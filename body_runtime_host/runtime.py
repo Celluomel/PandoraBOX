@@ -507,8 +507,18 @@ class BodyHost:
         host = str(self.value("BODY_HOST", "127.0.0.1") or "127.0.0.1")
         port = max(1, min(65535, int(self.value("BODY_PORT", 8766) or 8766)))
         owner = self
+        from .body_gui import BODY_GUI_HTML
 
         class Handler(BaseHTTPRequestHandler):
+            def _send_html(self, html: str, status: int = 200) -> None:
+                data = html.encode("utf-8")
+                self.send_response(status)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
             def _send(self, payload, status: int = 200) -> None:
                 data = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
                 self.send_response(status)
@@ -528,7 +538,9 @@ class BodyHost:
 
             def do_GET(self):  # noqa: N802
                 path = self.path.split("?", 1)[0].rstrip("/") or "/"
-                if path == "/health":
+                if path in {"", "/", "/body"}:
+                    self._send_html(BODY_GUI_HTML)
+                elif path == "/health":
                     wm = owner._worldmodel
                     self._send({
                         "status": "ready",
@@ -612,7 +624,7 @@ class BodyHost:
         try:
             self.http_server = ThreadingHTTPServer((host, port), Handler)
             threading.Thread(target=self.http_server.serve_forever, name="body-http", daemon=True).start()
-            LOG.info("Body endpoint listening on http://%s:%d/health", host, port)
+            LOG.info("Body endpoint listening on http://%s:%d/", host, port)
         except OSError as exc:
             LOG.warning("Body endpoint unavailable on %s:%d: %s", host, port, exc)
 

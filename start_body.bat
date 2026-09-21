@@ -20,5 +20,6 @@ if not defined BODY_PYTHON (
   exit /b 1
 )
 echo Starting standalone PandoraBOX Body Runtime...
+echo Body management page: http://127.0.0.1:8766/
 "%BODY_PYTHON%" -m body_runtime_host
 endlocal
