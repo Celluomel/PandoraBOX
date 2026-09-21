@@ -688,6 +688,17 @@ class BodyHost:
                         self._send({"error": "world model unavailable"}, 503)
                         return
                     self._send(wm.step())
+                elif path == "/worldmodel/run":
+                    wm = owner.worldmodel
+                    if wm is None:
+                        self._send({"error": "world model unavailable"}, 503)
+                        return
+                    running = bool(self._read_body().get("running", False))
+                    if running:
+                        wm.start()
+                    else:
+                        wm.stop()
+                    self._send(wm.status_summary())
                 elif path == "/worldmodel/reset":
                     wm = owner.worldmodel
                     if wm is None:
