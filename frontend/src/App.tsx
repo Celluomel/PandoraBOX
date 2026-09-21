@@ -530,6 +530,27 @@ function SettingsDevelopment() {
   return <><SettingsDevelopmentLegacy/><CapabilityExperimentOverview/></>;
 }
 
+function WorldModelView() {
+  const [status, setStatus] = useState<any>(null);
+  const [anchors, setAnchors] = useState<any>(null);
+  const [episodes, setEpisodes] = useState<any[]>([]);
+  const [message, setMessage] = useState('');
+  const read = async () => {
+    try {
+      const [s, a, e] = await Promise.all([
+        fetch('/api/interface/body/worldmodel/status').then(checked).then(r => r.json()),
+        fetch('/api/interface/body/worldmodel/anchors').then(checked).then(r => r.json()),
+        fetch('/api/interface/body/worldmodel/episodes?limit=12').then(checked).then(r => r.json()),
+      ]);
+      setStatus(s); setAnchors(a); setEpisodes(Array.isArray(e) ? e : []); setMessage('');
+    } catch (e) { setMessage(e instanceof Error ? e.message : 'World model unavailable.'); }
+  };
+  useEffect(() => { void read(); const timer = setInterval(() => void read(), 5000); return () => clearInterval(timer); }, []);
+  const step = async () => { setMessage('Running supervised Body step...'); try { await checked(await fetch('/api/interface/body/worldmodel/step', { method: 'POST' })); await read(); } catch (e) { setMessage(e instanceof Error ? e.message : 'World model step failed.'); } };
+  const reset = async () => { if (!window.confirm('Reset the embodied world model memory?')) return; setMessage('Resetting...'); try { await checked(await fetch('/api/interface/body/worldmodel/reset?clear_memory=true', { method: 'POST' })); await read(); } catch (e) { setMessage(e instanceof Error ? e.message : 'World model reset failed.'); } };
+  return <main className="settings-view world-model-view"><header className="settings-view-header"><div><span className="eyebrow">COGNITIVE ORGANISM / BODY</span><h1>Embodied World Model</h1><p className="muted">The Body’s perception, physical memory, learned dynamics and action policy. The Brain reads this model; the Body owns it.</p></div><div className="settings-view-actions"><span className="settings-message">{message}</span><button className="settings-action-button" onClick={() => void step()}><Play size={15}/>Run supervised step</button><button className="settings-action-button" onClick={() => void reset()}><RefreshCw size={15}/>Reset memory</button><IconButton label="Close world model" onClick={() => window.close()}><X size={18}/></IconButton></div></header><div className="settings-stat-grid world-model-stats">{[['Mode', status?.mode || 'Unavailable'], ['Source', status?.source?.source || 'Unavailable'], ['Steps', status?.steps ?? 0], ['Running', status?.running ? 'Yes' : 'No'], ['Prediction error', status?.prediction_error_ema ?? '—'], ['Anchors', status?.memory?.lieux?.count !== undefined ? `${status.memory.lieux.count} places · ${status.memory.objets?.count || 0} objects` : '—']].map(([label, value]) => <div className="settings-stat" key={String(label)}><span>{label}</span><strong>{String(value)}</strong></div>)}</div><div className="world-model-grid"><section className="settings-panel"><div className="settings-section-title">Current body source</div><pre className="settings-log">{status?.source ? JSON.stringify(status.source, null, 2) : 'Waiting for Body Runtime...'}</pre><div className="settings-section-title">Last policy decision</div><pre className="settings-log">{status?.last_decision ? JSON.stringify(status.last_decision, null, 2) : 'No decision recorded.'}</pre></section><section className="settings-panel"><div className="settings-section-title">Physical memory</div><pre className="settings-log world-model-log">{anchors ? JSON.stringify({ stats: anchors.stats, top: anchors.top }, null, 2) : 'No anchors recorded.'}</pre><div className="settings-section-title">Recent sensorimotor episodes</div>{episodes.length ? <div className="settings-event-list">{episodes.map((episode, index) => <div key={`${episode.step}-${index}`}><span><b>{episode.action}</b><small>step {episode.step} · reward {episode.reward} · error {episode.pred_error}</small></span><b>{episode.outcome}</b></div>)}</div> : <p className="muted">No episodes recorded yet.</p>}</section></div></main>;
+}
+
 function BodySettingsView() {
   const [values, setValues] = useState<Record<string, any>>({});
   const [plugins, setPlugins] = useState<{ id: string; label: string; toggle_field: string; description: string; enabled?: boolean; runtime?: string }[]>([]);
@@ -600,6 +621,7 @@ function savedMessages(): Message[] {
 export default function App() {
   const view = new URLSearchParams(window.location.search).get('view');
   if (view === 'body') return <BodySettingsView />;
+  if (view === 'worldmodel') return <WorldModelView />;
   if (view === 'flux-dialogue') return <FluxDialogueWindow />;
   if (view === 'health') return <CognitiveHealthWindow />;
   if (view === 'rss') return <RSSFeedsWindow />;
