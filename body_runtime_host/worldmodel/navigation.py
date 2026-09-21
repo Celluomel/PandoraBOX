@@ -7,6 +7,7 @@ policy remains responsible for choosing among safe alternatives.
 from __future__ import annotations
 
 import math
+from collections import deque
 from typing import Any, Dict, Iterable
 
 
@@ -28,6 +29,77 @@ def _turn_toward_target(heading: float, target: tuple[float, float], position: t
         "turn_right": heading - math.pi / 2,
     }
     return min(candidates, key=lambda action: abs(_angle_delta(candidates[action], bearing)))
+
+
+def _grid_route_action(
+    observation: Any,
+    body: Any,
+    target: tuple[float, float],
+    interaction_radius: float,
+) -> str | None:
+    """Return the first action on a short collision-free route to ``target``.
+
+    The old steering rule only compared the target bearing with the current
+    heading. That is sufficient in open space but fails when a pillar lies on
+    the direct line: after one turn the same rule can turn the Body back into
+    the pillar forever. This bounded BFS is deliberately local and cheap; it
+    uses the latest perception frame and is recomputed after every action.
+    """
+    width = body.capabilities.get("world_width")
+    height = body.capabilities.get("world_height")
+    if width is None or height is None:
+        return None
+    width, height = int(width), int(height)
+    start = (int(round(float(body.position[0]))), int(round(float(body.position[1]))))
+    goal = (float(target[0]), float(target[1]))
+    if not (0 <= start[0] < width and 0 <= start[1] < height):
+        return None
+
+    blocked: set[tuple[int, int]] = set()
+    for obj in list(getattr(observation, "scene", []) or []):
+        kind = str(getattr(obj, "kind", ""))
+        if kind not in {"obstacle", "mobile_obstacle", "table", "chair"}:
+            continue
+        # A destination surface is not traversable, but cells adjacent to it
+        # remain valid goals. Other solid objects occupy their observed cell.
+        ox, oy = float(obj.position[0]), float(obj.position[1])
+        blocked.add((int(round(ox)), int(round(oy))))
+
+    def is_goal(cell: tuple[int, int]) -> bool:
+        return math.hypot(cell[0] - goal[0], cell[1] - goal[1]) <= interaction_radius
+
+    # Do not treat the current cell as blocked if perception overlaps the Body.
+    blocked.discard(start)
+    queue = deque([start])
+    parents: dict[tuple[int, int], tuple[int, int] | None] = {start: None}
+    goal_cell: tuple[int, int] | None = start if is_goal(start) else None
+    directions = ((1, 0), (0, 1), (-1, 0), (0, -1))
+    while queue and goal_cell is None:
+        cell = queue.popleft()
+        for dx, dy in directions:
+            nxt = (cell[0] + dx, cell[1] + dy)
+            if not (0 <= nxt[0] < width and 0 <= nxt[1] < height):
+                continue
+            if nxt in parents or nxt in blocked:
+                continue
+            parents[nxt] = cell
+            if is_goal(nxt):
+                goal_cell = nxt
+                break
+            queue.append(nxt)
+
+    if goal_cell is None or goal_cell == start:
+        return None
+    step = goal_cell
+    while parents[step] != start:
+        parent = parents[step]
+        if parent is None:
+            return None
+        step = parent
+    desired = math.atan2(step[1] - start[1], step[0] - start[0])
+    if abs(_angle_delta(float(body.orientation), desired)) < 0.1:
+        return "forward"
+    return _turn_toward_target(float(body.orientation), (float(step[0]), float(step[1])), (float(start[0]), float(start[1])))
 
 
 def navigation_guidance(observation: Any, body: Any, carrying: bool = False) -> Dict[str, Any]:
@@ -83,6 +155,11 @@ def navigation_guidance(observation: Any, body: Any, carrying: bool = False) -> 
         # caused repeated failed grabs while the target was still one step
         # away.
         grab_distance = float(body.capabilities.get("reach", 1.8)) * (1.0 + 0.25 * target_size)
+        route_radius = 1.25 if carrying else grab_distance
+        routed = _grid_route_action(observation, body, target, route_radius)
+        if routed is not None:
+            recommended = routed
+            prior[routed] = max(prior.get(routed, 0.0), 3.0)
         if not carrying and distance <= grab_distance:
             prior["grab"] = 1.6
             recommended = "grab"
