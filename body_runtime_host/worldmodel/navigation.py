@@ -50,19 +50,33 @@ def navigation_guidance(observation: Any, body: Any, carrying: bool = False) -> 
 
     prior: Dict[str, float] = {}
     forbidden: set[str] = set()
+    recommended: str | None = None
+    phase = "to_target"
     if target is not None:
         bearing = math.atan2(target[1] - py, target[0] - px)
         delta = _angle_delta(heading, bearing)
         distance = math.hypot(target[0] - px, target[1] - py)
-        if abs(delta) < math.pi / 6:
-            prior["forward"] = 1.25
+        phase = "to_shelf" if carrying else "to_target"
+        forward_position = (px + math.cos(heading), py + math.sin(heading))
+        forward_distance = math.hypot(target[0] - forward_position[0], target[1] - forward_position[1])
+        forward_progress = distance - forward_distance
+
+        # A body should advance whenever its current heading makes progress.
+        # This prevents the learned policy from oscillating between turns at
+        # the starting point while the target remains many cells away.
+        if forward_progress > 0.05:
+            recommended = "forward"
+            prior["forward"] = 2.4
         else:
-            prior[_turn_toward_target(heading, target, (px, py))] = 1.0
+            recommended = _turn_toward_target(heading, target, (px, py))
+            prior[recommended] = 2.0
             prior["forward"] = -0.35
         if not carrying and distance <= float(body.capabilities.get("reach", 1.8)) * 1.25:
             prior["grab"] = 1.6
+            recommended = "grab"
         if carrying and distance <= 1.25:
             prior["release"] = 1.8
+            recommended = "release"
 
     # A forward step is unsafe when it enters an obstacle's local footprint.
     forward = (px + math.cos(heading), py + math.sin(heading))
@@ -95,5 +109,14 @@ def navigation_guidance(observation: Any, body: Any, carrying: bool = False) -> 
             preferred = "turn_right" if side > 0 else "turn_left"
         prior[preferred] = max(prior.get(preferred, 0.0), 1.35)
         prior["forward"] = -2.0
+        recommended = preferred
 
-    return {"prior": prior, "forbidden": sorted(forbidden), "target": list(target) if target else None, "obstacle_ahead": bool(nearby_obstacles)}
+    return {
+        "prior": prior,
+        "forbidden": sorted(forbidden),
+        "target": list(target) if target else None,
+        "phase": phase,
+        "distance_to_target": round(distance, 3) if target is not None else None,
+        "recommended": recommended,
+        "obstacle_ahead": bool(nearby_obstacles),
+    }

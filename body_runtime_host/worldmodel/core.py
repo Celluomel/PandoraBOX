@@ -255,7 +255,16 @@ class EmbodiedWorldModel:
                 prior[action] = max(float(prior.get(action, 0.0)), float(score))
             decision = self.policy.decide(s, candidates, prior=prior or None)
             chosen = decision.get("action")
-            # 9) execute (robot actuators, sandbox physics, or legacy bridge)
+            # The geometric objective layer is authoritative for the
+            # sandbox: learned values still get evaluated and trained, but
+            # they cannot make the body rotate in place when a safe forward
+            # step advances the current objective.
+            recommended = navigation.get("recommended")
+            candidate_types = {str(candidate.get("type")) for candidate in candidates}
+            if recommended in candidate_types and recommended not in forbidden:
+                chosen = {"type": recommended}
+                decision["reason"] = "geometric objective guidance"
+              # 9) execute (robot actuators, sandbox physics, or legacy bridge)
             if self.source is not None:
                 obs_after, outcome = self.source.execute(self._as_action(chosen))
             else:
