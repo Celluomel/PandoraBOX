@@ -96,7 +96,11 @@ def navigation_guidance(observation: Any, body: Any, carrying: bool = False) -> 
     forward = (px + math.cos(heading), py + math.sin(heading))
     nearby_obstacles = []
     for obj in objects:
-        if str(getattr(obj, "kind", "")) != "obstacle":
+        object_kind = str(getattr(obj, "kind", ""))
+        # The simulator's collision model treats furniture and surfaces as
+        # solid volumes too. They are valid destinations for manipulation, but
+        # they are still obstacles while the Body is travelling elsewhere.
+        if object_kind not in {"obstacle", "table", "chair"}:
             continue
         ox, oy = float(obj.position[0]), float(obj.position[1])
         radius = max(0.65, float(getattr(obj, "size", 1.0)) * 0.7)
@@ -131,7 +135,11 @@ def navigation_guidance(observation: Any, body: Any, carrying: bool = False) -> 
             preferred = _turn_toward_target(heading, target, (px, py)) if target is not None else "turn_left"
         prior[preferred] = max(prior.get(preferred, 0.0), 1.35)
         prior["forward"] = -2.0
-        recommended = preferred
+        # A blocking surface can be the current manipulation target. If the
+        # Body is already within release/grasp range, complete that operation
+        # instead of turning away from the table or target.
+        if recommended not in {"grab", "release"}:
+            recommended = preferred
 
     return {
         "prior": prior,
