@@ -42,11 +42,13 @@ def navigation_guidance(observation: Any, body: Any, carrying: bool = False) -> 
         shelf = (float(match.group(1)), float(match.group(2)))
 
     target = shelf if carrying else None
+    target_size = 0.0
     if target is None:
         candidates = [o for o in objects if str(getattr(o, "kind", "")) == "target"]
         if candidates:
             target_obj = min(candidates, key=lambda o: math.hypot(float(o.position[0]) - px, float(o.position[1]) - py))
             target = (float(target_obj.position[0]), float(target_obj.position[1]))
+            target_size = max(0.0, float(getattr(target_obj, "size", 0.0)))
 
     prior: Dict[str, float] = {}
     forbidden: set[str] = set()
@@ -72,7 +74,12 @@ def navigation_guidance(observation: Any, body: Any, carrying: bool = False) -> 
             recommended = _turn_toward_target(heading, target, (px, py))
             prior[recommended] = 2.0
             prior["forward"] = -0.35
-        if not carrying and distance <= float(body.capabilities.get("reach", 1.8)) * 1.25:
+        # Keep this threshold identical to SimulatedRoom._nearest_graspable:
+        # reach depends on the object's footprint. A loose generic threshold
+        # caused repeated failed grabs while the target was still one step
+        # away.
+        grab_distance = float(body.capabilities.get("reach", 1.8)) * (1.0 + 0.25 * target_size)
+        if not carrying and distance <= grab_distance:
             prior["grab"] = 1.6
             recommended = "grab"
         if carrying and distance <= 1.25:
@@ -128,6 +135,7 @@ def navigation_guidance(observation: Any, body: Any, carrying: bool = False) -> 
         "target": list(target) if target else None,
         "phase": phase,
         "distance_to_target": round(distance, 3) if distance is not None else None,
+        "grasp_distance": round(grab_distance, 3) if target is not None and not carrying else None,
         "recommended": recommended,
         "obstacle_ahead": bool(nearby_obstacles),
         "boundary_ahead": boundary_ahead,
