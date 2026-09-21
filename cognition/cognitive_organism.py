@@ -109,6 +109,7 @@ from cognition.self_model_influence import SelfModelInfluence
 # ── Self revision engine (v38) — prediction error reshapes the self ───────────
 from cognition.self_revision_engine import SelfRevisionEngine
 from cognition.self_correction_engine import SelfCorrectionEngine
+from cognition.identity_grounding import IdentityGrounding
 
 # ── v46: Human-depth features ─────────────────────────────────────────────────
 from cognition.skill_registry    import SkillRegistry
@@ -234,6 +235,9 @@ class CognitiveOrganism:
         # ── Aspirational Self (emergent Superego) ──────────────────
         self.aspirational_self = AspirationalSelf(self)
         self.self_model     = SelfModel(str(self._data_dir / "self_model.json"))
+        self.identity_grounding = IdentityGrounding(
+            self, persona_dir=str(self._data_dir)
+        )
         self.attractors     = CognitiveAttractorSystem(str(self._data_dir / "attractors.json"))
         self.priority_engine = PriorityEngine()
 
@@ -596,15 +600,12 @@ class CognitiveOrganism:
         # ── IDENTITY GROUNDING: self grounded in DEMONSTRATED capability ──────
         # evidence (the outcome loop's efficacy + focus stability), not only in
         # aspiration. A CONSUMER of the causal-closure layers — reads their real
-        # numbers and says nothing it cannot cite. Placed with the self-state:
-        # the self is the frame the moment appears within.
+        # numbers and says nothing it cannot cite. It has a dedicated bounded
+        # category so experiential fragments cannot silently displace it.
         try:
-            from cognition.identity_grounding import get_identity_grounding
-            _ig_block = get_identity_grounding(
-                self, str(getattr(self, '_data_dir', 'data/persona'))
-            ).identity_block()
+            _ig_block = self.identity_grounding.identity_block()
             if _ig_block:
-                budget.add("self_state", "grounded_identity", _ig_block)
+                budget.add("self_evidence", "grounded_identity", _ig_block)
         except Exception:
             pass
 
@@ -1558,6 +1559,20 @@ class CognitiveOrganism:
             self._cognitive_restructuring.observe_turn(_correction_result, _validator_score)
         except Exception as _cr_err:
             logger.debug("[CognitiveOrganism] restructuring observation failed (non-fatal): %s", _cr_err)
+
+        # Evidence-backed self model: record only consequential events. This
+        # keeps autobiographical continuity tied to observable corrections or
+        # measured misalignment instead of turning every conversation into a
+        # flattering identity claim.
+        try:
+            self.identity_grounding.record_interaction_evidence(
+                user_input=user_input,
+                response=response,
+                validator_score=_validator_score,
+                correction=_correction_result,
+            )
+        except Exception as _ig_err:
+            logger.debug("[CognitiveOrganism] identity evidence update failed (non-fatal): %s", _ig_err)
 
         # ── Observatory: record response + tick metrics ────────────────────
         try:

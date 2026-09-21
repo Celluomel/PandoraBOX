@@ -510,10 +510,20 @@ class LLMManager:
     def begin_interactive_turn(self) -> None:
         """Reserve the LLM for a user turn, including prompt preparation."""
         self._chat_active.set()
+        try:
+            from utils.shared_embedder import set_interactive_priority
+            set_interactive_priority(True)
+        except Exception:
+            pass
 
     def end_interactive_turn(self) -> None:
         """Release the reservation after the complete user turn finishes."""
         self._chat_active.clear()
+        try:
+            from utils.shared_embedder import set_interactive_priority
+            set_interactive_priority(False)
+        except Exception:
+            pass
 
     def _trim_history(self):
         """

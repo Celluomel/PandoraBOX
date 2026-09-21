@@ -37,15 +37,16 @@ Token budget (conservative — real tokenisation is ~4 chars/token):
 
     Category            Budget (tokens)   Priority
     ─────────────────────────────────────────────
-    self_state          120               1  (φ, coherence, ground)
-    identity            200               2  (narrative arc, values)
-    cognitive_pressure  100               3  (tensions, energy, homeostasis)
-    attention           80                4  (attention + curiosity)
-    memory_active       150               5  (inner monologue, working memory)
-    skills              120               6  (relevant competencies)
-    preferences         80                7  (stable orientations)
-    experimentation     100               8  (active experiment)
-    meta_systems        120               9  (audit, immune, ripple, ethics)
+    self_evidence       120               1  (verified claims and epistemic contract)
+    self_state          120               2  (φ, coherence, experiential state)
+    identity            200               3  (narrative arc, values)
+    cognitive_pressure  100               4  (tensions, energy, homeostasis)
+    attention           80                5  (attention + curiosity)
+    memory_active       150               6  (inner monologue, working memory)
+    skills              120               7  (relevant competencies)
+    preferences         80                8  (stable orientations)
+    experimentation     100               9  (active experiment)
+    meta_systems        120              10  (audit, immune, ripple, ethics)
     ─────────────────────────────────────────────
     TOTAL HARD CAP      900               (≈ 3600 chars / ~720 words)
 
@@ -74,15 +75,16 @@ CHARS_PER_TOKEN = 4
 CATEGORY_BUDGETS: Dict[str, Tuple[int, int]] = {
     # category → (token_budget, priority)  lower priority = higher priority number
     "factual_telemetry":  (320, 0),
-    "self_state":         (120, 1),
-    "identity":           (200, 2),
-    "cognitive_pressure": (100, 3),
-    "attention":          (80,  4),
-    "memory_active":      (150, 5),
-    "skills":             (120, 6),
-    "preferences":        (80,  7),
-    "experimentation":    (100, 8),
-    "meta_systems":       (120, 9),
+    "self_evidence":      (120, 1),
+    "self_state":         (120, 2),
+    "identity":           (200, 3),
+    "cognitive_pressure": (100, 4),
+    "attention":          (80,  5),
+    "memory_active":      (150, 6),
+    "skills":             (120, 7),
+    "preferences":        (80,  8),
+    "experimentation":    (100, 9),
+    "meta_systems":       (120, 10),
 }
 
 TOTAL_TOKEN_CAP = 900   # hard ceiling across all categories

@@ -192,6 +192,7 @@ function CognitiveHealth({ onData }: { onData?: (data: CognitiveHealthData) => v
     { title: 'Global Workspace', icon: '🌐', keys: ['global_workspace'] },
     { title: 'Emotion, Mood and Threat', icon: '🌡', keys: ['emotion_mood', 'threat_level'] },
     { title: 'Epistemic Self-Model', icon: '💡', keys: ['internal_cognitive_state'] },
+    { title: 'Evidence-Backed Self Model', icon: '◉', keys: ['evidential_self_model'] },
     { title: 'Recursive Crossing (Self-Efficacy)', icon: '↻', keys: ['epistemic_efficacy'] },
     { title: 'Open Symbol Repertoire', icon: '🔣', keys: ['symbol_system'] },
     { title: 'Architecture as Object of Reflection', icon: '🧬', keys: ['self_description', 'revision_gateway'] },

@@ -2024,6 +2024,17 @@ class InternalThoughtLoop:
         except Exception as _cal_ece_e:
             logger.debug(f"[InternalLoop] Calibration ECE refresh error (non-fatal): {_cal_ece_e}")
 
+        # Refresh the evidential self-model after the subsystems above have
+        # produced their latest outcomes. This is local aggregation only: no
+        # LLM call and no dependency on an active user conversation.
+        try:
+            if _IS_CONSOLIDATION:
+                _identity = getattr(o, "identity_grounding", None)
+                if _identity is not None:
+                    _identity.ground()
+        except Exception as _identity_e:
+            logger.debug(f"[InternalLoop] Evidential self-model refresh error (non-fatal): {_identity_e}")
+
         # ── Governor summary (end of slow cycle) ─────────────────────────────
         if self._governor:
             self._governor.summary_log()

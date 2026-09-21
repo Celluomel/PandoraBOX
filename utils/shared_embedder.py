@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import urllib.request
 
 logger = logging.getLogger(__name__)
@@ -43,11 +44,22 @@ _fast_instance = None
 _fast_name = ""
 _quality_instance = None
 _quality_name = ""
+_interactive_priority = threading.Event()
+_quality_request_lock = threading.Lock()
 
 # Defaults
 DEFAULT_FAST_MODEL    = "all-MiniLM-L6-v2"
 DEFAULT_QUALITY_MODEL = "text-embedding-nomic-embed-text-v1.5"
 DEFAULT_BASE_URL      = "http://localhost:1234/v1"
+QUALITY_REQUEST_TIMEOUT = 8
+
+
+def set_interactive_priority(active: bool) -> None:
+    """Tell background embedding work to yield to the visible chat turn."""
+    if active:
+        _interactive_priority.set()
+    else:
+        _interactive_priority.clear()
 
 
 def _base_url_from_config():
@@ -83,7 +95,7 @@ class APIEmbedder:
     Falls back to the FAST tier on any API failure so callers never crash.
     """
 
-    def __init__(self, model_name, base_url, timeout=60):
+    def __init__(self, model_name, base_url, timeout=QUALITY_REQUEST_TIMEOUT):
         self.model_name = model_name
         self.base_url = (base_url or DEFAULT_BASE_URL).rstrip("/")
         self.timeout = timeout
@@ -102,14 +114,26 @@ class APIEmbedder:
     def _encode_list(self, texts, batch_size=32):
         import numpy as np
         texts = [str(t) for t in texts]
-        out = []
-        for i in range(0, len(texts), batch_size):
-            chunk = texts[i:i + batch_size]
-            d = self._post(chunk)
-            data = sorted(d.get("data", []), key=lambda x: x.get("index", 0))
-            for item in data:
-                out.append(item["embedding"])
-        return np.asarray(out, dtype="float32")
+        if _interactive_priority.is_set():
+            raise RuntimeError("quality embeddings deferred during interactive turn")
+        # Do not let several background modules queue independent requests in
+        # LM Studio. A caller that loses this non-blocking race falls back to
+        # the local FAST tier instead of making the visible chat wait.
+        if not _quality_request_lock.acquire(blocking=False):
+            raise RuntimeError("quality embedding request already in progress")
+        try:
+            out = []
+            for i in range(0, len(texts), batch_size):
+                if _interactive_priority.is_set():
+                    raise RuntimeError("quality embeddings deferred during interactive turn")
+                chunk = texts[i:i + batch_size]
+                d = self._post(chunk)
+                data = sorted(d.get("data", []), key=lambda x: x.get("index", 0))
+                for item in data:
+                    out.append(item["embedding"])
+            return np.asarray(out, dtype="float32")
+        finally:
+            _quality_request_lock.release()
 
     def encode(self, texts, **kw):
         single = isinstance(texts, str)
@@ -117,16 +141,21 @@ class APIEmbedder:
             mat = self._encode_list([texts] if single else list(texts))
             return mat[0] if single else mat
         except Exception as e:
-            logger.warning(
-                "[embedder] QUALITY tier API failed (%s); "
-                "falling back to FAST tier for this call" % e
-            )
+            if "deferred" in str(e) or "already in progress" in str(e):
+                logger.debug("[embedder] QUALITY tier yielded to interactive work: %s", e)
+            else:
+                logger.warning(
+                    "[embedder] QUALITY tier API failed (%s); "
+                    "falling back to FAST tier for this call" % e
+                )
             fast = _get_fast_embedder()
             if fast is None:
                 raise
             return fast.encode(texts, **kw)
 
     def get_sentence_embedding_dimension(self):
+        if _interactive_priority.is_set():
+            raise RuntimeError("quality embedding dimension deferred during interactive turn")
         if self._dim is None:
             v = self.encode(["dimension calibration probe"])
             self._dim = int(v.shape[-1] if v.ndim > 1 else len(v))

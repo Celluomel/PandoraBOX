@@ -179,7 +179,31 @@ retained, revised or abandoned.
 confidence update and persistence decision. A correction is not complete until a
 later observation tests whether it held.
 
-### 3.11 Autonomous experimentation
+### 3.11 Evidence-backed self modelling
+
+The self model is a local aggregation layer over recorded subsystem outcomes,
+not a language-model autobiography. It consumes measured action efficacy,
+Workspace focus stability, prediction calibration, active planning state,
+self-correction outcomes, cognitive-restructuring trials and selected narrative
+transitions. It produces an inspectable claim ledger whose entries are explicitly
+`verified`, `developing` or `unverified`.
+
+**Functional output:** evidence-linked capability claims, active agency distinct
+from desired aspirations, calibration status, correction maturity, epistemic
+contract and a bounded autobiographical timeline of meaningful state changes.
+A capability requires at least three recorded trials and sufficient measured
+efficacy before it can be represented as verified. A stored correction also
+requires repeated evidence, later successful turns and adequate confidence.
+Self-reported scores remain contextual evidence and cannot verify competence.
+
+The prompt receives a compact, independently budgeted fragment that requires the
+language model to separate direct observation, tentative inference, aspiration
+and unknown state. The full evidence is exposed through Cognitive Health and the
+`/api/interface/self-awareness/evidence` endpoint. This mechanism improves
+self-monitoring and epistemic honesty; it is not evidence of phenomenal
+consciousness.
+
+### 3.12 Autonomous experimentation
 
 Experiments provide bounded hypothesis-test-measure-revise cycles. The current
 capability-development experiment measures Workspace activity using a baseline,
@@ -190,7 +214,7 @@ repeated trials and long-run stabilization. Its lifecycle is:
 An experiment can end as `inconclusive`; this is a valid scientific outcome.
 Proposal, experiment and verified capability are persisted separately.
 
-### 3.12 Orchestration and background cognition
+### 3.13 Orchestration and background cognition
 
 `InternalThoughtLoop` schedules slow cognitive services such as attention,
 reflection, goal evaluation, memory maintenance, world modelling, experiments
@@ -200,7 +224,7 @@ running background work independently and treating failures as non-fatal.
 **Functional output:** cycle count, subsystem events, workspace changes,
 background outcomes and timing evidence.
 
-### 3.13 Research companion layer
+### 3.14 Research companion layer
 
 The same grounded pipeline supports practical intellectual collaboration. The
 organism can retrieve and compare scientific sources such as arXiv papers,

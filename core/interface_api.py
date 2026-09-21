@@ -553,6 +553,14 @@ async def cognitive_health():
         data = await asyncio.to_thread(_fetch_all)
         if isinstance(data, dict):
             data['orchestrator'] = _orchestrator_snapshot()
+            try:
+                state = _runtime()
+                organism = getattr(getattr(state, 'persona', None), '_organism', None)
+                grounding = getattr(organism, 'identity_grounding', None)
+                if grounding is not None:
+                    data['evidential_self_model'] = _json_safe(grounding.snapshot())
+            except Exception as evidence_exc:
+                logger.debug('Evidential self-model unavailable: %s', evidence_exc)
             index = _compute_self_awareness_index(data)
             data['self_awareness_index'] = (
                 {'score': index[0], 'components': [
@@ -565,6 +573,17 @@ async def cognitive_health():
     except Exception as exc:
         logger.warning('Cognitive health read failed: %s', exc)
         raise HTTPException(503, 'Cognitive dashboard is unavailable.')
+
+
+@router.get('/self-awareness/evidence')
+async def self_awareness_evidence():
+    """Expose the inspectable evidence behind first-person cognitive claims."""
+    state = _runtime()
+    organism = getattr(getattr(state, 'persona', None), '_organism', None)
+    grounding = getattr(organism, 'identity_grounding', None)
+    if grounding is None:
+        raise HTTPException(503, 'Evidence-backed self model is not ready.')
+    return _json_safe(await asyncio.to_thread(grounding.snapshot))
 
 
 @router.get('/network')
