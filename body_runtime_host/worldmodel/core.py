@@ -206,6 +206,14 @@ class EmbodiedWorldModel:
         while not self._stop.wait(max(0.2, float(self._cfg.get("step_interval", 2.0)))):
             try:
                 self.step()
+                # A completed simulated episode is a terminal state. Keep the
+                # final perception visible and pause until the operator resets
+                # the episode instead of repeatedly re-grabbing/releasing the
+                # already delivered object.
+                if self.sim is not None and self.sim.status().get("done"):
+                    logger.info("[worldmodel] simulated objective completed; pausing episode")
+                    self._stop.set()
+                    break
             except Exception:
                 logger.exception("[worldmodel] background step failed")
 
@@ -270,6 +278,10 @@ class EmbodiedWorldModel:
             else:
                 obs_after, outcome = self._bridge_execute(chosen)
             reward = outcome.reward
+            # The observable Body boundary must represent the result of the
+            # action, not the stale pre-action frame used for decision-making.
+            self._last_observation = obs_after
+            self._last_body_state = self.source.body_state() if self.source is not None else body_state
             # 10) learn: prediction error + online update
             pred_s_next = self.dynamics.step(s, self._action_vec(chosen))
             next_body = self.source.body_state() if self.source is not None else body_state
