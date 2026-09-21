@@ -41,7 +41,11 @@ def navigation_guidance(observation: Any, body: Any, carrying: bool = False) -> 
     if match:
         shelf = (float(match.group(1)), float(match.group(2)))
 
+    stage = str(body.capabilities.get("task_stage", "to_target"))
+    table = next((o for o in objects if str(getattr(o, "kind", "")) == "table"), None)
     target = shelf if carrying else None
+    if carrying and stage == "to_table" and table is not None:
+        target = (float(table.position[0]), float(table.position[1]))
     target_size = 0.0
     if target is None:
         candidates = [o for o in objects if str(getattr(o, "kind", "")) == "target"]
@@ -59,7 +63,7 @@ def navigation_guidance(observation: Any, body: Any, carrying: bool = False) -> 
         bearing = math.atan2(target[1] - py, target[0] - px)
         delta = _angle_delta(heading, bearing)
         distance = math.hypot(target[0] - px, target[1] - py)
-        phase = "to_shelf" if carrying else "to_target"
+        phase = stage
         forward_position = (px + math.cos(heading), py + math.sin(heading))
         forward_distance = math.hypot(target[0] - forward_position[0], target[1] - forward_position[1])
         forward_progress = distance - forward_distance

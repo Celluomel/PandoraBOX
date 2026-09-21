@@ -643,7 +643,13 @@ class EmbodiedWorldModel:
             task = "complete" if sim_status.get("done") else "in progress"
             lines.append(
                 f"- Physical task state: {task} (carrying={sim_status.get('carrying')}, "
+                f"stage={sim_status.get('task_stage')}, goal={sim_status.get('shelf')}, "
                 f"steps={sim_status.get('steps')}, collisions={sim_status.get('collisions')})."
+            )
+            lines.append(
+                "- Body objective sequence: "
+                + " → ".join(sim_status.get("goal_sequence") or [])
+                + "."
             )
         if source_status is not None:
             src = source_status.get("source")

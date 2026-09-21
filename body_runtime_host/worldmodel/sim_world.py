@@ -1,9 +1,9 @@
 """Simulated physical world — the Body's test environment.
 
 A small grid room with a body (position, heading, reach, strength, gripper),
-a few physical objects with mass, one *target* (the cup), one *drop zone*
-(the shelf) and one *obstacle*.  The body's task: **grab the cup and bring
-it to the shelf**.
+    a few physical objects with mass, one *target* (the cup), one intermediate
+    surface (the table), one *drop zone* (the shelf) and one *obstacle*. The
+    body's task is sequential: **grab → table → grab → shelf**.
 
 This is the executable "body" used to demonstrate and test the embodied
 world model end-to-end.  In a real deployment the Body's sensors and
@@ -44,6 +44,7 @@ class SimulatedRoom:
         self._reset_objects()
         # goal
         self.shelf = (1.0, 9.0)  # drop zone centre
+        self.task_stage = "to_target"
         self.done = False
         self.steps = 0
         self.collision_count = 0
@@ -75,6 +76,8 @@ class SimulatedRoom:
         self.px, self.py, self.heading = 1.0, 1.0, 0.0
         self.carrying = None
         self._reset_objects()
+        self.shelf = (1.0, 9.0)
+        self.task_stage = "to_target"
         self.done = False
         self.steps = 0
         self.collision_count = 0
@@ -82,6 +85,16 @@ class SimulatedRoom:
 
     def shuffle_objects(self) -> None:
         """Place the scene objects in a fresh, collision-free arrangement."""
+        cells = [
+            (float(x), float(y))
+            for x in range(1, self.width - 1)
+            for y in range(1, self.height - 1)
+        ]
+        random.SystemRandom().shuffle(cells)
+        self.shelf = next(
+            cell for cell in cells
+            if math.hypot(cell[0] - 1.0, cell[1] - 1.0) >= 2.0
+        )
         reserved = [(1.0, 1.0), self.shelf]
         cells = [
             (float(x), float(y))
@@ -118,6 +131,8 @@ class SimulatedRoom:
                 "reach": REACH, "speed": 1.0,
                 "strength": STRENGTH, "gripper": 1.0,
                 "world_width": float(self.width), "world_height": float(self.height),
+                "task_stage": self.task_stage,
+                "goal": list(self.shelf),
             },
         )
 
@@ -140,7 +155,7 @@ class SimulatedRoom:
         )
 
     def _describe(self) -> str:
-        parts = [f"Body at ({self.px:.1f},{self.py:.1f}) heading {math.degrees(self.heading):.0f}deg."]
+        parts = [f"Body at ({self.px:.1f},{self.py:.1f}) heading {math.degrees(self.heading):.0f}deg. Task stage: {self.task_stage}."]
         if self.carrying:
             parts.append(f"Carrying {self.carrying}.")
         objs = []
@@ -213,6 +228,8 @@ class SimulatedRoom:
                     desc = "nothing within reach to grab"
                 else:
                     self.carrying = target["id"]
+                    if target["id"] == "cup":
+                        self.task_stage = "to_table" if self.task_stage == "to_target" else "to_shelf"
                     kind = "success"
                     # The environment knows its own goal: grabbing the *target*
                     # object (the cup) is strongly rewarded, grabbing anything
@@ -230,19 +247,33 @@ class SimulatedRoom:
                     self.objects[oid]["x"] - self.shelf[0],
                     self.objects[oid]["y"] - self.shelf[1],
                 ) < 1.2
-                self.objects[oid]["x"] = self.px
-                self.objects[oid]["y"] = self.py
-                self.carrying = None
-                if on_shelf:
+                table = self.objects["table"]
+                on_table = math.hypot(self.px - table["x"], self.py - table["y"]) < 1.2
+                if on_table and oid == "cup" and self.task_stage == "to_table":
+                    self.objects[oid]["x"] = table["x"]
+                    self.objects[oid]["y"] = table["y"]
+                    self.carrying = None
+                    self.task_stage = "to_target_from_table"
+                    kind = "success"
+                    reward += 0.4
+                    self.success_count += 1
+                    desc = f"placed {oid} on the table — intermediate objective complete"
+                elif on_shelf and oid == "cup" and self.task_stage == "to_shelf":
+                    self.objects[oid]["x"] = self.shelf[0]
+                    self.objects[oid]["y"] = self.shelf[1]
+                    self.carrying = None
                     kind = "success"
                     reward += 1.0
                     self.success_count += 1
                     self.done = True
                     desc = f"placed {oid} on the shelf — TASK COMPLETE"
                 else:
+                    self.objects[oid]["x"] = self.px
+                    self.objects[oid]["y"] = self.py
+                    self.carrying = None
                     kind = "failure"
                     reward -= 0.3
-                    desc = f"dropped {oid} (not on shelf)"
+                    desc = f"dropped {oid} (not on a valid objective surface)"
         elif a == "push":
             target = self._nearest_pushable()
             if target is None:
@@ -320,6 +351,8 @@ class SimulatedRoom:
             "body": [round(self.px, 2), round(self.py, 2)],
             "heading_deg": round(math.degrees(self.heading), 1),
             "carrying": self.carrying,
+            "task_stage": self.task_stage,
+            "goal_sequence": ["to_target", "to_table", "to_target_from_table", "to_shelf"],
             "objects": {
                 k: {"x": round(v["x"], 2), "y": round(v["y"], 2), "kind": v["kind"]}
                 for k, v in self.objects.items()
