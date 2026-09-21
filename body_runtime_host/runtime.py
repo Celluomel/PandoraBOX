@@ -110,6 +110,38 @@ class BodyHost:
         safe["BODY_BRIDGE_TOKEN"] = "@env:BODY_BRIDGE_TOKEN"
         CONFIG_PATH.write_text(json.dumps(safe, indent=2, ensure_ascii=False), encoding="utf-8")
 
+    def save_config(self) -> None:
+        """Persist Body settings while keeping secret values environment-backed."""
+        CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        safe = dict(self.config)
+        for key in ("HOME_ASSISTANT_TOKEN", "BODY_BRIDGE_TOKEN", "ROBOT_TOKEN"):
+            if safe.get(key) and not str(safe[key]).startswith("@env:"):
+                safe[key] = f"@env:{key}"
+        CONFIG_PATH.write_text(json.dumps(safe, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    def set_plugin_enabled(self, plugin_id: str, enabled: bool) -> dict:
+        fields = {
+            "home_assistant": "BODY_PLUGIN_HOME_ASSISTANT_ENABLED",
+            "robot": "BODY_PLUGIN_ROBOT_ENABLED",
+            "sim_robot": "BODY_PLUGIN_SIM_ROBOT_ENABLED",
+            "world_model": "BODY_WORLDMODEL_ENABLED",
+        }
+        field = fields.get(plugin_id)
+        if not field:
+            raise ValueError(f"unknown Body plugin: {plugin_id}")
+        self.config[field] = bool(enabled)
+        self.save_config()
+        if plugin_id == "world_model":
+            wm = self.worldmodel if enabled else self._worldmodel
+            if wm is not None:
+                if enabled:
+                    wm.start()
+                else:
+                    wm.stop()
+        elif self._worldmodel is not None:
+            self.reload_worldmodel_source()
+        return {"ok": True, "plugin": plugin_id, "enabled": bool(enabled), "plugins": self.plugins()}
+
     # ── Home Assistant (auxiliary presence feed) ───────────────────────────
 
     def discover(self) -> list[dict]:
@@ -465,6 +497,11 @@ class BodyHost:
                 "enabled": bool(self.value("BODY_PLUGIN_HOME_ASSISTANT_ENABLED", self.value("HOME_ASSISTANT_ENABLED", False))),
                 "role": "auxiliary presence cues (not a sensorimetry channel)",
             },
+            {
+                "id": "world_model",
+                "enabled": bool(self.value("BODY_WORLDMODEL_ENABLED", False)),
+                "role": "embodied perception, physical memory and prediction",
+            },
         ]
 
     # ── lifecycle ───────────────────────────────────────────────────────────
@@ -557,6 +594,8 @@ class BodyHost:
                     })
                 elif path == "/plugins":
                     self._send({"plugins": owner.plugins()})
+                elif path == "/config":
+                    self._send({"config": {k: v for k, v in owner.config.items() if "TOKEN" not in k and "SECRET" not in k}})
                 elif path == "/worldmodel/status":
                     wm = owner.worldmodel
                     if wm is None:
@@ -592,7 +631,14 @@ class BodyHost:
 
             def do_POST(self):  # noqa: N802
                 path = self.path.split("?", 1)[0].rstrip("/")
-                if path == "/worldmodel/step":
+                if path.startswith("/plugins/"):
+                    plugin_id = path.rsplit("/", 1)[-1]
+                    body = self._read_body()
+                    try:
+                        self._send(owner.set_plugin_enabled(plugin_id, bool(body.get("enabled", False))))
+                    except ValueError as exc:
+                        self._send({"error": str(exc)}, 400)
+                elif path == "/worldmodel/step":
                     wm = owner.worldmodel
                     if wm is None:
                         self._send({"error": "world model unavailable"}, 503)
