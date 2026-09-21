@@ -66,6 +66,10 @@ class SimulatedRoom:
                 "id": "obstacle", "label": "pillar", "kind": "obstacle",
                 "x": 6.0, "y": 6.0, "mass": 999.0, "size": 1.0,
             },
+            "mobile_obstacle": {
+                "id": "mobile_obstacle", "label": "moving obstacle", "kind": "mobile_obstacle",
+                "x": 7.0, "y": 8.0, "mass": 999.0, "size": 0.8,
+            },
             "cup": {
                 "id": "cup", "label": "cup", "kind": "target",
                 "x": 10.0, "y": 9.0, "mass": 0.4, "size": 0.4,
@@ -104,7 +108,7 @@ class SimulatedRoom:
         ]
         random.SystemRandom().shuffle(cells)
         placed: list[tuple[float, float]] = []
-        for object_id in ("table", "chair", "obstacle", "cup"):
+        for object_id in ("table", "chair", "obstacle", "mobile_obstacle", "cup"):
             candidates = [
                 cell for cell in cells
                 if all(math.hypot(cell[0] - px, cell[1] - py) >= 1.5 for px, py in placed)
@@ -168,15 +172,30 @@ class SimulatedRoom:
 
     # ── action execution (the "physics") ────────────────────────────────────
 
-    def _free_cell(self, x: float, y: float) -> bool:
+    def _free_cell(self, x: float, y: float, ignore_id: str | None = None) -> bool:
         if x < 0 or y < 0 or x >= self.width or y >= self.height:
             return False
         for o in self.objects.values():
-            if o["id"] == self.carrying:
+            if o["id"] in {self.carrying, ignore_id}:
                 continue
             if math.hypot(o["x"] - x, o["y"] - y) < 0.6:
                 return False
         return True
+
+    def _move_mobile_obstacle(self) -> None:
+        """Advance the dynamic obstacle by one random legal grid move."""
+        mobile = self.objects.get("mobile_obstacle")
+        if mobile is None or self.done:
+            return
+        directions = [(0.0, 0.0), (1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)]
+        random.SystemRandom().shuffle(directions)
+        for dx, dy in directions:
+            nx, ny = mobile["x"] + dx, mobile["y"] + dy
+            if math.hypot(nx - self.px, ny - self.py) < 1.0:
+                continue
+            if self._free_cell(nx, ny, ignore_id="mobile_obstacle"):
+                mobile["x"], mobile["y"] = nx, ny
+                return
 
     def step(self, action: Action) -> Tuple[Observation, Outcome]:
         """Execute one action; return (next_observation, outcome)."""
@@ -299,6 +318,10 @@ class SimulatedRoom:
                     desc = f"couldn't push {target['label']} (blocked)"
         else:  # wait
             desc = "waited"
+
+        # The environment changes after the action, so the next decision must
+        # use the resulting observation rather than a frozen obstacle map.
+        self._move_mobile_obstacle()
 
         # carried object follows the body (it is held, not left behind)
         if self.carrying is not None:

@@ -127,7 +127,7 @@ def scene_geometry(objects: List[SceneObject], body: BodyState) -> np.ndarray:
     # kind composition
     kinds = [o.kind for o in objects]
     feats[8] = min(1.0, kinds.count("target") / max(1, len(objects)))
-    feats[9] = min(1.0, kinds.count("obstacle") / max(1, len(objects)))
+    feats[9] = min(1.0, sum(kind in {"obstacle", "mobile_obstacle"} for kind in kinds) / max(1, len(objects)))
     feats[10] = min(1.0, kinds.count("table") / max(1, len(objects)))
     feats[11] = min(1.0, kinds.count("chair") / max(1, len(objects)))
 
@@ -259,7 +259,7 @@ class ArtificialCortex:
             d = math.hypot(ox - px, oy - py)
             bearing = math.atan2(oy - py, ox - px)
             in_reach = d <= reach * (1.0 + 0.25 * o.size)
-            if o.kind == "obstacle":
+            if o.kind in {"obstacle", "mobile_obstacle"}:
                 score = 0.2  # only "avoid" is meaningful
                 actions = ["avoid"]
             elif in_reach and gripper > 0.5 and o.mass <= max(5.0, strength * 0.5):

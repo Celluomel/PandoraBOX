@@ -53,7 +53,7 @@ def encode_action(action: Dict[str, Any]) -> np.ndarray:
     dy = float(params.get("dy", 0.0))
     has_target = 1.0 if action.get("target") else 0.0
     kind = str(params.get("target_kind") or "")
-    kind_idx = {"table": 0, "chair": 1, "target": 2, "obstacle": 3, "object": 4, "generic": 4}.get(kind, 4)
+    kind_idx = {"table": 0, "chair": 1, "target": 2, "obstacle": 3, "mobile_obstacle": 3, "object": 4, "generic": 4}.get(kind, 4)
     vec[-4] = dx
     vec[-3] = dy
     vec[-2] = has_target

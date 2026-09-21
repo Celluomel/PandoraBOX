@@ -100,7 +100,7 @@ def navigation_guidance(observation: Any, body: Any, carrying: bool = False) -> 
         # The simulator's collision model treats furniture and surfaces as
         # solid volumes too. They are valid destinations for manipulation, but
         # they are still obstacles while the Body is travelling elsewhere.
-        if object_kind not in {"obstacle", "table", "chair"}:
+        if object_kind not in {"obstacle", "mobile_obstacle", "table", "chair"}:
             continue
         ox, oy = float(obj.position[0]), float(obj.position[1])
         radius = max(0.65, float(getattr(obj, "size", 1.0)) * 0.7)
