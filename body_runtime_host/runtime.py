@@ -394,8 +394,8 @@ class BodyHost:
             with self._worldmodel_lock:
                 if self._worldmodel is None:
                     try:
-                        from .worldmodel import EmbodiedWorldModel, resolve_source
-                        src = resolve_source(self.config, self.latest)
+                        from .worldmodel import EmbodiedWorldModel
+                        src = self._resolve_worldmodel_source()
                         self._worldmodel = EmbodiedWorldModel(
                             body=None,
                             data_dir=str(ROOT / "data" / "body" / "worldmodel"),
@@ -412,8 +412,7 @@ class BodyHost:
         if wm is None:
             return {"ok": False, "error": "world model unavailable"}
         try:
-            from .worldmodel import resolve_source
-            src = resolve_source(self.config, self.latest)
+            src = self._resolve_worldmodel_source()
             wm.stop()
             wm.source = src
             if bool(self.value("BODY_WORLDMODEL_ENABLED", False)) and wm.config().get("enabled"):
@@ -421,6 +420,30 @@ class BodyHost:
             return {"ok": True, "source": src.name, "status": wm.status_summary()}
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
+
+    def _resolve_worldmodel_source(self):
+        """Resolve the source selected by the Body's world-model config.
+
+        ``data/body/worldmodel/config.json`` is authoritative for the
+        simulator/bridge mode.  Previously the Body plugin priority could
+        silently replace ``mode=sim`` with an unavailable robot endpoint.
+        """
+        from .worldmodel import SimRobotSource, resolve_source
+
+        model_config_path = ROOT / "data" / "body" / "worldmodel" / "config.json"
+        model_config: dict = {}
+        try:
+            payload = json.loads(model_config_path.read_text(encoding="utf-8"))
+            if isinstance(payload, dict):
+                model_config = payload
+        except Exception:
+            pass
+        mode = str(model_config.get("mode") or "sim").strip().lower()
+        if mode == "sim":
+            return SimRobotSource()
+        if mode == "bridge":
+            return None
+        return resolve_source(self.config, self.latest)
 
     def plugins(self) -> list[dict]:
         return [
