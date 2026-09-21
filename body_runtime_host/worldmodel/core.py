@@ -39,6 +39,7 @@ from .consolidation import ConsolidationEngine
 from .concepts import EmbodiedConceptMemory
 from .cortex import ArtificialCortex, action_space_for_body
 from .dynamics import LatentWorldDynamics
+from .navigation import navigation_guidance
 from .policy import Policy
 from .sim_world import SimulatedRoom
 from .sources import SimRobotSource
@@ -97,6 +98,7 @@ class EmbodiedWorldModel:
         self._pred_error_ema = 0.0
         self._last_loss: Optional[Dict[str, float]] = None
         self._last_decision: Optional[Dict[str, Any]] = None
+        self._last_navigation: Dict[str, Any] = {}
         self._last_report: Optional[Dict[str, Any]] = None
         self._last_success_step = -1
         # Keep the latest perception boundary observable without re-polling a
@@ -234,6 +236,13 @@ class EmbodiedWorldModel:
             state = GlobalState(physical={"latent_dim": int(s.shape[0])}, cognitive=cog, body=body_state)
             # 8) policy decision by imagined rollouts
             candidates = self._candidates(obs, body_state, aff)
+            carrying = bool(getattr(self.sim, "carrying", None))
+            navigation = navigation_guidance(obs, body_state, carrying=carrying)
+            forbidden = set(navigation.get("forbidden", []))
+            if forbidden:
+                safe = [candidate for candidate in candidates if str(candidate.get("type")) not in forbidden]
+                if safe:
+                    candidates = safe
             # Exploration anneals down as the policy gains experience
             # (more plastic early, more stable later — mirrors the
             # stability/plasticity principle applied to behaviour).
@@ -242,6 +251,8 @@ class EmbodiedWorldModel:
             # cortex's action-oriented channel informs exploration; learned
             # value dominates once the model has real signal.
             prior = self._steering_prior(obs, aff, body_state)
+            for action, score in navigation.get("prior", {}).items():
+                prior[action] = max(float(prior.get(action, 0.0)), float(score))
             decision = self.policy.decide(s, candidates, prior=prior or None)
             chosen = decision.get("action")
             # 9) execute (robot actuators, sandbox physics, or legacy bridge)
@@ -311,6 +322,7 @@ class EmbodiedWorldModel:
                     for t in decision.get("top", [])[:3]
                 ],
             }
+            self._last_navigation = navigation
             self._last_report = report
             return self._step_summary(episode, decision, aff, pred_error)
 
@@ -701,6 +713,7 @@ class EmbodiedWorldModel:
             self._pred_error_ema = 0.0
             self._last_loss = None
             self._last_decision = None
+            self._last_navigation = {}
             self._last_observation = None
             self._last_body_state = None
             self._last_affordances = {}
@@ -730,6 +743,7 @@ class EmbodiedWorldModel:
                     "action_values": self.policy.action_value_history(),
                 },
                 "last_decision": self._last_decision,
+                "navigation": self._last_navigation,
                 "last_report": self._last_report,
                 "perception": self._perception_summary(),
                 "recent_steps": list(self._step_history)[-12:],
