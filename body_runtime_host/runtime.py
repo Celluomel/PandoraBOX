@@ -480,11 +480,12 @@ class BodyHost:
         if bool(self.value("BODY_WORLDMODEL_ENABLED", False)):
             wm = self.worldmodel
             if wm is not None:
-                if bool(wm.config().get("enabled", False)):
-                    wm.start()
-                    LOG.info("World model loop started (steps=%d)", wm.status_summary().get("steps"))
-                else:
-                    LOG.info("World model built but disabled in its own config (POST /worldmodel/config {\"enabled\": true} to start)")
+                # The Body plugin toggle is the runtime authority.  The
+                # model-local flag remains persisted for direct world-model
+                # use, but must not silently prevent the enabled Body plugin
+                # from starting after a restart.
+                wm.start()
+                LOG.info("World model loop started (steps=%d)", wm.status_summary().get("steps"))
             else:
                 LOG.warning("BODY_WORLDMODEL_ENABLED set but the world model could not be built (numpy/torch missing?)")
         while not self.stop_event.wait(1):
