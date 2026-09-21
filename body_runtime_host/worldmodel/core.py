@@ -754,6 +754,7 @@ class EmbodiedWorldModel:
 
     def status_summary(self) -> Dict[str, Any]:
         with self._lock:
+            sim_status = self.sim.status() if self.sim is not None else None
             return {
                 "enabled": bool(self._cfg.get("enabled")),
                 "mode": self._cfg.get("mode"),
@@ -780,7 +781,14 @@ class EmbodiedWorldModel:
                 "last_report": self._last_report,
                 "perception": self._perception_summary(),
                 "recent_steps": list(self._step_history)[-12:],
-                "sim": self.sim.status() if self.sim is not None else None,
+                "sim": sim_status,
+                "goal_status": {
+                    "state": "achieved" if sim_status and sim_status.get("done") else "in_progress",
+                    "achieved": bool(sim_status and sim_status.get("done")),
+                    "steps": int(sim_status.get("steps", 0)) if sim_status else 0,
+                    "successes": int(sim_status.get("successes", 0)) if sim_status else 0,
+                    "sequence": list(sim_status.get("goal_sequence") or []) if sim_status else [],
+                },
                 "brain_bridge": {
                     "body_attached": self.body is not None,
                     "organism_attached": getattr(self.body, "organism", None) is not None,

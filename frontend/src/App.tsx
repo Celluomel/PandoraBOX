@@ -538,7 +538,7 @@ function WorldModelView() {
   const readStatus = async () => {
     try {
       const s = await fetch('/api/interface/body/worldmodel/status').then(checked).then(r => r.json());
-      setStatus(s); setMessage('');
+      setStatus(s); setMessage(s.goal_status?.achieved ? 'Goal achieved · full task completed.' : '');
     } catch (e) { setMessage(e instanceof Error ? e.message : 'World model unavailable.'); }
   };
   const readDetails = async () => {
