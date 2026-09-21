@@ -72,6 +72,24 @@ class BodyRuntime:
             "BODY_PLUGIN_HOME_ASSISTANT_ENABLED",
             "Read-only environmental sensors and presence",
         )
+        self.register_plugin(
+            "fnk0031_wifi",
+            "FNK0031 Wi-Fi robot",
+            "BODY_PLUGIN_ROBOT_ENABLED",
+            "Network robot adapter for the FNK0031/Mega 2560 body",
+        )
+        self.register_plugin(
+            "sim_robot",
+            "Simulated robot",
+            "BODY_PLUGIN_SIM_ROBOT_ENABLED",
+            "Safe local robot and world-model test body",
+        )
+        self.register_plugin(
+            "world_model",
+            "Embodied world model",
+            "BODY_WORLDMODEL_ENABLED",
+            "Body-owned perception, memory, dynamics and policy",
+        )
         self._stop = Event()
         self._thread: Optional[Thread] = None
         self._bridge = None
