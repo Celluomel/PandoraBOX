@@ -36,6 +36,7 @@ import numpy as np
 
 from .anchors import PhysicalMemory, atomic_write_json
 from .consolidation import ConsolidationEngine
+from .concepts import EmbodiedConceptMemory
 from .cortex import ArtificialCortex, action_space_for_body
 from .dynamics import LatentWorldDynamics
 from .policy import Policy
@@ -59,6 +60,8 @@ DEFAULT_CONFIG = {
     "horizon": 8,                  # imagination horizon
     "lr": 5e-3,
     "batch": 64,
+    "train_every": 8,             # keep action selection off the training hot path
+    "train_epochs": 1,
     "consolidation_every": 50,     # background_pass every N steps
     "max_buffer": 4096,
     "max_episodes": 2000,
@@ -129,6 +132,7 @@ class EmbodiedWorldModel:
             exploration=float(self._cfg.get("exploration", 0.10)),
         )
         self.consolidation = ConsolidationEngine(self.memory)
+        self.concepts = EmbodiedConceptMemory(self.data_dir / "concepts.json")
         self._episodes_path = self.data_dir / "episodes.jsonl"
         self._maybe_trim_episodes_file()
 
@@ -260,10 +264,12 @@ class EmbodiedWorldModel:
             if self.dynamics.available:
                 success = outcome.kind == "success"
                 self.dynamics.remember(features, chosen, actual_features, reward, success)
-                self._last_loss = self.dynamics.train_step(
-                    batch=int(self._cfg.get("batch", 64)),
-                    epochs=2,
-                )
+                train_every = max(1, int(self._cfg.get("train_every", 8)))
+                if (self._steps + 1) % train_every == 0:
+                    self._last_loss = self.dynamics.train_step(
+                        batch=int(self._cfg.get("batch", 64)),
+                        epochs=max(1, int(self._cfg.get("train_epochs", 1))),
+                    )
             # 11) consolidate + log
             episode = Episode(
                 step_id=self._steps,
@@ -280,6 +286,7 @@ class EmbodiedWorldModel:
                 body_position=list(body_state.position),
                 obs_after=obs_after,
             )
+            self.concepts.learn(episode)
             self._log_episode(episode)
             self._steps += 1
             self._step_history.append({
@@ -582,6 +589,9 @@ class EmbodiedWorldModel:
             f"{stats['objets'].get('avg_reliability', 0):.2f}), "
             f"{stats['trajectories']['count']} action sequences.",
         ]
+        concepts = self.concepts.snapshot(limit=5)
+        if concepts:
+            lines.append("- Reusable embodied concepts (confidence): " + "; ".join(f"{c['label']} ({c['confidence']:.2f})" for c in concepts) + ".")
         for family in ("objets", "lieux", "trajectories"):
             items = top.get(family, [])
             if items:
@@ -713,6 +723,7 @@ class EmbodiedWorldModel:
                     "last_loss": self._last_loss,
                 },
                 "memory": self.memory.stats(),
+                "concepts": self.concepts.stats(),
                 "top_anchors": self.memory.top_anchors(limit=3),
                 "policy": {
                     "horizon": self.policy.horizon,
