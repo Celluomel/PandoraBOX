@@ -290,7 +290,7 @@ function BodyRuntimeCard() {
   const [data, setData] = useState<{ status?: { running?: boolean; mode?: string; observation_count?: number; event_count?: number; loop_count?: number }; observations?: { subject?: string; value?: unknown; unit?: string; source?: string; observed_at?: number }[] } | null>(null);
   useEffect(() => { let live = true; const read = () => void fetch('/api/interface/body/status').then(checked).then(r => r.json()).then(v => live && setData(v)).catch(() => {}); read(); const timer = setInterval(read, 3000); return () => { live = false; clearInterval(timer); }; }, []);
   const body = data?.status;
-  return <><div className="settings-section-title">Body runtime</div><div className="provider-notes"><div><span className={body?.running ? 'status-dot online' : 'status-dot'} /> {body?.running ? 'Running independently' : 'Starting'}</div><p>Local sensor loop is separate from chat and feeds timestamped observations to the cognitive brain. Actuator commands remain queued and require a future permissioned adapter.</p><p>{body?.observation_count ?? 0} latest observations · {body?.event_count ?? 0} events · {body?.mode || 'local'}</p>{data?.observations?.slice(0, 3).map(item => <p key={(item.source || '') + '-' + (item.subject || '')}><b>{item.subject}</b>: {String(item.value)}{item.unit ? ' ' + item.unit : ''}</p>)}</div></>;
+  return <><div className="settings-section-title">Body runtime</div><div className="provider-notes"><div><span className={body?.running ? 'status-dot online' : 'status-dot'} /> {body?.running ? 'Running independently' : 'Starting'}</div><p>Local sensor loop is separate from chat and feeds timestamped observations to the cognitive brain. Physical commands remain confirmation-gated and auditable.</p><p>{data?.observations?.length ?? 0} latest observations · {body?.event_count ?? 0} events · {body?.mode || 'local'}</p>{data?.observations?.slice(0, 3).map(item => <p key={(item.source || '') + '-' + (item.subject || '')}><b>{item.subject}</b>: {String(item.value)}{item.unit ? ' ' + item.unit : ''}</p>)}</div></>;
 }
 
 function BodyPluginsPanel() {
@@ -301,7 +301,7 @@ function BodyPluginsPanel() {
   const toggle = async (plugin: { toggle_field: string; label: string }, enabled: boolean) => {
     setMessage('Saving...');
     try {
-      await checked(await fetch('/api/interface/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ values: { [plugin.toggle_field]: enabled } }) }));
+      await checked(await fetch('/api/interface/body/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ values: { [plugin.toggle_field]: enabled } }) }));
       setMessage(plugin.label + (enabled ? ' enabled.' : ' disabled.'));
       read();
     } catch (e) { setMessage(e instanceof Error ? e.message : 'Plugin setting could not be saved.'); }
