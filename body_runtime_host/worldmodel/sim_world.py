@@ -347,7 +347,11 @@ class SimulatedRoom:
     def _nearest_graspable(self) -> Optional[Dict[str, Any]]:
         best, best_d = None, None
         for o in self.objects.values():
-            if o["kind"] == "obstacle" or o["mass"] > max(5.0, STRENGTH * 0.5):
+            # Furniture and environmental structures are not gripper targets.
+            # Without this guard the exploratory policy could grab the chair,
+            # after which the normal carried-object rule made it follow the
+            # Body and look like a second moving agent.
+            if o["kind"] in {"obstacle", "mobile_obstacle", "table", "chair"} or o["mass"] > max(5.0, STRENGTH * 0.5):
                 continue
             d = math.hypot(o["x"] - self.px, o["y"] - self.py)
             if d <= REACH * (1.0 + 0.25 * o["size"]):

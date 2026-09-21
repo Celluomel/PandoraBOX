@@ -535,17 +535,28 @@ function WorldModelView() {
   const [anchors, setAnchors] = useState<any>(null);
   const [episodes, setEpisodes] = useState<any[]>([]);
   const [message, setMessage] = useState('');
-  const read = async () => {
+  const readStatus = async () => {
     try {
-      const [s, a, e] = await Promise.all([
-        fetch('/api/interface/body/worldmodel/status').then(checked).then(r => r.json()),
+      const s = await fetch('/api/interface/body/worldmodel/status').then(checked).then(r => r.json());
+      setStatus(s); setMessage('');
+    } catch (e) { setMessage(e instanceof Error ? e.message : 'World model unavailable.'); }
+  };
+  const readDetails = async () => {
+    try {
+      const [a, e] = await Promise.all([
         fetch('/api/interface/body/worldmodel/anchors').then(checked).then(r => r.json()),
         fetch('/api/interface/body/worldmodel/episodes?limit=12').then(checked).then(r => r.json()),
       ]);
-      setStatus(s); setAnchors(a); setEpisodes(Array.isArray(e) ? e : []); setMessage('');
-    } catch (e) { setMessage(e instanceof Error ? e.message : 'World model unavailable.'); }
+      setAnchors(a); setEpisodes(Array.isArray(e) ? e : []);
+    } catch { /* the fast perception stream remains usable if details lag */ }
   };
-  useEffect(() => { void read(); const timer = setInterval(() => void read(), 5000); return () => clearInterval(timer); }, []);
+  const read = async () => { await Promise.all([readStatus(), readDetails()]); };
+  useEffect(() => {
+    void read();
+    const statusTimer = setInterval(() => void readStatus(), 900);
+    const detailsTimer = setInterval(() => void readDetails(), 4000);
+    return () => { clearInterval(statusTimer); clearInterval(detailsTimer); };
+  }, []);
   const step = async () => { setMessage('Running one supervised Body step...'); try { await checked(await fetch('/api/interface/body/worldmodel/step', { method: 'POST' })); await read(); } catch (e) { setMessage(e instanceof Error ? e.message : 'World model step failed.'); } };
   const run = async () => { const running = !Boolean(status?.running); setMessage(running ? 'Starting simulated Body loop with a shuffled scene...' : 'Pausing simulated Body loop...'); try { await checked(await fetch('/api/interface/body/worldmodel/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ running, shuffle: running }) })); await read(); } catch (e) { setMessage(e instanceof Error ? e.message : 'World model run control failed.'); } };
   const reset = async () => { if (!window.confirm('Reset the embodied world model memory?')) return; setMessage('Resetting...'); try { await checked(await fetch('/api/interface/body/worldmodel/reset?clear_memory=true', { method: 'POST' })); await read(); } catch (e) { setMessage(e instanceof Error ? e.message : 'World model reset failed.'); } };
