@@ -339,8 +339,8 @@ async def reject_body_command(command_id: str, payload: BodyCommandDecision | No
 
 # ── Body's embodied world model (owned by the Body; read through the API) ──
 #
-# Ownership rule: these endpoints only *read* the Body's world model or run
-# one supervised step.  The Brain never writes anchors/dynamics directly.
+# Ownership rule: these endpoints read the Body's world model or control its
+# bounded simulator loop. The Brain never writes anchors/dynamics directly.
 
 
 def _worldmodel():
@@ -365,6 +365,24 @@ async def body_worldmodel_step():
     except Exception as exc:
         logger.exception('world model step failed')
         raise HTTPException(500, f'World model step failed: {exc}')
+
+
+@router.post('/body/worldmodel/run')
+async def body_worldmodel_run(payload: dict[str, object] | None = None):
+    """Start or pause the Body-owned world-model loop from the Brain UI."""
+    try:
+        model = _worldmodel()
+        running = bool((payload or {}).get('running', False))
+        if running:
+            model.start()
+        else:
+            model.stop()
+        return _json_safe(model.status_summary())
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception('world model run control failed')
+        raise HTTPException(500, f'World model run control failed: {exc}')
 
 
 @router.get('/body/worldmodel/anchors')
