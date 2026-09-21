@@ -119,6 +119,45 @@ class BodyHost:
                 safe[key] = f"@env:{key}"
         CONFIG_PATH.write_text(json.dumps(safe, indent=2, ensure_ascii=False), encoding="utf-8")
 
+    def home_assistant_settings(self) -> dict:
+        """Return editable Home Assistant settings without exposing the token."""
+        token = str(self.value("HOME_ASSISTANT_TOKEN", "") or "")
+        return {
+            "url": str(self.value("HOME_ASSISTANT_URL", "") or ""),
+            "token_configured": bool(token),
+            "verify_ssl": bool(self.value("HOME_ASSISTANT_VERIFY_SSL", True)),
+            "poll_interval": int(self.value("HOME_ASSISTANT_POLL_INTERVAL", 5) or 5),
+            "allowed_domains": str(self.value("HOME_ASSISTANT_ALLOWED_DOMAINS", "") or ""),
+            "entities": str(self.value("HOME_ASSISTANT_ENTITIES", "") or ""),
+        }
+
+    def update_home_assistant_settings(self, payload: dict) -> dict:
+        """Persist Body-owned Home Assistant settings and optional token."""
+        values = {
+            "HOME_ASSISTANT_URL": str(payload.get("url", "") or "").strip().rstrip("/"),
+            "HOME_ASSISTANT_VERIFY_SSL": bool(payload.get("verify_ssl", True)),
+            "HOME_ASSISTANT_POLL_INTERVAL": max(1, int(payload.get("poll_interval", 5) or 5)),
+            "HOME_ASSISTANT_ALLOWED_DOMAINS": str(payload.get("allowed_domains", "") or "").strip(),
+            "HOME_ASSISTANT_ENTITIES": str(payload.get("entities", "") or "").strip(),
+        }
+        self.config.update(values)
+        token = str(payload.get("token", "") or "").strip()
+        if token:
+            os.environ["HOME_ASSISTANT_TOKEN"] = token
+            self.config["HOME_ASSISTANT_TOKEN"] = "@env:HOME_ASSISTANT_TOKEN"
+            secret_path = ROOT / "body_venv" / ".env"
+            secret_path.parent.mkdir(parents=True, exist_ok=True)
+            existing = {}
+            if secret_path.exists():
+                for line in secret_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+                    if "=" in line and not line.lstrip().startswith("#"):
+                        key, value = line.split("=", 1)
+                        existing[key.strip()] = value.strip()
+            existing["HOME_ASSISTANT_TOKEN"] = token
+            secret_path.write_text("".join(f"{key}={value}\n" for key, value in existing.items()), encoding="utf-8")
+        self.save_config()
+        return {"ok": True, "settings": self.home_assistant_settings()}
+
     def set_plugin_enabled(self, plugin_id: str, enabled: bool) -> dict:
         fields = {
             "home_assistant": "BODY_PLUGIN_HOME_ASSISTANT_ENABLED",
@@ -594,6 +633,8 @@ class BodyHost:
                     })
                 elif path == "/plugins":
                     self._send({"plugins": owner.plugins()})
+                elif path == "/plugins/home_assistant/settings":
+                    self._send(owner.home_assistant_settings())
                 elif path == "/config":
                     self._send({"config": {k: v for k, v in owner.config.items() if "TOKEN" not in k and "SECRET" not in k}})
                 elif path == "/worldmodel/status":
@@ -634,10 +675,13 @@ class BodyHost:
                 if path.startswith("/plugins/"):
                     plugin_id = path.rsplit("/", 1)[-1]
                     body = self._read_body()
-                    try:
-                        self._send(owner.set_plugin_enabled(plugin_id, bool(body.get("enabled", False))))
-                    except ValueError as exc:
-                        self._send({"error": str(exc)}, 400)
+                    if path == "/plugins/home_assistant/settings":
+                        self._send(owner.update_home_assistant_settings(body))
+                    else:
+                        try:
+                            self._send(owner.set_plugin_enabled(plugin_id, bool(body.get("enabled", False))))
+                        except ValueError as exc:
+                            self._send({"error": str(exc)}, 400)
                 elif path == "/worldmodel/step":
                     wm = owner.worldmodel
                     if wm is None:
