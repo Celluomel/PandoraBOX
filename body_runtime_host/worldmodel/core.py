@@ -96,6 +96,11 @@ class EmbodiedWorldModel:
         self._last_decision: Optional[Dict[str, Any]] = None
         self._last_report: Optional[Dict[str, Any]] = None
         self._last_success_step = -1
+        # Keep the latest perception boundary observable without re-polling a
+        # physical source from the status endpoint.
+        self._last_observation: Optional[Observation] = None
+        self._last_body_state: Optional[BodyState] = None
+        self._last_affordances: Dict[str, Any] = {}
 
         # -- components ------------------------------------------------------
         self.memory = PhysicalMemory(self.data_dir / "anchors.json")
@@ -212,6 +217,9 @@ class EmbodiedWorldModel:
             # 3) cortex encode (affordance features, body-conditioned)
             features = self.cortex.encode(obs, body_state)
             aff = self.cortex.affordances(obs, body_state)
+            self._last_observation = obs
+            self._last_body_state = body_state
+            self._last_affordances = aff
             # 4) anchor activation (upsert what we see now)
             self._activate_anchors(obs, body_state, aff)
             # 5) physical latent
@@ -683,6 +691,9 @@ class EmbodiedWorldModel:
             self._pred_error_ema = 0.0
             self._last_loss = None
             self._last_decision = None
+            self._last_observation = None
+            self._last_body_state = None
+            self._last_affordances = {}
         return self.status_summary()
 
     def status_summary(self) -> Dict[str, Any]:
@@ -709,6 +720,7 @@ class EmbodiedWorldModel:
                 },
                 "last_decision": self._last_decision,
                 "last_report": self._last_report,
+                "perception": self._perception_summary(),
                 "recent_steps": list(self._step_history)[-12:],
                 "sim": self.sim.status() if self.sim is not None else None,
                 "brain_bridge": {
@@ -716,6 +728,34 @@ class EmbodiedWorldModel:
                     "organism_attached": getattr(self.body, "organism", None) is not None,
                 },
             }
+
+    def _perception_summary(self) -> Dict[str, Any]:
+        """Expose the Body boundary and interpretation, not raw model tensors.
+
+        The simulator's exact state remains under ``sim`` as a debug oracle;
+        this section is the observation and affordance view available to the
+        cognitive stack.
+        """
+        obs = self._last_observation
+        body = self._last_body_state
+        if obs is None or body is None:
+            return {"available": False, "note": "No Body observation recorded yet."}
+        return {
+            "available": True,
+            "source": obs.source,
+            "kind": obs.kind,
+            "timestamp": obs.timestamp,
+            "age_seconds": round(max(0.0, time.time() - obs.timestamp), 3),
+            "text": obs.text,
+            "body": body.as_dict(),
+            "objects": [o.as_dict() for o in obs.scene],
+            "affordances": {
+                "which2act": list(self._last_affordances.get("which2act", []))[:12],
+                "where2act": list(self._last_affordances.get("where2act", []))[:12],
+                "how2act": list(self._last_affordances.get("how2act", []))[:16],
+            },
+            "ground_truth_available": isinstance(self.source, SimRobotSource),
+        }
 
     def recent_episodes(self, limit: int = 12) -> List[Dict[str, Any]]:
         with self._lock:
