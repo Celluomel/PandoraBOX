@@ -693,9 +693,10 @@ class BodyHost:
                     if wm is None:
                         self._send({"error": "world model unavailable"}, 503)
                         return
-                    running = bool(self._read_body().get("running", False))
+                    command = self._read_body()
+                    running = bool(command.get("running", False))
                     if running:
-                        wm.start()
+                        wm.start(shuffle=bool(command.get("shuffle", False)))
                     else:
                         wm.stop()
                     self._send(wm.status_summary())

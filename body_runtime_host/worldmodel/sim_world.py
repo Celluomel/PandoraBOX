@@ -20,6 +20,7 @@ Physics implemented:
 from __future__ import annotations
 
 import math
+import random
 from typing import Any, Dict, List, Optional, Tuple
 
 from .types import Action, BodyState, Observation, Outcome, SceneObject
@@ -78,6 +79,34 @@ class SimulatedRoom:
         self.steps = 0
         self.collision_count = 0
         self.success_count = 0
+
+    def shuffle_objects(self) -> None:
+        """Place the scene objects in a fresh, collision-free arrangement."""
+        reserved = [(1.0, 1.0), self.shelf]
+        cells = [
+            (float(x), float(y))
+            for x in range(1, self.width - 1)
+            for y in range(1, self.height - 1)
+            if all(math.hypot(x - rx, y - ry) >= 1.5 for rx, ry in reserved)
+        ]
+        random.SystemRandom().shuffle(cells)
+        placed: list[tuple[float, float]] = []
+        for object_id in ("table", "chair", "obstacle", "cup"):
+            candidates = [
+                cell for cell in cells
+                if all(math.hypot(cell[0] - px, cell[1] - py) >= 1.5 for px, py in placed)
+                and (object_id != "cup" or math.hypot(cell[0] - self.shelf[0], cell[1] - self.shelf[1]) >= 3.0)
+            ]
+            if not candidates:
+                break
+            position = candidates[0]
+            placed.append(position)
+            self.objects[object_id]["x"], self.objects[object_id]["y"] = position
+
+    def reset_episode(self, shuffle: bool = False) -> None:
+        self.reset()
+        if shuffle:
+            self.shuffle_objects()
 
     # ── perception ──────────────────────────────────────────────────────────
 

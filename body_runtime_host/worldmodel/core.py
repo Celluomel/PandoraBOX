@@ -177,8 +177,14 @@ class EmbodiedWorldModel:
 
     # ── lifecycle ───────────────────────────────────────────────────────────
 
-    def start(self) -> None:
+    def start(self, shuffle: bool = False) -> None:
         with self._lock:
+            if shuffle and self.sim is not None:
+                self.sim.reset_episode(shuffle=True)
+                self._last_navigation = {}
+                self._last_observation = None
+                self._last_body_state = None
+                self._last_affordances = {}
             if not self._cfg.get("enabled"):
                 self._cfg["enabled"] = True
             if self._thread and self._thread.is_alive():

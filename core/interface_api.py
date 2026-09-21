@@ -373,7 +373,7 @@ async def body_worldmodel_run(payload: dict[str, object] | None = None):
         model = _worldmodel()
         running = bool((payload or {}).get('running', False))
         if running:
-            model.start()
+            model.start(shuffle=bool((payload or {}).get('shuffle', False)))
         else:
             model.stop()
         return _json_safe(model.status_summary())
