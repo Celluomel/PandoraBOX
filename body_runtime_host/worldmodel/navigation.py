@@ -52,6 +52,7 @@ def navigation_guidance(observation: Any, body: Any, carrying: bool = False) -> 
     forbidden: set[str] = set()
     recommended: str | None = None
     phase = "to_target"
+    distance: float | None = None
     if target is not None:
         bearing = math.atan2(target[1] - py, target[0] - px)
         delta = _angle_delta(heading, bearing)
@@ -78,7 +79,9 @@ def navigation_guidance(observation: Any, body: Any, carrying: bool = False) -> 
             prior["release"] = 1.8
             recommended = "release"
 
-    # A forward step is unsafe when it enters an obstacle's local footprint.
+    # A forward step is unsafe when it enters an obstacle or leaves the known
+    # world. The latter was previously invisible to the navigation guard and
+    # allowed the policy to repeatedly drive into a wall at the map edge.
     forward = (px + math.cos(heading), py + math.sin(heading))
     nearby_obstacles = []
     for obj in objects:
@@ -88,9 +91,15 @@ def navigation_guidance(observation: Any, body: Any, carrying: bool = False) -> 
         radius = max(0.65, float(getattr(obj, "size", 1.0)) * 0.7)
         if math.hypot(ox - forward[0], oy - forward[1]) <= radius:
             nearby_obstacles.append((ox, oy))
-    if nearby_obstacles:
+    width = body.capabilities.get("world_width")
+    height = body.capabilities.get("world_height")
+    boundary_ahead = (
+        width is not None and height is not None and
+        (forward[0] < 0 or forward[1] < 0 or forward[0] >= float(width) or forward[1] >= float(height))
+    )
+    if nearby_obstacles or boundary_ahead:
         forbidden.add("forward")
-        nearest = min(nearby_obstacles, key=lambda p: math.hypot(p[0] - px, p[1] - py))
+        nearest = min(nearby_obstacles, key=lambda p: math.hypot(p[0] - px, p[1] - py)) if nearby_obstacles else None
         # Prefer the detour that remains closest to the destination after the
         # turn, rather than always turning away from the obstacle's bearing.
         if target is not None:
@@ -103,10 +112,12 @@ def navigation_guidance(observation: Any, body: Any, carrying: bool = False) -> 
                     )
                 ),
             )
-        else:
+        elif nearest is not None:
             obstacle_bearing = math.atan2(nearest[1] - py, nearest[0] - px)
             side = _angle_delta(heading, obstacle_bearing)
             preferred = "turn_right" if side > 0 else "turn_left"
+        else:
+            preferred = _turn_toward_target(heading, target, (px, py)) if target is not None else "turn_left"
         prior[preferred] = max(prior.get(preferred, 0.0), 1.35)
         prior["forward"] = -2.0
         recommended = preferred
@@ -116,7 +127,8 @@ def navigation_guidance(observation: Any, body: Any, carrying: bool = False) -> 
         "forbidden": sorted(forbidden),
         "target": list(target) if target else None,
         "phase": phase,
-        "distance_to_target": round(distance, 3) if target is not None else None,
+        "distance_to_target": round(distance, 3) if distance is not None else None,
         "recommended": recommended,
         "obstacle_ahead": bool(nearby_obstacles),
+        "boundary_ahead": boundary_ahead,
     }

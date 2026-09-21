@@ -88,6 +88,7 @@ class SimulatedRoom:
             capabilities={
                 "reach": REACH, "speed": 1.0,
                 "strength": STRENGTH, "gripper": 1.0,
+                "world_width": float(self.width), "world_height": float(self.height),
             },
         )
 
@@ -164,10 +165,10 @@ class SimulatedRoom:
                 kind = "danger"
                 desc = "blocked (collision)"
         elif a == "turn_left":
-            self.heading += math.radians(90)
+            self.heading = (self.heading + math.radians(90) + math.pi) % (2 * math.pi) - math.pi
             desc = "turned left"
         elif a == "turn_right":
-            self.heading -= math.radians(90)
+            self.heading = (self.heading - math.radians(90) + math.pi) % (2 * math.pi) - math.pi
             desc = "turned right"
         elif a == "grab":
             if self.carrying is not None:
