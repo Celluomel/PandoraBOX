@@ -841,9 +841,10 @@ export default function App() {
     let stopped = false;
     const controller = new AbortController();
     let timeout: ReturnType<typeof setTimeout>;
+    let consecutiveFailures = 0;
     async function refresh() {
-      try { const response = await checked(await fetch('/api/interface/status', { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(5000)]) })); const data: Status = await response.json(); if (!stopped) { setStatus(data); setResponseLanguage(data.response_language || 'auto'); setWebSearchMode(data.web_search_mode || 'off'); setResponseVerbosity(data.response_verbosity || 'concise'); setConnected(true); const fresh = (data.presence_messages || []).filter(item => !seenPresence.current.has(item.id)); fresh.forEach(item => seenPresence.current.add(item.id)); if (fresh.length) window.dispatchEvent(new CustomEvent('lumina-presence', { detail: fresh[fresh.length - 1] })); } }
-      catch { if (!stopped) setConnected(false); }
+      try { const response = await checked(await fetch('/api/interface/status', { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(8000)]) })); const data: Status = await response.json(); consecutiveFailures = 0; if (!stopped) { setStatus(data); setResponseLanguage(data.response_language || 'auto'); setWebSearchMode(data.web_search_mode || 'off'); setResponseVerbosity(data.response_verbosity || 'concise'); setConnected(true); const fresh = (data.presence_messages || []).filter(item => !seenPresence.current.has(item.id)); fresh.forEach(item => seenPresence.current.add(item.id)); if (fresh.length) window.dispatchEvent(new CustomEvent('lumina-presence', { detail: fresh[fresh.length - 1] })); } }
+      catch { consecutiveFailures += 1; if (!stopped && consecutiveFailures >= 3) setConnected(false); }
       if (!stopped) timeout = setTimeout(refresh, document.hidden ? 10000 : 2000);
     }
     void refresh();

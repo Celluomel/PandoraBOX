@@ -199,11 +199,10 @@ async def status():
     audio = getattr(state, 'audio', None)
     active_tts = (audio.tts_engine or {}).get('type') if audio else None
     active_stt = (audio.stt_engine or {}).get('type') if audio else None
-    context = (
-        persona.get_prompt_context('default')
-        if persona and persona.is_ready and hasattr(persona, 'get_prompt_context')
-        else {}
-    )
+    # This endpoint is polled by the main UI every two seconds. Do not build
+    # the full prompt context here: memory retrieval and state synthesis can
+    # briefly block while a chat turn is active and make the UI appear offline.
+    context = {}
     system = getattr(persona, '_system', None)
     body = getattr(org, '_body_runtime', None) if org is not None else getattr(state, 'body_runtime', None)
     return {
