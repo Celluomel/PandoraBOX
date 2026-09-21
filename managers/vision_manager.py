@@ -823,6 +823,12 @@ class StreamingVisionManager:
         self.last_encoded_frame = None
         self.last_clean_encoded_frame = None
         self.encode_lock        = threading.Lock()
+        self.frame_sequence     = 0
+        self.frame_updated_at   = 0.0
+        # Camera capture can run faster than the UI needs. Encoding two JPEGs
+        # for every driver frame wastes CPU and competes with embeddings and
+        # face tracking, so the interface stream has its own stable cadence.
+        self.ui_encode_fps      = max(5.0, min(float(target_fps or 10), 10.0))
 
         # Face recognition
         self.face_encodings:     Dict[str, np.ndarray] = {}
@@ -1007,12 +1013,25 @@ class StreamingVisionManager:
         """
         logger.info("📹 Camera capture loop started")
         frame_count = 0
+        next_encode_at = 0.0
 
         while not self.stop_event.is_set() and self.camera_active:
             try:
                 ret, frame = cap.read()
                 if ret and frame is not None:
                     frame_count += 1
+                    with self.frame_lock:
+                        self.current_frame = frame.copy()
+                        self.frame_sequence += 1
+                        self.frame_updated_at = time.time()
+
+                    # Keep acquisition responsive, but encode only the rate
+                    # the browser can use. The latest raw frame remains
+                    # available to perception and face tracking.
+                    now = time.monotonic()
+                    if now < next_encode_at:
+                        continue
+                    next_encode_at = now + (1.0 / self.ui_encode_fps)
                     small_frame = cv2.resize(frame, (self.frame_width, self.frame_height))
 
                     clean_frame = small_frame.copy()
@@ -1029,8 +1048,6 @@ class StreamingVisionManager:
                     )
                     clean_b64_str = base64.b64encode(clean_buffer).decode("utf-8")
 
-                    with self.frame_lock:
-                        self.current_frame = frame.copy()
                     with self.encode_lock:
                         self.last_encoded_frame = b64_str
                         self.last_clean_encoded_frame = clean_b64_str

@@ -1421,7 +1421,14 @@ async def camera_frame():
     faces = []
     if vision and vision.camera_active:
         faces = [{'name': face.get('name', 'Unknown'), 'confidence': face.get('confidence', 0), 'location': face.get('location', {})} for face in (getattr(vision, 'last_detected_faces', None) or [])]
-    return {'active': bool(vision and vision.camera_active), 'frame': frame, 'faces': faces}
+    updated_at = float(getattr(vision, 'frame_updated_at', 0.0) or 0.0) if vision else 0.0
+    return {
+        'active': bool(vision and vision.camera_active),
+        'frame': frame,
+        'faces': faces,
+        'frame_sequence': int(getattr(vision, 'frame_sequence', 0) or 0) if vision else 0,
+        'frame_age_ms': round(max(0.0, time.time() - updated_at) * 1000.0, 1) if updated_at else None,
+    }
 
 
 @router.post('/camera/toggle')
