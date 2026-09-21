@@ -13,7 +13,7 @@ from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File
 from fastapi import WebSocket, WebSocketDisconnect
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import PlainTextResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
@@ -46,6 +46,15 @@ def _local_request(request: Request):
 
 
 router = APIRouter(prefix='/api/interface', dependencies=[Depends(_local_request)])
+
+
+@router.get('/research/embodied-blueprint', response_class=PlainTextResponse)
+async def embodied_development_blueprint():
+    """Expose the versioned embodiment blueprint to the local research loop."""
+    path = Path(__file__).resolve().parent.parent / 'docs' / 'EMBODIED_DEVELOPMENT_BLUEPRINT.md'
+    if not path.is_file():
+        raise HTTPException(404, 'Embodied development blueprint not found.')
+    return PlainTextResponse(path.read_text(encoding='utf-8'), media_type='text/markdown')
 
 
 class BodySettingsUpdate(BaseModel):
