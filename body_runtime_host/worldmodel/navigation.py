@@ -14,6 +14,22 @@ def _angle_delta(a: float, b: float) -> float:
     return math.atan2(math.sin(b - a), math.cos(b - a))
 
 
+def _turn_toward_target(heading: float, target: tuple[float, float], position: tuple[float, float]) -> str:
+    """Return the quarter-turn that points most directly at ``target``.
+
+    The simulated body turns in 90-degree increments, so choosing by the
+    sign of the current bearing is not enough near a wrap-around or when the
+    target is behind the body. Compare the actual post-turn headings instead.
+    """
+    px, py = position
+    bearing = math.atan2(target[1] - py, target[0] - px)
+    candidates = {
+        "turn_left": heading + math.pi / 2,
+        "turn_right": heading - math.pi / 2,
+    }
+    return min(candidates, key=lambda action: abs(_angle_delta(candidates[action], bearing)))
+
+
 def navigation_guidance(observation: Any, body: Any, carrying: bool = False) -> Dict[str, Any]:
     objects = list(getattr(observation, "scene", []) or [])
     px, py = float(body.position[0]), float(body.position[1])
@@ -40,11 +56,8 @@ def navigation_guidance(observation: Any, body: Any, carrying: bool = False) -> 
         distance = math.hypot(target[0] - px, target[1] - py)
         if abs(delta) < math.pi / 6:
             prior["forward"] = 1.25
-        elif delta > 0:
-            prior["turn_left"] = 1.0
-            prior["forward"] = -0.35
         else:
-            prior["turn_right"] = 1.0
+            prior[_turn_toward_target(heading, target, (px, py))] = 1.0
             prior["forward"] = -0.35
         if not carrying and distance <= float(body.capabilities.get("reach", 1.8)) * 1.25:
             prior["grab"] = 1.6
@@ -64,9 +77,22 @@ def navigation_guidance(observation: Any, body: Any, carrying: bool = False) -> 
     if nearby_obstacles:
         forbidden.add("forward")
         nearest = min(nearby_obstacles, key=lambda p: math.hypot(p[0] - px, p[1] - py))
-        obstacle_bearing = math.atan2(nearest[1] - py, nearest[0] - px)
-        side = _angle_delta(heading, obstacle_bearing)
-        preferred = "turn_right" if side > 0 else "turn_left"
+        # Prefer the detour that remains closest to the destination after the
+        # turn, rather than always turning away from the obstacle's bearing.
+        if target is not None:
+            preferred = min(
+                ("turn_left", "turn_right"),
+                key=lambda action: abs(
+                    _angle_delta(
+                        heading + (math.pi / 2 if action == "turn_left" else -math.pi / 2),
+                        math.atan2(target[1] - py, target[0] - px),
+                    )
+                ),
+            )
+        else:
+            obstacle_bearing = math.atan2(nearest[1] - py, nearest[0] - px)
+            side = _angle_delta(heading, obstacle_bearing)
+            preferred = "turn_right" if side > 0 else "turn_left"
         prior[preferred] = max(prior.get(preferred, 0.0), 1.35)
         prior["forward"] = -2.0
 
