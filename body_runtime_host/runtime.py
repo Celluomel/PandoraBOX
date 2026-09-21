@@ -1,7 +1,17 @@
-"""Independent Body process for sensor plugins and the optional Brain bridge.
+"""Independent Body process: robot sensors, world model, and Brain bridge.
 
-This module intentionally uses only the Python standard library plus the
-optional ``websockets`` package. It does not import the cognitive package.
+The Body is the primary owner of Lumina's embodied world model.  This process:
+
+    * polls the ROBOT (the main sensorimetry channel) — GET {ROBOT_URL}/sensors
+    * keeps Home Assistant as an auxiliary presence feed only
+    * runs the embodied world model loop (``body_runtime_host.worldmodel``)
+      close to the sensors/actuators, learning in continuous operation
+    * bridges observations to the Brain (websocket) when enabled
+    * exposes HTTP endpoints for status, world model state, and control
+
+Dependencies: standard library + optional ``websockets``.  The world model
+needs numpy/torch; those imports are lazy, so the host still starts and serves
+robot telemetry without them (the world model simply reports unavailable).
 """
 from __future__ import annotations
 
@@ -36,6 +46,30 @@ def _load_dotenv() -> None:
                 os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
 
 
+def _http_get(url: str, token: str = "", timeout: float = 5.0):
+    headers = {"Accept": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    parsed = urlparse(url)
+    context = None
+    if parsed.scheme == "https":
+        context = ssl.create_default_context()
+    request = Request(url, headers=headers)
+    with urlopen(request, timeout=timeout, context=context) as response:
+        payload = response.read().decode("utf-8")
+        return json.loads(payload) if payload else None
+
+
+def _http_post(url: str, payload: dict, token: str = "", timeout: float = 5.0):
+    headers = {"Accept": "application/json", "Content-Type": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    request = Request(url, data=json.dumps(payload, ensure_ascii=False).encode("utf-8"), headers=headers, method="POST")
+    with urlopen(request, timeout=timeout) as response:
+        raw = response.read().decode("utf-8")
+        return json.loads(raw) if raw else None
+
+
 class BodyHost:
     def __init__(self) -> None:
         self.stop_event = threading.Event()
@@ -44,6 +78,12 @@ class BodyHost:
         self.queue: Queue[dict] = Queue(maxsize=256)
         self.bridge_thread: threading.Thread | None = None
         self.http_server: ThreadingHTTPServer | None = None
+        self._worldmodel = None
+        self._worldmodel_lock = threading.Lock()
+        self._robot_last_ok: float | None = None
+        self._robot_last_error = ""
+
+    # ── config ──────────────────────────────────────────────────────────────
 
     def _load_config(self) -> dict:
         try:
@@ -69,6 +109,8 @@ class BodyHost:
         safe["HOME_ASSISTANT_TOKEN"] = "@env:HOME_ASSISTANT_TOKEN"
         safe["BODY_BRIDGE_TOKEN"] = "@env:BODY_BRIDGE_TOKEN"
         CONFIG_PATH.write_text(json.dumps(safe, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    # ── Home Assistant (auxiliary presence feed) ───────────────────────────
 
     def discover(self) -> list[dict]:
         url = str(self.value("HOME_ASSISTANT_URL", "") or "").rstrip("/")
@@ -132,21 +174,156 @@ class BodyHost:
         except Exception:
             LOG.warning("Body bridge queue is full; dropping observation")
 
+    # ── Robot (MAIN sensorimetry channel) ──────────────────────────────────
+
+    def _robot_configured(self) -> bool:
+        return bool(self.value("BODY_PLUGIN_ROBOT_ENABLED", False)) and bool(str(self.value("ROBOT_URL", "") or "").strip())
+
+    def fetch_robot_sensors(self) -> dict | None:
+        """GET {ROBOT_URL}/sensors — the robot's current state + scene."""
+        url = str(self.value("ROBOT_URL", "") or "").rstrip("/")
+        token = str(self.value("ROBOT_TOKEN", "") or "")
+        timeout = float(self.value("ROBOT_TIMEOUT", 5.0) or 5.0)
+        try:
+            sensors = _http_get(f"{url}/sensors", token=token, timeout=timeout)
+            if isinstance(sensors, dict):
+                self._robot_last_ok = time.time()
+                self._robot_last_error = ""
+                return sensors
+            self._robot_last_error = "robot /sensors returned a non-object payload"
+        except (HTTPError, URLError, TimeoutError, OSError) as exc:
+            self._robot_last_error = f"robot unreachable: {exc}"
+            LOG.warning("Robot sensor poll failed: %s", exc)
+        return None
+
+    def publish_robot(self, sensors: dict) -> None:
+        """Store robot telemetry and forward it to the Brain bridge queue."""
+        now = time.time()
+        position = sensors.get("position") or [0.0, 0.0, 0.0]
+        body_entry = {
+            "entity_id": "robot.body.pose",
+            "source": "robot", "kind": "body",
+            "subject": "body.pose",
+            "value": f"({position[0]:.1f},{position[1]:.1f}) heading {sensors.get('orientation', 0):.2f}rad",
+            "unit": "m", "confidence": 1.0, "observed_at": now,
+            "provenance": {
+                "position": position,
+                "orientation": sensors.get("orientation"),
+                "carrying": sensors.get("carrying"),
+                "battery": sensors.get("battery"),
+            },
+        }
+        self.latest[body_entry["entity_id"]] = body_entry
+        self._bridge_put(body_entry)
+        for obj in (sensors.get("objects") or [])[:24]:
+            oid = str(obj.get("id") or obj.get("label") or "object")
+            entry = {
+                "entity_id": f"robot.object.{oid}",
+                "source": "robot", "kind": str(obj.get("kind") or "object"),
+                "subject": f"object.{oid}",
+                "value": f"{obj.get('label') or oid} at ({obj.get('x', 0):.1f},{obj.get('y', 0):.1f})",
+                "unit": "m", "confidence": 1.0, "observed_at": now,
+                "provenance": {"id": oid, "mass": obj.get("mass"), "size": obj.get("size"), "props": obj.get("props")},
+            }
+            self.latest[entry["entity_id"]] = entry
+            self._bridge_put(entry)
+
+    def _bridge_put(self, entry: dict) -> None:
+        message = {"type": "observation", "observation": entry}
+        try:
+            self.queue.put_nowait(message)
+        except Exception:
+            LOG.warning("Body bridge queue is full; dropping observation")
+
+    def _bridge_put_message(self, message: dict) -> None:
+        try:
+            self.queue.put_nowait(message)
+        except Exception:
+            LOG.warning("Body bridge queue is full; dropping outbound message")
+
+    def execute_command(self, command: dict) -> dict:
+        """Execute one Brain-approved command through the Body world model."""
+        command_id = str(command.get("command_id") or "")
+        expires_at = float(command.get("expires_at") or 0.0)
+        if not command_id:
+            return {"type": "command_result", "status": "failed", "error": "missing command_id"}
+        if expires_at and expires_at <= time.time():
+            result = {"type": "command_result", "command_id": command_id,
+                      "status": "expired", "error": "command expired before Body delivery"}
+            self._bridge_put_message(result)
+            return result
+        if str(command.get("status") or "") != "approved":
+            result = {"type": "command_result", "command_id": command_id,
+                      "status": "rejected", "error": "Body accepts approved commands only"}
+            self._bridge_put_message(result)
+            return result
+        try:
+            from body_runtime_host.worldmodel.types import Action
+            action = Action(
+                type=str(command.get("action") or "wait"),
+                target=command.get("target"),
+                params=dict((command.get("payload") or {}).get("params") or {}),
+            )
+            wm = self.worldmodel
+            if wm is None:
+                raise RuntimeError("world model unavailable")
+            execution = wm.execute_external(action)
+            outcome = dict(execution.get("outcome") or {})
+            status = "executed" if str(outcome.get("kind")) in {"success", "neutral"} else "failed"
+            result = {"type": "command_result", "command_id": command_id,
+                      "status": status, "outcome": outcome, "execution": execution}
+        except Exception as exc:
+            LOG.exception("Approved Body command failed: %s", command_id)
+            result = {"type": "command_result", "command_id": command_id,
+                      "status": "failed", "error": str(exc)[:240]}
+        self._bridge_put_message(result)
+        # Also expose the outcome to the Body's own observation stream.
+        self.latest[f"body_action.{command_id}"] = {
+            "entity_id": f"body_action.{command_id}", "source": "body_action",
+            "kind": "actuation_feedback", "subject": f"{command.get('target')}.{command.get('action')}",
+            "value": result.get("status"), "unit": "", "confidence": 1.0,
+            "observed_at": time.time(), "provenance": {"command_id": command_id, "outcome": result.get("outcome", {})},
+        }
+        return result
+
+    def robot_status(self) -> dict:
+        return {
+            "enabled": bool(self.value("BODY_PLUGIN_ROBOT_ENABLED", False)),
+            "url": str(self.value("ROBOT_URL", "") or ""),
+            "token_set": bool(str(self.value("ROBOT_TOKEN", "") or "")),
+            "last_ok": self._robot_last_ok,
+            "last_ok_age_s": round(time.time() - self._robot_last_ok, 1) if self._robot_last_ok else None,
+            "last_error": self._robot_last_error,
+            "role": "primary sensorimetry channel",
+        }
+
+    # ── poll loop (robot first, HA auxiliary) ──────────────────────────────
+
     def poll_loop(self) -> None:
         while not self.stop_event.is_set():
-            if bool(self.value("BODY_PLUGIN_HOME_ASSISTANT_ENABLED", self.value("HOME_ASSISTANT_ENABLED", False))):
+            interval = 5
+            if self._robot_configured():
+                interval = max(1, min(300, int(self.value("ROBOT_POLL_INTERVAL", 5) or 5)))
+                sensors = self.fetch_robot_sensors()
+                if sensors is not None:
+                    self.publish_robot(sensors)
+                    LOG.info("Robot: %d objects, body at %s",
+                             len(sensors.get("objects") or []), sensors.get("position"))
+            ha_enabled = bool(self.value("BODY_PLUGIN_HOME_ASSISTANT_ENABLED", self.value("HOME_ASSISTANT_ENABLED", False)))
+            if ha_enabled:
                 try:
                     entities = self.discover()
                     self.save_discovery(entities)
                     for item in entities:
                         self.publish(item)
-                    LOG.info("Home Assistant: %d selected entities", len(entities))
+                    LOG.info("Home Assistant: %d selected entities (auxiliary)", len(entities))
                 except (HTTPError, URLError, TimeoutError, OSError) as exc:
                     LOG.warning("Home Assistant poll failed: %s", exc)
                 except Exception:
                     LOG.exception("Home Assistant poll failed")
-            interval = max(1, min(300, int(self.value("HOME_ASSISTANT_POLL_INTERVAL", 5) or 5)))
             self.stop_event.wait(interval)
+
+    # ── Brain bridge (websocket) ────────────────────────────────────────────
 
     def bridge_loop(self) -> None:
         try:
@@ -175,58 +352,242 @@ class BodyHost:
                 async with socket as ws:
                     await ws.send(json.dumps({"type": "hello", "device_id": self.value("BODY_BRIDGE_DEVICE_ID", "body-local"), "protocol": 1}))
                     LOG.info("Body bridge connected to %s", url)
-                    while not self.stop_event.is_set():
-                        try:
-                            await ws.send(json.dumps(await asyncio.to_thread(self.queue.get, True, 1), ensure_ascii=False))
-                        except Empty:
-                            continue
+
+                    async def send_loop():
+                        while not self.stop_event.is_set():
+                            try:
+                                message = await asyncio.to_thread(self.queue.get, True, 1)
+                                await ws.send(json.dumps(message, ensure_ascii=False))
+                            except Empty:
+                                continue
+
+                    async def receive_loop():
+                        while not self.stop_event.is_set():
+                            raw = await ws.recv()
+                            message = json.loads(raw) if isinstance(raw, str) else raw
+                            if isinstance(message, dict) and message.get("type") == "command":
+                                self.execute_command(dict(message.get("command") or {}))
+
+                    sender = asyncio.create_task(send_loop())
+                    receiver = asyncio.create_task(receive_loop())
+                    done, pending = await asyncio.wait(
+                        {sender, receiver}, return_when=asyncio.FIRST_COMPLETED
+                    )
+                    for task in pending:
+                        task.cancel()
+                    await asyncio.gather(*done, return_exceptions=True)
             except Exception as exc:
                 LOG.warning("Body bridge disconnected: %s", exc)
             await asyncio.sleep(max(1, float(self.value("BODY_BRIDGE_RECONNECT_SECONDS", 3))))
 
+    # ── world model (owned by the Body) ────────────────────────────────────
+
+    @property
+    def worldmodel(self):
+        """The Body's embodied world model (lazy, owned by this process).
+
+        The sensor source is resolved from config: robot > sim robot >
+        HA fallback > null.  Re-resolve after a config change with
+        ``reload_worldmodel_source()``.
+        """
+        if self._worldmodel is None:
+            with self._worldmodel_lock:
+                if self._worldmodel is None:
+                    try:
+                        from .worldmodel import EmbodiedWorldModel, resolve_source
+                        src = resolve_source(self.config, self.latest)
+                        self._worldmodel = EmbodiedWorldModel(
+                            body=None,
+                            data_dir=str(ROOT / "data" / "body" / "worldmodel"),
+                            source=src,
+                        )
+                        LOG.info("World model ready (source=%s)", getattr(src, "name", "?"))
+                    except Exception as exc:
+                        LOG.warning("World model unavailable: %s", exc)
+        return self._worldmodel
+
+    def reload_worldmodel_source(self) -> dict:
+        """Re-resolve the sensor source (after a config change) and restart."""
+        wm = self.worldmodel
+        if wm is None:
+            return {"ok": False, "error": "world model unavailable"}
+        try:
+            from .worldmodel import resolve_source
+            src = resolve_source(self.config, self.latest)
+            wm.stop()
+            wm.source = src
+            if bool(self.value("BODY_WORLDMODEL_ENABLED", False)) and wm.config().get("enabled"):
+                wm.start()
+            return {"ok": True, "source": src.name, "status": wm.status_summary()}
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+
+    def plugins(self) -> list[dict]:
+        return [
+            {
+                "id": "robot",
+                "enabled": bool(self.value("BODY_PLUGIN_ROBOT_ENABLED", False)),
+                "url": str(self.value("ROBOT_URL", "") or ""),
+                "last_ok_age_s": round(time.time() - self._robot_last_ok, 1) if self._robot_last_ok else None,
+                "last_error": self._robot_last_error,
+                "role": "primary sensorimetry channel (plugged robot sensors)",
+            },
+            {
+                "id": "sim_robot",
+                "enabled": bool(self.value("BODY_PLUGIN_SIM_ROBOT_ENABLED", False)),
+                "role": "simulated robot sandbox (dev/test/demo)",
+            },
+            {
+                "id": "home_assistant",
+                "enabled": bool(self.value("BODY_PLUGIN_HOME_ASSISTANT_ENABLED", self.value("HOME_ASSISTANT_ENABLED", False))),
+                "role": "auxiliary presence cues (not a sensorimetry channel)",
+            },
+        ]
+
+    # ── lifecycle ───────────────────────────────────────────────────────────
+
     def run(self) -> None:
         LOG.info("Standalone Body host started with %s", CONFIG_PATH)
         self._start_http_endpoint()
-        threads = [threading.Thread(target=self.poll_loop, name="body-home-assistant", daemon=True)]
+        threads = [threading.Thread(target=self.poll_loop, name="body-sensors", daemon=True)]
         if bool(self.value("BODY_BRIDGE_ENABLED", False)):
             threads.append(threading.Thread(target=self.bridge_loop, name="body-brain-bridge", daemon=True))
         for thread in threads:
             thread.start()
+        if bool(self.value("BODY_WORLDMODEL_ENABLED", False)):
+            wm = self.worldmodel
+            if wm is not None:
+                if bool(wm.config().get("enabled", False)):
+                    wm.start()
+                    LOG.info("World model loop started (steps=%d)", wm.status_summary().get("steps"))
+                else:
+                    LOG.info("World model built but disabled in its own config (POST /worldmodel/config {\"enabled\": true} to start)")
+            else:
+                LOG.warning("BODY_WORLDMODEL_ENABLED set but the world model could not be built (numpy/torch missing?)")
         while not self.stop_event.wait(1):
             pass
 
+        wm = self._worldmodel
+        if wm is not None:
+            try:
+                wm.stop()
+            except Exception:
+                LOG.exception("World model shutdown failed")
         if self.http_server is not None:
             self.http_server.shutdown()
             self.http_server.server_close()
 
+    # ── HTTP endpoints ──────────────────────────────────────────────────────
+
     def _start_http_endpoint(self) -> None:
         host = str(self.value("BODY_HOST", "127.0.0.1") or "127.0.0.1")
-        port = max(1, min(65535, int(self.value("BODY_PORT", 8765) or 8765)))
+        port = max(1, min(65535, int(self.value("BODY_PORT", 8766) or 8766)))
         owner = self
 
         class Handler(BaseHTTPRequestHandler):
-            def do_GET(self):  # noqa: N802
-                if self.path != "/health":
-                    self.send_error(404)
-                    return
-                data = json.dumps({
-                    "status": "ready",
-                    "runtime": "independent",
-                    "observations": len(owner.latest),
-                    "bridge_enabled": bool(owner.value("BODY_BRIDGE_ENABLED", False)),
-                }).encode("utf-8")
-                self.send_response(200)
+            def _send(self, payload, status: int = 200) -> None:
+                data = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
+                self.send_response(status)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(data)))
                 self.end_headers()
                 self.wfile.write(data)
+
+            def _read_body(self) -> dict:
+                length = int(self.headers.get("Content-Length") or 0)
+                if length <= 0:
+                    return {}
+                try:
+                    return json.loads(self.rfile.read(length).decode("utf-8"))
+                except Exception:
+                    return {}
+
+            def do_GET(self):  # noqa: N802
+                path = self.path.split("?", 1)[0].rstrip("/") or "/"
+                if path == "/health":
+                    wm = owner._worldmodel
+                    self._send({
+                        "status": "ready",
+                        "runtime": "independent",
+                        "observations": len(owner.latest),
+                        "bridge_enabled": bool(owner.value("BODY_BRIDGE_ENABLED", False)),
+                        "robot": owner.robot_status(),
+                        "plugins": owner.plugins(),
+                        "worldmodel": (
+                            {"available": True, **wm.status_summary()}
+                            if wm is not None
+                            else {"available": False, "note": "not initialized (BODY_WORLDMODEL_ENABLED or first /worldmodel/* call)"}
+                        ),
+                    })
+                elif path == "/plugins":
+                    self._send({"plugins": owner.plugins()})
+                elif path == "/worldmodel/status":
+                    wm = owner.worldmodel
+                    if wm is None:
+                        self._send({"error": "world model unavailable"}, 503)
+                    else:
+                        self._send(wm.status_summary())
+                elif path == "/worldmodel/anchors":
+                    wm = owner.worldmodel
+                    if wm is None:
+                        self._send({"error": "world model unavailable"}, 503)
+                    else:
+                        self._send(wm.anchors_payload())
+                elif path == "/worldmodel/episodes":
+                    wm = owner.worldmodel
+                    if wm is None:
+                        self._send({"error": "world model unavailable"}, 503)
+                    else:
+                        self._send(wm.recent_episodes(limit=12))
+                elif path == "/worldmodel/context":
+                    wm = owner.worldmodel
+                    if wm is None:
+                        self._send({"error": "world model unavailable"}, 503)
+                    else:
+                        self._send({"context": wm.context_for_brain()})
+                elif path == "/worldmodel/config":
+                    wm = owner.worldmodel
+                    if wm is None:
+                        self._send({"error": "world model unavailable"}, 503)
+                    else:
+                        self._send(wm.config())
+                else:
+                    self._send({"error": "not found"}, 404)
+
+            def do_POST(self):  # noqa: N802
+                path = self.path.split("?", 1)[0].rstrip("/")
+                if path == "/worldmodel/step":
+                    wm = owner.worldmodel
+                    if wm is None:
+                        self._send({"error": "world model unavailable"}, 503)
+                        return
+                    self._send(wm.step())
+                elif path == "/worldmodel/reset":
+                    wm = owner.worldmodel
+                    if wm is None:
+                        self._send({"error": "world model unavailable"}, 503)
+                        return
+                    body = self._read_body()
+                    self._send(wm.reset(clear_memory=bool(body.get("clear_memory", False))))
+                elif path == "/worldmodel/config":
+                    wm = owner.worldmodel
+                    if wm is None:
+                        self._send({"error": "world model unavailable"}, 503)
+                        return
+                    body = self._read_body()
+                    values = body.get("values") if isinstance(body.get("values"), dict) else body
+                    self._send(wm.update_config(values or {}))
+                elif path == "/worldmodel/reload":
+                    self._send(owner.reload_worldmodel_source())
+                else:
+                    self._send({"error": "not found"}, 404)
 
             def log_message(self, format, *args):
                 LOG.debug("Body HTTP: " + format, *args)
 
         try:
             self.http_server = ThreadingHTTPServer((host, port), Handler)
-            threading.Thread(target=self.http_server.serve_forever, name="body-health", daemon=True).start()
+            threading.Thread(target=self.http_server.serve_forever, name="body-http", daemon=True).start()
             LOG.info("Body endpoint listening on http://%s:%d/health", host, port)
         except OSError as exc:
             LOG.warning("Body endpoint unavailable on %s:%d: %s", host, port, exc)

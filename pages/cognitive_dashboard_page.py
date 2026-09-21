@@ -182,6 +182,21 @@ def _fetch_all() -> Dict[str, Any]:
                lambda: _import_build('cognition.cognitive_resource_economy',
                                      'CognitiveResourceEconomy'))
 
+        # Embodied world model — owned by the *Body*, read here (adopt pattern:
+        # first dashboard access builds it once, then reuses the instance).
+        try:
+            _body = getattr(org, '_body_runtime', None)
+            if _body is None:
+                from cognition.body_runtime import get_body_runtime
+                _body = get_body_runtime(org)
+            wm = getattr(_body, '_worldmodel', None)
+            if wm is None:
+                wm = _body.worldmodel  # lazy build (cached on the Body)
+            if wm is not None:
+                result['sensorimotor'] = wm.status_summary()
+        except Exception:
+            pass
+
         # Phase 4.x: Global Workspace state
         gw = getattr(org, 'workspace', None)
         if gw and hasattr(gw, 'state_summary'):
@@ -1938,6 +1953,83 @@ async def cognitive_dashboard_page():
                                     ui.label(
                                         f"• {name}: {val:.2f}  (weight {weight:.0%})"
                                     ).classes('text-slate-300 text-xs font-mono')
+
+                        # ── Panel 24: Embodied World Model (owned by the Body) ─
+                        with ui.element('div').classes('dash-card'):
+                            _section('Embodied World Model — Body', '🦾')
+                            ui.label(
+                                'The Body\'s physical world knowledge: an affordance cortex '
+                                'conditioned on the body, learned latent dynamics, anchor memory '
+                                '(places / objects / trajectories) and a policy that decides by '
+                                'imagined rollouts. Owned by the Body; the Brain only reads it.'
+                            ).classes('text-slate-600 text-xs italic mb-2')
+                            sm = d.get('sensorimotor')
+                            if not sm:
+                                ui.label(
+                                    'Not yet initialized. Run one step (POST /api/interface/body/worldmodel/step) '
+                                    'or enable the background loop in its config.'
+                                ).classes('text-slate-500 text-xs italic')
+                            else:
+                                _running = bool(sm.get('running'))
+                                _badge(
+                                    f"mode {sm.get('mode', '?')}",
+                                    'green' if _running else 'gray'
+                                )
+                                _badge(
+                                    f"{'loop on' if sm.get('enabled') else 'loop off'}",
+                                    'green' if sm.get('enabled') else 'gray'
+                                )
+                                ui.separator().classes('my-3 border-slate-700')
+                                ui.label('Learning').classes('text-slate-400 text-xs mb-1 block')
+                                _dyn = sm.get('dynamics') or {}
+                                _loss = (_dyn.get('last_loss') or {}).get('loss')
+                                ui.label(
+                                    f"Steps: {sm.get('steps', 0)}   •   Trained: {_dyn.get('steps_trained', 0)}   •   "
+                                    f"Buffer: {_dyn.get('buffer', 0)}   •   Last loss: "
+                                    f"{f'{_loss:.4f}' if isinstance(_loss, (int, float)) else '—'}"
+                                ).classes('text-slate-300 text-xs font-mono')
+                                _pe = sm.get('prediction_error_ema')
+                                if isinstance(_pe, (int, float)):
+                                    _pe_color = 'green' if _pe < 0.3 else 'yellow' if _pe < 0.6 else 'red'
+                                    _pct_bar(min(1.0, _pe), _pe_color)
+                                    ui.label(f'Prediction error (EMA): {_pe:.3f}').classes(
+                                        'text-slate-500 text-[10px] font-mono'
+                                    )
+                                ui.separator().classes('my-3 border-slate-700')
+                                ui.label('Anchor memory (physical world)').classes('text-slate-400 text-xs mb-1 block')
+                                _mem = sm.get('memory') or {}
+                                for _fam, _icon in (('lieux', '📍'), ('objets', '📦'), ('trajectories', '🧭')):
+                                    _st = _mem.get(_fam) or {}
+                                    _cnt = _st.get('count', 0)
+                                    _rel = _st.get('avg_reliability')
+                                    _rel_s = f"  (avg reliability {_rel:.2f})" if isinstance(_rel, (int, float)) else ''
+                                    ui.label(f"• {_icon} {_fam}: {_cnt}{_rel_s}").classes('text-slate-300 text-xs font-mono')
+                                _top = sm.get('top_anchors') or {}
+                                _top_lines = []
+                                for _fam, _items in _top.items():
+                                    for _it in (_items or [])[:2]:
+                                        _top_lines.append(
+                                            f"{_it.get('label', '?')} (r={_it.get('reliability', 0):.2f})"
+                                        )
+                                if _top_lines:
+                                    ui.label('Most reliable: ' + ', '.join(_top_lines)).classes(
+                                        'text-slate-400 text-xs font-mono'
+                                    )
+                                ui.separator().classes('my-3 border-slate-700')
+                                ui.label('Recent embodied steps').classes('text-slate-400 text-xs mb-1 block')
+                                _steps = (sm.get('recent_steps') or [])[-8:]
+                                if not _steps:
+                                    ui.label('No steps yet.').classes('text-slate-500 text-xs italic')
+                                for _s in reversed(_steps):
+                                    _ok = _s.get('outcome') in ('success',)
+                                    _bad = _s.get('outcome') in ('failure', 'danger')
+                                    _c = 'green' if _ok else 'red' if _bad else 'gray'
+                                    with ui.row().classes('items-center gap-2 w-full'):
+                                        ui.label(
+                                            f"#{_s.get('step', '?')}  {_s.get('action', '?')}  "
+                                            f"r={_s.get('reward', 0):+.3f}  pe={_s.get('pred_error', 0):.3f}"
+                                        ).classes('text-slate-300 text-xs font-mono flex-1')
+                                        _badge(_s.get('outcome', '?'), _c)
 
             except Exception as _panel_err:
                     logger.warning(

@@ -173,10 +173,12 @@ function HealthValue({ value, field = '' }: { value: unknown; field?: string }) 
 function CognitiveHealth({ onData }: { onData?: (data: CognitiveHealthData) => void }) {
   const [data, setData] = useState<CognitiveHealthData | null>(null);
   const [error, setError] = useState('');
+  const [commandMessage, setCommandMessage] = useState('');
   const panels: { title: string; icon: string; keys: string[] }[] = [
     { title: 'Predictive Model Readiness', icon: '🧠', keys: ['pcm', 'wsdm', 'wsdm_network_records'] },
     { title: 'Identity Constraint Health', icon: '🛡', keys: ['ice', 'ice_by_value'] },
     { title: 'Cross-Layer Feedback', icon: '⚡', keys: ['ec_multiplier', 'clf', 'gate', 'arbitration'] },
+    { title: 'Body Command Queue', icon: '⚙', keys: ['body_commands'] },
     { title: 'Aspiration Pipeline', icon: '✦', keys: ['aspirations', 'tp', 'next_synthesis_cycle', 'next_generative_cycle', 'synthesis_locked', 'generative_locked'] },
     { title: 'Motivational State', icon: '⏱', keys: ['mf'] },
     { title: 'Resource Economy', icon: '⚡', keys: ['ec'] },
@@ -215,11 +217,22 @@ function CognitiveHealth({ onData }: { onData?: (data: CognitiveHealthData) => v
   }, []);
   const known = new Set([...panels.flatMap(panel => panel.keys), 'slow_cycle', 'fetched_at']);
   const metrics = data ? Object.entries(data).filter(([key, value]) => !known.has(key) && (typeof value !== 'object' || value === null)).slice(0, 8) : [];
+  const bodyCommands = (data?.body_commands || {}) as { pending?: { command_id: string; target: string; action: string; status: string }[]; bridge_connected?: boolean };
+  const decideCommand = async (commandId: string, decision: 'approve' | 'reject') => {
+    try {
+      const response = await checked(await fetch(`/api/interface/body/commands/${encodeURIComponent(commandId)}/${decision}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: decision === 'reject' ? JSON.stringify({ reason: 'rejected from Cognitive Observatory' }) : undefined }));
+      await response.json();
+      setCommandMessage(`Command ${decision}d.`);
+      const next = await checked(await fetch('/api/interface/cognitive-health')).then(result => result.json());
+      setData(next); onData?.(next);
+    } catch (e) { setCommandMessage(e instanceof Error ? e.message : 'Command decision failed.'); }
+  };
   return <section className="cognitive-health-content">
     <header className="health-heading"><div><span className="eyebrow">PANDORABOX / COGNITIVE HEALTH</span><h2>Engine status, beneath the conversation</h2></div><div className="health-head-meta"><span className="health-cycle">Cycle #{data?.slow_cycle !== undefined ? displayValue(data.slow_cycle) : '—'}</span><span className="health-live"><i/>{error ? 'Refresh failed' : data ? 'Live telemetry' : 'Connecting'}</span><span>{data && formatHealthTimestamp('fetched_at', data.fetched_at)}</span></div></header>
     {error && <p className="health-error" role="status">{error}</p>}
     {metrics.length > 0 && <div className="health-metrics">{metrics.map(([key, value]) => <div key={key}><span>{key.replaceAll('_', ' ')}</span><strong>{displayValue(value)}</strong></div>)}</div>}
     <div className="health-columns">{[0, 1].map(column => <div className="health-column" key={column}>{panels.filter((_, index) => index % 2 === column).map((panel, index) => <article className={`health-panel tone-${(index + column) % 6}`} key={panel.title}><h3><span className="health-icon">{panel.icon}</span>{panel.title}<span className="health-index">{String(index * 2 + column + 1).padStart(2, '0')}</span></h3>{panel.keys.map(key => data && key in data ? <div className="health-row" key={key}><span>{key.replaceAll('_', ' ')}</span><HealthValue value={data[key]} field={key}/></div> : null)}{data && !panel.keys.some(key => key in data) && <p className="muted">No data recorded yet.</p>}{!data && <p className="muted">Waiting for engine telemetry.</p>}</article>)}</div>)}</div>
+    {data && data.body_commands != null && <section className="health-panel body-command-actions"><h3><span className="health-icon">⚙</span>Permissioned Body actions</h3><p className="muted">Bridge {bodyCommands.bridge_connected ? 'connected' : 'disconnected'} · commands never execute without approval.</p>{(bodyCommands.pending || []).length ? (bodyCommands.pending || []).map(command => <div className="health-command-row" key={command.command_id}><span><b>{command.action}</b><small>{command.target || 'body'} · {command.status}</small></span>{command.status === 'queued' && <span className="health-command-buttons"><button onClick={() => void decideCommand(command.command_id, 'approve')} title="Approve command"><Check size={13}/></button><button onClick={() => void decideCommand(command.command_id, 'reject')} title="Reject command"><X size={13}/></button></span>}</div>) : <p className="muted">No pending Body commands.</p>}{commandMessage && <p className="muted">{commandMessage}</p>}</section>}
     <details className="health-raw"><summary>Raw engine data</summary><pre>{data ? JSON.stringify(data, null, 2) : 'Waiting for engine telemetry.'}</pre></details>
   </section>;
 }

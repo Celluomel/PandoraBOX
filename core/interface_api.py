@@ -52,6 +52,19 @@ class BodySettingsUpdate(BaseModel):
     values: dict[str, object] = Field(default_factory=dict)
 
 
+class BodyCommandRequest(BaseModel):
+    target: str = Field(default='', max_length=160)
+    action: str = Field(..., min_length=1, max_length=80)
+    payload: dict[str, object] = Field(default_factory=dict)
+    requires_confirmation: bool = True
+    origin: str = Field(default='brain', max_length=80)
+    ttl_seconds: float | None = Field(default=None, gt=0, le=3600)
+
+
+class BodyCommandDecision(BaseModel):
+    reason: str = Field(default='', max_length=240)
+
+
 def _runtime():
     from core.state import state
     return state
@@ -280,9 +293,122 @@ async def discover_body_home_assistant():
     return _json_safe(result)
 
 
+@router.get('/body/commands')
+async def body_commands(include_terminal: bool = False):
+    """Inspect the auditable Body command queue without executing anything."""
+    body, _ = _body_runtime_for_state()
+    return _json_safe({
+        'commands': body.snapshot_commands(include_terminal=include_terminal),
+        'bridge_connected': bool(body.status().get('brain_bridge', {}).get('connected')),
+    })
+
+
+@router.post('/body/commands')
+async def enqueue_body_command(payload: BodyCommandRequest):
+    """Create a command; it remains queued until an operator approves it."""
+    body, _ = _body_runtime_for_state()
+    command = body.enqueue_command(
+        target=payload.target,
+        action=payload.action,
+        payload=payload.payload,
+        requires_confirmation=payload.requires_confirmation,
+        origin=payload.origin,
+        ttl_seconds=payload.ttl_seconds,
+    )
+    return _json_safe({'ok': True, 'command': command.as_dict()})
+
+
+@router.post('/body/commands/{command_id}/approve')
+async def approve_body_command(command_id: str):
+    """Approve one command for delivery to the connected Body."""
+    body, _ = _body_runtime_for_state()
+    result = body.approve_command(command_id)
+    if not result.get('ok'):
+        raise HTTPException(409, result.get('error', 'Command cannot be approved.'))
+    return _json_safe(result)
+
+
+@router.post('/body/commands/{command_id}/reject')
+async def reject_body_command(command_id: str, payload: BodyCommandDecision | None = None):
+    body, _ = _body_runtime_for_state()
+    result = body.reject_command(command_id, (payload.reason if payload else '') or 'rejected by operator')
+    if not result.get('ok'):
+        raise HTTPException(409, result.get('error', 'Command cannot be rejected.'))
+    return _json_safe(result)
+
+
+# ── Body's embodied world model (owned by the Body; read through the API) ──
+#
+# Ownership rule: these endpoints only *read* the Body's world model or run
+# one supervised step.  The Brain never writes anchors/dynamics directly.
+
+
+def _worldmodel():
+    body, _ = _body_runtime_for_state()
+    try:
+        return body.worldmodel
+    except Exception as exc:
+        raise HTTPException(503, f'World model unavailable: {exc}')
+
+
+@router.get('/body/worldmodel/status')
+async def body_worldmodel_status():
+    return _json_safe(_worldmodel().status_summary())
+
+
+@router.post('/body/worldmodel/step')
+async def body_worldmodel_step():
+    try:
+        return _json_safe(await asyncio.to_thread(_worldmodel().step))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception('world model step failed')
+        raise HTTPException(500, f'World model step failed: {exc}')
+
+
+@router.get('/body/worldmodel/anchors')
+async def body_worldmodel_anchors():
+    try:
+        return _json_safe(_worldmodel().anchors_payload(limit=40))
+    except AttributeError:
+        raise HTTPException(503, 'World model does not expose anchors (Body host offline?)')
+
+
+@router.get('/body/worldmodel/episodes')
+async def body_worldmodel_episodes(limit: int = 12):
+    limit = min(50, max(1, limit))
+    return _json_safe(_worldmodel().recent_episodes(limit=limit))
+
+
+class WorldModelConfigUpdate(BaseModel):
+    values: dict[str, object] = Field(default_factory=dict)
+
+
+@router.get('/body/worldmodel/config')
+async def body_worldmodel_config():
+    return _json_safe(_worldmodel().config())
+
+
+@router.post('/body/worldmodel/config')
+async def update_worldmodel_config(payload: WorldModelConfigUpdate):
+    try:
+        return _json_safe(await asyncio.to_thread(_worldmodel().update_config, payload.values or {}))
+    except Exception as exc:
+        raise HTTPException(500, f'World model config update failed: {exc}')
+
+
+@router.post('/body/worldmodel/reset')
+async def body_worldmodel_reset(clear_memory: bool = False):
+    try:
+        return _json_safe(await asyncio.to_thread(_worldmodel().reset, clear_memory))
+    except Exception as exc:
+        raise HTTPException(500, f'World model reset failed: {exc}')
+
+
 @router.websocket('/body/bridge')
 async def body_bridge(websocket: WebSocket):
-    """Receive authenticated observations from a remote Body Runtime."""
+    """Exchange authenticated observations and approved commands with a Body."""
     body, _ = _body_runtime_for_state()
     from managers.settings_manager import config
     expected = str(body.config_value('BODY_BRIDGE_TOKEN', getattr(config, 'BODY_BRIDGE_TOKEN', '')) or '')
@@ -292,14 +418,35 @@ async def body_bridge(websocket: WebSocket):
         await websocket.close(code=1008, reason='Body bridge authentication failed')
         return
     await websocket.accept()
+    send_lock = asyncio.Lock()
+    sender_task = None
+    device_id = 'body'
+
+    async def send(payload):
+        async with send_lock:
+            await websocket.send_json(payload)
+
+    async def send_commands():
+        while True:
+            command = await asyncio.to_thread(body.next_bridge_command, 1.0)
+            if command:
+                await send(command)
+
     try:
+        sender_task = asyncio.create_task(send_commands())
         while True:
             message = await websocket.receive_json()
             if message.get('type') == 'hello':
-                await websocket.send_json({'type': 'hello_ack', 'protocol': 1, 'brain': 'ready'})
+                device_id = str(message.get('device_id') or 'body')
+                body.register_bridge_device(device_id)
+                await send({'type': 'hello_ack', 'protocol': 1, 'brain': 'ready'})
+                continue
+            if message.get('type') == 'command_result':
+                result = body.record_command_outcome(message)
+                await send({'type': 'command_result_ack', 'command_id': message.get('command_id'), **result})
                 continue
             if message.get('type') != 'observation' or not isinstance(message.get('observation'), dict):
-                await websocket.send_json({'type': 'error', 'reason': 'unsupported message'})
+                await send({'type': 'error', 'reason': 'unsupported message'})
                 continue
             item = message['observation']
             from cognition.body_runtime import BodyObservation
@@ -314,9 +461,14 @@ async def body_bridge(websocket: WebSocket):
                 provenance=dict(item.get('provenance') or {}),
             )
             body.publish_observation(observation, forward=False)
-            await websocket.send_json({'type': 'observation_ack', 'subject': observation.subject})
+            await send({'type': 'observation_ack', 'subject': observation.subject})
     except WebSocketDisconnect:
         logger.info('[BodyBridge] remote Body disconnected')
+    finally:
+        body.unregister_bridge_device(device_id)
+        if sender_task is not None:
+            sender_task.cancel()
+            await asyncio.gather(sender_task, return_exceptions=True)
 
 
 @router.get('/telemetry')
@@ -553,6 +705,16 @@ async def cognitive_health():
         data = await asyncio.to_thread(_fetch_all)
         if isinstance(data, dict):
             data['orchestrator'] = _orchestrator_snapshot()
+            try:
+                body, _ = _body_runtime_for_state()
+                body_status = body.status()
+                data['body_commands'] = {
+                    'pending': body.snapshot_commands(include_terminal=False),
+                    'recent': body.snapshot_commands(include_terminal=True)[:12],
+                    'bridge_connected': bool(body_status.get('brain_bridge', {}).get('connected')),
+                }
+            except Exception as body_exc:
+                logger.debug('Body command telemetry unavailable: %s', body_exc)
             try:
                 state = _runtime()
                 organism = getattr(getattr(state, 'persona', None), '_organism', None)

@@ -1,2 +1,7 @@
 # Dependencies for the independent Body process only.
 websockets>=12.0,<16.0
+# World model (embodied loop): numpy is required; torch powers the latent
+# dynamics (CPU build is enough).  Both are already present in the main venv,
+# so a separate body venv is optional.
+numpy>=1.24
+torch>=2.0
