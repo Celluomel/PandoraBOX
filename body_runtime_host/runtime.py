@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 import signal
 import ssl
@@ -265,10 +266,12 @@ class BodyHost:
             self._fnk_controller_last = self._fnk_controller.step(
                 imu={}, reward=0.0, dt=0.04, gait="forward"
             )
+            sim = wm.sim
             return {
                 "active": True,
                 "mode": "local_simulation",
                 "actuation": False,
+                "body_heading_deg": round(math.degrees(float(sim.heading)), 1) if sim else 0.0,
                 "imu_available": False,
                 "reward_source": "none (no external reward in the sandbox)",
                 "state_loaded": bool(self._fnk_controller.loaded),

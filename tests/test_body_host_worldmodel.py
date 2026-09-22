@@ -123,6 +123,11 @@ class BodySingletonStartupTest(unittest.TestCase):
         class RunningWorldModel:
             _thread = RunningThread()
 
+            class Sim:
+                heading = 1.5707963267948966
+
+            sim = Sim()
+
             def config(self):
                 return {"mode": "sim"}
 
@@ -148,6 +153,7 @@ class BodySingletonStartupTest(unittest.TestCase):
             result = host.fnk0031_controller_step()
         self.assertTrue(result["active"])
         self.assertFalse(result["actuation"])
+        self.assertEqual(result["body_heading_deg"], 90.0)
 
     def test_locomotion_simulation_waits_for_running_world_model(self):
         from body_runtime_host.runtime import BodyHost
