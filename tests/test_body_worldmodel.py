@@ -197,6 +197,49 @@ class SimWorldTest(unittest.TestCase):
         self.assertEqual(outcome.kind, "danger")
         self.assertEqual(room.px, 5.0, "body must not pass through the obstacle")
 
+    def test_mobile_obstacle_approaches_body_and_records_near_miss(self):
+        from body_runtime_host.worldmodel import Action, SimulatedRoom
+
+        room = SimulatedRoom()
+        room.px, room.py = 5.0, 5.0
+        room.objects["mobile_obstacle"]["x"] = 8.0
+        room.objects["mobile_obstacle"]["y"] = 5.0
+
+        room.step(Action(type="wait"))
+        self.assertEqual(room.objects["mobile_obstacle"]["x"], 7.0)
+        _, outcome = room.step(Action(type="wait"))
+
+        mobile = room.objects["mobile_obstacle"]
+        self.assertEqual((mobile["x"], mobile["y"]), (6.0, 5.0))
+        self.assertEqual(room.near_miss_count, 1)
+        self.assertEqual(outcome.kind, "danger")
+        self.assertLess(outcome.reward, -0.12)
+
+        _, collision = room.step(Action(type="forward"))
+        self.assertEqual(collision.kind, "danger")
+        self.assertEqual(room.collision_count, 1)
+        self.assertEqual((room.px, room.py), (5.0, 5.0))
+
+    def test_navigation_detours_and_keeps_advancing_near_mobile_obstacle(self):
+        from body_runtime_host.worldmodel import Action, SimulatedRoom
+        from body_runtime_host.worldmodel.navigation import navigation_guidance
+
+        room = SimulatedRoom()
+        room.px, room.py, room.heading = 5.0, 5.0, 0.0
+        room.objects["mobile_obstacle"]["x"] = 6.0
+        room.objects["mobile_obstacle"]["y"] = 5.0
+
+        guidance = navigation_guidance(room.observe(), room.body_state())
+        self.assertIn("forward", guidance["forbidden"])
+        self.assertIn(guidance["recommended"], {"turn_left", "turn_right"})
+        self.assertNotEqual(guidance["recommended"], "wait")
+
+        room.step(Action(type=guidance["recommended"]))
+        next_guidance = navigation_guidance(room.observe(), room.body_state())
+        self.assertEqual(next_guidance["recommended"], "forward")
+        room.step(Action(type="forward"))
+        self.assertGreater(room.py, 5.0)
+
     def test_full_task_is_solvable(self):
         """A scripted (non-learned) policy must be able to solve the task —
         proving the environment itself is solvable (separates environment
@@ -205,6 +248,9 @@ class SimWorldTest(unittest.TestCase):
         from body_runtime_host.worldmodel import Action, SimulatedRoom
 
         room = SimulatedRoom()
+        # This fixture checks the static manipulation route; dynamic obstacle
+        # interaction has its own attraction/avoidance test above.
+        room.objects.pop("mobile_obstacle")
 
         def walk_to(x: float, y: float) -> None:
             """Axis-aligned walk to (x, y) — the grid is unit-stepped."""
@@ -230,7 +276,14 @@ class SimWorldTest(unittest.TestCase):
         self.assertEqual(room.carrying, "cup")
         # carried object must follow the body
         self.assertAlmostEqual(room.objects["cup"]["x"], room.px)
-        # back to the shelf (1,9)
+        # Place it on the intermediate table, then retrieve it.
+        walk_to(3.0, 4.0)
+        _, out = room.step(Action(type="release"))
+        self.assertEqual(out.kind, "success", f"expected table placement, got {out.description}")
+        walk_to(3.0, 4.0)
+        _, out = room.step(Action(type="grab"))
+        self.assertEqual(out.kind, "success", f"expected to retrieve cup, got {out.description}")
+        # Carry it to the shelf (1,9).
         walk_to(1.0, 9.0)
         obs, out = room.step(Action(type="release"))
         self.assertTrue(room.done, f"task should complete: {out.description}")

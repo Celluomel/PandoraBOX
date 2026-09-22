@@ -48,6 +48,8 @@ class SimulatedRoom:
         self.done = False
         self.steps = 0
         self.collision_count = 0
+        self.near_miss_count = 0
+        self._mobile_was_near = False
         self.success_count = 0
 
     # ── setup ───────────────────────────────────────────────────────────────
@@ -85,6 +87,8 @@ class SimulatedRoom:
         self.done = False
         self.steps = 0
         self.collision_count = 0
+        self.near_miss_count = 0
+        self._mobile_was_near = False
         self.success_count = 0
 
     def shuffle_objects(self) -> None:
@@ -175,6 +179,8 @@ class SimulatedRoom:
     def _free_cell(self, x: float, y: float, ignore_id: str | None = None) -> bool:
         if x < 0 or y < 0 or x >= self.width or y >= self.height:
             return False
+        if math.hypot(x - self.px, y - self.py) < 0.6:
+            return False
         for o in self.objects.values():
             if o["id"] in {self.carrying, ignore_id}:
                 continue
@@ -182,20 +188,30 @@ class SimulatedRoom:
                 return False
         return True
 
-    def _move_mobile_obstacle(self) -> None:
-        """Advance the dynamic obstacle by one random legal grid move."""
+    def _move_mobile_obstacle(self) -> bool:
+        """Move the dynamic obstacle toward the Body, stopping before overlap.
+
+        The Body is deliberately an attractor: this creates observable dynamic
+        collision risk for the navigation policy instead of teaching the
+        obstacle to keep away. Static geometry and the Body still block overlap.
+        """
         mobile = self.objects.get("mobile_obstacle")
         if mobile is None or self.done:
-            return
-        directions = [(0.0, 0.0), (1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)]
-        random.SystemRandom().shuffle(directions)
-        for dx, dy in directions:
+            return False
+        current_distance = math.hypot(mobile["x"] - self.px, mobile["y"] - self.py)
+        candidates: list[tuple[float, float, float]] = []
+        for dx, dy in ((1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)):
             nx, ny = mobile["x"] + dx, mobile["y"] + dy
-            if math.hypot(nx - self.px, ny - self.py) < 1.0:
-                continue
             if self._free_cell(nx, ny, ignore_id="mobile_obstacle"):
-                mobile["x"], mobile["y"] = nx, ny
-                return
+                distance = math.hypot(nx - self.px, ny - self.py)
+                if distance < current_distance:
+                    candidates.append((distance, nx, ny))
+        if candidates:
+            _, mobile["x"], mobile["y"] = min(candidates)
+        near = math.hypot(mobile["x"] - self.px, mobile["y"] - self.py) <= 1.25
+        entered_near_zone = near and not self._mobile_was_near
+        self._mobile_was_near = near
+        return entered_near_zone
 
     def step(self, action: Action) -> Tuple[Observation, Outcome]:
         """Execute one action; return (next_observation, outcome)."""
@@ -321,7 +337,7 @@ class SimulatedRoom:
 
         # The environment changes after the action, so the next decision must
         # use the resulting observation rather than a frozen obstacle map.
-        self._move_mobile_obstacle()
+        near_miss = self._move_mobile_obstacle()
 
         # carried object follows the body (it is held, not left behind)
         if self.carrying is not None:
@@ -338,6 +354,15 @@ class SimulatedRoom:
             dist = math.hypot(self.px - goal[0], self.py - goal[1])
             reward -= 0.02 * dist
             reward += 0.0  # (small positive shaping handled by value head)
+        mobile = self.objects.get("mobile_obstacle")
+        mobile_distance = math.hypot(mobile["x"] - self.px, mobile["y"] - self.py) if mobile else math.inf
+        if mobile_distance <= 1.25:
+            reward -= 0.12
+            if kind == "neutral":
+                kind = "danger"
+            if near_miss:
+                self.near_miss_count += 1
+                desc = f"{desc}; moving obstacle entered the collision zone".strip("; ")
 
         outcome = Outcome(kind=kind, reward=round(float(reward), 4), description=desc)
         return self.observe(), outcome
@@ -388,5 +413,6 @@ class SimulatedRoom:
             "done": self.done,
             "steps": self.steps,
             "collisions": self.collision_count,
+            "near_misses": self.near_miss_count,
             "successes": self.success_count,
         }
