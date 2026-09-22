@@ -65,6 +65,23 @@ drawFnkController=function(s){
   if(!s.active){note.textContent=s.reason||'Start the simulated World Model to run the local hexapod plant.';return}
   const imu=s.imu||{},error=s.forward_prediction_error||[];
   note.textContent=`SIMULATED PLANT · pitch ${Number(imu.pitch||0).toFixed(3)} rad · roll ${Number(imu.roll||0).toFixed(3)} rad · reward ${Number(s.reward||0).toFixed(3)} · stability ${Number(s.stability||0).toFixed(3)} · CPG ${(Number(s.cpg_weight||1)*100).toFixed(0)}% / SNN ${(Number(s.snn_weight||0)*100).toFixed(0)}% · forward error ${Number(error[0]||0).toFixed(3)}, ${Number(error[1]||0).toFixed(3)} · no hardware actuation`;
+  const svg=document.getElementById('fnk-preview');
+  svg.setAttribute('viewBox','0 0 360 280');
+  const legs=[
+    {n:1,x:158,y:88,side:-1,group:'A'}, {n:2,x:153,y:115,side:-1,group:'B'},
+    {n:3,x:158,y:142,side:-1,group:'A'}, {n:4,x:202,y:88,side:1,group:'B'},
+    {n:5,x:207,y:115,side:1,group:'A'}, {n:6,x:202,y:142,side:1,group:'B'}
+  ];
+  const cpg=s.cpg||[],contact=s.contact||Array(6).fill(0),lift=s.foot_lift||Array(6).fill(0);
+  const legsSvg=legs.map((leg,i)=>{
+    const sourceIndex=[0,2,4,1,3,5][i];
+    const stride=Number(cpg[sourceIndex]||0),air=Number(lift[sourceIndex]||0),ground=Number(contact[sourceIndex]||0)===1;
+    const kneeX=leg.x+leg.side*19,kneeY=leg.y,footX=kneeX+leg.side*(25+air*5),footY=kneeY-stride*12;
+    const color=ground?'#75dda4':'#f0bd70',dash=ground?'':'stroke-dasharray="4 3"';
+    return `<g><line x1="${leg.x}" y1="${leg.y}" x2="${kneeX}" y2="${kneeY}" stroke="#739184" stroke-width="7" stroke-linecap="round"/><line x1="${kneeX}" y1="${kneeY}" x2="${footX}" y2="${footY}" stroke="${color}" stroke-width="5" stroke-linecap="round" ${dash}/><circle cx="${footX}" cy="${footY}" r="${4+air*2}" fill="${color}"/><text x="${footX+leg.side*8}" y="${footY-5}" text-anchor="${leg.side<0?'end':'start'}" fill="#dcebe2" font-size="9" font-family="monospace">L${leg.n}</text><text x="${leg.x+leg.side*11}" y="${leg.y+3}" fill="#8cae9a" font-size="7" font-family="monospace">${leg.group}</text></g>`;
+  }).join('');
+  const neurons=Array.from({length:18},(_,i)=>{const on=Boolean((s.spikes||[])[i]),leg=Math.floor(i/3),visualLeg=[0,3,1,4,2,5][leg],col=on?'#ffd27a':(contact[leg]?'#75dda4':'#f0bd70');return `<circle cx="${45+visualLeg*54+(i%3)*7}" cy="250" r="${on?4:2.5}" fill="${col}" opacity="${on?1:.65}"/>`}).join('');
+  svg.innerHTML=`<text x="180" y="16" text-anchor="middle" fill="#dcebe2" font-size="9" font-family="monospace">N ↑</text><path d="M180 21l-5 9h10z" fill="#dcebe2"/><g transform="rotate(${fnkVisualHeading} 180 118)">${legsSvg}<rect x="155" y="70" width="50" height="96" rx="10" fill="#152b22" stroke="#7ed9ab" stroke-width="2"/><text x="180" y="111" text-anchor="middle" fill="#c8f5d9" font-size="9" font-family="monospace">FNK0031</text><text x="180" y="124" text-anchor="middle" fill="#8cae99" font-size="8" font-family="monospace">FRONT</text></g><text x="180" y="194" text-anchor="middle" fill="#a7beaf" font-size="8" font-family="monospace">${s.gait||'idle'} · stance ${contact.map((v,i)=>v?`L${i+1}`:'').filter(Boolean).join(' ')||'none'}</text><text x="180" y="210" text-anchor="middle" fill="#81998b" font-size="7" font-family="monospace">TRIPOD A: L1/L3/L5 · TRIPOD B: L2/L4/L6</text><text x="180" y="235" text-anchor="middle" fill="#81998b" font-size="7" font-family="monospace">18 IZHikevich neurons · recent firing</text>${neurons}`;
 };
 </script></body></html>""",
 )

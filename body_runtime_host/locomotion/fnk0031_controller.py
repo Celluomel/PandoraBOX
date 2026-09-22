@@ -163,19 +163,25 @@ class CerebellarForwardModel:
 
 
 class TripodCPG:
-    """Six-leg tripod oscillator: legs A/C/E oppose B/D/F."""
+    """Tripod foot trajectory; leg order is FL, FR, ML, MR, RL, RR."""
 
     def __init__(self, frequency_hz: float = 1.2) -> None:
         self.phase = 0.0
         self.frequency_hz = float(frequency_hz)
+        self.contact = np.ones(6, dtype=np.int8)
+        self.foot_lift = np.zeros(6, dtype=np.float32)
 
     def step(self, dt: float = 0.02) -> np.ndarray:
         self.phase = (self.phase + 2.0 * math.pi * self.frequency_hz * dt) % (2.0 * math.pi)
-        # Leg order is left-front, right-front, left-middle, right-middle,
-        # left-rear, right-rear: alternate diagonal tripod groups.
+        # A = L1/L3/L5 (FL/RL/MR); B = L2/L4/L6 (ML/FR/RR).
         offsets = np.asarray([0.0, math.pi, math.pi, 0.0, 0.0, math.pi], dtype=np.float32)
-        phases = self.phase + offsets
-        return np.sin(phases)
+        phases = np.mod(self.phase + offsets, 2.0 * math.pi) / (2.0 * math.pi)
+        self.contact = (phases < 0.5).astype(np.int8)
+        stance_position = 1.0 - 4.0 * phases
+        swing_phase = np.clip((phases - 0.5) * 2.0, 0.0, 1.0)
+        swing_position = -1.0 + 2.0 * swing_phase
+        self.foot_lift = np.where(self.contact == 0, np.sin(math.pi * swing_phase), 0.0).astype(np.float32)
+        return np.where(self.contact == 1, stance_position, swing_position).astype(np.float32)
 
 
 class FNK0031LocomotionController:
@@ -238,6 +244,9 @@ class FNK0031LocomotionController:
         total_reward = max(-1.0, min(1.0, float(reward) + 0.25 * stability))
         moving = gait in {"forward", "backward", "turn_left", "turn_right"}
         cpg = self.cpg.step(dt) if moving else np.zeros(6, dtype=np.float32)
+        if not moving:
+            self.cpg.contact.fill(1)
+            self.cpg.foot_lift.fill(0.0)
         if gait == "backward":
             cpg *= -1.0
         elif gait in {"turn_left", "turn_right"}:
@@ -296,6 +305,8 @@ class FNK0031LocomotionController:
         return {
             "joint_targets": joints.round(4).tolist(),
             "cpg": cpg.round(4).tolist(),
+            "contact": self.cpg.contact.tolist(),
+            "foot_lift": self.cpg.foot_lift.round(4).tolist(),
             "cpg_phase": round(float(self.cpg.phase), 5),
             "spikes": spikes.astype(int).tolist(),
             "imu": {"pitch": round(pitch, 5), "roll": round(roll, 5), "source": "hardware" if external_imu else "simulated_plant" if simulated else "unavailable"},

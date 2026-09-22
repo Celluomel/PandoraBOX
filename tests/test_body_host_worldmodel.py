@@ -86,7 +86,10 @@ class FNK0031LocomotionControllerTest(unittest.TestCase):
 
         cpg = TripodCPG()
         values = cpg.step(dt=0.02)
-        self.assertEqual(np.sign(values).tolist(), [1.0, -1.0, -1.0, 1.0, 1.0, -1.0])
+        self.assertEqual(cpg.contact.tolist(), [1, 0, 0, 1, 1, 0])
+        self.assertEqual(len(values), 6)
+        self.assertGreater(float(cpg.foot_lift[1]), 0.0)
+        self.assertEqual(float(cpg.foot_lift[0]), 0.0)
 
         with tempfile.TemporaryDirectory() as tmp:
             controller = FNK0031LocomotionController(Path(tmp) / "weights.npz")
