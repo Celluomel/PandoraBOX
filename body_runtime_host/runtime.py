@@ -278,7 +278,8 @@ class BodyHost:
                 "body_heading_deg": round(math.degrees(float(sim.heading)), 1) if sim else 0.0,
                 "imu_available": True,
                 "imu_source": "simulated_hexapod_plant",
-                "reward_source": "simulated stability/progress signal",
+                "reward_source": "synthetic_heuristic",
+                "locomotion_verified": False,
                 "state_loaded": bool(self._fnk_controller.loaded),
                 **self._fnk_controller_last,
             }
@@ -293,7 +294,8 @@ class BodyHost:
                 "actuation": False,
                 "imu_available": True,
                 "imu_source": "simulated_hexapod_plant",
-                "reward_source": "simulated stability/progress signal",
+                "reward_source": "synthetic_heuristic",
+                "locomotion_verified": False,
                 "state_loaded": bool(self._fnk_controller.loaded),
                 **self._fnk_controller_last,
             }

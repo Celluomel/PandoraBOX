@@ -111,8 +111,11 @@ class FNK0031LocomotionControllerTest(unittest.TestCase):
             self.assertGreater(int(observed_spikes.sum()), 0, "SNN should emit visible spikes during gait")
             self.assertGreater(float(np.abs(controller.snn.weights - initial_weights).sum()), 0.0)
             self.assertGreater(state["forward_prediction_weights_norm"], 0.0)
-            self.assertGreater(controller.competence, 0.0)
-            self.assertLess(state["cpg_weight"], 1.0)
+            self.assertEqual(controller.competence, 0.0)
+            self.assertEqual(state["cpg_weight"], 1.0)
+            self.assertEqual(state["snn_weight"], 0.0)
+            self.assertEqual(state["reward_source"], "synthetic_heuristic")
+            self.assertFalse(state["locomotion_verified"])
             phase = controller.cpg.phase
             idle = controller.step(imu=None, reward=0.0, gait="idle")
             self.assertEqual(controller.cpg.phase, phase)
@@ -122,7 +125,7 @@ class FNK0031LocomotionControllerTest(unittest.TestCase):
             controller.step(imu=None, reward=0.0)
             restored = FNK0031LocomotionController(Path(tmp) / "weights.npz")
             self.assertTrue(restored.loaded)
-            self.assertGreater(restored.competence, 0.0)
+            self.assertEqual(restored.competence, 0.0)
             self.assertGreater(np.linalg.norm(restored.forward_model.weights), 0.0)
 
             hardware_without_imu = FNK0031LocomotionController(Path(tmp) / "hardware.npz")

@@ -75,14 +75,25 @@ conversation.
 
 ## FNK0031 controller now included
 
-The Body contains a first real `FNK0031LocomotionController` implementation:
+The Body contains an experimental `FNK0031LocomotionController`:
 
 - a six-leg tripod CPG;
 - an 18-neuron Izhikevich population;
 - bounded reward-modulated STDP updates;
 - pitch/roll stability input;
-- a competence gate that gradually permits learned correction;
 - persisted SNN weights under `data/body/locomotion/`.
+
+This is not equivalent to MH-FLOCKE and has not demonstrated learned walking.
+The current local plant generates heuristic tilt/progress signals; it has no
+rigid-body/contact simulation, calibrated servo kinematics, fall detection, or
+independent task evaluator. Those synthetic rewards therefore do not establish
+locomotion competence. Synthetic scores no longer increase a competence gate;
+the SNN output contribution stays disabled until independent evaluation exists.
+The UI labels this as a gait/controller sandbox. A walking claim requires
+repeatable trials with measured displacement, foot contacts, stability/falls,
+and goal completion in a physics-backed simulator, followed by hardware
+validation. The current saved weights are experimental state, not evidence of
+walking skill.
 
 The controller is called only through the approved FNK0031 action path. It
 does not move a robot merely because `FNK0031_SNN_ENABLED` is enabled.

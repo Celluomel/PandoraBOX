@@ -90,7 +90,7 @@ class IzhikevichNetwork:
 
 
 class SimulatedHexapodPlant:
-    """Small deterministic plant that produces synthetic IMU and gait outcomes."""
+    """Heuristic signal source for controller visualization, not robot physics."""
 
     def __init__(self) -> None:
         self.pitch = 0.0
@@ -195,6 +195,8 @@ class FNK0031LocomotionController:
         self._pending_forward_features: Optional[np.ndarray] = None
         self.state_path = Path(state_path)
         self.steps = 0
+        # Kept for state/API compatibility. Only an independent locomotion
+        # evaluator may raise this; the heuristic plant cannot verify skill.
         self.competence = 0.0
         self.loaded = self.snn.load(self.state_path)
         if self.loaded:
@@ -203,8 +205,6 @@ class FNK0031LocomotionController:
     def _load_extended_state(self) -> None:
         try:
             with np.load(self.state_path) as data:
-                if "competence" in data:
-                    self.competence = float(data["competence"])
                 if "cpg_phase" in data:
                     self.cpg.phase = float(data["cpg_phase"])
                 if "forward_weights" in data and data["forward_weights"].shape == self.forward_model.weights.shape:
@@ -268,8 +268,10 @@ class FNK0031LocomotionController:
             spikes = np.maximum(spikes, frame_spikes)
         correction = np.tanh(self.snn.weights.mean(axis=1)).reshape(6, 3)
         tripod = np.repeat(cpg, 3).reshape(6, 3)
-        cpg_weight = max(0.3, 1.0 - 0.7 * self.competence)
-        snn_weight = 1.0 - cpg_weight
+        # No physics-backed or hardware evaluator currently validates the SNN
+        # policy, so synthetic rewards must not authorize learned motor output.
+        cpg_weight = 1.0
+        snn_weight = 0.0
         correction *= snn_weight
         joints = np.clip(tripod * cpg_weight + correction, -1.0, 1.0)
         if not moving:
@@ -298,7 +300,6 @@ class FNK0031LocomotionController:
             total_reward = plant_state["reward"]
             stability = plant_state["stability"]
         self._pending_forward_features = features
-        self.competence = max(0.0, min(1.0, 0.995 * self.competence + 0.005 * max(0.0, total_reward)))
         self.steps += 1
         if self.steps % 100 == 0:
             self._save_state()
@@ -323,6 +324,9 @@ class FNK0031LocomotionController:
             "spikes": spikes.astype(int).tolist(),
             "imu": {"pitch": round(pitch, 5), "roll": round(roll, 5), "source": "hardware" if external_imu else "simulated_plant" if simulated else "unavailable"},
             "reward": round(total_reward, 5),
+            "reward_source": "synthetic_heuristic" if simulated else "operator_or_hardware_unverified",
+            "learning_evidence": "none",
+            "locomotion_verified": False,
             "stability": round(stability, 5),
             "competence": round(self.competence, 5),
             "cpg_weight": round(cpg_weight, 5),
