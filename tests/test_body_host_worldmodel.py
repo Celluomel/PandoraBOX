@@ -101,6 +101,10 @@ class FNK0031LocomotionControllerTest(unittest.TestCase):
                     controller.step(imu={}, reward=0.0)["spikes"],
                 )
             self.assertGreater(int(observed_spikes.sum()), 0, "SNN should emit visible spikes during gait")
+            phase = controller.cpg.phase
+            idle = controller.step(imu={}, reward=0.0, gait="idle")
+            self.assertEqual(controller.cpg.phase, phase)
+            self.assertTrue(np.allclose(idle["joint_targets"], 0.0))
 
 
 class BodySingletonStartupTest(unittest.TestCase):
@@ -129,6 +133,8 @@ class BodySingletonStartupTest(unittest.TestCase):
 
         class RunningWorldModel:
             _thread = RunningThread()
+            _lock = threading.RLock()
+            _last_decision = {"action": "turn_left"}
 
             class Sim:
                 heading = 1.5707963267948966
@@ -142,9 +148,10 @@ class BodySingletonStartupTest(unittest.TestCase):
             loaded = False
 
             def __init__(self, **_kwargs):
-                pass
+                self.gait = None
 
-            def step(self, **_kwargs):
+            def step(self, **kwargs):
+                self.gait = kwargs["gait"]
                 return {"cpg": [1, -1, -1, 1, 1, -1], "spikes": [0] * 18, "step": 1}
 
         fake_locomotion = types.ModuleType("body_runtime_host.locomotion")
@@ -161,6 +168,8 @@ class BodySingletonStartupTest(unittest.TestCase):
         self.assertTrue(result["active"])
         self.assertFalse(result["actuation"])
         self.assertEqual(result["body_heading_deg"], 90.0)
+        self.assertEqual(result["gait"], "turn_left")
+        self.assertEqual(host._fnk_controller.gait, "turn_left")
 
     def test_locomotion_simulation_waits_for_running_world_model(self):
         from body_runtime_host.runtime import BodyHost

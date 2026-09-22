@@ -123,8 +123,9 @@ class FNK0031LocomotionController:
         imu_available = "pitch" in imu or "roll" in imu
         stability = max(-1.0, min(1.0, 1.0 - (abs(pitch) + abs(roll)) / 0.8)) if imu_available else 0.0
         total_reward = max(-1.0, min(1.0, float(reward) + 0.25 * stability))
-        cpg = self.cpg.step(dt)
-        input_current = 8.0 + np.repeat(cpg, 3) * 4.0
+        moving = gait in {"forward", "backward", "turn_left", "turn_right"}
+        cpg = self.cpg.step(dt) if moving else np.zeros(6, dtype=np.float32)
+        input_current = 8.0 + np.repeat(cpg, 3) * 4.0 if moving else np.zeros(18, dtype=np.float32)
         input_current[::3] += np.float32(-pitch * 2.0)
         input_current[1::3] += np.float32(-roll * 2.0)
         # The gait clock uses seconds; Izhikevich integration uses milliseconds.
@@ -142,6 +143,8 @@ class FNK0031LocomotionController:
         correction *= min(0.6, 0.05 + self.competence * 0.55)
         tripod = np.repeat(cpg, 3).reshape(6, 3)
         joints = np.clip(tripod + correction, -1.0, 1.0)
+        if not moving:
+            joints.fill(0.0)
         if gait == "turn_left":
             joints[::2] *= 0.65
         elif gait == "turn_right":

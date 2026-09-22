@@ -261,15 +261,21 @@ class BodyHost:
                     )
                 except Exception as exc:
                     return {"active": False, "reason": f"locomotion dependencies unavailable: {exc}"}
+            with wm._lock:
+                decision = dict(wm._last_decision or {})
+                sim = wm.sim
+                gait = str(decision.get("action") or "idle")
+            if gait not in {"forward", "backward", "turn_left", "turn_right"}:
+                gait = "idle"
             # The simulator currently has no hexapod IMU or external reward.
             # Keep both explicit rather than presenting fabricated sensor data.
             self._fnk_controller_last = self._fnk_controller.step(
-                imu={}, reward=0.0, dt=0.04, gait="forward"
+                imu={}, reward=0.0, dt=0.04, gait=gait
             )
-            sim = wm.sim
             return {
                 "active": True,
                 "mode": "local_simulation",
+                "gait": gait,
                 "actuation": False,
                 "body_heading_deg": round(math.degrees(float(sim.heading)), 1) if sim else 0.0,
                 "imu_available": False,
