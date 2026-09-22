@@ -302,8 +302,20 @@ class FNK0031LocomotionController:
         self.steps += 1
         if self.steps % 100 == 0:
             self._save_state()
+        servo_targets = [
+            {
+                "index": (visual_leg - 1) * 3 + joint + 1,
+                "leg": f"L{visual_leg}",
+                "joint": joint_name,
+                "target": round(float(joints[physical_leg, joint]), 4),
+            }
+            for visual_leg, physical_leg in enumerate((0, 2, 4, 1, 3, 5), start=1)
+            for joint, joint_name in enumerate(("coxa", "femur", "tibia"))
+        ]
         return {
             "joint_targets": joints.round(4).tolist(),
+            "servo_count": len(servo_targets),
+            "servo_targets": servo_targets,
             "cpg": cpg.round(4).tolist(),
             "contact": self.cpg.contact.tolist(),
             "foot_lift": self.cpg.foot_lift.round(4).tolist(),
