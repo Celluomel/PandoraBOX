@@ -11,6 +11,7 @@ Run:  venv/Scripts/python.exe -m pytest tests/test_body_host_worldmodel.py -v
 """
 import json
 import importlib.util
+import types
 import sys
 import tempfile
 import threading
@@ -96,6 +97,58 @@ class FNK0031LocomotionControllerTest(unittest.TestCase):
 
 
 class BodySingletonStartupTest(unittest.TestCase):
+    def test_sim_mode_keeps_sim_source_even_when_physical_plugin_is_enabled(self):
+        import body_runtime_host.runtime as brt
+        fake_worldmodel = types.ModuleType("body_runtime_host.worldmodel")
+        fake_worldmodel.SimRobotSource = type("SimRobotSource", (), {})
+        fake_worldmodel.resolve_source = lambda *_: self.fail("physical source must not override sim mode")
+        host = brt.BodyHost()
+        host.config = {"BODY_PLUGIN_ROBOT_ENABLED": True, "BODY_PLUGIN_FNK0050_ENABLED": True}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = root / "data" / "body" / "worldmodel"
+            cfg.mkdir(parents=True)
+            (cfg / "config.json").write_text(json.dumps({"mode": "sim"}), encoding="utf-8")
+            with patch.object(brt, "ROOT", root), patch.dict(sys.modules, {"body_runtime_host.worldmodel": fake_worldmodel}):
+                source = host._resolve_worldmodel_source()
+        self.assertEqual(type(source).__name__, "SimRobotSource")
+
+    def test_simulated_locomotion_does_not_require_physical_actuation(self):
+        import body_runtime_host.runtime as brt
+
+        class RunningThread:
+            def is_alive(self):
+                return True
+
+        class RunningWorldModel:
+            _thread = RunningThread()
+
+            def config(self):
+                return {"mode": "sim"}
+
+        class FakeController:
+            loaded = False
+
+            def __init__(self, **_kwargs):
+                pass
+
+            def step(self, **_kwargs):
+                return {"cpg": [1, -1, -1, 1, 1, -1], "spikes": [0] * 18, "step": 1}
+
+        fake_locomotion = types.ModuleType("body_runtime_host.locomotion")
+        fake_locomotion.FNK0031LocomotionController = FakeController
+        host = brt.BodyHost()
+        host.config = {
+            "BODY_PLUGIN_ROBOT_ENABLED": True,
+            "FNK0031_SNN_ENABLED": True,
+            "FNK0031_ACTUATION_ENABLED": False,
+        }
+        host._worldmodel = RunningWorldModel()
+        with patch.dict(sys.modules, {"body_runtime_host.locomotion": fake_locomotion}), patch.object(brt, "ROOT", Path(tempfile.gettempdir())):
+            result = host.fnk0031_controller_step()
+        self.assertTrue(result["active"])
+        self.assertFalse(result["actuation"])
+
     def test_locomotion_simulation_waits_for_running_world_model(self):
         from body_runtime_host.runtime import BodyHost
 

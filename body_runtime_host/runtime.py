@@ -658,8 +658,6 @@ class BodyHost:
             pass
         mode = str(model_config.get("mode") or "sim").strip().lower()
         if mode == "sim":
-            if bool(self.value("BODY_PLUGIN_FNK0050_ENABLED", False)) or bool(self.value("BODY_PLUGIN_ROBOT_ENABLED", False)):
-                return resolve_source(self.config, self.latest)
             return SimRobotSource()
         if mode == "bridge":
             return None
