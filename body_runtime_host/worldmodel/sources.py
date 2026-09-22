@@ -354,6 +354,28 @@ class FNK0050WifiSource(RobotHttpSource):
         )
 
 
+class FNK0031WifiSource(RobotHttpSource):
+    """FNK0031 six-leg development profile.
+
+    The Mega 2560 remains a motor/sensor endpoint. The Body host owns the
+    higher-rate SNN/CPG loop and sends validated motion commands through the
+    same transport, which also works with an ESP Wi-Fi bridge.
+    """
+
+    name = "fnk0031_wifi"
+
+    def __init__(self, config: Dict[str, Any]):
+        url = str(config.get("FNK0031_URL") or config.get("ROBOT_URL", "") or "")
+        token = str(config.get("FNK0031_TOKEN") or config.get("ROBOT_TOKEN", "") or "")
+        super().__init__(
+            url=url,
+            token=token,
+            timeout=float(config.get("FNK0031_TIMEOUT", config.get("ROBOT_TIMEOUT", 5.0)) or 5.0),
+            capabilities={"reach": 0.7, "speed": 0.6, "strength": 2.0, "gripper": 0.0, "legs": 6},
+            actuation_enabled=bool(config.get("FNK0031_ACTUATION_ENABLED", config.get("BODY_ACTUATION_ENABLED", False))),
+        )
+
+
 class HAFallbackSource:
     """Coarse observations from Home Assistant presence sensors (auxiliary).
 
@@ -430,18 +452,12 @@ def resolve_source(config: Dict[str, Any], latest: Optional[Dict[str, Dict[str, 
         if url:
             return FNK0050WifiSource(config)
         logger.warning("[body] FNK0050 plugin enabled but FNK0050_URL is empty — falling through")
-    # 2) real robot (the main sensorimetry channel)
+    # 2) FNK0031 six-leg development channel.
     if bool(config.get("BODY_PLUGIN_ROBOT_ENABLED", False)):
-        url = str(config.get("ROBOT_URL", "") or "").strip()
+        url = str(config.get("FNK0031_URL") or config.get("ROBOT_URL", "") or "").strip()
         if url:
-            return RobotHttpSource(
-                url=url,
-                token=str(config.get("ROBOT_TOKEN", "") or ""),
-                timeout=float(config.get("ROBOT_TIMEOUT", 5.0) or 5.0),
-                capabilities=config.get("ROBOT_CAPABILITIES"),
-                actuation_enabled=bool(config.get("BODY_ACTUATION_ENABLED", False)),
-            )
-        logger.warning("[body] robot plugin enabled but ROBOT_URL is empty — falling through")
+            return FNK0031WifiSource(config)
+        logger.warning("[body] FNK0031 plugin enabled but FNK0031_URL/ROBOT_URL is empty — falling through")
     # 3) simulated robot (development / tests / demos)
     if bool(config.get("BODY_PLUGIN_SIM_ROBOT_ENABLED", False)):
         return SimRobotSource()

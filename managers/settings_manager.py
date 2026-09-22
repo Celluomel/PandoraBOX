@@ -165,6 +165,13 @@ class AppSettings(BaseModel):
     BODY_BRIDGE_DEVICE_ID: str = "body-local"
     BODY_BRIDGE_VERIFY_TLS: bool = True
     BODY_BRIDGE_RECONNECT_SECONDS: int = 3
+    FNK0031_URL: str = ""
+    FNK0031_TOKEN: str = ""
+    FNK0031_TIMEOUT: float = 5.0
+    FNK0031_POLL_INTERVAL: int = 5
+    FNK0031_SNN_ENABLED: bool = False
+    FNK0031_ACTUATION_ENABLED: bool = False
+    FNK0031_LEG_COUNT: int = 6
     BODY_PLUGIN_FNK0050_ENABLED: bool = False
     FNK0050_URL: str = ""
     FNK0050_TOKEN: str = ""

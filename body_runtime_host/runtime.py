@@ -114,7 +114,7 @@ class BodyHost:
         """Persist Body settings while keeping secret values environment-backed."""
         CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
         safe = dict(self.config)
-        for key in ("HOME_ASSISTANT_TOKEN", "BODY_BRIDGE_TOKEN", "ROBOT_TOKEN", "FNK0050_TOKEN"):
+        for key in ("HOME_ASSISTANT_TOKEN", "BODY_BRIDGE_TOKEN", "ROBOT_TOKEN", "FNK0031_TOKEN", "FNK0050_TOKEN"):
             if safe.get(key) and not str(safe[key]).startswith("@env:"):
                 safe[key] = f"@env:{key}"
         CONFIG_PATH.write_text(json.dumps(safe, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -200,6 +200,7 @@ class BodyHost:
         fields = {
             "home_assistant": "BODY_PLUGIN_HOME_ASSISTANT_ENABLED",
             "robot": "BODY_PLUGIN_ROBOT_ENABLED",
+            "fnk0031_wifi": "BODY_PLUGIN_ROBOT_ENABLED",
             "fnk0050_wifi": "BODY_PLUGIN_FNK0050_ENABLED",
             "sim_robot": "BODY_PLUGIN_SIM_ROBOT_ENABLED",
             "world_model": "BODY_WORLDMODEL_ENABLED",
@@ -561,12 +562,13 @@ class BodyHost:
     def plugins(self) -> list[dict]:
         return [
             {
-                "id": "robot",
+                "id": "fnk0031_wifi",
+                "label": "FNK0031 Wi-Fi robot",
                 "enabled": bool(self.value("BODY_PLUGIN_ROBOT_ENABLED", False)),
-                "url": str(self.value("ROBOT_URL", "") or ""),
+                "url": str(self.value("FNK0031_URL") or self.value("ROBOT_URL", "") or ""),
                 "last_ok_age_s": round(time.time() - self._robot_last_ok, 1) if self._robot_last_ok else None,
                 "last_error": self._robot_last_error,
-                "role": "primary sensorimetry channel (plugged robot sensors)",
+                "role": "six-leg sensorimetry channel (Arduino/ESP bridge)",
             },
             {
                 "id": "fnk0050_wifi",

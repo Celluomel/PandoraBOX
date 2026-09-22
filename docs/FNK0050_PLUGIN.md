@@ -1,8 +1,9 @@
-# FNK0050 Body Plugin
+# FNK0031 / FNK0050 Body Plugins
 
 The FNK0050 plugin is a development integration for a Freenove FNK0050
-Wi-Fi quadruped. It is deliberately disabled by default and does not require
-the hardware to be present.
+Wi-Fi quadruped. The same transport is now also exposed as an explicit
+FNK0031 six-leg profile, which is the hardware currently owned for this
+project. Both are deliberately disabled by default.
 
 ## Boundary
 
@@ -21,8 +22,17 @@ also passes the Body's approval path.
 
 ## Configuration
 
-These values are stored in the Body configuration. `FNK0050_TOKEN` is kept in
-the local Body environment rather than committed configuration:
+These values are stored in the Body configuration. Tokens are kept in the
+local Body environment rather than committed configuration:
+
+- `BODY_PLUGIN_ROBOT_ENABLED` (FNK0031)
+- `FNK0031_URL` (falls back to the legacy `ROBOT_URL`)
+- `FNK0031_TOKEN`
+- `FNK0031_TIMEOUT`
+- `FNK0031_POLL_INTERVAL`
+- `FNK0031_SNN_ENABLED`
+- `FNK0031_ACTUATION_ENABLED`
+- `FNK0031_LEG_COUNT` (default `6`)
 
 - `BODY_PLUGIN_FNK0050_ENABLED`
 - `FNK0050_URL`
@@ -33,8 +43,11 @@ the local Body environment rather than committed configuration:
 - `FNK0050_ACTUATION_ENABLED`
 
 The Brain discovers the plugin but does not own the Body's hardware settings.
-When enabled with a URL, the Body world model selects the FNK0050 source even
-if its persisted development mode is still `sim`. This makes a hardware
+For FNK0031, the Mega 2560 is treated as a sensor/servo endpoint; the SNN
+and CPG run on the Body host and can communicate through an ESP Wi-Fi bridge.
+When enabled with a URL, the Body world model selects the corresponding
+FNK0031 or FNK0050 source even if its persisted development mode is still
+`sim`. This makes a hardware
 service easy to substitute for the simulator without changing the cognitive
 core.
 
