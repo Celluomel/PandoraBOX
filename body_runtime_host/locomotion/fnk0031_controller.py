@@ -266,9 +266,22 @@ class FNK0031LocomotionController:
             self.cpg.foot_lift.fill(0.0)
         if gait == "backward":
             cpg *= -1.0
-        elif gait in {"turn_left", "turn_right"}:
-            left_direction = -1.0 if gait == "turn_left" else 1.0
-            cpg *= np.asarray([left_direction, -left_direction] * 3, dtype=np.float32)
+        turn_direction = 1.0 if gait == "turn_left" else -1.0 if gait == "turn_right" else 0.0
+        # During a turn, feet sweep along the tangent of their position around
+        # the body. Keep the tripod phase intact; mirroring the stride by side
+        # made the preview look like a weak forward gait instead of a pivot.
+        leg_positions = np.asarray([
+            (-1.0, -0.65), (1.0, -0.65), (-1.0, 0.0),
+            (1.0, 0.0), (-1.0, 0.65), (1.0, 0.65),
+        ], dtype=np.float32)
+        foot_motion = np.zeros((6, 3), dtype=np.float32)
+        if turn_direction:
+            foot_motion[:, 0] = -leg_positions[:, 1] * turn_direction * cpg * 0.72
+            foot_motion[:, 1] = leg_positions[:, 0] * turn_direction * cpg * 0.72
+            foot_motion[:, 2] = self.cpg.foot_lift
+        else:
+            foot_motion[:, 1] = cpg * 0.45
+            foot_motion[:, 2] = self.cpg.foot_lift
         input_current = 12.0 + np.repeat(cpg, 3) * 8.0 if moving else np.zeros(18, dtype=np.float32)
         input_current[::3] += np.float32(-pitch * 2.0)
         input_current[1::3] += np.float32(-roll * 2.0)
@@ -347,6 +360,7 @@ class FNK0031LocomotionController:
             "cpg": cpg.round(4).tolist(),
             "contact": self.cpg.contact.tolist(),
             "foot_lift": self.cpg.foot_lift.round(4).tolist(),
+            "foot_motion": foot_motion.round(4).tolist(),
             "cpg_phase": round(float(self.cpg.phase), 5),
             "spikes": spikes.astype(int).tolist(),
             "imu": {"pitch": round(pitch, 5), "roll": round(roll, 5), "source": "hardware" if external_imu else "simulated_plant" if simulated else "unavailable"},

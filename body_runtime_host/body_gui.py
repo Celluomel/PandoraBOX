@@ -74,14 +74,16 @@ drawFnkController=function(s){
     {n:3,x:158,y:142,side:-1,group:'A'}, {n:4,x:202,y:88,side:1,group:'B'},
     {n:5,x:207,y:115,side:1,group:'A'}, {n:6,x:202,y:142,side:1,group:'B'}
   ];
-  const cpg=s.cpg||[],contact=s.contact||Array(6).fill(0),lift=s.foot_lift||Array(6).fill(0);
+  const cpg=s.cpg||[],contact=s.contact||Array(6).fill(0),lift=s.foot_lift||Array(6).fill(0),footMotion=s.foot_motion||[];
   const legsSvg=legs.map((leg,i)=>{
     const sourceIndex=[0,2,4,1,3,5][i];
     const stride=Number(cpg[sourceIndex]||0),air=Number(lift[sourceIndex]||0),ground=Number(contact[sourceIndex]||0)===1;
     const [coxa,femur,tibia]=(s.joint_targets||[])[sourceIndex]||[0,0,0];
     const coxaX=leg.x+leg.side*(11+Number(coxa||0)*3),coxaY=leg.y+Number(coxa||0)*2;
     const femurX=coxaX+leg.side*(15+Number(femur||0)*3),femurY=coxaY-stride*4+Number(femur||0)*3;
-    const footX=femurX+leg.side*(15+air*5),footY=femurY-stride*8+Number(tibia||0)*4;
+    const motion=footMotion[sourceIndex]||[0,0,0],turning=String(s.gait||'').startsWith('turn_');
+    const footX=femurX+leg.side*(15+air*5)+Number(motion[0]||0)*30;
+    const footY=femurY-stride*8+Number(tibia||0)*4+Number(motion[1]||0)*30-air*(turning?12:0);
     const color=ground?'#75dda4':'#f0bd70',dash=ground?'':'stroke-dasharray="4 3"';
     return `<g><line x1="${leg.x}" y1="${leg.y}" x2="${coxaX}" y2="${coxaY}" stroke="#83cbd1" stroke-width="6" stroke-linecap="round"/><line x1="${coxaX}" y1="${coxaY}" x2="${femurX}" y2="${femurY}" stroke="#9ce0b4" stroke-width="6" stroke-linecap="round"/><line x1="${femurX}" y1="${femurY}" x2="${footX}" y2="${footY}" stroke="${color}" stroke-width="5" stroke-linecap="round" ${dash}/><circle cx="${coxaX}" cy="${coxaY}" r="3.2" fill="#d5f2f4"/><circle cx="${femurX}" cy="${femurY}" r="3.2" fill="#d9f4df"/><circle cx="${footX}" cy="${footY}" r="${4+air*2}" fill="${color}"/><text x="${footX+leg.side*8}" y="${footY-5}" text-anchor="${leg.side<0?'end':'start'}" fill="#dcebe2" font-size="9" font-family="monospace">L${leg.n}</text><text x="${leg.x+leg.side*11}" y="${leg.y+3}" fill="#8cae9a" font-size="7" font-family="monospace">${leg.group}</text></g>`;
   }).join('');

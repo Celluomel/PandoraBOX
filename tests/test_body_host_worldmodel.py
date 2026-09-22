@@ -136,6 +136,10 @@ class FNK0031LocomotionControllerTest(unittest.TestCase):
             turn_left = FNK0031LocomotionController(Path(tmp) / "left.npz").step(gait="turn_left")
             turn_right = FNK0031LocomotionController(Path(tmp) / "right.npz").step(gait="turn_right")
             self.assertNotEqual(turn_left["joint_targets"], turn_right["joint_targets"])
+            self.assertGreater(max(abs(value) for leg in turn_left["foot_motion"] for value in leg[:2]), 0.1)
+            for left_leg, right_leg in zip(turn_left["foot_motion"], turn_right["foot_motion"]):
+                self.assertAlmostEqual(left_leg[0], -right_leg[0], places=3)
+                self.assertAlmostEqual(left_leg[1], -right_leg[1], places=3)
             self.assertLess(turn_left["plant"]["heading"], 3.14159)
             self.assertGreater(turn_right["plant"]["heading"], 3.14159)
 
