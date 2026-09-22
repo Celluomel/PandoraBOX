@@ -228,35 +228,29 @@ class SimulatedRoom:
         kind = "neutral"
         desc = ""
 
-        if a in {"forward", "sprint"}:
+        if a in {"forward", "sprint", "backward", "retreat"}:
             max_speed = float(self.body_state().capabilities.get("max_speed", 1.0))
-            requested_speed = 1.0 if a == "forward" else float(action.params.get("speed", max_speed))
+            requested_speed = 1.0 if a in {"forward", "backward"} else float(action.params.get("speed", max_speed))
             distance = max(1.0, min(max_speed, requested_speed))
+            direction = 1.0 if a in {"forward", "sprint"} else -1.0
             moved = 0
             for _ in range(int(math.floor(distance))):
-                nx = self.px + math.cos(self.heading)
-                ny = self.py + math.sin(self.heading)
+                nx = self.px + direction * math.cos(self.heading)
+                ny = self.py + direction * math.sin(self.heading)
                 if not self._free_cell(nx, ny):
                     break
                 self.px, self.py = nx, ny
                 moved += 1
             if moved:
-                desc = f"sprinted {moved} cells" if a == "sprint" else "moved forward"
+                desc = (
+                    f"sprinted {moved} cells" if a == "sprint"
+                    else f"retreated {moved} cells" if a == "retreat"
+                    else "moved forward" if direction > 0 else "moved backward"
+                )
                 if moved < int(math.floor(distance)):
                     kind = "danger"
                     reward -= 0.2
                     desc += "; sprint halted by an obstacle"
-            else:
-                self.collision_count += 1
-                reward -= 0.2
-                kind = "danger"
-                desc = "blocked (collision)"
-        elif a == "backward":
-            nx = self.px - math.cos(self.heading)
-            ny = self.py - math.sin(self.heading)
-            if self._free_cell(nx, ny):
-                self.px, self.py = nx, ny
-                desc = "moved backward"
             else:
                 self.collision_count += 1
                 reward -= 0.2

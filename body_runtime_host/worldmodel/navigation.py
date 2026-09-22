@@ -31,6 +31,24 @@ def _turn_toward_target(heading: float, target: tuple[float, float], position: t
     return min(candidates, key=lambda action: abs(_angle_delta(candidates[action], bearing)))
 
 
+def _cell_clear(
+    x: float,
+    y: float,
+    objects: list[Any],
+    width: Any,
+    height: Any,
+) -> bool:
+    if width is not None and height is not None and not (0 <= x < float(width) and 0 <= y < float(height)):
+        return False
+    for obj in objects:
+        kind = str(getattr(obj, "kind", ""))
+        if kind not in {"obstacle", "mobile_obstacle", "table", "chair"}:
+            continue
+        if math.hypot(float(obj.position[0]) - x, float(obj.position[1]) - y) < 0.6:
+            return False
+    return True
+
+
 def _grid_route_action(
     observation: Any,
     body: Any,
@@ -218,6 +236,39 @@ def navigation_guidance(observation: Any, body: Any, carrying: bool = False) -> 
     if nearby_obstacles or boundary_ahead:
         forbidden.add("forward")
         nearest = min(nearby_obstacles, key=lambda p: math.hypot(p[0] - px, p[1] - py)) if nearby_obstacles else None
+        mobile_distance = math.hypot(float(mobile.position[0]) - px, float(mobile.position[1]) - py) if mobile else math.inf
+        if mobile is not None and mobile_distance <= 2.2:
+            mobile_dx = float(mobile.position[0]) - px
+            mobile_dy = float(mobile.position[1]) - py
+            forward_component = mobile_dx * math.cos(heading) + mobile_dy * math.sin(heading)
+            lateral_component = abs(-mobile_dx * math.sin(heading) + mobile_dy * math.cos(heading))
+            rear = (px - math.cos(heading), py - math.sin(heading))
+            rear_clear = _cell_clear(rear[0], rear[1], objects, width, height)
+            retreat_clear = all(
+                _cell_clear(px - math.cos(heading) * step, py - math.sin(heading) * step,
+                            objects, width, height)
+                for step in range(1, max(1, int(max_speed)) + 1)
+            )
+            forward_clear = _cell_clear(forward[0], forward[1], objects, width, height)
+            sprint_clear = all(
+                _cell_clear(px + math.cos(heading) * step, py + math.sin(heading) * step,
+                            objects, width, height)
+                for step in (1, 2)
+            )
+            max_speed = float(body.capabilities.get("max_speed", 1.0))
+            if forward_component > 0 and lateral_component <= 1.0 and max_speed >= 2 and sprint_clear:
+                recommended = "sprint"
+                prior["sprint"] = max(prior.get("sprint", 0.0), 3.6)
+            elif forward_component > 0 and lateral_component <= 1.0 and retreat_clear and max_speed >= 2:
+                recommended = "retreat"
+                prior["retreat"] = max(prior.get("retreat", 0.0), 3.4)
+            elif forward_component > 0 and lateral_component <= 1.0 and rear_clear:
+                recommended = "backward"
+                prior["backward"] = max(prior.get("backward", 0.0), 3.4)
+            elif not forward_clear and not rear_clear:
+                # Hold position rather than spin in a tight, occupied corridor.
+                recommended = "wait"
+                prior["wait"] = max(prior.get("wait", 0.0), 2.8)
         # Prefer the detour that remains closest to the destination after the
         # turn, rather than always turning away from the obstacle's bearing.
         if target is not None:
@@ -241,7 +292,7 @@ def navigation_guidance(observation: Any, body: Any, carrying: bool = False) -> 
         # A blocking surface can be the current manipulation target. If the
         # Body is already within release/grasp range, complete that operation
         # instead of turning away from the table or target.
-        if recommended not in {"grab", "release"}:
+        if recommended not in {"grab", "release", "sprint", "retreat", "backward", "wait"}:
             recommended = preferred
 
     return {

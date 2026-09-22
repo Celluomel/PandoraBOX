@@ -49,8 +49,8 @@ def encode_action(action: Dict[str, Any]) -> np.ndarray:
     params = action.get("params") or {}
     # Keep the persisted action-vector shape stable; sprint is a faster
     # forward primitive whose requested speed is carried in dx.
-    if t == "sprint":
-        t = "forward"
+    if t in {"sprint", "retreat"}:
+        t = "forward" if t == "sprint" else "backward"
     idx = ACTION_TYPES.index(t) if t in ACTION_TYPES else ACTION_TYPES.index("wait")
     vec[idx] = 1.0
     dx = float(params.get("dx", params.get("speed", 0.0)))

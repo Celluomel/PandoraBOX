@@ -263,14 +263,35 @@ class SimWorldTest(unittest.TestCase):
 
         guidance = navigation_guidance(room.observe(), room.body_state())
         self.assertIn("forward", guidance["forbidden"])
-        self.assertIn(guidance["recommended"], {"turn_left", "turn_right"})
-        self.assertNotEqual(guidance["recommended"], "wait")
+        self.assertEqual(guidance["recommended"], "retreat")
 
         room.step(Action(type=guidance["recommended"]))
-        next_guidance = navigation_guidance(room.observe(), room.body_state())
-        self.assertIn(next_guidance["recommended"], {"forward", "sprint"})
-        room.step(Action(type="forward"))
-        self.assertGreater(room.py, 5.0)
+        self.assertEqual(room.px, 3.0)
+        self.assertEqual(room.status()["mobile_obstacle_distance"], 2.0)
+
+    def test_navigation_reverses_instead_of_spinning_when_pursuer_blocks_front(self):
+        from body_runtime_host.worldmodel import SimulatedRoom
+        from body_runtime_host.worldmodel.navigation import navigation_guidance
+
+        room = SimulatedRoom()
+        room.px, room.py, room.heading = 5.0, 5.0, 0.0
+        room.objects["mobile_obstacle"]["x"] = 6.0
+        room.objects["mobile_obstacle"]["y"] = 5.0
+        guidance = navigation_guidance(room.observe(), room.body_state())
+        self.assertEqual(guidance["recommended"], "retreat")
+
+    def test_navigation_holds_when_pursuer_closes_both_directions(self):
+        from body_runtime_host.worldmodel import SimulatedRoom
+        from body_runtime_host.worldmodel.navigation import navigation_guidance
+
+        room = SimulatedRoom()
+        room.px, room.py, room.heading = 5.0, 5.0, 0.0
+        room.objects["mobile_obstacle"]["x"] = 6.0
+        room.objects["mobile_obstacle"]["y"] = 5.0
+        room.objects["obstacle"]["x"] = 4.0
+        room.objects["obstacle"]["y"] = 5.0
+        guidance = navigation_guidance(room.observe(), room.body_state())
+        self.assertEqual(guidance["recommended"], "wait")
 
     def test_full_task_is_solvable(self):
         """A scripted (non-learned) policy must be able to solve the task —
