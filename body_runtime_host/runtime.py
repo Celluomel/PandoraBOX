@@ -549,6 +549,9 @@ class BodyHost:
     def run(self) -> None:
         LOG.info("Standalone Body host started with %s", CONFIG_PATH)
         self._start_http_endpoint()
+        if self.http_server is None:
+            LOG.error("Body host did not start; refusing to run a second sensor/plugin loop")
+            return
         threads = [threading.Thread(target=self.poll_loop, name="body-sensors", daemon=True)]
         if bool(self.value("BODY_BRIDGE_ENABLED", False)):
             threads.append(threading.Thread(target=self.bridge_loop, name="body-brain-bridge", daemon=True))

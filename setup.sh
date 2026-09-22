@@ -292,6 +292,7 @@ echo "=========================================="
 echo ""
 export ROBOT_PORT="$PORT"
 echo "[*] New interface: http://localhost:$PORT/next/"
+echo "[*] The Body is not started by this launcher. Start it separately with ./start_body.sh when needed."
 echo ""
 
 if command -v xdg-open >/dev/null 2>&1; then

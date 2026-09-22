@@ -1,9 +1,9 @@
-"""A small, local body process boundary.
+"""Brain-side registry for observations and permissioned Body commands.
 
-The body owns normalized observations and an auditable command queue. It is
-independent of the cognitive loop and remains useful without a brain attached.
-Actuator execution is permissioned and auditable. Commands remain queued until
-an explicit approval is issued and a connected Body host consumes them.
+The actual sensor/plugin/world-model host runs separately in
+``body_runtime_host``. This Brain-side adapter receives its observations and
+approved command results over the authenticated WebSocket bridge; it never
+starts a second Body or a local world-model fallback.
 """
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ import json
 import uuid
 from pathlib import Path
 from queue import Full, Queue
-from threading import Event, RLock, Thread
+from threading import RLock
 import time
 from typing import Any, Dict, Optional
 from secret_store import SECRET_FIELDS, config_reference, resolve, store
@@ -58,7 +58,7 @@ class BodyCommand:
 
 
 class BodyRuntime:
-    """Thread-safe local body loop shared by adapters and the brain."""
+    """Passive Brain-side state, observation, and command adapter."""
 
     def __init__(self, organism: Any = None, max_events: int = 256):
         self.organism = organism
@@ -90,16 +90,11 @@ class BodyRuntime:
             "BODY_WORLDMODEL_ENABLED",
             "Body-owned perception, memory, dynamics and policy",
         )
-        self._stop = Event()
-        self._thread: Optional[Thread] = None
-        self._bridge = None
         self._latest: Dict[str, BodyObservation] = {}
         self._events = deque(maxlen=max_events)
         self._commands = deque(maxlen=64)
         self._bridge_commands: Queue[Dict[str, Any]] = Queue(maxsize=64)
         self._bridge_devices: set[str] = set()
-        self._heartbeat = time.time()
-        self._loop_count = 0
         # The Body's embodied world model (lazy — built on first access).
         # Owned by the Body; the Brain only reads its context.
         self._worldmodel = None
@@ -165,19 +160,6 @@ class BodyRuntime:
                 if key in self._CONFIG_FIELDS:
                     self._config[key] = value
             self._write_config(self._config)
-            bridge_enabled = bool(self._config.get("BODY_BRIDGE_ENABLED", False))
-            bridge = self._bridge
-        if bridge_enabled and self._thread and self._thread.is_alive():
-            if bridge is None:
-                try:
-                    from cognition.body_runtime.bridge import BodyBrainBridge
-                    self._bridge = BodyBrainBridge(self)
-                    self._bridge.start()
-                except Exception:
-                    pass
-        elif not bridge_enabled and bridge is not None:
-            bridge.stop()
-            self._bridge = None
         return dict(self._config)
 
     def config_snapshot(self) -> Dict[str, Any]:
@@ -206,7 +188,7 @@ class BodyRuntime:
             plugin["enabled"] = bool(self.config_value(field, fallback))
             # Do not call status() here: status() includes plugin snapshots and
             # would recurse forever as soon as the Body toggle is enabled.
-            running = bool(self._thread and self._thread.is_alive())
+            running = bool(self._bridge_devices)
             plugin["runtime"] = "active" if plugin["enabled"] and running else "disabled"
         return plugins
 
@@ -217,10 +199,9 @@ class BodyRuntime:
         """The Body's embodied world model (lazy).
 
         The model is OWNED by the Body.  Preferred source: the independent
-        Body host process (``body_runtime_host``), read over HTTP — this is
-        the normal case, and the only place it mutates state.  Fallback for
-        development/tests when the Body host is not running: a local
-        in-process model with the same data dir.
+        Body host process (``body_runtime_host``), read over HTTP. The Brain
+        never creates a fallback model: starting the Body is an explicit,
+        separate operator action.
         """
         if self._worldmodel is None:
             self._worldmodel = self._build_worldmodel()
@@ -240,70 +221,19 @@ class BodyRuntime:
                 return client
         except Exception:
             pass
-        # 2) Local in-process fallback (dev/tests; Body host not running)
-        try:
-            from body_runtime_host.worldmodel import EmbodiedWorldModel, resolve_source
-            import logging
-            logging.getLogger(__name__).info("World model: Body host offline, using local in-process model")
-            return EmbodiedWorldModel(
-                body=self,
-                data_dir="data/body/worldmodel",
-                source=resolve_source(self.config_snapshot(), self._latest),
-            )
-        except Exception:
-            import logging
-            logging.getLogger(__name__).warning(
-                "[BodyRuntime] world model unavailable", exc_info=True
-            )
-            return None
-
-    def start(self) -> None:
-        with self._lock:
-            if self._thread and self._thread.is_alive():
-                return
-            self._stop.clear()
-            self._thread = Thread(target=self._run, name="lumina-body-runtime", daemon=True)
-            self._thread.start()
-            if bool(self.config_value("BODY_BRIDGE_ENABLED", False)):
-                try:
-                    from cognition.body_runtime.bridge import BodyBrainBridge
-                    self._bridge = self._bridge or BodyBrainBridge(self)
-                    self._bridge.start()
-                except Exception:
-                    import logging
-                    logging.getLogger(__name__).warning("[BodyRuntime] Brain bridge unavailable", exc_info=True)
-        # World model: only start its background loop if it was already built
-        # and its config says "enabled".  Remote facades (Body host owns the
-        # loop) have no start(); local models do.
-        try:
-            wm = self._worldmodel
-            if wm is not None and hasattr(wm, "start") and bool(wm.config().get("enabled", False)):
-                wm.start()
-        except Exception:
-            pass
-
-    def stop(self, timeout: float = 1.0) -> None:
-        self._stop.set()
-        thread = self._thread
-        if thread and thread.is_alive():
-            thread.join(timeout=max(0.0, timeout))
-        self._thread = None
-        if self._bridge is not None:
-            self._bridge.stop(timeout)
-        if self._worldmodel is not None and hasattr(self._worldmodel, "stop"):
-            try:
-                self._worldmodel.stop()
-            except Exception:
-                pass
+        import logging
+        logging.getLogger(__name__).info(
+            "World model unavailable: standalone Body host is not reachable at %s", base
+        )
+        return None
 
     def publish_observation(self, observation: BodyObservation | None = None, forward: bool = True, **kwargs: Any) -> BodyObservation:
+        """Record a Body observation received from a local or remote adapter."""
         item = observation or BodyObservation(**kwargs)
         key = f"{item.source}:{item.subject}"
         with self._lock:
             self._latest[key] = item
             self._events.append(item)
-        if forward and self._bridge is not None:
-            self._bridge.enqueue_observation(item.as_dict())
         return item
 
     def enqueue_command(self, target: str, action: str, payload: Optional[Dict[str, Any]] = None,
@@ -447,13 +377,11 @@ class BodyRuntime:
 
     def status(self) -> Dict[str, Any]:
         with self._lock:
-            thread = self._thread
             return {
                 "available": True,
-                "running": bool(thread and thread.is_alive()),
-                "mode": "standalone-local",
-                "heartbeat": self._heartbeat,
-                "loop_count": self._loop_count,
+                "running": bool(self._bridge_devices),
+                "mode": "remote-connected" if self._bridge_devices else "remote-disconnected",
+                "heartbeat": max((item.observed_at for item in self._latest.values()), default=None),
                 "observation_count": len(self._latest),
                 "event_count": len(self._events),
                 "commands": self.snapshot_commands(include_terminal=True),
@@ -464,7 +392,7 @@ class BodyRuntime:
                 },
                 "brain_bridge": {
                     "enabled": bool(self.config_value("BODY_BRIDGE_ENABLED", False)),
-                    "connected": bool(self._bridge and self._bridge.connected),
+                    "connected": bool(self._bridge_devices),
                     "url": str(self.config_value("BODY_BRIDGE_URL", "") or ""),
                 },
                 # World model is reported only if already built (no forced
@@ -526,22 +454,13 @@ class BodyRuntime:
             pass
         return "\n".join(lines)
 
-    def _run(self) -> None:
-        while not self._stop.wait(1.0):
-            with self._lock:
-                self._heartbeat = time.time()
-                self._loop_count += 1
-
-
 def get_body_runtime(organism: Any = None) -> BodyRuntime:
-    """Return one body runtime per organism and start its local loop lazily."""
+    """Return the Brain-side passive adapter; the Body host starts separately."""
     if organism is not None:
         existing = getattr(organism, "_body_runtime", None)
         if existing is not None:
-            existing.start()
             return existing
     runtime = BodyRuntime(organism=organism)
-    runtime.start()
     if organism is not None:
         try:
             organism._body_runtime = runtime

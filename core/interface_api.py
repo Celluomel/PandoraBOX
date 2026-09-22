@@ -80,12 +80,10 @@ def _runtime():
 
 
 def _body_runtime_for_state():
-    """Return the body even while the cognitive organism is booting.
+    """Return the passive Brain adapter even while cognition is booting.
 
-    Body configuration and plugin discovery are intentionally independent from
-    brain readiness.  A brain-attached runtime is reused when available;
-    otherwise a standalone runtime is kept on the shared state until the brain
-    attaches to it.
+    This must never start a local sensor loop or world model; those belong to
+    the separately launched Body host.
     """
     state = _runtime()
     organism = getattr(getattr(state, 'persona', None), '_organism', None)

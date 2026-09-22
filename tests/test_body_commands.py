@@ -1,6 +1,7 @@
 """Permissioned Brain -> Body command path tests."""
 import time
 import unittest
+from unittest.mock import patch
 
 
 class BodyCommandQueueTest(unittest.TestCase):
@@ -9,6 +10,13 @@ class BodyCommandQueueTest(unittest.TestCase):
         self.body = BodyRuntime()
         # Keep this unit test isolated from the user's persisted Body config.
         self.body._config = {"BODY_COMMAND_TTL_SECONDS": 120.0}
+
+    def test_brain_adapter_is_passive_and_never_builds_local_world_model(self):
+        self.assertFalse(self.body.status()["running"])
+        with patch("cognition.body_runtime.remote.RemoteWorldModel") as remote_model:
+            remote_model.return_value.ping.return_value = False
+            self.assertIsNone(self.body._build_worldmodel())
+        remote_model.assert_called_once()
 
     def test_approval_delivers_only_approved_command(self):
         command = self.body.enqueue_command("robot", "forward")

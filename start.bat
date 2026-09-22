@@ -223,6 +223,7 @@ echo.
 echo [*] Starting PandoraBOX on http://localhost:8080
 echo [*] New interface: http://localhost:8080/next/
 echo [*] Existing interface: http://localhost:8080/
+echo [*] The Body is not started by this launcher. Start it separately with start_body.bat when needed.
 echo [*] Press Ctrl+C to stop.
 echo.
 "%LUMINA_PYTHON%" app.py

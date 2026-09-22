@@ -244,38 +244,16 @@ class UniversalConnector:
             return {"ok": False, "status": "error", "entities": [], "message": str(exc)}
 
     def refresh_home_assistant_for_prompt(self) -> bool:
-        """Refresh selected sensor values immediately before prompt creation.
-
-        The background poll remains the normal path. This short synchronous
-        read closes the race where a sensor changes while the monitor is
-        paused for an interactive turn, so current-value questions use the
-        latest Home Assistant timestamp instead of the previous poll.
-        """
-        result = self.discover_home_assistant(timeout=1.5)
-        if result.get("ok"):
-            self._ingest_home_assistant_changes(result.get("entities", []))
-            return True
-        logger.debug("[UniversalConnector] prompt refresh unavailable: %s", result.get("message"))
-        return False
+        """Check the Body-fed cache without polling Home Assistant from Brain."""
+        return any(
+            item.get("source", "").startswith("remote:")
+            and "home_assistant" in item.get("source", "")
+            for item in self._body_runtime.snapshot(max_age=120.0)
+        )
 
     async def reconcile_home_assistant_monitor(self) -> None:
-        """Start or stop the low-rate HA monitor after config changes."""
-        try:
-            from managers.settings_manager import config
-            enabled = (
-                bool(getattr(config, "UNIVERSAL_CONNECTOR_ENABLED", False))
-                and bool(getattr(config, "BODY_RUNTIME_ENABLED", True))
-                and bool(self._body_setting(config, "BODY_PLUGIN_HOME_ASSISTANT_ENABLED", getattr(config, "HOME_ASSISTANT_ENABLED", False)))
-            )
-        except Exception:
-            enabled = False
-        if enabled and self._ha_task is None:
-            import asyncio
-            self._ha_stop = asyncio.Event()
-            self._ha_task = asyncio.create_task(self._home_assistant_loop())
-            logger.info("[UniversalConnector] Home Assistant monitor started")
-        elif not enabled and self._ha_task is not None:
-            await self.stop_home_assistant_monitor()
+        """Keep HA polling owned by the separately launched Body process."""
+        await self.stop_home_assistant_monitor()
 
     async def stop_home_assistant_monitor(self) -> None:
         """Stop the HA monitor without leaving a pending asyncio task."""

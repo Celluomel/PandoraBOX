@@ -318,8 +318,9 @@ class AppState:
             except Exception as _e:
                 logger.warning("Sensor-only PresenceEngine unavailable (non-fatal): %s", _e)
 
-        # Start the optional Home Assistant monitor only when explicitly
-        # enabled in config.json. It is read-only and remains outside chat.
+        # Home Assistant polling belongs to the separately launched Body.
+        # Reconcile only shuts down a legacy Brain-side monitor if one exists;
+        # it never starts a second polling loop.
         try:
             organism = getattr(self.persona, '_organism', None) if self.persona else None
             if organism is not None:

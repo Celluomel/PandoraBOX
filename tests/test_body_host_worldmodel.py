@@ -16,6 +16,7 @@ import threading
 import time
 import unittest
 import urllib.request
+from unittest.mock import patch
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
@@ -72,6 +73,17 @@ class RobotSimServerTest(unittest.TestCase):
     def test_reset(self):
         out = _post(f"{self.base}/reset", {})
         self.assertTrue(out["ok"])
+
+
+class BodySingletonStartupTest(unittest.TestCase):
+    def test_host_does_not_start_sensor_pollers_when_http_port_is_taken(self):
+        from body_runtime_host.runtime import BodyHost
+        host = BodyHost()
+        with patch.object(host, "_start_http_endpoint") as start_http, \
+             patch.object(host, "poll_loop") as poll_loop:
+            start_http.side_effect = lambda: setattr(host, "http_server", None)
+            host.run()
+        poll_loop.assert_not_called()
 
 
 class RobotHttpSourceTest(unittest.TestCase):

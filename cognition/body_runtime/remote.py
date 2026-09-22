@@ -15,8 +15,7 @@ This module wraps that API in the same object surface the brain-side code
 already uses (``status_summary()``, ``context_for_brain()``, ``step()``,
 ``reset()``, ``config()``, ``update_config()``, ``recent_episodes()``,
 ``anchors_payload()``), so the dashboard, the REST API and the prompt context
-keep working whether the model is local (dev fallback) or remote (the normal
-Body-owned case).
+work only through the separately launched Body host.
 
 Read-only by design: the only mutations the Brain may trigger are the
 explicit, auditable ``step`` / ``reset`` / ``config`` operations.

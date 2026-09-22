@@ -1343,7 +1343,6 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
         # Keep live external observations aside until the prompt cap has been
         # applied. Otherwise a large cognitive context can silently remove the
         # newest sensor reading before it reaches the model.
-        _ha_context = ""
 
         # ── CognitiveOrganism pre-interaction cycle ───────────────────────────
         # Runs energy regen, tension compute, goal ecology, arbitration, and
@@ -2017,22 +2016,9 @@ Memory honesty — two distinct cases:
                 )
                 self._pending_vision_context = None  # consumed — clear for next turn
 
-            # Selected Home Assistant states are live external perceptions,
-            # not user claims. Keep them read-only and clearly sourced.
-            try:
-                from cognition.universal_connector import get_universal_connector
-                _ha_connector = get_universal_connector(self._organism) if self._organism else None
-                if not _ha_connector or not _ha_connector.refresh_home_assistant_for_prompt():
-                    logger.debug("[HomeAssistant] live prompt refresh unavailable; using cached snapshot if present")
-                _ha_context = _ha_connector.home_assistant_context() if _ha_connector else ""
-            except Exception:
-                logger.debug("[HomeAssistant] prompt context unavailable", exc_info=True)
-
-            # The Body is the canonical sensor surface. The legacy HA block
-            # above is retained only as a fallback for older configurations.
-            # Previously HA observations were explicitly excluded here, so
-            # the model received the connector cache instead of the freshest
-            # Body sample and its read timestamp.
+            # The separately launched Body is the sole sensor poller. Its
+            # authenticated bridge delivers the timestamped snapshot below;
+            # Brain must not open a parallel Home Assistant connection.
             try:
                 _body = getattr(self._organism, "_body_runtime", None) if self._organism else None
                 _body_context = _body.context_for_brain() if _body else ""
@@ -2043,9 +2029,6 @@ Memory honesty — two distinct cases:
                         "Prefer it over older connector, memory, or conversation values.\n"
                         f"{_body_context}"
                     )
-                    # Avoid presenting two competing copies of the same
-                    # Home Assistant sensor with different timestamp formats.
-                    _ha_context = ""
             except Exception:
                 logger.debug("[BodyRuntime] prompt context unavailable", exc_info=True)
 
@@ -2183,19 +2166,6 @@ Memory honesty — two distinct cases:
                     "This applies to the complete visible answer, including headings, "
                     "lists, recovery output, and audio text. Do not switch to English "
                     "unless the user explicitly requests it or quotes English text."
-                )
-
-            # This block is deliberately last. It must survive the general
-            # prompt cap and remain adjacent to generation as authoritative,
-            # timestamped evidence for current-value questions.
-            if _ha_context:
-                system_prompt += (
-                    f"\n\n━━ CURRENT HOME ASSISTANT OBSERVATIONS ━━\n{_ha_context}\n"
-                    "These are authoritative read-only observations captured for this turn. "
-                    "For a current-value question, use the exact value and sensor timestamp above. "
-                    "Never substitute an older memory, cached conversation value, or invented estimate. "
-                    "If the requested sensor is absent, say it is unavailable. Use these observations "
-                    "only when relevant, and do not infer identity from an occupancy sensor."
                 )
 
             return system_prompt, emo_dict, cond_dict, arb_temperature
