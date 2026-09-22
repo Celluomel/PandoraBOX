@@ -258,7 +258,7 @@ class RobotHttpSource:
             obs = Observation(
                 subject="scene",
                 value=None,
-                source="robot",
+                source=self.name,
                 kind="scene",
                 confidence=float(payload.get("confidence", 1.0)),
                 timestamp=float(payload.get("timestamp") or time.time()),
@@ -334,6 +334,26 @@ class RobotHttpSource:
         }
 
 
+class FNK0050WifiSource(RobotHttpSource):
+    """Development adapter for an FNK0050 Wi-Fi robot.
+
+    The hardware remains optional. Its firmware can expose the same compact
+    JSON contract as the Body robot adapter while keeping FNK0050 telemetry
+    distinct for locomotion and spiking-neural-network experiments.
+    """
+
+    name = "fnk0050_wifi"
+
+    def __init__(self, config: Dict[str, Any]):
+        super().__init__(
+            url=str(config.get("FNK0050_URL", "") or ""),
+            token=str(config.get("FNK0050_TOKEN", "") or ""),
+            timeout=float(config.get("FNK0050_TIMEOUT", 5.0) or 5.0),
+            capabilities=config.get("FNK0050_CAPABILITIES") or DEFAULT_CAPABILITIES,
+            actuation_enabled=bool(config.get("FNK0050_ACTUATION_ENABLED", False)),
+        )
+
+
 class HAFallbackSource:
     """Coarse observations from Home Assistant presence sensors (auxiliary).
 
@@ -404,7 +424,13 @@ def resolve_source(config: Dict[str, Any], latest: Optional[Dict[str, Dict[str, 
     Priority: robot → sim robot → HA fallback → null.
     """
     config = config or {}
-    # 1) real robot (the main sensorimetry channel)
+    # 1) FNK0050 development channel (explicitly preferred when enabled).
+    if bool(config.get("BODY_PLUGIN_FNK0050_ENABLED", False)):
+        url = str(config.get("FNK0050_URL", "") or "").strip()
+        if url:
+            return FNK0050WifiSource(config)
+        logger.warning("[body] FNK0050 plugin enabled but FNK0050_URL is empty — falling through")
+    # 2) real robot (the main sensorimetry channel)
     if bool(config.get("BODY_PLUGIN_ROBOT_ENABLED", False)):
         url = str(config.get("ROBOT_URL", "") or "").strip()
         if url:
@@ -416,12 +442,12 @@ def resolve_source(config: Dict[str, Any], latest: Optional[Dict[str, Dict[str, 
                 actuation_enabled=bool(config.get("BODY_ACTUATION_ENABLED", False)),
             )
         logger.warning("[body] robot plugin enabled but ROBOT_URL is empty — falling through")
-    # 2) simulated robot (development / tests / demos)
+    # 3) simulated robot (development / tests / demos)
     if bool(config.get("BODY_PLUGIN_SIM_ROBOT_ENABLED", False)):
         return SimRobotSource()
-    # 3) HA fallback (auxiliary context)
+    # 4) HA fallback (auxiliary context)
     if latest is not None and bool(config.get("BODY_PLUGIN_HOME_ASSISTANT_ENABLED",
                                              config.get("HOME_ASSISTANT_ENABLED", False))):
         return HAFallbackSource(latest)
-    # 4) nothing attached
-    return NullSource("no sensor source enabled (set BODY_PLUGIN_ROBOT_ENABLED + ROBOT_URL, or BODY_PLUGIN_SIM_ROBOT_ENABLED)")
+    # 5) nothing attached
+    return NullSource("no sensor source enabled (set FNK0050_URL, ROBOT_URL, or BODY_PLUGIN_SIM_ROBOT_ENABLED)")

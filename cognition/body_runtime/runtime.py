@@ -79,6 +79,12 @@ class BodyRuntime:
             "Network robot adapter for the FNK0031/Mega 2560 body",
         )
         self.register_plugin(
+            "fnk0050_wifi",
+            "FNK0050 Wi-Fi robot",
+            "BODY_PLUGIN_FNK0050_ENABLED",
+            "Development adapter for the Freenove FNK0050 quadruped and locomotion experiments",
+        )
+        self.register_plugin(
             "sim_robot",
             "Simulated robot",
             "BODY_PLUGIN_SIM_ROBOT_ENABLED",
@@ -104,6 +110,9 @@ class BodyRuntime:
         "BODY_HOST", "BODY_PORT",
         "BODY_PLUGIN_ROBOT_ENABLED", "ROBOT_URL", "ROBOT_TOKEN",
         "ROBOT_TIMEOUT", "ROBOT_POLL_INTERVAL",
+        "BODY_PLUGIN_FNK0050_ENABLED", "FNK0050_URL", "FNK0050_TOKEN",
+        "FNK0050_TIMEOUT", "FNK0050_POLL_INTERVAL", "FNK0050_SNN_ENABLED",
+        "FNK0050_ACTUATION_ENABLED",
         "BODY_PLUGIN_SIM_ROBOT_ENABLED", "BODY_WORLDMODEL_ENABLED",
         "HOME_ASSISTANT_ENABLED", "HOME_ASSISTANT_PRESENCE_ENABLED",
         "HOME_ASSISTANT_URL", "HOME_ASSISTANT_TOKEN",

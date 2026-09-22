@@ -114,7 +114,7 @@ class BodyHost:
         """Persist Body settings while keeping secret values environment-backed."""
         CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
         safe = dict(self.config)
-        for key in ("HOME_ASSISTANT_TOKEN", "BODY_BRIDGE_TOKEN", "ROBOT_TOKEN"):
+        for key in ("HOME_ASSISTANT_TOKEN", "BODY_BRIDGE_TOKEN", "ROBOT_TOKEN", "FNK0050_TOKEN"):
             if safe.get(key) and not str(safe[key]).startswith("@env:"):
                 safe[key] = f"@env:{key}"
         CONFIG_PATH.write_text(json.dumps(safe, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -158,10 +158,49 @@ class BodyHost:
         self.save_config()
         return {"ok": True, "settings": self.home_assistant_settings()}
 
+    def fnk0050_settings(self) -> dict:
+        token = str(self.value("FNK0050_TOKEN", "") or "")
+        return {
+            "url": str(self.value("FNK0050_URL", "") or ""),
+            "token_configured": bool(token),
+            "timeout": float(self.value("FNK0050_TIMEOUT", 5.0) or 5.0),
+            "poll_interval": int(self.value("FNK0050_POLL_INTERVAL", 5) or 5),
+            "snn_enabled": bool(self.value("FNK0050_SNN_ENABLED", False)),
+            "actuation_enabled": bool(self.value("FNK0050_ACTUATION_ENABLED", False)),
+        }
+
+    def update_fnk0050_settings(self, payload: dict) -> dict:
+        self.config.update({
+            "FNK0050_URL": str(payload.get("url", "") or "").strip().rstrip("/"),
+            "FNK0050_TIMEOUT": max(0.5, float(payload.get("timeout", 5.0) or 5.0)),
+            "FNK0050_POLL_INTERVAL": max(1, int(payload.get("poll_interval", 5) or 5)),
+            "FNK0050_SNN_ENABLED": bool(payload.get("snn_enabled", False)),
+            "FNK0050_ACTUATION_ENABLED": bool(payload.get("actuation_enabled", False)),
+        })
+        token = str(payload.get("token", "") or "").strip()
+        if token:
+            os.environ["FNK0050_TOKEN"] = token
+            self.config["FNK0050_TOKEN"] = "@env:FNK0050_TOKEN"
+            secret_path = ROOT / "body_venv" / ".env"
+            secret_path.parent.mkdir(parents=True, exist_ok=True)
+            existing = {}
+            if secret_path.exists():
+                for line in secret_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+                    if "=" in line and not line.lstrip().startswith("#"):
+                        key, value = line.split("=", 1)
+                        existing[key.strip()] = value.strip()
+            existing["FNK0050_TOKEN"] = token
+            secret_path.write_text("".join(f"{key}={value}\n" for key, value in existing.items()), encoding="utf-8")
+        self.save_config()
+        if self._worldmodel is not None:
+            self.reload_worldmodel_source()
+        return {"ok": True, "settings": self.fnk0050_settings()}
+
     def set_plugin_enabled(self, plugin_id: str, enabled: bool) -> dict:
         fields = {
             "home_assistant": "BODY_PLUGIN_HOME_ASSISTANT_ENABLED",
             "robot": "BODY_PLUGIN_ROBOT_ENABLED",
+            "fnk0050_wifi": "BODY_PLUGIN_FNK0050_ENABLED",
             "sim_robot": "BODY_PLUGIN_SIM_ROBOT_ENABLED",
             "world_model": "BODY_WORLDMODEL_ENABLED",
         }
@@ -512,6 +551,8 @@ class BodyHost:
             pass
         mode = str(model_config.get("mode") or "sim").strip().lower()
         if mode == "sim":
+            if bool(self.value("BODY_PLUGIN_FNK0050_ENABLED", False)) or bool(self.value("BODY_PLUGIN_ROBOT_ENABLED", False)):
+                return resolve_source(self.config, self.latest)
             return SimRobotSource()
         if mode == "bridge":
             return None
@@ -526,6 +567,16 @@ class BodyHost:
                 "last_ok_age_s": round(time.time() - self._robot_last_ok, 1) if self._robot_last_ok else None,
                 "last_error": self._robot_last_error,
                 "role": "primary sensorimetry channel (plugged robot sensors)",
+            },
+            {
+                "id": "fnk0050_wifi",
+                "label": "FNK0050 Wi-Fi robot",
+                "enabled": bool(self.value("BODY_PLUGIN_FNK0050_ENABLED", False)),
+                "url": str(self.value("FNK0050_URL", "") or ""),
+                "snn_enabled": bool(self.value("FNK0050_SNN_ENABLED", False)),
+                "last_ok_age_s": round(time.time() - self._robot_last_ok, 1) if self._robot_last_ok else None,
+                "last_error": self._robot_last_error,
+                "role": "development quadruped channel (SNN locomotion experiments)",
             },
             {
                 "id": "sim_robot",
@@ -639,6 +690,8 @@ class BodyHost:
                     self._send({"plugins": owner.plugins()})
                 elif path == "/plugins/home_assistant/settings":
                     self._send(owner.home_assistant_settings())
+                elif path == "/plugins/fnk0050_wifi/settings":
+                    self._send(owner.fnk0050_settings())
                 elif path == "/observations":
                     self._send({"observations": sorted(
                         owner.latest.values(),
@@ -687,6 +740,8 @@ class BodyHost:
                     body = self._read_body()
                     if path == "/plugins/home_assistant/settings":
                         self._send(owner.update_home_assistant_settings(body))
+                    elif path == "/plugins/fnk0050_wifi/settings":
+                        self._send(owner.update_fnk0050_settings(body))
                     elif path == "/plugins/home_assistant/discover":
                         try:
                             entities = owner.discover()
