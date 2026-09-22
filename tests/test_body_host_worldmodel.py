@@ -90,21 +90,44 @@ class FNK0031LocomotionControllerTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             controller = FNK0031LocomotionController(Path(tmp) / "weights.npz")
-            state = controller.step(imu={}, reward=0.0)
+            state = controller.step(imu=None, reward=0.0)
             self.assertEqual(len(state["joint_targets"]), 6)
             self.assertEqual(len(state["spikes"]), 18)
-            self.assertEqual(state["competence"], 0.0)
+            self.assertEqual(state["imu"]["source"], "simulated_plant")
+            self.assertGreater(state["reward"], 0.0)
+            self.assertIn("forward_prediction_error", state)
+            initial_weights = controller.snn.weights.copy()
             observed_spikes = np.asarray(state["spikes"])
             for _ in range(10):
-                observed_spikes = np.maximum(
-                    observed_spikes,
-                    controller.step(imu={}, reward=0.0)["spikes"],
-                )
+                state = controller.step(imu=None, reward=0.0)
+                observed_spikes = np.maximum(observed_spikes, state["spikes"])
             self.assertGreater(int(observed_spikes.sum()), 0, "SNN should emit visible spikes during gait")
+            self.assertGreater(float(np.abs(controller.snn.weights - initial_weights).sum()), 0.0)
+            self.assertGreater(state["forward_prediction_weights_norm"], 0.0)
+            self.assertGreater(controller.competence, 0.0)
+            self.assertLess(state["cpg_weight"], 1.0)
             phase = controller.cpg.phase
-            idle = controller.step(imu={}, reward=0.0, gait="idle")
+            idle = controller.step(imu=None, reward=0.0, gait="idle")
             self.assertEqual(controller.cpg.phase, phase)
             self.assertTrue(np.allclose(idle["joint_targets"], 0.0))
+
+            controller.steps = 99
+            controller.step(imu=None, reward=0.0)
+            restored = FNK0031LocomotionController(Path(tmp) / "weights.npz")
+            self.assertTrue(restored.loaded)
+            self.assertGreater(restored.competence, 0.0)
+            self.assertGreater(np.linalg.norm(restored.forward_model.weights), 0.0)
+
+            hardware_without_imu = FNK0031LocomotionController(Path(tmp) / "hardware.npz")
+            hardware_state = hardware_without_imu.step(imu=None, simulate=False)
+            self.assertEqual(hardware_state["imu"]["source"], "unavailable")
+            self.assertEqual(hardware_state["reward"], 0.0)
+
+            turn_left = FNK0031LocomotionController(Path(tmp) / "left.npz").step(gait="turn_left")
+            turn_right = FNK0031LocomotionController(Path(tmp) / "right.npz").step(gait="turn_right")
+            self.assertNotEqual(turn_left["joint_targets"], turn_right["joint_targets"])
+            self.assertLess(turn_left["plant"]["heading"], 3.14159)
+            self.assertGreater(turn_right["plant"]["heading"], 3.14159)
 
 
 class BodySingletonStartupTest(unittest.TestCase):

@@ -53,3 +53,18 @@ let pollTimer;async function poll(){await refreshAll();pollTimer=setTimeout(poll
 showView(location.pathname==='/worldmodel'?'worldmodel':'body');void poll();setInterval(()=>{if(currentView==='worldmodel')void refreshDetails()},4000);
 async function refreshDetails(){try{const [a,e]=await Promise.all([get('/worldmodel/anchors'),get('/worldmodel/episodes?limit=12')]);$('memory').textContent=JSON.stringify(a,null,2);const steps=Array.isArray(e)?e:[];$('episodes').innerHTML=steps.slice().reverse().map(x=>`<div class="row"><span><b>${esc(x.action)}</b><small>step ${x.step} · reward ${x.reward} · error ${x.pred_error}</small></span><strong>${esc(x.outcome)}</strong></div>`).join('')||'<span class="muted">No episodes recorded yet.</span>'}catch{}}
 </script></body></html>'''
+
+BODY_GUI_HTML = BODY_GUI_HTML.replace(
+    "</script></body></html>",
+    """</script><script>
+const baseFnkTelemetryDraw=drawFnkController;
+drawFnkController=function(s){
+  baseFnkTelemetryDraw(s);
+  const note=document.getElementById('fnk-controller-note');
+  if(!note)return;
+  if(!s.active){note.textContent=s.reason||'Start the simulated World Model to run the local hexapod plant.';return}
+  const imu=s.imu||{},error=s.forward_prediction_error||[];
+  note.textContent=`SIMULATED PLANT · pitch ${Number(imu.pitch||0).toFixed(3)} rad · roll ${Number(imu.roll||0).toFixed(3)} rad · reward ${Number(s.reward||0).toFixed(3)} · stability ${Number(s.stability||0).toFixed(3)} · CPG ${(Number(s.cpg_weight||1)*100).toFixed(0)}% / SNN ${(Number(s.snn_weight||0)*100).toFixed(0)}% · forward error ${Number(error[0]||0).toFixed(3)}, ${Number(error[1]||0).toFixed(3)} · no hardware actuation`;
+};
+</script></body></html>""",
+)

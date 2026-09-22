@@ -31,6 +31,7 @@ import math
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from .sim_world import SimulatedRoom
@@ -381,7 +382,9 @@ class FNK0031WifiSource(RobotHttpSource):
         if self.snn_enabled:
             try:
                 from body_runtime_host.locomotion import FNK0031LocomotionController
-                self.snn_controller = FNK0031LocomotionController()
+                self.snn_controller = FNK0031LocomotionController(
+                    Path("data/body/locomotion/fnk0031_hardware.npz")
+                )
             except Exception as exc:
                 self.last_error = f"SNN controller unavailable: {exc}"
                 logger.warning("[fnk0031] SNN controller unavailable: %s", exc)
@@ -391,7 +394,7 @@ class FNK0031WifiSource(RobotHttpSource):
         # place where it can reach the physical adapter.
         if self.snn_controller is not None and action.type in {"forward", "backward", "turn_left", "turn_right"}:
             imu = (self._last_body.posture.get("imu") if self._last_body else None)
-            learned = self.snn_controller.step(imu=imu, gait=action.type)
+            learned = self.snn_controller.step(imu=imu, gait=action.type, simulate=False)
             action = Action(type=action.type, target=action.target,
                             params={**action.params, "gait": action.type, "snn": learned})
         return super().execute_authorized(action)

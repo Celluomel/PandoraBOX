@@ -267,10 +267,8 @@ class BodyHost:
                 gait = str(decision.get("action") or "idle")
             if gait not in {"forward", "backward", "turn_left", "turn_right"}:
                 gait = "idle"
-            # The simulator currently has no hexapod IMU or external reward.
-            # Keep both explicit rather than presenting fabricated sensor data.
             self._fnk_controller_last = self._fnk_controller.step(
-                imu={}, reward=0.0, dt=0.04, gait=gait
+                imu=None, reward=0.0, dt=0.04, gait=gait
             )
             return {
                 "active": True,
@@ -278,8 +276,9 @@ class BodyHost:
                 "gait": gait,
                 "actuation": False,
                 "body_heading_deg": round(math.degrees(float(sim.heading)), 1) if sim else 0.0,
-                "imu_available": False,
-                "reward_source": "none (no external reward in the sandbox)",
+                "imu_available": True,
+                "imu_source": "simulated_hexapod_plant",
+                "reward_source": "simulated stability/progress signal",
                 "state_loaded": bool(self._fnk_controller.loaded),
                 **self._fnk_controller_last,
             }
@@ -292,8 +291,9 @@ class BodyHost:
                 "active": True,
                 "mode": "local_simulation",
                 "actuation": False,
-                "imu_available": False,
-                "reward_source": "none (no external reward in the sandbox)",
+                "imu_available": True,
+                "imu_source": "simulated_hexapod_plant",
+                "reward_source": "simulated stability/progress signal",
                 "state_loaded": bool(self._fnk_controller.loaded),
                 **self._fnk_controller_last,
             }
