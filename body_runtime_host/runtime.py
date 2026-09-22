@@ -82,6 +82,9 @@ class BodyHost:
         self._worldmodel_lock = threading.Lock()
         self._robot_last_ok: float | None = None
         self._robot_last_error = ""
+        self._fnk_controller = None
+        self._fnk_controller_lock = threading.Lock()
+        self._fnk_controller_last: dict | None = None
 
     # ── config ──────────────────────────────────────────────────────────────
 
@@ -235,6 +238,56 @@ class BodyHost:
         if self._worldmodel is not None:
             self.reload_worldmodel_source()
         return {"ok": True, "settings": self.fnk0031_settings()}
+
+    def fnk0031_controller_step(self) -> dict:
+        """Advance the local hexapod controller only in the running sim sandbox."""
+        if not bool(self.value("BODY_PLUGIN_ROBOT_ENABLED", False)):
+            return {"active": False, "reason": "FNK0031 plugin is disabled"}
+        if not bool(self.value("FNK0031_SNN_ENABLED", False)):
+            return {"active": False, "reason": "SNN locomotion is disabled"}
+        wm = self.worldmodel
+        if wm is None:
+            return {"active": False, "reason": "world model is unavailable"}
+        if wm.config().get("mode") != "sim" or not (wm._thread and wm._thread.is_alive()):
+            return {"active": False, "reason": "start the simulated world model to run the gait sandbox"}
+
+        with self._fnk_controller_lock:
+            if self._fnk_controller is None:
+                try:
+                    from body_runtime_host.locomotion import FNK0031LocomotionController
+                    self._fnk_controller = FNK0031LocomotionController(
+                        state_path=ROOT / "data" / "body" / "locomotion" / "fnk0031_snn.npz"
+                    )
+                except Exception as exc:
+                    return {"active": False, "reason": f"locomotion dependencies unavailable: {exc}"}
+            # The simulator currently has no hexapod IMU or external reward.
+            # Keep both explicit rather than presenting fabricated sensor data.
+            self._fnk_controller_last = self._fnk_controller.step(
+                imu={}, reward=0.0, dt=0.04, gait="forward"
+            )
+            return {
+                "active": True,
+                "mode": "local_simulation",
+                "actuation": False,
+                "imu_available": False,
+                "reward_source": "none (no external reward in the sandbox)",
+                "state_loaded": bool(self._fnk_controller.loaded),
+                **self._fnk_controller_last,
+            }
+
+    def fnk0031_controller_status(self) -> dict:
+        with self._fnk_controller_lock:
+            if self._fnk_controller_last is None:
+                return {"active": False, "reason": "waiting for simulation step"}
+            return {
+                "active": True,
+                "mode": "local_simulation",
+                "actuation": False,
+                "imu_available": False,
+                "reward_source": "none (no external reward in the sandbox)",
+                "state_loaded": bool(self._fnk_controller.loaded),
+                **self._fnk_controller_last,
+            }
 
     def set_plugin_enabled(self, plugin_id: str, enabled: bool) -> dict:
         fields = {
@@ -749,6 +802,8 @@ class BodyHost:
                     self._send(owner.fnk0050_settings())
                 elif path == "/plugins/fnk0031_wifi/settings":
                     self._send(owner.fnk0031_settings())
+                elif path == "/plugins/fnk0031_wifi/controller":
+                    self._send(owner.fnk0031_controller_status())
                 elif path == "/observations":
                     self._send({"observations": sorted(
                         owner.latest.values(),
@@ -801,6 +856,8 @@ class BodyHost:
                         self._send(owner.update_fnk0050_settings(body))
                     elif path == "/plugins/fnk0031_wifi/settings":
                         self._send(owner.update_fnk0031_settings(body))
+                    elif path == "/plugins/fnk0031_wifi/controller/step":
+                        self._send(owner.fnk0031_controller_step())
                     elif path == "/plugins/home_assistant/discover":
                         try:
                             entities = owner.discover()

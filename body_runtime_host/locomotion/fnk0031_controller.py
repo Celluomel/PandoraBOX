@@ -97,7 +97,10 @@ class TripodCPG:
 
     def step(self, dt: float = 0.02) -> np.ndarray:
         self.phase = (self.phase + 2.0 * math.pi * self.frequency_hz * dt) % (2.0 * math.pi)
-        phases = np.asarray([self.phase, self.phase + math.pi] * 3, dtype=np.float32)
+        # Leg order is left-front, right-front, left-middle, right-middle,
+        # left-rear, right-rear: alternate diagonal tripod groups.
+        offsets = np.asarray([0.0, math.pi, math.pi, 0.0, 0.0, math.pi], dtype=np.float32)
+        phases = self.phase + offsets
         return np.sin(phases)
 
 
@@ -117,7 +120,8 @@ class FNK0031LocomotionController:
         imu = imu or {}
         pitch = float(imu.get("pitch", 0.0) or 0.0)
         roll = float(imu.get("roll", 0.0) or 0.0)
-        stability = max(-1.0, min(1.0, 1.0 - (abs(pitch) + abs(roll)) / 0.8))
+        imu_available = "pitch" in imu or "roll" in imu
+        stability = max(-1.0, min(1.0, 1.0 - (abs(pitch) + abs(roll)) / 0.8)) if imu_available else 0.0
         total_reward = max(-1.0, min(1.0, float(reward) + 0.25 * stability))
         cpg = self.cpg.step(dt)
         input_current = np.repeat(cpg, 3) * 4.0
@@ -139,10 +143,11 @@ class FNK0031LocomotionController:
         return {
             "joint_targets": joints.round(4).tolist(),
             "cpg": cpg.round(4).tolist(),
+            "cpg_phase": round(float(self.cpg.phase), 5),
+            "spikes": spikes.astype(int).tolist(),
             "imu": {"pitch": pitch, "roll": roll},
             "reward": round(total_reward, 5),
             "competence": round(self.competence, 5),
             "step": self.steps,
             "network": self.snn.state(),
         }
-

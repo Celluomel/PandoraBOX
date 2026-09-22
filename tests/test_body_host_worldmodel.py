@@ -10,6 +10,7 @@ Covers:
 Run:  venv/Scripts/python.exe -m pytest tests/test_body_host_worldmodel.py -v
 """
 import json
+import importlib.util
 import sys
 import tempfile
 import threading
@@ -75,7 +76,45 @@ class RobotSimServerTest(unittest.TestCase):
         self.assertTrue(out["ok"])
 
 
+@unittest.skipUnless(importlib.util.find_spec("numpy"), "numpy is required for the locomotion controller")
+class FNK0031LocomotionControllerTest(unittest.TestCase):
+    def test_tripod_groups_and_controller_telemetry(self):
+        import numpy as np
+        from body_runtime_host.locomotion import FNK0031LocomotionController
+        from body_runtime_host.locomotion.fnk0031_controller import TripodCPG
+
+        cpg = TripodCPG()
+        values = cpg.step(dt=0.02)
+        self.assertEqual(np.sign(values).tolist(), [1.0, -1.0, -1.0, 1.0, 1.0, -1.0])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            controller = FNK0031LocomotionController(Path(tmp) / "weights.npz")
+            state = controller.step(imu={}, reward=0.0)
+            self.assertEqual(len(state["joint_targets"]), 6)
+            self.assertEqual(len(state["spikes"]), 18)
+            self.assertEqual(state["competence"], 0.0)
+
+
 class BodySingletonStartupTest(unittest.TestCase):
+    def test_locomotion_simulation_waits_for_running_world_model(self):
+        from body_runtime_host.runtime import BodyHost
+
+        class PausedWorldModel:
+            _thread = None
+
+            def config(self):
+                return {"mode": "sim"}
+
+        host = BodyHost()
+        host.config = {
+            "BODY_PLUGIN_ROBOT_ENABLED": True,
+            "FNK0031_SNN_ENABLED": True,
+        }
+        host._worldmodel = PausedWorldModel()
+        result = host.fnk0031_controller_step()
+        self.assertFalse(result["active"])
+        self.assertIn("start the simulated world model", result["reason"])
+
     def test_robot_poll_uses_fnk_endpoint_and_ignores_legacy_localhost_placeholder(self):
         from body_runtime_host.runtime import BodyHost
         host = BodyHost()
