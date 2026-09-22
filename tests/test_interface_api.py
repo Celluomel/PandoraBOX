@@ -114,6 +114,29 @@ class InterfaceTests(unittest.IsolatedAsyncioTestCase):
             'sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2',
         )
 
+    async def test_camera_frame_skips_jpeg_when_sequence_is_unchanged(self):
+        class Vision:
+            camera_active = True
+            frame_sequence = 7
+            frame_updated_at = 1.0
+            last_detected_faces = []
+
+            def __init__(self):
+                self.reads = 0
+
+            def get_latest_clean_encoded_frame(self):
+                self.reads += 1
+                return 'jpeg-data'
+
+        vision = Vision()
+        self.runtime.vision = vision
+        async with self.client() as client:
+            changed = await client.get('/api/interface/camera/frame?after_sequence=6')
+            unchanged = await client.get('/api/interface/camera/frame?after_sequence=7')
+        self.assertEqual(changed.json()['frame'], 'jpeg-data')
+        self.assertIsNone(unchanged.json()['frame'])
+        self.assertEqual(vision.reads, 1)
+
     async def test_affect_embedding_model_can_be_saved_through_settings_api(self):
         selected = 'sentence-transformers/alternate-model'
         async with self.client() as client:

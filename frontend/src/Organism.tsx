@@ -227,10 +227,20 @@ class GraphicsBoundary extends Component<{ children: ReactNode }, { failed: bool
 }
 
 export default function Organism({ active, energy = 0, reduced, mode = active ? 'processing' : 'idle' }: { active: boolean; energy?: number; reduced: boolean; mode?: OrganismMode }) {
-  const [visible, setVisible] = useState(!document.hidden);
+  const [visible, setVisible] = useState(!document.hidden && document.hasFocus());
   const [lost, setLost] = useState(false);
-  useEffect(() => { const change = () => setVisible(!document.hidden); document.addEventListener('visibilitychange', change); return () => document.removeEventListener('visibilitychange', change); }, []);
+  useEffect(() => {
+    const change = () => setVisible(!document.hidden && document.hasFocus());
+    document.addEventListener('visibilitychange', change);
+    window.addEventListener('focus', change);
+    window.addEventListener('blur', change);
+    return () => {
+      document.removeEventListener('visibilitychange', change);
+      window.removeEventListener('focus', change);
+      window.removeEventListener('blur', change);
+    };
+  }, []);
   return <div className="organism" role="img" aria-label={`PandoraBOX visual organism, ${mode}`}>
-    {lost ? <div className="graphics-fallback">PandoraBOX<span>Graphics paused. Reload to restore.</span></div> : <GraphicsBoundary><Canvas camera={{ position: [0, 0, 4.9], fov: 43 }} dpr={[1, 1.5]} frameloop={!visible ? 'never' : reduced ? 'demand' : 'always'} gl={{ antialias: true, alpha: true, powerPreference: 'high-performance' }} onCreated={({gl, scene}) => { gl.toneMappingExposure = 1.12; scene.background = new THREE.Color('#060d12'); scene.fog = new THREE.Fog('#060d12', 4.5, 8); gl.domElement.addEventListener('webglcontextlost', () => setLost(true), { once: true }); }}><ambientLight intensity={.18}/><SculpturalLighting energy={active ? .65 : energy} reduced={reduced}/><Atmosphere energy={active ? .65 : energy} reduced={reduced}/><GroundShadow energy={active ? .65 : energy} reduced={reduced}/><Body energy={active ? .65 : energy} mode={mode} reduced={reduced}/></Canvas></GraphicsBoundary>}
+    {lost ? <div className="graphics-fallback">PandoraBOX<span>Graphics paused. Reload to restore.</span></div> : <GraphicsBoundary><Canvas camera={{ position: [0, 0, 4.9], fov: 43 }} dpr={[1, 1.25]} frameloop={!visible ? 'never' : reduced ? 'demand' : 'always'} gl={{ antialias: true, alpha: true, powerPreference: 'high-performance' }} onCreated={({gl, scene}) => { gl.toneMappingExposure = 1.12; scene.background = new THREE.Color('#060d12'); scene.fog = new THREE.Fog('#060d12', 4.5, 8); gl.domElement.addEventListener('webglcontextlost', () => setLost(true), { once: true }); }}><ambientLight intensity={.18}/><SculpturalLighting energy={active ? .65 : energy} reduced={reduced}/><Atmosphere energy={active ? .65 : energy} reduced={reduced}/><GroundShadow energy={active ? .65 : energy} reduced={reduced}/><Body energy={active ? .65 : energy} mode={mode} reduced={reduced}/></Canvas></GraphicsBoundary>}
   </div>;
 }

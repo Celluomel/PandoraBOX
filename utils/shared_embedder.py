@@ -137,11 +137,15 @@ class APIEmbedder:
 
     def encode(self, texts, **kw):
         single = isinstance(texts, str)
+        if _interactive_priority.is_set():
+            raise RuntimeError("quality embeddings deferred during interactive turn")
         try:
             mat = self._encode_list([texts] if single else list(texts))
             return mat[0] if single else mat
         except Exception as e:
-            if "deferred" in str(e) or "already in progress" in str(e):
+            if "deferred" in str(e):
+                raise
+            if "already in progress" in str(e):
                 logger.debug("[embedder] QUALITY tier yielded to interactive work: %s", e)
             else:
                 logger.warning(

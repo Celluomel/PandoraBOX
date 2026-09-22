@@ -29,11 +29,16 @@ embeddings backend is unavailable.
 from __future__ import annotations
 
 import logging
+import threading
+from collections import OrderedDict
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
 logger = logging.getLogger(__name__)
+_embedding_cache: OrderedDict[str, np.ndarray] = OrderedDict()
+_embedding_cache_lock = threading.RLock()
+_EMBEDDING_CACHE_LIMIT = 4096
 
 
 # ── Low-level helpers ─────────────────────────────────────────────────────────
@@ -46,13 +51,39 @@ def embed(texts: Sequence[str]) -> Optional[np.ndarray]:
     dimension (dimension-safety).
     """
     try:
-        from utils.shared_embedder import get_embedder
-        emb = get_embedder(quality=True)
-        mat = emb.encode([str(t) for t in texts])
-        mat = np.asarray(mat, dtype="float32")
-        if mat.ndim == 1:
-            mat = mat[None, :]
-        return mat
+        values = [str(text) for text in texts]
+        if not values:
+            return np.empty((0, 0), dtype="float32")
+        with _embedding_cache_lock:
+            missing = list(dict.fromkeys(text for text in values if text not in _embedding_cache))
+            if missing:
+                from utils.shared_embedder import get_embedder
+                embedder = get_embedder(quality=True)
+                mat = np.asarray(embedder.encode(missing), dtype="float32")
+                if mat.ndim == 1:
+                    mat = mat[None, :]
+                if mat.shape[0] != len(missing):
+                    raise ValueError("embedding provider returned an unexpected row count")
+                # A provider/model switch can change vector dimensions. Never
+                # compare cached vectors from different embedding spaces.
+                cached_dim = next(iter(_embedding_cache.values())).shape[0] if _embedding_cache else mat.shape[1]
+                if cached_dim != mat.shape[1]:
+                    _embedding_cache.clear()
+                    missing = list(dict.fromkeys(values))
+                    mat = np.asarray(embedder.encode(missing), dtype="float32")
+                    if mat.ndim == 1:
+                        mat = mat[None, :]
+                for text, vector in zip(missing, mat):
+                    _embedding_cache[text] = vector.copy()
+                    _embedding_cache.move_to_end(text)
+                while len(_embedding_cache) > _EMBEDDING_CACHE_LIMIT:
+                    _embedding_cache.popitem(last=False)
+            result = []
+            for text in values:
+                vector = _embedding_cache[text]
+                _embedding_cache.move_to_end(text)
+                result.append(vector)
+            return np.stack(result).astype("float32", copy=False)
     except Exception as e:  # noqa: BLE001 - never break a goal cycle
         logger.warning(
             "[goal_semantics] embeddings unavailable (%s); "

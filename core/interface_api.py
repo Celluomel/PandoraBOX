@@ -11,7 +11,7 @@ import uuid
 import ipaddress
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File, Query
 from fastapi import WebSocket, WebSocketDisconnect
 from fastapi.responses import PlainTextResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
@@ -1412,10 +1412,15 @@ async def network_dialogue(dialogue_id: str):
 
 
 @router.get('/camera/frame')
-async def camera_frame():
+async def camera_frame(after_sequence: int | None = Query(default=None, ge=0)):
     state = _runtime()
     vision = getattr(state, 'vision', None)
-    frame = vision.get_latest_clean_encoded_frame() if vision and vision.camera_active else None
+    sequence = int(getattr(vision, 'frame_sequence', 0) or 0) if vision else 0
+    frame = (
+        vision.get_latest_clean_encoded_frame()
+        if vision and vision.camera_active and after_sequence != sequence
+        else None
+    )
     faces = []
     if vision and vision.camera_active:
         faces = [{'name': face.get('name', 'Unknown'), 'confidence': face.get('confidence', 0), 'location': face.get('location', {})} for face in (getattr(vision, 'last_detected_faces', None) or [])]
@@ -1424,7 +1429,7 @@ async def camera_frame():
         'active': bool(vision and vision.camera_active),
         'frame': frame,
         'faces': faces,
-        'frame_sequence': int(getattr(vision, 'frame_sequence', 0) or 0) if vision else 0,
+        'frame_sequence': sequence,
         'frame_age_ms': round(max(0.0, time.time() - updated_at) * 1000.0, 1) if updated_at else None,
     }
 
@@ -1666,6 +1671,11 @@ async def chat(payload: Turn, request: Request):
                     continue
 
         try:
+            try:
+                from utils.shared_embedder import set_interactive_priority
+                set_interactive_priority(True)
+            except Exception:
+                logger.debug('Embedding priority control unavailable', exc_info=True)
             # Reserve the provider before any cognitive pre-processing. This
             # prevents perception/presence from acquiring LM Studio in the
             # small gap before PersonaBridge starts its visible stream.
@@ -1760,6 +1770,11 @@ async def chat(payload: Turn, request: Request):
         finally:
             if llm_turn_reserved and hasattr(state.llm, 'end_interactive_turn'):
                 state.llm.end_interactive_turn()
+            try:
+                from utils.shared_embedder import set_interactive_priority
+                set_interactive_priority(False)
+            except Exception:
+                pass
             _turn_lock.release()
 
     worker = asyncio.create_task(produce())

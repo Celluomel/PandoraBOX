@@ -383,7 +383,29 @@ function SettingsLlmFull() {
 
 function VisionFeed({ data }: { data: any }) {
   const [feed, setFeed] = useState<any>(null);
-  useEffect(() => { let live = true; const read = () => void fetch('/api/interface/camera/frame').then(r => r.json()).then(v => live && setFeed(v)).catch(() => {}); read(); const timer = setInterval(read, 450); return () => { live = false; clearInterval(timer); }; }, []);
+  const feedRef = useRef<any>(null);
+  useEffect(() => {
+    let live = true;
+    let timer: ReturnType<typeof setTimeout>;
+    let sequence = -1;
+    const read = async () => {
+      try {
+        const url = sequence < 0 ? '/api/interface/camera/frame' : `/api/interface/camera/frame?after_sequence=${sequence}`;
+        const response = await fetch(url);
+        const value = await response.json();
+        if (!live) return;
+        if (value.frame_sequence !== sequence || value.active !== feedRef.current?.active || !feedRef.current) {
+          sequence = value.frame_sequence;
+          const next = { ...value, frame: value.active ? (value.frame || feedRef.current?.frame || null) : null };
+          feedRef.current = next;
+          setFeed(next);
+        }
+      } catch { /* camera may be unavailable while settings are open */ }
+      if (live) timer = setTimeout(read, 220);
+    };
+    void read();
+    return () => { live = false; clearTimeout(timer); };
+  }, []);
   return <div className="vision-feed-panel"><div className="settings-section-title">Live camera feed</div><div className="vision-feed-frame">{feed?.frame ? <img src={`data:image/jpeg;base64,${feed.frame}`} alt="Live camera feed"/> : <div className="vision-feed-empty"><Eye size={24}/><span>Start the camera to see the live feed.</span></div>}{(feed?.faces || []).map((face: any, index: number) => { const loc = face.location || {}; return <div className="vision-feed-face" key={index} style={{ left: `${(loc.left || 0) / 6.4}%`, top: `${(loc.top || 0) / 4.8}%`, width: `${((loc.right || 0) - (loc.left || 0)) / 6.4}%`, height: `${((loc.bottom || 0) - (loc.top || 0)) / 4.8}%` }}><b>{face.name} · {Math.round((face.confidence || 0) * 100)}%</b></div>; })}</div><div className="vision-feed-meta"><span>{feed?.active ? 'Camera active' : 'Camera off'}</span><span>{feed?.faces?.length || 0} detected faces</span></div></div>;
 }
 
@@ -427,8 +449,8 @@ function RSSFeedsWindow() {
 
 function VisionLegacyPanel() {
   const [frame, setFrame] = useState<any>(null); const [faces, setFaces] = useState<any[]>([]); const [memories, setMemories] = useState<any[]>([]); const [analysis, setAnalysis] = useState('No analysis yet'); const [query, setQuery] = useState(''); const [name, setName] = useState(''); const [message, setMessage] = useState('');
-  const read = () => void Promise.all([fetch('/api/interface/camera/frame').then(r => r.json()), fetch('/api/interface/vision/faces').then(r => r.json()), fetch(`/api/interface/vision/memories?query=${encodeURIComponent(query)}`).then(r => r.json())]).then(([camera, faceData, memoryData]) => { setFrame(camera); setFaces(faceData.faces || []); setMemories(memoryData.memories || []); }).catch(() => {});
-  useEffect(() => { read(); const timer = setInterval(read, 700); return () => clearInterval(timer); }, [query]);
+  const read = () => void Promise.all([fetch('/api/interface/camera/frame').then(r => r.json()), fetch('/api/interface/vision/faces').then(r => r.json()), fetch(`/api/interface/vision/memories?query=${encodeURIComponent(query)}`).then(r => r.json())]).then(([camera, faceData, memoryData]) => { setFrame((current: any) => camera.frame_sequence === current?.frame_sequence ? { ...camera, frame: current.frame } : camera); setFaces(faceData.faces || []); setMemories(memoryData.memories || []); }).catch(() => {});
+  useEffect(() => { void read(); const timer = setInterval(read, 5000); return () => clearInterval(timer); }, [query]);
   const action = async (url: string, options?: RequestInit) => { try { const r = await checked(await fetch(url, options)); return await r.json(); } catch (e) { setMessage(e instanceof Error ? e.message : 'Vision action failed.'); return null; } };
   const analyze = async () => { const result = await action('/api/interface/vision/analyze', { method: 'POST' }); if (result) { setAnalysis(result.analysis || 'No analysis returned.'); setFaces(result.faces || faces); } };
   const capture = async () => { if (!name.trim()) return; const result = await action('/api/interface/vision/capture-face', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) }); if (result) { setName(''); setMessage(result.message); read(); } };
@@ -440,6 +462,34 @@ function CameraToggle() {
   useEffect(() => { let live = true; const read = () => void fetch('/api/interface/camera/frame').then(r => r.json()).then(v => live && setActive(Boolean(v.active))).catch(() => {}); read(); const timer = setInterval(read, 1200); return () => { live = false; clearInterval(timer); }; }, []);
   const toggle = async () => { setBusy(true); try { const response = await checked(await fetch('/api/interface/camera/toggle', { method: 'POST' })); setActive(Boolean((await response.json()).active)); } finally { setBusy(false); } };
   return <label className="camera-toggle"><span>Camera</span><input type="checkbox" checked={active} disabled={busy} onChange={() => void toggle()}/><b>{active ? 'Live' : 'Off'}</b></label>;
+}
+
+function CameraPreview() {
+  const [frame, setFrame] = useState<string | null>(null);
+  const [faces, setFaces] = useState<{ name: string; location?: { left?: number; top?: number; right?: number; bottom?: number } }[]>([]);
+  useEffect(() => {
+    let live = true;
+    let timer: ReturnType<typeof setTimeout>;
+    let sequence = -1;
+    const poll = async () => {
+      try {
+        const url = sequence < 0 ? '/api/interface/camera/frame' : `/api/interface/camera/frame?after_sequence=${sequence}`;
+        const response = await fetch(url);
+        if (response.ok) {
+          const value = await response.json();
+          if (live && value.frame_sequence !== sequence) {
+            sequence = value.frame_sequence;
+            setFrame(value.frame ? `data:image/jpeg;base64,${value.frame}` : null);
+            setFaces(value.faces || []);
+          }
+        }
+      } catch { /* camera frame is optional */ }
+      if (live) timer = setTimeout(poll, document.hidden || !document.hasFocus() ? 900 : 220);
+    };
+    void poll();
+    return () => { live = false; clearTimeout(timer); };
+  }, []);
+  return <div className="camera-orb" aria-label="Live camera feed"><div className="camera-orb-label"><Eye size={13}/>Camera live</div>{frame ? <img src={frame} alt="Live camera view"/> : <div className="camera-empty">Waiting for camera</div>}{faces.map((face, index) => { const loc = face.location || {}; const left = ((loc.left || 0) / 640) * 100; const top = ((loc.top || 0) / 480) * 100; const width = (((loc.right || 0) - (loc.left || 0)) / 640) * 100; const height = (((loc.bottom || 0) - (loc.top || 0)) / 480) * 100; return <div className="camera-face-box" key={`${face.name}-${index}`} style={{ left: `${left}%`, top: `${top}%`, width: `${width}%`, height: `${height}%` }}><span>{face.name}</span></div>; })}</div>;
 }
 
 function SettingsVoiceRecording() {
@@ -668,8 +718,6 @@ export default function App() {
   const [networkBusy, setNetworkBusy] = useState(false);
   const [networkResult, setNetworkResult] = useState('');
   const [cameraMode, setCameraMode] = useState(false);
-  const [cameraFrame, setCameraFrame] = useState<string | null>(null);
-  const [cameraFaces, setCameraFaces] = useState<{ name: string; confidence?: number; location?: { left?: number; top?: number; right?: number; bottom?: number } }[]>([]);
   const [connected, setConnected] = useState(false);
   const [responseLanguage, setResponseLanguage] = useState('auto');
   const [webSearchMode, setWebSearchMode] = useState<'off' | 'auto' | 'always'>('off');
@@ -807,20 +855,16 @@ export default function App() {
   useEffect(() => {
     let stopped = false;
     let timeout: ReturnType<typeof setTimeout>;
-    async function refreshSurfaces() {
+    const refreshNetwork = async () => {
       try {
-        const [networkResponse, cameraResponse] = await Promise.all([
-          fetch('/api/interface/network'),
-          cameraMode ? fetch('/api/interface/camera/frame') : Promise.resolve(null),
-        ]);
-        if (!stopped && networkResponse.ok) setNetworkState(await networkResponse.json());
-        if (!stopped && cameraResponse?.ok) { const frame = await cameraResponse.json(); setCameraFrame(frame.frame ? `data:image/jpeg;base64,${frame.frame}` : null); setCameraFaces(frame.faces || []); }
-      } catch { /* connection indicator owns the visible error state */ }
-      if (!stopped) timeout = setTimeout(refreshSurfaces, cameraMode ? 120 : 3000);
-    }
-    void refreshSurfaces();
+        const response = await fetch('/api/interface/network');
+        if (response.ok && !stopped) setNetworkState(await response.json());
+      } catch { /* network status is ancillary to conversation */ }
+      if (!stopped) timeout = setTimeout(refreshNetwork, document.hidden ? 15000 : 5000);
+    };
+    void refreshNetwork();
     return () => { stopped = true; clearTimeout(timeout); };
-  }, [cameraMode]);
+  }, []);
   useEffect(() => { try { localStorage.setItem(storageKey, JSON.stringify(messages.slice(-200))); } catch { setError('This browser could not save the transcript.'); } }, [messages]);
   useEffect(() => { try { localStorage.setItem(telemetryVisibilityKey, String(showTelemetry)); } catch { /* optional UI preference */ } }, [showTelemetry]);
   useEffect(() => {
@@ -910,7 +954,6 @@ export default function App() {
       const response = await checked(await fetch('/api/interface/camera/toggle', { method: 'POST' }));
       const result = await response.json();
       setCameraMode(Boolean(result.active));
-      if (!result.active) { setCameraFrame(null); setCameraFaces([]); }
     } catch (e) { setError(e instanceof Error ? e.message : 'Camera unavailable.'); }
   }
   async function toggleNetwork() {
@@ -1141,7 +1184,7 @@ export default function App() {
     <header className="topbar"><div className="brand-symbol"><Sparkles size={23}/></div><a className="brand" href="/next/">{personaName}<span>PERSONAL COGNITIVE SPACE</span></a><div className={`connection ${connected ? 'online' : ''}`}><i/>{connected ? status?.ready ? 'Connected' : 'Starting' : 'Disconnected'}</div><div className="telemetry-strip"><span>Memory <b>{status?.providers ? 'FAISS' : 'Unavailable'}</b></span><span>STT <b>{status?.providers.stt ?? 'Unavailable'}</b></span><span>TTS <b>{status?.providers.tts ?? 'Unavailable'}</b></span><span className={cameraMode ? 'telemetry-live' : ''}><Eye size={12}/> {cameraMode ? 'Camera' : 'Vision off'}</span><span className={networkState.enabled ? 'telemetry-live' : ''}><Network size={12}/> {networkState.enabled ? `Flux ${networkState.children.length}` : 'Flux off'}</span></div><div className="header-actions"><label className="language-control" title="Response language"><span>Lang</span><select aria-label="Response language" value={responseLanguage} onChange={event => void changeLanguage(event.target.value)}>{languageOptions.map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label><span className="session-label">Conversation</span><IconButton label={cameraMode ? 'Close camera mode' : 'Open camera mode'} active={cameraMode} onClick={() => void toggleCamera()}><Eye size={19}/></IconButton><IconButton label="Open Body interface" onClick={() => openSettingsWindow('/body')}><HeartPulse size={19}/></IconButton><IconButton label={networkState.enabled ? 'Open Flux network' : 'Enable Flux network'} active={networkOpen} disabled={networkBusy} onClick={() => networkState.enabled ? setNetworkOpen(open => !open) : void toggleNetwork()}><Network size={19}/></IconButton><button ref={inspectorTrigger} className={`icon-button ${inspector ? 'active' : ''}`} aria-label="Open cognitive inspector" aria-expanded={inspector} title="Cognitive inspector" onClick={() => setInspector(!inspector)}><PanelRightOpen size={19}/></button><IconButton label={voice ? 'Return to chat' : 'Enter voice mode'} active={voice} onClick={() => voice ? leaveVoiceMode() : setVoice(true)}><AudioLines size={20}/></IconButton></div></header>
     <nav className="rail" aria-label="Main navigation"><IconButton label="Conversation" active={!voice} onClick={() => { if (voice) leaveVoiceMode(); }}><MessageCircle size={21}/></IconButton><IconButton label="Conversation history" active={history} onClick={() => setHistory(!history)}><History size={21}/></IconButton><IconButton label="Cognitive activity" active={inspector} onClick={() => { setTab('Activity'); setInspector(true); }}><Activity size={21}/></IconButton><div className="rail-spacer"/><IconButton label="Interface settings" active={settings} onClick={() => openSettingsWindow('/settings')}><Settings size={20}/></IconButton></nav>
     <main className="workspace">
-      <section className="presence" aria-label="PandoraBOX presence"><div className="presence-heading"><span className="eyebrow">PANDORABOX / LIVE PRESENCE</span><IconButton label={voice ? 'Return to chat' : 'Expand voice view'} onClick={() => voice ? leaveVoiceMode() : setVoice(true)}><Expand size={15}/></IconButton></div>{cameraMode && <div className="camera-orb" aria-label="Live camera feed"><div className="camera-orb-label"><Eye size={13}/>Camera live</div>{cameraFrame ? <img src={cameraFrame} alt="Live camera view"/> : <div className="camera-empty">Waiting for camera</div>}{cameraFaces.map((face, index) => { const loc = face.location || {}; const left = ((loc.left || 0) / 640) * 100; const top = ((loc.top || 0) / 480) * 100; const width = (((loc.right || 0) - (loc.left || 0)) / 640) * 100; const height = (((loc.bottom || 0) - (loc.top || 0)) / 480) * 100; return <div className="camera-face-box" key={`${face.name}-${index}`} style={{ left: `${left}%`, top: `${top}%`, width: `${width}%`, height: `${height}%` }}><span>{face.name}</span></div>; })}</div>}<div className="organism-stage" onMouseEnter={() => setOrganismHover(true)} onMouseLeave={() => setOrganismHover(false)} onFocusCapture={() => setOrganismHover(true)} onBlurCapture={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOrganismHover(false); }}><div className={`organism-quickbar ${organismHover ? 'is-visible' : ''}`} aria-label="Quick settings"><IconButton label="Open cognitive dashboard" onClick={() => openSettingsWindow('/cognitive-dashboard')}><Activity size={17}/></IconButton><IconButton label="Open memory settings" onClick={() => openSettingsWindow('/settings?tab=memory')}><Database size={17}/></IconButton><IconButton label="Open voice settings" onClick={() => openSettingsWindow('/settings?tab=voice')}><AudioLines size={17}/></IconButton><IconButton label="Open camera settings" onClick={() => openSettingsWindow('/vision')}><Eye size={17}/></IconButton><IconButton label="Open Body interface" onClick={() => openSettingsWindow('/body')}><HeartPulse size={17}/></IconButton><IconButton label="Open Flux network settings" onClick={() => openSettingsWindow('/orchestrator')}><Network size={17}/></IconButton><IconButton label="Open interface settings" onClick={() => openSettingsWindow('/settings')}><Settings size={17}/></IconButton></div><Organism active={busy || Boolean(status?.busy)} energy={level} mode={organismMode} reduced={reduced || !connected}/></div><div className="presence-caption"><span className={`state-dot ${recording || speaking ? 'bright' : ''}`}/><span>{stateLabel}</span><span className="caption-divider"/><span className="presence-emotion">{status?.emotional_state || (connected ? 'Present and attentive' : 'Awaiting connection')}</span>{status?.life_stage && <><span className="caption-divider"/><span className="presence-stage">{status.life_stage}{status.current_age != null ? ` · age ${status.current_age.toFixed(1)}` : ''}</span></>}<span className="caption-divider"/>{connected ? 'Here with you' : 'Awaiting connection'}</div><div className="presence-foot"><span>01 / {voice ? 'VOICE' : cameraMode ? 'CAMERA' : 'CONVERSATION'}</span><span>{personaName.toUpperCase()}</span></div></section>
+      <section className="presence" aria-label="PandoraBOX presence"><div className="presence-heading"><span className="eyebrow">PANDORABOX / LIVE PRESENCE</span><IconButton label={voice ? 'Return to chat' : 'Expand voice view'} onClick={() => voice ? leaveVoiceMode() : setVoice(true)}><Expand size={15}/></IconButton></div>{cameraMode && <CameraPreview/>}<div className="organism-stage" onMouseEnter={() => setOrganismHover(true)} onMouseLeave={() => setOrganismHover(false)} onFocusCapture={() => setOrganismHover(true)} onBlurCapture={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOrganismHover(false); }}><div className={`organism-quickbar ${organismHover ? 'is-visible' : ''}`} aria-label="Quick settings"><IconButton label="Open cognitive dashboard" onClick={() => openSettingsWindow('/cognitive-dashboard')}><Activity size={17}/></IconButton><IconButton label="Open memory settings" onClick={() => openSettingsWindow('/settings?tab=memory')}><Database size={17}/></IconButton><IconButton label="Open voice settings" onClick={() => openSettingsWindow('/settings?tab=voice')}><AudioLines size={17}/></IconButton><IconButton label="Open camera settings" onClick={() => openSettingsWindow('/vision')}><Eye size={17}/></IconButton><IconButton label="Open Body interface" onClick={() => openSettingsWindow('/body')}><HeartPulse size={17}/></IconButton><IconButton label="Open Flux network settings" onClick={() => openSettingsWindow('/orchestrator')}><Network size={17}/></IconButton><IconButton label="Open interface settings" onClick={() => openSettingsWindow('/settings')}><Settings size={17}/></IconButton></div><Organism active={busy || Boolean(status?.busy)} energy={level} mode={organismMode} reduced={reduced || !connected}/></div><div className="presence-caption"><span className={`state-dot ${recording || speaking ? 'bright' : ''}`}/><span>{stateLabel}</span><span className="caption-divider"/><span className="presence-emotion">{status?.emotional_state || (connected ? 'Present and attentive' : 'Awaiting connection')}</span>{status?.life_stage && <><span className="caption-divider"/><span className="presence-stage">{status.life_stage}{status.current_age != null ? ` · age ${status.current_age.toFixed(1)}` : ''}</span></>}<span className="caption-divider"/>{connected ? 'Here with you' : 'Awaiting connection'}</div><div className="presence-foot"><span>01 / {voice ? 'VOICE' : cameraMode ? 'CAMERA' : 'CONVERSATION'}</span><span>{personaName.toUpperCase()}</span></div></section>
       <section className="conversation" aria-label="Conversation"><div className="conversation-heading"><div><span className="eyebrow">YOUR SPACE TO THINK</span><h1>{voice ? 'In conversation.' : 'A conversation, unfolding.'}</h1></div><div className="conversation-tools"><IconButton label="Reveal orchestration field" onClick={revealOrchestration}><Workflow size={16}/></IconButton><IconButton label="Open cognitive dashboard" onClick={() => openSettingsWindow('/cognitive-dashboard')}><Activity size={16}/></IconButton><IconButton label="Open RSS feed management" onClick={() => openSettingsWindow('/rss-feeds')}><Rss size={16}/></IconButton><IconButton label="Interface settings" onClick={() => setSettings(true)}><Settings size={16}/></IconButton><IconButton label="New conversation" onClick={startNewConversation}><MessageCircle size={16}/></IconButton><IconButton label={`Web search: ${webSearchMode}`} active={webSearchMode !== 'off'} onClick={cycleWebSearch}><Search size={16}/></IconButton><IconButton label={responseVerbosity === 'verbose' ? 'Extended responses on' : 'Concise responses on'} active={responseVerbosity === 'verbose'} onClick={() => void updatePreference('response_verbosity', responseVerbosity === 'verbose' ? 'concise' : 'verbose')}><ChevronRight size={16} style={{ transform: responseVerbosity === 'verbose' ? 'rotate(90deg)' : 'rotate(0deg)' }}/></IconButton><span className="day-label">{new Date().toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</span></div></div>
         <div className="transcript" ref={transcript} onScroll={e => { const el = e.currentTarget; setAtBottom(el.scrollHeight - el.scrollTop - el.clientHeight < 90); }}>
           {messages.length === 0 ? <div className="empty-conversation"><Sparkles size={24}/><h2>Where shall we begin?</h2><p>{ready ? 'I am here.' : connected ? `${personaName} is waking up.` : `Waiting for ${personaName} to connect.`}</p></div> : messages.map(m => <article key={m.id} id={`message-${m.id}`} className={`message ${m.role}`}><div className="message-author">{m.role === 'assistant' ? <Sparkles size={16}/> : <span className="user-mark">F</span>}<span>{m.role === 'assistant' ? personaName : 'You'}</span></div><div className="message-content"><Markdown>{m.text || (m.stopped ? 'Response stopped.' : 'Thinking...')}</Markdown>{m.stopped && m.text && <small className="muted">Response stopped</small>}</div>{m.role === 'assistant' && m.webSources?.length ? <div className="web-provenance"><span>Sources used</span>{m.webSources.map((source, index) => <a key={source.url + index} href={source.url} target="_blank" rel="noreferrer"><b>{source.kind === 'page' ? 'Page read' : source.kind === 'fetch_failed' ? 'Fetch failed' : 'Search result'}</b> {source.title || source.url}</a>)}</div> : null}{m.role === 'assistant' && showTelemetry && m.telemetry && <TelemetryTrace data={m.telemetry}/>} {m.role === 'assistant' && m.text && <div className="message-actions"><IconButton label="Copy response" onClick={async () => { try { await navigator.clipboard.writeText(m.text); setCopied(m.id); } catch { setError('Clipboard is unavailable.'); } }}>{copied === m.id ? <Check size={14}/> : <Copy size={14}/>}</IconButton><IconButton label="Read response aloud" disabled={!ready || audioBusy || recording} onClick={() => void speak(m.text)}><Volume2 size={15}/></IconButton><span className="feedback-label">Helpful?</span><IconButton label="Mark response helpful" active={m.feedback === 'positive'} aria-pressed={m.feedback === 'positive'} disabled={Boolean(m.feedback)} onClick={() => void giveFeedback(m, true)}><ThumbsUp size={14}/></IconButton><IconButton label="Mark response unhelpful" active={m.feedback === 'negative'} aria-pressed={m.feedback === 'negative'} disabled={Boolean(m.feedback)} onClick={() => void giveFeedback(m, false)}><ThumbsDown size={14}/></IconButton></div>}</article>)}
