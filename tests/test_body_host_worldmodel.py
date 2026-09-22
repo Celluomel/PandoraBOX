@@ -167,6 +167,7 @@ class FNK0031MuJoCoTest(unittest.TestCase):
         self.assertGreater(float(np.abs(controller.snn.weights - initial).sum()), 0.0)
         self.assertGreater(result.neural_spike_events, 0)
         self.assertGreater(result.weight_change_l1, 0.0)
+        self.assertGreater(result.motor_readout_change_l1, 0.0)
 
 
 class BodySingletonStartupTest(unittest.TestCase):

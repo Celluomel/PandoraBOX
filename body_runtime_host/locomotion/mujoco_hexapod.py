@@ -94,6 +94,7 @@ class LocomotionEpisode:
     return_value: float
     neural_spike_events: int
     weight_change_l1: float
+    motor_readout_change_l1: float
 
 
 class MuJoCoHexapodSim:
@@ -228,6 +229,7 @@ def run_episode(controller: Any, policy: str, steps: int = 250, seed: int = 0) -
     returns = 0.0
     spike_events = 0
     initial_weights = controller.snn.weights.copy()
+    initial_motor_weights = controller.motor_weights.copy()
     last_reward = 0.0
     fall = False
     actual_steps = 0
@@ -275,6 +277,7 @@ def run_episode(controller: Any, policy: str, steps: int = 250, seed: int = 0) -
         return_value=round(returns, 5),
         neural_spike_events=spike_events,
         weight_change_l1=round(float(np.abs(controller.snn.weights - initial_weights).sum()), 7),
+        motor_readout_change_l1=round(float(np.abs(controller.motor_weights - initial_motor_weights).sum()), 7),
     )
 
 
@@ -288,11 +291,13 @@ def run_training_experiment(state_path: str, training_episodes: int = 24,
     total = evaluation_episodes * 2 + training_episodes
     completed = 0
     for i in range(evaluation_episodes):
-        baseline.append(asdict(run_episode(FNK0031LocomotionController(state_path=f"{state_path}.baseline-{i}"), "cpg", steps_per_episode, i)))
+        baseline.append(asdict(run_episode(FNK0031LocomotionController(
+            state_path=f"{state_path}.baseline-{i}", load_state=False, seed=31
+        ), "cpg", steps_per_episode, i)))
         completed += 1
         if on_progress:
             on_progress({"phase": "baseline", "completed": completed, "total": total})
-    learner = FNK0031LocomotionController(state_path=state_path)
+    learner = FNK0031LocomotionController(state_path=state_path, load_state=False, seed=31)
     for episode in range(training_episodes):
         run_episode(learner, "snn", steps_per_episode, episode)
         completed += 1

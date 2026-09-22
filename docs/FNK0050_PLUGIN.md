@@ -92,15 +92,19 @@ contact, tilt, effort proxy and falls. It is launched asynchronously from the
 FNK0031 plugin page and sends no commands to hardware.
 
 The local model is an explicit geometry estimate, not a measured FNK0031 CAD
-model. In the current 24-episode training and 8-pair held-out run, mean
-displacement was 1.07142 m for CPG and 1.07026 m for SNN (0 falls for either),
-so the experiment correctly reports `no_reliable_improvement`. Weight changes
-and spikes demonstrate activity, not a learned walking skill. This is not
-equivalent to MH-FLOCKE and does not establish hardware competence. Before
-transferring weights, the physical robot still needs measured link geometry,
-servo zero/direction/range calibration, sensor validation, and safe low-speed
-trials. Freenove recommends its leg-level motion interface over commanding
-individual servos without calibration.
+model. The experiment now includes a reward-modulated plastic motor readout,
+not just recurrent SNN-weight updates. However, neither of these establishes
+that the policy has learned to walk. A 24-episode/8-pair run measured mean
+displacement of 1.07142 m for CPG and 1.06579 m for SNN. A longer run with 240
+training episodes and 32 held-out pairs measured 1.07056 m for CPG and 1.06667
+m for SNN; both policies had zero falls. Both runs correctly report
+`no_reliable_improvement`. Weight changes and spikes demonstrate activity, not
+a learned walking skill. This is not equivalent to MH-FLOCKE and does not
+establish hardware competence. The learning policy itself needs further work
+before transfer. After that, the physical robot still needs measured link
+geometry, servo zero/direction/range calibration, sensor validation, and safe
+low-speed trials. Freenove recommends its leg-level motion interface over
+commanding individual servos without calibration.
 
 The controller is called only through the approved FNK0031 action path. It
 does not move a robot merely because `FNK0031_SNN_ENABLED` is enabled.

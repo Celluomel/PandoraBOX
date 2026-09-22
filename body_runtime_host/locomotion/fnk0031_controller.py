@@ -188,9 +188,13 @@ class TripodCPG:
 class FNK0031LocomotionController:
     """CPG scaffold plus learned bounded SNN correction for six legs."""
 
-    def __init__(self, state_path: str | Path = "data/body/locomotion/fnk0031_snn.npz") -> None:
+    def __init__(self, state_path: str | Path = "data/body/locomotion/fnk0031_snn.npz",
+                 load_state: bool = True, seed: int = 31) -> None:
         self.cpg = TripodCPG()
-        self.snn = IzhikevichNetwork(neurons=18)
+        self.snn = IzhikevichNetwork(neurons=18, seed=seed)
+        self._rng = np.random.default_rng(seed + 1)
+        self.motor_weights = np.zeros((18, 18), dtype=np.float32)
+        self.motor_eligibility = np.zeros((18, 18), dtype=np.float32)
         self.plant = SimulatedHexapodPlant()
         self.forward_model = CerebellarForwardModel()
         self._pending_forward_features: Optional[np.ndarray] = None
@@ -200,7 +204,7 @@ class FNK0031LocomotionController:
         # Kept for state/API compatibility. Only an independent locomotion
         # evaluator may raise this; the heuristic plant cannot verify skill.
         self.competence = 0.0
-        self.loaded = self.snn.load(self.state_path)
+        self.loaded = bool(load_state and self.snn.load(self.state_path))
         if self.loaded:
             self._load_extended_state()
 
@@ -211,6 +215,8 @@ class FNK0031LocomotionController:
                     self.cpg.phase = float(data["cpg_phase"])
                 if "reward_baseline" in data:
                     self.reward_baseline = float(data["reward_baseline"])
+                if "motor_weights" in data and data["motor_weights"].shape == self.motor_weights.shape:
+                    self.motor_weights = data["motor_weights"].astype(np.float32)
                 if "forward_weights" in data and data["forward_weights"].shape == self.forward_model.weights.shape:
                     self.forward_model.weights = data["forward_weights"].astype(np.float32)
                 for key in ("pitch", "roll", "heading", "distance"):
@@ -233,6 +239,7 @@ class FNK0031LocomotionController:
             heading=np.asarray(self.plant.heading), distance=np.asarray(self.plant.distance),
             steps=np.asarray(self.steps),
             reward_baseline=np.asarray(self.reward_baseline),
+            motor_weights=self.motor_weights,
         )
 
     def step(self, imu: Optional[Dict[str, float]] = None, reward: float = 0.0,
@@ -276,8 +283,16 @@ class FNK0031LocomotionController:
                 dt=1.0,
             )
             spikes = np.maximum(spikes, frame_spikes)
-        centered_activity = spikes - np.float32(spikes.mean())
-        correction = np.tanh(centered_activity * 2.0).reshape(6, 3)
+        # The motor readout is the plastic policy: reward-modulated eligibility
+        # links recently active neurons to exploratory joint corrections.
+        action_noise = self._rng.normal(0.0, 0.10, 18).astype(np.float32) if learning_mode else np.zeros(18, dtype=np.float32)
+        self.motor_eligibility *= np.float32(0.96)
+        if learning_mode:
+            self.motor_eligibility += np.outer(spikes, action_noise)
+            self.motor_weights += np.float32(0.025 * reward_prediction_error) * self.motor_eligibility
+            np.clip(self.motor_weights, -0.35, 0.35, out=self.motor_weights)
+        motor_activity = self.motor_weights.T @ spikes + action_noise
+        correction = np.tanh(motor_activity * 2.0).reshape(6, 3)
         tripod = np.repeat(cpg, 3).reshape(6, 3)
         # No physics-backed or hardware evaluator currently validates the SNN
         # policy, so synthetic rewards must not authorize learned motor output.
