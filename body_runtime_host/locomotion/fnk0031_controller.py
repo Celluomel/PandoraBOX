@@ -276,11 +276,10 @@ class FNK0031LocomotionController:
         ], dtype=np.float32)
         foot_motion = np.zeros((6, 3), dtype=np.float32)
         if turn_direction:
-            foot_motion[:, 0] = -leg_positions[:, 1] * turn_direction * cpg * 0.72
-            foot_motion[:, 1] = leg_positions[:, 0] * turn_direction * cpg * 0.72
+            foot_motion[:, 0] = -leg_positions[:, 1] * turn_direction * cpg * 0.55
+            foot_motion[:, 1] = leg_positions[:, 0] * turn_direction * cpg * 0.55
             foot_motion[:, 2] = self.cpg.foot_lift
-        else:
-            foot_motion[:, 1] = cpg * 0.45
+        elif moving:
             foot_motion[:, 2] = self.cpg.foot_lift
         input_current = 12.0 + np.repeat(cpg, 3) * 8.0 if moving else np.zeros(18, dtype=np.float32)
         input_current[::3] += np.float32(-pitch * 2.0)
@@ -307,6 +306,10 @@ class FNK0031LocomotionController:
         motor_activity = self.motor_weights.T @ spikes + action_noise
         correction = np.tanh(motor_activity * 2.0).reshape(6, 3)
         tripod = np.repeat(cpg, 3).reshape(6, 3)
+        if turn_direction:
+            tripod[:, 0] = foot_motion[:, 0]
+            tripod[:, 1] = foot_motion[:, 1]
+            tripod[:, 2] = foot_motion[:, 2]
         # No physics-backed or hardware evaluator currently validates the SNN
         # policy, so synthetic rewards must not authorize learned motor output.
         snn_weight = 0.18 if learning_mode else 0.0

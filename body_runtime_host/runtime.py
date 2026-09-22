@@ -268,6 +268,11 @@ class BodyHost:
                 decision = dict(wm._last_decision or {})
                 sim = wm.sim
                 gait = str(decision.get("action") or "idle")
+                worldmodel_pose = ({
+                    "body": [round(float(sim.px), 3), round(float(sim.py), 3)],
+                    "heading_deg": round(math.degrees(float(sim.heading)), 2),
+                    "step": int(sim.steps),
+                } if sim is not None else None)
             if gait not in {"forward", "backward", "turn_left", "turn_right"}:
                 gait = "idle"
             self._fnk_controller_last = self._fnk_controller.step(
@@ -277,6 +282,7 @@ class BodyHost:
                 "active": True,
                 "mode": "local_simulation",
                 "gait": gait,
+                "worldmodel_pose": worldmodel_pose,
                 "actuation": False,
                 "body_heading_deg": round(math.degrees(float(sim.heading)), 1) if sim else 0.0,
                 "imu_available": True,

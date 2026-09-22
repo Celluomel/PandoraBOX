@@ -95,6 +95,7 @@ class FNK0031LocomotionControllerTest(unittest.TestCase):
             controller = FNK0031LocomotionController(Path(tmp) / "weights.npz")
             state = controller.step(imu=None, reward=0.0)
             self.assertEqual(len(state["joint_targets"]), 6)
+            self.assertTrue(all(leg[0] == 0.0 and leg[1] == 0.0 for leg in state["foot_motion"]))
             self.assertEqual(len(state["spikes"]), 18)
             self.assertEqual(state["servo_count"], 18)
             self.assertEqual([x["index"] for x in state["servo_targets"]], list(range(1, 19)))
@@ -205,6 +206,9 @@ class BodySingletonStartupTest(unittest.TestCase):
 
             class Sim:
                 heading = 1.5707963267948966
+                px = 4.0
+                py = 6.0
+                steps = 12
 
             sim = Sim()
 
@@ -236,6 +240,7 @@ class BodySingletonStartupTest(unittest.TestCase):
         self.assertFalse(result["actuation"])
         self.assertEqual(result["body_heading_deg"], 90.0)
         self.assertEqual(result["gait"], "turn_left")
+        self.assertEqual(result["worldmodel_pose"], {"body": [4.0, 6.0], "heading_deg": 90.0, "step": 12})
         self.assertEqual(host._fnk_controller.gait, "turn_left")
 
     def test_locomotion_simulation_waits_for_running_world_model(self):
