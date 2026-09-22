@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch
 
-from utils.shared_embedder import APIEmbedder
+from utils.shared_embedder import APIEmbedder, interactive_priority_active, set_interactive_priority
 
 
 class InteractiveEmbeddingPriorityTests(unittest.TestCase):
@@ -12,6 +12,12 @@ class InteractiveEmbeddingPriorityTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "deferred during interactive turn"):
                 APIEmbedder("nomic", "http://localhost:1234/v1").encode(["background work"])
         fast_fallback.assert_not_called()
+
+    def test_priority_state_can_be_set_and_cleared(self):
+        set_interactive_priority(True)
+        self.assertTrue(interactive_priority_active())
+        set_interactive_priority(False)
+        self.assertFalse(interactive_priority_active())
 
 
 if __name__ == "__main__":

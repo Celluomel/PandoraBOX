@@ -62,6 +62,11 @@ def set_interactive_priority(active: bool) -> None:
         _interactive_priority.clear()
 
 
+def interactive_priority_active() -> bool:
+    """Whether foreground chat currently owns shared model resources."""
+    return _interactive_priority.is_set()
+
+
 def _base_url_from_config():
     """Resolve the embeddings API base URL from config, with a safe default."""
     try:

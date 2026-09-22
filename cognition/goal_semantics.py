@@ -54,6 +54,9 @@ def embed(texts: Sequence[str]) -> Optional[np.ndarray]:
         values = [str(text) for text in texts]
         if not values:
             return np.empty((0, 0), dtype="float32")
+        from utils.shared_embedder import interactive_priority_active
+        if interactive_priority_active():
+            return None
         with _embedding_cache_lock:
             missing = list(dict.fromkeys(text for text in values if text not in _embedding_cache))
             if missing:
@@ -85,6 +88,9 @@ def embed(texts: Sequence[str]) -> Optional[np.ndarray]:
                 result.append(vector)
             return np.stack(result).astype("float32", copy=False)
     except Exception as e:  # noqa: BLE001 - never break a goal cycle
+        if "deferred during interactive turn" in str(e):
+            logger.debug("[goal_semantics] deferred embedding work during interactive chat")
+            return None
         logger.warning(
             "[goal_semantics] embeddings unavailable (%s); "
             "callers should use dictionary fallback" % e
