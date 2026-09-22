@@ -199,7 +199,7 @@ class BodyHost:
     def fnk0031_settings(self) -> dict:
         token = str(self.value("FNK0031_TOKEN") or self.value("ROBOT_TOKEN", "") or "")
         return {
-            "url": str(self.value("FNK0031_URL") or self.value("ROBOT_URL", "") or ""),
+            "url": self._robot_url(),
             "token_configured": bool(token),
             "timeout": float(self.value("FNK0031_TIMEOUT", self.value("ROBOT_TIMEOUT", 5.0)) or 5.0),
             "poll_interval": int(self.value("FNK0031_POLL_INTERVAL", self.value("ROBOT_POLL_INTERVAL", 5)) or 5),
@@ -328,14 +328,27 @@ class BodyHost:
 
     # ── Robot (MAIN sensorimetry channel) ──────────────────────────────────
 
+    def _robot_url(self) -> str:
+        """Prefer the FNK0031 endpoint; ignore the old localhost placeholder."""
+        url = str(self.value("FNK0031_URL", "") or "").strip()
+        if url:
+            return url.rstrip("/")
+        legacy_url = str(self.value("ROBOT_URL", "") or "").strip()
+        if legacy_url and (urlparse(legacy_url).hostname or "").lower() not in {"localhost", "127.0.0.1", "::1"}:
+            return legacy_url.rstrip("/")
+        return ""
+
+    def _robot_token(self) -> str:
+        return str(self.value("FNK0031_TOKEN") or self.value("ROBOT_TOKEN", "") or "")
+
     def _robot_configured(self) -> bool:
-        return bool(self.value("BODY_PLUGIN_ROBOT_ENABLED", False)) and bool(str(self.value("ROBOT_URL", "") or "").strip())
+        return bool(self.value("BODY_PLUGIN_ROBOT_ENABLED", False)) and bool(self._robot_url())
 
     def fetch_robot_sensors(self) -> dict | None:
-        """GET {ROBOT_URL}/sensors — the robot's current state + scene."""
-        url = str(self.value("ROBOT_URL", "") or "").rstrip("/")
-        token = str(self.value("ROBOT_TOKEN", "") or "")
-        timeout = float(self.value("ROBOT_TIMEOUT", 5.0) or 5.0)
+        """GET {FNK0031_URL}/sensors — the robot's current state + scene."""
+        url = self._robot_url()
+        token = self._robot_token()
+        timeout = float(self.value("FNK0031_TIMEOUT", self.value("ROBOT_TIMEOUT", 5.0)) or 5.0)
         try:
             sensors = _http_get(f"{url}/sensors", token=token, timeout=timeout)
             if isinstance(sensors, dict):
@@ -441,8 +454,8 @@ class BodyHost:
     def robot_status(self) -> dict:
         return {
             "enabled": bool(self.value("BODY_PLUGIN_ROBOT_ENABLED", False)),
-            "url": str(self.value("ROBOT_URL", "") or ""),
-            "token_set": bool(str(self.value("ROBOT_TOKEN", "") or "")),
+            "url": self._robot_url(),
+            "token_set": bool(self._robot_token()),
             "last_ok": self._robot_last_ok,
             "last_ok_age_s": round(time.time() - self._robot_last_ok, 1) if self._robot_last_ok else None,
             "last_error": self._robot_last_error,
@@ -455,7 +468,7 @@ class BodyHost:
         while not self.stop_event.is_set():
             interval = 5
             if self._robot_configured():
-                interval = max(1, min(300, int(self.value("ROBOT_POLL_INTERVAL", 5) or 5)))
+                interval = max(1, min(300, int(self.value("FNK0031_POLL_INTERVAL", self.value("ROBOT_POLL_INTERVAL", 5)) or 5)))
                 sensors = self.fetch_robot_sensors()
                 if sensors is not None:
                     self.publish_robot(sensors)

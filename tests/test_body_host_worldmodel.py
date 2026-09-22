@@ -76,6 +76,20 @@ class RobotSimServerTest(unittest.TestCase):
 
 
 class BodySingletonStartupTest(unittest.TestCase):
+    def test_robot_poll_uses_fnk_endpoint_and_ignores_legacy_localhost_placeholder(self):
+        from body_runtime_host.runtime import BodyHost
+        host = BodyHost()
+        host.config = {
+            "BODY_PLUGIN_ROBOT_ENABLED": True,
+            "ROBOT_URL": "http://127.0.0.1:9100",
+        }
+        self.assertFalse(host._robot_configured())
+        self.assertEqual(host.robot_status()["url"], "")
+
+        host.config["FNK0031_URL"] = "http://192.168.0.42:9100/"
+        self.assertTrue(host._robot_configured())
+        self.assertEqual(host.robot_status()["url"], "http://192.168.0.42:9100")
+
     def test_host_does_not_start_sensor_pollers_when_http_port_is_taken(self):
         from body_runtime_host.runtime import BodyHost
         host = BodyHost()
