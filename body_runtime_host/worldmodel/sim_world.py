@@ -28,6 +28,7 @@ from .types import Action, BodyState, Observation, Outcome, SceneObject
 GRID = 12          # room is GRID x GRID units
 REACH = 1.8        # base reach (metres)
 STRENGTH = 30.0    # max pushable mass
+MOBILE_OBSTACLE_SPEED = 0.55  # mean grid cells per Body decision
 
 
 class SimulatedRoom:
@@ -52,6 +53,8 @@ class SimulatedRoom:
         self._mobile_was_near = False
         self._mobile_velocity = (0.0, 0.0)
         self._mobile_blocked = False
+        self._mobile_motion_phase = 0.5
+        self._mobile_current_speed = MOBILE_OBSTACLE_SPEED
         self.success_count = 0
 
     # ── setup ───────────────────────────────────────────────────────────────
@@ -93,6 +96,8 @@ class SimulatedRoom:
         self._mobile_was_near = False
         self._mobile_velocity = (0.0, 0.0)
         self._mobile_blocked = False
+        self._mobile_motion_phase = 0.5
+        self._mobile_current_speed = MOBILE_OBSTACLE_SPEED
         self.success_count = 0
 
     def shuffle_objects(self) -> None:
@@ -136,11 +141,16 @@ class SimulatedRoom:
     # ── perception ──────────────────────────────────────────────────────────
 
     def body_state(self) -> BodyState:
+        next_mobile_speed = self._mobile_speed_for_step(self.steps + 1)
         return BodyState(
             position=[self.px, self.py, 0.0],
             orientation=self.heading,
             capabilities={
                 "reach": REACH, "speed": 1.0, "max_speed": 2.0,
+                "mobile_obstacle_speed": next_mobile_speed,
+                "mobile_obstacle_moves_next": self._mobile_motion_phase + next_mobile_speed >= 1.0,
+                "mobile_motion_phase": self._mobile_motion_phase,
+                "simulation_step": self.steps,
                 "strength": STRENGTH, "gripper": 1.0,
                 "world_width": float(self.width), "world_height": float(self.height),
                 "task_stage": self.task_stage,
@@ -192,22 +202,35 @@ class SimulatedRoom:
                 return False
         return True
 
-    def _move_mobile_obstacle(self) -> bool:
-        """Move the dynamic obstacle toward the Body, stopping before overlap.
+    def _move_mobile_obstacle(self, body_position: tuple[float, float]) -> bool:
+        """Move toward the Body's last observed position at its own speed.
 
         The Body is deliberately an attractor: this creates observable dynamic
         collision risk for the navigation policy instead of teaching the
-        obstacle to keep away. Static geometry and the Body still block overlap.
+        obstacle to keep away. Motion is half-speed and one observation behind;
+        it cannot instantaneously mirror a Body action. Static geometry and
+        the Body still block overlap.
         """
         mobile = self.objects.get("mobile_obstacle")
         if mobile is None or self.done:
             return False
-        current_distance = math.hypot(mobile["x"] - self.px, mobile["y"] - self.py)
+        self._mobile_current_speed = self._mobile_speed_for_step(self.steps)
+        self._mobile_motion_phase += self._mobile_current_speed
+        if self._mobile_motion_phase < 1.0:
+            self._mobile_velocity = (0.0, 0.0)
+            self._mobile_blocked = False
+            near = math.hypot(mobile["x"] - self.px, mobile["y"] - self.py) <= 1.25
+            entered_near_zone = near and not self._mobile_was_near
+            self._mobile_was_near = near
+            return entered_near_zone
+        self._mobile_motion_phase -= 1.0
+        target_x, target_y = body_position
+        current_distance = math.hypot(mobile["x"] - target_x, mobile["y"] - target_y)
         candidates: list[tuple[float, float, float]] = []
         for dx, dy in ((1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)):
             nx, ny = mobile["x"] + dx, mobile["y"] + dy
             if self._free_cell(nx, ny, ignore_id="mobile_obstacle"):
-                distance = math.hypot(nx - self.px, ny - self.py)
+                distance = math.hypot(nx - target_x, ny - target_y)
                 if distance < current_distance:
                     candidates.append((distance, nx, ny))
         old_position = (float(mobile["x"]), float(mobile["y"]))
@@ -220,9 +243,15 @@ class SimulatedRoom:
         self._mobile_was_near = near
         return entered_near_zone
 
+    @staticmethod
+    def _mobile_speed_for_step(step: int) -> float:
+        """Smooth, repeatable acceleration/deceleration in [0.2, 0.9]."""
+        return 0.55 + 0.35 * math.sin(max(0, int(step)) * 0.18)
+
     def step(self, action: Action) -> Tuple[Observation, Outcome]:
         """Execute one action; return (next_observation, outcome)."""
         self.steps += 1
+        body_position_before_action = (self.px, self.py)
         a = action.type
         reward = 0.0
         kind = "neutral"
@@ -350,7 +379,7 @@ class SimulatedRoom:
 
         # The environment changes after the action, so the next decision must
         # use the resulting observation rather than a frozen obstacle map.
-        near_miss = self._move_mobile_obstacle()
+        near_miss = self._move_mobile_obstacle(body_position_before_action)
 
         # carried object follows the body (it is held, not left behind)
         if self.carrying is not None:
@@ -428,7 +457,7 @@ class SimulatedRoom:
             "steps": self.steps,
             "collisions": self.collision_count,
             "near_misses": self.near_miss_count,
-            "mobile_obstacle_speed_cells_per_action": 1.0,
+            "mobile_obstacle_speed_cells_per_action": round(self._mobile_current_speed, 3),
             "mobile_obstacle_distance": round(
                 math.hypot(self.objects["mobile_obstacle"]["x"] - self.px, self.objects["mobile_obstacle"]["y"] - self.py), 2
             ) if "mobile_obstacle" in self.objects else None,

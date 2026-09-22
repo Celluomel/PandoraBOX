@@ -207,6 +207,8 @@ class SimWorldTest(unittest.TestCase):
 
         room.step(Action(type="wait"))
         self.assertEqual(room.objects["mobile_obstacle"]["x"], 7.0)
+        room.step(Action(type="wait"))
+        self.assertEqual(room.objects["mobile_obstacle"]["x"], 7.0, "pursuer moves at half the Body's decision rate")
         _, outcome = room.step(Action(type="wait"))
 
         mobile = room.objects["mobile_obstacle"]
@@ -230,7 +232,9 @@ class SimWorldTest(unittest.TestCase):
         _, outcome = room.step(Action(type="sprint", params={"speed": 2.0}))
         self.assertEqual((room.px, room.py), (4.0, 5.0))
         self.assertIn("sprinted 2 cells", outcome.description)
-        self.assertEqual(room.status()["mobile_obstacle_speed_cells_per_action"], 1.0)
+        self.assertGreaterEqual(room.status()["mobile_obstacle_speed_cells_per_action"], 0.2)
+        self.assertLessEqual(room.status()["mobile_obstacle_speed_cells_per_action"], 0.9)
+        self.assertEqual(room.objects["mobile_obstacle"]["x"], 7.0, "pursuer reacts to the pre-sprint Body position")
 
         room.objects["obstacle"]["x"] = 5.0
         room.objects["obstacle"]["y"] = 5.0
@@ -292,6 +296,29 @@ class SimWorldTest(unittest.TestCase):
         room.objects["obstacle"]["y"] = 5.0
         guidance = navigation_guidance(room.observe(), room.body_state())
         self.assertEqual(guidance["recommended"], "wait")
+
+    def test_predictive_route_breaks_chase_loop_and_reaches_goal(self):
+        from body_runtime_host.worldmodel import Action, SimulatedRoom
+        from body_runtime_host.worldmodel.navigation import navigation_guidance
+
+        room = SimulatedRoom()
+        room.px, room.py, room.heading = 10.0, 6.0, -math.pi / 2
+        room.carrying = "cup"
+        room.task_stage = "to_shelf"
+        room.shelf = (5.0, 5.0)
+        room.objects["table"].update(x=8.0, y=9.0)
+        room.objects["chair"].update(x=9.0, y=3.0)
+        room.objects["obstacle"].update(x=1.0, y=4.0)
+        room.objects["mobile_obstacle"].update(x=9.0, y=6.0)
+        room.objects["cup"].update(x=10.0, y=6.0)
+
+        for _ in range(10):
+            guidance = navigation_guidance(room.observe(), room.body_state(), carrying=True)
+            room.step(Action(type=guidance["recommended"] or "wait", params={"speed": 2.0}))
+            if room.done:
+                break
+        self.assertTrue(room.done, "time-aware routing should avoid chasing the moving obstacle in a loop")
+        self.assertEqual(room.carrying, None)
 
     def test_full_task_is_solvable(self):
         """A scripted (non-learned) policy must be able to solve the task —
