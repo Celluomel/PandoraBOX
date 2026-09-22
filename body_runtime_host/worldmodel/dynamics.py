@@ -46,10 +46,14 @@ def encode_action(action: Dict[str, Any]) -> np.ndarray:
     """Action dict -> fixed-size vector (one-hot + params)."""
     vec = np.zeros(ACTION_DIM, dtype="float32")
     t = str(action.get("type") or "wait")
+    params = action.get("params") or {}
+    # Keep the persisted action-vector shape stable; sprint is a faster
+    # forward primitive whose requested speed is carried in dx.
+    if t == "sprint":
+        t = "forward"
     idx = ACTION_TYPES.index(t) if t in ACTION_TYPES else ACTION_TYPES.index("wait")
     vec[idx] = 1.0
-    params = action.get("params") or {}
-    dx = float(params.get("dx", 0.0))
+    dx = float(params.get("dx", params.get("speed", 0.0)))
     dy = float(params.get("dy", 0.0))
     has_target = 1.0 if action.get("target") else 0.0
     kind = str(params.get("target_kind") or "")

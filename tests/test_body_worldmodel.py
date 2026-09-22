@@ -220,6 +220,38 @@ class SimWorldTest(unittest.TestCase):
         self.assertEqual(room.collision_count, 1)
         self.assertEqual((room.px, room.py), (5.0, 5.0))
 
+    def test_sprint_uses_speed_advantage_without_tunneling(self):
+        from body_runtime_host.worldmodel import Action, SimulatedRoom
+
+        room = SimulatedRoom()
+        room.px, room.py, room.heading = 2.0, 5.0, 0.0
+        room.objects["mobile_obstacle"]["x"] = 8.0
+        room.objects["mobile_obstacle"]["y"] = 5.0
+        _, outcome = room.step(Action(type="sprint", params={"speed": 2.0}))
+        self.assertEqual((room.px, room.py), (4.0, 5.0))
+        self.assertIn("sprinted 2 cells", outcome.description)
+        self.assertEqual(room.status()["mobile_obstacle_speed_cells_per_action"], 1.0)
+
+        room.objects["obstacle"]["x"] = 5.0
+        room.objects["obstacle"]["y"] = 5.0
+        _, blocked = room.step(Action(type="sprint", params={"speed": 2.0}))
+        self.assertEqual((room.px, room.py), (4.0, 5.0), "sprint must stop before fixed geometry")
+        self.assertEqual(blocked.kind, "danger")
+
+    def test_fixed_object_can_block_pursuing_obstacle(self):
+        from body_runtime_host.worldmodel import Action, SimulatedRoom
+
+        room = SimulatedRoom()
+        room.px, room.py = 5.0, 5.0
+        room.objects["obstacle"]["x"] = 7.0
+        room.objects["obstacle"]["y"] = 5.0
+        room.objects["mobile_obstacle"]["x"] = 8.0
+        room.objects["mobile_obstacle"]["y"] = 5.0
+        room.step(Action(type="wait"))
+        status = room.status()
+        self.assertEqual(status["objects"]["mobile_obstacle"]["x"], 8.0)
+        self.assertTrue(status["mobile_obstacle_blocked_by_static_object"])
+
     def test_navigation_detours_and_keeps_advancing_near_mobile_obstacle(self):
         from body_runtime_host.worldmodel import Action, SimulatedRoom
         from body_runtime_host.worldmodel.navigation import navigation_guidance
@@ -236,7 +268,7 @@ class SimWorldTest(unittest.TestCase):
 
         room.step(Action(type=guidance["recommended"]))
         next_guidance = navigation_guidance(room.observe(), room.body_state())
-        self.assertEqual(next_guidance["recommended"], "forward")
+        self.assertIn(next_guidance["recommended"], {"forward", "sprint"})
         room.step(Action(type="forward"))
         self.assertGreater(room.py, 5.0)
 
@@ -321,6 +353,25 @@ class CoreLoopTest(unittest.TestCase):
             wm.step()
             payload = json.dumps(wm.status_summary(), default=str)
             self.assertIn("prediction_error_ema", payload)
+
+    def test_stalled_objective_alert_is_exposed_to_brain(self):
+        from unittest.mock import patch
+        from body_runtime_host.worldmodel import EmbodiedWorldModel
+
+        with tempfile.TemporaryDirectory() as tmp:
+            wm = EmbodiedWorldModel(body=None, data_dir=tmp)
+            wm._navigation_stagnation = 7
+            wm._navigation_objective_key = ("to_target", (10.0, 9.0))
+            stalled = {
+                "target": [10.0, 9.0], "phase": "to_target", "distance_to_target": 12.0,
+                "recommended": "turn_left", "forbidden": [], "prior": {},
+            }
+            with patch("body_runtime_host.worldmodel.core.navigation_guidance", return_value=stalled):
+                wm.step()
+            status = wm.status_summary()
+            self.assertEqual(status["goal_status"]["state"], "blocked")
+            self.assertEqual(status["navigation_alert"]["type"], "goal_progress_stalled")
+            self.assertIn("BODY ALERT", wm.context_for_brain())
 
     def test_reset_clears_state(self):
         from body_runtime_host.worldmodel import EmbodiedWorldModel

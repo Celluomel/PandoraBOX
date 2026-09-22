@@ -50,6 +50,8 @@ class SimulatedRoom:
         self.collision_count = 0
         self.near_miss_count = 0
         self._mobile_was_near = False
+        self._mobile_velocity = (0.0, 0.0)
+        self._mobile_blocked = False
         self.success_count = 0
 
     # ── setup ───────────────────────────────────────────────────────────────
@@ -89,6 +91,8 @@ class SimulatedRoom:
         self.collision_count = 0
         self.near_miss_count = 0
         self._mobile_was_near = False
+        self._mobile_velocity = (0.0, 0.0)
+        self._mobile_blocked = False
         self.success_count = 0
 
     def shuffle_objects(self) -> None:
@@ -136,7 +140,7 @@ class SimulatedRoom:
             position=[self.px, self.py, 0.0],
             orientation=self.heading,
             capabilities={
-                "reach": REACH, "speed": 1.0,
+                "reach": REACH, "speed": 1.0, "max_speed": 2.0,
                 "strength": STRENGTH, "gripper": 1.0,
                 "world_width": float(self.width), "world_height": float(self.height),
                 "task_stage": self.task_stage,
@@ -206,8 +210,11 @@ class SimulatedRoom:
                 distance = math.hypot(nx - self.px, ny - self.py)
                 if distance < current_distance:
                     candidates.append((distance, nx, ny))
+        old_position = (float(mobile["x"]), float(mobile["y"]))
         if candidates:
             _, mobile["x"], mobile["y"] = min(candidates)
+        self._mobile_velocity = (float(mobile["x"]) - old_position[0], float(mobile["y"]) - old_position[1])
+        self._mobile_blocked = not candidates and current_distance > 1.0
         near = math.hypot(mobile["x"] - self.px, mobile["y"] - self.py) <= 1.25
         entered_near_zone = near and not self._mobile_was_near
         self._mobile_was_near = near
@@ -221,12 +228,24 @@ class SimulatedRoom:
         kind = "neutral"
         desc = ""
 
-        if a == "forward":
-            nx = self.px + math.cos(self.heading)
-            ny = self.py + math.sin(self.heading)
-            if self._free_cell(nx, ny):
+        if a in {"forward", "sprint"}:
+            max_speed = float(self.body_state().capabilities.get("max_speed", 1.0))
+            requested_speed = 1.0 if a == "forward" else float(action.params.get("speed", max_speed))
+            distance = max(1.0, min(max_speed, requested_speed))
+            moved = 0
+            for _ in range(int(math.floor(distance))):
+                nx = self.px + math.cos(self.heading)
+                ny = self.py + math.sin(self.heading)
+                if not self._free_cell(nx, ny):
+                    break
                 self.px, self.py = nx, ny
-                desc = "moved forward"
+                moved += 1
+            if moved:
+                desc = f"sprinted {moved} cells" if a == "sprint" else "moved forward"
+                if moved < int(math.floor(distance)):
+                    kind = "danger"
+                    reward -= 0.2
+                    desc += "; sprint halted by an obstacle"
             else:
                 self.collision_count += 1
                 reward -= 0.2
@@ -402,6 +421,7 @@ class SimulatedRoom:
             "width": self.width, "height": self.height,
             "body": [round(self.px, 2), round(self.py, 2)],
             "heading_deg": round(math.degrees(self.heading), 1),
+            "body_max_speed_cells_per_action": 2.0,
             "carrying": self.carrying,
             "task_stage": self.task_stage,
             "goal_sequence": ["to_target", "to_table", "to_target_from_table", "to_shelf"],
@@ -414,5 +434,11 @@ class SimulatedRoom:
             "steps": self.steps,
             "collisions": self.collision_count,
             "near_misses": self.near_miss_count,
+            "mobile_obstacle_speed_cells_per_action": 1.0,
+            "mobile_obstacle_distance": round(
+                math.hypot(self.objects["mobile_obstacle"]["x"] - self.px, self.objects["mobile_obstacle"]["y"] - self.py), 2
+            ) if "mobile_obstacle" in self.objects else None,
+            "mobile_obstacle_velocity": [round(v, 2) for v in self._mobile_velocity],
+            "mobile_obstacle_blocked_by_static_object": self._mobile_blocked,
             "successes": self.success_count,
         }

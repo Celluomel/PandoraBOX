@@ -312,6 +312,8 @@ def action_space_for_body(body: BodyState) -> List[Action]:
         Action(type="turn_right"),
         Action(type="wait"),
     ]
+    if float(body.capabilities.get("max_speed", 1.0)) > 1.0:
+        actions.append(Action(type="sprint", params={"speed": float(body.capabilities["max_speed"])}))
     if float(body.capabilities.get("gripper", 1.0)) > 0.5:
         actions += [Action(type="grab"), Action(type="release")]
     if float(body.capabilities.get("strength", 0.0)) > 1.0:

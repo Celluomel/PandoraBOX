@@ -99,6 +99,9 @@ class EmbodiedWorldModel:
         self._last_loss: Optional[Dict[str, float]] = None
         self._last_decision: Optional[Dict[str, Any]] = None
         self._last_navigation: Dict[str, Any] = {}
+        self._navigation_stagnation = 0
+        self._navigation_objective_key: Optional[tuple] = None
+        self._navigation_alert: Optional[Dict[str, Any]] = None
         self._last_report: Optional[Dict[str, Any]] = None
         self._last_success_step = -1
         # Keep the latest perception boundary observable without re-polling a
@@ -350,6 +353,48 @@ class EmbodiedWorldModel:
                 ],
             }
             self._last_navigation = navigation
+            # Detect a sustained failure to approach the current objective.
+            # Turning to route around an obstacle is normal; only persistent
+            # non-progress becomes an alert for the Brain to interpret.
+            target = navigation.get("target")
+            phase = navigation.get("phase")
+            objective_key = (phase, tuple(target) if target else None)
+            if objective_key != self._navigation_objective_key:
+                self._navigation_stagnation = 0
+                self._navigation_alert = None
+                self._navigation_objective_key = objective_key
+            after_position = self._last_body_state.position if self._last_body_state else body_state.position
+            after_distance = (
+                math.hypot(float(target[0]) - float(after_position[0]), float(target[1]) - float(after_position[1]))
+                if target else None
+            )
+            same_objective = self._navigation_alert is None or (
+                self._navigation_alert.get("phase") == phase
+                and self._navigation_alert.get("target") == target
+            )
+            before_distance = navigation.get("distance_to_target")
+            if target and before_distance is not None and after_distance is not None and after_distance > 1.3:
+                if same_objective and after_distance >= float(before_distance) - 0.05:
+                    self._navigation_stagnation += 1
+                else:
+                    self._navigation_stagnation = 0
+                    self._navigation_alert = None
+                if self._navigation_stagnation >= 8:
+                    sim_status = self.sim.status() if self.sim is not None else {}
+                    self._navigation_alert = {
+                        "type": "goal_progress_stalled",
+                        "severity": "warning",
+                        "phase": phase,
+                        "target": target,
+                        "steps_without_progress": self._navigation_stagnation,
+                        "mobile_obstacle_distance": sim_status.get("mobile_obstacle_distance"),
+                        "mobile_obstacle_blocked_by_static_object": sim_status.get("mobile_obstacle_blocked_by_static_object", False),
+                        "message": "Body has not reduced distance to its current objective for multiple actions; replan around static cover, use speed advantage, or request assistance.",
+                        "timestamp": time.time(),
+                    }
+            else:
+                self._navigation_stagnation = 0
+                self._navigation_alert = None
             self._last_report = report
             return self._step_summary(episode, decision, aff, pred_error)
 
@@ -651,6 +696,12 @@ class EmbodiedWorldModel:
                 + " → ".join(sim_status.get("goal_sequence") or [])
                 + "."
             )
+            if self._navigation_alert:
+                alert = self._navigation_alert
+                lines.append(
+                    f"- BODY ALERT ({alert['severity']}): {alert['message']} "
+                    f"Objective phase={alert['phase']}; no progress for {alert['steps_without_progress']} actions."
+                )
         if source_status is not None:
             src = source_status.get("source")
             if src == "robot":
@@ -747,6 +798,9 @@ class EmbodiedWorldModel:
             self._last_loss = None
             self._last_decision = None
             self._last_navigation = {}
+            self._navigation_stagnation = 0
+            self._navigation_objective_key = None
+            self._navigation_alert = None
             self._last_observation = None
             self._last_body_state = None
             self._last_affordances = {}
@@ -778,13 +832,15 @@ class EmbodiedWorldModel:
                 },
                 "last_decision": self._last_decision,
                 "navigation": self._last_navigation,
+                "navigation_alert": self._navigation_alert,
                 "last_report": self._last_report,
                 "perception": self._perception_summary(),
                 "recent_steps": list(self._step_history)[-12:],
                 "sim": sim_status,
                 "goal_status": {
-                    "state": "achieved" if sim_status and sim_status.get("done") else "in_progress",
+                    "state": "achieved" if sim_status and sim_status.get("done") else "blocked" if self._navigation_alert else "in_progress",
                     "achieved": bool(sim_status and sim_status.get("done")),
+                    "alert": self._navigation_alert,
                     "steps": int(sim_status.get("steps", 0)) if sim_status else 0,
                     "successes": int(sim_status.get("successes", 0)) if sim_status else 0,
                     "sequence": list(sim_status.get("goal_sequence") or []) if sim_status else [],

@@ -128,6 +128,7 @@ def navigation_guidance(observation: Any, body: Any, carrying: bool = False) -> 
 
     prior: Dict[str, float] = {}
     forbidden: set[str] = set()
+    mobile = next((o for o in objects if str(getattr(o, "kind", "")) == "mobile_obstacle"), None)
     recommended: str | None = None
     phase = "to_target"
     distance: float | None = None
@@ -160,6 +161,31 @@ def navigation_guidance(observation: Any, body: Any, carrying: bool = False) -> 
         if routed is not None:
             recommended = routed
             prior[routed] = max(prior.get(routed, 0.0), 3.0)
+        # When the pursuer is close, spend the Body's speed advantage to
+        # create separation, but only if every traversed cell is clear.
+        max_speed = int(float(body.capabilities.get("max_speed", 1.0)))
+        width = body.capabilities.get("world_width")
+        height = body.capabilities.get("world_height")
+        if recommended == "forward" and max_speed >= 2 and mobile is not None:
+            mobile_distance = math.hypot(float(mobile.position[0]) - px, float(mobile.position[1]) - py)
+            path_clear = True
+            for step in (1, 2):
+                cell = (px + math.cos(heading) * step, py + math.sin(heading) * step)
+                out_of_bounds = (
+                    width is not None and height is not None
+                    and (cell[0] < 0 or cell[1] < 0 or cell[0] >= float(width) or cell[1] >= float(height))
+                )
+                if out_of_bounds or any(
+                    obj is not mobile
+                    and str(getattr(obj, "kind", "")) in {"obstacle", "table", "chair"}
+                    and math.hypot(float(obj.position[0]) - cell[0], float(obj.position[1]) - cell[1]) < 0.6
+                    for obj in objects
+                ) or math.hypot(float(mobile.position[0]) - cell[0], float(mobile.position[1]) - cell[1]) < 0.6:
+                    path_clear = False
+                    break
+            if mobile_distance <= 4.0 and path_clear:
+                recommended = "sprint"
+                prior["sprint"] = 3.4
         if not carrying and distance <= grab_distance:
             prior["grab"] = 1.6
             recommended = "grab"
@@ -228,4 +254,7 @@ def navigation_guidance(observation: Any, body: Any, carrying: bool = False) -> 
         "recommended": recommended,
         "obstacle_ahead": bool(nearby_obstacles),
         "boundary_ahead": boundary_ahead,
+        "mobile_obstacle_distance": round(
+            math.hypot(float(mobile.position[0]) - px, float(mobile.position[1]) - py), 3
+        ) if mobile is not None else None,
     }
