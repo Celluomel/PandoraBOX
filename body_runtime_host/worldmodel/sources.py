@@ -268,7 +268,9 @@ class RobotHttpSource:
             body = BodyState(
                 position=pos,
                 orientation=float(payload.get("orientation", 0.0)),
-                posture={"carrying": carrying, "battery": battery},
+                posture={"carrying": carrying, "battery": battery,
+                         "imu": payload.get("imu") or payload.get("imu_data") or {},
+                         "snn": payload.get("snn") or {}},
                 capabilities=dict(self.capabilities),
                 timestamp=obs.timestamp,
             )
@@ -374,6 +376,25 @@ class FNK0031WifiSource(RobotHttpSource):
             capabilities={"reach": 0.7, "speed": 0.6, "strength": 2.0, "gripper": 0.0, "legs": 6},
             actuation_enabled=bool(config.get("FNK0031_ACTUATION_ENABLED", config.get("BODY_ACTUATION_ENABLED", False))),
         )
+        self.snn_enabled = bool(config.get("FNK0031_SNN_ENABLED", False))
+        self.snn_controller = None
+        if self.snn_enabled:
+            try:
+                from body_runtime_host.locomotion import FNK0031LocomotionController
+                self.snn_controller = FNK0031LocomotionController()
+            except Exception as exc:
+                self.last_error = f"SNN controller unavailable: {exc}"
+                logger.warning("[fnk0031] SNN controller unavailable: %s", exc)
+
+    def execute_authorized(self, action: Action) -> Tuple[Observation, Outcome]:
+        # The SNN creates a bounded gait command; this method remains the only
+        # place where it can reach the physical adapter.
+        if self.snn_controller is not None and action.type in {"forward", "backward", "turn_left", "turn_right"}:
+            imu = (self._last_body.posture.get("imu") if self._last_body else None)
+            learned = self.snn_controller.step(imu=imu, gait=action.type)
+            action = Action(type=action.type, target=action.target,
+                            params={**action.params, "gait": action.type, "snn": learned})
+        return super().execute_authorized(action)
 
 
 class HAFallbackSource:

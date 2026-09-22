@@ -72,3 +72,22 @@ to expose a timestamped locomotion stream from the board or simulator:
 That telemetry can then become a Body observation and be evaluated by the
 world model without mixing motor-control learning with the Brain's language
 conversation.
+
+## FNK0031 controller now included
+
+The Body contains a first real `FNK0031LocomotionController` implementation:
+
+- a six-leg tripod CPG;
+- an 18-neuron Izhikevich population;
+- bounded reward-modulated STDP updates;
+- pitch/roll stability input;
+- a competence gate that gradually permits learned correction;
+- persisted SNN weights under `data/body/locomotion/`.
+
+The controller is called only through the approved FNK0031 action path. It
+does not move a robot merely because `FNK0031_SNN_ENABLED` is enabled.
+
+An ESP32 is a good companion for the Mega 2560: it can expose the Wi-Fi API,
+relay sensor/IMU data and forward servo commands. It should not be treated as
+the owner of the learned brain until timing, watchdog and emergency-stop
+behaviour have been validated.
