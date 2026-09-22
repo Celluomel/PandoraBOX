@@ -124,10 +124,20 @@ class FNK0031LocomotionController:
         stability = max(-1.0, min(1.0, 1.0 - (abs(pitch) + abs(roll)) / 0.8)) if imu_available else 0.0
         total_reward = max(-1.0, min(1.0, float(reward) + 0.25 * stability))
         cpg = self.cpg.step(dt)
-        input_current = np.repeat(cpg, 3) * 4.0
+        input_current = 8.0 + np.repeat(cpg, 3) * 4.0
         input_current[::3] += np.float32(-pitch * 2.0)
         input_current[1::3] += np.float32(-roll * 2.0)
-        spikes = self.snn.step(input_current, total_reward, dt=dt)
+        # The gait clock uses seconds; Izhikevich integration uses milliseconds.
+        # Retain any spike from this control frame so the live view can show it.
+        neural_steps = max(1, int(round(dt * 1000.0)))
+        spikes = np.zeros(self.snn.n, dtype=np.float32)
+        for neural_step in range(neural_steps):
+            frame_spikes = self.snn.step(
+                input_current,
+                total_reward if neural_step == neural_steps - 1 else 0.0,
+                dt=1.0,
+            )
+            spikes = np.maximum(spikes, frame_spikes)
         correction = np.tanh(self.snn.weights.mean(axis=1)).reshape(6, 3)
         correction *= min(0.6, 0.05 + self.competence * 0.55)
         tripod = np.repeat(cpg, 3).reshape(6, 3)

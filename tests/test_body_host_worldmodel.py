@@ -94,6 +94,13 @@ class FNK0031LocomotionControllerTest(unittest.TestCase):
             self.assertEqual(len(state["joint_targets"]), 6)
             self.assertEqual(len(state["spikes"]), 18)
             self.assertEqual(state["competence"], 0.0)
+            observed_spikes = np.asarray(state["spikes"])
+            for _ in range(10):
+                observed_spikes = np.maximum(
+                    observed_spikes,
+                    controller.step(imu={}, reward=0.0)["spikes"],
+                )
+            self.assertGreater(int(observed_spikes.sum()), 0, "SNN should emit visible spikes during gait")
 
 
 class BodySingletonStartupTest(unittest.TestCase):
