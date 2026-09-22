@@ -229,7 +229,8 @@ class BodyHost:
         return sorted(result, key=lambda item: item["entity_id"])
 
     def publish(self, item: dict) -> None:
-        self.latest[item["entity_id"]] = item
+        snapshot = {**item, "source": "home_assistant", "observed_at": time.time()}
+        self.latest[item["entity_id"]] = snapshot
         message = {"type": "observation", "observation": {
             "source": "home_assistant",
             "kind": item["domain"],
@@ -614,7 +615,7 @@ class BodyHost:
 
             def do_GET(self):  # noqa: N802
                 path = self.path.split("?", 1)[0].rstrip("/") or "/"
-                if path in {"", "/", "/body"}:
+                if path in {"", "/", "/body", "/worldmodel"}:
                     self._send_html(BODY_GUI_HTML)
                 elif path == "/health":
                     wm = owner._worldmodel
@@ -635,6 +636,12 @@ class BodyHost:
                     self._send({"plugins": owner.plugins()})
                 elif path == "/plugins/home_assistant/settings":
                     self._send(owner.home_assistant_settings())
+                elif path == "/observations":
+                    self._send({"observations": sorted(
+                        owner.latest.values(),
+                        key=lambda item: float(item.get("observed_at") or 0),
+                        reverse=True,
+                    )})
                 elif path == "/config":
                     self._send({"config": {k: v for k, v in owner.config.items() if "TOKEN" not in k and "SECRET" not in k}})
                 elif path == "/worldmodel/status":
@@ -677,6 +684,13 @@ class BodyHost:
                     body = self._read_body()
                     if path == "/plugins/home_assistant/settings":
                         self._send(owner.update_home_assistant_settings(body))
+                    elif path == "/plugins/home_assistant/discover":
+                        try:
+                            entities = owner.discover()
+                            owner.save_discovery(entities)
+                            self._send({"ok": True, "status": "ok", "count": len(entities), "entities": entities})
+                        except Exception as exc:
+                            self._send({"ok": False, "message": str(exc), "entities": []}, 502)
                     else:
                         try:
                             self._send(owner.set_plugin_enabled(plugin_id, bool(body.get("enabled", False))))

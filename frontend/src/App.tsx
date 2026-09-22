@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useRef, useState, type ReactNode } from 'react';
-import { Activity, ArrowDown, ArrowLeft, ArrowUp, AudioLines, Check, ChevronRight, Copy, Database, Expand, Eye, HeartPulse, History, Lightbulb, MessageCircle, Mic, MicOff, Network, PanelRightOpen, Pause, Phone, Play, PlugZap, RefreshCw, Rss, Search, Send, Settings, SkipForward, Sparkles, Square, ThumbsDown, ThumbsUp, Volume2, Wifi, Workflow, X } from 'lucide-react';
+import { Activity, ArrowDown, ArrowLeft, ArrowUp, AudioLines, Check, ChevronRight, Copy, Database, Expand, Eye, HeartPulse, History, Lightbulb, MessageCircle, Mic, MicOff, Network, PanelRightOpen, Pause, Phone, Play, PlugZap, RefreshCw, Rss, Search, Send, Settings, Sparkles, Square, ThumbsDown, ThumbsUp, Volume2, Wifi, Workflow, X } from 'lucide-react';
 import Markdown from 'react-markdown';
 import { appendReasoning, readEvents, visibleText } from './stream.mjs';
 import { listenContinuously } from './audio';
@@ -531,47 +531,22 @@ function SettingsDevelopment() {
 }
 
 function WorldModelView() {
-  const [status, setStatus] = useState<any>(null);
-  const [anchors, setAnchors] = useState<any>(null);
-  const [episodes, setEpisodes] = useState<any[]>([]);
-  const [message, setMessage] = useState('');
-  const readStatus = async () => {
-    try {
-      const s = await fetch('/api/interface/body/worldmodel/status').then(checked).then(r => r.json());
-      setStatus(s); setMessage(s.goal_status?.achieved ? 'Goal achieved · full task completed.' : '');
-    } catch (e) { setMessage(e instanceof Error ? e.message : 'World model unavailable.'); }
-  };
-  const readDetails = async () => {
-    try {
-      const [a, e] = await Promise.all([
-        fetch('/api/interface/body/worldmodel/anchors').then(checked).then(r => r.json()),
-        fetch('/api/interface/body/worldmodel/episodes?limit=12').then(checked).then(r => r.json()),
-      ]);
-      setAnchors(a); setEpisodes(Array.isArray(e) ? e : []);
-    } catch { /* the fast perception stream remains usable if details lag */ }
-  };
-  const read = async () => { await Promise.all([readStatus(), readDetails()]); };
+  const [bodyUrl, setBodyUrl] = useState('');
+  const [error, setError] = useState('');
   useEffect(() => {
-    void read();
-    const statusTimer = setInterval(() => void readStatus(), 900);
-    const detailsTimer = setInterval(() => void readDetails(), 4000);
-    return () => { clearInterval(statusTimer); clearInterval(detailsTimer); };
+    let live = true;
+    void fetch('/api/interface/body/settings').then(checked).then(response => response.json()).then(result => {
+      const values = result.values || {};
+      let host = String(values.BODY_HOST || '').trim();
+      if (!host || ['0.0.0.0', '::', '127.0.0.1', 'localhost'].includes(host)) host = window.location.hostname;
+      const port = Number(values.BODY_PORT || 8766);
+      const scheme = values.BODY_SCHEME === 'https' ? 'https' : 'http';
+      if (live) setBodyUrl(`${scheme}://${host}:${port}/worldmodel`);
+    }).catch(e => { if (live) setError(e instanceof Error ? e.message : 'Body address is unavailable.'); });
+    return () => { live = false; };
   }, []);
-  const step = async () => { setMessage('Running one supervised Body step...'); try { await checked(await fetch('/api/interface/body/worldmodel/step', { method: 'POST' })); await read(); } catch (e) { setMessage(e instanceof Error ? e.message : 'World model step failed.'); } };
-  const run = async () => { const running = !Boolean(status?.running); setMessage(running ? 'Starting simulated Body loop with a shuffled scene...' : 'Pausing simulated Body loop...'); try { await checked(await fetch('/api/interface/body/worldmodel/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ running, shuffle: running }) })); await read(); } catch (e) { setMessage(e instanceof Error ? e.message : 'World model run control failed.'); } };
-  const reset = async () => { if (!window.confirm('Reset the embodied world model memory?')) return; setMessage('Resetting...'); try { await checked(await fetch('/api/interface/body/worldmodel/reset?clear_memory=true', { method: 'POST' })); await read(); } catch (e) { setMessage(e instanceof Error ? e.message : 'World model reset failed.'); } };
-  return <main className="settings-view world-model-view"><header className="settings-view-header"><div><span className="eyebrow">COGNITIVE ORGANISM / BODY</span><h1>Embodied World Model</h1><p className="muted">The Body’s perception, physical memory, learned dynamics and action policy. The Brain reads this model; the Body owns it.</p></div><div className="settings-view-actions"><span className="settings-message">{message}</span><button className="settings-action-button" onClick={() => void run()}>{status?.running ? <><Pause size={15}/>Pause simulation</> : <><Play size={15}/>Start simulation</>}</button><button className="settings-action-button" onClick={() => void step()}><SkipForward size={15}/>Step once</button><button className="settings-action-button" onClick={() => void reset()}><RefreshCw size={15}/>Reset memory</button><IconButton label="Close world model" onClick={() => window.close()}><X size={18}/></IconButton></div></header><div className="settings-stat-grid world-model-stats">{[['Mode', status?.mode || 'Unavailable'], ['Source', status?.source?.source || 'Unavailable'], ['Stage', status?.sim?.task_stage || '—'], ['Steps', status?.steps ?? 0], ['Running', status?.running ? 'Yes' : 'No'], ['Goal', status?.sim?.shelf ? `(${status.sim.shelf[0]}, ${status.sim.shelf[1]})` : '—'], ['Prediction error', status?.prediction_error_ema ?? '—'], ['Anchors', status?.memory?.lieux?.count !== undefined ? `${status.memory.lieux.count} places · ${status.memory.objets?.count || 0} objects` : '—']].map(([label, value]) => <div className="settings-stat" key={String(label)}><span>{label}</span><strong>{String(value)}</strong></div>)}</div><section className="settings-panel perception-panel"><div className="settings-section-title">Perception observatory</div><p className="muted perception-intro">Latest Body observation crossing into the world model. This is the structured scene available to Lumina, not a hidden simulator dump.</p><PerceptionMap perception={status?.perception} sim={status?.sim}/></section><div className="world-model-grid"><section className="settings-panel"><div className="settings-section-title">Lumina’s interpreted perception</div>{status?.perception?.available ? <><div className="perception-meta"><span>Source <b>{status.perception.source}</b></span><span>Age <b>{status.perception.age_seconds}s</b></span><span>Objects <b>{status.perception.objects?.length ?? 0}</b></span></div><p className="perception-text">{status.perception.text || 'No scene description supplied.'}</p><div className="settings-event-list perception-objects">{(status.perception.objects || []).map((object: any) => <div key={object.id}><span><b>{object.label}</b><small>{object.kind} · ({(object.position || []).slice(0, 2).map((n: number) => Number(n).toFixed(1)).join(', ')})</small></span><b>{object.mass} kg</b></div>)}</div></> : <p className="muted">Waiting for the first Body observation. Run a supervised step or enable the Body world-model loop.</p>}<div className="settings-section-title">Affordances</div><pre className="settings-log world-model-log">{status?.perception?.affordances ? JSON.stringify(status.perception.affordances, null, 2) : 'No affordances inferred yet.'}</pre></section><section className="settings-panel"><div className="settings-section-title">Physical memory</div><pre className="settings-log world-model-log">{anchors ? JSON.stringify({ stats: anchors.stats, top: anchors.top }, null, 2) : 'No anchors recorded.'}</pre><div className="settings-section-title">Learned embodied concepts</div>{status?.concepts?.top?.length ? <div className="settings-event-list">{status.concepts.top.map((concept: any) => <div key={concept.label}><span><b>{concept.label}</b><small>{concept.observations} observations · confidence {concept.confidence}</small></span><b>{concept.positive}/{concept.negative}</b></div>)}</div> : <p className="muted">No concepts consolidated yet.</p>}<div className="settings-section-title">Last policy decision</div><pre className="settings-log">{status?.last_decision ? JSON.stringify(status.last_decision, null, 2) : 'No decision recorded.'}</pre><div className="settings-section-title">Recent sensorimotor episodes</div>{episodes.length ? <div className="settings-event-list">{episodes.map((episode, index) => <div key={`${episode.step}-${index}`}><span><b>{episode.action}</b><small>step {episode.step} · reward {episode.reward} · error {episode.pred_error}</small></span><b>{episode.outcome}</b></div>)}</div> : <p className="muted">No episodes recorded yet.</p>}</section></div></main>;
-}
-
-function PerceptionMap({ perception, sim }: { perception?: any; sim?: any }) {
-  const objects = Array.isArray(perception?.objects) ? perception.objects : [];
-  const body = perception?.body?.position || sim?.body || [0, 0, 0];
-  const shelf = sim?.shelf || [1, 9];
-  const width = Number(sim?.width || 12);
-  const height = Number(sim?.height || 12);
-  const sx = (value: number) => Math.max(0.25, Math.min(width - 0.25, Number(value) || 0));
-  const sy = (value: number) => height - sx(value);
-  return <div className="perception-observatory"><div className="perception-map-wrap"><svg className="perception-map" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Current Body perception map"><rect className="map-room" x="0" y="0" width={width} height={height}/>{Array.from({ length: width + 1 }).map((_, index) => <line className="map-grid" key={`x-${index}`} x1={index} y1="0" x2={index} y2={height}/>) }{Array.from({ length: height + 1 }).map((_, index) => <line className="map-grid" key={`y-${index}`} x1="0" y1={index} x2={width} y2={index}/>) }<circle className="map-goal" cx={sx(shelf[0])} cy={sy(shelf[1])} r=".34"/><text className="map-label" x={sx(shelf[0]) + .45} y={sy(shelf[1]) + .12}>goal</text>{objects.map((object: any) => { const p = object.position || [0, 0]; const obstacle = object.kind === 'obstacle' || object.kind === 'mobile_obstacle'; return <g key={object.id}><circle className={`map-object ${obstacle ? 'obstacle' : object.kind === 'target' ? 'target' : ''}`} cx={sx(p[0])} cy={sy(p[1])} r={Math.max(.22, Math.min(.55, Number(object.size || .4) / 2))}/><text className="map-label" x={sx(p[0]) + .4} y={sy(p[1]) + .12}>{object.label}</text></g>; })}<circle className="map-reach" cx={sx(body[0])} cy={sy(body[1])} r={Number(perception?.body?.capabilities?.reach || 1.8)}/><g transform={`translate(${sx(body[0])} ${sy(body[1])}) rotate(${-Number(perception?.body?.orientation || 0) * 180 / Math.PI})`}><circle className="map-body" r=".34"/><path className="map-heading" d="M0 0 L0.7 -0.2 L0.7 0.2 Z"/></g></svg></div><div className="perception-legend"><span><i className="legend-body"/>Body</span><span><i className="legend-target"/>Target</span><span><i className="legend-obstacle"/>Obstacle</span><span><i className="legend-goal"/>Goal</span><small>{perception?.available ? `Observation ${perception.age_seconds}s old` : 'No observation yet'}</small></div><div className="perception-truth-note"><b>Simulation boundary</b><span>{perception?.ground_truth_available ? 'The simulator has an exact debug state; Lumina receives the observation and affordances shown here.' : 'No simulator ground truth is exposed for this source.'}</span></div></div>;
+  useEffect(() => { if (bodyUrl) window.location.replace(bodyUrl); }, [bodyUrl]);
+  return <main className="settings-view"><header className="settings-view-header"><div><span className="eyebrow">COGNITIVE ORGANISM / BODY</span><h1>Embodied World Model</h1><p className="muted">Opening the Body-owned World Model interface.</p></div></header><p className="muted">{error ? `Could not open the Body interface: ${error}` : bodyUrl ? <>Opening <a href={bodyUrl}>{bodyUrl}</a>…</> : 'Resolving Body address…'}</p></main>;
 }
 
 function BodyPluginDetails({ plugin, values, set, save }: { plugin: any; values: Record<string, any>; set: (key: string, value: any) => void; save: () => void }) {
