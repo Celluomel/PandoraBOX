@@ -196,6 +196,46 @@ class BodyHost:
             self.reload_worldmodel_source()
         return {"ok": True, "settings": self.fnk0050_settings()}
 
+    def fnk0031_settings(self) -> dict:
+        token = str(self.value("FNK0031_TOKEN") or self.value("ROBOT_TOKEN", "") or "")
+        return {
+            "url": str(self.value("FNK0031_URL") or self.value("ROBOT_URL", "") or ""),
+            "token_configured": bool(token),
+            "timeout": float(self.value("FNK0031_TIMEOUT", self.value("ROBOT_TIMEOUT", 5.0)) or 5.0),
+            "poll_interval": int(self.value("FNK0031_POLL_INTERVAL", self.value("ROBOT_POLL_INTERVAL", 5)) or 5),
+            "snn_enabled": bool(self.value("FNK0031_SNN_ENABLED", False)),
+            "actuation_enabled": bool(self.value("FNK0031_ACTUATION_ENABLED", False)),
+            "leg_count": int(self.value("FNK0031_LEG_COUNT", 6) or 6),
+        }
+
+    def update_fnk0031_settings(self, payload: dict) -> dict:
+        self.config.update({
+            "FNK0031_URL": str(payload.get("url", "") or "").strip().rstrip("/"),
+            "FNK0031_TIMEOUT": max(0.5, float(payload.get("timeout", 5.0) or 5.0)),
+            "FNK0031_POLL_INTERVAL": max(1, int(payload.get("poll_interval", 5) or 5)),
+            "FNK0031_SNN_ENABLED": bool(payload.get("snn_enabled", False)),
+            "FNK0031_ACTUATION_ENABLED": bool(payload.get("actuation_enabled", False)),
+            "FNK0031_LEG_COUNT": 6,
+        })
+        token = str(payload.get("token", "") or "").strip()
+        if token:
+            os.environ["FNK0031_TOKEN"] = token
+            self.config["FNK0031_TOKEN"] = "@env:FNK0031_TOKEN"
+            secret_path = ROOT / "body_venv" / ".env"
+            secret_path.parent.mkdir(parents=True, exist_ok=True)
+            existing = {}
+            if secret_path.exists():
+                for line in secret_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+                    if "=" in line and not line.lstrip().startswith("#"):
+                        key, value = line.split("=", 1)
+                        existing[key.strip()] = value.strip()
+            existing["FNK0031_TOKEN"] = token
+            secret_path.write_text("".join(f"{key}={value}\n" for key, value in existing.items()), encoding="utf-8")
+        self.save_config()
+        if self._worldmodel is not None:
+            self.reload_worldmodel_source()
+        return {"ok": True, "settings": self.fnk0031_settings()}
+
     def set_plugin_enabled(self, plugin_id: str, enabled: bool) -> dict:
         fields = {
             "home_assistant": "BODY_PLUGIN_HOME_ASSISTANT_ENABLED",
@@ -694,6 +734,8 @@ class BodyHost:
                     self._send(owner.home_assistant_settings())
                 elif path == "/plugins/fnk0050_wifi/settings":
                     self._send(owner.fnk0050_settings())
+                elif path == "/plugins/fnk0031_wifi/settings":
+                    self._send(owner.fnk0031_settings())
                 elif path == "/observations":
                     self._send({"observations": sorted(
                         owner.latest.values(),
@@ -744,6 +786,8 @@ class BodyHost:
                         self._send(owner.update_home_assistant_settings(body))
                     elif path == "/plugins/fnk0050_wifi/settings":
                         self._send(owner.update_fnk0050_settings(body))
+                    elif path == "/plugins/fnk0031_wifi/settings":
+                        self._send(owner.update_fnk0031_settings(body))
                     elif path == "/plugins/home_assistant/discover":
                         try:
                             entities = owner.discover()
