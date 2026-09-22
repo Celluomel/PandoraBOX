@@ -73,7 +73,7 @@ That telemetry can then become a Body observation and be evaluated by the
 world model without mixing motor-control learning with the Brain's language
 conversation.
 
-## FNK0031 controller now included
+## FNK0031 locomotion software status
 
 The Body contains an experimental `FNK0031LocomotionController`:
 
@@ -83,17 +83,24 @@ The Body contains an experimental `FNK0031LocomotionController`:
 - pitch/roll stability input;
 - persisted SNN weights under `data/body/locomotion/`.
 
-This is not equivalent to MH-FLOCKE and has not demonstrated learned walking.
-The current local plant generates heuristic tilt/progress signals; it has no
-rigid-body/contact simulation, calibrated servo kinematics, fall detection, or
-independent task evaluator. Those synthetic rewards therefore do not establish
-locomotion competence. Synthetic scores no longer increase a competence gate;
-the SNN output contribution stays disabled until independent evaluation exists.
-The UI labels this as a gait/controller sandbox. A walking claim requires
-repeatable trials with measured displacement, foot contacts, stability/falls,
-and goal completion in a physics-backed simulator, followed by hardware
-validation. The current saved weights are experimental state, not evidence of
-walking skill.
+The Body now includes an optional MuJoCo-backed training experiment, installed
+with the independent Body requirements. It models 18 bounded position
+actuators, a floating chassis, six three-joint legs, ground contact and IMU-like
+orientation. The experiment runs a CPG baseline, trains with task reward and
+R-STDP, then compares paired randomized held-out episodes by displacement,
+contact, tilt, effort proxy and falls. It is launched asynchronously from the
+FNK0031 plugin page and sends no commands to hardware.
+
+The local model is an explicit geometry estimate, not a measured FNK0031 CAD
+model. In the current 24-episode training and 8-pair held-out run, mean
+displacement was 1.07142 m for CPG and 1.07026 m for SNN (0 falls for either),
+so the experiment correctly reports `no_reliable_improvement`. Weight changes
+and spikes demonstrate activity, not a learned walking skill. This is not
+equivalent to MH-FLOCKE and does not establish hardware competence. Before
+transferring weights, the physical robot still needs measured link geometry,
+servo zero/direction/range calibration, sensor validation, and safe low-speed
+trials. Freenove recommends its leg-level motion interface over commanding
+individual servos without calibration.
 
 The controller is called only through the approved FNK0031 action path. It
 does not move a robot merely because `FNK0031_SNN_ENABLED` is enabled.

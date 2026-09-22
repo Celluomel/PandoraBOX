@@ -30,6 +30,7 @@ class IzhikevichNetwork:
         self.u = self.b * self.v
         self.weights = rng.normal(0.0, 0.08, (self.n, self.n)).astype(np.float32)
         np.fill_diagonal(self.weights, 0.0)
+        self.weights -= self.weights.mean(axis=1, keepdims=True)
         self.pre_trace = np.zeros(self.n, dtype=np.float32)
         self.post_trace = np.zeros(self.n, dtype=np.float32)
         self.last_spikes = np.zeros(self.n, dtype=np.float32)
@@ -195,6 +196,7 @@ class FNK0031LocomotionController:
         self._pending_forward_features: Optional[np.ndarray] = None
         self.state_path = Path(state_path)
         self.steps = 0
+        self.reward_baseline = 0.0
         # Kept for state/API compatibility. Only an independent locomotion
         # evaluator may raise this; the heuristic plant cannot verify skill.
         self.competence = 0.0
@@ -207,6 +209,8 @@ class FNK0031LocomotionController:
             with np.load(self.state_path) as data:
                 if "cpg_phase" in data:
                     self.cpg.phase = float(data["cpg_phase"])
+                if "reward_baseline" in data:
+                    self.reward_baseline = float(data["reward_baseline"])
                 if "forward_weights" in data and data["forward_weights"].shape == self.forward_model.weights.shape:
                     self.forward_model.weights = data["forward_weights"].astype(np.float32)
                 for key in ("pitch", "roll", "heading", "distance"):
@@ -228,10 +232,12 @@ class FNK0031LocomotionController:
             pitch=np.asarray(self.plant.pitch), roll=np.asarray(self.plant.roll),
             heading=np.asarray(self.plant.heading), distance=np.asarray(self.plant.distance),
             steps=np.asarray(self.steps),
+            reward_baseline=np.asarray(self.reward_baseline),
         )
 
     def step(self, imu: Optional[Dict[str, float]] = None, reward: float = 0.0,
-             dt: float = 0.02, gait: str = "forward", simulate: bool = True) -> Dict[str, Any]:
+             dt: float = 0.02, gait: str = "forward", simulate: bool = True,
+             learning_mode: bool = False) -> Dict[str, Any]:
         imu = imu or {}
         external_imu = "pitch" in imu or "roll" in imu
         simulated = simulate and not external_imu
@@ -241,7 +247,11 @@ class FNK0031LocomotionController:
         roll = float(imu.get("roll", 0.0) or 0.0)
         imu_available = "pitch" in imu or "roll" in imu
         stability = max(-1.0, min(1.0, 1.0 - (abs(pitch) + abs(roll)) / 0.8)) if imu_available else 0.0
-        total_reward = max(-1.0, min(1.0, float(reward) + 0.25 * stability))
+        total_reward = max(-1.0, min(1.0, float(reward) + (0.25 * stability if simulated else 0.0)))
+        reward_prediction_error = 0.0
+        if learning_mode:
+            reward_prediction_error = max(-1.0, min(1.0, float(reward) - self.reward_baseline))
+            self.reward_baseline += 0.02 * (float(reward) - self.reward_baseline)
         moving = gait in {"forward", "backward", "turn_left", "turn_right"}
         cpg = self.cpg.step(dt) if moving else np.zeros(6, dtype=np.float32)
         if not moving:
@@ -252,7 +262,7 @@ class FNK0031LocomotionController:
         elif gait in {"turn_left", "turn_right"}:
             left_direction = -1.0 if gait == "turn_left" else 1.0
             cpg *= np.asarray([left_direction, -left_direction] * 3, dtype=np.float32)
-        input_current = 8.0 + np.repeat(cpg, 3) * 4.0 if moving else np.zeros(18, dtype=np.float32)
+        input_current = 12.0 + np.repeat(cpg, 3) * 8.0 if moving else np.zeros(18, dtype=np.float32)
         input_current[::3] += np.float32(-pitch * 2.0)
         input_current[1::3] += np.float32(-roll * 2.0)
         # The gait clock uses seconds; Izhikevich integration uses milliseconds.
@@ -262,16 +272,18 @@ class FNK0031LocomotionController:
         for neural_step in range(neural_steps):
             frame_spikes = self.snn.step(
                 input_current,
-                total_reward / neural_steps,
+                reward_prediction_error if learning_mode and neural_step == neural_steps - 1 else 0.0,
                 dt=1.0,
             )
             spikes = np.maximum(spikes, frame_spikes)
-        correction = np.tanh(self.snn.weights.mean(axis=1)).reshape(6, 3)
+        centered_activity = spikes - np.float32(spikes.mean())
+        correction = np.tanh(centered_activity * 2.0).reshape(6, 3)
         tripod = np.repeat(cpg, 3).reshape(6, 3)
         # No physics-backed or hardware evaluator currently validates the SNN
         # policy, so synthetic rewards must not authorize learned motor output.
-        cpg_weight = 1.0
-        snn_weight = 0.0
+        snn_weight = 0.18 if learning_mode else 0.0
+        cpg_weight = 1.0 - snn_weight
+        snn_correction = correction.copy()
         correction *= snn_weight
         joints = np.clip(tripod * cpg_weight + correction, -1.0, 1.0)
         if not moving:
@@ -324,9 +336,11 @@ class FNK0031LocomotionController:
             "spikes": spikes.astype(int).tolist(),
             "imu": {"pitch": round(pitch, 5), "roll": round(roll, 5), "source": "hardware" if external_imu else "simulated_plant" if simulated else "unavailable"},
             "reward": round(total_reward, 5),
-            "reward_source": "synthetic_heuristic" if simulated else "operator_or_hardware_unverified",
-            "learning_evidence": "none",
+            "reward_source": "synthetic_heuristic" if simulated else "mujoco_task_evaluator" if learning_mode else "unverified_hardware_feedback",
+            "learning_evidence": "mujoco_task_reward" if learning_mode else "none",
+            "reward_prediction_error": round(reward_prediction_error, 5),
             "locomotion_verified": False,
+            "snn_correction": snn_correction.round(5).tolist(),
             "stability": round(stability, 5),
             "competence": round(self.competence, 5),
             "cpg_weight": round(cpg_weight, 5),

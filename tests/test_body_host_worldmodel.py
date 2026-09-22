@@ -109,7 +109,7 @@ class FNK0031LocomotionControllerTest(unittest.TestCase):
                 state = controller.step(imu=None, reward=0.0)
                 observed_spikes = np.maximum(observed_spikes, state["spikes"])
             self.assertGreater(int(observed_spikes.sum()), 0, "SNN should emit visible spikes during gait")
-            self.assertGreater(float(np.abs(controller.snn.weights - initial_weights).sum()), 0.0)
+            self.assertEqual(float(np.abs(controller.snn.weights - initial_weights).sum()), 0.0)
             self.assertGreater(state["forward_prediction_weights_norm"], 0.0)
             self.assertEqual(controller.competence, 0.0)
             self.assertEqual(state["cpg_weight"], 1.0)
@@ -138,6 +138,35 @@ class FNK0031LocomotionControllerTest(unittest.TestCase):
             self.assertNotEqual(turn_left["joint_targets"], turn_right["joint_targets"])
             self.assertLess(turn_left["plant"]["heading"], 3.14159)
             self.assertGreater(turn_right["plant"]["heading"], 3.14159)
+
+
+@unittest.skipUnless(importlib.util.find_spec("mujoco"), "mujoco is required for physics-backed locomotion")
+class FNK0031MuJoCoTest(unittest.TestCase):
+    def test_estimated_model_has_18_actuators_and_stable_contact_gait(self):
+        from body_runtime_host.locomotion.fnk0031_controller import FNK0031LocomotionController
+        from body_runtime_host.locomotion.mujoco_hexapod import run_episode
+
+        with tempfile.TemporaryDirectory() as tmp:
+            result = run_episode(
+                FNK0031LocomotionController(Path(tmp) / "snn.npz"), "cpg", steps=250, seed=4
+            )
+        self.assertEqual(result.steps, 250)
+        self.assertFalse(result.fell)
+        self.assertGreater(result.displacement_m, 0.1)
+        self.assertGreater(result.mean_foot_contacts, 1.0)
+
+    def test_task_reward_drives_snn_plasticity_in_physics_trial(self):
+        import numpy as np
+        from body_runtime_host.locomotion.fnk0031_controller import FNK0031LocomotionController
+        from body_runtime_host.locomotion.mujoco_hexapod import run_episode
+
+        with tempfile.TemporaryDirectory() as tmp:
+            controller = FNK0031LocomotionController(Path(tmp) / "snn.npz")
+            initial = controller.snn.weights.copy()
+            result = run_episode(controller, "snn", steps=100, seed=8)
+        self.assertGreater(float(np.abs(controller.snn.weights - initial).sum()), 0.0)
+        self.assertGreater(result.neural_spike_events, 0)
+        self.assertGreater(result.weight_change_l1, 0.0)
 
 
 class BodySingletonStartupTest(unittest.TestCase):

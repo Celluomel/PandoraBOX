@@ -86,6 +86,9 @@ class BodyHost:
         self._fnk_controller = None
         self._fnk_controller_lock = threading.Lock()
         self._fnk_controller_last: dict | None = None
+        self._fnk_experiment_lock = threading.Lock()
+        self._fnk_experiment_thread: threading.Thread | None = None
+        self._fnk_experiment_status: dict = {"state": "idle", "completed": 0, "total": 0}
 
     # ── config ──────────────────────────────────────────────────────────────
 
@@ -299,6 +302,39 @@ class BodyHost:
                 "state_loaded": bool(self._fnk_controller.loaded),
                 **self._fnk_controller_last,
             }
+
+    def fnk0031_experiment_status(self) -> dict:
+        with self._fnk_experiment_lock:
+            return dict(self._fnk_experiment_status)
+
+    def start_fnk0031_experiment(self) -> dict:
+        with self._fnk_experiment_lock:
+            if self._fnk_experiment_thread and self._fnk_experiment_thread.is_alive():
+                return dict(self._fnk_experiment_status)
+            self._fnk_experiment_status = {"state": "starting", "completed": 0, "total": 40}
+
+            def run() -> None:
+                def progress(update: dict) -> None:
+                    with self._fnk_experiment_lock:
+                        self._fnk_experiment_status.update(update)
+                try:
+                    from body_runtime_host.locomotion.mujoco_hexapod import run_training_experiment
+                    result = run_training_experiment(
+                        str(ROOT / "data" / "body" / "locomotion" / "fnk0031_mujoco_snn.npz"),
+                        on_progress=progress,
+                    )
+                    with self._fnk_experiment_lock:
+                        self._fnk_experiment_status = {"state": "completed", **result}
+                except Exception as exc:
+                    LOG.exception("FNK0031 MuJoCo experiment failed")
+                    with self._fnk_experiment_lock:
+                        self._fnk_experiment_status = {"state": "failed", "error": str(exc)}
+
+            self._fnk_experiment_thread = threading.Thread(
+                target=run, name="fnk0031-mujoco-training", daemon=True
+            )
+            self._fnk_experiment_thread.start()
+            return dict(self._fnk_experiment_status)
 
     def set_plugin_enabled(self, plugin_id: str, enabled: bool) -> dict:
         fields = {
@@ -813,6 +849,8 @@ class BodyHost:
                     self._send(owner.fnk0031_settings())
                 elif path == "/plugins/fnk0031_wifi/controller":
                     self._send(owner.fnk0031_controller_status())
+                elif path == "/plugins/fnk0031_wifi/experiment":
+                    self._send(owner.fnk0031_experiment_status())
                 elif path == "/observations":
                     self._send({"observations": sorted(
                         owner.latest.values(),
@@ -867,6 +905,8 @@ class BodyHost:
                         self._send(owner.update_fnk0031_settings(body))
                     elif path == "/plugins/fnk0031_wifi/controller/step":
                         self._send(owner.fnk0031_controller_step())
+                    elif path == "/plugins/fnk0031_wifi/experiment/start":
+                        self._send(owner.start_fnk0031_experiment())
                     elif path == "/plugins/home_assistant/discover":
                         try:
                             entities = owner.discover()

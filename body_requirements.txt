@@ -5,3 +5,4 @@ websockets>=12.0,<16.0
 # so a separate body venv is optional.
 numpy>=1.24
 torch>=2.0
+mujoco>=3.3,<4
