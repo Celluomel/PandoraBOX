@@ -96,6 +96,17 @@ class FNK0031LocomotionControllerTest(unittest.TestCase):
             state = controller.step(imu=None, reward=0.0)
             self.assertEqual(len(state["joint_targets"]), 6)
             self.assertTrue(all(leg[0] == 0.0 and leg[1] == 0.0 for leg in state["foot_motion"]))
+            forward_motion = controller.step(imu=None, reward=0.0, gait="forward")
+            self.assertGreater(
+                max(abs(leg[0]) for leg in forward_motion["foot_motion"]),
+                0.0,
+                "forward gait must expose sagittal foot motion",
+            )
+            self.assertGreater(
+                max(abs(value) for leg in forward_motion["joint_targets"] for value in leg),
+                0.0,
+                "forward gait must produce actuator targets",
+            )
             self.assertEqual(len(state["spikes"]), 18)
             self.assertEqual(state["servo_count"], 18)
             self.assertEqual([x["index"] for x in state["servo_targets"]], list(range(1, 19)))

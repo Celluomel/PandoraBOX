@@ -147,7 +147,7 @@ drawFnkController=function(s){
   ];
   const legSvg=layout.map((point,index)=>{
     const leg=legs[index],j=leg.joint_targets||[0,0,0],motion=leg.foot_motion||[0,0,0],lift=Number(leg.foot_lift||0),stance=Number(leg.contact)===1;
-    const turning=String(s.gait||'').startsWith('turn_'),stride=Number(leg.cpg||0),hipX=point.x,hipY=point.y;
+    const turning=String(s.gait||'').startsWith('turn_'),motionStride=Number(motion[0]||0),stride=motionStride||Number(leg.cpg||0),hipX=point.x,hipY=point.y;
     const coxaX=hipX+point.side*(12+Number(j[0]||0)*3),coxaY=hipY;
     const kneeX=coxaX+point.side*(19+Number(j[1]||0)*3),kneeY=coxaY+(turning?0:-stride*5);
     const footX=kneeX+point.side*(19+lift*5)+(turning?Number(motion[0]||0)*22:0);

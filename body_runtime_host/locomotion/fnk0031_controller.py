@@ -290,6 +290,11 @@ class FNK0031LocomotionController:
             foot_motion[:, 1] = leg_positions[:, 0] * turn_direction * cpg * 0.55
             foot_motion[:, 2] = self.cpg.foot_lift
         elif moving:
+            # Expose the sagittal foot displacement explicitly.  Previously a
+            # forward step only reported lift here while the horizontal stride
+            # remained implicit in ``tripod``.  That made telemetry and the
+            # visual controller look stationary even though the CPG was active.
+            foot_motion[:, 0] = cpg
             foot_motion[:, 2] = self.cpg.foot_lift
         input_current = 12.0 + np.repeat(cpg, 3) * 8.0 if moving else np.zeros(18, dtype=np.float32)
         input_current[::3] += np.float32(-pitch * 2.0)
