@@ -91,6 +91,7 @@ class BodyHost:
         self._fnk_controller = None
         self._fnk_controller_lock = threading.Lock()
         self._fnk_controller_last: dict | None = None
+        self._fnk_controller_world_step: int | None = None
         self._fnk_experiment_lock = threading.Lock()
         self._fnk_experiment_thread: threading.Thread | None = None
         self._fnk_experiment_status: dict = {"state": "idle", "completed": 0, "total": 0}
@@ -273,6 +274,7 @@ class BodyHost:
                 decision = dict(wm._last_decision or {})
                 sim = wm.sim
                 gait = str(decision.get("action") or "idle")
+                world_step = int(sim.steps) if sim is not None else -1
                 worldmodel_pose = ({
                     "body": [round(float(sim.px), 3), round(float(sim.py), 3)],
                     "heading_deg": round(math.degrees(float(sim.heading)), 2),
@@ -285,12 +287,14 @@ class BodyHost:
             self._fnk_controller_last = self._fnk_controller.step(
                 imu=None, reward=0.0, dt=0.04, gait=gait
             )
+            self._fnk_controller_world_step = world_step
             return {
                 "active": True,
                 "mode": "local_simulation",
                 "simulation_running": True,
                 "gait": gait,
                 "worldmodel_pose": worldmodel_pose,
+                "worldmodel_step": world_step,
                 "actuation": False,
                 "body_heading_deg": round(math.degrees(float(sim.heading)), 1) if sim else 0.0,
                 "imu_available": True,
@@ -304,6 +308,17 @@ class BodyHost:
             }
 
     def fnk0031_controller_status(self) -> dict:
+        # The World Model is the clock for embodied telemetry.  A status poll
+        # may advance the controller once when a new simulation step exists,
+        # but repeated UI polls must never run the gait ahead of the map.
+        wm = self._worldmodel
+        if wm is not None:
+            with wm._lock:
+                sim = wm.sim
+                running = bool(wm._thread and wm._thread.is_alive())
+                world_step = int(sim.steps) if sim is not None else -1
+            if running and world_step != self._fnk_controller_world_step:
+                self.fnk0031_controller_step()
         with self._fnk_controller_lock:
             last = dict(self._fnk_controller_last or {})
             wm = self._worldmodel
@@ -341,6 +356,7 @@ class BodyHost:
                 "gait": gait if simulation_running else "idle",
                 "body_heading_deg": heading,
                 "worldmodel_pose": pose,
+                "worldmodel_step": int(pose["step"]) if pose else -1,
                 "actuation": False,
                 "imu_available": True,
                 "imu_source": "simulated_hexapod_plant",
