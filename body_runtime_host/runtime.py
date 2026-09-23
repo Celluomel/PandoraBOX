@@ -92,6 +92,7 @@ class BodyHost:
         self._fnk_controller_lock = threading.Lock()
         self._fnk_controller_last: dict | None = None
         self._fnk_controller_world_step: int | None = None
+        self._fnk_controller_gait = "idle"
         self._fnk_experiment_lock = threading.Lock()
         self._fnk_experiment_thread: threading.Thread | None = None
         self._fnk_experiment_status: dict = {"state": "idle", "completed": 0, "total": 0}
@@ -288,6 +289,7 @@ class BodyHost:
                 imu=None, reward=0.0, dt=0.04, gait=gait
             )
             self._fnk_controller_world_step = world_step
+            self._fnk_controller_gait = gait
             return {
                 "active": True,
                 "mode": "local_simulation",
@@ -340,7 +342,7 @@ class BodyHost:
             if simulation_running:
                 gait = str(decision.get("action") or "idle")
             else:
-                gait = str(last.get("gait") or "idle")
+                gait = self._fnk_controller_gait
             if not last:
                 return {"active": False, "simulation_running": simulation_running,
                         "mode": "local_simulation", "gait": gait,
@@ -353,7 +355,7 @@ class BodyHost:
                 "active": True,
                 "mode": "local_simulation",
                 "simulation_running": simulation_running,
-                "gait": gait if simulation_running else "idle",
+                "gait": gait,
                 "body_heading_deg": heading,
                 "worldmodel_pose": pose,
                 "worldmodel_step": int(pose["step"]) if pose else -1,
