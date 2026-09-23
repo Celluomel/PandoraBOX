@@ -242,6 +242,10 @@ class BodySingletonStartupTest(unittest.TestCase):
         self.assertEqual(result["gait"], "turn_left")
         self.assertEqual(result["worldmodel_pose"], {"body": [4.0, 6.0], "heading_deg": 90.0, "step": 12})
         self.assertEqual(host._fnk_controller.gait, "turn_left")
+        status = host.fnk0031_controller_status()
+        self.assertTrue(status["simulation_running"])
+        self.assertEqual(status["worldmodel_pose"], result["worldmodel_pose"])
+        self.assertEqual(status["gait"], "turn_left")
 
     def test_locomotion_simulation_waits_for_running_world_model(self):
         from body_runtime_host.runtime import BodyHost

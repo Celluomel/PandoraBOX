@@ -281,6 +281,7 @@ class BodyHost:
             return {
                 "active": True,
                 "mode": "local_simulation",
+                "simulation_running": True,
                 "gait": gait,
                 "worldmodel_pose": worldmodel_pose,
                 "actuation": False,
@@ -295,11 +296,38 @@ class BodyHost:
 
     def fnk0031_controller_status(self) -> dict:
         with self._fnk_controller_lock:
-            if self._fnk_controller_last is None:
-                return {"active": False, "reason": "waiting for simulation step"}
+            last = dict(self._fnk_controller_last or {})
+            wm = self._worldmodel
+            if wm is None:
+                return {"active": bool(last), "simulation_running": False, **last,
+                        "reason": "world model is unavailable"}
+            with wm._lock:
+                sim = wm.sim
+                decision = dict(wm._last_decision or {})
+                simulation_running = bool(wm._thread and wm._thread.is_alive())
+                pose = ({
+                    "body": [round(float(sim.px), 3), round(float(sim.py), 3)],
+                    "heading_deg": round(math.degrees(float(sim.heading)), 2),
+                    "step": int(sim.steps),
+                } if sim is not None else None)
+                heading = round(math.degrees(float(sim.heading)), 1) if sim is not None else 0.0
+            if simulation_running:
+                gait = str(decision.get("action") or "idle")
+            else:
+                gait = str(last.get("gait") or "idle")
+            if not last:
+                return {"active": False, "simulation_running": simulation_running,
+                        "mode": "local_simulation", "gait": gait,
+                        "body_heading_deg": heading, "worldmodel_pose": pose,
+                        "reason": "waiting for simulation step"}
             return {
+                **last,
                 "active": True,
                 "mode": "local_simulation",
+                "simulation_running": simulation_running,
+                "gait": gait if simulation_running else "idle",
+                "body_heading_deg": heading,
+                "worldmodel_pose": pose,
                 "actuation": False,
                 "imu_available": True,
                 "imu_source": "simulated_hexapod_plant",
