@@ -105,6 +105,7 @@ class BodyHost:
         self._fnk_controller_last: dict | None = None
         self._fnk_controller_world_step: int | None = None
         self._fnk_controller_gait = "idle"
+        self._fnk_controller_last_tick: float | None = None
         self._fnk_experiment_lock = threading.Lock()
         self._fnk_experiment_thread: threading.Thread | None = None
         self._fnk_experiment_status: dict = {"state": "idle", "completed": 0, "total": 0}
@@ -262,7 +263,7 @@ class BodyHost:
             self.reload_worldmodel_source()
         return {"ok": True, "settings": self.fnk0031_settings()}
 
-    def fnk0031_controller_step(self) -> dict:
+    def fnk0031_controller_step(self, dt: float = 0.04) -> dict:
         """Advance the local hexapod controller only in the running sim sandbox."""
         if not bool(self.value("BODY_PLUGIN_ROBOT_ENABLED", False)):
             return {"active": False, "reason": "FNK0031 plugin is disabled"}
@@ -296,11 +297,13 @@ class BodyHost:
                     "svg_heading_deg": round(north_up_svg_rotation_degrees(sim.heading), 2),
                     "step": int(sim.steps),
                 } if sim is not None else None)
+            controller_dt = max(0.02, min(0.12, float(dt)))
             self._fnk_controller_last = self._fnk_controller.step(
-                imu=None, reward=0.0, dt=0.04, gait=gait
+                imu=None, reward=0.0, dt=controller_dt, gait=gait
             )
             self._fnk_controller_world_step = world_step
             self._fnk_controller_gait = gait
+            self._fnk_controller_last_tick = time.monotonic()
             return {
                 "active": True,
                 "mode": "local_simulation",
@@ -309,6 +312,7 @@ class BodyHost:
                 "world_action": world_action,
                 "worldmodel_pose": worldmodel_pose,
                 "worldmodel_step": world_step,
+                "controller_dt": round(controller_dt, 4),
                 "actuation": False,
                 "body_heading_deg": round(math.degrees(float(sim.heading)), 1) if sim else 0.0,
                 "imu_available": True,
@@ -322,17 +326,20 @@ class BodyHost:
             }
 
     def fnk0031_controller_status(self) -> dict:
-        # The World Model is the clock for embodied telemetry.  A status poll
-        # may advance the controller once when a new simulation step exists,
-        # but repeated UI polls must never run the gait ahead of the map.
+        # World Model actions are macro-steps, while a leg controller needs a
+        # real-time motor clock. Advance the CPG between map updates using
+        # elapsed wall time, but keep pose and gait sourced from the same World
+        # Model snapshot so the visual body cannot diverge spatially.
         wm = self._worldmodel
         if wm is not None:
             with wm._lock:
                 sim = wm.sim
                 running = bool(wm._thread and wm._thread.is_alive())
                 world_step = int(sim.steps) if sim is not None else -1
-            if running and world_step != self._fnk_controller_world_step:
-                self.fnk0031_controller_step()
+            now = time.monotonic()
+            elapsed = now - self._fnk_controller_last_tick if self._fnk_controller_last_tick is not None else 0.04
+            if running and (world_step != self._fnk_controller_world_step or elapsed >= 0.06):
+                self.fnk0031_controller_step(dt=elapsed)
         with self._fnk_controller_lock:
             last = dict(self._fnk_controller_last or {})
             wm = self._worldmodel

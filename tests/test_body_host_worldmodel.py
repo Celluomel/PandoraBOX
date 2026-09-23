@@ -242,9 +242,11 @@ class BodySingletonStartupTest(unittest.TestCase):
 
             def __init__(self, **_kwargs):
                 self.gait = None
+                self.calls = 0
 
             def step(self, **kwargs):
                 self.gait = kwargs["gait"]
+                self.calls += 1
                 return {"cpg": [1, -1, -1, 1, 1, -1], "spikes": [0] * 18, "step": 1}
 
         fake_locomotion = types.ModuleType("body_runtime_host.locomotion")
@@ -279,6 +281,11 @@ class BodySingletonStartupTest(unittest.TestCase):
         self.assertEqual(sprint_status["world_action"], "sprint")
         self.assertEqual(sprint_status["gait"], "forward")
         self.assertEqual(host._fnk_controller.gait, "forward")
+        calls = host._fnk_controller.calls
+        host._fnk_controller_last_tick = 0.0
+        same_world_step = host.fnk0031_controller_status()
+        self.assertEqual(host._fnk_controller.calls, calls + 1)
+        self.assertEqual(same_world_step["worldmodel_step"], 13)
         host._worldmodel._thread = None
         paused_status = host.fnk0031_controller_status()
         self.assertFalse(paused_status["simulation_running"])
