@@ -41,6 +41,18 @@ ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / "data" / "body" / "config.json"
 
 
+def _locomotion_gait_for_action(action: str) -> str:
+    """Translate World Model actions into physical locomotion primitives."""
+    return {
+        "forward": "forward",
+        "sprint": "forward",
+        "backward": "backward",
+        "retreat": "backward",
+        "turn_left": "turn_left",
+        "turn_right": "turn_right",
+    }.get(str(action or "").strip().lower(), "idle")
+
+
 def _load_dotenv() -> None:
     for path in (ROOT / "body_venv" / ".env", ROOT / ".body_venv" / ".env", ROOT / ".venv" / ".env", ROOT / ".env"):
         if not path.exists():
@@ -274,7 +286,8 @@ class BodyHost:
             with wm._lock:
                 decision = dict(wm._last_decision or {})
                 sim = wm.sim
-                gait = str(decision.get("action") or "idle")
+                world_action = str(decision.get("action") or "idle")
+                gait = _locomotion_gait_for_action(world_action)
                 world_step = int(sim.steps) if sim is not None else -1
                 worldmodel_pose = ({
                     "body": [round(float(sim.px), 3), round(float(sim.py), 3)],
@@ -283,8 +296,6 @@ class BodyHost:
                     "svg_heading_deg": round(north_up_svg_rotation_degrees(sim.heading), 2),
                     "step": int(sim.steps),
                 } if sim is not None else None)
-            if gait not in {"forward", "backward", "turn_left", "turn_right"}:
-                gait = "idle"
             self._fnk_controller_last = self._fnk_controller.step(
                 imu=None, reward=0.0, dt=0.04, gait=gait
             )
@@ -295,6 +306,7 @@ class BodyHost:
                 "mode": "local_simulation",
                 "simulation_running": True,
                 "gait": gait,
+                "world_action": world_action,
                 "worldmodel_pose": worldmodel_pose,
                 "worldmodel_step": world_step,
                 "actuation": False,
@@ -340,12 +352,15 @@ class BodyHost:
                 } if sim is not None else None)
                 heading = round(math.degrees(float(sim.heading)), 1) if sim is not None else 0.0
             if simulation_running:
-                gait = str(decision.get("action") or "idle")
+                world_action = str(decision.get("action") or "idle")
+                gait = _locomotion_gait_for_action(world_action)
             else:
+                world_action = "paused"
                 gait = self._fnk_controller_gait
             if not last:
                 return {"active": False, "simulation_running": simulation_running,
                         "mode": "local_simulation", "gait": gait,
+                        "world_action": world_action,
                         "body_heading_deg": heading, "worldmodel_pose": pose,
                         "compass_heading_deg": round(compass_heading_degrees(sim.heading), 2) if sim is not None else 0.0,
                         "svg_heading_deg": round(north_up_svg_rotation_degrees(sim.heading), 2) if sim is not None else 90.0,
@@ -356,6 +371,7 @@ class BodyHost:
                 "mode": "local_simulation",
                 "simulation_running": simulation_running,
                 "gait": gait,
+                "world_action": world_action,
                 "body_heading_deg": heading,
                 "worldmodel_pose": pose,
                 "worldmodel_step": int(pose["step"]) if pose else -1,

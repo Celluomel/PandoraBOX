@@ -273,10 +273,24 @@ class BodySingletonStartupTest(unittest.TestCase):
         self.assertTrue(status["simulation_running"])
         self.assertEqual(status["worldmodel_pose"], result["worldmodel_pose"])
         self.assertEqual(status["gait"], "turn_left")
+        host._worldmodel._last_decision = {"action": "sprint"}
+        host._worldmodel.sim.steps = 13
+        sprint_status = host.fnk0031_controller_status()
+        self.assertEqual(sprint_status["world_action"], "sprint")
+        self.assertEqual(sprint_status["gait"], "forward")
+        self.assertEqual(host._fnk_controller.gait, "forward")
         host._worldmodel._thread = None
         paused_status = host.fnk0031_controller_status()
         self.assertFalse(paused_status["simulation_running"])
-        self.assertEqual(paused_status["gait"], "turn_left")
+        self.assertEqual(paused_status["gait"], "forward")
+
+    def test_world_actions_are_mapped_to_physical_gaits(self):
+        from body_runtime_host.runtime import _locomotion_gait_for_action
+
+        self.assertEqual(_locomotion_gait_for_action("sprint"), "forward")
+        self.assertEqual(_locomotion_gait_for_action("retreat"), "backward")
+        self.assertEqual(_locomotion_gait_for_action("turn_left"), "turn_left")
+        self.assertEqual(_locomotion_gait_for_action("grab"), "idle")
 
     def test_locomotion_simulation_waits_for_running_world_model(self):
         from body_runtime_host.runtime import BodyHost
