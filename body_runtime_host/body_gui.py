@@ -99,3 +99,70 @@ drawFnkController=function(s){
 };
 </script></body></html>""",
 )
+
+BODY_GUI_HTML = BODY_GUI_HTML.replace(
+    "</body></html>",
+    """<script>
+const renderMapWithAlignedHeading=renderMap;
+renderMap=function(w){
+  renderMapWithAlignedHeading(w);
+  const sim=w?.sim||{},heading=w?.mode==='sim'?Number(sim.heading_deg||0)*Math.PI/180:Number(w?.perception?.body?.orientation||0),rotation=w?.mode==='sim'&&Number.isFinite(Number(sim.svg_heading_deg))?Number(sim.svg_heading_deg):90-heading*180/Math.PI;
+  for(const svg of [document.getElementById('map'),document.getElementById('map-large')]){
+    const pose=svg?.querySelector('.body-pose');if(!pose)continue;
+    const nose=pose.querySelector('.heading');if(nose)nose.setAttribute('d','M0 -.72 L-.19 .19 L0 .08 L.19 .19 Z');
+    pose.setAttribute('transform',`${pose.getAttribute('transform').split(' rotate(')[0]} rotate(${rotation})`);
+  }
+  if(w?.mode==='sim'){
+    const step=document.getElementById('wm-steps');if(step)step.textContent=String(sim.steps??0);
+    const label=step?.closest('.stat')?.querySelector('span');if(label)label.textContent='Simulation steps';
+    const note=`Simulator ground truth · step ${sim.steps??0} · ${Object.keys(sim.objects||{}).length} objects · near misses ${sim.near_misses??0}`;
+    for(const id of ['map-legend','map-legend-large']){const foot=document.getElementById(id)?.querySelector('.legend-foot');if(foot)foot.textContent=note}
+  }
+};
+
+syncMapPose=function(pose){
+  if(!pose?.body)return;
+  const [x,y]=pose.body,heading=Number(pose.heading_deg||0),rotation=Number.isFinite(Number(pose.svg_heading_deg))?Number(pose.svg_heading_deg):90-heading;
+  for(const svg of [document.getElementById('map'),document.getElementById('map-large')]){
+    if(!svg)continue;
+    const [width,height]=svg.getAttribute('viewBox').split(/\\s+/).map(Number),px=Math.max(.25,Math.min(width-.25,Number(x))),py=height-Math.max(.25,Math.min(height-.25,Number(y))),body=svg.querySelector('.body-pose'),reach=svg.querySelector('.reach');
+    if(body){const nose=body.querySelector('.heading');if(nose)nose.setAttribute('d','M0 -.72 L-.19 .19 L0 .08 L.19 .19 Z');body.setAttribute('transform',`translate(${px} ${py}) rotate(${rotation})`)}
+    if(reach){reach.setAttribute('cx',px);reach.setAttribute('cy',py)}
+  }
+};
+
+const previousWorldRender=renderWorld;
+renderWorld=function(w){previousWorldRender(w);if(w?.mode==='sim'&&w.sim)syncMapPose({body:w.sim.body,heading_deg:w.sim.heading_deg,svg_heading_deg:w.sim.svg_heading_deg})};
+
+const previousFnkRender=drawFnkController;
+drawFnkController=function(s){
+  previousFnkRender(s);
+  if(!s?.active)return;
+  const svg=document.getElementById('fnk-preview'),legs=s.visual_legs||[];
+  if(!svg||legs.length!==6)return;
+  const heading=Number(s.body_heading_deg||0),rotation=Number.isFinite(Number(s.svg_heading_deg))?Number(s.svg_heading_deg):90-heading;
+  const layout=[
+    {name:'L1',x:158,y:88,side:-1},{name:'L2',x:153,y:118,side:-1},{name:'L3',x:158,y:148,side:-1},
+    {name:'L4',x:202,y:88,side:1},{name:'L5',x:207,y:118,side:1},{name:'L6',x:202,y:148,side:1}
+  ];
+  const legSvg=layout.map((point,index)=>{
+    const leg=legs[index],j=leg.joint_targets||[0,0,0],motion=leg.foot_motion||[0,0,0],lift=Number(leg.foot_lift||0),stance=Number(leg.contact)===1;
+    const turning=String(s.gait||'').startsWith('turn_'),stride=Number(leg.cpg||0),hipX=point.x,hipY=point.y;
+    const coxaX=hipX+point.side*(12+Number(j[0]||0)*3),coxaY=hipY;
+    const kneeX=coxaX+point.side*(19+Number(j[1]||0)*3),kneeY=coxaY+(turning?0:-stride*5);
+    const footX=kneeX+point.side*(19+lift*5)+(turning?Number(motion[0]||0)*22:0);
+    const footY=kneeY+(turning?Number(motion[1]||0)*22:-stride*8+Number(j[2]||0)*3)-lift*(turning?10:12);
+    const color=stance?'#75dda4':'#f0bd70',dash=stance?'':'stroke-dasharray="4 3"';
+    return `<g><line x1="${hipX}" y1="${hipY}" x2="${coxaX}" y2="${coxaY}" stroke="#83cbd1" stroke-width="6" stroke-linecap="round"/><line x1="${coxaX}" y1="${coxaY}" x2="${kneeX}" y2="${kneeY}" stroke="#9ce0b4" stroke-width="6" stroke-linecap="round"/><line x1="${kneeX}" y1="${kneeY}" x2="${footX}" y2="${footY}" stroke="${color}" stroke-width="5" stroke-linecap="round" ${dash}/><circle cx="${kneeX}" cy="${kneeY}" r="3.2" fill="#d9f4df"/><circle cx="${footX}" cy="${footY}" r="4.5" fill="${color}"/><text x="${footX+point.side*8}" y="${footY-5}" text-anchor="${point.side<0?'end':'start'}" fill="#dcebe2" font-size="9" font-family="monospace">${leg.name}</text></g>`;
+  }).join('');
+  const neuronSvg=legs.flatMap(leg=>leg.neuron_indices||[]).map((neuron,index)=>{
+    const active=Boolean((s.spikes||[])[neuron]),legIndex=Math.floor(index/3),x=55+legIndex*50+(index%3)*7;
+    return `<circle cx="${x}" cy="258" r="${active?4:2.5}" fill="${active?'#ffd27a':'#86cbd2'}" opacity="${active?1:.65}"/>`;
+  }).join('');
+  svg.setAttribute('viewBox','0 0 360 285');
+  svg.innerHTML=`<text x="180" y="16" text-anchor="middle" fill="#dcebe2" font-size="9" font-family="monospace">N ↑</text><path d="M180 21l-5 9h10z" fill="#dcebe2"/><g transform="rotate(${rotation} 180 118)">${legSvg}<rect x="155" y="70" width="50" height="96" rx="10" fill="#152b22" stroke="#7ed9ab" stroke-width="2"/><text x="180" y="91" text-anchor="middle" fill="#8cae99" font-size="8" font-family="monospace">FRONT</text><text x="180" y="121" text-anchor="middle" fill="#c8f5d9" font-size="9" font-family="monospace">FNK0031</text></g><text x="180" y="198" text-anchor="middle" fill="#a7beaf" font-size="8" font-family="monospace">${s.gait||'idle'} · tripod A L1/L3/L5 · B L2/L4/L6</text><text x="180" y="238" text-anchor="middle" fill="#81998b" font-size="7" font-family="monospace">18 Izhikevich neurons · recent firing</text>${neuronSvg}`;
+  document.getElementById('fnk-heading').textContent=`${Math.round(Number(s.compass_heading_deg??((90-heading+360)%360)))}°`;
+  syncMapPose(s.worldmodel_pose);
+};
+</script></body></html>""",
+)

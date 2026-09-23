@@ -15,6 +15,16 @@ from typing import Any, Dict, Optional
 
 import numpy as np
 
+from body_runtime_host.coordinate_frames import (
+    compass_heading_degrees,
+    north_up_svg_rotation_degrees,
+)
+
+
+VISUAL_TO_PHYSICAL_LEG = (0, 2, 4, 1, 3, 5)
+VISUAL_LEG_NAMES = ("L1", "L2", "L3", "L4", "L5", "L6")
+VISUAL_LEG_LABELS = ("front-left", "middle-left", "rear-left", "front-right", "middle-right", "rear-right")
+
 
 class IzhikevichNetwork:
     """Regular-spiking Izhikevich population with reward-modulated STDP."""
@@ -353,13 +363,31 @@ class FNK0031LocomotionController:
                 "joint": joint_name,
                 "target": round(float(joints[physical_leg, joint]), 4),
             }
-            for visual_leg, physical_leg in enumerate((0, 2, 4, 1, 3, 5), start=1)
+            for visual_leg, physical_leg in enumerate(VISUAL_TO_PHYSICAL_LEG, start=1)
             for joint, joint_name in enumerate(("coxa", "femur", "tibia"))
         ]
+        visual_legs = []
+        for visual_index, physical_index in enumerate(VISUAL_TO_PHYSICAL_LEG):
+            visual_leg = visual_index + 1
+            visual_legs.append({
+                "name": VISUAL_LEG_NAMES[visual_index],
+                "label": VISUAL_LEG_LABELS[visual_index],
+                "physical_index": physical_index,
+                "joint_targets": joints[physical_index].round(4).tolist(),
+                "cpg": round(float(cpg[physical_index]), 4),
+                "contact": int(self.cpg.contact[physical_index]),
+                "foot_lift": round(float(self.cpg.foot_lift[physical_index]), 4),
+                "foot_motion": foot_motion[physical_index].round(4).tolist(),
+                "neuron_indices": list(range(physical_index * 3, physical_index * 3 + 3)),
+                "servo_targets": [target for target in servo_targets if target["leg"] == f"L{visual_leg}"],
+            })
         return {
             "joint_targets": joints.round(4).tolist(),
             "servo_count": len(servo_targets),
             "servo_targets": servo_targets,
+            "visual_legs": visual_legs,
+            "compass_heading_deg": round(compass_heading_degrees(self.plant.heading), 2),
+            "svg_heading_deg": round(north_up_svg_rotation_degrees(self.plant.heading), 2),
             "cpg": cpg.round(4).tolist(),
             "contact": self.cpg.contact.tolist(),
             "foot_lift": self.cpg.foot_lift.round(4).tolist(),

@@ -31,6 +31,11 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
+from body_runtime_host.coordinate_frames import (
+    compass_heading_degrees,
+    north_up_svg_rotation_degrees,
+)
+
 LOG = logging.getLogger("lumina.body")
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / "data" / "body" / "config.json"
@@ -271,6 +276,8 @@ class BodyHost:
                 worldmodel_pose = ({
                     "body": [round(float(sim.px), 3), round(float(sim.py), 3)],
                     "heading_deg": round(math.degrees(float(sim.heading)), 2),
+                    "compass_heading_deg": round(compass_heading_degrees(sim.heading), 2),
+                    "svg_heading_deg": round(north_up_svg_rotation_degrees(sim.heading), 2),
                     "step": int(sim.steps),
                 } if sim is not None else None)
             if gait not in {"forward", "backward", "turn_left", "turn_right"}:
@@ -292,6 +299,8 @@ class BodyHost:
                 "locomotion_verified": False,
                 "state_loaded": bool(self._fnk_controller.loaded),
                 **self._fnk_controller_last,
+                "compass_heading_deg": round(compass_heading_degrees(sim.heading), 2) if sim else 0.0,
+                "svg_heading_deg": round(north_up_svg_rotation_degrees(sim.heading), 2) if sim else 90.0,
             }
 
     def fnk0031_controller_status(self) -> dict:
@@ -308,6 +317,8 @@ class BodyHost:
                 pose = ({
                     "body": [round(float(sim.px), 3), round(float(sim.py), 3)],
                     "heading_deg": round(math.degrees(float(sim.heading)), 2),
+                    "compass_heading_deg": round(compass_heading_degrees(sim.heading), 2),
+                    "svg_heading_deg": round(north_up_svg_rotation_degrees(sim.heading), 2),
                     "step": int(sim.steps),
                 } if sim is not None else None)
                 heading = round(math.degrees(float(sim.heading)), 1) if sim is not None else 0.0
@@ -319,6 +330,8 @@ class BodyHost:
                 return {"active": False, "simulation_running": simulation_running,
                         "mode": "local_simulation", "gait": gait,
                         "body_heading_deg": heading, "worldmodel_pose": pose,
+                        "compass_heading_deg": round(compass_heading_degrees(sim.heading), 2) if sim is not None else 0.0,
+                        "svg_heading_deg": round(north_up_svg_rotation_degrees(sim.heading), 2) if sim is not None else 90.0,
                         "reason": "waiting for simulation step"}
             return {
                 **last,
@@ -335,6 +348,8 @@ class BodyHost:
                 "locomotion_verified": False,
                 "state_loaded": bool(self._fnk_controller.loaded),
                 **self._fnk_controller_last,
+                "compass_heading_deg": round(compass_heading_degrees(sim.heading), 2) if sim is not None else 0.0,
+                "svg_heading_deg": round(north_up_svg_rotation_degrees(sim.heading), 2) if sim is not None else 90.0,
             }
 
     def fnk0031_experiment_status(self) -> dict:

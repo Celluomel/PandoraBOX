@@ -13,6 +13,27 @@ sys.path.insert(0, str(ROOT))
 
 
 class WorldModelTypesTest(unittest.TestCase):
+    def test_north_up_heading_transform_matches_world_cardinals(self):
+        from body_runtime_host.coordinate_frames import (
+            compass_heading_degrees,
+            north_up_svg_rotation_degrees,
+        )
+
+        for heading, compass, svg_rotation in (
+            (0.0, 90.0, 90.0),
+            (math.pi / 2, 0.0, 0.0),
+            (math.pi, 270.0, -90.0),
+            (-math.pi / 2, 180.0, 180.0),
+        ):
+            with self.subTest(heading=heading):
+                self.assertAlmostEqual(compass_heading_degrees(heading), compass)
+                self.assertAlmostEqual(north_up_svg_rotation_degrees(heading), svg_rotation)
+                radians = math.radians(svg_rotation)
+                rendered_front = (math.sin(radians), -math.cos(radians))
+                expected_front = (math.cos(heading), -math.sin(heading))
+                self.assertAlmostEqual(rendered_front[0], expected_front[0], places=7)
+                self.assertAlmostEqual(rendered_front[1], expected_front[1], places=7)
+
     def test_anchor_serialization_roundtrip(self):
         from body_runtime_host.worldmodel import AnchorLieu, AnchorObjet, Action
 

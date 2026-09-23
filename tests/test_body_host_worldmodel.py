@@ -101,6 +101,15 @@ class FNK0031LocomotionControllerTest(unittest.TestCase):
             self.assertEqual([x["index"] for x in state["servo_targets"]], list(range(1, 19)))
             self.assertEqual([x["joint"] for x in state["servo_targets"][:3]], ["coxa", "femur", "tibia"])
             self.assertEqual(state["servo_targets"][3]["leg"], "L2")
+            self.assertEqual([leg["label"] for leg in state["visual_legs"]], [
+                "front-left", "middle-left", "rear-left",
+                "front-right", "middle-right", "rear-right",
+            ])
+            self.assertEqual([leg["physical_index"] for leg in state["visual_legs"]], [0, 2, 4, 1, 3, 5])
+            self.assertEqual([leg["neuron_indices"] for leg in state["visual_legs"]], [
+                [0, 1, 2], [6, 7, 8], [12, 13, 14],
+                [3, 4, 5], [9, 10, 11], [15, 16, 17],
+            ])
             self.assertEqual(state["imu"]["source"], "simulated_plant")
             self.assertGreater(state["reward"], 0.0)
             self.assertIn("forward_prediction_error", state)
@@ -138,6 +147,8 @@ class FNK0031LocomotionControllerTest(unittest.TestCase):
             turn_right = FNK0031LocomotionController(Path(tmp) / "right.npz").step(gait="turn_right")
             self.assertNotEqual(turn_left["joint_targets"], turn_right["joint_targets"])
             self.assertGreater(max(abs(value) for leg in turn_left["foot_motion"] for value in leg[:2]), 0.1)
+            self.assertGreater(turn_left["visual_legs"][0]["foot_motion"][0], 0.0)
+            self.assertLess(turn_left["visual_legs"][2]["foot_motion"][0], 0.0)
             for left_leg, right_leg in zip(turn_left["foot_motion"], turn_right["foot_motion"]):
                 self.assertAlmostEqual(left_leg[0], -right_leg[0], places=3)
                 self.assertAlmostEqual(left_leg[1], -right_leg[1], places=3)
@@ -240,7 +251,12 @@ class BodySingletonStartupTest(unittest.TestCase):
         self.assertFalse(result["actuation"])
         self.assertEqual(result["body_heading_deg"], 90.0)
         self.assertEqual(result["gait"], "turn_left")
-        self.assertEqual(result["worldmodel_pose"], {"body": [4.0, 6.0], "heading_deg": 90.0, "step": 12})
+        self.assertEqual(result["worldmodel_pose"], {
+            "body": [4.0, 6.0], "heading_deg": 90.0,
+            "compass_heading_deg": 0.0, "svg_heading_deg": 0.0, "step": 12,
+        })
+        self.assertEqual(result["compass_heading_deg"], 0.0)
+        self.assertEqual(result["svg_heading_deg"], 0.0)
         self.assertEqual(host._fnk_controller.gait, "turn_left")
         status = host.fnk0031_controller_status()
         self.assertTrue(status["simulation_running"])

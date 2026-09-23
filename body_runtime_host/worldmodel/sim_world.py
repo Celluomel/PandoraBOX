@@ -24,6 +24,7 @@ import random
 from typing import Any, Dict, List, Optional, Tuple
 
 from .types import Action, BodyState, Observation, Outcome, SceneObject
+from body_runtime_host.coordinate_frames import compass_heading_degrees, north_up_svg_rotation_degrees
 
 GRID = 12          # room is GRID x GRID units
 REACH = 1.8        # base reach (metres)
@@ -444,6 +445,8 @@ class SimulatedRoom:
             "width": self.width, "height": self.height,
             "body": [round(self.px, 2), round(self.py, 2)],
             "heading_deg": round(math.degrees(self.heading), 1),
+            "compass_heading_deg": round(compass_heading_degrees(self.heading), 1),
+            "svg_heading_deg": round(north_up_svg_rotation_degrees(self.heading), 1),
             "body_max_speed_cells_per_action": 2.0,
             "carrying": self.carrying,
             "task_stage": self.task_stage,
