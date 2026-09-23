@@ -125,7 +125,7 @@ syncMapPose=function(pose){
   const [x,y]=pose.body,heading=Number(pose.heading_deg||0),rotation=Number.isFinite(Number(pose.svg_heading_deg))?Number(pose.svg_heading_deg):90-heading;
   for(const svg of [document.getElementById('map'),document.getElementById('map-large')]){
     if(!svg)continue;
-    const [width,height]=svg.getAttribute('viewBox').split(/\\s+/).map(Number),px=Math.max(.25,Math.min(width-.25,Number(x))),py=height-Math.max(.25,Math.min(height-.25,Number(y))),body=svg.querySelector('.body-pose'),reach=svg.querySelector('.reach');
+    const [, , width, height]=svg.getAttribute('viewBox').split(/\\s+/).map(Number),px=Math.max(.25,Math.min(width-.25,Number(x))),py=height-Math.max(.25,Math.min(height-.25,Number(y))),body=svg.querySelector('.body-pose'),reach=svg.querySelector('.reach');
     if(body){const nose=body.querySelector('.heading');if(nose)nose.setAttribute('d','M0 -.72 L-.19 .19 L0 .08 L.19 .19 Z');body.setAttribute('transform',`translate(${px} ${py}) rotate(${rotation})`)}
     if(reach){reach.setAttribute('cx',px);reach.setAttribute('cy',py)}
   }
