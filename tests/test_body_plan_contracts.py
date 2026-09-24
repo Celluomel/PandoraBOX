@@ -11,6 +11,8 @@ from body_runtime_host.worldmodel.plan_runtime import BodyPlanRuntime
 from body_runtime_host.worldmodel.task_graph import TaskGraphExecutor
 from body_runtime_host.worldmodel.local_planner import LocalRoutePlanner
 from body_runtime_host.worldmodel.types import BodyState
+from body_runtime_host.worldmodel.types import Action
+from body_runtime_host.worldmodel.sim_world import SimulatedRoom
 
 
 def snapshot() -> BodySnapshot:
@@ -149,3 +151,16 @@ class BodyPlanContractTests(unittest.TestCase):
         self.assertGreater(len(route.cells), 2)
         self.assertNotIn((4, 1), route.cells)
         self.assertLessEqual(abs(route.cells[-1][0] - 8) + abs(route.cells[-1][1] - 1), 1)
+
+    def test_plan_controlled_simulation_uses_arbitrary_object_and_surface(self):
+        room = SimulatedRoom()
+        room.objects["parcel"] = {"id": "parcel", "label": "parcel", "kind": "object", "x": 2.0, "y": 2.0, "mass": 0.4, "size": 0.4}
+        room.objects["dock"] = {"id": "dock", "label": "dock", "kind": "surface", "x": 5.0, "y": 5.0, "mass": 25.0, "size": 1.0}
+        room.px, room.py = room.objects["parcel"]["x"], room.objects["parcel"]["y"]
+        _, outcome = room.step(Action(type="grab", target="parcel", params={"plan_controlled": True}))
+        self.assertEqual(outcome.kind, "success")
+        room.px, room.py = room.objects["dock"]["x"], room.objects["dock"]["y"]
+        _, outcome = room.step(Action(type="release", target="dock", params={"plan_controlled": True}))
+        self.assertEqual(outcome.kind, "success")
+        self.assertEqual(room.carrying, None)
+        self.assertEqual((room.objects["parcel"]["x"], room.objects["parcel"]["y"]), (room.objects["dock"]["x"], room.objects["dock"]["y"]))

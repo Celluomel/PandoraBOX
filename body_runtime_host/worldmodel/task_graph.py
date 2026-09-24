@@ -45,7 +45,11 @@ class TaskGraphExecutor:
                 return TaskDecision(None, step.step_id, "recover_from_blockage", details=self.last_route)
             return TaskDecision(self._navigation_action(route, snapshot, body), step.step_id, route.reason, details=self.last_route)
         if step.verb in {"grab", "release", "push", "wait"}:
-            return TaskDecision(Action(type=step.verb, target=step.target), step.step_id, "execute planned primitive")
+            return TaskDecision(
+                Action(type=step.verb, target=step.target, params={"plan_controlled": True, **step.arguments}),
+                step.step_id,
+                "execute planned primitive",
+            )
         return TaskDecision(None, step.step_id, f"unsupported plan verb: {step.verb}")
 
     def recovery_action(self, plan: BodyPlan, snapshot: BodySnapshot, body: BodyState) -> TaskDecision:

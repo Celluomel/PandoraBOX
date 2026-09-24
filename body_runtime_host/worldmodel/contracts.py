@@ -24,6 +24,7 @@ class PlanStep:
     step_id: str
     verb: str
     target: str = ""
+    arguments: Dict[str, Any] = field(default_factory=dict)
     preconditions: List[Dict[str, Any]] = field(default_factory=list)
     postconditions: List[Dict[str, Any]] = field(default_factory=list)
     max_retries: int = 3
@@ -37,6 +38,7 @@ class PlanStep:
             step_id=str(value.get("step_id") or f"step-{index + 1}"),
             verb=str(value.get("verb") or "").strip().lower(),
             target=str(value.get("target") or "").strip(),
+            arguments=dict(value.get("arguments") or {}),
             preconditions=list(value.get("preconditions") or []),
             postconditions=list(value.get("postconditions") or []),
             max_retries=max(0, min(10, int(value.get("max_retries", 3) or 3))),

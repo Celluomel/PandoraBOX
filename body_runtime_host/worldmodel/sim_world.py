@@ -255,6 +255,7 @@ class SimulatedRoom:
         self.steps += 1
         body_position_before_action = (self.px, self.py)
         a = action.type
+        plan_controlled = bool(action.params.get("plan_controlled"))
         reward = 0.0
         kind = "neutral"
         desc = ""
@@ -300,21 +301,21 @@ class SimulatedRoom:
                 reward -= 0.05
                 desc = f"already carrying {self.carrying}"
             else:
-                target = self._nearest_graspable()
+                target = self._nearest_graspable(action.target if plan_controlled else None)
                 if target is None:
                     kind = "failure"
                     reward -= 0.05
                     desc = "nothing within reach to grab"
                 else:
                     self.carrying = target["id"]
-                    if target["id"] == "cup":
+                    if not plan_controlled and target["id"] == "cup":
                         self.task_stage = "to_table" if self.task_stage == "to_target" else "to_shelf"
                     kind = "success"
                     # The environment knows its own goal: grabbing the *target*
                     # object (the cup) is strongly rewarded, grabbing anything
                     # else is only mildly useful.  This is the task signal the
                     # policy must learn to seek out.
-                    reward += 0.3 if target["kind"] == "target" else 0.05
+                    reward += 0.05 if plan_controlled else (0.3 if target["kind"] == "target" else 0.05)
                     desc = f"grabbed {target['label']}"
         elif a == "release":
             if self.carrying is None:
@@ -322,37 +323,11 @@ class SimulatedRoom:
                 desc = "not carrying anything"
             else:
                 oid = self.carrying
-                on_shelf = math.hypot(
-                    self.objects[oid]["x"] - self.shelf[0],
-                    self.objects[oid]["y"] - self.shelf[1],
-                ) < 1.2
-                table = self.objects["table"]
-                on_table = math.hypot(self.px - table["x"], self.py - table["y"]) < 1.2
-                if on_table and oid == "cup" and self.task_stage == "to_table":
-                    self.objects[oid]["x"] = table["x"]
-                    self.objects[oid]["y"] = table["y"]
-                    self.carrying = None
-                    self.task_stage = "to_target_from_table"
-                    kind = "success"
-                    reward += 0.4
-                    self.success_count += 1
-                    desc = f"placed {oid} on the table — intermediate objective complete"
-                elif on_shelf and oid == "cup" and self.task_stage == "to_shelf":
-                    self.objects[oid]["x"] = self.shelf[0]
-                    self.objects[oid]["y"] = self.shelf[1]
-                    self.carrying = None
-                    kind = "success"
-                    reward += 1.0
-                    self.success_count += 1
-                    self.done = True
-                    desc = f"placed {oid} on the shelf — TASK COMPLETE"
+                if plan_controlled:
+                    kind, reward, desc = self._planned_release(oid, action.target)
                 else:
-                    self.objects[oid]["x"] = self.px
-                    self.objects[oid]["y"] = self.py
-                    self.carrying = None
-                    kind = "failure"
-                    reward -= 0.3
-                    desc = f"dropped {oid} (not on a valid objective surface)"
+                    self._legacy_release(oid)
+                    kind, reward, desc = self._legacy_release_outcome
         elif a == "push":
             target = self._nearest_pushable()
             if target is None:
@@ -388,8 +363,10 @@ class SimulatedRoom:
             self.objects[self.carrying]["x"] = self.px
             self.objects[self.carrying]["y"] = self.py
 
-        # shaping reward: distance to goal (cup if not carried, shelf if carried)
-        if not self.done:
+        # The autonomous demonstration has its own optional teaching signal.
+        # A TaskGraph-controlled plan supplies its objective externally, so it
+        # must never receive a hidden reward tied to this fixture's cup/shelf.
+        if not plan_controlled and not self.done:
             if self.carrying is None:
                 cup = self.objects["cup"]
                 goal = (cup["x"], cup["y"])
@@ -413,9 +390,11 @@ class SimulatedRoom:
 
     # ── affordance helpers (reach / strength gated) ─────────────────────────
 
-    def _nearest_graspable(self) -> Optional[Dict[str, Any]]:
+    def _nearest_graspable(self, target_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         best, best_d = None, None
         for o in self.objects.values():
+            if target_id and o["id"] != target_id:
+                continue
             # Furniture and environmental structures are not gripper targets.
             # Without this guard the exploratory policy could grab the chair,
             # after which the normal carried-object rule made it follow the
@@ -427,6 +406,48 @@ class SimulatedRoom:
                 if best_d is None or d < best_d:
                     best, best_d = o, d
         return best
+
+    def _destination(self, target_id: Optional[str]) -> Optional[Tuple[float, float]]:
+        if target_id == "goal":
+            return self.shelf
+        target = self.objects.get(str(target_id or ""))
+        return (float(target["x"]), float(target["y"])) if target else None
+
+    def _planned_release(self, object_id: str, destination_id: Optional[str]) -> Tuple[str, float, str]:
+        """Apply a plan-controlled release without assuming a task scenario."""
+        destination = self._destination(destination_id)
+        on_destination = destination is not None and math.hypot(self.px - destination[0], self.py - destination[1]) < 1.2
+        if on_destination:
+            self.objects[object_id]["x"], self.objects[object_id]["y"] = destination
+            self.carrying = None
+            self.task_stage = f"placed:{destination_id or 'surface'}"
+            self.success_count += 1
+            self.done = bool(destination_id == "goal")
+            reward = 1.0 if self.done else 0.4
+            return "success", reward, f"placed {object_id} on {destination_id or 'surface'}"
+        self.objects[object_id]["x"], self.objects[object_id]["y"] = self.px, self.py
+        self.carrying = None
+        return "failure", -0.15, f"cannot release {object_id}: destination is not within reach"
+
+    def _legacy_release(self, oid: str) -> None:
+        """Compatibility path for the autonomous demonstration policy only."""
+        on_shelf = math.hypot(self.objects[oid]["x"] - self.shelf[0], self.objects[oid]["y"] - self.shelf[1]) < 1.2
+        table = self.objects["table"]
+        on_table = math.hypot(self.px - table["x"], self.py - table["y"]) < 1.2
+        if on_table and oid == "cup" and self.task_stage == "to_table":
+            self.objects[oid]["x"], self.objects[oid]["y"] = table["x"], table["y"]
+            self.carrying, self.task_stage = None, "to_target_from_table"
+            self.success_count += 1
+            self._legacy_release_outcome = ("success", 0.4, f"placed {oid} on the table — intermediate objective complete")
+        elif on_shelf and oid == "cup" and self.task_stage == "to_shelf":
+            self.objects[oid]["x"], self.objects[oid]["y"] = self.shelf
+            self.carrying, self.done = None, True
+            self.success_count += 1
+            self._legacy_release_outcome = ("success", 1.0, f"placed {oid} on the shelf — TASK COMPLETE")
+        else:
+            self.objects[oid]["x"], self.objects[oid]["y"] = self.px, self.py
+            self.carrying = None
+            self._legacy_release_outcome = ("failure", -0.3, f"dropped {oid} (not on a valid objective surface)")
 
     def _nearest_pushable(self) -> Optional[Dict[str, Any]]:
         best, best_d = None, None

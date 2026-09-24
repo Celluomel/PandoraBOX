@@ -84,6 +84,12 @@ continuity. The active plan, however, now owns execution when it has the Body
 plan lease. The next increment expands the generic predicate set and removes
 the remaining simulator-only placement assumptions.
 
+The default room remains a reproducible test fixture, not an embodiment
+schema. Under a plan lease, the simulator receives only a verb, an entity ID,
+arguments and observed postconditions. It can therefore grasp and place any
+perceived graspable object on any perceived destination; names such as `cup`,
+`table` and `goal` are never part of the plan executor's decision logic.
+
 ### Existing limitation
 
 The current task sequence is encoded in the simulator and the navigation layer.
