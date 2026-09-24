@@ -898,7 +898,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                 or _temporal_analysis is not None
                 or _quantitative_analysis is not None
                 or _goal_means_analysis is not None
-                or vision_context
+                or bool(getattr(self, "_pending_vision_context", None))
                 or self._last_web_sources
             )
             _fast_enabled = bool(getattr(_fast_cfg, "FAST_ROUND_ENABLED", False))
