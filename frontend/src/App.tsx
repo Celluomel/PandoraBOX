@@ -6,6 +6,7 @@ import { listenContinuously } from './audio';
 import { formatHealthTimestamp } from './health-format.mjs';
 import CognitiveActivity from './CognitiveObservatory';
 import './fnk0031.css';
+import './confirm-dialog.css';
 
 function Fnk0031Activity() {
   const [phase, setPhase] = useState(0);
@@ -779,6 +780,7 @@ export default function App() {
   const [tab, setTab] = useState<typeof tabs[number]>('Overview');
   const [voice, setVoice] = useState(false);
   const [history, setHistory] = useState(false);
+  const [confirmNewConversation, setConfirmNewConversation] = useState(false);
   const [settings, setSettings] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -944,7 +946,7 @@ export default function App() {
     return () => { stopped = true; };
   }, []);
   useEffect(() => { if (inspector) inspectorClose.current?.focus(); }, [inspector]);
-  useEffect(() => { const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') { closeInspector(); setSettings(false); setHistory(false); } }; window.addEventListener('keydown', handler); return () => window.removeEventListener('keydown', handler); }, []);
+  useEffect(() => { const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') { closeInspector(); setSettings(false); setHistory(false); setConfirmNewConversation(false); } }; window.addEventListener('keydown', handler); return () => window.removeEventListener('keydown', handler); }, []);
   useEffect(() => {
     const handler = (event: MouseEvent) => {
       const target = event.target as HTMLElement | null;
@@ -978,7 +980,21 @@ export default function App() {
     catch (e) { if (kind === 'web_search_mode') setWebSearchMode(previous as 'off' | 'auto' | 'always'); else setResponseVerbosity(previous as 'concise' | 'verbose'); setError(e instanceof Error ? e.message : 'Preference change failed.'); }
   }
   function cycleWebSearch() { const next = ({ off: 'auto', auto: 'always', always: 'off' } as const)[webSearchMode]; void updatePreference('web_search_mode', next); }
-  function startNewConversation() { setMessages([]); setDraft(''); setError(''); }
+  function startNewConversation() { setConfirmNewConversation(true); }
+  async function clearConversationHistory() {
+    try {
+      await checked(await fetch('/api/interface/conversation/clear', { method: 'POST' }));
+      localStorage.removeItem(storageKey);
+      setMessages([]);
+      setDraft('');
+      setError('');
+      setHistory(false);
+      setConfirmNewConversation(false);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Conversation history could not be cleared.');
+      setConfirmNewConversation(false);
+    }
+  }
   function stopAudio() {
     echoUntil.current = performance.now() + 400;
     operation.current++;
@@ -1258,6 +1274,7 @@ export default function App() {
       {tab === 'Diagnostics' && <><div className="section-label">LAST MEASURED LATENCY</div><dl className="metrics">{[['first_token_ms', 'First token'], ['turn_ms', 'Full response'], ['stt_ms', 'Transcription'], ['tts_ms', 'Speech synthesis']].map(([key, label]) => <div key={key}><dt>{label}</dt><dd>{status?.timings[key] !== undefined ? `${status.timings[key]} ms` : 'Unavailable'}</dd></div>)}</dl><div className="section-label">AUDIO PROVIDERS</div><dl className="metrics"><div><dt>Speech recognition</dt><dd>{status?.providers.stt ?? 'Unavailable'}</dd></div><div><dt>Speech synthesis</dt><dd>{status?.providers.tts ?? 'Unavailable'}</dd></div></dl><a className="text-button" href="http://127.0.0.1:8080/settings" target="_blank" rel="noreferrer">Provider settings<ChevronRight size={14}/></a></>}
     </div><div className="inspector-foot"><i className={connected ? 'live-dot' : ''}/>{status ? `Updated ${new Date(status.timestamp * 1000).toLocaleTimeString()}` : 'Awaiting telemetry'}</div></aside>}
     {history && <div className="history-panel"><div className="panel-title"><h2>History</h2><IconButton label="Close history" onClick={() => setHistory(false)}><X size={18}/></IconButton></div>{messages.filter(m => m.role === 'user').length === 0 ? <p className="muted">No messages yet.</p> : messages.filter(m => m.role === 'user').map(m => <button className="history-item" key={m.id} onClick={() => { setHistory(false); setVoice(false); setAtBottom(false); setTimeout(() => document.getElementById(`message-${m.id}`)?.scrollIntoView({ block: 'center' }), 0); }}><MessageCircle size={15}/><span>{m.text}</span><ChevronRight size={14}/></button>)}</div>}
+    {confirmNewConversation && <div className="confirm-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) setConfirmNewConversation(false); }}><section className="confirm-dialog" role="alertdialog" aria-modal="true" aria-labelledby="new-conversation-title" aria-describedby="new-conversation-description"><span className="eyebrow">NEW CONVERSATION</span><h2 id="new-conversation-title">Clear the full conversation history?</h2><p id="new-conversation-description">This clears the chat and its saved short-term session history. Long-term memories are not deleted.</p>{busy && <p className="confirm-warning">Stop the current response before clearing the conversation.</p>}<div className="confirm-actions"><button className="confirm-no" onClick={() => setConfirmNewConversation(false)}>No, keep it</button><button className="confirm-yes" disabled={busy} onClick={() => void clearConversationHistory()}>Yes, clear history</button></div></section></div>}
     {settings && <dialog open className="settings-dialog" aria-label="Interface settings"><div className="panel-title"><h2>Interface</h2><IconButton label="Close settings" onClick={() => setSettings(false)}><X size={18}/></IconButton></div><label className="setting-row">Reduce motion<input type="checkbox" checked={reduced} onChange={e => setReduced(e.target.checked)}/></label><a className="text-button" href="http://127.0.0.1:8080/settings" target="_blank" rel="noreferrer">PandoraBOX settings<ChevronRight size={15}/></a></dialog>}
   </div>;
 

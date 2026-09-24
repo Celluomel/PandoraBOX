@@ -1246,6 +1246,20 @@ async def settings_snapshot():
     return {'values': _settings_snapshot(), 'secret_fields': sorted(_SECRET_FIELDS)}
 
 
+@router.post('/conversation/clear')
+async def clear_conversation_history():
+    """Clear the active chat and its persisted short-term session history."""
+    from core.state import state
+    llm_manager = getattr(state, 'llm', None)
+    if llm_manager is None:
+        raise HTTPException(503, 'Conversation history is unavailable while the model is starting.')
+    if _turn_lock.locked():
+        raise HTTPException(409, 'Stop the current response before starting a new conversation.')
+    from managers.session_manager import get_session_manager
+    get_session_manager().clear(llm_manager)
+    return {'cleared': True}
+
+
 def _lmstudio_models(base_url: str) -> list[dict[str, str]]:
     """Read model IDs from an OpenAI-compatible local model server."""
     parsed = urlparse((base_url or '').strip())
