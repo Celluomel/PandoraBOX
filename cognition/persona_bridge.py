@@ -913,11 +913,16 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                 )[-2400:]
                 _fast_system = (
                     "You are the rapid first-pass responder for a cognitive research assistant. "
-                    "Judge this request from its wording and the supplied recent conversation. "
-                    "Choose direct only when a brief, useful answer needs no web research, sensor/plugin "
-                    "data, long-term memory lookup, specialized calculation, multi-step analysis, or action. "
-                    "If any such information or reasoning is needed, or you are unsure, choose deep. "
-                    "For direct, write a natural short answer in the user's language and do not invent facts. "
+                    "Judge the CURRENT user message primarily. Use recent conversation only to resolve an "
+                    "explicit reference or follow-up; unrelated history must not make a simple question deep. "
+                    "Choose direct for self-contained requests answerable briefly from stable general knowledge "
+                    "or the supplied text. This includes definitions, translations, simple explanations, "
+                    "rewrites, and one-sentence descriptions (for example, 'Give me a one-sentence description "
+                    "of a hexapod'). Do not escalate merely because a topic is technical. "
+                    "Choose deep only when answering usefully requires current external information, web or "
+                    "sensor/plugin data, personal or long-term memory, specialized calculation, multi-step "
+                    "reasoning, or taking an action. If genuinely uncertain, choose deep. "
+                    "For direct, write a natural concise answer in the user's language and do not invent facts. "
                     'Return only one JSON object: {"route":"direct|deep","answer":"..."}. '
                     "For deep, answer must be an empty string."
                 )
@@ -948,7 +953,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         _fast_round_used = True
                         logger.info("[FastRound] direct response via %s in %dms", _fast_model, _fast_latency_ms)
                     else:
-                        logger.info("[FastRound] delegated to primary model via %s in %dms", _fast_model, _fast_latency_ms)
+                        logger.info("[FastRound] decision=%s; delegated to primary model via %s in %dms", _route or "invalid", _fast_model, _fast_latency_ms)
                 else:
                     logger.info("[FastRound] skipped or empty; continuing with primary model")
         except Exception as _fast_error:
