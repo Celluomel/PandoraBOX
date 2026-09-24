@@ -21,6 +21,7 @@ Public API consumed by app.py
 
 import asyncio
 import datetime as _dt
+import json
 import logging
 import re
 import sys
@@ -884,6 +885,75 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             except Exception as _report_error:
                 logger.debug("Factual goal report fallback unavailable: %s", _report_error)
 
+        # Optional Phi first pass: the model judges whether this turn can be
+        # answered directly from the supplied conversation. Anything needing
+        # tools, stored/current facts, or multi-step reasoning stays on the
+        # established main-model path. No lexical topic rules are used.
+        _fast_round_used = False
+        try:
+            from managers.settings_manager import config as _fast_cfg
+            _specialized_turn = bool(
+                _deterministic_response
+                or _factual_self_report
+                or _temporal_analysis is not None
+                or _quantitative_analysis is not None
+                or _goal_means_analysis is not None
+                or vision_context
+                or self._last_web_sources
+            )
+            _fast_enabled = bool(getattr(_fast_cfg, "FAST_ROUND_ENABLED", False))
+            _fast_model = str(getattr(_fast_cfg, "FAST_ROUND_MODEL", "") or "").strip()
+            _manager = getattr(self._llm_stream_fn, "__self__", None)
+            _fast_fn = getattr(_manager, "generate_fast_round", None)
+            if _fast_enabled and _fast_model and not _specialized_turn and callable(_fast_fn):
+                _recent_history = getattr(_manager, "history", [])[-4:]
+                _history_text = "\n".join(
+                    f"{item.get('role', 'unknown')}: {str(item.get('content', ''))[-700:]}"
+                    for item in _recent_history if isinstance(item, dict)
+                )[-2400:]
+                _fast_system = (
+                    "You are the rapid first-pass responder for a cognitive research assistant. "
+                    "Judge this request from its wording and the supplied recent conversation. "
+                    "Choose direct only when a brief, useful answer needs no web research, sensor/plugin "
+                    "data, long-term memory lookup, specialized calculation, multi-step analysis, or action. "
+                    "If any such information or reasoning is needed, or you are unsure, choose deep. "
+                    "For direct, write a natural short answer in the user's language and do not invent facts. "
+                    'Return only one JSON object: {"route":"direct|deep","answer":"..."}. '
+                    "For deep, answer must be an empty string."
+                )
+                _fast_prompt = (
+                    (f"Recent conversation:\n{_history_text}\n\n" if _history_text else "")
+                    + f"Current user message:\n{effective_input}"
+                )
+                _fast_started = time.perf_counter()
+                _fast_raw = await asyncio.to_thread(
+                    _fast_fn,
+                    _fast_prompt,
+                    _fast_system,
+                    model=_fast_model,
+                    timeout=float(getattr(_fast_cfg, "FAST_ROUND_TIMEOUT_SECONDS", 4.0) or 4.0),
+                    max_tokens=160,
+                )
+                _fast_latency_ms = round((time.perf_counter() - _fast_started) * 1000)
+                if _fast_raw:
+                    _json_match = re.search(r"\{[\s\S]*\}", str(_fast_raw))
+                    try:
+                        _fast_decision = json.loads(_json_match.group(0)) if _json_match else {}
+                    except (json.JSONDecodeError, TypeError):
+                        _fast_decision = {}
+                    _route = str(_fast_decision.get("route", "")).casefold()
+                    _quick_answer = str(_fast_decision.get("answer", "")).strip()
+                    if _route == "direct" and _quick_answer and len(_quick_answer) <= 1200:
+                        _deterministic_response = _quick_answer
+                        _fast_round_used = True
+                        logger.info("[FastRound] direct response via %s in %dms", _fast_model, _fast_latency_ms)
+                    else:
+                        logger.info("[FastRound] delegated to primary model via %s in %dms", _fast_model, _fast_latency_ms)
+                else:
+                    logger.info("[FastRound] skipped or empty; continuing with primary model")
+        except Exception as _fast_error:
+            logger.warning("[FastRound] unavailable; continuing with primary model: %s", _fast_error)
+
         # ── Phase B: stream tokens ───────────────────────────────────
         accumulated = []
         _reasoning_seen = []
@@ -916,8 +986,14 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                             _quantitative_analysis.agent,
                         )
                     else:
-                        self._chat_stage = 'factual cognitive self-report'
-                        logger.info("[FactualSelfReport] goal/plan answer rendered from recorded telemetry")
+                        self._chat_stage = (
+                            'fast first-pass response' if _fast_round_used
+                            else 'factual cognitive self-report'
+                        )
+                        if _fast_round_used:
+                            logger.info("[FastRound] response resolved without primary-model generation")
+                        else:
+                            logger.info("[FactualSelfReport] goal/plan answer rendered from recorded telemetry")
                     _llm_manager = getattr(self._llm_stream_fn, "__self__", None)
                     _record_exchange = getattr(_llm_manager, "record_exchange", None)
                     if callable(_record_exchange):

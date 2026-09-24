@@ -21,6 +21,11 @@ class AppSettings(BaseModel):
     # Set to "" to always use LLM_MODEL for everything.
     # Example: LLM_MODEL = "llava:latest", TEXT_MODEL = "llama3.2:3b"
     TEXT_MODEL: str = ""
+    # Optional fast first-pass router/responder; enable after loading and
+    # confirming the model id in the local provider.
+    FAST_ROUND_ENABLED: bool = False
+    FAST_ROUND_MODEL: str = "microsoft/Phi-4-mini-reasoning"
+    FAST_ROUND_TIMEOUT_SECONDS: float = 4.0
     # Local multilingual sentence encoder for background affect estimation.
     AFFECT_EMBEDDING_MODEL: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
     LLM_BASE_URL: str = "http://localhost:11434"

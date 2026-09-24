@@ -269,7 +269,7 @@ class LMStudioProvider(BaseLLMProvider):
             r = requests.post(
                 f"{self.base_url}/chat/completions",
                 json=request_body,
-                timeout=60
+                timeout=max(1.0, float(kwargs.get("timeout", 60)))
             )
             if r.status_code == 200:
                 return r.json()["choices"][0]["message"]["content"]
@@ -561,6 +561,35 @@ class LLMManager:
         return self.generate_bare_result(
             prompt, system_prompt=system_prompt, **kwargs
         )["text"]
+
+    def generate_fast_round(
+        self,
+        prompt: str,
+        system_prompt: str,
+        model: str,
+        timeout: float = 8.0,
+        max_tokens: int = 160,
+    ) -> Optional[str]:
+        """Run a foreground fast-model pass without touching chat history.
+
+        It yields immediately if another request owns the shared provider, so
+        this optional pass can never queue ahead of the main response.
+        """
+        if not self._provider_lock.acquire(blocking=False):
+            return None
+        try:
+            result = self.provider.generate(
+                prompt,
+                system_prompt=system_prompt,
+                model=str(model or self.text_model),
+                max_tokens=max(32, min(int(max_tokens), 256)),
+                temperature=0.1,
+                timeout=max(1.0, min(float(timeout), 20.0)),
+                reasoning_format="none",
+            )
+            return str(result or "").strip()
+        finally:
+            self._provider_lock.release()
 
     def generate_bare_result(
         self,

@@ -278,6 +278,11 @@ const settingsFields: Record<Exclude<SettingsTab, 'status' | 'lumina' | 'tools' 
   vision: [{ key: 'CAMERA_AUTOSTART', label: 'Camera on startup', type: 'checkbox' }, { key: 'CAMERA_ID', label: 'Camera ID', type: 'number' }, { key: 'CAMERA_FPS', label: 'Frame rate', type: 'number' }, { key: 'CAMERA_RESOLUTION', label: 'Resolution', type: 'select', options: ['640x480', '1280x720'] }, { key: 'VISION_MODE', label: 'Vision mode', type: 'select', options: ['keyword', 'always', 'context'] }, { key: 'LAVA_MODEL', label: 'Vision model' }, { key: 'VISION_LLM_MODE', label: 'Vision routing', type: 'select', options: ['separate', 'direct'] }, { key: 'AMBIENT_VISION_INTERVAL', label: 'Ambient interval (seconds)', type: 'number' }],
 };
 const voiceLanguages = [['en', 'EN - English'], ['fr', 'FR - Francais'], ['uk', 'UK - Ukrainian'], ['de', 'DE - German'], ['es', 'ES - Spanish'], ['it', 'IT - Italian'], ['pt', 'PT - Portuguese'], ['ru', 'RU - Russian'], ['nl', 'NL - Dutch'], ['pl', 'PL - Polish'], ['ja', 'JA - Japanese'], ['ko', 'KO - Korean'], ['zh-cn', 'ZH - Chinese']];
+settingsFields.llm.splice(4, 0,
+  { key: 'FAST_ROUND_ENABLED', label: 'Enable fast first-pass responder', type: 'checkbox' },
+  { key: 'FAST_ROUND_MODEL', label: 'Fast first-pass model ID' },
+  { key: 'FAST_ROUND_TIMEOUT_SECONDS', label: 'Fast pass timeout (seconds)', type: 'number' },
+);
 settingsFields.llm.unshift({ key: 'NICEGUI_HOST', label: 'Interface access', type: 'select', options: ['127.0.0.1', '0.0.0.0'] });
 const settingOptionLabel = (key: string, option: string) => key === 'RESPONSE_VERBOSITY'
   ? (option === 'verbose' ? 'Extended' : 'Concise')
