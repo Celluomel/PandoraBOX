@@ -936,8 +936,8 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     _fast_prompt,
                     _fast_system,
                     model=_fast_model,
-                    timeout=float(getattr(_fast_cfg, "FAST_ROUND_TIMEOUT_SECONDS", 10.0) or 10.0),
-                    max_tokens=512,
+                    timeout=max(1.0, min(30.0, float(getattr(_fast_cfg, "FAST_ROUND_TIMEOUT_SECONDS", 10.0) or 10.0))),
+                    max_tokens=max(64, min(768, int(getattr(_fast_cfg, "FAST_ROUND_MAX_TOKENS", 512) or 512))),
                 )
                 _fast_latency_ms = round((time.perf_counter() - _fast_started) * 1000)
                 if _fast_raw:

@@ -825,7 +825,7 @@ class SettingsUpdate(BaseModel):
 _SETTING_FIELDS = {
     'PERSONA_NAME', 'LOCATION_NAME', 'LOCATION_ADDRESS', 'LOCATION_LATITUDE', 'LOCATION_LONGITUDE',
     'LLM_PROVIDER', 'LLM_MODEL', 'TEXT_MODEL', 'FAST_ROUND_ENABLED', 'FAST_ROUND_MODEL',
-    'FAST_ROUND_TIMEOUT_SECONDS', 'QUALITY_EMBED_MODEL', 'EMBED_API_BASE_URL',
+    'FAST_ROUND_MAX_TOKENS', 'FAST_ROUND_TIMEOUT_SECONDS', 'QUALITY_EMBED_MODEL', 'EMBED_API_BASE_URL',
     'AFFECT_EMBEDDING_MODEL', 'LLM_BASE_URL',
     'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'RESEARCH_SEARCH_BACKEND',
     'BRAVE_SEARCH_KEY', 'SERPAPI_KEY', 'MEMORY_BACKEND', 'MEMORY_DB_PATH',
@@ -1301,6 +1301,14 @@ async def update_settings(payload: SettingsUpdate):
         if name in _SECRET_FIELDS and value == '••••••••':
             continue
         try:
+            if name == 'FAST_ROUND_MAX_TOKENS':
+                value = int(value)
+                if not 64 <= value <= 768:
+                    raise ValueError('must be between 64 and 768')
+            elif name == 'FAST_ROUND_TIMEOUT_SECONDS':
+                value = float(value)
+                if not 1 <= value <= 30:
+                    raise ValueError('must be between 1 and 30 seconds')
             setattr(config, name, value)
             changed.append(name)
         except Exception as exc:

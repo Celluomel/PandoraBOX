@@ -25,6 +25,7 @@ class AppSettings(BaseModel):
     # confirming the model id in the local provider.
     FAST_ROUND_ENABLED: bool = False
     FAST_ROUND_MODEL: str = "microsoft/Phi-4-mini-reasoning"
+    FAST_ROUND_MAX_TOKENS: int = 512
     FAST_ROUND_TIMEOUT_SECONDS: float = 10.0
     # Local multilingual sentence encoder for background affect estimation.
     AFFECT_EMBEDDING_MODEL: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"

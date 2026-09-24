@@ -582,9 +582,9 @@ class LLMManager:
                 prompt,
                 system_prompt=system_prompt,
                 model=str(model or self.text_model),
-                max_tokens=max(32, min(int(max_tokens), 768)),
+                max_tokens=max(64, min(int(max_tokens), 768)),
                 temperature=0.1,
-                timeout=max(1.0, min(float(timeout), 20.0)),
+                timeout=max(1.0, min(float(timeout), 30.0)),
                 reasoning_format="none",
             )
             return str(result or "").strip()
