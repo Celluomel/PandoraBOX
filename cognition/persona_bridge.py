@@ -916,15 +916,12 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     "Judge the CURRENT user message primarily. Use recent conversation only to resolve an "
                     "explicit reference or follow-up; unrelated history must not make a simple question deep. "
                     "Choose direct for self-contained requests answerable briefly from stable general knowledge "
-                    "or the supplied text. This includes definitions, translations, simple explanations, "
-                    "rewrites, and one-sentence descriptions (for example, 'Give me a one-sentence description "
-                    "of a hexapod'). Do not escalate merely because a topic is technical. "
-                    "Choose deep only when answering usefully requires current external information, web or "
-                    "sensor/plugin data, personal or long-term memory, specialized calculation, multi-step "
-                    "reasoning, or taking an action. Also choose deep when the user invites you to choose "
-                    "a conversation topic or asks about your own current interests, focus, intentions, or "
-                    "preferred next discussion; those answers must be grounded in live organism state, not "
-                    "a generic assistant persona. If genuinely uncertain, choose deep. "
+                    "or the supplied text/history. Choose deep whenever any required evidence is outside "
+                    "that material, including current application state, long-term memory, live sensors, "
+                    "external services, or a tool/action. Do not guess whether such evidence is needed from "
+                    "keywords or topic labels: determine what facts the answer depends on, and whether each "
+                    "is actually available in this fast-pass context. If a dependency is missing or uncertain, "
+                    "choose deep. Do not escalate merely because a topic is technical. "
                     "For direct, write a natural concise answer in the user's language and do not invent facts. "
                     'Return only one JSON object: {"route":"direct|deep","answer":"..."}. '
                     "For deep, answer must be an empty string."
@@ -2179,16 +2176,6 @@ Memory honesty — two distinct cases:
                             acc_frag = _state.acc.get_prompt_fragment()
                             if acc_frag:
                                 system_prompt += f"\n\n{acc_frag}"
-                                system_prompt += (
-                                    "\nWhen the user invites you to choose what to discuss, or asks about "
-                                    "your current focus or interests, treat it as a request for an "
-                                    "organism-grounded suggestion. Select one concrete topic from the "
-                                    "strongest relevant active thread, unresolved question, curiosity pull, "
-                                    "or internal goal in this cognitive field. Briefly say what makes it "
-                                    "salient now. Do not answer with generic greetings, claim unrecorded "
-                                    "feelings, or return the choice to the user. If this field contains no "
-                                    "usable focus, say so plainly and then invite the user's preference."
-                                )
                     except Exception:
                         pass
 
@@ -2223,6 +2210,18 @@ Memory honesty — two distinct cases:
                         pass
             except Exception:
                 pass
+
+            system_prompt += (
+                "\n\n━━ EVIDENCE-GROUNDED RESPONSE POLICY ━━\n"
+                "For every answer, determine what evidence it depends on and use the authoritative "
+                "source actually available in this turn: the user's message, relevant conversation "
+                "history, retrieved memory, current cognitive telemetry, live Body observations, or "
+                "verified external results. Do not substitute conversational plausibility for a missing "
+                "source. If the needed evidence is absent, stale, or ambiguous, state that limitation and "
+                "use an available retrieval/tool path when appropriate. When asked to choose or initiate "
+                "a direction, ground the choice in current cognitive telemetry or recorded goals; label "
+                "inference as inference, and never present an unrecorded preference or intention as fact."
+            )
 
             # ── Hard-cap system prompt to fit context window ─────────────
             try:
