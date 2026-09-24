@@ -55,6 +55,8 @@ class BodyPlan:
     expires_at: float = field(default_factory=lambda: time.time() + 600.0)
     state: str = "draft"
     current_step_index: int = 0
+    step_attempts: Dict[str, int] = field(default_factory=dict)
+    last_error: str = ""
 
     def as_dict(self) -> Dict[str, Any]:
         data = asdict(self)
@@ -75,6 +77,8 @@ class BodyPlan:
             expires_at=float(value.get("expires_at") or (time.time() + 600.0)),
             state=str(value.get("state") or "draft"),
             current_step_index=max(0, int(value.get("current_step_index") or 0)),
+            step_attempts={str(key): int(count) for key, count in dict(value.get("step_attempts") or {}).items()},
+            last_error=str(value.get("last_error") or ""),
         )
 
 

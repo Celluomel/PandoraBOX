@@ -146,6 +146,7 @@ class SimulatedRoom:
         return BodyState(
             position=[self.px, self.py, 0.0],
             orientation=self.heading,
+            posture={"holding": self.carrying or ""},
             capabilities={
                 "reach": REACH, "speed": 1.0, "max_speed": 2.0,
                 "mobile_obstacle_speed": next_mobile_speed,

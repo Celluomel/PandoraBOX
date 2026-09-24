@@ -126,11 +126,54 @@ class BodyPlanRuntime:
             self._append(self._actions_path, {"event": "action_result", **result.as_dict()})
             return {"ok": True, "action": result.as_dict()}
 
+    def active_plan(self) -> Optional[BodyPlan]:
+        with self._lock:
+            return self._active
+
+    def begin_execution(self) -> None:
+        with self._lock:
+            if self._active and self._active.state == "ready":
+                self._active.state = "executing"
+                self._persist_active()
+                self._append(self._plans_path, {"event": "execution_started", "at": time.time(), "plan": self._active.as_dict()})
+
+    def advance(self, step_id: str, snapshot_id: str) -> Dict[str, Any]:
+        with self._lock:
+            plan = self._active
+            if plan is None or plan.state not in {"ready", "executing", "observing"}:
+                return {"ok": False, "error": "no executable active plan"}
+            if plan.current_step_index >= len(plan.steps) or plan.steps[plan.current_step_index].step_id != step_id:
+                return {"ok": False, "error": "step is no longer current"}
+            plan.current_step_index += 1
+            plan.last_error = ""
+            plan.state = "completed" if plan.current_step_index >= len(plan.steps) else "executing"
+            result = {"ok": True, "snapshot_id": snapshot_id, "plan": plan.as_dict()}
+            self._append(self._plans_path, {"event": "step_completed", "at": time.time(), "step_id": step_id, **result})
+            self._persist_active()
+            return result
+
+    def record_step_failure(self, step_id: str, snapshot_id: str, description: str) -> Dict[str, Any]:
+        with self._lock:
+            plan = self._active
+            if plan is None or plan.current_step_index >= len(plan.steps):
+                return {"ok": False, "error": "no active step"}
+            step = plan.steps[plan.current_step_index]
+            if step.step_id != step_id:
+                return {"ok": False, "error": "step is no longer current"}
+            attempts = int(plan.step_attempts.get(step_id, 0)) + 1
+            plan.step_attempts[step_id] = attempts
+            plan.last_error = description
+            plan.state = "recovery" if attempts > step.max_retries else "executing"
+            result = {"ok": True, "attempts": attempts, "snapshot_id": snapshot_id, "plan": plan.as_dict()}
+            self._append(self._plans_path, {"event": "step_failed", "at": time.time(), "step_id": step_id, "description": description, **result})
+            self._persist_active()
+            return result
+
     def payload(self) -> Dict[str, Any]:
         with self._lock:
             return {
                 "active_plan": self._active.as_dict() if self._active else None,
                 "latest_snapshot": self._latest_snapshot.as_dict() if self._latest_snapshot else None,
-                "execution": "contract_ready",
-                "note": "Plans are validated and persisted. Generic TaskGraph execution is the next phase.",
+                "execution": "task_graph",
+                "note": "Plans execute locally against fresh Body snapshots; every action and transition is persisted.",
             }

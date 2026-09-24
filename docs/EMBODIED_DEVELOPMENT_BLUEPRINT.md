@@ -63,9 +63,21 @@ The repository already contains the foundations below.
   `POST /worldmodel/plans`, and `POST /worldmodel/plans/{plan_id}/cancel`.
 - World Model UI panel showing the current validated plan and next step.
 
-This is deliberately a contract and evidence layer, not yet an executor. The
-current simulator still owns its legacy demonstration sequence; Phase 1 moves
-execution to the generic task graph below.
+### TaskGraph execution baseline (Phase 1)
+
+- `TaskGraphExecutor` evaluates the active ordered step against the latest
+  local Body snapshot, rather than against a conversation or a UI claim.
+- Generic `navigate`, `grab`, `release`, `push` and `wait` primitives are
+  selected from the plan; navigation is geometry-grounded on the target pose.
+- Observed predicates (`near`, `holding`, `empty_gripper`) advance a step;
+  failed or dangerous actions increment an auditable recovery counter.
+- Every commanded primitive is written to the action ledger and every plan
+  transition is restart-safe.
+
+The simulator still exposes its legacy demonstration telemetry for visual
+continuity. The active plan, however, now owns execution when it has the Body
+plan lease. The next increment expands the generic predicate set and removes
+the remaining simulator-only placement assumptions.
 
 ### Existing limitation
 
@@ -284,7 +296,7 @@ Any physical safety violation -> EMERGENCY_STOP
 
 ### Phase 0 - Contract and observability
 
-Status: implemented. The next active engineering milestone is Phase 1.
+Status: implemented. Phase 1 is active.
 
 Goal: make the current system measurable before adding more intelligence.
 
@@ -306,6 +318,9 @@ Acceptance tests:
 ### Phase 1 - General sequential task engine
 
 Goal: replace simulator-specific stage assumptions with a reusable task graph.
+
+Status: execution baseline implemented. Remaining work: generalized surface
+relations, path-clearance predicates, deadlines and recovery/replanning.
 
 Deliverables:
 

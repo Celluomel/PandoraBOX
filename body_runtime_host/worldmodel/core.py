@@ -36,13 +36,14 @@ import numpy as np
 
 from .anchors import PhysicalMemory, atomic_write_json
 from .consolidation import ConsolidationEngine
-from .contracts import BodySnapshot
+from .contracts import ActionResult, BodySnapshot
 from .concepts import EmbodiedConceptMemory
 from .cortex import ArtificialCortex, action_space_for_body
 from .dynamics import LatentWorldDynamics
 from .navigation import navigation_guidance
 from .policy import Policy
 from .plan_runtime import BodyPlanRuntime
+from .task_graph import TaskGraphExecutor
 from .sim_world import SimulatedRoom
 from .sources import SimRobotSource
 from .types import (
@@ -141,6 +142,7 @@ class EmbodiedWorldModel:
         self.consolidation = ConsolidationEngine(self.memory)
         self.concepts = EmbodiedConceptMemory(self.data_dir / "concepts.json")
         self.plan_runtime = BodyPlanRuntime(self.data_dir)
+        self.task_graph = TaskGraphExecutor()
         self._episodes_path = self.data_dir / "episodes.jsonl"
         self._maybe_trim_episodes_file()
 
@@ -246,7 +248,8 @@ class EmbodiedWorldModel:
             self._last_observation = obs
             self._last_body_state = body_state
             self._last_affordances = aff
-            self.plan_runtime.record_snapshot(self._make_plan_snapshot(obs, body_state))
+            plan_snapshot = self._make_plan_snapshot(obs, body_state)
+            self.plan_runtime.record_snapshot(plan_snapshot)
             # 4) anchor activation (upsert what we see now)
             self._activate_anchors(obs, body_state, aff)
             # 5) physical latent
@@ -285,6 +288,25 @@ class EmbodiedWorldModel:
             if recommended in candidate_types and recommended not in forbidden:
                 chosen = {"type": recommended}
                 decision["reason"] = "geometric objective guidance"
+            # An accepted Body plan is a local, snapshot-grounded controller.
+            # It supersedes the exploratory policy only while it owns the plan
+            # lease; learning continues from each executed primitive.
+            active_plan = self.plan_runtime.active_plan()
+            task_decision = None
+            if active_plan and active_plan.state in {"ready", "executing"}:
+                self.plan_runtime.begin_execution()
+                task_decision = self.task_graph.decide(active_plan, plan_snapshot, body_state)
+                if task_decision.satisfied:
+                    self.plan_runtime.advance(task_decision.step_id, plan_snapshot.snapshot_id)
+                    chosen = {"type": "wait"}
+                    decision["reason"] = "TaskGraph observed postcondition"
+                elif task_decision.action is None:
+                    self.plan_runtime.record_step_failure(task_decision.step_id, plan_snapshot.snapshot_id, task_decision.reason)
+                    chosen = {"type": "wait"}
+                    decision["reason"] = "TaskGraph requires recovery"
+                else:
+                    chosen = task_decision.action.as_dict()
+                    decision["reason"] = task_decision.reason
               # 9) execute (robot actuators, sandbox physics, or legacy bridge)
             if self.source is not None:
                 obs_after, outcome = self.source.execute(self._as_action(chosen))
@@ -295,6 +317,25 @@ class EmbodiedWorldModel:
             # action, not the stale pre-action frame used for decision-making.
             self._last_observation = obs_after
             self._last_body_state = self.source.body_state() if self.source is not None else body_state
+            if task_decision and active_plan:
+                self.plan_runtime.record_action(ActionResult(
+                    plan_id=active_plan.plan_id,
+                    step_id=task_decision.step_id,
+                    action_id=f"step-{self._steps + 1}",
+                    status=outcome.kind,
+                    outcome=outcome.description,
+                    snapshot_id=plan_snapshot.snapshot_id,
+                    reward=float(outcome.reward),
+                ))
+                after_snapshot = self._make_plan_snapshot(obs_after, self._last_body_state)
+                self.plan_runtime.record_snapshot(after_snapshot)
+                current = self.plan_runtime.active_plan()
+                if current and task_decision.step_id and current.current_step_index < len(current.steps):
+                    check = self.task_graph.decide(current, after_snapshot, self._last_body_state)
+                    if check.satisfied and check.step_id == task_decision.step_id:
+                        self.plan_runtime.advance(task_decision.step_id, after_snapshot.snapshot_id)
+                    elif outcome.kind in {"failure", "danger"}:
+                        self.plan_runtime.record_step_failure(task_decision.step_id, after_snapshot.snapshot_id, outcome.description)
             # 10) learn: prediction error + online update
             pred_s_next = self.dynamics.step(s, self._action_vec(chosen))
             next_body = self.source.body_state() if self.source is not None else body_state
@@ -477,7 +518,11 @@ class EmbodiedWorldModel:
                 "x": float(body.position[0]), "y": float(body.position[1]),
                 "yaw": float(body.orientation),
             },
-            objects=[item.as_dict() for item in obs.scene],
+            objects=[item.as_dict() for item in obs.scene] + ([{
+                "id": "goal", "label": "goal", "kind": "goal",
+                "position": list(body.capabilities.get("goal") or [0.0, 0.0, 0.0]),
+                "size": 0.5, "mass": 0.0, "props": {},
+            }] if body.capabilities.get("goal") else []),
             capabilities=sorted(set(capabilities)),
             reliability=max(0.0, min(1.0, float(obs.confidence))),
             timestamp=float(obs.timestamp),

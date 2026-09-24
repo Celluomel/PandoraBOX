@@ -6,8 +6,10 @@ import time
 import unittest
 from pathlib import Path
 
-from body_runtime_host.worldmodel.contracts import ActionResult, BodySnapshot
+from body_runtime_host.worldmodel.contracts import ActionResult, BodyPlan, BodySnapshot, PlanStep
 from body_runtime_host.worldmodel.plan_runtime import BodyPlanRuntime
+from body_runtime_host.worldmodel.task_graph import TaskGraphExecutor
+from body_runtime_host.worldmodel.types import BodyState
 
 
 def snapshot() -> BodySnapshot:
@@ -93,3 +95,24 @@ class BodyPlanContractTests(unittest.TestCase):
             )
             self.assertFalse(runtime.record_action(stale)["ok"])
             self.assertIn('"action_result"', (path / "actions.jsonl").read_text(encoding="utf-8"))
+
+    def test_task_graph_uses_geometry_and_observed_postconditions(self):
+        current = snapshot()
+        current.objects[0]["position"] = [4.0, 1.0, 0.0]
+        plan_value = BodyPlan(
+            objective="approach and grasp cup",
+            steps=[
+                PlanStep(step_id="approach", verb="navigate", target="cup"),
+                PlanStep(step_id="grasp", verb="grab", target="cup"),
+            ],
+        )
+        executor = TaskGraphExecutor()
+        body = BodyState(position=[1.0, 1.0, 0.0], orientation=0.0, posture={"holding": ""})
+        decision = executor.decide(plan_value, current, body)
+        self.assertEqual(decision.action.type, "forward")
+        current.pose["x"] = 4.0
+        body.position[0] = 4.0
+        self.assertTrue(executor.decide(plan_value, current, body).satisfied)
+        plan_value.current_step_index = 1
+        body.posture["holding"] = "cup"
+        self.assertTrue(executor.decide(plan_value, current, body).satisfied)
