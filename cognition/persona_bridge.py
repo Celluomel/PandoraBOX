@@ -24,6 +24,7 @@ import datetime as _dt
 import logging
 import re
 import sys
+import threading
 import time
 from managers.settings_manager import get_persona_name as _gpn
 from cognition.identity_boundary import prompt_block as _identity_boundary_block
@@ -50,6 +51,33 @@ def _interlocutor_display_name(user_id: str) -> str:
     if raw_id.casefold() not in {"", "default", "guest"}:
         return raw_id.replace("_", " ").title()
     return ""
+
+
+def _deferred_analysis_score(text: str) -> float:
+    """Estimate whether a turn merits background deliberation from structure."""
+    value = str(text or "").strip()
+    if not value:
+        return 0.0
+    words = re.findall(r"\b\w+\b", value, flags=re.UNICODE)
+    sentences = len(re.findall(r"[.!?]+(?:\s|$)", value))
+    lines = [line.strip() for line in value.splitlines() if line.strip()]
+    questions = value.count("?") + value.count("？")
+    score = 0.0
+    if len(words) >= 35:
+        score += 0.2
+    if len(words) >= 70:
+        score += 0.2
+    if sentences >= 3:
+        score += 0.2
+    if questions >= 2:
+        score += 0.2
+    if len(lines) >= 4 or re.search(r"(?:^|\n)\s*(?:[-*•]|\d+[.)])\s+", value):
+        score += 0.25
+    if re.search(r"https?://|```", value, flags=re.IGNORECASE):
+        score += 0.25
+    if value.count(";") >= 2 or value.count(":") >= 2:
+        score += 0.15
+    return min(1.0, score)
 
 
 _root = Path(__file__).parent.parent
@@ -186,6 +214,8 @@ class PersonaBridge:
         self._MAX_SESSION_VISUALS = 20
         self._pending_vision_context: str | None = None  # set per-turn, cleared in _build_prompt_and_cache
         self._recent_goal_means: dict = {}
+        self._deferred_analysis_lock = threading.Lock()
+        self._deferred_analysis_last: dict[str, float] = {}
         self._init_lumina(external_llm_fn)
         # Wire CognitiveOrganism once ai_system is ready
         if self._system is not None:
@@ -444,6 +474,65 @@ class PersonaBridge:
             "intensity": intensity,
         }
 
+    def run_deferred_analysis(self, user_text: str, user_id: str = "default") -> None:
+        """Run expensive, optional analysis after the visible chat turn ends."""
+        if _deferred_analysis_score(user_text) < 0.35 or not self._system:
+            return
+        now = time.monotonic()
+        with self._deferred_analysis_lock:
+            if now - self._deferred_analysis_last.get(user_id, 0.0) < 8.0:
+                return
+            self._deferred_analysis_last[user_id] = now
+
+        # These paths are intentionally best-effort. LLMManager skips them if
+        # another interactive turn already owns the model, keeping chat first.
+        try:
+            from core.state import state as runtime_state
+            are = getattr(runtime_state, "are", None)
+            if are is not None:
+                are.reason(user_id, user_text)
+        except Exception as exc:
+            logger.debug("Deferred abstract analysis unavailable: %s", exc)
+
+        try:
+            from cognition.goal_means_reasoning import (
+                analysis_prompt,
+                is_practical_decision,
+                parse_analysis,
+            )
+            if not is_practical_decision(user_text):
+                return
+            llm_manager = getattr(self._external_llm_fn, "__self__", None)
+            generate = getattr(llm_manager, "generate_bare", None)
+            if not callable(generate):
+                return
+            raw = generate(
+                analysis_prompt(
+                    user_text,
+                    agent_name=_interlocutor_display_name(user_id),
+                ),
+                max_tokens=480,
+                temperature=0.1,
+            )
+            analysis = parse_analysis(raw)
+            if analysis is None:
+                return
+            self._recent_goal_means[user_id] = (analysis, time.monotonic(), 3)
+            goal_engine = getattr(self._system, "goal_engine", None)
+            if goal_engine is not None:
+                goal_engine.register_external_task(
+                    user_text,
+                    analysis.primary_goal,
+                    [option.name for option in analysis.options],
+                )
+            logger.info(
+                "[DeferredAnalysis] practical decision ready for follow-up: goal=%r recommendation=%r",
+                analysis.primary_goal,
+                analysis.recommended_option,
+            )
+        except Exception as exc:
+            logger.debug("Deferred goal-means analysis unavailable: %s", exc)
+
     # ─────────────────────────────────────────────────────────────────
     #  Streaming path with FULL lifecycle
     # ─────────────────────────────────────────────────────────────────
@@ -487,23 +576,9 @@ class PersonaBridge:
         except Exception:
             pass
 
-        # ── Abstract Reasoning Engine: conceptual analysis before prompt build ─
-        self._chat_stage = 'abstract reasoning preparation'
-        try:
-            from core.state import state as _st_are
-            # AbstractReasoningEngine may perform up to three bare provider
-            # passes. It remains available to text chat, but must not contend
-            # with a live voice turn whose only provider pass is the answer.
-            if _st_are.are and not voice_mode:
-                await asyncio.to_thread(
-                    _st_are.are.reason, user_id, effective_input
-                )
-        except Exception:
-            pass
-
-        # ── Goal-means reasoning: one bounded call for practical choices ──
-        # This is a separate history-free analysis, not another chat turn. It
-        # runs before the visible stream and uses LLMManager's text-only model.
+        # Heavy reasoning belongs after the visible answer. The response model
+        # receives fast local constraints below; structured explorations are
+        # queued only for turns whose shape warrants them.
         _goal_means_analysis = None
         _goal_means_followup = False
         _temporal_analysis = None
@@ -533,70 +608,33 @@ class PersonaBridge:
             _quantitative_analysis = None
         try:
             from cognition.goal_means_reasoning import (
-                analysis_prompt, is_analysis_followup, is_practical_decision,
-                parse_analysis,
+                is_analysis_followup, is_practical_decision,
             )
-            # Voice turns must reach the visible response with one provider
-            # generation. The auxiliary goal-means call is useful for
-            # deliberate text decisions, but doubles latency for speech.
+            _recent = self._recent_goal_means.get(user_id)
+            if _recent:
+                _analysis, _created_at, _turns_left = _recent
+                if (
+                    time.monotonic() - _created_at <= 300.0
+                    and _turns_left > 0
+                    and is_analysis_followup(effective_input, _analysis)
+                ):
+                    _goal_means_analysis = _analysis
+                    _goal_means_followup = True
+                    self._recent_goal_means[user_id] = (
+                        _analysis, _created_at, _turns_left - 1,
+                    )
+                    logger.info(
+                        "[GoalMeans] continuing deferred analysis for goal=%r",
+                        _analysis.primary_goal,
+                    )
+                elif len(effective_input.split()) > 5:
+                    self._recent_goal_means.pop(user_id, None)
             if (
-                not voice_mode
+                is_practical_decision(effective_input)
                 and _temporal_analysis is None
                 and _quantitative_analysis is None
-                and is_practical_decision(effective_input)
             ):
-                self._chat_stage = 'goal-means analysis'
-                _llm_manager = getattr(self._external_llm_fn, "__self__", None)
-                _analysis_fn = getattr(_llm_manager, "generate_interactive_analysis", None)
-                if callable(_analysis_fn):
-                    _raw_analysis = await asyncio.to_thread(
-                        _analysis_fn,
-                        analysis_prompt(
-                            effective_input,
-                            agent_name=_interlocutor_display_name(user_id),
-                        ),
-                        max_tokens=480,
-                        temperature=0.1,
-                    )
-                    _goal_means_analysis = parse_analysis(_raw_analysis)
-                    if _goal_means_analysis:
-                        self._recent_goal_means[user_id] = (
-                            _goal_means_analysis, time.monotonic(), 3,
-                        )
-                        _goal_engine = getattr(self._system, "goal_engine", None)
-                        if _goal_engine is not None:
-                            _goal_engine.register_external_task(
-                                effective_input,
-                                _goal_means_analysis.primary_goal,
-                                [option.name for option in _goal_means_analysis.options],
-                            )
-                        logger.info(
-                            "[GoalMeans] goal=%r recommendation=%r",
-                            _goal_means_analysis.primary_goal,
-                            _goal_means_analysis.recommended_option,
-                        )
-                    else:
-                        logger.warning("[GoalMeans] structured analysis was unavailable")
-            else:
-                _recent = self._recent_goal_means.get(user_id)
-                if _recent:
-                    _analysis, _created_at, _turns_left = _recent
-                    if (
-                        time.monotonic() - _created_at <= 300.0
-                        and _turns_left > 0
-                        and is_analysis_followup(effective_input, _analysis)
-                    ):
-                        _goal_means_analysis = _analysis
-                        _goal_means_followup = True
-                        self._recent_goal_means[user_id] = (
-                            _analysis, _created_at, _turns_left - 1,
-                        )
-                        logger.info(
-                            "[GoalMeans] continuing goal=%r",
-                            _analysis.primary_goal,
-                        )
-                    elif len(effective_input.split()) > 5:
-                        self._recent_goal_means.pop(user_id, None)
+                logger.debug("[GoalMeans] structured analysis deferred until after response")
         except Exception as _gma_error:
             logger.warning("[GoalMeans] analysis failed (using contract only): %s", _gma_error)
 

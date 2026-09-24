@@ -3,6 +3,7 @@ import logging
 import json
 import requests
 import threading
+import time
 from typing import Optional, List, Dict, Iterator
 from abc import ABC, abstractmethod
 
@@ -607,6 +608,14 @@ class LLMManager:
                 "reason": "provider busy",
             }
         try:
+            # Close the race where a user turn starts between the first marker
+            # check and acquiring the provider lock.
+            if self._chat_active.is_set():
+                return {
+                    "text": "",
+                    "status": "deferred",
+                    "reason": "interactive turn started",
+                }
             text = self.provider._generate_messages(messages, **kwargs) or ""
             stripped = str(text).strip()
             if not stripped:
@@ -721,6 +730,11 @@ class LLMManager:
         owns_chat_marker = not self._chat_active.is_set()
         if owns_chat_marker:
             self._chat_active.set()
+        lock_started = time.monotonic()
+        self._provider_lock.acquire()
+        lock_wait = time.monotonic() - lock_started
+        if lock_wait > 0.25:
+            logger.info("Interactive stream waited %.0fms for an in-flight provider call", lock_wait * 1000)
         try:
             for token in self.provider.generate_with_history_stream(
                 prompt, self.history, system_prompt, model=model, **kwargs
@@ -731,6 +745,7 @@ class LLMManager:
                 accumulated.append(token)
                 yield token
         finally:
+            self._provider_lock.release()
             if owns_chat_marker:
                 self._chat_active.clear()
         full_response = "".join(accumulated)

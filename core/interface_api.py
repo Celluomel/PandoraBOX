@@ -1662,6 +1662,7 @@ async def chat(payload: Turn, request: Request):
         started = time.perf_counter()
         seq = 0
         llm_turn_reserved = False
+        turn_completed = False
 
         async def emit(kind, **fields):
             nonlocal seq
@@ -1767,6 +1768,7 @@ async def chat(payload: Turn, request: Request):
                 await emit('telemetry', data=telemetry)
             _event('Turn interrupted' if stopped.is_set() else 'Turn completed', turn_id)
             await emit('done')
+            turn_completed = not stopped.is_set()
         except Exception:
             logger.exception('Interface chat failed')
             _event('Turn failed', turn_id)
@@ -1780,6 +1782,12 @@ async def chat(payload: Turn, request: Request):
             except Exception:
                 pass
             _turn_lock.release()
+            if turn_completed:
+                deferred = getattr(state.persona, 'run_deferred_analysis', None)
+                if callable(deferred):
+                    task = asyncio.create_task(asyncio.to_thread(deferred, text, user_id))
+                    _workers.add(task)
+                    task.add_done_callback(_workers.discard)
 
     worker = asyncio.create_task(produce())
     _workers.add(worker)
