@@ -921,7 +921,10 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     "of a hexapod'). Do not escalate merely because a topic is technical. "
                     "Choose deep only when answering usefully requires current external information, web or "
                     "sensor/plugin data, personal or long-term memory, specialized calculation, multi-step "
-                    "reasoning, or taking an action. If genuinely uncertain, choose deep. "
+                    "reasoning, or taking an action. Also choose deep when the user invites you to choose "
+                    "a conversation topic or asks about your own current interests, focus, intentions, or "
+                    "preferred next discussion; those answers must be grounded in live organism state, not "
+                    "a generic assistant persona. If genuinely uncertain, choose deep. "
                     "For direct, write a natural concise answer in the user's language and do not invent facts. "
                     'Return only one JSON object: {"route":"direct|deep","answer":"..."}. '
                     "For deep, answer must be an empty string."
@@ -2176,6 +2179,16 @@ Memory honesty — two distinct cases:
                             acc_frag = _state.acc.get_prompt_fragment()
                             if acc_frag:
                                 system_prompt += f"\n\n{acc_frag}"
+                                system_prompt += (
+                                    "\nWhen the user invites you to choose what to discuss, or asks about "
+                                    "your current focus or interests, treat it as a request for an "
+                                    "organism-grounded suggestion. Select one concrete topic from the "
+                                    "strongest relevant active thread, unresolved question, curiosity pull, "
+                                    "or internal goal in this cognitive field. Briefly say what makes it "
+                                    "salient now. Do not answer with generic greetings, claim unrecorded "
+                                    "feelings, or return the choice to the user. If this field contains no "
+                                    "usable focus, say so plainly and then invite the user's preference."
+                                )
                     except Exception:
                         pass
 
