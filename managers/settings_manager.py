@@ -151,6 +151,8 @@ class AppSettings(BaseModel):
     # connection or exposing a network service by default.
     UNIVERSAL_CONNECTOR_ENABLED: bool = False
     BODY_RUNTIME_ENABLED: bool = True
+    BODY_HOST: str = "127.0.0.1"
+    BODY_PORT: int = 8766
     # None preserves legacy HOME_ASSISTANT_ENABLED until the user chooses the
     # new body-plugin toggle in the interface.
     BODY_PLUGIN_HOME_ASSISTANT_ENABLED: Optional[bool] = None

@@ -279,14 +279,16 @@ const settingsFields: Record<Exclude<SettingsTab, 'status' | 'lumina' | 'tools' 
 };
 const voiceLanguages = [['en', 'EN - English'], ['fr', 'FR - Francais'], ['uk', 'UK - Ukrainian'], ['de', 'DE - German'], ['es', 'ES - Spanish'], ['it', 'IT - Italian'], ['pt', 'PT - Portuguese'], ['ru', 'RU - Russian'], ['nl', 'NL - Dutch'], ['pl', 'PL - Polish'], ['ja', 'JA - Japanese'], ['ko', 'KO - Korean'], ['zh-cn', 'ZH - Chinese']];
 settingsFields.llm.splice(4, 0,
-  { key: 'FAST_ROUND_ENABLED', label: 'Enable fast first-pass responder', type: 'checkbox' },
+  { key: 'FAST_ROUND_ENABLED', label: 'Enable fast first-pass responder', type: 'select', options: ['yes', 'no'] },
   { key: 'FAST_ROUND_MODEL', label: 'Fast first-pass model ID' },
   { key: 'FAST_ROUND_TIMEOUT_SECONDS', label: 'Fast pass timeout (seconds)', type: 'number' },
 );
 settingsFields.llm.unshift({ key: 'NICEGUI_HOST', label: 'Interface access', type: 'select', options: ['127.0.0.1', '0.0.0.0'] });
-const settingOptionLabel = (key: string, option: string) => key === 'RESPONSE_VERBOSITY'
-  ? (option === 'verbose' ? 'Extended' : 'Concise')
-  : option;
+const settingOptionLabel = (key: string, option: string) => {
+  if (key === 'RESPONSE_VERBOSITY') return option === 'verbose' ? 'Extended' : 'Concise';
+  if (key === 'FAST_ROUND_ENABLED') return option === 'yes' ? 'Yes' : 'No';
+  return option;
+};
 
 function SettingsSubpage({ tab, children, compact = false }: { tab: SettingsTab; children: ReactNode; compact?: boolean }) {
   const current = settingTabs.find(item => item.id === tab);
@@ -405,7 +407,7 @@ function SettingsLlmFull() {
   useEffect(() => { void fetch('/api/interface/settings').then(checked).then(r => r.json()).then(r => { setValues(r.values || {}); setSecrets(r.secret_fields || []); }); }, []);
   const set = (key: string, value: any) => setValues(current => ({ ...current, [key]: value }));
   const save = async () => { try { await checked(await fetch('/api/interface/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ values }) })); setMessage('Saved. Restart required for model and provider changes.'); } catch (e) { setMessage(e instanceof Error ? e.message : 'Save failed.'); } };
-  return <SettingsSubpage tab="llm"><div className="settings-form settings-form-compact">{settingsFields.llm.map(field => <label className={`settings-field ${field.type === 'textarea' ? 'wide' : ''}`} key={field.key}><span>{field.label}</span>{field.type === 'textarea' ? <textarea value={values[field.key] || ''} onChange={e => set(field.key, e.target.value)}/> : field.type === 'select' ? <select value={values[field.key] || ''} onChange={e => set(field.key, e.target.value)}>{field.options?.map(option => <option value={option} key={option}>{settingOptionLabel(field.key, option)}</option>)}</select> : <input type={secrets.includes(field.key) ? 'password' : field.type === 'number' ? 'number' : 'text'} value={values[field.key] ?? ''} onChange={e => set(field.key, field.type === 'number' ? Number(e.target.value) : e.target.value)}/>}</label>)}</div><div className="provider-notes"><div>PROVIDER NOTES</div><p><b>ollama</b> → <code>http://localhost:11434</code> · run <code>ollama serve</code> first</p><p><b>lmstudio</b> → <code>http://localhost:1234/v1</code> · start LM Studio server</p><p><b>openai</b> → requires API key above</p><div>AFFECT EMBEDDING MODEL</div><p>This is a local multilingual sentence model for background affect estimation, not a generative/chat LLM. The selected model must be cached locally; changing it requires a restart.</p></div><div className="lumina-actions"><button onClick={() => void save()}><Check size={15}/>Save LLM settings</button><span>{message}</span></div></SettingsSubpage>;
+  return <SettingsSubpage tab="llm"><div className="settings-form settings-form-compact">{settingsFields.llm.map(field => <label className={`settings-field ${field.type === 'textarea' ? 'wide' : ''}`} key={field.key}><span>{field.label}</span>{field.type === 'textarea' ? <textarea value={values[field.key] || ''} onChange={e => set(field.key, e.target.value)}/> : field.type === 'select' ? <select value={field.key === 'FAST_ROUND_ENABLED' ? (values[field.key] ? 'yes' : 'no') : values[field.key] || ''} onChange={e => set(field.key, field.key === 'FAST_ROUND_ENABLED' ? e.target.value === 'yes' : e.target.value)}>{field.options?.map(option => <option value={option} key={option}>{settingOptionLabel(field.key, option)}</option>)}</select> : <input type={secrets.includes(field.key) ? 'password' : field.type === 'number' ? 'number' : 'text'} value={values[field.key] ?? ''} onChange={e => set(field.key, field.type === 'number' ? Number(e.target.value) : e.target.value)}/>}</label>)}</div><div className="provider-notes"><div>PROVIDER NOTES</div><p><b>ollama</b> → <code>http://localhost:11434</code> · run <code>ollama serve</code> first</p><p><b>lmstudio</b> → <code>http://localhost:1234/v1</code> · start LM Studio server</p><p><b>openai</b> → requires API key above</p><div>AFFECT EMBEDDING MODEL</div><p>This is a local multilingual sentence model for background affect estimation, not a generative/chat LLM. The selected model must be cached locally; changing it requires a restart.</p></div><div className="lumina-actions"><button onClick={() => void save()}><Check size={15}/>Save LLM settings</button><span>{message}</span></div></SettingsSubpage>;
 }
 
 function VisionFeed({ data }: { data: any }) {
