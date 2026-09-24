@@ -936,12 +936,15 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     _fast_prompt,
                     _fast_system,
                     model=_fast_model,
-                    timeout=float(getattr(_fast_cfg, "FAST_ROUND_TIMEOUT_SECONDS", 4.0) or 4.0),
-                    max_tokens=160,
+                    timeout=float(getattr(_fast_cfg, "FAST_ROUND_TIMEOUT_SECONDS", 10.0) or 10.0),
+                    max_tokens=512,
                 )
                 _fast_latency_ms = round((time.perf_counter() - _fast_started) * 1000)
                 if _fast_raw:
-                    _json_match = re.search(r"\{[\s\S]*\}", str(_fast_raw))
+                    _fast_text = str(_fast_raw).strip()
+                    if "</think>" in _fast_text:
+                        _fast_text = _fast_text.rsplit("</think>", 1)[-1].strip()
+                    _json_match = re.search(r"\{[\s\S]*?\}", _fast_text)
                     try:
                         _fast_decision = json.loads(_json_match.group(0)) if _json_match else {}
                     except (json.JSONDecodeError, TypeError):

@@ -18,7 +18,8 @@ class FastRoundManagerTest(unittest.TestCase):
         manager = self.make_manager()
 
         result = manager.generate_fast_round(
-            "Bonjour", "Choose direct or deep", model="microsoft/Phi-4-mini-reasoning"
+            "Bonjour", "Choose direct or deep", model="microsoft/Phi-4-mini-reasoning",
+            max_tokens=512,
         )
 
         self.assertIn('"route":"direct"', result)
@@ -27,6 +28,7 @@ class FastRoundManagerTest(unittest.TestCase):
             manager.provider.generate.call_args.kwargs["model"],
             "microsoft/Phi-4-mini-reasoning",
         )
+        self.assertEqual(manager.provider.generate.call_args.kwargs["max_tokens"], 512)
 
     def test_fast_round_skips_when_provider_is_busy(self):
         manager = self.make_manager()
