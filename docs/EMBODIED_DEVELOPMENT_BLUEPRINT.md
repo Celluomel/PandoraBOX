@@ -332,7 +332,13 @@ Goal: replace simulator-specific stage assumptions with a reusable task graph.
 
 Status: execution baseline implemented. Generic surface relations, clearance,
 deadlines and a bounded local recovery loop are implemented. Remaining work:
-multi-step replanning and learned local trajectories.
+learned local trajectories and broad shuffled-scene evaluation.
+
+The deterministic local planner now uses inflated obstacle geometry and A*;
+it marks a route as replanned when the scene geometry changes. Manipulation
+steps route into reach before attempting the primitive, with explicit reason
+codes (`toward_target`, `avoid_obstacle`, `align_for_grasp`,
+`align_for_release`, `recover_from_blockage`).
 
 Deliverables:
 

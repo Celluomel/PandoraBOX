@@ -309,7 +309,8 @@ class EmbodiedWorldModel:
                 else:
                     chosen = task_decision.action.as_dict()
                     decision["reason"] = task_decision.reason
-                    navigation = {**navigation, "local_route": task_decision.details or {}}
+                if task_decision.details:
+                    navigation = {**navigation, "local_route": task_decision.details, "phase": task_decision.reason}
             elif active_plan and active_plan.state == "recovery":
                 task_decision = self.task_graph.recovery_action(active_plan, plan_snapshot, body_state)
                 chosen = task_decision.action.as_dict() if task_decision.action else {"type": "wait"}

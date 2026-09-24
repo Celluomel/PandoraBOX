@@ -23,19 +23,23 @@ class Route:
     cells: List[Cell] = field(default_factory=list)
     reason: str = ""
     blocked: bool = False
+    replanned: bool = False
 
     @property
     def next_cell(self) -> Optional[Cell]:
         return self.cells[1] if len(self.cells) > 1 else None
 
     def as_dict(self) -> Dict[str, Any]:
-        return {"target": self.target, "cells": [list(cell) for cell in self.cells], "reason": self.reason, "blocked": self.blocked}
+        return {"target": self.target, "cells": [list(cell) for cell in self.cells], "reason": self.reason, "blocked": self.blocked, "replanned": self.replanned}
 
 
 class LocalRoutePlanner:
     """A* routing with obstacle inflation and reachable destination cells."""
 
     _BLOCKING_KINDS = {"obstacle", "chair", "table", "wall", "mobile_obstacle"}
+
+    def __init__(self) -> None:
+        self._scene_signatures: Dict[str, tuple] = {}
 
     def route(self, target_id: str, snapshot: BodySnapshot, body: BodyState) -> Route:
         target = next((item for item in snapshot.objects if str(item.get("id")) == target_id), None)
@@ -45,13 +49,18 @@ class LocalRoutePlanner:
         height = max(2, int(round(float(body.capabilities.get("world_height", 12)))))
         start = self._cell(body.position, width, height)
         blocked = self._blocked_cells(snapshot, target_id, width, height)
+        signature = tuple(sorted((str(item.get("id")), tuple(round(float(v), 1) for v in (item.get("position") or [])[:2])) for item in snapshot.objects))
+        replanned = target_id in self._scene_signatures and self._scene_signatures[target_id] != signature
+        self._scene_signatures[target_id] = signature
         goals = self._goal_cells(target, body, width, height, blocked)
         if start in goals:
-            return Route(target_id, [start], "already_near_target")
+            return Route(target_id, [start], "already_near_target", replanned=replanned)
         path = self._astar(start, goals, blocked, width, height)
         if not path:
-            return Route(target_id, reason="no_clear_route", blocked=True)
-        return Route(target_id, path, "toward_target")
+            return Route(target_id, reason="recover_from_blockage", blocked=True, replanned=replanned)
+        direct = abs(start[0] - path[-1][0]) + abs(start[1] - path[-1][1])
+        reason = "replan_after_scene_change" if replanned else "avoid_obstacle" if len(path) - 1 > direct else "toward_target"
+        return Route(target_id, path, reason, replanned=replanned)
 
     @staticmethod
     def _cell(position: List[float], width: int, height: int) -> Cell:

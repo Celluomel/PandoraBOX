@@ -152,6 +152,19 @@ class BodyPlanContractTests(unittest.TestCase):
         self.assertNotIn((4, 1), route.cells)
         self.assertLessEqual(abs(route.cells[-1][0] - 8) + abs(route.cells[-1][1] - 1), 1)
 
+    def test_local_planner_replans_and_aligns_before_grasp(self):
+        current = snapshot()
+        current.objects = [{"id": "parcel", "kind": "object", "position": [5.0, 1.0, 0.0], "size": 0.4}]
+        body = BodyState(position=[1.0, 1.0, 0.0], orientation=0.0, posture={"holding": ""}, capabilities={"reach": 1.0, "world_width": 12, "world_height": 12})
+        planner = LocalRoutePlanner()
+        self.assertFalse(planner.route("parcel", current, body).replanned)
+        current.objects.append({"id": "moving", "kind": "mobile_obstacle", "position": [3.0, 1.0, 0.0], "size": 0.8})
+        self.assertTrue(planner.route("parcel", current, body).replanned)
+        plan_value = BodyPlan(objective="grasp parcel", steps=[PlanStep(step_id="grasp", verb="grab", target="parcel")])
+        decision = TaskGraphExecutor().decide(plan_value, current, body)
+        self.assertEqual(decision.reason, "align_for_grasp")
+        self.assertIn(decision.action.type, {"forward", "turn_left", "turn_right"})
+
     def test_plan_controlled_simulation_uses_arbitrary_object_and_surface(self):
         room = SimulatedRoom()
         room.objects["parcel"] = {"id": "parcel", "label": "parcel", "kind": "object", "x": 2.0, "y": 2.0, "mass": 0.4, "size": 0.4}

@@ -39,11 +39,10 @@ class TaskGraphExecutor:
         if self._satisfied(step, snapshot, body):
             return TaskDecision(None, step.step_id, "postcondition observed", satisfied=True)
         if step.verb == "navigate":
-            route = self.local_planner.route(step.target, snapshot, body)
-            self.last_route = route.as_dict()
-            if route.blocked:
-                return TaskDecision(None, step.step_id, "recover_from_blockage", details=self.last_route)
-            return TaskDecision(self._navigation_action(route, snapshot, body), step.step_id, route.reason, details=self.last_route)
+            return self._route_decision(step.step_id, step.target, snapshot, body)
+        if step.verb in {"grab", "release"} and not self._predicate({"type": "near", "target": step.target}, snapshot, body):
+            reason = "align_for_grasp" if step.verb == "grab" else "align_for_release"
+            return self._route_decision(step.step_id, step.target, snapshot, body, reason)
         if step.verb in {"grab", "release", "push", "wait"}:
             return TaskDecision(
                 Action(type=step.verb, target=step.target, params={"plan_controlled": True, **step.arguments}),
@@ -51,6 +50,13 @@ class TaskGraphExecutor:
                 "execute planned primitive",
             )
         return TaskDecision(None, step.step_id, f"unsupported plan verb: {step.verb}")
+
+    def _route_decision(self, step_id: str, target: str, snapshot: BodySnapshot, body: BodyState, align_reason: str = "") -> TaskDecision:
+        route = self.local_planner.route(target, snapshot, body)
+        self.last_route = route.as_dict()
+        if route.blocked:
+            return TaskDecision(None, step_id, "recover_from_blockage", details=self.last_route)
+        return TaskDecision(self._navigation_action(route, snapshot, body), step_id, align_reason or route.reason, details=self.last_route)
 
     def recovery_action(self, plan: BodyPlan, snapshot: BodySnapshot, body: BodyState) -> TaskDecision:
         """Take one reversible clearance action before re-evaluating a step."""
