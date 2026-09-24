@@ -29,7 +29,7 @@ class BodyPlanRuntime:
         try:
             raw = json.loads(self._active_path.read_text(encoding="utf-8"))
             plan = BodyPlan.from_dict(raw)
-            return plan if plan.state not in {"completed", "cancelled", "rejected"} else None
+            return plan if plan.state not in {"completed", "cancelled", "expired", "rejected"} else None
         except Exception:
             return None
 
@@ -130,6 +130,19 @@ class BodyPlanRuntime:
         with self._lock:
             return self._active
 
+    def expire_if_needed(self) -> Optional[Dict[str, Any]]:
+        """Terminate an overdue lease before it can emit another action."""
+        with self._lock:
+            plan = self._active
+            if plan is None or plan.expires_at > time.time():
+                return None
+            plan.state = "expired"
+            result = {"plan": plan.as_dict(), "reason": "plan deadline elapsed"}
+            self._append(self._plans_path, {"event": "expired", "at": time.time(), **result})
+            self._active = None
+            self._persist_active()
+            return result
+
     def begin_execution(self) -> None:
         with self._lock:
             if self._active and self._active.state == "ready":
@@ -166,6 +179,20 @@ class BodyPlanRuntime:
             plan.state = "recovery" if attempts > step.max_retries else "executing"
             result = {"ok": True, "attempts": attempts, "snapshot_id": snapshot_id, "plan": plan.as_dict()}
             self._append(self._plans_path, {"event": "step_failed", "at": time.time(), "step_id": step_id, "description": description, **result})
+            self._persist_active()
+            return result
+
+    def resume_after_recovery(self, step_id: str, snapshot_id: str, description: str) -> Dict[str, Any]:
+        with self._lock:
+            plan = self._active
+            if plan is None or plan.state != "recovery":
+                return {"ok": False, "error": "plan is not recovering"}
+            if plan.current_step_index >= len(plan.steps) or plan.steps[plan.current_step_index].step_id != step_id:
+                return {"ok": False, "error": "step is no longer current"}
+            plan.state = "executing"
+            plan.last_error = description
+            result = {"ok": True, "snapshot_id": snapshot_id, "plan": plan.as_dict()}
+            self._append(self._plans_path, {"event": "recovery_completed", "at": time.time(), "step_id": step_id, **result})
             self._persist_active()
             return result
 

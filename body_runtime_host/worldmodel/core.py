@@ -293,6 +293,8 @@ class EmbodiedWorldModel:
             # lease; learning continues from each executed primitive.
             active_plan = self.plan_runtime.active_plan()
             task_decision = None
+            self.plan_runtime.expire_if_needed()
+            active_plan = self.plan_runtime.active_plan()
             if active_plan and active_plan.state in {"ready", "executing"}:
                 self.plan_runtime.begin_execution()
                 task_decision = self.task_graph.decide(active_plan, plan_snapshot, body_state)
@@ -307,6 +309,10 @@ class EmbodiedWorldModel:
                 else:
                     chosen = task_decision.action.as_dict()
                     decision["reason"] = task_decision.reason
+            elif active_plan and active_plan.state == "recovery":
+                task_decision = self.task_graph.recovery_action(active_plan, plan_snapshot, body_state)
+                chosen = task_decision.action.as_dict() if task_decision.action else {"type": "wait"}
+                decision["reason"] = task_decision.reason
               # 9) execute (robot actuators, sandbox physics, or legacy bridge)
             if self.source is not None:
                 obs_after, outcome = self.source.execute(self._as_action(chosen))
@@ -336,6 +342,8 @@ class EmbodiedWorldModel:
                         self.plan_runtime.advance(task_decision.step_id, after_snapshot.snapshot_id)
                     elif outcome.kind in {"failure", "danger"}:
                         self.plan_runtime.record_step_failure(task_decision.step_id, after_snapshot.snapshot_id, outcome.description)
+                    elif active_plan.state == "recovery":
+                        self.plan_runtime.resume_after_recovery(task_decision.step_id, after_snapshot.snapshot_id, outcome.description)
             # 10) learn: prediction error + online update
             pred_s_next = self.dynamics.step(s, self._action_vec(chosen))
             next_body = self.source.body_state() if self.source is not None else body_state

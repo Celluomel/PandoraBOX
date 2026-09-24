@@ -116,3 +116,22 @@ class BodyPlanContractTests(unittest.TestCase):
         plan_value.current_step_index = 1
         body.posture["holding"] = "cup"
         self.assertTrue(executor.decide(plan_value, current, body).satisfied)
+
+    def test_task_graph_checks_surface_path_and_expiry(self):
+        current = snapshot()
+        current.objects = [
+            {"id": "cup", "kind": "target", "position": [4.0, 1.0, 0.0], "size": 0.4},
+            {"id": "table", "kind": "table", "position": [4.2, 1.0, 0.0], "size": 1.0},
+            {"id": "pillar", "kind": "obstacle", "position": [2.5, 1.0, 0.0], "size": 0.8},
+        ]
+        body = BodyState(position=[1.0, 1.0, 0.0], posture={"holding": ""})
+        executor = TaskGraphExecutor()
+        self.assertTrue(executor._predicate({"type": "on_surface", "target": "cup", "surface": "table"}, current, body))
+        self.assertFalse(executor._predicate({"type": "clear_path", "target": "cup"}, current, body))
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = BodyPlanRuntime(Path(tmp))
+            runtime.record_snapshot(current)
+            self.assertTrue(runtime.submit(plan(expires_at=time.time() + 0.01))["accepted"])
+            time.sleep(0.02)
+            self.assertEqual(runtime.expire_if_needed()["plan"]["state"], "expired")
+            self.assertIsNone(runtime.active_plan())

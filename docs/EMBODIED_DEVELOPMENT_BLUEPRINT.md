@@ -71,6 +71,11 @@ The repository already contains the foundations below.
   selected from the plan; navigation is geometry-grounded on the target pose.
 - Observed predicates (`near`, `holding`, `empty_gripper`) advance a step;
   failed or dangerous actions increment an auditable recovery counter.
+- The predicate layer now also supports `released`, `on_surface`,
+  `goal_reached` and geometric `clear_path`; expired plan leases terminate
+  before another action is emitted.
+- A bounded recovery primitive increases clearance or changes heading, then
+  returns control to the same observed step for re-evaluation.
 - Every commanded primitive is written to the action ledger and every plan
   transition is restart-safe.
 
@@ -319,8 +324,9 @@ Acceptance tests:
 
 Goal: replace simulator-specific stage assumptions with a reusable task graph.
 
-Status: execution baseline implemented. Remaining work: generalized surface
-relations, path-clearance predicates, deadlines and recovery/replanning.
+Status: execution baseline implemented. Generic surface relations, clearance,
+deadlines and a bounded local recovery loop are implemented. Remaining work:
+multi-step replanning and learned local trajectories.
 
 Deliverables:
 

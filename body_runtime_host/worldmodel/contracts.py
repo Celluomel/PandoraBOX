@@ -15,7 +15,7 @@ from .types import new_id
 
 PLAN_STATES = {
     "draft", "validating", "ready", "executing", "observing", "evaluating",
-    "replanning", "recovery", "paused", "completed", "cancelled", "rejected",
+    "replanning", "recovery", "paused", "completed", "cancelled", "expired", "rejected",
 }
 
 
