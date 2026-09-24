@@ -18,6 +18,12 @@ class BodyCommandQueueTest(unittest.TestCase):
             self.assertIsNone(self.body._build_worldmodel())
         remote_model.assert_called_once()
 
+    def test_disabled_world_model_does_not_probe_body_host(self):
+        self.body._config["BODY_WORLDMODEL_ENABLED"] = False
+        with patch("cognition.body_runtime.runtime.BodyRuntime._build_worldmodel") as build:
+            self.assertIsNone(self.body.worldmodel)
+        build.assert_not_called()
+
     def test_approval_delivers_only_approved_command(self):
         command = self.body.enqueue_command("robot", "forward")
         self.assertEqual(self.body.snapshot_commands()[0]["status"], "queued")

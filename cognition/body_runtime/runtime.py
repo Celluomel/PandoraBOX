@@ -214,6 +214,8 @@ class BodyRuntime:
         never creates a fallback model: starting the Body is an explicit,
         separate operator action.
         """
+        if not bool(self.config_value("BODY_WORLDMODEL_ENABLED", False)):
+            return None
         if self._worldmodel is None:
             self._worldmodel = self._build_worldmodel()
         return self._worldmodel
