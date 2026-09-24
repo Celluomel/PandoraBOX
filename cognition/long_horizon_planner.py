@@ -878,6 +878,53 @@ class LongHorizonPlanner:
         )
         return "\n".join(lines)
 
+    @staticmethod
+    def is_goal_plan_query(user_input: str) -> bool:
+        """Identify a direct self-report request about goals or planning."""
+        text = " ".join(str(user_input or "").casefold().split())
+        return bool(re.search(
+            r"\b(?:goals?|plans?|planning|objectifs?|planifications?|buts?)\b",
+            text,
+        )) and LongHorizonPlanner.is_self_report_query(text)
+
+    def factual_goal_plan_response(self, user_input: str, language: str = "auto") -> str:
+        """Render goal/plan telemetry from recorded state without LLM paraphrase."""
+        if not self.is_goal_plan_query(user_input):
+            return ""
+        snapshot = self.factual_self_report_snapshot()
+        goals = [str(item["topic"]) for item in snapshot["active_goals"] if item.get("topic")]
+        plan = snapshot.get("dominant_plan")
+        lang = str(language or "auto").casefold().replace("_", "-")
+        if lang.startswith("fr"):
+            lines = [
+                "Objectifs actifs enregistrés : " + (" ; ".join(goals) if goals else "aucun objectif actif vérifié."),
+            ]
+            if plan:
+                lines.append(
+                    f"Plan interne enregistré : « {plan['objective']} » — "
+                    f"{plan['steps_completed']}/{plan['steps_total']} étapes terminées."
+                )
+                if plan.get("next_operation"):
+                    lines.append(f"Prochaine étape enregistrée : {plan['next_operation']}.")
+            else:
+                lines.append("Aucun plan opérationnel actif n’est enregistré.")
+            lines.append("Ce compte rendu reflète l’état enregistré du système.")
+        else:
+            lines = [
+                "Recorded active goals: " + ("; ".join(goals) if goals else "no verified active goal."),
+            ]
+            if plan:
+                lines.append(
+                    f"Recorded internal plan: “{plan['objective']}” — "
+                    f"{plan['steps_completed']}/{plan['steps_total']} steps complete."
+                )
+                if plan.get("next_operation"):
+                    lines.append(f"Recorded next step: {plan['next_operation']}.")
+            else:
+                lines.append("No active operational plan is recorded.")
+            lines.append("This report reflects the system’s recorded state.")
+        return " ".join(lines)
+
     def _run(self) -> None:
         try:
             asp = getattr(self._organism, 'aspirational_self', None)

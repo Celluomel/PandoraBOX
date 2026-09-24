@@ -869,6 +869,20 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             )
             else ""
         )
+        if _factual_self_report:
+            try:
+                _loop = getattr(self._organism, "_loop", None) if self._organism else None
+                _planner = getattr(_loop, "_long_horizon_planner", None)
+                if _planner is not None:
+                    from managers.settings_manager import config as _report_cfg
+                    _goal_report = _planner.factual_goal_plan_response(
+                        effective_input,
+                        getattr(_report_cfg, "RESPONSE_LANGUAGE", "auto"),
+                    )
+                    if _goal_report:
+                        _deterministic_response = _goal_report
+            except Exception as _report_error:
+                logger.debug("Factual goal report fallback unavailable: %s", _report_error)
 
         # ── Phase B: stream tokens ───────────────────────────────────
         accumulated = []
@@ -895,11 +909,15 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             self._chat_stage = 'waiting for provider stream'
             try:
                 if _deterministic_response:
-                    self._chat_stage = 'grounded physical constraint'
-                    logger.info(
-                        "[QuantitativeReasoning] physically infeasible turn resolved without LLM; agent=%s",
-                        _quantitative_analysis.agent,
-                    )
+                    if _quantitative_analysis is not None:
+                        self._chat_stage = 'grounded physical constraint'
+                        logger.info(
+                            "[QuantitativeReasoning] physically infeasible turn resolved without LLM; agent=%s",
+                            _quantitative_analysis.agent,
+                        )
+                    else:
+                        self._chat_stage = 'factual cognitive self-report'
+                        logger.info("[FactualSelfReport] goal/plan answer rendered from recorded telemetry")
                     _llm_manager = getattr(self._llm_stream_fn, "__self__", None)
                     _record_exchange = getattr(_llm_manager, "record_exchange", None)
                     if callable(_record_exchange):
@@ -2132,6 +2150,8 @@ Memory honesty — two distinct cases:
                 _do_search = False
                 if suppress_external_search:
                     logger.debug("Web search suppressed for latency-safe or closed-world turn.")
+                elif "[Cognitive telemetry - factual self-report]" in system_prompt:
+                    logger.debug("Web search suppressed for factual cognitive self-report.")
                 elif not self._research or _ws_mode == 'off':
                     # Closed-world mode must never call the LLM search
                     # classifier as a side effect of an ordinary chat turn.

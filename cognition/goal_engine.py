@@ -207,6 +207,7 @@ class GoalEngine:
         # acquires this same lock on the same thread.
         self._lock = RLock()
         self._goals: Dict[str, Goal] = {}
+        self._topic_quality_cache: Dict[str, bool] = {}
         self._cycle_counter: int = 0
         self._persistence_file = Path(persistence_file or "data/persona/goals.json")
         self._external_tasks_file = self._persistence_file.with_name(
@@ -279,39 +280,48 @@ class GoalEngine:
             for item in self._external_tasks
         )
 
-    @staticmethod
-    def _is_valid_goal_topic(topic: str) -> bool:
+    def _is_valid_goal_topic(self, topic: str) -> bool:
         """Strict, language-neutral gate for durable goals.
 
         Semantic quality is the decision. This deliberately avoids deciding
-        that a token is a fragment because it appears in an English or French
-        dictionary. If no embedder is reachable, the safe fallback accepts
-        only a single long token and refuses to persist an unscored phrase.
+        that a token is a fragment because it appears in a language dictionary.
+        If no embedder is reachable, an isolated token is not enough evidence
+        for a durable goal; defer it until the semantic scorer is available.
         """
         normalized = " ".join(str(topic or "").casefold().split())
         if not normalized:
             return False
-        words = normalized.split()
+        with self._lock:
+            cached = self._topic_quality_cache.get(normalized)
+        if cached is not None:
+            return cached
         try:
             from cognition import goal_semantics
             semantic_quality = goal_semantics.batch_topic_quality([normalized])
             if semantic_quality is not None:
-                return bool(semantic_quality[normalized][2])
+                accepted = bool(semantic_quality[normalized][2])
+                with self._lock:
+                    self._topic_quality_cache[normalized] = accepted
+                return accepted
         except Exception:
-            semantic_quality = None
-        # Fail closed for an unscorable multi-word candidate. A goal should
-        # not become durable merely because a local dictionary recognises its
-        # tokens; embeddings are the universal path for phrase meaning.
-        return len(words) == 1 and len(words[0]) >= 7 and not any(
-            char in normalized for char in "'’`"
-        )
+            pass
+        # Unknown is not a negative verdict: callers must defer the candidate
+        # and persisted goals must remain intact until embeddings are available.
+        return False
 
     def _retire_invalid_active_goals(self) -> int:
         """Migrate legacy goals that predate the strict topic-quality gate."""
         retired = 0
         now = time.time()
         for goal in self._goals.values():
-            if goal.status == "active" and not self._is_valid_goal_topic(goal.topic):
+            if goal.status != "active" or self._is_valid_goal_topic(goal.topic):
+                continue
+            normalized = " ".join(goal.topic.casefold().split())
+            with self._lock:
+                has_semantic_verdict = normalized in self._topic_quality_cache
+            if not has_semantic_verdict:
+                continue
+            if goal.status == "active":
                 goal.status = "abandoned"
                 self._recently_abandoned[goal.topic.casefold()] = now
                 retired += 1
@@ -1247,17 +1257,9 @@ class GoalEngine:
                     # confirmations must never become autonomous goals.
                     raw_topics = sem.recent_user_topics(limit=15, min_strength=0.5)
 
-                    # Quality filter for goal topics.
-                    # Bigrams from semantic memory are often conversation noise.
-                    # Require either:
-                    #   - Single word >= 7 chars (proper content word)
-                    #   - Multi-word where both parts are known content domains
-                    # PREFERRED: embedding-based "meaningfulness" scoring,
-                    # computed ONCE for all raw topics in a single batched
-                    # embedding call (dimension-safe). Accepts goal-worthy
-                    # topics across ANY domain, not just a fixed word list.
-                    # FALLBACK: the original static dictionary logic below,
-                    # used automatically when no embedding tier is reachable.
+                    # Score topics semantically in one dimension-safe batch.
+                    # If embeddings are busy/unavailable, defer promotion and
+                    # retry on a later cycle rather than guessing lexically.
                     _sem_topic = None
                     try:
                         from cognition import goal_semantics as _gs
@@ -1267,20 +1269,18 @@ class GoalEngine:
                         _sem_topic = None
 
                     def _is_quality_topic(t: str) -> bool:
-                        words = t.lower().split()
-                        # PREFERRED: embedding-based meaningfulness.
                         if _sem_topic is not None and t in _sem_topic:
                             good_sim, noise_sim, ok = _sem_topic[t]
+                            with self._lock:
+                                normalized_topic = " ".join(t.casefold().split())
+                                self._topic_quality_cache[normalized_topic] = bool(ok)
                             logger.debug(
                                 "[GoalEngine] topic '%s' %s semantic "
                                 "(good=%.2f noise=%.2f)"
                                 % (t, "PASS" if ok else "reject", good_sim, noise_sim)
                             )
                             return ok
-                        # Language-neutral fallback when embeddings are
-                        # unavailable. Lexical validity is handled by the
-                        # shared statistical/morphological topic filter.
-                        return len(words) <= 4 and all(len(w) >= 4 for w in words)
+                        return False
 
                     topics = [t for t in raw_topics if _is_quality_topic(t)][:8]
                     if _sem_topic is not None:
@@ -1290,8 +1290,8 @@ class GoalEngine:
                         )
                     else:
                         logger.info(
-                            f"[GoalEngine] {len(topics)}/{len(raw_topics)} topic(s) "
-                            f"passed language-neutral quality gate (embeddings unavailable)"
+                            "[GoalEngine] semantic goal-topic scoring deferred; "
+                            "no unscored topics promoted"
                         )
             except Exception as e:
                 logger.debug(f"[GoalEngine] semantic topics: {e}")

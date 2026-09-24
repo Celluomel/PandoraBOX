@@ -34,7 +34,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import random
+import re
 from typing import List, Optional
 from urllib.parse import urlparse, quote_plus
 
@@ -241,7 +243,7 @@ def _rss(query: str, num: int, tag_hint: Optional[str] = None) -> List[dict]:
             logger.info("RSS: no active feeds configured")
             return []
 
-        terms = set(query.lower().split())
+        terms = set(re.findall(r"[^\W_]{3,}", query.casefold(), flags=re.UNICODE))
         candidates = []
         for feed in feeds:
             try:
@@ -255,15 +257,39 @@ def _rss(query: str, num: int, tag_hint: Optional[str] = None) -> List[dict]:
                     desc  = (item.findtext("description") or "").strip()
                     if not title or not link:
                         continue
-                    score = sum(1 for t in terms if t in (title+" "+desc).lower()) / max(len(terms),1)
-                    candidates.append((score, _r(title, link, desc[:300], src=f"rss_{feed.name}")))
+                    tokens = set(re.findall(
+                        r"[^\W_]{3,}", f"{title} {desc}".casefold(), flags=re.UNICODE
+                    ))
+                    candidates.append((tokens, _r(title, link, desc[:300], src=f"rss_{feed.name}")))
                 registry.mark_used(feed.feed_id)
             except Exception:
                 continue
         if not candidates:
             return []
-        candidates.sort(key=lambda x: (x[0], x[1]["credibility"]), reverse=True)
-        out = [c[1] for c in candidates[:num]]
+        # Weight query terms by rarity across fetched feed items. This
+        # suppresses generic overlap ("news", "today") and requires results
+        # to match distinctive query content such as a requested country.
+        doc_count = len(candidates)
+        document_frequency = {
+            term: sum(term in tokens for tokens, _ in candidates)
+            for term in terms
+        }
+        weights = {
+            term: math.log((doc_count + 1) / (frequency + 1))
+            for term, frequency in document_frequency.items()
+            if frequency / max(doc_count, 1) < 0.8
+        }
+        if not weights:
+            weights = {term: 1.0 for term in terms}
+        ranked = []
+        total_weight = max(sum(weights.values()), 1e-9)
+        for tokens, result in candidates:
+            matched_weight = sum(weight for term, weight in weights.items() if term in tokens)
+            relevance = matched_weight / total_weight
+            if relevance >= 0.18:
+                ranked.append((relevance, result["credibility"], result))
+        ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        out = [item[2] for item in ranked[:num]]
         logger.info(f"RSS: {len(out)} results for {query!r}")
         return out
     except Exception as e:

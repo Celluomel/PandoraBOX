@@ -14,8 +14,8 @@ Model stack (see utils/shared_embedder.py):
                       (http://localhost:1234/v1/embeddings), 768-dim.
   2. FAST tier     -> local all-MiniLM-L6-v2 (sentence-transformers), 384-dim,
                       used automatically when the LM Studio API is down.
-  3. Neither       -> functions here return None so the CALLER falls back to
-                      its original static dictionary logic.
+  3. Neither       -> semantic decisions are deferred until an embedding
+                      backend is available; no lexical dictionary fallback.
 
 Dimension safety: every public function produces ALL of its vectors inside a
 SINGLE encode() batch, so all vectors in one computation always share the same
@@ -54,12 +54,16 @@ def embed(texts: Sequence[str]) -> Optional[np.ndarray]:
         values = [str(text) for text in texts]
         if not values:
             return np.empty((0, 0), dtype="float32")
-        from utils.shared_embedder import interactive_priority_active
-        if interactive_priority_active():
-            return None
         with _embedding_cache_lock:
             missing = list(dict.fromkeys(text for text in values if text not in _embedding_cache))
             if missing:
+                from utils.shared_embedder import interactive_priority_active
+                if interactive_priority_active():
+                    logger.debug(
+                        "[goal_semantics] deferred %d uncached text(s) during interactive chat",
+                        len(missing),
+                    )
+                    return None
                 from utils.shared_embedder import get_embedder
                 embedder = get_embedder(quality=True)
                 mat = np.asarray(embedder.encode(missing), dtype="float32")
@@ -93,7 +97,7 @@ def embed(texts: Sequence[str]) -> Optional[np.ndarray]:
             return None
         logger.warning(
             "[goal_semantics] embeddings unavailable (%s); "
-            "callers should use dictionary fallback" % e
+            "semantic scoring deferred; no lexical fallback" % e
         )
         return None
 
@@ -214,7 +218,7 @@ def batch_tension_alignment(
     (`tension_level * 0.3`) but uses real semantic similarity.
 
     Returns {goal_name: (best_alignment, best_tension_key)} or None if
-    embeddings are unavailable (caller should use its dictionary fallback).
+    embeddings are unavailable (semantic scoring is deferred).
     """
     names = [str(g) for g in goal_names]
     if not names:
@@ -271,7 +275,7 @@ def batch_topic_quality(
     downstream quality filter do the fine discrimination.
 
     Returns {topic: (good_sim, noise_sim, pass)} or None if embeddings are
-    unavailable (caller should use its dictionary fallback).
+    unavailable (semantic scoring is deferred).
     """
     topics = [str(t) for t in topics]
     if not topics:
