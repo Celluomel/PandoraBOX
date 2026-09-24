@@ -9,7 +9,8 @@ import tempfile
 import time
 import uuid
 import ipaddress
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
+from urllib.request import Request as UrlRequest, urlopen
 
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File, Query
 from fastapi import WebSocket, WebSocketDisconnect
@@ -1243,6 +1244,51 @@ def _settings_snapshot():
 @router.get('/settings')
 async def settings_snapshot():
     return {'values': _settings_snapshot(), 'secret_fields': sorted(_SECRET_FIELDS)}
+
+
+def _lmstudio_models(base_url: str) -> list[dict[str, str]]:
+    """Read model IDs from an OpenAI-compatible local model server."""
+    parsed = urlparse((base_url or '').strip())
+    if parsed.scheme not in {'http', 'https'} or not parsed.netloc:
+        return []
+    path = parsed.path.rstrip('/')
+    if path.endswith('/v1'):
+        path += '/models'
+    else:
+        path += '/v1/models'
+    url = urlunparse((parsed.scheme, parsed.netloc, path, '', '', ''))
+    request = UrlRequest(url, headers={'Accept': 'application/json'})
+    try:
+        with urlopen(request, timeout=2.5) as response:
+            payload = json.loads(response.read().decode('utf-8'))
+    except Exception as exc:
+        logger.debug('LM Studio model discovery failed for %s: %s', url, exc)
+        return []
+    data = payload.get('data', []) if isinstance(payload, dict) else []
+    return [
+        {'id': str(item['id']), 'object': str(item.get('object', 'model'))}
+        for item in data if isinstance(item, dict) and item.get('id')
+    ]
+
+
+@router.get('/llm/models')
+async def llm_model_choices():
+    from managers.settings_manager import config
+    if str(getattr(config, 'LLM_PROVIDER', '')).lower() != 'lmstudio':
+        return {'available': False, 'reason': 'Select LM Studio as the provider to discover its loaded models.',
+                'chat_models': [], 'embedding_models': []}
+    chat_url = getattr(config, 'LLM_BASE_URL', '')
+    embedding_url = getattr(config, 'EMBED_API_BASE_URL', '') or chat_url
+    chat_models, embedding_models = await asyncio.gather(
+        asyncio.to_thread(_lmstudio_models, chat_url),
+        asyncio.to_thread(_lmstudio_models, embedding_url),
+    )
+    return {
+        'available': bool(chat_models or embedding_models),
+        'chat_models': chat_models,
+        'embedding_models': embedding_models,
+        'reason': '' if chat_models or embedding_models else 'No models returned. Check the LM Studio server and the configured base URLs.',
+    }
 
 
 @router.post('/settings')

@@ -404,10 +404,32 @@ function SettingsVoiceFull() {
 
 function SettingsLlmFull() {
   const [values, setValues] = useState<Record<string, any>>({}); const [secrets, setSecrets] = useState<string[]>([]); const [message, setMessage] = useState('');
+  const [modelChoices, setModelChoices] = useState<{ chat_models: { id: string }[]; embedding_models: { id: string }[]; reason?: string }>({ chat_models: [], embedding_models: [] });
+  const [modelsLoading, setModelsLoading] = useState(false);
   useEffect(() => { void fetch('/api/interface/settings').then(checked).then(r => r.json()).then(r => { setValues(r.values || {}); setSecrets(r.secret_fields || []); }); }, []);
   const set = (key: string, value: any) => setValues(current => ({ ...current, [key]: value }));
+  const loadModels = async () => {
+    if (values.LLM_PROVIDER !== 'lmstudio') return;
+    setModelsLoading(true);
+    try {
+      const response = await checked(await fetch('/api/interface/llm/models'));
+      const result = await response.json();
+      setModelChoices(result);
+    } catch (e) {
+      setModelChoices({ chat_models: [], embedding_models: [], reason: e instanceof Error ? e.message : 'Model discovery failed.' });
+    } finally {
+      setModelsLoading(false);
+    }
+  };
+  useEffect(() => { if (values.LLM_PROVIDER === 'lmstudio') void loadModels(); }, [values.LLM_PROVIDER, values.LLM_BASE_URL, values.EMBED_API_BASE_URL]);
   const save = async () => { try { await checked(await fetch('/api/interface/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ values }) })); setMessage('Saved. Restart required for model and provider changes.'); } catch (e) { setMessage(e instanceof Error ? e.message : 'Save failed.'); } };
-  return <SettingsSubpage tab="llm"><div className="settings-form settings-form-compact">{settingsFields.llm.map(field => <label className={`settings-field ${field.type === 'textarea' ? 'wide' : ''}`} key={field.key}><span>{field.label}</span>{field.type === 'textarea' ? <textarea value={values[field.key] || ''} onChange={e => set(field.key, e.target.value)}/> : field.type === 'select' ? <select value={field.key === 'FAST_ROUND_ENABLED' ? (values[field.key] ? 'yes' : 'no') : values[field.key] || ''} onChange={e => set(field.key, field.key === 'FAST_ROUND_ENABLED' ? e.target.value === 'yes' : e.target.value)}>{field.options?.map(option => <option value={option} key={option}>{settingOptionLabel(field.key, option)}</option>)}</select> : <input type={secrets.includes(field.key) ? 'password' : field.type === 'number' ? 'number' : 'text'} value={values[field.key] ?? ''} onChange={e => set(field.key, field.type === 'number' ? Number(e.target.value) : e.target.value)}/>}</label>)}</div><div className="provider-notes"><div>PROVIDER NOTES</div><p><b>ollama</b> → <code>http://localhost:11434</code> · run <code>ollama serve</code> first</p><p><b>lmstudio</b> → <code>http://localhost:1234/v1</code> · start LM Studio server</p><p><b>openai</b> → requires API key above</p><div>AFFECT EMBEDDING MODEL</div><p>This is a local multilingual sentence model for background affect estimation, not a generative/chat LLM. The selected model must be cached locally; changing it requires a restart.</p></div><div className="lumina-actions"><button onClick={() => void save()}><Check size={15}/>Save LLM settings</button><span>{message}</span></div></SettingsSubpage>;
+  const modelFields = new Set(['LLM_MODEL', 'QUALITY_EMBED_MODEL', 'FAST_ROUND_MODEL']);
+  const choicesFor = (key: string) => key === 'QUALITY_EMBED_MODEL' ? modelChoices.embedding_models : modelChoices.chat_models;
+  return <SettingsSubpage tab="llm"><div className="settings-form settings-form-compact">{settingsFields.llm.map(field => {
+    const modelField = values.LLM_PROVIDER === 'lmstudio' && modelFields.has(field.key);
+    const choices = modelField ? choicesFor(field.key) : [];
+    return <label className={`settings-field ${field.type === 'textarea' ? 'wide' : ''}`} key={field.key}><span>{field.label}</span>{field.type === 'textarea' ? <textarea value={values[field.key] || ''} onChange={e => set(field.key, e.target.value)}/> : field.type === 'select' ? <select value={field.key === 'FAST_ROUND_ENABLED' ? (values[field.key] ? 'yes' : 'no') : values[field.key] || ''} onChange={e => set(field.key, field.key === 'FAST_ROUND_ENABLED' ? e.target.value === 'yes' : e.target.value)}>{field.options?.map(option => <option value={option} key={option}>{settingOptionLabel(field.key, option)}</option>)}</select> : <input list={modelField ? `lmstudio-${field.key}` : undefined} type={secrets.includes(field.key) ? 'password' : field.type === 'number' ? 'number' : 'text'} value={values[field.key] ?? ''} onChange={e => set(field.key, field.type === 'number' ? Number(e.target.value) : e.target.value)}/>}</label>;
+  })}</div>{values.LLM_PROVIDER === 'lmstudio' && <div className="provider-notes"><div className="settings-section-title">LM STUDIO MODEL DISCOVERY</div><div className="settings-form settings-form-compact">{['LLM_MODEL', 'FAST_ROUND_MODEL', 'QUALITY_EMBED_MODEL'].map(key => <datalist id={`lmstudio-${key}`} key={key}>{choicesFor(key).map(model => <option value={model.id} key={model.id}/>)}</datalist>)}</div><button className="settings-action-button" disabled={modelsLoading} onClick={() => void loadModels()}>{modelsLoading ? 'Loading models...' : 'Refresh model list'}</button><p>{modelChoices.reason || `${modelChoices.chat_models.length} chat model(s), ${modelChoices.embedding_models.length} embedding model(s) discovered. Select a suggestion or enter a custom model ID.`}</p></div>}<div className="provider-notes"><div>PROVIDER NOTES</div><p><b>ollama</b> → <code>http://localhost:11434</code> · run <code>ollama serve</code> first</p><p><b>lmstudio</b> → <code>http://localhost:1234/v1</code> · start LM Studio server</p><p><b>openai</b> → requires API key above</p><div>AFFECT EMBEDDING MODEL</div><p>This is a local multilingual sentence model for background affect estimation, not a generative/chat LLM. The selected model must be cached locally; changing it requires a restart.</p></div><div className="lumina-actions"><button onClick={() => void save()}><Check size={15}/>Save LLM settings</button><span>{message}</span></div></SettingsSubpage>;
 }
 
 function VisionFeed({ data }: { data: any }) {
