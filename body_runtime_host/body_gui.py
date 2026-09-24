@@ -167,3 +167,18 @@ drawFnkController=function(s){
 };
 </script></body></html>""",
 )
+
+BODY_GUI_HTML = BODY_GUI_HTML.replace(
+    "</body></html>",
+    """<script>
+function renderPlanContract(payload){
+  const panel=document.getElementById('plan-contract-panel');if(!panel)return;
+  const plan=payload.active_plan;
+  if(!plan){panel.innerHTML='<div class="panel-head"><h2>Body plan contract</h2><small>Phase 0</small></div><p class="muted">No active Brain plan. The Body is ready to validate a grounded plan against its latest scene.</p>';return}
+  const step=(plan.steps||[])[plan.current_step_index||0];
+  panel.innerHTML=`<div class="panel-head"><h2>Body plan contract</h2><small>${esc(plan.state)}</small></div><div class="meta"><span>Objective <b>${esc(plan.objective)}</b></span><span>Step <b>${Number(plan.current_step_index||0)+1}/${(plan.steps||[]).length}</b></span></div><p class="perception-text">${step?`${esc(step.verb)} ${esc(step.target||'')}`:'No pending step.'}</p><small class="muted">Validated against snapshot ${esc(payload.latest_snapshot?.snapshot_id||'—')}. Generic TaskGraph execution is next.</small>`;
+}
+async function refreshPlanContract(){try{renderPlanContract(await get('/worldmodel/plans'))}catch{}}
+const planGrid=document.querySelector('#view-worldmodel .detail-grid');if(planGrid){const planPanel=document.createElement('section');planPanel.id='plan-contract-panel';planPanel.className='panel';planGrid.prepend(planPanel);refreshPlanContract();setInterval(refreshPlanContract,1500)}
+</script></body></html>""",
+)

@@ -21,6 +21,7 @@ from .types import (
     Action, AnchorLieu, AnchorObjet, AnchorTrajectoire, BodyState,
     Episode, GlobalState, Observation, Outcome, SceneObject,
 )
+from .contracts import ActionResult, BodyPlan, BodySnapshot, PlanStep
 from .anchors import PhysicalMemory, atomic_write_json
 from .cortex import ArtificialCortex, HashEmbedder, action_space_for_body
 from .dynamics import LatentWorldDynamics, encode_action, ACTION_TYPES
@@ -39,6 +40,7 @@ from .core import EmbodiedWorldModel, get_embodied_worldmodel
 __all__ = [
     "Action", "AnchorLieu", "AnchorObjet", "AnchorTrajectoire", "BodyState",
     "Episode", "GlobalState", "Observation", "Outcome", "SceneObject",
+    "ActionResult", "BodyPlan", "BodySnapshot", "PlanStep",
     "PhysicalMemory", "atomic_write_json",
     "ArtificialCortex", "HashEmbedder", "action_space_for_body",
     "LatentWorldDynamics", "encode_action", "ACTION_TYPES",

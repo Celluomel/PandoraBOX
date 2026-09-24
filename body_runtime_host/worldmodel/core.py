@@ -36,11 +36,13 @@ import numpy as np
 
 from .anchors import PhysicalMemory, atomic_write_json
 from .consolidation import ConsolidationEngine
+from .contracts import BodySnapshot
 from .concepts import EmbodiedConceptMemory
 from .cortex import ArtificialCortex, action_space_for_body
 from .dynamics import LatentWorldDynamics
 from .navigation import navigation_guidance
 from .policy import Policy
+from .plan_runtime import BodyPlanRuntime
 from .sim_world import SimulatedRoom
 from .sources import SimRobotSource
 from .types import (
@@ -138,6 +140,7 @@ class EmbodiedWorldModel:
         )
         self.consolidation = ConsolidationEngine(self.memory)
         self.concepts = EmbodiedConceptMemory(self.data_dir / "concepts.json")
+        self.plan_runtime = BodyPlanRuntime(self.data_dir)
         self._episodes_path = self.data_dir / "episodes.jsonl"
         self._maybe_trim_episodes_file()
 
@@ -243,6 +246,7 @@ class EmbodiedWorldModel:
             self._last_observation = obs
             self._last_body_state = body_state
             self._last_affordances = aff
+            self.plan_runtime.record_snapshot(self._make_plan_snapshot(obs, body_state))
             # 4) anchor activation (upsert what we see now)
             self._activate_anchors(obs, body_state, aff)
             # 5) physical latent
@@ -457,6 +461,52 @@ class EmbodiedWorldModel:
             },
             "consolidation": self._last_report,
         }
+
+    @staticmethod
+    def _make_plan_snapshot(obs: Observation, body: BodyState) -> BodySnapshot:
+        """Normalize current Body evidence into the planning boundary."""
+        capabilities = [name for name, value in body.capabilities.items() if value]
+        if body.capabilities.get("speed", 0) > 0:
+            capabilities.append("navigate")
+        if body.capabilities.get("gripper", 0) > 0:
+            capabilities.extend(["grab", "release"])
+        return BodySnapshot(
+            source=obs.source,
+            frame="world",
+            pose={
+                "x": float(body.position[0]), "y": float(body.position[1]),
+                "yaw": float(body.orientation),
+            },
+            objects=[item.as_dict() for item in obs.scene],
+            capabilities=sorted(set(capabilities)),
+            reliability=max(0.0, min(1.0, float(obs.confidence))),
+            timestamp=float(obs.timestamp),
+        )
+
+    def plan_payload(self) -> Dict[str, Any]:
+        with self._lock:
+            if self._last_observation is not None and self._last_body_state is not None:
+                self.plan_runtime.record_snapshot(
+                    self._make_plan_snapshot(self._last_observation, self._last_body_state)
+                )
+            return self.plan_runtime.payload()
+
+    def submit_plan(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        with self._lock:
+            if self._last_observation is None or self._last_body_state is None:
+                if self.source is not None:
+                    self._last_observation = self.source.observe()
+                    self._last_body_state = self.source.body_state()
+                else:
+                    self._last_observation = self._bridge_observation()
+                    self._last_body_state = self._bridge_body_state()
+            self.plan_runtime.record_snapshot(
+                self._make_plan_snapshot(self._last_observation, self._last_body_state)
+            )
+            return self.plan_runtime.submit(payload)
+
+    def cancel_plan(self, plan_id: str, reason: str = "cancelled by operator") -> Dict[str, Any]:
+        return self.plan_runtime.cancel(plan_id, reason)
 
     # ── anchor activation ───────────────────────────────────────────────────
 
@@ -845,6 +895,7 @@ class EmbodiedWorldModel:
                     "successes": int(sim_status.get("successes", 0)) if sim_status else 0,
                     "sequence": list(sim_status.get("goal_sequence") or []) if sim_status else [],
                 },
+                "planning": self.plan_runtime.payload(),
                 "brain_bridge": {
                     "body_attached": self.body is not None,
                     "organism_attached": getattr(self.body, "organism", None) is not None,

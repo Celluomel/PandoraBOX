@@ -1,6 +1,6 @@
 # PandoraBOX Embodied Development Blueprint
 
-Status: proposed implementation roadmap  
+Status: active implementation roadmap  
 Owner boundary: Body owns physical perception and execution; Brain owns interpretation, intention, planning and dialogue.  
 Primary test platform: the local simulated room.  
 Target physical platform: FNK0031 / Arduino Mega 2560 class robot with Wi-Fi.
@@ -50,6 +50,22 @@ The repository already contains the foundations below.
 - Sequential simulated task:
   `to_target -> to_table -> to_target_from_table -> to_shelf`.
 - Scene and goal shuffling when a new simulation is started.
+
+### Plan-contract baseline (Phase 0)
+
+- Typed `BodyPlan`, `PlanStep`, `BodySnapshot` and `ActionResult` contracts.
+- Snapshot-based validation of targets, capabilities, plan expiry and one active
+  plan lease.
+- Restart-safe active-plan persistence plus append-only `plans.jsonl` and
+  `actions.jsonl` audit records.
+- Body HTTP inspection and control surface:
+  `GET /worldmodel/plans`, `GET /worldmodel/snapshot`,
+  `POST /worldmodel/plans`, and `POST /worldmodel/plans/{plan_id}/cancel`.
+- World Model UI panel showing the current validated plan and next step.
+
+This is deliberately a contract and evidence layer, not yet an executor. The
+current simulator still owns its legacy demonstration sequence; Phase 1 moves
+execution to the generic task graph below.
 
 ### Existing limitation
 
@@ -267,6 +283,8 @@ Any physical safety violation -> EMERGENCY_STOP
 ## 7. Development phases
 
 ### Phase 0 - Contract and observability
+
+Status: implemented. The next active engineering milestone is Phase 1.
 
 Goal: make the current system measurable before adding more intelligence.
 

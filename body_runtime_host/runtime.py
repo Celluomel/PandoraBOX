@@ -973,6 +973,18 @@ class BodyHost:
                         self._send({"error": "world model unavailable"}, 503)
                     else:
                         self._send({"context": wm.context_for_brain()})
+                elif path == "/worldmodel/plans":
+                    wm = owner.worldmodel
+                    if wm is None:
+                        self._send({"error": "world model unavailable"}, 503)
+                    else:
+                        self._send(wm.plan_payload())
+                elif path == "/worldmodel/snapshot":
+                    wm = owner.worldmodel
+                    if wm is None:
+                        self._send({"error": "world model unavailable"}, 503)
+                    else:
+                        self._send(wm.plan_payload().get("latest_snapshot") or {"available": False})
                 elif path == "/worldmodel/config":
                     wm = owner.worldmodel
                     if wm is None:
@@ -1044,6 +1056,20 @@ class BodyHost:
                     self._send(wm.update_config(values or {}))
                 elif path == "/worldmodel/reload":
                     self._send(owner.reload_worldmodel_source())
+                elif path == "/worldmodel/plans":
+                    wm = owner.worldmodel
+                    if wm is None:
+                        self._send({"error": "world model unavailable"}, 503)
+                        return
+                    self._send(wm.submit_plan(self._read_body()))
+                elif path.startswith("/worldmodel/plans/") and path.endswith("/cancel"):
+                    wm = owner.worldmodel
+                    if wm is None:
+                        self._send({"error": "world model unavailable"}, 503)
+                        return
+                    plan_id = path[len("/worldmodel/plans/"):-len("/cancel")].strip("/")
+                    payload = self._read_body()
+                    self._send(wm.cancel_plan(plan_id, str(payload.get("reason") or "cancelled by operator")))
                 else:
                     self._send({"error": "not found"}, 404)
 
