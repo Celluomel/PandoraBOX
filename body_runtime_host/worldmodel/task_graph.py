@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 from .contracts import BodyPlan, BodySnapshot, PlanStep
+from .local_planner import LocalRoutePlanner
 from .types import Action, BodyState
 
 
@@ -25,6 +26,7 @@ class TaskDecision:
     step_id: str = ""
     reason: str = ""
     satisfied: bool = False
+    details: Dict[str, Any] = None
 
 
 class TaskGraphExecutor:
@@ -37,7 +39,11 @@ class TaskGraphExecutor:
         if self._satisfied(step, snapshot, body):
             return TaskDecision(None, step.step_id, "postcondition observed", satisfied=True)
         if step.verb == "navigate":
-            return TaskDecision(self._navigation_action(step.target, snapshot, body), step.step_id, "route toward planned target")
+            route = self.local_planner.route(step.target, snapshot, body)
+            self.last_route = route.as_dict()
+            if route.blocked:
+                return TaskDecision(None, step.step_id, "recover_from_blockage", details=self.last_route)
+            return TaskDecision(self._navigation_action(route, snapshot, body), step.step_id, route.reason, details=self.last_route)
         if step.verb in {"grab", "release", "push", "wait"}:
             return TaskDecision(Action(type=step.verb, target=step.target), step.step_id, "execute planned primitive")
         return TaskDecision(None, step.step_id, f"unsupported plan verb: {step.verb}")
@@ -115,13 +121,15 @@ class TaskGraphExecutor:
                 return False
         return True
 
-    def _navigation_action(self, target_id: str, snapshot: BodySnapshot, body: BodyState) -> Action:
-        target = self._object(target_id, snapshot)
-        if target is None:
-            return Action(type="wait", target=target_id)
-        pos = target.get("position") or [0.0, 0.0, 0.0]
-        desired = math.atan2(float(pos[1]) - snapshot.pose["y"], float(pos[0]) - snapshot.pose["x"])
+    def _navigation_action(self, route: Any, snapshot: BodySnapshot, body: BodyState) -> Action:
+        waypoint = route.next_cell
+        if waypoint is None:
+            return Action(type="wait", target=route.target)
+        desired = math.atan2(float(waypoint[1]) - snapshot.pose["y"], float(waypoint[0]) - snapshot.pose["x"])
         delta = (desired - float(body.orientation) + math.pi) % (2 * math.pi) - math.pi
         if abs(delta) > 0.35:
-            return Action(type="turn_left" if delta > 0 else "turn_right", target=target_id)
-        return Action(type="forward", target=target_id)
+            return Action(type="turn_left" if delta > 0 else "turn_right", target=route.target, params={"waypoint": list(waypoint)})
+        return Action(type="forward", target=route.target, params={"waypoint": list(waypoint)})
+    def __init__(self) -> None:
+        self.local_planner = LocalRoutePlanner()
+        self.last_route: Dict[str, Any] = {}

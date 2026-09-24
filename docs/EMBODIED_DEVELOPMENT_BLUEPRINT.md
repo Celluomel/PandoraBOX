@@ -358,6 +358,12 @@ Deliverables:
   `align_for_grasp`, `recover_from_blockage`.
 - Bounded replanning after map changes.
 
+Sensor boundary: the planner consumes normalized scene geometry, not a camera,
+LiDAR or vendor-specific API. A future 3-D LiDAR plugin will project its local
+point cloud into the Body world frame, mark occupied cells/volumes with a
+confidence and time-to-live, then publish the same snapshot objects and map.
+This permits sensor fusion without changing plan semantics or actuator safety.
+
 Acceptance metrics:
 
 - No repeated identical failed action beyond configured retry limit.

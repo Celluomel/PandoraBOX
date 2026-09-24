@@ -9,6 +9,7 @@ from pathlib import Path
 from body_runtime_host.worldmodel.contracts import ActionResult, BodyPlan, BodySnapshot, PlanStep
 from body_runtime_host.worldmodel.plan_runtime import BodyPlanRuntime
 from body_runtime_host.worldmodel.task_graph import TaskGraphExecutor
+from body_runtime_host.worldmodel.local_planner import LocalRoutePlanner
 from body_runtime_host.worldmodel.types import BodyState
 
 
@@ -135,3 +136,16 @@ class BodyPlanContractTests(unittest.TestCase):
             time.sleep(0.02)
             self.assertEqual(runtime.expire_if_needed()["plan"]["state"], "expired")
             self.assertIsNone(runtime.active_plan())
+
+    def test_local_planner_routes_around_inflated_obstacle(self):
+        current = snapshot()
+        current.objects = [
+            {"id": "cup", "kind": "target", "position": [8.0, 1.0, 0.0], "size": 0.4},
+            {"id": "pillar", "kind": "obstacle", "position": [4.0, 1.0, 0.0], "size": 1.0},
+        ]
+        body = BodyState(position=[1.0, 1.0, 0.0], capabilities={"reach": 1.0, "world_width": 12, "world_height": 12})
+        route = LocalRoutePlanner().route("cup", current, body)
+        self.assertFalse(route.blocked)
+        self.assertGreater(len(route.cells), 2)
+        self.assertNotIn((4, 1), route.cells)
+        self.assertLessEqual(abs(route.cells[-1][0] - 8) + abs(route.cells[-1][1] - 1), 1)
