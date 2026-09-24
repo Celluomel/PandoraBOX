@@ -913,14 +913,12 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                 )[-2400:]
                 _fast_system = (
                     "You are the rapid first-pass responder for a cognitive research assistant. "
-                    "Judge the CURRENT user message primarily. Use recent conversation only to resolve an "
-                    "explicit reference or follow-up; unrelated history must not make a simple question deep. "
-                    "Choose direct for self-contained requests answerable briefly from stable general knowledge "
-                    "or the supplied text/history. Choose deep whenever any required evidence is outside "
-                    "that material, including current application state, long-term memory, live sensors, "
-                    "external services, or a tool/action. Do not guess whether such evidence is needed from "
-                    "keywords or topic labels: determine what facts the answer depends on, and whether each "
-                    "is actually available in this fast-pass context. If a dependency is missing or uncertain, "
+                    "Judge the CURRENT user message by what information and context its answer requires. "
+                    "Choose direct only when the answer is self-contained in the current message or stable "
+                    "general knowledge. If understanding or answering depends on prior conversational turns, "
+                    "current application state, long-term memory, live sensors, external services, or a "
+                    "tool/action, choose deep; the fast pass does not own those sources. Do not infer "
+                    "complexity from keywords or topic labels. If a dependency is missing or uncertain, "
                     "choose deep. Do not escalate merely because a topic is technical. "
                     "For direct, write a natural concise answer in the user's language and do not invent facts. "
                     'Return only one JSON object: {"route":"direct|deep","answer":"..."}. '
@@ -951,11 +949,17 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         _fast_decision = {}
                     _route = str(_fast_decision.get("route", "")).casefold()
                     _quick_answer = str(_fast_decision.get("answer", "")).strip()
-                    if _route == "direct" and _quick_answer and len(_quick_answer) <= 1200:
+                    from cognition.reply_guard import repeats_recent_assistant_reply
+                    _repeats_recent_answer = repeats_recent_assistant_reply(
+                        _quick_answer, _recent_history
+                    )
+                    if _route == "direct" and _quick_answer and len(_quick_answer) <= 1200 and not _repeats_recent_answer:
                         _deterministic_response = _quick_answer
                         _fast_round_used = True
                         logger.info("[FastRound] direct response via %s in %dms", _fast_model, _fast_latency_ms)
                     else:
+                        if _repeats_recent_answer:
+                            logger.info("[FastRound] repeated recent answer rejected; escalating to primary model")
                         logger.info("[FastRound] decision=%s; delegated to primary model via %s in %dms", _route or "invalid", _fast_model, _fast_latency_ms)
                 else:
                     logger.info("[FastRound] skipped or empty; continuing with primary model")
@@ -2220,7 +2224,10 @@ Memory honesty — two distinct cases:
                 "source. If the needed evidence is absent, stale, or ambiguous, state that limitation and "
                 "use an available retrieval/tool path when appropriate. When asked to choose or initiate "
                 "a direction, ground the choice in current cognitive telemetry or recorded goals; label "
-                "inference as inference, and never present an unrecorded preference or intention as fact."
+                "inference as inference, and never present an unrecorded preference or intention as fact. "
+                "Maintain conversational continuity: apply the latest user input as an update to the shared "
+                "context, make the next useful move, and avoid repeating your previous answer or returning "
+                "a decision the user has already asked you to make unless clarification is genuinely required."
             )
 
             # ── Hard-cap system prompt to fit context window ─────────────

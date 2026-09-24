@@ -1,9 +1,28 @@
 import threading
 import unittest
+import importlib.util
+from pathlib import Path
 from unittest.mock import Mock
+
+_reply_guard_spec = importlib.util.spec_from_file_location(
+    "reply_guard_test", Path(__file__).resolve().parents[1] / "cognition" / "reply_guard.py"
+)
+_reply_guard = importlib.util.module_from_spec(_reply_guard_spec)
+_reply_guard_spec.loader.exec_module(_reply_guard)
+repeats_recent_assistant_reply = _reply_guard.repeats_recent_assistant_reply
 
 
 class FastRoundManagerTest(unittest.TestCase):
+    def test_repeated_long_assistant_answer_is_detected(self):
+        answer = "I am ready to discuss any topic that interests you; tell me what you prefer. " * 2
+        history = [{"role": "assistant", "content": answer}]
+        self.assertTrue(repeats_recent_assistant_reply(answer, history))
+
+    def test_short_or_new_answer_is_not_rejected(self):
+        history = [{"role": "assistant", "content": "Good morning."}]
+        self.assertFalse(repeats_recent_assistant_reply("Good morning.", history))
+        self.assertFalse(repeats_recent_assistant_reply("A different answer with new detail.", history))
+
     def make_manager(self):
         from managers.llm_manager import LLMManager
 
