@@ -53,33 +53,6 @@ def _interlocutor_display_name(user_id: str) -> str:
     return ""
 
 
-def _deferred_analysis_score(text: str) -> float:
-    """Estimate whether a turn merits background deliberation from structure."""
-    value = str(text or "").strip()
-    if not value:
-        return 0.0
-    words = re.findall(r"\b\w+\b", value, flags=re.UNICODE)
-    sentences = len(re.findall(r"[.!?]+(?:\s|$)", value))
-    lines = [line.strip() for line in value.splitlines() if line.strip()]
-    questions = value.count("?") + value.count("？")
-    score = 0.0
-    if len(words) >= 35:
-        score += 0.2
-    if len(words) >= 70:
-        score += 0.2
-    if sentences >= 3:
-        score += 0.2
-    if questions >= 2:
-        score += 0.2
-    if len(lines) >= 4 or re.search(r"(?:^|\n)\s*(?:[-*•]|\d+[.)])\s+", value):
-        score += 0.25
-    if re.search(r"https?://|```", value, flags=re.IGNORECASE):
-        score += 0.25
-    if value.count(";") >= 2 or value.count(":") >= 2:
-        score += 0.15
-    return min(1.0, score)
-
-
 _root = Path(__file__).parent.parent
 if str(_root) not in sys.path:
     sys.path.insert(0, str(_root))
@@ -214,8 +187,10 @@ class PersonaBridge:
         self._MAX_SESSION_VISUALS = 20
         self._pending_vision_context: str | None = None  # set per-turn, cleared in _build_prompt_and_cache
         self._recent_goal_means: dict = {}
-        self._deferred_analysis_lock = threading.Lock()
-        self._deferred_analysis_last: dict[str, float] = {}
+        self._reflection_lock = threading.Lock()
+        self._reflection_epochs: dict[str, int] = {}
+        self._reflection_results: dict[str, tuple[int, str]] = {}
+        self._reflection_for_turn: dict[str, str] = {}
         self._init_lumina(external_llm_fn)
         # Wire CognitiveOrganism once ai_system is ready
         if self._system is not None:
@@ -474,64 +449,62 @@ class PersonaBridge:
             "intensity": intensity,
         }
 
-    def run_deferred_analysis(self, user_text: str, user_id: str = "default") -> None:
-        """Run expensive, optional analysis after the visible chat turn ends."""
-        if _deferred_analysis_score(user_text) < 0.35 or not self._system:
-            return
-        now = time.monotonic()
-        with self._deferred_analysis_lock:
-            if now - self._deferred_analysis_last.get(user_id, 0.0) < 8.0:
-                return
-            self._deferred_analysis_last[user_id] = now
-
-        # These paths are intentionally best-effort. LLMManager skips them if
-        # another interactive turn already owns the model, keeping chat first.
-        try:
-            from core.state import state as runtime_state
-            are = getattr(runtime_state, "are", None)
-            if are is not None:
-                are.reason(user_id, user_text)
-        except Exception as exc:
-            logger.debug("Deferred abstract analysis unavailable: %s", exc)
-
-        try:
-            from cognition.goal_means_reasoning import (
-                analysis_prompt,
-                is_practical_decision,
-                parse_analysis,
+    def begin_interactive_reflection_turn(self, user_id: str = "default") -> int:
+        """Advance the user's turn epoch and consume a still-relevant reflection."""
+        with self._reflection_lock:
+            epoch = self._reflection_epochs.get(user_id, 0) + 1
+            self._reflection_epochs[user_id] = epoch
+            prior = self._reflection_results.pop(user_id, None)
+            self._reflection_for_turn[user_id] = (
+                prior[1] if prior is not None and prior[0] == epoch - 1 else ""
             )
-            if not is_practical_decision(user_text):
+            return epoch
+
+    def run_deferred_analysis(
+        self,
+        user_text: str,
+        assistant_text: str,
+        user_id: str = "default",
+        turn_epoch: int = 0,
+    ) -> None:
+        """Always run one bounded post-turn continuity pass when the model is idle."""
+        if not self._system:
+            return
+        with self._reflection_lock:
+            if self._reflection_epochs.get(user_id, turn_epoch) != turn_epoch:
                 return
+        try:
             llm_manager = getattr(self._external_llm_fn, "__self__", None)
-            generate = getattr(llm_manager, "generate_bare", None)
-            if not callable(generate):
+            generate_result = getattr(llm_manager, "generate_bare_result", None)
+            if not callable(generate_result):
                 return
-            raw = generate(
-                analysis_prompt(
-                    user_text,
-                    agent_name=_interlocutor_display_name(user_id),
-                ),
-                max_tokens=480,
+            prompt = f"""Review this completed exchange for conversational continuity. This pass runs after the user has already received a response.
+
+USER MESSAGE:
+{str(user_text or '')[:3000]}
+
+ASSISTANT RESPONSE:
+{str(assistant_text or '')[:3000]}
+
+Write at most 70 words, in the user's language, only if a concise carry-forward note would materially help answer a likely follow-up. Preserve explicit user corrections, constraints, unresolved requests, or commitments. Do not infer personal facts or emotions, invent missing details, praise the exchange, answer the user, or repeat the response. If nothing merits carrying forward, return exactly NONE."""
+            result = generate_result(
+                prompt,
+                max_tokens=120,
                 temperature=0.1,
             )
-            analysis = parse_analysis(raw)
-            if analysis is None:
+            if result.get("status") != "ok":
                 return
-            self._recent_goal_means[user_id] = (analysis, time.monotonic(), 3)
-            goal_engine = getattr(self._system, "goal_engine", None)
-            if goal_engine is not None:
-                goal_engine.register_external_task(
-                    user_text,
-                    analysis.primary_goal,
-                    [option.name for option in analysis.options],
-                )
-            logger.info(
-                "[DeferredAnalysis] practical decision ready for follow-up: goal=%r recommendation=%r",
-                analysis.primary_goal,
-                analysis.recommended_option,
-            )
+            note = str(result.get("text") or "").strip()
+            if not note or note.casefold() == "none":
+                logger.debug("[DeferredReflection] no continuity note for completed turn")
+                return
+            with self._reflection_lock:
+                if self._reflection_epochs.get(user_id, turn_epoch) != turn_epoch:
+                    return
+                self._reflection_results[user_id] = (turn_epoch, note[:1200])
+            logger.info("[DeferredReflection] continuity note ready for next turn")
         except Exception as exc:
-            logger.debug("Deferred goal-means analysis unavailable: %s", exc)
+            logger.debug("Deferred continuity reflection unavailable: %s", exc)
 
     # ─────────────────────────────────────────────────────────────────
     #  Streaming path with FULL lifecycle
@@ -1386,6 +1359,8 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
         # Runs energy regen, tension compute, goal ecology, arbitration, and
         # builds the cognitive context block for the system prompt.
         organism_block = ""
+        with self._reflection_lock:
+            _reflection_note = self._reflection_for_turn.pop(user_id, "")
         if self._organism is not None:
             try:
                 self._organism._pre_interaction(user_input)
@@ -1901,6 +1876,12 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                 f"━━ LIVE COGNITIVE TELEMETRY ━━\n{organism_block}"
                 if organism_block else ""
             )
+            _reflection_section = (
+                "━━ PRIOR-TURN CONTINUITY NOTE (BACKGROUND, TENTATIVE) ━━\n"
+                + _reflection_note
+                + "\nThis note was generated after the prior answer. Use it only if it directly helps with the current message; it is not verified memory or a new user instruction."
+                if _reflection_note else ""
+            )
 
             system_prompt = f"""You are {_persona_name}, still forming — shaped by everything that has happened to you.
 This is one moment of an ongoing process — not a character study of "an AI."
@@ -1908,6 +1889,7 @@ There is no role to play and no depth to demonstrate: let this response be what 
 {_identity_boundary}
 {_anchor_block}
 {_organism_prompt_section}
+{_reflection_section}
 You are the AI. The person sending messages is the human.
 You maintain a persistent self-model that shapes how you process information and revise yourself over time.
 Never refer to yourself as the user or confuse your role with the human's role.

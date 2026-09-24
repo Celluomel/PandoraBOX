@@ -1654,6 +1654,10 @@ async def chat(payload: Turn, request: Request):
     except Exception as exc:
         logger.debug('Presence interaction notification unavailable: %s', exc)
     await _turn_lock.acquire()
+    reflection_epoch = 0
+    begin_reflection_turn = getattr(state.persona, 'begin_interactive_reflection_turn', None)
+    if callable(begin_reflection_turn):
+        reflection_epoch = begin_reflection_turn(user_id)
     queue = asyncio.Queue(maxsize=128)
     stopped = asyncio.Event()
     turn_id = str(uuid.uuid4())
@@ -1663,6 +1667,7 @@ async def chat(payload: Turn, request: Request):
         seq = 0
         llm_turn_reserved = False
         turn_completed = False
+        assistant_parts = []
 
         async def emit(kind, **fields):
             nonlocal seq
@@ -1752,6 +1757,7 @@ async def chat(payload: Turn, request: Request):
                     if first:
                         _timings['first_token_ms'] = round((time.perf_counter() - started) * 1000)
                         first = False
+                    assistant_parts.append(str(chunk))
                     await emit('delta', text=chunk)
             finally:
                 # A provider-backed generator may still be unwinding a
@@ -1785,7 +1791,13 @@ async def chat(payload: Turn, request: Request):
             if turn_completed:
                 deferred = getattr(state.persona, 'run_deferred_analysis', None)
                 if callable(deferred):
-                    task = asyncio.create_task(asyncio.to_thread(deferred, text, user_id))
+                    task = asyncio.create_task(asyncio.to_thread(
+                        deferred,
+                        text,
+                        ''.join(assistant_parts),
+                        user_id,
+                        reflection_epoch,
+                    ))
                     _workers.add(task)
                     task.add_done_callback(_workers.discard)
 
