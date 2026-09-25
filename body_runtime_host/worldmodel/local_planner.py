@@ -41,7 +41,7 @@ class LocalRoutePlanner:
     def __init__(self) -> None:
         self._scene_signatures: Dict[str, tuple] = {}
 
-    def route(self, target_id: str, snapshot: BodySnapshot, body: BodyState) -> Route:
+    def route(self, target_id: str, snapshot: BodySnapshot, body: BodyState, reach: Optional[float] = None) -> Route:
         target = next((item for item in snapshot.objects if str(item.get("id")) == target_id), None)
         if target is None:
             return Route(target_id, reason="unknown_target", blocked=True)
@@ -52,7 +52,7 @@ class LocalRoutePlanner:
         signature = tuple(sorted((str(item.get("id")), tuple(round(float(v), 1) for v in (item.get("position") or [])[:2])) for item in snapshot.objects))
         replanned = target_id in self._scene_signatures and self._scene_signatures[target_id] != signature
         self._scene_signatures[target_id] = signature
-        goals = self._goal_cells(target, body, width, height, blocked)
+        goals = self._goal_cells(target, body, width, height, blocked, reach=reach)
         if start in goals:
             return Route(target_id, [start], "already_near_target", replanned=replanned)
         path = self._astar(start, goals, blocked, width, height)
@@ -80,9 +80,12 @@ class LocalRoutePlanner:
         return blocked
 
     @staticmethod
-    def _goal_cells(target: Dict[str, Any], body: BodyState, width: int, height: int, blocked: set[Cell]) -> set[Cell]:
+    def _goal_cells(
+        target: Dict[str, Any], body: BodyState, width: int, height: int,
+        blocked: set[Cell], reach: Optional[float] = None,
+    ) -> set[Cell]:
         pos = target.get("position") or [0.0, 0.0]
-        reach = max(0.75, float(body.capabilities.get("reach", 1.0)))
+        reach = max(0.75, float(body.capabilities.get("reach", 1.0) if reach is None else reach))
         goals = {
             (x, y) for x in range(width) for y in range(height)
             if (x, y) not in blocked and math.hypot(x - float(pos[0]), y - float(pos[1])) <= reach

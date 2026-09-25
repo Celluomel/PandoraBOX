@@ -54,7 +54,10 @@ class TaskGraphExecutor:
         return TaskDecision(None, step.step_id, f"unsupported plan verb: {step.verb}")
 
     def _route_decision(self, step_id: str, target: str, snapshot: BodySnapshot, body: BodyState, align_reason: str = "", arguments: Optional[Dict[str, Any]] = None) -> TaskDecision:
-        route = self.local_planner.route(target, snapshot, body)
+        route_reach = None
+        if align_reason == "align_for_release":
+            route_reach = float(body.capabilities.get("placement_reach", body.capabilities.get("reach", 1.0)))
+        route = self.local_planner.route(target, snapshot, body, reach=route_reach)
         self.last_route = route.as_dict()
         if route.blocked:
             return TaskDecision(None, step_id, "recover_from_blockage", details=self.last_route)
@@ -66,9 +69,45 @@ class TaskGraphExecutor:
             return TaskDecision(None, reason="no remaining step")
         step = plan.steps[plan.current_step_index]
         target = self._object(step.target, snapshot)
-        if target and self._clear_path(step.target, snapshot, body):
-            return TaskDecision(Action(type="retreat", target=step.target, params={"plan_controlled": True}), step.step_id, "recover clearance by increasing separation")
-        return TaskDecision(Action(type="turn_left", target=step.target, params={"plan_controlled": True}), step.step_id, "recover by changing heading before replanning")
+        # Recovery is still a Body action, so it must obey the same geometry
+        # as ordinary navigation.  The old unconditional retreat could move
+        # directly into a wall or furniture and turn one blockage into a
+        # collision loop.
+        if self._translation_clear(snapshot, body, -1.0):
+            return TaskDecision(Action(type="backward", target=step.target, params={"plan_controlled": True}), step.step_id, "recover clearance by increasing separation")
+        desired = None
+        if target:
+            desired = math.atan2(
+                float((target.get("position") or [0.0, 0.0])[1]) - float(body.position[1]),
+                float((target.get("position") or [0.0, 0.0])[0]) - float(body.position[0]),
+            )
+        delta = ((desired - float(body.orientation) + math.pi) % (2 * math.pi) - math.pi) if desired is not None else 0.0
+        preferred = "turn_left" if delta >= 0 else "turn_right"
+        alternate = "turn_right" if preferred == "turn_left" else "turn_left"
+        for action in (preferred, alternate):
+            turn = math.radians(90.0 if action == "turn_left" else -90.0)
+            heading = (float(body.orientation) + turn + math.pi) % (2 * math.pi) - math.pi
+            if self._translation_clear(snapshot, body, 1.0, heading=heading):
+                return TaskDecision(Action(type=action, target=step.target, params={"plan_controlled": True}), step.step_id, "recover by changing heading before replanning")
+        return TaskDecision(Action(type="wait", target=step.target, params={"plan_controlled": True}), step.step_id, "recover by waiting for a clear observation")
+
+    @staticmethod
+    def _translation_clear(snapshot: BodySnapshot, body: BodyState, distance: float, heading: Optional[float] = None) -> bool:
+        """Check one grid translation using the current Body snapshot."""
+        angle = float(body.orientation if heading is None else heading)
+        x = float(body.position[0]) + math.cos(angle) * distance
+        y = float(body.position[1]) + math.sin(angle) * distance
+        width = float(body.capabilities.get("world_width", 12.0))
+        height = float(body.capabilities.get("world_height", 12.0))
+        if x < 0.0 or y < 0.0 or x >= width or y >= height:
+            return False
+        for item in snapshot.objects:
+            if str(item.get("kind")) not in {"obstacle", "chair", "table", "wall", "mobile_obstacle"}:
+                continue
+            position = item.get("position") or [0.0, 0.0]
+            if math.hypot(float(position[0]) - x, float(position[1]) - y) < 0.6:
+                return False
+        return True
 
     def _satisfied(self, step: PlanStep, snapshot: BodySnapshot, body: BodyState) -> bool:
         predicates = step.postconditions or [self._default_postcondition(step)]
