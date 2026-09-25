@@ -120,6 +120,9 @@ class BodyHost:
         self._fnk_experiment_lock = threading.Lock()
         self._fnk_experiment_thread: threading.Thread | None = None
         self._fnk_experiment_status: dict = {"state": "idle", "completed": 0, "total": 0}
+        self._worldmodel_evaluation_lock = threading.Lock()
+        self._worldmodel_evaluation_thread: threading.Thread | None = None
+        self._worldmodel_evaluation_status: dict = {"state": "idle", "trials": 0}
 
     # ── config ──────────────────────────────────────────────────────────────
 
@@ -449,6 +452,42 @@ class BodyHost:
             )
             self._fnk_experiment_thread.start()
             return dict(self._fnk_experiment_status)
+
+    def worldmodel_evaluation_status(self) -> dict:
+        with self._worldmodel_evaluation_lock:
+            return dict(self._worldmodel_evaluation_status)
+
+    def start_worldmodel_evaluation(self, payload: dict | None = None) -> dict:
+        """Run the generic shuffled-scene benchmark outside the Body loop."""
+        payload = payload if isinstance(payload, dict) else {}
+        trials = max(1, min(250, int(payload.get("trials", 25) or 25)))
+        max_steps = max(20, min(1000, int(payload.get("max_steps", 180) or 180)))
+        with self._worldmodel_evaluation_lock:
+            if self._worldmodel_evaluation_thread and self._worldmodel_evaluation_thread.is_alive():
+                return dict(self._worldmodel_evaluation_status)
+            self._worldmodel_evaluation_status = {
+                "state": "running", "trials": trials, "max_steps": max_steps,
+            }
+
+        def run() -> None:
+            try:
+                from body_runtime_host.worldmodel.evaluation import run_shuffled_trials
+                result = run_shuffled_trials(trials=trials, max_steps=max_steps)
+                with self._worldmodel_evaluation_lock:
+                    self._worldmodel_evaluation_status = {"state": "completed", **result}
+            except Exception as exc:
+                LOG.exception("World Model shuffled evaluation failed")
+                with self._worldmodel_evaluation_lock:
+                    self._worldmodel_evaluation_status = {
+                        "state": "failed", "trials": trials, "max_steps": max_steps,
+                        "error": str(exc),
+                    }
+
+        self._worldmodel_evaluation_thread = threading.Thread(
+            target=run, name="worldmodel-shuffled-evaluation", daemon=True
+        )
+        self._worldmodel_evaluation_thread.start()
+        return self.worldmodel_evaluation_status()
 
     def set_plugin_enabled(self, plugin_id: str, enabled: bool) -> dict:
         fields = {
@@ -1066,6 +1105,8 @@ class BodyHost:
                         self._send({"error": "world model unavailable"}, 503)
                     else:
                         self._send({"context": wm.context_for_brain()})
+                elif path == "/worldmodel/evaluation":
+                    self._send(owner.worldmodel_evaluation_status())
                 elif path == "/worldmodel/plans/validate":
                     wm = owner.worldmodel
                     if wm is None:
@@ -1146,6 +1187,8 @@ class BodyHost:
                         return
                     body = self._read_body()
                     self._send(wm.reset(clear_memory=bool(body.get("clear_memory", False))))
+                elif path == "/worldmodel/evaluation/run":
+                    self._send(owner.start_worldmodel_evaluation(self._read_body()))
                 elif path == "/worldmodel/config":
                     wm = owner.worldmodel
                     if wm is None:
