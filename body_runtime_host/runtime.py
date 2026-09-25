@@ -280,11 +280,12 @@ class BodyHost:
 
     def fnk0031_controller_step(self, dt: float = 0.04) -> dict:
         """Advance the local hexapod controller only in the running sim sandbox."""
-        if not bool(self.value("BODY_PLUGIN_ROBOT_ENABLED", False)):
+        wm = self.worldmodel
+        simulation_mode = bool(wm is not None and wm.config().get("mode") == "sim")
+        if not bool(self.value("BODY_PLUGIN_ROBOT_ENABLED", False)) and not simulation_mode:
             return {"active": False, "reason": "FNK0031 plugin is disabled"}
         if not bool(self.value("FNK0031_SNN_ENABLED", False)):
             return {"active": False, "reason": "SNN locomotion is disabled"}
-        wm = self.worldmodel
         if wm is None:
             return {"active": False, "reason": "world model is unavailable"}
         if wm.config().get("mode") != "sim" or not (wm._thread and wm._thread.is_alive()):
