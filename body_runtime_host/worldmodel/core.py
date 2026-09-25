@@ -343,15 +343,30 @@ class EmbodiedWorldModel:
                 prior[action] = max(float(prior.get(action, 0.0)), float(score))
             decision = self.policy.decide(s, candidates, prior=prior or None)
             chosen = decision.get("action")
-            # The geometric objective layer is authoritative for the
-            # sandbox: learned values still get evaluated and trained, but
-            # they cannot make the body rotate in place when a safe forward
-            # step advances the current objective.
+            # Geometry remains a safety boundary, while the learned model is
+            # allowed to choose among safe locomotion actions after it has
+            # accumulated enough transitions. Interaction actions and dynamic
+            # hazard recovery remain authoritative and cannot be overridden by
+            # an immature model.
             recommended = navigation.get("recommended")
             candidate_types = {str(candidate.get("type")) for candidate in candidates}
             if recommended in candidate_types and recommended not in forbidden:
-                chosen = {"type": recommended}
-                decision["reason"] = "geometric objective guidance"
+                movement = {"forward", "backward", "retreat", "sprint", "turn_left", "turn_right", "wait"}
+                learned_type = str(
+                    chosen.get("type") if isinstance(chosen, dict) else getattr(chosen, "type", "")
+                )
+                learned_can_steer = (
+                    self.dynamics.training_steps >= 25
+                    and learned_type in movement
+                    and learned_type not in forbidden
+                    and recommended in movement
+                    and not navigation.get("recovery_mode")
+                )
+                if not learned_can_steer:
+                    chosen = {"type": recommended}
+                    decision["reason"] = "geometric objective guidance"
+                else:
+                    decision["reason"] = "learned dynamics within geometric safety boundary"
             # An accepted Body plan is a local, snapshot-grounded controller.
             # It supersedes the exploratory policy only while it owns the plan
             # lease; learning continues from each executed primitive.

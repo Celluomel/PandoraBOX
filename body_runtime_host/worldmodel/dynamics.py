@@ -298,3 +298,8 @@ class LatentWorldDynamics:
             logger.info("[dynamics] restored %d training steps from %s", self._steps_trained, self.save_path)
         except Exception as exc:
             logger.warning("[dynamics] load failed (%s) — starting fresh", exc)
+
+    @property
+    def training_steps(self) -> int:
+        """Number of completed online updates available to the policy."""
+        return int(self._steps_trained)
