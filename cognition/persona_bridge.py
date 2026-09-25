@@ -2706,10 +2706,11 @@ Memory honesty — two distinct cases:
             body = getattr(self._organism, "_body_runtime", None) if self._organism else None
             result = body.submit_worldmodel_plan(pending["plan"]) if body else {"accepted": False, "error": "Body unavailable"}
             if result.get("accepted"):
-                if body:
-                    body.run_worldmodel(True, False)
+                run_result = body.run_worldmodel(True, False) if body else {"error": "Body unavailable"}
+                if isinstance(run_result, dict) and run_result.get("error"):
+                    return {"handled": True, "status": "blocked", "response": "Le plan est accepté, mais le Body ne démarre pas : " + str(run_result["error"]), "submission": result, "runtime": run_result}
                 self._pending_body_plans.pop(str(user_id), None)
-                return {"handled": True, "status": "submitted", "response": "Le plan est confirmé et transmis au Body. L'exécution commence maintenant.", "submission": result}
+                return {"handled": True, "status": "submitted", "response": "Le plan est confirmé et transmis au Body. Le premier pas est lancé maintenant.", "submission": result, "runtime": run_result}
             return {"handled": True, "status": "blocked", "response": "Le Body refuse encore ce plan : " + "; ".join(result.get("errors") or [result.get("error", "validation impossible")]), "submission": result}
         if pending and route == "cancel":
             self._pending_body_plans.pop(str(user_id), None)

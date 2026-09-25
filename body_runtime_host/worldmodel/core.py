@@ -219,7 +219,10 @@ class EmbodiedWorldModel:
             pass
 
     def _run(self) -> None:
-        while not self._stop.wait(max(0.2, float(self._cfg.get("step_interval", 2.0)))):
+        # Execute the first observation/action immediately. Waiting for the
+        # interval here made a confirmed chat action look like a no-op until
+        # the next polling cycle.
+        while not self._stop.is_set():
             try:
                 self.step()
                 # A completed simulated episode is a terminal state. Keep the
@@ -240,6 +243,8 @@ class EmbodiedWorldModel:
                     break
             except Exception:
                 logger.exception("[worldmodel] background step failed")
+            if self._stop.wait(max(0.2, float(self._cfg.get("step_interval", 2.0)))):
+                break
 
     # ── the 11-step protocol ────────────────────────────────────────────────
 
