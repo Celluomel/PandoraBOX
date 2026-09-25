@@ -320,7 +320,12 @@ class EmbodiedWorldModel:
             # 8) policy decision by imagined rollouts
             candidates = self._candidates(obs, body_state, aff)
             carrying = bool(getattr(self.sim, "carrying", None))
-            navigation = navigation_guidance(obs, body_state, carrying=carrying)
+            navigation = navigation_guidance(
+                obs,
+                body_state,
+                carrying=carrying,
+                stagnation_steps=self._navigation_stagnation,
+            )
             forbidden = set(navigation.get("forbidden", []))
             if forbidden:
                 safe = [candidate for candidate in candidates if str(candidate.get("type")) not in forbidden]
@@ -384,6 +389,19 @@ class EmbodiedWorldModel:
                 else:
                     chosen = task_decision.action.as_dict()
                     decision["reason"] = task_decision.reason
+                    # A conversation plan must not override an urgent,
+                    # snapshot-grounded dynamic-obstacle recovery.  This is
+                    # only applied to navigation steps; manipulation actions
+                    # remain under the task graph's ordering and permissions.
+                    current_step = active_plan.steps[active_plan.current_step_index] if active_plan.current_step_index < len(active_plan.steps) else None
+                    if (
+                        current_step is not None
+                        and current_step.verb == "navigate"
+                        and navigation.get("recovery_mode")
+                        and navigation.get("recommended") in {"sprint", "retreat", "backward", "turn_left", "turn_right"}
+                    ):
+                        chosen = {"type": navigation["recommended"], "target": current_step.target, "params": {"plan_controlled": True, "dynamic_recovery": True}}
+                        decision["reason"] = navigation.get("recovery_reason") or "dynamic obstacle recovery"
                 if task_decision.details:
                     navigation = {**navigation, "local_route": task_decision.details, "phase": task_decision.reason}
             elif active_plan and active_plan.state == "recovery":

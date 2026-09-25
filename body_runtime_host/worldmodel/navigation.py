@@ -284,7 +284,12 @@ def _grid_route_action(
     return _turn_toward_target(float(body.orientation), (float(step[0]), float(step[1])), (float(start[0]), float(start[1])))
 
 
-def navigation_guidance(observation: Any, body: Any, carrying: bool = False) -> Dict[str, Any]:
+def navigation_guidance(
+    observation: Any,
+    body: Any,
+    carrying: bool = False,
+    stagnation_steps: int = 0,
+) -> Dict[str, Any]:
     objects = list(getattr(observation, "scene", []) or [])
     px, py = float(body.position[0]), float(body.position[1])
     heading = float(body.orientation)
@@ -315,6 +320,8 @@ def navigation_guidance(observation: Any, body: Any, carrying: bool = False) -> 
         objects, (px, py), bool(body.capabilities.get("mobile_obstacle_moves_next", True))
     )
     recommended: str | None = None
+    recovery_mode = False
+    recovery_reason = ""
     phase = "to_target"
     distance: float | None = None
     if target is not None:
@@ -391,6 +398,62 @@ def navigation_guidance(observation: Any, body: Any, carrying: bool = False) -> 
         if carrying and distance <= 1.25:
             prior["release"] = 1.8
             recommended = "release"
+
+        # A dynamic obstacle must change the navigation attitude when the
+        # current policy has failed to reduce the objective distance.  Merely
+        # turning toward the same target can create a turn/retreat loop.  Once
+        # the Body has stalled for several observations, prefer an action that
+        # changes the relative velocity or clears a lateral corridor.
+        if mobile is not None and stagnation_steps >= 3 and distance > 1.25:
+            mobile_distance = math.hypot(float(mobile.position[0]) - px, float(mobile.position[1]) - py)
+            mobile_speed = float(body.capabilities.get("mobile_obstacle_speed", 0.55))
+            threat_radius = max(2.5, _mobile_safety_radius(mobile, body) + mobile_speed * 2.0)
+            if mobile_distance <= threat_radius:
+                recovery_mode = True
+                recovery_reason = "stagnation_with_dynamic_obstacle"
+                max_speed = float(body.capabilities.get("max_speed", 1.0))
+                width = body.capabilities.get("world_width")
+                height = body.capabilities.get("world_height")
+
+                def clear_translation(dx: float, dy: float) -> bool:
+                    nx, ny = px + dx, py + dy
+                    if width is not None and height is not None and not (0 <= nx < float(width) and 0 <= ny < float(height)):
+                        return False
+                    for item in objects:
+                        kind = str(getattr(item, "kind", ""))
+                        if kind not in {"obstacle", "table", "surface", "chair"}:
+                            continue
+                        if math.hypot(float(item.position[0]) - nx, float(item.position[1]) - ny) < 0.6:
+                            return False
+                    return math.hypot(float(mobile.position[0]) - nx, float(mobile.position[1]) - ny) >= _mobile_safety_radius(mobile, body)
+
+                forward_dx, forward_dy = math.cos(heading), math.sin(heading)
+                backward_dx, backward_dy = -forward_dx, -forward_dy
+                # First try to outrun a pursuer when a clear two-cell sprint
+                # exists and it genuinely reduces the target distance.
+                sprint_target = (px + forward_dx * 2.0, py + forward_dy * 2.0)
+                sprint_progress = math.hypot(target[0] - sprint_target[0], target[1] - sprint_target[1]) < distance - 0.5
+                sprint_clear = clear_translation(forward_dx, forward_dy) and clear_translation(forward_dx * 2.0, forward_dy * 2.0)
+                if max_speed >= 2.0 and sprint_progress and sprint_clear:
+                    recommended = "sprint"
+                elif clear_translation(backward_dx, backward_dy):
+                    # A short retreat creates separation and lets the next
+                    # observation select a new route instead of oscillating.
+                    recommended = "retreat" if max_speed >= 2.0 else "backward"
+                else:
+                    # If forward and backward are unsafe, turn toward the
+                    # side with the greater clearance from the moving object.
+                    left_heading = heading + math.pi / 2
+                    right_heading = heading - math.pi / 2
+                    left = (px + math.cos(left_heading), py + math.sin(left_heading))
+                    right = (px + math.cos(right_heading), py + math.sin(right_heading))
+                    left_clear = math.hypot(float(mobile.position[0]) - left[0], float(mobile.position[1]) - left[1])
+                    right_clear = math.hypot(float(mobile.position[0]) - right[0], float(mobile.position[1]) - right[1])
+                    candidates = [(left_clear, "turn_left"), (right_clear, "turn_right")]
+                    candidates = [item for item in candidates if clear_translation(*(left[0] - px, left[1] - py) if item[1] == "turn_left" else (right[0] - px, right[1] - py))]
+                    if candidates:
+                        recommended = max(candidates, key=lambda item: item[0])[1]
+                prior[recommended] = max(prior.get(recommended, 0.0), 4.2)
 
     # A forward step is unsafe when it enters an obstacle or leaves the known
     # world. The latter was previously invisible to the navigation guard and
@@ -497,4 +560,7 @@ def navigation_guidance(observation: Any, body: Any, carrying: bool = False) -> 
         ),
         "mobile_obstacle_speed": round(float(body.capabilities.get("mobile_obstacle_speed", 0.0)), 3),
         "mobile_obstacle_predicted_position": list(mobile_predicted) if mobile_predicted is not None else None,
+        "recovery_mode": recovery_mode,
+        "recovery_reason": recovery_reason,
+        "stagnation_steps": int(stagnation_steps),
     }

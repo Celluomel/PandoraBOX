@@ -323,6 +323,19 @@ class SimWorldTest(unittest.TestCase):
         guidance = navigation_guidance(room.observe(), room.body_state())
         self.assertEqual(guidance["recommended"], "retreat")
 
+    def test_navigation_changes_attitude_after_stagnation_near_mobile_obstacle(self):
+        from body_runtime_host.worldmodel import SimulatedRoom
+        from body_runtime_host.worldmodel.navigation import navigation_guidance
+
+        room = SimulatedRoom()
+        room.px, room.py, room.heading = 5.0, 5.0, 0.0
+        room.objects["mobile_obstacle"].update(x=6.0, y=5.0)
+        guidance = navigation_guidance(room.observe(), room.body_state(), stagnation_steps=4)
+        self.assertTrue(guidance["recovery_mode"])
+        self.assertEqual(guidance["recovery_reason"], "stagnation_with_dynamic_obstacle")
+        self.assertIn(guidance["recommended"], {"sprint", "retreat", "backward", "turn_left", "turn_right"})
+        self.assertEqual(guidance["stagnation_steps"], 4)
+
     def test_navigation_holds_when_pursuer_closes_both_directions(self):
         from body_runtime_host.worldmodel import SimulatedRoom
         from body_runtime_host.worldmodel.navigation import navigation_guidance
