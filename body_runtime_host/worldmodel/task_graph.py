@@ -163,7 +163,7 @@ class TaskGraphExecutor:
             # the Body loop with an AttributeError.
             return False
         kind = str(predicate.get("type") or "").lower()
-        if kind == "near":
+        if kind in {"near", "at_location"}:
             target = self._object(str(predicate.get("target") or ""), snapshot)
             default_reach = body.capabilities.get("reach", 1.0)
             if predicate.get("operation") == "release":

@@ -256,6 +256,19 @@ class BodyPlanContractTests(unittest.TestCase):
         self.assertEqual(decision.action.type, "release")
         self.assertEqual(decision.action.target, "chair")
 
+    def test_task_graph_accepts_at_location_navigation_postcondition(self):
+        current = snapshot()
+        current.objects = [{"id": "chair", "kind": "chair", "position": [2.0, 1.0, 0.0]}]
+        current.pose = {"x": 2.0, "y": 1.0, "yaw": 0.0}
+        body = BodyState(position=[2.0, 1.0, 0.0], posture={"holding": ""})
+        plan_value = BodyPlan(objective="reach chair", steps=[
+            PlanStep(step_id="chair", verb="navigate", target="chair", postconditions=[
+                {"type": "at_location", "target": "chair"},
+            ]),
+        ])
+        decision = TaskGraphExecutor().decide(plan_value, current, body)
+        self.assertTrue(decision.satisfied)
+
     def test_local_planner_routes_around_inflated_obstacle(self):
         current = snapshot()
         current.objects = [
