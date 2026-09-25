@@ -2745,13 +2745,22 @@ Memory honesty — two distinct cases:
         route = self._classify_body_chat_turn(user_input, pending=bool(pending))
         if pending and route == "confirm":
             body = getattr(self._organism, "_body_runtime", None) if self._organism else None
+            replacement_id = str(pending.get("replace_plan_id") or "").strip()
+            if replacement_id and body:
+                cancelled = body.cancel_worldmodel_plan(
+                    replacement_id,
+                    reason="superseded by a newer user Body objective",
+                )
+                if not cancelled.get("ok") and "not found" not in str(cancelled.get("error", "")).lower():
+                    return {"handled": True, "status": "blocked", "response": "Le Body n'a pas pu interrompre le plan précédent : " + str(cancelled.get("error", "annulation impossible")), "cancellation": cancelled}
             result = body.submit_worldmodel_plan(pending["plan"]) if body else {"accepted": False, "error": "Body unavailable"}
             if result.get("accepted"):
                 run_result = body.run_worldmodel(True, False) if body else {"error": "Body unavailable"}
                 if isinstance(run_result, dict) and run_result.get("error"):
                     return {"handled": True, "status": "blocked", "response": "Le plan est accepté, mais le Body ne démarre pas : " + str(run_result["error"]), "submission": result, "runtime": run_result}
                 self._pending_body_plans.pop(str(user_id), None)
-                return {"handled": True, "status": "submitted", "response": "Le plan est confirmé et transmis au Body. Le premier pas est lancé maintenant.", "submission": result, "runtime": run_result}
+                response = "Le nouveau plan est confirmé et transmis au Body. Le plan précédent a été interrompu et le premier pas est lancé maintenant." if replacement_id else "Le plan est confirmé et transmis au Body. Le premier pas est lancé maintenant."
+                return {"handled": True, "status": "submitted", "response": response, "submission": result, "runtime": run_result}
             return {"handled": True, "status": "blocked", "response": "Le Body refuse encore ce plan : " + "; ".join(result.get("errors") or [result.get("error", "validation impossible")]), "submission": result}
         if pending and route == "cancel":
             self._pending_body_plans.pop(str(user_id), None)
@@ -2771,8 +2780,16 @@ Memory honesty — two distinct cases:
         if not feasibility.get("feasible"):
             errors = "; ".join(feasibility.get("errors") or [feasibility.get("error", "faisabilité non confirmée")])
             return {"handled": True, "status": "blocked", "response": "Le Body ne confirme pas cette action : " + errors, "assessment": assessment}
-        self._pending_body_plans[str(user_id)] = {"plan": assessment, "created_at": time.time()}
-        return {"handled": True, "status": "awaiting_confirmation", "response": "Le Body confirme que cette action est faisable. Voulez-vous que j'exécute ce plan ?", "assessment": assessment}
+        replacement_id = ""
+        body = getattr(self._organism, "_body_runtime", None) if self._organism else None
+        if body:
+            current_plan = body.worldmodel_plan()
+            active = current_plan.get("active_plan") if isinstance(current_plan, dict) else None
+            if isinstance(active, dict) and active.get("state") in {"ready", "executing", "recovery"}:
+                replacement_id = str(active.get("plan_id") or "")
+        self._pending_body_plans[str(user_id)] = {"plan": assessment, "replace_plan_id": replacement_id, "created_at": time.time()}
+        response = "Le Body confirme cette nouvelle action. Elle remplacera le plan en cours après votre confirmation. Voulez-vous l'exécuter ?" if replacement_id else "Le Body confirme que cette action est faisable. Voulez-vous que j'exécute ce plan ?"
+        return {"handled": True, "status": "awaiting_confirmation", "response": response, "assessment": assessment}
 
     def assess_body_action_request(self, user_input: str) -> dict:
         """Compile a request and run Body feasibility validation, without execution."""

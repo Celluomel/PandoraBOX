@@ -144,6 +144,14 @@ class RemoteWorldModel:
             self._last_error = str(exc)
             return {"accepted": False, "error": str(exc)}
 
+    def plan_payload(self) -> Dict[str, Any]:
+        """Read the current plan lease and latest Body planning snapshot."""
+        try:
+            return _request("GET", f"{self.base_url}/worldmodel/plans", timeout=self.timeout)
+        except Exception as exc:
+            self._last_error = str(exc)
+            return {"active_plan": None, "error": str(exc)}
+
     def validate_plan(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Ask the Body whether a plan is feasible without reserving it."""
         try:

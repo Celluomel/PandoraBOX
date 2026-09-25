@@ -248,6 +248,14 @@ class BodyRuntime:
             return {"accepted": False, "error": "Body world model does not expose plan submission"}
         return submit(payload)
 
+    def worldmodel_plan(self) -> Dict[str, Any]:
+        """Return the Body-owned active plan lease, if one exists."""
+        wm = self.worldmodel
+        read = getattr(wm, "plan_payload", None) if wm is not None else None
+        if not callable(read):
+            return {"active_plan": None, "error": "Body world model plan state is unavailable"}
+        return read()
+
     def body_snapshot(self) -> Dict[str, Any]:
         wm = self.worldmodel
         snapshot = getattr(wm, "snapshot", None) if wm is not None else None
