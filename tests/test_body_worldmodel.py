@@ -374,6 +374,23 @@ class SimWorldTest(unittest.TestCase):
         self.assertNotEqual(guidance["recommended"], "forward")
         self.assertGreaterEqual(float(room.body_state().capabilities["mobile_obstacle_clearance"]), 1.3)
 
+    def test_planned_release_uses_body_placement_reach(self):
+        from body_runtime_host.worldmodel import Action, SimulatedRoom
+
+        room = SimulatedRoom()
+        room.px, room.py = 7.0, 4.0
+        room.objects["chair"].update(x=8.0, y=3.0)
+        room.objects["cup"].update(x=7.0, y=4.0)
+        room.carrying = "cup"
+
+        _, outcome = room.step(Action(type="release", target="chair", params={"plan_controlled": True}))
+
+        self.assertEqual(outcome.kind, "success")
+        self.assertEqual(room.carrying, None)
+        self.assertEqual(room.task_stage, "placed:chair")
+        self.assertGreater(outcome.reward, 0.0)
+        self.assertIn("placed cup on chair", outcome.description)
+
     def test_full_task_is_solvable(self):
         """A scripted (non-learned) policy must be able to solve the task —
         proving the environment itself is solvable (separates environment

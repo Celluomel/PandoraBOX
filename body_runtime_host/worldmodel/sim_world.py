@@ -150,7 +150,11 @@ class SimulatedRoom:
             orientation=self.heading,
             posture={"holding": self.carrying or ""},
             capabilities={
-                "reach": REACH, "speed": 1.0, "max_speed": 2.0,
+                # Placement uses the same physical reach as the simulated
+                # gripper. Keeping this explicit lets planners and the
+                # simulator agree without embedding a scenario-specific radius.
+                "reach": REACH, "placement_reach": REACH,
+                "speed": 1.0, "max_speed": 2.0,
                 "mobile_obstacle_speed": next_mobile_speed,
                 "mobile_obstacle_clearance": 1.3,
                 "mobile_obstacle_moves_next": self._mobile_motion_phase + next_mobile_speed >= 1.0,
@@ -442,7 +446,8 @@ class SimulatedRoom:
     def _planned_release(self, object_id: str, destination_id: Optional[str]) -> Tuple[str, float, str]:
         """Apply a plan-controlled release without assuming a task scenario."""
         destination = self._destination(destination_id)
-        on_destination = destination is not None and math.hypot(self.px - destination[0], self.py - destination[1]) < 1.2
+        placement_reach = float(self.body_state().capabilities.get("placement_reach", REACH))
+        on_destination = destination is not None and math.hypot(self.px - destination[0], self.py - destination[1]) <= placement_reach
         if on_destination:
             self.objects[object_id]["x"], self.objects[object_id]["y"] = destination
             self.carrying = None
