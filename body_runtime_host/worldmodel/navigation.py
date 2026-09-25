@@ -77,6 +77,16 @@ def _predict_mobile_step(
     return min(choices, key=lambda item: item[0])[1] if choices else None
 
 
+def _mobile_safety_radius(mobile: Any, body: Any) -> float:
+    """Return the minimum body-to-mobile separation for predictive routing."""
+    configured = body.capabilities.get("mobile_obstacle_clearance")
+    if configured is not None:
+        return max(0.8, float(configured))
+    size = float(getattr(mobile, "size", 0.8) or 0.8)
+    # Body footprint + obstacle footprint + a small reaction margin.
+    return max(1.15, 0.6 + (size * 0.5) + 0.3)
+
+
 def _grid_route_action(
     observation: Any,
     body: Any,
@@ -133,6 +143,7 @@ def _grid_route_action(
         first_step = int(body.capabilities.get("simulation_step", 0)) + 1
         max_speed = max(1, min(2, int(float(body.capabilities.get("max_speed", 1.0)))))
         mobile_speed = float(body.capabilities.get("mobile_obstacle_speed", 0.55))
+        mobile_clearance = _mobile_safety_radius(mobile_obj, body)
         static_blocked = {
             (int(round(float(o.position[0]))), int(round(float(o.position[1]))))
             for o in scene_objects
@@ -199,9 +210,13 @@ def _grid_route_action(
                         nmx, nmy = min(choices, key=lambda item: item[0])[1]
                 next_phase = max(0.0, min(0.99, next_phase))
                 separation = math.hypot(nmx - nx, nmy - ny)
-                if separation < 0.6:
+                # Treat the predicted separation as a hard constraint. A
+                # short route that enters the mobile object's reaction zone
+                # is not a valid route and is the source of the old
+                # advance/retreat oscillation.
+                if separation < mobile_clearance:
                     continue
-                risk_cost = max(0.0, 1.8 - separation) * 0.8
+                risk_cost = max(0.0, (mobile_clearance + 1.0) - separation) * 1.4
                 next_cost = cost + 1.0 + risk_cost
                 next_elapsed = elapsed + 1
                 next_state = (nx, ny, next_heading, nmx, nmy, round(next_phase, 2), next_elapsed)

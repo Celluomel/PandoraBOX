@@ -360,6 +360,20 @@ class SimWorldTest(unittest.TestCase):
         self.assertTrue(room.done, "time-aware routing should avoid chasing the moving obstacle in a loop")
         self.assertEqual(room.carrying, None)
 
+    def test_predictive_route_keeps_clearance_from_mobile_obstacle(self):
+        from body_runtime_host.worldmodel import SimulatedRoom
+        from body_runtime_host.worldmodel.navigation import navigation_guidance
+
+        room = SimulatedRoom()
+        room.px, room.py, room.heading = 2.0, 2.0, 0.0
+        room.objects["mobile_obstacle"].update(x=3.0, y=2.0)
+        room.shelf = (8.0, 2.0)
+        room.carrying = "cup"
+        room.task_stage = "to_shelf"
+        guidance = navigation_guidance(room.observe(), room.body_state(), carrying=True)
+        self.assertNotEqual(guidance["recommended"], "forward")
+        self.assertGreaterEqual(float(room.body_state().capabilities["mobile_obstacle_clearance"]), 1.3)
+
     def test_full_task_is_solvable(self):
         """A scripted (non-learned) policy must be able to solve the task —
         proving the environment itself is solvable (separates environment

@@ -152,6 +152,7 @@ class SimulatedRoom:
             capabilities={
                 "reach": REACH, "speed": 1.0, "max_speed": 2.0,
                 "mobile_obstacle_speed": next_mobile_speed,
+                "mobile_obstacle_clearance": 1.3,
                 "mobile_obstacle_moves_next": self._mobile_motion_phase + next_mobile_speed >= 1.0,
                 "mobile_motion_phase": self._mobile_motion_phase,
                 "simulation_step": self.steps,
