@@ -23,6 +23,7 @@ class TrialResult:
     collisions: int
     replans: int
     recoveries: int
+    near_misses: int = 0
     disturbed: bool = False
     disturbance_kind: str = ""
     final_step: str = ""
@@ -122,9 +123,26 @@ def _run_trial(
     plan, executor = _generic_plan(), TaskGraphExecutor()
     replans = recoveries = 0
     disturbed = False
-    disturbance_kind = ""
+    disturbance_kinds: list[str] = []
     reason = "step_budget_exhausted"
     disturbance_step = max(6, min(18, max_steps // 4))
+    disturbance_steps = {disturbance_step, min(max_steps - 1, disturbance_step + 24)}
+
+    def inject_scene_change(step_index: int) -> None:
+        nonlocal disturbed
+        if not inject_disturbance or step_index not in disturbance_steps:
+            return
+        if plan.current_step_index < 3:
+            changed = _displace_surface(room, "dock", seed + 17 + step_index)
+            kind = "surface_moved_before_release"
+        else:
+            changed = _displace_mobile_obstacle(room, seed + 29 + step_index)
+            kind = "mobile_obstacle_shifted"
+        if changed:
+            disturbed = True
+            if kind not in disturbance_kinds:
+                disturbance_kinds.append(kind)
+
     for step_number in range(max_steps):
         obs, body = room.observe(), room.body_state()
         snapshot = EmbodiedWorldModel._make_plan_snapshot(obs, body)
@@ -138,13 +156,7 @@ def _run_trial(
             # scene. This models the Body's timestamped observation boundary
             # and prevents a disturbance from invalidating an action that was
             # already acknowledged by the executor.
-            if inject_disturbance and step_number == disturbance_step:
-                if plan.current_step_index < 3:
-                    disturbed = _displace_surface(room, "dock", seed + 17)
-                    disturbance_kind = "surface_moved_before_release" if disturbed else ""
-                else:
-                    disturbed = _displace_mobile_obstacle(room, seed + 29)
-                    disturbance_kind = "mobile_obstacle_shifted" if disturbed else ""
+            inject_scene_change(step_number)
             continue
         if decision.details and decision.details.get("replanned"):
             replans += 1
@@ -162,13 +174,7 @@ def _run_trial(
             if recovery.action:
                 room.step(recovery.action)
                 recoveries += 1
-        if inject_disturbance and step_number == disturbance_step:
-            if plan.current_step_index < 3:
-                disturbed = _displace_surface(room, "dock", seed + 17)
-                disturbance_kind = "surface_moved_before_release" if disturbed else ""
-            else:
-                disturbed = _displace_mobile_obstacle(room, seed + 29)
-                disturbance_kind = "mobile_obstacle_shifted" if disturbed else ""
+        inject_scene_change(step_number)
     if reason != "completed":
         current = plan.steps[plan.current_step_index] if plan.current_step_index < len(plan.steps) else None
         final_step = f"{current.verb}->{current.target}" if current else "complete"
@@ -182,8 +188,9 @@ def _run_trial(
         collisions=room.collision_count,
         replans=replans,
         recoveries=recoveries,
+        near_misses=room.near_miss_count,
         disturbed=disturbed,
-        disturbance_kind=disturbance_kind,
+        disturbance_kind=", ".join(disturbance_kinds),
         final_step=final_step,
         reason=reason,
     )
@@ -205,6 +212,9 @@ def _aggregate(results: List[TrialResult]) -> Dict[str, Any]:
         "collisions": sum(item.collisions for item in results),
         "replans": sum(item.replans for item in results),
         "recoveries": sum(item.recoveries for item in results),
+        "near_misses": sum(item.near_misses for item in results),
+        "avg_recoveries": round(sum(item.recoveries for item in results) / max(1, len(results)), 2),
+        "avg_near_misses": round(sum(item.near_misses for item in results) / max(1, len(results)), 2),
         "disturbed_trials": len(disturbed),
         "failures": len(failures),
         "failure_reasons": failure_reasons,
@@ -216,6 +226,7 @@ def _aggregate(results: List[TrialResult]) -> Dict[str, Any]:
                 "steps": item.steps,
                 "replans": item.replans,
                 "recoveries": item.recoveries,
+                "near_misses": item.near_misses,
                 "disturbed": item.disturbed,
                 "disturbance_kind": item.disturbance_kind,
             }

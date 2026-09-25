@@ -10,6 +10,8 @@ class BodyEvaluationTests(unittest.TestCase):
         self.assertEqual(result["trials"], 5)
         self.assertEqual(result["successes"], 5)
         self.assertEqual(result["collisions"], 0)
+        self.assertIn("near_misses", result)
+        self.assertIn("near_misses", result["baseline_without_recovery"])
         self.assertTrue(all(item["success"] for item in result["results"]))
 
 
