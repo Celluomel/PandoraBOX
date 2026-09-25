@@ -72,10 +72,13 @@ class PlanStep:
 
     @classmethod
     def from_dict(cls, value: Dict[str, Any], index: int = 0) -> "PlanStep":
+        verb = str(value.get("verb") or "").strip().lower()
         return cls(
             step_id=str(value.get("step_id") or f"step-{index + 1}"),
-            verb=str(value.get("verb") or "").strip().lower(),
-            target=str(value.get("target") or "").strip(),
+            verb=verb,
+            # Exploration is an intrinsic Body operation over the current
+            # scene. Provider/source labels must never become entity targets.
+            target="scene" if verb == "explore" else str(value.get("target") or "").strip(),
             arguments=_mapping(value.get("arguments")),
             preconditions=_predicate_list(value.get("preconditions")),
             postconditions=_predicate_list(value.get("postconditions")),

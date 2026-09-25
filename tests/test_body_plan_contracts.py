@@ -123,6 +123,17 @@ class BodyPlanContractTests(unittest.TestCase):
             ))
             self.assertTrue(result["accepted"], result)
 
+    def test_explore_provider_label_is_normalized_at_body_contract_boundary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = BodyPlanRuntime(Path(tmp))
+            runtime.record_snapshot(snapshot())
+            result = runtime.submit(plan(
+                required_capabilities=["navigate"],
+                steps=[{"step_id": "tour", "verb": "explore", "target": "simulated_room"}],
+            ))
+            self.assertTrue(result["accepted"], result)
+            self.assertEqual(result["plan"]["steps"][0]["target"], "scene")
+
     def test_plan_restores_and_enforces_single_active_lease(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp)

@@ -163,6 +163,8 @@ def _audit_ordered_intent(
         "requested before manipulation. If the draft is incomplete, return JSON "
         "with needs_revision true and a complete replacement steps array. If it is "
         "complete, return exactly {\"needs_revision\":false}. Never execute actions. "
+        "Do not add exploration when the user only asks to move, pick up or place "
+        "an object; never introduce a new user objective. "
         "Use only the supplied Body entity ids. Use the intrinsic verb explore for "
         "a bounded physical room/scene survey."
     )
