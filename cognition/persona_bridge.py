@@ -2669,15 +2669,43 @@ Memory honesty — two distinct cases:
 
     def _classify_body_chat_turn(self, text: str, pending: bool = False) -> str:
         """Use the configured fast model as a semantic action gate."""
+        def _primary_confirmation() -> str:
+            manager = getattr(self._llm_stream_fn, "__self__", None)
+            interactive = getattr(manager, "generate_interactive_analysis", None)
+            if not callable(interactive):
+                return "normal"
+            system = (
+                "Classify whether the user's latest message approves, rejects, replaces, "
+                "or does not address the pending physical Body plan. Return exactly one "
+                "label and nothing else: CONFIRM, CANCEL, NEW_ACTION, or NORMAL. "
+                "Understand the user's language semantically; do not use a phrase list."
+            )
+            prompt = json.dumps({
+                "pending_objective": pending.get("plan", {}).get("objective", "") if isinstance(pending, dict) else "",
+                "user_message": text,
+            }, ensure_ascii=False)
+            try:
+                raw = interactive(
+                    prompt,
+                    system,
+                    max_tokens=32,
+                    temperature=0.0,
+                    reasoning_format="none",
+                )
+                match = re.search(r"\b(CONFIRM|CANCEL|NEW_ACTION|NORMAL)\b", str(raw or "").upper())
+                return match.group(1).lower() if match else "normal"
+            except Exception:
+                return "normal"
+
         try:
             from managers.settings_manager import config
             if not bool(getattr(config, "FAST_ROUND_ENABLED", False)):
-                return "normal"
+                return _primary_confirmation() if pending else "normal"
             manager = getattr(self._llm_stream_fn, "__self__", None)
             fast = getattr(manager, "generate_fast_round", None)
             model = str(getattr(config, "FAST_ROUND_MODEL", "") or "").strip()
             if not callable(fast) or not model:
-                return "normal"
+                return _primary_confirmation() if pending else "normal"
             if pending:
                 system = (
                     "A physical Body plan is waiting for approval. Classify the user's latest "
@@ -2712,32 +2740,9 @@ Memory honesty — two distinct cases:
             # model for a tiny structured judgment instead of silently falling
             # back to a narrative response that never reaches the Body.
             if pending:
-                _interactive = getattr(manager, "generate_interactive_analysis", None)
-                if callable(_interactive):
-                    _confirm_system = (
-                        "Classify whether the user explicitly approves, rejects, or replaces "
-                        "the pending physical Body plan. Return exactly one label and nothing "
-                        "else: CONFIRM, CANCEL, NEW_ACTION, or NORMAL. "
-                        "Treat a direct imperative such as 'do it' as confirm only when it "
-                        "refers to the pending plan; do not invent approval."
-                    )
-                    _confirm_prompt = json.dumps({
-                        "pending_objective": pending.get("plan", {}).get("objective", ""),
-                        "user_message": text,
-                    }, ensure_ascii=False)
-                    _raw = _interactive(
-                        _confirm_prompt,
-                        _confirm_system,
-                        max_tokens=32,
-                        temperature=0.0,
-                        reasoning_format="none",
-                    )
-                    _raw_text = str(_raw or "").strip().upper()
-                    _match = re.search(r"\b(CONFIRM|CANCEL|NEW_ACTION|NORMAL)\b", _raw_text)
-                    if _match:
-                        _route = _match.group(1).lower()
-                        if _route in allowed:
-                            return _route
+                _route = _primary_confirmation()
+                if _route in allowed:
+                    return _route
             return "normal"
         except Exception:
             return "normal"
