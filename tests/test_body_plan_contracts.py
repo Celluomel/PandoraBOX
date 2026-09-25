@@ -53,6 +53,16 @@ class BodyPlanContractTests(unittest.TestCase):
             self.assertTrue(any("missing capabilities" in error for error in result["errors"]))
             self.assertTrue(any("unknown target" in error for error in result["errors"]))
 
+    def test_intrinsic_observation_capabilities_do_not_require_hardware(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = BodyPlanRuntime(Path(tmp))
+            runtime.record_snapshot(snapshot())
+            result = runtime.submit(plan(
+                required_capabilities=["navigate", "wait", "inspect", "avoid"],
+                steps=[{"step_id": "route", "verb": "navigate", "target": "table"}],
+            ))
+            self.assertTrue(result["accepted"], result)
+
     def test_plan_restores_and_enforces_single_active_lease(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp)

@@ -67,6 +67,12 @@ def compile_body_plan(
         "constraints. Each step needs only step_id, verb, target and, when "
         "needed, postconditions. Do not emit empty arguments or preconditions. "
         "Allowed verbs are navigate, grab, release, push, wait and inspect. "
+        "Only list hardware or actuator capabilities in required_capabilities; "
+        "wait, inspect, observe, replan and avoid are intrinsic Body operations "
+        "and must be omitted from that list. When the user asks to avoid or "
+        "circumvent an obstacle, keep the requested destination as the navigate "
+        "target and express the obstacle in constraints. Never navigate toward "
+        "the obstacle merely because it is mentioned as something to avoid. "
         "For grab, target is the object to hold. For navigate and release, target is "
         "the destination entity. A release target must be the requested receiving "
         "surface (chair, table, shelf or another support), never the held object. "
@@ -127,6 +133,11 @@ def compile_body_plan(
             "postconditions": list(item.get("postconditions") or []),
             "max_retries": int(item.get("max_retries", 3) or 3),
         })
+    intrinsic = {"wait", "inspect", "observe", "replan", "avoid"}
+    required_capabilities = [
+        str(value) for value in plan.get("required_capabilities") or []
+        if str(value).strip().lower() not in intrinsic
+    ]
     return {
         "accepted": True,
         "status": "draft",
@@ -134,7 +145,7 @@ def compile_body_plan(
         "objective": str(plan.get("objective") or request).strip(),
         "source": "chat",
         "steps": normalized,
-        "required_capabilities": [str(value) for value in plan.get("required_capabilities") or []],
+        "required_capabilities": required_capabilities,
         "constraints": _mapping(plan.get("constraints")),
         "body_snapshot_id": snapshot.get("snapshot_id"),
     }

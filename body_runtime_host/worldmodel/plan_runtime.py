@@ -14,6 +14,8 @@ from typing import Any, Dict, Optional
 
 from .contracts import ActionResult, BodyPlan, BodySnapshot, PLAN_STATES
 
+_INTRINSIC_CAPABILITIES = {"wait", "inspect", "observe", "replan", "avoid"}
+
 
 class BodyPlanRuntime:
     def __init__(self, data_dir: Path) -> None:
@@ -115,7 +117,10 @@ class BodyPlanRuntime:
         errors: list[str] = []
         objects = {str(item.get("id")) for item in snapshot.objects}
         capability_set = set(snapshot.capabilities)
-        missing = sorted(set(plan.required_capabilities) - capability_set)
+        # These are Body-gateway primitives, not hardware features. A plan
+        # asking the Body to wait, inspect, replan or avoid an obstacle must
+        # not be rejected because a sensor adapter does not advertise them.
+        missing = sorted(set(plan.required_capabilities) - capability_set - _INTRINSIC_CAPABILITIES)
         if missing:
             errors.append("missing capabilities: " + ", ".join(missing))
         for step in plan.steps:
