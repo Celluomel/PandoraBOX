@@ -486,6 +486,8 @@ class BodyHostHttpTest(unittest.TestCase):
                 status = _get(f"{base}/worldmodel/status")
                 self.assertIn("mode", status)
                 self.assertFalse(status["running"], "Body startup must leave simulation paused")
+                initial_snapshot = _get(f"{base}/worldmodel/snapshot")
+                self.assertTrue(initial_snapshot.get("snapshot_id"), initial_snapshot)
                 anchors = _get(f"{base}/worldmodel/anchors")
                 self.assertIn("stats", anchors)
                 eps = _get(f"{base}/worldmodel/episodes")

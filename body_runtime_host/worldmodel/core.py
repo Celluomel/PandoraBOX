@@ -147,6 +147,26 @@ class EmbodiedWorldModel:
         self.skills = BodySkillLibrary(self.data_dir / "skills.json")
         self._episodes_path = self.data_dir / "episodes.jsonl"
         self._maybe_trim_episodes_file()
+        # Establish a read-only perception boundary at construction time.
+        # This makes the paused Body observable and plan-able without
+        # launching the sensorimotor loop or executing a simulation action.
+        self.ensure_snapshot()
+
+    def ensure_snapshot(self) -> Optional[BodySnapshot]:
+        """Refresh the static perception boundary without executing an action."""
+        with self._lock:
+            if self._last_observation is None or self._last_body_state is None:
+                if self.source is not None:
+                    self._last_observation = self.source.observe()
+                    self._last_body_state = self.source.body_state()
+                else:
+                    self._last_observation = self._bridge_observation()
+                    self._last_body_state = self._bridge_body_state()
+            if self._last_observation is None or self._last_body_state is None:
+                return None
+            snapshot = self._make_plan_snapshot(self._last_observation, self._last_body_state)
+            self.plan_runtime.record_snapshot(snapshot)
+            return snapshot
 
     @staticmethod
     def _is_transient_mobile_hazard(outcome: Outcome) -> bool:
@@ -632,10 +652,7 @@ class EmbodiedWorldModel:
 
     def plan_payload(self) -> Dict[str, Any]:
         with self._lock:
-            if self._last_observation is not None and self._last_body_state is not None:
-                self.plan_runtime.record_snapshot(
-                    self._make_plan_snapshot(self._last_observation, self._last_body_state)
-                )
+            self.ensure_snapshot()
             payload = self.plan_runtime.payload()
             payload["skills"] = self.skills.snapshot()
             return payload

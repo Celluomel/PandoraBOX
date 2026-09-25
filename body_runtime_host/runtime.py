@@ -1083,6 +1083,7 @@ class BodyHost:
                     if wm is None:
                         self._send({"error": "world model unavailable"}, 503)
                     else:
+                        wm.ensure_snapshot()
                         self._send(wm.plan_payload().get("latest_snapshot") or {"available": False})
                 elif path == "/worldmodel/config":
                     wm = owner.worldmodel
