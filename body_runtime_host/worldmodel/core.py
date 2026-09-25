@@ -849,12 +849,22 @@ class EmbodiedWorldModel:
                 f"(source={observation.get('source')}, observed {stamp})."
             )
         terminal = bool(sim_status and sim_status.get("done"))
-        if active_plan and not terminal:
+        _plan_is_active = bool(
+            active_plan and active_plan.state in {
+                "ready", "executing", "observing", "evaluating", "replanning", "recovery"
+            }
+        )
+        if _plan_is_active and not terminal:
             current = active_plan.steps[active_plan.current_step_index] if active_plan.current_step_index < len(active_plan.steps) else None
             next_step = current.verb if current else "none"
             lines.append(
                 f"- Active Body plan: {active_plan.objective} (state={active_plan.state}, "
                 f"next={next_step}, progress={active_plan.current_step_index}/{len(active_plan.steps)})."
+            )
+        elif active_plan and active_plan.state == "completed" and not terminal:
+            lines.append(
+                f"- COMPLETED BODY PLAN: {active_plan.objective} is complete at the latest "
+                "Body observation. There is no active movement or pending step."
             )
         elif terminal:
             lines.append(
