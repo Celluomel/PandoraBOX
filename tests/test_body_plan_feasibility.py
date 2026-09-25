@@ -5,6 +5,18 @@ from body_runtime_host.worldmodel.plan_runtime import BodyPlanRuntime
 
 
 class BodyPlanFeasibilityTests(unittest.TestCase):
+    def test_malformed_string_predicate_is_normalized_without_crashing(self):
+        plan = BodyPlan.from_dict({
+            "objective": "place cup",
+            "steps": [{
+                "step_id": "place",
+                "verb": "release",
+                "target": "chair",
+                "postconditions": ["not-json-predicate"],
+            }],
+        })
+        self.assertEqual(plan.steps[0].postconditions, [])
+
     def test_validate_does_not_take_plan_lease(self):
         import tempfile
         from pathlib import Path

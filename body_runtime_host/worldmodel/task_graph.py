@@ -84,6 +84,10 @@ class TaskGraphExecutor:
         return {"type": "action_completed"}
 
     def _predicate(self, predicate: Dict[str, Any], snapshot: BodySnapshot, body: BodyState) -> bool:
+        if not isinstance(predicate, dict):
+            # A malformed persisted/LLM predicate must fail closed, not stop
+            # the Body loop with an AttributeError.
+            return False
         kind = str(predicate.get("type") or "").lower()
         if kind == "near":
             target = self._object(str(predicate.get("target") or ""), snapshot)

@@ -7,10 +7,36 @@ future task executor may act on it.
 from __future__ import annotations
 
 import time
+import json
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List
 
 from .types import new_id
+
+
+def _predicate_list(value: Any) -> List[Dict[str, Any]]:
+    """Normalize LLM-produced predicate fields without trusting their shape."""
+    if isinstance(value, dict):
+        return [value]
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (TypeError, json.JSONDecodeError):
+            return []
+    if not isinstance(value, list):
+        return []
+    normalized: List[Dict[str, Any]] = []
+    for item in value:
+        if isinstance(item, dict):
+            normalized.append(item)
+        elif isinstance(item, str):
+            try:
+                parsed = json.loads(item)
+                if isinstance(parsed, dict):
+                    normalized.append(parsed)
+            except (TypeError, json.JSONDecodeError):
+                continue
+    return normalized
 
 
 PLAN_STATES = {
@@ -39,8 +65,8 @@ class PlanStep:
             verb=str(value.get("verb") or "").strip().lower(),
             target=str(value.get("target") or "").strip(),
             arguments=dict(value.get("arguments") or {}),
-            preconditions=list(value.get("preconditions") or []),
-            postconditions=list(value.get("postconditions") or []),
+            preconditions=_predicate_list(value.get("preconditions")),
+            postconditions=_predicate_list(value.get("postconditions")),
             max_retries=max(0, min(10, int(value.get("max_retries", 3) or 3))),
         )
 
