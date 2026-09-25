@@ -72,6 +72,36 @@ class BodyPlanContractTests(unittest.TestCase):
         self.assertEqual([step["target"] for step in releases], ["table", "chair"])
         self.assertEqual([step["arguments"]["held"] for step in releases], ["cup", "cup"])
 
+    def test_compiler_expands_placement_postcondition_into_release_step(self):
+        from cognition.body_plan_compiler import compile_body_plan
+
+        body_snapshot = {
+            "snapshot_id": "snap-2",
+            "objects": [
+                {"id": "cup", "kind": "target"},
+                {"id": "chair", "kind": "chair"},
+                {"id": "table", "kind": "table"},
+            ],
+        }
+        payload = {
+            "objective": "put cup on chair then table",
+            "required_capabilities": ["navigate", "grab", "release"],
+            "steps": [
+                {"step_id": "grab", "verb": "grab", "target": "cup"},
+                {"step_id": "chair", "verb": "navigate", "target": "chair",
+                 "postconditions": [{"type": "on_surface", "target": "cup", "surface": "chair"}]},
+                {"step_id": "table", "verb": "navigate", "target": "table",
+                 "postconditions": [{"type": "on_surface", "target": "cup", "surface": "table"}]},
+            ],
+        }
+        result = compile_body_plan("put cup on chair then table", body_snapshot, lambda *_args, **_kwargs: json.dumps(payload))
+        self.assertTrue(result["accepted"], result)
+        self.assertEqual(
+            [(step["verb"], step["target"]) for step in result["steps"]],
+            [("grab", "cup"), ("navigate", "chair"), ("release", "chair"),
+             ("navigate", "table"), ("release", "table")],
+        )
+
     def test_rejects_unknown_target_and_missing_capability(self):
         with tempfile.TemporaryDirectory() as tmp:
             runtime = BodyPlanRuntime(Path(tmp))

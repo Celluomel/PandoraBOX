@@ -44,6 +44,52 @@ def _extract_json(raw: str) -> Optional[Dict[str, Any]]:
             return None
 
 
+def _split_implicit_release_steps(steps: list[dict[str, Any]], snapshot: Dict[str, Any]) -> list[dict[str, Any]]:
+    """Expand navigation steps whose postcondition describes a placement.
+
+    Some providers compress ``navigate to chair`` plus ``cup on chair`` into
+    one step. The Body cannot make that physical transition implicitly: it
+    must arrive, then release. Expand the semantic postcondition without
+    relying on object names or a fixed room scenario.
+    """
+    expanded: list[dict[str, Any]] = []
+    for index, step in enumerate(steps):
+        postconditions = list(step.get("postconditions") or [])
+        placement = next(
+            (predicate for predicate in postconditions
+             if isinstance(predicate, dict)
+             and str(predicate.get("type") or "").lower() in {"on_surface", "goal_reached"}),
+            None,
+        )
+        if step.get("verb") != "navigate" or placement is None:
+            expanded.append(step)
+            continue
+        destination = str(placement.get("surface") or placement.get("goal") or step.get("target") or "")
+        held = str(placement.get("target") or "")
+        next_step = steps[index + 1] if index + 1 < len(steps) else None
+        has_explicit_release = bool(
+            next_step and next_step.get("verb") == "release"
+            and str(next_step.get("target") or "") == destination
+        )
+        navigation = dict(step)
+        navigation["postconditions"] = [] if not has_explicit_release else [
+            predicate for predicate in postconditions if predicate is not placement
+        ]
+        expanded.append(navigation)
+        if not has_explicit_release:
+            release = {
+                "step_id": f"{step.get('step_id') or index + 1}-release",
+                "verb": "release",
+                "target": destination,
+                "arguments": {"surface": destination, "held": held} if held else {"surface": destination},
+                "preconditions": [],
+                "postconditions": postconditions,
+                "max_retries": int(step.get("max_retries", 3) or 3),
+            }
+            expanded.append(release)
+    return expanded
+
+
 def _normalize_release_steps(steps: list[dict[str, Any]], snapshot: Dict[str, Any]) -> None:
     """Repair an ambiguous release target using semantic plan evidence.
 
@@ -185,6 +231,7 @@ def compile_body_plan(
             "postconditions": list(item.get("postconditions") or []),
             "max_retries": int(item.get("max_retries", 3) or 3),
         })
+    normalized = _split_implicit_release_steps(normalized, snapshot)
     _normalize_release_steps(normalized, snapshot)
     intrinsic = {"wait", "inspect", "observe", "replan", "avoid"}
     required_capabilities = [
