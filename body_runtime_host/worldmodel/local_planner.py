@@ -56,20 +56,39 @@ class LocalRoutePlanner:
         if start in goals:
             return Route(target_id, [start], "already_near_target", replanned=replanned)
         path = self._astar(start, goals, blocked, width, height)
+        route_reason = ""
+        if not path:
+            # A mobile obstacle is a time-varying hazard, not permanent
+            # architecture. If its current cell seals the snapshot route,
+            # compute a provisional route through that cell and let the next
+            # Body observation/collision check decide whether to wait or
+            # replan. This prevents manipulation plans from dead-locking on
+            # a transient obstacle that has an escape trajectory.
+            dynamic_blocked = self._blocked_cells(snapshot, target_id, width, height, ignored_kinds={"mobile_obstacle"})
+            if dynamic_blocked != blocked:
+                path = self._astar(start, goals, dynamic_blocked, width, height)
+                if path:
+                    blocked = dynamic_blocked
+                    route_reason = "replan_around_dynamic_obstacle"
         if not path:
             return Route(target_id, reason="recover_from_blockage", blocked=True, replanned=replanned)
         direct = abs(start[0] - path[-1][0]) + abs(start[1] - path[-1][1])
-        reason = "replan_after_scene_change" if replanned else "avoid_obstacle" if len(path) - 1 > direct else "toward_target"
+        reason = route_reason or ("replan_after_scene_change" if replanned else "avoid_obstacle" if len(path) - 1 > direct else "toward_target")
         return Route(target_id, path, reason, replanned=replanned)
 
     @staticmethod
     def _cell(position: List[float], width: int, height: int) -> Cell:
         return (max(0, min(width - 1, int(round(float(position[0]))))), max(0, min(height - 1, int(round(float(position[1]))))))
 
-    def _blocked_cells(self, snapshot: BodySnapshot, target_id: str, width: int, height: int) -> set[Cell]:
+    def _blocked_cells(
+        self, snapshot: BodySnapshot, target_id: str, width: int, height: int,
+        ignored_kinds: Optional[set[str]] = None,
+    ) -> set[Cell]:
         blocked: set[Cell] = set()
+        ignored_kinds = ignored_kinds or set()
         for item in snapshot.objects:
-            if str(item.get("id")) == target_id or str(item.get("kind")) not in self._BLOCKING_KINDS:
+            kind = str(item.get("kind"))
+            if str(item.get("id")) == target_id or kind not in self._BLOCKING_KINDS or kind in ignored_kinds:
                 continue
             pos = item.get("position") or [0.0, 0.0]
             radius = max(0.7, float(item.get("size", 0.5)) * 0.5 + 0.35)

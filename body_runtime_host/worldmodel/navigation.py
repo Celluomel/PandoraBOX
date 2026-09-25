@@ -412,6 +412,7 @@ def navigation_guidance(observation: Any, body: Any, carrying: bool = False) -> 
             lateral_component = abs(-mobile_dx * math.sin(heading) + mobile_dy * math.cos(heading))
             rear = (px - math.cos(heading), py - math.sin(heading))
             rear_clear = _cell_clear(rear[0], rear[1], objects, width, height)
+            max_speed = float(body.capabilities.get("max_speed", 1.0))
             retreat_clear = all(
                 _cell_clear(px - math.cos(heading) * step, py - math.sin(heading) * step,
                             objects, width, height)
@@ -423,7 +424,6 @@ def navigation_guidance(observation: Any, body: Any, carrying: bool = False) -> 
                             objects, width, height)
                 for step in (1, 2)
             )
-            max_speed = float(body.capabilities.get("max_speed", 1.0))
             if forward_component > 0 and lateral_component <= 1.0 and max_speed >= 2 and sprint_clear:
                 recommended = "sprint"
                 prior["sprint"] = max(prior.get("sprint", 0.0), 3.6)

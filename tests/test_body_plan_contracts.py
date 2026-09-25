@@ -220,6 +220,17 @@ class BodyPlanContractTests(unittest.TestCase):
         self.assertEqual(decision.reason, "align_for_grasp")
         self.assertIn(decision.action.type, {"forward", "turn_left", "turn_right"})
 
+    def test_local_planner_can_replan_around_transient_mobile_obstacle(self):
+        current = snapshot()
+        current.objects = [
+            {"id": "table", "kind": "table", "position": [5.0, 1.0, 0.0], "size": 1.0},
+            {"id": "mobile", "kind": "mobile_obstacle", "position": [2.0, 1.0, 0.0], "size": 0.8},
+        ]
+        body = BodyState(position=[1.0, 1.0, 0.0], orientation=0.0, capabilities={"reach": 1.0, "world_width": 8, "world_height": 8})
+        route = LocalRoutePlanner().route("table", current, body)
+        self.assertFalse(route.blocked)
+        self.assertNotEqual(route.reason, "recover_from_blockage")
+
     def test_plan_controlled_simulation_uses_arbitrary_object_and_surface(self):
         room = SimulatedRoom()
         room.objects["parcel"] = {"id": "parcel", "label": "parcel", "kind": "object", "x": 2.0, "y": 2.0, "mass": 0.4, "size": 0.4}
