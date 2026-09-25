@@ -58,9 +58,19 @@ def run_shuffled_trials(
     trial_seeds = list(seeds or range(count))[:count]
     if len(trial_seeds) < count:
         trial_seeds.extend(range(len(trial_seeds), count))
+    deterministic_shuffling = True
     for seed in trial_seeds:
         room = SimulatedRoom()
-        room.reset_episode(shuffle=True, seed=int(seed))
+        try:
+            room.reset_episode(shuffle=True, seed=int(seed))
+        except TypeError as exc:
+            # A Body process started from an older checkout may still expose
+            # the pre-seed simulator API. Keep the benchmark usable while
+            # reporting that this run was not reproducibly shuffled.
+            if "unexpected keyword argument 'seed'" not in str(exc):
+                raise
+            deterministic_shuffling = False
+            room.reset_episode(shuffle=True)
         # Rename only the fixture entities. The evaluator and executor retain
         # no dependency on their original demonstration names.
         parcel = room.objects.pop("cup")
@@ -109,6 +119,7 @@ def run_shuffled_trials(
         "schema": "pandorabox.embodied_evaluation.v1",
         "suite": "generic_shuffled_scene",
         "controller": "task_graph_local_planner",
+        "deterministic_shuffling": deterministic_shuffling,
         "recorded_at": time.time(),
         "trials": len(results),
         "successes": len(successful),
