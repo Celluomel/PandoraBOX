@@ -61,13 +61,38 @@ def compile_body_plan(
         {"user_request": str(request).strip(), "body_snapshot": snapshot},
         ensure_ascii=False,
     )
-    try:
-        raw = llm(prompt, system, max_tokens=max(128, min(int(max_tokens), 1200)), temperature=0.1)
-    except Exception as exc:
-        return {"accepted": False, "status": "error", "error": str(exc)}
-    plan = _extract_json(raw)
+    raw = ""
+    last_error = ""
+    # Prefer provider-enforced JSON. Some local OpenAI-compatible servers do
+    # not implement response_format consistently, so retain a plain-prompt
+    # retry rather than making the feature provider-specific.
+    for structured in (True, False):
+        try:
+            raw = llm(
+                prompt,
+                system,
+                max_tokens=max(320, min(int(max_tokens), 1200)),
+                temperature=0.1,
+                json_mode=structured,
+                reasoning_format="none",
+            )
+        except TypeError:
+            try:
+                raw = llm(prompt, system, max_tokens=900, temperature=0.1)
+            except Exception as exc:
+                last_error = str(exc)
+                continue
+        except Exception as exc:
+            last_error = str(exc)
+            continue
+        plan = _extract_json(raw)
+        if plan:
+            break
+    else:
+        plan = None
     if not plan:
-        return {"accepted": False, "status": "invalid", "error": "LLM returned no plan JSON"}
+        detail = str(raw or last_error or "provider returned no content").strip()
+        return {"accepted": False, "status": "invalid", "error": f"LLM returned no plan JSON ({detail[:180]})"}
     steps = plan.get("steps")
     if not isinstance(steps, list) or not steps:
         return {"accepted": False, "status": "invalid", "error": "plan requires ordered steps"}
