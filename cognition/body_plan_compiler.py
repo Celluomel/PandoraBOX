@@ -14,6 +14,18 @@ from typing import Any, Callable, Dict, Optional
 _VERBS = {"navigate", "grab", "release", "push", "wait", "inspect"}
 
 
+def _mapping(value: Any) -> Dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, dict) else {}
+        except (TypeError, json.JSONDecodeError):
+            return {}
+    return {}
+
+
 def _extract_json(raw: str) -> Optional[Dict[str, Any]]:
     text = str(raw or "").strip()
     if "```" in text:
@@ -108,7 +120,7 @@ def compile_body_plan(
             "step_id": str(item.get("step_id") or f"step-{index + 1}"),
             "verb": verb,
             "target": str(item.get("target") or ""),
-            "arguments": dict(item.get("arguments") or {}),
+            "arguments": _mapping(item.get("arguments")),
             "preconditions": list(item.get("preconditions") or []),
             "postconditions": list(item.get("postconditions") or []),
             "max_retries": int(item.get("max_retries", 3) or 3),
@@ -121,6 +133,6 @@ def compile_body_plan(
         "source": "chat",
         "steps": normalized,
         "required_capabilities": [str(value) for value in plan.get("required_capabilities") or []],
-        "constraints": dict(plan.get("constraints") or {}),
+        "constraints": _mapping(plan.get("constraints")),
         "body_snapshot_id": snapshot.get("snapshot_id"),
     }

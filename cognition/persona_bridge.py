@@ -2719,6 +2719,10 @@ Memory honesty — two distinct cases:
             return None
         assessment = self.assess_body_action_request(user_input)
         if not assessment.get("accepted"):
+            # A false-positive semantic route must fall back to normal chat;
+            # otherwise a social sentence could be presented as a Body error.
+            if assessment.get("status") in {"invalid", "error"}:
+                return None
             return {"handled": True, "status": "blocked", "response": "Je ne peux pas construire un plan Body fiable : " + str(assessment.get("error", "demande ambiguë")), "assessment": assessment}
         feasibility = assessment.get("feasibility") or {}
         if not feasibility.get("feasible"):

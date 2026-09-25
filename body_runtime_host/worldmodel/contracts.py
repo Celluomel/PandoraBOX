@@ -39,6 +39,18 @@ def _predicate_list(value: Any) -> List[Dict[str, Any]]:
     return normalized
 
 
+def _mapping(value: Any) -> Dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, dict) else {}
+        except (TypeError, json.JSONDecodeError):
+            return {}
+    return {}
+
+
 PLAN_STATES = {
     "draft", "validating", "ready", "executing", "observing", "evaluating",
     "replanning", "recovery", "paused", "completed", "cancelled", "expired", "rejected",
@@ -64,7 +76,7 @@ class PlanStep:
             step_id=str(value.get("step_id") or f"step-{index + 1}"),
             verb=str(value.get("verb") or "").strip().lower(),
             target=str(value.get("target") or "").strip(),
-            arguments=dict(value.get("arguments") or {}),
+            arguments=_mapping(value.get("arguments")),
             preconditions=_predicate_list(value.get("preconditions")),
             postconditions=_predicate_list(value.get("postconditions")),
             max_retries=max(0, min(10, int(value.get("max_retries", 3) or 3))),
@@ -101,7 +113,7 @@ class BodyPlan:
             objective=str(value.get("objective") or "").strip(),
             source=str(value.get("source") or "user"),
             required_capabilities=[str(item) for item in value.get("required_capabilities") or []],
-            constraints=dict(value.get("constraints") or {}),
+            constraints=_mapping(value.get("constraints")),
             steps=[PlanStep.from_dict(item, index) for index, item in enumerate(raw_steps) if isinstance(item, dict)],
             created_at=float(value.get("created_at") or time.time()),
             expires_at=float(value.get("expires_at") or (time.time() + 600.0)),
