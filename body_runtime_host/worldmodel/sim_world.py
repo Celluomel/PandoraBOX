@@ -458,8 +458,10 @@ class SimulatedRoom:
             self.done = bool(destination_id == "goal")
             reward = 1.0 if self.done else 0.4
             return "success", reward, f"placed {object_id} on {destination_id or 'surface'}"
+        # A failed placement must not silently drop the held object. The
+        # active plan remains on the release step and the local planner needs
+        # another observation to approach the moved surface safely.
         self.objects[object_id]["x"], self.objects[object_id]["y"] = self.px, self.py
-        self.carrying = None
         return "failure", -0.15, f"cannot release {object_id}: destination is not within reach"
 
     def _legacy_release(self, oid: str) -> None:

@@ -24,6 +24,7 @@ class TrialResult:
     replans: int
     recoveries: int
     disturbed: bool = False
+    disturbance_kind: str = ""
     final_step: str = ""
     reason: str = ""
 
@@ -72,6 +73,32 @@ def _displace_surface(room: SimulatedRoom, surface_id: str, seed: int) -> bool:
     return True
 
 
+def _displace_mobile_obstacle(room: SimulatedRoom, seed: int) -> bool:
+    """Move the dynamic hazard without invalidating completed manipulation."""
+    mobile = room.objects.get("mobile_obstacle")
+    if not mobile:
+        return False
+    occupied = [
+        (float(obj.get("x", 0)), float(obj.get("y", 0)))
+        for object_id, obj in room.objects.items()
+        if object_id != "mobile_obstacle" and object_id != room.carrying
+    ]
+    candidates = [
+        (float(x), float(y))
+        for x in range(1, room.width - 1)
+        for y in range(1, room.height - 1)
+        if all((x - ox) ** 2 + (y - oy) ** 2 >= 2.25 for ox, oy in occupied)
+        and (x, y) != (float(room.px), float(room.py))
+    ]
+    if not candidates:
+        return False
+    position = candidates[int(seed) % len(candidates)]
+    mobile["x"], mobile["y"] = position
+    room._mobile_velocity = (0.0, 0.0)
+    room._mobile_motion_phase = 0.0
+    return True
+
+
 def _run_trial(
     seed: int,
     max_steps: int,
@@ -95,11 +122,10 @@ def _run_trial(
     plan, executor = _generic_plan(), TaskGraphExecutor()
     replans = recoveries = 0
     disturbed = False
+    disturbance_kind = ""
     reason = "step_budget_exhausted"
     disturbance_step = max(6, min(18, max_steps // 4))
     for step_number in range(max_steps):
-        if inject_disturbance and step_number == disturbance_step:
-            disturbed = _displace_surface(room, "dock", seed + 17)
         obs, body = room.observe(), room.body_state()
         snapshot = EmbodiedWorldModel._make_plan_snapshot(obs, body)
         decision = executor.decide(plan, snapshot, body)
@@ -108,6 +134,17 @@ def _run_trial(
             if plan.current_step_index >= len(plan.steps):
                 reason = "completed"
                 break
+            # Confirm the just-completed postcondition before changing the
+            # scene. This models the Body's timestamped observation boundary
+            # and prevents a disturbance from invalidating an action that was
+            # already acknowledged by the executor.
+            if inject_disturbance and step_number == disturbance_step:
+                if plan.current_step_index < 3:
+                    disturbed = _displace_surface(room, "dock", seed + 17)
+                    disturbance_kind = "surface_moved_before_release" if disturbed else ""
+                else:
+                    disturbed = _displace_mobile_obstacle(room, seed + 29)
+                    disturbance_kind = "mobile_obstacle_shifted" if disturbed else ""
             continue
         if decision.details and decision.details.get("replanned"):
             replans += 1
@@ -125,6 +162,13 @@ def _run_trial(
             if recovery.action:
                 room.step(recovery.action)
                 recoveries += 1
+        if inject_disturbance and step_number == disturbance_step:
+            if plan.current_step_index < 3:
+                disturbed = _displace_surface(room, "dock", seed + 17)
+                disturbance_kind = "surface_moved_before_release" if disturbed else ""
+            else:
+                disturbed = _displace_mobile_obstacle(room, seed + 29)
+                disturbance_kind = "mobile_obstacle_shifted" if disturbed else ""
     if reason != "completed":
         current = plan.steps[plan.current_step_index] if plan.current_step_index < len(plan.steps) else None
         final_step = f"{current.verb}->{current.target}" if current else "complete"
@@ -139,6 +183,7 @@ def _run_trial(
         replans=replans,
         recoveries=recoveries,
         disturbed=disturbed,
+        disturbance_kind=disturbance_kind,
         final_step=final_step,
         reason=reason,
     )
@@ -172,6 +217,7 @@ def _aggregate(results: List[TrialResult]) -> Dict[str, Any]:
                 "replans": item.replans,
                 "recoveries": item.recoveries,
                 "disturbed": item.disturbed,
+                "disturbance_kind": item.disturbance_kind,
             }
             for item in failures
         ],

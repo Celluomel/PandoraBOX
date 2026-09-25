@@ -403,6 +403,20 @@ class SimWorldTest(unittest.TestCase):
         self.assertGreater(outcome.reward, 0.0)
         self.assertIn("placed cup on chair", outcome.description)
 
+    def test_failed_planned_release_keeps_object_held_for_reapproach(self):
+        from body_runtime_host.worldmodel import Action, SimulatedRoom
+
+        room = SimulatedRoom()
+        room.px, room.py = 2.0, 2.0
+        room.objects["cup"].update(x=2.0, y=2.0)
+        room.carrying = "cup"
+        room.objects["chair"].update(x=8.0, y=8.0)
+
+        _, outcome = room.step(Action(type="release", target="chair", params={"plan_controlled": True}))
+
+        self.assertEqual(outcome.kind, "failure")
+        self.assertEqual(room.carrying, "cup")
+
     def test_full_task_is_solvable(self):
         """A scripted (non-learned) policy must be able to solve the task —
         proving the environment itself is solvable (separates environment
