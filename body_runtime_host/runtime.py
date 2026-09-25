@@ -566,6 +566,8 @@ class BodyHost:
                 "orientation": sensors.get("orientation"),
                 "carrying": sensors.get("carrying"),
                 "battery": sensors.get("battery"),
+                "capabilities": sensors.get("capabilities") or {},
+                "affordances": sensors.get("affordances") or {},
             },
         }
         self.latest[body_entry["entity_id"]] = body_entry
@@ -582,6 +584,44 @@ class BodyHost:
             }
             self.latest[entry["entity_id"]] = entry
             self._bridge_put(entry)
+
+    def publish_worldmodel_perception(self) -> None:
+        """Forward the Body-owned perception boundary to the Brain bridge."""
+        wm = self._worldmodel
+        if wm is None:
+            return
+        try:
+            perception = wm.status_summary().get("perception") or {}
+            if not perception.get("available"):
+                return
+            body = perception.get("body") or {}
+            entry = {
+                "entity_id": "world_model.body_state",
+                "source": "world_model",
+                "kind": "embodied_perception",
+                "subject": "body.world_model",
+                "value": {
+                    "capabilities": body.get("capabilities") or {},
+                    "affordances": perception.get("affordances") or {},
+                    "objects": perception.get("objects") or [],
+                    "position": body.get("position"),
+                    "orientation": body.get("orientation"),
+                    "text": perception.get("text") or "",
+                },
+                "unit": "",
+                "confidence": 1.0,
+                "observed_at": float(perception.get("timestamp") or time.time()),
+                "provenance": {
+                    "source": perception.get("source") or "world_model",
+                    "ground_truth_available": bool(perception.get("ground_truth_available")),
+                    "capabilities": body.get("capabilities") or {},
+                    "affordances": perception.get("affordances") or {},
+                },
+            }
+            self.latest[entry["entity_id"]] = entry
+            self._bridge_put(entry)
+        except Exception:
+            LOG.debug("World-model perception bridge update failed", exc_info=True)
 
     def _bridge_put(self, entry: dict) -> None:
         message = {"type": "observation", "observation": entry}
@@ -676,6 +716,8 @@ class BodyHost:
                     LOG.warning("Home Assistant poll failed: %s", exc)
                 except Exception:
                     LOG.exception("Home Assistant poll failed")
+            if bool(self.value("BODY_WORLDMODEL_ENABLED", False)):
+                self.publish_worldmodel_perception()
             self.stop_event.wait(interval)
 
     # ── Brain bridge (websocket) ────────────────────────────────────────────
