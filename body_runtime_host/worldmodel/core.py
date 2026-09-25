@@ -840,12 +840,20 @@ class EmbodiedWorldModel:
                 f"- Current scene observation: {observation.get('text') or 'no scene description'} "
                 f"(source={observation.get('source')}, observed {stamp})."
             )
-        if active_plan:
+        terminal = bool(sim_status and sim_status.get("done"))
+        if active_plan and not terminal:
             current = active_plan.steps[active_plan.current_step_index] if active_plan.current_step_index < len(active_plan.steps) else None
             next_step = current.verb if current else "none"
             lines.append(
                 f"- Active Body plan: {active_plan.objective} (state={active_plan.state}, "
                 f"next={next_step}, progress={active_plan.current_step_index}/{len(active_plan.steps)})."
+            )
+        elif terminal:
+            lines.append(
+                f"- TERMINAL BODY STATE: the physical objective is achieved at the latest Body observation "
+                f"(step={sim_status.get('steps')}, task_stage={sim_status.get('task_stage')}). "
+                "The Body is stopped and no movement or pending action is currently executing. "
+                "Any older plan or trajectory is historical; do not describe it as current motion."
             )
         concepts = self.concepts.snapshot(limit=5)
         if concepts:
@@ -865,6 +873,11 @@ class EmbodiedWorldModel:
                 f"stage={sim_status.get('task_stage')}, goal={sim_status.get('shelf')}, "
                 f"steps={sim_status.get('steps')}, collisions={sim_status.get('collisions')})."
             )
+            if sim_status.get("done"):
+                lines.append(
+                    f"- Final Body pose from the live simulator: position={sim_status.get('body')}, "
+                    f"heading={sim_status.get('heading_deg')} degrees; this is the authoritative present state."
+                )
             lines.append(
                 "- Body objective sequence: "
                 + " → ".join(sim_status.get("goal_sequence") or [])

@@ -442,6 +442,19 @@ class CoreLoopTest(unittest.TestCase):
             self.assertEqual(status["navigation_alert"]["type"], "goal_progress_stalled")
             self.assertIn("BODY ALERT", wm.context_for_brain())
 
+    def test_completed_body_is_reported_as_terminal_not_current_motion(self):
+        from body_runtime_host.worldmodel import EmbodiedWorldModel
+
+        with tempfile.TemporaryDirectory() as tmp:
+            wm = EmbodiedWorldModel(body=None, data_dir=tmp)
+            wm.sim.done = True
+            wm.sim.steps = 17
+            context = wm.context_for_brain()
+            self.assertIn("TERMINAL BODY STATE", context)
+            self.assertIn("stopped", context)
+            self.assertIn("Final Body pose from the live simulator", context)
+            self.assertNotIn("Active Body plan:", context)
+
     def test_reset_clears_state(self):
         from body_runtime_host.worldmodel import EmbodiedWorldModel
 
