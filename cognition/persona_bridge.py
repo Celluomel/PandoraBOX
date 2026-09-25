@@ -2726,7 +2726,8 @@ Memory honesty — two distinct cases:
                     "Use semantic meaning, not a fixed phrase list."
                 )
             raw = fast(text, system, model=model, timeout=6.0, max_tokens=120)
-            match = re.search(r"\{[\s\S]*?\}", str(raw or ""))
+            raw_text = str(raw or "")
+            match = re.search(r"\{[\s\S]*?\}", raw_text)
             allowed = {"confirm", "cancel", "new_action", "body_status", "normal"} if pending else {"body_action", "body_perception", "body_status", "normal"}
             if match:
                 value = json.loads(match.group(0))
@@ -2737,6 +2738,15 @@ Memory honesty — two distinct cases:
                 # as if it had executed the Body command.
                 if route in allowed and route != "normal":
                     return route
+            # Local fast models sometimes obey the label protocol without
+            # wrapping it in JSON. Accept the same finite label vocabulary so
+            # an approval is not mistaken for a new plan request.
+            if pending:
+                label_match = re.search(r"\b(confirm|cancel|new_action|body_status|normal)\b", raw_text.lower())
+            else:
+                label_match = re.search(r"\b(body_action|body_perception|body_status|normal)\b", raw_text.lower())
+            if label_match and label_match.group(1) != "normal":
+                return label_match.group(1)
             # Confirmation is safety-sensitive but only applies to an already
             # prepared plan. If the small model is ambiguous, ask the primary
             # model for a tiny structured judgment instead of silently falling
