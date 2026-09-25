@@ -2833,10 +2833,19 @@ Memory honesty — two distinct cases:
             return None
         assessment = self.assess_body_action_request(user_input)
         if not assessment.get("accepted"):
-            # A false-positive semantic route must fall back to normal chat;
-            # otherwise a social sentence could be presented as a Body error.
+            # A semantically classified Body request must fail closed. Falling
+            # through to the conversational LLM here allowed it to narrate an
+            # action after the Body had rejected the plan. Ordinary social
+            # turns never reach this branch because the classifier routes them
+            # to NORMAL before planning.
             if assessment.get("status") in {"invalid", "error"}:
-                return None
+                return {
+                    "handled": True,
+                    "status": "blocked",
+                    "response": "Je ne peux pas exécuter cette action Body : "
+                    + str(assessment.get("error", "plan invalide")),
+                    "assessment": assessment,
+                }
             return {"handled": True, "status": "blocked", "response": "Je ne peux pas construire un plan Body fiable : " + str(assessment.get("error", "demande ambiguë")), "assessment": assessment}
         feasibility = assessment.get("feasibility") or {}
         if not feasibility.get("feasible"):
