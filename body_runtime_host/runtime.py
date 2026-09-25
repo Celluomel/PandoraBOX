@@ -262,9 +262,21 @@ class BodyHost:
             existing["FNK0031_TOKEN"] = token
             secret_path.write_text("".join(f"{key}={value}\n" for key, value in existing.items()), encoding="utf-8")
         self.save_config()
+        # Treat the disk copy as authoritative.  The controller and the
+        # world-model source may already exist with the previous safety flags.
+        self.config = self._load_config()
+        with self._fnk_controller_lock:
+            self._fnk_controller = None
+            self._fnk_controller_last = None
+            self._fnk_controller_world_step = None
         if self._worldmodel is not None:
             self.reload_worldmodel_source()
-        return {"ok": True, "settings": self.fnk0031_settings()}
+        settings = self.fnk0031_settings()
+        settings["persisted"] = {
+            "snn_enabled": settings["snn_enabled"],
+            "actuation_enabled": settings["actuation_enabled"],
+        }
+        return {"ok": True, "settings": settings}
 
     def fnk0031_controller_step(self, dt: float = 0.04) -> dict:
         """Advance the local hexapod controller only in the running sim sandbox."""

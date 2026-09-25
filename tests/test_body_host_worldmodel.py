@@ -503,6 +503,37 @@ class BodyHostHttpTest(unittest.TestCase):
                 brt.CONFIG_PATH = real_config_path
                 brt._load_dotenv = real_dotenv
 
+    def test_fnk0031_locomotion_flags_round_trip_to_disk_and_runtime(self):
+        import body_runtime_host.runtime as brt
+        with tempfile.TemporaryDirectory() as tmp:
+            real_config_path = brt.CONFIG_PATH
+            real_dotenv = brt._load_dotenv
+            brt.CONFIG_PATH = Path(tmp) / "config.json"
+            brt.CONFIG_PATH.write_text(json.dumps({
+                "BODY_PLUGIN_ROBOT_ENABLED": True,
+                "FNK0031_SNN_ENABLED": False,
+                "FNK0031_ACTUATION_ENABLED": False,
+            }), encoding="utf-8")
+            brt._load_dotenv = lambda: None
+            host = brt.BodyHost()
+            try:
+                result = host.update_fnk0031_settings({
+                    "snn_enabled": True,
+                    "actuation_enabled": True,
+                })
+                self.assertTrue(result["settings"]["snn_enabled"])
+                self.assertTrue(result["settings"]["actuation_enabled"])
+                persisted = json.loads(brt.CONFIG_PATH.read_text(encoding="utf-8"))
+                self.assertTrue(persisted["FNK0031_SNN_ENABLED"])
+                self.assertTrue(persisted["FNK0031_ACTUATION_ENABLED"])
+                self.assertEqual(result["settings"]["persisted"], {
+                    "snn_enabled": True,
+                    "actuation_enabled": True,
+                })
+            finally:
+                brt.CONFIG_PATH = real_config_path
+                brt._load_dotenv = real_dotenv
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
