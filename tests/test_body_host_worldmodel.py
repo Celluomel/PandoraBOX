@@ -295,6 +295,9 @@ class BodySingletonStartupTest(unittest.TestCase):
         from body_runtime_host.runtime import _locomotion_gait_for_action
 
         self.assertEqual(_locomotion_gait_for_action("sprint"), "forward")
+        self.assertEqual(_locomotion_gait_for_action("forward→table"), "forward")
+        self.assertEqual(_locomotion_gait_for_action("turn_left→chair"), "turn_left")
+        self.assertEqual(_locomotion_gait_for_action("retreat->obstacle"), "backward")
         self.assertEqual(_locomotion_gait_for_action("retreat"), "backward")
         self.assertEqual(_locomotion_gait_for_action("turn_left"), "turn_left")
         self.assertEqual(_locomotion_gait_for_action("grab"), "idle")

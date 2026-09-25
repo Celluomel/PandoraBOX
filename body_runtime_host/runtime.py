@@ -43,6 +43,14 @@ CONFIG_PATH = ROOT / "data" / "body" / "config.json"
 
 def _locomotion_gait_for_action(action: str) -> str:
     """Translate World Model actions into physical locomotion primitives."""
+    # World-model telemetry intentionally exposes a readable action label such
+    # as ``forward→table``.  The locomotion controller needs the primitive
+    # verb only; otherwise every targeted movement silently became ``idle``.
+    normalized = str(action or "").strip().lower()
+    for separator in ("→", "->"):
+        if separator in normalized:
+            normalized = normalized.split(separator, 1)[0].strip()
+            break
     return {
         "forward": "forward",
         "sprint": "forward",
@@ -50,7 +58,7 @@ def _locomotion_gait_for_action(action: str) -> str:
         "retreat": "backward",
         "turn_left": "turn_left",
         "turn_right": "turn_right",
-    }.get(str(action or "").strip().lower(), "idle")
+    }.get(normalized, "idle")
 
 
 def _load_dotenv() -> None:
