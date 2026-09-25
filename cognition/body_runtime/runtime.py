@@ -527,19 +527,38 @@ class BodyRuntime:
                 if item.get("source") != "home_assistant"
                 or str((item.get("provenance") or {}).get("entity_id", "")) in selected
             ]
-        if not observations:
-            observations = []
-        lines: list[str] = []
+        lines: list[str] = [
+            "BODY GROUNDING STATUS (authoritative for physical self-report):",
+            "Answer questions about the physical body from this section first. "
+            "If it says unavailable, explicitly say that the Body has not supplied that fact.",
+        ]
         if observations:
-            lines = [
+            lines.extend([
                 "BODY RUNTIME OBSERVATIONS (local, timestamped sensor evidence):",
                 "Use these observations only when relevant; preserve exact values and timestamps.",
-            ]
+            ])
             for item in observations:
                 value = item["value"]
                 unit = f" {item['unit']}" if item.get("unit") else ""
                 stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(item["observed_at"]))
                 lines.append(f"- {item['subject']}: {value}{unit} (source {item['source']}, observed {stamp})")
+        else:
+            lines.append("- No current Body sensor observation is available to this Brain turn.")
+        try:
+            capabilities = self._capability_learner.snapshot().get("capabilities", {})
+            if capabilities:
+                lines.append("BODY CAPABILITY EVIDENCE (persisted, not imagination):")
+                for name, record in sorted(capabilities.items()):
+                    lines.append(
+                        f"- {name}: state={record.get('state', 'hypothesis')}, "
+                        f"confidence={float(record.get('confidence', 0.0)):.2f}, "
+                        f"observations={record.get('observations', 0)}, "
+                        f"successes={record.get('successes', 0)}, failures={record.get('failures', 0)}"
+                    )
+            else:
+                lines.append("- No learned Body capability evidence is available yet.")
+        except Exception:
+            lines.append("- Body capability ledger is unavailable for this turn.")
         # The Body's learned world knowledge (anchors + task state).  Only
         # This is the single channel through which the Body's physical
         # knowledge informs the Brain. Accessing ``worldmodel`` creates only
