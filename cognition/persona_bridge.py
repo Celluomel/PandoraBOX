@@ -192,6 +192,7 @@ class PersonaBridge:
         self._reflection_epochs: dict[str, int] = {}
         self._reflection_results: dict[str, tuple[int, str]] = {}
         self._reflection_for_turn: dict[str, str] = {}
+        self._pending_body_plans: dict[str, dict] = {}
         self._init_lumina(external_llm_fn)
         # Wire CognitiveOrganism once ai_system is ready
         if self._system is not None:
@@ -328,6 +329,32 @@ class PersonaBridge:
         # instead of treating it as its own first-person perception.
         effective_input = user_text
         self._pending_vision_context = None
+
+        # Physical requests use a separate confirmation-gated path. This keeps
+        # ordinary conversation fast while preventing the main LLM from merely
+        # narrating an action that never reaches the Body.
+        try:
+            _body_turn = self.handle_body_chat_turn(effective_input, user_id)
+        except Exception as _body_turn_error:
+            logger.debug("[BodyPlan] chat routing unavailable: %s", _body_turn_error)
+            _body_turn = None
+        if _body_turn and _body_turn.get("handled"):
+            _body_response = str(_body_turn.get("response") or "")
+            _manager = getattr(self._llm_stream_fn, "__self__", None)
+            _record_exchange = getattr(_manager, "record_exchange", None)
+            if callable(_record_exchange):
+                _record_exchange(effective_input, _body_response)
+            for _word in _body_response.split():
+                yield _word + " "
+            yield {
+                "__meta__": True,
+                "raw": _body_response,
+                "speech": self._sanitize(_body_response),
+                "emotion": "focused",
+                "intensity": 0.45,
+                "body_plan": _body_turn,
+            }
+            return
         if vision_context:
             self._pending_vision_context = vision_context
             # Store in session visual buffer immediately (sync, no FAISS wait)
@@ -2622,6 +2649,14 @@ Memory honesty — two distinct cases:
             if not snapshot or snapshot.get("available") is False:
                 return {"accepted": False, "status": "unavailable", "error": "No current Body snapshot"}
             llm = self._external_llm_fn
+            # During an interactive chat turn the normal bare/background path
+            # intentionally defers. Planning is part of this foreground turn,
+            # so use the manager's bounded history-free interactive analysis
+            # channel when it is available.
+            _manager = getattr(llm, "__self__", None)
+            _interactive = getattr(_manager, "generate_interactive_analysis", None)
+            if callable(_interactive):
+                llm = _interactive
             if not callable(llm):
                 return {"accepted": False, "status": "unavailable", "error": "planning LLM unavailable"}
             from cognition.body_plan_compiler import compile_body_plan
@@ -2629,6 +2664,65 @@ Memory honesty — two distinct cases:
         except Exception as exc:
             logger.warning("[BodyPlan] draft compilation failed: %s", exc)
             return {"accepted": False, "status": "error", "error": str(exc)}
+
+    def _classify_body_chat_turn(self, text: str, pending: bool = False) -> str:
+        """Use the configured fast model as a semantic action gate."""
+        try:
+            from managers.settings_manager import config
+            if not bool(getattr(config, "FAST_ROUND_ENABLED", False)):
+                return "normal"
+            manager = getattr(self._llm_stream_fn, "__self__", None)
+            fast = getattr(manager, "generate_fast_round", None)
+            model = str(getattr(config, "FAST_ROUND_MODEL", "") or "").strip()
+            if not callable(fast) or not model:
+                return "normal"
+            state = "There is a pending physical plan awaiting confirmation." if pending else "There is no pending plan."
+            system = (
+                "Classify the user's latest message for a cognitive Body interface. "
+                f"{state} Return exactly JSON with route equal to one of: "
+                "body_action, body_perception, confirm, cancel, normal. "
+                "body_action means the user requests a physical manipulation or movement; "
+                "body_perception means asking what the robot sees or senses; confirm means "
+                "explicit approval of the pending plan; cancel means rejecting it. Use semantic "
+                "meaning, not a fixed phrase list."
+            )
+            raw = fast(text, system, model=model, timeout=6.0, max_tokens=120)
+            match = re.search(r"\{[\s\S]*?\}", str(raw or ""))
+            if not match:
+                return "normal"
+            value = json.loads(match.group(0))
+            route = str(value.get("route") or "normal").strip().lower()
+            return route if route in {"body_action", "body_perception", "confirm", "cancel", "normal"} else "normal"
+        except Exception:
+            return "normal"
+
+    def handle_body_chat_turn(self, user_input: str, user_id: str = "default") -> dict | None:
+        """Handle only Body-specific turns; return None for normal dialogue."""
+        pending = self._pending_body_plans.get(str(user_id))
+        route = self._classify_body_chat_turn(user_input, pending=bool(pending))
+        if pending and route == "confirm":
+            body = getattr(self._organism, "_body_runtime", None) if self._organism else None
+            result = body.submit_worldmodel_plan(pending["plan"]) if body else {"accepted": False, "error": "Body unavailable"}
+            if result.get("accepted"):
+                if body:
+                    body.run_worldmodel(True, False)
+                self._pending_body_plans.pop(str(user_id), None)
+                return {"handled": True, "status": "submitted", "response": "Le plan est confirmé et transmis au Body. L'exécution commence maintenant.", "submission": result}
+            return {"handled": True, "status": "blocked", "response": "Le Body refuse encore ce plan : " + "; ".join(result.get("errors") or [result.get("error", "validation impossible")]), "submission": result}
+        if pending and route == "cancel":
+            self._pending_body_plans.pop(str(user_id), None)
+            return {"handled": True, "status": "cancelled", "response": "Le plan Body est annulé, aucune action n'a été exécutée."}
+        if route != "body_action":
+            return None
+        assessment = self.assess_body_action_request(user_input)
+        if not assessment.get("accepted"):
+            return {"handled": True, "status": "blocked", "response": "Je ne peux pas construire un plan Body fiable : " + str(assessment.get("error", "demande ambiguë")), "assessment": assessment}
+        feasibility = assessment.get("feasibility") or {}
+        if not feasibility.get("feasible"):
+            errors = "; ".join(feasibility.get("errors") or [feasibility.get("error", "faisabilité non confirmée")])
+            return {"handled": True, "status": "blocked", "response": "Le Body ne confirme pas cette action : " + errors, "assessment": assessment}
+        self._pending_body_plans[str(user_id)] = {"plan": assessment, "created_at": time.time()}
+        return {"handled": True, "status": "awaiting_confirmation", "response": "Le Body confirme que cette action est faisable. Voulez-vous que j'exécute ce plan ?", "assessment": assessment}
 
     def assess_body_action_request(self, user_input: str) -> dict:
         """Compile a request and run Body feasibility validation, without execution."""

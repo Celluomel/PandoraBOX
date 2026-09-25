@@ -226,7 +226,15 @@ class EmbodiedWorldModel:
                 # final perception visible and pause until the operator resets
                 # the episode instead of repeatedly re-grabbing/releasing the
                 # already delivered object.
-                if self.sim is not None and self.sim.status().get("done"):
+                _active_after_step = self.plan_runtime.active_plan()
+                if (
+                    self.sim is not None
+                    and self.sim.status().get("done")
+                    and (
+                        _active_after_step is None
+                        or _active_after_step.state in {"completed", "cancelled", "rejected", "expired"}
+                    )
+                ):
                     logger.info("[worldmodel] simulated objective completed; pausing episode")
                     self._stop.set()
                     break

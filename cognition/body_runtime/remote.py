@@ -126,6 +126,15 @@ class RemoteWorldModel:
             self._last_error = str(exc)
             return {"error": str(exc)}
 
+    def run(self, running: bool = True, shuffle: bool = False) -> Dict[str, Any]:
+        try:
+            return _request("POST", f"{self.base_url}/worldmodel/run",
+                            payload={"running": bool(running), "shuffle": bool(shuffle)},
+                            timeout=self.timeout)
+        except Exception as exc:
+            self._last_error = str(exc)
+            return {"error": str(exc)}
+
     def submit_plan(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Submit a Brain-produced generic plan to the Body validator."""
         try:

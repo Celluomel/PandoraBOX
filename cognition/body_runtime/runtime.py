@@ -262,6 +262,13 @@ class BodyRuntime:
             return {"feasible": False, "error": "Body world model validation is unavailable"}
         return validate(payload)
 
+    def run_worldmodel(self, running: bool = True, shuffle: bool = False) -> Dict[str, Any]:
+        wm = self.worldmodel
+        run = getattr(wm, "run", None) if wm is not None else None
+        if not callable(run):
+            return {"available": False, "error": "Body world model runtime is unavailable"}
+        return run(running, shuffle)
+
     def cancel_worldmodel_plan(self, plan_id: str, reason: str = "cancelled by Brain") -> Dict[str, Any]:
         wm = self.worldmodel
         cancel = getattr(wm, "cancel_plan", None)
