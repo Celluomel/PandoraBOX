@@ -484,10 +484,14 @@ class BodyHost:
         def run() -> None:
             try:
                 from body_runtime_host.worldmodel.evaluation import run_shuffled_trials
+                def progress(update: dict) -> None:
+                    with self._worldmodel_evaluation_lock:
+                        self._worldmodel_evaluation_status.update({"live": update})
                 result = run_shuffled_trials(
                     trials=trials,
                     max_steps=max_steps,
                     report_path=self._worldmodel_evaluation_report_path,
+                    progress_callback=progress,
                 )
                 with self._worldmodel_evaluation_lock:
                     self._worldmodel_evaluation_status = {"state": "completed", **result}

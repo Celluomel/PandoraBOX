@@ -7,7 +7,7 @@ import math
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, List, Optional
 
 from .contracts import BodyPlan, PlanStep
 from .core import EmbodiedWorldModel
@@ -169,6 +169,8 @@ def _run_trial(
     allow_recovery: bool,
     inject_disturbance: bool,
     learner: _EvaluationLearner | None = None,
+    progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+    trial_index: int = 0,
 ) -> TrialResult:
     room = SimulatedRoom()
     try:
@@ -233,6 +235,20 @@ def _run_trial(
                 action = Action(type="wait")
         state_before = _evaluation_state(room)
         _, outcome = room.step(action)
+        if progress_callback is not None:
+            progress_callback({
+                "trial": trial_index,
+                "step": step_number + 1,
+                "action": action.type,
+                "body": [round(room.px, 2), round(room.py, 2)],
+                "mobile_obstacle": [
+                    round(float(room.objects["mobile_obstacle"]["x"]), 2),
+                    round(float(room.objects["mobile_obstacle"]["y"]), 2),
+                ],
+                "mobile_velocity": [round(float(value), 2) for value in room._mobile_velocity],
+                "mobile_speed": round(float(room._mobile_current_speed), 3),
+                "near_misses": room.near_miss_count,
+            })
         if learner is not None:
             learner.observe(
                 state_before,
@@ -314,6 +330,7 @@ def run_shuffled_trials(
     *,
     seeds: List[int] | None = None,
     report_path: str | Path | None = None,
+    progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> Dict[str, Any]:
     """Exercise routing, manipulation and recovery on reproducible scenes."""
     count = max(1, min(250, int(trials)))
@@ -325,7 +342,10 @@ def run_shuffled_trials(
     results: list[TrialResult] = []
     learning_curve: list[Dict[str, Any]] = []
     for index, seed in enumerate(trial_seeds, start=1):
-        results.append(_run_trial(seed, max_steps, allow_recovery=True, inject_disturbance=True, learner=learner))
+        results.append(_run_trial(
+            seed, max_steps, allow_recovery=True, inject_disturbance=True,
+            learner=learner, progress_callback=progress_callback, trial_index=index,
+        ))
         if index % 10 == 0 or index == count:
             window = results[-min(10, len(results)):]
             learning_curve.append({
