@@ -56,6 +56,7 @@ class SimulatedRoom:
         self._mobile_blocked = False
         self._mobile_motion_phase = 0.5
         self._mobile_current_speed = MOBILE_OBSTACLE_SPEED
+        self._mobile_patrol_index = 0
         self.success_count = 0
 
     # ── setup ───────────────────────────────────────────────────────────────
@@ -99,6 +100,7 @@ class SimulatedRoom:
         self._mobile_blocked = False
         self._mobile_motion_phase = 0.5
         self._mobile_current_speed = MOBILE_OBSTACLE_SPEED
+        self._mobile_patrol_index = 0
         self.success_count = 0
 
     def shuffle_objects(self) -> None:
@@ -229,17 +231,40 @@ class SimulatedRoom:
         target_x, target_y = body_position
         current_distance = math.hypot(mobile["x"] - target_x, mobile["y"] - target_y)
         candidates: list[tuple[float, float, float]] = []
+        free_neighbors: list[tuple[float, float]] = []
         for dx, dy in ((1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)):
             nx, ny = mobile["x"] + dx, mobile["y"] + dy
             if self._free_cell(nx, ny, ignore_id="mobile_obstacle"):
+                free_neighbors.append((nx, ny))
                 distance = math.hypot(nx - target_x, ny - target_y)
                 if distance < current_distance:
                     candidates.append((distance, nx, ny))
         old_position = (float(mobile["x"]), float(mobile["y"]))
         if candidates:
             _, mobile["x"], mobile["y"] = min(candidates)
+            self._mobile_blocked = False
+        elif free_neighbors and current_distance <= 1.5:
+            # A pursuer that has reached the Body must not freeze forever when
+            # the direct chase cell is unavailable.  Select a free escape
+            # cell, preferring separation from the Body and rotating the tie
+            # break so the simulated obstacle has a changing trajectory.
+            self._mobile_patrol_index = (self._mobile_patrol_index + 1) % len(free_neighbors)
+            mobile["x"], mobile["y"] = max(
+                free_neighbors,
+                key=lambda position: (
+                    math.hypot(position[0] - target_x, position[1] - target_y),
+                    -((free_neighbors.index(position) - self._mobile_patrol_index) % len(free_neighbors)),
+                ),
+            )
+            # The direct pursuit vector is blocked by geometry even though a
+            # safe lateral escape exists; retain that distinction in telemetry
+            # so the Brain can explain why the obstacle changed course.
+            self._mobile_blocked = True
+        else:
+            # No improving pursuit cell exists: the direct route is blocked
+            # by geometry, even if the obstacle is not immediately adjacent.
+            self._mobile_blocked = not candidates and current_distance > 1.0
         self._mobile_velocity = (float(mobile["x"]) - old_position[0], float(mobile["y"]) - old_position[1])
-        self._mobile_blocked = not candidates and current_distance > 1.0
         near = math.hypot(mobile["x"] - self.px, mobile["y"] - self.py) <= 1.25
         entered_near_zone = near and not self._mobile_was_near
         self._mobile_was_near = near

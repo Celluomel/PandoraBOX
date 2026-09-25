@@ -496,6 +496,38 @@ class EmbodiedWorldModel:
             else:
                 self._navigation_stagnation = 0
                 self._navigation_alert = None
+            # A nearby mobile obstacle is a distinct physical cause, not just
+            # an abstract planning failure. Report it to the Brain whenever
+            # the obstacle occupies the Body's immediate neighborhood and is
+            # currently unable to clear the route.
+            sim_status = self.sim.status() if self.sim is not None else {}
+            mobile_distance = sim_status.get("mobile_obstacle_distance")
+            mobile_velocity = sim_status.get("mobile_obstacle_velocity") or []
+            mobile_stopped = not any(abs(float(value)) > 0.01 for value in mobile_velocity)
+            if (
+                mobile_distance is not None
+                and float(mobile_distance) <= 1.25
+                and (mobile_stopped or bool(sim_status.get("mobile_obstacle_blocked_by_static_object")))
+            ):
+                self._navigation_alert = {
+                    "type": "mobile_obstacle_blocking",
+                    "severity": "warning",
+                    "phase": phase,
+                    "target": target,
+                    "steps_without_progress": self._navigation_stagnation,
+                    "mobile_obstacle_distance": mobile_distance,
+                    "mobile_obstacle_speed": sim_status.get("mobile_obstacle_speed_cells_per_action"),
+                    "mobile_obstacle_velocity": mobile_velocity,
+                    "mobile_obstacle_blocked_by_static_object": bool(
+                        sim_status.get("mobile_obstacle_blocked_by_static_object")
+                    ),
+                    "message": (
+                        "A mobile obstacle is blocking the Body's immediate route; "
+                        "the Body has not cleared the conflict. Replan with a detour, "
+                        "retreat, or a speed change and report the blocked condition to the Brain."
+                    ),
+                    "timestamp": time.time(),
+                }
             self._last_report = report
             return self._step_summary(episode, decision, aff, pred_error)
 
@@ -933,6 +965,16 @@ class EmbodiedWorldModel:
                 lines.append(
                     f"- BODY ALERT ({alert['severity']}): {alert['message']} "
                     f"Objective phase={alert['phase']}; no progress for {alert['steps_without_progress']} actions."
+                )
+            mobile = sim_status.get("objects", {}).get("mobile_obstacle")
+            if mobile:
+                lines.append(
+                    "- Mobile obstacle telemetry: "
+                    f"position={[mobile.get('x'), mobile.get('y')]}, "
+                    f"distance={sim_status.get('mobile_obstacle_distance')}, "
+                    f"speed={sim_status.get('mobile_obstacle_speed_cells_per_action')}, "
+                    f"velocity={sim_status.get('mobile_obstacle_velocity')}, "
+                    f"static_block={bool(sim_status.get('mobile_obstacle_blocked_by_static_object'))}."
                 )
         if source_status is not None:
             src = source_status.get("source")

@@ -476,6 +476,10 @@ def navigation_guidance(observation: Any, body: Any, carrying: bool = False) -> 
         "mobile_obstacle_distance": round(
             math.hypot(float(mobile.position[0]) - px, float(mobile.position[1]) - py), 3
         ) if mobile is not None else None,
+        "mobile_obstacle_blocking": bool(
+            mobile is not None
+            and math.hypot(float(mobile.position[0]) - px, float(mobile.position[1]) - py) <= 1.25
+        ),
         "mobile_obstacle_speed": round(float(body.capabilities.get("mobile_obstacle_speed", 0.0)), 3),
         "mobile_obstacle_predicted_position": list(mobile_predicted) if mobile_predicted is not None else None,
     }

@@ -278,6 +278,24 @@ class SimWorldTest(unittest.TestCase):
         self.assertEqual(status["objects"]["mobile_obstacle"]["x"], 8.0)
         self.assertTrue(status["mobile_obstacle_blocked_by_static_object"])
 
+    def test_mobile_obstacle_escapes_when_close_pursuit_cell_is_unavailable(self):
+        from body_runtime_host.worldmodel import Action, SimulatedRoom
+
+        room = SimulatedRoom()
+        room.px, room.py = 5.0, 5.0
+        room.objects["mobile_obstacle"]["x"] = 6.0
+        room.objects["mobile_obstacle"]["y"] = 5.0
+
+        room.step(Action(type="wait"))
+        status = room.status()
+        self.assertNotEqual(
+            (status["objects"]["mobile_obstacle"]["x"], status["objects"]["mobile_obstacle"]["y"]),
+            (6.0, 5.0),
+            "a close mobile obstacle must choose a safe escape cell instead of freezing",
+        )
+        self.assertNotEqual(status["mobile_obstacle_velocity"], [0.0, 0.0])
+        self.assertTrue(status["mobile_obstacle_blocked_by_static_object"])
+
     def test_navigation_detours_and_keeps_advancing_near_mobile_obstacle(self):
         from body_runtime_host.worldmodel import Action, SimulatedRoom
         from body_runtime_host.worldmodel.navigation import navigation_guidance
