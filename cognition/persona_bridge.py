@@ -2630,6 +2630,39 @@ Memory honesty — two distinct cases:
             logger.warning("[BodyPlan] draft compilation failed: %s", exc)
             return {"accepted": False, "status": "error", "error": str(exc)}
 
+    def assess_body_action_request(self, user_input: str) -> dict:
+        """Compile a request and run Body feasibility validation, without execution."""
+        draft = self.compile_body_action_draft(user_input)
+        if not draft.get("accepted"):
+            return draft
+        try:
+            body = getattr(self._organism, "_body_runtime", None) if self._organism else None
+            result = body.validate_worldmodel_plan(draft) if body else {
+                "feasible": False, "error": "Body runtime unavailable"
+            }
+            draft["feasibility"] = result
+            draft["status"] = "feasible" if result.get("feasible") else "blocked"
+            return draft
+        except Exception as exc:
+            draft["feasibility"] = {"feasible": False, "error": str(exc)}
+            draft["status"] = "blocked"
+            return draft
+
+    def current_body_perception(self) -> dict:
+        """Expose the latest structured Body view for a chat/UI report."""
+        try:
+            body = getattr(self._organism, "_body_runtime", None) if self._organism else None
+            if body is None:
+                return {"available": False, "error": "Body runtime unavailable"}
+            snapshot = body.body_snapshot()
+            return {
+                "available": bool(snapshot) and snapshot.get("available", True) is not False,
+                "snapshot": snapshot,
+                "grounding": "direct Body snapshot; values are timestamped and may become stale",
+            }
+        except Exception as exc:
+            return {"available": False, "error": str(exc)}
+
     def _llm_should_search(self, user_input: str) -> bool:
         """
         Ask the LLM whether web search is needed. Has 3 layers:

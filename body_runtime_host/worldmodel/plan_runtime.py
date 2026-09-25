@@ -51,8 +51,9 @@ class BodyPlanRuntime:
         with self._lock:
             self._latest_snapshot = snapshot
 
-    def submit(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        plan = BodyPlan.from_dict(payload)
+    def validate(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Validate a proposed plan without taking the active-plan lease."""
+        plan = BodyPlan.from_dict(payload or {})
         errors = self._validate_shape(plan)
         with self._lock:
             snapshot = self._latest_snapshot
@@ -60,6 +61,21 @@ class BodyPlanRuntime:
                 errors.extend(self._validate_against_snapshot(plan, snapshot))
             elif not errors:
                 errors.append("no Body snapshot is available yet")
+            result = {
+                "feasible": not errors,
+                "plan": plan.as_dict(),
+                "errors": errors,
+                "snapshot_id": snapshot.snapshot_id if snapshot is not None else None,
+                "requires_confirmation": True,
+            }
+            return result
+
+    def submit(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        plan = BodyPlan.from_dict(payload)
+        with self._lock:
+            result = self.validate(payload)
+            errors = list(result.get("errors") or [])
+            snapshot = self._latest_snapshot
             if errors:
                 plan.state = "rejected"
                 result = {"accepted": False, "plan": plan.as_dict(), "errors": errors}
