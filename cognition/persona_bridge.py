@@ -2678,23 +2678,31 @@ Memory honesty — two distinct cases:
             model = str(getattr(config, "FAST_ROUND_MODEL", "") or "").strip()
             if not callable(fast) or not model:
                 return "normal"
-            state = "There is a pending physical plan awaiting confirmation." if pending else "There is no pending plan."
-            system = (
-                "Classify the user's latest message for a cognitive Body interface. "
-                f"{state} Return exactly JSON with route equal to one of: "
-                "body_action, body_perception, confirm, cancel, normal. "
-                "body_action means the user requests a physical manipulation or movement; "
-                "body_perception means asking what the robot sees or senses; confirm means "
-                "explicit approval of the pending plan; cancel means rejecting it. Use semantic "
-                "meaning, not a fixed phrase list."
-            )
+            if pending:
+                system = (
+                    "A physical Body plan is waiting for approval. Classify the user's latest "
+                    "message semantically. Return exactly JSON with route equal to one of: "
+                    "confirm, cancel, new_action, normal. confirm means approval to execute "
+                    "the waiting plan; cancel means rejection; new_action means a different "
+                    "physical objective; normal means unrelated conversation. Do not use a "
+                    "fixed phrase list."
+                )
+            else:
+                system = (
+                    "Classify the user's latest message for a cognitive Body interface. "
+                    "Return exactly JSON with route equal to one of: body_action, body_perception, "
+                    "normal. body_action means the user requests a physical manipulation or "
+                    "movement; body_perception means asking what the robot sees or senses. "
+                    "Use semantic meaning, not a fixed phrase list."
+                )
             raw = fast(text, system, model=model, timeout=6.0, max_tokens=120)
             match = re.search(r"\{[\s\S]*?\}", str(raw or ""))
             if not match:
                 return "normal"
             value = json.loads(match.group(0))
             route = str(value.get("route") or "normal").strip().lower()
-            return route if route in {"body_action", "body_perception", "confirm", "cancel", "normal"} else "normal"
+            allowed = {"confirm", "cancel", "new_action", "normal"} if pending else {"body_action", "body_perception", "normal"}
+            return route if route in allowed else "normal"
         except Exception:
             return "normal"
 
@@ -2715,7 +2723,9 @@ Memory honesty — two distinct cases:
         if pending and route == "cancel":
             self._pending_body_plans.pop(str(user_id), None)
             return {"handled": True, "status": "cancelled", "response": "Le plan Body est annulé, aucune action n'a été exécutée."}
-        if route != "body_action":
+        if pending and route != "new_action":
+            return None
+        if route != "body_action" and not (pending and route == "new_action"):
             return None
         assessment = self.assess_body_action_request(user_input)
         if not assessment.get("accepted"):

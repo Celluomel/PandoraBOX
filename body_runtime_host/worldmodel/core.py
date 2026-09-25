@@ -198,7 +198,14 @@ class EmbodiedWorldModel:
             if not self._cfg.get("enabled"):
                 self._cfg["enabled"] = True
             if self._thread and self._thread.is_alive():
-                return
+                if not self._stop.is_set():
+                    return
+                # A terminal episode may still be unwinding while a new chat
+                # plan arrives. Wait briefly, then replace that stopped loop.
+                self._thread.join(timeout=1.0)
+                if self._thread.is_alive():
+                    logger.warning("[worldmodel] previous stopped loop did not unwind; start deferred")
+                    return
             self._stop.clear()
             self._thread = threading.Thread(target=self._run, name="lumina-body-worldmodel", daemon=True)
             self._thread.start()
