@@ -122,9 +122,21 @@ class BodyHost:
         self._fnk_experiment_status: dict = {"state": "idle", "completed": 0, "total": 0}
         self._worldmodel_evaluation_lock = threading.Lock()
         self._worldmodel_evaluation_thread: threading.Thread | None = None
-        self._worldmodel_evaluation_status: dict = {"state": "idle", "trials": 0}
+        self._worldmodel_evaluation_report_path = ROOT / "data" / "body" / "worldmodel" / "evaluations.jsonl"
+        self._worldmodel_evaluation_status: dict = self._load_latest_worldmodel_evaluation()
 
     # ── config ──────────────────────────────────────────────────────────────
+
+    def _load_latest_worldmodel_evaluation(self) -> dict:
+        try:
+            lines = self._worldmodel_evaluation_report_path.read_text(encoding="utf-8").splitlines()
+            if lines:
+                latest = json.loads(lines[-1])
+                if isinstance(latest, dict):
+                    return {"state": "completed", **latest}
+        except Exception:
+            pass
+        return {"state": "idle", "trials": 0}
 
     def _load_config(self) -> dict:
         try:
@@ -460,7 +472,7 @@ class BodyHost:
     def start_worldmodel_evaluation(self, payload: dict | None = None) -> dict:
         """Run the generic shuffled-scene benchmark outside the Body loop."""
         payload = payload if isinstance(payload, dict) else {}
-        trials = max(1, min(250, int(payload.get("trials", 25) or 25)))
+        trials = max(1, min(250, int(payload.get("trials", 100) or 100)))
         max_steps = max(20, min(1000, int(payload.get("max_steps", 180) or 180)))
         with self._worldmodel_evaluation_lock:
             if self._worldmodel_evaluation_thread and self._worldmodel_evaluation_thread.is_alive():
@@ -472,7 +484,11 @@ class BodyHost:
         def run() -> None:
             try:
                 from body_runtime_host.worldmodel.evaluation import run_shuffled_trials
-                result = run_shuffled_trials(trials=trials, max_steps=max_steps)
+                result = run_shuffled_trials(
+                    trials=trials,
+                    max_steps=max_steps,
+                    report_path=self._worldmodel_evaluation_report_path,
+                )
                 with self._worldmodel_evaluation_lock:
                     self._worldmodel_evaluation_status = {"state": "completed", **result}
             except Exception as exc:

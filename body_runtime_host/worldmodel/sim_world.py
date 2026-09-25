@@ -103,14 +103,15 @@ class SimulatedRoom:
         self._mobile_patrol_index = 0
         self.success_count = 0
 
-    def shuffle_objects(self) -> None:
+    def shuffle_objects(self, seed: int | None = None) -> None:
         """Place the scene objects in a fresh, collision-free arrangement."""
+        shuffler = random.Random(seed) if seed is not None else random.SystemRandom()
         cells = [
             (float(x), float(y))
             for x in range(1, self.width - 1)
             for y in range(1, self.height - 1)
         ]
-        random.SystemRandom().shuffle(cells)
+        shuffler.shuffle(cells)
         self.shelf = next(
             cell for cell in cells
             if math.hypot(cell[0] - 1.0, cell[1] - 1.0) >= 2.0
@@ -122,7 +123,7 @@ class SimulatedRoom:
             for y in range(1, self.height - 1)
             if all(math.hypot(x - rx, y - ry) >= 1.5 for rx, ry in reserved)
         ]
-        random.SystemRandom().shuffle(cells)
+        shuffler.shuffle(cells)
         placed: list[tuple[float, float]] = []
         for object_id in ("table", "chair", "obstacle", "mobile_obstacle", "cup"):
             candidates = [
@@ -136,10 +137,10 @@ class SimulatedRoom:
             placed.append(position)
             self.objects[object_id]["x"], self.objects[object_id]["y"] = position
 
-    def reset_episode(self, shuffle: bool = False) -> None:
+    def reset_episode(self, shuffle: bool = False, seed: int | None = None) -> None:
         self.reset()
         if shuffle:
-            self.shuffle_objects()
+            self.shuffle_objects(seed=seed)
 
     # ── perception ──────────────────────────────────────────────────────────
 

@@ -1,8 +1,10 @@
 """Repeatable, local evaluation of the generic Body task stack."""
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, List
 
 from .contracts import BodyPlan, PlanStep
@@ -14,6 +16,7 @@ from .types import Action
 
 @dataclass
 class TrialResult:
+    seed: int
     success: bool
     steps: int
     collisions: int
@@ -42,12 +45,22 @@ def _generic_plan() -> BodyPlan:
     )
 
 
-def run_shuffled_trials(trials: int = 25, max_steps: int = 180) -> Dict[str, Any]:
-    """Exercise routing, manipulation and recovery on fresh shuffled scenes."""
+def run_shuffled_trials(
+    trials: int = 100,
+    max_steps: int = 180,
+    *,
+    seeds: List[int] | None = None,
+    report_path: str | Path | None = None,
+) -> Dict[str, Any]:
+    """Exercise routing, manipulation and recovery on reproducible scenes."""
     results: List[TrialResult] = []
-    for _ in range(max(1, min(250, int(trials)))):
+    count = max(1, min(250, int(trials)))
+    trial_seeds = list(seeds or range(count))[:count]
+    if len(trial_seeds) < count:
+        trial_seeds.extend(range(len(trial_seeds), count))
+    for seed in trial_seeds:
         room = SimulatedRoom()
-        room.reset_episode(shuffle=True)
+        room.reset_episode(shuffle=True, seed=int(seed))
         # Rename only the fixture entities. The evaluator and executor retain
         # no dependency on their original demonstration names.
         parcel = room.objects.pop("cup")
@@ -83,6 +96,7 @@ def run_shuffled_trials(trials: int = 25, max_steps: int = 180) -> Dict[str, Any
                     room.step(recovery.action)
                     recoveries += 1
         results.append(TrialResult(
+            seed=int(seed),
             success=reason == "completed",
             steps=room.steps,
             collisions=room.collision_count,
@@ -91,7 +105,11 @@ def run_shuffled_trials(trials: int = 25, max_steps: int = 180) -> Dict[str, Any
             reason=reason,
         ))
     successful = [item for item in results if item.success]
-    return {
+    report = {
+        "schema": "pandorabox.embodied_evaluation.v1",
+        "suite": "generic_shuffled_scene",
+        "controller": "task_graph_local_planner",
+        "recorded_at": time.time(),
         "trials": len(results),
         "successes": len(successful),
         "success_rate": round(len(successful) / max(1, len(results)), 4),
@@ -101,3 +119,9 @@ def run_shuffled_trials(trials: int = 25, max_steps: int = 180) -> Dict[str, Any
         "recoveries": sum(item.recoveries for item in results),
         "results": [item.as_dict() for item in results],
     }
+    if report_path:
+        path = Path(report_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(report, ensure_ascii=False) + "\n")
+    return report
