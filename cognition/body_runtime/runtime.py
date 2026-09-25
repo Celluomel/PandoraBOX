@@ -557,6 +557,15 @@ class BodyRuntime:
                     )
             else:
                 lines.append("- No learned Body capability evidence is available yet.")
+            skills = self._capability_learner.verified_skills()
+            if skills:
+                lines.append("BODY SKILLS (verified and reusable under recorded conditions):")
+                for skill_id, skill in sorted(skills.items()):
+                    lines.append(
+                        f"- {skill_id}: confidence={float(skill.get('confidence', 0.0)):.2f}, "
+                        f"generalization={float(skill.get('generalization', 0.0)):.2f}, "
+                        f"successes={skill.get('successes', 0)}, failures={skill.get('failures', 0)}"
+                    )
         except Exception:
             lines.append("- Body capability ledger is unavailable for this turn.")
         # The Body's learned world knowledge (anchors + task state).  Only

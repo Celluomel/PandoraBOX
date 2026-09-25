@@ -33,11 +33,12 @@ class BodyCapabilityLearner:
             value = json.loads(self._path.read_text(encoding="utf-8"))
             if isinstance(value, dict):
                 value.setdefault("capabilities", {})
+                value.setdefault("skills", {})
                 value.setdefault("recent_signals", [])
                 return value
         except Exception:
             pass
-        return {"version": 1, "capabilities": {}, "recent_signals": []}
+        return {"version": 1, "capabilities": {}, "skills": {}, "recent_signals": []}
 
     def _save(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
@@ -116,6 +117,29 @@ class BodyCapabilityLearner:
                 elif record["observations"] >= 1:
                     record["state"] = "observed"
                 record["confidence"] = round(min(1.0, max(0.0, 0.2 + 0.15 * record["observations"] + (0.1 * record["successes"]) - (0.12 * record["failures"]))), 3)
+                if record["state"] == "verified":
+                    skill_id = f"body.{name}"
+                    trials = record["successes"] + record["failures"]
+                    skill = self._data["skills"].setdefault(skill_id, {
+                        "skill_id": skill_id,
+                        "capability": name,
+                        "state": "candidate",
+                        "preconditions": [],
+                        "limits": [],
+                        "generalization": 0.0,
+                        "created_at": now,
+                    })
+                    skill["state"] = "verified"
+                    skill["confidence"] = record["confidence"]
+                    skill["evidence_count"] = record["observations"]
+                    skill["successes"] = record["successes"]
+                    skill["failures"] = record["failures"]
+                    skill["generalization"] = round(record["successes"] / max(1, trials), 3)
+                    skill["last_verified"] = now
+                    # These are deliberately evidence-derived constraints,
+                    # not a hand-written list of situations.
+                    skill["preconditions"] = [{"capability": name, "observed_state": record.get("declared_or_observed_state")}]
+                    skill["limits"] = [{"failure_count": record["failures"]}] if record["failures"] else []
                 emitted.append({"name": name, "state": record["state"], "confidence": record["confidence"], "successes": record["successes"], "failures": record["failures"]})
             if not emitted:
                 return None
@@ -127,3 +151,9 @@ class BodyCapabilityLearner:
         with self._lock:
             return json.loads(json.dumps(self._data, ensure_ascii=False))
 
+    def verified_skills(self) -> Dict[str, Dict[str, Any]]:
+        with self._lock:
+            return {
+                key: dict(value) for key, value in self._data.get("skills", {}).items()
+                if value.get("state") == "verified"
+            }

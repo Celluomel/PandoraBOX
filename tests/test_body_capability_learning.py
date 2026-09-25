@@ -28,4 +28,7 @@ class BodyCapabilityLearningTest(unittest.TestCase):
                     value={"action": "navigate", "outcome": {"kind": "success", "trial": index}},
                 ))
             self.assertEqual(result["items"][0]["state"], "verified")
+            skills = learner.snapshot()["skills"]
+            self.assertEqual(skills["body.navigate"]["state"], "verified")
+            self.assertGreaterEqual(skills["body.navigate"]["generalization"], 0.75)
             self.assertTrue((Path(temp_dir) / "capabilities.json").exists())
