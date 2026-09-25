@@ -94,6 +94,9 @@ class BodyHost:
         self.config = self._load_config()
         self.latest: dict[str, dict] = {}
         self.queue: Queue[dict] = Queue(maxsize=256)
+        self._bridge_lock = threading.Lock()
+        self._bridge_connected = threading.Event()
+        self._bridge_latest: dict[str, dict] = {}
         self.bridge_thread: threading.Thread | None = None
         self.http_server: ThreadingHTTPServer | None = None
         self._worldmodel = None
@@ -638,10 +641,17 @@ class BodyHost:
 
     def _bridge_put(self, entry: dict) -> None:
         message = {"type": "observation", "observation": entry}
+        entity_id = str(entry.get("entity_id") or entry.get("subject") or "observation")
+        if not self._bridge_connected.is_set():
+            with self._bridge_lock:
+                self._bridge_latest[entity_id] = message
+            return
         try:
             self.queue.put_nowait(message)
         except Exception:
-            LOG.warning("Body bridge queue is full; dropping observation")
+            with self._bridge_lock:
+                self._bridge_latest[entity_id] = message
+            LOG.debug("Body bridge queue full; coalescing %s", entity_id)
 
     def _bridge_put_message(self, message: dict) -> None:
         try:
@@ -761,6 +771,15 @@ class BodyHost:
                     socket = websockets.connect(url, extra_headers=headers, **kwargs)
                 async with socket as ws:
                     await ws.send(json.dumps({"type": "hello", "device_id": self.value("BODY_BRIDGE_DEVICE_ID", "body-local"), "protocol": 1}))
+                    self._bridge_connected.set()
+                    with self._bridge_lock:
+                        pending = list(self._bridge_latest.values())
+                        self._bridge_latest.clear()
+                    for message in pending:
+                        try:
+                            self.queue.put_nowait(message)
+                        except Exception:
+                            break
                     LOG.info("Body bridge connected to %s", url)
 
                     async def send_loop():
@@ -786,7 +805,9 @@ class BodyHost:
                     for task in pending:
                         task.cancel()
                     await asyncio.gather(*done, return_exceptions=True)
+                    self._bridge_connected.clear()
             except Exception as exc:
+                self._bridge_connected.clear()
                 LOG.warning("Body bridge disconnected: %s", exc)
             await asyncio.sleep(max(1, float(self.value("BODY_BRIDGE_RECONNECT_SECONDS", 3))))
 
