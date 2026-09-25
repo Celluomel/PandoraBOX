@@ -177,3 +177,14 @@ class BodyPlanContractTests(unittest.TestCase):
         self.assertEqual(outcome.kind, "success")
         self.assertEqual(room.carrying, None)
         self.assertEqual((room.objects["parcel"]["x"], room.objects["parcel"]["y"]), (room.objects["dock"]["x"], room.objects["dock"]["y"]))
+
+    def test_plan_controlled_simulation_accepts_chair_as_destination(self):
+        room = SimulatedRoom()
+        room.objects["parcel"] = {"id": "parcel", "label": "parcel", "kind": "object", "x": 2.0, "y": 2.0, "mass": 0.4, "size": 0.4}
+        room.objects["chair"] = {"id": "chair", "label": "chair", "kind": "chair", "x": 5.0, "y": 5.0, "mass": 12.0, "size": 0.8}
+        room.px, room.py = 5.0, 5.0
+        room.carrying = "parcel"
+        _, outcome = room.step(Action(type="release", target="chair", params={"plan_controlled": True}))
+        self.assertEqual(outcome.kind, "success")
+        self.assertIsNone(room.carrying)
+        self.assertEqual((room.objects["parcel"]["x"], room.objects["parcel"]["y"]), (5.0, 5.0))

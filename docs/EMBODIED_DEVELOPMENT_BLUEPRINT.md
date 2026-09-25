@@ -92,10 +92,13 @@ perceived graspable object on any perceived destination; names such as `cup`,
 
 ### Existing limitation
 
-The current task sequence is encoded in the simulator and the navigation layer.
-The Brain does not yet send a general structured plan to the Body. The Body
-does not yet expose a general objective interpreter or a formal plan execution
-contract. This blueprint addresses that gap.
+The default task sequence is still a simulator fixture, but it is no longer the
+plan contract. The Body accepts generic structured plans and the Brain now has
+an auditable remote submission/cancellation boundary. A chat-to-plan compiler
+also produces a confirmation-gated draft from a fresh Body snapshot without
+executing it. The remaining integration is to expose that draft in the
+conversation/UI, ask for explicit approval, and submit it for Body validation.
+No phrase dictionary is used for this translation.
 
 ## 3. Design principles
 
@@ -386,7 +389,8 @@ Acceptance metrics:
 ### Phase 3 - Body LLM adapter
 
 Goal: use a local LLM as a grounded Body reasoning assistant without giving it
-unrestricted actuator access.
+unrestricted actuator access. The Brain-side compiler and Body transport are
+available; a Body-local adapter remains optional.
 
 The Body LLM receives only:
 
@@ -414,7 +418,9 @@ recovery strategies, but the Body remains functional without it.
 
 ### Phase 4 - Brain planning bridge
 
-Goal: let a user ask PandoraBOX for a physical task in natural language.
+Goal: let a user ask PandoraBOX for a physical task in natural language. The
+generic compiler seam is implemented, but approval UI and chat orchestration
+are still required before this phase is complete.
 
 Example:
 

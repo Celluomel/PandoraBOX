@@ -234,6 +234,34 @@ class BodyRuntime:
                 self._worldmodel_retry_after = 0.0
         return self._worldmodel
 
+    def submit_worldmodel_plan(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Forward a structured Brain plan to the independent Body.
+
+        Natural-language interpretation belongs above this boundary. The Body
+        remains the authority that validates entities, capabilities and safety.
+        """
+        wm = self.worldmodel
+        if wm is None:
+            return {"accepted": False, "error": "Body world model is unavailable"}
+        submit = getattr(wm, "submit_plan", None)
+        if not callable(submit):
+            return {"accepted": False, "error": "Body world model does not expose plan submission"}
+        return submit(payload)
+
+    def body_snapshot(self) -> Dict[str, Any]:
+        wm = self.worldmodel
+        snapshot = getattr(wm, "snapshot", None) if wm is not None else None
+        if not callable(snapshot):
+            return {"available": False, "error": "Body world model snapshot is unavailable"}
+        return snapshot()
+
+    def cancel_worldmodel_plan(self, plan_id: str, reason: str = "cancelled by Brain") -> Dict[str, Any]:
+        wm = self.worldmodel
+        cancel = getattr(wm, "cancel_plan", None)
+        if wm is None or not callable(cancel):
+            return {"ok": False, "error": "Body world model does not expose plan cancellation"}
+        return cancel(plan_id, reason)
+
     def _build_worldmodel(self):
         host = str(self.config_value("BODY_HOST", "127.0.0.1") or "127.0.0.1")
         port = self.config_value("BODY_PORT", 8766) or 8766

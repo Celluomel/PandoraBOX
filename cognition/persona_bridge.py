@@ -2607,6 +2607,29 @@ Memory honesty — two distinct cases:
         if self._research:
             self._research.rac.record_query(user_input, low_confidence=low_confidence)
 
+    def compile_body_action_draft(self, user_input: str) -> dict:
+        """Interpret a chat request as a confirmation-gated Body plan draft.
+
+        This is the bridge for future chat/UI action approval.  It never sends
+        the draft to the Body by itself; callers must show it to the user and
+        explicitly submit it after the Body validates the fresh snapshot.
+        """
+        try:
+            body = getattr(self._organism, "_body_runtime", None) if self._organism else None
+            if body is None:
+                return {"accepted": False, "status": "unavailable", "error": "Body runtime unavailable"}
+            snapshot = body.body_snapshot()
+            if not snapshot or snapshot.get("available") is False:
+                return {"accepted": False, "status": "unavailable", "error": "No current Body snapshot"}
+            llm = self._external_llm_fn
+            if not callable(llm):
+                return {"accepted": False, "status": "unavailable", "error": "planning LLM unavailable"}
+            from cognition.body_plan_compiler import compile_body_plan
+            return compile_body_plan(user_input, snapshot, llm)
+        except Exception as exc:
+            logger.warning("[BodyPlan] draft compilation failed: %s", exc)
+            return {"accepted": False, "status": "error", "error": str(exc)}
+
     def _llm_should_search(self, user_input: str) -> bool:
         """
         Ask the LLM whether web search is needed. Has 3 layers:

@@ -76,6 +76,15 @@ class RemoteWorldModel:
             self._last_error = str(exc)
             return {"available": False, "remote": True, "base_url": self.base_url, "error": str(exc)}
 
+    def snapshot(self) -> Dict[str, Any]:
+        """Return the latest structured Body snapshot for planning."""
+        try:
+            data = _request("GET", f"{self.base_url}/worldmodel/snapshot", timeout=self.timeout)
+            return data if isinstance(data, dict) else {}
+        except Exception as exc:
+            self._last_error = str(exc)
+            return {"available": False, "error": str(exc)}
+
     def context_for_brain(self) -> str:
         try:
             data = _request("GET", f"{self.base_url}/worldmodel/context", timeout=self.timeout)
@@ -116,6 +125,23 @@ class RemoteWorldModel:
         except Exception as exc:
             self._last_error = str(exc)
             return {"error": str(exc)}
+
+    def submit_plan(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Submit a Brain-produced generic plan to the Body validator."""
+        try:
+            return _request("POST", f"{self.base_url}/worldmodel/plans",
+                            payload=payload or {}, timeout=self.timeout)
+        except Exception as exc:
+            self._last_error = str(exc)
+            return {"accepted": False, "error": str(exc)}
+
+    def cancel_plan(self, plan_id: str, reason: str = "cancelled by Brain") -> Dict[str, Any]:
+        try:
+            return _request("POST", f"{self.base_url}/worldmodel/plans/{plan_id}/cancel",
+                            payload={"reason": reason}, timeout=self.timeout)
+        except Exception as exc:
+            self._last_error = str(exc)
+            return {"ok": False, "error": str(exc)}
 
     def reset(self, clear_memory: bool = False) -> Dict[str, Any]:
         try:

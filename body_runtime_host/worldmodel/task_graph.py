@@ -40,8 +40,9 @@ class TaskGraphExecutor:
             return TaskDecision(None, step.step_id, "postcondition observed", satisfied=True)
         if step.verb == "navigate":
             return self._route_decision(step.step_id, step.target, snapshot, body, arguments=step.arguments)
-        if step.verb in {"grab", "release"} and not self._predicate({"type": "near", "target": step.target}, snapshot, body):
-            reason = "align_for_grasp" if step.verb == "grab" else "align_for_release"
+        if step.verb in {"grab", "release"} and not self._predicate({"type": "near", "target": step.target, "operation": step.verb}, snapshot, body):
+            reach_kind = "grab" if step.verb == "grab" else "release"
+            reason = "align_for_grasp" if reach_kind == "grab" else "align_for_release"
             return self._route_decision(step.step_id, step.target, snapshot, body, reason, step.arguments)
         if step.verb in {"grab", "release", "push", "wait"}:
             return TaskDecision(
@@ -65,8 +66,8 @@ class TaskGraphExecutor:
         step = plan.steps[plan.current_step_index]
         target = self._object(step.target, snapshot)
         if target and self._clear_path(step.target, snapshot, body):
-            return TaskDecision(Action(type="retreat", target=step.target), step.step_id, "recover clearance by increasing separation")
-        return TaskDecision(Action(type="turn_left", target=step.target), step.step_id, "recover by changing heading before replanning")
+            return TaskDecision(Action(type="retreat", target=step.target, params={"plan_controlled": True}), step.step_id, "recover clearance by increasing separation")
+        return TaskDecision(Action(type="turn_left", target=step.target, params={"plan_controlled": True}), step.step_id, "recover by changing heading before replanning")
 
     def _satisfied(self, step: PlanStep, snapshot: BodySnapshot, body: BodyState) -> bool:
         predicates = step.postconditions or [self._default_postcondition(step)]
@@ -86,7 +87,10 @@ class TaskGraphExecutor:
         kind = str(predicate.get("type") or "").lower()
         if kind == "near":
             target = self._object(str(predicate.get("target") or ""), snapshot)
-            reach = float(predicate.get("distance", body.capabilities.get("reach", 1.0)))
+            default_reach = body.capabilities.get("reach", 1.0)
+            if predicate.get("operation") == "release":
+                default_reach = body.capabilities.get("placement_reach", min(float(default_reach), 1.2))
+            reach = float(predicate.get("distance", default_reach))
             return bool(target and _distance(snapshot.pose, target) <= reach)
         if kind == "holding":
             return str(body.posture.get("holding") or "") == str(predicate.get("target") or "")
