@@ -2716,8 +2716,8 @@ Memory honesty — two distinct cases:
                 if callable(_interactive):
                     _confirm_system = (
                         "Classify whether the user explicitly approves, rejects, or replaces "
-                        "the pending physical Body plan. Return exactly JSON: "
-                        '{"route":"confirm|cancel|new_action|normal"}. '
+                        "the pending physical Body plan. Return exactly one label and nothing "
+                        "else: CONFIRM, CANCEL, NEW_ACTION, or NORMAL. "
                         "Treat a direct imperative such as 'do it' as confirm only when it "
                         "refers to the pending plan; do not invent approval."
                     )
@@ -2728,15 +2728,14 @@ Memory honesty — two distinct cases:
                     _raw = _interactive(
                         _confirm_prompt,
                         _confirm_system,
-                        max_tokens=180,
+                        max_tokens=32,
                         temperature=0.0,
-                        json_mode=True,
                         reasoning_format="none",
                     )
-                    _match = re.search(r"\{[\s\S]*?\}", str(_raw or ""))
+                    _raw_text = str(_raw or "").strip().upper()
+                    _match = re.search(r"\b(CONFIRM|CANCEL|NEW_ACTION|NORMAL)\b", _raw_text)
                     if _match:
-                        _value = json.loads(_match.group(0))
-                        _route = str(_value.get("route") or "normal").strip().lower()
+                        _route = _match.group(1).lower()
                         if _route in allowed:
                             return _route
             return "normal"
