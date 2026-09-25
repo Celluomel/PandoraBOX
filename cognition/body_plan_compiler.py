@@ -67,8 +67,10 @@ def compile_body_plan(
         "constraints. Each step needs only step_id, verb, target and, when "
         "needed, postconditions. Do not emit empty arguments or preconditions. "
         "Allowed verbs are navigate, grab, release, push, wait and inspect. "
-        "A release onto a surface must include "
-        "postcondition {type:on_surface,target:<held object>,surface:<surface>}."
+        "For grab, target is the object to hold. For navigate and release, target is "
+        "the destination entity. A release target must be the requested receiving "
+        "surface (chair, table, shelf or another support), never the held object. "
+        "A release may include postcondition {type:on_surface,target:<held object>,surface:<destination>}."
     )
     prompt = json.dumps(
         {"user_request": str(request).strip(), "body_snapshot": snapshot},

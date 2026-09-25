@@ -139,6 +139,21 @@ class BodyPlanContractTests(unittest.TestCase):
             self.assertEqual(runtime.expire_if_needed()["plan"]["state"], "expired")
             self.assertIsNone(runtime.active_plan())
 
+    def test_task_graph_releases_held_object_on_destination_surface(self):
+        current = snapshot()
+        current.objects = [
+            {"id": "parcel", "kind": "object", "position": [4.0, 1.0, 0.0], "size": 0.4},
+            {"id": "chair", "kind": "chair", "position": [4.0, 1.0, 0.0], "size": 0.8},
+        ]
+        current.pose = {"x": 4.0, "y": 1.0, "yaw": 0.0}
+        body = BodyState(position=[4.0, 1.0, 0.0], posture={"holding": "parcel"})
+        plan_value = BodyPlan(objective="place parcel on chair", steps=[
+            PlanStep(step_id="release", verb="release", target="chair"),
+        ])
+        decision = TaskGraphExecutor().decide(plan_value, current, body)
+        self.assertEqual(decision.action.type, "release")
+        self.assertEqual(decision.action.target, "chair")
+
     def test_local_planner_routes_around_inflated_obstacle(self):
         current = snapshot()
         current.objects = [

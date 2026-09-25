@@ -40,13 +40,14 @@ class TaskGraphExecutor:
             return TaskDecision(None, step.step_id, "postcondition observed", satisfied=True)
         if step.verb == "navigate":
             return self._route_decision(step.step_id, step.target, snapshot, body, arguments=step.arguments)
-        if step.verb in {"grab", "release"} and not self._predicate({"type": "near", "target": step.target, "operation": step.verb}, snapshot, body):
+        release_target = self._release_destination(step) if step.verb == "release" else step.target
+        if step.verb in {"grab", "release"} and not self._predicate({"type": "near", "target": release_target, "operation": step.verb}, snapshot, body):
             reach_kind = "grab" if step.verb == "grab" else "release"
             reason = "align_for_grasp" if reach_kind == "grab" else "align_for_release"
-            return self._route_decision(step.step_id, step.target, snapshot, body, reason, step.arguments)
+            return self._route_decision(step.step_id, release_target, snapshot, body, reason, step.arguments)
         if step.verb in {"grab", "release", "push", "wait"}:
             return TaskDecision(
-                Action(type=step.verb, target=step.target, params={"plan_controlled": True, **step.arguments}),
+                Action(type=step.verb, target=release_target, params={"plan_controlled": True, **step.arguments}),
                 step.step_id,
                 "execute planned primitive",
             )
@@ -80,8 +81,17 @@ class TaskGraphExecutor:
         if step.verb == "grab":
             return {"type": "holding", "target": step.target}
         if step.verb == "release":
+            destination = str(step.arguments.get("surface") or step.arguments.get("destination") or step.target)
+            held = str(step.arguments.get("held") or "")
+            if held and destination:
+                return {"type": "on_surface", "target": held, "surface": destination}
             return {"type": "empty_gripper"}
         return {"type": "action_completed"}
+
+    @staticmethod
+    def _release_destination(step: PlanStep) -> str:
+        """Resolve the receiving surface, keeping older plans compatible."""
+        return str(step.arguments.get("surface") or step.arguments.get("destination") or step.target)
 
     def _predicate(self, predicate: Dict[str, Any], snapshot: BodySnapshot, body: BodyState) -> bool:
         if not isinstance(predicate, dict):

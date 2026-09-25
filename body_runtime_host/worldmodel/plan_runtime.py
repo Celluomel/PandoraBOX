@@ -121,6 +121,10 @@ class BodyPlanRuntime:
         for step in plan.steps:
             if step.target and step.target not in objects and step.target not in {"goal", "self"}:
                 errors.append(f"step {step.step_id} references unknown target: {step.target}")
+            if step.verb == "release" and step.target:
+                destination = next((item for item in snapshot.objects if str(item.get("id")) == step.target), None)
+                if destination and str(destination.get("kind") or "").lower() in {"target", "object", "item"}:
+                    errors.append(f"step {step.step_id} release target must be a receiving surface, not {step.target}")
         return errors
 
     def cancel(self, plan_id: str, reason: str = "cancelled by operator") -> Dict[str, Any]:
