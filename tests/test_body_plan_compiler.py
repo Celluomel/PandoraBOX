@@ -7,8 +7,8 @@ class BodyPlanCompilerTests(unittest.TestCase):
     snapshot = {
         "snapshot_id": "snap-1",
         "objects": [
-            {"id": "cup", "kind": "object"},
-            {"id": "chair", "kind": "chair"},
+            {"id": "cup", "kind": "object", "position": [2.0, 1.0]},
+            {"id": "chair", "kind": "chair", "position": [4.0, 1.0]},
         ],
         "capabilities": ["navigate", "grab", "release"],
     }
@@ -35,6 +35,19 @@ class BodyPlanCompilerTests(unittest.TestCase):
         result = compile_body_plan("Fais quelque chose", self.snapshot, llm)
         self.assertFalse(result["accepted"])
         self.assertIn("unsupported Body verb", result["error"])
+
+    def test_preserves_exploration_before_manipulation(self):
+        def llm(_prompt, _system, **_kwargs):
+            return '{"objective":"tour the room then place the cup on the table","steps":[' \
+                '{"step_id":"tour","verb":"explore","target":"scene"},' \
+                '{"step_id":"grab","verb":"grab","target":"cup"},' \
+                '{"step_id":"place","verb":"release","target":"table",' \
+                '"postconditions":[{"type":"on_surface","target":"cup","surface":"table"}]}]}'
+
+        result = compile_body_plan("Fais le tour de la pièce puis pose la tasse sur la table", self.snapshot, llm)
+        self.assertTrue(result["accepted"], result)
+        self.assertEqual([step["verb"] for step in result["steps"]], ["explore", "grab", "release"])
+        self.assertEqual(result["steps"][0]["arguments"]["targets"], ["chair"])
 
 
 if __name__ == "__main__":

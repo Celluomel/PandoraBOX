@@ -14,7 +14,7 @@ from typing import Any, Dict, Optional
 
 from .contracts import ActionResult, BodyPlan, BodySnapshot, PLAN_STATES
 
-_INTRINSIC_CAPABILITIES = {"wait", "inspect", "observe", "replan", "avoid"}
+_INTRINSIC_CAPABILITIES = {"explore", "wait", "inspect", "observe", "replan", "avoid"}
 
 
 class BodyPlanRuntime:
@@ -124,13 +124,26 @@ class BodyPlanRuntime:
         if missing:
             errors.append("missing capabilities: " + ", ".join(missing))
         for step in plan.steps:
-            if step.target and step.target not in objects and step.target not in {"goal", "self"}:
+            if step.target and step.target not in objects and step.target not in {"goal", "self", "scene", "room"}:
                 errors.append(f"step {step.step_id} references unknown target: {step.target}")
             if step.verb == "release" and step.target:
                 destination = next((item for item in snapshot.objects if str(item.get("id")) == step.target), None)
                 if destination and str(destination.get("kind") or "").lower() in {"target", "object", "item"}:
                     errors.append(f"step {step.step_id} release target must be a receiving surface, not {step.target}")
         return errors
+
+    def update_step_arguments(self, step_id: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Persist executor-owned progress without advancing the user plan."""
+        with self._lock:
+            plan = self._active
+            if plan is None or plan.current_step_index >= len(plan.steps):
+                return {"ok": False, "error": "no active step"}
+            step = plan.steps[plan.current_step_index]
+            if step.step_id != step_id:
+                return {"ok": False, "error": "step is no longer current"}
+            step.arguments = dict(arguments or {})
+            self._persist_active()
+            return {"ok": True, "plan": plan.as_dict()}
 
     def cancel(self, plan_id: str, reason: str = "cancelled by operator") -> Dict[str, Any]:
         with self._lock:

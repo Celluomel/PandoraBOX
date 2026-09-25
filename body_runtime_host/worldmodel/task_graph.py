@@ -38,6 +38,8 @@ class TaskGraphExecutor:
         step = plan.steps[plan.current_step_index]
         if self._satisfied(step, snapshot, body):
             return TaskDecision(None, step.step_id, "postcondition observed", satisfied=True)
+        if step.verb == "explore":
+            return self._explore_decision(step, snapshot, body)
         if step.verb == "navigate":
             return self._route_decision(step.step_id, step.target, snapshot, body, arguments=step.arguments)
         release_target = self._release_destination(step) if step.verb == "release" else step.target
@@ -52,6 +54,29 @@ class TaskGraphExecutor:
                 "execute planned primitive",
             )
         return TaskDecision(None, step.step_id, f"unsupported plan verb: {step.verb}")
+
+    def _explore_decision(self, step: PlanStep, snapshot: BodySnapshot, body: BodyState) -> TaskDecision:
+        """Visit bounded scene anchors before allowing the next plan step."""
+        arguments = dict(step.arguments or {})
+        targets = [str(value) for value in arguments.get("targets") or [] if str(value)]
+        if not targets:
+            targets = [
+                str(item.get("id")) for item in snapshot.objects
+                if item.get("id") and item.get("position") is not None
+                and str(item.get("kind") or "").lower() not in {"object", "item", "target"}
+            ]
+        index = max(0, min(int(arguments.get("target_index", 0) or 0), len(targets)))
+        while index < len(targets):
+            target = targets[index]
+            if self._predicate({"type": "near", "target": target}, snapshot, body):
+                index += 1
+                continue
+            updated = {**arguments, "targets": targets, "target_index": index}
+            decision = self._route_decision(step.step_id, target, snapshot, body, "explore_scene", updated)
+            decision.details = {**(decision.details or {}), "step_arguments": updated, "explore_target": target, "explore_index": index}
+            return decision
+        updated = {**arguments, "targets": targets, "target_index": len(targets)}
+        return TaskDecision(None, step.step_id, "scene exploration complete", satisfied=True, details={"step_arguments": updated, "explore_count": len(targets)})
 
     def _route_decision(self, step_id: str, target: str, snapshot: BodySnapshot, body: BodyState, align_reason: str = "", arguments: Optional[Dict[str, Any]] = None) -> TaskDecision:
         route_reach = None

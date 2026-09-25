@@ -186,6 +186,27 @@ class BodyPlanContractTests(unittest.TestCase):
         current.pose["x"] = 4.0
         body.position[0] = 4.0
         self.assertTrue(executor.decide(plan_value, current, body).satisfied)
+
+    def test_task_graph_explores_scene_anchors_and_persists_progress(self):
+        current = snapshot()
+        current.objects = [
+            {"id": "table", "kind": "table", "position": [3.0, 1.0, 0.0]},
+            {"id": "chair", "kind": "chair", "position": [5.0, 1.0, 0.0]},
+            {"id": "cup", "kind": "object", "position": [4.0, 1.0, 0.0]},
+        ]
+        plan_value = BodyPlan(objective="tour then act", steps=[
+            PlanStep(step_id="tour", verb="explore", arguments={"targets": ["table", "chair"], "target_index": 0}),
+        ])
+        body = BodyState(position=[1.0, 1.0, 0.0], orientation=0.0, posture={"holding": ""})
+        executor = TaskGraphExecutor()
+        first = executor.decide(plan_value, current, body)
+        self.assertEqual(first.action.type, "forward")
+        self.assertEqual(first.details["explore_target"], "table")
+        current.pose["x"] = 3.0
+        body.position[0] = 3.0
+        second = executor.decide(plan_value, current, body)
+        self.assertEqual(second.details["explore_target"], "chair")
+        self.assertEqual(second.details["step_arguments"]["target_index"], 1)
         plan_value.current_step_index = 1
         body.posture["holding"] = "cup"
         self.assertTrue(executor.decide(plan_value, current, body).satisfied)

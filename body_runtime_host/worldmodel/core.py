@@ -349,6 +349,11 @@ class EmbodiedWorldModel:
                     task_decision = TaskDecision(None, current_step.step_id if current_step else "", skill_reason, details={"skill_guard": "refused"})
                 if task_decision is None:
                     task_decision = self.task_graph.decide(active_plan, plan_snapshot, body_state)
+                if task_decision and task_decision.details and task_decision.details.get("step_arguments"):
+                    self.plan_runtime.update_step_arguments(
+                        task_decision.step_id,
+                        task_decision.details["step_arguments"],
+                    )
                 if task_decision.satisfied:
                     self.plan_runtime.advance(task_decision.step_id, plan_snapshot.snapshot_id)
                     chosen = {"type": "wait"}

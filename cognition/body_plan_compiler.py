@@ -11,7 +11,7 @@ import re
 from typing import Any, Callable, Dict, Optional
 
 
-_VERBS = {"navigate", "grab", "release", "push", "wait", "inspect"}
+_VERBS = {"navigate", "explore", "grab", "release", "push", "wait", "inspect"}
 
 
 def _mapping(value: Any) -> Dict[str, Any]:
@@ -164,9 +164,11 @@ def compile_body_plan(
         "Return compact JSON with objective, steps, required_capabilities and "
         "constraints. Each step needs only step_id, verb, target and, when "
         "needed, postconditions. Do not emit empty arguments or preconditions. "
-        "Allowed verbs are navigate, grab, release, push, wait and inspect. "
+        "Allowed verbs are navigate, explore, grab, release, push, wait and inspect. "
+        "Use explore for a request to tour, survey or inspect the room/scene before later actions; "
+        "explore is a physical Body step and must remain in the requested order. "
         "Only list hardware or actuator capabilities in required_capabilities; "
-        "wait, inspect, observe, replan and avoid are intrinsic Body operations "
+        "explore, wait, inspect, observe, replan and avoid are intrinsic Body operations "
         "and must be omitted from that list. When the user asks to avoid or "
         "circumvent an obstacle, keep the requested destination as the navigate "
         "target and express the obstacle in constraints. Never navigate toward "
@@ -231,9 +233,23 @@ def compile_body_plan(
             "postconditions": list(item.get("postconditions") or []),
             "max_retries": int(item.get("max_retries", 3) or 3),
         })
+    # Keep exploration generic: the Body derives a bounded route from the
+    # current snapshot rather than embedding a room-specific script in the
+    # language compiler.
+    for step in normalized:
+        if step["verb"] == "explore" and not step["arguments"].get("targets"):
+            step["arguments"]["targets"] = [
+                str(item["id"])
+                for item in snapshot.get("objects") or []
+                if isinstance(item, dict)
+                and item.get("id")
+                and item.get("position") is not None
+                and str(item.get("kind") or "").lower() not in {"object", "item", "target"}
+            ]
+            step["arguments"]["target_index"] = 0
     normalized = _split_implicit_release_steps(normalized, snapshot)
     _normalize_release_steps(normalized, snapshot)
-    intrinsic = {"wait", "inspect", "observe", "replan", "avoid"}
+    intrinsic = {"explore", "wait", "inspect", "observe", "replan", "avoid"}
     required_capabilities = [
         str(value) for value in plan.get("required_capabilities") or []
         if str(value).strip().lower() not in intrinsic
