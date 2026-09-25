@@ -2675,11 +2675,11 @@ Memory honesty — two distinct cases:
             if not callable(interactive):
                 return "normal"
             if pending:
-                labels = "CONFIRM, CANCEL, NEW_ACTION, or NORMAL"
-                meaning = "approves, rejects, replaces, or does not address the pending physical Body plan"
+                labels = "CONFIRM, CANCEL, NEW_ACTION, BODY_STATUS, or NORMAL"
+                meaning = "approves, rejects, replaces, asks for the current status of, or does not address the pending physical Body plan"
             else:
-                labels = "BODY_ACTION, BODY_PERCEPTION, or NORMAL"
-                meaning = "requests a physical action, asks what the Body perceives, or is ordinary conversation"
+                labels = "BODY_ACTION, BODY_PERCEPTION, BODY_STATUS, or NORMAL"
+                meaning = "requests a physical action, asks what the Body perceives, asks for current task status, or is ordinary conversation"
             system = f"Classify whether the user's latest message {meaning}. Return exactly one label and nothing else: {labels}. Understand the user's language semantically; do not use a phrase list."
             prompt = json.dumps({
                 "pending_objective": pending.get("plan", {}).get("objective", "") if isinstance(pending, dict) else "",
@@ -2693,7 +2693,7 @@ Memory honesty — two distinct cases:
                     temperature=0.0,
                     reasoning_format="none",
                 )
-                match = re.search(r"\b(CONFIRM|CANCEL|NEW_ACTION|BODY_ACTION|BODY_PERCEPTION|NORMAL)\b", str(raw or "").upper())
+                match = re.search(r"\b(CONFIRM|CANCEL|NEW_ACTION|BODY_ACTION|BODY_PERCEPTION|BODY_STATUS|NORMAL)\b", str(raw or "").upper())
                 return match.group(1).lower() if match else "normal"
             except Exception:
                 return "normal"
@@ -2711,22 +2711,23 @@ Memory honesty — two distinct cases:
                 system = (
                     "A physical Body plan is waiting for approval. Classify the user's latest "
                     "message semantically. Return exactly JSON with route equal to one of: "
-                    "confirm, cancel, new_action, normal. confirm means approval to execute "
+                    "confirm, cancel, new_action, body_status, normal. confirm means approval to execute "
                     "the waiting plan; cancel means rejection; new_action means a different "
-                    "physical objective; normal means unrelated conversation. Do not use a "
+                    "physical objective; body_status means asking whether the task is complete or what step is active; normal means unrelated conversation. Do not use a "
                     "fixed phrase list."
                 )
             else:
                 system = (
                     "Classify the user's latest message for a cognitive Body interface. "
                     "Return exactly JSON with route equal to one of: body_action, body_perception, "
-                    "normal. body_action means the user requests a physical manipulation or "
-                    "movement; body_perception means asking what the robot sees or senses. "
+                    "body_status, normal. body_action means the user requests a physical manipulation or "
+                    "movement; body_perception means asking what the robot sees or senses; body_status "
+                    "means asking whether a task is complete, what step is active, or whether the Body is stuck. "
                     "Use semantic meaning, not a fixed phrase list."
                 )
             raw = fast(text, system, model=model, timeout=6.0, max_tokens=120)
             match = re.search(r"\{[\s\S]*?\}", str(raw or ""))
-            allowed = {"confirm", "cancel", "new_action", "normal"} if pending else {"body_action", "body_perception", "normal"}
+            allowed = {"confirm", "cancel", "new_action", "body_status", "normal"} if pending else {"body_action", "body_perception", "body_status", "normal"}
             if match:
                 value = json.loads(match.group(0))
                 route = str(value.get("route") or "normal").strip().lower()
@@ -2752,10 +2753,50 @@ Memory honesty — two distinct cases:
         except Exception:
             return "normal"
 
+    def _body_status_response(self) -> dict:
+        """Report only the latest Body-owned plan and physical state."""
+        body = getattr(self._organism, "_body_runtime", None) if self._organism else None
+        if body is None:
+            return {"handled": True, "status": "unavailable", "response": "Le Body Runtime n'est pas disponible."}
+        try:
+            payload = body.worldmodel_plan()
+            active = payload.get("active_plan") if isinstance(payload, dict) else None
+            worldmodel = getattr(body, "worldmodel", None)
+            live = worldmodel.status_summary() if worldmodel is not None else {}
+            sim = live.get("sim") if isinstance(live, dict) else {}
+            if not isinstance(sim, dict):
+                sim = {}
+            if not isinstance(active, dict):
+                return {
+                    "handled": True,
+                    "status": "reported",
+                    "response": "Aucun plan Body actif n'est enregistré ; je ne peux donc pas confirmer une action en cours ou accomplie.",
+                }
+            objective = str(active.get("objective") or "objectif Body")
+            state = str(active.get("state") or "unknown")
+            steps = list(active.get("steps") or [])
+            index = int(active.get("current_step_index") or 0)
+            if state == "completed":
+                response = f"Oui. Selon le dernier état confirmé par le Body, le plan « {objective} » est terminé ({len(steps)}/{len(steps)} étapes)."
+            elif state in {"cancelled", "rejected", "expired"}:
+                response = f"Non. Le plan « {objective} » est {state} ; aucune exécution active n'est confirmée."
+            else:
+                current = steps[index] if 0 <= index < len(steps) else None
+                step = f" étape {index + 1}/{len(steps)} ({current.get('verb')} → {current.get('target')})" if isinstance(current, dict) else ""
+                response = f"Le plan « {objective} » est encore {state}{step}. Le Body ne confirme pas son accomplissement final."
+            if sim.get("carrying"):
+                response += f" Le Body transporte actuellement {sim['carrying']}."
+            return {"handled": True, "status": "reported", "response": response, "body_status": live}
+        except Exception as exc:
+            logger.warning("[BodyStatus] report failed: %s", exc)
+            return {"handled": True, "status": "unavailable", "response": "Je ne peux pas obtenir un état Body fiable pour le moment."}
+
     def handle_body_chat_turn(self, user_input: str, user_id: str = "default") -> dict | None:
         """Handle only Body-specific turns; return None for normal dialogue."""
         pending = self._pending_body_plans.get(str(user_id))
         route = self._classify_body_chat_turn(user_input, pending=bool(pending))
+        if route == "body_status":
+            return self._body_status_response()
         if pending and route == "confirm":
             body = getattr(self._organism, "_body_runtime", None) if self._organism else None
             replacement_id = str(pending.get("replace_plan_id") or "").strip()
