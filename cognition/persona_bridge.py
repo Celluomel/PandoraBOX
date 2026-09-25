@@ -2701,7 +2701,11 @@ Memory honesty — two distinct cases:
             if match:
                 value = json.loads(match.group(0))
                 route = str(value.get("route") or "normal").strip().lower()
-                if route in allowed:
+                # A valid ``normal`` from the fast model is still ambiguous
+                # while a physical plan is pending. Let the primary judge
+                # resolve it instead of allowing the narrative LLM to speak
+                # as if it had executed the Body command.
+                if route in allowed and not (pending and route == "normal"):
                     return route
             # Confirmation is safety-sensitive but only applies to an already
             # prepared plan. If the small model is ambiguous, ask the primary
