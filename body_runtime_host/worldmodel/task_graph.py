@@ -170,7 +170,7 @@ class TaskGraphExecutor:
                 default_reach = body.capabilities.get("placement_reach", min(float(default_reach), 1.2))
             reach = float(predicate.get("distance", default_reach))
             return bool(target and _distance(snapshot.pose, target) <= reach)
-        if kind == "holding":
+        if kind in {"holding", "held"}:
             return str(body.posture.get("holding") or "") == str(predicate.get("target") or "")
         if kind == "released":
             return str(body.posture.get("holding") or "") != str(predicate.get("target") or "")

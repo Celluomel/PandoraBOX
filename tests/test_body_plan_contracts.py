@@ -269,6 +269,18 @@ class BodyPlanContractTests(unittest.TestCase):
         decision = TaskGraphExecutor().decide(plan_value, current, body)
         self.assertTrue(decision.satisfied)
 
+    def test_task_graph_accepts_held_alias_when_gripper_already_contains_object(self):
+        current = snapshot()
+        current.objects = [{"id": "cup", "kind": "target", "position": [2.0, 1.0, 0.0]}]
+        body = BodyState(position=[2.0, 1.0, 0.0], posture={"holding": "cup"})
+        plan_value = BodyPlan(objective="hold cup", steps=[
+            PlanStep(step_id="grab", verb="grab", target="cup", postconditions=[
+                {"type": "held", "target": "cup"},
+            ]),
+        ])
+        decision = TaskGraphExecutor().decide(plan_value, current, body)
+        self.assertTrue(decision.satisfied)
+
     def test_local_planner_routes_around_inflated_obstacle(self):
         current = snapshot()
         current.objects = [
