@@ -1074,13 +1074,6 @@ class BodyHost:
                         self._send({"error": "world model unavailable"}, 503)
                     else:
                         self._send(wm.plan_payload())
-                elif path == "/worldmodel/plans/validate":
-                    wm = owner.worldmodel
-                    if wm is None:
-                        self._send({"error": "world model unavailable"}, 503)
-                    else:
-                        body = self._read_json() or {}
-                        self._send(wm.plan_runtime.validate(body))
                 elif path == "/worldmodel/snapshot":
                     wm = owner.worldmodel
                     if wm is None:
@@ -1158,6 +1151,12 @@ class BodyHost:
                     self._send(wm.update_config(values or {}))
                 elif path == "/worldmodel/reload":
                     self._send(owner.reload_worldmodel_source())
+                elif path == "/worldmodel/plans/validate":
+                    wm = owner.worldmodel
+                    if wm is None:
+                        self._send({"error": "world model unavailable"}, 503)
+                        return
+                    self._send(wm.plan_runtime.validate(self._read_body()))
                 elif path == "/worldmodel/plans":
                     wm = owner.worldmodel
                     if wm is None:
