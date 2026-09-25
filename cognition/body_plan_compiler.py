@@ -37,7 +37,7 @@ def compile_body_plan(
     snapshot: Dict[str, Any],
     llm: Callable[..., str],
     *,
-    max_tokens: int = 700,
+    max_tokens: int = 1400,
 ) -> Dict[str, Any]:
     """Return a safe plan draft, never an actuator command.
 
@@ -51,10 +51,11 @@ def compile_body_plan(
         "Use only entity ids present in the supplied snapshot; never invent one. "
         "Do not execute anything and do not write prose. Preserve the user's "
         "requested destination, even when it differs from prior tasks. "
-        "Return exactly JSON with objective, steps, required_capabilities and "
-        "constraints. Each step has step_id, verb, target, arguments, "
-        "preconditions and postconditions. Allowed verbs are navigate, grab, "
-        "release, push, wait and inspect. A release onto a surface must include "
+        "Return compact JSON with objective, steps, required_capabilities and "
+        "constraints. Each step needs only step_id, verb, target and, when "
+        "needed, postconditions. Do not emit empty arguments or preconditions. "
+        "Allowed verbs are navigate, grab, release, push, wait and inspect. "
+        "A release onto a surface must include "
         "postcondition {type:on_surface,target:<held object>,surface:<surface>}."
     )
     prompt = json.dumps(
@@ -66,19 +67,19 @@ def compile_body_plan(
     # Prefer provider-enforced JSON. Some local OpenAI-compatible servers do
     # not implement response_format consistently, so retain a plain-prompt
     # retry rather than making the feature provider-specific.
-    for structured in (True, False):
+    for attempt, structured in enumerate((True, False), start=1):
         try:
             raw = llm(
                 prompt,
-                system,
-                max_tokens=max(320, min(int(max_tokens), 1200)),
+                system + (" The previous response was truncated; emit the complete compact JSON now." if attempt == 2 else ""),
+                max_tokens=max(900, min(int(max_tokens), 1800)),
                 temperature=0.1,
                 json_mode=structured,
                 reasoning_format="none",
             )
         except TypeError:
             try:
-                raw = llm(prompt, system, max_tokens=900, temperature=0.1)
+                raw = llm(prompt, system, max_tokens=1600, temperature=0.1)
             except Exception as exc:
                 last_error = str(exc)
                 continue
