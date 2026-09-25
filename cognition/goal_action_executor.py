@@ -1062,8 +1062,12 @@ class GoalActionExecutor:
                 llm,
                 prompt,
                 caller="gae_self_question",
-                max_tokens=120,
-                temperature=0.75,
+                # Reasoning-capable local models may spend part of the
+                # completion budget before emitting assistant content. 120
+                # tokens made an otherwise valid autonomous action look like
+                # a provider failure.
+                max_tokens=360,
+                temperature=0.55,
             )
             response = generation["text"]
 
@@ -1092,8 +1096,8 @@ class GoalActionExecutor:
                     llm,
                     retry_prompt,
                     caller="gae_self_question_retry",
-                    max_tokens=max(240, 3 * 120),
-                    temperature=0.55,
+                    max_tokens=900,
+                    temperature=0.35,
                 )
                 response = generation["text"]
 
