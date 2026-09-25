@@ -108,6 +108,10 @@ class BodyRuntime:
         # every chat turn. This is only a read-side cooldown; it never starts
         # or configures the Body host.
         self._worldmodel_retry_after = 0.0
+        from cognition.body_capability_learning import BodyCapabilityLearner
+        self._capability_learner = BodyCapabilityLearner()
+        self._workspace_observation_fingerprints: Dict[str, str] = {}
+        self._workspace_observation_times: Dict[str, float] = {}
 
     _CONFIG_FIELDS = {
         "BODY_RUNTIME_ENABLED", "BODY_PLUGIN_HOME_ASSISTANT_ENABLED",
@@ -257,7 +261,83 @@ class BodyRuntime:
         with self._lock:
             self._latest[key] = item
             self._events.append(item)
+        self._publish_workspace_perception(item, key)
+        # Body evidence is allowed to compete globally only when it carries a
+        # structural capability/affordance change or an action outcome. The
+        # learner performs persistence and deduplication, so regular polling
+        # cannot flood the workspace.
+        try:
+            signal = self._capability_learner.observe(item)
+            if signal and self.organism is not None:
+                workspace = getattr(self.organism, "workspace", None)
+                if workspace is not None:
+                    workspace.update_state(
+                        "body_capability_learning",
+                        context={
+                            **(workspace.get_state().context or {}),
+                            "body_capabilities": self._capability_learner.snapshot(),
+                        },
+                    )
+                    workspace.broadcast(
+                        "body_capability",
+                        {"evidence": "Body capability update", **signal},
+                        priority=0.68 if any(item["state"] in {"verified", "failed"} for item in signal["items"]) else 0.48,
+                    )
+        except Exception:
+            import logging
+            logging.getLogger(__name__).debug("Body capability learning route failed", exc_info=True)
         return item
+
+    def _publish_workspace_perception(self, item: BodyObservation, key: str) -> None:
+        """Expose meaningful Body changes to the global workspace.
+
+        Polling remains local to the Body. The workspace receives the first
+        value, a changed value, or an explicit action outcome, with a short
+        heartbeat for unchanged state. This keeps attention meaningful while
+        preserving the complete timestamped stream in BodyRuntime.
+        """
+        try:
+            workspace = getattr(self.organism, "workspace", None) if self.organism is not None else None
+            if workspace is None:
+                return
+            import hashlib
+            fingerprint = hashlib.sha256(json.dumps({
+                "value": item.value, "unit": item.unit, "confidence": item.confidence,
+            }, ensure_ascii=False, sort_keys=True, default=str).encode()).hexdigest()
+            now = time.time()
+            previous = self._workspace_observation_fingerprints.get(key)
+            last = self._workspace_observation_times.get(key, 0.0)
+            outcome = item.kind == "actuation_feedback"
+            changed = previous != fingerprint
+            if not changed and not outcome and now - last < 30.0:
+                return
+            self._workspace_observation_fingerprints[key] = fingerprint
+            self._workspace_observation_times[key] = now
+            stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(item.observed_at))
+            content = {
+                "subject": item.subject,
+                "value": item.value,
+                "unit": item.unit,
+                "source": item.source,
+                "confidence": item.confidence,
+                "observed_at": stamp,
+                "changed": changed,
+            }
+            workspace.broadcast(
+                "body_perception",
+                content,
+                priority=0.78 if outcome else 0.46,
+            )
+            workspace.update_state(
+                "body_perception",
+                context={
+                    **(workspace.get_state().context or {}),
+                    "latest_body_perception": content,
+                },
+            )
+        except Exception:
+            import logging
+            logging.getLogger(__name__).debug("Body perception workspace route failed", exc_info=True)
 
     def enqueue_command(self, target: str, action: str, payload: Optional[Dict[str, Any]] = None,
                         requires_confirmation: bool = True, origin: str = "brain",
