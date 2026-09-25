@@ -2669,17 +2669,18 @@ Memory honesty — two distinct cases:
 
     def _classify_body_chat_turn(self, text: str, pending: bool = False) -> str:
         """Use the configured fast model as a semantic action gate."""
-        def _primary_confirmation() -> str:
+        def _primary_route() -> str:
             manager = getattr(self._llm_stream_fn, "__self__", None)
             interactive = getattr(manager, "generate_interactive_analysis", None)
             if not callable(interactive):
                 return "normal"
-            system = (
-                "Classify whether the user's latest message approves, rejects, replaces, "
-                "or does not address the pending physical Body plan. Return exactly one "
-                "label and nothing else: CONFIRM, CANCEL, NEW_ACTION, or NORMAL. "
-                "Understand the user's language semantically; do not use a phrase list."
-            )
+            if pending:
+                labels = "CONFIRM, CANCEL, NEW_ACTION, or NORMAL"
+                meaning = "approves, rejects, replaces, or does not address the pending physical Body plan"
+            else:
+                labels = "BODY_ACTION, BODY_PERCEPTION, or NORMAL"
+                meaning = "requests a physical action, asks what the Body perceives, or is ordinary conversation"
+            system = f"Classify whether the user's latest message {meaning}. Return exactly one label and nothing else: {labels}. Understand the user's language semantically; do not use a phrase list."
             prompt = json.dumps({
                 "pending_objective": pending.get("plan", {}).get("objective", "") if isinstance(pending, dict) else "",
                 "user_message": text,
@@ -2692,7 +2693,7 @@ Memory honesty — two distinct cases:
                     temperature=0.0,
                     reasoning_format="none",
                 )
-                match = re.search(r"\b(CONFIRM|CANCEL|NEW_ACTION|NORMAL)\b", str(raw or "").upper())
+                match = re.search(r"\b(CONFIRM|CANCEL|NEW_ACTION|BODY_ACTION|BODY_PERCEPTION|NORMAL)\b", str(raw or "").upper())
                 return match.group(1).lower() if match else "normal"
             except Exception:
                 return "normal"
@@ -2700,12 +2701,12 @@ Memory honesty — two distinct cases:
         try:
             from managers.settings_manager import config
             if not bool(getattr(config, "FAST_ROUND_ENABLED", False)):
-                return _primary_confirmation() if pending else "normal"
+                return _primary_route()
             manager = getattr(self._llm_stream_fn, "__self__", None)
             fast = getattr(manager, "generate_fast_round", None)
             model = str(getattr(config, "FAST_ROUND_MODEL", "") or "").strip()
             if not callable(fast) or not model:
-                return _primary_confirmation() if pending else "normal"
+                return _primary_route()
             if pending:
                 system = (
                     "A physical Body plan is waiting for approval. Classify the user's latest "
@@ -2733,14 +2734,18 @@ Memory honesty — two distinct cases:
                 # while a physical plan is pending. Let the primary judge
                 # resolve it instead of allowing the narrative LLM to speak
                 # as if it had executed the Body command.
-                if route in allowed and not (pending and route == "normal"):
+                if route in allowed and route != "normal":
                     return route
             # Confirmation is safety-sensitive but only applies to an already
             # prepared plan. If the small model is ambiguous, ask the primary
             # model for a tiny structured judgment instead of silently falling
             # back to a narrative response that never reaches the Body.
             if pending:
-                _route = _primary_confirmation()
+                _route = _primary_route()
+                if _route in allowed:
+                    return _route
+            else:
+                _route = _primary_route()
                 if _route in allowed:
                     return _route
             return "normal"
