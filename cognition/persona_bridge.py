@@ -2669,41 +2669,7 @@ Memory honesty — two distinct cases:
 
     def _classify_body_chat_turn(self, text: str, pending: bool = False) -> str:
         """Use the configured fast model as a semantic action gate."""
-        def _explicit_confirmation() -> str | None:
-            """Recognize the finite approval protocol without target dictionaries.
-
-            This is deliberately limited to short, standalone approval/cancel
-            commands. Longer or content-bearing messages still go through the
-            semantic LLM judge, so this cannot turn an ordinary physical
-            sentence into an authorization accidentally.
-            """
-            if not pending:
-                return None
-            normalized = re.sub(r"[^\wÀ-ÿ]+", " ", str(text or "").casefold()).strip()
-            if not normalized or len(normalized.split()) > 5:
-                return None
-            protocol = {
-                "execute": "confirm",
-                "executer": "confirm",
-                "exécute": "confirm",
-                "fais le": "confirm",
-                "fais-le": "confirm",
-                "do it": "confirm",
-                "go": "confirm",
-                "proceed": "confirm",
-                "oui": "confirm",
-                "yes": "confirm",
-                "confirm": "confirm",
-                "confirme": "confirm",
-                "annule": "cancel",
-                "annuler": "cancel",
-                "cancel": "cancel",
-                "no": "cancel",
-                "non": "cancel",
-            }
-            return protocol.get(normalized)
-
-        def _primary_route() -> str:
+        def _primary_route(retry: bool = False) -> str:
             manager = getattr(self._llm_stream_fn, "__self__", None)
             interactive = getattr(manager, "generate_interactive_analysis", None)
             if not callable(interactive):
@@ -2714,7 +2680,9 @@ Memory honesty — two distinct cases:
             else:
                 labels = "BODY_ACTION, BODY_PERCEPTION, BODY_STATUS, or NORMAL"
                 meaning = "requests a physical action, asks what the Body perceives, asks for current task status, or is ordinary conversation"
-            system = f"Classify whether the user's latest message {meaning}. Return exactly one label and nothing else: {labels}. Understand the user's language semantically; do not use a phrase list. When there is no pending Body plan, treat a short ambiguous utterance without a clear physical target or action as NORMAL; do not invoke Body planning merely because it could hypothetically describe motion."
+            system = f"Classify whether the user's latest message {meaning}. Return exactly one label and nothing else: {labels}. Understand the user's language semantically across languages; do not use a phrase list or translate by matching words. A short imperative or affirmative can confirm the already prepared plan when its conversational function is approval, while a new physical objective is NEW_ACTION. A refusal or withdrawal is CANCEL. This is a safety classification: infer the speech act from the pending plan and dialogue state, not from the vocabulary."
+            if retry and pending:
+                system += " Re-evaluate the speech act carefully. The user is responding immediately after the Body asked whether to execute the already validated plan."
             prompt = json.dumps({
                 "pending_objective": pending.get("plan", {}).get("objective", "") if isinstance(pending, dict) else "",
                 "user_message": text,
@@ -2723,7 +2691,7 @@ Memory honesty — two distinct cases:
                 raw = interactive(
                     prompt,
                     system,
-                    max_tokens=32,
+                    max_tokens=16,
                     temperature=0.0,
                     reasoning_format="none",
                 )
@@ -2736,7 +2704,9 @@ Memory honesty — two distinct cases:
             from managers.settings_manager import config
             if not bool(getattr(config, "FAST_ROUND_ENABLED", False)):
                 route = _primary_route()
-                return _explicit_confirmation() or route
+                if pending and route == "normal":
+                    route = _primary_route(retry=True)
+                return route
             manager = getattr(self._llm_stream_fn, "__self__", None)
             fast = getattr(manager, "generate_fast_round", None)
             model = str(getattr(config, "FAST_ROUND_MODEL", "") or "").strip()
@@ -2790,9 +2760,9 @@ Memory honesty — two distinct cases:
                 _route = _primary_route()
                 if _route in allowed and _route != "normal":
                     return _route
-                explicit = _explicit_confirmation()
-                if explicit:
-                    return explicit
+                _route = _primary_route(retry=True)
+                if _route in allowed and _route != "normal":
+                    return _route
                 if _route in allowed:
                     return _route
             else:
