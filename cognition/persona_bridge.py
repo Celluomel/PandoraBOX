@@ -2839,13 +2839,15 @@ Memory honesty — two distinct cases:
             self._pending_body_plans.pop(str(user_id), None)
             return {"handled": True, "status": "cancelled", "response": "Le plan Body est annulé, aucune action n'a été exécutée."}
         if pending and route == "normal":
-            # A pending plan must not turn a newly stated physical objective
-            # into ordinary narrative chat. Re-run the universal Body planner
-            # against the fresh message; if it yields a feasible plan, route
-            # it through the replacement confirmation path.
-            candidate = self.assess_body_action_request(user_input)
-            if candidate.get("accepted") and (candidate.get("feasibility") or {}).get("feasible"):
-                route = "new_action"
+            # Never reinterpret an ambiguous confirmation as a new physical
+            # objective. That used to compile "oui"/"execute" again, replace
+            # the pending draft and ask the same question indefinitely.
+            return {
+                "handled": True,
+                "status": "awaiting_confirmation",
+                "response": "Le plan Body reste en attente. Confirmez explicitement son exécution ou annulez-le.",
+                "pending_plan": pending.get("plan"),
+            }
         if pending and route != "new_action":
             return None
         if route != "body_action" and not (pending and route == "new_action"):
