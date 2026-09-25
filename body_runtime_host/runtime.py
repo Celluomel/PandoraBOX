@@ -1035,22 +1035,35 @@ class BodyHost:
         from .body_gui import BODY_GUI_HTML
 
         class Handler(BaseHTTPRequestHandler):
+            def _write_response(self, data: bytes) -> None:
+                """Ignore a browser closing a polling request mid-response."""
+                try:
+                    self.wfile.write(data)
+                except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                    LOG.debug("Body HTTP client disconnected before response completed")
+
             def _send_html(self, html: str, status: int = 200) -> None:
                 data = html.encode("utf-8")
-                self.send_response(status)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.send_header("Cache-Control", "no-store")
-                self.send_header("Content-Length", str(len(data)))
-                self.end_headers()
-                self.wfile.write(data)
+                try:
+                    self.send_response(status)
+                    self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("Content-Length", str(len(data)))
+                    self.end_headers()
+                    self._write_response(data)
+                except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                    LOG.debug("Body HTTP client disconnected before HTML response completed")
 
             def _send(self, payload, status: int = 200) -> None:
                 data = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
-                self.send_response(status)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(data)))
-                self.end_headers()
-                self.wfile.write(data)
+                try:
+                    self.send_response(status)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(data)))
+                    self.end_headers()
+                    self._write_response(data)
+                except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                    LOG.debug("Body HTTP client disconnected before JSON response completed")
 
             def _read_body(self) -> dict:
                 length = int(self.headers.get("Content-Length") or 0)
