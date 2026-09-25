@@ -935,6 +935,16 @@ class EmbodiedWorldModel:
                 f"- Active Body plan: {active_plan.objective} (state={active_plan.state}, "
                 f"next={next_step}, progress={active_plan.current_step_index}/{len(active_plan.steps)})."
             )
+            if current and current.verb == "explore":
+                targets = [str(value) for value in (current.arguments or {}).get("targets") or [] if str(value)]
+                index = max(0, min(int((current.arguments or {}).get("target_index", 0) or 0), len(targets)))
+                if index < len(targets):
+                    lines.append(
+                        f"- Body exploration progress: visiting scene anchor {index + 1}/{len(targets)} "
+                        f"(target={targets[index]}). Manipulation steps are intentionally blocked until exploration completes."
+                    )
+                else:
+                    lines.append("- Body exploration progress: all scene anchors visited; the next plan step may begin.")
         elif active_plan and active_plan.state == "completed" and not terminal:
             lines.append(
                 f"- COMPLETED BODY PLAN: {active_plan.objective} is complete at the latest "

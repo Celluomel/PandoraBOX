@@ -185,6 +185,15 @@ Sensors / motors / gripper / camera / lidar
 | User confirmation | Brain/UI | Required by policy |
 | Action result | Body | Returned to Brain and persisted |
 
+### Current execution milestone
+
+The Body now supports a generic persisted `explore` plan step. It derives a
+bounded sequence of spatial anchors from the current snapshot, visits them
+with the local planner, persists the waypoint index, and blocks later
+manipulation steps until the exploration postcondition is observed. The Brain
+context includes the current exploration target and progress so dialogue is
+grounded in the same execution state as the Body UI.
+
 ## 5. Canonical data contracts
 
 The first major implementation task is to create typed Python models for these
