@@ -2667,7 +2667,12 @@ Memory honesty — two distinct cases:
             logger.warning("[BodyPlan] draft compilation failed: %s", exc)
             return {"accepted": False, "status": "error", "error": str(exc)}
 
-    def _classify_body_chat_turn(self, text: str, pending: bool = False) -> str:
+    def _classify_body_chat_turn(
+        self,
+        text: str,
+        pending: bool | dict = False,
+        confirmation_probe: bool = False,
+    ) -> str:
         """Use the configured fast model as a semantic action gate."""
         def _primary_route(retry: bool = False) -> str:
             manager = getattr(self._llm_stream_fn, "__self__", None)
@@ -2675,14 +2680,20 @@ Memory honesty — two distinct cases:
             if not callable(interactive):
                 return "normal"
             if pending:
-                labels = "CONFIRM, CANCEL, NEW_ACTION, BODY_STATUS, or NORMAL"
-                meaning = "approves, rejects, replaces, asks for the current status of, or does not address the pending physical Body plan"
+                if confirmation_probe:
+                    labels = "CONFIRM, CANCEL, or NORMAL"
+                    meaning = "approves, rejects, or does not approve the already validated physical Body plan"
+                else:
+                    labels = "CONFIRM, CANCEL, NEW_ACTION, BODY_STATUS, or NORMAL"
+                    meaning = "approves, rejects, replaces, asks for the current status of, or does not address the pending physical Body plan"
             else:
                 labels = "BODY_ACTION, BODY_PERCEPTION, BODY_STATUS, or NORMAL"
                 meaning = "requests a physical action, asks what the Body perceives, asks for current task status, or is ordinary conversation"
             system = f"Classify whether the user's latest message {meaning}. Return exactly one label and nothing else: {labels}. Understand the user's language semantically across languages; do not use a phrase list or translate by matching words. A short imperative or affirmative can confirm the already prepared plan when its conversational function is approval, while a new physical objective is NEW_ACTION. A refusal or withdrawal is CANCEL. This is a safety classification: infer the speech act from the pending plan and dialogue state, not from the vocabulary."
             if retry and pending:
                 system += " Re-evaluate the speech act carefully. The user is responding immediately after the Body asked whether to execute the already validated plan."
+            if confirmation_probe:
+                system += " This is a confirmation-focused second judgment: do not classify an approval as a status request merely because it contains the word plan or action."
             prompt = json.dumps({
                 "pending_objective": pending.get("plan", {}).get("objective", "") if isinstance(pending, dict) else "",
                 "user_message": text,
@@ -2695,7 +2706,8 @@ Memory honesty — two distinct cases:
                     temperature=0.0,
                     reasoning_format="none",
                 )
-                match = re.search(r"\b(CONFIRM|CANCEL|NEW_ACTION|BODY_ACTION|BODY_PERCEPTION|BODY_STATUS|NORMAL)\b", str(raw or "").upper())
+                labels = "CONFIRM|CANCEL|NORMAL" if confirmation_probe else "CONFIRM|CANCEL|NEW_ACTION|BODY_ACTION|BODY_PERCEPTION|BODY_STATUS|NORMAL"
+                match = re.search(rf"\b({labels})\b", str(raw or "").upper())
                 return match.group(1).lower() if match else "normal"
             except Exception:
                 return "normal"
@@ -2716,10 +2728,10 @@ Memory honesty — two distinct cases:
                 system = (
                     "A physical Body plan is waiting for approval. Classify the user's latest "
                     "message semantically. Return exactly JSON with route equal to one of: "
-                    "confirm, cancel, new_action, body_status, normal. confirm means approval to execute "
-                    "the waiting plan; cancel means rejection; new_action means a different "
-                    "physical objective; body_status means asking whether the task is complete or what step is active; normal means unrelated conversation. Do not use a "
-                    "fixed phrase list."
+                    + ("confirm, cancel, normal" if confirmation_probe else "confirm, cancel, new_action, body_status, normal")
+                    + ". confirm means approval to execute the waiting plan; cancel means rejection; "
+                    + ("normal means unrelated conversation." if confirmation_probe else "new_action means a different physical objective; body_status means asking whether the task is complete or what step is active; normal means unrelated conversation.")
+                    + " Do not use a fixed phrase list."
                 )
             else:
                 system = (
@@ -2733,7 +2745,7 @@ Memory honesty — two distinct cases:
             raw = fast(text, system, model=model, timeout=6.0, max_tokens=120)
             raw_text = str(raw or "")
             match = re.search(r"\{[\s\S]*?\}", raw_text)
-            allowed = {"confirm", "cancel", "new_action", "body_status", "normal"} if pending else {"body_action", "body_perception", "body_status", "normal"}
+            allowed = ({"confirm", "cancel", "normal"} if confirmation_probe else {"confirm", "cancel", "new_action", "body_status", "normal"}) if pending else {"body_action", "body_perception", "body_status", "normal"}
             if match:
                 value = json.loads(match.group(0))
                 route = str(value.get("route") or "normal").strip().lower()
@@ -2747,7 +2759,8 @@ Memory honesty — two distinct cases:
             # wrapping it in JSON. Accept the same finite label vocabulary so
             # an approval is not mistaken for a new plan request.
             if pending:
-                label_match = re.search(r"\b(confirm|cancel|new_action|body_status|normal)\b", raw_text.lower())
+                labels = "confirm|cancel|normal" if confirmation_probe else "confirm|cancel|new_action|body_status|normal"
+                label_match = re.search(rf"\b({labels})\b", raw_text.lower())
             else:
                 label_match = re.search(r"\b(body_action|body_perception|body_status|normal)\b", raw_text.lower())
             if label_match and label_match.group(1) != "normal":
@@ -2814,9 +2827,26 @@ Memory honesty — two distinct cases:
     def handle_body_chat_turn(self, user_input: str, user_id: str = "default") -> dict | None:
         """Handle only Body-specific turns; return None for normal dialogue."""
         pending = self._pending_body_plans.get(str(user_id))
-        route = self._classify_body_chat_turn(user_input, pending=bool(pending))
+        route = self._classify_body_chat_turn(user_input, pending=pending)
         if route == "body_status":
-            return self._body_status_response()
+            # A local classifier can confuse an approval such as "execute the
+            # plan" with a status question. Resolve that ambiguity with a
+            # confirmation-focused semantic judgment before reporting that no
+            # active plan exists.
+            if pending:
+                reroute = self._classify_body_chat_turn(
+                    user_input,
+                    pending=pending,
+                    confirmation_probe=True,
+                )
+                if reroute == "confirm":
+                    route = reroute
+                elif reroute == "cancel":
+                    route = reroute
+                else:
+                    return self._body_status_response()
+            else:
+                return self._body_status_response()
         if pending and route == "confirm":
             body = getattr(self._organism, "_body_runtime", None) if self._organism else None
             replacement_id = str(pending.get("replace_plan_id") or "").strip()
