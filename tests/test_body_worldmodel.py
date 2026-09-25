@@ -456,13 +456,14 @@ class CoreLoopTest(unittest.TestCase):
             self.assertIn("Final Body pose from the live simulator", context)
             self.assertNotIn("Active Body plan:", context)
 
-    def test_new_plan_reopens_terminal_simulated_episode(self):
+    def test_new_plan_reopens_terminal_simulation_without_teleporting_body(self):
         from body_runtime_host.worldmodel import EmbodiedWorldModel
 
         with tempfile.TemporaryDirectory() as tmp:
             wm = EmbodiedWorldModel(body=None, data_dir=tmp)
             wm.sim.done = True
             wm.sim.steps = 24
+            wm.sim.px, wm.sim.py = 5.0, 6.0
             result = wm.submit_plan({
                 "objective": "inspect the cup",
                 "required_capabilities": ["navigate"],
@@ -471,8 +472,8 @@ class CoreLoopTest(unittest.TestCase):
             })
             self.assertTrue(result["accepted"])
             self.assertFalse(wm.sim.done)
-            self.assertEqual(wm.sim.steps, 0)
-            self.assertEqual(wm.sim.body_state().position[:2], [1.0, 1.0])
+            self.assertEqual(wm.sim.steps, 24)
+            self.assertEqual(wm.sim.body_state().position[:2], [5.0, 6.0])
 
     def test_reset_clears_state(self):
         from body_runtime_host.worldmodel import EmbodiedWorldModel

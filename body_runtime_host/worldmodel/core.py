@@ -588,16 +588,13 @@ class EmbodiedWorldModel:
 
     def submit_plan(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         with self._lock:
-            # A completed simulator episode is a terminal fixture, not a
-            # usable actuator state for the next conversational request.  A
-            # newly accepted plan starts a fresh local episode; real robot
-            # sources are never reset here.
+            # A completed simulator objective must not teleport the Body when
+            # the user asks for a new action. Keep the live pose, object
+            # arrangement and controller continuity; only reopen the local
+            # terminal flag for the newly accepted plan. Real robot sources
+            # are never modified here.
             if self.sim is not None and self.sim.status().get("done"):
-                self.sim.reset_episode(shuffle=False)
-                self._last_navigation = {}
-                self._last_observation = None
-                self._last_body_state = None
-                self._last_affordances = {}
+                self.sim.done = False
             if self._last_observation is None or self._last_body_state is None:
                 if self.source is not None:
                     self._last_observation = self.source.observe()
