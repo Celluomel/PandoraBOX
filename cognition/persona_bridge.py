@@ -336,7 +336,7 @@ class PersonaBridge:
         try:
             _body_turn = self.handle_body_chat_turn(effective_input, user_id)
         except Exception as _body_turn_error:
-            logger.debug("[BodyPlan] chat routing unavailable: %s", _body_turn_error)
+            logger.warning("[BodyPlan] chat routing failed; refusing narrative execution: %s", _body_turn_error)
             _body_turn = None
         if _body_turn and _body_turn.get("handled"):
             _body_response = str(_body_turn.get("response") or "")
@@ -2773,6 +2773,14 @@ Memory honesty — two distinct cases:
         if pending and route == "cancel":
             self._pending_body_plans.pop(str(user_id), None)
             return {"handled": True, "status": "cancelled", "response": "Le plan Body est annulé, aucune action n'a été exécutée."}
+        if pending and route == "normal":
+            # A pending plan must not turn a newly stated physical objective
+            # into ordinary narrative chat. Re-run the universal Body planner
+            # against the fresh message; if it yields a feasible plan, route
+            # it through the replacement confirmation path.
+            candidate = self.assess_body_action_request(user_input)
+            if candidate.get("accepted") and (candidate.get("feasibility") or {}).get("feasible"):
+                route = "new_action"
         if pending and route != "new_action":
             return None
         if route != "body_action" and not (pending and route == "new_action"):
