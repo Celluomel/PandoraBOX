@@ -2697,12 +2697,45 @@ Memory honesty — two distinct cases:
                 )
             raw = fast(text, system, model=model, timeout=6.0, max_tokens=120)
             match = re.search(r"\{[\s\S]*?\}", str(raw or ""))
-            if not match:
-                return "normal"
-            value = json.loads(match.group(0))
-            route = str(value.get("route") or "normal").strip().lower()
             allowed = {"confirm", "cancel", "new_action", "normal"} if pending else {"body_action", "body_perception", "normal"}
-            return route if route in allowed else "normal"
+            if match:
+                value = json.loads(match.group(0))
+                route = str(value.get("route") or "normal").strip().lower()
+                if route in allowed:
+                    return route
+            # Confirmation is safety-sensitive but only applies to an already
+            # prepared plan. If the small model is ambiguous, ask the primary
+            # model for a tiny structured judgment instead of silently falling
+            # back to a narrative response that never reaches the Body.
+            if pending:
+                _interactive = getattr(manager, "generate_interactive_analysis", None)
+                if callable(_interactive):
+                    _confirm_system = (
+                        "Classify whether the user explicitly approves, rejects, or replaces "
+                        "the pending physical Body plan. Return exactly JSON: "
+                        '{"route":"confirm|cancel|new_action|normal"}. '
+                        "Treat a direct imperative such as 'do it' as confirm only when it "
+                        "refers to the pending plan; do not invent approval."
+                    )
+                    _confirm_prompt = json.dumps({
+                        "pending_objective": pending.get("plan", {}).get("objective", ""),
+                        "user_message": text,
+                    }, ensure_ascii=False)
+                    _raw = _interactive(
+                        _confirm_prompt,
+                        _confirm_system,
+                        max_tokens=180,
+                        temperature=0.0,
+                        json_mode=True,
+                        reasoning_format="none",
+                    )
+                    _match = re.search(r"\{[\s\S]*?\}", str(_raw or ""))
+                    if _match:
+                        _value = json.loads(_match.group(0))
+                        _route = str(_value.get("route") or "normal").strip().lower()
+                        if _route in allowed:
+                            return _route
+            return "normal"
         except Exception:
             return "normal"
 

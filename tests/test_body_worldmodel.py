@@ -5,6 +5,7 @@ Run:  venv/Scripts/python.exe -m pytest tests/test_body_worldmodel.py -v
 import math
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -410,7 +411,7 @@ class CoreLoopTest(unittest.TestCase):
             self.assertTrue(math.isfinite(wm._pred_error_ema))
             # brain context must be non-empty and grounded
             ctx = wm.context_for_brain()
-            self.assertIn("BODY WORLD MODEL", ctx)
+            self.assertIn("CURRENT EMBODIED STATE", ctx)
             self.assertIn("places", ctx)
 
     def test_status_summary_serializable(self):
@@ -454,6 +455,24 @@ class CoreLoopTest(unittest.TestCase):
             self.assertIn("stopped", context)
             self.assertIn("Final Body pose from the live simulator", context)
             self.assertNotIn("Active Body plan:", context)
+
+    def test_new_plan_reopens_terminal_simulated_episode(self):
+        from body_runtime_host.worldmodel import EmbodiedWorldModel
+
+        with tempfile.TemporaryDirectory() as tmp:
+            wm = EmbodiedWorldModel(body=None, data_dir=tmp)
+            wm.sim.done = True
+            wm.sim.steps = 24
+            result = wm.submit_plan({
+                "objective": "inspect the cup",
+                "required_capabilities": ["navigate"],
+                "expires_at": time.time() + 60,
+                "steps": [{"step_id": "inspect", "verb": "inspect", "target": "cup"}],
+            })
+            self.assertTrue(result["accepted"])
+            self.assertFalse(wm.sim.done)
+            self.assertEqual(wm.sim.steps, 0)
+            self.assertEqual(wm.sim.body_state().position[:2], [1.0, 1.0])
 
     def test_reset_clears_state(self):
         from body_runtime_host.worldmodel import EmbodiedWorldModel
