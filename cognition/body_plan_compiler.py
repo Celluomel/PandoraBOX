@@ -44,6 +44,58 @@ def _extract_json(raw: str) -> Optional[Dict[str, Any]]:
             return None
 
 
+def _normalize_release_steps(steps: list[dict[str, Any]], snapshot: Dict[str, Any]) -> None:
+    """Repair an ambiguous release target using semantic plan evidence.
+
+    The LLM can refer to the held object when it means the receiving surface.
+    Resolve that ambiguity from an explicit ``on_surface`` postcondition or
+    the nearest preceding navigation step, while leaving genuinely unknown
+    plans for Body validation to reject.
+    """
+    objects = {
+        str(item.get("id")): str(item.get("kind") or "").lower()
+        for item in (snapshot.get("objects") or [])
+        if isinstance(item, dict) and item.get("id")
+    }
+    surface_kinds = {"table", "chair", "shelf", "support", "surface", "zone"}
+    held = ""
+    for index, step in enumerate(steps):
+        verb = str(step.get("verb") or "").lower()
+        if verb == "grab" and step.get("target"):
+            held = str(step["target"])
+            continue
+        if verb != "release":
+            continue
+        arguments = dict(step.get("arguments") or {})
+        destination = str(arguments.get("surface") or arguments.get("destination") or step.get("target") or "")
+        inferred_surface = ""
+        inferred_held = str(arguments.get("held") or "")
+        for predicate in step.get("postconditions") or []:
+            if not isinstance(predicate, dict):
+                continue
+            predicate_type = str(predicate.get("type") or "").lower()
+            if predicate_type not in {"on_surface", "goal_reached"}:
+                continue
+            inferred_surface = str(predicate.get("surface") or predicate.get("goal") or "")
+            inferred_held = inferred_held or str(predicate.get("target") or "")
+            break
+        if not inferred_surface and objects.get(destination) in surface_kinds:
+            inferred_surface = destination
+        if not inferred_surface and objects.get(destination) not in surface_kinds:
+            # A preceding navigate step is the generic structural cue for a
+            # destination, independent of any particular room or object names.
+            for previous in reversed(steps[:index]):
+                if previous.get("verb") == "navigate" and objects.get(str(previous.get("target") or "")) in surface_kinds:
+                    inferred_surface = str(previous["target"])
+                    break
+        if inferred_surface:
+            step["target"] = inferred_surface
+            arguments["surface"] = inferred_surface
+        if inferred_held or held:
+            arguments["held"] = inferred_held or held
+        step["arguments"] = arguments
+
+
 def compile_body_plan(
     request: str,
     snapshot: Dict[str, Any],
@@ -133,6 +185,7 @@ def compile_body_plan(
             "postconditions": list(item.get("postconditions") or []),
             "max_retries": int(item.get("max_retries", 3) or 3),
         })
+    _normalize_release_steps(normalized, snapshot)
     intrinsic = {"wait", "inspect", "observe", "replan", "avoid"}
     required_capabilities = [
         str(value) for value in plan.get("required_capabilities") or []

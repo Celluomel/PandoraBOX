@@ -1,6 +1,7 @@
 """Phase-0 embodied plan contracts: validation and restart-safe persistence."""
 from __future__ import annotations
 
+import json
 import tempfile
 import time
 import unittest
@@ -42,6 +43,35 @@ def plan(**overrides):
 
 
 class BodyPlanContractTests(unittest.TestCase):
+    def test_compiler_repairs_release_target_to_receiving_surface(self):
+        from cognition.body_plan_compiler import compile_body_plan
+
+        body_snapshot = {
+            "snapshot_id": "snap-1",
+            "objects": [
+                {"id": "cup", "kind": "target"},
+                {"id": "table", "kind": "table"},
+                {"id": "chair", "kind": "chair"},
+            ],
+        }
+        payload = {
+            "objective": "move the cup to the table then the chair",
+            "required_capabilities": ["navigate", "grab", "release"],
+            "steps": [
+                {"step_id": "to-table", "verb": "navigate", "target": "table"},
+                {"step_id": "grab-1", "verb": "grab", "target": "cup"},
+                {"step_id": "release-1", "verb": "release", "target": "cup"},
+                {"step_id": "to-chair", "verb": "navigate", "target": "chair"},
+                {"step_id": "grab-2", "verb": "grab", "target": "cup"},
+                {"step_id": "release-2", "verb": "release", "target": "cup"},
+            ],
+        }
+        result = compile_body_plan("move the cup to the table then the chair", body_snapshot, lambda *_args, **_kwargs: json.dumps(payload))
+        self.assertTrue(result["accepted"], result)
+        releases = [step for step in result["steps"] if step["verb"] == "release"]
+        self.assertEqual([step["target"] for step in releases], ["table", "chair"])
+        self.assertEqual([step["arguments"]["held"] for step in releases], ["cup", "cup"])
+
     def test_rejects_unknown_target_and_missing_capability(self):
         with tempfile.TemporaryDirectory() as tmp:
             runtime = BodyPlanRuntime(Path(tmp))
