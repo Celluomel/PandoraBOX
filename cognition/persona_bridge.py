@@ -2680,7 +2680,7 @@ Memory honesty — two distinct cases:
             else:
                 labels = "BODY_ACTION, BODY_PERCEPTION, BODY_STATUS, or NORMAL"
                 meaning = "requests a physical action, asks what the Body perceives, asks for current task status, or is ordinary conversation"
-            system = f"Classify whether the user's latest message {meaning}. Return exactly one label and nothing else: {labels}. Understand the user's language semantically; do not use a phrase list."
+            system = f"Classify whether the user's latest message {meaning}. Return exactly one label and nothing else: {labels}. Understand the user's language semantically; do not use a phrase list. When there is no pending Body plan, treat a short ambiguous utterance without a clear physical target or action as NORMAL; do not invoke Body planning merely because it could hypothetically describe motion."
             prompt = json.dumps({
                 "pending_objective": pending.get("plan", {}).get("objective", "") if isinstance(pending, dict) else "",
                 "user_message": text,
