@@ -2813,7 +2813,16 @@ Memory honesty — two distinct cases:
                 if isinstance(run_result, dict) and run_result.get("error"):
                     return {"handled": True, "status": "blocked", "response": "Le plan est accepté, mais le Body ne démarre pas : " + str(run_result["error"]), "submission": result, "runtime": run_result}
                 self._pending_body_plans.pop(str(user_id), None)
-                response = "Le nouveau plan est confirmé et transmis au Body. Le plan précédent a été interrompu et le premier pas est lancé maintenant." if replacement_id else "Le plan est confirmé et transmis au Body. Le premier pas est lancé maintenant."
+                submitted_plan = result.get("plan") if isinstance(result, dict) else None
+                steps = list(submitted_plan.get("steps") or []) if isinstance(submitted_plan, dict) else []
+                current = steps[0] if steps else {}
+                if str(current.get("verb") or "") == "explore":
+                    targets = list((current.get("arguments") or {}).get("targets") or [])
+                    first_step = f"L’exploration de la scène commence ({len(targets)} points à visiter, sans saisir d’objet)."
+                else:
+                    first_step = f"La première étape est {current.get('verb', 'l’action demandée')} vers {current.get('target', 'la cible')}."
+                prefix = "Le nouveau plan est confirmé et transmis au Body. Le plan précédent a été interrompu. " if replacement_id else "Le plan est confirmé et transmis au Body. "
+                response = prefix + first_step
                 return {"handled": True, "status": "submitted", "response": response, "submission": result, "runtime": run_result}
             return {"handled": True, "status": "blocked", "response": "Le Body refuse encore ce plan : " + "; ".join(result.get("errors") or [result.get("error", "validation impossible")]), "submission": result}
         if pending and route == "cancel":
