@@ -2149,6 +2149,7 @@ Memory honesty — two distinct cases:
             # The separately launched Body is the sole sensor poller. Its
             # authenticated bridge delivers the timestamped snapshot below;
             # Brain must not open a parallel Home Assistant connection.
+            _body_context = ""
             try:
                 _body = getattr(self._organism, "_body_runtime", None) if self._organism else None
                 _body_context = _body.context_for_brain() if _body else ""
@@ -2321,6 +2322,20 @@ Memory honesty — two distinct cases:
                     "This applies to the complete visible answer, including headings, "
                     "lists, recovery output, and audio text. Do not switch to English "
                     "unless the user explicitly requests it or quotes English text."
+                )
+
+            # Keep the physical evidence authoritative after all optional
+            # personality, cognition and web fragments have been appended.
+            # The main Body block may have been clipped by the context cap;
+            # this compact tail preserves its latest facts without a question
+            # classifier or situation-specific keyword list.
+            if _body_context:
+                system_prompt += (
+                    "\n\n━━ FINAL BODY GROUNDING ━━\n"
+                    "For physical self-report, use only the timestamped Body evidence below. "
+                    "Do not replace it with feelings, metaphor, personality, or generic abilities. "
+                    "If a fact is absent, say it is unavailable.\n"
+                    f"{_body_context[-1800:]}"
                 )
 
             return system_prompt, emo_dict, cond_dict, arb_temperature
