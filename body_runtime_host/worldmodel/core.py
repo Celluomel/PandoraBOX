@@ -148,6 +148,16 @@ class EmbodiedWorldModel:
         self._episodes_path = self.data_dir / "episodes.jsonl"
         self._maybe_trim_episodes_file()
 
+    @staticmethod
+    def _is_transient_mobile_hazard(outcome: Outcome) -> bool:
+        """Treat a mobile near-miss as re-observe/replan, not step failure."""
+        description = str(getattr(outcome, "description", "") or "").lower()
+        return (
+            str(getattr(outcome, "kind", "")) == "danger"
+            and "moving obstacle entered the collision zone" in description
+            and "blocked (collision)" not in description
+        )
+
     # ── config ──────────────────────────────────────────────────────────────
 
     def _load_config(self) -> Dict[str, Any]:
@@ -388,7 +398,7 @@ class EmbodiedWorldModel:
                     check = self.task_graph.decide(current, after_snapshot, self._last_body_state)
                     if check.satisfied and check.step_id == task_decision.step_id:
                         self.plan_runtime.advance(task_decision.step_id, after_snapshot.snapshot_id)
-                    elif outcome.kind in {"failure", "danger"}:
+                    elif outcome.kind in {"failure", "danger"} and not self._is_transient_mobile_hazard(outcome):
                         self.plan_runtime.record_step_failure(task_decision.step_id, after_snapshot.snapshot_id, outcome.description)
                     elif active_plan.state == "recovery":
                         self.plan_runtime.resume_after_recovery(task_decision.step_id, after_snapshot.snapshot_id, outcome.description)

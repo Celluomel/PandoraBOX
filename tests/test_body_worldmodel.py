@@ -461,6 +461,19 @@ class CoreLoopTest(unittest.TestCase):
             self.assertEqual(status["navigation_alert"]["type"], "goal_progress_stalled")
             self.assertIn("BODY ALERT", wm.context_for_brain())
 
+    def test_mobile_near_miss_is_reobservable_not_a_plan_failure(self):
+        from body_runtime_host.worldmodel import EmbodiedWorldModel
+        from body_runtime_host.worldmodel.types import Outcome
+
+        self.assertTrue(EmbodiedWorldModel._is_transient_mobile_hazard(Outcome(
+            kind="danger",
+            description="waited; moving obstacle entered the collision zone",
+        )))
+        self.assertFalse(EmbodiedWorldModel._is_transient_mobile_hazard(Outcome(
+            kind="danger",
+            description="blocked (collision)",
+        )))
+
     def test_completed_body_is_reported_as_terminal_not_current_motion(self):
         from body_runtime_host.worldmodel import EmbodiedWorldModel
 
