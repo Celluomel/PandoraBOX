@@ -767,10 +767,11 @@ class EmbodiedWorldModel:
             last_success = self._last_success_step
             sim_status = self.sim.status() if self.sim is not None else None
             source_status = self.source.status() if self.source is not None else None
-        if n_steps == 0 and stats["lieux"]["count"] == 0:
-            return ""
+            body_state = self._last_body_state.as_dict() if self._last_body_state else None
+            observation = self._last_observation.as_dict() if self._last_observation else None
+            active_plan = self.plan_runtime.active_plan()
         lines = [
-            "BODY WORLD MODEL (physical world knowledge owned by the Body):",
+            "CURRENT EMBODIED STATE (physical evidence owned by the Body):",
             f"- Learned {n_steps} embodied steps; prediction error (EMA) {ema:.3f}.",
             f"- Memory: {stats['lieux']['count']} places (avg reliability "
             f"{stats['lieux'].get('avg_reliability', 0):.2f}), "
@@ -778,6 +779,33 @@ class EmbodiedWorldModel:
             f"{stats['objets'].get('avg_reliability', 0):.2f}), "
             f"{stats['trajectories']['count']} action sequences.",
         ]
+        if body_state:
+            stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(body_state["timestamp"]))
+            position = ", ".join(f"{value:.2f}" for value in body_state["position"])
+            posture = body_state.get("posture") or {}
+            holding = posture.get("holding", "nothing")
+            capabilities = body_state.get("capabilities") or {}
+            capability_text = ", ".join(f"{key}={value}" for key, value in capabilities.items()) or "not reported"
+            lines.append(
+                f"- Current Body pose: position=({position}), yaw={body_state['orientation']:.2f} rad, "
+                f"holding={holding} (observed {stamp})."
+            )
+            lines.append(f"- Current Body capabilities: {capability_text}.")
+        else:
+            lines.append("- Current Body pose: unavailable; no Body observation has been received yet.")
+        if observation:
+            stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(observation["timestamp"]))
+            lines.append(
+                f"- Current scene observation: {observation.get('text') or 'no scene description'} "
+                f"(source={observation.get('source')}, observed {stamp})."
+            )
+        if active_plan:
+            current = active_plan.steps[active_plan.current_step_index] if active_plan.current_step_index < len(active_plan.steps) else None
+            next_step = current.verb if current else "none"
+            lines.append(
+                f"- Active Body plan: {active_plan.objective} (state={active_plan.state}, "
+                f"next={next_step}, progress={active_plan.current_step_index}/{len(active_plan.steps)})."
+            )
         concepts = self.concepts.snapshot(limit=5)
         if concepts:
             lines.append("- Reusable embodied concepts (confidence): " + "; ".join(f"{c['label']} ({c['confidence']:.2f})" for c in concepts) + ".")
@@ -823,7 +851,7 @@ class EmbodiedWorldModel:
                 lines.append("- Sensor source: none attached (body without sensors).")
         if last_success >= 0:
             lines.append(f"- Last goal success at step {last_success}.")
-        lines.append("Treat this as grounded physical evidence, not abstract belief.")
+        lines.append("Treat this as grounded physical evidence, not abstract belief. Do not infer an unobserved body state.")
         return "\n".join(lines)
 
     # ── logging ─────────────────────────────────────────────────────────────

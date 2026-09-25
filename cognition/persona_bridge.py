@@ -2157,6 +2157,9 @@ Memory honesty — two distinct cases:
                         "\n\n━━ CURRENT BODY OBSERVATIONS ━━\n"
                         "This is the freshest snapshot read by the Body for this turn. "
                         "Prefer it over older connector, memory, or conversation values.\n"
+                        "When the user asks what you perceive, sense, can physically do, or what your body is doing, "
+                        "answer from this evidence first. Distinguish direct current observation, stale observation, "
+                        "and unavailable information; never invent a bodily state to fill a gap.\n"
                         f"{_body_context}"
                     )
             except Exception:

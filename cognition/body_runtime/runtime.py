@@ -104,6 +104,10 @@ class BodyRuntime:
         # The Body's embodied world model (lazy — built on first access).
         # Owned by the Body; the Brain only reads its context.
         self._worldmodel = None
+        # A missing standalone Body must not trigger a connection attempt for
+        # every chat turn. This is only a read-side cooldown; it never starts
+        # or configures the Body host.
+        self._worldmodel_retry_after = 0.0
 
     _CONFIG_FIELDS = {
         "BODY_RUNTIME_ENABLED", "BODY_PLUGIN_HOME_ASSISTANT_ENABLED",
@@ -217,7 +221,13 @@ class BodyRuntime:
         if not bool(self.config_value("BODY_WORLDMODEL_ENABLED", False)):
             return None
         if self._worldmodel is None:
+            if time.time() < self._worldmodel_retry_after:
+                return None
             self._worldmodel = self._build_worldmodel()
+            if self._worldmodel is None:
+                self._worldmodel_retry_after = time.time() + 15.0
+            else:
+                self._worldmodel_retry_after = 0.0
         return self._worldmodel
 
     def _build_worldmodel(self):
@@ -451,12 +461,12 @@ class BodyRuntime:
                 stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(item["observed_at"]))
                 lines.append(f"- {item['subject']}: {value}{unit} (source {item['source']}, observed {stamp})")
         # The Body's learned world knowledge (anchors + task state).  Only
-        # included if the world model was already built — this is the single
-        # channel through which the Body's physical knowledge informs the
-        # Brain, and it is read-only by design.  It is included even when
-        # there are no live sensor observations (e.g. the simulated body).
+        # This is the single channel through which the Body's physical
+        # knowledge informs the Brain. Accessing ``worldmodel`` creates only
+        # a read-only remote facade; it never launches a Body process. It is
+        # included even when there are no bridged sensor observations.
         try:
-            wm = self._worldmodel
+            wm = self.worldmodel
             if wm is not None:
                 wm_ctx = wm.context_for_brain()
                 if wm_ctx:
