@@ -24,6 +24,7 @@ class TrialResult:
     replans: int
     recoveries: int
     disturbed: bool = False
+    final_step: str = ""
     reason: str = ""
 
     def as_dict(self) -> Dict[str, Any]:
@@ -124,6 +125,12 @@ def _run_trial(
             if recovery.action:
                 room.step(recovery.action)
                 recoveries += 1
+    if reason != "completed":
+        current = plan.steps[plan.current_step_index] if plan.current_step_index < len(plan.steps) else None
+        final_step = f"{current.verb}->{current.target}" if current else "complete"
+        reason = f"{reason}:{final_step}"
+    else:
+        final_step = "complete"
     return TrialResult(
         seed=int(seed),
         success=reason == "completed",
@@ -132,6 +139,7 @@ def _run_trial(
         replans=replans,
         recoveries=recoveries,
         disturbed=disturbed,
+        final_step=final_step,
         reason=reason,
     )
 
@@ -139,6 +147,11 @@ def _run_trial(
 def _aggregate(results: List[TrialResult]) -> Dict[str, Any]:
     successful = [item for item in results if item.success]
     disturbed = [item for item in results if item.disturbed]
+    failures = [item for item in results if not item.success]
+    failure_reasons: Dict[str, int] = {}
+    for item in failures:
+        reason = str(item.reason).split(":", 1)[0]
+        failure_reasons[reason] = failure_reasons.get(reason, 0) + 1
     return {
         "trials": len(results),
         "successes": len(successful),
@@ -148,6 +161,20 @@ def _aggregate(results: List[TrialResult]) -> Dict[str, Any]:
         "replans": sum(item.replans for item in results),
         "recoveries": sum(item.recoveries for item in results),
         "disturbed_trials": len(disturbed),
+        "failures": len(failures),
+        "failure_reasons": failure_reasons,
+        "failed_trials": [
+            {
+                "seed": item.seed,
+                "final_step": item.final_step,
+                "reason": item.reason,
+                "steps": item.steps,
+                "replans": item.replans,
+                "recoveries": item.recoveries,
+                "disturbed": item.disturbed,
+            }
+            for item in failures
+        ],
         "results": [item.as_dict() for item in results],
     }
 
