@@ -189,10 +189,9 @@ class EmbodiedWorldModel:
             self.source = SimRobotSource()
         if mode_changed == "bridge":
             self.source = None
-        if self._cfg.get("enabled"):
-            self.start()
-        else:
-            self.stop()
+        # Configuration changes are intentionally side-effect free. Enabling
+        # the Body plugin does not launch a simulation; /worldmodel/run is the
+        # explicit lifecycle control.
         return dict(payload)
 
     # ── lifecycle ───────────────────────────────────────────────────────────

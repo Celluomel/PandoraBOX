@@ -480,11 +480,12 @@ class BodyHostHttpTest(unittest.TestCase):
                 self.assertIn("robot", health)
                 self.assertIn("plugins", health)
                 self.assertIn("worldmodel", health)
-                self.assertEqual(len(health["plugins"]), 3)
+                self.assertEqual(len(health["plugins"]), 5)
 
                 # world model endpoints (lazy build)
                 status = _get(f"{base}/worldmodel/status")
                 self.assertIn("mode", status)
+                self.assertFalse(status["running"], "Body startup must leave simulation paused")
                 anchors = _get(f"{base}/worldmodel/anchors")
                 self.assertIn("stats", anchors)
                 eps = _get(f"{base}/worldmodel/episodes")

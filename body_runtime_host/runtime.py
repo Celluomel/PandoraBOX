@@ -471,12 +471,11 @@ class BodyHost:
         if persisted_value != bool(enabled):
             raise OSError(f"Body configuration was not persisted for {field}")
         if plugin_id == "world_model":
-            wm = self.worldmodel if enabled else self._worldmodel
-            if wm is not None:
-                if enabled:
-                    wm.start()
-                else:
-                    wm.stop()
+            # Enabling the plugin exposes the Body capability; it must not
+            # implicitly launch a physics episode. Simulation is an explicit
+            # operator action through POST /worldmodel/run.
+            if not enabled and self._worldmodel is not None:
+                self._worldmodel.stop()
         elif self._worldmodel is not None:
             self.reload_worldmodel_source()
         return {
@@ -867,8 +866,6 @@ class BodyHost:
             src = self._resolve_worldmodel_source()
             wm.stop()
             wm.source = src
-            if bool(self.value("BODY_WORLDMODEL_ENABLED", False)) and wm.config().get("enabled"):
-                wm.start()
             return {"ok": True, "source": src.name, "status": wm.status_summary()}
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
@@ -951,12 +948,10 @@ class BodyHost:
         if bool(self.value("BODY_WORLDMODEL_ENABLED", False)):
             wm = self.worldmodel
             if wm is not None:
-                # The Body plugin toggle is the runtime authority.  The
-                # model-local flag remains persisted for direct world-model
-                # use, but must not silently prevent the enabled Body plugin
-                # from starting after a restart.
-                wm.start()
-                LOG.info("World model loop started (steps=%d)", wm.status_summary().get("steps"))
+                # Body startup exposes the world-model plugin but does not
+                # start a simulation episode. The operator starts it through
+                # the Body UI or POST /worldmodel/run.
+                LOG.info("World model ready but paused (steps=%d)", wm.status_summary().get("steps"))
             else:
                 LOG.warning("BODY_WORLDMODEL_ENABLED set but the world model could not be built (numpy/torch missing?)")
         while not self.stop_event.wait(1):
