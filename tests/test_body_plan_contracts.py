@@ -261,6 +261,21 @@ class BodyPlanContractTests(unittest.TestCase):
         self.assertFalse(route.blocked)
         self.assertNotEqual(route.reason, "recover_from_blockage")
 
+    def test_local_planner_treats_surfaces_as_blocking_geometry(self):
+        current = snapshot()
+        current.objects = [
+            {"id": "dock", "kind": "surface", "position": [2.0, 1.0, 0.0], "size": 1.0},
+            {"id": "goal", "kind": "goal", "position": [4.0, 1.0, 0.0], "size": 0.5},
+        ]
+        body = BodyState(
+            position=[1.0, 1.0, 0.0],
+            orientation=0.0,
+            capabilities={"reach": 0.75, "world_width": 8, "world_height": 8},
+        )
+        route = LocalRoutePlanner().route("goal", current, body)
+        self.assertFalse(route.blocked)
+        self.assertNotIn((2, 1), route.cells)
+
     def test_plan_controlled_simulation_uses_arbitrary_object_and_surface(self):
         room = SimulatedRoom()
         room.objects["parcel"] = {"id": "parcel", "label": "parcel", "kind": "object", "x": 2.0, "y": 2.0, "mass": 0.4, "size": 0.4}

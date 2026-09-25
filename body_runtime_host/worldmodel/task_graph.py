@@ -102,7 +102,7 @@ class TaskGraphExecutor:
         if x < 0.0 or y < 0.0 or x >= width or y >= height:
             return False
         for item in snapshot.objects:
-            if str(item.get("kind")) not in {"obstacle", "chair", "table", "wall", "mobile_obstacle"}:
+            if str(item.get("kind")) not in {"obstacle", "chair", "table", "surface", "wall", "mobile_obstacle"}:
                 continue
             position = item.get("position") or [0.0, 0.0]
             if math.hypot(float(position[0]) - x, float(position[1]) - y) < 0.6:
@@ -178,7 +178,7 @@ class TaskGraphExecutor:
         for item in snapshot.objects:
             if str(item.get("id")) == target_id or str(item.get("kind")) in {"goal", "target"}:
                 continue
-            if str(item.get("kind")) not in {"obstacle", "chair", "table", "wall", "mobile_obstacle"}:
+            if str(item.get("kind")) not in {"obstacle", "chair", "table", "surface", "wall", "mobile_obstacle"}:
                 continue
             ox, oy = (item.get("position") or [0.0, 0.0])[:2]
             projection = max(0.0, min(1.0, ((ox - bx) * (tx - bx) + (oy - by) * (ty - by)) / (length * length)))

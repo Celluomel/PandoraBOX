@@ -36,7 +36,7 @@ class Route:
 class LocalRoutePlanner:
     """A* routing with obstacle inflation and reachable destination cells."""
 
-    _BLOCKING_KINDS = {"obstacle", "chair", "table", "wall", "mobile_obstacle"}
+    _BLOCKING_KINDS = {"obstacle", "chair", "table", "surface", "wall", "mobile_obstacle"}
 
     def __init__(self) -> None:
         self._scene_signatures: Dict[str, tuple] = {}

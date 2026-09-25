@@ -44,7 +44,7 @@ def _cell_clear(
         return False
     for obj in objects:
         kind = str(getattr(obj, "kind", ""))
-        if kind not in {"obstacle", "mobile_obstacle", "table", "chair"}:
+        if kind not in {"obstacle", "mobile_obstacle", "table", "surface", "chair"}:
             continue
         if math.hypot(float(obj.position[0]) - x, float(obj.position[1]) - y) < 0.6:
             return False
@@ -64,7 +64,7 @@ def _predict_mobile_step(
         return None
     mx, my = float(mobile.position[0]), float(mobile.position[1])
     current_distance = math.hypot(mx - position[0], my - position[1])
-    static = [o for o in objects if str(getattr(o, "kind", "")) in {"obstacle", "table", "chair"}]
+    static = [o for o in objects if str(getattr(o, "kind", "")) in {"obstacle", "table", "surface", "chair"}]
     choices = []
     for dx, dy in ((1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)):
         cell = (mx + dx, my + dy)
@@ -115,7 +115,7 @@ def _grid_route_action(
     scene_objects = list(getattr(observation, "scene", []) or [])
     for obj in scene_objects:
         kind = str(getattr(obj, "kind", ""))
-        if kind not in {"obstacle", "mobile_obstacle", "table", "chair"}:
+        if kind not in {"obstacle", "mobile_obstacle", "table", "surface", "chair"}:
             continue
         # A destination surface is not traversable, but cells adjacent to it
         # remain valid goals. Other solid objects occupy their observed cell.
@@ -147,7 +147,7 @@ def _grid_route_action(
         static_blocked = {
             (int(round(float(o.position[0]))), int(round(float(o.position[1]))))
             for o in scene_objects
-            if str(getattr(o, "kind", "")) in {"obstacle", "table", "chair"}
+            if str(getattr(o, "kind", "")) in {"obstacle", "table", "surface", "chair"}
         }
         actions = [("forward", 1, 0), ("backward", -1, 0), ("turn_left", 0, 1),
                    ("turn_right", 0, -1), ("wait", 0, 0)]
@@ -376,7 +376,7 @@ def navigation_guidance(observation: Any, body: Any, carrying: bool = False) -> 
                 )
                 if out_of_bounds or (mobile_predicted is not None and math.hypot(mobile_predicted[0] - cell[0], mobile_predicted[1] - cell[1]) < 0.6) or any(
                     obj is not mobile
-                    and str(getattr(obj, "kind", "")) in {"obstacle", "table", "chair"}
+                    and str(getattr(obj, "kind", "")) in {"obstacle", "table", "surface", "chair"}
                     and math.hypot(float(obj.position[0]) - cell[0], float(obj.position[1]) - cell[1]) < 0.6
                     for obj in objects
                 ) or math.hypot(float(mobile.position[0]) - cell[0], float(mobile.position[1]) - cell[1]) < 0.6:
@@ -402,7 +402,7 @@ def navigation_guidance(observation: Any, body: Any, carrying: bool = False) -> 
         # The simulator's collision model treats furniture and surfaces as
         # solid volumes too. They are valid destinations for manipulation, but
         # they are still obstacles while the Body is travelling elsewhere.
-        if object_kind not in {"obstacle", "mobile_obstacle", "table", "chair"}:
+        if object_kind not in {"obstacle", "mobile_obstacle", "table", "surface", "chair"}:
             continue
         ox, oy = float(obj.position[0]), float(obj.position[1])
         radius = max(0.65, float(getattr(obj, "size", 1.0)) * 0.7)
