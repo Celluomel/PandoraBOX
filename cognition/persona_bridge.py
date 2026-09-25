@@ -2669,6 +2669,40 @@ Memory honesty — two distinct cases:
 
     def _classify_body_chat_turn(self, text: str, pending: bool = False) -> str:
         """Use the configured fast model as a semantic action gate."""
+        def _explicit_confirmation() -> str | None:
+            """Recognize the finite approval protocol without target dictionaries.
+
+            This is deliberately limited to short, standalone approval/cancel
+            commands. Longer or content-bearing messages still go through the
+            semantic LLM judge, so this cannot turn an ordinary physical
+            sentence into an authorization accidentally.
+            """
+            if not pending:
+                return None
+            normalized = re.sub(r"[^\wÀ-ÿ]+", " ", str(text or "").casefold()).strip()
+            if not normalized or len(normalized.split()) > 5:
+                return None
+            protocol = {
+                "execute": "confirm",
+                "executer": "confirm",
+                "exécute": "confirm",
+                "fais le": "confirm",
+                "fais-le": "confirm",
+                "do it": "confirm",
+                "go": "confirm",
+                "proceed": "confirm",
+                "oui": "confirm",
+                "yes": "confirm",
+                "confirm": "confirm",
+                "confirme": "confirm",
+                "annule": "cancel",
+                "annuler": "cancel",
+                "cancel": "cancel",
+                "no": "cancel",
+                "non": "cancel",
+            }
+            return protocol.get(normalized)
+
         def _primary_route() -> str:
             manager = getattr(self._llm_stream_fn, "__self__", None)
             interactive = getattr(manager, "generate_interactive_analysis", None)
@@ -2701,7 +2735,8 @@ Memory honesty — two distinct cases:
         try:
             from managers.settings_manager import config
             if not bool(getattr(config, "FAST_ROUND_ENABLED", False)):
-                return _primary_route()
+                route = _primary_route()
+                return _explicit_confirmation() or route
             manager = getattr(self._llm_stream_fn, "__self__", None)
             fast = getattr(manager, "generate_fast_round", None)
             model = str(getattr(config, "FAST_ROUND_MODEL", "") or "").strip()
@@ -2753,6 +2788,11 @@ Memory honesty — two distinct cases:
             # back to a narrative response that never reaches the Body.
             if pending:
                 _route = _primary_route()
+                if _route in allowed and _route != "normal":
+                    return _route
+                explicit = _explicit_confirmation()
+                if explicit:
+                    return explicit
                 if _route in allowed:
                     return _route
             else:
