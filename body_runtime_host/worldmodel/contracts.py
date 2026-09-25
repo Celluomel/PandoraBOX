@@ -59,6 +59,8 @@ class BodyPlan:
     current_step_index: int = 0
     step_attempts: Dict[str, int] = field(default_factory=dict)
     last_error: str = ""
+    selected_skills: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    skill_resolution: Dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> Dict[str, Any]:
         data = asdict(self)
@@ -81,6 +83,8 @@ class BodyPlan:
             current_step_index=max(0, int(value.get("current_step_index") or 0)),
             step_attempts={str(key): int(count) for key, count in dict(value.get("step_attempts") or {}).items()},
             last_error=str(value.get("last_error") or ""),
+            selected_skills={str(key): dict(item) for key, item in dict(value.get("selected_skills") or {}).items() if isinstance(item, dict)},
+            skill_resolution=dict(value.get("skill_resolution") or {}),
         )
 
 

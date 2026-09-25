@@ -39,10 +39,10 @@ class TaskGraphExecutor:
         if self._satisfied(step, snapshot, body):
             return TaskDecision(None, step.step_id, "postcondition observed", satisfied=True)
         if step.verb == "navigate":
-            return self._route_decision(step.step_id, step.target, snapshot, body)
+            return self._route_decision(step.step_id, step.target, snapshot, body, arguments=step.arguments)
         if step.verb in {"grab", "release"} and not self._predicate({"type": "near", "target": step.target}, snapshot, body):
             reason = "align_for_grasp" if step.verb == "grab" else "align_for_release"
-            return self._route_decision(step.step_id, step.target, snapshot, body, reason)
+            return self._route_decision(step.step_id, step.target, snapshot, body, reason, step.arguments)
         if step.verb in {"grab", "release", "push", "wait"}:
             return TaskDecision(
                 Action(type=step.verb, target=step.target, params={"plan_controlled": True, **step.arguments}),
@@ -51,12 +51,12 @@ class TaskGraphExecutor:
             )
         return TaskDecision(None, step.step_id, f"unsupported plan verb: {step.verb}")
 
-    def _route_decision(self, step_id: str, target: str, snapshot: BodySnapshot, body: BodyState, align_reason: str = "") -> TaskDecision:
+    def _route_decision(self, step_id: str, target: str, snapshot: BodySnapshot, body: BodyState, align_reason: str = "", arguments: Optional[Dict[str, Any]] = None) -> TaskDecision:
         route = self.local_planner.route(target, snapshot, body)
         self.last_route = route.as_dict()
         if route.blocked:
             return TaskDecision(None, step_id, "recover_from_blockage", details=self.last_route)
-        return TaskDecision(self._navigation_action(route, snapshot, body), step_id, align_reason or route.reason, details=self.last_route)
+        return TaskDecision(self._navigation_action(route, snapshot, body, arguments), step_id, align_reason or route.reason, details=self.last_route)
 
     def recovery_action(self, plan: BodyPlan, snapshot: BodySnapshot, body: BodyState) -> TaskDecision:
         """Take one reversible clearance action before re-evaluating a step."""
@@ -131,15 +131,15 @@ class TaskGraphExecutor:
                 return False
         return True
 
-    def _navigation_action(self, route: Any, snapshot: BodySnapshot, body: BodyState) -> Action:
+    def _navigation_action(self, route: Any, snapshot: BodySnapshot, body: BodyState, arguments: Optional[Dict[str, Any]] = None) -> Action:
         waypoint = route.next_cell
         if waypoint is None:
             return Action(type="wait", target=route.target)
         desired = math.atan2(float(waypoint[1]) - snapshot.pose["y"], float(waypoint[0]) - snapshot.pose["x"])
         delta = (desired - float(body.orientation) + math.pi) % (2 * math.pi) - math.pi
         if abs(delta) > 0.35:
-            return Action(type="turn_left" if delta > 0 else "turn_right", target=route.target, params={"waypoint": list(waypoint)})
-        return Action(type="forward", target=route.target, params={"waypoint": list(waypoint)})
+            return Action(type="turn_left" if delta > 0 else "turn_right", target=route.target, params={**(arguments or {}), "waypoint": list(waypoint), "plan_controlled": True})
+        return Action(type="forward", target=route.target, params={**(arguments or {}), "waypoint": list(waypoint), "plan_controlled": True})
     def __init__(self) -> None:
         self.local_planner = LocalRoutePlanner()
         self.last_route: Dict[str, Any] = {}

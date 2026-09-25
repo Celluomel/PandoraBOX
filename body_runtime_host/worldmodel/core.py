@@ -44,6 +44,7 @@ from .navigation import navigation_guidance
 from .policy import Policy
 from .plan_runtime import BodyPlanRuntime
 from .task_graph import TaskGraphExecutor
+from .skills import BodySkillLibrary
 from .sim_world import SimulatedRoom
 from .sources import SimRobotSource
 from .types import (
@@ -143,6 +144,7 @@ class EmbodiedWorldModel:
         self.concepts = EmbodiedConceptMemory(self.data_dir / "concepts.json")
         self.plan_runtime = BodyPlanRuntime(self.data_dir)
         self.task_graph = TaskGraphExecutor()
+        self.skills = BodySkillLibrary(self.data_dir / "skills.json")
         self._episodes_path = self.data_dir / "episodes.jsonl"
         self._maybe_trim_episodes_file()
 
@@ -297,7 +299,18 @@ class EmbodiedWorldModel:
             active_plan = self.plan_runtime.active_plan()
             if active_plan and active_plan.state in {"ready", "executing"}:
                 self.plan_runtime.begin_execution()
-                task_decision = self.task_graph.decide(active_plan, plan_snapshot, body_state)
+                current_step = active_plan.steps[active_plan.current_step_index] if active_plan.current_step_index < len(active_plan.steps) else None
+                selected, skill_reason = self.skills.resolve(
+                    current_step, plan_snapshot, body_state,
+                    strict=bool(active_plan.constraints.get("require_verified_skills", False)),
+                ) if current_step else (None, "no current step")
+                if selected:
+                    self._last_decision = {**decision, "skill": selected.get("skill_id"), "skill_reason": skill_reason}
+                elif active_plan.constraints.get("require_verified_skills"):
+                    from .task_graph import TaskDecision
+                    task_decision = TaskDecision(None, current_step.step_id if current_step else "", skill_reason, details={"skill_guard": "refused"})
+                if task_decision is None:
+                    task_decision = self.task_graph.decide(active_plan, plan_snapshot, body_state)
                 if task_decision.satisfied:
                     self.plan_runtime.advance(task_decision.step_id, plan_snapshot.snapshot_id)
                     chosen = {"type": "wait"}
@@ -326,6 +339,11 @@ class EmbodiedWorldModel:
             self._last_observation = obs_after
             self._last_body_state = self.source.body_state() if self.source is not None else body_state
             if task_decision and active_plan:
+                if task_decision.action is not None:
+                    self.skills.record_trial(
+                        active_plan.steps[active_plan.current_step_index], outcome,
+                        plan_snapshot, body_state,
+                    )
                 self.plan_runtime.record_action(ActionResult(
                     plan_id=active_plan.plan_id,
                     step_id=task_decision.step_id,
@@ -544,7 +562,9 @@ class EmbodiedWorldModel:
                 self.plan_runtime.record_snapshot(
                     self._make_plan_snapshot(self._last_observation, self._last_body_state)
                 )
-            return self.plan_runtime.payload()
+            payload = self.plan_runtime.payload()
+            payload["skills"] = self.skills.snapshot()
+            return payload
 
     def submit_plan(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         with self._lock:
@@ -558,7 +578,28 @@ class EmbodiedWorldModel:
             self.plan_runtime.record_snapshot(
                 self._make_plan_snapshot(self._last_observation, self._last_body_state)
             )
-            return self.plan_runtime.submit(payload)
+            plan_result = self.plan_runtime.submit(payload)
+            if plan_result.get("accepted"):
+                plan = self.plan_runtime.active_plan()
+                if plan:
+                    resolution = {}
+                    strict = bool(plan.constraints.get("require_verified_skills", False))
+                    body = self._last_body_state
+                    for step in plan.steps:
+                        selected, reason = self.skills.resolve(step, self._make_plan_snapshot(self._last_observation, body), body, strict=strict)
+                        resolution[step.step_id] = {"selected": bool(selected), "skill_id": selected.get("skill_id") if selected else None, "reason": reason}
+                        if selected:
+                            step.arguments["skill_id"] = selected.get("skill_id")
+                            plan.selected_skills[step.step_id] = selected
+                    plan.skill_resolution = resolution
+                    if strict and any(not item["selected"] for item in resolution.values()):
+                        plan.state = "rejected"
+                        self.plan_runtime.cancel(plan.plan_id, "verified skill preconditions or limits not met")
+                        return {"accepted": False, "errors": ["verified skill requirements not met"], "skill_resolution": resolution}
+                    self.plan_runtime._persist_active()
+                    plan_result["plan"] = plan.as_dict()
+                    plan_result["skill_resolution"] = resolution
+            return plan_result
 
     def cancel_plan(self, plan_id: str, reason: str = "cancelled by operator") -> Dict[str, Any]:
         return self.plan_runtime.cancel(plan_id, reason)
