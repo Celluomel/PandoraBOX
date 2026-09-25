@@ -49,6 +49,26 @@ class BodyPlanCompilerTests(unittest.TestCase):
         self.assertEqual([step["verb"] for step in result["steps"]], ["explore", "grab", "release"])
         self.assertEqual(result["steps"][0]["arguments"]["targets"], ["chair"])
 
+    def test_semantic_audit_restores_missing_exploration_step(self):
+        calls = []
+
+        def llm(_prompt, _system, **_kwargs):
+            calls.append(True)
+            if len(calls) == 1:
+                return '{"objective":"tour then place","steps":[' \
+                    '{"step_id":"1","verb":"navigate","target":"goal"},' \
+                    '{"step_id":"2","verb":"grab","target":"cup"},' \
+                    '{"step_id":"3","verb":"release","target":"chair"}]}'
+            return '{"needs_revision":true,"steps":[' \
+                '{"step_id":"tour","verb":"explore","target":"scene"},' \
+                '{"step_id":"grab","verb":"grab","target":"cup"},' \
+                '{"step_id":"place","verb":"release","target":"chair"}]}'
+
+        result = compile_body_plan("Tourne dans la pièce puis prends la tasse et pose-la sur la chaise", self.snapshot, llm)
+        self.assertTrue(result["accepted"], result)
+        self.assertEqual(result["steps"][0]["verb"], "explore")
+        self.assertEqual(len(calls), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -142,6 +142,54 @@ def _normalize_release_steps(steps: list[dict[str, Any]], snapshot: Dict[str, An
         step["arguments"] = arguments
 
 
+def _audit_ordered_intent(
+    request: str,
+    plan: Dict[str, Any],
+    llm: Callable[..., str],
+    *,
+    max_tokens: int,
+) -> Dict[str, Any]:
+    """Ask a bounded semantic pass whether the draft lost an ordered intent.
+
+    This is deliberately not a phrase dictionary. The first pass plans the
+    action; the second pass checks the relationship between the request and
+    the ordered steps, repairing omissions such as a room survey being
+    collapsed into navigation to a single legacy goal.
+    """
+    system = (
+        "Audit a proposed physical Body plan against the user's complete request. "
+        "Infer meaning semantically; do not use a keyword list. Check that ordered "
+        "intent is preserved, especially any observation, survey or exploration "
+        "requested before manipulation. If the draft is incomplete, return JSON "
+        "with needs_revision true and a complete replacement steps array. If it is "
+        "complete, return exactly {\"needs_revision\":false}. Never execute actions. "
+        "Use only the supplied Body entity ids. Use the intrinsic verb explore for "
+        "a bounded physical room/scene survey."
+    )
+    prompt = json.dumps({"user_request": request, "draft_plan": plan}, ensure_ascii=False)
+    try:
+        raw = llm(
+            prompt,
+            system,
+            max_tokens=max(700, min(int(max_tokens), 1200)),
+            temperature=0.0,
+            json_mode=True,
+            reasoning_format="none",
+        )
+    except Exception:
+        return plan
+    audit = _extract_json(raw)
+    if not audit or not bool(audit.get("needs_revision")) or not isinstance(audit.get("steps"), list):
+        return plan
+    repaired = dict(plan)
+    repaired["steps"] = audit["steps"]
+    if audit.get("objective"):
+        repaired["objective"] = audit["objective"]
+    if isinstance(audit.get("constraints"), dict):
+        repaired["constraints"] = audit["constraints"]
+    return repaired
+
+
 def compile_body_plan(
     request: str,
     snapshot: Dict[str, Any],
@@ -214,6 +262,8 @@ def compile_body_plan(
     if not plan:
         detail = str(raw or last_error or "provider returned no content").strip()
         return {"accepted": False, "status": "invalid", "error": f"LLM returned no plan JSON ({detail[:180]})"}
+    if not any(str(item.get("verb") or "").strip().lower() == "explore" for item in plan.get("steps") or [] if isinstance(item, dict)):
+        plan = _audit_ordered_intent(str(request).strip(), plan, llm, max_tokens=max_tokens)
     steps = plan.get("steps")
     if not isinstance(steps, list) or not steps:
         return {"accepted": False, "status": "invalid", "error": "plan requires ordered steps"}
