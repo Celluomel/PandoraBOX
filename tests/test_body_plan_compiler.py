@@ -47,6 +47,7 @@ class BodyPlanCompilerTests(unittest.TestCase):
         result = compile_body_plan("Fais le tour de la pièce puis pose la tasse sur la table", self.snapshot, llm)
         self.assertTrue(result["accepted"], result)
         self.assertEqual([step["verb"] for step in result["steps"]], ["explore", "grab", "release"])
+        self.assertEqual(result["steps"][0]["target"], "scene")
         self.assertEqual(result["steps"][0]["arguments"]["targets"], ["chair"])
 
     def test_semantic_audit_restores_missing_exploration_step(self):

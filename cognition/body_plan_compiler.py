@@ -274,10 +274,15 @@ def compile_body_plan(
         verb = str(item.get("verb") or "").strip().lower()
         if verb not in _VERBS:
             return {"accepted": False, "status": "invalid", "error": f"unsupported Body verb: {verb or '<empty>'}"}
+        # ``explore`` is an intrinsic operation over the current scene, not
+        # navigation to an entity. Providers sometimes echo a room/source
+        # label (for example ``simulated_room``); normalize it so that such
+        # prose cannot become an unknown Body target.
+        target = "scene" if verb == "explore" else str(item.get("target") or "")
         normalized.append({
             "step_id": str(item.get("step_id") or f"step-{index + 1}"),
             "verb": verb,
-            "target": str(item.get("target") or ""),
+            "target": target,
             "arguments": _mapping(item.get("arguments")),
             "preconditions": list(item.get("preconditions") or []),
             "postconditions": list(item.get("postconditions") or []),
