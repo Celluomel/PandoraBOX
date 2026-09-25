@@ -440,6 +440,12 @@ class BodyHost:
             raise ValueError(f"unknown Body plugin: {plugin_id}")
         self.config[field] = bool(enabled)
         self.save_config()
+        # Confirm the value survived the write instead of reporting success
+        # based only on the in-memory dictionary.
+        persisted = self._load_config()
+        persisted_value = bool(persisted.get(field, False))
+        if persisted_value != bool(enabled):
+            raise OSError(f"Body configuration was not persisted for {field}")
         if plugin_id == "world_model":
             wm = self.worldmodel if enabled else self._worldmodel
             if wm is not None:
@@ -449,7 +455,14 @@ class BodyHost:
                     wm.stop()
         elif self._worldmodel is not None:
             self.reload_worldmodel_source()
-        return {"ok": True, "plugin": plugin_id, "enabled": bool(enabled), "plugins": self.plugins()}
+        return {
+            "ok": True,
+            "plugin": plugin_id,
+            "enabled": bool(enabled),
+            "persisted": persisted_value,
+            "config_path": str(CONFIG_PATH),
+            "plugins": self.plugins(),
+        }
 
     # ── Home Assistant (auxiliary presence feed) ───────────────────────────
 
@@ -963,6 +976,7 @@ class BodyHost:
                         "runtime": "independent",
                         "observations": len(owner.latest),
                         "bridge_enabled": bool(owner.value("BODY_BRIDGE_ENABLED", False)),
+                        "config_path": str(CONFIG_PATH),
                         "robot": owner.robot_status(),
                         "plugins": owner.plugins(),
                         "worldmodel": (
