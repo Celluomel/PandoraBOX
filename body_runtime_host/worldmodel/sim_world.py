@@ -212,13 +212,12 @@ class SimulatedRoom:
         return True
 
     def _move_mobile_obstacle(self, body_position: tuple[float, float]) -> bool:
-        """Move toward the Body's last observed position at its own speed.
+        """Pursue the Body at a safe distance, with an escape fallback.
 
-        The Body is deliberately an attractor: this creates observable dynamic
-        collision risk for the navigation policy instead of teaching the
-        obstacle to keep away. Motion is half-speed and one observation behind;
-        it cannot instantaneously mirror a Body action. Static geometry and
-        the Body still block overlap.
+        The moving obstacle remains a useful dynamic hazard, but it must not
+        become a second Body controller or enter the contact zone. Motion is
+        one observation behind and speed-varied; once pursuit would cross the
+        configured clearance, it turns away or patrols through a free cell.
         """
         mobile = self.objects.get("mobile_obstacle")
         if mobile is None or self.done:
@@ -235,6 +234,7 @@ class SimulatedRoom:
         self._mobile_motion_phase -= 1.0
         target_x, target_y = body_position
         current_distance = math.hypot(mobile["x"] - target_x, mobile["y"] - target_y)
+        clearance = float(self.body_state().capabilities.get("mobile_obstacle_clearance", 1.3))
         candidates: list[tuple[float, float, float]] = []
         free_neighbors: list[tuple[float, float]] = []
         for dx, dy in ((1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)):
@@ -242,13 +242,14 @@ class SimulatedRoom:
             if self._free_cell(nx, ny, ignore_id="mobile_obstacle"):
                 free_neighbors.append((nx, ny))
                 distance = math.hypot(nx - target_x, ny - target_y)
-                if distance < current_distance:
+                # Never pursue into the Body's configured safety envelope.
+                if distance < current_distance and distance >= clearance:
                     candidates.append((distance, nx, ny))
         old_position = (float(mobile["x"]), float(mobile["y"]))
         if candidates:
             _, mobile["x"], mobile["y"] = min(candidates)
             self._mobile_blocked = False
-        elif free_neighbors and current_distance <= 1.5:
+        elif free_neighbors and current_distance <= clearance + 1.0:
             # A pursuer that has reached the Body must not freeze forever when
             # the direct chase cell is unavailable.  Select a free escape
             # cell, preferring separation from the Body and rotating the tie

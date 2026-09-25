@@ -234,15 +234,14 @@ class SimWorldTest(unittest.TestCase):
         _, outcome = room.step(Action(type="wait"))
 
         mobile = room.objects["mobile_obstacle"]
-        self.assertEqual((mobile["x"], mobile["y"]), (6.0, 5.0))
-        self.assertEqual(room.near_miss_count, 1)
-        self.assertEqual(outcome.kind, "danger")
-        self.assertLess(outcome.reward, -0.12)
+        self.assertGreaterEqual(math.hypot(mobile["x"] - room.px, mobile["y"] - room.py), 1.3)
+        self.assertEqual(room.near_miss_count, 0)
+        self.assertNotEqual(outcome.kind, "danger")
 
-        _, collision = room.step(Action(type="forward"))
-        self.assertEqual(collision.kind, "danger")
-        self.assertEqual(room.collision_count, 1)
-        self.assertEqual((room.px, room.py), (5.0, 5.0))
+        _, forward = room.step(Action(type="forward"))
+        self.assertEqual(forward.kind, "danger")
+        self.assertEqual(room.collision_count, 0)
+        self.assertEqual((room.px, room.py), (6.0, 5.0))
 
     def test_sprint_uses_speed_advantage_without_tunneling(self):
         from body_runtime_host.worldmodel import Action, SimulatedRoom
@@ -311,7 +310,7 @@ class SimWorldTest(unittest.TestCase):
 
         room.step(Action(type=guidance["recommended"]))
         self.assertEqual(room.px, 3.0)
-        self.assertEqual(room.status()["mobile_obstacle_distance"], 2.0)
+        self.assertGreaterEqual(room.status()["mobile_obstacle_distance"], 1.3)
 
     def test_navigation_reverses_instead_of_spinning_when_pursuer_blocks_front(self):
         from body_runtime_host.worldmodel import SimulatedRoom
