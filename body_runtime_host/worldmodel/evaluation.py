@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import inspect
+import math
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,6 +11,7 @@ from typing import Any, Dict, List
 
 from .contracts import BodyPlan, PlanStep
 from .core import EmbodiedWorldModel
+from .dynamics import LatentWorldDynamics
 from .sim_world import SimulatedRoom
 from .task_graph import TaskGraphExecutor
 from .types import Action
@@ -31,6 +33,66 @@ class TrialResult:
 
     def as_dict(self) -> Dict[str, Any]:
         return self.__dict__.copy()
+
+
+def _evaluation_state(room: SimulatedRoom) -> Any:
+    """Encode arbitrary scene geometry without naming a fixture or route."""
+    import numpy as np
+
+    body = room.body_state()
+    width = max(1.0, float(body.capabilities.get("world_width", room.width)))
+    height = max(1.0, float(body.capabilities.get("world_height", room.height)))
+    values = [
+        float(body.position[0]) / width,
+        float(body.position[1]) / height,
+        math.sin(float(body.orientation)),
+        math.cos(float(body.orientation)),
+        1.0 if body.posture.get("holding") else 0.0,
+        float(body.capabilities.get("mobile_obstacle_speed", 0.0)),
+    ]
+    for item in sorted(room.objects.values(), key=lambda value: (str(value.get("kind", "")), str(value.get("id", "")))):
+        kind = str(item.get("kind", "object"))
+        kind_signal = (sum(ord(char) for char in kind) % 997) / 997.0
+        values.extend([
+            (float(item.get("x", 0.0)) - float(body.position[0])) / width,
+            (float(item.get("y", 0.0)) - float(body.position[1])) / height,
+            float(item.get("size", 0.0)) / max(width, height),
+            min(1.0, float(item.get("mass", 0.0)) / 1000.0),
+            kind_signal,
+        ])
+    values.extend([0.0] * max(0, 32 - len(values)))
+    return np.asarray(values[:32], dtype="float32")
+
+
+class _EvaluationLearner:
+    """Small in-run learner for the shuffled-scene protocol."""
+
+    def __init__(self) -> None:
+        self.model = LatentWorldDynamics(in_dim=32, latent_dim=16, hidden_dim=32, lr=2e-3, seed=19)
+        self.transitions = 0
+        self.updates = 0
+        self.losses: list[float] = []
+
+    def observe(self, before: Any, action: Action, after: Any, reward: float, success: bool) -> None:
+        if not self.model.available:
+            return
+        self.model.remember(before, action, after, reward, success)
+        self.transitions += 1
+        if self.transitions % 8:
+            return
+        result = self.model.train_step(batch=32, epochs=1)
+        if result:
+            self.updates += 1
+            self.losses.append(float(result.get("loss", 0.0)))
+
+    def snapshot(self) -> Dict[str, Any]:
+        window = self.losses[-10:]
+        return {
+            "transitions": self.transitions,
+            "updates": self.updates,
+            "loss": round(sum(window) / len(window), 6) if window else None,
+            "available": bool(self.model.available),
+        }
 
 
 def _generic_plan() -> BodyPlan:
@@ -106,6 +168,7 @@ def _run_trial(
     *,
     allow_recovery: bool,
     inject_disturbance: bool,
+    learner: _EvaluationLearner | None = None,
 ) -> TrialResult:
     room = SimulatedRoom()
     try:
@@ -168,7 +231,16 @@ def _run_trial(
                 recoveries += 1
             else:
                 action = Action(type="wait")
+        state_before = _evaluation_state(room)
         _, outcome = room.step(action)
+        if learner is not None:
+            learner.observe(
+                state_before,
+                action,
+                _evaluation_state(room),
+                float(outcome.reward),
+                outcome.kind in {"success", "completed"},
+            )
         if allow_recovery and outcome.kind in {"failure", "danger"}:
             recovery = executor.recovery_action(plan, snapshot, room.body_state())
             if recovery.action:
@@ -249,7 +321,20 @@ def run_shuffled_trials(
     if len(trial_seeds) < count:
         trial_seeds.extend(range(len(trial_seeds), count))
     deterministic_shuffling = "seed" in inspect.signature(SimulatedRoom.reset_episode).parameters
-    results = [_run_trial(seed, max_steps, allow_recovery=True, inject_disturbance=True) for seed in trial_seeds]
+    learner = _EvaluationLearner()
+    results: list[TrialResult] = []
+    learning_curve: list[Dict[str, Any]] = []
+    for index, seed in enumerate(trial_seeds, start=1):
+        results.append(_run_trial(seed, max_steps, allow_recovery=True, inject_disturbance=True, learner=learner))
+        if index % 10 == 0 or index == count:
+            window = results[-min(10, len(results)):]
+            learning_curve.append({
+                "trial": index,
+                "success_rate": round(sum(item.success for item in window) / len(window), 4),
+                "avg_steps": round(sum(item.steps for item in window) / len(window), 2),
+                "avg_near_misses": round(sum(item.near_misses for item in window) / len(window), 2),
+                "model": learner.snapshot(),
+            })
     baseline_results = [_run_trial(seed, max_steps, allow_recovery=False, inject_disturbance=True) for seed in trial_seeds]
     adaptive = _aggregate(results)
     baseline = _aggregate(baseline_results)
@@ -259,6 +344,11 @@ def run_shuffled_trials(
         "controller": "task_graph_local_planner",
         "deterministic_shuffling": deterministic_shuffling,
         "recorded_at": time.time(),
+        "learning": {
+            "protocol": "online latent dynamics from sensorimotor transitions",
+            "curve": learning_curve,
+            "final": learner.snapshot(),
+        },
         **adaptive,
         "baseline_without_recovery": baseline,
     }
