@@ -1062,6 +1062,12 @@ class BodyHost:
                         self._send({"error": "world model unavailable"}, 503)
                     else:
                         self._send({"context": wm.context_for_brain()})
+                elif path == "/worldmodel/plans/validate":
+                    wm = owner.worldmodel
+                    if wm is None:
+                        self._send({"error": "world model unavailable"}, 503)
+                        return
+                    self._send(wm.plan_runtime.validate(self._read_body()))
                 elif path == "/worldmodel/plans":
                     wm = owner.worldmodel
                     if wm is None:

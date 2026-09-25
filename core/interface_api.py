@@ -406,6 +406,44 @@ async def body_worldmodel_episodes(limit: int = 12):
     return _json_safe(_worldmodel().recent_episodes(limit=limit))
 
 
+@router.get('/body/worldmodel/snapshot')
+async def body_worldmodel_snapshot():
+    body, _ = _body_runtime_for_state()
+    return _json_safe(body.body_snapshot())
+
+
+class BodyPlanAssessment(BaseModel):
+    request: str = Field(..., min_length=1, max_length=2000)
+
+
+class BodyPlanSubmission(BaseModel):
+    plan: dict[str, object] = Field(default_factory=dict)
+    confirmed: bool = False
+
+
+@router.post('/body/worldmodel/plan/assess')
+async def assess_body_worldmodel_plan(payload: BodyPlanAssessment):
+    """Compile a chat request and validate it without executing the Body."""
+    state = _runtime()
+    persona = getattr(state, 'persona', None)
+    assessor = getattr(persona, 'assess_body_action_request', None)
+    if not callable(assessor):
+        raise HTTPException(503, 'Body planning bridge is not ready.')
+    return _json_safe(await asyncio.to_thread(assessor, payload.request))
+
+
+@router.post('/body/worldmodel/plan/submit')
+async def submit_body_worldmodel_plan(payload: BodyPlanSubmission):
+    """Submit a previously assessed plan only after explicit confirmation."""
+    if not payload.confirmed:
+        raise HTTPException(400, 'Explicit confirmation is required before Body execution.')
+    body, _ = _body_runtime_for_state()
+    result = await asyncio.to_thread(body.submit_worldmodel_plan, payload.plan)
+    if not result.get('accepted'):
+        raise HTTPException(409, detail=_json_safe(result))
+    return _json_safe(result)
+
+
 class WorldModelConfigUpdate(BaseModel):
     values: dict[str, object] = Field(default_factory=dict)
 
