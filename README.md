@@ -130,6 +130,128 @@ flowchart LR
     W --> O[Inspectable organism\nvisualisation and traces]
 ```
 
+## Body Runtime
+
+PandoraBOX has two independent runtime surfaces:
+
+- **Brain**: conversation, memory, goals, planning, voice and cognitive
+  orchestration. The Brain consumes Body observations through a narrow remote
+  connector.
+- **Body**: perception, plugins, physical memory, world-model dynamics and
+  action execution. The Body owns its configuration and can run without the
+  Brain.
+
+The independent Body host listens on `http://127.0.0.1:8766/` by default. The
+Brain application normally uses port `8785` or its configured application port;
+these are separate services. The Body can also be bound to a LAN address when
+the robot or Brain is on another machine. Keep the default loopback binding
+unless remote access is required, and use an authenticated network boundary
+when exposing it beyond the local computer.
+
+### Start the Body independently
+
+Windows:
+
+```bat
+start_body.bat
+```
+
+Linux:
+
+```bash
+./start_body.sh
+```
+
+These scripts create and maintain the separate `body_venv` environment and
+install `body_requirements.txt`. They do not use the Brain virtual environment
+and do not start the Brain. Open the management page at
+`http://127.0.0.1:8766/`.
+
+The Body starts paused. Use **Start simulation** in the Body interface when a
+simulated scene is wanted. This prevents a newly launched Body from moving a
+robot or advancing a test scene before the operator has inspected the
+configuration.
+
+### Body plugins
+
+The Body exposes capabilities independently and keeps their credentials local:
+
+| Plugin | Purpose | Hardware status |
+|---|---|---|
+| `sim_robot` | Deterministic robot and scene sandbox for development and tests | Available locally |
+| `world_model` | Physical memory, dynamics, policy, route memory and evaluation | Available locally |
+| `fnk0031_wifi` | Six-leg FNK0031 sensorimetry and servo gateway | Requires the robot/gateway |
+| `fnk0050_wifi` | Development adapter for the FNK0050 quadruped profile | Requires compatible hardware |
+| `home_assistant` | Auxiliary presence and environmental observations | Optional |
+
+Plugin enablement, tokens and hardware settings are managed on the Body page.
+The Brain connector only discovers enabled capabilities and reads their
+timestamped observations; it does not own plugin configuration.
+
+### Body API surface
+
+The most important endpoints are:
+
+| Endpoint | Role |
+|---|---|
+| `GET /health` | Runtime and connectivity health |
+| `GET /plugins` | Enabled and available Body plugins |
+| `GET /sensors` | Latest normalized Body observations |
+| `GET /worldmodel/status` | World-model state, objective and telemetry |
+| `POST /worldmodel/step` | Advance one supervised simulation step |
+| `POST /worldmodel/reset` | Reset the current simulated episode |
+| `GET /worldmodel/context` | Read-only grounded context for the Brain |
+| `POST /worldmodel/evaluate` | Run bounded shuffled-scene evaluation |
+| `POST /worldmodel/perception/video-replay` | Replay video frames with synchronized proxy LiDAR |
+| `GET /deployment/status` | Check deployment support and staged releases |
+
+The exact route set is discoverable from the running Body host and may grow as
+the protocol evolves. Physical commands remain confirmation-gated and must pass
+through the Body safety and capability checks.
+
+### Perception and world-model pipeline
+
+The Body's perception frame is designed to combine modalities without making a
+vision-language model authoritative over geometry:
+
+1. camera frame or video replay is timestamped and normalized;
+2. LiDAR or depth points are transformed into the Body metric frame;
+3. the VLM describes visible objects, surfaces, scene context and uncertainty;
+4. vision entities are associated with nearby LiDAR clusters by position,
+   distance, category and confidence;
+5. the deterministic world model keeps the metric pose, obstacles, clearance,
+   route and action legality authoritative;
+6. the Brain receives a grounded summary, provenance and uncertainty rather
+   than an unverified narrative.
+
+`body_perception_frame.v2` carries the shared timestamp, camera image,
+point-cloud data, Body pose and speed, camera/LiDAR calibration, metric frame,
+vision-to-LiDAR associations and per-modality quality. The current video replay
+path produces a calibrated monocular LiDAR proxy for development; real LiDAR
+replaces that proxy without changing the contract.
+
+### FNK0031 and VENTUNO Q
+
+The FNK0031 remains the servo and motor controller. A VENTUNO Q, when used, is
+the Linux gateway and optional edge-AI host; it does not replace the FNK0031
+servo board. The gateway exposes health, module discovery, sensor polling,
+command forwarding and deployment endpoints.
+
+The local simulator follows the same protocol profile and exposes 18 servo
+targets, six-leg metadata, IMU/odometry fields, `/capabilities` and `/stop`.
+Use `start_fnk0031_sim.bat` or `start_fnk0031_sim.sh` to exercise that path.
+Use `start_ventuno_gateway.bat` or `start_ventuno_gateway.sh` for the gateway
+adapter. Deployment details and the security boundary are documented in
+[`docs/BODY_DEPLOYMENT.md`](docs/BODY_DEPLOYMENT.md).
+
+### Body schematics
+
+The architecture and data-flow diagrams are maintained in
+[`docs/BODY_SCHEMATICS.md`](docs/BODY_SCHEMATICS.md). They cover process
+separation, perception fusion, Brain-to-Body planning, robot transport and the
+deployment path. The development sequence and acceptance gates remain in
+[`docs/EMBODIED_DEVELOPMENT_BLUEPRINT.md`](docs/EMBODIED_DEVELOPMENT_BLUEPRINT.md).
+
 ## Cognitive cycle
 
 ```mermaid
