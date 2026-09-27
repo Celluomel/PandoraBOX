@@ -17,6 +17,27 @@ def snapshot(capabilities=None):
 
 
 class BodySkillPlannerTests(unittest.TestCase):
+    def test_generic_skill_proposals_are_grounded_and_unverified(self):
+        snapshot_value = BodySnapshot(
+            source="sim_robot", frame="world",
+            pose={"x": 0.0, "y": 0.0, "yaw": 0.0},
+            objects=[
+                {"id": "cup", "label": "cup", "kind": "target", "position": [1, 0, 0]},
+                {"id": "table", "label": "table", "kind": "table", "position": [2, 0, 0]},
+                {"id": "pillar", "label": "pillar", "kind": "obstacle", "position": [1, 1, 0]},
+            ],
+            capabilities=["navigate", "grab", "release"],
+            reliability=1.0,
+            semantic_scene={"entities": [{"id": "cup", "affordances": ["grab"]}]},
+        )
+        proposals = BodySkillLibrary.proposals(snapshot_value, BodyState(capabilities={"gripper": 1.0}))
+        by_id = {(item["skill_id"], item.get("target")): item for item in proposals}
+        self.assertIn(("body.approach", "cup"), by_id)
+        self.assertIn(("body.grasp", "cup"), by_id)
+        self.assertIn(("body.place", "table"), by_id)
+        self.assertNotIn(("body.approach", "pillar"), by_id)
+        self.assertTrue(all(item["verified"] is False for item in proposals))
+
     def test_skill_requires_repeated_evidence_before_selection(self):
         with tempfile.TemporaryDirectory() as tmp:
             library = BodySkillLibrary(Path(tmp) / "skills.json")

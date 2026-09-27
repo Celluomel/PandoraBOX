@@ -139,6 +139,9 @@ class BodySnapshot:
     reliability: float
     snapshot_id: str = field(default_factory=lambda: new_id("snap"))
     timestamp: float = field(default_factory=time.time)
+    # Optional semantic interpretation grounded in this exact sensor frame.
+    # It enriches planning and skills but never replaces measured geometry.
+    semantic_scene: Dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> Dict[str, Any]:
         data = asdict(self)

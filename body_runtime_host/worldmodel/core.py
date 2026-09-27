@@ -23,6 +23,7 @@ confirmation-required — the existing safety posture).
 """
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import math
@@ -42,6 +43,9 @@ from .cortex import ArtificialCortex, action_space_for_body
 from .dynamics import LatentWorldDynamics
 from .navigation import navigation_guidance
 from .policy import Policy
+from .perception import build_body_perception_frame, sensor_projections
+from .scene_interpreter import BodySceneInterpreter
+from .route_memory import RouteMemory
 from .plan_runtime import BodyPlanRuntime
 from .task_graph import TaskGraphExecutor
 from .skills import BodySkillLibrary
@@ -62,6 +66,7 @@ DEFAULT_CONFIG = {
     # always takes priority over the mode.
     "mode": "sim",
     "step_interval": 2.0,          # seconds between background steps (sim)
+    "simulation_dt_s": 1.0,        # physical seconds represented by one action
     "horizon": 8,                  # imagination horizon
     "lr": 5e-3,
     "batch": 64,
@@ -74,6 +79,25 @@ DEFAULT_CONFIG = {
     "exploration": 0.35,
     "risk_aversion": 0.25,
     "body_actuation_enabled": False,
+    # The learned model may steer autonomous locomotion only after it has
+    # enough online transitions to make counterfactual values meaningful.
+    "learned_action_selection": True,
+    "learned_action_min_training_steps": 25,
+    "learned_action_margin": 0.05,
+    # Optional local Body interpreter. It is asynchronous and advisory only.
+    "BODY_LLM_ENABLED": False,
+    "BODY_LLM_BASE_URL": "http://127.0.0.1:1234/v1",
+    "BODY_LLM_MODEL": "",
+    "BODY_LLM_INTERVAL": 8.0,
+    "BODY_LLM_SPEED_REFERENCE": 0.5,
+    "BODY_LLM_TIMEOUT": 8.0,
+    "BODY_LLM_MAX_TOKENS": 360,
+    "BODY_LLM_FOCUS_RANGE_M": 5.0,
+    "BODY_LLM_JSON_MODE": True,
+    "BODY_LLM_EMBEDDING_MODEL": "text-embedding-nomic-embed-text-v1.5",
+    "BODY_LLM_EMBEDDING_THRESHOLD": 0.78,
+    "BODY_LLM_EMBEDDING_TIMEOUT": 4.0,
+    "BODY_CAMERA_INTERVAL": 0.5,
 }
 
 
@@ -106,6 +130,8 @@ class EmbodiedWorldModel:
         self._navigation_stagnation = 0
         self._navigation_objective_key: Optional[tuple] = None
         self._navigation_alert: Optional[Dict[str, Any]] = None
+        self._last_motion_action: Optional[str] = None
+        self._last_motion_position: Optional[tuple[float, float]] = None
         self._last_report: Optional[Dict[str, Any]] = None
         self._last_success_step = -1
         # Keep the latest perception boundary observable without re-polling a
@@ -113,6 +139,15 @@ class EmbodiedWorldModel:
         self._last_observation: Optional[Observation] = None
         self._last_body_state: Optional[BodyState] = None
         self._last_affordances: Dict[str, Any] = {}
+        self._last_scene_motion: Dict[str, Any] = {
+            "speed": 0.0,
+            "angular_speed": 0.0,
+            "angular_speed_deg": 0.0,
+            "turning": False,
+            "moving": False,
+            "perception_risk": 0.0,
+            "source": "odometry_delta",
+        }
 
         # -- components ------------------------------------------------------
         self.memory = PhysicalMemory(self.data_dir / "anchors.json")
@@ -124,7 +159,10 @@ class EmbodiedWorldModel:
         elif self._cfg.get("mode") == "bridge":
             self.source = None  # legacy brain-side bridge path
         else:
-            self.source = SimRobotSource()
+            self.source = SimRobotSource(
+                camera_interval=float(self._cfg.get("BODY_CAMERA_INTERVAL", 0.5) or 0.5),
+                simulation_dt_s=float(self._cfg.get("simulation_dt_s", 1.0) or 1.0),
+            )
         # dynamics input dim is fixed by the cortex output dim
         probe = self.cortex.encode(Observation(), BodyState())
         self.dynamics = LatentWorldDynamics(
@@ -145,6 +183,8 @@ class EmbodiedWorldModel:
         self.plan_runtime = BodyPlanRuntime(self.data_dir)
         self.task_graph = TaskGraphExecutor()
         self.skills = BodySkillLibrary(self.data_dir / "skills.json")
+        self.route_memory = RouteMemory(self.data_dir / "route_memory.json")
+        self.scene_interpreter = BodySceneInterpreter(self._cfg)
         self._episodes_path = self.data_dir / "episodes.jsonl"
         self._maybe_trim_episodes_file()
         # Establish a read-only perception boundary at construction time.
@@ -164,7 +204,14 @@ class EmbodiedWorldModel:
                     self._last_body_state = self._bridge_body_state()
             if self._last_observation is None or self._last_body_state is None:
                 return None
-            snapshot = self._make_plan_snapshot(self._last_observation, self._last_body_state)
+            frame_id = ((self._last_observation.modalities.get("camera") or {}).get("frame_id")
+                        if getattr(self._last_observation, "modalities", None) else "")
+            self.route_memory.record(
+                self._last_body_state.as_dict(),
+                [item.as_dict() for item in self._last_observation.scene],
+                frame_id=frame_id or "",
+            )
+            snapshot = self._current_plan_snapshot(self._last_observation, self._last_body_state)
             self.plan_runtime.record_snapshot(snapshot)
             return snapshot
 
@@ -219,6 +266,7 @@ class EmbodiedWorldModel:
     def start(self, shuffle: bool = False) -> None:
         with self._lock:
             if shuffle and self.sim is not None:
+                self.route_memory.close_current()
                 self.sim.reset_episode(shuffle=True)
                 self._last_navigation = {}
                 self._last_observation = None
@@ -294,6 +342,8 @@ class EmbodiedWorldModel:
 
     def step(self) -> Dict[str, Any]:
         with self._lock:
+            previous_body_state = self._last_body_state
+            previous_observation = self._last_observation
             # 1) observe (sensor source: robot > sim robot > HA fallback)
             if self.source is not None:
                 obs = self.source.observe()
@@ -307,7 +357,9 @@ class EmbodiedWorldModel:
             self._last_observation = obs
             self._last_body_state = body_state
             self._last_affordances = aff
-            plan_snapshot = self._make_plan_snapshot(obs, body_state)
+            frame_id = (obs.modalities.get("camera") or {}).get("frame_id") if getattr(obs, "modalities", None) else ""
+            self.route_memory.record(body_state.as_dict(), [item.as_dict() for item in obs.scene], frame_id=frame_id or "")
+            plan_snapshot = self._current_plan_snapshot(obs, body_state)
             self.plan_runtime.record_snapshot(plan_snapshot)
             # 4) anchor activation (upsert what we see now)
             self._activate_anchors(obs, body_state, aff)
@@ -326,6 +378,63 @@ class EmbodiedWorldModel:
                 carrying=carrying,
                 stagnation_steps=self._navigation_stagnation,
             )
+            self._last_scene_motion = self._scene_motion_metrics(
+                previous_body_state, body_state, previous_observation, obs, navigation,
+            )
+            navigation = dict(navigation)
+            navigation["relative_speed"] = self._last_scene_motion.get("relative_speed", 0.0)
+            navigation["relative_closing_speed"] = self._last_scene_motion.get("closing_speed", 0.0)
+            # A turn is useful only if it is followed by translation. The
+            # route planner is recomputed every frame, so without this small
+            # temporal guard the same turn can be selected forever while the
+            # Body remains on one cell. Force a translation or the opposite
+            # turn when a repeated turn has produced no positional progress.
+            current_position = (round(float(body_state.position[0]), 3), round(float(body_state.position[1]), 3))
+            repeated_turn = (
+                self._last_motion_action in {"turn_left", "turn_right"}
+                and self._last_motion_position == current_position
+            )
+            repeated_wait = (
+                self._last_motion_action == "wait"
+                and self._last_motion_position == current_position
+            )
+            if repeated_wait:
+                navigation = dict(navigation)
+                prior = navigation.setdefault("prior", {})
+                turn_options = [(float(prior.get("turn_left", 0.0)), "turn_left"),
+                                (float(prior.get("turn_right", 0.0)), "turn_right")]
+                escape_turn = max(turn_options, key=lambda item: item[0])[1]
+                navigation["recommended"] = escape_turn
+                prior[escape_turn] = max(float(prior.get(escape_turn, 0.0)), 4.0)
+                navigation["recovery_reason"] = "turn_after_repeated_wait"
+            elif repeated_turn:
+                navigation = dict(navigation)
+                if "forward" not in set(navigation.get("forbidden", [])) and not navigation.get("obstacle_ahead"):
+                    navigation["recommended"] = "forward"
+                    navigation.setdefault("prior", {})["forward"] = max(
+                        float(navigation.get("prior", {}).get("forward", 0.0)), 4.5
+                    )
+                    navigation["recovery_reason"] = "translate_after_repeated_turn"
+                elif "backward" not in set(navigation.get("forbidden", [])) and not navigation.get("boundary_behind"):
+                    # A turn has no translational effect in the simulator.
+                    # At a boundary, alternating turns can therefore leave the
+                    # Body spinning forever even though the rear corridor is
+                    # clear. Prefer a safe translation to create real progress.
+                    navigation["recommended"] = "backward"
+                    navigation.setdefault("prior", {})["backward"] = max(
+                        float(navigation.get("prior", {}).get("backward", 0.0)), 4.5
+                    )
+                    navigation["recovery_reason"] = "retreat_after_repeated_turn"
+                else:
+                    alternate = "turn_right" if self._last_motion_action == "turn_left" else "turn_left"
+                    navigation["recommended"] = alternate
+                    navigation.setdefault("prior", {})[alternate] = max(
+                        float(navigation.get("prior", {}).get(alternate, 0.0)), 4.0
+                    )
+                    navigation["recovery_reason"] = "alternate_after_repeated_turn"
+            self.scene_interpreter.submit(self._scene_packet(
+                obs, body_state, navigation, motion=self._last_scene_motion,
+            ))
             forbidden = set(navigation.get("forbidden", []))
             if forbidden:
                 safe = [candidate for candidate in candidates if str(candidate.get("type")) not in forbidden]
@@ -374,6 +483,29 @@ class EmbodiedWorldModel:
             task_decision = None
             self.plan_runtime.expire_if_needed()
             active_plan = self.plan_runtime.active_plan()
+            # In autonomous mode, let the learned dynamics choose between
+            # safe locomotion primitives. Confirmed Body plans remain under
+            # TaskGraph control, and recovery geometry always wins.
+            if (
+                (not active_plan or active_plan.state not in {"ready", "executing", "recovery"})
+                and not navigation.get("recovery_mode")
+                and not navigation.get("recovery_reason")
+            ):
+                learned_choice = self._learned_safe_action(
+                    s, candidates, chosen, navigation, forbidden,
+                )
+                if learned_choice is not None:
+                    chosen, learned_meta = learned_choice
+                    decision["reason"] = "learned counterfactual action selection"
+                    decision["learned"] = learned_meta
+            recovery_override = str(navigation.get("recovery_reason") or "")
+            if recovery_override in {
+                "turn_after_repeated_wait",
+                "translate_after_repeated_turn",
+                "alternate_after_repeated_turn",
+            } and navigation.get("recommended"):
+                chosen = {"type": navigation["recommended"]}
+                decision["reason"] = "temporal recovery guard"
             if active_plan and active_plan.state in {"ready", "executing"}:
                 self.plan_runtime.begin_execution()
                 current_step = active_plan.steps[active_plan.current_step_index] if active_plan.current_step_index < len(active_plan.steps) else None
@@ -381,11 +513,15 @@ class EmbodiedWorldModel:
                     current_step, plan_snapshot, body_state,
                     strict=bool(active_plan.constraints.get("require_verified_skills", False)),
                 ) if current_step else (None, "no current step")
+                skill_proposal = self.skills.proposal_for_step(current_step, plan_snapshot, body_state) if current_step else None
                 if selected:
-                    self._last_decision = {**decision, "skill": selected.get("skill_id"), "skill_reason": skill_reason}
+                    self._last_decision = {**decision, "skill": selected.get("skill_id"), "skill_reason": skill_reason, "skill_proposal": skill_proposal}
                 elif active_plan.constraints.get("require_verified_skills"):
                     from .task_graph import TaskDecision
                     task_decision = TaskDecision(None, current_step.step_id if current_step else "", skill_reason, details={"skill_guard": "refused"})
+                if current_step and active_plan.constraints.get("require_fresh_skill_proposal") and skill_proposal is None:
+                    from .task_graph import TaskDecision
+                    task_decision = TaskDecision(None, current_step.step_id, "fresh grounded skill proposal unavailable", details={"skill_guard": "stale_or_missing_proposal"})
                 if task_decision is None:
                     task_decision = self.task_graph.decide(active_plan, plan_snapshot, body_state)
                 if task_decision and task_decision.details and task_decision.details.get("step_arguments"):
@@ -424,6 +560,7 @@ class EmbodiedWorldModel:
                 chosen = task_decision.action.as_dict() if task_decision.action else {"type": "wait"}
                 decision["reason"] = task_decision.reason
               # 9) execute (robot actuators, sandbox physics, or legacy bridge)
+            chosen = self._adapt_motion_speed(chosen, body_state, navigation)
             if self.source is not None:
                 obs_after, outcome = self.source.execute(self._as_action(chosen))
             else:
@@ -448,7 +585,7 @@ class EmbodiedWorldModel:
                     snapshot_id=plan_snapshot.snapshot_id,
                     reward=float(outcome.reward),
                 ))
-                after_snapshot = self._make_plan_snapshot(obs_after, self._last_body_state)
+                after_snapshot = self._current_plan_snapshot(obs_after, self._last_body_state)
                 self.plan_runtime.record_snapshot(after_snapshot)
                 current = self.plan_runtime.active_plan()
                 if current and task_decision.step_id and current.current_step_index < len(current.steps):
@@ -515,11 +652,19 @@ class EmbodiedWorldModel:
                 "action": self._action_label(chosen),
                 "score": decision.get("score"),
                 "reason": decision.get("reason"),
+                "navigation_reason": navigation.get("recovery_reason") or navigation.get("phase") or "objective guidance",
+                "distance_to_target": navigation.get("distance_to_target"),
+                "mobile_obstacle_distance": navigation.get("mobile_obstacle_distance"),
+                "mobile_obstacle_speed": navigation.get("mobile_obstacle_speed"),
+                "estimated_safety_gap": round(max(0.0, float(navigation.get("mobile_obstacle_distance") or 0.0) - float(body_state.capabilities.get("mobile_obstacle_clearance", 1.3))), 3) if navigation.get("mobile_obstacle_distance") is not None else None,
+                "alternatives_rejected": list(navigation.get("forbidden") or []),
                 "top": [
                     {"action": self._action_label(t.get("action")), "score": t.get("score")}
-                    for t in decision.get("top", [])[:3]
+                    for t in decision.get("top_k", decision.get("top", []))[:3]
                 ],
             }
+            if decision.get("learned"):
+                self._last_decision["learned"] = decision["learned"]
             self._last_navigation = navigation
             # Detect a sustained failure to approach the current objective.
             # Turning to route around an obstacle is normal; only persistent
@@ -532,6 +677,10 @@ class EmbodiedWorldModel:
                 self._navigation_alert = None
                 self._navigation_objective_key = objective_key
             after_position = self._last_body_state.position if self._last_body_state else body_state.position
+            self._last_motion_action = str(getattr(self._as_action(chosen), "type", "") or "")
+            self._last_motion_position = (
+                round(float(after_position[0]), 3), round(float(after_position[1]), 3)
+            )
             after_distance = (
                 math.hypot(float(target[0]) - float(after_position[0]), float(target[1]) - float(after_position[1]))
                 if target else None
@@ -683,11 +832,59 @@ class EmbodiedWorldModel:
             timestamp=float(obs.timestamp),
         )
 
+    def _current_plan_snapshot(self, obs: Observation, body: BodyState) -> BodySnapshot:
+        """Attach fresh semantic context while preserving current geometry."""
+        snapshot = self._make_plan_snapshot(obs, body)
+        interpreter = self.scene_interpreter.status()
+        semantic = interpreter.get("semantic_scene") or {}
+        current_projection = sensor_projections(body, obs.scene, modalities=obs.modalities)
+        current_frame = (current_projection.get("frame") or {}).get("frame_id")
+        if interpreter.get("status") == "interpreted" and semantic.get("frame_id"):
+            semantic_frame = str(semantic.get("frame_id"))
+            semantic_age = max(
+                0.0,
+                float(obs.timestamp or time.time())
+                - float(semantic.get("observed_at") or obs.timestamp or time.time()),
+            )
+            same_frame = semantic_frame == str(current_frame)
+            fresh_context = bool(interpreter.get("fresh")) and semantic_age <= max(
+                10.0, self.scene_interpreter._interval() * 2.0
+            )
+            grounding = semantic.get("grounding") or {}
+            grounding_accepted = bool(grounding.get("accepted_for_context", True))
+            if (same_frame or fresh_context) and grounding_accepted:
+                aligned = copy.deepcopy(semantic)
+                current_objects = {
+                    str(item.id): item for item in (obs.scene or []) if getattr(item, "id", None)
+                }
+                for entity in aligned.get("entities") or []:
+                    observed = current_objects.get(str(entity.get("id")))
+                    if observed is not None:
+                        entity["position"] = list(getattr(observed, "position", ()) or ())
+                        entity["size"] = getattr(observed, "size", entity.get("size"))
+                        entity["geometry_frame_id"] = current_frame
+                grounding = dict(aligned.get("grounding") or {})
+                grounding.update({
+                    "source_frame_id": semantic_frame,
+                    "current_frame_id": current_frame,
+                    "same_frame": same_frame,
+                    "semantic_age_seconds": round(semantic_age, 3),
+                    "fresh_context": fresh_context,
+                    "geometry_rebound_to_current_frame": True,
+                })
+                aligned["grounding"] = grounding
+                aligned["frame_id"] = current_frame
+                snapshot.semantic_scene = aligned
+        return snapshot
+
     def plan_payload(self) -> Dict[str, Any]:
         with self._lock:
             self.ensure_snapshot()
             payload = self.plan_runtime.payload()
             payload["skills"] = self.skills.snapshot()
+            if self._last_observation is not None and self._last_body_state is not None:
+                snapshot = self._current_plan_snapshot(self._last_observation, self._last_body_state)
+                payload["skill_proposals"] = self.skills.proposals(snapshot, self._last_body_state)
             return payload
 
     def submit_plan(self, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -707,7 +904,7 @@ class EmbodiedWorldModel:
                     self._last_observation = self._bridge_observation()
                     self._last_body_state = self._bridge_body_state()
             self.plan_runtime.record_snapshot(
-                self._make_plan_snapshot(self._last_observation, self._last_body_state)
+                self._current_plan_snapshot(self._last_observation, self._last_body_state)
             )
             plan_result = self.plan_runtime.submit(payload)
             if plan_result.get("accepted"):
@@ -716,9 +913,11 @@ class EmbodiedWorldModel:
                     resolution = {}
                     strict = bool(plan.constraints.get("require_verified_skills", False))
                     body = self._last_body_state
+                    current_snapshot = self._current_plan_snapshot(self._last_observation, body)
                     for step in plan.steps:
-                        selected, reason = self.skills.resolve(step, self._make_plan_snapshot(self._last_observation, body), body, strict=strict)
-                        resolution[step.step_id] = {"selected": bool(selected), "skill_id": selected.get("skill_id") if selected else None, "reason": reason}
+                        selected, reason = self.skills.resolve(step, current_snapshot, body, strict=strict)
+                        proposal = self.skills.proposal_for_step(step, current_snapshot, body)
+                        resolution[step.step_id] = {"selected": bool(selected), "skill_id": selected.get("skill_id") if selected else None, "reason": reason, "proposal": proposal}
                         if selected:
                             step.arguments["skill_id"] = selected.get("skill_id")
                             plan.selected_skills[step.step_id] = selected
@@ -727,6 +926,10 @@ class EmbodiedWorldModel:
                         plan.state = "rejected"
                         self.plan_runtime.cancel(plan.plan_id, "verified skill preconditions or limits not met")
                         return {"accepted": False, "errors": ["verified skill requirements not met"], "skill_resolution": resolution}
+                    if plan.constraints.get("require_fresh_skill_proposal") and any(not item.get("proposal") for item in resolution.values()):
+                        plan.state = "rejected"
+                        self.plan_runtime.cancel(plan.plan_id, "fresh grounded skill proposal unavailable")
+                        return {"accepted": False, "errors": ["fresh grounded skill proposal unavailable"], "skill_resolution": resolution}
                     self.plan_runtime._persist_active()
                     plan_result["plan"] = plan.as_dict()
                     plan_result["skill_resolution"] = resolution
@@ -787,6 +990,79 @@ class EmbodiedWorldModel:
                             "body_pos": [round(float(body.position[0]), 2), round(float(body.position[1]), 2)],
                         }
         return base
+
+    def _learned_safe_action(
+        self,
+        state: np.ndarray,
+        candidates: List[Dict[str, Any]],
+        chosen: Any,
+        navigation: Dict[str, Any],
+        forbidden: set[str],
+    ) -> Optional[tuple[Any, Dict[str, Any]]]:
+        """Select a learned action without weakening the safety boundary.
+
+        The policy already evaluates imagined futures, but this explicit gate
+        makes the learned-control contract visible: only locomotion actions
+        are eligible, recovery mode is authoritative, and a candidate must
+        beat the current choice by a meaningful margin. Manipulation and
+        conversation plans therefore remain deterministic while autonomous
+        exploration can adapt to scenes it has not seen before.
+        """
+        if not bool(self._cfg.get("learned_action_selection", True)):
+            return None
+        if self.dynamics.training_steps < int(self._cfg.get("learned_action_min_training_steps", 25)):
+            return None
+        if navigation.get("recovery_mode"):
+            return None
+
+        movement = {"forward", "backward", "retreat", "sprint", "turn_left", "turn_right", "wait"}
+        eligible = [
+            candidate for candidate in candidates
+            if str(candidate.get("type")) in movement
+            and str(candidate.get("type")) not in forbidden
+        ]
+        if len(eligible) < 2:
+            return None
+
+        evaluations = [self.policy.evaluate(state, candidate) for candidate in eligible]
+        best = max(evaluations, key=lambda item: float(item.get("score", 0.0)))
+        current_type = self._action_label(chosen)
+        best_type = self._action_label(best.get("action"))
+        recommended_type = str(navigation.get("recommended") or "")
+        # Learned values may choose speed within the geometric manoeuvre, but
+        # must not change its direction or turn the Body into a new manoeuvre.
+        # This prevents persisted training from reintroducing backwards/wait
+        # loops on a shuffled scene.
+        compatible = {
+            "forward": {"forward", "sprint"},
+            "sprint": {"forward", "sprint"},
+            "backward": {"backward", "retreat"},
+            "retreat": {"backward", "retreat"},
+            "turn_left": {"turn_left"},
+            "turn_right": {"turn_right"},
+            "wait": {"wait"},
+        }
+        if recommended_type and best_type not in compatible.get(recommended_type, {recommended_type}):
+            return None
+        current = next(
+            (item for item in evaluations if self._action_label(item.get("action")) == current_type),
+            None,
+        )
+        current_score = float(current.get("score", 0.0)) if current else float("-inf")
+        margin = float(self._cfg.get("learned_action_margin", 0.05))
+        if self._action_label(best.get("action")) == current_type or float(best["score"]) < current_score + margin:
+            return None
+
+        return best["action"], {
+            "selected": self._action_label(best["action"]),
+            "replaced": current_type,
+            "margin": round(float(best["score"]) - current_score, 5),
+            "training_steps": self.dynamics.training_steps,
+            "candidates": [
+                {"action": self._action_label(item["action"]), "score": item["score"]}
+                for item in sorted(evaluations, key=lambda item: item["score"], reverse=True)
+            ],
+        }
 
     def _steering_prior(self, obs: Observation, aff: Dict, body: BodyState) -> Dict[str, float]:
         """Affordance-guided steering prior for exploration.
@@ -941,7 +1217,13 @@ class EmbodiedWorldModel:
             source_status = self.source.status() if self.source is not None else None
             body_state = self._last_body_state.as_dict() if self._last_body_state else None
             observation = self._last_observation.as_dict() if self._last_observation else None
+            aligned_semantic = None
+            if self._last_observation is not None and self._last_body_state is not None:
+                aligned_semantic = self._current_plan_snapshot(
+                    self._last_observation, self._last_body_state
+                ).semantic_scene
             active_plan = self.plan_runtime.active_plan()
+            route_state = self.route_memory.snapshot()
         lines = [
             "CURRENT EMBODIED STATE (physical evidence owned by the Body):",
             f"- Learned {n_steps} embodied steps; prediction error (EMA) {ema:.3f}.",
@@ -960,9 +1242,26 @@ class EmbodiedWorldModel:
             capability_text = ", ".join(f"{key}={value}" for key, value in capabilities.items()) or "not reported"
             lines.append(
                 f"- Current Body pose: position=({position}), yaw={body_state['orientation']:.2f} rad, "
-                f"holding={holding} (observed {stamp})."
+                f"holding={holding} (observed {stamp}); frame={body_state.get('coordinate_frame', 'local_map')}, "
+                f"position_source={body_state.get('position_source', 'unknown')}, "
+                f"accuracy={body_state.get('position_accuracy_m', 'unknown')}m."
             )
+            if body_state.get("geo"):
+                lines.append("- Body geographic fix (optional): " + json.dumps(body_state["geo"], ensure_ascii=False)[:500] + ".")
             lines.append(f"- Current Body capabilities: {capability_text}.")
+            current_route = route_state.get("current") or {}
+            lines.append(
+                f"- Route memory: {route_state.get('waypoints', 0)} metric waypoints, "
+                f"{float(route_state.get('distance', 0.0)):.2f} m recorded, "
+                f"{route_state.get('routes', 0)} persisted route(s)."
+            )
+            if current_route.get("route_id"):
+                lines.append(
+                    f"- Route memory current route={current_route.get('route_id')} "
+                    f"closed={bool(current_route.get('closed'))}; known flags="
+                    + ", ".join(str(flag.get("id")) for flag in route_state.get("flags", [])[:12])
+                    + "."
+                )
         else:
             lines.append("- Current Body pose: unavailable; no Body observation has been received yet.")
         if observation:
@@ -971,6 +1270,35 @@ class EmbodiedWorldModel:
                 f"- Current scene observation: {observation.get('text') or 'no scene description'} "
                 f"(source={observation.get('source')}, observed {stamp})."
             )
+        interpreter = self.scene_interpreter.status()
+        if interpreter.get("status") == "interpreted":
+            interpretation = interpreter.get("interpretation") or {}
+            semantic_scene = aligned_semantic or {}
+            lines.append(
+                "- Body LLM scene interpretation (advisory, timestamped and geometry-rebound): "
+                + str(interpretation.get("scene_summary") or "no summary")
+                + f" (model={interpreter.get('model')}, observed_at={interpreter.get('observed_at')}, "
+                  f"age={interpreter.get('age_seconds', 'unknown')}s, fresh={interpreter.get('fresh', False)})."
+            )
+            for key, label in (("primary_objects", "primary objects"), ("environment", "environment"),
+                               ("possible_paths", "possible paths"), ("movement_support", "movement support"),
+                               ("uncertainty", "uncertainty")):
+                values = interpretation.get(key)
+                if values:
+                    lines.append(f"- Body LLM {label}: {json.dumps(values, ensure_ascii=False)[:900]}.")
+            if semantic_scene:
+                lines.append(
+                    "- Grounded semantic scene model: "
+                    + json.dumps(semantic_scene, ensure_ascii=False, separators=(",", ":"))[:1400]
+                    + "."
+                )
+        elif interpreter.get("enabled"):
+            lines.append(
+                f"- Body LLM interpreter: {interpreter.get('status')}"
+                + (f" ({interpreter.get('error')})" if interpreter.get("error") else ".")
+            )
+        else:
+            lines.append("- Body LLM interpreter: disabled; geometric perception remains authoritative.")
         terminal = bool(sim_status and sim_status.get("done"))
         _plan_is_active = bool(
             active_plan and active_plan.state in {
@@ -1102,6 +1430,42 @@ class EmbodiedWorldModel:
 
     # ── helpers ─────────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _adapt_motion_speed(
+        chosen: Any, body: BodyState, navigation: Dict[str, Any],
+    ) -> Any:
+        """Attach a speed setpoint scaled to the relative hazard motion.
+
+        The planner still selects the action and safety checks remain
+        authoritative. This only prevents a forward/retreat primitive from
+        using a fixed speed when a moving hazard is closing faster or when the
+        Body has a higher calibrated capability.
+        """
+        if not isinstance(chosen, dict):
+            return chosen
+        action = str(chosen.get("type") or "")
+        if action not in {"forward", "sprint", "backward", "retreat"}:
+            return chosen
+        params = dict(chosen.get("params") or {})
+        if "speed" in params:
+            params.setdefault("continuous_physics", True)
+            return {**chosen, "params": params}
+        nominal = max(0.1, float(body.capabilities.get("speed", 1.0) or 1.0))
+        maximum = max(nominal, float(body.capabilities.get("max_speed", nominal) or nominal))
+        hazard_speed = max(0.0, float(navigation.get("mobile_obstacle_speed") or 0.0))
+        closing = max(0.0, float(navigation.get("relative_closing_speed") or 0.0))
+        risk = bool(navigation.get("recovery_mode") or navigation.get("mobile_obstacle_blocking"))
+        if action == "sprint":
+            setpoint = maximum
+        elif risk or closing > nominal or hazard_speed > nominal:
+            setpoint = maximum
+        else:
+            setpoint = nominal
+        params["speed"] = round(setpoint, 3)
+        params["relative_hazard_speed"] = round(max(hazard_speed, closing), 3)
+        params["continuous_physics"] = True
+        return {**chosen, "params": params}
+
     def _as_action(self, a: Any) -> Action:
         if isinstance(a, Action):
             return a
@@ -1123,6 +1487,7 @@ class EmbodiedWorldModel:
 
     def reset(self, clear_memory: bool = False) -> Dict[str, Any]:
         with self._lock:
+            self.route_memory.close_current()
             if self.sim is not None:
                 self.sim.reset()
             if clear_memory:
@@ -1149,9 +1514,12 @@ class EmbodiedWorldModel:
             self._navigation_stagnation = 0
             self._navigation_objective_key = None
             self._navigation_alert = None
+            self._last_motion_action = None
+            self._last_motion_position = None
             self._last_observation = None
             self._last_body_state = None
             self._last_affordances = {}
+        self.ensure_snapshot()
         return self.status_summary()
 
     def status_summary(self) -> Dict[str, Any]:
@@ -1182,6 +1550,8 @@ class EmbodiedWorldModel:
                 "navigation": self._last_navigation,
                 "navigation_alert": self._navigation_alert,
                 "last_report": self._last_report,
+                "scene_interpreter": self.scene_interpreter.status(),
+                "route_memory": self.route_memory.snapshot(),
                 "perception": self._perception_summary(),
                 "recent_steps": list(self._step_history)[-12:],
                 "sim": sim_status,
@@ -1211,6 +1581,11 @@ class EmbodiedWorldModel:
         body = self._last_body_state
         if obs is None or body is None:
             return {"available": False, "note": "No Body observation recorded yet."}
+        projections = sensor_projections(body, obs.scene, modalities=obs.modalities)
+        perception_frame = build_body_perception_frame(
+            body, obs, projections=projections, motion=self._last_scene_motion,
+        )
+        interpreter = self.scene_interpreter.status()
         return {
             "available": True,
             "source": obs.source,
@@ -1220,12 +1595,180 @@ class EmbodiedWorldModel:
             "text": obs.text,
             "body": body.as_dict(),
             "objects": [o.as_dict() for o in obs.scene],
+            "modalities": dict(obs.modalities),
             "affordances": {
                 "which2act": list(self._last_affordances.get("which2act", []))[:12],
                 "where2act": list(self._last_affordances.get("where2act", []))[:12],
                 "how2act": list(self._last_affordances.get("how2act", []))[:16],
             },
             "ground_truth_available": isinstance(self.source, SimRobotSource),
+            "sensor_projections": projections,
+            "perception_frame": perception_frame,
+            "scene_interpreter": interpreter,
+        }
+
+    @staticmethod
+    def _scene_motion_metrics(
+        previous: Optional[BodyState],
+        current: BodyState,
+        previous_observation: Optional[Observation],
+        current_observation: Observation,
+        navigation: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Measure scene-change cadence from the Body's actual motion.
+
+        This deliberately uses pose deltas and generic safety margins. It is
+        valid for the simulator, an odometry-equipped robot, or a future GPS/
+        LiDAR source without naming a particular object or scene layout.
+        """
+        speed = 0.0
+        angular_speed = 0.0
+        angular_delta = 0.0
+        displacement = 0.0
+        elapsed = 0.0
+        body_velocity = (0.0, 0.0)
+        if previous is not None:
+            try:
+                dx = float(current.position[0]) - float(previous.position[0])
+                dy = float(current.position[1]) - float(previous.position[1])
+                displacement = math.hypot(dx, dy)
+                elapsed = max(0.0, float(current.timestamp) - float(previous.timestamp))
+                # Ignore back-to-back status reads; they are not a physical
+                # sampling interval and would create a false speed spike.
+                if elapsed >= 0.05:
+                    speed = displacement / elapsed
+                    body_velocity = (dx / elapsed, dy / elapsed)
+                    angular_delta = math.atan2(
+                        math.sin(float(current.orientation) - float(previous.orientation)),
+                        math.cos(float(current.orientation) - float(previous.orientation)),
+                    )
+                    angular_speed = abs(angular_delta) / elapsed
+                else:
+                    elapsed = 0.0
+            except (TypeError, ValueError, IndexError):
+                speed = 0.0
+        relative_speed = speed
+        closing_speed = 0.0
+        current_mobile = next(
+            (item for item in current_observation.scene if str(item.kind) == "mobile_obstacle"),
+            None,
+        )
+        previous_mobile = next(
+            (item for item in (previous_observation.scene if previous_observation else [])
+             if str(item.kind) == "mobile_obstacle"),
+            None,
+        )
+        if current_mobile is not None and previous_mobile is not None and elapsed > 1e-3:
+            mobile_velocity = (
+                (float(current_mobile.position[0]) - float(previous_mobile.position[0])) / elapsed,
+                (float(current_mobile.position[1]) - float(previous_mobile.position[1])) / elapsed,
+            )
+            relative_velocity = (
+                body_velocity[0] - mobile_velocity[0],
+                body_velocity[1] - mobile_velocity[1],
+            )
+            relative_speed = math.hypot(*relative_velocity)
+            separation = (
+                float(current_mobile.position[0]) - float(current.position[0]),
+                float(current_mobile.position[1]) - float(current.position[1]),
+            )
+            separation_length = math.hypot(*separation)
+            if separation_length > 1e-3:
+                closing_speed = max(
+                    0.0,
+                    -(relative_velocity[0] * separation[0] + relative_velocity[1] * separation[1])
+                    / separation_length,
+                )
+        clearance = navigation.get("mobile_obstacle_distance")
+        required = float(current.capabilities.get("mobile_obstacle_clearance", 1.3) or 1.3)
+        margin = float(current.capabilities.get("mobile_obstacle_planning_margin", 0.0) or 0.0)
+        gap = None if clearance is None else max(0.0, float(clearance) - required)
+        risk = 0.0
+        if gap is not None and margin > 0.0:
+            risk = max(0.0, min(1.0, (margin - gap) / margin))
+        if navigation.get("mobile_obstacle_blocking"):
+            risk = max(risk, 0.85)
+        if navigation.get("recovery_mode"):
+            risk = max(risk, 0.65)
+        return {
+            "speed": round(speed, 4),
+            "angular_speed": round(angular_speed, 4),
+            "angular_speed_deg": round(math.degrees(angular_speed), 3),
+            "angular_delta": round(angular_delta, 4),
+            "angular_delta_deg": round(math.degrees(angular_delta), 3),
+            "relative_speed": round(relative_speed, 4),
+            "closing_speed": round(closing_speed, 4),
+            "displacement": round(displacement, 4),
+            "elapsed_seconds": round(elapsed, 4),
+            "turning": bool(angular_speed > 0.02),
+            "moving": bool(speed > 0.05 or displacement > 0.01 or angular_speed > 0.02),
+            "perception_risk": round(risk, 3),
+            "clearance_gap": round(gap, 3) if gap is not None else None,
+            "required_margin": round(margin, 3),
+            "source": "odometry_delta",
+        }
+
+    def _scene_packet(
+        self,
+        obs: Observation,
+        body: BodyState,
+        navigation: Dict[str, Any],
+        motion: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Compact, timestamped input for the optional Body-side LLM."""
+        projections = sensor_projections(body, obs.scene, modalities=obs.modalities)
+        motion_payload = dict(motion or self._last_scene_motion)
+        perception_frame = build_body_perception_frame(
+            body, obs, projections=projections, motion=motion_payload,
+        )
+        body_position_m = [float(value) for value in list(body.position)[:3]]
+        body_position_cm = [round(value * 100.0, 1) for value in body_position_m]
+        metric_objects = []
+        for item in obs.scene:
+            position_m = [float(value) for value in list(item.position)[:3]]
+            metric_objects.append({
+                "id": item.id,
+                "position_m": position_m,
+                "position_cm": [round(value * 100.0, 1) for value in position_m],
+                "size_m": float(item.size),
+            })
+        return {
+            "timestamp": float(obs.timestamp),
+            "frame_id": projections.get("frame", {}).get("frame_id"),
+            "contract": "body_perception.v2",
+            "perception_frame": perception_frame,
+            "source": obs.source,
+            "confidence": float(obs.confidence),
+            "body": body.as_dict(),
+            "objects": [item.as_dict() for item in obs.scene],
+            "modalities": dict(obs.modalities),
+            "vision_2d": projections.get("vision_projection"),
+            "lidar_3d": projections.get("lidar"),
+            "sensor_fusion": projections.get("fusion"),
+            "quality": projections.get("quality"),
+            "metric_frame": {
+                "length_unit": "m",
+                "display_unit": "cm",
+                "meters_per_grid_unit": 1.0,
+                "body_position_m": body_position_m,
+                "body_position_cm": body_position_cm,
+                "objects": metric_objects,
+                "speed_mps": motion_payload.get("speed", 0.0),
+                "angular_speed_rad_s": motion_payload.get("angular_speed", 0.0),
+                "angular_speed_deg_s": motion_payload.get("angular_speed_deg", 0.0),
+                "heading_rad": float(body.orientation),
+                "heading_deg": round(math.degrees(float(body.orientation)), 3),
+                "relative_speed_mps": motion_payload.get("relative_speed", 0.0),
+                "closing_speed_mps": motion_payload.get("closing_speed", 0.0),
+            },
+            "motion": motion_payload,
+            "navigation": {
+                "recommended": navigation.get("recommended"),
+                "reason": navigation.get("reason"),
+                "recovery_mode": bool(navigation.get("recovery_mode")),
+                "mobile_obstacle": navigation.get("mobile_obstacle"),
+                "route": navigation.get("local_route"),
+            },
         }
 
     def recent_episodes(self, limit: int = 12) -> List[Dict[str, Any]]:

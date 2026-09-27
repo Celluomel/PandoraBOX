@@ -31,7 +31,8 @@ def new_id(prefix: str) -> str:
 class BodyState:
     """State of Lumina's body at a point in time.
 
-    ``position`` is expressed in the world frame (metres or grid units).
+    ``position`` is expressed in metres in the world frame. A planner may
+    project it to a grid, but grid coordinates are never the physical unit.
     ``capabilities`` describes what the body *can do* — the whole point of an
     affordance-based encoding is that perception is indexed on these limits.
     """
@@ -41,11 +42,15 @@ class BodyState:
     posture: Dict[str, Any] = field(default_factory=dict)
     capabilities: Dict[str, float] = field(default_factory=lambda: {
         "reach": 1.8,          # metres
-        "speed": 1.0,          # cells / step
+        "speed": 1.0,          # metres / simulation step (or m/s for live telemetry)
         "strength": 20.0,      # max pushable mass (kg)
         "gripper": 1.0,        # 1.0 = has a working end-effector
     })
     timestamp: float = field(default_factory=time.time)
+    coordinate_frame: str = "local_map"
+    position_source: str = "odometry"
+    position_accuracy_m: Optional[float] = None
+    geo: Dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -58,6 +63,10 @@ class BodyState:
             posture=dict(d.get("posture") or {}),
             capabilities=dict(d.get("capabilities") or {}),
             timestamp=float(d.get("timestamp") or time.time()),
+            coordinate_frame=str(d.get("coordinate_frame") or d.get("frame") or "local_map"),
+            position_source=str(d.get("position_source") or d.get("location_source") or "odometry"),
+            position_accuracy_m=(float(d["position_accuracy_m"]) if d.get("position_accuracy_m") is not None else None),
+            geo=dict(d.get("geo") or d.get("gps") or d.get("gnss") or {}),
         )
 
 
@@ -72,6 +81,10 @@ class SceneObject:
     size: float = 1.0
     mass: float = 1.0
     props: Dict[str, Any] = field(default_factory=dict)
+    coordinate_frame: str = "local_map"
+    position_source: str = "perception"
+    position_accuracy_m: Optional[float] = None
+    geo: Dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -86,6 +99,10 @@ class SceneObject:
             size=float(d.get("size", 1.0)),
             mass=float(d.get("mass", 1.0)),
             props=dict(d.get("props") or {}),
+            coordinate_frame=str(d.get("coordinate_frame") or d.get("frame") or "local_map"),
+            position_source=str(d.get("position_source") or d.get("location_source") or "perception"),
+            position_accuracy_m=(float(d["position_accuracy_m"]) if d.get("position_accuracy_m") is not None else None),
+            geo=dict(d.get("geo") or d.get("gps") or d.get("gnss") or {}),
         )
 
 
@@ -107,6 +124,7 @@ class Observation:
     timestamp: float = field(default_factory=time.time)
     scene: List[SceneObject] = field(default_factory=list)
     text: str = ""  # natural-language description of the current scene
+    modalities: Dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> Dict[str, Any]:
         d = asdict(self)
@@ -127,6 +145,7 @@ class Observation:
             timestamp=float(d.get("timestamp") or time.time()),
             scene=scene,
             text=str(d.get("text") or ""),
+            modalities=dict(d.get("modalities") or {}),
         )
 
 

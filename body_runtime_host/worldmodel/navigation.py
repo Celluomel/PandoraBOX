@@ -55,14 +55,20 @@ def _predict_mobile_step(
     objects: list[Any],
     position: tuple[float, float],
     moves_next: bool = True,
+    predicted_position: Any = None,
 ) -> tuple[float, float] | None:
-    """Predict the next legal pursuit cell when its speed phase allows motion."""
+    """Predict the next mobile position from velocity, then from pursuit geometry."""
     if not moves_next:
         return None
     mobile = next((o for o in objects if str(getattr(o, "kind", "")) == "mobile_obstacle"), None)
     if mobile is None:
         return None
     mx, my = float(mobile.position[0]), float(mobile.position[1])
+    if predicted_position and len(predicted_position) >= 2:
+        candidate = (float(predicted_position[0]), float(predicted_position[1]))
+        static = [o for o in objects if str(getattr(o, "kind", "")) in {"obstacle", "table", "surface", "chair"}]
+        if all(math.hypot(float(o.position[0]) - candidate[0], float(o.position[1]) - candidate[1]) >= 0.6 for o in static):
+            return candidate
     current_distance = math.hypot(mx - position[0], my - position[1])
     static = [o for o in objects if str(getattr(o, "kind", "")) in {"obstacle", "table", "surface", "chair"}]
     choices = []
@@ -81,7 +87,13 @@ def _mobile_safety_radius(mobile: Any, body: Any) -> float:
     """Return the minimum body-to-mobile separation for predictive routing."""
     configured = body.capabilities.get("mobile_obstacle_clearance")
     if configured is not None:
-        return max(0.8, float(configured))
+        base = max(0.8, float(configured))
+        # The simulator reports the obstacle before it moves.  A planning
+        # margin absorbs that one-step latency and the obstacle's fluctuating
+        # speed; it is deliberately separate from the physical collision
+        # envelope so the policy becomes cautious without changing physics.
+        margin = max(0.0, float(body.capabilities.get("mobile_obstacle_planning_margin", 0.0)))
+        return base + margin
     size = float(getattr(mobile, "size", 0.8) or 0.8)
     # Body footprint + obstacle footprint + a small reaction margin.
     return max(1.15, 0.6 + (size * 0.5) + 0.3)
@@ -125,6 +137,7 @@ def _grid_route_action(
         scene_objects,
         (float(body.position[0]), float(body.position[1])),
         bool(body.capabilities.get("mobile_obstacle_moves_next", True)),
+        body.capabilities.get("mobile_obstacle_predicted_position"),
     )
     if predicted_mobile is not None:
         blocked.add((int(round(predicted_mobile[0])), int(round(predicted_mobile[1]))))
@@ -232,6 +245,20 @@ def _grid_route_action(
 
     # Do not treat the current cell as blocked if perception overlaps the Body.
     blocked.discard(start)
+    if mobile_obj is not None:
+        # If the time-aware search cannot find a route, the static fallback
+        # must not erase the dynamic safety guarantee.  Mark the cells inside
+        # the predicted comfort envelope as unavailable as well.
+        comfort_radius = _mobile_safety_radius(mobile_obj, body)
+        mobile_positions = [(float(mobile_obj.position[0]), float(mobile_obj.position[1]))]
+        if predicted_mobile is not None:
+            mobile_positions.append((float(predicted_mobile[0]), float(predicted_mobile[1])))
+        for px, py in mobile_positions:
+            for cell_x in range(max(0, int(math.floor(px - comfort_radius))), min(width, int(math.ceil(px + comfort_radius + 1)))):
+                for cell_y in range(max(0, int(math.floor(py - comfort_radius))), min(height, int(math.ceil(py + comfort_radius + 1)))):
+                    if math.hypot(cell_x - px, cell_y - py) < comfort_radius:
+                        blocked.add((cell_x, cell_y))
+        blocked.discard(start)
     queue = deque([start])
     parents: dict[tuple[int, int], tuple[int, int] | None] = {start: None}
     goal_cell: tuple[int, int] | None = start if is_goal(start) else None
@@ -317,7 +344,10 @@ def navigation_guidance(
     forbidden: set[str] = set()
     mobile = next((o for o in objects if str(getattr(o, "kind", "")) == "mobile_obstacle"), None)
     mobile_predicted = _predict_mobile_step(
-        objects, (px, py), bool(body.capabilities.get("mobile_obstacle_moves_next", True))
+        objects,
+        (px, py),
+        bool(body.capabilities.get("mobile_obstacle_moves_next", True)),
+        body.capabilities.get("mobile_obstacle_predicted_position"),
     )
     recommended: str | None = None
     recovery_mode = False
@@ -459,6 +489,7 @@ def navigation_guidance(
     # world. The latter was previously invisible to the navigation guard and
     # allowed the policy to repeatedly drive into a wall at the map edge.
     forward = (px + math.cos(heading), py + math.sin(heading))
+    backward = (px - math.cos(heading), py - math.sin(heading))
     nearby_obstacles = []
     for obj in objects:
         object_kind = str(getattr(obj, "kind", ""))
@@ -479,6 +510,12 @@ def navigation_guidance(
         width is not None and height is not None and
         (forward[0] < 0 or forward[1] < 0 or forward[0] >= float(width) or forward[1] >= float(height))
     )
+    boundary_behind = (
+        width is not None and height is not None
+        and (backward[0] < 0 or backward[1] < 0 or backward[0] >= float(width) or backward[1] >= float(height))
+    )
+    if boundary_behind:
+        forbidden.update({"backward", "retreat"})
     if nearby_obstacles or boundary_ahead:
         forbidden.add("forward")
         nearest = min(nearby_obstacles, key=lambda p: math.hypot(p[0] - px, p[1] - py)) if nearby_obstacles else None
@@ -551,6 +588,7 @@ def navigation_guidance(
         "recommended": recommended,
         "obstacle_ahead": bool(nearby_obstacles),
         "boundary_ahead": boundary_ahead,
+        "boundary_behind": boundary_behind,
         "mobile_obstacle_distance": round(
             math.hypot(float(mobile.position[0]) - px, float(mobile.position[1]) - py), 3
         ) if mobile is not None else None,

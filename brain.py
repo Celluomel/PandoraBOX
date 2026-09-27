@@ -48,7 +48,7 @@ _parser = _ap.ArgumentParser(description="PandoraBOX headless brain runner")
 _parser.add_argument("--repl",         action="store_true", help="Launch interactive terminal REPL")
 _parser.add_argument("--no-api",       action="store_true", help="Disable REST API")
 _parser.add_argument("--no-telegram",  action="store_true", help="Disable Telegram connector")
-_parser.add_argument("--port",         type=int, default=8765, help="REST API port (default 8765)")
+_parser.add_argument("--port",         type=int, default=None, help="REST API port (default: BRAIN_API_PORT from config.json)")
 _parser.add_argument("--host",         default="127.0.0.1",   help="REST API host (default 127.0.0.1)")
 _parser.add_argument("--vision",       action="store_true",   help="Enable camera (default: off)")
 _ARGS = _parser.parse_args()
@@ -91,6 +91,12 @@ logger = logging.getLogger("brain")
 #  3.  BRAIN BOOT
 # ══════════════════════════════════════════════════════════════════════
 from managers.settings_manager import config
+
+# Keep the headless Brain API aligned with the configured network contract.
+# An explicit CLI flag still wins, which is useful when running a second Brain
+# beside the main process.  The Body remains independently bound to BODY_PORT.
+if _ARGS.port is None:
+    _ARGS.port = int(getattr(config, "BRAIN_API_PORT", 8765) or 8765)
 from core.state import state
 
 async def _boot() -> bool:
@@ -310,11 +316,20 @@ async def chat(req: ChatRequest):
     full_text   = ""
     emotion     = "neutral"
     token_count = 0
+    sources     = []
+    body_plan   = None
     async for chunk in state.persona.get_response_stream(req.text, req.user_id):
-        if isinstance(chunk, dict) and chunk.get("__meta__"):
-            emotion = chunk.get("emotion", "neutral")
-        else:
-            full_text   += chunk
+        if isinstance(chunk, dict):
+            if chunk.get("__meta__"):
+                emotion = chunk.get("emotion", "neutral")
+                if chunk.get("body_plan") is not None:
+                    body_plan = chunk.get("body_plan")
+            elif chunk.get("type") == "web_sources":
+                sources = chunk.get("sources") or []
+            # Structured reasoning/events are transport metadata, not text.
+            # Concatenating them caused Brain-only /chat to return HTTP 500.
+        elif chunk is not None:
+            full_text   += str(chunk)
             token_count += 1
 
     return {
@@ -322,6 +337,8 @@ async def chat(req: ChatRequest):
         "emotion":  emotion,
         "tokens":   token_count,
         "user_id":  req.user_id,
+        "sources":  sources,
+        "body_plan": body_plan,
     }
 
 

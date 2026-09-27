@@ -26,6 +26,7 @@ import json
 import logging
 import urllib.error
 import urllib.request
+from urllib.parse import quote
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -80,6 +81,34 @@ class RemoteWorldModel:
         """Return the latest structured Body snapshot for planning."""
         try:
             data = _request("GET", f"{self.base_url}/worldmodel/snapshot", timeout=self.timeout)
+            return data if isinstance(data, dict) else {}
+        except Exception as exc:
+            self._last_error = str(exc)
+            return {"available": False, "error": str(exc)}
+
+    def perception(self) -> Dict[str, Any]:
+        """Return the complete timestamped 2-D/3-D Body perception packet."""
+        try:
+            data = _request("GET", f"{self.base_url}/worldmodel/perception", timeout=self.timeout)
+            return data if isinstance(data, dict) else {}
+        except Exception as exc:
+            self._last_error = str(exc)
+            return {"available": False, "error": str(exc)}
+
+    def route_map(self) -> Dict[str, Any]:
+        """Return the Body-owned metric route memory and landmark flags."""
+        try:
+            data = _request("GET", f"{self.base_url}/worldmodel/map", timeout=self.timeout)
+            return data if isinstance(data, dict) else {}
+        except Exception as exc:
+            self._last_error = str(exc)
+            return {"available": False, "error": str(exc)}
+
+    def remembered_route(self, target: str = "start") -> Dict[str, Any]:
+        """Read a replayable route to a remembered object or the start pose."""
+        try:
+            encoded = quote(str(target or "start"), safe="")
+            data = _request("GET", f"{self.base_url}/worldmodel/map/route?target={encoded}", timeout=self.timeout)
             return data if isinstance(data, dict) else {}
         except Exception as exc:
             self._last_error = str(exc)
@@ -151,6 +180,15 @@ class RemoteWorldModel:
         except Exception as exc:
             self._last_error = str(exc)
             return {"active_plan": None, "error": str(exc)}
+
+    def capability_gate(self) -> Dict[str, Any]:
+        """Read the latest Body evidence gate for Brain/chat status answers."""
+        try:
+            data = _request("GET", f"{self.base_url}/worldmodel/capability-gate", timeout=self.timeout)
+            return data if isinstance(data, dict) else {"state": "unknown"}
+        except Exception as exc:
+            self._last_error = str(exc)
+            return {"state": "unavailable", "error": str(exc)}
 
     def validate_plan(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Ask the Body whether a plan is feasible without reserving it."""

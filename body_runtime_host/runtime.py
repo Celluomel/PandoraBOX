@@ -28,17 +28,31 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from queue import Empty, Queue
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 from urllib.request import Request, urlopen
 
 from body_runtime_host.coordinate_frames import (
     compass_heading_degrees,
     north_up_svg_rotation_degrees,
 )
+from body_runtime_host.deployment import build_bundle
 
 LOG = logging.getLogger("lumina.body")
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / "data" / "body" / "config.json"
+
+# Hardware modules are discovered from the robot/gateway capability contract.
+# This catalog only defines the vocabulary and UI metadata; it does not claim
+# that optional hardware is present.
+FNK0031_MODULE_CATALOG = {
+    "camera": {"label": "Camera", "kind": "vision", "source": "robot"},
+    "lidar": {"label": "LiDAR", "kind": "range", "source": "robot"},
+    "gps": {"label": "GPS", "kind": "localization", "source": "robot"},
+    "imu": {"label": "IMU", "kind": "inertial", "source": "robot"},
+    "odometry": {"label": "Wheel/servo odometry", "kind": "localization", "source": "robot"},
+    "actuators": {"label": "FNK0031 servo actuators", "kind": "actuation", "source": "robot"},
+    "gripper": {"label": "Gripper", "kind": "manipulation", "source": "robot"},
+}
 
 
 def _locomotion_gait_for_action(action: str) -> str:
@@ -123,7 +137,10 @@ class BodyHost:
         self._worldmodel_evaluation_lock = threading.Lock()
         self._worldmodel_evaluation_thread: threading.Thread | None = None
         self._worldmodel_evaluation_report_path = ROOT / "data" / "body" / "worldmodel" / "evaluations.jsonl"
+        self._worldmodel_capability_path = ROOT / "data" / "body" / "worldmodel" / "capability_gate.json"
         self._worldmodel_evaluation_status: dict = self._load_latest_worldmodel_evaluation()
+        self._robot_sim = None
+        self._robot_sim_lock = threading.RLock()
 
     # ── config ──────────────────────────────────────────────────────────────
 
@@ -137,6 +154,16 @@ class BodyHost:
         except Exception:
             pass
         return {"state": "idle", "trials": 0}
+
+    def worldmodel_capability_gate(self) -> dict:
+        """Return the latest evidence gate independently of live evaluation."""
+        try:
+            payload = json.loads(self._worldmodel_capability_path.read_text(encoding="utf-8"))
+            return payload if isinstance(payload, dict) else {"state": "unknown"}
+        except Exception:
+            latest = self.worldmodel_evaluation_status()
+            gate = latest.get("capability_gate")
+            return gate if isinstance(gate, dict) else {"state": "unknown", "pending_gates": ["evaluation"]}
 
     def _load_config(self) -> dict:
         try:
@@ -167,10 +194,163 @@ class BodyHost:
         """Persist Body settings while keeping secret values environment-backed."""
         CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
         safe = dict(self.config)
-        for key in ("HOME_ASSISTANT_TOKEN", "BODY_BRIDGE_TOKEN", "ROBOT_TOKEN", "FNK0031_TOKEN", "FNK0050_TOKEN"):
+        for key in ("HOME_ASSISTANT_TOKEN", "BODY_BRIDGE_TOKEN", "ROBOT_TOKEN", "FNK0031_TOKEN", "FNK0050_TOKEN", "BODY_LLM_TOKEN"):
             if safe.get(key) and not str(safe[key]).startswith("@env:"):
                 safe[key] = f"@env:{key}"
         CONFIG_PATH.write_text(json.dumps(safe, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    def body_llm_settings(self) -> dict:
+        return {
+            "enabled": bool(self.value("BODY_LLM_ENABLED", False)),
+            "base_url": str(self.value("BODY_LLM_BASE_URL", "http://127.0.0.1:1234/v1") or ""),
+            "model": str(self.value("BODY_LLM_MODEL", "") or ""),
+            "interval": float(self.value("BODY_LLM_INTERVAL", 8.0) or 8.0),
+            "timeout": float(self.value("BODY_LLM_TIMEOUT", 8.0) or 8.0),
+            "max_tokens": int(self.value("BODY_LLM_MAX_TOKENS", 360) or 360),
+            "focus_range_m": float(self.value("BODY_LLM_FOCUS_RANGE_M", 5.0) or 5.0),
+            "json_mode": bool(self.value("BODY_LLM_JSON_MODE", True)),
+            "embedding_model": str(self.value("BODY_LLM_EMBEDDING_MODEL", "") or ""),
+            "embedding_threshold": float(self.value("BODY_LLM_EMBEDDING_THRESHOLD", 0.78) or 0.78),
+            "embedding_timeout": float(self.value("BODY_LLM_EMBEDDING_TIMEOUT", 4.0) or 4.0),
+            "token_configured": bool(self.value("BODY_LLM_TOKEN", "")),
+        }
+
+    def deployment_check(self, payload: dict) -> dict:
+        target = str(payload.get("target_url", "") or "").strip().rstrip("/")
+        if not target:
+            return {"ok": False, "error": "target_url is required"}
+        try:
+            health = _http_get(f"{target}/health", token=str(payload.get("token", "") or ""), timeout=3.0)
+            return {"ok": True, "target_url": target, "health": health}
+        except Exception as exc:
+            return {"ok": False, "target_url": target, "error": str(exc)[:240]}
+
+    def deployment_push(self, payload: dict) -> dict:
+        target = str(payload.get("target_url", "") or "").strip().rstrip("/")
+        if not target:
+            return {"ok": False, "error": "target_url is required"}
+        bundle, manifest = build_bundle(ROOT, bool(payload.get("include_learned_model", False)))
+        headers = {"Content-Type": "application/zip", "Accept": "application/json"}
+        token = str(payload.get("token", "") or "").strip()
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        request = Request(f"{target}/deploy", data=bundle, headers=headers, method="POST")
+        try:
+            with urlopen(request, timeout=30.0) as response:
+                raw = response.read().decode("utf-8")
+                result = json.loads(raw) if raw else {}
+            return {"ok": True, "target_url": target, "manifest": manifest, "remote": result}
+        except Exception as exc:
+            return {"ok": False, "target_url": target, "manifest": manifest, "error": str(exc)[:300]}
+
+    def deployment_activate(self, payload: dict) -> dict:
+        target = str(payload.get("target_url", "") or "").strip().rstrip("/")
+        stage_id = str(payload.get("stage_id", "") or "").strip()
+        if not target or not stage_id:
+            return {"ok": False, "error": "target_url and stage_id are required"}
+        try:
+            result = _http_post(f"{target}/deploy/activate", {"stage_id": stage_id}, token=str(payload.get("token", "") or ""), timeout=10.0)
+            return {"ok": True, "target_url": target, "remote": result}
+        except Exception as exc:
+            return {"ok": False, "target_url": target, "error": str(exc)[:300]}
+
+    def deployment_restart(self, payload: dict) -> dict:
+        target = str(payload.get("target_url", "") or "").strip().rstrip("/")
+        if not target:
+            return {"ok": False, "error": "target_url is required"}
+        try:
+            result = _http_post(f"{target}/deploy/restart", {}, token=str(payload.get("token", "") or ""), timeout=45.0)
+            return {"ok": True, "target_url": target, "remote": result}
+        except Exception as exc:
+            return {"ok": False, "target_url": target, "error": str(exc)[:300]}
+
+    def body_llm_models(self) -> dict:
+        base = str(self.value("BODY_LLM_BASE_URL", "http://127.0.0.1:1234/v1") or "").rstrip("/")
+        try:
+            # LM Studio exposes rich model metadata on its native API. The
+            # OpenAI-compatible endpoint remains the fallback for providers
+            # that do not implement /api/v0/models.
+            native_base = base[:-3] if base.endswith("/v1") else base
+            try:
+                payload = _http_get(f"{native_base}/api/v0/models", timeout=3.0) or {}
+                metadata_source = "provider_native_metadata"
+            except Exception:
+                payload = _http_get(f"{base}/models", timeout=3.0) or {}
+                metadata_source = "openai_compatible_metadata"
+            models = []
+            for item in payload.get("data", []):
+                if not isinstance(item, dict) or not item.get("id"):
+                    continue
+                # Keep the provider metadata small, but preserve the fields
+                # needed to audit why a model is marked vision-capable.
+                metadata = {
+                    key: item[key] for key in (
+                        "modalities", "input_modalities", "supported_modalities",
+                        "capabilities", "architecture", "type",
+                    ) if key in item
+                }
+                tokens = json.dumps(metadata, ensure_ascii=False).lower()
+                explicit_modalities = metadata.get("modalities") or metadata.get("input_modalities") or metadata.get("supported_modalities")
+                model_type = str(item.get("type") or "").lower()
+                if model_type in {"vlm", "vision", "multimodal"} or any(token in tokens for token in ("vision", "image", "multimodal", "vlm", "visual")):
+                    vision = True
+                    capability_source = metadata_source
+                elif isinstance(explicit_modalities, (list, tuple, set)) and explicit_modalities:
+                    vision = False
+                    capability_source = metadata_source
+                elif model_type in {"llm", "embedding", "embeddings"}:
+                    vision = False
+                    capability_source = metadata_source
+                else:
+                    vision = None
+                    capability_source = "unknown"
+                models.append({
+                    "id": str(item["id"]),
+                    "vision_capable": vision,
+                    "capability_source": capability_source,
+                    "type": model_type or None,
+                    "metadata": metadata,
+                })
+            return {"ok": True, "models": models}
+        except Exception as exc:
+            return {"ok": False, "models": [], "error": str(exc)[:180]}
+
+    def update_body_llm_settings(self, payload: dict) -> dict:
+        self.config.update({
+            "BODY_LLM_ENABLED": bool(payload.get("enabled", False)),
+            "BODY_LLM_BASE_URL": str(payload.get("base_url", "http://127.0.0.1:1234/v1") or "").strip().rstrip("/"),
+            "BODY_LLM_MODEL": str(payload.get("model", "") or "").strip(),
+            "BODY_LLM_INTERVAL": max(2.0, float(payload.get("interval", 8.0) or 8.0)),
+            "BODY_LLM_TIMEOUT": max(1.0, float(payload.get("timeout", 8.0) or 8.0)),
+            "BODY_LLM_MAX_TOKENS": max(64, min(2048, int(payload.get("max_tokens", 360) or 360))),
+            "BODY_LLM_JSON_MODE": bool(payload.get("json_mode", True)),
+            "BODY_LLM_EMBEDDING_MODEL": str(payload.get("embedding_model", "text-embedding-nomic-embed-text-v1.5") or "").strip(),
+            "BODY_LLM_EMBEDDING_THRESHOLD": max(0.0, min(1.0, float(payload.get("embedding_threshold", 0.78) or 0.78))),
+            "BODY_LLM_EMBEDDING_TIMEOUT": max(1.0, min(8.0, float(payload.get("embedding_timeout", 4.0) or 4.0))),
+        })
+        token = str(payload.get("token", "") or "").strip()
+        if token:
+            os.environ["BODY_LLM_TOKEN"] = token
+            self.config["BODY_LLM_TOKEN"] = "@env:BODY_LLM_TOKEN"
+            secret_path = ROOT / "body_venv" / ".env"
+            secret_path.parent.mkdir(parents=True, exist_ok=True)
+            existing = {}
+            if secret_path.exists():
+                for line in secret_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+                    if "=" in line and not line.lstrip().startswith("#"):
+                        key, value = line.split("=", 1)
+                        existing[key.strip()] = value.strip()
+            existing["BODY_LLM_TOKEN"] = token
+            secret_path.write_text("".join(f"{key}={value}\n" for key, value in existing.items()), encoding="utf-8")
+        self.save_config()
+        wm = self._worldmodel
+        if wm is not None:
+            with wm._lock:
+                for key in ("BODY_LLM_ENABLED", "BODY_LLM_BASE_URL", "BODY_LLM_MODEL", "BODY_LLM_INTERVAL", "BODY_LLM_TIMEOUT", "BODY_LLM_MAX_TOKENS", "BODY_LLM_JSON_MODE", "BODY_LLM_EMBEDDING_MODEL", "BODY_LLM_EMBEDDING_THRESHOLD", "BODY_LLM_EMBEDDING_TIMEOUT"):
+                    wm._cfg[key] = self.config.get(key)
+                wm._cfg["BODY_LLM_TOKEN"] = self.value("BODY_LLM_TOKEN", "")
+                wm.scene_interpreter._config = wm._cfg
+        return {"ok": True, "settings": self.body_llm_settings()}
 
     def home_assistant_settings(self) -> dict:
         """Return editable Home Assistant settings without exposing the token."""
@@ -259,7 +439,146 @@ class BodyHost:
             "snn_enabled": bool(self.value("FNK0031_SNN_ENABLED", False)),
             "actuation_enabled": bool(self.value("FNK0031_ACTUATION_ENABLED", False)),
             "leg_count": int(self.value("FNK0031_LEG_COUNT", 6) or 6),
+            "platform": str(self.value("FNK0031_PLATFORM", "ventuno_q_gateway") or "ventuno_q_gateway"),
         }
+
+    def fnk0031_modules(self) -> dict:
+        """Return discovered FNK0031/VENTUNO modules and their Body state."""
+        configured = self.value("FNK0031_MODULES", {})
+        if not isinstance(configured, dict):
+            configured = {}
+        url = self._robot_url()
+        source = "configured_robot"
+        capabilities = {}
+        error = ""
+        if url:
+            try:
+                capabilities = _http_get(
+                    f"{url}/capabilities",
+                    token=self._robot_token(),
+                    timeout=float(self.value("FNK0031_TIMEOUT", 5.0) or 5.0),
+                ) or {}
+            except (HTTPError, URLError, TimeoutError, OSError, ValueError) as exc:
+                error = str(exc)
+        if not isinstance(capabilities, dict):
+            capabilities = {}
+        advertised = capabilities.get("modules") or []
+        if not advertised:
+            # Older firmware can still describe modules through sensor names.
+            advertised = capabilities.get("sensors") or []
+        detected = {}
+        for item in advertised:
+            if isinstance(item, dict):
+                module_id = str(item.get("id") or item.get("name") or "").strip().lower()
+                details = item
+            else:
+                module_id = str(item).strip().lower()
+                details = {}
+            if module_id:
+                detected[module_id] = details
+        modules = []
+        for module_id, metadata in FNK0031_MODULE_CATALOG.items():
+            details = detected.get(module_id)
+            modules.append({
+                "id": module_id,
+                **metadata,
+                "detected": details is not None,
+                "available": details is not None,
+                "enabled": bool(configured.get(module_id, details is not None)),
+                "details": details or {},
+            })
+        # Preserve vendor-specific modules without forcing them into the
+        # universal catalog, so new VENTUNO hardware remains visible.
+        for module_id, details in detected.items():
+            if module_id in FNK0031_MODULE_CATALOG:
+                continue
+            modules.append({
+                "id": module_id, "label": str(details.get("label") if isinstance(details, dict) else module_id),
+                "kind": str(details.get("kind") if isinstance(details, dict) else "vendor"),
+                "source": "robot", "detected": True, "available": True,
+                "enabled": bool(configured.get(module_id, True)), "details": details,
+            })
+        return {
+            "ok": not error,
+            "source": source,
+            "url": url,
+            "connected": bool(capabilities),
+            "error": error,
+            "modules": modules,
+            "capabilities": capabilities,
+        }
+
+    def fnk0031_module_status(self) -> dict:
+        """Probe live module health without assuming a particular sensor vendor."""
+        discovered = self.fnk0031_modules()
+        url = str(discovered.get("url") or "").rstrip("/")
+        token = self._robot_token()
+        timeout = min(2.0, float(self.value("FNK0031_TIMEOUT", 5.0) or 5.0))
+        payload = None
+        source = "capabilities_fallback"
+        error = ""
+        if url:
+            for suffix in ("/modules/status", "/module-status", "/sensors/modules"):
+                try:
+                    candidate = _http_get(f"{url}{suffix}", token=token, timeout=timeout)
+                    if isinstance(candidate, dict):
+                        payload = candidate
+                        source = suffix
+                        break
+                except (HTTPError, URLError, TimeoutError, OSError, ValueError) as exc:
+                    error = str(exc)
+            if payload is None:
+                # Older robot firmware has no module endpoint. Its sensor
+                # payload still gives a meaningful live status for core data.
+                try:
+                    sensors = _http_get(f"{url}/sensors", token=token, timeout=timeout) or {}
+                    if isinstance(sensors, dict):
+                        payload = {"modules": {
+                            "imu": {"status": "online" if sensors.get("imu") else "unknown", "data": sensors.get("imu")},
+                            "odometry": {"status": "online" if sensors.get("position") is not None else "unknown", "data": sensors.get("position")},
+                            "actuators": {"status": "online" if sensors.get("actuators") else "unknown", "data": sensors.get("actuators")},
+                        }}
+                        source = "/sensors fallback"
+                except (HTTPError, URLError, TimeoutError, OSError, ValueError) as exc:
+                    error = str(exc)
+        raw_modules = (payload or {}).get("modules") if isinstance(payload, dict) else {}
+        if isinstance(raw_modules, list):
+            raw_modules = {str(item.get("id")): item for item in raw_modules if isinstance(item, dict) and item.get("id")}
+        if not isinstance(raw_modules, dict):
+            raw_modules = {}
+        modules = []
+        for module in discovered.get("modules", []):
+            module_id = module["id"]
+            live = raw_modules.get(module_id) or {}
+            status = str(live.get("status") or ("online" if module.get("detected") else "not_detected")).lower()
+            modules.append({
+                **module,
+                "status": status,
+                "last_seen": live.get("last_seen") or live.get("timestamp"),
+                "error": str(live.get("error") or ""),
+                "data": live.get("data", live.get("value")),
+            })
+        return {
+            "ok": bool(discovered.get("connected")) and not error,
+            "connected": bool(discovered.get("connected")),
+            "url": url,
+            "source": source,
+            "queried_at": time.time(),
+            "error": error,
+            "modules": modules,
+        }
+
+    def update_fnk0031_module(self, payload: dict) -> dict:
+        module_id = str(payload.get("id") or "").strip().lower()
+        if not module_id or (module_id not in FNK0031_MODULE_CATALOG and not module_id.replace("_", "").isalnum()):
+            raise ValueError("unknown FNK0031 module")
+        configured = self.value("FNK0031_MODULES", {})
+        if not isinstance(configured, dict):
+            configured = {}
+        configured[module_id] = bool(payload.get("enabled", False))
+        self.config["FNK0031_MODULES"] = configured
+        self.save_config()
+        return {"ok": True, "persisted": True, **self.fnk0031_modules()}
 
     def update_fnk0031_settings(self, payload: dict) -> dict:
         self.config.update({
@@ -269,6 +588,7 @@ class BodyHost:
             "FNK0031_SNN_ENABLED": bool(payload.get("snn_enabled", False)),
             "FNK0031_ACTUATION_ENABLED": bool(payload.get("actuation_enabled", False)),
             "FNK0031_LEG_COUNT": 6,
+            "FNK0031_PLATFORM": str(payload.get("platform", "ventuno_q_gateway") or "ventuno_q_gateway").strip().lower(),
         })
         token = str(payload.get("token", "") or "").strip()
         if token:
@@ -469,11 +789,45 @@ class BodyHost:
         with self._worldmodel_evaluation_lock:
             return dict(self._worldmodel_evaluation_status)
 
+    def run_video_lidar_replay(self, payload: dict | None = None) -> dict:
+        """Replay a local camera video through the Body perception contract.
+
+        This is intentionally synchronous and bounded: it is a diagnostic
+        tool, not another sensor loop. The generated JSONL keeps the image and
+        estimated range returns together for later VLM/LiDAR comparison.
+        """
+        payload = payload if isinstance(payload, dict) else {}
+        video_path = str(payload.get("video_path") or payload.get("path") or "").strip()
+        if not video_path:
+            return {"status": "error", "error": "video_path is required"}
+        output = payload.get("output_path")
+        if not output:
+            stamp = time.strftime("%Y%m%d-%H%M%S")
+            output = str(ROOT / "data" / "body" / "replays" / f"video-lidar-{stamp}.jsonl")
+        try:
+            from body_runtime_host.worldmodel.video_lidar import run_video_lidar_replay
+            return run_video_lidar_replay(
+                video_path,
+                sample_fps=float(payload.get("sample_fps", 2.0) or 2.0),
+                max_frames=int(payload.get("max_frames", 20) or 20),
+                capture_width=int(payload.get("capture_width", 640) or 640),
+                capture_height=int(payload.get("capture_height", 480) or 480),
+                output_path=str(output),
+                camera_height_m=float(payload.get("camera_height_m", 0.24) or 0.24),
+                horizontal_fov_deg=float(payload.get("horizontal_fov_deg", 100.0) or 100.0),
+                vertical_fov_deg=float(payload.get("vertical_fov_deg", 62.0) or 62.0),
+            )
+        except Exception as exc:
+            LOG.exception("Video/LiDAR replay failed")
+            return {"status": "error", "error": str(exc), "video_path": video_path}
+
     def start_worldmodel_evaluation(self, payload: dict | None = None) -> dict:
         """Run the generic shuffled-scene benchmark outside the Body loop."""
         payload = payload if isinstance(payload, dict) else {}
         trials = max(1, min(250, int(payload.get("trials", 100) or 100)))
         max_steps = max(20, min(1000, int(payload.get("max_steps", 180) or 180)))
+        grounding_samples = max(0, min(100, int(payload.get("grounding_samples", 0) or 0)))
+        visual_blind = bool(payload.get("visual_blind", True))
         with self._worldmodel_evaluation_lock:
             if self._worldmodel_evaluation_thread and self._worldmodel_evaluation_thread.is_alive():
                 return dict(self._worldmodel_evaluation_status)
@@ -483,7 +837,7 @@ class BodyHost:
 
         def run() -> None:
             try:
-                from body_runtime_host.worldmodel.evaluation import run_shuffled_trials
+                from body_runtime_host.worldmodel.evaluation import collect_body_llm_grounding, run_shuffled_trials
                 def progress(update: dict) -> None:
                     with self._worldmodel_evaluation_lock:
                         self._worldmodel_evaluation_status.update({"live": update})
@@ -493,6 +847,17 @@ class BodyHost:
                     report_path=self._worldmodel_evaluation_report_path,
                     progress_callback=progress,
                 )
+                if grounding_samples:
+                    result["body_llm_grounding"] = collect_body_llm_grounding(
+                        grounding_samples, self.config, visual_blind=visual_blind,
+                    )
+                gate = result.get("capability_gate")
+                if isinstance(gate, dict):
+                    self._worldmodel_capability_path.parent.mkdir(parents=True, exist_ok=True)
+                    self._worldmodel_capability_path.write_text(
+                        json.dumps({"recorded_at": time.time(), **gate}, ensure_ascii=False, indent=2),
+                        encoding="utf-8",
+                    )
                 with self._worldmodel_evaluation_lock:
                     self._worldmodel_evaluation_status = {"state": "completed", **result}
             except Exception as exc:
@@ -696,9 +1061,16 @@ class BodyHost:
                 "kind": "embodied_perception",
                 "subject": "body.world_model",
                 "value": {
+                    "contract": "body_perception_frame.v2",
+                    "frame_id": (perception.get("sensor_projections") or {}).get("frame", {}).get("frame_id"),
+                    "timestamp": float(perception.get("timestamp") or time.time()),
                     "capabilities": body.get("capabilities") or {},
                     "affordances": perception.get("affordances") or {},
                     "objects": perception.get("objects") or [],
+                    "modalities": perception.get("modalities") or {},
+                    "sensor_projections": perception.get("sensor_projections") or {},
+                    "perception_frame": perception.get("perception_frame") or {},
+                    "scene_interpreter": perception.get("scene_interpreter") or {},
                     "position": body.get("position"),
                     "orientation": body.get("orientation"),
                     "text": perception.get("text") or "",
@@ -711,6 +1083,7 @@ class BodyHost:
                     "ground_truth_available": bool(perception.get("ground_truth_available")),
                     "capabilities": body.get("capabilities") or {},
                     "affordances": perception.get("affordances") or {},
+                    "quality": (perception.get("sensor_projections") or {}).get("quality") or {},
                 },
             }
             self.latest[entry["entity_id"]] = entry
@@ -793,6 +1166,53 @@ class BodyHost:
             "last_error": self._robot_last_error,
             "role": "primary sensorimetry channel",
         }
+
+    def robot_sim_status(self) -> dict:
+        with self._robot_sim_lock:
+            server = self._robot_sim
+            if server is None:
+                return {"running": False, "url": "", "platform": "fnk0031_simulator"}
+            return {
+                "running": True,
+                "url": f"http://127.0.0.1:{server.port}",
+                "port": server.port,
+                "platform": "fnk0031_simulator",
+                "capabilities": server.capabilities(),
+            }
+
+    def start_robot_sim(self, payload: dict | None = None) -> dict:
+        with self._robot_sim_lock:
+            if self._robot_sim is not None:
+                return {"ok": True, **self.robot_sim_status(), "already_running": True}
+            from body_runtime_host.robot_sim import RobotSimServer
+            requested = (payload or {}).get("port")
+            requested_port = int(self.value("FNK0031_SIM_PORT", 9101) if requested is None else requested)
+            server = RobotSimServer(host="127.0.0.1", port=requested_port)
+            server.start()
+            self._robot_sim = server
+            return {"ok": True, **self.robot_sim_status()}
+
+    def stop_robot_sim(self) -> dict:
+        with self._robot_sim_lock:
+            server = self._robot_sim
+            self._robot_sim = None
+        if server is not None:
+            server.stop()
+        return {"ok": True, "running": False, "stopped": server is not None}
+
+    def use_robot_sim(self) -> dict:
+        started = self.start_robot_sim()
+        url = str(started.get("url") or "")
+        result = self.update_fnk0031_settings({
+            "url": url,
+            "platform": "fnk0031_simulator",
+            "poll_interval": 1,
+            "timeout": 3,
+            "snn_enabled": bool(self.value("FNK0031_SNN_ENABLED", False)),
+            "actuation_enabled": True,
+        })
+        enabled = self.set_plugin_enabled("fnk0031_wifi", True)
+        return {"ok": bool(result.get("ok") and enabled.get("persisted")), "simulator": started, "settings": result, "plugin": enabled}
 
     # ── poll loop (robot first, HA auxiliary) ──────────────────────────────
 
@@ -906,9 +1326,16 @@ class BodyHost:
                     try:
                         from .worldmodel import EmbodiedWorldModel
                         src = self._resolve_worldmodel_source()
+                        # Body LLM settings live with the Body process, while
+                        # the world-model config remains the model's own data.
+                        body_llm_config = {
+                            key: self.value(key, value) for key, value in self.config.items()
+                            if str(key).startswith("BODY_LLM_")
+                        }
                         self._worldmodel = EmbodiedWorldModel(
                             body=None,
                             data_dir=str(ROOT / "data" / "body" / "worldmodel"),
+                            config=body_llm_config,
                             source=src,
                         )
                         LOG.info("World model ready (source=%s)", getattr(src, "name", "?"))
@@ -948,7 +1375,12 @@ class BodyHost:
             pass
         mode = str(model_config.get("mode") or "sim").strip().lower()
         if mode == "sim":
-            return SimRobotSource()
+            try:
+                return SimRobotSource(camera_interval=float(self.value("BODY_CAMERA_INTERVAL", 0.5) or 0.5))
+            except TypeError:
+                # Keep compatibility with lightweight test doubles and older
+                # Body plugin implementations that accept no constructor args.
+                return SimRobotSource()
         if mode == "bridge":
             return None
         return resolve_source(self.config, self.latest)
@@ -963,6 +1395,7 @@ class BodyHost:
                 "last_ok_age_s": round(time.time() - self._robot_last_ok, 1) if self._robot_last_ok else None,
                 "last_error": self._robot_last_error,
                 "role": "six-leg sensorimetry channel (Arduino/ESP bridge)",
+                "platform": str(self.value("FNK0031_PLATFORM", "ventuno_q_gateway") or "ventuno_q_gateway"),
             },
             {
                 "id": "fnk0050_wifi",
@@ -1025,6 +1458,7 @@ class BodyHost:
         if self.http_server is not None:
             self.http_server.shutdown()
             self.http_server.server_close()
+        self.stop_robot_sim()
 
     # ── HTTP endpoints ──────────────────────────────────────────────────────
 
@@ -1102,10 +1536,30 @@ class BodyHost:
                     self._send(owner.fnk0050_settings())
                 elif path == "/plugins/fnk0031_wifi/settings":
                     self._send(owner.fnk0031_settings())
+                elif path == "/plugins/fnk0031_wifi/modules":
+                    self._send(owner.fnk0031_modules())
+                elif path == "/plugins/fnk0031_wifi/modules/status":
+                    self._send(owner.fnk0031_module_status())
                 elif path == "/plugins/fnk0031_wifi/controller":
                     self._send(owner.fnk0031_controller_status())
                 elif path == "/plugins/fnk0031_wifi/experiment":
                     self._send(owner.fnk0031_experiment_status())
+                elif path == "/robot-sim/status":
+                    self._send(owner.robot_sim_status())
+                elif path == "/deployment/status":
+                    self._send({
+                        "ok": True,
+                        "contract": "pandorabox.body_bundle.v1",
+                        "secrets_excluded": True,
+                        "learned_model_optional": True,
+                    })
+                elif path == "/worldmodel/scene-interpreter":
+                    wm = owner.worldmodel
+                    self._send(wm.scene_interpreter.status() if wm is not None else {"status": "unavailable"})
+                elif path == "/body/llm":
+                    self._send(owner.body_llm_settings())
+                elif path == "/body/llm/models":
+                    self._send(owner.body_llm_models())
                 elif path == "/observations":
                     self._send({"observations": sorted(
                         owner.latest.values(),
@@ -1120,6 +1574,28 @@ class BodyHost:
                         self._send({"error": "world model unavailable"}, 503)
                     else:
                         self._send(wm.status_summary())
+                elif path == "/worldmodel/perception":
+                    wm = owner.worldmodel
+                    if wm is None:
+                        self._send({"error": "world model unavailable"}, 503)
+                    else:
+                        self._send(wm.status_summary().get("perception") or {"available": False})
+                elif path == "/worldmodel/map":
+                    wm = owner.worldmodel
+                    if wm is None:
+                        self._send({"available": False, "error": "world model unavailable"}, 503)
+                    else:
+                        self._send(wm.route_memory.snapshot())
+                elif path == "/worldmodel/map/route":
+                    wm = owner.worldmodel
+                    query = parse_qs(urlparse(self.path).query)
+                    target = str((query.get("target") or [""])[0]).strip()
+                    if wm is None:
+                        self._send({"available": False, "error": "world model unavailable"}, 503)
+                    elif target == "start":
+                        self._send(wm.route_memory.route_to_start())
+                    else:
+                        self._send(wm.route_memory.route_to(target))
                 elif path == "/worldmodel/anchors":
                     wm = owner.worldmodel
                     if wm is None:
@@ -1140,6 +1616,8 @@ class BodyHost:
                         self._send({"context": wm.context_for_brain()})
                 elif path == "/worldmodel/evaluation":
                     self._send(owner.worldmodel_evaluation_status())
+                elif path == "/worldmodel/capability-gate":
+                    self._send(owner.worldmodel_capability_gate())
                 elif path == "/worldmodel/plans/validate":
                     wm = owner.worldmodel
                     if wm is None:
@@ -1179,6 +1657,8 @@ class BodyHost:
                         self._send(owner.update_fnk0050_settings(body))
                     elif path == "/plugins/fnk0031_wifi/settings":
                         self._send(owner.update_fnk0031_settings(body))
+                    elif path == "/plugins/fnk0031_wifi/modules":
+                        self._send(owner.update_fnk0031_module(body))
                     elif path == "/plugins/fnk0031_wifi/controller/step":
                         self._send(owner.fnk0031_controller_step())
                     elif path == "/plugins/fnk0031_wifi/experiment/start":
@@ -1195,6 +1675,22 @@ class BodyHost:
                             self._send(owner.set_plugin_enabled(plugin_id, bool(body.get("enabled", False))))
                         except ValueError as exc:
                             self._send({"error": str(exc)}, 400)
+                elif path == "/body/llm":
+                    self._send(owner.update_body_llm_settings(self._read_body()))
+                elif path == "/deployment/check":
+                    self._send(owner.deployment_check(self._read_body()))
+                elif path == "/deployment/push":
+                    self._send(owner.deployment_push(self._read_body()))
+                elif path == "/deployment/activate":
+                    self._send(owner.deployment_activate(self._read_body()))
+                elif path == "/deployment/restart":
+                    self._send(owner.deployment_restart(self._read_body()))
+                elif path == "/robot-sim/start":
+                    self._send(owner.start_robot_sim(self._read_body()))
+                elif path == "/robot-sim/stop":
+                    self._send(owner.stop_robot_sim())
+                elif path == "/robot-sim/use":
+                    self._send(owner.use_robot_sim())
                 elif path == "/worldmodel/step":
                     wm = owner.worldmodel
                     if wm is None:
@@ -1222,6 +1718,8 @@ class BodyHost:
                     self._send(wm.reset(clear_memory=bool(body.get("clear_memory", False))))
                 elif path == "/worldmodel/evaluation/run":
                     self._send(owner.start_worldmodel_evaluation(self._read_body()))
+                elif path == "/worldmodel/perception/video-replay":
+                    self._send(owner.run_video_lidar_replay(self._read_body()))
                 elif path == "/worldmodel/config":
                     wm = owner.worldmodel
                     if wm is None:

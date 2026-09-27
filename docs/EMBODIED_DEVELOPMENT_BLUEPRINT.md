@@ -96,9 +96,9 @@ The default task sequence is still a simulator fixture, but it is no longer the
 plan contract. The Body accepts generic structured plans and the Brain now has
 an auditable remote submission/cancellation boundary. A chat-to-plan compiler
 also produces a confirmation-gated draft from a fresh Body snapshot without
-executing it. The remaining integration is to expose that draft in the
-conversation/UI, ask for explicit approval, and submit it for Body validation.
-No phrase dictionary is used for this translation.
+executing it. The draft is exposed through the Brain chat bridge, validated
+against the fresh snapshot, held for explicit approval, and submitted only
+after approval. No phrase dictionary is used for this translation.
 
 ## 3. Design principles
 
@@ -343,8 +343,11 @@ Acceptance tests:
 Goal: replace simulator-specific stage assumptions with a reusable task graph.
 
 Status: execution baseline implemented. Generic surface relations, clearance,
-deadlines and a bounded local recovery loop are implemented. Remaining work:
-learned local trajectories and broad shuffled-scene evaluation.
+deadlines and a bounded local recovery loop are implemented. Learned local
+action arbitration and broad shuffled-scene evaluation are now implemented as
+well: the Body trains online from sensorimotor transitions and may replace a
+validated primitive only when the learned counterfactual is safer by a bounded
+margin. Confirmed plans and urgent recovery remain authoritative.
 
 The deterministic local planner now uses inflated obstacle geometry and A*;
 it marks a route as replanned when the scene geometry changes. Manipulation
@@ -395,11 +398,24 @@ Acceptance metrics:
 - Goal completion across at least 100 shuffled scenes.
 - Route length no more than 1.5 times the known shortest valid route.
 
+Current evidence: the planner and simulator now share continuous metric
+collision geometry (body radius, object radius and contact margin), while the
+legacy grid planner remains available only for paired comparison. On a
+100-scene benchmark with the same fractional coordinates and disturbances,
+the metric planner completed 100/100 with 0 collisions, 38.88 average steps
+and 19.02 m travelled; the legacy grid planner completed 99/100 with 0
+collisions, 40.00 average steps and 19.19 m travelled. This is the first
+measurable advantage of metric validation rather than a grid-aligned result.
+The next benchmark increment is to collect Body-LLM semantic-grounding
+precision on those same frames, while keeping geometry and action legality
+authoritative in the Body.
+
 ### Phase 3 - Body LLM adapter
 
 Goal: use a local LLM as a grounded Body reasoning assistant without giving it
-unrestricted actuator access. The Brain-side compiler and Body transport are
-available; a Body-local adapter remains optional.
+unrestricted actuator access. The Body-local asynchronous scene interpreter is
+now implemented and remains optional; it is advisory perception, not an action
+executor.
 
 The Body LLM receives only:
 
@@ -411,25 +427,46 @@ The Body LLM receives only:
 - recent failed actions;
 - local planner alternatives.
 
-It returns a validated action proposal, never a direct device command. The
-deterministic gateway checks the proposal against the world model before
-execution.
+It returns a timestamped scene summary, primary objects, environment facts,
+possible paths, movement support and uncertainty. Any future action proposal
+must still pass through the deterministic gateway, which checks it against the
+world model before execution.
 
 Fallback hierarchy:
 
 1. deterministic safety controller;
 2. local geometric planner;
-3. Body LLM proposal;
+3. Body LLM scene interpretation;
 4. learned policy ranking among legal actions.
 
 The LLM is useful for interpreting ambiguous affordances and proposing
 recovery strategies, but the Body remains functional without it.
 
+The current implementation also records a grounding report for each accepted
+interpretation: valid object-reference precision, observed object count,
+sensor frame id and an explicit `geometry_authoritative` flag. Unknown LLM
+entities are discarded before the semantic scene reaches the Brain. A
+configurable `BODY_LLM_GROUNDING_THRESHOLD` now gates semantic context
+insertion; the Body exposes sample count, average precision and rejected
+contexts in its interpreter status. The geometric snapshot remains usable
+when the threshold rejects an interpretation.
+
+The evaluation endpoint accepts an optional `grounding_samples` value. When
+set, it runs real Body-LLM calls on the same fractional scene protocol and
+adds `body_llm_grounding` to the persisted report with accepted/rejected
+counts, per-seed diagnostics, precision, errors and threshold. The collection is isolated from the
+motion benchmark, so model latency or unavailability cannot change motor
+results.
+
 ### Phase 4 - Brain planning bridge
 
-Goal: let a user ask PandoraBOX for a physical task in natural language. The
-generic compiler seam is implemented, but approval UI and chat orchestration
-are still required before this phase is complete.
+Goal: let a user ask PandoraBOX for a physical task in natural language.
+
+Status: implemented for the local Body bridge. Chat requests are compiled to
+generic drafts, validated against a fresh Body snapshot, held for explicit
+confirmation, and submitted through the persisted Body plan lease. A new
+physical request can replace an active plan only after the replacement is
+validated and the old lease is cancelled.
 
 Example:
 
@@ -457,6 +494,11 @@ Body responsibilities:
 ### Phase 5 - User control and supervision
 
 Goal: make embodied autonomy understandable and interruptible.
+
+Status: Body-side supervision is implemented. The World Model panel exposes
+the active plan state, current step, retry count, recent action timeline, and
+pause/continue/cancel controls. Brain-side dialogue remains the preferred
+confirmation surface; the Body controls are an operator safety surface.
 
 World Model UI additions:
 
@@ -496,12 +538,20 @@ Required robot-side protocol:
 Minimum sensor payload:
 
 - timestamp;
-- pose or odometry estimate;
+- pose or odometry estimate in a declared coordinate frame;
+- position source and accuracy estimate;
+- optional GNSS/GPS fix used to anchor the local metric map;
 - heading;
 - obstacle/distance sensors;
 - gripper state;
 - battery and connectivity;
 - firmware protocol version.
+
+The Body now implements the corresponding `body_spatial_fix.v1` contract. It
+uses a Body-anchored `local_map` for indoor operation, projects GNSS-only
+robot/object fixes into that frame when available, and persists the frame,
+origin, source and accuracy with route waypoints and object flags. GPS is an
+optional anchor, not a prerequisite for local navigation.
 
 The physical adapter must implement a hard stop locally. Loss of Body or Brain
 connection must not leave motors running.
@@ -556,6 +606,27 @@ Promotion requires:
 - safety test;
 - comparison against a deterministic baseline;
 - persisted evaluation report.
+
+Current implementation status: the shuffled-scene benchmark now persists a
+capability gate alongside each report and exposes it through the Body API and
+Body interface. The gate records success rate, collisions, randomized-scene
+coverage, recovery/near-miss evidence, efficiency against baseline, and the
+remaining restart/resume and hardware-transfer gates. A safe, reliable
+randomized simulation can therefore become `PROVISIONAL`, but it cannot become
+`VERIFIED` from simulation alone. The next implementation step is to exercise
+restart/resume against the persisted Body state, then repeat the same evidence
+protocol through the robot gateway at reduced speed after calibration.
+
+The first restart/resume probe is now implemented: it reloads an accepted
+partially completed plan, confirms the next step index and rejects a competing
+lease. This validates the Body plan ledger, while the gate continues to mark
+the full process restart and physical transfer as pending.
+
+The evaluation report also records time-to-goal, detour distance and detour
+actions, together with average and maximum local decision latency. These
+metrics are available to the Brain through the Body report and are suitable
+for chat-level status answers without asking the chat model to invent motion
+state.
 
 ## 8. Evaluation matrix
 

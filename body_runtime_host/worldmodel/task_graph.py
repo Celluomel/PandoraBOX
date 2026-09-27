@@ -32,6 +32,9 @@ class TaskDecision:
 class TaskGraphExecutor:
     """Derive the next safe primitive action from a generic plan step."""
 
+    def __init__(self, local_planner: Optional[LocalRoutePlanner] = None) -> None:
+        self.local_planner = local_planner or LocalRoutePlanner()
+
     def decide(self, plan: BodyPlan, snapshot: BodySnapshot, body: BodyState) -> TaskDecision:
         if plan.current_step_index >= len(plan.steps):
             return TaskDecision(None, reason="all plan steps are satisfied", satisfied=True)
@@ -118,20 +121,37 @@ class TaskGraphExecutor:
 
     @staticmethod
     def _translation_clear(snapshot: BodySnapshot, body: BodyState, distance: float, heading: Optional[float] = None) -> bool:
-        """Check one grid translation using the current Body snapshot."""
+        """Check a translation against the continuous metric collision envelope."""
         angle = float(body.orientation if heading is None else heading)
-        x = float(body.position[0]) + math.cos(angle) * distance
-        y = float(body.position[1]) + math.sin(angle) * distance
+        start_x, start_y = float(body.position[0]), float(body.position[1])
         width = float(body.capabilities.get("world_width", 12.0))
         height = float(body.capabilities.get("world_height", 12.0))
-        if x < 0.0 or y < 0.0 or x >= width or y >= height:
-            return False
-        for item in snapshot.objects:
-            if str(item.get("kind")) not in {"obstacle", "chair", "table", "surface", "wall", "mobile_obstacle"}:
-                continue
-            position = item.get("position") or [0.0, 0.0]
-            if math.hypot(float(position[0]) - x, float(position[1]) - y) < 0.6:
+        end_x = start_x + math.cos(angle) * distance
+        end_y = start_y + math.sin(angle) * distance
+        body_radius = max(0.01, float(body.capabilities.get("body_radius_m", 0.3)))
+        margin = max(0.0, float(body.capabilities.get("contact_margin_m", 0.05)))
+        samples = max(1, int(math.ceil(abs(distance) / 0.1)))
+        for index in range(samples + 1):
+            ratio = index / samples
+            x = start_x + (end_x - start_x) * ratio
+            y = start_y + (end_y - start_y) * ratio
+            if x < body_radius or y < body_radius or x > width - body_radius or y > height - body_radius:
                 return False
+            for item in snapshot.objects:
+                kind = str(item.get("kind"))
+                if kind not in {"obstacle", "chair", "table", "surface", "wall", "mobile_obstacle"}:
+                    continue
+                position = item.get("position") or [0.0, 0.0]
+                object_radius = max(0.05, float(item.get("size", 0.5)) * 0.3)
+                clearance = body_radius + object_radius + margin
+                if kind == "mobile_obstacle":
+                    clearance = max(clearance, float(body.capabilities.get("mobile_obstacle_clearance", 1.3)))
+                if math.hypot(float(position[0]) - x, float(position[1]) - y) < clearance:
+                    return False
+                if kind == "mobile_obstacle":
+                    predicted = body.capabilities.get("mobile_obstacle_predicted_position")
+                    if predicted and len(predicted) >= 2 and math.hypot(float(predicted[0]) - x, float(predicted[1]) - y) < clearance:
+                        return False
         return True
 
     def _satisfied(self, step: PlanStep, snapshot: BodySnapshot, body: BodyState) -> bool:
@@ -220,8 +240,19 @@ class TaskGraphExecutor:
         desired = math.atan2(float(waypoint[1]) - snapshot.pose["y"], float(waypoint[0]) - snapshot.pose["x"])
         delta = (desired - float(body.orientation) + math.pi) % (2 * math.pi) - math.pi
         if abs(delta) > 0.35:
-            return Action(type="turn_left" if delta > 0 else "turn_right", target=route.target, params={**(arguments or {}), "waypoint": list(waypoint), "plan_controlled": True})
+            action = "turn_left" if delta > 0 else "turn_right"
+            return Action(type=action, target=route.target, params={**(arguments or {}), "waypoint": list(waypoint), "plan_controlled": True})
+        if not self._translation_clear(snapshot, body, 1.0, heading=desired):
+            # The static route can become invalid between two observations
+            # when a mobile obstacle moves. Turn into the clearest lateral
+            # corridor and let the next snapshot rebuild the route.
+            candidates = []
+            for action, turn in (("turn_left", math.pi / 2), ("turn_right", -math.pi / 2)):
+                heading = float(body.orientation) + turn
+                if self._translation_clear(snapshot, body, 1.0, heading=heading):
+                    candidates.append((abs(((heading - desired + math.pi) % (2 * math.pi)) - math.pi), action))
+            if candidates:
+                action = min(candidates, key=lambda item: item[0])[1]
+                return Action(type=action, target=route.target, params={**(arguments or {}), "waypoint": list(waypoint), "plan_controlled": True, "dynamic_avoidance": True})
+            return Action(type="wait", target=route.target, params={**(arguments or {}), "plan_controlled": True, "dynamic_avoidance": True})
         return Action(type="forward", target=route.target, params={**(arguments or {}), "waypoint": list(waypoint), "plan_controlled": True})
-    def __init__(self) -> None:
-        self.local_planner = LocalRoutePlanner()
-        self.last_route: Dict[str, Any] = {}

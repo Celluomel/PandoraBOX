@@ -12,6 +12,14 @@ The plugin uses the Body's small robot protocol:
 - `GET /health` (optional)
 - `GET /sensors`
 - `POST /command`
+- `POST /stop`
+- `POST /reset` (development only)
+- `GET /capabilities`
+
+The normalized protocol identifier is `fnk0031.body.v1`. Sensor frames must
+include a timestamp, a two-dimensional pose (`position` or `x`/`y`) and may
+include IMU, GPS, camera, LiDAR and servo telemetry. Commands are normalized
+before forwarding; unknown verbs are rejected by the gateway.
 
 `/sensors` returns a JSON object containing the body pose, orientation,
 capabilities, visible objects, carrying state, battery and timestamp. A
@@ -33,6 +41,7 @@ local Body environment rather than committed configuration:
 - `FNK0031_SNN_ENABLED`
 - `FNK0031_ACTUATION_ENABLED`
 - `FNK0031_LEG_COUNT` (default `6`)
+- `FNK0031_PLATFORM` (default `ventuno_q_gateway`)
 
 - `BODY_PLUGIN_FNK0050_ENABLED`
 - `FNK0050_URL`
@@ -43,8 +52,12 @@ local Body environment rather than committed configuration:
 - `FNK0050_ACTUATION_ENABLED`
 
 The Brain discovers the plugin but does not own the Body's hardware settings.
-For FNK0031, the Mega 2560 is treated as a sensor/servo endpoint; the SNN
-and CPG run on the Body host and can communicate through an ESP Wi-Fi bridge.
+For FNK0031, the FNK0031 board remains the servo and motor endpoint. The
+VENTUNO Q is an optional Linux/Wi-Fi AI gateway: it hosts the Body API, camera
+and local inference, then forwards validated gait commands to the FNK0031
+board. The SNN and CPG run on the Body side during development; the FNK0031
+board remains responsible for servo timing, motor power and its local stop
+path.
 When enabled with a URL, the Body world model selects the corresponding
 FNK0031 or FNK0050 source even if its persisted development mode is still
 `sim`. This makes a hardware
@@ -109,7 +122,16 @@ commanding individual servos without calibration.
 The controller is called only through the approved FNK0031 action path. It
 does not move a robot merely because `FNK0031_SNN_ENABLED` is enabled.
 
-An ESP32 is a good companion for the Mega 2560: it can expose the Wi-Fi API,
-relay sensor/IMU data and forward servo commands. It should not be treated as
-the owner of the learned brain until timing, watchdog and emergency-stop
-behaviour have been validated.
+The VENTUNO Q takes the role previously considered for an ESP32 gateway. Its
+Linux side exposes the Body API and can run local perception or inference; its
+internal RPC/STM32H5 is not the FNK0031 servo controller. The gateway must
+forward commands to the FNK0031 board and preserve watchdog and emergency-stop
+behaviour end to end.
+
+The development gateway is `body_runtime_host/ventuno_gateway.py`. On the
+VENTUNO Linux side start it with `start_ventuno_gateway.sh`, then configure
+`FNK0031_URL` in the Body plugin to the VENTUNO address, for example
+`http://ventuno-q.local:9100`. It forwards `GET /sensors`, `POST /command`,
+`POST /stop` and `GET /health` to the FNK0031 board. Physical forwarding stays
+disabled until `VENTUNO_ACTUATION_ENABLED=1` is explicitly set; `POST /stop`
+remains available for the safety path.

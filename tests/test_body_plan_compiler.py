@@ -28,6 +28,21 @@ class BodyPlanCompilerTests(unittest.TestCase):
         self.assertEqual(result["steps"][-1]["target"], "chair")
         self.assertEqual(result["steps"][-1]["postconditions"][0]["surface"], "chair")
 
+    def test_completes_generic_skill_postconditions(self):
+        def llm(_prompt, _system, **_kwargs):
+            return '{"objective":"move cup to chair","steps":[' \
+                '{"verb":"navigate","target":"cup"},' \
+                '{"verb":"grab","target":"cup"},' \
+                '{"verb":"navigate","target":"chair"},' \
+                '{"verb":"release","target":"chair"}]}'
+
+        result = compile_body_plan("Move the cup to the chair", self.snapshot, llm)
+        self.assertTrue(result["accepted"], result)
+        self.assertEqual(result["constraints"]["skill_contract"], "generic_grounded_v1")
+        self.assertEqual(result["steps"][0]["postconditions"], [{"type": "near", "target": "cup"}])
+        self.assertEqual(result["steps"][1]["postconditions"], [{"type": "holding", "target": "cup"}])
+        self.assertEqual(result["steps"][-1]["postconditions"], [{"type": "on_surface", "target": "cup", "surface": "chair"}])
+
     def test_rejects_unknown_protocol_verb(self):
         def llm(_prompt, _system, **_kwargs):
             return '{"objective":"do it","steps":[{"verb":"fly","target":"cup"}]}'

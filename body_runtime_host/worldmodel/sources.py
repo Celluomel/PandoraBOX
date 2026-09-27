@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from .sim_world import SimulatedRoom
+from .spatial import LocalMapReference, geo_fix
 from .types import Action, BodyState, Observation, Outcome, SceneObject
 
 logger = logging.getLogger(__name__)
@@ -98,12 +99,116 @@ class SimRobotSource:
 
     name = "sim_robot"
 
-    def __init__(self, room: Optional[SimulatedRoom] = None):
-        self.room = room or SimulatedRoom()
+    def __init__(
+        self,
+        room: Optional[SimulatedRoom] = None,
+        camera_interval: float = 0.5,
+        simulation_dt_s: float = 1.0,
+    ):
+        self.room = room or SimulatedRoom(simulation_dt_s=simulation_dt_s)
         self.last_error = ""
+        self.camera_interval = max(0.05, float(camera_interval or 0.5))
+        self._last_camera_at = 0.0
+        self._last_camera: Dict[str, Any] = {}
+        self._last_pose: Optional[Tuple[float, float]] = None
+        self._last_mobile_pose: Optional[Tuple[float, float]] = None
+        self._last_heading: Optional[float] = None
+        self._last_room_step: Optional[int] = None
+        self._last_pose_at = 0.0
+        self._last_motion_speed = 0.0
+        self._last_angular_speed = 0.0
+        self._last_relative_speed = 0.0
+        self._last_closing_speed = 0.0
+        self._last_effective_camera_interval = self.camera_interval
+
+    def _effective_camera_interval(self, now: float) -> float:
+        """Sample faster when the simulated Body itself is moving faster.
+
+        The camera cadence follows measured odometry, rather than a fixed
+        object list or a guessed action name.  A safety margin can further
+        increase sampling without changing the physical controller.
+        """
+        state = self.room.body_state()
+        position = (float(state.position[0]), float(state.position[1]))
+        heading = float(state.orientation)
+        mobile = self.room.objects.get("mobile_obstacle")
+        mobile_position = (
+            (float(mobile["x"]), float(mobile["y"])) if isinstance(mobile, dict) else None
+        )
+        step_delta = (
+            int(self.room.steps) - int(self._last_room_step)
+            if self._last_room_step is not None else 0
+        )
+        # Simulation actions have a stable physical duration of one world
+        # step. Use that unit rather than wall-clock HTTP latency.
+        elapsed = float(step_delta) if step_delta > 0 else 0.0
+        angular_speed = 0.0
+        if elapsed > 0.0:
+            body_velocity = (
+                (position[0] - self._last_pose[0]) / elapsed,
+                (position[1] - self._last_pose[1]) / elapsed,
+            )
+            self._last_motion_speed = math.hypot(*body_velocity)
+            if self._last_heading is not None:
+                heading_delta = math.atan2(
+                    math.sin(heading - self._last_heading),
+                    math.cos(heading - self._last_heading),
+                )
+                angular_speed = abs(heading_delta) / elapsed
+            if self._last_mobile_pose is not None and mobile_position is not None:
+                mobile_velocity = (
+                    (mobile_position[0] - self._last_mobile_pose[0]) / elapsed,
+                    (mobile_position[1] - self._last_mobile_pose[1]) / elapsed,
+                )
+                relative_velocity = (
+                    body_velocity[0] - mobile_velocity[0],
+                    body_velocity[1] - mobile_velocity[1],
+                )
+                self._last_relative_speed = math.hypot(*relative_velocity)
+                separation = (mobile_position[0] - position[0], mobile_position[1] - position[1])
+                length = math.hypot(*separation)
+                self._last_closing_speed = max(
+                    0.0,
+                    -(relative_velocity[0] * separation[0] + relative_velocity[1] * separation[1]) / length,
+                ) if length > 1e-3 else 0.0
+        self._last_pose = position
+        self._last_mobile_pose = mobile_position
+        self._last_heading = heading
+        self._last_room_step = int(self.room.steps)
+        self._last_pose_at = now
+        reference = max(0.1, float(state.capabilities.get("speed", 1.0) or 1.0))
+        effective_speed = max(self._last_motion_speed, self._last_relative_speed, self._last_closing_speed, angular_speed)
+        self._last_angular_speed = angular_speed
+        interval = self.camera_interval / (1.0 + min(2.0, effective_speed / reference))
+        status = self.room.status()
+        distance = status.get("mobile_obstacle_distance")
+        clearance = float(state.capabilities.get("mobile_obstacle_clearance", 1.3) or 1.3)
+        margin = float(state.capabilities.get("mobile_obstacle_planning_margin", 0.0) or 0.0)
+        if distance is not None and margin > 0.0:
+            gap = max(0.0, float(distance) - clearance)
+            risk = max(0.0, min(1.0, (margin - gap) / margin))
+            if risk >= 0.5:
+                interval = min(interval, self.camera_interval * 0.35)
+        self._last_effective_camera_interval = max(0.05, min(self.camera_interval, interval))
+        return self._last_effective_camera_interval
 
     def observe(self) -> Observation:
-        return self.room.observe()
+        now = time.time()
+        interval = self._effective_camera_interval(now)
+        capture = not self._last_camera or now - self._last_camera_at >= interval
+        observation = self.room.observe(include_camera=capture)
+        if capture and observation.modalities.get("camera"):
+            self._last_camera = dict(observation.modalities["camera"])
+            self._last_camera["captured_at"] = now
+            self._last_camera["motion_speed"] = round(self._last_motion_speed, 4)
+            self._last_camera["angular_speed_rad_s"] = round(self._last_angular_speed, 4)
+            self._last_camera["heading_deg"] = round(math.degrees(float(self.room.body_state().orientation)), 3)
+            self._last_camera["capture_interval_s"] = round(interval, 3)
+            self._last_camera_at = now
+        elif self._last_camera:
+            observation.modalities["camera"] = dict(self._last_camera)
+            observation.modalities["camera"]["stale_age_s"] = round(max(0.0, now - self._last_camera_at), 3)
+        return observation
 
     def body_state(self) -> BodyState:
         return self.room.body_state()
@@ -119,11 +224,36 @@ class SimRobotSource:
 
     def reset(self) -> None:
         self.room.reset()
+        self._last_camera = {}
+        self._last_camera_at = 0.0
+        self._last_pose = None
+        self._last_mobile_pose = None
+        self._last_heading = None
+        self._last_room_step = None
+        self._last_pose_at = 0.0
+        self._last_motion_speed = 0.0
+        self._last_angular_speed = 0.0
+        self._last_relative_speed = 0.0
+        self._last_closing_speed = 0.0
+        self._last_effective_camera_interval = self.camera_interval
 
     def status(self) -> Dict[str, Any]:
+        # An action may have completed since the last sensor poll. Refresh
+        # motion telemetry before publishing status so a final turn is not
+        # invisible until the next world-model step.
+        self._effective_camera_interval(time.time())
         st = dict(self.room.status())
         st["source"] = self.name
         st["last_error"] = self.last_error
+        st["motion_speed"] = round(self._last_motion_speed, 4)
+        st["angular_speed_rad_s"] = round(self._last_angular_speed, 4)
+        st["angular_speed_deg_s"] = round(math.degrees(self._last_angular_speed), 3)
+        st["heading_deg"] = round(math.degrees(float(self.room.body_state().orientation)), 3)
+        st["relative_speed"] = round(self._last_relative_speed, 4)
+        st["closing_speed"] = round(self._last_closing_speed, 4)
+        st["camera_interval_s"] = round(self._last_effective_camera_interval, 3)
+        st["simulation_time_s"] = round(float(self.room.simulation_time_s), 3)
+        st["simulation_dt_s"] = float(self.room.simulation_dt_s)
         return st
 
 
@@ -153,7 +283,12 @@ class RobotHttpSource:
 
         GET  {ROBOT_URL}/health   (optional, for ping)
 
-    Security: ``ROBOT_TOKEN`` (optional) is sent as a Bearer token.
+    Security: ``ROBOT_TOKEN`` (optional) is sent as a Bearer token.  The
+    endpoint may be hosted by the Linux side of an Arduino VENTUNO Q. In our
+    FNK0031 deployment the VENTUNO Q is the network/AI gateway, while the
+    FNK0031 board remains the servo and motor controller behind it. The
+    gateway must forward the validated command to the FNK0031 board and keep
+    the FNK0031 local stop path available.
     """
 
     name = "robot"
@@ -176,6 +311,7 @@ class RobotHttpSource:
         self.last_latency_ms: Optional[float] = None
         self._last_obs: Optional[Observation] = None
         self._last_body: Optional[BodyState] = None
+        self._spatial = LocalMapReference()
 
     # ── protocol ────────────────────────────────────────────────────────────
 
@@ -207,13 +343,16 @@ class RobotHttpSource:
             raise ValueError("robot /sensors returned a non-object payload")
         return payload
 
-    @staticmethod
-    def _scene_from_payload(payload: Dict[str, Any]) -> List[SceneObject]:
+    def _scene_from_payload(self, payload: Dict[str, Any]) -> List[SceneObject]:
         out: List[SceneObject] = []
         for raw in payload.get("objects") or []:
             if not isinstance(raw, dict):
                 continue
+            raw_geo = raw.get("geo") or raw.get("gps") or raw.get("gnss") or {}
+            explicit_position = raw.get("position") or any(key in raw for key in ("x", "y", "z"))
             pos = raw.get("position") or [raw.get("x", 0.0), raw.get("y", 0.0), raw.get("z", 0.0)]
+            if not explicit_position and geo_fix(raw_geo):
+                pos = self._spatial.project(raw_geo) or [0.0, 0.0, 0.0]
             try:
                 pos = [float(pos[0]), float(pos[1]), float(pos[2])] if len(pos) >= 3 else [float(pos[0]), float(pos[1]), 0.0]
             except Exception:
@@ -226,6 +365,10 @@ class RobotHttpSource:
                 size=float(raw.get("size", 1.0) or 1.0),
                 mass=float(raw.get("mass", 1.0) or 1.0),
                 props={k: v for k, v in (raw.get("props") or {}).items()},
+                coordinate_frame=str(raw.get("coordinate_frame") or raw.get("frame") or payload.get("coordinate_frame") or ("local_map" if geo_fix(raw_geo) else "local_map")),
+                position_source=str(raw.get("position_source") or raw.get("location_source") or ("gnss_projected" if geo_fix(raw_geo) and not explicit_position else "perception")),
+                position_accuracy_m=(float(raw["position_accuracy_m"]) if raw.get("position_accuracy_m") is not None else None),
+                geo=dict(raw_geo),
             ))
         return out
 
@@ -234,9 +377,17 @@ class RobotHttpSource:
     def observe(self) -> Observation:
         try:
             payload = self._raw_sensors()
-            scene = self._scene_from_payload(payload)
+            body_geo = payload.get("geo") or payload.get("gps") or payload.get("gnss") or {}
+            explicit_position = payload.get("position") is not None
             pos = payload.get("position") or [0.0, 0.0, 0.0]
+            position_source = str(payload.get("position_source") or payload.get("location_source") or "odometry")
+            if not explicit_position and geo_fix(body_geo):
+                pos = self._spatial.project(body_geo) or [0.0, 0.0, 0.0]
+                position_source = "gnss_projected"
             pos = [float(pos[0]), float(pos[1]), float(pos[2])] if len(pos) >= 3 else [float(pos[0]), float(pos[1]), 0.0]
+            # Anchor the local map on the robot fix before projecting object
+            # fixes; an object must never become the map origin by accident.
+            scene = self._scene_from_payload(payload)
             if payload.get("capabilities"):
                 for k, v in payload["capabilities"].items():
                     try:
@@ -265,6 +416,15 @@ class RobotHttpSource:
                 timestamp=float(payload.get("timestamp") or time.time()),
                 scene=scene,
                 text=" ".join(text_parts),
+                modalities=dict(
+                    payload.get("modalities")
+                    or payload.get("perception")
+                    or {
+                        key: payload[key]
+                        for key in ("camera", "vision", "lidar", "point_cloud")
+                        if key in payload
+                    }
+                ),
             )
             body = BodyState(
                 position=pos,
@@ -274,6 +434,10 @@ class RobotHttpSource:
                          "snn": payload.get("snn") or {}},
                 capabilities=dict(self.capabilities),
                 timestamp=obs.timestamp,
+                coordinate_frame=str(payload.get("coordinate_frame") or payload.get("frame") or "local_map"),
+                position_source=position_source,
+                position_accuracy_m=(float(payload["position_accuracy_m"]) if payload.get("position_accuracy_m") is not None else None),
+                geo=dict(body_geo),
             )
             self.last_error = ""
             self.last_ok = time.time()
@@ -484,7 +648,7 @@ def resolve_source(config: Dict[str, Any], latest: Optional[Dict[str, Dict[str, 
         logger.warning("[body] FNK0031 plugin enabled but FNK0031_URL/ROBOT_URL is empty — falling through")
     # 3) simulated robot (development / tests / demos)
     if bool(config.get("BODY_PLUGIN_SIM_ROBOT_ENABLED", False)):
-        return SimRobotSource()
+        return SimRobotSource(camera_interval=float(config.get("BODY_CAMERA_INTERVAL", 0.5) or 0.5))
     # 4) HA fallback (auxiliary context)
     if latest is not None and bool(config.get("BODY_PLUGIN_HOME_ASSISTANT_ENABLED",
                                              config.get("HOME_ASSISTANT_ENABLED", False))):

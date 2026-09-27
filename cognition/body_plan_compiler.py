@@ -142,6 +142,29 @@ def _normalize_release_steps(steps: list[dict[str, Any]], snapshot: Dict[str, An
         step["arguments"] = arguments
 
 
+def _complete_skill_contract(steps: list[dict[str, Any]]) -> None:
+    """Add generic observable contracts without naming a room or scenario."""
+    held = ""
+    for step in steps:
+        verb = str(step.get("verb") or "").lower()
+        target = str(step.get("target") or "")
+        postconditions = list(step.get("postconditions") or [])
+        if verb == "grab":
+            held = target
+            if not postconditions and target:
+                postconditions = [{"type": "holding", "target": target}]
+        elif verb == "navigate" and target and not postconditions:
+            postconditions = [{"type": "near", "target": target}]
+        elif verb == "release" and not postconditions:
+            surface = str((step.get("arguments") or {}).get("surface") or target)
+            carried = str((step.get("arguments") or {}).get("held") or held)
+            if carried and surface:
+                postconditions = [{"type": "on_surface", "target": carried, "surface": surface}]
+            else:
+                postconditions = [{"type": "empty_gripper"}]
+        step["postconditions"] = postconditions
+
+
 def _audit_ordered_intent(
     request: str,
     plan: Dict[str, Any],
@@ -306,6 +329,7 @@ def compile_body_plan(
             step["arguments"]["target_index"] = 0
     normalized = _split_implicit_release_steps(normalized, snapshot)
     _normalize_release_steps(normalized, snapshot)
+    _complete_skill_contract(normalized)
     intrinsic = {"explore", "wait", "inspect", "observe", "replan", "avoid"}
     required_capabilities = [
         str(value) for value in plan.get("required_capabilities") or []
@@ -319,6 +343,9 @@ def compile_body_plan(
         "source": "chat",
         "steps": normalized,
         "required_capabilities": required_capabilities,
-        "constraints": _mapping(plan.get("constraints")),
+        "constraints": {
+            **_mapping(plan.get("constraints")),
+            "skill_contract": "generic_grounded_v1",
+        },
         "body_snapshot_id": snapshot.get("snapshot_id"),
     }

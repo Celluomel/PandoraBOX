@@ -131,3 +131,99 @@ class BodySkillLibrary:
     def snapshot(self) -> Dict[str, Any]:
         with self._lock:
             return json.loads(json.dumps(self._data, ensure_ascii=False))
+
+    @staticmethod
+    def proposals(snapshot: Any, body: Any) -> list[Dict[str, Any]]:
+        """Suggest generic embodied skills from the current grounded scene.
+
+        These are proposals, not verified skills and never commands. They are
+        generated from measured entities plus optional semantic affordances;
+        missing LLM semantics never prevents the geometric fallback.
+        """
+        objects = [item for item in getattr(snapshot, "objects", []) or [] if isinstance(item, dict)]
+        semantic = getattr(snapshot, "semantic_scene", {}) or {}
+        semantic_entities = {str(item.get("id")): item for item in semantic.get("entities", []) if isinstance(item, dict)}
+        caps = getattr(snapshot, "capabilities", []) or []
+        body_caps = getattr(body, "capabilities", {}) or {}
+        proposals: list[Dict[str, Any]] = [{
+            "skill_id": "body.inspect",
+            "capability": "inspect",
+            "target": "scene",
+            "state": "proposal",
+            "verified": False,
+            "preconditions": [{"capability": "inspect"}],
+            "postconditions": [{"type": "observation_updated"}],
+            "reason": "inspect the current grounded perception frame",
+            "frame_id": semantic.get("frame_id"),
+            "expires_at": float(getattr(snapshot, "timestamp", 0.0) or 0.0) + 8.0,
+        }]
+        surfaces = {"table", "chair", "surface", "shelf", "dock"}
+        for item in objects:
+            object_id = str(item.get("id") or "")
+            if not object_id or str(item.get("kind") or "").lower() in {"obstacle", "mobile_obstacle", "wall"}:
+                continue
+            label = str(item.get("label") or object_id)
+            entity = semantic_entities.get(object_id, {})
+            affordances = {str(value).lower() for value in entity.get("affordances") or []}
+            proposals.append({
+                "skill_id": "body.approach",
+                "capability": "navigate",
+                "target": object_id,
+                "state": "proposal",
+                "verified": False,
+                "preconditions": [{"capability": "navigate"}],
+                "postconditions": [{"type": "near", "target": object_id}],
+                "reason": f"approach observed object {label}",
+                "frame_id": semantic.get("frame_id"),
+                "expires_at": float(getattr(snapshot, "timestamp", 0.0) or 0.0) + 8.0,
+            })
+            if body_caps.get("gripper", 0) and (str(item.get("kind") or "").lower() in {"target", "object", "item"} or "grab" in affordances):
+                proposals.append({
+                    "skill_id": "body.grasp",
+                    "capability": "grab",
+                    "target": object_id,
+                    "state": "proposal",
+                    "verified": False,
+                    "preconditions": [{"capability": "gripper"}, {"type": "near", "target": object_id}],
+                    "postconditions": [{"type": "holding", "target": object_id}],
+                    "reason": f"grasp candidate grounded by observed object {label}",
+                    "frame_id": semantic.get("frame_id"),
+                    "expires_at": float(getattr(snapshot, "timestamp", 0.0) or 0.0) + 8.0,
+                })
+        if body_caps.get("gripper", 0):
+            for item in objects:
+                if str(item.get("kind") or "").lower() not in surfaces:
+                    continue
+                object_id = str(item.get("id") or "")
+                if object_id:
+                    proposals.append({
+                        "skill_id": "body.place",
+                        "capability": "release",
+                        "target": object_id,
+                        "state": "proposal",
+                        "verified": False,
+                        "preconditions": [{"capability": "gripper"}, {"type": "holding"}],
+                        "postconditions": [{"type": "on_surface", "surface": object_id}],
+                        "reason": f"place held object on observed receiving surface {item.get('label') or object_id}",
+                        "frame_id": semantic.get("frame_id"),
+                        "expires_at": float(getattr(snapshot, "timestamp", 0.0) or 0.0) + 8.0,
+                    })
+        return proposals
+
+    @staticmethod
+    def proposal_for_step(step: Any, snapshot: Any, body: Any) -> Optional[Dict[str, Any]]:
+        """Find a fresh generic proposal compatible with one plan step."""
+        verb = str(getattr(step, "verb", "") or "").lower()
+        target = str(getattr(step, "target", "") or "")
+        skill_id = {"navigate": "body.approach", "grab": "body.grasp", "release": "body.place"}.get(verb)
+        if not skill_id:
+            return None
+        for proposal in BodySkillLibrary.proposals(snapshot, body):
+            if proposal.get("skill_id") != skill_id:
+                continue
+            if target and proposal.get("target") != target:
+                continue
+            if float(proposal.get("expires_at", 0.0) or 0.0) < time.time():
+                continue
+            return proposal
+        return None

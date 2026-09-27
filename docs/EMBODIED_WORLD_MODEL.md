@@ -169,6 +169,11 @@ venv\Scripts\python.exe scripts\body_worldmodel_demo.py --steps 3000 --reset
 venv\Scripts\python.exe -m body_runtime_host
 venv\Scripts\python.exe -m body_runtime_host.robot_sim --host 127.0.0.1 --port 9100
 
+The simulator now exposes the FNK0031 protocol profile, including 18 servo
+targets, six-leg metadata, IMU/odometry fields, `/capabilities` and `/stop`.
+Use `start_fnk0031_sim.bat` or `start_fnk0031_sim.sh` for the same HTTP path
+that the future VENTUNO gateway and physical FNK0031 will use.
+
 # Config world model (mode sim | robot | bridge)
 curl http://127.0.0.1:8766/worldmodel/config
 curl -X POST http://127.0.0.1:8766/worldmodel/config -H "Content-Type: application/json" -d "{\"mode\": \"robot\", \"ROBOT_HOST\": \"127.0.0.1\", \"ROBOT_PORT\": 9100}"

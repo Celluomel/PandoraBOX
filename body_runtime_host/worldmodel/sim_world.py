@@ -24,18 +24,25 @@ import random
 from typing import Any, Dict, List, Optional, Tuple
 
 from .types import Action, BodyState, Observation, Outcome, SceneObject
+from .virtual_camera import render_camera, render_lidar
 from body_runtime_host.coordinate_frames import compass_heading_degrees, north_up_svg_rotation_degrees
 
-GRID = 12          # room is GRID x GRID units
+METERS_PER_GRID_UNIT = 1.0  # physical coordinates are metres; grid is planner-only
+CENTIMETERS_PER_METER = 100.0
+GRID = 12          # room is GRID x GRID metres in the simulator
 REACH = 1.8        # base reach (metres)
 STRENGTH = 30.0    # max pushable mass
-MOBILE_OBSTACLE_SPEED = 0.55  # mean grid cells per Body decision
+MOBILE_OBSTACLE_SPEED = 0.55  # mean metres per Body decision
+BODY_RADIUS_M = 0.3
+CONTACT_MARGIN_M = 0.05
 
 
 class SimulatedRoom:
-    def __init__(self, seed_target: bool = True):
+    def __init__(self, seed_target: bool = True, simulation_dt_s: float = 1.0):
         self.width = GRID
         self.height = GRID
+        self.simulation_dt_s = max(0.05, float(simulation_dt_s or 1.0))
+        self.simulation_time_s = 0.0
         # body
         self.px = 1.0
         self.py = 1.0
@@ -102,6 +109,7 @@ class SimulatedRoom:
         self._mobile_current_speed = MOBILE_OBSTACLE_SPEED
         self._mobile_patrol_index = 0
         self.success_count = 0
+        self.simulation_time_s = 0.0
 
     def shuffle_objects(self, seed: int | None = None) -> None:
         """Place the scene objects in a fresh, collision-free arrangement."""
@@ -157,7 +165,19 @@ class SimulatedRoom:
                 "reach": REACH, "placement_reach": REACH,
                 "speed": 1.0, "max_speed": 2.0,
                 "mobile_obstacle_speed": next_mobile_speed,
+                "mobile_obstacle_velocity": [
+                    float(self._mobile_velocity[0]), float(self._mobile_velocity[1])
+                ],
+                "mobile_obstacle_predicted_position": [
+                    float(self.objects["mobile_obstacle"]["x"] + self._mobile_velocity[0]),
+                    float(self.objects["mobile_obstacle"]["y"] + self._mobile_velocity[1]),
+                ] if "mobile_obstacle" in self.objects else None,
                 "mobile_obstacle_clearance": 1.3,
+                # Planning sees one step ahead of the physical update.  Keep
+                # this margin in the Body capability contract so other
+                # planners and a future robot adapter can calibrate it rather
+                # than embedding a scenario-specific constant.
+                "mobile_obstacle_planning_margin": 0.8,
                 "mobile_obstacle_moves_next": self._mobile_motion_phase + next_mobile_speed >= 1.0,
                 "mobile_motion_phase": self._mobile_motion_phase,
                 "simulation_step": self.steps,
@@ -177,13 +197,24 @@ class SimulatedRoom:
             ))
         return out
 
-    def observe(self) -> Observation:
+    def observe(self, include_camera: bool = True) -> Observation:
         body = self.body_state()
         scene = self._scene()
         text = self._describe()
+        modalities = {}
+        if include_camera:
+            frame_id = f"sim-sensors-{self.steps}-{int(body.timestamp * 1000)}"
+            modalities["camera"] = render_camera(
+                # Keep the UI preview compact, but provide enough pixels for
+                # the Body VLM to distinguish small targets and obstacles.
+                body, scene, width=640, height=480,
+                frame_id=frame_id
+            )
+            modalities["lidar"] = render_lidar(body, scene, frame_id=frame_id)
         return Observation(
             subject="scene", value=None, source="simulated_room",
             kind="scene", confidence=1.0, scene=scene, text=text,
+            modalities=modalities,
         )
 
     def _describe(self) -> str:
@@ -200,15 +231,33 @@ class SimulatedRoom:
 
     # ── action execution (the "physics") ────────────────────────────────────
 
-    def _free_cell(self, x: float, y: float, ignore_id: str | None = None) -> bool:
+    def _free_cell(
+        self, x: float, y: float, ignore_id: str | None = None,
+        ignore_body: bool = False,
+    ) -> bool:
         if x < 0 or y < 0 or x >= self.width or y >= self.height:
             return False
-        if math.hypot(x - self.px, y - self.py) < 0.6:
+        if not ignore_body and math.hypot(x - self.px, y - self.py) < 0.6:
             return False
         for o in self.objects.values():
             if o["id"] in {self.carrying, ignore_id}:
                 continue
             if math.hypot(o["x"] - x, o["y"] - y) < 0.6:
+                return False
+        return True
+
+    def _metric_position_clear(self, x: float, y: float, ignore_id: str | None = None) -> bool:
+        """Continuous metric collision geometry for the physical integrator."""
+        if x < BODY_RADIUS_M or y < BODY_RADIUS_M:
+            return False
+        if x > self.width - BODY_RADIUS_M or y > self.height - BODY_RADIUS_M:
+            return False
+        for obj in self.objects.values():
+            if obj["id"] in {self.carrying, ignore_id}:
+                continue
+            object_radius = max(0.15, float(obj.get("size", 1.0)) * 0.3)
+            clearance = BODY_RADIUS_M + object_radius + CONTACT_MARGIN_M
+            if math.hypot(float(obj["x"]) - x, float(obj["y"]) - y) < clearance:
                 return False
         return True
 
@@ -285,6 +334,7 @@ class SimulatedRoom:
     def step(self, action: Action) -> Tuple[Observation, Outcome]:
         """Execute one action; return (next_observation, outcome)."""
         self.steps += 1
+        self.simulation_time_s += self.simulation_dt_s
         body_position_before_action = (self.px, self.py)
         a = action.type
         plan_controlled = bool(action.params.get("plan_controlled"))
@@ -294,24 +344,50 @@ class SimulatedRoom:
 
         if a in {"forward", "sprint", "backward", "retreat"}:
             max_speed = float(self.body_state().capabilities.get("max_speed", 1.0))
-            requested_speed = 1.0 if a in {"forward", "backward"} else float(action.params.get("speed", max_speed))
-            distance = max(1.0, min(max_speed, requested_speed))
+            requested_speed = float(
+                action.params.get(
+                    "speed", 1.0 if a in {"forward", "backward"} else max_speed,
+                )
+                if action.params.get("continuous_physics")
+                else (1.0 if a in {"forward", "backward"} else action.params.get("speed", max_speed))
+            )
+            distance = max(0.0, min(max_speed, requested_speed)) * self.simulation_dt_s
             direction = 1.0 if a in {"forward", "sprint"} else -1.0
-            moved = 0
-            for _ in range(int(math.floor(distance))):
-                nx = self.px + direction * math.cos(self.heading)
-                ny = self.py + direction * math.sin(self.heading)
-                if not self._free_cell(nx, ny):
-                    break
-                self.px, self.py = nx, ny
-                moved += 1
+            moved = 0.0
+            if action.params.get("continuous_physics"):
+                remaining = distance
+                integration_step = 0.1
+                while remaining > 1e-6:
+                    delta = min(integration_step, remaining)
+                    nx = self.px + direction * math.cos(self.heading) * delta
+                    ny = self.py + direction * math.sin(self.heading) * delta
+                    if not self._metric_position_clear(nx, ny):
+                        break
+                    self.px, self.py = nx, ny
+                    moved += delta
+                    remaining -= delta
+            else:
+                # Compatibility path for direct grid actions used by older
+                # tests and saved evaluation traces. Runtime-generated Body
+                # actions opt into the metric integrator above.
+                for _ in range(int(math.floor(distance))):
+                    nx = self.px + direction * math.cos(self.heading)
+                    ny = self.py + direction * math.sin(self.heading)
+                    if not self._free_cell(nx, ny):
+                        break
+                    self.px, self.py = nx, ny
+                    moved += 1.0
             if moved:
+                moved_label = (
+                    f"{int(round(moved))} cells" if abs(moved - round(moved)) < 1e-6
+                    else f"{moved:.2f} m"
+                )
                 desc = (
-                    f"sprinted {moved} cells" if a == "sprint"
-                    else f"retreated {moved} cells" if a == "retreat"
+                    f"sprinted {moved_label}" if a == "sprint"
+                    else f"retreated {moved_label}" if a == "retreat"
                     else "moved forward" if direction > 0 else "moved backward"
                 )
-                if moved < int(math.floor(distance)):
+                if moved + 1e-6 < distance:
                     kind = "danger"
                     reward -= 0.2
                     desc += "; sprint halted by an obstacle"
@@ -386,6 +462,15 @@ class SimulatedRoom:
         else:  # wait
             desc = "waited"
 
+        mobile_before = self.objects.get("mobile_obstacle")
+        previous_mobile_distance = (
+            math.hypot(
+                float(mobile_before["x"]) - body_position_before_action[0],
+                float(mobile_before["y"]) - body_position_before_action[1],
+            )
+            if mobile_before else math.inf
+        )
+
         # The environment changes after the action, so the next decision must
         # use the resulting observation rather than a frozen obstacle map.
         near_miss = self._move_mobile_obstacle(body_position_before_action)
@@ -400,8 +485,18 @@ class SimulatedRoom:
         # must never receive a hidden reward tied to this fixture's cup/shelf.
         if not plan_controlled and not self.done:
             if self.carrying is None:
-                cup = self.objects["cup"]
-                goal = (cup["x"], cup["y"])
+                # The autonomous shaping signal must remain valid for
+                # shuffled/evaluated scenes whose manipulable object is not
+                # named ``cup``.
+                target = next(
+                    (
+                        item for item in self.objects.values()
+                        if item.get("kind") in {"target", "object", "item"}
+                        and float(item.get("mass", 0.0)) <= STRENGTH
+                    ),
+                    None,
+                )
+                goal = (target["x"], target["y"]) if target else (self.px, self.py)
             else:
                 goal = self.shelf
             dist = math.hypot(self.px - goal[0], self.py - goal[1])
@@ -416,6 +511,16 @@ class SimulatedRoom:
             if near_miss:
                 self.near_miss_count += 1
                 desc = f"{desc}; moving obstacle entered the collision zone".strip("; ")
+        if mobile is not None and not self.done:
+            # Continuous safety shaping teaches anticipation instead of only
+            # reacting after a near miss.  It is derived from the body's
+            # calibrated clearance and the observed closing distance, so it
+            # remains applicable to different obstacle sizes and scenes.
+            clearance = float(self.body_state().capabilities.get("mobile_obstacle_clearance", 1.3))
+            comfort_gap = max(0.0, (clearance + 0.7) - mobile_distance)
+            closing = max(0.0, previous_mobile_distance - mobile_distance)
+            reward -= min(0.18, comfort_gap * 0.045)
+            reward -= min(0.08, closing * 0.04)
 
         outcome = Outcome(kind=kind, reward=round(float(reward), 4), description=desc)
         return self.observe(), outcome
@@ -498,9 +603,26 @@ class SimulatedRoom:
     # ── introspection ───────────────────────────────────────────────────────
 
     def status(self) -> Dict[str, Any]:
+        body_position_m = [round(self.px * METERS_PER_GRID_UNIT, 3), round(self.py * METERS_PER_GRID_UNIT, 3)]
+        body_position_cm = [round(value * CENTIMETERS_PER_METER, 1) for value in body_position_m]
+        mobile_distance_m = (
+            math.hypot(self.objects["mobile_obstacle"]["x"] - self.px, self.objects["mobile_obstacle"]["y"] - self.py)
+            * METERS_PER_GRID_UNIT
+            if "mobile_obstacle" in self.objects else None
+        )
         return {
+            "metric_frame": {
+                "length_unit": "m",
+                "display_unit": "cm",
+                "meters_per_grid_unit": METERS_PER_GRID_UNIT,
+                "simulation_dt_s": self.simulation_dt_s,
+                "collision_geometry": "continuous_circles",
+                "body_radius_m": BODY_RADIUS_M,
+                "contact_margin_m": CONTACT_MARGIN_M,
+            },
             "width": self.width, "height": self.height,
-            "body": [round(self.px, 2), round(self.py, 2)],
+            "body": body_position_m,
+            "body_cm": body_position_cm,
             "heading_deg": round(math.degrees(self.heading), 1),
             "compass_heading_deg": round(compass_heading_degrees(self.heading), 1),
             "svg_heading_deg": round(north_up_svg_rotation_degrees(self.heading), 1),
@@ -515,12 +637,15 @@ class SimulatedRoom:
             "shelf": list(self.shelf),
             "done": self.done,
             "steps": self.steps,
+            "simulation_time_s": round(self.simulation_time_s, 3),
+            "simulation_dt_s": self.simulation_dt_s,
             "collisions": self.collision_count,
             "near_misses": self.near_miss_count,
+            "mobile_obstacle_speed_m_per_action": round(self._mobile_current_speed * METERS_PER_GRID_UNIT, 3),
+            "mobile_obstacle_speed_cm_per_action": round(self._mobile_current_speed * METERS_PER_GRID_UNIT * CENTIMETERS_PER_METER, 1),
             "mobile_obstacle_speed_cells_per_action": round(self._mobile_current_speed, 3),
-            "mobile_obstacle_distance": round(
-                math.hypot(self.objects["mobile_obstacle"]["x"] - self.px, self.objects["mobile_obstacle"]["y"] - self.py), 2
-            ) if "mobile_obstacle" in self.objects else None,
+            "mobile_obstacle_distance": round(mobile_distance_m, 3) if mobile_distance_m is not None else None,
+            "mobile_obstacle_distance_cm": round(mobile_distance_m * CENTIMETERS_PER_METER, 1) if mobile_distance_m is not None else None,
             "mobile_obstacle_velocity": [round(v, 2) for v in self._mobile_velocity],
             "mobile_obstacle_blocked_by_static_object": self._mobile_blocked,
             "successes": self.success_count,

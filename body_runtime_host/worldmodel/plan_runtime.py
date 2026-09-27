@@ -236,9 +236,22 @@ class BodyPlanRuntime:
 
     def payload(self) -> Dict[str, Any]:
         with self._lock:
+            actions = []
+            try:
+                lines = self._actions_path.read_text(encoding="utf-8").splitlines()
+                for line in lines[-12:]:
+                    try:
+                        item = json.loads(line)
+                        if isinstance(item, dict):
+                            actions.append(item)
+                    except json.JSONDecodeError:
+                        continue
+            except OSError:
+                pass
             return {
                 "active_plan": self._active.as_dict() if self._active else None,
                 "latest_snapshot": self._latest_snapshot.as_dict() if self._latest_snapshot else None,
+                "recent_actions": list(reversed(actions)),
                 "execution": "task_graph",
                 "note": "Plans execute locally against fresh Body snapshots; every action and transition is persisted.",
             }
