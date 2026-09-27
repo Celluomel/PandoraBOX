@@ -576,6 +576,12 @@ then calibrate servo geometry and IMU/odometry on the real FNK0031. Only after
 that report and calibration are accepted should reduced-speed physical motion
 be enabled.
 
+The local stop path is now verified in software: the FNK0031 simulator returns
+to `idle` after a moving command, the gateway forwards `stop` independently of
+normal actuation permission, and non-stop physical commands remain rejected
+until explicit actuation is enabled. The remaining work is physical servo/IMU
+calibration and a measured reduced-speed trial.
+
 ### Phase 7 - World model learning
 
 Goal: learn reusable dynamics and concepts without confusing memory with truth.
