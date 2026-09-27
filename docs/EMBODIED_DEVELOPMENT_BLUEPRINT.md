@@ -556,6 +556,21 @@ optional anchor, not a prerequisite for local navigation.
 The physical adapter must implement a hard stop locally. Loss of Body or Brain
 connection must not leave motors running.
 
+Current implementation status: the Body now exposes a dedicated **Robot &
+hardware** management view. It separates FNK0031 gateway settings, module
+discovery and live module health from the World Model perception/testing views.
+The view also hosts the FNK0031 simulator, the 18-actuator locomotion preview,
+SNN and physical-actuation gates, and the VENTUNO Q deployment controls. The
+simulator and gateway follow the same capability vocabulary, but this remains a
+software/integration milestone: no physical FNK0031 calibration or walking
+validation has been completed.
+
+Next acceptance step: connect a capability-reporting gateway or simulator,
+verify every module state (`camera`, `lidar`, `gps`, `imu`, `odometry` and
+`actuators`), test the local stop path, then persist a redacted hardware
+diagnostic report. Physical actuation stays disabled until that report and the
+servo calibration are accepted.
+
 ### Phase 7 - World model learning
 
 Goal: learn reusable dynamics and concepts without confusing memory with truth.
