@@ -46,6 +46,36 @@ class FNK0031ModulesTest(unittest.TestCase):
                 brt.CONFIG_PATH = real_config_path
                 brt._load_dotenv = real_dotenv
 
+    def test_read_only_diagnostic_persists_redacted_contract_report(self):
+        import body_runtime_host.runtime as brt
+        from body_runtime_host.robot_sim import RobotSimServer
+
+        with tempfile.TemporaryDirectory() as tmp:
+            real_config_path = brt.CONFIG_PATH
+            real_dotenv = brt._load_dotenv
+            brt.CONFIG_PATH = Path(tmp) / "config.json"
+            brt.CONFIG_PATH.write_text(json.dumps({"FNK0031_URL": ""}), encoding="utf-8")
+            brt._load_dotenv = lambda: None
+            server = RobotSimServer(port=0)
+            server.start()
+            host = brt.BodyHost()
+            host.config["FNK0031_URL"] = f"http://127.0.0.1:{server.port}"
+            host.config["FNK0031_TOKEN"] = "test-secret"
+            host._fnk_diagnostic_path = Path(tmp) / "hardware" / "diagnostic.json"
+            try:
+                report = host.fnk0031_diagnostic()
+                self.assertEqual(report["schema"], "fnk0031.hardware_diagnostic.v1")
+                self.assertEqual(report["status"], "ready")
+                self.assertTrue(report["secrets_excluded"])
+                self.assertNotIn("test-secret", host._fnk_diagnostic_path.read_text(encoding="utf-8"))
+                items = {item["id"]: item for item in report["modules"]["items"]}
+                self.assertEqual(items["imu"]["status"], "online")
+                self.assertEqual(items["actuators"]["status"], "online")
+            finally:
+                server.stop()
+                brt.CONFIG_PATH = real_config_path
+                brt._load_dotenv = real_dotenv
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -138,6 +138,7 @@ class BodyHost:
         self._worldmodel_evaluation_thread: threading.Thread | None = None
         self._worldmodel_evaluation_report_path = ROOT / "data" / "body" / "worldmodel" / "evaluations.jsonl"
         self._worldmodel_capability_path = ROOT / "data" / "body" / "worldmodel" / "capability_gate.json"
+        self._fnk_diagnostic_path = ROOT / "data" / "body" / "hardware" / "fnk0031_diagnostic.json"
         self._worldmodel_evaluation_status: dict = self._load_latest_worldmodel_evaluation()
         self._robot_sim = None
         self._robot_sim_lock = threading.RLock()
@@ -579,6 +580,68 @@ class BodyHost:
         self.config["FNK0031_MODULES"] = configured
         self.save_config()
         return {"ok": True, "persisted": True, **self.fnk0031_modules()}
+
+    def fnk0031_diagnostic(self) -> dict:
+        """Run a read-only FNK0031/gateway contract diagnostic.
+
+        The report deliberately stores summaries rather than raw responses so
+        a gateway cannot accidentally persist credentials or opaque payloads.
+        No command, stop, or actuation endpoint is called here.
+        """
+        url = self._robot_url()
+        settings = self.fnk0031_settings()
+        report = {
+            "schema": "fnk0031.hardware_diagnostic.v1",
+            "timestamp": time.time(),
+            "profile": "fnk0031_wifi",
+            "url": url,
+            "secrets_excluded": True,
+            "actuation_enabled": bool(settings.get("actuation_enabled")),
+            "checks": {},
+            "modules": {},
+            "status": "not_configured" if not url else "not_ready",
+        }
+        if url:
+            for name, suffix in (("health", "/health"), ("capabilities", "/capabilities"), ("sensors", "/sensors")):
+                try:
+                    payload = _http_get(
+                        f"{url}{suffix}",
+                        token=self._robot_token(),
+                        timeout=min(3.0, float(settings.get("timeout", 5.0) or 5.0)),
+                    ) or {}
+                    if not isinstance(payload, dict):
+                        payload = {}
+                    report["checks"][name] = {
+                        "ok": True,
+                        "fields": sorted(str(key) for key in payload.keys()),
+                    }
+                except (HTTPError, URLError, TimeoutError, OSError, ValueError) as exc:
+                    report["checks"][name] = {"ok": False, "error": str(exc)[:180]}
+            module_report = self.fnk0031_module_status()
+            report["modules"] = {
+                "connected": bool(module_report.get("connected")),
+                "source": module_report.get("source"),
+                "error": str(module_report.get("error") or "")[:180],
+                "items": [
+                    {
+                        "id": item.get("id"),
+                        "label": item.get("label"),
+                        "status": item.get("status"),
+                        "detected": bool(item.get("detected")),
+                        "enabled": bool(item.get("enabled")),
+                        "error": str(item.get("error") or "")[:180],
+                    }
+                    for item in module_report.get("modules", [])
+                ],
+            }
+            checks = report["checks"]
+            if checks.get("health", {}).get("ok") and checks.get("capabilities", {}).get("ok") and checks.get("sensors", {}).get("ok"):
+                report["status"] = "ready" if report["modules"].get("connected") else "partial"
+        report["passed_checks"] = sum(1 for item in report["checks"].values() if item.get("ok"))
+        report["total_checks"] = len(report["checks"])
+        self._fnk_diagnostic_path.parent.mkdir(parents=True, exist_ok=True)
+        self._fnk_diagnostic_path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+        return report
 
     def update_fnk0031_settings(self, payload: dict) -> dict:
         self.config.update({
@@ -1540,6 +1603,11 @@ class BodyHost:
                     self._send(owner.fnk0031_modules())
                 elif path == "/plugins/fnk0031_wifi/modules/status":
                     self._send(owner.fnk0031_module_status())
+                elif path == "/plugins/fnk0031_wifi/diagnostic":
+                    try:
+                        self._send(json.loads(owner._fnk_diagnostic_path.read_text(encoding="utf-8")))
+                    except (OSError, ValueError):
+                        self._send({"status": "not_run", "schema": "fnk0031.hardware_diagnostic.v1"})
                 elif path == "/plugins/fnk0031_wifi/controller":
                     self._send(owner.fnk0031_controller_status())
                 elif path == "/plugins/fnk0031_wifi/experiment":
@@ -1659,6 +1727,8 @@ class BodyHost:
                         self._send(owner.update_fnk0031_settings(body))
                     elif path == "/plugins/fnk0031_wifi/modules":
                         self._send(owner.update_fnk0031_module(body))
+                    elif path == "/plugins/fnk0031_wifi/diagnostic":
+                        self._send(owner.fnk0031_diagnostic())
                     elif path == "/plugins/fnk0031_wifi/controller/step":
                         self._send(owner.fnk0031_controller_step())
                     elif path == "/plugins/fnk0031_wifi/experiment/start":

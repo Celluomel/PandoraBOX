@@ -204,6 +204,8 @@ The most important endpoints are:
 | `POST /worldmodel/evaluate` | Run bounded shuffled-scene evaluation |
 | `POST /worldmodel/perception/video-replay` | Replay video frames with synchronized proxy LiDAR |
 | `GET /deployment/status` | Check deployment support and staged releases |
+| `GET /plugins/fnk0031_wifi/diagnostic` | Read the latest redacted hardware diagnostic |
+| `POST /plugins/fnk0031_wifi/diagnostic` | Run a read-only hardware contract diagnostic |
 
 The exact route set is discoverable from the running Body host and may grow as
 the protocol evolves. Physical commands remain confirmation-gated and must pass

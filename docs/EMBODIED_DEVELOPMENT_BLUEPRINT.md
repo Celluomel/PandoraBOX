@@ -565,11 +565,16 @@ simulator and gateway follow the same capability vocabulary, but this remains a
 software/integration milestone: no physical FNK0031 calibration or walking
 validation has been completed.
 
-Next acceptance step: connect a capability-reporting gateway or simulator,
-verify every module state (`camera`, `lidar`, `gps`, `imu`, `odometry` and
-`actuators`), test the local stop path, then persist a redacted hardware
-diagnostic report. Physical actuation stays disabled until that report and the
-servo calibration are accepted.
+The first acceptance probe is now implemented: the Robot & hardware view can
+run a read-only `fnk0031.hardware_diagnostic.v1` report against a simulator or
+gateway, verify health/capabilities/sensors and record each module state
+(`camera`, `lidar`, `gps`, `imu`, `odometry` and `actuators`) without persisting
+tokens. Physical actuation stays disabled during this probe.
+
+Next acceptance step: test the local stop path through the simulator/gateway,
+then calibrate servo geometry and IMU/odometry on the real FNK0031. Only after
+that report and calibration are accepted should reduced-speed physical motion
+be enabled.
 
 ### Phase 7 - World model learning
 
