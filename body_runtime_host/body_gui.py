@@ -658,3 +658,78 @@ if(currentView==='robot')void refreshRobotManagement();
 </script></body></html>""",
     1,
 )
+
+BODY_GUI_HTML = BODY_GUI_HTML.replace(
+    "</body></html>",
+    """<script>
+let cameraSettingsDirty=false;
+let cameraSettingsRevision=0;
+let cameraSettingsDraft=null;
+function readCameraSettingsDraft(){
+  return {
+    startup_enabled:document.getElementById('camera-setting-startup').value==='true',
+    device_index:Number(document.getElementById('camera-setting-device').value||0),
+    fps:Number(document.getElementById('camera-setting-fps').value||5),
+    profile:document.getElementById('camera-setting-profile').value,
+    width:Number(document.getElementById('camera-setting-width').value||640),
+    height:Number(document.getElementById('camera-setting-height').value||480),
+    face_detection_enabled:document.getElementById('camera-setting-face').checked
+  };
+}
+function applyCameraSettingsDraft(draft){
+  if(!draft)return;
+  document.getElementById('camera-setting-startup').value=String(draft.startup_enabled);
+  document.getElementById('camera-setting-device').value=draft.device_index;
+  document.getElementById('camera-setting-fps').value=draft.fps;
+  document.getElementById('camera-setting-profile').value=draft.profile;
+  document.getElementById('camera-setting-width').value=draft.width;
+  document.getElementById('camera-setting-height').value=draft.height;
+  document.getElementById('camera-setting-face').checked=draft.face_detection_enabled;
+}
+function bindCameraSettingsDraft(){
+  const page=document.getElementById('view-camera');
+  if(!page||page.dataset.settingsDraftBound)return;
+  page.dataset.settingsDraftBound='true';
+  page.querySelectorAll('#camera-setting-startup,#camera-setting-device,#camera-setting-fps,#camera-setting-profile,#camera-setting-width,#camera-setting-height,#camera-setting-face').forEach(input=>{
+    for(const eventName of ['input','change'])input.addEventListener(eventName,()=>{
+      cameraSettingsDraft=readCameraSettingsDraft();
+      cameraSettingsDirty=true;
+      cameraSettingsRevision++;
+    });
+  });
+}
+const refreshCameraWithDraftProtection=refreshCamera;
+refreshCamera=async function(){
+  ensureCameraPage();
+  bindCameraSettingsDraft();
+  const revisionAtStart=cameraSettingsRevision;
+  const result=await refreshCameraWithDraftProtection();
+  if(revisionAtStart!==cameraSettingsRevision&&cameraSettingsDraft){
+    applyCameraSettingsDraft(cameraSettingsDraft);
+  }else if(!cameraSettingsDirty){
+    cameraSettingsDraft=readCameraSettingsDraft();
+  }
+  return result;
+};
+saveCameraSettings=async function(){
+  bindCameraSettingsDraft();
+  const submitted=readCameraSettingsDraft();
+  const revisionAtSubmit=cameraSettingsRevision;
+  try{
+    const result=await post('/body/camera',submitted);
+    if(!result.ok)throw Error(result.error||'Body did not confirm camera settings');
+    if(cameraSettingsRevision===revisionAtSubmit){
+      cameraSettingsRevision++;
+      cameraSettingsDirty=false;
+      cameraSettingsDraft=submitted;
+    }
+    document.getElementById('message').textContent='Camera settings saved and applied';
+    await refreshCamera();
+  }catch(error){
+    document.getElementById('message').textContent='Camera settings failed: '+error.message;
+  }
+};
+bindCameraSettingsDraft();
+</script></body></html>""",
+    1,
+)
