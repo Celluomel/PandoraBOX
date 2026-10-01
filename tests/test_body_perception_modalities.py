@@ -388,6 +388,38 @@ class BodyPerceptionModalitiesTest(unittest.TestCase):
         self.assertNotIn("image_url", calls[2])
         interpreter.close()
 
+    def test_scene_interpreter_surfaces_provider_http_error_details(self):
+        from body_runtime_host.worldmodel.scene_interpreter import BodySceneInterpreter
+
+        interpreter = BodySceneInterpreter({
+            "BODY_LLM_ENABLED": True,
+            "BODY_LLM_MODEL": "qualcomm/Intern3.5-VL-2B:W4A16",
+            "BODY_LLM_BASE_URL": "http://127.0.0.1:18181/v1",
+        })
+        packet = {
+            "frame_id": "frame-vision",
+            "timestamp": 123.0,
+            "objects": [],
+            "modalities": {"camera": {"image_base64": "aGVsbG8=", "mime_type": "image/jpeg"}},
+        }
+        calls = []
+
+        def fake_urlopen(request, timeout):
+            calls.append(request.data.decode("utf-8"))
+            detail = f"provider detail {len(calls)}"
+            raise HTTPError(request.full_url, 400, "bad request", {}, BytesIO(detail.encode()))
+
+        with patch("body_runtime_host.worldmodel.scene_interpreter.urlopen", side_effect=fake_urlopen):
+            result = interpreter._interpret(packet)
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("Provider rejected Body request", result["error"])
+        self.assertIn("provider detail 1", result["error"])
+        self.assertIn("provider detail 2", result["error"])
+        self.assertIn("provider detail 3", result["error"])
+        self.assertEqual(len(calls), 3)
+        interpreter.close()
+
 
 if __name__ == "__main__":
     unittest.main()

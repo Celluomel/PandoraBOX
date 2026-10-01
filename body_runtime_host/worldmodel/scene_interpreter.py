@@ -531,6 +531,7 @@ class BodySceneInterpreter:
         modalities = dict(packet.get("modalities") or {})
         camera_meta = dict(modalities.get("camera") or {})
         camera_image = camera_meta.pop("image_base64", None) or camera_meta.pop("image_url", None)
+        camera_image_size = len(str(camera_image)) if camera_image else 0
         depth_image = camera_meta.pop("depth_base64", None)
         camera_meta["image_attached"] = bool(camera_image)
         camera_meta["depth_attached"] = bool(depth_image)
@@ -587,12 +588,13 @@ class BodySceneInterpreter:
             + json.dumps(prompt_packet, ensure_ascii=False, separators=(",", ":"))
         )
         logger.info(
-            "[BodyVLM] prompt model=%s chars=%d estimated_tokens=%d context_window=%s image=%s lidar_points=%d",
+            "[BodyVLM] prompt model=%s chars=%d estimated_tokens=%d context_window=%s image=%s image_chars=%d lidar_points=%d",
             model,
             len(prompt),
             max(1, len(prompt) // 4),
             self._config.get("BODY_LLM_CONTEXT_WINDOW", "unknown"),
             bool(camera_image),
+            camera_image_size,
             len(lidar.get("points") or []),
         )
         user_content: Any = prompt
@@ -632,30 +634,68 @@ class BodySceneInterpreter:
         if token:
             headers["Authorization"] = f"Bearer {token}"
         timeout = float(self._config.get("BODY_LLM_TIMEOUT", 8.0) or 8.0)
-        def request_completion() -> Dict[str, Any]:
+        def request_completion(attempt: str) -> Dict[str, Any]:
+            request_data = json.dumps(payload).encode("utf-8")
+            logger.info(
+                "[BodyVLM] request attempt=%s bytes=%d response_format=%s image=%s",
+                attempt,
+                len(request_data),
+                (payload.get("response_format") or {}).get("type", "none"),
+                isinstance(payload["messages"][1]["content"], list),
+            )
             request = Request(
                 f"{self._base_url()}/chat/completions",
-                data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST",
+                data=request_data, headers=headers, method="POST",
             )
             with urlopen(request, timeout=timeout) as response:
                 return json.loads(response.read().decode("utf-8"))
 
+        def describe_http_error(exc: HTTPError, attempt: str) -> str:
+            try:
+                detail = exc.read(1600).decode("utf-8", errors="replace").strip()
+            except Exception:
+                detail = ""
+            finally:
+                exc.close()
+            detail = " ".join(detail.split())[:500]
+            logger.warning(
+                "[BodyVLM] provider rejected attempt=%s status=%d detail=%s",
+                attempt,
+                exc.code,
+                detail or exc.reason,
+            )
+            return detail or str(exc.reason or "provider rejected request")
+
         try:
-            result = request_completion()
+            result = request_completion("json+image")
         except HTTPError as exc:
             # LM Studio versions differ in JSON-schema support. First remove
             # that optional constraint, then fall back to text-only input for
             # instruct models that reject a vision content part with 400/422.
             if exc.code not in {400, 422}:
                 raise
+            first_detail = describe_http_error(exc, "json+image")
             payload.pop("response_format", None)
             try:
-                result = request_completion()
+                result = request_completion("image-no-format")
             except HTTPError as retry_exc:
                 if retry_exc.code not in {400, 422} or not isinstance(user_content, list):
                     raise
+                second_detail = describe_http_error(retry_exc, "image-no-format")
                 payload["messages"][1]["content"] = prompt
-                result = request_completion()
+                try:
+                    result = request_completion("text-only-fallback")
+                except HTTPError as final_exc:
+                    final_detail = describe_http_error(final_exc, "text-only-fallback")
+                    def short(value: str) -> str:
+                        return " ".join(value.split())[:48]
+
+                    return self._error(
+                        "Provider rejected Body request: "
+                        f"JSON+image {exc.code} {short(first_detail)}; "
+                        f"image {retry_exc.code} {short(second_detail)}; "
+                        f"text {final_exc.code} {short(final_detail)}"
+                    )
         content = (((result.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
         if not content:
             return self._error("Body LLM returned no content")
