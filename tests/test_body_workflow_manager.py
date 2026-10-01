@@ -12,6 +12,12 @@ class FakeHost:
         self._ros2_bridge = None
         self.sent = []
 
+    def robot_status(self):
+        return {"last_ok": None}
+
+    def fnk0031_settings(self):
+        return {"url": "", "actuation_enabled": False}
+
     def _bridge_put(self, observation):
         self.sent.append(observation)
 
@@ -66,6 +72,52 @@ class WorkflowManagerTests(unittest.TestCase):
         with self.assertRaisesRegex(WorkflowError, "no nodes were run"):
             self.manager.execute(saved["id"])
         self.assertEqual(self.host.sent, [])
+
+    def test_mobile_manipulation_demo_executes_typed_shared_frame_handoff(self):
+        demo = self.manager.mobile_manipulation_demo()
+        saved = self.manager.save(demo)
+
+        run = self.manager.execute(saved["id"])
+
+        self.assertEqual(run["status"], "completed")
+        self.assertEqual(run["execution_mode"], "simulation")
+        self.assertEqual([node["status"] for node in run["nodes"]], ["success"] * 3)
+        self.assertEqual(run["nodes"][-1]["output"]["status"], "simulated_success")
+        self.assertEqual(run["nodes"][-1]["output"]["actuation"], False)
+
+    def test_mobile_manipulation_rejects_frame_mismatch_and_unreachable_arm_pose(self):
+        base = self.manager.MOBILE_MANIPULATION_DEMO["nodes"][0]
+        guard = self.manager.MOBILE_MANIPULATION_DEMO["nodes"][1]
+
+        with self.assertRaisesRegex(WorkflowError, "coordinate frame mismatch"):
+            self.manager._execute_node("frame_guard", [self.manager._execute_node(
+                "sim_base_navigate", [], {**base["config"], "frame_id": "odom"}
+            )], guard["config"])
+
+        with self.assertRaisesRegex(WorkflowError, "out of reach"):
+            self.manager._execute_node("frame_guard", [self.manager._execute_node(
+                "sim_base_navigate", [], base["config"]
+            )], {**guard["config"], "x": 8.0})
+
+    def test_typed_workflow_connections_reject_incompatible_pose_handoff(self):
+        with self.assertRaisesRegex(WorkflowError, "incompatible connection"):
+            self.manager.save({
+                "name": "invalid typed graph",
+                "nodes": [
+                    {"id": "base", "type": "sim_base_navigate"},
+                    {"id": "arm", "type": "sim_arm_action"},
+                ],
+                "edges": [["base", "arm"]],
+            })
+
+    def test_catalog_distinguishes_real_hardware_from_simulated_adapters(self):
+        catalog = self.manager.catalog()
+        devices = {device["id"]: device for device in catalog["devices"]}
+
+        self.assertEqual(devices["fnk0031"]["mode"], "hardware")
+        self.assertEqual(devices["sim_manipulator"]["mode"], "simulation")
+        self.assertFalse(catalog["physical_actuation_enabled"])
+        self.assertIn("sim_arm_action", {node["type"] for node in catalog["nodes"]})
 
 
 if __name__ == "__main__":

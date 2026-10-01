@@ -36,6 +36,36 @@ class WorkflowManager:
     NODE_TYPES = {
         "camera", "lidar", "imu", "ros2_in", "perception", "fusion",
         "world", "safety", "brain", "ros2_out", "fnk",
+        "sim_base_navigate", "frame_guard", "sim_arm_action",
+    }
+    NODE_CONTRACTS = {
+        "camera": {"group": "Input", "output": "camera_frame"},
+        "lidar": {"group": "Input", "output": "observation"},
+        "imu": {"group": "Input", "output": "observation"},
+        "ros2_in": {"group": "Input", "output": "observation"},
+        "perception": {"group": "Process", "input": "any", "output": "perception_frame"},
+        "fusion": {"group": "Process", "input": "any", "output": "fused_scene"},
+        "world": {"group": "Process", "input": "any", "output": "world_state"},
+        "safety": {"group": "Process", "input": "any", "output": "safety_decision"},
+        "brain": {"group": "Output", "input": "any", "output": "ack"},
+        "ros2_out": {"group": "Output", "input": "any", "output": "ack"},
+        "fnk": {"group": "Output", "input": "any", "output": "ack"},
+        "sim_base_navigate": {"group": "Robot · simulation", "input": "any", "output": "pose"},
+        "frame_guard": {"group": "Robot · simulation", "input": "pose", "output": "safe_pose"},
+        "sim_arm_action": {"group": "Robot · simulation", "input": "safe_pose", "output": "task_result"},
+    }
+
+    MOBILE_MANIPULATION_DEMO = {
+        "name": "Coordinated base + arm (simulation)",
+        "nodes": [
+            {"id": "approach", "type": "sim_base_navigate", "label": "Base · approach object", "x": 90, "y": 160,
+             "config": {"device_id": "sim_mobile_base", "frame_id": "map", "x": 2.0, "y": 2.0, "heading_deg": 0}},
+            {"id": "shared_frame", "type": "frame_guard", "label": "Check shared frame & reach", "x": 410, "y": 160,
+             "config": {"frame_id": "map", "object_id": "demo_object", "x": 2.45, "y": 2.1, "z": 0.4, "max_reach_m": 0.75}},
+            {"id": "manipulate", "type": "sim_arm_action", "label": "Arm · grasp target", "x": 730, "y": 160,
+             "config": {"device_id": "sim_manipulator", "action": "grasp", "object_id": "demo_object", "frame_id": "map"}},
+        ],
+        "edges": [["approach", "shared_frame"], ["shared_frame", "manipulate"]],
     }
 
     def __init__(self, host, path: Path):
@@ -44,6 +74,56 @@ class WorkflowManager:
         self._lock = threading.RLock()
         self._workflows: dict[str, dict[str, Any]] = {}
         self._load()
+
+    def catalog(self) -> dict[str, Any]:
+        """Describe executable node contracts and distinguish real from simulated devices."""
+        try:
+            robot = self.host.robot_status()
+            settings = self.host.fnk0031_settings()
+        except Exception:
+            robot, settings = {}, {}
+        return {
+            "schema": "pandorabox.workflow_catalog.v1",
+            "nodes": [
+                {"type": node_type, **contract}
+                for node_type, contract in self.NODE_CONTRACTS.items()
+            ],
+            "devices": [
+                {
+                    "id": "fnk0031",
+                    "label": "FNK0031 hexapod",
+                    "kind": "mobile_base",
+                    "mode": "hardware",
+                    "state": "connected" if robot.get("last_ok") else "configured" if settings.get("url") else "not_configured",
+                    "actuation": "confirmation_gated" if settings.get("actuation_enabled") else "disabled",
+                    "capabilities": ["locomotion", "body_pose", "camera_input"],
+                    "transport": "FNK0031 gateway",
+                },
+                {
+                    "id": "sim_mobile_base",
+                    "label": "Virtual mobile base",
+                    "kind": "mobile_base",
+                    "mode": "simulation",
+                    "state": "available",
+                    "frame_id": "map",
+                    "capabilities": ["navigate_to_pose"],
+                },
+                {
+                    "id": "sim_manipulator",
+                    "label": "Virtual manipulator",
+                    "kind": "manipulator",
+                    "mode": "simulation",
+                    "state": "available",
+                    "frame_id": "map",
+                    "capabilities": ["reach", "grasp", "release"],
+                },
+            ],
+            "physical_actuation_enabled": False,
+        }
+
+    @classmethod
+    def mobile_manipulation_demo(cls) -> dict[str, Any]:
+        return json.loads(json.dumps(cls.MOBILE_MANIPULATION_DEMO))
 
     def _load(self) -> None:
         if not self.path.exists():
@@ -78,6 +158,8 @@ class WorkflowManager:
                 raise WorkflowError("node ids must be unique, non-empty strings")
             if node_type not in cls.NODE_TYPES:
                 raise WorkflowError(f"unsupported workflow node type: {node_type}")
+            if not isinstance(node.get("config", {}), dict):
+                raise WorkflowError(f"node {node_id} config must be an object")
             ids.append(node_id)
         indegree = dict.fromkeys(ids, 0)
         adjacency = {node_id: [] for node_id in ids}
@@ -89,6 +171,14 @@ class WorkflowManager:
             if source not in indegree or target not in indegree or source == target:
                 raise WorkflowError("connection references an unknown node or a self-loop")
             if [source, target] not in normalized_edges:
+                source_type = next(node["type"] for node in nodes if node["id"] == source)
+                target_type = next(node["type"] for node in nodes if node["id"] == target)
+                expected = cls.NODE_CONTRACTS[target_type].get("input", "any")
+                produced = cls.NODE_CONTRACTS[source_type].get("output", "any")
+                if expected != "any" and produced != expected:
+                    raise WorkflowError(
+                        f"incompatible connection {source} ({produced}) -> {target} (expects {expected})"
+                    )
                 normalized_edges.append([source, target])
                 adjacency[source].append(target)
                 indegree[target] += 1
@@ -177,14 +267,15 @@ class WorkflowManager:
         incoming: dict[str, list[str]] = {node_id: [] for node_id in node_by_id}
         for source, target in graph["edges"]:
             incoming[target].append(source)
-        run = {"id": uuid.uuid4().hex, "workflow_id": workflow_id, "started_at": time.time(), "status": "running", "nodes": [], "error": ""}
+        simulated = any(node["type"].startswith("sim_") or node["type"] == "frame_guard" for node in row["nodes"])
+        run = {"id": uuid.uuid4().hex, "workflow_id": workflow_id, "started_at": time.time(), "status": "running", "execution_mode": "simulation" if simulated else "body_dataflow", "nodes": [], "error": ""}
         values: dict[str, Any] = {}
         try:
             for node_id in graph["order"]:
                 node = node_by_id[node_id]
                 node_type = node["type"]
                 inputs = [values[parent] for parent in incoming[node_id] if parent in values]
-                result = self._execute_node(node_type, inputs)
+                result = self._execute_node(node_type, inputs, node.get("config") or {})
                 values[node_id] = result
                 run["nodes"].append({"id": node_id, "type": node_type, "label": node.get("label") or node_type, "status": "success", "output": self._compact(result)})
             run["status"] = "completed"
@@ -204,7 +295,48 @@ class WorkflowManager:
                 self._persist()
         return run
 
-    def _execute_node(self, node_type: str, inputs: list[Any]) -> Any:
+    def _execute_node(self, node_type: str, inputs: list[Any], config: dict[str, Any] | None = None) -> Any:
+        config = config or {}
+        if node_type == "sim_base_navigate":
+            target = self._pose_from_config(config)
+            return {
+                "kind": "pose", "device_id": "sim_mobile_base", "frame_id": target["frame_id"],
+                "position": target["position"], "heading_deg": target["heading_deg"],
+                "mode": "simulation", "actuation": False,
+                "reason": "Virtual navigation result; no Body map or hardware was moved.",
+            }
+        if node_type == "frame_guard":
+            base = next((item for item in reversed(inputs) if isinstance(item, dict) and item.get("kind") == "pose"), None)
+            if base is None:
+                raise WorkflowError("frame guard requires a mobile-base pose input")
+            target = self._pose_from_config(config)
+            if base.get("frame_id") != target["frame_id"]:
+                raise WorkflowError(f"coordinate frame mismatch: base={base.get('frame_id')} target={target['frame_id']}")
+            base_position, target_position = base["position"], target["position"]
+            distance = sum((base_position[index] - target_position[index]) ** 2 for index in range(3)) ** 0.5
+            limit = self._bounded_number(config.get("max_reach_m", 0.75), "max_reach_m", 0.05, 5.0)
+            if distance > limit:
+                raise WorkflowError(f"arm target is out of reach ({distance:.3f} m > {limit:.3f} m)")
+            return {
+                "kind": "safe_pose", "frame_id": target["frame_id"], "base_pose": base_position,
+                "target_pose": target_position, "distance_m": round(distance, 4),
+                "reach_limit_m": limit, "safe": True, "mode": "simulation",
+            }
+        if node_type == "sim_arm_action":
+            checked = next((item for item in reversed(inputs) if isinstance(item, dict) and item.get("kind") == "safe_pose"), None)
+            if checked is None or not checked.get("safe"):
+                raise WorkflowError("simulated arm requires a passing frame/reach guard")
+            if config.get("frame_id", checked.get("frame_id")) != checked.get("frame_id"):
+                raise WorkflowError("arm and shared target coordinate frames do not match")
+            action = str(config.get("action", "grasp")).strip().lower()
+            if action not in {"reach", "grasp", "release"}:
+                raise WorkflowError("simulated arm action must be reach, grasp or release")
+            return {
+                "kind": "task_result", "device_id": "sim_manipulator", "action": action,
+                "object_id": str(config.get("object_id") or "target"), "status": "simulated_success",
+                "frame_id": checked["frame_id"], "target_pose": checked["target_pose"],
+                "mode": "simulation", "actuation": False,
+            }
         if node_type == "camera":
             frame = self.host.camera_frame()
             camera = frame.get("camera") or {}
@@ -251,6 +383,29 @@ class WorkflowManager:
         if node_type == "fnk":
             raise WorkflowError("FNK physical actuation is not an executable workflow node; use the confirmation-gated Body command path")
         raise WorkflowError(f"node type has no execution handler: {node_type}")
+
+    @staticmethod
+    def _bounded_number(value: Any, field: str, minimum: float, maximum: float) -> float:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            raise WorkflowError(f"{field} must be a number") from None
+        if not minimum <= number <= maximum:
+            raise WorkflowError(f"{field} must be between {minimum} and {maximum}")
+        return number
+
+    @classmethod
+    def _pose_from_config(cls, config: dict[str, Any]) -> dict[str, Any]:
+        frame_id = str(config.get("frame_id") or "map").strip()
+        if not frame_id or len(frame_id) > 100:
+            raise WorkflowError("frame_id must be a non-empty string")
+        position = [
+            cls._bounded_number(config.get("x", 0), "x", -100.0, 100.0),
+            cls._bounded_number(config.get("y", 0), "y", -100.0, 100.0),
+            cls._bounded_number(config.get("z", 0), "z", -10.0, 10.0),
+        ]
+        heading = cls._bounded_number(config.get("heading_deg", 0), "heading_deg", -3600.0, 3600.0)
+        return {"frame_id": frame_id, "position": position, "heading_deg": heading}
 
     @classmethod
     def _compact(cls, value: Any, depth: int = 0) -> Any:

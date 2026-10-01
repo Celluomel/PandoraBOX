@@ -1924,6 +1924,10 @@ class BodyHost:
                     })
                 elif path in {"/ros2/status", "/ros2/settings"}:
                     self._send(owner.ros2_settings())
+                elif path == "/workflows/catalog":
+                    self._send(owner.workflow_manager.catalog())
+                elif path == "/workflows/templates/mobile-manipulation":
+                    self._send(owner.workflow_manager.mobile_manipulation_demo())
                 elif path == "/workflows":
                     self._send(owner.workflow_manager.list())
                 elif path.startswith("/workflows/"):
