@@ -506,11 +506,17 @@ class BodySceneInterpreter:
         # camera image is attached separately below as a vision part.
         prompt_packet = {
             key: packet.get(key)
-            for key in ("timestamp", "frame_id", "contract", "source", "confidence", "body", "objects", "motion", "navigation")
+            for key in ("timestamp", "frame_id", "contract", "source", "confidence")
             if key in packet
         }
-        for bulky_key in ("perception_frame", "vision_2d", "lidar_3d", "sensor_fusion", "quality"):
-            prompt_packet.pop(bulky_key, None)
+        def compact_fields(value: Any, fields: tuple[str, ...]) -> Dict[str, Any]:
+            if not isinstance(value, dict):
+                return {}
+            return {key: value[key] for key in fields if key in value and value[key] is not None}
+
+        prompt_packet["body"] = compact_fields(
+            packet.get("body"), ("position", "orientation", "posture", "coordinate_frame", "position_source")
+        )
         if packet.get("visual_blind"):
             # Evaluation mode: the image and LiDAR are the evidence. The
             # simulator's object list remains outside the prompt for scoring.
@@ -523,7 +529,7 @@ class BodySceneInterpreter:
         else:
             prompt_packet["objects"] = [
                 {key: item.get(key) for key in ("id", "label", "kind")}
-                for item in packet.get("objects") or [] if isinstance(item, dict)
+                for item in (packet.get("objects") or [])[:5] if isinstance(item, dict)
             ]
         # The image is attached as a vision part below. Never duplicate its
         # Base64 bytes inside the JSON prompt; that doubles latency and token
@@ -535,32 +541,44 @@ class BodySceneInterpreter:
         depth_image = camera_meta.pop("depth_base64", None)
         camera_meta["image_attached"] = bool(camera_image)
         camera_meta["depth_attached"] = bool(depth_image)
-        modalities["camera"] = camera_meta
+        modalities = {
+            "camera": compact_fields(
+                camera_meta,
+                ("camera_profile", "width", "height", "calibration", "image_attached", "depth_attached", "source"),
+            )
+        }
         lidar = dict(modalities.get("lidar") or {})
-        points = [point for point in lidar.get("points") or [] if isinstance(point, dict)]
-        if len(points) > 96:
-            # Preserve the nearest returns first; the full cloud remains in
-            # the Body perception API and is not needed for semantic captioning.
-            points.sort(key=lambda point: self._number(point.get("range_m"), float("inf")))
-            lidar["points"] = points[:96]
-            lidar["points_truncated"] = len(points) - 96
-        modalities["lidar"] = lidar
+        raw_lidar = (packet.get("modalities") or {}).get("lidar") or {}
+        points = [point for point in raw_lidar.get("points") or [] if isinstance(point, dict)]
+        points.sort(key=lambda point: self._number(point.get("range_m"), float("inf")))
+        point_fields = ("x", "y", "z", "range_m", "angle_deg", "object_id")
+        compact_points = [
+            {key: point[key] for key in point_fields if key in point}
+            for point in points[:24]
+        ]
+        modalities["lidar"] = {
+            **compact_fields(raw_lidar, ("frame_id", "timestamp", "source", "quality", "coordinate_frame")),
+            "points": compact_points,
+            "points_truncated": max(0, len(points) - len(compact_points)),
+        }
+        raw_motion = packet.get("motion")
+        if isinstance(raw_motion, dict):
+            prompt_packet["motion"] = compact_fields(
+                raw_motion,
+                ("speed", "relative_speed", "closing_speed", "angular_speed", "moving", "perception_risk", "minimum_clearance_m"),
+            )
+        raw_navigation = packet.get("navigation")
+        if isinstance(raw_navigation, dict):
+            prompt_packet["navigation"] = compact_fields(
+                raw_navigation, ("recommended", "reason", "recovery_mode", "mobile_obstacle")
+            )
         if packet.get("visual_blind"):
             # Do not leak simulator identities through the derived projections.
             # The vision model must infer them from pixels and unlabeled ranges.
-            vision = dict(modalities.get("vision_projection") or {})
-            vision.pop("objects", None)
-            modalities["vision_projection"] = vision
-            lidar = dict(modalities.get("lidar") or {})
-            lidar["points"] = [
+            modalities["lidar"]["points"] = [
                 {key: value for key, value in point.items() if key != "object_id"}
-                for point in lidar.get("points") or [] if isinstance(point, dict)
+                for point in modalities["lidar"]["points"]
             ]
-            modalities["lidar"] = lidar
-            # The association layer is used for post-call scoring, but must
-            # not leak simulator identities or fused labels to the blind VLM.
-            modalities.pop("fusion", None)
-            prompt_packet.pop("sensor_fusion", None)
         prompt_packet["modalities"] = modalities
         prompt_packet["attention"] = {
             "policy": "near_actionable_and_hazardous",

@@ -420,6 +420,63 @@ class BodyPerceptionModalitiesTest(unittest.TestCase):
         self.assertEqual(len(calls), 3)
         interpreter.close()
 
+    def test_scene_interpreter_bounds_multimodal_prompt_for_small_context_models(self):
+        import json
+        from body_runtime_host.worldmodel.scene_interpreter import BodySceneInterpreter
+
+        interpreter = BodySceneInterpreter({
+            "BODY_LLM_ENABLED": True,
+            "BODY_LLM_MODEL": "qualcomm/Intern3.5-VL-2B:W4A16",
+            "BODY_LLM_BASE_URL": "http://127.0.0.1:18181/v1",
+        })
+        points = [
+            {"x": float(index), "y": 1.0, "z": 0.0, "range_m": float(index + 1),
+             "angle_deg": float(index), "object_id": f"object-{index}", "debug_payload": "x" * 300}
+            for index in range(200)
+        ]
+        packet = {
+            "frame_id": "compact-frame",
+            "timestamp": 123.0,
+            "source": "sensor",
+            "body": {"position": [0, 0, 0], "orientation": 0, "unused": "x" * 1000},
+            "objects": [{"id": "cup", "label": "cup", "kind": "target", "props": "x" * 1000}],
+            "modalities": {
+                "camera": {"image_base64": "aGVsbG8=", "mime_type": "image/jpeg", "unused": "x" * 1000},
+                "lidar": {"points": points, "unused": "x" * 1000},
+                "vision_projection": {"objects": ["x" * 1000] * 100},
+                "fusion": {"associations": ["x" * 1000] * 100},
+            },
+            "sensor_fusion": {"unused": "x" * 1000},
+        }
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def read(self):
+                return b'{"choices":[{"message":{"content":"{\\"scene_summary\\":\\"scene\\"}"}}]}'
+
+        calls = []
+
+        def fake_urlopen(request, timeout):
+            calls.append(json.loads(request.data.decode("utf-8")))
+            return Response()
+
+        with patch("body_runtime_host.worldmodel.scene_interpreter.urlopen", side_effect=fake_urlopen):
+            result = interpreter._interpret(packet)
+
+        prompt = calls[0]["messages"][1]["content"][0]["text"]
+        self.assertEqual(result["status"], "interpreted")
+        self.assertLess(len(prompt), 6000)
+        self.assertEqual(len(json.loads(prompt.split("\n\n", 1)[1])["modalities"]["lidar"]["points"]), 24)
+        self.assertNotIn("vision_projection", prompt)
+        self.assertNotIn("debug_payload", prompt)
+        self.assertTrue(any(part.get("type") == "image_url" for part in calls[0]["messages"][1]["content"]))
+        interpreter.close()
+
     def test_body_vlm_test_identifies_observation_stage_failures(self):
         from body_runtime_host.runtime import BodyHost
 
