@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import logging
+import platform
 import threading
 import time
 from typing import Any
@@ -33,6 +34,7 @@ class LocalCameraCapture:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._capture = None
+        self._capture_backend = ""
         self._latest: dict[str, Any] = {}
         self._status = "stopped"
         self._error = ""
@@ -100,6 +102,7 @@ class LocalCameraCapture:
             "frame_age_s": round(max(0.0, time.time() - captured_at), 3) if captured_at else None,
             "last_error": self._error,
             "opencv": self._opencv_available(),
+            "backend": self._capture_backend or None,
         }
 
     @staticmethod
@@ -113,11 +116,40 @@ class LocalCameraCapture:
     def _release(self) -> None:
         capture = self._capture
         self._capture = None
+        self._capture_backend = ""
         if capture is not None:
             try:
                 capture.release()
             except Exception:
                 LOG.debug("Could not release local camera", exc_info=True)
+
+    @staticmethod
+    def _open_capture(cv2, device_index: int):
+        system = platform.system()
+        backends = {
+            "Windows": (("CAP_DSHOW", "DirectShow"), ("CAP_MSMF", "Media Foundation"), ("CAP_ANY", "automatic")),
+            "Linux": (("CAP_V4L2", "V4L2"), ("CAP_ANY", "automatic")),
+            "Darwin": (("CAP_AVFOUNDATION", "AVFoundation"), ("CAP_ANY", "automatic")),
+        }.get(system, (("CAP_ANY", "automatic"),))
+        attempted = set()
+        for constant, label in backends:
+            backend = getattr(cv2, constant, None)
+            if backend is None or backend in attempted:
+                continue
+            attempted.add(backend)
+            capture = None
+            try:
+                capture = cv2.VideoCapture(device_index, backend)
+                if capture is not None and capture.isOpened():
+                    return capture, label
+            except Exception:
+                LOG.debug("Camera open failed using %s", label, exc_info=True)
+            if capture is not None:
+                try:
+                    capture.release()
+                except Exception:
+                    pass
+        return None, ""
 
     def _run(self) -> None:
         try:
@@ -127,10 +159,7 @@ class LocalCameraCapture:
             self._error = "OpenCV is not installed; install body_requirements.txt"
             LOG.warning("PC camera unavailable: %s", self._error)
             return
-        try:
-            self._capture = cv2.VideoCapture(self.device_index, cv2.CAP_DSHOW)
-        except Exception:
-            self._capture = cv2.VideoCapture(self.device_index)
+        self._capture, self._capture_backend = self._open_capture(cv2, self.device_index)
         if self._capture is None or not self._capture.isOpened():
             self._status = "unavailable"
             self._error = f"camera device {self.device_index} could not be opened"
@@ -140,7 +169,7 @@ class LocalCameraCapture:
         self._capture.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
         self._capture.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
         self._status = "capturing"
-        LOG.info("PC camera capture started (device=%d, requested=%dx%d)", self.device_index, self.width, self.height)
+        LOG.info("Local camera capture started (device=%d, backend=%s, requested=%dx%d)", self.device_index, self._capture_backend, self.width, self.height)
         try:
             while not self._stop.is_set():
                 ok, frame = self._capture.read()

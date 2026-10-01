@@ -32,6 +32,55 @@ class LocalCameraTests(unittest.TestCase):
         with patch.dict("sys.modules", {"cv2": None}):
             self.assertFalse(capture._opencv_available())
 
+    def test_linux_camera_uses_v4l2_instead_of_windows_directshow(self):
+        class Capture:
+            def isOpened(self):
+                return True
+            def release(self):
+                pass
+
+        class Cv2:
+            CAP_DSHOW = 700
+            CAP_V4L2 = 200
+            CAP_ANY = 0
+            def __init__(self):
+                self.calls = []
+            def VideoCapture(self, index, backend):
+                self.calls.append((index, backend))
+                return Capture()
+
+        cv2 = Cv2()
+        with patch("body_runtime_host.local_camera.platform.system", return_value="Linux"):
+            capture, backend = LocalCameraCapture._open_capture(cv2, 2)
+        self.assertTrue(capture.isOpened())
+        self.assertEqual(backend, "V4L2")
+        self.assertEqual(cv2.calls, [(2, cv2.CAP_V4L2)])
+
+    def test_linux_camera_falls_back_to_opencv_auto_backend(self):
+        class Capture:
+            def __init__(self, opened):
+                self.opened = opened
+            def isOpened(self):
+                return self.opened
+            def release(self):
+                pass
+
+        class Cv2:
+            CAP_V4L2 = 200
+            CAP_ANY = 0
+            def __init__(self):
+                self.calls = []
+            def VideoCapture(self, index, backend):
+                self.calls.append(backend)
+                return Capture(backend == self.CAP_ANY)
+
+        cv2 = Cv2()
+        with patch("body_runtime_host.local_camera.platform.system", return_value="Linux"):
+            capture, backend = LocalCameraCapture._open_capture(cv2, 0)
+        self.assertTrue(capture.isOpened())
+        self.assertEqual(backend, "automatic")
+        self.assertEqual(cv2.calls, [cv2.CAP_V4L2, cv2.CAP_ANY])
+
     def test_live_capture_toggle_does_not_change_startup_preference(self):
         import body_runtime_host.runtime as brt
         with tempfile.TemporaryDirectory() as tmp:
