@@ -607,3 +607,54 @@ BODY_GUI_HTML = BODY_GUI_HTML.replace(
     "Saving stores this visual draft in this browser only. It does not deploy a workflow or send commands. The live ROS 2 bridge below remains a separate observation adapter.",
     "Workflows save to the Body runtime and keep execution history. Robot actuation is excluded from this manual executor and remains on its confirmation-gated command path.",
 )
+
+BODY_GUI_HTML = BODY_GUI_HTML.replace(
+    "</body></html>",
+    """<script>
+function mountFnkPanelInRobotSettings(){
+  const panel=document.getElementById('fnk0031-panel');
+  const page=document.getElementById('view-robot');
+  const anchor=page?.querySelector(':scope > .panel');
+  if(panel&&anchor&&panel.parentElement!==page)anchor.insertAdjacentElement('afterend',panel);
+}
+const refreshFnkPanelWithReachableSettings=refreshFnkPanel;
+refreshFnkPanel=async function(){
+  mountFnkPanelInRobotSettings();
+  await refreshFnkPanelWithReachableSettings();
+  const panel=document.getElementById('fnk0031-panel');
+  if(!panel)return;
+  panel.hidden=currentView!=='robot';
+  const settings=panel.querySelector('.plugin-settings');
+  if(settings)settings.hidden=false;
+  if(!fnkSettingsLoaded){
+    try{
+      const saved=await get('/plugins/fnk0031_wifi/settings');
+      document.getElementById('fnk0031-platform').value=saved.platform||'ventuno_q_gateway';
+      document.getElementById('fnk0031-url').value=saved.url||'';
+      document.getElementById('fnk0031-poll').value=saved.poll_interval||5;
+      document.getElementById('fnk0031-timeout').value=saved.timeout||5;
+      document.getElementById('fnk0031-snn').checked=!!saved.snn_enabled;
+      document.getElementById('fnk0031-actuation').checked=!!saved.actuation_enabled;
+      document.getElementById('fnk0031-token').placeholder=saved.token_configured?'Token configured; leave blank to keep it':'Optional access token';
+      fnkSettingsLoaded=true;
+    }catch(error){
+      const state=document.getElementById('fnk-controller-state');
+      if(state)state.textContent='FNK0031 settings unavailable: '+error.message;
+    }
+  }
+};
+const showViewWithRobotControls=showView;
+showView=function(view){
+  showViewWithRobotControls(view);
+  const panel=document.getElementById('fnk0031-panel');
+  if(panel)panel.hidden=view!=='robot';
+  if(view==='robot'){
+    mountFnkPanelInRobotSettings();
+    void refreshRobotManagement();
+  }
+};
+mountFnkPanelInRobotSettings();
+if(currentView==='robot')void refreshRobotManagement();
+</script></body></html>""",
+    1,
+)
