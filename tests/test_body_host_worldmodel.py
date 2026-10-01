@@ -452,6 +452,22 @@ def math_isfinite(x) -> bool:
 class BodyHostHttpTest(unittest.TestCase):
     """BodyHost HTTP surface: /health, /plugins, /worldmodel/* (no config file writes)."""
 
+    def test_missing_config_is_created_on_first_run(self):
+        import body_runtime_host.runtime as brt
+        with tempfile.TemporaryDirectory() as tmp:
+            real_config_path = brt.CONFIG_PATH
+            real_dotenv = brt._load_dotenv
+            brt.CONFIG_PATH = Path(tmp) / "data" / "body" / "config.json"
+            brt._load_dotenv = lambda: None
+            try:
+                host = brt.BodyHost()
+                self.assertEqual(host.config, {})
+                self.assertTrue(brt.CONFIG_PATH.is_file())
+                self.assertEqual(json.loads(brt.CONFIG_PATH.read_text(encoding="utf-8")), {})
+            finally:
+                brt.CONFIG_PATH = real_config_path
+                brt._load_dotenv = real_dotenv
+
     def test_health_plugins_and_worldmodel_endpoints(self):
         # Build a BodyHost without touching the real config: monkeypatch CONFIG_PATH.
         import body_runtime_host.runtime as brt

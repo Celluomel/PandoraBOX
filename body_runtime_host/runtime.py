@@ -189,6 +189,14 @@ class BodyHost:
             return gate if isinstance(gate, dict) else {"state": "unknown", "pending_gates": ["evaluation"]}
 
     def _load_config(self) -> dict:
+        if not CONFIG_PATH.exists():
+            try:
+                CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+                CONFIG_PATH.write_text("{}\n", encoding="utf-8")
+                LOG.info("Created default Body configuration at %s", CONFIG_PATH)
+                return {}
+            except OSError as exc:
+                LOG.warning("Could not create default Body configuration at %s: %s", CONFIG_PATH, exc)
         try:
             payload = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
             return payload if isinstance(payload, dict) else {}
