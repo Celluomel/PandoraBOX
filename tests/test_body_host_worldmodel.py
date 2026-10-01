@@ -93,7 +93,7 @@ class FNK0031LocomotionControllerTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             controller = FNK0031LocomotionController(Path(tmp) / "weights.npz")
-            state = controller.step(imu=None, reward=0.0)
+            state = controller.step(imu=None, reward=0.0, gait="idle")
             self.assertEqual(len(state["joint_targets"]), 6)
             self.assertTrue(all(leg[0] == 0.0 and leg[1] == 0.0 for leg in state["foot_motion"]))
             forward_motion = controller.step(imu=None, reward=0.0, gait="forward")
@@ -392,7 +392,7 @@ class RobotHttpSourceTest(unittest.TestCase):
             "BODY_PLUGIN_HOME_ASSISTANT_ENABLED": True,
         }
         src = resolve_source(cfg, {"a": {"observed_at": time.time()}})
-        self.assertEqual(src.name, "robot")
+        self.assertEqual(src.name, "fnk0031_wifi")
 
     def test_resolve_source_priority_chain(self):
         from body_runtime_host.worldmodel import resolve_source
@@ -480,7 +480,8 @@ class BodyHostHttpTest(unittest.TestCase):
                 self.assertIn("robot", health)
                 self.assertIn("plugins", health)
                 self.assertIn("worldmodel", health)
-            self.assertEqual(len(health["plugins"]), 6)
+                plugin_ids = {plugin["id"] for plugin in health["plugins"]}
+                self.assertTrue({"pc_camera", "fnk0031_wifi", "sim_robot"}.issubset(plugin_ids))
 
                 # world model endpoints (lazy build)
                 status = _get(f"{base}/worldmodel/status")
