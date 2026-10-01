@@ -420,6 +420,24 @@ class BodyPerceptionModalitiesTest(unittest.TestCase):
         self.assertEqual(len(calls), 3)
         interpreter.close()
 
+    def test_body_vlm_test_identifies_observation_stage_failures(self):
+        from body_runtime_host.runtime import BodyHost
+
+        class Source:
+            def observe(self):
+                raise RuntimeError("HTTP Error 400: bad request")
+
+        class WorldModel:
+            source = Source()
+
+        host = BodyHost.__new__(BodyHost)
+        host._worldmodel = WorldModel()
+        result = host.test_body_vlm()
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["stage"], "observe")
+        self.assertIn("HTTP Error 400", result["error"])
+
 
 if __name__ == "__main__":
     unittest.main()

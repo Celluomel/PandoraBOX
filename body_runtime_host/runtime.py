@@ -434,16 +434,25 @@ class BodyHost:
         """Run one synchronous Body VLM interpretation on the latest scene."""
         wm = self.worldmodel
         if wm is None or wm.source is None:
-            return {"ok": False, "error": "world model or sensor source unavailable"}
+            return {
+                "ok": False,
+                "stage": "source_check",
+                "error": "world model or sensor source unavailable",
+            }
+        stage = "observe"
         try:
             obs = wm.source.observe()
+            stage = "body_state"
             body = wm.source.body_state()
+            stage = "scene_packet"
             packet = wm._scene_packet(obs, body, {}, {})
+            stage = "interpret"
             result = wm.scene_interpreter.interpret_now(packet)
             interpreted = result.get("status") == "interpreted"
             grounding = (result.get("semantic_scene") or {}).get("grounding") or {}
             return {
                 "ok": interpreted,
+                "stage": "complete" if interpreted else "interpret",
                 "model": result.get("model") or self.body_llm_settings().get("model"),
                 "status": result.get("status"),
                 "error": result.get("error"),
@@ -453,8 +462,8 @@ class BodyHost:
                 "result": result,
             }
         except Exception as exc:
-            LOG.exception("Body VLM test failed")
-            return {"ok": False, "error": str(exc)[:300]}
+            LOG.exception("Body VLM test failed during %s", stage)
+            return {"ok": False, "stage": stage, "error": str(exc)[:300]}
 
     def body_llm_settings(self) -> dict:
         return {
