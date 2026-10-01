@@ -604,6 +604,56 @@ BODY_GUI_HTML = BODY_GUI_HTML.replace(
 )
 
 BODY_GUI_HTML = BODY_GUI_HTML.replace(
+    "</body></html>",
+    r'''<script>
+(function(){
+  const nav=document.querySelector('.sidebar .nav');
+  const footer=document.querySelector('.sidebar .sidebar-foot');
+  const main=document.querySelector('main.shell');
+  if(!nav||!footer||!main)return;
+  if(!document.getElementById('nav-runtime')){
+    const link=document.createElement('button');link.id='nav-runtime';link.type='button';link.textContent='05  Runtime';link.onclick=()=>showView('runtime');nav.appendChild(link);
+  }
+  if(!document.getElementById('view-runtime')){
+    const view=document.createElement('section');view.id='view-runtime';view.className='view';view.hidden=true;
+    view.innerHTML='<div class="stats"><div class="stat"><span>Branch</span><b id="runtime-branch">—</b></div><div class="stat"><span>Installed commit</span><b id="runtime-commit">—</b></div><div class="stat"><span>Upstream</span><b id="runtime-upstream">—</b></div><div class="stat"><span>Remote updates</span><b id="runtime-behind">—</b></div><div class="stat"><span>Worktree</span><b id="runtime-dirty">—</b></div><div class="stat"><span>Runtime</span><b id="runtime-pull-state">—</b></div></div><section class="panel"><div class="panel-head"><h2>PandoraBOX runtime updates</h2><small>Body checkout · fast-forward only</small></div><p id="runtime-update-message" class="perception-text">Check the configured Git upstream for updates. Local changes are never overwritten.</p><div class="plugin-actions"><button id="runtime-check-button" type="button">Check for updates</button><button id="runtime-pull-button" type="button" disabled>Pull updates</button></div><div class="detail-block"><div class="panel-head"><h2>Local changes</h2><small id="runtime-change-count">—</small></div><div id="runtime-change-list" class="event-list muted">Checking repository…</div></div><p class="truth-note"><b>Restart after update</b><span>A successful pull only updates files. Restart the Body Runtime to load the new code. Pull is disabled when the checkout has local changes or cannot fast-forward.</span></p></section>';
+    main.appendChild(view);
+  }
+  const setText=(id,value)=>{const el=document.getElementById(id);if(el)el.textContent=String(value??'—')};
+  function renderStatus(data){
+    setText('runtime-branch',data.branch||'—');setText('runtime-commit',data.commit||'—');setText('runtime-upstream',data.upstream||'No upstream');
+    setText('runtime-behind',data.upstream?`${data.behind||0} behind · ${data.ahead||0} ahead`:'Unavailable');
+    setText('runtime-dirty',data.dirty?'Changes present':'Clean');setText('runtime-pull-state',data.restart_required?'Restart required':'Ready');
+    const button=document.getElementById('runtime-pull-button');if(button)button.disabled=Boolean(data.dirty||!data.update_available);
+    const changes=document.getElementById('runtime-change-list');if(changes){changes.textContent='';if(data.changed_files?.length){for(const file of data.changed_files){const row=document.createElement('div');row.className='row';row.textContent=file;changes.appendChild(row)}}else changes.textContent='No local changes.'}
+    setText('runtime-change-count',`${data.changed_files?.length||0} file(s)`);
+    if(data.error)setText('runtime-update-message',data.error);
+    else if(data.dirty)setText('runtime-update-message','Local edits or untracked files detected. Commit or otherwise resolve them before pulling; this tool will not overwrite them.');
+    else if(data.update_available)setText('runtime-update-message',`${data.behind} update(s) available from ${data.upstream}.`);
+    else if(data.upstream)setText('runtime-update-message',data.ahead?'This branch has local commits; fast-forward update is not available.': 'The checkout is up to date with its upstream.');
+    else setText('runtime-update-message','This checkout has no configured Git upstream.');
+  }
+  async function runtimeRequest(path){const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}',cache:'no-store'});const data=await response.json();if(!response.ok&&!data.reason)throw Error(data.error||`Request failed (${response.status})`);return data}
+  async function refreshRuntime(){try{renderStatus(await get('/runtime/status'))}catch(error){setText('runtime-update-message','Repository status unavailable: '+error.message);const button=document.getElementById('runtime-pull-button');if(button)button.disabled=true}}
+  async function checkRuntimeUpdates(){const button=document.getElementById('runtime-check-button');button.disabled=true;setText('runtime-update-message','Fetching upstream status…');try{renderStatus(await runtimeRequest('/runtime/check'))}catch(error){setText('runtime-update-message','Update check failed: '+error.message)}finally{button.disabled=false}}
+  async function pullRuntimeUpdates(){if(!window.confirm('Pull the fast-forward update into the Body checkout? Local changes will not be overwritten.'))return;const button=document.getElementById('runtime-pull-button');button.disabled=true;setText('runtime-update-message','Pulling updates…');try{const result=await runtimeRequest('/runtime/pull');renderStatus(result);if(result.reason==='dirty_worktree')setText('runtime-update-message','Pull blocked: the checkout has local changes. Nothing was changed.');else if(result.reason==='no_upstream')setText('runtime-update-message','Pull blocked: no Git upstream is configured.');else if(result.pulled)setText('runtime-update-message',`Updated to ${result.commit}. Restart the Body Runtime to load it.`);else setText('runtime-update-message','Already up to date.')}catch(error){setText('runtime-update-message','Pull failed: '+error.message)}finally{await refreshRuntime()}}
+  document.getElementById('runtime-check-button').onclick=checkRuntimeUpdates;
+  document.getElementById('runtime-pull-button').onclick=pullRuntimeUpdates;
+  const previousShowView=showView;
+  showView=function(view){
+    const runtimePage=document.getElementById('view-runtime');
+    if(view!=='runtime'){if(runtimePage)runtimePage.hidden=true;document.getElementById('nav-runtime')?.classList.remove('active');previousShowView(view);return}
+    currentView='runtime';document.body.dataset.view='runtime';document.querySelectorAll('.view').forEach(page=>page.hidden=true);runtimePage.hidden=false;
+    document.querySelectorAll('.sidebar .nav button').forEach(button=>button.classList.toggle('active',button.id==='nav-runtime'));
+    setText('page-breadcrumb','RUNTIME');setText('page-title','Runtime updates');setText('page-description','Check and update the PandoraBOX Body code running on this device.');document.title='Runtime updates · Body';history.replaceState(null,'','/runtime');void refreshRuntime();window.scrollTo({top:0,behavior:'instant'});
+  };
+  if(location.pathname==='/runtime')showView('runtime');
+})();
+</script></body></html>''',
+    1,
+)
+
+BODY_GUI_HTML = BODY_GUI_HTML.replace(
     '<label class="field">Activate camera at Body startup',
     '<label class="field check"><input id="camera-setting-live" type="checkbox" onchange="toggleCameraCapture(this.checked)"> Camera stream running now</label><label class="field">Activate camera at Body startup',
     1,

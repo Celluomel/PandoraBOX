@@ -23,6 +23,7 @@ import math
 import os
 import signal
 import ssl
+import subprocess
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -38,6 +39,7 @@ from body_runtime_host.coordinate_frames import (
 )
 from body_runtime_host.deployment import build_bundle
 from body_runtime_host.local_camera import LocalCameraCapture
+from body_runtime_host.repository_update import RepositoryUpdater
 
 LOG = logging.getLogger("lumina.body")
 ROOT = Path(__file__).resolve().parents[1]
@@ -157,6 +159,7 @@ class BodyHost:
         self._local_camera_lock = threading.RLock()
         self._ros2_bridge = None
         self._workflow_manager = None
+        self._repository_updater = RepositoryUpdater(ROOT)
 
     @property
     def workflow_manager(self):
@@ -422,9 +425,7 @@ class BodyHost:
         self.config["BODY_CAMERA_DEVICE_INDEX"] = max(0, int(payload.get("device_index", self.value("BODY_CAMERA_DEVICE_INDEX", 0)) or 0))
         self.config["BODY_FACE_DETECTION_ENABLED"] = _payload_bool(payload.get("face_detection_enabled"))
         self.save_config()
-        self._configure_local_camera(
-            start=was_capturing or _payload_bool(self.config["BODY_CAMERA_STARTUP_ENABLED"])
-        )
+        self._configure_local_camera(start=was_capturing)
         if self._worldmodel is not None:
             self.reload_worldmodel_source()
         return {"ok": True, **self.camera_settings()}
@@ -1893,7 +1894,7 @@ class BodyHost:
 
             def do_GET(self):  # noqa: N802
                 path = self.path.split("?", 1)[0].rstrip("/") or "/"
-                if path in {"", "/", "/body", "/worldmodel", "/camera", "/llm", "/robot", "/ros2"}:
+                if path in {"", "/", "/body", "/worldmodel", "/camera", "/llm", "/robot", "/ros2", "/runtime"}:
                     self._send_html(BODY_GUI_HTML)
                 elif path == "/health":
                     wm = owner._worldmodel
@@ -1958,6 +1959,11 @@ class BodyHost:
                         "secrets_excluded": True,
                         "learned_model_optional": True,
                     })
+                elif path == "/runtime/status":
+                    try:
+                        self._send(owner._repository_updater.status())
+                    except (RuntimeError, OSError, subprocess.TimeoutExpired) as exc:
+                        self._send({"available": False, "error": str(exc)}, 503)
                 elif path == "/worldmodel/scene-interpreter":
                     wm = owner.worldmodel
                     self._send(wm.scene_interpreter.status() if wm is not None else {"status": "unavailable"})
@@ -2124,6 +2130,12 @@ class BodyHost:
                     self._send(owner.deployment_activate(self._read_body()))
                 elif path == "/deployment/restart":
                     self._send(owner.deployment_restart(self._read_body()))
+                elif path in {"/runtime/check", "/runtime/pull"}:
+                    try:
+                        result = owner._repository_updater.check() if path.endswith("/check") else owner._repository_updater.pull()
+                        self._send(result, 200 if result.get("ok") else 409)
+                    except (RuntimeError, OSError, subprocess.TimeoutExpired) as exc:
+                        self._send({"ok": False, "error": str(exc)}, 502)
                 elif path == "/robot-sim/start":
                     self._send(owner.start_robot_sim(self._read_body()))
                 elif path == "/robot-sim/stop":

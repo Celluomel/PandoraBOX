@@ -48,6 +48,19 @@ class LocalCameraTests(unittest.TestCase):
                     self.assertTrue(stopped["ok"])
                     self.assertFalse(host.camera_settings()["startup_enabled"])
 
+    def test_saving_settings_does_not_restart_stopped_camera_when_startup_enabled(self):
+        import json
+        import body_runtime_host.runtime as brt
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.json"
+            with patch.object(brt, "CONFIG_PATH", config_path), patch.object(brt, "_load_dotenv"):
+                host = brt.BodyHost()
+                with patch.object(host, "_configure_local_camera", return_value={"status": "stopped"}) as configure:
+                    result = host.update_camera_settings({"startup_enabled": True})
+                configure.assert_called_once_with(start=False)
+                self.assertTrue(result["startup_enabled"])
+                self.assertTrue(json.loads(config_path.read_text(encoding="utf-8"))["BODY_CAMERA_STARTUP_ENABLED"])
+
 
 if __name__ == "__main__":
     unittest.main()
