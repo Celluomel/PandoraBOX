@@ -604,6 +604,44 @@ BODY_GUI_HTML = BODY_GUI_HTML.replace(
 )
 
 BODY_GUI_HTML = BODY_GUI_HTML.replace(
+    '<label class="field">Activate camera at Body startup',
+    '<label class="field check"><input id="camera-setting-live" type="checkbox" onchange="toggleCameraCapture(this.checked)"> Camera stream running now</label><label class="field">Activate camera at Body startup',
+    1,
+)
+
+BODY_GUI_HTML = BODY_GUI_HTML.replace(
+    "</body></html>",
+    """<script>
+let cameraCaptureToggleBusy=false;
+const cameraRefreshWithLiveToggle=refreshCamera;
+refreshCamera=async function(){
+  const result=await cameraRefreshWithLiveToggle();
+  const toggle=document.getElementById('camera-setting-live');
+  if(toggle&&!cameraCaptureToggleBusy){
+    const status=document.getElementById('camera-page-status')?.textContent||'';
+    toggle.checked=['capturing','starting'].includes(status);
+  }
+  return result;
+};
+async function toggleCameraCapture(enabled){
+  const toggle=document.getElementById('camera-setting-live');
+  cameraCaptureToggleBusy=true;
+  try{
+    const result=await post('/body/camera/capture',{enabled});
+    if(!result.ok)throw Error(result.last_error||result.error||'Camera capture did not start');
+    if(toggle)toggle.checked=['capturing','starting'].includes(result.status);
+    document.getElementById('message').textContent=enabled?'Starting camera capture':'Camera capture stopped';
+    await refreshCamera();
+  }catch(error){
+    if(toggle)toggle.checked=!enabled;
+    document.getElementById('message').textContent='Camera control failed: '+error.message;
+  }finally{cameraCaptureToggleBusy=false}
+}
+</script></body></html>""",
+    1,
+)
+
+BODY_GUI_HTML = BODY_GUI_HTML.replace(
     "Saving stores this visual draft in this browser only. It does not deploy a workflow or send commands. The live ROS 2 bridge below remains a separate observation adapter.",
     "Workflows save to the Body runtime and keep execution history. Robot actuation is excluded from this manual executor and remains on its confirmation-gated command path.",
 )

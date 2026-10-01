@@ -387,6 +387,11 @@ class BodyHost:
             result = self._local_camera.start() if should_start else self._local_camera.stop()
         return result
 
+    def set_camera_capture(self, enabled: bool) -> dict:
+        """Start or stop the live camera without changing its boot preference."""
+        capture = self._configure_local_camera(start=bool(enabled))
+        return {"ok": capture.get("status") in {"starting", "capturing", "stopped"}, **capture}
+
     def update_camera_settings(self, payload: dict) -> dict:
         # Preserve a manually running stream while applying live capture
         # changes. Startup preference must not unexpectedly stop it.
@@ -2106,6 +2111,9 @@ class BodyHost:
                         self._send(owner.update_camera_settings(self._read_body()))
                     except (TypeError, ValueError) as exc:
                         self._send({"ok": False, "error": str(exc)}, 400)
+                elif path == "/body/camera/capture":
+                    body = self._read_body()
+                    self._send(owner.set_camera_capture(_payload_bool(body.get("enabled"))))
                 elif path == "/body/camera/test-vlm":
                     self._send(owner.test_body_vlm())
                 elif path == "/deployment/check":
