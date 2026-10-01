@@ -659,7 +659,9 @@ async def vision_page():
 
     async def on_camera_toggle(e):
         """Handle camera switch toggle - runs in UI context"""
-        is_active = camera_switch.value
+        # Use the event value.  Reading camera_switch.value here can race the
+        # client-side model update and invert the requested action.
+        is_active = bool(getattr(e, 'value', camera_switch.value))
         
         if is_active:
             if state.vision:
@@ -716,6 +718,10 @@ async def vision_page():
                     </div>
                 ''')
 
+        # Keep the switch synchronized with the authoritative manager state
+        # after either start or stop, including camera-open failures.
+        camera_switch.value = bool(state.vision and state.vision.camera_active)
+
     # Simplified camera update loop - just uses the pre-encoded frames
     async def update_camera_feed():
         """Update camera feed in UI with pre-encoded frames"""
@@ -724,6 +730,12 @@ async def vision_page():
                 if state.vision and state.vision.camera_active:
                     # Get pre-encoded frame - no processing on UI thread!
                     encoded_frame = state.vision.get_latest_encoded_frame()
+
+                    # A short fallback for the first frame or a transient
+                    # encoder delay.  Normal streaming uses the pre-encoded
+                    # buffer and never performs JPEG work on the UI thread.
+                    if not encoded_frame:
+                        encoded_frame = state.vision.get_frame_as_base64()
                     
                     if encoded_frame:
                         camera_image.set_source(f'data:image/jpeg;base64,{encoded_frame}')
@@ -775,6 +787,4 @@ async def vision_page():
 # ─────────────────────────────────────────────
 #  Settings Page with Fixed Status Tab
 # ─────────────────────────────────────────────
-
-
 

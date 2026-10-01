@@ -3,6 +3,10 @@ setlocal
 cd /d "%~dp0"
 chcp 65001 >nul 2>&1
 set PYTHONUTF8=1
+if defined ROS2_INSTALL_PATH if exist "%ROS2_INSTALL_PATH%\local_setup.bat" (
+  echo [*] Loading ROS 2 environment from %ROS2_INSTALL_PATH%
+  call "%ROS2_INSTALL_PATH%\local_setup.bat"
+)
 set "BODY_PYTHON=body_venv\Scripts\python.exe"
 if not exist "%BODY_PYTHON%" goto :create_body_venv
 "%BODY_PYTHON%" -c "import sys" >nul 2>&1
@@ -19,10 +23,26 @@ if errorlevel 1 (
 )
 
 :body_venv_ready
-"%BODY_PYTHON%" -m pip install -q --upgrade pip
-"%BODY_PYTHON%" -m pip install -q -r body_requirements.txt
-if not defined BODY_PYTHON (
-  echo [ERROR] No Python environment found. Run start.bat once first.
+"%BODY_PYTHON%" -c "import websockets, imageio_ffmpeg, cv2, numpy, torch, mujoco" >nul 2>&1
+if errorlevel 1 (
+  echo [*] Body dependencies are missing or incomplete. Installing them...
+  "%BODY_PYTHON%" -m pip install --upgrade pip
+  if errorlevel 1 (
+    echo [ERROR] Could not prepare pip in body_venv.
+    exit /b 1
+  )
+  "%BODY_PYTHON%" -m pip install -r body_requirements.txt
+  if errorlevel 1 (
+    echo [ERROR] Body dependency installation failed.
+    exit /b 1
+  )
+) else (
+  echo [OK] Body dependencies already installed.
+)
+
+"%BODY_PYTHON%" -c "import websockets, imageio_ffmpeg, cv2, numpy, torch, mujoco" >nul 2>&1
+if errorlevel 1 (
+  echo [ERROR] Body dependencies are still unavailable after installation.
   exit /b 1
 )
 echo Starting standalone PandoraBOX Body Runtime...

@@ -38,6 +38,10 @@ from .sources import (
     resolve_source,
 )
 from .core import EmbodiedWorldModel, get_embodied_worldmodel
+from ..mmwave_radar import (
+    HttpMmWaveRadarSource, MmWaveFrame, MmWaveRadarSource, MmWaveTarget,
+    SimulatedMmWaveRadarSource, frame_from_payload,
+)
 
 __all__ = [
     "Action", "AnchorLieu", "AnchorObjet", "AnchorTrajectoire", "BodyState",
@@ -51,4 +55,6 @@ __all__ = [
     "RobotHttpSource", "SimRobotSource", "HAFallbackSource", "NullSource",
     "resolve_source",
     "EmbodiedWorldModel", "get_embodied_worldmodel",
+    "MmWaveTarget", "MmWaveFrame", "MmWaveRadarSource",
+    "HttpMmWaveRadarSource", "SimulatedMmWaveRadarSource", "frame_from_payload",
 ]

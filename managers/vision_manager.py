@@ -982,6 +982,21 @@ class StreamingVisionManager:
             with self.frame_lock:
                 self.current_frame = test_frame.copy()
 
+            # Seed the UI with the first successful frame.  Otherwise the
+            # camera can be reported as active while the browser still sees
+            # the placeholder until the capture loop gets its first cycle.
+            try:
+                _, first_buffer = cv2.imencode(
+                    ".jpg", test_frame, [cv2.IMWRITE_JPEG_QUALITY, 70]
+                )
+                with self.encode_lock:
+                    self.last_encoded_frame = base64.b64encode(first_buffer).decode("utf-8")
+                    self.last_clean_encoded_frame = self.last_encoded_frame
+                    self.frame_sequence = max(1, self.frame_sequence)
+                    self.frame_updated_at = time.time()
+            except Exception as encode_error:
+                logger.warning(f"Initial camera frame encoding failed: {encode_error}")
+
             self.camera_active = True
             self.stop_event.clear()
 

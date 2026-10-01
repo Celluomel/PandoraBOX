@@ -16,6 +16,7 @@ robot telemetry without them (the world model simply reports unavailable).
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import math
@@ -36,6 +37,7 @@ from body_runtime_host.coordinate_frames import (
     north_up_svg_rotation_degrees,
 )
 from body_runtime_host.deployment import build_bundle
+from body_runtime_host.local_camera import LocalCameraCapture
 
 LOG = logging.getLogger("lumina.body")
 ROOT = Path(__file__).resolve().parents[1]
@@ -52,6 +54,7 @@ FNK0031_MODULE_CATALOG = {
     "odometry": {"label": "Wheel/servo odometry", "kind": "localization", "source": "robot"},
     "actuators": {"label": "FNK0031 servo actuators", "kind": "actuation", "source": "robot"},
     "gripper": {"label": "Gripper", "kind": "manipulation", "source": "robot"},
+    "mmwave_radar": {"label": "mmWave radar", "kind": "range", "source": "robot"},
 }
 
 
@@ -110,6 +113,14 @@ def _http_post(url: str, payload: dict, token: str = "", timeout: float = 5.0):
         return json.loads(raw) if raw else None
 
 
+def _payload_bool(value, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
 class BodyHost:
     def __init__(self) -> None:
         self.stop_event = threading.Event()
@@ -142,6 +153,17 @@ class BodyHost:
         self._worldmodel_evaluation_status: dict = self._load_latest_worldmodel_evaluation()
         self._robot_sim = None
         self._robot_sim_lock = threading.RLock()
+        self._local_camera: LocalCameraCapture | None = None
+        self._local_camera_lock = threading.RLock()
+        self._ros2_bridge = None
+        self._workflow_manager = None
+
+    @property
+    def workflow_manager(self):
+        if self._workflow_manager is None:
+            from body_runtime_host.workflow_manager import WorkflowManager
+            self._workflow_manager = WorkflowManager(self, ROOT / "data" / "body" / "workflows.json")
+        return self._workflow_manager
 
     # ── config ──────────────────────────────────────────────────────────────
 
@@ -200,6 +222,226 @@ class BodyHost:
                 safe[key] = f"@env:{key}"
         CONFIG_PATH.write_text(json.dumps(safe, indent=2, ensure_ascii=False), encoding="utf-8")
 
+    def ros2_settings(self) -> dict:
+        enabled = bool(self.value("BODY_ROS2_ENABLED", False))
+        bridge = self._ros2_bridge
+        status = bridge.status() if bridge is not None else self._ros2_probe_status()
+        return {
+            "enabled": enabled,
+            "publish_topic": str(self.value("BODY_ROS2_PUBLISH_TOPIC", "/body/observations")),
+            "input_topic": str(self.value("BODY_ROS2_INPUT_TOPIC", "/body/observations_in")),
+            "status": status,
+            "contract": "pandorabox.body_observation.v1",
+            "actuation_enabled": False,
+        }
+
+    @staticmethod
+    def _ros2_probe_status() -> dict:
+        import importlib.util
+        available = importlib.util.find_spec("rclpy") is not None
+        return {
+            "state": "ready-to-enable" if available else "not-installed",
+            "available": available,
+            "ros_distro": os.environ.get("ROS_DISTRO", ""),
+            "domain_id": os.environ.get("ROS_DOMAIN_ID", "0"),
+            "last_error": "" if available else "rclpy is not available in this ROS-sourced environment",
+            "physical_actuation": "not exposed by this bridge",
+            "components": {
+                "body_navigation": {"state": "available", "backend": "Body LocalRoutePlanner + safety gate"},
+                "task_graph": {"state": "available", "backend": "Body task sequencing and action preconditions"},
+                "arm_adapter": {"state": "not-configured", "backend": "requires a robot-specific driver and feedback contract"},
+                "ros2_interop": {"state": "available" if available else "unavailable", "backend": "observation bridge only; no motor commands"},
+            },
+        }
+
+    def _accept_ros2_observation(self, observation: dict) -> None:
+        subject = str(observation.get("subject") or "")[:160]
+        if not subject:
+            return
+        now = time.time()
+        try:
+            confidence = max(0.0, min(1.0, float(observation.get("confidence", 1.0) or 0.0)))
+            observed_at = float(observation.get("observed_at") or now)
+        except (TypeError, ValueError):
+            confidence, observed_at = 0.0, now
+        entry = {
+            "entity_id": f"ros2.{subject}",
+            "source": str(observation.get("source") or "ros2")[:80],
+            "kind": str(observation.get("kind") or "sensor")[:80],
+            "subject": subject,
+            "value": observation.get("value"),
+            "unit": str(observation.get("unit") or "")[:40],
+            "confidence": confidence,
+            "observed_at": observed_at,
+            "provenance": observation.get("provenance") if isinstance(observation.get("provenance"), dict) else {"transport": "ros2"},
+        }
+        self.latest[entry["entity_id"]] = entry
+        self._bridge_put(entry)
+
+    def update_ros2_settings(self, payload: dict) -> dict:
+        publish_topic = str(payload.get("publish_topic") or "/body/observations").strip()
+        input_topic = str(payload.get("input_topic") or "/body/observations_in").strip()
+        for topic in (publish_topic, input_topic):
+            if not topic.startswith("/") or any(part in {"", ".", ".."} for part in topic.split("/")[1:]):
+                raise ValueError("ROS 2 topics must be absolute names, e.g. /body/observations")
+        if publish_topic == input_topic:
+            raise ValueError("ROS 2 input and output topics must differ to prevent observation loops")
+        self.config.update({
+            "BODY_ROS2_ENABLED": _payload_bool(payload.get("enabled")),
+            "BODY_ROS2_PUBLISH_TOPIC": publish_topic,
+            "BODY_ROS2_INPUT_TOPIC": input_topic,
+        })
+        self.save_config()
+        persisted = self._load_config()
+        if bool(persisted.get("BODY_ROS2_ENABLED", False)) != bool(self.config["BODY_ROS2_ENABLED"]):
+            raise OSError("ROS 2 settings were not persisted")
+        self._stop_ros2_bridge()
+        if self.config["BODY_ROS2_ENABLED"]:
+            self._start_ros2_bridge()
+        return {"ok": True, "persisted": True, **self.ros2_settings()}
+
+    def _start_ros2_bridge(self) -> dict:
+        from .ros2_bridge import Ros2ObservationBridge
+        if self._ros2_bridge is None:
+            self._ros2_bridge = Ros2ObservationBridge(
+                self._accept_ros2_observation,
+                publish_topic=str(self.value("BODY_ROS2_PUBLISH_TOPIC", "/body/observations")),
+                input_topic=str(self.value("BODY_ROS2_INPUT_TOPIC", "/body/observations_in")),
+            )
+        return self._ros2_bridge.start()
+
+    def _stop_ros2_bridge(self) -> None:
+        if self._ros2_bridge is not None:
+            self._ros2_bridge.stop()
+
+    def camera_settings(self) -> dict:
+        startup_enabled = bool(self.value("BODY_CAMERA_STARTUP_ENABLED", False))
+        with self._local_camera_lock:
+            capture_status = self._local_camera.status() if self._local_camera is not None else {
+                "status": "disabled" if not startup_enabled else "not_started",
+                "available": False,
+                "last_error": "",
+            }
+        return {
+            "interval": max(1.0 / 60.0, float(self.value("BODY_CAMERA_INTERVAL", 0.5) or 0.5)),
+            "width": max(640, int(self.value("BODY_CAMERA_WIDTH", 640) or 640)),
+            "height": max(480, int(self.value("BODY_CAMERA_HEIGHT", 480) or 480)),
+            "profile": str(self.value("BODY_CAMERA_PROFILE", "low_body_front") or "low_body_front"),
+            "startup_enabled": startup_enabled,
+            "device_index": max(0, int(self.value("BODY_CAMERA_DEVICE_INDEX", 0) or 0)),
+            "fps": round(1.0 / max(1.0 / 60.0, float(self.value("BODY_CAMERA_INTERVAL", 0.5) or 0.5)), 2),
+            "brain_settings": {
+                "autostart": startup_enabled,
+                "camera_id": max(0, int(self.value("BODY_CAMERA_DEVICE_INDEX", 0) or 0)),
+                "fps": round(1.0 / max(1.0 / 60.0, float(self.value("BODY_CAMERA_INTERVAL", 0.5) or 0.5)), 2),
+                "resolution": f"{max(640, int(self.value('BODY_CAMERA_WIDTH', 640) or 640))}x{max(480, int(self.value('BODY_CAMERA_HEIGHT', 480) or 480))}",
+                "vlm_model": str(self.value("BODY_LLM_MODEL", "") or ""),
+            },
+            "vision_mode": str(self.value("BODY_VISION_MODE", "keyword") or "keyword"),
+            "vision_llm_mode": str(self.value("BODY_VISION_LLM_MODE", "separate") or "separate"),
+            "vlm_model": str(self.value("BODY_LLM_MODEL", "") or ""),
+            "face_detection_enabled": bool(self.value("BODY_FACE_DETECTION_ENABLED", False)),
+            "face_detection_status": "configured" if bool(self.value("BODY_FACE_DETECTION_ENABLED", False)) else "disabled",
+            "capture": capture_status,
+        }
+
+    def _camera_provider(self) -> dict:
+        with self._local_camera_lock:
+            camera = self._local_camera
+            return camera.latest() if camera is not None else {}
+
+    def camera_frame(self) -> dict:
+        frame = self._camera_provider()
+        if frame:
+            return {"available": True, "camera": frame}
+        settings = self.camera_settings()
+        return {
+            "available": False,
+            "camera": {},
+            "status": settings.get("capture", {}).get("status", "disabled"),
+            "error": settings.get("capture", {}).get("last_error", ""),
+        }
+
+    def _configure_local_camera(self, start: bool | None = None) -> dict:
+        settings = self.camera_settings()
+        should_start = settings["startup_enabled"] if start is None else bool(start)
+        with self._local_camera_lock:
+            if self._local_camera is None:
+                self._local_camera = LocalCameraCapture(
+                    device_index=settings["device_index"], interval=settings["interval"],
+                    width=settings["width"], height=settings["height"], profile=settings["profile"],
+                )
+            else:
+                self._local_camera.reconfigure(
+                    device_index=settings["device_index"], interval=settings["interval"],
+                    width=settings["width"], height=settings["height"], profile=settings["profile"],
+                )
+            result = self._local_camera.start() if should_start else self._local_camera.stop()
+        return result
+
+    def update_camera_settings(self, payload: dict) -> dict:
+        # Preserve a manually running stream while applying live capture
+        # changes. Startup preference must not unexpectedly stop it.
+        with self._local_camera_lock:
+            was_capturing = bool(
+                self._local_camera is not None
+                and self._local_camera.status().get("status") in {"capturing", "starting"}
+            )
+        self.config["BODY_CAMERA_INTERVAL"] = max(1.0 / 60.0, min(30.0, float(payload.get("interval", 0.5) or 0.5)))
+        if payload.get("fps") is not None:
+            self.config["BODY_CAMERA_INTERVAL"] = 1.0 / max(1.0, min(60.0, float(payload.get("fps") or 5)))
+        self.config["BODY_CAMERA_WIDTH"] = max(640, min(3840, int(payload.get("width", 640) or 640)))
+        self.config["BODY_CAMERA_HEIGHT"] = max(480, min(2160, int(payload.get("height", 480) or 480)))
+        profile = str(payload.get("profile", "low_body_front") or "low_body_front").strip().lower()
+        if profile not in {"low_body_front", "level_body_front", "high_body_front"}:
+            raise ValueError("unsupported camera profile")
+        self.config["BODY_CAMERA_PROFILE"] = profile
+        if payload.get("vision_mode") is not None:
+            self.config["BODY_VISION_MODE"] = str(payload.get("vision_mode") or "keyword")
+        if payload.get("vision_llm_mode") is not None:
+            self.config["BODY_VISION_LLM_MODE"] = str(payload.get("vision_llm_mode") or "separate")
+        if payload.get("vlm_model") is not None:
+            self.config["BODY_LLM_MODEL"] = str(payload.get("vlm_model") or "").strip()
+        self.config["BODY_CAMERA_STARTUP_ENABLED"] = _payload_bool(
+            payload.get("startup_enabled"),
+            _payload_bool(self.value("BODY_CAMERA_STARTUP_ENABLED", False)),
+        )
+        self.config["BODY_CAMERA_DEVICE_INDEX"] = max(0, int(payload.get("device_index", self.value("BODY_CAMERA_DEVICE_INDEX", 0)) or 0))
+        self.config["BODY_FACE_DETECTION_ENABLED"] = _payload_bool(payload.get("face_detection_enabled"))
+        self.save_config()
+        self._configure_local_camera(
+            start=was_capturing or _payload_bool(self.config["BODY_CAMERA_STARTUP_ENABLED"])
+        )
+        if self._worldmodel is not None:
+            self.reload_worldmodel_source()
+        return {"ok": True, **self.camera_settings()}
+
+    def test_body_vlm(self) -> dict:
+        """Run one synchronous Body VLM interpretation on the latest scene."""
+        wm = self.worldmodel
+        if wm is None or wm.source is None:
+            return {"ok": False, "error": "world model or sensor source unavailable"}
+        try:
+            obs = wm.source.observe()
+            body = wm.source.body_state()
+            packet = wm._scene_packet(obs, body, {}, {})
+            result = wm.scene_interpreter.interpret_now(packet)
+            interpreted = result.get("status") == "interpreted"
+            grounding = (result.get("semantic_scene") or {}).get("grounding") or {}
+            return {
+                "ok": interpreted,
+                "model": result.get("model") or self.body_llm_settings().get("model"),
+                "status": result.get("status"),
+                "error": result.get("error"),
+                "grounding": grounding,
+                "interpretation": result.get("interpretation"),
+                "semantic_scene": result.get("semantic_scene"),
+                "result": result,
+            }
+        except Exception as exc:
+            LOG.exception("Body VLM test failed")
+            return {"ok": False, "error": str(exc)[:300]}
+
     def body_llm_settings(self) -> dict:
         return {
             "enabled": bool(self.value("BODY_LLM_ENABLED", False)),
@@ -208,6 +450,7 @@ class BodyHost:
             "interval": float(self.value("BODY_LLM_INTERVAL", 8.0) or 8.0),
             "timeout": float(self.value("BODY_LLM_TIMEOUT", 8.0) or 8.0),
             "max_tokens": int(self.value("BODY_LLM_MAX_TOKENS", 360) or 360),
+            "context_window": int(self.value("BODY_LLM_CONTEXT_WINDOW", 50000) or 50000),
             "focus_range_m": float(self.value("BODY_LLM_FOCUS_RANGE_M", 5.0) or 5.0),
             "json_mode": bool(self.value("BODY_LLM_JSON_MODE", True)),
             "embedding_model": str(self.value("BODY_LLM_EMBEDDING_MODEL", "") or ""),
@@ -324,6 +567,7 @@ class BodyHost:
             "BODY_LLM_INTERVAL": max(2.0, float(payload.get("interval", 8.0) or 8.0)),
             "BODY_LLM_TIMEOUT": max(1.0, float(payload.get("timeout", 8.0) or 8.0)),
             "BODY_LLM_MAX_TOKENS": max(64, min(2048, int(payload.get("max_tokens", 360) or 360))),
+            "BODY_LLM_CONTEXT_WINDOW": max(2048, min(131072, int(payload.get("context_window", 50000) or 50000))),
             "BODY_LLM_JSON_MODE": bool(payload.get("json_mode", True)),
             "BODY_LLM_EMBEDDING_MODEL": str(payload.get("embedding_model", "text-embedding-nomic-embed-text-v1.5") or "").strip(),
             "BODY_LLM_EMBEDDING_THRESHOLD": max(0.0, min(1.0, float(payload.get("embedding_threshold", 0.78) or 0.78))),
@@ -347,7 +591,7 @@ class BodyHost:
         wm = self._worldmodel
         if wm is not None:
             with wm._lock:
-                for key in ("BODY_LLM_ENABLED", "BODY_LLM_BASE_URL", "BODY_LLM_MODEL", "BODY_LLM_INTERVAL", "BODY_LLM_TIMEOUT", "BODY_LLM_MAX_TOKENS", "BODY_LLM_JSON_MODE", "BODY_LLM_EMBEDDING_MODEL", "BODY_LLM_EMBEDDING_THRESHOLD", "BODY_LLM_EMBEDDING_TIMEOUT"):
+                for key in ("BODY_LLM_ENABLED", "BODY_LLM_BASE_URL", "BODY_LLM_MODEL", "BODY_LLM_INTERVAL", "BODY_LLM_TIMEOUT", "BODY_LLM_MAX_TOKENS", "BODY_LLM_CONTEXT_WINDOW", "BODY_LLM_JSON_MODE", "BODY_LLM_EMBEDDING_MODEL", "BODY_LLM_EMBEDDING_THRESHOLD", "BODY_LLM_EMBEDDING_TIMEOUT"):
                     wm._cfg[key] = self.config.get(key)
                 wm._cfg["BODY_LLM_TOKEN"] = self.value("BODY_LLM_TOKEN", "")
                 wm.scene_interpreter._config = wm._cfg
@@ -884,6 +1128,28 @@ class BodyHost:
             LOG.exception("Video/LiDAR replay failed")
             return {"status": "error", "error": str(exc), "video_path": video_path}
 
+    def upload_video_replay(self, payload: dict | None = None) -> dict:
+        """Store a browser-selected video inside the Body replay workspace."""
+        payload = payload if isinstance(payload, dict) else {}
+        filename = Path(str(payload.get("filename") or "capture.mp4")).name
+        encoded = str(payload.get("content_base64") or "")
+        if not encoded:
+            return {"status": "error", "error": "video content is required"}
+        try:
+            raw = base64.b64decode(encoded, validate=True)
+        except (ValueError, TypeError) as exc:
+            return {"status": "error", "error": f"invalid video encoding: {exc}"}
+        max_bytes = 256 * 1024 * 1024
+        if len(raw) > max_bytes:
+            return {"status": "error", "error": "video exceeds the 256 MB upload limit"}
+        replay_dir = ROOT / "data" / "body" / "replays" / "uploads"
+        replay_dir.mkdir(parents=True, exist_ok=True)
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        destination = replay_dir / f"{stamp}-{filename}"
+        destination.write_bytes(raw)
+        LOG.info("Stored browser-selected video replay %s (%d bytes)", destination, len(raw))
+        return {"status": "uploaded", "video_path": str(destination), "filename": filename, "bytes": len(raw)}
+
     def start_worldmodel_evaluation(self, payload: dict | None = None) -> dict:
         """Run the generic shuffled-scene benchmark outside the Body loop."""
         payload = payload if isinstance(payload, dict) else {}
@@ -945,6 +1211,8 @@ class BodyHost:
             "fnk0050_wifi": "BODY_PLUGIN_FNK0050_ENABLED",
             "sim_robot": "BODY_PLUGIN_SIM_ROBOT_ENABLED",
             "world_model": "BODY_WORLDMODEL_ENABLED",
+            "mmwave_radar": "BODY_PLUGIN_MMWAVE_RADAR_ENABLED",
+            "pc_camera": "BODY_CAMERA_STARTUP_ENABLED",
         }
         field = fields.get(plugin_id)
         if not field:
@@ -963,6 +1231,8 @@ class BodyHost:
             # operator action through POST /worldmodel/run.
             if not enabled and self._worldmodel is not None:
                 self._worldmodel.stop()
+        elif plugin_id == "pc_camera":
+            self._configure_local_camera(start=enabled)
         elif self._worldmodel is not None:
             self.reload_worldmodel_source()
         return {
@@ -1155,6 +1425,8 @@ class BodyHost:
             LOG.debug("World-model perception bridge update failed", exc_info=True)
 
     def _bridge_put(self, entry: dict) -> None:
+        if self._ros2_bridge is not None:
+            self._ros2_bridge.publish(entry)
         message = {"type": "observation", "observation": entry}
         entity_id = str(entry.get("entity_id") or entry.get("subject") or "observation")
         if not self._bridge_connected.is_set():
@@ -1439,7 +1711,14 @@ class BodyHost:
         mode = str(model_config.get("mode") or "sim").strip().lower()
         if mode == "sim":
             try:
-                return SimRobotSource(camera_interval=float(self.value("BODY_CAMERA_INTERVAL", 0.5) or 0.5))
+                return SimRobotSource(
+                    camera_interval=float(self.value("BODY_CAMERA_INTERVAL", 0.5) or 0.5),
+                    mmwave_enabled=bool(self.value("BODY_PLUGIN_MMWAVE_RADAR_ENABLED", True)),
+                    camera_width=int(self.value("BODY_CAMERA_WIDTH", 640) or 640),
+                    camera_height=int(self.value("BODY_CAMERA_HEIGHT", 480) or 480),
+                    camera_profile=str(self.value("BODY_CAMERA_PROFILE", "low_body_front") or "low_body_front"),
+                    camera_provider=self._camera_provider,
+                )
             except TypeError:
                 # Keep compatibility with lightweight test doubles and older
                 # Body plugin implementations that accept no constructor args.
@@ -1450,6 +1729,14 @@ class BodyHost:
 
     def plugins(self) -> list[dict]:
         return [
+            {
+                "id": "pc_camera",
+                "label": "PC camera",
+                "enabled": bool(self.value("BODY_CAMERA_STARTUP_ENABLED", False)),
+                "role": "local webcam capture for Body perception",
+                "settings_url": "/body/camera",
+                "capture": self.camera_settings().get("capture"),
+            },
             {
                 "id": "fnk0031_wifi",
                 "label": "FNK0031 Wi-Fi robot",
@@ -1481,6 +1768,14 @@ class BodyHost:
                 "role": "auxiliary presence cues (not a sensorimetry channel)",
             },
             {
+                "id": "mmwave_radar",
+                "label": "mmWave radar",
+                "enabled": bool(self.value("BODY_PLUGIN_MMWAVE_RADAR_ENABLED", False)),
+                "url": str(self.value("MMWAVE_RADAR_URL", "") or ""),
+                "role": "vendor-neutral metric targets and relative motion",
+                "protocol": str(self.value("MMWAVE_RADAR_PROTOCOL", "http_json") or "http_json"),
+            },
+            {
                 "id": "world_model",
                 "enabled": bool(self.value("BODY_WORLDMODEL_ENABLED", False)),
                 "role": "embodied perception, physical memory and prediction",
@@ -1495,6 +1790,14 @@ class BodyHost:
         if self.http_server is None:
             LOG.error("Body host did not start; refusing to run a second sensor/plugin loop")
             return
+        if bool(self.value("BODY_CAMERA_STARTUP_ENABLED", False)):
+            self._configure_local_camera(start=True)
+        if bool(self.value("BODY_ROS2_ENABLED", False)):
+            ros_status = self._start_ros2_bridge()
+            if ros_status.get("available"):
+                LOG.info("ROS 2 observation bridge enabled (%s -> %s)", ros_status.get("input_topic"), ros_status.get("publish_topic"))
+            else:
+                LOG.warning("ROS 2 bridge enabled but unavailable: %s", ros_status.get("last_error"))
         threads = [threading.Thread(target=self.poll_loop, name="body-sensors", daemon=True)]
         if bool(self.value("BODY_BRIDGE_ENABLED", False)):
             threads.append(threading.Thread(target=self.bridge_loop, name="body-brain-bridge", daemon=True))
@@ -1521,6 +1824,10 @@ class BodyHost:
         if self.http_server is not None:
             self.http_server.shutdown()
             self.http_server.server_close()
+        with self._local_camera_lock:
+            if self._local_camera is not None:
+                self._local_camera.stop()
+        self._stop_ros2_bridge()
         self.stop_robot_sim()
 
     # ── HTTP endpoints ──────────────────────────────────────────────────────
@@ -1573,7 +1880,7 @@ class BodyHost:
 
             def do_GET(self):  # noqa: N802
                 path = self.path.split("?", 1)[0].rstrip("/") or "/"
-                if path in {"", "/", "/body", "/worldmodel"}:
+                if path in {"", "/", "/body", "/worldmodel", "/camera", "/llm", "/robot", "/ros2"}:
                     self._send_html(BODY_GUI_HTML)
                 elif path == "/health":
                     wm = owner._worldmodel
@@ -1584,6 +1891,7 @@ class BodyHost:
                         "bridge_enabled": bool(owner.value("BODY_BRIDGE_ENABLED", False)),
                         "config_path": str(CONFIG_PATH),
                         "robot": owner.robot_status(),
+                        "ros2": owner.ros2_settings(),
                         "plugins": owner.plugins(),
                         "worldmodel": (
                             {"available": True, **wm.status_summary()}
@@ -1591,6 +1899,22 @@ class BodyHost:
                             else {"available": False, "note": "not initialized (BODY_WORLDMODEL_ENABLED or first /worldmodel/* call)"}
                         ),
                     })
+                elif path in {"/ros2/status", "/ros2/settings"}:
+                    self._send(owner.ros2_settings())
+                elif path == "/workflows":
+                    self._send(owner.workflow_manager.list())
+                elif path.startswith("/workflows/"):
+                    parts = path.strip("/").split("/")
+                    workflow_id = parts[1] if len(parts) > 1 else ""
+                    try:
+                        if len(parts) == 3 and parts[2] == "executions":
+                            self._send(owner.workflow_manager.executions(workflow_id))
+                        elif len(parts) == 2:
+                            self._send(owner.workflow_manager.get(workflow_id))
+                        else:
+                            self._send({"error": "not found"}, 404)
+                    except KeyError:
+                        self._send({"error": "workflow not found"}, 404)
                 elif path == "/plugins":
                     self._send({"plugins": owner.plugins()})
                 elif path == "/plugins/home_assistant/settings":
@@ -1626,6 +1950,10 @@ class BodyHost:
                     self._send(wm.scene_interpreter.status() if wm is not None else {"status": "unavailable"})
                 elif path == "/body/llm":
                     self._send(owner.body_llm_settings())
+                elif path == "/body/camera":
+                    self._send(owner.camera_settings())
+                elif path == "/body/camera/frame":
+                    self._send(owner.camera_frame())
                 elif path == "/body/llm/models":
                     self._send(owner.body_llm_models())
                 elif path == "/observations":
@@ -1716,7 +2044,20 @@ class BodyHost:
 
             def do_POST(self):  # noqa: N802
                 path = self.path.split("?", 1)[0].rstrip("/")
-                if path.startswith("/plugins/"):
+                if path == "/workflows":
+                    try:
+                        self._send({"ok": True, "workflow": owner.workflow_manager.save(self._read_body())})
+                    except (ValueError, OSError) as exc:
+                        self._send({"ok": False, "error": str(exc)}, 400)
+                elif path.startswith("/workflows/") and path.endswith("/execute"):
+                    workflow_id = path[len("/workflows/"):-len("/execute")].strip("/")
+                    try:
+                        self._send(owner.workflow_manager.execute(workflow_id))
+                    except KeyError:
+                        self._send({"error": "workflow not found"}, 404)
+                    except (ValueError, OSError) as exc:
+                        self._send({"status": "failed", "error": str(exc)}, 400)
+                elif path.startswith("/plugins/"):
                     plugin_id = path.rsplit("/", 1)[-1]
                     body = self._read_body()
                     if path == "/plugins/home_assistant/settings":
@@ -1747,6 +2088,18 @@ class BodyHost:
                             self._send({"error": str(exc)}, 400)
                 elif path == "/body/llm":
                     self._send(owner.update_body_llm_settings(self._read_body()))
+                elif path == "/ros2/settings":
+                    try:
+                        self._send(owner.update_ros2_settings(self._read_body()))
+                    except (OSError, ValueError) as exc:
+                        self._send({"ok": False, "error": str(exc)}, 400)
+                elif path == "/body/camera":
+                    try:
+                        self._send(owner.update_camera_settings(self._read_body()))
+                    except (TypeError, ValueError) as exc:
+                        self._send({"ok": False, "error": str(exc)}, 400)
+                elif path == "/body/camera/test-vlm":
+                    self._send(owner.test_body_vlm())
                 elif path == "/deployment/check":
                     self._send(owner.deployment_check(self._read_body()))
                 elif path == "/deployment/push":
@@ -1788,6 +2141,8 @@ class BodyHost:
                     self._send(wm.reset(clear_memory=bool(body.get("clear_memory", False))))
                 elif path == "/worldmodel/evaluation/run":
                     self._send(owner.start_worldmodel_evaluation(self._read_body()))
+                elif path == "/worldmodel/perception/video-upload":
+                    self._send(owner.upload_video_replay(self._read_body()))
                 elif path == "/worldmodel/perception/video-replay":
                     self._send(owner.run_video_lidar_replay(self._read_body()))
                 elif path == "/worldmodel/config":
@@ -1820,6 +2175,15 @@ class BodyHost:
                     plan_id = path[len("/worldmodel/plans/"):-len("/cancel")].strip("/")
                     payload = self._read_body()
                     self._send(wm.cancel_plan(plan_id, str(payload.get("reason") or "cancelled by operator")))
+                else:
+                    self._send({"error": "not found"}, 404)
+
+            def do_DELETE(self):  # noqa: N802
+                path = self.path.split("?", 1)[0].rstrip("/")
+                if path.startswith("/workflows/"):
+                    workflow_id = path[len("/workflows/"):].strip("/")
+                    removed = owner.workflow_manager.delete(workflow_id)
+                    self._send({"ok": removed}, 200 if removed else 404)
                 else:
                     self._send({"error": "not found"}, 404)
 

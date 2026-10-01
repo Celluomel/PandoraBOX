@@ -37,6 +37,8 @@ from typing import Any, Dict, List, Optional, Tuple
 from .sim_world import SimulatedRoom
 from .spatial import LocalMapReference, geo_fix
 from .types import Action, BodyState, Observation, Outcome, SceneObject
+from ..mmwave_radar import SimulatedMmWaveRadarSource
+from .virtual_camera import render_camera
 
 logger = logging.getLogger(__name__)
 
@@ -104,10 +106,19 @@ class SimRobotSource:
         room: Optional[SimulatedRoom] = None,
         camera_interval: float = 0.5,
         simulation_dt_s: float = 1.0,
+        mmwave_enabled: bool = True,
+        camera_width: int = 640,
+        camera_height: int = 480,
+        camera_profile: str = "low_body_front",
+        camera_provider=None,
     ):
         self.room = room or SimulatedRoom(simulation_dt_s=simulation_dt_s)
         self.last_error = ""
         self.camera_interval = max(0.05, float(camera_interval or 0.5))
+        self.camera_width = max(640, int(camera_width or 640))
+        self.camera_height = max(480, int(camera_height or 480))
+        self.camera_profile = str(camera_profile or "low_body_front")
+        self.camera_provider = camera_provider
         self._last_camera_at = 0.0
         self._last_camera: Dict[str, Any] = {}
         self._last_pose: Optional[Tuple[float, float]] = None
@@ -120,6 +131,10 @@ class SimRobotSource:
         self._last_relative_speed = 0.0
         self._last_closing_speed = 0.0
         self._last_effective_camera_interval = self.camera_interval
+        self.mmwave_radar = (
+            SimulatedMmWaveRadarSource(self.room._scene, self.room.body_state)
+            if mmwave_enabled else None
+        )
 
     def _effective_camera_interval(self, now: float) -> float:
         """Sample faster when the simulated Body itself is moving faster.
@@ -197,9 +212,27 @@ class SimRobotSource:
         interval = self._effective_camera_interval(now)
         capture = not self._last_camera or now - self._last_camera_at >= interval
         observation = self.room.observe(include_camera=capture)
-        if capture and observation.modalities.get("camera"):
+        external_camera = self.camera_provider() if callable(self.camera_provider) else {}
+        if external_camera:
+            # A local PC camera is an independent producer. Reuse its latest
+            # frame even when the world-model cadence does not request a new
+            # simulation render, so the GUI never falls back to virtual imagery.
+            observation.modalities["camera"] = external_camera
+        elif capture:
+            body = self.room.body_state()
+            observation.modalities["camera"] = render_camera(
+                body, observation.scene, width=self.camera_width,
+                height=self.camera_height, profile=self.camera_profile,
+                frame_id=(observation.modalities.get("camera") or {}).get("frame_id"),
+            )
+        # mmWave is a secondary, vendor-neutral modality. It is sampled with
+        # every Body observation so dynamic targets remain synchronized with
+        # the pose and LiDAR frame without becoming the navigation authority.
+        if self.mmwave_radar is not None:
+            observation.modalities["mmwave_radar"] = self.mmwave_radar.read().as_dict()
+        if (capture or external_camera) and observation.modalities.get("camera"):
             self._last_camera = dict(observation.modalities["camera"])
-            self._last_camera["captured_at"] = now
+            self._last_camera.setdefault("captured_at", now)
             self._last_camera["motion_speed"] = round(self._last_motion_speed, 4)
             self._last_camera["angular_speed_rad_s"] = round(self._last_angular_speed, 4)
             self._last_camera["heading_deg"] = round(math.degrees(float(self.room.body_state().orientation)), 3)
@@ -217,7 +250,12 @@ class SimRobotSource:
         if action.type == "reset":
             self.room.reset()
             return self.observe(), Outcome(kind="success", reward=0.0, description="sim robot reset")
-        return self.room.step(action)
+        # Keep every actuator result on the same sensor pipeline as passive
+        # observations.  ``room.step`` returns the physical outcome, but its
+        # raw observation does not include the camera/radar modalities owned
+        # by this source.
+        _observation, outcome = self.room.step(action)
+        return self.observe(), outcome
 
     def execute_authorized(self, action: Action) -> Tuple[Observation, Outcome]:
         return self.execute(action)

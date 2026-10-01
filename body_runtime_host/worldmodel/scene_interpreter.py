@@ -316,6 +316,19 @@ class BodySceneInterpreter:
             self._last_submit = now
             self._future = self._executor.submit(self._interpret, packet)
 
+    def interpret_now(self, packet: Dict[str, Any]) -> Dict[str, Any]:
+        """Run one explicit diagnostic interpretation and publish its result.
+
+        The Body VLM test is a user-triggered diagnostic, so it must be visible
+        through the same status endpoint as the background interpreter.  This
+        also keeps the UI from showing an old ``No interpretation yet`` value
+        after a successful test.
+        """
+        result = self._interpret(packet)
+        with self._lock:
+            self._latest = dict(result)
+        return result
+
     def _error(self, message: str) -> Dict[str, Any]:
         return {
             "status": "error",
@@ -487,7 +500,17 @@ class BodySceneInterpreter:
         model = str(self._config.get("BODY_LLM_MODEL") or "").strip()
         if not model:
             return self._error("BODY_LLM_MODEL is not configured")
-        prompt_packet = dict(packet)
+        # Keep the provider prompt compact.  The full perception frame is
+        # still exposed through the Body API, but sending it here duplicates
+        # the same LiDAR, projections and fusion data several times.  The
+        # camera image is attached separately below as a vision part.
+        prompt_packet = {
+            key: packet.get(key)
+            for key in ("timestamp", "frame_id", "contract", "source", "confidence", "body", "objects", "motion", "navigation")
+            if key in packet
+        }
+        for bulky_key in ("perception_frame", "vision_2d", "lidar_3d", "sensor_fusion", "quality"):
+            prompt_packet.pop(bulky_key, None)
         if packet.get("visual_blind"):
             # Evaluation mode: the image and LiDAR are the evidence. The
             # simulator's object list remains outside the prompt for scoring.
@@ -512,6 +535,15 @@ class BodySceneInterpreter:
         camera_meta["image_attached"] = bool(camera_image)
         camera_meta["depth_attached"] = bool(depth_image)
         modalities["camera"] = camera_meta
+        lidar = dict(modalities.get("lidar") or {})
+        points = [point for point in lidar.get("points") or [] if isinstance(point, dict)]
+        if len(points) > 96:
+            # Preserve the nearest returns first; the full cloud remains in
+            # the Body perception API and is not needed for semantic captioning.
+            points.sort(key=lambda point: self._number(point.get("range_m"), float("inf")))
+            lidar["points"] = points[:96]
+            lidar["points_truncated"] = len(points) - 96
+        modalities["lidar"] = lidar
         if packet.get("visual_blind"):
             # Do not leak simulator identities through the derived projections.
             # The vision model must infer them from pixels and unlabeled ranges.
@@ -553,6 +585,15 @@ class BodySceneInterpreter:
             "label derived projections as inferred. Do not invent objects, coordinates, or completion. "
             "This is advisory perception; never issue actuator commands.\n\n"
             + json.dumps(prompt_packet, ensure_ascii=False, separators=(",", ":"))
+        )
+        logger.info(
+            "[BodyVLM] prompt model=%s chars=%d estimated_tokens=%d context_window=%s image=%s lidar_points=%d",
+            model,
+            len(prompt),
+            max(1, len(prompt) // 4),
+            self._config.get("BODY_LLM_CONTEXT_WINDOW", "unknown"),
+            bool(camera_image),
+            len(lidar.get("points") or []),
         )
         user_content: Any = prompt
         camera = packet.get("modalities", {}).get("camera") if isinstance(packet.get("modalities"), dict) else None

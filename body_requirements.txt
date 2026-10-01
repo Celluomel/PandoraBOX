@@ -3,9 +3,15 @@ websockets>=12.0,<16.0
 # Video replay/runtime decoding for Body camera frames and video-derived
 # LiDAR proxy generation. This bundles a compatible ffmpeg executable.
 imageio-ffmpeg>=0.6.0,<1.0
+# Optional local PC webcam capture for the Body Camera page. The Body starts
+# without it and reports an explicit unavailable status until enabled.
+opencv-python>=4.8,<5
 # World model (embodied loop): numpy is required; torch powers the latent
 # dynamics (CPU build is enough).  Both are already present in the main venv,
 # so a separate body venv is optional.
 numpy>=1.24
 torch>=2.0
 mujoco>=3.3,<4
+# Optional ROS 2 integration is provided by the OS ROS installation, not pip.
+# On Ubuntu/VENTUNO Q run ./install_body_ros2.sh (or start with
+# BODY_INSTALL_ROS2=1); the Body GUI reports ROS_DISTRO/rclpy availability.

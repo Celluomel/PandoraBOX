@@ -1309,9 +1309,50 @@ async def settings_page(tab: str = 'llm'):
                         ui.label('Camera').style('font-weight:600;color:#c084fc;font-size:0.9rem')
                         
                         with ui.column().classes('gap-4 mt-3'):
+                            camera_runtime_status = ui.label('').classes('text-xs text-slate-400')
+
+                            async def _on_camera_autostart_change(e):
+                                """Apply the camera switch immediately as well as on next startup."""
+                                enabled = bool(getattr(e, 'value', camera_enabled.value))
+                                config.CAMERA_AUTOSTART = enabled
+                                vision = getattr(state, 'vision', None)
+                                if not vision:
+                                    camera_runtime_status.set_text('Camera manager unavailable')
+                                    ui.notify('Camera manager is unavailable', type='warning', position='top')
+                                    return
+                                try:
+                                    if enabled:
+                                        camera_runtime_status.set_text('Starting camera...')
+                                        started = await asyncio.to_thread(vision.start_camera)
+                                        if not started:
+                                            camera_enabled.value = False
+                                            config.CAMERA_AUTOSTART = False
+                                            save_settings(config, silent=True)
+                                            camera_runtime_status.set_text('Camera could not be opened')
+                                            ui.notify('Camera could not be opened', type='negative', position='top')
+                                            return
+                                        camera_runtime_status.set_text('Camera active now; startup preference enabled')
+                                        save_settings(config, silent=True)
+                                        ui.notify('Camera started', type='positive', position='top')
+                                    else:
+                                        await asyncio.to_thread(vision.stop_camera)
+                                        camera_runtime_status.set_text('Camera stopped now; startup preference disabled')
+                                        save_settings(config, silent=True)
+                                        ui.notify('Camera stopped', type='info', position='top')
+                                except Exception as exc:
+                                    camera_enabled.value = bool(vision.camera_active)
+                                    config.CAMERA_AUTOSTART = bool(vision.camera_active)
+                                    camera_runtime_status.set_text(f'Camera control failed: {exc}')
+                                    ui.notify(f'Camera control failed: {exc}', type='negative', position='top')
+
                             camera_enabled = ui.switch(
-                                'Enable Camera on Startup',
-                                value=getattr(config, 'CAMERA_AUTOSTART', False)
+                                'Enable Camera at Startup (apply now)',
+                                value=bool(getattr(config, 'CAMERA_AUTOSTART', False))
+                            )
+                            camera_enabled.on('update:model-value', _on_camera_autostart_change)
+                            camera_runtime_status.set_text(
+                                'Camera active' if state.vision and state.vision.camera_active
+                                else 'Camera stopped; click the switch to start it now'
                             )
                             
                             with ui.grid(columns=2).classes('w-full gap-4'):
@@ -2696,5 +2737,3 @@ EMO_COLORS = {
     "anxiety":      "#f87171",
     "frustration":  "#dc2626",
 }
-
-

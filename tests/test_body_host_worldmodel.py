@@ -480,7 +480,7 @@ class BodyHostHttpTest(unittest.TestCase):
                 self.assertIn("robot", health)
                 self.assertIn("plugins", health)
                 self.assertIn("worldmodel", health)
-                self.assertEqual(len(health["plugins"]), 5)
+            self.assertEqual(len(health["plugins"]), 6)
 
                 # world model endpoints (lazy build)
                 status = _get(f"{base}/worldmodel/status")
