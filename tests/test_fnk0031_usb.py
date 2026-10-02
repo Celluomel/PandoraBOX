@@ -173,6 +173,40 @@ class FNK0031USBSourceTests(unittest.TestCase):
         self.assertEqual(source.port, "/dev/ttyUSB0")
         self.assertFalse(source.actuation_enabled)
 
+    def test_usb_health_is_forwarded_to_brain_without_enabling_actuation(self):
+        from body_runtime_host.runtime import BodyHost
+
+        host = BodyHost()
+        host.config = {
+            "BODY_PLUGIN_ROBOT_ENABLED": True,
+            "FNK0031_PLATFORM": "usb_serial",
+            "FNK0031_SERIAL_PORT": "/dev/ttyUSB0",
+            "FNK0031_ACTUATION_ENABLED": False,
+            "FNK0031_POLL_INTERVAL": 5,
+        }
+        host.fnk0031_usb_status = lambda: {
+            "connected": False,
+            "configured_port": "/dev/ttyUSB0",
+            "protocol": "fnhr_framed_serial",
+            "transport": "USB serial / stock FNHR framed protocol",
+            "actuation_enabled": False,
+            "pose_available": False,
+            "supply_voltage_v": None,
+            "last_error": "read-only echo timeout",
+            "supported_actions": ["forward"],
+            "unsupported_actions": ["set_action_speed"],
+            "remote_preserved": True,
+        }
+
+        self.assertTrue(host.publish_fnk0031_usb_status())
+        message = host._bridge_latest["robot.fnk0031.usb_status"]
+        value = message["observation"]["value"]
+        self.assertFalse(value["connected"])
+        self.assertFalse(value["actuation_enabled"])
+        self.assertEqual(value["port"], "/dev/ttyUSB0")
+        self.assertEqual(value["last_error"], "read-only echo timeout")
+        self.assertFalse(host.publish_fnk0031_usb_status())
+
 
 if __name__ == "__main__":
     unittest.main()

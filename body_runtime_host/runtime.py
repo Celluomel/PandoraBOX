@@ -140,6 +140,7 @@ class BodyHost:
         self._worldmodel_lock = threading.Lock()
         self._robot_last_ok: float | None = None
         self._robot_last_error = ""
+        self._fnk_usb_last_publish = 0.0
         self._fnk_controller = None
         self._fnk_controller_lock = threading.Lock()
         self._fnk_controller_last: dict | None = None
@@ -987,6 +988,53 @@ class BodyHost:
             "configured_port": port,
             "plugin_enabled": bool(self.value("BODY_PLUGIN_ROBOT_ENABLED", False)),
         }
+
+    def publish_fnk0031_usb_status(self) -> bool:
+        """Forward a read-only FNK USB health snapshot to the Brain bridge."""
+        if (
+            not bool(self.value("BODY_PLUGIN_ROBOT_ENABLED", False))
+            or str(self.value("FNK0031_PLATFORM", "")).lower() != "usb_serial"
+        ):
+            return False
+        interval = max(10.0, float(self.value("FNK0031_POLL_INTERVAL", 5) or 5))
+        now = time.monotonic()
+        if now - self._fnk_usb_last_publish < interval:
+            return False
+        self._fnk_usb_last_publish = now
+        status = self.fnk0031_usb_status()
+        observed_at = time.time()
+        value = {
+            "connected": bool(status.get("connected")),
+            "port": status.get("configured_port") or status.get("port") or "",
+            "protocol": status.get("protocol") or "fnhr_framed_serial",
+            "actuation_enabled": bool(status.get("actuation_enabled")),
+            "pose_available": bool(status.get("pose_available")),
+            "supply_voltage_v": status.get("supply_voltage_v"),
+            "last_error": str(status.get("last_error") or "")[:240],
+        }
+        entry = {
+            "entity_id": "robot.fnk0031.usb_status",
+            "source": "fnk0031_usb",
+            "kind": "hardware_status",
+            "subject": "fnk0031.usb_status",
+            "value": value,
+            "unit": "",
+            "confidence": 1.0,
+            "observed_at": observed_at,
+            "provenance": {
+                "transport": status.get("transport"),
+                "supported_actions": status.get("supported_actions") or [],
+                "unsupported_actions": status.get("unsupported_actions") or [],
+                "remote_preserved": bool(status.get("remote_preserved", True)),
+            },
+        }
+        self.latest[entry["entity_id"]] = entry
+        self._bridge_put(entry)
+        LOG.info(
+            "Forwarded FNK0031 USB health to Brain: connected=%s port=%s actuation=%s",
+            value["connected"], value["port"], value["actuation_enabled"],
+        )
+        return True
 
     def fnk0031_modules(self) -> dict:
         """Return discovered FNK0031/VENTUNO modules and their Body state."""
@@ -1880,6 +1928,7 @@ class BodyHost:
                     LOG.exception("Home Assistant poll failed")
             if bool(self.value("BODY_WORLDMODEL_ENABLED", False)):
                 self.publish_worldmodel_perception()
+            self.publish_fnk0031_usb_status()
             self.stop_event.wait(interval)
 
     # ── Brain bridge (websocket) ────────────────────────────────────────────
