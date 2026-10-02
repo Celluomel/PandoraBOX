@@ -23,7 +23,7 @@ if errorlevel 1 (
 )
 
 :body_venv_ready
-"%BODY_PYTHON%" -c "import websockets, imageio_ffmpeg, cv2, numpy, torch, mujoco" >nul 2>&1
+"%BODY_PYTHON%" -c "import websockets, imageio_ffmpeg, cv2, numpy, torch, mujoco, fastembed" >nul 2>&1
 if errorlevel 1 (
   echo [*] Body dependencies are missing or incomplete. Installing them...
   "%BODY_PYTHON%" -m pip install --upgrade pip
@@ -40,7 +40,7 @@ if errorlevel 1 (
   echo [OK] Body dependencies already installed.
 )
 
-"%BODY_PYTHON%" -c "import websockets, imageio_ffmpeg, cv2, numpy, torch, mujoco" >nul 2>&1
+"%BODY_PYTHON%" -c "import websockets, imageio_ffmpeg, cv2, numpy, torch, mujoco, fastembed" >nul 2>&1
 if errorlevel 1 (
   echo [ERROR] Body dependencies are still unavailable after installation.
   exit /b 1

@@ -557,6 +557,70 @@ class BodyHostHttpTest(unittest.TestCase):
                 brt.CONFIG_PATH = real_config_path
                 brt._load_dotenv = real_dotenv
 
+    def test_runtime_network_binding_is_allowlisted_and_persisted(self):
+        import body_runtime_host.runtime as brt
+        with tempfile.TemporaryDirectory() as tmp:
+            real_config_path = brt.CONFIG_PATH
+            real_dotenv = brt._load_dotenv
+            brt.CONFIG_PATH = Path(tmp) / "config.json"
+            brt.CONFIG_PATH.write_text("{}", encoding="utf-8")
+            brt._load_dotenv = lambda: None
+            host = brt.BodyHost()
+            try:
+                initial = host.runtime_network_settings()
+                self.assertEqual(initial["configured_host"], "127.0.0.1")
+                self.assertFalse(initial["authentication"])
+
+                result = host.update_runtime_network_settings({"bind_host": "0.0.0.0"})
+                self.assertEqual(result["settings"]["configured_host"], "0.0.0.0")
+                self.assertTrue(result["settings"]["restart_required"])
+                self.assertEqual(json.loads(brt.CONFIG_PATH.read_text(encoding="utf-8"))["BODY_HOST"], "0.0.0.0")
+                with self.assertRaises(ValueError):
+                    host.update_runtime_network_settings({"bind_host": "192.168.0.14"})
+            finally:
+                brt.CONFIG_PATH = real_config_path
+                brt._load_dotenv = real_dotenv
+
+    def test_brain_bridge_settings_keep_token_out_of_config_and_enable_live_loop(self):
+        import body_runtime_host.runtime as brt
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            real_root, real_config_path, real_dotenv = brt.ROOT, brt.CONFIG_PATH, brt._load_dotenv
+            brt.ROOT = root
+            brt.CONFIG_PATH = root / "data" / "body" / "config.json"
+            brt.CONFIG_PATH.parent.mkdir(parents=True)
+            brt.CONFIG_PATH.write_text("{}", encoding="utf-8")
+            brt._load_dotenv = lambda: None
+            host = brt.BodyHost()
+            try:
+                with self.assertRaises(ValueError):
+                    host.update_brain_bridge_settings({"enabled": True})
+                with self.assertRaisesRegex(ValueError, "require wss"):
+                    host.update_brain_bridge_settings({
+                        "enabled": True,
+                        "url": "ws://192.168.0.10:8785/api/interface/body/bridge",
+                        "token": "test-bridge-token",
+                    })
+                with self.assertRaisesRegex(ValueError, "control characters"):
+                    host.update_brain_bridge_settings({
+                        "enabled": False,
+                        "url": "wss://brain.example/api/interface/body/bridge",
+                        "token": "unsafe\ntoken",
+                    })
+                result = host.update_brain_bridge_settings({
+                    "enabled": True,
+                    "url": "wss://brain.example/api/interface/body/bridge",
+                    "token": "test-bridge-token",
+                })
+                self.assertTrue(result["enabled"])
+                self.assertTrue(result["token_configured"])
+                stored = json.loads(brt.CONFIG_PATH.read_text(encoding="utf-8"))
+                self.assertEqual(stored["BODY_BRIDGE_TOKEN"], "@env:BODY_BRIDGE_TOKEN")
+                self.assertNotIn("test-bridge-token", brt.CONFIG_PATH.read_text(encoding="utf-8"))
+                self.assertIn("BODY_BRIDGE_TOKEN=test-bridge-token", (root / "body_venv" / ".env").read_text(encoding="utf-8"))
+            finally:
+                brt.ROOT, brt.CONFIG_PATH, brt._load_dotenv = real_root, real_config_path, real_dotenv
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

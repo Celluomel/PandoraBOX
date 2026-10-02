@@ -7,11 +7,13 @@ an actuator command; geometry and the task planner remain authoritative.
 from __future__ import annotations
 
 import json
+import importlib.util
 import logging
 import math
 import re
 import threading
 import time
+from pathlib import Path
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any, Dict, Optional
 from urllib.error import HTTPError
@@ -20,6 +22,7 @@ from urllib.request import Request, urlopen
 from .perception import canonical_category
 
 logger = logging.getLogger(__name__)
+LOCAL_EMBEDDING_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 
 
 def _cosine(left: list[float], right: list[float]) -> float:
@@ -47,6 +50,12 @@ class BodySceneInterpreter:
         self._grounding_precision_sum = 0.0
         self._grounding_rejected = 0
         self._embedding_cache: Dict[str, list[float]] = {}
+        self._local_embedding_engine = None
+        self._local_embedding_engine_model = ""
+        self._embedding_requests = 0
+        self._embedding_accepted = 0
+        self._embedding_rejected = 0
+        self._embedding_last_resolution: Dict[str, Any] = {"status": "not_run"}
         self._latest: Dict[str, Any] = {
             "status": "disabled",
             "model": str(config.get("BODY_LLM_MODEL") or ""),
@@ -114,7 +123,19 @@ class BodySceneInterpreter:
                 self._future = None
             current = dict(self._latest)
             current["enabled"] = self._enabled()
+            if not current.get("updated_at"):
+                current["status"] = "waiting" if self._enabled() else "disabled"
             current["model"] = str(self._config.get("BODY_LLM_MODEL") or "")
+            current["embedding_model"] = self._embedding_model()
+            current["embedding_provider"] = self._embedding_provider()
+            current["local_embedding_available"] = importlib.util.find_spec("fastembed") is not None
+            current["embedding"] = {
+                "requests": self._embedding_requests,
+                "accepted": self._embedding_accepted,
+                "rejected": self._embedding_rejected,
+                "cache_entries": len(self._embedding_cache),
+                "last_resolution": dict(self._embedding_last_resolution),
+            }
             current["in_flight"] = bool(self._future and not self._future.done())
             current["effective_interval"] = round(float(self._last_effective_interval), 3)
             current["cadence_reason"] = self._last_cadence_reason
@@ -144,19 +165,81 @@ class BodySceneInterpreter:
             return 5.0
 
     def _embedding_model(self) -> str:
-        return str(
+        configured = str(
             self._config.get("BODY_LLM_EMBEDDING_MODEL")
             or self._config.get("QUALITY_EMBED_MODEL")
             or ""
         ).strip()
+        if self._embedding_provider() == "local_fastembed" and (
+            not configured or "nomic-embed-text-v1.5" in configured.lower()
+        ):
+            return LOCAL_EMBEDDING_MODEL
+        return configured
+
+    def _embedding_provider(self) -> str:
+        provider = str(self._config.get("BODY_LLM_EMBEDDING_PROVIDER") or "openai").strip().lower()
+        return provider if provider in {"openai", "local_fastembed"} else "openai"
+
+    def _embed(self, texts: list[str], *, model: str, timeout: float, kind: str) -> list[list[float]]:
+        """Run an embedding batch through the selected remote or local provider."""
+        provider = self._embedding_provider()
+        if provider == "local_fastembed":
+            if not importlib.util.find_spec("fastembed"):
+                raise RuntimeError("FastEmbed is not installed in the Body Python environment")
+            with self._lock:
+                if self._local_embedding_engine is None or self._local_embedding_engine_model != model:
+                    from fastembed import TextEmbedding
+
+                    cache_dir = Path(__file__).resolve().parents[2] / "data" / "body" / "embedding_models"
+                    cache_dir.mkdir(parents=True, exist_ok=True)
+                    logger.info(
+                        "[BodyEmbeddings] loading local provider=fastembed model=%s cache=%s threads=2",
+                        model, cache_dir,
+                    )
+                    self._local_embedding_engine = TextEmbedding(
+                        model_name=model, cache_dir=str(cache_dir), threads=2,
+                    )
+                    self._local_embedding_engine_model = model
+            logger.info(
+                "[BodyEmbeddings] request provider=fastembed model=%s kind=%s inputs=%d",
+                model, kind, len(texts),
+            )
+            rows = list(self._local_embedding_engine.embed(texts, batch_size=32))
+            vectors = [[float(value) for value in row] for row in rows]
+            logger.info(
+                "[BodyEmbeddings] response provider=fastembed model=%s kind=%s vectors=%d dimensions=%s",
+                model, kind, len(vectors), len(vectors[0]) if vectors else 0,
+            )
+            return vectors
+
+        url = f"{self._base_url()}/embeddings"
+        logger.info(
+            "[BodyEmbeddings] request provider=openai model=%s endpoint=%s kind=%s inputs=%d",
+            model, url, kind, len(texts),
+        )
+        request = Request(
+            url,
+            data=json.dumps({"model": model, "input": texts}).encode("utf-8"),
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+            method="POST",
+        )
+        with urlopen(request, timeout=timeout) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        rows = sorted(payload.get("data") or [], key=lambda row: int(row.get("index", 0)))
+        vectors = [row.get("embedding") for row in rows if isinstance(row, dict)]
+        logger.info(
+            "[BodyEmbeddings] response provider=openai model=%s kind=%s vectors=%d",
+            model, kind, len(vectors),
+        )
+        return vectors
 
     def _embedding_threshold(self) -> float:
         try:
             return max(0.0, min(1.0, float(
-                self._config.get("BODY_LLM_EMBEDDING_THRESHOLD", 0.78) or 0.78
+                self._config.get("BODY_LLM_EMBEDDING_THRESHOLD", 0.55) or 0.55
             )))
         except (TypeError, ValueError):
-            return 0.78
+            return 0.55
 
     def _semantic_reference_resolver(self, values: list[Any], known: Dict[str, Dict[str, Any]]) -> Dict[str, str]:
         """Resolve only unknown labels through one bounded embedding batch.
@@ -166,12 +249,21 @@ class BodySceneInterpreter:
         measured entities as the only possible targets.
         """
         model = self._embedding_model()
+        provider = self._embedding_provider()
+        nomic_v15 = provider == "openai" and "nomic-embed-text-v1.5" in model.lower()
         unknown = []
         for value in values:
             key = " ".join(str(value or "").lower().split())
             if key and key not in unknown:
                 unknown.append(key)
-        if not model or not unknown or not known:
+        if not model:
+            logger.info("[BodyEmbeddings] skipped reason=model_not_configured")
+            return {}
+        if not unknown or not known:
+            logger.info(
+                "[BodyEmbeddings] skipped reason=%s queries=%d scene_objects=%d",
+                "no_unknown_labels" if not unknown else "no_scene_objects", len(unknown), len(known),
+            )
             return {}
         candidates = []
         candidate_ids = []
@@ -179,9 +271,12 @@ class BodySceneInterpreter:
             text = " ".join(str(value) for value in (
                 object_id, item.get("label"), item.get("kind"), canonical_category(object_id),
             ) if value).strip()
+            if nomic_v15:
+                text = f"search_document: {text}"
             candidates.append(text)
             candidate_ids.append(object_id)
-        cache_key = f"{self._base_url()}::{model}::{tuple(candidates)}"
+        cache_scope = self._base_url() if provider == "openai" else "local"
+        cache_key = f"{provider}::{cache_scope}::{model}::{tuple(candidates)}"
         try:
             timeout = min(8.0, max(1.0, float(self._config.get("BODY_LLM_EMBEDDING_TIMEOUT", 4.0) or 4.0)))
         except (TypeError, ValueError):
@@ -190,83 +285,117 @@ class BodySceneInterpreter:
             with self._lock:
                 missing = [text for text in candidates if f"{cache_key}::{text}" not in self._embedding_cache]
             if missing:
-                logger.info(
-                    "[BodyEmbeddings] request model=%s endpoint=%s kind=candidates inputs=%d",
-                    model, f"{self._base_url()}/embeddings", len(missing),
-                )
-                request = Request(
-                    f"{self._base_url()}/embeddings",
-                    data=json.dumps({"model": model, "input": missing}).encode("utf-8"),
-                    headers={"Content-Type": "application/json", "Accept": "application/json"},
-                    method="POST",
-                )
-                with urlopen(request, timeout=timeout) as response:
-                    payload = json.loads(response.read().decode("utf-8"))
-                logger.info(
-                    "[BodyEmbeddings] response model=%s kind=candidates vectors=%d",
-                    model, len(payload.get("data") or []),
-                )
-                rows = sorted(payload.get("data") or [], key=lambda row: int(row.get("index", 0)))
                 with self._lock:
-                    for text, row in zip(missing, rows):
-                        vector = row.get("embedding") if isinstance(row, dict) else None
-                        if isinstance(vector, list) and vector:
+                    self._embedding_requests += 1
+                vectors = self._embed(missing, model=model, timeout=timeout, kind="candidates")
+                with self._lock:
+                    for text, vector in zip(missing, vectors):
+                        if isinstance(vector, (list, tuple)) and vector:
                             self._embedding_cache[f"{cache_key}::{text}"] = [float(v) for v in vector]
-            query_request = Request(
-                f"{self._base_url()}/embeddings",
-                data=json.dumps({"model": model, "input": unknown}).encode("utf-8"),
-                headers={"Content-Type": "application/json", "Accept": "application/json"},
-                method="POST",
-            )
-            logger.info(
-                "[BodyEmbeddings] request model=%s endpoint=%s kind=queries inputs=%d",
-                model, f"{self._base_url()}/embeddings", len(unknown),
-            )
-            with urlopen(query_request, timeout=timeout) as response:
-                query_payload = json.loads(response.read().decode("utf-8"))
-            logger.info(
-                "[BodyEmbeddings] response model=%s kind=queries vectors=%d",
-                model, len(query_payload.get("data") or []),
-            )
-            query_rows = sorted(query_payload.get("data") or [], key=lambda row: int(row.get("index", 0)))
+            usable_candidates = []
+            with self._lock:
+                for object_id, text in zip(candidate_ids, candidates):
+                    vector = self._embedding_cache.get(f"{cache_key}::{text}")
+                    if vector:
+                        usable_candidates.append((object_id, text, vector))
+            if not usable_candidates:
+                raise ValueError("embedding provider returned no usable vectors for scene objects")
+            with self._lock:
+                self._embedding_requests += 1
+            query_texts = [f"search_query: {value}" for value in unknown] if nomic_v15 else unknown
+            query_vectors = self._embed(query_texts, model=model, timeout=timeout, kind="queries")
             resolved: Dict[str, str] = {}
             threshold = self._embedding_threshold()
-            for value, row in zip(unknown, query_rows):
-                vector = row.get("embedding") if isinstance(row, dict) else None
-                if not isinstance(vector, list):
+            for value, vector in zip(unknown, query_vectors):
+                if not isinstance(vector, list) or not vector:
+                    logger.info(
+                        "[BodyEmbeddings] rejected label=%r reason=missing_query_vector",
+                        value,
+                    )
                     continue
                 scores = []
-                for object_id, text in zip(candidate_ids, candidates):
-                    with self._lock:
-                        candidate_vector = self._embedding_cache.get(f"{cache_key}::{text}")
+                for object_id, _text, candidate_vector in usable_candidates:
                     scores.append((
-                        _cosine([float(v) for v in vector], candidate_vector or []), object_id
+                        _cosine([float(v) for v in vector], candidate_vector), object_id
                     ))
                 if scores:
-                    score, object_id = max(scores)
-                    if score >= threshold:
+                    ranked = sorted(scores, reverse=True)
+                    score, object_id = ranked[0]
+                    runner_up_score = ranked[1][0] if len(ranked) > 1 else 0.0
+                    margin = score - runner_up_score
+                    if score >= threshold and margin >= 0.04:
                         resolved[value] = object_id
+                        with self._lock:
+                            self._embedding_accepted += 1
+                            self._embedding_last_resolution = {
+                                "status": "accepted", "label": value, "target": object_id,
+                                "score": round(score, 4), "threshold": threshold,
+                                "runner_up_score": round(runner_up_score, 4), "margin": round(margin, 4),
+                            }
                         logger.info(
-                            "[BodyEmbeddings] accepted label=%r target=%s score=%.3f threshold=%.3f",
-                            value, object_id, score, threshold,
+                            "[BodyEmbeddings] accepted label=%r target=%s score=%.3f threshold=%.3f runner_up=%.3f margin=%.3f",
+                            value, object_id, score, threshold, runner_up_score, margin,
                         )
                     else:
+                        reason = "below_threshold" if score < threshold else "ambiguous_candidates"
+                        with self._lock:
+                            self._embedding_rejected += 1
+                            self._embedding_last_resolution = {
+                                "status": "rejected", "label": value, "target": object_id,
+                                "score": round(score, 4), "threshold": threshold,
+                                "runner_up_score": round(runner_up_score, 4),
+                                "margin": round(margin, 4), "reason": reason,
+                            }
                         logger.info(
-                            "[BodyEmbeddings] rejected label=%r target=%s score=%.3f threshold=%.3f reason=below_threshold",
-                            value, object_id, score, threshold,
+                            "[BodyEmbeddings] rejected label=%r target=%s score=%.3f threshold=%.3f runner_up=%.3f margin=%.3f reason=%s",
+                            value, object_id, score, threshold, runner_up_score, margin, reason,
                         )
                 else:
+                    with self._lock:
+                        self._embedding_rejected += 1
+                        self._embedding_last_resolution = {
+                            "status": "rejected", "label": value,
+                            "reason": "no_candidate_score", "threshold": threshold,
+                        }
                     logger.info(
                         "[BodyEmbeddings] rejected label=%r score=unavailable reason=no_candidate_score",
                         value,
                     )
             return resolved
         except Exception as exc:
+            with self._lock:
+                self._embedding_last_resolution = {
+                    "status": "unavailable", "model": model, "error": str(exc)[:240],
+                }
             logger.warning(
                 "[BodyEmbeddings] unavailable model=%s endpoint=%s error=%s",
-                model, f"{self._base_url()}/embeddings", str(exc)[:240],
+                model, "local:fastembed" if provider == "local_fastembed" else f"{self._base_url()}/embeddings", str(exc)[:240],
             )
             return {}
+
+    def test_embedding_resolution(
+        self, label: str, known: Dict[str, Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Exercise the configured embedding endpoint against current scene objects."""
+        normalized = " ".join(str(label or "").split())[:160]
+        if not normalized:
+            return {"ok": False, "status": "invalid_input", "error": "Enter a label to test."}
+        if not known:
+            return {"ok": False, "status": "no_scene_objects", "error": "The latest Body scene has no objects."}
+        matches = self._semantic_reference_resolver([normalized], known)
+        with self._lock:
+            detail = dict(self._embedding_last_resolution)
+        detail.update({
+            "ok": detail.get("status") in {"accepted", "rejected"},
+            "model": self._embedding_model(),
+            "provider": self._embedding_provider(),
+            "scene_objects": [
+                {"id": object_id, "label": str(item.get("label") or item.get("kind") or object_id)}
+                for object_id, item in known.items()
+            ],
+            "matched_object_id": matches.get(normalized),
+        })
+        return detail
 
     @staticmethod
     def _camera_view_note(camera: Dict[str, Any]) -> str:

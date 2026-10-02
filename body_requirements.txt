@@ -12,6 +12,9 @@ opencv-python>=4.8,<5
 numpy>=1.24
 torch>=2.0
 mujoco>=3.3,<4
+# Local multilingual text embeddings. FastEmbed uses ONNX Runtime; model
+# weights are downloaded lazily into Body-owned data on first use.
+fastembed>=0.7,<1
 # Optional ROS 2 integration is provided by the OS ROS installation, not pip.
 # On Ubuntu/VENTUNO Q run ./install_body_ros2.sh (or start with
 # BODY_INSTALL_ROS2=1); the Body GUI reports ROS_DISTRO/rclpy availability.

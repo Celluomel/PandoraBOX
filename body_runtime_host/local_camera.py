@@ -7,6 +7,7 @@ one bounded latest-frame buffer so camera capture cannot block the sensor loop.
 from __future__ import annotations
 
 import base64
+from collections import deque
 import logging
 import platform
 import threading
@@ -36,6 +37,8 @@ class LocalCameraCapture:
         self._capture = None
         self._capture_backend = ""
         self._latest: dict[str, Any] = {}
+        self._frame_times: deque[float] = deque(maxlen=30)
+        self._driver_fps = 0.0
         self._status = "stopped"
         self._error = ""
         self._started_at: float | None = None
@@ -43,6 +46,9 @@ class LocalCameraCapture:
     def start(self) -> dict[str, Any]:
         if self._thread and self._thread.is_alive():
             return self.status()
+        with self._lock:
+            self._frame_times.clear()
+            self._driver_fps = 0.0
         self._stop.clear()
         self._status = "starting"
         self._error = ""
@@ -69,18 +75,16 @@ class LocalCameraCapture:
             self.height = max(480, int(settings.get("height", self.height) or 480))
             self.profile = str(settings.get("profile", self.profile) or self.profile)
             capture = self._capture
-            width, height = self.width, self.height
 
         # OpenCV accepts property changes while a capture is running on most
-        # webcams. The loop still resizes every frame, so drivers that ignore
-        # the request remain usable at the selected Body output dimensions.
+        # webcams. The loop still resizes every frame if the driver ignores
+        # the requested output dimensions.
         if capture is not None:
             try:
                 import cv2
-                capture.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-                capture.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+                self._apply_capture_settings(cv2, capture)
             except Exception:
-                LOG.debug("Could not apply live camera resolution", exc_info=True)
+                LOG.debug("Could not apply live camera settings", exc_info=True)
 
     def latest(self) -> dict[str, Any]:
         with self._lock:
@@ -89,12 +93,22 @@ class LocalCameraCapture:
     def status(self) -> dict[str, Any]:
         with self._lock:
             frame = dict(self._latest)
+            frame_times = tuple(self._frame_times)
+            driver_fps = self._driver_fps
         captured_at = float(frame.get("captured_at") or 0.0)
+        observed_fps = (
+            (len(frame_times) - 1) / (frame_times[-1] - frame_times[0])
+            if len(frame_times) > 1 and frame_times[-1] > frame_times[0]
+            else 0.0
+        )
         return {
             "status": self._status,
             "available": self._status in {"capturing", "starting"},
             "device_index": self.device_index,
             "interval": self.interval,
+            "target_fps": round(1.0 / max(1.0 / 60.0, self.interval), 2),
+            "driver_fps": round(driver_fps, 2),
+            "observed_fps": round(observed_fps, 2),
             "width": self.width,
             "height": self.height,
             "profile": self.profile,
@@ -122,6 +136,29 @@ class LocalCameraCapture:
                 capture.release()
             except Exception:
                 LOG.debug("Could not release local camera", exc_info=True)
+
+    def _apply_capture_settings(self, cv2, capture) -> None:
+        with self._lock:
+            width, height = self.width, self.height
+            target_fps = 1.0 / max(1.0 / 60.0, self.interval)
+        capture.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+        capture.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+        fps_property = getattr(cv2, "CAP_PROP_FPS", None)
+        if fps_property is None:
+            return
+        accepted = capture.set(fps_property, target_fps)
+        try:
+            reported_fps = float(capture.get(fps_property) or 0.0)
+        except (AttributeError, TypeError, ValueError):
+            reported_fps = 0.0
+        with self._lock:
+            self._driver_fps = reported_fps if reported_fps > 0 else 0.0
+        LOG.info(
+            "Camera FPS requested %.2f; driver reports %.2f (set accepted=%s)",
+            target_fps,
+            reported_fps,
+            accepted,
+        )
 
     @staticmethod
     def _open_capture(cv2, device_index: int):
@@ -166,8 +203,7 @@ class LocalCameraCapture:
             LOG.warning("PC camera unavailable: %s", self._error)
             self._release()
             return
-        self._capture.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
-        self._capture.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
+        self._apply_capture_settings(cv2, self._capture)
         self._status = "capturing"
         LOG.info("Local camera capture started (device=%d, backend=%s, requested=%dx%d)", self.device_index, self._capture_backend, self.width, self.height)
         try:
@@ -198,6 +234,7 @@ class LocalCameraCapture:
                 }
                 with self._lock:
                     self._latest = payload
+                    self._frame_times.append(captured_at)
                     self._error = ""
                 self._stop.wait(self.interval)
         finally:

@@ -734,6 +734,8 @@ async def _main():
     # ── REST API in background thread ─────────────────────────────────
     api_server = None
     api_thread = None
+    bridge_server = None
+    bridge_thread = None
     if not _ARGS.no_api:
         logger.info(f"🌐 REST API → http://{_ARGS.host}:{_ARGS.port}")
         logger.info(f"   Docs    → http://{_ARGS.host}:{_ARGS.port}/docs")
@@ -753,6 +755,38 @@ async def _main():
         api_thread = threading.Thread(target=_run_api, daemon=True, name="api-server")
         api_thread.start()
 
+        if bool(getattr(config, "BODY_BRIDGE_LISTEN_ENABLED", False)):
+            try:
+                from core.body_bridge_listener import app as bridge_app, validate_bind
+
+                bridge_host, bridge_port = validate_bind(
+                    config.BODY_BRIDGE_LISTEN_HOST,
+                    config.BODY_BRIDGE_LISTEN_PORT,
+                    _ARGS.host,
+                    _ARGS.port,
+                )
+                bridge_cfg = uvicorn.Config(
+                    app=bridge_app,
+                    host=bridge_host,
+                    port=bridge_port,
+                    log_level="warning",
+                    access_log=False,
+                )
+                bridge_server = uvicorn.Server(bridge_cfg)
+
+                def _run_body_bridge():
+                    asyncio.run(bridge_server.serve())
+
+                bridge_thread = threading.Thread(target=_run_body_bridge, daemon=True, name="body-bridge-api")
+                bridge_thread.start()
+                logger.info(
+                    "🔒 Body bridge listener → ws://%s:%d/api/interface/body/bridge (WebSocket-only; bearer auth)",
+                    bridge_host,
+                    bridge_port,
+                )
+            except (ValueError, OSError) as exc:
+                logger.error("Body bridge listener configuration is invalid: %s", exc)
+
     # ── Banner ─────────────────────────────────────────────────────────
     tg_ok    = bool(_messaging and getattr(_messaging, "_tg_app", None))
     wa_ok    = bool(_messaging and getattr(_messaging, "_twilio", None))
@@ -768,6 +802,8 @@ async def _main():
         print(f"║   REST API   : http://{_ARGS.host}:{_ARGS.port:<36}║")
         print(f"║   WA Webhook : POST /webhook/whatsapp{' '*22}║")
         print(f"║   Docs       : http://{_ARGS.host}:{_ARGS.port}/docs{' '*30}║")
+    if bridge_server:
+        print(f"║   Body bridge: ws://{config.BODY_BRIDGE_LISTEN_HOST}:{config.BODY_BRIDGE_LISTEN_PORT:<27}║")
     print(f"║   Vision     : {'✅ enabled' if _ARGS.vision else '— pass --vision to enable':<42}║")
     print("╠" + "═" * 58 + "╣")
     print("║   Send !help via WhatsApp/Telegram to get started       ║")
@@ -810,6 +846,8 @@ async def _main():
         pass
     if api_server:
         api_server.should_exit = True
+    if bridge_server:
+        bridge_server.should_exit = True
     logger.info("✅ Brain shutdown complete")
 
 

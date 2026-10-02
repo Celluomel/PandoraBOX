@@ -13,6 +13,33 @@ class LocalCameraTests(unittest.TestCase):
         self.assertEqual(capture.status()["status"], "stopped")
         self.assertEqual(capture.latest(), {})
 
+    def test_requested_fps_is_applied_to_camera_driver(self):
+        class Capture:
+            def __init__(self):
+                self.values = {}
+                self.set_calls = []
+            def set(self, prop, value):
+                self.values[prop] = value
+                self.set_calls.append((prop, value))
+                return True
+            def get(self, prop):
+                return self.values.get(prop, 0.0)
+
+        class Cv2:
+            CAP_PROP_FRAME_WIDTH = 3
+            CAP_PROP_FRAME_HEIGHT = 4
+            CAP_PROP_FPS = 5
+
+        camera = LocalCameraCapture(interval=1 / 60, width=1280, height=720)
+        device = Capture()
+        camera._apply_capture_settings(Cv2, device)
+
+        self.assertEqual(device.values[Cv2.CAP_PROP_FRAME_WIDTH], 1280)
+        self.assertEqual(device.values[Cv2.CAP_PROP_FRAME_HEIGHT], 720)
+        self.assertAlmostEqual(device.values[Cv2.CAP_PROP_FPS], 60.0)
+        self.assertAlmostEqual(camera.status()["driver_fps"], 60.0)
+        self.assertAlmostEqual(camera.status()["target_fps"], 60.0)
+
     def test_sim_source_prefers_external_camera_frame(self):
         frame = {
             "image_base64": "aGVsbG8=",

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import importlib.util
 import json
 import logging
 import math
@@ -233,6 +234,52 @@ class BodyHost:
                 safe[key] = f"@env:{key}"
         CONFIG_PATH.write_text(json.dumps(safe, indent=2, ensure_ascii=False), encoding="utf-8")
 
+    def brain_bridge_settings(self) -> dict:
+        return {
+            "enabled": bool(self.value("BODY_BRIDGE_ENABLED", False)),
+            "url": str(self.value("BODY_BRIDGE_URL", "") or ""),
+            "token_configured": bool(self.value("BODY_BRIDGE_TOKEN", "")),
+            "device_id": str(self.value("BODY_BRIDGE_DEVICE_ID", "body-ventuno") or "body-ventuno"),
+            "verify_tls": bool(self.value("BODY_BRIDGE_VERIFY_TLS", True)),
+            "connected": self._bridge_connected.is_set(),
+        }
+
+    def update_brain_bridge_settings(self, payload: dict) -> dict:
+        url = str(payload.get("url", "") or "").strip()
+        token = str(payload.get("token", "") or "").strip()
+        enabled = bool(payload.get("enabled", False))
+        if len(token) > 512 or any(ord(char) < 32 for char in token):
+            raise ValueError("Bridge token must be at most 512 characters and contain no control characters")
+        if url:
+            parsed = urlparse(url)
+            if parsed.scheme not in {"ws", "wss"} or not parsed.netloc or parsed.username or parsed.password:
+                raise ValueError("Use a ws:// or wss:// Brain bridge URL without embedded credentials")
+            if parsed.scheme == "ws" and (parsed.hostname or "").lower() not in {"localhost", "127.0.0.1", "::1"}:
+                raise ValueError("Remote Brain bridge connections require wss:// so the bearer token is encrypted in transit")
+        if enabled and (not url or not (token or self.value("BODY_BRIDGE_TOKEN", ""))):
+            raise ValueError("A Brain bridge URL and bearer token are required before enabling")
+        self.config.update({
+            "BODY_BRIDGE_ENABLED": enabled,
+            "BODY_BRIDGE_URL": url,
+            "BODY_BRIDGE_DEVICE_ID": str(payload.get("device_id", "body-ventuno") or "body-ventuno").strip()[:80],
+            "BODY_BRIDGE_VERIFY_TLS": bool(payload.get("verify_tls", True)),
+        })
+        if token:
+            os.environ["BODY_BRIDGE_TOKEN"] = token
+            self.config["BODY_BRIDGE_TOKEN"] = "@env:BODY_BRIDGE_TOKEN"
+            secret_path = ROOT / "body_venv" / ".env"
+            secret_path.parent.mkdir(parents=True, exist_ok=True)
+            existing = {}
+            if secret_path.exists():
+                for line in secret_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+                    if "=" in line and not line.lstrip().startswith("#"):
+                        key, value = line.split("=", 1)
+                        existing[key.strip()] = value.strip()
+            existing["BODY_BRIDGE_TOKEN"] = token
+            secret_path.write_text("".join(f"{key}={value}\n" for key, value in existing.items()), encoding="utf-8")
+        self.save_config()
+        return self.brain_bridge_settings()
+
     def ros2_settings(self) -> dict:
         enabled = bool(self.value("BODY_ROS2_ENABLED", False))
         bridge = self._ros2_bridge
@@ -362,7 +409,7 @@ class BodyHost:
             return camera.latest() if camera is not None else {}
 
     def camera_frame(self) -> dict:
-        frame = self._camera_provider()
+        frame = self._camera_provider() or {}
         if frame:
             return {"available": True, "camera": frame}
         settings = self.camera_settings()
@@ -465,7 +512,185 @@ class BodyHost:
             LOG.exception("Body VLM test failed during %s", stage)
             return {"ok": False, "stage": stage, "error": str(exc)[:300]}
 
+    def test_body_embeddings(self, label: str) -> dict:
+        """Run a real semantic-match probe against objects in the latest Body scene."""
+        wm = self.worldmodel
+        if wm is None or wm.source is None:
+            return {"ok": False, "status": "source_unavailable", "error": "World model or sensor source unavailable."}
+        try:
+            observation = wm.source.observe()
+            body = wm.source.body_state()
+            packet = wm._scene_packet(observation, body, {}, {})
+            known = {
+                str(item.get("id")): item
+                for item in packet.get("objects", [])
+                if isinstance(item, dict) and item.get("id")
+            }
+            result = wm.scene_interpreter.test_embedding_resolution(label, known)
+            LOG.info(
+                "[BodyEmbeddings] diagnostic status=%s model=%s query=%r matched=%s",
+                result.get("status"), result.get("model"), str(label)[:160],
+                result.get("matched_object_id"),
+            )
+            return result
+        except Exception as exc:
+            LOG.exception("Body embedding diagnostic failed")
+            return {"ok": False, "status": "error", "error": str(exc)[:300]}
+
+    @staticmethod
+    def _workflow_analysis_safe(value, depth: int = 0):
+        if depth > 6:
+            return "…"
+        if isinstance(value, dict):
+            return {
+                str(key): BodyHost._workflow_analysis_safe(item, depth + 1)
+                for key, item in list(value.items())[:80]
+                if not any(secret in str(key).lower() for secret in ("token", "secret", "password", "api_key", "base64"))
+            }
+        if isinstance(value, (list, tuple)):
+            return [BodyHost._workflow_analysis_safe(item, depth + 1) for item in value[:40]]
+        if isinstance(value, str):
+            return value[:1200]
+        if value is None or isinstance(value, (bool, int, float)):
+            return value
+        return str(value)[:500]
+
+    def analyze_workflow_execution(self, workflow_id: str) -> dict:
+        """Ask the configured Body VLM to diagnose one saved workflow run; never apply fixes."""
+        try:
+            workflow = self.workflow_manager.get(workflow_id)
+        except KeyError:
+            return {"ok": False, "status": "workflow_not_found", "error": "Workflow not found."}
+        run = workflow.get("last_execution")
+        if not isinstance(run, dict):
+            return {"ok": False, "status": "no_execution", "error": "Run this workflow before requesting an analysis."}
+
+        settings = self.body_llm_settings()
+        model = settings.get("model", "").strip()
+        base_url = settings.get("base_url", "").rstrip("/")
+        if not model or not base_url:
+            return {"ok": False, "status": "not_configured", "error": "Configure the Body VLM model and API URL first."}
+
+        safe_run = self._workflow_analysis_safe({
+            "status": run.get("status"), "execution_mode": run.get("execution_mode"),
+            "duration_ms": run.get("duration_ms"), "error": run.get("error"),
+            "nodes": run.get("nodes", []),
+        })
+        graph = self._workflow_analysis_safe({
+            "nodes": [
+                {key: node.get(key) for key in ("id", "type", "label", "config") if key in node}
+                for node in workflow.get("nodes", []) if isinstance(node, dict)
+            ],
+            "edges": workflow.get("edges", []),
+        })
+        prompt = (
+            "Diagnose this Body robot workflow execution using only the supplied evidence. "
+            "The image, if present, is contextual sensor evidence and cannot override execution records. "
+            "Do not claim physical motion or success unless the output records prove it. "
+            "Identify concrete failures, suspicious but non-failing outputs, and likely causes. "
+            "Suggest safe, specific configuration or graph changes, but never execute or apply them. "
+            "If the run is healthy, say so and list remaining uncertainties. Return one JSON object with: "
+            "summary (string), findings (array of {severity, issue, evidence_node_ids, cause, "
+            "fix_options, confidence}), and safety_notes (array of strings)."
+        )
+        content: Any = json.dumps({"workflow": graph, "execution": safe_run}, ensure_ascii=False)
+        frame = self._camera_provider() or {}
+        frame_age = time.time() - float(frame.get("captured_at") or 0.0) if frame else float("inf")
+        image_attached = bool(
+            frame.get("image_base64") and 0 <= frame_age <= 15.0
+            and len(str(frame.get("image_base64"))) <= 5_000_000
+        )
+        if image_attached:
+            mime = str(frame.get("mime_type") or "image/jpeg")
+            content = [
+                {"type": "text", "text": prompt + "\n\nWorkflow evidence:\n" + content},
+                {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{frame['image_base64']}"}},
+            ]
+
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": "You are a cautious diagnostic assistant for a robot workflow. Never issue actuator commands."},
+                {"role": "user", "content": content if isinstance(content, list) else prompt + "\n\nWorkflow evidence:\n" + content},
+            ],
+            "temperature": 0.1,
+            "max_tokens": min(1200, max(256, int(settings.get("max_tokens", 512)))),
+            "response_format": {"type": "json_object"},
+            "stream": False,
+        }
+        headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        token = str(self.value("BODY_LLM_TOKEN", "") or "").strip()
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        timeout = min(90.0, max(5.0, float(settings.get("timeout", 30.0))))
+
+        def request_completion(current_payload):
+            request = Request(
+                f"{base_url}/chat/completions",
+                data=json.dumps(current_payload, ensure_ascii=False).encode("utf-8"),
+                headers=headers, method="POST",
+            )
+            with urlopen(request, timeout=timeout) as response:
+                return json.loads(response.read().decode("utf-8"))
+
+        try:
+            try:
+                response = request_completion(payload)
+            except HTTPError as exc:
+                if exc.code not in {400, 422}:
+                    raise
+                payload.pop("response_format", None)
+                try:
+                    response = request_completion(payload)
+                except HTTPError as retry_exc:
+                    if retry_exc.code not in {400, 422} or not image_attached:
+                        raise
+                    payload["messages"][1]["content"] = prompt + "\n\nWorkflow evidence:\n" + json.dumps(
+                        {"workflow": graph, "execution": safe_run}, ensure_ascii=False,
+                    )
+                    image_attached = False
+                    response = request_completion(payload)
+            message = ((response.get("choices") or [{}])[0].get("message") or {})
+            raw = message.get("content") or ""
+            if isinstance(raw, list):
+                raw = "".join(str(part.get("text") or "") for part in raw if isinstance(part, dict))
+            from body_runtime_host.worldmodel.scene_interpreter import BodySceneInterpreter
+            analysis = BodySceneInterpreter._parse_json_object(str(raw))
+            if not isinstance(analysis, dict):
+                return {
+                    "ok": False, "status": "invalid_response", "model": model,
+                    "image_attached": image_attached, "error": "VLM response was not valid JSON.",
+                    "raw_response": str(raw)[:1800],
+                }
+            result = {
+                "ok": True, "status": "analyzed", "model": model,
+                "workflow_id": workflow_id, "execution_id": run.get("id"),
+                "image_attached": image_attached, "analysis": analysis,
+                "applied": False,
+            }
+            LOG.info(
+                "[WorkflowVLM] analyzed workflow=%s execution=%s model=%s image=%s findings=%d",
+                workflow_id, run.get("id"), model, image_attached,
+                len(analysis.get("findings") or []),
+            )
+            return result
+        except Exception as exc:
+            LOG.warning(
+                "[WorkflowVLM] analysis failed workflow=%s model=%s error=%s",
+                workflow_id, model, str(exc)[:240],
+            )
+            return {
+                "ok": False, "status": "provider_error", "model": model,
+                "image_attached": image_attached, "error": str(exc)[:300],
+            }
+
     def body_llm_settings(self) -> dict:
+        embedding_provider = str(self.value("BODY_LLM_EMBEDDING_PROVIDER", "openai") or "openai")
+        embedding_model = str(self.value("BODY_LLM_EMBEDDING_MODEL", "") or "")
+        if embedding_provider == "local_fastembed" and (
+            not embedding_model or "nomic-embed-text-v1.5" in embedding_model.lower()
+        ):
+            embedding_model = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
         return {
             "enabled": bool(self.value("BODY_LLM_ENABLED", False)),
             "base_url": str(self.value("BODY_LLM_BASE_URL", "http://127.0.0.1:1234/v1") or ""),
@@ -476,11 +701,39 @@ class BodyHost:
             "context_window": int(self.value("BODY_LLM_CONTEXT_WINDOW", 50000) or 50000),
             "focus_range_m": float(self.value("BODY_LLM_FOCUS_RANGE_M", 5.0) or 5.0),
             "json_mode": bool(self.value("BODY_LLM_JSON_MODE", True)),
-            "embedding_model": str(self.value("BODY_LLM_EMBEDDING_MODEL", "") or ""),
-            "embedding_threshold": float(self.value("BODY_LLM_EMBEDDING_THRESHOLD", 0.78) or 0.78),
+            "embedding_provider": embedding_provider,
+            "embedding_model": embedding_model,
+            "local_embedding_available": importlib.util.find_spec("fastembed") is not None,
+            "embedding_threshold": float(self.value("BODY_LLM_EMBEDDING_THRESHOLD", 0.55) or 0.55),
             "embedding_timeout": float(self.value("BODY_LLM_EMBEDDING_TIMEOUT", 4.0) or 4.0),
             "token_configured": bool(self.value("BODY_LLM_TOKEN", "")),
         }
+
+    def runtime_network_settings(self) -> dict:
+        configured_host = str(self.value("BODY_HOST", "127.0.0.1") or "127.0.0.1")
+        if configured_host not in {"127.0.0.1", "0.0.0.0"}:
+            configured_host = "127.0.0.1"
+        active_host = "127.0.0.1"
+        active_port = int(self.value("BODY_PORT", 8766) or 8766)
+        if self.http_server is not None:
+            active_host = str(self.http_server.server_address[0])
+            active_port = int(self.http_server.server_address[1])
+        return {
+            "configured_host": configured_host,
+            "active_host": active_host,
+            "port": active_port,
+            "restart_required": configured_host != active_host,
+            "choices": ["127.0.0.1", "0.0.0.0"],
+            "authentication": False,
+        }
+
+    def update_runtime_network_settings(self, payload: dict) -> dict:
+        host = str(payload.get("bind_host", "127.0.0.1") or "127.0.0.1").strip()
+        if host not in {"127.0.0.1", "0.0.0.0"}:
+            raise ValueError("bind_host must be 127.0.0.1 or 0.0.0.0")
+        self.config["BODY_HOST"] = host
+        self.save_config()
+        return {"ok": True, "settings": self.runtime_network_settings()}
 
     def deployment_check(self, payload: dict) -> dict:
         target = str(payload.get("target_url", "") or "").strip().rstrip("/")
@@ -592,8 +845,11 @@ class BodyHost:
             "BODY_LLM_MAX_TOKENS": max(64, min(2048, int(payload.get("max_tokens", 360) or 360))),
             "BODY_LLM_CONTEXT_WINDOW": max(2048, min(131072, int(payload.get("context_window", 50000) or 50000))),
             "BODY_LLM_JSON_MODE": bool(payload.get("json_mode", True)),
+            "BODY_LLM_EMBEDDING_PROVIDER": str(payload.get("embedding_provider", "openai") or "openai").strip().lower()
+            if str(payload.get("embedding_provider", "openai") or "openai").strip().lower() in {"openai", "local_fastembed"}
+            else "openai",
             "BODY_LLM_EMBEDDING_MODEL": str(payload.get("embedding_model", "text-embedding-nomic-embed-text-v1.5") or "").strip(),
-            "BODY_LLM_EMBEDDING_THRESHOLD": max(0.0, min(1.0, float(payload.get("embedding_threshold", 0.78) or 0.78))),
+            "BODY_LLM_EMBEDDING_THRESHOLD": max(0.0, min(1.0, float(payload.get("embedding_threshold", 0.55)))),
             "BODY_LLM_EMBEDDING_TIMEOUT": max(1.0, min(8.0, float(payload.get("embedding_timeout", 4.0) or 4.0))),
         })
         token = str(payload.get("token", "") or "").strip()
@@ -614,7 +870,7 @@ class BodyHost:
         wm = self._worldmodel
         if wm is not None:
             with wm._lock:
-                for key in ("BODY_LLM_ENABLED", "BODY_LLM_BASE_URL", "BODY_LLM_MODEL", "BODY_LLM_INTERVAL", "BODY_LLM_TIMEOUT", "BODY_LLM_MAX_TOKENS", "BODY_LLM_CONTEXT_WINDOW", "BODY_LLM_JSON_MODE", "BODY_LLM_EMBEDDING_MODEL", "BODY_LLM_EMBEDDING_THRESHOLD", "BODY_LLM_EMBEDDING_TIMEOUT"):
+                for key in ("BODY_LLM_ENABLED", "BODY_LLM_BASE_URL", "BODY_LLM_MODEL", "BODY_LLM_INTERVAL", "BODY_LLM_TIMEOUT", "BODY_LLM_MAX_TOKENS", "BODY_LLM_CONTEXT_WINDOW", "BODY_LLM_JSON_MODE", "BODY_LLM_EMBEDDING_PROVIDER", "BODY_LLM_EMBEDDING_MODEL", "BODY_LLM_EMBEDDING_THRESHOLD", "BODY_LLM_EMBEDDING_TIMEOUT"):
                     wm._cfg[key] = self.config.get(key)
                 wm._cfg["BODY_LLM_TOKEN"] = self.value("BODY_LLM_TOKEN", "")
                 wm.scene_interpreter._config = wm._cfg
@@ -1822,8 +2078,9 @@ class BodyHost:
             else:
                 LOG.warning("ROS 2 bridge enabled but unavailable: %s", ros_status.get("last_error"))
         threads = [threading.Thread(target=self.poll_loop, name="body-sensors", daemon=True)]
-        if bool(self.value("BODY_BRIDGE_ENABLED", False)):
-            threads.append(threading.Thread(target=self.bridge_loop, name="body-brain-bridge", daemon=True))
+        # Keep the bridge loop alive even when disabled so the UI can enable it
+        # without requiring a second process restart.
+        threads.append(threading.Thread(target=self.bridge_loop, name="body-brain-bridge", daemon=True))
         for thread in threads:
             thread.start()
         if bool(self.value("BODY_WORLDMODEL_ENABLED", False)):
@@ -1875,6 +2132,8 @@ class BodyHost:
                     self.send_response(status)
                     self.send_header("Content-Type", "text/html; charset=utf-8")
                     self.send_header("Cache-Control", "no-store")
+                    self.send_header("Pragma", "no-cache")
+                    self.send_header("Expires", "0")
                     self.send_header("Content-Length", str(len(data)))
                     self.end_headers()
                     self._write_response(data)
@@ -1886,6 +2145,7 @@ class BodyHost:
                 try:
                     self.send_response(status)
                     self.send_header("Content-Type", "application/json")
+                    self.send_header("Cache-Control", "no-store")
                     self.send_header("Content-Length", str(len(data)))
                     self.end_headers()
                     self._write_response(data)
@@ -1944,6 +2204,8 @@ class BodyHost:
                         self._send({"error": "workflow not found"}, 404)
                 elif path == "/plugins":
                     self._send({"plugins": owner.plugins()})
+                elif path == "/brain-bridge":
+                    self._send(owner.brain_bridge_settings())
                 elif path == "/plugins/home_assistant/settings":
                     self._send(owner.home_assistant_settings())
                 elif path == "/plugins/fnk0050_wifi/settings":
@@ -1977,6 +2239,8 @@ class BodyHost:
                         self._send(owner._repository_updater.status())
                     except (RuntimeError, OSError, subprocess.TimeoutExpired) as exc:
                         self._send({"available": False, "error": str(exc)}, 503)
+                elif path == "/runtime/network":
+                    self._send(owner.runtime_network_settings())
                 elif path == "/worldmodel/scene-interpreter":
                     wm = owner.worldmodel
                     self._send(wm.scene_interpreter.status() if wm is not None else {"status": "unavailable"})
@@ -2089,6 +2353,16 @@ class BodyHost:
                         self._send({"error": "workflow not found"}, 404)
                     except (ValueError, OSError) as exc:
                         self._send({"status": "failed", "error": str(exc)}, 400)
+                elif path.startswith("/workflows/") and path.endswith("/analyze"):
+                    workflow_id = path[len("/workflows/"):-len("/analyze")].strip("/")
+                    self._send(owner.analyze_workflow_execution(workflow_id))
+                elif path == "/body/llm/embedding-check":
+                    self._send(owner.test_body_embeddings(str(self._read_body().get("label") or "")))
+                elif path == "/brain-bridge":
+                    try:
+                        self._send({"ok": True, "settings": owner.update_brain_bridge_settings(self._read_body())})
+                    except (ValueError, OSError) as exc:
+                        self._send({"ok": False, "error": str(exc)}, 400)
                 elif path.startswith("/plugins/"):
                     plugin_id = path.rsplit("/", 1)[-1]
                     body = self._read_body()
@@ -2149,6 +2423,11 @@ class BodyHost:
                         self._send(result, 200 if result.get("ok") else 409)
                     except (RuntimeError, OSError, subprocess.TimeoutExpired) as exc:
                         self._send({"ok": False, "error": str(exc)}, 502)
+                elif path == "/runtime/network":
+                    try:
+                        self._send(owner.update_runtime_network_settings(self._read_body()))
+                    except (OSError, ValueError) as exc:
+                        self._send({"ok": False, "error": str(exc)}, 400)
                 elif path == "/robot-sim/start":
                     self._send(owner.start_robot_sim(self._read_body()))
                 elif path == "/robot-sim/stop":

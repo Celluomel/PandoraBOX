@@ -16,6 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File
 from fastapi import WebSocket, WebSocketDisconnect
 from fastapi.responses import PlainTextResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
+from core.body_bridge import body_bridge as _body_bridge_handler
 
 logger = logging.getLogger(__name__)
 _turn_lock = asyncio.Lock()
@@ -60,6 +61,12 @@ async def embodied_development_blueprint():
 
 class BodySettingsUpdate(BaseModel):
     values: dict[str, object] = Field(default_factory=dict)
+
+
+class BodyBridgeListenerSettingsUpdate(BaseModel):
+    enabled: bool
+    host: str = Field(default="127.0.0.1", max_length=64)
+    port: int = Field(default=8786, ge=1024, le=65535)
 
 
 class BodyCommandRequest(BaseModel):
@@ -262,7 +269,7 @@ async def body_plugins():
 async def body_settings():
     body, _ = _body_runtime_for_state()
     values = body.config_snapshot()
-    for secret_name in ('HOME_ASSISTANT_TOKEN', 'BODY_BRIDGE_TOKEN'):
+    for secret_name in ('HOME_ASSISTANT_TOKEN', 'BODY_BRIDGE_TOKEN', 'BODY_HTTP_PASSWORD'):
         if values.get(secret_name):
             values[secret_name] = '••••••••'
     return _json_safe({'values': values, 'config_path': 'data/body/config.json'})
@@ -272,17 +279,56 @@ async def body_settings():
 async def update_body_settings(payload: BodySettingsUpdate):
     body, organism = _body_runtime_for_state()
     values = dict(payload.values)
-    for secret_name in ('HOME_ASSISTANT_TOKEN', 'BODY_BRIDGE_TOKEN'):
+    for secret_name in ('HOME_ASSISTANT_TOKEN', 'BODY_BRIDGE_TOKEN', 'BODY_HTTP_PASSWORD'):
         if values.get(secret_name) == '••••••••':
             values.pop(secret_name, None)
     saved = body.update_config(values)
     if organism is not None:
         from cognition.universal_connector import get_universal_connector
         await get_universal_connector(organism).reconcile_home_assistant_monitor()
-    for secret_name in ('HOME_ASSISTANT_TOKEN', 'BODY_BRIDGE_TOKEN'):
+    for secret_name in ('HOME_ASSISTANT_TOKEN', 'BODY_BRIDGE_TOKEN', 'BODY_HTTP_PASSWORD'):
         if saved.get(secret_name):
             saved[secret_name] = '••••••••'
     return _json_safe({'values': saved, 'config_path': 'data/body/config.json'})
+
+
+@router.get('/body/bridge-listener')
+async def body_bridge_listener_settings():
+    from managers.settings_manager import config
+    return {
+        'enabled': bool(config.BODY_BRIDGE_LISTEN_ENABLED),
+        'host': str(config.BODY_BRIDGE_LISTEN_HOST),
+        'port': int(config.BODY_BRIDGE_LISTEN_PORT),
+        'restart_required': True,
+        'transport': 'authenticated WebSocket only; put TLS termination in front for remote use',
+    }
+
+
+@router.post('/body/bridge-listener')
+async def update_body_bridge_listener_settings(payload: BodyBridgeListenerSettingsUpdate):
+    from managers.settings_manager import config, save_settings
+    from core.body_bridge_listener import validate_bind
+
+    try:
+        host, port = validate_bind(
+            payload.host, payload.port,
+            str(getattr(config, 'BRAIN_API_HOST', '127.0.0.1')),
+            int(getattr(config, 'BRAIN_API_PORT', 8765)),
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    config.BODY_BRIDGE_LISTEN_ENABLED = payload.enabled
+    config.BODY_BRIDGE_LISTEN_HOST = host
+    config.BODY_BRIDGE_LISTEN_PORT = port
+    save_settings(config, silent=True)
+    return {
+        'ok': True,
+        'enabled': payload.enabled,
+        'host': host,
+        'port': port,
+        'restart_required': True,
+        'config_path': 'config.json',
+    }
 
 
 @router.post('/body/discover')
@@ -472,66 +518,7 @@ async def body_worldmodel_reset(clear_memory: bool = False):
 @router.websocket('/body/bridge')
 async def body_bridge(websocket: WebSocket):
     """Exchange authenticated observations and approved commands with a Body."""
-    body, _ = _body_runtime_for_state()
-    from managers.settings_manager import config
-    expected = str(body.config_value('BODY_BRIDGE_TOKEN', getattr(config, 'BODY_BRIDGE_TOKEN', '')) or '')
-    supplied = websocket.headers.get('authorization', '')
-    token = supplied[7:].strip() if supplied.lower().startswith('bearer ') else ''
-    if not expected or token != expected:
-        await websocket.close(code=1008, reason='Body bridge authentication failed')
-        return
-    await websocket.accept()
-    send_lock = asyncio.Lock()
-    sender_task = None
-    device_id = 'body'
-
-    async def send(payload):
-        async with send_lock:
-            await websocket.send_json(payload)
-
-    async def send_commands():
-        while True:
-            command = await asyncio.to_thread(body.next_bridge_command, 1.0)
-            if command:
-                await send(command)
-
-    try:
-        sender_task = asyncio.create_task(send_commands())
-        while True:
-            message = await websocket.receive_json()
-            if message.get('type') == 'hello':
-                device_id = str(message.get('device_id') or 'body')
-                body.register_bridge_device(device_id)
-                await send({'type': 'hello_ack', 'protocol': 1, 'brain': 'ready'})
-                continue
-            if message.get('type') == 'command_result':
-                result = body.record_command_outcome(message)
-                await send({'type': 'command_result_ack', 'command_id': message.get('command_id'), **result})
-                continue
-            if message.get('type') != 'observation' or not isinstance(message.get('observation'), dict):
-                await send({'type': 'error', 'reason': 'unsupported message'})
-                continue
-            item = message['observation']
-            from cognition.body_runtime import BodyObservation
-            observation = BodyObservation(
-                source=f"remote:{message.get('device_id') or 'body'}:{item.get('source') or 'unknown'}",
-                kind=str(item.get('kind') or 'sensor'),
-                subject=str(item.get('subject') or 'observation'),
-                value=item.get('value'),
-                unit=str(item.get('unit') or ''),
-                confidence=float(item.get('confidence', 1.0)),
-                observed_at=float(item.get('observed_at') or time.time()),
-                provenance=dict(item.get('provenance') or {}),
-            )
-            body.publish_observation(observation, forward=False)
-            await send({'type': 'observation_ack', 'subject': observation.subject})
-    except WebSocketDisconnect:
-        logger.info('[BodyBridge] remote Body disconnected')
-    finally:
-        body.unregister_bridge_device(device_id)
-        if sender_task is not None:
-            sender_task.cancel()
-            await asyncio.gather(sender_task, return_exceptions=True)
+    await _body_bridge_handler(websocket)
 
 
 @router.get('/telemetry')
@@ -880,17 +867,18 @@ _SETTING_FIELDS = {
     'CUSTOM_SYSTEM_PROMPT', 'LOG_FULL_PROMPTS', 'OBSERVATORY_ENABLED',
     'OBSERVATORY_BASELINE_SAMPLES', 'OBSERVATORY_EMERGENCE_THRESHOLD',
     'NICEGUI_HOST', 'UNIVERSAL_CONNECTOR_ENABLED', 'BODY_RUNTIME_ENABLED', 'BODY_PLUGIN_HOME_ASSISTANT_ENABLED', 'BODY_PLUGIN_FNK0050_ENABLED',
-    'BODY_HOST', 'BODY_PORT',
+    'BODY_HOST', 'BODY_PORT', 'BODY_URL', 'BODY_HTTP_USERNAME', 'BODY_HTTP_PASSWORD',
     'HOME_ASSISTANT_ENABLED', 'HOME_ASSISTANT_PRESENCE_ENABLED',
     'HOME_ASSISTANT_URL', 'HOME_ASSISTANT_TOKEN', 'HOME_ASSISTANT_VERIFY_SSL',
     'FNK0031_URL', 'FNK0031_TOKEN', 'FNK0031_TIMEOUT', 'FNK0031_POLL_INTERVAL', 'FNK0031_SNN_ENABLED', 'FNK0031_ACTUATION_ENABLED', 'FNK0031_LEG_COUNT',
     'FNK0050_URL', 'FNK0050_TOKEN', 'FNK0050_TIMEOUT', 'FNK0050_POLL_INTERVAL', 'FNK0050_SNN_ENABLED', 'FNK0050_ACTUATION_ENABLED',
     'HOME_ASSISTANT_POLL_INTERVAL', 'HOME_ASSISTANT_ALLOWED_DOMAINS', 'HOME_ASSISTANT_SELECTED_ENTITIES', 'HOME_ASSISTANT_DISCOVERED_ENTITIES', 'HOME_ASSISTANT_ENTITY_TAGS',
     'BODY_BRIDGE_ENABLED', 'BODY_BRIDGE_URL', 'BODY_BRIDGE_TOKEN', 'BODY_BRIDGE_DEVICE_ID', 'BODY_BRIDGE_VERIFY_TLS', 'BODY_BRIDGE_RECONNECT_SECONDS',
+    'BODY_BRIDGE_LISTEN_ENABLED', 'BODY_BRIDGE_LISTEN_HOST', 'BODY_BRIDGE_LISTEN_PORT',
 }
 _SECRET_FIELDS = {
     'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'BRAVE_SEARCH_KEY', 'SERPAPI_KEY',
-    'ELEVENLABS_API_KEY', 'HOME_ASSISTANT_TOKEN', 'WHATSAPP_WEBHOOK_SECRET', 'BODY_BRIDGE_TOKEN', 'ROBOT_TOKEN', 'FNK0031_TOKEN', 'FNK0050_TOKEN',
+    'ELEVENLABS_API_KEY', 'HOME_ASSISTANT_TOKEN', 'WHATSAPP_WEBHOOK_SECRET', 'BODY_BRIDGE_TOKEN', 'BODY_HTTP_PASSWORD', 'ROBOT_TOKEN', 'FNK0031_TOKEN', 'FNK0050_TOKEN',
 }
 
 
@@ -1368,7 +1356,7 @@ async def update_settings(payload: SettingsUpdate):
     save_settings(config, silent=True)
     body_fields = {
         'BODY_RUNTIME_ENABLED', 'BODY_PLUGIN_HOME_ASSISTANT_ENABLED', 'BODY_PLUGIN_FNK0050_ENABLED',
-        'BODY_HOST', 'BODY_PORT',
+        'BODY_HOST', 'BODY_PORT', 'BODY_URL', 'BODY_HTTP_USERNAME', 'BODY_HTTP_PASSWORD',
         'HOME_ASSISTANT_ENABLED', 'HOME_ASSISTANT_PRESENCE_ENABLED',
         'HOME_ASSISTANT_URL', 'HOME_ASSISTANT_TOKEN', 'HOME_ASSISTANT_VERIFY_SSL',
         'HOME_ASSISTANT_POLL_INTERVAL', 'HOME_ASSISTANT_ALLOWED_DOMAINS',

@@ -115,7 +115,7 @@ class BodyRuntime:
 
     _CONFIG_FIELDS = {
         "BODY_RUNTIME_ENABLED", "BODY_PLUGIN_HOME_ASSISTANT_ENABLED",
-        "BODY_HOST", "BODY_PORT",
+        "BODY_HOST", "BODY_PORT", "BODY_URL", "BODY_HTTP_USERNAME", "BODY_HTTP_PASSWORD",
         "BODY_PLUGIN_ROBOT_ENABLED", "ROBOT_URL", "ROBOT_TOKEN",
         "ROBOT_TIMEOUT", "ROBOT_POLL_INTERVAL", "FNK0031_URL", "FNK0031_TOKEN",
         "FNK0031_TIMEOUT", "FNK0031_POLL_INTERVAL", "FNK0031_SNN_ENABLED",
@@ -285,13 +285,27 @@ class BodyRuntime:
         return cancel(plan_id, reason)
 
     def _build_worldmodel(self):
-        host = str(self.config_value("BODY_HOST", "127.0.0.1") or "127.0.0.1")
-        port = self.config_value("BODY_PORT", 8766) or 8766
-        base = f"http://{host}:{port}"
+        base = str(self.config_value("BODY_URL", "") or "").strip().rstrip("/")
+        if not base:
+            host = str(self.config_value("BODY_HOST", "127.0.0.1") or "127.0.0.1")
+            port = self.config_value("BODY_PORT", 8766) or 8766
+            base = f"http://{host}:{port}"
+        from urllib.parse import urlsplit
+        parsed = urlsplit(base)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
+            logging.getLogger(__name__).error("Invalid Body URL; use an HTTP(S) URL without embedded credentials")
+            return None
+        if parsed.scheme == "http" and parsed.hostname.lower() not in {"127.0.0.1", "localhost", "::1"}:
+            logging.getLogger(__name__).error("Remote Body connections require HTTPS; refusing cleartext LAN traffic")
+            return None
         # 1) Body host (owner of the world model) — remote, read-only facade
         try:
             from .remote import RemoteWorldModel
-            client = RemoteWorldModel(base)
+            client = RemoteWorldModel(
+                base,
+                auth_username=str(self.config_value("BODY_HTTP_USERNAME", "") or ""),
+                auth_password=str(self.config_value("BODY_HTTP_PASSWORD", "") or ""),
+            )
             if client.ping():
                 import logging
                 logging.getLogger(__name__).info("World model: attached to Body host at %s", base)

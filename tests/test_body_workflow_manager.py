@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from body_runtime_host.workflow_manager import WorkflowError, WorkflowManager
 
@@ -118,6 +119,65 @@ class WorkflowManagerTests(unittest.TestCase):
         self.assertEqual(devices["sim_manipulator"]["mode"], "simulation")
         self.assertFalse(catalog["physical_actuation_enabled"])
         self.assertIn("sim_arm_action", {node["type"] for node in catalog["nodes"]})
+
+    def test_workflow_editor_mounts_on_sidebar_navigation_and_exposes_vlm_analysis(self):
+        from body_runtime_host.body_gui import BODY_GUI_HTML
+
+        self.assertIn("if(view==='ros2')", BODY_GUI_HTML)
+        self.assertIn("mountWorkflowEditor(rosView)", BODY_GUI_HTML)
+        self.assertIn("Analyze with Body VLM", BODY_GUI_HTML)
+        self.assertIn("/workflows/'+encodeURIComponent(workflowId)+'/analyze", BODY_GUI_HTML)
+
+    def test_workflow_analysis_uses_saved_outputs_and_never_applies_suggestions(self):
+        import json
+        from types import SimpleNamespace
+        from body_runtime_host.runtime import BodyHost
+
+        saved = {
+            "id": "wf-1", "nodes": [{"id": "camera", "type": "camera"}],
+            "edges": [],
+            "last_execution": {"id": "run-1", "status": "failed", "nodes": [
+                {"id": "camera", "status": "failed", "error": "camera unavailable"},
+            ]},
+        }
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def read(self):
+                return json.dumps({"choices": [{"message": {"content": json.dumps({
+                    "summary": "Camera input failed.",
+                    "findings": [{"severity": "error", "issue": "camera unavailable",
+                                  "evidence_node_ids": ["camera"], "cause": "No frame source.",
+                                  "fix_options": ["Check the camera source."], "confidence": 0.9}],
+                    "safety_notes": ["No physical command was sent."],
+                })}}]}).encode()
+
+        host = SimpleNamespace(
+            workflow_manager=SimpleNamespace(get=lambda workflow_id: saved),
+            body_llm_settings=lambda: {"model": "local-vlm", "base_url": "http://localhost:1234/v1",
+                                       "max_tokens": 512, "timeout": 10},
+            _camera_provider=lambda: None,
+            value=lambda key, fallback=None: "",
+            _workflow_analysis_safe=BodyHost._workflow_analysis_safe,
+        )
+        requests = []
+
+        def fake_urlopen(request, timeout):
+            requests.append(json.loads(request.data.decode()))
+            return Response()
+
+        with patch("body_runtime_host.runtime.urlopen", side_effect=fake_urlopen):
+            result = BodyHost.analyze_workflow_execution(host, "wf-1")
+
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["applied"])
+        self.assertEqual(result["execution_id"], "run-1")
+        self.assertIn("camera unavailable", requests[0]["messages"][1]["content"])
 
 
 if __name__ == "__main__":

@@ -154,6 +154,9 @@ class AppSettings(BaseModel):
     BODY_RUNTIME_ENABLED: bool = True
     BODY_HOST: str = "127.0.0.1"
     BODY_PORT: int = 8766
+    BODY_URL: str = ""
+    BODY_HTTP_USERNAME: str = ""
+    BODY_HTTP_PASSWORD: str = ""
     # None preserves legacy HOME_ASSISTANT_ENABLED until the user chooses the
     # new body-plugin toggle in the interface.
     BODY_PLUGIN_HOME_ASSISTANT_ENABLED: Optional[bool] = None
@@ -173,6 +176,9 @@ class AppSettings(BaseModel):
     BODY_BRIDGE_DEVICE_ID: str = "body-local"
     BODY_BRIDGE_VERIFY_TLS: bool = True
     BODY_BRIDGE_RECONNECT_SECONDS: int = 3
+    BODY_BRIDGE_LISTEN_ENABLED: bool = False
+    BODY_BRIDGE_LISTEN_HOST: str = "127.0.0.1"
+    BODY_BRIDGE_LISTEN_PORT: int = 8786
     FNK0031_URL: str = ""
     FNK0031_TOKEN: str = ""
     FNK0031_TIMEOUT: float = 5.0

@@ -1,5 +1,6 @@
 """Tests for the native camera/LiDAR perception boundary."""
 import sys
+import types
 import unittest
 from io import BytesIO
 from pathlib import Path
@@ -11,6 +12,121 @@ sys.path.insert(0, str(ROOT))
 
 
 class BodyPerceptionModalitiesTest(unittest.TestCase):
+    def test_scene_interpreter_waits_and_exposes_embedding_configuration(self):
+        from body_runtime_host.worldmodel.scene_interpreter import BodySceneInterpreter
+
+        interpreter = BodySceneInterpreter({
+            "BODY_LLM_ENABLED": True,
+            "BODY_LLM_MODEL": "vision-model",
+            "BODY_LLM_EMBEDDING_MODEL": "text-embedding-nomic-embed-text-v1.5",
+        })
+        status = interpreter.status()
+        self.assertEqual(status["status"], "waiting")
+        self.assertEqual(status["embedding_model"], "text-embedding-nomic-embed-text-v1.5")
+        self.assertEqual(status["embedding"]["last_resolution"]["status"], "not_run")
+        interpreter.close()
+
+    def test_embedding_probe_matches_only_observed_scene_objects(self):
+        import json
+        from body_runtime_host.worldmodel.scene_interpreter import BodySceneInterpreter
+
+        interpreter = BodySceneInterpreter({
+            "BODY_LLM_ENABLED": True,
+            "BODY_LLM_BASE_URL": "http://embedding.test/v1",
+            "BODY_LLM_EMBEDDING_MODEL": "text-embedding-nomic-embed-text-v1.5",
+            "BODY_LLM_EMBEDDING_THRESHOLD": 0.78,
+        })
+        known = {
+            "cup": {"id": "cup", "label": "cup", "kind": "target"},
+            "table": {"id": "table", "label": "table", "kind": "table"},
+        }
+
+        class Response:
+            def __init__(self, payload):
+                self.payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def read(self):
+                return json.dumps(self.payload).encode()
+
+        def fake_urlopen(request, timeout):
+            payload = json.loads(request.data.decode())
+            if payload["input"] and payload["input"][0].startswith("search_document: "):
+                vectors = [[1.0, 0.0] if "cup" in text else [0.0, 1.0] for text in payload["input"]]
+            else:
+                vectors = [[0.99, 0.01] for _ in payload["input"]]
+                self.assertEqual(payload["input"], ["search_query: mug"])
+            return Response({"data": [{"index": i, "embedding": vector} for i, vector in enumerate(vectors)]})
+
+        with patch("body_runtime_host.worldmodel.scene_interpreter.urlopen", side_effect=fake_urlopen):
+            result = interpreter.test_embedding_resolution("mug", known)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "accepted")
+        self.assertEqual(result["matched_object_id"], "cup")
+        self.assertEqual(result["model"], "text-embedding-nomic-embed-text-v1.5")
+        self.assertEqual(result["scene_objects"], [
+            {"id": "cup", "label": "cup"}, {"id": "table", "label": "table"},
+        ])
+        self.assertEqual(interpreter.status()["embedding"]["requests"], 2)
+        self.assertEqual(interpreter.status()["embedding"]["accepted"], 1)
+        interpreter.close()
+
+    def test_local_fastembed_provider_uses_body_model_and_returns_grounded_match(self):
+        from body_runtime_host.worldmodel.scene_interpreter import BodySceneInterpreter, LOCAL_EMBEDDING_MODEL
+
+        class FakeEmbedding:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+
+            def embed(self, texts, batch_size):
+                return ([1.0, 0.0] if "cup" in text.lower() or "mug" in text.lower() else [0.0, 1.0]
+                        for text in texts)
+
+        fake_module = types.ModuleType("fastembed")
+        fake_module.TextEmbedding = FakeEmbedding
+        interpreter = BodySceneInterpreter({
+            "BODY_LLM_EMBEDDING_PROVIDER": "local_fastembed",
+            "BODY_LLM_EMBEDDING_MODEL": "text-embedding-nomic-embed-text-v1.5",
+            "BODY_LLM_EMBEDDING_THRESHOLD": 0.78,
+        })
+        known = {
+            "cup": {"id": "cup", "label": "cup", "kind": "target"},
+            "table": {"id": "table", "label": "table", "kind": "table"},
+        }
+        with patch.dict(sys.modules, {"fastembed": fake_module}), \
+                patch("body_runtime_host.worldmodel.scene_interpreter.importlib.util.find_spec", return_value=object()):
+            result = interpreter.test_embedding_resolution("mug", known)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["provider"], "local_fastembed")
+        self.assertEqual(result["model"], LOCAL_EMBEDDING_MODEL)
+        self.assertEqual(result["matched_object_id"], "cup")
+        self.assertEqual(interpreter.status()["embedding"]["requests"], 2)
+        interpreter.close()
+
+    def test_body_llm_settings_persist_local_embedding_provider(self):
+        from body_runtime_host.runtime import BodyHost
+
+        host = BodyHost()
+        host.config = {}
+        with patch.object(host, "save_config") as save_config:
+            result = host.update_body_llm_settings({
+                "embedding_provider": "local_fastembed",
+                "embedding_model": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+            })
+        save_config.assert_called_once()
+        self.assertEqual(host.config["BODY_LLM_EMBEDDING_PROVIDER"], "local_fastembed")
+        self.assertEqual(result["settings"]["embedding_provider"], "local_fastembed")
+        self.assertEqual(
+            result["settings"]["embedding_model"],
+            "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+        )
+
     def test_native_modalities_are_preferred_and_provenanced(self):
         from body_runtime_host.worldmodel.perception import sensor_projections
         from body_runtime_host.worldmodel.types import BodyState, SceneObject
