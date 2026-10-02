@@ -975,9 +975,10 @@ class BodyHost:
         port = settings["serial_port"]
         probe = FNK0031USBSource(port, timeout=min(2.0, settings["timeout"])) if port else None
         status = probe.status() if probe else {
-            "source": "fnk0031_usb", "transport": "USB serial / FNHR", "port": "",
+            "source": "fnk0031_usb", "transport": "USB serial / stock FNHR framed protocol", "protocol": "fnhr_framed_serial", "port": "",
             "connected": False, "actuation_enabled": settings["actuation_enabled"],
-            "pose_available": False, "last_error": "USB serial port is not configured",
+            "pose_available": False, "supply_voltage_v": None, "remote_preserved": True,
+            "last_error": "USB serial port is not configured",
             "supported_actions": ["forward", "backward", "turn_left", "turn_right", "stop", "wait"],
         }
         return {

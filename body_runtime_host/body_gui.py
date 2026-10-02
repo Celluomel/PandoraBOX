@@ -910,7 +910,7 @@ BODY_GUI_HTML = BODY_GUI_HTML.replace(
 function mountFnkUsbSettings(){
   const settings=document.querySelector('#fnk0031-panel .plugin-settings');
   if(settings&&!document.getElementById('fnk0031-serial-port')){
-    const label=document.createElement('label');label.className='field';label.id='fnk0031-usb-port-field';label.innerHTML='USB serial device<input id="fnk0031-serial-port" list="fnk0031-usb-ports" placeholder="/dev/ttyACM0 or COM5" autocomplete="off"><datalist id="fnk0031-usb-ports"></datalist>';
+    const label=document.createElement('label');label.className='field';label.id='fnk0031-usb-port-field';label.innerHTML='USB serial device<input id="fnk0031-serial-port" list="fnk0031-usb-ports" placeholder="/dev/ttyUSB0 or COM5" autocomplete="off"><datalist id="fnk0031-usb-ports"></datalist>';
     const platform=document.getElementById('fnk0031-platform');if(platform&&!platform.querySelector('option[value="usb_serial"]'))platform.add(new Option('Direct USB serial · FNHR firmware','usb_serial'));settings.insertBefore(label,settings.querySelector('.plugin-actions'));
     const url=document.getElementById('fnk0031-url')?.closest('.field');
     const update=()=>{const usb=platform?.value==='usb_serial';label.hidden=!usb;if(url)url.hidden=usb};
@@ -923,7 +923,7 @@ function mountFnkUsbSettings(){
 }
 async function runFnkUsbDiagnostic(){
   const output=document.getElementById('fnk-usb-status');if(output)output.textContent='Checking configured USB serial device (read-only echo + voltage; no movement command)…';
-  try{const data=await get('/plugins/fnk0031_wifi/usb/status');const ports=(data.ports||[]).map(p=>`${p.device} — ${p.description}`).join('\\n')||'No serial ports detected on this Body host.';const devices=document.getElementById('fnk0031-usb-ports');if(devices)devices.innerHTML=(data.ports||[]).map(p=>`<option value="${esc(p.device)}">${esc(p.description)}</option>`).join('');if(output)output.textContent=JSON.stringify({...data,detected_ports:ports},null,2);document.getElementById('robot-page-status').textContent=data.connected?`FNK0031 USB connected · ${data.port} · voltage ${data.battery_v??'unknown'} V`:(data.last_error||'FNK0031 USB not connected');}
+  try{const data=await get('/plugins/fnk0031_wifi/usb/status');const ports=(data.ports||[]).map(p=>`${p.device} — ${p.description}`).join('\\n')||'No serial ports detected on this Body host.';const devices=document.getElementById('fnk0031-usb-ports');if(devices)devices.innerHTML=(data.ports||[]).map(p=>`<option value="${esc(p.device)}">${esc(p.description)}</option>`).join('');if(output)output.textContent=JSON.stringify({...data,detected_ports:ports},null,2);document.getElementById('robot-page-status').textContent=data.connected?`FNK0031 USB connected · ${data.port} · voltage ${data.supply_voltage_v??'unknown'} V`:(data.last_error||'FNK0031 USB not connected');}
   catch(error){if(output)output.textContent='USB diagnostic failed: '+error.message}
 }
 saveFnk0031Settings=async function(){
