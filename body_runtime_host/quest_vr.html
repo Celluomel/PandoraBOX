@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#07110d">
+  <title>PandoraBOX · Quest Body View</title>
+  <style>
+    :root{color-scheme:dark;font:14px Inter,system-ui,sans-serif;background:#07110d;color:#e1eee6}
+    *{box-sizing:border-box}html,body{width:100%;height:100%;margin:0;overflow:hidden}
+    body{background:radial-gradient(ellipse at 50% 20%,#18382a 0,#0b1711 48%,#050907 100%)}
+    #scene{position:absolute;inset:0;width:100%;height:100%;display:block}
+    .hud{position:absolute;z-index:2;inset:18px 18px auto;display:flex;align-items:flex-start;justify-content:space-between;gap:14px;pointer-events:none}
+    .brand,.telemetry{border:1px solid #ffffff24;background:#09130edb;backdrop-filter:blur(16px);box-shadow:0 12px 40px #0005}
+    .brand{padding:12px 15px;min-width:190px}.eyebrow{color:#81d9ab;font:10px ui-monospace,monospace;letter-spacing:.12em;text-transform:uppercase}
+    h1{font-size:17px;font-weight:550;margin:6px 0 2px}.brand p{margin:0;color:#91a79a;font-size:11px}
+    .telemetry{display:grid;grid-template-columns:repeat(3,minmax(85px,1fr));min-width:min(420px,55vw)}
+    .metric{padding:10px 12px;border-left:1px solid #ffffff18}.metric:first-child{border-left:0}
+    .metric small{display:block;color:#86a091;font-size:9px;text-transform:uppercase;letter-spacing:.08em}.metric b{display:block;margin-top:5px;font:12px ui-monospace,monospace;color:#d7f1e1}
+    .controls{position:absolute;z-index:2;left:50%;bottom:22px;transform:translateX(-50%);display:flex;align-items:center;gap:9px;max-width:calc(100vw - 24px);pointer-events:auto}
+    button,a{border:1px solid #75c99a88;background:#0c2117e8;color:#d9f5e4;padding:11px 15px;font:12px inherit;text-decoration:none;cursor:pointer;backdrop-filter:blur(14px)}
+    button:hover,a:hover{background:#17402a}button:disabled{opacity:.5;cursor:default}
+    #status{position:absolute;z-index:2;left:50%;top:86px;transform:translateX(-50%);max-width:min(700px,calc(100vw - 32px));padding:8px 12px;background:#09130edb;color:#a9c3b2;border:1px solid #ffffff1b;text-align:center;font-size:11px}
+    #selection{position:absolute;z-index:2;right:18px;bottom:22px;max-width:min(280px,40vw);padding:12px 14px;background:#09130edb;border-left:2px solid #81d9ab;color:#d6e9dc;pointer-events:none}
+    #selection small{display:block;color:#8ca497;margin-top:4px;line-height:1.4}
+    .badge{display:inline-block;margin-left:7px;padding:3px 6px;border:1px solid #4a7158;color:#b6dfc2;font:9px ui-monospace,monospace;vertical-align:2px}
+    @media(max-width:650px){.hud{inset:10px 10px auto;display:grid}.brand{padding:9px 11px}.telemetry{min-width:0}.metric{padding:8px}.metric b{font-size:10px}#status{top:150px}#selection{right:10px;bottom:70px;max-width:50vw}.controls{bottom:12px;left:10px;right:10px;transform:none;justify-content:center}.controls button,.controls a{padding:10px 11px}}
+  </style>
+</head>
+<body>
+  <canvas id="scene" aria-label="Three-dimensional Body perception scene"></canvas>
+  <header class="hud">
+    <section class="brand"><div class="eyebrow">PandoraBOX · embodied view</div><h1>Body scene<span class="badge">READ ONLY</span></h1><p>Metric scene from Body perception, not Quest camera passthrough.</p></section>
+    <section class="telemetry" aria-label="Live Body telemetry">
+      <div class="metric"><small>Body pose</small><b id="pose">Waiting</b></div>
+      <div class="metric"><small>Scene source</small><b id="source">—</b></div>
+      <div class="metric"><small>Observation age</small><b id="age">—</b></div>
+    </section>
+  </header>
+  <div id="status" role="status">Connecting to Body world model…</div>
+  <aside id="selection"><b>No object selected</b><small>Point with a Quest controller and press its trigger. Selection never sends a robot command.</small></aside>
+  <nav class="controls" aria-label="Scene controls">
+    <button id="enter-xr" type="button">Enter VR</button>
+    <button id="recenter" type="button">Recenter view</button>
+    <a href="/worldmodel">Body dashboard</a>
+  </nav>
+  <script type="module" src="/quest-vr.js"></script>
+</body>
+</html>

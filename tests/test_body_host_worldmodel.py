@@ -499,6 +499,18 @@ class BodyHostHttpTest(unittest.TestCase):
                 plugin_ids = {plugin["id"] for plugin in health["plugins"]}
                 self.assertTrue({"pc_camera", "fnk0031_wifi", "sim_robot"}.issubset(plugin_ids))
 
+                # Quest VR view is served by the standalone Body host and uses
+                # the same authenticated origin as its world-model telemetry.
+                with urllib.request.urlopen(f"{base}/quest", timeout=5) as response:
+                    quest_html = response.read().decode("utf-8")
+                    self.assertEqual(response.headers.get_content_type(), "text/html")
+                self.assertIn("/quest-vr.js", quest_html)
+                self.assertIn("READ ONLY", quest_html)
+                with urllib.request.urlopen(f"{base}/quest-vr.js", timeout=5) as response:
+                    quest_bundle = response.read()
+                    self.assertEqual(response.headers.get_content_type(), "text/javascript")
+                self.assertGreater(len(quest_bundle), 100_000)
+
                 # world model endpoints (lazy build)
                 status = _get(f"{base}/worldmodel/status")
                 self.assertIn("mode", status)

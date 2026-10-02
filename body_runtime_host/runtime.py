@@ -2205,7 +2205,7 @@ class BodyHost:
                 except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
                     LOG.debug("Body HTTP client disconnected before response completed")
 
-            def _send_html(self, html: str, status: int = 200) -> None:
+            def _send_html(self, html: str, status: int = 200, check_version: bool = True) -> None:
                 version = hashlib.sha256(html.encode("utf-8")).hexdigest()[:16]
                 version_script = (
                     f"<script>window.BODY_UI_VERSION='{version}';"
@@ -2215,7 +2215,8 @@ class BodyHost:
                     "sessionStorage.setItem(k,'1');location.reload()}}catch(e){}}"
                     "setInterval(check,20000);document.addEventListener('visibilitychange',()=>{if(!document.hidden)check()})})();</script>"
                 )
-                html = html.replace("</body></html>", version_script + "</body></html>", 1)
+                if check_version:
+                    html = html.replace("</body></html>", version_script + "</body></html>", 1)
                 data = html.encode("utf-8")
                 try:
                     self.send_response(status)
@@ -2254,6 +2255,21 @@ class BodyHost:
                 path = self.path.split("?", 1)[0].rstrip("/") or "/"
                 if path in {"", "/", "/body", "/worldmodel", "/camera", "/llm", "/robot", "/ros2", "/runtime"}:
                     self._send_html(BODY_GUI_HTML)
+                elif path == "/quest":
+                    quest_page = ROOT / "body_runtime_host" / "quest_vr.html"
+                    self._send_html(quest_page.read_text(encoding="utf-8"), check_version=False)
+                elif path == "/quest-vr.js":
+                    bundle = ROOT / "body_runtime_host" / "quest-vr.bundle.js"
+                    try:
+                        data = bundle.read_bytes()
+                        self.send_response(200)
+                        self.send_header("Content-Type", "text/javascript; charset=utf-8")
+                        self.send_header("Cache-Control", "no-store")
+                        self.send_header("Content-Length", str(len(data)))
+                        self.end_headers()
+                        self._write_response(data)
+                    except FileNotFoundError:
+                        self._send({"error": "Quest VR renderer bundle is not installed"}, 404)
                 elif path == "/ui-version":
                     version = hashlib.sha256(BODY_GUI_HTML.encode("utf-8")).hexdigest()[:16]
                     self._send({"version": version})

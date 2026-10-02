@@ -15,6 +15,8 @@ class BodyDeploymentTests(unittest.TestCase):
             root = Path(directory)
             (root / "body_runtime_host").mkdir()
             (root / "body_runtime_host" / "runtime.py").write_text("# body", encoding="utf-8")
+            (root / "body_runtime_host" / "quest_vr.html").write_text("<script src='/quest-vr.js'></script>", encoding="utf-8")
+            (root / "body_runtime_host" / "quest-vr.bundle.js").write_text("// bundled renderer", encoding="utf-8")
             (root / ".venv" / "Scripts").mkdir(parents=True)
             (root / ".venv" / "Scripts" / "python.exe").write_bytes(b"secret env")
             config = {"BODY_PORT": 8766, "FNK0031_TOKEN": "do-not-copy", "NORMAL": "ok"}
@@ -25,6 +27,8 @@ class BodyDeploymentTests(unittest.TestCase):
                 names = archive.namelist()
                 copied = json.loads(archive.read("data/body/config.json"))
             self.assertIn("body_runtime_host/runtime.py", names)
+            self.assertIn("body_runtime_host/quest_vr.html", names)
+            self.assertIn("body_runtime_host/quest-vr.bundle.js", names)
             self.assertNotIn(".venv/Scripts/python.exe", names)
             self.assertNotIn("FNK0031_TOKEN", copied)
             self.assertEqual(copied["NORMAL"], "ok")
