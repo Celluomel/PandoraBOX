@@ -11,8 +11,7 @@ renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.xr.enabled = true;
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color('#07110d');
-scene.fog = new THREE.Fog('#07110d', 18, 42);
+scene.background = null;
 const camera = new THREE.PerspectiveCamera(58, window.innerWidth / window.innerHeight, 0.05, 100);
 camera.position.set(0, 7.2, 10.5);
 camera.lookAt(0, 0, -4);
@@ -33,7 +32,7 @@ world.position.set(0, 0, -4);
 scene.add(world);
 const floor = new THREE.Mesh(
   new THREE.PlaneGeometry(16, 16),
-  new THREE.MeshStandardMaterial({ color: '#14241b', roughness: 0.94, metalness: 0.02, side: THREE.DoubleSide }),
+  new THREE.MeshStandardMaterial({ color: '#14241b', roughness: 0.94, metalness: 0.02, side: THREE.DoubleSide, transparent: true, opacity: 0.2 }),
 );
 floor.rotation.x = -Math.PI / 2;
 floor.position.y = -0.035;
@@ -231,7 +230,7 @@ for (let index = 0; index < 2; index += 1) {
   controllerRays.push(controller);
 }
 
-document.querySelector('#enter-xr').addEventListener('click', async () => {
+async function enterXR(mode) {
   if (!window.isSecureContext) {
     setStatus('WebXR needs a trusted HTTPS origin. Trust the Body proxy certificate on the Quest, then reopen this page.', true);
     return;
@@ -241,20 +240,31 @@ document.querySelector('#enter-xr').addEventListener('click', async () => {
     return;
   }
   try {
-    const supported = await navigator.xr.isSessionSupported('immersive-vr');
-    if (!supported) throw new Error('This browser does not expose immersive-vr support.');
-    const session = await navigator.xr.requestSession('immersive-vr', { optionalFeatures: ['local-floor', 'bounded-floor'] });
+    const supported = await navigator.xr.isSessionSupported(mode);
+    if (!supported) throw new Error(`${mode} is not supported by this browser/device.`);
+    const session = await navigator.xr.requestSession(mode, {
+      optionalFeatures: ['local-floor', 'bounded-floor', 'hand-tracking'],
+    });
     await renderer.xr.setSession(session);
     orbit.enabled = false;
-    document.querySelector('#enter-xr').textContent = 'Exit VR';
+    document.querySelector('#enter-xr').textContent = mode === 'immersive-vr' ? 'Exit VR' : 'VR view';
+    document.querySelector('#enter-ar').textContent = mode === 'immersive-ar' ? 'Exit passthrough' : 'Passthrough AR';
+    setStatus(mode === 'immersive-ar'
+      ? 'Passthrough is active. The Body map is an unaligned overlay; controller input is telemetry only.'
+      : 'VR is active. Controller input is telemetry only.');
     session.addEventListener('end', () => {
       orbit.enabled = true;
       document.querySelector('#enter-xr').textContent = 'Enter VR';
+      document.querySelector('#enter-ar').textContent = 'Passthrough AR';
+      document.querySelector('#xr-input').textContent = 'Not in XR';
     }, { once: true });
   } catch (error) {
-    setStatus(`Could not start VR: ${error.message}`, true);
+    setStatus(`Could not start ${mode}: ${error.message}`, true);
   }
-});
+}
+
+document.querySelector('#enter-xr').addEventListener('click', () => enterXR('immersive-vr'));
+document.querySelector('#enter-ar').addEventListener('click', () => enterXR('immersive-ar'));
 
 document.querySelector('#recenter').addEventListener('click', () => {
   camera.position.set(0, 7.2, 10.5);
@@ -275,5 +285,17 @@ setInterval(pollBody, 1200);
 void pollBody();
 renderer.setAnimationLoop(() => {
   if (!renderer.xr.isPresenting) orbit.update();
+  const session = renderer.xr.getSession();
+  if (session) {
+    const xrCamera = renderer.xr.getCamera(camera);
+    const headYaw = new THREE.Euler().setFromQuaternion(xrCamera.quaternion, 'YXZ').y;
+    const active = [...session.inputSources].filter(source => source.gamepad);
+    const sticks = active.map(source => {
+      const axes = source.gamepad.axes || [];
+      const pressed = source.gamepad.buttons?.some(button => button.pressed) || false;
+      return `${source.handedness || 'controller'} ${Number(axes[2] ?? axes[0] ?? 0).toFixed(1)},${Number(axes[3] ?? axes[1] ?? 0).toFixed(1)}${pressed ? ' · button' : ''}`;
+    });
+    document.querySelector('#xr-input').textContent = `yaw ${Math.round(headYaw * 180 / Math.PI)}° · ${sticks.join(' | ') || 'no controller'}`;
+  }
   renderer.render(scene, camera);
 });

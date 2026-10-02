@@ -30,17 +30,19 @@
 <body>
   <canvas id="scene" aria-label="Three-dimensional Body perception scene"></canvas>
   <header class="hud">
-    <section class="brand"><div class="eyebrow">PandoraBOX · embodied view</div><h1>Body scene<span class="badge">READ ONLY</span></h1><p>Metric scene from Body perception, not Quest camera passthrough.</p></section>
+    <section class="brand"><div class="eyebrow">PandoraBOX · embodied view</div><h1>Body scene<span class="badge">INPUT PREVIEW</span></h1><p>Passthrough overlay · scene alignment is not calibrated.</p></section>
     <section class="telemetry" aria-label="Live Body telemetry">
       <div class="metric"><small>Body pose</small><b id="pose">Waiting</b></div>
       <div class="metric"><small>Scene source</small><b id="source">—</b></div>
       <div class="metric"><small>Observation age</small><b id="age">—</b></div>
+      <div class="metric"><small>Head / controller</small><b id="xr-input">Not in XR</b></div>
     </section>
   </header>
   <div id="status" role="status">Connecting to Body world model…</div>
-  <aside id="selection"><b>No object selected</b><small>Point with a Quest controller and press its trigger. Selection never sends a robot command.</small></aside>
+  <aside id="selection"><b>No object selected</b><small>Controller input is preview-only. No robot commands are sent from this page.</small></aside>
   <nav class="controls" aria-label="Scene controls">
     <button id="enter-xr" type="button">Enter VR</button>
+    <button id="enter-ar" type="button">Passthrough AR</button>
     <button id="recenter" type="button">Recenter view</button>
     <a href="/worldmodel">Body dashboard</a>
   </nav>
