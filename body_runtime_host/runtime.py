@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import importlib.util
 import json
 import logging
@@ -964,6 +965,26 @@ class BodyHost:
             "actuation_enabled": bool(self.value("FNK0031_ACTUATION_ENABLED", False)),
             "leg_count": int(self.value("FNK0031_LEG_COUNT", 6) or 6),
             "platform": str(self.value("FNK0031_PLATFORM", "ventuno_q_gateway") or "ventuno_q_gateway"),
+            "serial_port": str(self.value("FNK0031_SERIAL_PORT", "") or ""),
+        }
+
+    def fnk0031_usb_status(self) -> dict:
+        from body_runtime_host.fnk0031_usb import FNK0031USBSource, available_serial_ports
+
+        settings = self.fnk0031_settings()
+        port = settings["serial_port"]
+        probe = FNK0031USBSource(port, timeout=min(2.0, settings["timeout"])) if port else None
+        status = probe.status() if probe else {
+            "source": "fnk0031_usb", "transport": "USB serial / FNHR", "port": "",
+            "connected": False, "actuation_enabled": settings["actuation_enabled"],
+            "pose_available": False, "last_error": "USB serial port is not configured",
+            "supported_actions": ["forward", "backward", "turn_left", "turn_right", "stop", "wait"],
+        }
+        return {
+            **status,
+            "ports": available_serial_ports(),
+            "configured_port": port,
+            "plugin_enabled": bool(self.value("BODY_PLUGIN_ROBOT_ENABLED", False)),
         }
 
     def fnk0031_modules(self) -> dict:
@@ -1167,14 +1188,18 @@ class BodyHost:
         return report
 
     def update_fnk0031_settings(self, payload: dict) -> dict:
+        platform = str(payload.get("platform", "ventuno_q_gateway") or "ventuno_q_gateway").strip().lower()
+        if platform not in {"ventuno_q_gateway", "usb_serial", "esp32", "mega_wifi", "fnk0031_simulator"}:
+            raise ValueError("unsupported FNK0031 hardware topology")
         self.config.update({
             "FNK0031_URL": str(payload.get("url", "") or "").strip().rstrip("/"),
+            "FNK0031_SERIAL_PORT": str(payload.get("serial_port", self.value("FNK0031_SERIAL_PORT", "")) or "").strip(),
             "FNK0031_TIMEOUT": max(0.5, float(payload.get("timeout", 5.0) or 5.0)),
             "FNK0031_POLL_INTERVAL": max(1, int(payload.get("poll_interval", 5) or 5)),
             "FNK0031_SNN_ENABLED": bool(payload.get("snn_enabled", False)),
             "FNK0031_ACTUATION_ENABLED": bool(payload.get("actuation_enabled", False)),
             "FNK0031_LEG_COUNT": 6,
-            "FNK0031_PLATFORM": str(payload.get("platform", "ventuno_q_gateway") or "ventuno_q_gateway").strip().lower(),
+            "FNK0031_PLATFORM": platform,
         })
         token = str(payload.get("token", "") or "").strip()
         if token:
@@ -1988,7 +2013,11 @@ class BodyHost:
         except Exception:
             pass
         mode = str(model_config.get("mode") or "sim").strip().lower()
-        if mode == "sim":
+        usb_robot_selected = (
+            bool(self.value("BODY_PLUGIN_ROBOT_ENABLED", False))
+            and str(self.value("FNK0031_PLATFORM", "") or "").strip().lower() == "usb_serial"
+        )
+        if mode == "sim" and not usb_robot_selected:
             try:
                 return SimRobotSource(
                     camera_interval=float(self.value("BODY_CAMERA_INTERVAL", 0.5) or 0.5),
@@ -2127,6 +2156,16 @@ class BodyHost:
                     LOG.debug("Body HTTP client disconnected before response completed")
 
             def _send_html(self, html: str, status: int = 200) -> None:
+                version = hashlib.sha256(html.encode("utf-8")).hexdigest()[:16]
+                version_script = (
+                    f"<script>window.BODY_UI_VERSION='{version}';"
+                    "(function(){async function check(){try{const r=await fetch('/ui-version',{cache:'no-store'});"
+                    "if(!r.ok)return;const d=await r.json();if(d.version!==window.BODY_UI_VERSION){"
+                    "const k='body-ui-reloaded-'+d.version;if(sessionStorage.getItem(k))return;"
+                    "sessionStorage.setItem(k,'1');location.reload()}}catch(e){}}"
+                    "setInterval(check,20000);document.addEventListener('visibilitychange',()=>{if(!document.hidden)check()})})();</script>"
+                )
+                html = html.replace("</body></html>", version_script + "</body></html>", 1)
                 data = html.encode("utf-8")
                 try:
                     self.send_response(status)
@@ -2165,6 +2204,9 @@ class BodyHost:
                 path = self.path.split("?", 1)[0].rstrip("/") or "/"
                 if path in {"", "/", "/body", "/worldmodel", "/camera", "/llm", "/robot", "/ros2", "/runtime"}:
                     self._send_html(BODY_GUI_HTML)
+                elif path == "/ui-version":
+                    version = hashlib.sha256(BODY_GUI_HTML.encode("utf-8")).hexdigest()[:16]
+                    self._send({"version": version})
                 elif path == "/health":
                     wm = owner._worldmodel
                     self._send({
@@ -2212,6 +2254,8 @@ class BodyHost:
                     self._send(owner.fnk0050_settings())
                 elif path == "/plugins/fnk0031_wifi/settings":
                     self._send(owner.fnk0031_settings())
+                elif path == "/plugins/fnk0031_wifi/usb/status":
+                    self._send(owner.fnk0031_usb_status())
                 elif path == "/plugins/fnk0031_wifi/modules":
                     self._send(owner.fnk0031_modules())
                 elif path == "/plugins/fnk0031_wifi/modules/status":

@@ -12,6 +12,8 @@ opencv-python>=4.8,<5
 numpy>=1.24
 torch>=2.0
 mujoco>=3.3,<4
+# USB serial transport for the stock FNK0031 FNHR firmware (Ventuno Q / Linux).
+pyserial>=3.5,<4
 # Local multilingual text embeddings. FastEmbed uses ONNX Runtime; model
 # weights are downloaded lazily into Body-owned data on first use.
 fastembed>=0.7,<1

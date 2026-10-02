@@ -127,6 +127,10 @@ class WorkflowManagerTests(unittest.TestCase):
         self.assertIn("mountWorkflowEditor(rosView)", BODY_GUI_HTML)
         self.assertIn("Analyze with Body VLM", BODY_GUI_HTML)
         self.assertIn("/workflows/'+encodeURIComponent(workflowId)+'/analyze", BODY_GUI_HTML)
+        self.assertIn("new Set(Object.values(workflowBrickTypes).map(meta=>meta.group))", BODY_GUI_HTML)
+        self.assertIn("view.dataset.workflowEditor='mounting'", BODY_GUI_HTML)
+        self.assertIn("view.dataset.workflowEditor='1';", BODY_GUI_HTML)
+        self.assertIn("max-width:1200px", BODY_GUI_HTML)
 
     def test_workflow_analysis_uses_saved_outputs_and_never_applies_suggestions(self):
         import json

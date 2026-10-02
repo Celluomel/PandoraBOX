@@ -39,6 +39,7 @@ from .spatial import LocalMapReference, geo_fix
 from .types import Action, BodyState, Observation, Outcome, SceneObject
 from ..mmwave_radar import SimulatedMmWaveRadarSource
 from .virtual_camera import render_camera
+from ..fnk0031_usb import FNK0031USBSource
 
 logger = logging.getLogger(__name__)
 
@@ -680,6 +681,13 @@ def resolve_source(config: Dict[str, Any], latest: Optional[Dict[str, Dict[str, 
         logger.warning("[body] FNK0050 plugin enabled but FNK0050_URL is empty — falling through")
     # 2) FNK0031 six-leg development channel.
     if bool(config.get("BODY_PLUGIN_ROBOT_ENABLED", False)):
+        platform = str(config.get("FNK0031_PLATFORM", "") or "").strip().lower()
+        if platform == "usb_serial":
+            return FNK0031USBSource(
+                port=str(config.get("FNK0031_SERIAL_PORT", "") or ""),
+                timeout=float(config.get("FNK0031_TIMEOUT", 5.0) or 5.0),
+                actuation_enabled=bool(config.get("FNK0031_ACTUATION_ENABLED", config.get("BODY_ACTUATION_ENABLED", False))),
+            )
         url = str(config.get("FNK0031_URL") or config.get("ROBOT_URL", "") or "").strip()
         if url:
             return FNK0031WifiSource(config)
