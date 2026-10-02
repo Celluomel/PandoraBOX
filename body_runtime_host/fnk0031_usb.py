@@ -20,6 +20,7 @@ ORDER_VOLTAGE_REQUEST = 10
 ORDER_VOLTAGE_RESPONSE = 11
 ORDER_STARTED = 21
 ORDER_DONE = 23
+SERIAL_STARTUP_SETTLE_SECONDS = 3.0
 
 # Native Freenove commands. The FNHR firmware, not this host adapter, executes
 # each gait and continues polling the RF24 remote and ESP8266 between actions.
@@ -98,6 +99,12 @@ class FNK0031USBSource:
                     connection.port = self.port
                     connection.dtr = False
                     connection.open()
+                    LOG.info(
+                        "FNK0031 USB port %s opened; waiting %.1fs for controller startup",
+                        self.port,
+                        SERIAL_STARTUP_SETTLE_SECONDS,
+                    )
+                    time.sleep(SERIAL_STARTUP_SETTLE_SECONDS)
                 else:
                     connection = factory(self.port, 115200, timeout=0.1, write_timeout=self.timeout)
                 _SERIAL_CONNECTIONS[key] = connection

@@ -1,4 +1,6 @@
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from body_runtime_host.fnk0031_usb import (
     FNK0031USBSource,
@@ -10,6 +12,7 @@ from body_runtime_host.fnk0031_usb import (
     ORDER_STARTED,
     ORDER_VOLTAGE_REQUEST,
     ORDER_VOLTAGE_RESPONSE,
+    SERIAL_STARTUP_SETTLE_SECONDS,
 )
 from body_runtime_host.worldmodel.types import Action
 
@@ -53,6 +56,19 @@ class FakeSerial:
         return value
 
 
+class FakeHardwareSerial(FakeSerial):
+    def __init__(self, port, baudrate, timeout, write_timeout):
+        super().__init__(port, baudrate, timeout, write_timeout)
+        self.is_open = False
+        self.dtr = True
+
+    def open(self):
+        self.is_open = True
+
+    def close(self):
+        self.is_open = False
+
+
 class FNK0031USBSourceTests(unittest.TestCase):
     def setUp(self):
         self.connections = []
@@ -72,6 +88,20 @@ class FNK0031USBSourceTests(unittest.TestCase):
             self.connections[0].writes,
             [frame(ORDER_ECHO_REQUEST), frame(ORDER_VOLTAGE_REQUEST)],
         )
+
+    def test_real_serial_open_waits_for_fnhr_controller_startup(self):
+        connection = FakeHardwareSerial(None, 115200, 0.1, 5)
+        serial_module = SimpleNamespace(Serial=lambda *args, **kwargs: connection)
+        source = FNK0031USBSource("/dev/test-fnk0031-startup")
+        with patch.dict("sys.modules", {"serial": serial_module}), patch(
+            "body_runtime_host.fnk0031_usb.time.sleep"
+        ) as sleep:
+            with source._open() as opened:
+                self.assertIs(opened, connection)
+                self.assertTrue(opened.is_open)
+                self.assertFalse(opened.dtr)
+            sleep.assert_called_once_with(SERIAL_STARTUP_SETTLE_SECONDS)
+        connection.close()
 
     def test_observation_reports_stock_protocol_and_no_fabricated_pose(self):
         source = FNK0031USBSource("/dev/ttyUSB0", serial_factory=self.factory)
