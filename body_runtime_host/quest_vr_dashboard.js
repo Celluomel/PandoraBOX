@@ -22,8 +22,11 @@ export class QuestVRDashboard {
     this.controller = null;
     this.following = false;
     this.actionHitAreas = {};
+    this.actionBusy = false;
     this.cameraBitmap = null;
     this.cameraMessage = 'CAMERA · WAITING';
+    this.cameraBackgroundActive = false;
+    this.cameraHitArea = null;
 
     const canvas = document.createElement('canvas');
     canvas.width = 3072;
@@ -175,11 +178,11 @@ export class QuestVRDashboard {
     const simulationReady = this.frame?.mode === 'sim';
     const simulationRunning = Boolean(this.frame?.running);
     const simulationLabel = simulationRunning ? 'PAUSE SIMULATION' : 'START SIMULATION';
-    const simulationX = this.canvas.width / 2 - 280;
-    const exitX = this.canvas.width / 2 + 20;
+    const simulationX = this.canvas.width / 2 - 360;
+    const exitX = this.canvas.width / 2 + 40;
     const drawButton = (key, x, width, label, fill, stroke, textColor, enabled = true) => {
       const height = 48;
-      this.actionHitAreas[key] = { x, y: buttonY, width, height, enabled };
+      this.actionHitAreas[key] = { x: x - 16, y: buttonY - 12, width: width + 32, height: height + 24, enabled: enabled && !this.actionBusy };
       ctx.globalAlpha = enabled ? 1 : 0.42;
       ctx.fillStyle = fill;
       ctx.strokeStyle = stroke;
@@ -191,8 +194,8 @@ export class QuestVRDashboard {
       ctx.fillText(label, x + width / 2, buttonY + height / 2);
       ctx.globalAlpha = 1;
     };
-    drawButton('simulation', simulationX, 280, simulationReady ? simulationLabel : 'SIMULATION OFFLINE', 'rgba(31, 105, 78, .96)', '#75edbd', '#e5fff3', simulationReady);
-    drawButton('exit', exitX, 220, 'EXIT VR', 'rgba(91, 53, 42, .96)', '#f0a888', '#fff0e8');
+    drawButton('simulation', simulationX, 320, this.actionBusy ? 'PLEASE WAIT' : simulationReady ? simulationLabel : 'SIMULATION OFFLINE', 'rgba(31, 105, 78, .96)', '#75edbd', '#e5fff3', simulationReady);
+    drawButton('exit', exitX, 260, this.actionBusy ? 'PLEASE WAIT' : 'EXIT VR', 'rgba(91, 53, 42, .96)', '#f0a888', '#fff0e8');
   }
 
   drawTopTelemetry(ctx, perception, fnk, xr) {
@@ -234,11 +237,12 @@ export class QuestVRDashboard {
   }
 
   drawCamera(ctx, x, y, width, height) {
-    this.panel(ctx, x, y, width, height, 'Camera · egocentric', this.cameraBitmap ? 'LIVE' : 'BODY CAMERA');
+    this.panel(ctx, x, y, width, height, 'Camera · egocentric', this.cameraBackgroundActive ? 'BACKGROUND ON' : this.cameraBitmap ? 'LIVE' : 'BODY CAMERA');
     const imageX = x + 18;
     const imageWidth = width - 36;
     const imageHeight = Math.min(height - 112, imageWidth * .78);
     const imageY = y + 72 + Math.max(0, (height - 92 - imageHeight) / 2);
+    this.cameraHitArea = { x: imageX, y: imageY, width: imageWidth, height: imageHeight };
     ctx.fillStyle = '#0b1512';
     ctx.beginPath(); ctx.roundRect(imageX, imageY, imageWidth, imageHeight, 20); ctx.fill();
     if (this.cameraBitmap) {
@@ -249,6 +253,11 @@ export class QuestVRDashboard {
       ctx.beginPath(); ctx.roundRect(imageX, imageY, imageWidth, imageHeight, 20); ctx.clip();
       ctx.drawImage(this.cameraBitmap, imageX + (imageWidth - drawWidth) / 2, imageY + (imageHeight - drawHeight) / 2, drawWidth, drawHeight);
       ctx.restore();
+      ctx.fillStyle = 'rgba(4, 13, 11, .78)';
+      ctx.beginPath(); ctx.roundRect(imageX + 16, imageY + imageHeight - 48, 390, 34, 12); ctx.fill();
+      ctx.fillStyle = '#d9f5e4'; ctx.font = '600 15px ui-monospace, monospace';
+      ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+      ctx.fillText(this.cameraBackgroundActive ? 'TRIGGER · RESTORE 3D VIEW' : 'TRIGGER · USE AS 3D BACKGROUND', imageX + 28, imageY + imageHeight - 31);
     } else {
       ctx.fillStyle = '#bbd6c5';
       ctx.font = '600 22px ui-monospace, monospace';
@@ -562,6 +571,16 @@ export class QuestVRDashboard {
 
   setVisible(visible) { this.visible = Boolean(visible); }
 
+  setCameraBackgroundActive(active) {
+    this.cameraBackgroundActive = Boolean(active);
+    this.drawDashboard();
+  }
+
+  setActionBusy(busy) {
+    this.actionBusy = Boolean(busy);
+    this.drawDashboard();
+  }
+
   isControllerOverDashboard(controller, raycaster) {
     controller.updateMatrixWorld(true);
     const rotation = new this.THREE.Matrix4().extractRotation(controller.matrixWorld);
@@ -582,6 +601,8 @@ export class QuestVRDashboard {
     if (!hit?.uv) return null;
     const x = hit.uv.x * this.canvas.width;
     const y = (1 - hit.uv.y) * this.canvas.height;
+    const cameraArea = this.cameraHitArea;
+    if (cameraArea && x >= cameraArea.x && x <= cameraArea.x + cameraArea.width && y >= cameraArea.y && y <= cameraArea.y + cameraArea.height) return 'camera-background';
     for (const [key, area] of Object.entries(this.actionHitAreas)) {
       if (area.enabled && x >= area.x && x <= area.x + area.width && y >= area.y && y <= area.y + area.height) return key;
     }

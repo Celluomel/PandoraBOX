@@ -14,6 +14,9 @@ renderer.autoClear = false;
 
 const scene = new THREE.Scene();
 const vrDashboard = new QuestVRDashboard(THREE);
+const cameraBackgroundTexture = new THREE.Texture();
+cameraBackgroundTexture.colorSpace = THREE.SRGBColorSpace;
+let cameraBackgroundActive = false;
 let cameraPollTimer = null;
 let cameraPollInFlight = false;
 let lastCameraFrameId = null;
@@ -191,6 +194,10 @@ async function pollCameraFrame() {
     if (frameId !== lastCameraFrameId) {
       lastCameraFrameId = frameId;
       await vrDashboard.setCameraFrame(frame);
+      if (cameraBackgroundActive && vrDashboard.cameraBitmap) {
+        cameraBackgroundTexture.image = vrDashboard.cameraBitmap;
+        cameraBackgroundTexture.needsUpdate = true;
+      }
     }
   } catch (error) {
     vrDashboard.setCameraStatus('CAMERA · STREAM ERROR');
@@ -345,7 +352,11 @@ function selectAt(controller) {
     return;
   }
   if (hudAction === 'exit') {
-    void renderer.xr.getSession()?.end();
+    void exitVrFromHud();
+    return;
+  }
+  if (hudAction === 'camera-background') {
+    toggleCameraBackground();
     return;
   }
   if (hudAction === 'dashboard') return;
@@ -377,7 +388,10 @@ async function toggleSimulationFromHud() {
     setStatus('World Model simulation controls are unavailable in the current Body mode.', true);
     return;
   }
+  if (vrDashboard.actionBusy) return;
   const running = latestWorldStatus.running === true;
+  vrDashboard.setActionBusy(true);
+  setStatus(running ? 'Pausing World Model simulation…' : 'Starting World Model simulation…');
   try {
     const response = await fetch('/worldmodel/run', {
       method: 'POST',
@@ -386,12 +400,53 @@ async function toggleSimulationFromHud() {
       body: JSON.stringify({ running: !running, shuffle: !running }),
     });
     if (!response.ok) throw new Error(`World Model HTTP ${response.status}`);
-    await response.json();
+    const result = await response.json();
+    if (typeof result.running === 'boolean') {
+      latestWorldStatus = { ...latestWorldStatus, ...result };
+      vrDashboard.update(latestWorldStatus);
+    }
     await pollBody();
-    setStatus(running ? 'World Model simulation paused from the VR HUD.' : 'World Model simulation started from the VR HUD.');
+    const nowRunning = latestWorldStatus?.running === true;
+    setStatus(nowRunning ? 'World Model simulation running.' : 'World Model simulation paused.');
   } catch (error) {
     setStatus(`Simulation control failed: ${error.message}`, true);
+  } finally {
+    vrDashboard.setActionBusy(false);
   }
+}
+
+async function exitVrFromHud() {
+  const session = renderer.xr.getSession();
+  if (!session) {
+    setStatus('No active VR session to exit.', true);
+    return;
+  }
+  setStatus('Exiting VR…');
+  try {
+    await session.end();
+  } catch (error) {
+    setStatus(`Could not exit VR: ${error.message}`, true);
+  }
+}
+
+function toggleCameraBackground() {
+  if (cameraBackgroundActive) {
+    cameraBackgroundActive = false;
+    scene.background = null;
+    vrDashboard.setCameraBackgroundActive(false);
+    setStatus('Standard 3D VR view restored.');
+    return;
+  }
+  if (!vrDashboard.cameraBitmap) {
+    setStatus('Camera background unavailable: no live camera frame.', true);
+    return;
+  }
+  cameraBackgroundTexture.image = vrDashboard.cameraBitmap;
+  cameraBackgroundTexture.needsUpdate = true;
+  scene.background = cameraBackgroundTexture;
+  cameraBackgroundActive = true;
+  vrDashboard.setCameraBackgroundActive(true);
+  setStatus('Live camera is behind the 3D scene. Virtual objects do not occlude real objects.');
 }
 
 function escapeText(value) {
@@ -448,6 +503,8 @@ async function enterXR(mode) {
     session.addEventListener('end', () => {
       orbit.enabled = true;
       scene.background = null;
+      cameraBackgroundActive = false;
+      vrDashboard.setCameraBackgroundActive(false);
       world.position.set(0, 0, 0);
       world.rotation.set(0, 0, 0);
       world.scale.set(1, 1, 1);
