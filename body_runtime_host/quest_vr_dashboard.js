@@ -40,8 +40,8 @@ export class QuestVRDashboard {
       new THREE.PlaneGeometry(1.25, 0.703),
       new THREE.MeshBasicMaterial({ map: this.cameraTexture, transparent: true, depthTest: false, side: THREE.DoubleSide }),
     );
-    cameraPanel.position.set(-1.27, 0.82, -1.96);
-    cameraPanel.rotation.y = 0.55;
+    cameraPanel.position.set(-0.8, 0.82, -1.8);
+    cameraPanel.rotation.y = 0.48;
     cameraPanel.renderOrder = 1000;
     this.root.add(cameraPanel);
     this.panels.push(cameraPanel);
@@ -54,11 +54,11 @@ export class QuestVRDashboard {
     this.sensorTexture = new THREE.CanvasTexture(sensorCanvas);
     this.sensorTexture.colorSpace = THREE.SRGBColorSpace;
     const sensorPanel = new THREE.Mesh(
-      new THREE.PlaneGeometry(1.45, 0.725),
+      new THREE.PlaneGeometry(1.55, 0.775),
       new THREE.MeshBasicMaterial({ map: this.sensorTexture, transparent: true, depthTest: false, side: THREE.DoubleSide }),
     );
-    sensorPanel.position.set(1.27, 0.82, -1.96);
-    sensorPanel.rotation.y = -0.55;
+    sensorPanel.position.set(0.8, 0.82, -1.8);
+    sensorPanel.rotation.y = -0.48;
     sensorPanel.renderOrder = 1000;
     this.root.add(sensorPanel);
     this.panels.push(sensorPanel);
