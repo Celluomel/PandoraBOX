@@ -115,7 +115,7 @@ class BodyRuntime:
 
     _CONFIG_FIELDS = {
         "BODY_RUNTIME_ENABLED", "BODY_PLUGIN_HOME_ASSISTANT_ENABLED",
-        "BODY_HOST", "BODY_PORT", "BODY_URL", "BODY_HTTP_USERNAME", "BODY_HTTP_PASSWORD",
+        "BODY_HOST", "BODY_PORT", "BODY_URL", "BODY_HTTP_USERNAME", "BODY_HTTP_PASSWORD", "BODY_HTTP_CA_CERT",
         "BODY_PLUGIN_ROBOT_ENABLED", "ROBOT_URL", "ROBOT_TOKEN",
         "ROBOT_TIMEOUT", "ROBOT_POLL_INTERVAL", "FNK0031_URL", "FNK0031_TOKEN",
         "FNK0031_TIMEOUT", "FNK0031_POLL_INTERVAL", "FNK0031_SNN_ENABLED",
@@ -313,6 +313,7 @@ class BodyRuntime:
                 base,
                 auth_username=str(self.config_value("BODY_HTTP_USERNAME", "") or ""),
                 auth_password=str(self.config_value("BODY_HTTP_PASSWORD", "") or ""),
+                ca_cert=str(self.config_value("BODY_HTTP_CA_CERT", "") or ""),
             )
             if client.ping():
                 import logging

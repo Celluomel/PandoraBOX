@@ -29,6 +29,16 @@ class RemoteWorldModelAuthTests(unittest.TestCase):
             self.assertTrue(client.ping())
         self.assertIsNone(open_url.call_args.args[0].get_header("Authorization"))
 
+    def test_custom_ca_is_used_for_https_requests(self):
+        context = object()
+        with patch.object(_MODULE.ssl, "create_default_context", return_value=context) as create_context:
+            client = RemoteWorldModel("https://body.example", ca_cert="body-root.crt")
+        create_context.assert_called_once_with(cafile="body-root.crt")
+        with patch.object(_MODULE.urllib.request, "urlopen") as open_url:
+            open_url.return_value.__enter__.return_value.read.return_value = b"{}"
+            self.assertTrue(client.ping())
+        self.assertIs(open_url.call_args.kwargs["context"], context)
+
 
 if __name__ == "__main__":
     unittest.main()

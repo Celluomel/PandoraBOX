@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import logging
 import base64
+import ssl
 import urllib.error
 import urllib.request
 from urllib.parse import quote
@@ -34,7 +35,8 @@ logger = logging.getLogger(__name__)
 
 
 def _request(method: str, url: str, payload: Optional[Dict[str, Any]] = None,
-             timeout: float = 10.0, headers: Optional[Dict[str, str]] = None) -> Any:
+             timeout: float = 10.0, headers: Optional[Dict[str, str]] = None,
+             ssl_context: Optional[ssl.SSLContext] = None) -> Any:
     data = None
     if payload is not None:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -42,7 +44,11 @@ def _request(method: str, url: str, payload: Optional[Dict[str, Any]] = None,
         url, data=data, method=method,
         headers={"Accept": "application/json", "Content-Type": "application/json", **(headers or {})},
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    opener = urllib.request.urlopen
+    response = opener(req, timeout=timeout) if ssl_context is None else opener(
+        req, timeout=timeout, context=ssl_context
+    )
+    with response as resp:
         raw = resp.read().decode("utf-8")
         return json.loads(raw) if raw else None
 
@@ -51,18 +57,20 @@ class RemoteWorldModel:
     """Brain-side, read-only view of the Body-owned world model."""
 
     def __init__(self, base_url: str, timeout: float = 10.0,
-                 auth_username: str = "", auth_password: str = ""):
+                 auth_username: str = "", auth_password: str = "", ca_cert: str = ""):
         self.base_url = str(base_url or "").rstrip("/")
         self.timeout = float(timeout or 10.0)
         self._headers: Dict[str, str] = {}
         if auth_username or auth_password:
             raw = f"{auth_username}:{auth_password}".encode("utf-8")
             self._headers["Authorization"] = "Basic " + base64.b64encode(raw).decode("ascii")
+        self._ssl_context = ssl.create_default_context(cafile=ca_cert) if ca_cert else None
         self._last_error = ""
 
     def _request(self, method: str, url: str, payload: Optional[Dict[str, Any]] = None,
                  timeout: Optional[float] = None) -> Any:
-        return _request(method, url, payload, self.timeout if timeout is None else timeout, self._headers)
+        args = (method, url, payload, self.timeout if timeout is None else timeout, self._headers)
+        return _request(*args) if self._ssl_context is None else _request(*args, self._ssl_context)
 
     # ── liveness ────────────────────────────────────────────────────────────
 

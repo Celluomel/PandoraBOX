@@ -157,6 +157,7 @@ class AppSettings(BaseModel):
     BODY_URL: str = ""
     BODY_HTTP_USERNAME: str = ""
     BODY_HTTP_PASSWORD: str = ""
+    BODY_HTTP_CA_CERT: str = ""
     # None preserves legacy HOME_ASSISTANT_ENABLED until the user chooses the
     # new body-plugin toggle in the interface.
     BODY_PLUGIN_HOME_ASSISTANT_ENABLED: Optional[bool] = None
