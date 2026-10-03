@@ -2803,7 +2803,7 @@ Memory honesty — two distinct cases:
             return "normal"
 
     def _body_status_response(self) -> dict:
-        """Report only the latest Body-owned plan and physical state."""
+        """Report the latest Body plan and any independently bridged telemetry."""
         body = getattr(self._organism, "_body_runtime", None) if self._organism else None
         if body is None:
             return {"handled": True, "status": "unavailable", "response": "Le Body Runtime n'est pas disponible."}
@@ -2816,10 +2816,45 @@ Memory honesty — two distinct cases:
             if not isinstance(sim, dict):
                 sim = {}
             if not isinstance(active, dict):
+                bridge_status = body.status()
+                bridge = bridge_status.get("brain_bridge") if isinstance(bridge_status, dict) else {}
+                connected = bool(bridge.get("connected")) if isinstance(bridge, dict) else False
+                observations = body.snapshot(max_age=300.0)
+                telemetry_lines = []
+                for item in observations[:4]:
+                    value = item.get("value")
+                    if isinstance(value, dict) and item.get("subject") == "body.runtime":
+                        camera = value.get("camera") or {}
+                        robot = value.get("robot") or {}
+                        model = value.get("world_model") or {}
+                        detail = (
+                            f"runtime={value.get('runtime', 'unknown')}; "
+                            f"camera={camera.get('status', 'unknown')}"
+                            + (f" {camera.get('observed_fps')} FPS" if camera.get("observed_fps") is not None else "")
+                            + f"; robot={'connected' if robot.get('connected') else 'not connected'}"
+                            + f"; world model={'running' if model.get('running') else 'not running'}"
+                        )
+                    else:
+                        detail = json.dumps(value, ensure_ascii=False, default=str, separators=(",", ":"))[:360]
+                    age = max(0.0, time.time() - float(item.get("observed_at") or time.time()))
+                    telemetry_lines.append(
+                        f"{item.get('subject', 'observation')} [{item.get('source', 'unknown')}, "
+                        f"{age:.0f} s]: {detail}"
+                    )
+                response = "Aucun plan Body actif n'est enregistré. "
+                response += "Pont télémétrique connecté." if connected else "Pont télémétrique non connecté."
+                if telemetry_lines:
+                    response += " Dernières observations Body (âgées de moins de 5 minutes) : " + " | ".join(telemetry_lines)
+                else:
+                    response += " Aucune observation Body récente n'est remontée."
+                if worldmodel is None:
+                    response += " L'API HTTP du Body distant est indisponible pour la planification."
                 return {
                     "handled": True,
                     "status": "reported",
-                    "response": "Aucun plan Body actif n'est enregistré ; je ne peux donc pas confirmer une action en cours ou accomplie.",
+                    "response": response,
+                    "body_status": bridge_status,
+                    "observations": observations,
                 }
             objective = str(active.get("objective") or "objectif Body")
             state = str(active.get("state") or "unknown")

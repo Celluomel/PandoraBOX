@@ -1832,6 +1832,65 @@ class BodyHost:
         except Exception:
             LOG.debug("World-model perception bridge update failed", exc_info=True)
 
+    def publish_runtime_status(self) -> None:
+        """Publish a small, timestamped Body health snapshot over the Brain bridge."""
+        now = time.time()
+        worldmodel = self._worldmodel
+        worldmodel_status = {"enabled": bool(self.value("BODY_WORLDMODEL_ENABLED", False)), "running": False}
+        if worldmodel is not None:
+            try:
+                summary = worldmodel.status_summary()
+                worldmodel_status.update({
+                    "enabled": bool(summary.get("enabled")),
+                    "running": bool(summary.get("running")),
+                    "mode": summary.get("mode"),
+                    "steps": summary.get("steps", 0),
+                    "source": summary.get("source"),
+                })
+            except Exception as exc:
+                worldmodel_status["error"] = str(exc)[:180]
+        camera = self.camera_settings().get("capture") or {}
+        robot = self.robot_status()
+        plugins = [
+            {"id": item.get("id"), "enabled": bool(item.get("enabled"))}
+            for item in self.plugins()
+        ]
+        value = {
+            "runtime": "ready",
+            "timestamp": now,
+            "bridge_connected": self._bridge_connected.is_set(),
+            "camera": {
+                "status": camera.get("status", "unknown"),
+                "available": bool(camera.get("available")),
+                "observed_fps": camera.get("observed_fps"),
+                "width": camera.get("width"),
+                "height": camera.get("height"),
+                "frame_age_s": camera.get("frame_age_s"),
+                "last_error": str(camera.get("last_error") or "")[:180],
+            },
+            "robot": {
+                "enabled": robot["enabled"],
+                "connected": robot["last_ok_age_s"] is not None and robot["last_ok_age_s"] < 15,
+                "last_ok_age_s": robot["last_ok_age_s"],
+                "last_error": str(robot["last_error"] or "")[:180],
+            },
+            "world_model": worldmodel_status,
+            "plugins": plugins,
+        }
+        entry = {
+            "entity_id": "body.runtime.status",
+            "source": "body_runtime",
+            "kind": "runtime_status",
+            "subject": "body.runtime",
+            "value": value,
+            "unit": "",
+            "confidence": 1.0,
+            "observed_at": now,
+            "provenance": {"contract": "pandorabox.body_runtime_status.v1"},
+        }
+        self.latest[entry["entity_id"]] = entry
+        self._bridge_put(entry)
+
     def _bridge_put(self, entry: dict) -> None:
         if self._ros2_bridge is not None:
             self._ros2_bridge.publish(entry)
@@ -1984,6 +2043,7 @@ class BodyHost:
             if bool(self.value("BODY_WORLDMODEL_ENABLED", False)):
                 self.publish_worldmodel_perception()
             self.publish_fnk0031_usb_status()
+            self.publish_runtime_status()
             self.stop_event.wait(interval)
 
     # ── Brain bridge (websocket) ────────────────────────────────────────────
