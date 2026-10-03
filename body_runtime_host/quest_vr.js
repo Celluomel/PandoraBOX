@@ -76,6 +76,7 @@ const objectsGroup = new THREE.Group();
 world.add(objectsGroup);
 const semanticSplatGroup = new THREE.Group();
 world.add(semanticSplatGroup);
+const semanticSplatNodes = new Map();
 const selectionMarker = new THREE.Mesh(
   new THREE.RingGeometry(0.42, 0.5, 32),
   new THREE.MeshBasicMaterial({ color: '#b9f5ce', side: THREE.DoubleSide, transparent: true, opacity: 0.95 }),
@@ -94,6 +95,7 @@ const selectable = [];
 const controllerRays = [];
 const colorByKind = { table: '#d3bd67', chair: '#83b3d5', obstacle: '#a77ba5', mobile_obstacle: '#db83bf', target: '#efa678' };
 let lastFrame = null;
+let sceneRenderKey = '';
 let basePosition = null;
 let firstData = true;
 let latestObjects = [];
@@ -314,38 +316,76 @@ function semanticSeed(value) {
   };
 }
 
-function gaussianPreview(group) {
+function updateGaussianPreview(points, group) {
   const center = group.center_m || [];
-  if (center.length < 2) return null;
+  if (!Array.isArray(center) || center.length < 2) return false;
+  const cx = Number(center[0]);
+  const cy = Number(center[1]);
+  if (!Number.isFinite(cx) || !Number.isFinite(cy)) return false;
+  const confidence = Number(group.confidence);
+  const extentValue = Number(group.extent_m);
+  const extent = Math.max(0.12, Math.min(1.2, Number.isFinite(extentValue) ? extentValue : 0.4));
+  const signature = JSON.stringify([cx, cy, center[2], extent, confidence, group.label, group.role]);
+  points.userData.semanticGroup = group;
+  if (points.userData.semanticSignature === signature) return true;
+
   const random = semanticSeed(group.entity_id);
-  const positions = [];
-  const sizes = [];
-  const extent = Math.max(0.12, Math.min(1.2, Number(group.extent_m) || 0.4));
+  const positions = points.geometry.getAttribute('position').array;
+  const sizes = points.geometry.getAttribute('splatSize').array;
   for (let i = 0; i < 96; i += 1) {
     const angle = random() * Math.PI * 2;
     const radius = Math.sqrt(-2 * Math.log(Math.max(0.0001, random()))) * extent * 0.31;
-    positions.push(
-      Number(center[0]) - basePosition[0] + Math.cos(angle) * radius,
-      0.38 + (random() - 0.5) * extent * 0.52,
-      -(Number(center[1]) - basePosition[1]) + Math.sin(angle) * radius,
-    );
-    sizes.push(0.035 + random() * 0.055);
+    const offset = i * 3;
+    positions[offset] = cx - basePosition[0] + Math.cos(angle) * radius;
+    positions[offset + 1] = 0.38 + (random() - 0.5) * extent * 0.52;
+    positions[offset + 2] = -(cy - basePosition[1]) + Math.sin(angle) * radius;
+    sizes[i] = 0.035 + random() * 0.055;
   }
+  points.geometry.getAttribute('position').needsUpdate = true;
+  points.geometry.getAttribute('splatSize').needsUpdate = true;
+  points.material.uniforms.confidence.value = Number.isFinite(confidence)
+    ? Math.max(0, Math.min(1, confidence)) : 0.5;
+  points.userData.semanticSignature = signature;
+  return true;
+}
+
+function createGaussianPreview(group) {
   const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-  geometry.setAttribute('splatSize', new THREE.Float32BufferAttribute(sizes, 1));
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(96 * 3), 3));
+  geometry.setAttribute('splatSize', new THREE.Float32BufferAttribute(new Float32Array(96), 1));
   const points = new THREE.Points(geometry, new THREE.ShaderMaterial({
     transparent: true,
     depthWrite: false,
-    uniforms: { tint: { value: new THREE.Color('#55ead1') }, confidence: { value: Number(group.confidence) || 0.5 } },
+    uniforms: { tint: { value: new THREE.Color('#55ead1') }, confidence: { value: 0.5 } },
     vertexShader: `attribute float splatSize; uniform float confidence; varying float vConfidence; void main(){ vec4 mvPosition=modelViewMatrix*vec4(position,1.0); gl_Position=projectionMatrix*mvPosition; gl_PointSize=clamp(splatSize*210.0/max(0.2,-mvPosition.z),2.0,22.0); vConfidence=confidence; }`,
     fragmentShader: `uniform vec3 tint; varying float vConfidence; void main(){ float r=length(gl_PointCoord-vec2(0.5)); float a=exp(-r*r*18.0)*(1.0-smoothstep(0.08,0.5,r))*mix(0.35,0.82,vConfidence); if(a<0.015) discard; gl_FragColor=vec4(tint,a); }`,
   }));
-  points.userData.semanticGroup = group;
+  updateGaussianPreview(points, group);
   return points;
 }
 
 function rebuildScene(frame) {
+  const perception = frame.perception || {};
+  const body = perception.body || {};
+  const position = Array.isArray(body.position) ? body.position : [0, 0, 0];
+  const objects = Array.isArray(perception.objects) ? perception.objects.filter(item => item && typeof item === 'object') : [];
+  const semanticSplatScene = perception.semantic_splats || {};
+  const semanticGroups = Array.isArray(semanticSplatScene.groups)
+    ? semanticSplatScene.groups.filter(group => group && typeof group === 'object') : [];
+  const renderKey = JSON.stringify({
+    pose: [position[0], position[1], body.orientation],
+    objects: objects.map(item => [item.id, item.label, item.kind, item.size,
+      item.position?.[0], item.position?.[1], item.position?.[2]]),
+    semantic: semanticGroups.map(group => [group.entity_id, group.center_m, group.extent_m,
+      group.confidence, group.label, group.role, group.description, group.attributes,
+      group.relations, group.image_region]),
+  });
+  if (renderKey === sceneRenderKey) {
+    updateSceneStatus(frame, perception, objects, semanticGroups, semanticSplatScene);
+    vrDashboard.update(frame);
+    return;
+  }
+  sceneRenderKey = renderKey;
   selectionMarker.visible = false;
   if (selectedLabel) {
     world.remove(selectedLabel);
@@ -354,22 +394,15 @@ function rebuildScene(frame) {
     selectedLabel = null;
   }
   while (objectsGroup.children.length) {
-    const child = objectsGroup.children.pop();
+    const child = objectsGroup.children[objectsGroup.children.length - 1];
+    objectsGroup.remove(child);
     child.traverse(node => {
       node.geometry?.dispose();
       if (Array.isArray(node.material)) node.material.forEach(material => material.dispose());
       else node.material?.dispose();
     });
   }
-  while (semanticSplatGroup.children.length) {
-    const child = semanticSplatGroup.children.pop();
-    child.geometry?.dispose();
-    child.material?.dispose();
-  }
   selectable.length = 0;
-  const perception = frame.perception || {};
-  const body = perception.body || {};
-  const position = Array.isArray(body.position) ? body.position : [0, 0, 0];
   if (!basePosition) basePosition = [Number(position[0]) || 0, Number(position[1]) || 0, Number(position[2]) || 0];
   configureSceneFrame(frame, position);
   const bodyX = (Number(position[0]) || 0) - basePosition[0];
@@ -390,7 +423,8 @@ function rebuildScene(frame) {
   bodyMarker.add(bodyLabel);
   objectsGroup.add(bodyMarker);
 
-  latestObjects = Array.isArray(perception.objects) ? perception.objects : [];
+  latestObjects = objects;
+  const semanticByEntity = new Map(semanticGroups.map(group => [String(group.entity_id), group]));
   for (const item of latestObjects) {
     if (!Array.isArray(item.position)) continue;
     const px = (Number(item.position[0]) || 0) - basePosition[0];
@@ -402,18 +436,42 @@ function rebuildScene(frame) {
     );
     mesh.position.set(px, kind.includes('obstacle') ? 0.58 : kind === 'table' || kind === 'chair' ? 0.38 : 0.25, pz);
     mesh.userData.entity = item;
+    mesh.userData.semanticGroup = semanticByEntity.get(String(item.id)) || null;
     objectsGroup.add(mesh);
     selectable.push(mesh);
     const label = labelSprite(item.label || item.id || kind);
     label.position.set(px, 1.2, pz);
     objectsGroup.add(label);
   }
-  const semanticSplatScene = perception.semantic_splats || {};
-  const semanticGroups = Array.isArray(semanticSplatScene.groups) ? semanticSplatScene.groups : [];
+  const activeSplatIds = new Set();
   for (const group of semanticGroups) {
-    const points = gaussianPreview(group);
-    if (points) semanticSplatGroup.add(points);
+    const id = String(group.entity_id || '');
+    if (!id) continue;
+    activeSplatIds.add(id);
+    let points = semanticSplatNodes.get(id);
+    if (!points) {
+      points = createGaussianPreview(group);
+      semanticSplatNodes.set(id, points);
+      semanticSplatGroup.add(points);
+    } else {
+      updateGaussianPreview(points, group);
+    }
   }
+  for (const [id, points] of semanticSplatNodes) {
+    if (activeSplatIds.has(id)) continue;
+    semanticSplatGroup.remove(points);
+    points.geometry.dispose();
+    points.material.dispose();
+    semanticSplatNodes.delete(id);
+  }
+  updateSceneStatus(frame, perception, latestObjects, semanticGroups, semanticSplatScene);
+  vrDashboard.update(frame);
+}
+
+function updateSceneStatus(frame, perception, objects, semanticGroups, semanticSplatScene) {
+  const body = perception.body || {};
+  const position = Array.isArray(body.position) ? body.position : [0, 0, 0];
+  const yaw = Number(body.orientation) || 0;
   const modal = perception.modalities || {};
   const source = perception.source || 'Body perception';
   document.querySelector('#source').textContent = String(source).replaceAll('_', ' ').slice(0, 24);
@@ -424,16 +482,15 @@ function rebuildScene(frame) {
   if (firstData) {
     const semanticStatus = semanticGroups.length
       ? ` · ${semanticGroups.length} VLM Gaussian groups${semanticSplatScene.preview_only ? ' · SIM PREVIEW' : ''}` : '';
-    setStatus(`${latestObjects.length} perceived objects · ${sensorCount} sensor modalities reporting${semanticStatus} · WebXR can be entered from this page`);
+    setStatus(`${objects.length} perceived objects · ${sensorCount} sensor modalities reporting${semanticStatus} · WebXR can be entered from this page`);
     firstData = false;
   } else if (age > 5) {
     setStatus(`Body observation is stale (${age.toFixed(1)} s). Showing last known scene.`, true);
   } else {
     const semanticStatus = semanticGroups.length
       ? ` · ${semanticGroups.length} VLM Gaussian groups${semanticSplatScene.preview_only ? ' · SIM PREVIEW' : ''}` : '';
-    setStatus(`${latestObjects.length} perceived objects${semanticStatus} · frame ${new Date(Number(perception.timestamp || Date.now() / 1000) * 1000).toLocaleTimeString()}`);
+    setStatus(`${objects.length} perceived objects${semanticStatus} · frame ${new Date(Number(perception.timestamp || Date.now() / 1000) * 1000).toLocaleTimeString()}`);
   }
-  vrDashboard.update(frame);
 }
 
 async function pollBody() {
@@ -474,7 +531,9 @@ function selectAt(controller) {
   scene.updateMatrixWorld(true);
   const hits = raycaster.intersectObjects(selectable, false);
   if (!hits.length) return;
-  const item = hits[0].object.userData.entity;
+  const hitObject = hits[0].object;
+  const item = hitObject.userData.entity;
+  const semantic = hitObject.userData.semanticGroup;
   const position = item.position || [];
   const relativeX = (Number(position[0]) || 0) - basePosition[0];
   const relativeZ = -((Number(position[1]) || 0) - basePosition[1]);
@@ -488,7 +547,10 @@ function selectAt(controller) {
   selectedLabel = labelSprite(`SELECTED · ${item.label || item.id || item.kind}`);
   selectedLabel.position.set(relativeX, 1.55, relativeZ);
   world.add(selectedLabel);
-  selectionNode.innerHTML = `<b>${escapeText(item.label || item.id || 'Perceived object')}</b><small>${escapeText(item.kind || 'object')} · ${position.slice(0, 2).map(v => Number(v).toFixed(2)).join(', ')} m · source ${escapeText(item.position_source || 'perception')}<br>Selection only; no actuator command sent.</small>`;
+  const semanticDetails = semantic
+    ? `<br>VLM · ${escapeText(semantic.role || semantic.kind || 'described')} · ${Number.isFinite(Number(semantic.confidence)) ? `${Math.round(Number(semantic.confidence) * 100)}% confidence` : 'confidence unavailable'}${semantic.description ? `<br>${escapeText(semantic.description)}` : ''}`
+    : '<br>No grounded VLM annotation for this object.';
+  selectionNode.innerHTML = `<b>${escapeText(item.label || item.id || 'Perceived object')}</b><small>${escapeText(item.kind || 'object')} · ${position.slice(0, 2).map(v => Number(v).toFixed(2)).join(', ')} m · source ${escapeText(item.position_source || 'perception')}${semanticDetails}<br>Selection only; no actuator command sent.</small>`;
 }
 
 function updateControllerPointer(controller, beam, reticle) {

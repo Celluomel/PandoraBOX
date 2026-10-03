@@ -7,26 +7,36 @@ unknown until a sensor model with validated ray evidence is added.
 from __future__ import annotations
 
 import json
+import logging
 import math
 import os
 import tempfile
 import threading
+import time
 from collections import deque
+from itertools import islice
 from pathlib import Path
 from typing import Any, Dict, Iterable, Tuple
+
+logger = logging.getLogger(__name__)
 
 
 class MetricVoxelMap:
     """Accumulate LiDAR endpoint evidence in a sparse, map-frame voxel grid."""
 
     def __init__(self, *, resolution_m: float = 0.1, max_voxels: int = 100_000,
-                 path: str | Path | None = None) -> None:
+                 path: str | Path | None = None, persist_every_frames: int = 25,
+                 persist_interval_s: float = 10.0) -> None:
         if not math.isfinite(resolution_m) or resolution_m <= 0:
             raise ValueError("resolution_m must be a positive finite number")
         if max_voxels < 1:
             raise ValueError("max_voxels must be positive")
+        if persist_every_frames < 1 or not math.isfinite(persist_interval_s) or persist_interval_s <= 0:
+            raise ValueError("persistence cadence must be positive")
         self.resolution_m = float(resolution_m)
         self.max_voxels = int(max_voxels)
+        self.persist_every_frames = int(persist_every_frames)
+        self.persist_interval_s = float(persist_interval_s)
         self.path = Path(path) if path is not None else None
         self._lock = threading.RLock()
         self._voxels: Dict[Tuple[int, int, int], Dict[str, Any]] = {}
@@ -35,6 +45,9 @@ class MetricVoxelMap:
         self._sources: set[str] = set()
         self._recent_frame_ids: deque[str] = deque(maxlen=4096)
         self._recent_frame_id_set: set[str] = set()
+        self._dirty_frames = 0
+        self._last_saved_at = 0.0
+        self._next_retry_at = 0.0
         if self.path and self.path.exists():
             self._load()
 
@@ -103,7 +116,14 @@ class MetricVoxelMap:
             self._frames += 1
             self._sources.add(source)
             if self.path:
-                self._save()
+                self._dirty_frames += 1
+            should_persist = bool(self.path) and (
+                self._frames == 1
+                or self._dirty_frames >= self.persist_every_frames
+                or time.monotonic() - self._last_saved_at >= self.persist_interval_s
+            ) and time.monotonic() >= self._next_retry_at
+            if should_persist:
+                self._persist_locked()
 
         return {
             "accepted": True,
@@ -111,13 +131,20 @@ class MetricVoxelMap:
             "skipped_returns": len(points) - accepted,
             "voxel_count": len(self._voxels),
             "source": source,
+            "persistence_pending": self._dirty_frames > 0,
             "safety_authoritative": False,
         }
 
-    def snapshot(self) -> Dict[str, Any]:
+    def snapshot(self, *, limit: int | None = 5_000) -> Dict[str, Any]:
         with self._lock:
+            voxel_count = len(self._voxels)
+            if limit is not None:
+                limit = max(0, min(100_000, int(limit)))
+                selected_voxels = islice(self._voxels.items(), limit)
+            else:
+                selected_voxels = self._voxels.items()
             voxels = []
-            for (ix, iy, iz), item in sorted(self._voxels.items()):
+            for (ix, iy, iz), item in selected_voxels:
                 voxels.append({
                     "index": [ix, iy, iz],
                     "center_m": [
@@ -140,7 +167,9 @@ class MetricVoxelMap:
                 "resolution_m": self.resolution_m,
                 "frames_integrated": self._frames,
                 "frames_rejected": self._rejected_frames,
-                "voxel_count": len(voxels),
+                "voxel_count": voxel_count,
+                "returned_voxel_count": len(voxels),
+                "truncated": len(voxels) < voxel_count,
                 "sources": sorted(self._sources),
                 "recent_frame_ids": list(self._recent_frame_ids),
                 "unknown_space_is_implicit": True,
@@ -157,29 +186,60 @@ class MetricVoxelMap:
             self._sources.clear()
             self._recent_frame_ids.clear()
             self._recent_frame_id_set.clear()
+            self._dirty_frames = 1 if self.path else 0
+            self._next_retry_at = 0.0
             if self.path:
-                self._save()
+                self._persist_locked()
+
+    def flush(self) -> bool:
+        """Persist pending frames at orderly shutdown without per-frame writes."""
+        with self._lock:
+            if self.path and self._dirty_frames:
+                return self._persist_locked()
+            return True
+
+    def _persist_locked(self) -> bool:
+        try:
+            self._save()
+        except (OSError, TypeError, ValueError) as exc:
+            self._next_retry_at = time.monotonic() + 30.0
+            logger.warning("[body-map] persistence failed; retaining in-memory map and retrying later: %s", exc)
+            return False
+        self._dirty_frames = 0
+        self._last_saved_at = time.monotonic()
+        self._next_retry_at = 0.0
+        return True
 
     def _validate(self, frame: Dict[str, Any], *, allow_non_native: bool) -> str:
         if not isinstance(frame, dict) or frame.get("contract") != "body_perception_frame.v2":
             return "unsupported_frame_contract"
-        if not (frame.get("synchronization") or {}).get("synchronized"):
+        synchronization = frame.get("synchronization")
+        if not isinstance(synchronization, dict) or not synchronization.get("synchronized"):
             return "frame_not_synchronized"
         try:
             if not str(frame.get("frame_id") or "").strip():
                 return "missing_frame_id"
             timestamp = float(frame["timestamp"])
-            pose = frame["body"]["pose"]
+            body = frame["body"]
+            if not isinstance(body, dict):
+                return "invalid_metric_pose_or_timestamp"
+            pose = body["pose"]
+            if not isinstance(pose, dict):
+                return "invalid_metric_pose_or_timestamp"
             if str(pose.get("coordinate_frame") or "").lower() not in {"map", "world", "local_map"}:
                 return "unsupported_pose_coordinate_frame"
             position = pose["position_m"]
             values = [timestamp, *(float(value) for value in position[:3]), float(pose["yaw_rad"])]
             if len(position) < 3 or not all(math.isfinite(value) for value in values):
                 return "invalid_metric_pose_or_timestamp"
-        except (KeyError, TypeError, ValueError, IndexError):
+        except (KeyError, TypeError, ValueError, IndexError, AttributeError, OverflowError):
             return "invalid_metric_pose_or_timestamp"
         lidar = frame.get("lidar") or {}
-        is_native = lidar.get("native") is True or (lidar.get("projection") or {}).get("native") is True
+        if not isinstance(lidar, dict):
+            return "invalid_lidar_payload"
+        projection = lidar.get("projection")
+        projection = projection if isinstance(projection, dict) else {}
+        is_native = lidar.get("native") is True or projection.get("native") is True
         if not is_native and not allow_non_native:
             return "non_native_lidar_requires_explicit_opt_in"
         if not isinstance(lidar.get("points"), list):
@@ -187,7 +247,7 @@ class MetricVoxelMap:
         frame_name = str(lidar.get("frame") or "").lower()
         if frame_name in {"body", "sensor", "robot", "body_sensor"}:
             calibration = lidar.get("calibration") or {}
-            if not isinstance(calibration.get("sensor_to_body"), dict):
+            if not isinstance(calibration, dict) or not isinstance(calibration.get("sensor_to_body"), dict):
                 return "missing_sensor_to_body_calibration"
         elif frame_name not in {"map", "world", "local_map", "body_world"}:
             return "unsupported_lidar_coordinate_frame"
@@ -218,12 +278,20 @@ class MetricVoxelMap:
     def _load(self) -> None:
         try:
             payload = json.loads(self.path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                return
             if payload.get("contract") != "body_metric_voxel_map.v1":
                 return
             self._frames = int(payload.get("frames_integrated", 0))
             self._rejected_frames = int(payload.get("frames_rejected", 0))
             self._sources = set(payload.get("sources") or [])
-            self._recent_frame_ids = deque(payload.get("recent_frame_ids") or [], maxlen=4096)
+            raw_frame_ids = payload.get("recent_frame_ids")
+            if not isinstance(raw_frame_ids, list):
+                raw_frame_ids = []
+            self._recent_frame_ids = deque(
+                [str(value)[:160] for value in raw_frame_ids[-4096:] if value is not None],
+                maxlen=4096,
+            )
             self._recent_frame_id_set = set(self._recent_frame_ids)
             for item in payload.get("voxels", []):
                 if len(self._voxels) >= self.max_voxels:
@@ -239,18 +307,20 @@ class MetricVoxelMap:
                     "sources": set(item.get("sources") or []),
                     "frame_ids": set(item.get("frame_ids") or []),
                 }
-        except (OSError, ValueError, TypeError, KeyError):
+            self._last_saved_at = time.monotonic()
+        except (OSError, ValueError, TypeError, KeyError, AttributeError, OverflowError):
             self._voxels.clear()
             self._frames = 0
             self._rejected_frames = 0
             self._sources.clear()
             self._recent_frame_ids.clear()
             self._recent_frame_id_set.clear()
+            self._dirty_frames = 0
 
     def _save(self) -> None:
         assert self.path is not None
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        payload = self.snapshot()
+        payload = self.snapshot(limit=None)
         fd, temp_name = tempfile.mkstemp(prefix=f".{self.path.name}.", dir=self.path.parent)
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as stream:

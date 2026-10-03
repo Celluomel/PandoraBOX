@@ -2463,9 +2463,14 @@ class BodyHost:
                     if wm is None:
                         self._send({"available": False, "error": "world model unavailable"}, 503)
                     else:
+                        query = parse_qs(urlparse(self.path).query)
+                        try:
+                            limit = max(0, min(100_000, int((query.get("limit") or [5_000])[0])))
+                        except (TypeError, ValueError):
+                            limit = 5_000
                         self._send({
                             "available": True,
-                            **wm.spatial_map.snapshot(),
+                            **wm.spatial_map.snapshot(limit=limit),
                             "last_update": dict(wm._last_spatial_map_update),
                         })
                 elif path == "/worldmodel/semantic-splats":

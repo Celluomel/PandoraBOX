@@ -43,16 +43,35 @@ def build_semantic_splat_scene(
     if grounding.get("accepted_for_context") is not True or grounding.get("geometry_authoritative") is not True:
         result["status"] = "grounding_rejected"
         return result
+    semantic_frame_id = str(grounding.get("source_frame_id") or scene.get("frame_id") or "")
+    same_frame = grounding.get("same_frame", semantic_frame_id == frame_id)
+    if not same_frame and grounding.get("geometry_rebound_to_current_frame") is not True:
+        result.update({"status": "stale_semantic_frame", "semantic_frame_id": semantic_frame_id})
+        return result
 
+    try:
+        observed_values = list(observed_objects or [])[:1024]
+    except TypeError:
+        observed_values = []
     observed = {
         str(item.get("id")): item
-        for item in observed_objects
+        for item in observed_values
         if isinstance(item, dict) and item.get("id") is not None
     }
-    primary = {str(value) for value in scene.get("primary_object_ids") or []}
+    raw_primary = scene.get("primary_object_ids")
+    if not isinstance(raw_primary, (list, tuple, set)):
+        raw_primary = [raw_primary] if isinstance(raw_primary, (str, int)) else []
+    primary = {str(value)[:160] for value in raw_primary if value is not None}
+    raw_entities = scene.get("entities")
+    if isinstance(raw_entities, dict):
+        raw_entities = list(raw_entities.values())
+    if not isinstance(raw_entities, (list, tuple)):
+        raw_entities = []
     groups: List[Dict[str, Any]] = []
     unmatched: List[str] = []
-    for entity in scene.get("entities") or []:
+    for entity in raw_entities[:64]:
+        if len(groups) >= 24:
+            break
         if not isinstance(entity, dict):
             continue
         entity_id = str(entity.get("id") or "")
@@ -86,9 +105,14 @@ def build_semantic_splat_scene(
             "description": str(entity.get("description") or "")[:240],
             "role": str(entity.get("role") or "")[:80],
             "attributes": _safe_attributes(entity.get("attributes")),
-            "relations": [item for item in (entity.get("relations") or []) if isinstance(item, dict)][:12]
-            if isinstance(entity.get("relations"), (list, tuple)) else [],
-            "image_region": _safe_region(entity.get("image_region")),
+            "relations": [
+                {"type": str(item.get("type") or "")[:50], "target_id": str(item.get("target_id"))[:160]}
+                for item in entity.get("relations", [])[:12]
+                if isinstance(item, dict) and item.get("target_id") is not None
+                and str(item.get("target_id")) in observed
+            ] if isinstance(entity.get("relations"), (list, tuple)) else [],
+            "image_region": _safe_region(entity.get("image_region")) if same_frame else None,
+            "image_region_frame_id": semantic_frame_id if same_frame else None,
             "primary": entity_id in primary,
             "confidence": _confidence(entity.get("confidence")),
             "center_m": metric_position,
@@ -101,7 +125,9 @@ def build_semantic_splat_scene(
             },
             "semantic_evidence": {
                 "source": "body_vlm",
-                "frame_id": frame_id,
+                "frame_id": semantic_frame_id,
+                "same_frame_as_geometry": bool(same_frame),
+                "age_seconds": _age_seconds(grounding.get("semantic_age_seconds")),
                 "grounding_precision": _confidence(grounding.get("reference_precision")),
             },
             "gaussian_membership": "position_binding_pending",
@@ -127,10 +153,17 @@ def bind_gaussian_primitives(
     Unmatched primitives remain untouched and can render as unclassified scene
     appearance. Each primitive is assigned to at most one nearest group.
     """
-    groups = [item for item in semantic_scene.get("groups", []) if isinstance(item, dict)]
+    if not isinstance(semantic_scene, dict):
+        semantic_scene = {}
+    raw_groups = semantic_scene.get("groups")
+    groups = [item for item in raw_groups[:256] if isinstance(item, dict)] if isinstance(raw_groups, list) else []
+    try:
+        primitive_values = list(primitives or [])[:100_000]
+    except TypeError:
+        primitive_values = []
     bound = []
     unbound = []
-    for primitive in primitives:
+    for primitive in primitive_values:
         if not isinstance(primitive, dict):
             continue
         raw_center = primitive.get("center_m") or primitive.get("position_m")
@@ -144,24 +177,32 @@ def bind_gaussian_primitives(
         candidates = []
         for group in groups:
             anchor = group.get("center_m") or []
-            if len(anchor) < 3:
+            if not isinstance(anchor, (list, tuple)) or len(anchor) < 3:
                 continue
-            distance = math.dist(center, [float(value) for value in anchor[:3]])
-            radius = max(0.25, float(group.get("extent_m") or 0.5) * 0.9)
+            try:
+                metric_anchor = [float(value) for value in anchor[:3]]
+                radius = max(0.25, float(group.get("extent_m") or 0.5) * 0.9)
+                if not all(math.isfinite(value) for value in metric_anchor + [radius]):
+                    continue
+                distance = math.dist(center, metric_anchor)
+            except (TypeError, ValueError, OverflowError):
+                continue
             if distance <= radius:
                 candidates.append((distance, group))
         if not candidates:
             unbound.append(primitive)
             continue
         _, group = min(candidates, key=lambda item: item[0])
+        evidence = group.get("semantic_evidence")
+        evidence = evidence if isinstance(evidence, dict) else {}
         bound.append({
             **primitive,
-            "semantic_group_id": group["group_id"],
-            "semantic_entity_id": group["entity_id"],
-            "semantic_label": group["label"],
-            "semantic_kind": group["kind"],
+            "semantic_group_id": group.get("group_id"),
+            "semantic_entity_id": group.get("entity_id"),
+            "semantic_label": group.get("label"),
+            "semantic_kind": group.get("kind"),
             "semantic_confidence": group.get("confidence"),
-            "semantic_frame_id": group["semantic_evidence"]["frame_id"],
+            "semantic_frame_id": evidence.get("frame_id"),
         })
     return {
         "contract": "body_semantic_splat_bindings.v1",
@@ -180,6 +221,14 @@ def _confidence(value: Any) -> float | None:
     except (TypeError, ValueError):
         pass
     return None
+
+
+def _age_seconds(value: Any) -> float | None:
+    try:
+        age = float(value)
+    except (TypeError, ValueError):
+        return None
+    return round(max(0.0, age), 3) if math.isfinite(age) else None
 
 
 def _safe_attributes(value: Any) -> Dict[str, Any]:

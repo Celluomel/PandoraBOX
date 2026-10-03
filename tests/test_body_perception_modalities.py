@@ -12,6 +12,19 @@ sys.path.insert(0, str(ROOT))
 
 
 class BodyPerceptionModalitiesTest(unittest.TestCase):
+    def test_native_lidar_projection_bounds_points_and_reports_truncation(self):
+        from types import SimpleNamespace
+        from body_runtime_host.worldmodel.perception import sensor_projections
+
+        body = SimpleNamespace(position=[0.0, 0.0, 0.0], orientation=0.0, timestamp=1.0)
+        points = [{"x": float(index + 1), "y": 0.0, "z": 0.2} for index in range(5_012)]
+        result = sensor_projections(body, [], modalities={
+            "lidar": {"native": True, "source": "fixture_lidar", "frame": "world", "points": points},
+        })
+        self.assertEqual(result["lidar"]["returns"], 5_000)
+        self.assertEqual(result["lidar"]["input_returns"], 5_012)
+        self.assertTrue(result["lidar"]["points_truncated"])
+
     def test_scene_interpreter_waits_and_exposes_embedding_configuration(self):
         from body_runtime_host.worldmodel.scene_interpreter import BodySceneInterpreter
 
@@ -395,6 +408,16 @@ class BodyPerceptionModalitiesTest(unittest.TestCase):
         # assigned by the configured interpreter threshold after the LLM call.
         self.assertEqual(model["grounding"]["reference_precision"], 1.0)
         self.assertFalse(model["grounding"]["accepted_for_context"])
+
+    def test_grounding_tolerates_malformed_optional_description_array(self):
+        from body_runtime_host.worldmodel.scene_interpreter import BodySceneInterpreter
+
+        model = BodySceneInterpreter._ground_interpretation({
+            "primary_objects": "cup",
+            "object_descriptions": 42,
+        }, {"objects": [{"id": "cup", "label": "cup", "kind": "target"}]})
+        self.assertEqual(model["primary_object_ids"], ["cup"])
+        self.assertEqual(model["grounding"]["described_object_references"], 0)
 
     def test_grounding_resolves_semantic_labels_in_visual_blind_mode(self):
         from body_runtime_host.worldmodel.scene_interpreter import BodySceneInterpreter

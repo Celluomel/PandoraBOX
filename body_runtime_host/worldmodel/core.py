@@ -308,6 +308,7 @@ class EmbodiedWorldModel:
                 self.dynamics.save()
         except Exception:
             pass
+        self.spatial_map.flush()
 
     def _run(self) -> None:
         # Execute the first observation/action immediately. Waiting for the
@@ -852,12 +853,18 @@ class EmbodiedWorldModel:
             timestamp=float(obs.timestamp),
         )
 
-    def _current_plan_snapshot(self, obs: Observation, body: BodyState) -> BodySnapshot:
+    def _current_plan_snapshot(
+        self,
+        obs: Observation,
+        body: BodyState,
+        *,
+        projections: Optional[Dict[str, Any]] = None,
+    ) -> BodySnapshot:
         """Attach fresh semantic context while preserving current geometry."""
         snapshot = self._make_plan_snapshot(obs, body)
         interpreter = self.scene_interpreter.status()
         semantic = interpreter.get("semantic_scene") or {}
-        current_projection = sensor_projections(body, obs.scene, modalities=obs.modalities)
+        current_projection = projections or sensor_projections(body, obs.scene, modalities=obs.modalities)
         current_frame = (current_projection.get("frame") or {}).get("frame_id")
         if interpreter.get("status") == "interpreted" and semantic.get("frame_id"):
             semantic_frame = str(semantic.get("frame_id"))
@@ -1606,11 +1613,12 @@ class EmbodiedWorldModel:
             body, obs, projections=projections, motion=self._last_scene_motion,
         )
         interpreter = self.scene_interpreter.status()
-        semantic_snapshot = self._current_plan_snapshot(obs, body)
+        semantic_snapshot = self._current_plan_snapshot(obs, body, projections=projections)
         semantic_scene = semantic_snapshot.semantic_scene
         frame_id = str((projections.get("frame") or {}).get("frame_id") or "")
+        observed_objects = [item.as_dict() for item in obs.scene]
         semantic_splats = build_semantic_splat_scene(
-            [item.as_dict() for item in obs.scene],
+            observed_objects,
             semantic_scene,
             frame_id=frame_id,
             simulated=isinstance(self.source, SimRobotSource),
@@ -1623,7 +1631,7 @@ class EmbodiedWorldModel:
             "age_seconds": round(max(0.0, time.time() - obs.timestamp), 3),
             "text": obs.text,
             "body": body.as_dict(),
-            "objects": [o.as_dict() for o in obs.scene],
+            "objects": observed_objects,
             "modalities": dict(obs.modalities),
             "affordances": {
                 "which2act": list(self._last_affordances.get("which2act", []))[:12],

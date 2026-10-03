@@ -12,6 +12,8 @@ import re
 import time
 from typing import Any, Dict, Iterable, List
 
+MAX_NATIVE_LIDAR_RETURNS = 5_000
+
 
 def _item_dict(item: Any) -> Dict[str, Any]:
     if hasattr(item, "as_dict"):
@@ -26,10 +28,11 @@ def _stable_phase(identifier: str) -> float:
 def _native_points(modalities: Dict[str, Any]) -> List[Dict[str, Any]]:
     lidar = modalities.get("lidar") or modalities.get("point_cloud") or {}
     if isinstance(lidar, list):
-        return [item for item in lidar if isinstance(item, dict)]
+        return [item for item in lidar[:MAX_NATIVE_LIDAR_RETURNS] if isinstance(item, dict)]
     if isinstance(lidar, dict):
         points = lidar.get("points") or lidar.get("returns") or []
-        return [item for item in points if isinstance(item, dict)]
+        if isinstance(points, list):
+            return [item for item in points[:MAX_NATIVE_LIDAR_RETURNS] if isinstance(item, dict)]
     return []
 
 
@@ -202,6 +205,15 @@ def sensor_projections(body: Any, objects: Iterable[Any], *, width: float = 12.0
 
     native_camera = _native_camera_objects(modalities)
     native_lidar = _native_points(modalities)
+    raw_lidar = modalities.get("lidar") or modalities.get("point_cloud") or {}
+    if isinstance(raw_lidar, dict):
+        raw_lidar_points = raw_lidar.get("points") or raw_lidar.get("returns") or []
+    elif isinstance(raw_lidar, list):
+        raw_lidar_points = raw_lidar
+    else:
+        raw_lidar_points = []
+    lidar_input_returns = len(raw_lidar_points) if isinstance(raw_lidar_points, list) else 0
+    lidar_points_truncated = lidar_input_returns > MAX_NATIVE_LIDAR_RETURNS
     for raw in (native_camera or objects):
         item = _item_dict(raw)
         position = item.get("position") or [item.get("x", 0.0), item.get("y", 0.0), item.get("z", 0.0)]
@@ -299,6 +311,8 @@ def sensor_projections(body: Any, objects: Iterable[Any], *, width: float = 12.0
             "source": lidar_source if native_lidar else "derived_scene",
             "native": lidar_native,
             "returns": len(lidar_points),
+            "input_returns": lidar_input_returns if lidar_native else len(lidar_points),
+            "points_truncated": lidar_points_truncated if lidar_native else False,
             "vertical_layers": max(1, vertical_layers),
             "llm_ready": True,
         },

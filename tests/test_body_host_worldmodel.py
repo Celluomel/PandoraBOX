@@ -588,7 +588,7 @@ class BodyHostHttpTest(unittest.TestCase):
                 self.assertIn("this.texture.needsUpdate = true", dashboard_source)
                 self.assertIn("/plugins/fnk0031_wifi/controller", quest_source)
                 self.assertIn("function updateControllerPointer(controller, beam, reticle)", quest_source)
-                self.assertIn("function gaussianPreview(group)", quest_source)
+                self.assertIn("function updateGaussianPreview(points, group)", quest_source)
                 self.assertIn("VLM Gaussian groups", quest_source)
                 self.assertIn("vrDashboard.clearPointer()", quest_source)
                 self.assertIn("renderer.clearDepth()", quest_source)

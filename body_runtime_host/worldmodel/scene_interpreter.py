@@ -553,7 +553,7 @@ class BodySceneInterpreter:
             raw_values = list(as_items(interpretation.get("primary_objects")))
             raw_values.extend(
                 item.get("id") or item.get("label")
-                for item in (interpretation.get("object_descriptions") or [])
+                for item in as_items(interpretation.get("object_descriptions"))
                 if isinstance(item, dict)
             )
             semantic_matches.update(label_resolver(raw_values, known) or {})
@@ -564,6 +564,8 @@ class BodySceneInterpreter:
         raw_descriptions = interpretation.get("object_descriptions") or []
         if isinstance(raw_descriptions, dict):
             raw_descriptions = [dict(value, id=key) for key, value in raw_descriptions.items() if isinstance(value, dict)]
+        elif not isinstance(raw_descriptions, (list, tuple)):
+            raw_descriptions = []
         for item in raw_descriptions:
             if not isinstance(item, dict):
                 continue

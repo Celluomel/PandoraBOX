@@ -62,6 +62,50 @@ class BodySemanticSplatsTest(unittest.TestCase):
         self.assertEqual(rejected["status"], "grounding_rejected")
         self.assertEqual(rejected["groups"], [])
 
+    def test_malformed_semantic_shapes_are_bounded_and_do_not_raise(self):
+        from body_runtime_host.worldmodel.semantic_splats import build_semantic_splat_scene, bind_gaussian_primitives
+
+        malformed = build_semantic_splat_scene(
+            None,
+            {"frame_id": "f", "grounding": {"accepted_for_context": True,
+             "geometry_authoritative": True}, "entities": 7, "primary_object_ids": "cup"},
+            frame_id="f",
+        )
+        self.assertEqual(malformed["status"], "no_grounded_render_groups")
+        bindings = bind_gaussian_primitives(
+            [{"center_m": [0, 0, 0]}],
+            {"groups": [{"center_m": ["bad", 0, 0]}]},
+        )
+        self.assertEqual(bindings["unbound_count"], 1)
+
+    def test_rebound_geometry_keeps_semantic_provenance_and_drops_stale_image_box(self):
+        from body_runtime_host.worldmodel.semantic_splats import build_semantic_splat_scene
+
+        scene = {
+            "frame_id": "current-frame",
+            "primary_object_ids": ["cup"],
+            "grounding": {
+                "accepted_for_context": True,
+                "geometry_authoritative": True,
+                "source_frame_id": "vlm-frame",
+                "current_frame_id": "current-frame",
+                "same_frame": False,
+                "geometry_rebound_to_current_frame": True,
+                "semantic_age_seconds": 1.4,
+            },
+            "entities": [{"id": "cup", "description": "ceramic cup",
+                          "image_region": {"x": 0.2, "y": 0.2, "width": 0.1, "height": 0.1}}],
+        }
+        result = build_semantic_splat_scene(
+            [{"id": "cup", "position": [3, 4, 0], "size": 0.4}], scene,
+            frame_id="current-frame",
+        )
+        group = result["groups"][0]
+        self.assertIsNone(group["image_region"])
+        self.assertEqual(group["semantic_evidence"]["frame_id"], "vlm-frame")
+        self.assertEqual(group["geometry_evidence"]["frame_id"], "current-frame")
+        self.assertEqual(group["semantic_evidence"]["age_seconds"], 1.4)
+
     def test_gaussian_primitives_receive_nearest_grounded_semantic_group(self):
         from body_runtime_host.worldmodel.semantic_splats import bind_gaussian_primitives
 
