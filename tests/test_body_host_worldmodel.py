@@ -517,6 +517,8 @@ class BodyHostHttpTest(unittest.TestCase):
                 dashboard_source = (Path(__file__).resolve().parents[1] / "body_runtime_host" / "quest_vr_dashboard.js").read_text(encoding="utf-8")
                 self.assertIn("new THREE.Scene()", dashboard_source)
                 self.assertIn("PANDORABOX · BODY STATUS", dashboard_source)
+                self.assertIn("PlaneGeometry(1.3, 0.5)", dashboard_source)
+                self.assertIn("panel.position.set(0, 0.72, -1.9)", dashboard_source)
                 self.assertIn("renderer.clearDepth()", quest_source)
                 with urllib.request.urlopen(f"{base}/quest-vr.js", timeout=5) as response:
                     quest_bundle = response.read()

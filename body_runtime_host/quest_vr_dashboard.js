@@ -12,10 +12,10 @@ export class QuestVRDashboard {
     this.texture = new THREE.CanvasTexture(canvas);
     this.texture.colorSpace = THREE.SRGBColorSpace;
     const panel = new THREE.Mesh(
-      new THREE.PlaneGeometry(1.55, 0.78),
+      new THREE.PlaneGeometry(1.3, 0.5),
       new THREE.MeshBasicMaterial({ map: this.texture, transparent: true, depthTest: false, side: THREE.DoubleSide }),
     );
-    panel.position.set(0, -0.25, -1.65);
+    panel.position.set(0, 0.72, -1.9);
     panel.renderOrder = 1000;
     this.root.add(panel);
     this.update(null);
