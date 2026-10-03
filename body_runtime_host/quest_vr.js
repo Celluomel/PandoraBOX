@@ -459,10 +459,27 @@ function toggleCameraBackground() {
   cameraBackgroundTexture.image = vrDashboard.cameraBitmap;
   cameraBackgroundTexture.needsUpdate = true;
   updateCameraArcGeometry(vrDashboard.cameraBitmap);
+  if (!anchorCameraArcInScene()) return;
   cameraArc.visible = true;
   cameraBackgroundActive = true;
   vrDashboard.setCameraBackgroundActive(true);
-  setStatus('Live camera arc is anchored to the Body in the planar scene, 12 m out. Turn your head to look around it.');
+  setStatus('Live camera arc anchored in the planar scene, 12 m out. It stays put as the Body turns; turn your head to look around it.');
+}
+
+function anchorCameraArcInScene() {
+  const bodyPose = latestWorldStatus?.perception?.body;
+  const position = bodyPose?.position;
+  if (!Array.isArray(position) || !basePosition) {
+    setStatus('Camera arc cannot be anchored: Body scene pose is unavailable.', true);
+    return false;
+  }
+  cameraArcRoot.position.set(
+    (Number(position[0]) || 0) - basePosition[0],
+    0.75,
+    -((Number(position[1]) || 0) - basePosition[1]),
+  );
+  cameraArcRoot.rotation.set(0, -Math.PI / 2 - (Number(bodyPose.orientation) || 0), 0);
+  return true;
 }
 
 function updateCameraArcGeometry(bitmap) {
@@ -619,19 +636,6 @@ renderer.setAnimationLoop(time => {
     const xrCamera = renderer.xr.getCamera(camera);
     updateXRSceneFollow(xrCamera);
     const headYaw = new THREE.Euler().setFromQuaternion(xrCamera.quaternion, 'YXZ').y;
-    if (cameraBackgroundActive) {
-      const bodyPose = latestWorldStatus?.perception?.body;
-      const position = bodyPose?.position;
-      if (Array.isArray(position) && basePosition) {
-        cameraArcRoot.position.set(
-          (Number(position[0]) || 0) - basePosition[0],
-          0.75,
-          -((Number(position[1]) || 0) - basePosition[1]),
-        );
-        cameraArcRoot.rotation.set(0, -Math.PI / 2 - (Number(bodyPose.orientation) || 0), 0);
-        updateCameraArcGeometry(vrDashboard.cameraBitmap);
-      }
-    }
     const active = [...session.inputSources].filter(source => source.gamepad);
     const controllers = active.map(source => {
       const axes = source.gamepad.axes || [];

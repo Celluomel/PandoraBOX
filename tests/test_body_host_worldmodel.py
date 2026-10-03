@@ -532,6 +532,11 @@ class BodyHostHttpTest(unittest.TestCase):
                 self.assertNotIn("dashboardGroup", quest_source)
                 self.assertIn("fetch('/body/camera/frame'", quest_source)
                 self.assertIn("setInterval(pollCameraFrame, 200)", quest_source)
+                self.assertIn("function anchorCameraArcInScene()", quest_source)
+                self.assertIn("It stays put as the Body turns", quest_source)
+                animation_loop = quest_source.split("renderer.setAnimationLoop(time => {", 1)[1]
+                self.assertNotIn("cameraArcRoot.rotation.set", animation_loop)
+                self.assertNotIn("cameraArcRoot.position.set", animation_loop)
                 self.assertIn("function updateXRSceneFollow(xrCamera)", quest_source)
                 self.assertIn("status.running === true", quest_source)
                 self.assertIn("const scale = 0.4", quest_source)
