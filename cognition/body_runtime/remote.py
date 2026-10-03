@@ -105,6 +105,18 @@ class RemoteWorldModel:
             self._last_error = str(exc)
             return {"available": False, "error": str(exc)}
 
+    def interpret_camera(self) -> Dict[str, Any]:
+        """Ask the Body-owned VLM to interpret its latest camera scene."""
+        try:
+            data = self._request(
+                "POST", f"{self.base_url}/body/camera/test-vlm",
+                payload={}, timeout=max(self.timeout, 90.0),
+            )
+            return data if isinstance(data, dict) else {"ok": False, "error": "invalid Body VLM response"}
+        except Exception as exc:
+            self._last_error = str(exc)
+            return {"ok": False, "error": str(exc)}
+
     def route_map(self) -> Dict[str, Any]:
         """Return the Body-owned metric route memory and landmark flags."""
         try:

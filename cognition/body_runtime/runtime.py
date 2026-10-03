@@ -263,6 +263,14 @@ class BodyRuntime:
             return {"available": False, "error": "Body world model snapshot is unavailable"}
         return snapshot()
 
+    def interpret_camera(self) -> Dict[str, Any]:
+        """Request one interpretation from the camera/VLM owned by the Body."""
+        wm = self.worldmodel
+        interpret = getattr(wm, "interpret_camera", None) if wm is not None else None
+        if not callable(interpret):
+            return {"ok": False, "error": "Body camera VLM endpoint is unavailable"}
+        return interpret()
+
     def validate_worldmodel_plan(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         wm = self.worldmodel
         validate = getattr(wm, "validate_plan", None) if wm is not None else None
@@ -596,6 +604,20 @@ class BodyRuntime:
             "Answer questions about the physical body from this section first. "
             "If it says unavailable, explicitly say that the Body has not supplied that fact.",
         ]
+        bridge_connected = bool(self._bridge_devices)
+        lines.append(
+            "Body-to-Brain telemetry bridge: "
+            + ("connected" if bridge_connected else "not connected; no live bridge telemetry is confirmed.")
+        )
+        try:
+            wm = self.worldmodel
+            lines.append(
+                "Brain-to-Body world-model API: "
+                + ("reachable" if wm is not None else "unavailable; do not claim current Body perception or camera access.")
+            )
+        except Exception:
+            wm = None
+            lines.append("Brain-to-Body world-model API: unavailable; do not claim current Body perception or camera access.")
         if observations:
             lines.extend([
                 "BODY RUNTIME OBSERVATIONS (local, timestamped sensor evidence):",
@@ -638,7 +660,6 @@ class BodyRuntime:
         # a read-only remote facade; it never launches a Body process. It is
         # included even when there are no bridged sensor observations.
         try:
-            wm = self.worldmodel
             if wm is not None:
                 wm_ctx = wm.context_for_brain()
                 if wm_ctx:

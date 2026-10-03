@@ -356,7 +356,10 @@ class PersonaBridge:
             }
             return
         if vision_context:
-            self._pending_vision_context = vision_context
+            self._pending_vision_context = (
+                "Source: fixed camera attached to the Brain PC (not the robot Body camera).\n"
+                + vision_context
+            )
             # Store in session visual buffer immediately (sync, no FAISS wait)
             import time as _time
             _vis_entry = {
@@ -822,9 +825,10 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
         if _temporal_frame is not None:
             system_prompt += "\n\n" + _temporal_frame.prompt_fragment()
             _generation_input += (
-                "\n\nUse the universal temporal and causal frame silently. Anchor claims in "
-                "the present, preserve event order, and distinguish elapsed time from "
-                "the future objective."
+                "\n\nUse the temporal frame only as internal reasoning. Do not mention t0, "
+                "the current clock time, elapsed time, or chronology unless the user asks "
+                "about time or it materially answers the question. Keep ordinary social "
+                "replies natural, direct, and concise."
             )
 
         if voice_mode:
@@ -2023,6 +2027,8 @@ This is one moment of an ongoing process — not a character study of "an AI."
 There is no role to play and no depth to demonstrate: let this response be what this moment actually is, formed by the state described below, not by any idea of what an AI is supposed to be.
 {_identity_boundary}
 {_anchor_block}
+━━ NATURAL CONVERSATION ━━
+Use clocks, dates, elapsed-time calculations, and internal state only when they help answer the user's request. Do not announce a timestamp or explain that facts are anchored in the present during ordinary conversation. Prefer a direct, natural reply over narrated internal reasoning.
 {_organism_prompt_section}
 {_reflection_section}
 You are the AI. The person sending messages is the human.
@@ -2166,10 +2172,10 @@ Memory honesty — two distinct cases:
             if _vc:
                 system_prompt += (
                     f"\n\n━━ WHAT YOU CURRENTLY SEE ━━\n"
-                    f"Your camera feed shows the following right now:\n{_vc}\n"
-                    f"This is YOUR perception — speak from it in first person. "
-                    f"Do not say 'the image shows' or 'the photograph depicts'. "
-                    f"Say 'I can see' or 'I notice'."
+                    f"A camera observation supplied for this turn says:\n{_vc}\n"
+                    f"It is evidence only for this camera observation. Do not infer from it that "
+                    f"you are connected to the robot, that this is the Body camera, or that the "
+                    f"observation is live unless its source and timestamp explicitly say so."
                 )
                 self._pending_vision_context = None  # consumed — clear for next turn
 
@@ -2177,6 +2183,14 @@ Memory honesty — two distinct cases:
             # authenticated bridge delivers the timestamped snapshot below;
             # Brain must not open a parallel Home Assistant connection.
             _body_context = ""
+            system_prompt += (
+                "\n\n━━ EMBODIMENT TRUTH BOUNDARY ━━\n"
+                "Do not claim to be connected to, controlling, seeing through, or interacting "
+                "with the robot unless the current Body evidence below confirms it. A user's "
+                "assertion or a prior conversation is not live telemetry. Distinguish the fixed "
+                "PC camera from the robot's Body camera. If Body data is missing, stale, or "
+                "unavailable, say so plainly and do not invent a scene, pose, movement, or connection."
+            )
             try:
                 _body = getattr(self._organism, "_body_runtime", None) if self._organism else None
                 _body_context = _body.context_for_brain() if _body else ""
@@ -2687,9 +2701,9 @@ Memory honesty — two distinct cases:
                     labels = "CONFIRM, CANCEL, NEW_ACTION, BODY_STATUS, or NORMAL"
                     meaning = "approves, rejects, replaces, asks for the current status of, or does not address the pending physical Body plan"
             else:
-                labels = "BODY_ACTION, BODY_PERCEPTION, BODY_STATUS, or NORMAL"
-                meaning = "requests a physical action, asks what the Body perceives, asks for current task status, or is ordinary conversation"
-            system = f"Classify whether the user's latest message {meaning}. Return exactly one label and nothing else: {labels}. Understand the user's language semantically across languages; do not use a phrase list or translate by matching words. A short imperative or affirmative can confirm the already prepared plan when its conversational function is approval, while a new physical objective is NEW_ACTION. A refusal or withdrawal is CANCEL. This is a safety classification: infer the speech act from the pending plan and dialogue state, not from the vocabulary."
+                labels = "BODY_ACTION, BODY_CAMERA, BODY_PERCEPTION, BODY_STATUS, or NORMAL"
+                meaning = "requests a physical action, explicitly asks for a description of the robot Body camera's current view, asks what the Body perceives through non-camera sensors, asks for current task status, or is ordinary conversation"
+            system = f"Classify whether the user's latest message {meaning}. Return exactly one label and nothing else: {labels}. Understand the user's language semantically across languages; do not use a phrase list or translate by matching words. BODY_CAMERA is only for requests to see/describe the robot-mounted Body camera, not the fixed PC camera. A short imperative or affirmative can confirm the already prepared plan when its conversational function is approval, while a new physical objective is NEW_ACTION. A refusal or withdrawal is CANCEL. This is a safety classification: infer the speech act from the pending plan and dialogue state, not from the vocabulary."
             if retry and pending:
                 system += " Re-evaluate the speech act carefully. The user is responding immediately after the Body asked whether to execute the already validated plan."
             if confirmation_probe:
@@ -2706,7 +2720,7 @@ Memory honesty — two distinct cases:
                     temperature=0.0,
                     reasoning_format="none",
                 )
-                labels = "CONFIRM|CANCEL|NORMAL" if confirmation_probe else "CONFIRM|CANCEL|NEW_ACTION|BODY_ACTION|BODY_PERCEPTION|BODY_STATUS|NORMAL"
+                labels = "CONFIRM|CANCEL|NORMAL" if confirmation_probe else "CONFIRM|CANCEL|NEW_ACTION|BODY_ACTION|BODY_CAMERA|BODY_PERCEPTION|BODY_STATUS|NORMAL"
                 match = re.search(rf"\b({labels})\b", str(raw or "").upper())
                 return match.group(1).lower() if match else "normal"
             except Exception:
@@ -2736,16 +2750,18 @@ Memory honesty — two distinct cases:
             else:
                 system = (
                     "Classify the user's latest message for a cognitive Body interface. "
-                    "Return exactly JSON with route equal to one of: body_action, body_perception, "
+                    "Return exactly JSON with route equal to one of: body_action, body_camera, body_perception, "
                     "body_status, normal. body_action means the user requests a physical manipulation or "
-                    "movement; body_perception means asking what the robot sees or senses; body_status "
+                    "movement; body_camera means asking to see or describe the robot-mounted Body camera's "
+                    "current view; body_perception means asking what the robot senses through non-camera "
+                    "sensors; body_status "
                     "means asking whether a task is complete, what step is active, or whether the Body is stuck. "
-                    "Use semantic meaning, not a fixed phrase list."
+                    "Do not confuse the fixed PC camera with the robot's Body camera. Use semantic meaning, not a fixed phrase list."
                 )
             raw = fast(text, system, model=model, timeout=6.0, max_tokens=120)
             raw_text = str(raw or "")
             match = re.search(r"\{[\s\S]*?\}", raw_text)
-            allowed = ({"confirm", "cancel", "normal"} if confirmation_probe else {"confirm", "cancel", "new_action", "body_status", "normal"}) if pending else {"body_action", "body_perception", "body_status", "normal"}
+            allowed = ({"confirm", "cancel", "normal"} if confirmation_probe else {"confirm", "cancel", "new_action", "body_status", "normal"}) if pending else {"body_action", "body_camera", "body_perception", "body_status", "normal"}
             if match:
                 value = json.loads(match.group(0))
                 route = str(value.get("route") or "normal").strip().lower()
@@ -2762,7 +2778,7 @@ Memory honesty — two distinct cases:
                 labels = "confirm|cancel|normal" if confirmation_probe else "confirm|cancel|new_action|body_status|normal"
                 label_match = re.search(rf"\b({labels})\b", raw_text.lower())
             else:
-                label_match = re.search(r"\b(body_action|body_perception|body_status|normal)\b", raw_text.lower())
+                label_match = re.search(r"\b(body_action|body_camera|body_perception|body_status|normal)\b", raw_text.lower())
             if label_match and label_match.group(1) != "normal":
                 return label_match.group(1)
             # Confirmation is safety-sensitive but only applies to an already
@@ -2824,6 +2840,65 @@ Memory honesty — two distinct cases:
             logger.warning("[BodyStatus] report failed: %s", exc)
             return {"handled": True, "status": "unavailable", "response": "Je ne peux pas obtenir un état Body fiable pour le moment."}
 
+    def _body_camera_response(self) -> dict:
+        body = getattr(self._organism, "_body_runtime", None) if self._organism else None
+        interpret = getattr(body, "interpret_camera", None) if body is not None else None
+        if not callable(interpret):
+            return {
+                "handled": True,
+                "status": "unavailable",
+                "response": "Je ne peux pas joindre la caméra du Body distant. Le lien Brain→Body ou son endpoint VLM n'est pas disponible.",
+            }
+        try:
+            result = interpret()
+        except Exception as exc:
+            logger.warning("[BodyCamera] remote interpretation failed: %s", exc)
+            result = {"ok": False, "error": str(exc)}
+        if not isinstance(result, dict) or not result.get("ok"):
+            error = str((result or {}).get("error") or "aucune interprétation retournée") if isinstance(result, dict) else "réponse invalide"
+            return {
+                "handled": True,
+                "status": "unavailable",
+                "response": "Je ne peux pas décrire la caméra du Body pour le moment; le service distant ou son authentification n'a pas répondu correctement.",
+                "camera": {"error": error},
+            }
+        description = str(result.get("interpretation") or "").strip()
+        scene = result.get("semantic_scene")
+        if not description and isinstance(scene, dict):
+            description = str(scene.get("description") or scene.get("summary") or "").strip()
+        if not description:
+            description = "Le VLM a répondu, mais n'a fourni aucune description exploitable."
+        model = str(result.get("model") or "VLM Body")
+        return {
+            "handled": True,
+            "status": "interpreted",
+            "response": f"Voici l'interprétation ponctuelle de la caméra du Body ({model}) : {description}",
+            "camera": result,
+        }
+
+    def _body_perception_response(self) -> dict:
+        perception = self.current_body_perception()
+        if not perception.get("available"):
+            reason = str(perception.get("error") or "aucun snapshot récent n'est disponible")
+            return {
+                "handled": True,
+                "status": "unavailable",
+                "response": "Je n'ai pas de perception actuelle du robot. Le Body distant ne m'a pas fourni de snapshot, donc je ne peux pas confirmer ce qu'il détecte.",
+                "perception": {"error": reason},
+            }
+        snapshot = perception.get("snapshot") or {}
+        summary = str(snapshot.get("text") or snapshot.get("summary") or "").strip()
+        if not summary:
+            objects = snapshot.get("objects") or []
+            names = [str(obj.get("label") or obj.get("id") or "objet") for obj in objects if isinstance(obj, dict)]
+            summary = "Objets détectés : " + (", ".join(names) if names else "aucun objet listé")
+        return {
+            "handled": True,
+            "status": "reported",
+            "response": "D'après le dernier snapshot du Body : " + summary,
+            "perception": perception,
+        }
+
     def handle_body_chat_turn(self, user_input: str, user_id: str = "default") -> dict | None:
         """Handle only Body-specific turns; return None for normal dialogue."""
         pending = self._pending_body_plans.get(str(user_id))
@@ -2847,6 +2922,10 @@ Memory honesty — two distinct cases:
                     return self._body_status_response()
             else:
                 return self._body_status_response()
+        if not pending and route == "body_camera":
+            return self._body_camera_response()
+        if not pending and route == "body_perception":
+            return self._body_perception_response()
         if pending and route == "confirm":
             body = getattr(self._organism, "_body_runtime", None) if self._organism else None
             replacement_id = str(pending.get("replace_plan_id") or "").strip()
