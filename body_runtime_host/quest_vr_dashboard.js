@@ -21,6 +21,7 @@ export class QuestVRDashboard {
     this.telemetry = null;
     this.controller = null;
     this.following = false;
+    this.actionHitAreas = {};
     this.cameraBitmap = null;
     this.cameraMessage = 'CAMERA · WAITING';
 
@@ -156,6 +157,7 @@ export class QuestVRDashboard {
     this.drawCamera(ctx, cameraX, top, cameraWidth, panelHeight);
     this.drawBodyPanel(ctx, bodyX, top, bodyWidth, panelHeight, perception, fnk, xr);
     this.drawSensorPanel(ctx, sensorX, top, sensorWidth, panelHeight, perception);
+    this.drawHudActions(ctx);
     ctx.fillStyle = this.grabbedController ? '#f0cd79' : '#91b6a0';
     ctx.font = '17px ui-monospace, monospace';
     ctx.textAlign = 'left';
@@ -166,6 +168,31 @@ export class QuestVRDashboard {
     ctx.fillText(this.following ? 'CAMERA FOLLOW · BODY' : 'SCENE VIEW · FIXED', width - margin - 8, height - 28);
     ctx.restore();
     this.texture.needsUpdate = true;
+  }
+
+  drawHudActions(ctx) {
+    const buttonY = this.canvas.height - 62;
+    const simulationReady = this.frame?.mode === 'sim';
+    const simulationRunning = Boolean(this.frame?.running);
+    const simulationLabel = simulationRunning ? 'PAUSE SIMULATION' : 'START SIMULATION';
+    const simulationX = this.canvas.width / 2 - 280;
+    const exitX = this.canvas.width / 2 + 20;
+    const drawButton = (key, x, width, label, fill, stroke, textColor, enabled = true) => {
+      const height = 48;
+      this.actionHitAreas[key] = { x, y: buttonY, width, height, enabled };
+      ctx.globalAlpha = enabled ? 1 : 0.42;
+      ctx.fillStyle = fill;
+      ctx.strokeStyle = stroke;
+      ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.roundRect(x, buttonY, width, height, 18); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = textColor;
+      ctx.font = '700 18px ui-monospace, monospace';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(label, x + width / 2, buttonY + height / 2);
+      ctx.globalAlpha = 1;
+    };
+    drawButton('simulation', simulationX, 280, simulationReady ? simulationLabel : 'SIMULATION OFFLINE', 'rgba(31, 105, 78, .96)', '#75edbd', '#e5fff3', simulationReady);
+    drawButton('exit', exitX, 220, 'EXIT VR', 'rgba(91, 53, 42, .96)', '#f0a888', '#fff0e8');
   }
 
   drawTopTelemetry(ctx, perception, fnk, xr) {
@@ -275,7 +302,7 @@ export class QuestVRDashboard {
   }
 
   drawHexapod(ctx, cx, cy, heading, fnk, scale = 1) {
-    ctx.save(); ctx.translate(cx, cy); ctx.rotate(-heading * Math.PI / 180); ctx.scale(scale, scale);
+    ctx.save(); ctx.translate(cx, cy); ctx.rotate(Math.PI / 2 - heading * Math.PI / 180); ctx.scale(scale, scale);
     ctx.lineCap = 'round';
     const visualToPhysical = [0, 2, 4, 1, 3, 5];
     const jointColors = ['#83cbd1', '#9ce0b4', '#efcb76'];
@@ -542,6 +569,23 @@ export class QuestVRDashboard {
     raycaster.ray.direction.set(0, 0, -1).applyMatrix4(rotation);
     this.scene.updateMatrixWorld(true);
     return raycaster.intersectObjects(this.panels, false).length > 0;
+  }
+
+  activateAt(controller, raycaster) {
+    if (!this.visible) return null;
+    controller.updateMatrixWorld(true);
+    const rotation = new this.THREE.Matrix4().extractRotation(controller.matrixWorld);
+    raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
+    raycaster.ray.direction.set(0, 0, -1).applyMatrix4(rotation);
+    this.scene.updateMatrixWorld(true);
+    const hit = raycaster.intersectObjects(this.panels, false)[0];
+    if (!hit?.uv) return null;
+    const x = hit.uv.x * this.canvas.width;
+    const y = (1 - hit.uv.y) * this.canvas.height;
+    for (const [key, area] of Object.entries(this.actionHitAreas)) {
+      if (area.enabled && x >= area.x && x <= area.x + area.width && y >= area.y && y <= area.y + area.height) return key;
+    }
+    return 'dashboard';
   }
 
   beginAdjust(controller, inputSource) {

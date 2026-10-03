@@ -339,10 +339,19 @@ async function pollBody() {
 }
 
 function selectAt(controller) {
+  const hudAction = vrDashboard.visible ? vrDashboard.activateAt(controller, raycaster) : null;
+  if (hudAction === 'simulation') {
+    void toggleSimulationFromHud();
+    return;
+  }
+  if (hudAction === 'exit') {
+    void renderer.xr.getSession()?.end();
+    return;
+  }
+  if (hudAction === 'dashboard') return;
   const ray = new THREE.Matrix4().extractRotation(controller.matrixWorld);
   raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
   raycaster.ray.direction.set(0, 0, -1).applyMatrix4(ray);
-  if (vrDashboard.visible && vrDashboard.isControllerOverDashboard(controller, raycaster)) return;
   scene.updateMatrixWorld(true);
   const hits = raycaster.intersectObjects(selectable, false);
   if (!hits.length) return;
@@ -361,6 +370,28 @@ function selectAt(controller) {
   selectedLabel.position.set(relativeX, 1.55, relativeZ);
   world.add(selectedLabel);
   selectionNode.innerHTML = `<b>${escapeText(item.label || item.id || 'Perceived object')}</b><small>${escapeText(item.kind || 'object')} · ${position.slice(0, 2).map(v => Number(v).toFixed(2)).join(', ')} m · source ${escapeText(item.position_source || 'perception')}<br>Selection only; no actuator command sent.</small>`;
+}
+
+async function toggleSimulationFromHud() {
+  if (latestWorldStatus?.mode !== 'sim') {
+    setStatus('World Model simulation controls are unavailable in the current Body mode.', true);
+    return;
+  }
+  const running = latestWorldStatus.running === true;
+  try {
+    const response = await fetch('/worldmodel/run', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ running: !running, shuffle: !running }),
+    });
+    if (!response.ok) throw new Error(`World Model HTTP ${response.status}`);
+    await response.json();
+    await pollBody();
+    setStatus(running ? 'World Model simulation paused from the VR HUD.' : 'World Model simulation started from the VR HUD.');
+  } catch (error) {
+    setStatus(`Simulation control failed: ${error.message}`, true);
+  }
 }
 
 function escapeText(value) {
