@@ -513,8 +513,8 @@ class BodyHostHttpTest(unittest.TestCase):
                     preview_html = response.read().decode("utf-8")
                     self.assertEqual(response.headers.get_content_type(), "text/html")
                 self.assertIn("Live controller telemetry · Quest + FNK0031", preview_html)
-                self.assertIn("LiDAR point cloud", preview_html)
-                self.assertIn("mmWave radar", preview_html)
+                self.assertIn("LiDAR · polar scan", preview_html)
+                self.assertIn("mmWave · range / azimuth", preview_html)
                 with urllib.request.urlopen(f"{base}/quest-hud-preview.js", timeout=5) as response:
                     preview_script = response.read().decode("utf-8")
                     self.assertEqual(response.headers.get_content_type(), "text/javascript")
@@ -544,8 +544,9 @@ class BodyHostHttpTest(unittest.TestCase):
                 self.assertIn("new THREE.Scene()", dashboard_source)
                 self.assertIn("LIVE CONTROLLER TELEMETRY", dashboard_source)
                 self.assertIn("drawMetricMap", dashboard_source)
-                self.assertIn("LiDAR POINT CLOUD", dashboard_source)
-                self.assertIn("mmWAVE TARGETS", dashboard_source)
+                self.assertIn("'LiDAR', 'lidar'", dashboard_source)
+                self.assertIn("'mmWave', 'radar'", dashboard_source)
+                self.assertIn("sensorLocal(position, sourceFrame, bodyPosition, yaw)", dashboard_source)
                 self.assertIn("createArcGeometry", dashboard_source)
                 self.assertIn("updateTelemetry(telemetry)", dashboard_source)
                 self.assertIn("updateController(controller)", dashboard_source)
@@ -572,6 +573,9 @@ class BodyHostHttpTest(unittest.TestCase):
                 for removed in (b"START SIM", b"dashboardGroup"):
                     self.assertNotIn(removed, quest_bundle)
                 self.assertIn(b"LIVE CONTROLLER TELEMETRY", quest_bundle)
+                self.assertIn(b"BODY SPEED", quest_bundle)
+                self.assertIn(b"mmWave", quest_bundle)
+                self.assertIn(b"RANGE", quest_bundle)
 
                 # world model endpoints (lazy build)
                 status = _get(f"{base}/worldmodel/status")

@@ -94,10 +94,10 @@ export class QuestVRDashboard {
 
   panel(ctx, x, y, width, height, title, meta = '') {
     ctx.fillStyle = 'rgba(7, 16, 14, .92)';
-    ctx.fillRect(x, y, width, height);
+    ctx.beginPath(); ctx.roundRect(x, y, width, height, 26); ctx.fill();
     ctx.strokeStyle = 'rgba(135, 206, 166, .48)';
     ctx.lineWidth = 2;
-    ctx.strokeRect(x + 1, y + 1, width - 2, height - 2);
+    ctx.beginPath(); ctx.roundRect(x + 1, y + 1, width - 2, height - 2, 25); ctx.stroke();
     ctx.fillStyle = '#a9e8c2';
     ctx.font = '600 25px system-ui';
     ctx.textAlign = 'left';
@@ -129,20 +129,19 @@ export class QuestVRDashboard {
     const perception = this.frame?.perception || {};
     const fnk = this.controller || {};
     const xr = this.telemetry || {};
-    this.drawTopTelemetry(ctx, perception, fnk, xr);
-    const top = 182;
-    const bottom = height - 86;
+    const top = 24;
+    const bottom = height - 68;
     const panelHeight = bottom - top;
-    const margin = 28;
-    const gap = 22;
-    const cameraWidth = 570;
-    const bodyWidth = 630;
+    const margin = 30;
+    const gap = 20;
+    const cameraWidth = 930;
+    const bodyWidth = 1040;
     const sensorWidth = width - 2 * margin - 2 * gap - cameraWidth - bodyWidth;
     const cameraX = margin;
     const bodyX = cameraX + cameraWidth + gap;
     const sensorX = bodyX + bodyWidth + gap;
     this.drawCamera(ctx, cameraX, top, cameraWidth, panelHeight);
-    this.drawBodyPanel(ctx, bodyX, top, bodyWidth, panelHeight, perception, fnk);
+    this.drawBodyPanel(ctx, bodyX, top, bodyWidth, panelHeight, perception, fnk, xr);
     this.drawSensorPanel(ctx, sensorX, top, sensorWidth, panelHeight, perception);
     ctx.fillStyle = this.grabbedController ? '#f0cd79' : '#91b6a0';
     ctx.font = '17px ui-monospace, monospace';
@@ -196,17 +195,17 @@ export class QuestVRDashboard {
   drawCamera(ctx, x, y, width, height) {
     this.panel(ctx, x, y, width, height, 'Camera · egocentric', this.cameraBitmap ? 'LIVE' : 'BODY CAMERA');
     const imageX = x + 18;
-    const imageY = y + 72;
     const imageWidth = width - 36;
-    const imageHeight = height - 92;
+    const imageHeight = Math.min(height - 112, imageWidth * .78);
+    const imageY = y + 72 + Math.max(0, (height - 92 - imageHeight) / 2);
     ctx.fillStyle = '#0b1512';
-    ctx.fillRect(imageX, imageY, imageWidth, imageHeight);
+    ctx.beginPath(); ctx.roundRect(imageX, imageY, imageWidth, imageHeight, 20); ctx.fill();
     if (this.cameraBitmap) {
       const scale = Math.max(imageWidth / this.cameraBitmap.width, imageHeight / this.cameraBitmap.height);
       const drawWidth = this.cameraBitmap.width * scale;
       const drawHeight = this.cameraBitmap.height * scale;
       ctx.save();
-      ctx.beginPath(); ctx.rect(imageX, imageY, imageWidth, imageHeight); ctx.clip();
+      ctx.beginPath(); ctx.roundRect(imageX, imageY, imageWidth, imageHeight, 20); ctx.clip();
       ctx.drawImage(this.cameraBitmap, imageX + (imageWidth - drawWidth) / 2, imageY + (imageHeight - drawHeight) / 2, drawWidth, drawHeight);
       ctx.restore();
     } else {
@@ -217,31 +216,48 @@ export class QuestVRDashboard {
     }
   }
 
-  drawBodyPanel(ctx, x, y, width, height, perception, fnk) {
+  drawBodyPanel(ctx, x, y, width, height, perception, fnk, xr) {
     const position = perception.body?.position || [];
     const heading = Number(perception.body?.orientation || 0) * 180 / Math.PI;
     const objects = perception.objects || [];
-    this.panel(ctx, x, y, width, height, 'Robot · body state', `${objects.length} OBJECTS`);
-    const cx = x + 190;
-    const cy = y + 258;
+    this.panel(ctx, x, y, width, height, 'Body telemetry', `${objects.length} OBJECTS`);
+    const cx = x + 270;
+    const cy = y + 360;
     this.drawHexapod(ctx, cx, cy, Number(fnk.body_heading_deg ?? heading), fnk);
-    const metrics = [
-      ['MAP POSITION', position.length >= 2 ? `${Number(position[0]).toFixed(2)}, ${Number(position[1]).toFixed(2)} m` : 'waiting'],
-      ['BODY HEADING', `${Math.round(Number(fnk.compass_heading_deg ?? heading))}°`],
-      ['LOCOMOTION', fnk.gait || 'idle'],
-      ['CPG PHASE', Number.isFinite(Number(fnk.cpg_phase)) ? `${Math.round(Number(fnk.cpg_phase) * 180 / Math.PI)}°` : '—'],
-      ['WALKING VERIFIED', fnk.locomotion_verified ? 'verified' : 'not measured'],
-      ['WORLD MODEL', this.following ? 'following body' : 'scene overview'],
-    ];
-    metrics.forEach(([label, value], index) => {
-      const rowY = y + 112 + index * 78;
-      ctx.fillStyle = '#829d8d'; ctx.font = '15px ui-monospace, monospace'; ctx.textAlign = 'left';
-      ctx.fillText(label, x + 370, rowY);
-      ctx.fillStyle = '#def1e4'; ctx.font = '600 22px ui-monospace, monospace';
-      ctx.fillText(String(value).slice(0, 24), x + 370, rowY + 34);
+    const headingDeg = Number(fnk.compass_heading_deg ?? fnk.body_heading_deg ?? heading);
+    const headingX = x + width * .75;
+    const headingY = y + 245;
+    ctx.strokeStyle = 'rgba(169,232,194,.52)'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(headingX, headingY, 47, 0, Math.PI * 2); ctx.stroke();
+    ctx.save(); ctx.translate(headingX, headingY); ctx.rotate(-headingDeg * Math.PI / 180);
+    ctx.fillStyle = '#59e0bc'; ctx.beginPath(); ctx.moveTo(0, -26); ctx.lineTo(-12, 13); ctx.lineTo(0, 7); ctx.lineTo(12, 13); ctx.closePath(); ctx.fill(); ctx.restore();
+    ctx.fillStyle = '#829d8d'; ctx.font = '15px ui-monospace, monospace'; ctx.textAlign = 'left';
+    ctx.fillText('HEADING', headingX + 70, headingY - 18);
+    ctx.fillStyle = '#e4f4ea'; ctx.font = '600 42px system-ui';
+    ctx.fillText(Number.isFinite(headingDeg) ? `${Math.round(headingDeg)}°` : '—', headingX + 70, headingY + 28);
+    const velocity = perception.body?.velocity_mps ?? perception.motion?.velocity_mps ?? perception.modalities?.odometry?.velocity_mps;
+    const speed = Array.isArray(velocity) ? Math.hypot(...velocity.map(Number)) : Number(velocity);
+    ctx.fillStyle = '#829d8d'; ctx.font = '15px ui-monospace, monospace'; ctx.fillText('BODY SPEED', headingX + 8, headingY + 112);
+    ctx.fillStyle = '#e4f4ea'; ctx.font = '600 32px system-ui';
+    ctx.fillText(Number.isFinite(speed) ? `${speed.toFixed(2)} m/s` : '— m/s', headingX + 8, headingY + 153);
+    const spikes = (fnk.spikes || []).filter(Boolean).length;
+    const servoTargets = fnk.servo_targets || [];
+    const bars = [['SERVO TARGETS', `${servoTargets.length}/18`, servoTargets.length / 18], ['SNN ACTIVE', `${spikes}/18`, spikes / 18]];
+    bars.forEach(([label, value, ratio], index) => {
+      const rowY = y + height - 210 + index * 66;
+      ctx.fillStyle = 'rgba(8,20,17,.78)'; ctx.strokeStyle = 'rgba(135,206,166,.32)'; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.roundRect(x + 28, rowY, width - 56, 52, 12); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = '#a5ddba'; ctx.font = '14px ui-monospace, monospace'; ctx.textAlign = 'left'; ctx.fillText(label, x + 50, rowY + 31);
+      const bx = x + 265; const bw = width - 390;
+      ctx.fillStyle = '#243a32'; ctx.fillRect(bx, rowY + 21, bw, 11);
+      ctx.fillStyle = '#58e3ba'; ctx.fillRect(bx, rowY + 21, bw * Math.max(0, Math.min(1, ratio)), 11);
+      ctx.fillStyle = '#dff4e6'; ctx.textAlign = 'right'; ctx.font = '600 16px ui-monospace, monospace'; ctx.fillText(value, x + width - 42, rowY + 32);
     });
-    ctx.fillStyle = '#7e9889'; ctx.font = '16px ui-monospace, monospace'; ctx.textAlign = 'left';
-    ctx.fillText(`controller step  ${fnk.step ?? '—'}    ·    recent spikes  ${(fnk.spikes || []).filter(Boolean).length}/18`, x + 28, y + height - 30);
+    const left = this.controllerText(xr.controllers, 'left');
+    const right = this.controllerText(xr.controllers, 'right');
+    ctx.fillStyle = '#7e9889'; ctx.textAlign = 'left'; ctx.font = '14px ui-monospace, monospace';
+    ctx.fillText(`GAIT ${fnk.gait || 'waiting'}   ·   CPG ${Number.isFinite(Number(fnk.cpg_phase)) ? `${Math.round(Number(fnk.cpg_phase) * 180 / Math.PI)}°` : '—'}   ·   STEP ${fnk.step ?? '—'}`, x + 32, y + height - 38);
+    ctx.textAlign = 'right'; ctx.fillText(`L ${left}   R ${right}`, x + width - 28, y + height - 38);
   }
 
   drawHexapod(ctx, cx, cy, heading, fnk) {
@@ -303,19 +319,19 @@ export class QuestVRDashboard {
   }
 
   drawSensorPanel(ctx, x, y, width, height, perception) {
-    this.panel(ctx, x, y, width, height, 'Egocentric · spatial sensors', 'TOP VIEW · METRIC');
+    this.panel(ctx, x, y, width, height, 'Egocentric sensors', 'METRIC · 6 M');
     const lidar = perception.sensor_projections?.lidar?.points || [];
     const radar = perception.modalities?.mmwave_radar?.targets || [];
     const inset = 20;
     const gap = 14;
-    const mapWidth = (width - inset * 2 - gap) / 2;
-    const mapHeight = height - 86;
-    const mapY = y + 74;
-    const dividerX = x + inset + mapWidth + gap / 2;
+    const mapWidth = width - inset * 2;
+    const mapHeight = (height - 94 - gap) / 2;
+    const mapY = y + 72;
     ctx.strokeStyle = 'rgba(135, 206, 166, .22)';
-    ctx.beginPath(); ctx.moveTo(dividerX, mapY + 8); ctx.lineTo(dividerX, y + height - 24); ctx.stroke();
-    this.drawMetricMap(ctx, x + inset, mapY, mapWidth, mapHeight, lidar, radar, perception, 'LiDAR POINT CLOUD', 'lidar');
-    this.drawMetricMap(ctx, x + inset + mapWidth + gap, mapY, mapWidth, mapHeight, lidar, radar, perception, 'mmWAVE TARGETS', 'radar');
+    ctx.beginPath(); ctx.roundRect(x + inset, mapY, mapWidth, mapHeight, 20); ctx.stroke();
+    ctx.beginPath(); ctx.roundRect(x + inset, mapY + mapHeight + gap, mapWidth, mapHeight, 20); ctx.stroke();
+    this.drawMetricMap(ctx, x + inset, mapY, mapWidth, mapHeight, lidar, radar, perception, 'LiDAR', 'lidar');
+    this.drawMetricMap(ctx, x + inset, mapY + mapHeight + gap, mapWidth, mapHeight, lidar, radar, perception, 'mmWave', 'radar');
   }
 
   drawMetricMap(ctx, x, y, width, height, lidar, radar, perception, title, mode) {
@@ -324,30 +340,40 @@ export class QuestVRDashboard {
     const mapTop = y + 32;
     const mapHeight = height - 42;
     const cx = x + width / 2;
-    const cy = mapTop + mapHeight / 2;
-    const radius = Math.min(width * 0.44, mapHeight * 0.44);
+    const cy = mode === 'lidar' ? mapTop + mapHeight - 12 : mapTop + mapHeight - 24;
+    const radius = Math.min(width * 0.46, mapHeight * 0.92);
     const scale = radius / 6;
     ctx.save();
     ctx.beginPath(); ctx.rect(x, mapTop, width, mapHeight); ctx.clip();
-    for (const meters of [1, 2, 3, 4, 5, 6]) {
-      ctx.strokeStyle = meters % 2 === 0 ? 'rgba(120,190,150,.28)' : 'rgba(120,190,150,.13)';
-      ctx.lineWidth = meters % 2 === 0 ? 2 : 1;
-      ctx.beginPath(); ctx.arc(cx, cy, meters * scale, 0, 2 * Math.PI); ctx.stroke();
-      if (meters % 2 === 0) {
-        ctx.fillStyle = '#779586'; ctx.font = '13px ui-monospace, monospace'; ctx.textAlign = 'left';
-        ctx.fillText(`${meters}m`, cx + 5, cy - meters * scale + 14);
-      }
-    }
     ctx.strokeStyle = 'rgba(120,190,150,.18)';
-    for (let spoke = 0; spoke < 12; spoke += 1) {
-      const angle = spoke * Math.PI / 6;
-      ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(cx + Math.cos(angle) * radius, cy + Math.sin(angle) * radius); ctx.stroke();
+    const plotLeft = x + 26;
+    const plotRight = x + width - 18;
+    const plotTop = mapTop + 12;
+    const plotBottom = mode === 'lidar' ? cy : mapTop + mapHeight - 24;
+    if (mode === 'lidar') {
+      for (let meters = 1; meters <= 6; meters += 1) {
+        ctx.strokeStyle = meters % 2 === 0 ? 'rgba(120,190,150,.28)' : 'rgba(120,190,150,.13)';
+        ctx.beginPath(); ctx.arc(cx, cy, meters * scale, Math.PI, Math.PI * 2); ctx.stroke();
+      }
+      for (let spoke = 0; spoke <= 12; spoke += 1) {
+        const angle = Math.PI + spoke * Math.PI / 12;
+        ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(cx + Math.cos(angle) * radius, cy + Math.sin(angle) * radius); ctx.stroke();
+      }
+      ctx.fillStyle = '#a8c3b1'; ctx.font = '12px ui-monospace, monospace'; ctx.textAlign = 'center';
+      ctx.fillText('LEFT', plotLeft, cy - 3); ctx.fillText('FRONT', cx, plotTop + 12); ctx.fillText('RIGHT', plotRight, cy - 3);
+    } else {
+      ctx.fillStyle = 'rgba(15,34,30,.46)'; ctx.fillRect(plotLeft, plotTop, plotRight - plotLeft, plotBottom - plotTop);
+      for (let i = 0; i <= 6; i += 1) {
+        const gx = plotLeft + (plotRight - plotLeft) * i / 6;
+        const gy = plotTop + (plotBottom - plotTop) * i / 6;
+        ctx.strokeStyle = i % 2 === 0 ? 'rgba(120,190,150,.25)' : 'rgba(120,190,150,.12)';
+        ctx.beginPath(); ctx.moveTo(gx, plotTop); ctx.lineTo(gx, plotBottom); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(plotLeft, gy); ctx.lineTo(plotRight, gy); ctx.stroke();
+      }
+      ctx.fillStyle = '#a8c3b1'; ctx.font = '12px ui-monospace, monospace'; ctx.textAlign = 'center';
+      ctx.fillText('−60°', plotLeft, plotBottom + 14); ctx.fillText('0°', cx, plotBottom + 14); ctx.fillText('+60°', plotRight, plotBottom + 14);
+      ctx.textAlign = 'left'; ctx.fillText('RANGE', plotLeft + 6, plotTop + 14);
     }
-    ctx.fillStyle = '#a8c3b1'; ctx.font = '12px ui-monospace, monospace'; ctx.textAlign = 'center';
-    ctx.fillText('FRONT', cx, cy - radius + 14);
-    ctx.fillText('REAR', cx, cy + radius - 5);
-    ctx.save(); ctx.translate(cx - radius + 10, cy); ctx.rotate(-Math.PI / 2); ctx.fillText('LEFT', 0, 0); ctx.restore();
-    ctx.save(); ctx.translate(cx + radius - 10, cy); ctx.rotate(Math.PI / 2); ctx.fillText('RIGHT', 0, 0); ctx.restore();
     const frame = perception.sensor_projections?.frame || {};
     const bodyPosition = frame.body || perception.body?.position || [0, 0, 0];
     const yaw = Number(frame.yaw_rad ?? perception.body?.orientation ?? 0);
@@ -366,7 +392,7 @@ export class QuestVRDashboard {
       }
       const distance = Math.hypot(forward, left);
       if (![forward, left].every(Number.isFinite) || distance > 6.2) return null;
-      return { x: cx - left * scale, y: cy - forward * scale, distance };
+      return { x: cx - left * scale, y: cy - forward * scale, distance, forward, left };
     };
     if (mode === 'lidar') {
       const returns = lidar.map(point => ({
@@ -380,6 +406,7 @@ export class QuestVRDashboard {
       for (let index = 0; index < returns.length; index += 1) {
         const current = returns[index].mapped;
         const next = returns[(index + 1) % returns.length].mapped;
+        if (returns[index].mapped.forward < 0 || next.forward < 0) continue;
         const angleCurrent = Math.atan2(current.y - cy, current.x - cx);
         const angleNext = Math.atan2(next.y - cy, next.x - cx);
         const angleGap = (angleNext - angleCurrent + Math.PI * 2) % (Math.PI * 2);
@@ -388,6 +415,7 @@ export class QuestVRDashboard {
       }
       ctx.restore();
       for (const { point, mapped } of returns) {
+        if (mapped.forward < 0) continue;
         const intensity = Math.max(.2, Math.min(1, Number(point.intensity ?? .7)));
         const dot = mapped.distance < 2 ? 5 : 3.5;
         ctx.fillStyle = `rgba(94, 221, 228, ${intensity * .2})`;
@@ -399,8 +427,11 @@ export class QuestVRDashboard {
       ctx.fillText('Measured returns · dashed links show local continuity', x + 6, y + height - 5);
     } else {
       for (const target of radar) {
-        const mapped = mapPoint(target.position_m || target.position, radarFrame, false);
-        if (!mapped) continue;
+        const local = this.sensorLocal(target.position_m || target.position, radarFrame, bodyPosition, yaw);
+        if (!local || local.forward < 0 || local.distance > 6.2) continue;
+        const bearing = Math.atan2(-local.left, local.forward);
+        if (Math.abs(bearing) > Math.PI / 3) continue;
+        const mapped = { x: cx + (bearing / (Math.PI / 3)) * ((plotRight - plotLeft) / 2), y: plotBottom - (local.distance / 6) * (plotBottom - plotTop), distance: local.distance };
         const color = target.classification === 'mobile_obstacle' ? '#ef91c5' : '#f2ce73';
         const confidence = Math.max(.3, Math.min(1, Number(target.confidence ?? .7)));
         ctx.strokeStyle = color; ctx.globalAlpha = .18 + confidence * .2; ctx.lineWidth = 2;
@@ -414,8 +445,10 @@ export class QuestVRDashboard {
           forwardSpeed = Math.cos(yaw) * worldForward + Math.sin(yaw) * leftSpeed;
           leftSpeed = -Math.sin(yaw) * worldForward + Math.cos(yaw) * leftSpeed;
         }
-        const vectorX = -leftSpeed * scale * 1.2;
-        const vectorY = -forwardSpeed * scale * 1.2;
+        const rangeRate = (local.forward * forwardSpeed + local.left * leftSpeed) / Math.max(local.distance, .1);
+        const bearingRate = (-local.forward * leftSpeed + local.left * forwardSpeed) / Math.max(local.distance ** 2, .01);
+        const vectorX = bearingRate * ((plotRight - plotLeft) / 2) / (Math.PI / 3) * .5;
+        const vectorY = -rangeRate * ((plotBottom - plotTop) / 6) * .5;
         if (Math.hypot(vectorX, vectorY) > 3) {
           const endX = mapped.x + vectorX;
           const endY = mapped.y + vectorY;
@@ -429,20 +462,32 @@ export class QuestVRDashboard {
         }
         ctx.fillStyle = color; ctx.beginPath(); ctx.arc(mapped.x, mapped.y, 8, 0, Math.PI * 2); ctx.fill();
         ctx.strokeStyle = '#fff3cf'; ctx.lineWidth = 2; ctx.stroke();
-        const speed = Math.hypot(Number(velocity[0] || 0), Number(velocity[1] || 0));
-        const labelX = mapped.x + (mapped.x > cx ? -13 : 13);
-        ctx.fillStyle = '#f8e8b8'; ctx.font = '12px ui-monospace, monospace'; ctx.textAlign = mapped.x > cx ? 'right' : 'left';
-        ctx.fillText(`${mapped.distance.toFixed(1)}m · ${target.classification || 'target'}`, labelX, mapped.y - 7);
-        ctx.fillText(`${speed.toFixed(2)}m/s · ${Math.round(confidence * 100)}%`, labelX, mapped.y + 9);
+        ctx.fillStyle = '#f8e8b8'; ctx.font = '600 12px ui-monospace, monospace'; ctx.textAlign = 'center';
+        ctx.fillText(target.classification === 'mobile_obstacle' ? 'M' : '•', mapped.x, mapped.y - 12);
       }
       ctx.fillStyle = '#83a99a'; ctx.font = '12px ui-monospace, monospace'; ctx.textAlign = 'left';
       ctx.fillText('Target range · direction vectors use measured velocity', x + 6, y + height - 5);
     }
-    ctx.fillStyle = '#d9f5e4'; ctx.beginPath();
-    ctx.moveTo(cx, cy - 17); ctx.lineTo(cx - 11, cy + 8); ctx.lineTo(cx + 11, cy + 8); ctx.closePath(); ctx.fill();
+    if (mode === 'lidar') {
+      ctx.fillStyle = '#d9f5e4'; ctx.beginPath();
+      ctx.moveTo(cx, cy - 17); ctx.lineTo(cx - 11, cy + 8); ctx.lineTo(cx + 11, cy + 8); ctx.closePath(); ctx.fill();
+    }
     ctx.restore();
     ctx.fillStyle = '#779586'; ctx.font = '13px ui-monospace, monospace'; ctx.textAlign = 'right';
     ctx.fillText('BODY', x + width - 6, y + 14);
+  }
+
+  sensorLocal(position, sourceFrame, bodyPosition, yaw) {
+    if (!Array.isArray(position) || position.length < 2) return null;
+    let forward = Number(position[0]);
+    let left = Number(position[1]);
+    if (/^(body_world|world|map|local_map|odom)$/i.test(sourceFrame || '')) {
+      const dx = forward - Number(bodyPosition[0] || 0);
+      const dy = left - Number(bodyPosition[1] || 0);
+      forward = Math.cos(yaw) * dx + Math.sin(yaw) * dy;
+      left = -Math.sin(yaw) * dx + Math.cos(yaw) * dy;
+    }
+    return { forward, left, distance: Math.hypot(forward, left) };
   }
 
   async setCameraFrame(frame) {
