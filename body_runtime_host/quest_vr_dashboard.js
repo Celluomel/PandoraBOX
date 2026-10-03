@@ -48,6 +48,16 @@ export class QuestVRDashboard {
     panel.renderOrder = 1000;
     this.root.add(panel);
     this.panels.push(panel);
+    this.pointerRing = new THREE.Mesh(
+      new THREE.TorusGeometry(0.045, 0.009, 8, 32),
+      new THREE.MeshBasicMaterial({ color: '#ffffff', transparent: true, depthTest: false, depthWrite: false, side: THREE.DoubleSide }),
+    );
+    this.pointerRotation = new THREE.Matrix4();
+    this.pointerNormal = new THREE.Vector3();
+    this.pointerForward = new THREE.Vector3(0, 0, 1);
+    this.pointerRing.visible = false;
+    this.pointerRing.renderOrder = 2001;
+    panel.add(this.pointerRing);
     this.drawDashboard();
   }
 
@@ -593,6 +603,29 @@ export class QuestVRDashboard {
   setActionBusy(busy) {
     this.actionBusy = Boolean(busy);
     this.drawDashboard();
+  }
+
+  clearPointer() {
+    this.pointerRing.visible = false;
+  }
+
+  updatePointer(controller, raycaster) {
+    if (!this.visible) return null;
+    controller.updateMatrixWorld(true);
+    const rotation = this.pointerRotation.extractRotation(controller.matrixWorld);
+    raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
+    raycaster.ray.direction.set(0, 0, -1).applyMatrix4(rotation);
+    this.scene.updateMatrixWorld(true);
+    const hit = raycaster.intersectObjects(this.panels, false)[0];
+    if (!hit) return null;
+    const panel = hit.object;
+    const localPoint = panel.worldToLocal(hit.point.clone());
+    const theta = Math.asin(this.THREE.MathUtils.clamp(localPoint.x / 5.09, -0.99, 0.99));
+    const normal = this.pointerNormal.set(-Math.sin(theta), 0, Math.cos(theta));
+    this.pointerRing.position.copy(localPoint).addScaledVector(normal, 0.012);
+    this.pointerRing.quaternion.setFromUnitVectors(this.pointerForward, normal);
+    this.pointerRing.visible = true;
+    return hit;
   }
 
   isControllerOverDashboard(controller, raycaster) {

@@ -85,6 +85,9 @@ world.add(selectionMarker);
 let selectedLabel = null;
 let mapFrameKey = '';
 const raycaster = new THREE.Raycaster();
+const controllerRayRotation = new THREE.Matrix4();
+const controllerRayNormal = new THREE.Vector3(0, 0, 1);
+const reticleDirection = new THREE.Vector3();
 const selectable = [];
 const controllerRays = [];
 const colorByKind = { table: '#d3bd67', chair: '#83b3d5', obstacle: '#a77ba5', mobile_obstacle: '#db83bf', target: '#efa678' };
@@ -428,6 +431,24 @@ function selectAt(controller) {
   selectionNode.innerHTML = `<b>${escapeText(item.label || item.id || 'Perceived object')}</b><small>${escapeText(item.kind || 'object')} · ${position.slice(0, 2).map(v => Number(v).toFixed(2)).join(', ')} m · source ${escapeText(item.position_source || 'perception')}<br>Selection only; no actuator command sent.</small>`;
 }
 
+function updateControllerPointer(controller, beam, reticle) {
+  controller.updateMatrixWorld(true);
+  const rotation = controllerRayRotation.extractRotation(controller.matrixWorld);
+  raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
+  raycaster.ray.direction.set(0, 0, -1).applyMatrix4(rotation);
+
+  const hudHit = vrDashboard.updatePointer(controller, raycaster);
+  const sceneHit = hudHit ? null : raycaster.intersectObjects(selectable, false)[0];
+  const hit = hudHit || sceneHit;
+  const distance = hit ? hit.distance : 4;
+  beam.scale.z = Math.max(0.05, distance / 4);
+  reticle.visible = Boolean(sceneHit);
+  if (sceneHit) {
+    reticle.position.copy(sceneHit.point).addScaledVector(raycaster.ray.direction, -0.008);
+    reticle.quaternion.setFromUnitVectors(controllerRayNormal, reticleDirection.copy(raycaster.ray.direction).negate());
+  }
+}
+
 async function toggleSimulationFromHud() {
   if (latestWorldStatus?.mode !== 'sim') {
     setStatus('World Model simulation controls are unavailable in the current Body mode.', true);
@@ -569,11 +590,22 @@ for (let index = 0; index < 2; index += 1) {
   controller.addEventListener('squeezeend', () => {
     vrDashboard.endAdjust(grip, renderer.xr.isPresenting ? renderer.xr.getCamera(camera) : null);
   });
-  const beam = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, -4)]), new THREE.LineBasicMaterial({ color: '#b6f1d3' }));
+  const beam = new THREE.Line(
+    new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, -4)]),
+    new THREE.LineBasicMaterial({ color: '#d5ffea', transparent: true, opacity: 0.95, depthTest: false }),
+  );
+  beam.renderOrder = 2000;
+  const reticle = new THREE.Mesh(
+    new THREE.TorusGeometry(0.045, 0.009, 8, 32),
+    new THREE.MeshBasicMaterial({ color: '#ffffff', depthTest: false, depthWrite: false, side: THREE.DoubleSide }),
+  );
+  reticle.visible = false;
+  reticle.renderOrder = 2001;
   controller.add(beam);
+  scene.add(reticle);
   scene.add(controller);
   scene.add(grip);
-  controllerRays.push(controller);
+  controllerRays.push({ controller, beam, reticle });
 }
 
 async function enterXR(mode) {
@@ -671,6 +703,8 @@ renderer.setAnimationLoop(time => {
     const headYaw = new THREE.Euler().setFromQuaternion(xrCamera.quaternion, 'YXZ').y;
     const active = [...session.inputSources].filter(source => source.gamepad);
     updateXRLocomotion(active, xrCamera, deltaSeconds);
+    vrDashboard.clearPointer();
+    for (const ray of controllerRays) updateControllerPointer(ray.controller, ray.beam, ray.reticle);
     const controllers = active.map(source => {
       const axes = source.gamepad.axes || [];
       const primaryMagnitude = Math.hypot(Number(axes[0]) || 0, Number(axes[1]) || 0);

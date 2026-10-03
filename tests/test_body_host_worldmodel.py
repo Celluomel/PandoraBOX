@@ -569,6 +569,8 @@ class BodyHostHttpTest(unittest.TestCase):
                 self.assertIn("panel.position.set(0, 0.05, -4.6)", dashboard_source)
                 self.assertIn("this.drawCamera(ctx, cameraX, top, cameraWidth, panelHeight)", dashboard_source)
                 self.assertIn("this.drawSensorPanel(ctx, sensorX, top, sensorWidth, panelHeight, perception)", dashboard_source)
+                self.assertIn("updatePointer(controller, raycaster)", dashboard_source)
+                self.assertIn("this.pointerRing.visible = true", dashboard_source)
                 self.assertIn("new this.THREE.Matrix4()", dashboard_source)
                 self.assertIn("LIVE CONTROLLER TELEMETRY", dashboard_source)
                 self.assertIn("CAMERA · WAITING", dashboard_source)
@@ -578,6 +580,8 @@ class BodyHostHttpTest(unittest.TestCase):
                 self.assertIn("HOLD GRIP TO EDIT", dashboard_source)
                 self.assertIn("this.texture.needsUpdate = true", dashboard_source)
                 self.assertIn("/plugins/fnk0031_wifi/controller", quest_source)
+                self.assertIn("function updateControllerPointer(controller, beam, reticle)", quest_source)
+                self.assertIn("vrDashboard.clearPointer()", quest_source)
                 self.assertIn("renderer.clearDepth()", quest_source)
                 with urllib.request.urlopen(f"{base}/quest-vr.js", timeout=5) as response:
                     quest_bundle = response.read()
@@ -590,6 +594,7 @@ class BodyHostHttpTest(unittest.TestCase):
                 self.assertIn(b"START SIMULATION", quest_bundle)
                 self.assertIn(b"LIVE CONTROLLER TELEMETRY", quest_bundle)
                 self.assertIn(b"BODY SPEED", quest_bundle)
+                self.assertIn(b"pointerRing", quest_bundle)
                 self.assertIn(b"mmWave", quest_bundle)
                 self.assertIn(b"RANGE", quest_bundle)
 
