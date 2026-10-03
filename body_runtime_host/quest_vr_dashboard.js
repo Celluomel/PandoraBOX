@@ -224,7 +224,7 @@ export class QuestVRDashboard {
     this.panel(ctx, x, y, width, height, 'Robot · body state', `${objects.length} OBJECTS`);
     const cx = x + 190;
     const cy = y + 258;
-    this.drawHexapod(ctx, cx, cy, Number(fnk.body_heading_deg ?? heading), fnk.spikes || []);
+    this.drawHexapod(ctx, cx, cy, Number(fnk.body_heading_deg ?? heading), fnk);
     const metrics = [
       ['MAP POSITION', position.length >= 2 ? `${Number(position[0]).toFixed(2)}, ${Number(position[1]).toFixed(2)} m` : 'waiting'],
       ['BODY HEADING', `${Math.round(Number(fnk.compass_heading_deg ?? heading))}°`],
@@ -244,20 +244,51 @@ export class QuestVRDashboard {
     ctx.fillText(`controller step  ${fnk.step ?? '—'}    ·    recent spikes  ${(fnk.spikes || []).filter(Boolean).length}/18`, x + 28, y + height - 30);
   }
 
-  drawHexapod(ctx, cx, cy, heading, spikes) {
+  drawHexapod(ctx, cx, cy, heading, fnk) {
     ctx.save(); ctx.translate(cx, cy); ctx.rotate(-heading * Math.PI / 180);
-    ctx.strokeStyle = '#79c99a'; ctx.lineWidth = 10; ctx.lineCap = 'round';
-    const legs = [[-1,-1],[0,-1],[1,-1],[-1,1],[0,1],[1,1]];
-    legs.forEach(([side, front], index) => {
-      const hipX = side * (index % 3 === 1 ? 9 : 28);
-      const hipY = front * 28;
-      const kneeX = side * 72;
-      const footX = side * 116;
-      const kneeY = front * 58;
-      const footY = front * (92 + (spikes[index] ? 8 : 0));
-      ctx.strokeStyle = spikes[index] ? '#ffd27a' : index < 3 ? '#76d5a0' : '#69bac2';
-      ctx.beginPath(); ctx.moveTo(hipX, hipY); ctx.lineTo(kneeX, kneeY); ctx.lineTo(footX, footY); ctx.stroke();
-      ctx.fillStyle = '#d9f2e3'; ctx.beginPath(); ctx.arc(footX, footY, 6, 0, Math.PI * 2); ctx.fill();
+    ctx.lineCap = 'round';
+    const visualToPhysical = [0, 2, 4, 1, 3, 5];
+    const jointColors = ['#83cbd1', '#9ce0b4', '#efcb76'];
+    const servoTargets = new Map((fnk.servo_targets || []).map(target => [Number(target.index), Number(target.target)]));
+    const jointsByPhysicalLeg = fnk.joint_targets || [];
+    visualToPhysical.forEach((physicalLeg, index) => {
+      const side = index < 3 ? -1 : 1;
+      const row = index % 3;
+      const longitudinal = row - 1;
+      const hipX = side * 35;
+      const hipY = longitudinal * 52;
+      const jointValues = jointsByPhysicalLeg[physicalLeg] || [];
+      const valueAt = joint => {
+        const fallback = servoTargets.get(index * 3 + joint + 1) ?? 0;
+        const value = Number(jointValues[joint] ?? fallback);
+        return Number.isFinite(value) ? Math.max(-1, Math.min(1, value)) : 0;
+      };
+      const [coxa, femur, tibia] = [0, 1, 2].map(valueAt);
+      const lift = Number(fnk.foot_lift?.[physicalLeg] || 0);
+      const points = [
+        [hipX + side * (24 + coxa * 5), hipY + coxa * 5],
+        [hipX + side * (59 + coxa * 5 + femur * 5), hipY + longitudinal * (12 + femur * 5)],
+        [hipX + side * (94 + coxa * 5 + femur * 5 + tibia * 5), hipY + longitudinal * (25 + femur * 5 + tibia * 7) - Math.max(0, lift) * 12],
+      ];
+      const legColor = Number(fnk.contact?.[physicalLeg]) === 1 ? '#76d5a0' : '#efcb76';
+      const chain = [[hipX, hipY], ...points];
+      chain.slice(1).forEach((point, joint) => {
+        ctx.strokeStyle = joint === 2 ? legColor : '#91ad9c';
+        ctx.lineWidth = joint === 2 ? 8 : 10;
+        ctx.beginPath(); ctx.moveTo(...chain[joint]); ctx.lineTo(...point); ctx.stroke();
+        ctx.fillStyle = jointColors[joint];
+        ctx.beginPath(); ctx.arc(point[0], point[1], 7, 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = '#07110d'; ctx.lineWidth = 2; ctx.stroke();
+        const servoId = String(index * 3 + joint + 1).padStart(2, '0');
+        ctx.fillStyle = jointColors[joint]; ctx.font = '12px ui-monospace, monospace';
+        ctx.textAlign = side < 0 ? 'right' : 'left';
+        ctx.fillText(servoId, point[0] + side * 10, point[1] - 9);
+      });
+      const foot = points[2];
+      ctx.fillStyle = legColor; ctx.beginPath(); ctx.arc(foot[0], foot[1], 5, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#dcebe2'; ctx.font = '13px ui-monospace, monospace';
+      ctx.textAlign = side < 0 ? 'right' : 'left';
+      ctx.fillText(`L${index + 1}`, foot[0] + side * 17, foot[1] + 5);
     });
     ctx.fillStyle = '#18352a'; ctx.strokeStyle = '#a0e5ba'; ctx.lineWidth = 3;
     ctx.beginPath(); ctx.roundRect(-40, -70, 80, 140, 24); ctx.fill(); ctx.stroke();
@@ -267,6 +298,8 @@ export class QuestVRDashboard {
     ctx.restore();
     ctx.fillStyle = '#829d8d'; ctx.font = '15px ui-monospace, monospace'; ctx.textAlign = 'center';
     ctx.fillText('FRONT', cx, cy - 120);
+    ctx.fillStyle = '#9db8a7'; ctx.font = '13px ui-monospace, monospace';
+    ctx.fillText('18 SERVO JOINTS · COXA / FEMUR / TIBIA', cx, cy + 150);
   }
 
   drawSensorPanel(ctx, x, y, width, height, perception) {
@@ -305,10 +338,16 @@ export class QuestVRDashboard {
         ctx.fillText(`${meters}m`, cx + 5, cy - meters * scale + 14);
       }
     }
-    ctx.strokeStyle = 'rgba(120,190,150,.28)';
-    for (const angle of [0, Math.PI / 2]) {
-      ctx.beginPath(); ctx.moveTo(cx - Math.cos(angle) * radius, cy - Math.sin(angle) * radius); ctx.lineTo(cx + Math.cos(angle) * radius, cy + Math.sin(angle) * radius); ctx.stroke();
+    ctx.strokeStyle = 'rgba(120,190,150,.18)';
+    for (let spoke = 0; spoke < 12; spoke += 1) {
+      const angle = spoke * Math.PI / 6;
+      ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(cx + Math.cos(angle) * radius, cy + Math.sin(angle) * radius); ctx.stroke();
     }
+    ctx.fillStyle = '#a8c3b1'; ctx.font = '12px ui-monospace, monospace'; ctx.textAlign = 'center';
+    ctx.fillText('FRONT', cx, cy - radius + 14);
+    ctx.fillText('REAR', cx, cy + radius - 5);
+    ctx.save(); ctx.translate(cx - radius + 10, cy); ctx.rotate(-Math.PI / 2); ctx.fillText('LEFT', 0, 0); ctx.restore();
+    ctx.save(); ctx.translate(cx + radius - 10, cy); ctx.rotate(Math.PI / 2); ctx.fillText('RIGHT', 0, 0); ctx.restore();
     const frame = perception.sensor_projections?.frame || {};
     const bodyPosition = frame.body || perception.body?.position || [0, 0, 0];
     const yaw = Number(frame.yaw_rad ?? perception.body?.orientation ?? 0);
@@ -330,26 +369,74 @@ export class QuestVRDashboard {
       return { x: cx - left * scale, y: cy - forward * scale, distance };
     };
     if (mode === 'lidar') {
-      for (const point of lidar) {
-        const mapped = mapPoint([Number(point.x), Number(point.y)], lidarFrame, false);
-        if (!mapped) continue;
+      const returns = lidar.map(point => ({
+        point,
+        mapped: mapPoint([Number(point.x), Number(point.y)], lidarFrame, false),
+      })).filter(item => item.mapped).sort((a, b) => Math.atan2(a.mapped.y - cy, a.mapped.x - cx) - Math.atan2(b.mapped.y - cy, b.mapped.x - cx));
+      ctx.save();
+      ctx.setLineDash([5, 6]);
+      ctx.strokeStyle = 'rgba(94, 221, 228, .38)';
+      ctx.lineWidth = 2;
+      for (let index = 0; index < returns.length; index += 1) {
+        const current = returns[index].mapped;
+        const next = returns[(index + 1) % returns.length].mapped;
+        const angleCurrent = Math.atan2(current.y - cy, current.x - cx);
+        const angleNext = Math.atan2(next.y - cy, next.x - cx);
+        const angleGap = (angleNext - angleCurrent + Math.PI * 2) % (Math.PI * 2);
+        if (angleGap > 0.75 || Math.abs(current.distance - next.distance) > 0.7) continue;
+        ctx.beginPath(); ctx.moveTo(current.x, current.y); ctx.lineTo(next.x, next.y); ctx.stroke();
+      }
+      ctx.restore();
+      for (const { point, mapped } of returns) {
         const intensity = Math.max(.2, Math.min(1, Number(point.intensity ?? .7)));
+        const dot = mapped.distance < 2 ? 5 : 3.5;
+        ctx.fillStyle = `rgba(94, 221, 228, ${intensity * .2})`;
+        ctx.beginPath(); ctx.arc(mapped.x, mapped.y, dot * 2.5, 0, Math.PI * 2); ctx.fill();
         ctx.fillStyle = `rgba(94, 221, 228, ${intensity})`;
-        const dot = mapped.distance < 2 ? 4.5 : 3.2;
         ctx.beginPath(); ctx.arc(mapped.x, mapped.y, dot, 0, Math.PI * 2); ctx.fill();
       }
+      ctx.fillStyle = '#83a99a'; ctx.font = '12px ui-monospace, monospace'; ctx.textAlign = 'left';
+      ctx.fillText('Measured returns · dashed links show local continuity', x + 6, y + height - 5);
     } else {
       for (const target of radar) {
         const mapped = mapPoint(target.position_m || target.position, radarFrame, false);
         if (!mapped) continue;
         const color = target.classification === 'mobile_obstacle' ? '#ef91c5' : '#f2ce73';
         const confidence = Math.max(.3, Math.min(1, Number(target.confidence ?? .7)));
-        ctx.fillStyle = color; ctx.globalAlpha = confidence;
-        ctx.beginPath(); ctx.arc(mapped.x, mapped.y, 10, 0, Math.PI * 2); ctx.fill();
-        ctx.globalAlpha = 1; ctx.strokeStyle = '#fff3cf'; ctx.lineWidth = 2; ctx.stroke();
-        ctx.fillStyle = '#f8e8b8'; ctx.font = '13px ui-monospace, monospace'; ctx.textAlign = 'left';
-        ctx.fillText(`${mapped.distance.toFixed(1)}m`, mapped.x + 13, mapped.y - 7);
+        ctx.strokeStyle = color; ctx.globalAlpha = .18 + confidence * .2; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(mapped.x, mapped.y, 24 + (1 - confidence) * 18, 0, Math.PI * 2); ctx.stroke();
+        ctx.globalAlpha = 1;
+        const velocity = target.velocity_mps || target.velocity || [0, 0];
+        let forwardSpeed = Number(velocity[0] || 0);
+        let leftSpeed = Number(velocity[1] || 0);
+        if (/^(body_world|world|map|local_map|odom)$/.test(radarFrame)) {
+          const worldForward = forwardSpeed;
+          forwardSpeed = Math.cos(yaw) * worldForward + Math.sin(yaw) * leftSpeed;
+          leftSpeed = -Math.sin(yaw) * worldForward + Math.cos(yaw) * leftSpeed;
+        }
+        const vectorX = -leftSpeed * scale * 1.2;
+        const vectorY = -forwardSpeed * scale * 1.2;
+        if (Math.hypot(vectorX, vectorY) > 3) {
+          const endX = mapped.x + vectorX;
+          const endY = mapped.y + vectorY;
+          ctx.strokeStyle = color; ctx.lineWidth = 4;
+          ctx.beginPath(); ctx.moveTo(mapped.x, mapped.y); ctx.lineTo(endX, endY); ctx.stroke();
+          const angle = Math.atan2(vectorY, vectorX);
+          ctx.beginPath(); ctx.moveTo(endX, endY);
+          ctx.lineTo(endX - 10 * Math.cos(angle - .5), endY - 10 * Math.sin(angle - .5));
+          ctx.lineTo(endX - 10 * Math.cos(angle + .5), endY - 10 * Math.sin(angle + .5));
+          ctx.closePath(); ctx.fillStyle = color; ctx.fill();
+        }
+        ctx.fillStyle = color; ctx.beginPath(); ctx.arc(mapped.x, mapped.y, 8, 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = '#fff3cf'; ctx.lineWidth = 2; ctx.stroke();
+        const speed = Math.hypot(Number(velocity[0] || 0), Number(velocity[1] || 0));
+        const labelX = mapped.x + (mapped.x > cx ? -13 : 13);
+        ctx.fillStyle = '#f8e8b8'; ctx.font = '12px ui-monospace, monospace'; ctx.textAlign = mapped.x > cx ? 'right' : 'left';
+        ctx.fillText(`${mapped.distance.toFixed(1)}m · ${target.classification || 'target'}`, labelX, mapped.y - 7);
+        ctx.fillText(`${speed.toFixed(2)}m/s · ${Math.round(confidence * 100)}%`, labelX, mapped.y + 9);
       }
+      ctx.fillStyle = '#83a99a'; ctx.font = '12px ui-monospace, monospace'; ctx.textAlign = 'left';
+      ctx.fillText('Target range · direction vectors use measured velocity', x + 6, y + height - 5);
     }
     ctx.fillStyle = '#d9f5e4'; ctx.beginPath();
     ctx.moveTo(cx, cy - 17); ctx.lineTo(cx - 11, cy + 8); ctx.lineTo(cx + 11, cy + 8); ctx.closePath(); ctx.fill();

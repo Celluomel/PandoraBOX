@@ -49,20 +49,45 @@ function drawMap(canvas, mode) {
       ctx.textAlign = 'left'; ctx.fillText(`${meters}m`, cx + 4, cy - meters * scale + 12 * scaleFactor);
     }
   }
-  ctx.strokeStyle = 'rgba(120,190,150,.25)';
-  for (const angle of [0, Math.PI / 2]) {
-    ctx.beginPath(); ctx.moveTo(cx - Math.cos(angle) * radius, cy - Math.sin(angle) * radius); ctx.lineTo(cx + Math.cos(angle) * radius, cy + Math.sin(angle) * radius); ctx.stroke();
+  ctx.strokeStyle = 'rgba(120,190,150,.18)';
+  for (let spoke = 0; spoke < 12; spoke += 1) {
+    const angle = spoke * Math.PI / 6;
+    ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(cx + Math.cos(angle) * radius, cy + Math.sin(angle) * radius); ctx.stroke();
   }
+  ctx.fillStyle = '#a8c3b1'; ctx.font = `${Math.round(8 * scaleFactor)}px ui-monospace,monospace`; ctx.textAlign = 'center';
+  ctx.fillText('FRONT', cx, cy - radius + 11 * scaleFactor);
+  ctx.fillText('REAR', cx, cy + radius - 4 * scaleFactor);
+  ctx.save(); ctx.translate(cx - radius + 10 * scaleFactor, cy); ctx.rotate(-Math.PI / 2); ctx.fillText('LEFT', 0, 0); ctx.restore();
+  ctx.save(); ctx.translate(cx + radius - 10 * scaleFactor, cy); ctx.rotate(Math.PI / 2); ctx.fillText('RIGHT', 0, 0); ctx.restore();
   const perception = world?.perception || {};
   if (mode === 'lidar') {
     const points = perception.sensor_projections?.lidar?.points || [];
-    for (const point of points) {
-      const local = worldLocal([Number(point.x), Number(point.y)], perception, perception.sensor_projections?.lidar?.frame);
-      if (!local || local.distance > 6.2) continue;
-      const x = cx - local.left * scale; const y = cy - local.forward * scale;
+    const returns = points.map(point => ({
+      point,
+      local: worldLocal([Number(point.x), Number(point.y)], perception, perception.sensor_projections?.lidar?.frame),
+    })).filter(item => item.local && item.local.distance <= 6.2).map(item => ({
+      ...item,
+      x: cx - item.local.left * scale,
+      y: cy - item.local.forward * scale,
+    })).sort((a, b) => Math.atan2(a.y - cy, a.x - cx) - Math.atan2(b.y - cy, b.x - cx));
+    ctx.save(); ctx.setLineDash([3 * scaleFactor, 4 * scaleFactor]);
+    ctx.strokeStyle = 'rgba(94,221,228,.38)'; ctx.lineWidth = Math.max(1, scaleFactor);
+    for (let index = 0; index < returns.length; index += 1) {
+      const current = returns[index]; const next = returns[(index + 1) % returns.length];
+      const a = Math.atan2(current.y - cy, current.x - cx);
+      const b = Math.atan2(next.y - cy, next.x - cx);
+      const gap = (b - a + Math.PI * 2) % (Math.PI * 2);
+      if (gap > .75 || Math.abs(current.local.distance - next.local.distance) > .7) continue;
+      ctx.beginPath(); ctx.moveTo(current.x, current.y); ctx.lineTo(next.x, next.y); ctx.stroke();
+    }
+    ctx.restore();
+    for (const { point, local, x, y } of returns) {
       const intensity = Math.max(.2, Math.min(1, Number(point.intensity ?? .7)));
+      const dot = (local.distance < 2 ? 3.6 : 2.8) * scaleFactor;
+      ctx.fillStyle = `rgba(94,221,228,${intensity * .2})`;
+      ctx.beginPath(); ctx.arc(x, y, dot * 2.5, 0, 2 * Math.PI); ctx.fill();
       ctx.fillStyle = `rgba(94,221,228,${intensity})`;
-      ctx.beginPath(); ctx.arc(x, y, (local.distance < 2 ? 3.6 : 2.4) * scaleFactor, 0, 2 * Math.PI); ctx.fill();
+      ctx.beginPath(); ctx.arc(x, y, dot, 0, 2 * Math.PI); ctx.fill();
     }
   } else {
     const targets = perception.modalities?.mmwave_radar?.targets || [];
@@ -70,11 +95,32 @@ function drawMap(canvas, mode) {
       const local = worldLocal(target.position_m || target.position, perception, perception.modalities?.mmwave_radar?.frame);
       if (!local || local.distance > 6.2) continue;
       const x = cx - local.left * scale; const y = cy - local.forward * scale;
-      ctx.fillStyle = target.classification === 'mobile_obstacle' ? '#ed91c5' : '#efcb76';
-      ctx.strokeStyle = '#fff0c1'; ctx.lineWidth = 2 * scaleFactor;
-      ctx.beginPath(); ctx.arc(x, y, 6.5 * scaleFactor, 0, 2 * Math.PI); ctx.fill(); ctx.stroke();
-      ctx.fillStyle = '#f5e8bf'; ctx.font = `${Math.round(9 * scaleFactor)}px ui-monospace,monospace`; ctx.textAlign = 'left';
-      ctx.fillText(`${local.distance.toFixed(1)}m`, x + 9 * scaleFactor, y - 5 * scaleFactor);
+      const color = target.classification === 'mobile_obstacle' ? '#ed91c5' : '#efcb76';
+      const confidence = Math.max(.3, Math.min(1, Number(target.confidence ?? .7)));
+      ctx.strokeStyle = color; ctx.globalAlpha = .2 + confidence * .2; ctx.lineWidth = 1.5 * scaleFactor;
+      ctx.beginPath(); ctx.arc(x, y, (11 + (1 - confidence) * 8) * scaleFactor, 0, 2 * Math.PI); ctx.stroke();
+      ctx.globalAlpha = 1;
+      const velocity = target.velocity_mps || target.velocity || [0, 0];
+      let forwardSpeed = Number(velocity[0] || 0); let leftSpeed = Number(velocity[1] || 0);
+      const radarFrame = perception.modalities?.mmwave_radar?.frame || 'body';
+      if (/^(body_world|world|map|local_map|odom)$/i.test(radarFrame)) {
+        const yaw = Number(perception.sensor_projections?.frame?.yaw_rad ?? perception.body?.orientation ?? 0);
+        const worldForward = forwardSpeed;
+        forwardSpeed = Math.cos(yaw) * worldForward + Math.sin(yaw) * leftSpeed;
+        leftSpeed = -Math.sin(yaw) * worldForward + Math.cos(yaw) * leftSpeed;
+      }
+      const vectorX = -leftSpeed * scale * 1.2; const vectorY = -forwardSpeed * scale * 1.2;
+      if (Math.hypot(vectorX, vectorY) > 3 * scaleFactor) {
+        ctx.strokeStyle = color; ctx.lineWidth = 2 * scaleFactor;
+        ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + vectorX, y + vectorY); ctx.stroke();
+      }
+      ctx.fillStyle = color; ctx.strokeStyle = '#fff0c1'; ctx.lineWidth = 1.5 * scaleFactor;
+      ctx.beginPath(); ctx.arc(x, y, 5.5 * scaleFactor, 0, 2 * Math.PI); ctx.fill(); ctx.stroke();
+      const speed = Math.hypot(Number(velocity[0] || 0), Number(velocity[1] || 0));
+      const labelX = x + (x > cx ? -8 : 8) * scaleFactor;
+      ctx.fillStyle = '#f5e8bf'; ctx.font = `${Math.round(8 * scaleFactor)}px ui-monospace,monospace`; ctx.textAlign = x > cx ? 'right' : 'left';
+      ctx.fillText(`${local.distance.toFixed(1)}m · ${target.classification || 'target'}`, labelX, y - 5 * scaleFactor);
+      ctx.fillText(`${speed.toFixed(2)}m/s · ${Math.round(confidence * 100)}%`, labelX, y + 5 * scaleFactor);
     }
   }
   ctx.fillStyle = '#d9f5e4';
@@ -87,24 +133,40 @@ function drawRobot() {
   const visualHeading = ((90 - heading) % 360 + 360) % 360;
   group.setAttribute('transform', `rotate(${visualHeading} 180 155)`);
   const legs = $('robot-legs');
-  const active = controller?.spikes || [];
+  const spikes = controller?.spikes || [];
+  const jointsByPhysicalLeg = controller?.joint_targets || [];
+  const visualToPhysicalLeg = [0, 2, 4, 1, 3, 5];
   legs.innerHTML = Array.from({ length: 6 }, (_, index) => {
-    const row = Math.floor(index / 2);
-    const side = index % 2 === 0 ? -1 : 1;
+    const row = index % 3;
+    const side = index < 3 ? -1 : 1;
     const longitudinal = row - 1;
     const hx = 180 + side * 39;
     const hy = 105 + row * 50;
-    const kx = 180 + side * 76;
-    const ky = hy + longitudinal * 11;
-    const fx = 180 + side * (132 + (active[index] ? 8 : 0));
-    const fy = hy + longitudinal * 21;
-    const color = active[index] ? '#efcb76' : side < 0 ? '#76d5a0' : '#69bac2';
-    return `<g stroke="${color}" stroke-width="8" fill="none"><path d="M${hx} ${hy} L${kx} ${ky} L${fx} ${fy}"/><circle cx="${fx}" cy="${fy}" r="5" fill="${color}"/></g>`;
+    const physicalLeg = visualToPhysicalLeg[index];
+    const [coxa = 0, femur = 0, tibia = 0] = jointsByPhysicalLeg[physicalLeg] || [];
+    const lift = Number(controller?.foot_lift?.[physicalLeg] || 0);
+    const coxaX = hx + side * (24 + Number(coxa) * 4);
+    const coxaY = hy + Number(coxa) * 4;
+    const femurX = coxaX + side * (31 + Number(femur) * 3);
+    const femurY = coxaY + longitudinal * (9 + Number(femur) * 3);
+    const footX = femurX + side * (34 + Number(tibia) * 3);
+    const footY = femurY + longitudinal * (11 + Number(tibia) * 4) - Math.max(0, lift) * 10;
+    const legColor = spikes.slice(physicalLeg * 3, physicalLeg * 3 + 3).some(Boolean) ? '#efcb76' : side < 0 ? '#76d5a0' : '#69bac2';
+    const points = [[coxaX, coxaY], [femurX, femurY], [footX, footY]];
+    const links = [[hx, hy, coxaX, coxaY], [coxaX, coxaY, femurX, femurY], [femurX, femurY, footX, footY]];
+    const servoMarkup = points.map(([x, y], joint) => {
+      const servoId = index * 3 + joint + 1;
+      const servoColor = ['#83cbd1', '#9ce0b4', '#efcb76'][joint];
+      const anchor = side < 0 ? 'end' : 'start';
+      return `<circle cx="${x}" cy="${y}" r="4.3" fill="${servoColor}" stroke="#07110d" stroke-width="1.5"/><text x="${x + side * 5}" y="${y - 6}" text-anchor="${anchor}" fill="${servoColor}" font-size="6" font-family="monospace">${String(servoId).padStart(2, '0')}</text>`;
+    }).join('');
+    const linkMarkup = links.map(([x1, y1, x2, y2], segment) => `<path d="M${x1} ${y1} L${x2} ${y2}" stroke="${segment === 2 ? legColor : '#92b8a1'}" stroke-width="${segment === 2 ? 6 : 7}" stroke-linecap="round"/>`).join('');
+    return `<g>${linkMarkup}${servoMarkup}<circle cx="${footX}" cy="${footY}" r="5.5" fill="${legColor}" stroke="#07110d" stroke-width="1.5"/><text x="${footX + side * 8}" y="${footY + 3}" text-anchor="${side < 0 ? 'end' : 'start'}" fill="#dcebe2" font-size="7" font-family="monospace">L${index + 1}</text></g>`;
   }).join('');
   const neurons = $('robot-neurons');
   neurons.innerHTML = Array.from({ length: 18 }, (_, index) => {
     const x = 27 + index * 18;
-    const firing = Boolean(active[index]);
+    const firing = Boolean(spikes[index]);
     const groupColor = index < 6 ? '#80dfaa' : index < 12 ? '#86cbd2' : '#c6a2e8';
     return `<circle cx="${x}" cy="278" r="${firing ? 4.3 : 2.6}" fill="${firing ? '#efcb76' : groupColor}" opacity="${firing ? 1 : .58}"/>`;
   }).join('');
