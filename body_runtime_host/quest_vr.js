@@ -566,6 +566,7 @@ async function enterXR(mode) {
       optionalFeatures: ['local-floor', 'bounded-floor', 'hand-tracking'],
     });
     await renderer.xr.setSession(session);
+    scene.background = mode === 'immersive-vr' ? new THREE.Color('#101a16') : null;
     orbit.enabled = false;
     dashboardGroup.visible = true;
     drawCameraPreview(null);
@@ -578,6 +579,7 @@ async function enterXR(mode) {
       : 'VR is active. Use the controller ray to operate the dashboard.');
     session.addEventListener('end', () => {
       orbit.enabled = true;
+      scene.background = null;
       dashboardGroup.visible = false;
       stopCameraPolling();
       document.querySelector('#enter-xr').textContent = 'Enter VR';
@@ -588,6 +590,17 @@ async function enterXR(mode) {
     setStatus(`Could not start ${mode}: ${error.message}`, true);
   }
 }
+
+window.addEventListener('error', event => {
+  setStatus(`VR page error: ${event.message || 'unknown JavaScript error'}`, true);
+});
+window.addEventListener('unhandledrejection', event => {
+  setStatus(`VR page error: ${event.reason?.message || String(event.reason || 'unhandled async error')}`, true);
+});
+renderer.domElement.addEventListener('webglcontextlost', event => {
+  event.preventDefault();
+  setStatus('WebGL context lost. Exit VR and reload the Quest page.', true);
+});
 
 document.querySelector('#enter-xr').addEventListener('click', () => enterXR('immersive-vr'));
 document.querySelector('#enter-ar').addEventListener('click', () => enterXR('immersive-ar'));
