@@ -254,12 +254,16 @@ def sensor_projections(body: Any, objects: Iterable[Any], *, width: float = 12.0
                 continue
     camera_native = _camera_available(modalities)
     lidar_source = _lidar_source(modalities)
-    lidar_native = bool(native_lidar) and lidar_source not in {"virtual_lidar", "derived_scene"}
+    lidar_meta = modalities.get("lidar") or {}
+    explicit_native = lidar_meta.get("native") if isinstance(lidar_meta, dict) else None
+    lidar_native = bool(native_lidar) and (
+        bool(explicit_native) if explicit_native is not None
+        else lidar_source not in {"virtual_lidar", "derived_scene", "video_lidar_proxy"}
+    )
     camera_objects.sort(key=lambda item: item["range"])
     timestamp = float(getattr(body, "timestamp", 0.0) or time.time())
     frame_id = str(modalities.get("frame_id") or modalities.get("frame") or f"body-{int(timestamp * 1000)}")
     lidar_quality = "native" if lidar_native else "virtual" if lidar_source == "virtual_lidar" else "derived"
-    lidar_meta = modalities.get("lidar") or {}
     lidar_frame = str(lidar_meta.get("frame") or "body_world") if isinstance(lidar_meta, dict) else "body_world"
     fusion = fuse_sensor_modalities(
         camera_objects, lidar_points,
@@ -385,6 +389,8 @@ def build_body_perception_frame(
             "points": lidar_points,
             "frame": (projections.get("lidar") or {}).get("frame") or lidar.get("frame", "body_world"),
             "calibration": dict(lidar.get("calibration") or {}),
+            "source": lidar.get("source") or (projections.get("lidar") or {}).get("source"),
+            "native": bool((projections.get("lidar") or {}).get("native")),
             "projection": projections.get("lidar") or {},
             "quality": {
                 "source": quality.get("lidar", "unknown"),

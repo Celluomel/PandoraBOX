@@ -25,6 +25,14 @@ logger = logging.getLogger(__name__)
 LOCAL_EMBEDDING_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 
 
+def _bounded_confidence(value: Any) -> Optional[float]:
+    try:
+        score = float(value)
+    except (TypeError, ValueError):
+        return None
+    return round(max(0.0, min(1.0, score)), 4) if math.isfinite(score) else None
+
+
 def _cosine(left: list[float], right: list[float]) -> float:
     """Return a bounded cosine score without making geometry decisions."""
     if not left or not right or len(left) != len(right):
@@ -512,6 +520,35 @@ class BodySceneInterpreter:
                     resolved = semantic_matches.get(key, "")
             return resolved
 
+        def image_region(value: Any) -> Optional[Dict[str, float]]:
+            if not isinstance(value, dict):
+                return None
+            try:
+                x, y = float(value.get("x")), float(value.get("y"))
+                width, height = float(value.get("width")), float(value.get("height"))
+            except (TypeError, ValueError):
+                return None
+            if (not all(math.isfinite(v) for v in (x, y, width, height))
+                    or width <= 0 or height <= 0 or x < 0 or y < 0
+                    or x + width > 1 or y + height > 1):
+                return None
+            return {"x": round(x, 5), "y": round(y, 5),
+                    "width": round(width, 5), "height": round(height, 5)}
+
+        def attributes(value: Any) -> Dict[str, Any]:
+            if not isinstance(value, dict):
+                return {}
+            safe: Dict[str, Any] = {}
+            for key, raw in list(value.items())[:16]:
+                name = str(key).strip().lower()[:40]
+                if not name or name in {"position", "coordinates", "x", "y", "z", "center", "size_m"}:
+                    continue
+                if isinstance(raw, (str, bool, int, float)):
+                    if isinstance(raw, float) and not math.isfinite(raw):
+                        continue
+                    safe[name] = str(raw)[:100] if isinstance(raw, str) else raw
+            return safe
+
         if label_resolver:
             raw_values = list(as_items(interpretation.get("primary_objects")))
             raw_values.extend(
@@ -537,7 +574,20 @@ class BodySceneInterpreter:
                 "description": str(item.get("description") or "")[:240],
                 "role": str(item.get("role") or known[object_id].get("kind") or "object")[:80],
                 "affordances": [str(value)[:50] for value in as_items(item.get("affordances"))][:8],
+                "attributes": attributes(item.get("attributes")),
+                "image_region": image_region(item.get("image_region")),
+                "confidence": _bounded_confidence(item.get("confidence")),
+                "relations": [],
             }
+            for relation in as_items(item.get("relations"))[:12]:
+                if not isinstance(relation, dict):
+                    continue
+                target_id = resolve_reference(relation.get("target_id") or relation.get("target"))
+                relation_type = str(relation.get("type") or "").strip()[:50]
+                if target_id and target_id != object_id and relation_type:
+                    descriptions[object_id]["relations"].append({
+                        "type": relation_type, "target_id": target_id,
+                    })
         entities = []
         for object_id, observed in known.items():
             entity = {
@@ -560,7 +610,8 @@ class BodySceneInterpreter:
                 "reason": str(path.get("reason") or "")[:240],
                 "target_id": str(path.get("target_id") or "") if str(path.get("target_id") or "") in known else None,
             })
-        primary_total = len([value for value in (interpretation.get("primary_objects") or []) if value])
+        raw_primary = as_items(interpretation.get("primary_objects"))
+        primary_total = len([value for value in raw_primary if value])
         primary_valid = len(primary)
         description_total = len([item for item in raw_descriptions if isinstance(item, dict)])
         description_valid = len(descriptions)
@@ -722,12 +773,15 @@ class BodySceneInterpreter:
             "about timestamps and provenance. Return JSON only with keys: "
             "scene_summary (one concise global sentence), primary_objects (array of ids or semantic labels for "
             "near, actionable or hazardous objects only), object_descriptions (array of at most five "
-            "near/actionable/hazardous objects with id, description, role and affordances), environment (array of "
+            "near/actionable/hazardous objects with id, description, role, affordances, confidence 0..1, optional "
+            "open-vocabulary scalar attributes, optional image_region {x,y,width,height} normalized to 0..1, and "
+            "optional relations [{type,target_id}] referencing another observed object), environment (array of "
             "observed facts), possible_paths (array of objects with action and reason), "
             "movement_support (array of monitoring or recovery suggestions), uncertainty (array). "
             f"Prioritize objects within approximately {self._focus_range():.1f} metres of the Body, objects on the "
             "current path, and hazards. Do not enumerate distant objects unless they are necessary for navigation. "
             "A distant or ambiguous visual shape must go into uncertainty, not into primary_objects. "
+            "Image regions describe pixels only; do not infer metric coordinates or object dimensions from them. "
             + camera_view_note + " "
             "Use only observed data. Prefer native camera/LiDAR returns when quality says native; "
             "label derived projections as inferred. Do not invent objects, coordinates, or completion. "

@@ -24,6 +24,12 @@ The goal is not to make the Body LLM an unrestricted autonomous controller.
 The goal is to create a clear, auditable division of responsibility between
 the conversational Brain, the embodied Body and the physical actuator layer.
 
+The spatial reconstruction workstream (camera + LiDAR + VLM + optional
+Gaussian Splatting) has its own staged plan in
+[`BODY_SPATIAL_RECONSTRUCTION_BLUEPRINT.md`](BODY_SPATIAL_RECONSTRUCTION_BLUEPRINT.md).
+It extends this roadmap; it does not replace the Body's metric world model or
+its safety checks.
+
 ## 2. Current baseline
 
 The repository already contains the foundations below.

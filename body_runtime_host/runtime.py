@@ -2458,6 +2458,28 @@ class BodyHost:
                         self._send({"available": False, "error": "world model unavailable"}, 503)
                     else:
                         self._send(wm.route_memory.snapshot())
+                elif path == "/worldmodel/spatial-map":
+                    wm = owner.worldmodel
+                    if wm is None:
+                        self._send({"available": False, "error": "world model unavailable"}, 503)
+                    else:
+                        self._send({
+                            "available": True,
+                            **wm.spatial_map.snapshot(),
+                            "last_update": dict(wm._last_spatial_map_update),
+                        })
+                elif path == "/worldmodel/semantic-splats":
+                    wm = owner.worldmodel
+                    if wm is None:
+                        self._send({"available": False, "error": "world model unavailable"}, 503)
+                    else:
+                        perception = (wm.status_summary().get("perception") or {})
+                        self._send(perception.get("semantic_splats") or {
+                            "contract": "body_semantic_splats.v1",
+                            "status": "waiting_for_perception",
+                            "groups": [],
+                            "safety_authoritative": False,
+                        })
                 elif path == "/worldmodel/map/route":
                     wm = owner.worldmodel
                     query = parse_qs(urlparse(self.path).query)

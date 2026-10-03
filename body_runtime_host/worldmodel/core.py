@@ -51,6 +51,8 @@ from .task_graph import TaskGraphExecutor
 from .skills import BodySkillLibrary
 from .sim_world import SimulatedRoom
 from .sources import SimRobotSource
+from .spatial_map import MetricVoxelMap
+from .semantic_splats import build_semantic_splat_scene
 from .types import (
     Action, BodyState, Episode, GlobalState, Observation, Outcome,
 )
@@ -185,6 +187,10 @@ class EmbodiedWorldModel:
         self.task_graph = TaskGraphExecutor()
         self.skills = BodySkillLibrary(self.data_dir / "skills.json")
         self.route_memory = RouteMemory(self.data_dir / "route_memory.json")
+        self.spatial_map = MetricVoxelMap(path=self.data_dir / "metric_voxel_map.json")
+        self._last_spatial_map_update: Dict[str, Any] = {
+            "accepted": False, "reason": "no_native_lidar_frame", "integrated_returns": 0,
+        }
         self.scene_interpreter = BodySceneInterpreter(self._cfg)
         self._episodes_path = self.data_dir / "episodes.jsonl"
         self._maybe_trim_episodes_file()
@@ -352,6 +358,19 @@ class EmbodiedWorldModel:
                 obs = self._bridge_observation()
             # 2) body state
             body_state = self.source.body_state() if self.source is not None else self._bridge_body_state()
+            lidar_input = (getattr(obs, "modalities", {}) or {}).get("lidar") or {}
+            lidar_source = str(lidar_input.get("source") or "unavailable") if isinstance(lidar_input, dict) else "unavailable"
+            if isinstance(lidar_input, dict) and lidar_input.get("native") is True:
+                projections = sensor_projections(body_state, obs.scene, modalities=obs.modalities)
+                frame = build_body_perception_frame(body_state, obs, projections=projections)
+                self._last_spatial_map_update = self.spatial_map.integrate(frame)
+            else:
+                self._last_spatial_map_update = {
+                    "accepted": False,
+                    "reason": "no_native_lidar_frame",
+                    "source": lidar_source,
+                    "integrated_returns": 0,
+                }
             # 3) cortex encode (affordance features, body-conditioned)
             features = self.cortex.encode(obs, body_state)
             aff = self.cortex.affordances(obs, body_state)
@@ -1587,6 +1606,15 @@ class EmbodiedWorldModel:
             body, obs, projections=projections, motion=self._last_scene_motion,
         )
         interpreter = self.scene_interpreter.status()
+        semantic_snapshot = self._current_plan_snapshot(obs, body)
+        semantic_scene = semantic_snapshot.semantic_scene
+        frame_id = str((projections.get("frame") or {}).get("frame_id") or "")
+        semantic_splats = build_semantic_splat_scene(
+            [item.as_dict() for item in obs.scene],
+            semantic_scene,
+            frame_id=frame_id,
+            simulated=isinstance(self.source, SimRobotSource),
+        )
         return {
             "available": True,
             "source": obs.source,
@@ -1606,6 +1634,7 @@ class EmbodiedWorldModel:
             "sensor_projections": projections,
             "perception_frame": perception_frame,
             "scene_interpreter": interpreter,
+            "semantic_splats": semantic_splats,
         }
 
     @staticmethod

@@ -74,6 +74,8 @@ roomLine.position.set(0, 0.01, 0);
 world.add(roomLine);
 const objectsGroup = new THREE.Group();
 world.add(objectsGroup);
+const semanticSplatGroup = new THREE.Group();
+world.add(semanticSplatGroup);
 const selectionMarker = new THREE.Mesh(
   new THREE.RingGeometry(0.42, 0.5, 32),
   new THREE.MeshBasicMaterial({ color: '#b9f5ce', side: THREE.DoubleSide, transparent: true, opacity: 0.95 }),
@@ -300,6 +302,49 @@ function objectGeometry(item) {
   return new THREE.BoxGeometry(width, Math.max(0.35, width), width);
 }
 
+function semanticSeed(value) {
+  let hash = 2166136261;
+  for (const char of String(value)) hash = Math.imul(hash ^ char.charCodeAt(0), 16777619);
+  return () => {
+    hash += 0x6D2B79F5;
+    let n = hash;
+    n = Math.imul(n ^ (n >>> 15), n | 1);
+    n ^= n + Math.imul(n ^ (n >>> 7), n | 61);
+    return ((n ^ (n >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function gaussianPreview(group) {
+  const center = group.center_m || [];
+  if (center.length < 2) return null;
+  const random = semanticSeed(group.entity_id);
+  const positions = [];
+  const sizes = [];
+  const extent = Math.max(0.12, Math.min(1.2, Number(group.extent_m) || 0.4));
+  for (let i = 0; i < 96; i += 1) {
+    const angle = random() * Math.PI * 2;
+    const radius = Math.sqrt(-2 * Math.log(Math.max(0.0001, random()))) * extent * 0.31;
+    positions.push(
+      Number(center[0]) - basePosition[0] + Math.cos(angle) * radius,
+      0.38 + (random() - 0.5) * extent * 0.52,
+      -(Number(center[1]) - basePosition[1]) + Math.sin(angle) * radius,
+    );
+    sizes.push(0.035 + random() * 0.055);
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute('splatSize', new THREE.Float32BufferAttribute(sizes, 1));
+  const points = new THREE.Points(geometry, new THREE.ShaderMaterial({
+    transparent: true,
+    depthWrite: false,
+    uniforms: { tint: { value: new THREE.Color('#55ead1') }, confidence: { value: Number(group.confidence) || 0.5 } },
+    vertexShader: `attribute float splatSize; uniform float confidence; varying float vConfidence; void main(){ vec4 mvPosition=modelViewMatrix*vec4(position,1.0); gl_Position=projectionMatrix*mvPosition; gl_PointSize=clamp(splatSize*210.0/max(0.2,-mvPosition.z),2.0,22.0); vConfidence=confidence; }`,
+    fragmentShader: `uniform vec3 tint; varying float vConfidence; void main(){ float r=length(gl_PointCoord-vec2(0.5)); float a=exp(-r*r*18.0)*(1.0-smoothstep(0.08,0.5,r))*mix(0.35,0.82,vConfidence); if(a<0.015) discard; gl_FragColor=vec4(tint,a); }`,
+  }));
+  points.userData.semanticGroup = group;
+  return points;
+}
+
 function rebuildScene(frame) {
   selectionMarker.visible = false;
   if (selectedLabel) {
@@ -315,6 +360,11 @@ function rebuildScene(frame) {
       if (Array.isArray(node.material)) node.material.forEach(material => material.dispose());
       else node.material?.dispose();
     });
+  }
+  while (semanticSplatGroup.children.length) {
+    const child = semanticSplatGroup.children.pop();
+    child.geometry?.dispose();
+    child.material?.dispose();
   }
   selectable.length = 0;
   const perception = frame.perception || {};
@@ -358,6 +408,12 @@ function rebuildScene(frame) {
     label.position.set(px, 1.2, pz);
     objectsGroup.add(label);
   }
+  const semanticSplatScene = perception.semantic_splats || {};
+  const semanticGroups = Array.isArray(semanticSplatScene.groups) ? semanticSplatScene.groups : [];
+  for (const group of semanticGroups) {
+    const points = gaussianPreview(group);
+    if (points) semanticSplatGroup.add(points);
+  }
   const modal = perception.modalities || {};
   const source = perception.source || 'Body perception';
   document.querySelector('#source').textContent = String(source).replaceAll('_', ' ').slice(0, 24);
@@ -366,12 +422,16 @@ function rebuildScene(frame) {
   document.querySelector('#age').textContent = `${age.toFixed(1)} s`;
   const sensorCount = Object.values(modal).filter(value => value && (value.available || value.status === 'available')).length;
   if (firstData) {
-    setStatus(`${latestObjects.length} perceived objects · ${sensorCount} sensor modalities reporting · WebXR can be entered from this page`);
+    const semanticStatus = semanticGroups.length
+      ? ` · ${semanticGroups.length} VLM Gaussian groups${semanticSplatScene.preview_only ? ' · SIM PREVIEW' : ''}` : '';
+    setStatus(`${latestObjects.length} perceived objects · ${sensorCount} sensor modalities reporting${semanticStatus} · WebXR can be entered from this page`);
     firstData = false;
   } else if (age > 5) {
     setStatus(`Body observation is stale (${age.toFixed(1)} s). Showing last known scene.`, true);
   } else {
-    setStatus(`${latestObjects.length} perceived objects · frame ${new Date(Number(perception.timestamp || Date.now() / 1000) * 1000).toLocaleTimeString()}`);
+    const semanticStatus = semanticGroups.length
+      ? ` · ${semanticGroups.length} VLM Gaussian groups${semanticSplatScene.preview_only ? ' · SIM PREVIEW' : ''}` : '';
+    setStatus(`${latestObjects.length} perceived objects${semanticStatus} · frame ${new Date(Number(perception.timestamp || Date.now() / 1000) * 1000).toLocaleTimeString()}`);
   }
   vrDashboard.update(frame);
 }

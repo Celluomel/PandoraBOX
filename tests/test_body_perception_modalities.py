@@ -141,7 +141,7 @@ class BodyPerceptionModalitiesTest(unittest.TestCase):
                     "id": "cup", "label": "cup", "kind": "target",
                     "position": [2, 3, 0], "size": 0.4,
                 }]},
-                "lidar": {"points": [{"x": 1.0, "y": 2.0, "z": 0.4,
+                "lidar": {"native": True, "points": [{"x": 1.0, "y": 2.0, "z": 0.4,
                                            "intensity": 0.9, "object_id": "cup"}]},
             },
         )
@@ -166,6 +166,21 @@ class BodyPerceptionModalitiesTest(unittest.TestCase):
         self.assertEqual(projections["quality"]["camera"], "derived")
         self.assertEqual(projections["quality"]["lidar"], "derived")
         self.assertFalse(projections["vision_projection"]["native"])
+        self.assertFalse(projections["lidar"]["native"])
+
+    def test_video_depth_proxy_is_not_classified_as_native_lidar(self):
+        from body_runtime_host.worldmodel.perception import sensor_projections
+        from body_runtime_host.worldmodel.types import BodyState
+
+        projections = sensor_projections(
+            BodyState(position=[0, 0, 0]), [],
+            modalities={"lidar": {
+                "source": "video_lidar_proxy",
+                "frame": "body_sensor",
+                "points": [{"x": 1.0, "y": 0.0, "z": 0.2}],
+            }},
+        )
+        self.assertEqual(projections["quality"]["lidar"], "derived")
         self.assertFalse(projections["lidar"]["native"])
 
     def test_camera_and_lidar_are_fused_by_category_and_geometry(self):
