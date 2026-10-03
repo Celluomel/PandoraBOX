@@ -2258,6 +2258,21 @@ class BodyHost:
                 elif path == "/quest":
                     quest_page = ROOT / "body_runtime_host" / "quest_vr.html"
                     self._send_html(quest_page.read_text(encoding="utf-8"), check_version=False)
+                elif path == "/quest-hud-preview":
+                    preview_page = ROOT / "body_runtime_host" / "quest_hud_preview.html"
+                    self._send_html(preview_page.read_text(encoding="utf-8"), check_version=False)
+                elif path == "/quest-hud-preview.js":
+                    preview_script = ROOT / "body_runtime_host" / "quest_hud_preview.js"
+                    try:
+                        data = preview_script.read_bytes()
+                        self.send_response(200)
+                        self.send_header("Content-Type", "text/javascript; charset=utf-8")
+                        self.send_header("Cache-Control", "no-store")
+                        self.send_header("Content-Length", str(len(data)))
+                        self.end_headers()
+                        self._write_response(data)
+                    except FileNotFoundError:
+                        self._send({"error": "Quest HUD preview is not installed"}, 404)
                 elif path == "/quest-vr.js":
                     bundle = ROOT / "body_runtime_host" / "quest-vr.bundle.js"
                     try:

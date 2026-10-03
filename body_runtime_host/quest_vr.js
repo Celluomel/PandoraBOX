@@ -18,6 +18,7 @@ let cameraPollTimer = null;
 let cameraPollInFlight = false;
 let lastCameraFrameId = null;
 let lastDashboardTelemetryAt = 0;
+let lastFnkTelemetryAt = 0;
 let xrFollowYaw = null;
 let xrSceneFollowing = false;
 scene.background = null;
@@ -495,6 +496,13 @@ renderer.setAnimationLoop(time => {
     if (vrDashboard.visible && performance.now() - lastDashboardTelemetryAt >= 200) {
       vrDashboard.updateTelemetry({ headingDegrees, controllers });
       lastDashboardTelemetryAt = performance.now();
+    }
+    if (vrDashboard.visible && performance.now() - lastFnkTelemetryAt >= 500) {
+      lastFnkTelemetryAt = performance.now();
+      fetch('/plugins/fnk0031_wifi/controller', { cache: 'no-store', credentials: 'same-origin' })
+        .then(response => response.ok ? response.json() : null)
+        .then(controllerStatus => { if (controllerStatus) vrDashboard.updateController(controllerStatus); })
+        .catch(() => {});
     }
   }
   renderer.render(scene, camera);
