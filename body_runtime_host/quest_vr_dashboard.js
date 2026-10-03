@@ -16,8 +16,6 @@ export class QuestVRDashboard {
     this.scratchQuaternion = new THREE.Quaternion();
     this.scratchOffset = new THREE.Vector3();
     this.grabForward = new THREE.Vector3(0, 0, -1);
-    this.grabRight = new THREE.Vector3(1, 0, 0);
-    this.adjustmentOffset = new THREE.Vector3();
     this.depthOffset = 0;
     this.frame = null;
     this.telemetry = null;
@@ -162,8 +160,8 @@ export class QuestVRDashboard {
     ctx.font = '17px ui-monospace, monospace';
     ctx.textAlign = 'left';
     ctx.fillText(this.grabbedController
-      ? 'HUD GRABBED · STICK XY MOVE · HOLD STICK CLICK: Y DEPTH · X SCALE'
-      : 'SQUEEZE GRIP TO EDIT · MOVE CONTROLLER OR USE STICK XY', margin + 8, height - 28);
+      ? 'HUD GRABBED · STICK ↑↓ PUSH / PULL · ←→ RESIZE · MOVE HAND TO REPOSITION'
+      : 'HOLD GRIP TO EDIT · MOVE HAND TO POSITION · STICK TO ADJUST DEPTH / SIZE', margin + 8, height - 28);
     ctx.textAlign = 'right';
     ctx.fillText(this.following ? 'CAMERA FOLLOW · BODY' : 'SCENE VIEW · FIXED', width - margin - 8, height - 28);
     ctx.restore();
@@ -555,7 +553,7 @@ export class QuestVRDashboard {
     this.grabOffsetQuaternion.copy(this.scratchQuaternion).invert().multiply(this.root.quaternion);
     this.grabbedController = controller;
     this.grabInputSource = inputSource || null;
-    this.adjustmentOffset.set(0, 0, 0);
+    this.depthOffset = 0;
     this.headLocked = false;
     this.drawDashboard();
     return true;
@@ -565,7 +563,7 @@ export class QuestVRDashboard {
     if (this.grabbedController !== controller) return false;
     this.grabbedController = null;
     this.grabInputSource = null;
-    this.adjustmentOffset.set(0, 0, 0);
+    this.depthOffset = 0;
     this.drawDashboard();
     return true;
   }
@@ -583,31 +581,21 @@ export class QuestVRDashboard {
     const axisOffset = secondaryMagnitude > primaryMagnitude ? 2 : 0;
     const stickX = Number(axes[axisOffset]) || 0;
     const stickY = Number(axes[axisOffset + 1]) || 0;
-    const buttons = this.grabInputSource?.gamepad?.buttons || [];
-    const depthAndScaleMode = Boolean(buttons[2]?.pressed || buttons[3]?.pressed);
     const elapsed = Math.max(0, Math.min(0.05, Number(deltaSeconds) || 0));
     this.grabForward.set(0, 0, -1).applyQuaternion(this.scratchQuaternion);
-    this.grabRight.set(1, 0, 0).applyQuaternion(this.scratchQuaternion);
-    this.grabRight.y = 0;
-    if (this.grabRight.lengthSq() > 0.001) this.grabRight.normalize();
-    if (Math.abs(stickX) > 0.12 || Math.abs(stickY) > 0.12) {
-      if (depthAndScaleMode) {
-        this.adjustmentOffset.addScaledVector(this.grabForward, -stickY * elapsed * 1.2);
-        this.userScale = Math.max(0.45, Math.min(2.5, this.userScale * Math.exp(stickX * elapsed * 1.1)));
-      } else {
-        this.adjustmentOffset.addScaledVector(this.grabRight, stickX * elapsed * 1.2);
-        this.adjustmentOffset.y = Math.max(-1.5, Math.min(2.5, this.adjustmentOffset.y - stickY * elapsed * 1.2));
-      }
+    if (Math.abs(stickY) > 0.12) this.depthOffset = Math.max(-1, Math.min(4, this.depthOffset - stickY * elapsed * 1.8));
+    this.root.position.addScaledVector(this.grabForward, this.depthOffset);
+    if (Math.abs(stickX) > 0.12) {
+      this.userScale = Math.max(0.45, Math.min(2.5, this.userScale * Math.exp(stickX * elapsed * 1.1)));
       this.root.scale.setScalar(this.userScale);
     }
-    this.root.position.add(this.adjustmentOffset);
   }
 
   resetPose() {
     this.grabbedController = null;
     this.grabInputSource = null;
     this.headLocked = true;
-    this.adjustmentOffset.set(0, 0, 0);
+    this.depthOffset = 0;
     this.userScale = 1;
     this.root.scale.setScalar(1);
     this.drawDashboard();
