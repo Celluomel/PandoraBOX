@@ -19,6 +19,7 @@ import asyncio
 import base64
 import hashlib
 import importlib.util
+import ipaddress
 import json
 import logging
 import math
@@ -513,6 +514,60 @@ class BodyHost:
         except Exception as exc:
             LOG.exception("Body VLM test failed during %s", stage)
             return {"ok": False, "stage": stage, "error": str(exc)[:300]}
+
+    def restart_geniex(self) -> dict:
+        """Restart only the local GenieX user service used by the Ventuno VLM."""
+        settings = self.body_llm_settings()
+        endpoint = urlparse(str(settings.get("base_url") or ""))
+        try:
+            is_geniex_endpoint = endpoint.hostname in {"127.0.0.1", "localhost", "::1"} and endpoint.port == 18181
+        except ValueError:
+            is_geniex_endpoint = False
+        if not is_geniex_endpoint:
+            return {
+                "ok": False,
+                "status": "not_local_geniex",
+                "error": "Restart is available only when Body VLM uses the local GenieX endpoint on port 18181.",
+            }
+        if os.name != "posix" or not Path("/run/systemd/system").exists():
+            return {
+                "ok": False,
+                "status": "unsupported_platform",
+                "error": "GenieX service restart is available from the Linux Ventuno Body runtime.",
+            }
+
+        uid = os.getuid()
+        runtime_dir = Path(f"/run/user/{uid}")
+        bus = runtime_dir / "bus"
+        if not bus.exists():
+            return {
+                "ok": False,
+                "status": "user_service_unavailable",
+                "error": "The systemd user-service bus is unavailable for this Body account.",
+            }
+        env = os.environ.copy()
+        env["XDG_RUNTIME_DIR"] = str(runtime_dir)
+        env["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={bus}"
+        try:
+            restarted = subprocess.run(
+                ["systemctl", "--user", "restart", "geniex.service"],
+                capture_output=True, text=True, timeout=30, check=False, env=env,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            LOG.warning("Could not restart local GenieX service: %s", exc)
+            return {"ok": False, "status": "restart_failed", "error": str(exc)[:240]}
+        if restarted.returncode != 0:
+            detail = (restarted.stderr or restarted.stdout or "systemctl restart failed").strip()
+            LOG.warning("GenieX restart failed: %s", detail[:240])
+            return {"ok": False, "status": "restart_failed", "error": detail[:240]}
+
+        LOG.info("Restarted local VLM inference service geniex.service")
+        return {
+            "ok": True,
+            "status": "restarted",
+            "service": "geniex.service",
+            "message": "GenieX restarted. Its model will load again on the next VLM request.",
+        }
 
     def test_body_embeddings(self, label: str) -> dict:
         """Run a real semantic-match probe against objects in the latest Body scene."""
@@ -2534,6 +2589,16 @@ class BodyHost:
                     self._send(owner.set_camera_capture(_payload_bool(body.get("enabled"))))
                 elif path == "/body/camera/test-vlm":
                     self._send(owner.test_body_vlm())
+                elif path == "/body/llm/restart":
+                    try:
+                        is_loopback = ipaddress.ip_address(self.client_address[0].split("%", 1)[0]).is_loopback
+                    except ValueError:
+                        is_loopback = False
+                    if not is_loopback:
+                        self._send({"ok": False, "status": "forbidden", "error": "GenieX restart is restricted to local Body UI requests."}, 403)
+                        return
+                    result = owner.restart_geniex()
+                    self._send(result, 200 if result.get("ok") else 409)
                 elif path == "/deployment/check":
                     self._send(owner.deployment_check(self._read_body()))
                 elif path == "/deployment/push":

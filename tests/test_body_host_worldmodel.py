@@ -493,6 +493,13 @@ class BodyHostHttpTest(unittest.TestCase):
                 base = "http://127.0.0.1:8791"
                 health = _get(f"{base}/health")
                 self.assertEqual(health["status"], "ready")
+                with urllib.request.urlopen(base, timeout=5) as response:
+                    body_html = response.read().decode("utf-8")
+                self.assertIn("Restart GenieX", body_html)
+                self.assertIn("/body/llm/restart", body_html)
+                with patch.object(host, "restart_geniex", return_value={"ok": True, "status": "restarted"}) as restart:
+                    self.assertEqual(_post(f"{base}/body/llm/restart", {}), {"ok": True, "status": "restarted"})
+                    restart.assert_called_once_with()
                 self.assertIn("robot", health)
                 self.assertIn("plugins", health)
                 self.assertIn("worldmodel", health)
