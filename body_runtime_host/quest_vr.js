@@ -17,6 +17,7 @@ const vrDashboard = new QuestVRDashboard(THREE);
 let cameraPollTimer = null;
 let cameraPollInFlight = false;
 let lastCameraFrameId = null;
+let lastDashboardTelemetryAt = 0;
 scene.background = null;
 const camera = new THREE.PerspectiveCamera(58, window.innerWidth / window.innerHeight, 0.05, 100);
 camera.position.set(6, 9, 7);
@@ -54,9 +55,6 @@ roomLine.position.set(0, 0.01, 0);
 world.add(roomLine);
 const objectsGroup = new THREE.Group();
 world.add(objectsGroup);
-const lidarGroup = new THREE.Group();
-const radarGroup = new THREE.Group();
-world.add(lidarGroup, radarGroup);
 const selectionMarker = new THREE.Mesh(
   new THREE.RingGeometry(0.42, 0.5, 32),
   new THREE.MeshBasicMaterial({ color: '#b9f5ce', side: THREE.DoubleSide, transparent: true, opacity: 0.95 }),
@@ -76,8 +74,6 @@ let basePosition = null;
 let firstData = true;
 let latestObjects = [];
 let latestWorldStatus = null;
-let showLidar = true;
-let showRadar = true;
 let mapCenter = { x: 5, z: -6 };
 function configureSceneFrame(frame, bodyPosition) {
   const source = frame.source || {};
@@ -122,37 +118,6 @@ function configureSceneFrame(frame, bodyPosition) {
   camera.position.set(centerX, distance * 0.62, targetZ + distance);
   camera.lookAt(centerX, 0, targetZ);
   orbit.update();
-}
-
-function renderSensorLayers(perception) {
-  const projections = perception.sensor_projections || {};
-  const points = projections.lidar?.points || [];
-  const lidarPositions = [];
-  for (const point of points) {
-    if (![point.x, point.y, point.z].every(value => Number.isFinite(Number(value)))) continue;
-    lidarPositions.push(Number(point.x) - basePosition[0], Number(point.z) || 0.03, -(Number(point.y) - basePosition[1]));
-  }
-  lidarGroup.clear();
-  if (lidarPositions.length) {
-    const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute('position', new THREE.Float32BufferAttribute(lidarPositions, 3));
-    lidarGroup.add(new THREE.Points(geometry, new THREE.PointsMaterial({ color: '#71e4eb', size: 0.055, transparent: true, opacity: 0.9, depthTest: false })));
-  }
-  const radar = perception.modalities?.mmwave_radar || {};
-  const radarPositions = [];
-  for (const target of radar.targets || []) {
-    const position = target.position_m || target.position || [];
-    if (position.length < 2) continue;
-    radarPositions.push(Number(position[0]) - basePosition[0], Number(position[2]) || 0.12, -(Number(position[1]) - basePosition[1]));
-  }
-  radarGroup.clear();
-  if (radarPositions.length) {
-    const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute('position', new THREE.Float32BufferAttribute(radarPositions, 3));
-    radarGroup.add(new THREE.Points(geometry, new THREE.PointsMaterial({ color: '#ffc36c', size: 0.13, transparent: true, opacity: 0.95, depthTest: false })));
-  }
-  lidarGroup.visible = showLidar;
-  radarGroup.visible = showRadar;
 }
 
 function setStatus(text, error = false) {
@@ -296,7 +261,6 @@ function rebuildScene(frame) {
   const age = Number(perception.age_seconds || 0);
   document.querySelector('#age').textContent = `${age.toFixed(1)} s`;
   const sensorCount = Object.values(modal).filter(value => value && (value.available || value.status === 'available')).length;
-  renderSensorLayers(perception);
   if (firstData) {
     setStatus(`${latestObjects.length} perceived objects · ${sensorCount} sensor modalities reporting · WebXR can be entered from this page`);
     firstData = false;
@@ -443,15 +407,25 @@ renderer.setAnimationLoop(() => {
     const xrCamera = renderer.xr.getCamera(camera);
     const headYaw = new THREE.Euler().setFromQuaternion(xrCamera.quaternion, 'YXZ').y;
     const active = [...session.inputSources].filter(source => source.gamepad);
-    const sticks = active.map(source => {
+    const controllers = active.map(source => {
       const axes = source.gamepad.axes || [];
       const pressed = source.gamepad.buttons?.some(button => button.pressed) || false;
-      return `${source.handedness || 'controller'} ${Number(axes[2] ?? axes[0] ?? 0).toFixed(1)},${Number(axes[3] ?? axes[1] ?? 0).toFixed(1)}${pressed ? ' · button' : ''}`;
+      return {
+        handedness: source.handedness || 'controller',
+        x: Number(axes[2] ?? axes[0] ?? 0),
+        y: Number(axes[3] ?? axes[1] ?? 0),
+        pressed,
+      };
     });
-    const telemetry = `HEAD ${Math.round(headYaw * 180 / Math.PI)}° · ${sticks.join(' | ') || 'NO CONTROLLER'}`;
+    const headingDegrees = Math.round(headYaw * 180 / Math.PI);
+    const telemetry = `HEAD ${headingDegrees}° · ${controllers.map(item => `${item.handedness} ${item.x.toFixed(1)},${item.y.toFixed(1)}${item.pressed ? ' · button' : ''}`).join(' | ') || 'NO CONTROLLER'}`;
     document.querySelector('#xr-input').textContent = telemetry;
     if (vrDashboard.visible) {
       vrDashboard.syncPose(xrCamera);
+      if (performance.now() - lastDashboardTelemetryAt >= 200) {
+        vrDashboard.updateTelemetry({ headingDegrees, controllers });
+        lastDashboardTelemetryAt = performance.now();
+      }
       renderer.clearDepth();
       renderer.render(vrDashboard.scene, camera);
     }

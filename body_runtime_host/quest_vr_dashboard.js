@@ -15,7 +15,7 @@ export class QuestVRDashboard {
       new THREE.PlaneGeometry(1.08, 0.5),
       new THREE.MeshBasicMaterial({ map: this.texture, transparent: true, depthTest: false, side: THREE.DoubleSide }),
     );
-    panel.position.set(0.56, 0.72, -1.9);
+    panel.position.set(-0.02, 0.72, -2.2);
     panel.renderOrder = 1000;
     this.root.add(panel);
 
@@ -29,14 +29,41 @@ export class QuestVRDashboard {
       new THREE.PlaneGeometry(1.08, 0.608),
       new THREE.MeshBasicMaterial({ map: this.cameraTexture, transparent: true, depthTest: false, side: THREE.DoubleSide }),
     );
-    cameraPanel.position.set(-0.56, 0.72, -1.9);
+    cameraPanel.position.set(-1.2, 0.72, -2.2);
     cameraPanel.renderOrder = 1000;
     this.root.add(cameraPanel);
     this.drawCameraMessage('CAMERA · WAITING');
+
+    const sensorCanvas = document.createElement('canvas');
+    sensorCanvas.width = 1024;
+    sensorCanvas.height = 512;
+    this.sensorContext = sensorCanvas.getContext('2d');
+    this.sensorTexture = new THREE.CanvasTexture(sensorCanvas);
+    this.sensorTexture.colorSpace = THREE.SRGBColorSpace;
+    const sensorPanel = new THREE.Mesh(
+      new THREE.PlaneGeometry(1.3, 0.65),
+      new THREE.MeshBasicMaterial({ map: this.sensorTexture, transparent: true, depthTest: false, side: THREE.DoubleSide }),
+    );
+    sensorPanel.position.set(1.2, 0.72, -2.2);
+    sensorPanel.renderOrder = 1000;
+    this.root.add(sensorPanel);
+    this.frame = null;
+    this.telemetry = null;
     this.update(null);
   }
 
   update(frame) {
+    this.frame = frame;
+    this.drawStatus();
+    this.drawSensorViews(frame?.perception || {});
+  }
+
+  updateTelemetry(telemetry) {
+    this.telemetry = telemetry;
+    this.drawStatus();
+  }
+
+  drawStatus() {
     const ctx = this.context;
     const canvas = ctx.canvas;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -48,22 +75,133 @@ export class QuestVRDashboard {
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
     ctx.fillStyle = '#e1f6e9';
-    ctx.font = '600 46px system-ui';
-    ctx.fillText('PANDORABOX · BODY STATUS', 44, 76);
+    ctx.font = '600 43px system-ui';
+    ctx.fillText('BODY STATUS', 44, 62);
     ctx.fillStyle = '#9fc5ac';
-    ctx.font = '32px system-ui';
+    ctx.font = '30px system-ui';
 
-    const perception = frame?.perception || {};
+    const perception = this.frame?.perception || {};
     const position = perception.body?.position || [];
     const pose = position.length >= 2
       ? `Body  ${Number(position[0]).toFixed(2)}, ${Number(position[1]).toFixed(2)} m`
       : 'Body pose  waiting for perception';
     const objects = perception.objects?.length || 0;
-    const lidar = perception.sensor_projections?.lidar?.points?.length || 0;
-    const radar = perception.modalities?.mmwave_radar?.targets?.length || 0;
-    const rows = [pose, `Scene objects  ${objects}`, `LiDAR points  ${lidar}`, `mmWave targets  ${radar}`];
-    rows.forEach((row, index) => ctx.fillText(row, 52, 164 + index * 70));
+    ctx.fillText(pose, 52, 135);
+    ctx.fillText(`Scene objects  ${objects}`, 52, 190);
+    ctx.fillStyle = '#e1f6e9';
+    ctx.font = '600 28px system-ui';
+    ctx.fillText('LIVE CONTROLLER TELEMETRY', 52, 274);
+    ctx.fillStyle = '#9fc5ac';
+    ctx.font = '28px system-ui';
+    const telemetry = this.telemetry || {};
+    ctx.fillText(`Head  ${telemetry.headingDegrees ?? '--'}°`, 52, 332);
+    const controllers = telemetry.controllers || [];
+    for (const [index, hand] of ['left', 'right'].entries()) {
+      const controller = controllers.find(item => item.handedness === hand);
+      const row = controller
+        ? `${hand === 'left' ? 'L' : 'R'} ctrl  ${controller.x.toFixed(1)}, ${controller.y.toFixed(1)}${controller.pressed ? ' · button' : ''}`
+        : `${hand === 'left' ? 'L' : 'R'} ctrl  not detected`;
+      ctx.fillText(row, 52, 390 + index * 58);
+    }
     this.texture.needsUpdate = true;
+  }
+
+  drawSensorViews(perception) {
+    const ctx = this.sensorContext;
+    const { width, height } = ctx.canvas;
+    ctx.clearRect(0, 0, width, height);
+    ctx.fillStyle = '#07120ff0';
+    ctx.fillRect(6, 6, width - 12, height - 12);
+    ctx.strokeStyle = '#72d5a1';
+    ctx.lineWidth = 4;
+    ctx.strokeRect(8, 8, width - 16, height - 16);
+    ctx.fillStyle = '#e1f6e9';
+    ctx.font = '600 31px system-ui';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('EGOCENTRIC SENSORS', 28, 42);
+    ctx.strokeStyle = '#284a39';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(width / 2, 68);
+    ctx.lineTo(width / 2, height - 18);
+    ctx.stroke();
+    this.drawSensorPlot(ctx, 18, 70, width / 2 - 28, height - 92, 'LiDAR · WORLD MODEL', perception.sensor_projections?.lidar?.points || [], 'lidar', perception);
+    this.drawSensorPlot(ctx, width / 2 + 10, 70, width / 2 - 28, height - 92, 'mmWAVE · TARGETS', perception.modalities?.mmwave_radar?.targets || [], 'radar', perception);
+    this.sensorTexture.needsUpdate = true;
+  }
+
+  drawSensorPlot(ctx, x, y, width, height, title, points, kind, perception) {
+    ctx.fillStyle = '#9fc5ac';
+    ctx.font = '600 23px system-ui';
+    ctx.textAlign = 'center';
+    ctx.fillText(`${title}  ·  ${points.length}`, x + width / 2, y + 18);
+    const centerX = x + width / 2;
+    const bodyY = y + height - 20;
+    const radius = Math.min(width * 0.43, height * 0.69);
+    const scale = radius / 6;
+    ctx.strokeStyle = '#284a39';
+    ctx.lineWidth = 2;
+    for (const meters of [2, 4, 6]) {
+      ctx.beginPath();
+      ctx.arc(centerX, bodyY, meters * scale, Math.PI, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.beginPath();
+    ctx.moveTo(centerX - 6 * scale, bodyY);
+    ctx.lineTo(centerX + 6 * scale, bodyY);
+    ctx.stroke();
+    ctx.fillStyle = '#b6f1d3';
+    ctx.beginPath();
+    ctx.moveTo(centerX, bodyY - 12);
+    ctx.lineTo(centerX - 10, bodyY + 8);
+    ctx.lineTo(centerX + 10, bodyY + 8);
+    ctx.closePath();
+    ctx.fill();
+
+    const frame = perception.sensor_projections?.frame || {};
+    const bodyPosition = frame.body || perception.body?.position || [0, 0, 0];
+    const yaw = Number(frame.yaw_rad ?? perception.body?.orientation ?? 0);
+    const sourceFrame = String(kind === 'lidar'
+      ? perception.sensor_projections?.lidar?.frame || 'body_world'
+      : perception.modalities?.mmwave_radar?.frame || 'body').toLowerCase();
+    const localFrame = /^(body|base_link|base_footprint|sensor|lidar)$/.test(sourceFrame);
+    const globalFrame = /^(body_world|world|map|local_map|odom)$/.test(sourceFrame);
+    const toScreen = position => {
+      if (!Array.isArray(position) || position.length < 2) return null;
+      let forward = Number(position[0]);
+      let left = Number(position[1]);
+      if (globalFrame || (!localFrame && kind === 'lidar')) {
+        const dx = forward - Number(bodyPosition[0] || 0);
+        const dy = left - Number(bodyPosition[1] || 0);
+        forward = Math.cos(yaw) * dx + Math.sin(yaw) * dy;
+        left = -Math.sin(yaw) * dx + Math.cos(yaw) * dy;
+      }
+      if (![forward, left].every(Number.isFinite) || Math.hypot(forward, left) > 6.5) return null;
+      return [centerX - left * scale, bodyY - forward * scale];
+    };
+
+    for (const point of points) {
+      const position = kind === 'lidar' ? [Number(point.x), Number(point.y)] : point.position_m || point.position;
+      const mapped = toScreen(position);
+      if (!mapped) continue;
+      if (kind === 'lidar') {
+        const intensity = Math.max(0.25, Math.min(1, Number(point.intensity ?? 0.6)));
+        ctx.fillStyle = `rgba(105, 224, 230, ${intensity})`;
+        ctx.beginPath();
+        ctx.arc(mapped[0], mapped[1], 3.5, 0, Math.PI * 2);
+        ctx.fill();
+      } else {
+        const confidence = Math.max(0.25, Math.min(1, Number(point.confidence ?? 0.6)));
+        ctx.fillStyle = point.classification === 'mobile_obstacle' ? `rgba(240, 168, 215, ${confidence})` : `rgba(240, 202, 118, ${confidence})`;
+        ctx.strokeStyle = '#fff3c2';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(mapped[0], mapped[1], 7, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+      }
+    }
   }
 
   drawCameraMessage(message) {
