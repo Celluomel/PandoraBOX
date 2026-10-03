@@ -83,20 +83,22 @@ function drawMap(canvas, mode) {
 
 function drawRobot() {
   const group = $('robot-drawing');
-  const degrees = Number(controller?.body_heading_deg ?? world?.perception?.body?.orientation * 180 / Math.PI ?? 0);
-  group.setAttribute('transform', `rotate(${-degrees} 180 155)`);
+  const heading = Number(controller?.body_heading_deg ?? (world?.perception?.body?.orientation ?? 0) * 180 / Math.PI);
+  const visualHeading = ((90 - heading) % 360 + 360) % 360;
+  group.setAttribute('transform', `rotate(${visualHeading} 180 155)`);
   const legs = $('robot-legs');
   const active = controller?.spikes || [];
   legs.innerHTML = Array.from({ length: 6 }, (_, index) => {
-    const row = index < 3 ? -1 : 1;
-    const column = index % 3;
-    const hx = 180 + (column - 1) * 23;
-    const hy = 155 + row * 42;
-    const kx = 180 + (column - 1) * 55;
-    const ky = 155 + row * 77;
-    const fx = 180 + (column - 1) * 84;
-    const fy = 155 + row * (active[index] ? 122 : 113);
-    const color = active[index] ? '#efcb76' : row < 0 ? '#76d5a0' : '#69bac2';
+    const row = Math.floor(index / 2);
+    const side = index % 2 === 0 ? -1 : 1;
+    const longitudinal = row - 1;
+    const hx = 180 + side * 39;
+    const hy = 105 + row * 50;
+    const kx = 180 + side * 76;
+    const ky = hy + longitudinal * 11;
+    const fx = 180 + side * (132 + (active[index] ? 8 : 0));
+    const fy = hy + longitudinal * 21;
+    const color = active[index] ? '#efcb76' : side < 0 ? '#76d5a0' : '#69bac2';
     return `<g stroke="${color}" stroke-width="8" fill="none"><path d="M${hx} ${hy} L${kx} ${ky} L${fx} ${fy}"/><circle cx="${fx}" cy="${fy}" r="5" fill="${color}"/></g>`;
   }).join('');
   const neurons = $('robot-neurons');
