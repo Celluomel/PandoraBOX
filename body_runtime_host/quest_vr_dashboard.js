@@ -25,13 +25,13 @@ export class QuestVRDashboard {
     this.cameraMessage = 'CAMERA · WAITING';
 
     const canvas = document.createElement('canvas');
-    canvas.width = 2048;
+    canvas.width = 3072;
     canvas.height = 1152;
     this.canvas = canvas;
     this.context = canvas.getContext('2d');
     this.texture = new THREE.CanvasTexture(canvas);
     this.texture.colorSpace = THREE.SRGBColorSpace;
-    const geometry = this.createArcGeometry(5.6, 0.18, 48);
+    const geometry = this.createArcGeometry(8.4, 0.18, 64);
     const panel = new THREE.Mesh(
       geometry,
       new THREE.MeshBasicMaterial({ map: this.texture, transparent: true, depthTest: false, side: THREE.DoubleSide }),
@@ -49,7 +49,7 @@ export class QuestVRDashboard {
     const positions = [];
     const uvs = [];
     const indices = [];
-    const angle = 0.72;
+    const angle = 1.9;
     const radius = width / (2 * Math.sin(angle / 2));
     for (let row = 0; row < 2; row += 1) {
       for (let column = 0; column <= segments; column += 1) {
