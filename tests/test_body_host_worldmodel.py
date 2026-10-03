@@ -505,11 +505,15 @@ class BodyHostHttpTest(unittest.TestCase):
                     quest_html = response.read().decode("utf-8")
                     self.assertEqual(response.headers.get_content_type(), "text/html")
                 self.assertIn("/quest-vr.js", quest_html)
-                self.assertIn("READ ONLY", quest_html)
+                self.assertIn("XR DASHBOARD", quest_html)
+                self.assertIn("Passthrough AR", quest_html)
+                self.assertIn("Head / controller", quest_html)
                 with urllib.request.urlopen(f"{base}/quest-vr.js", timeout=5) as response:
                     quest_bundle = response.read()
                     self.assertEqual(response.headers.get_content_type(), "text/javascript")
                 self.assertGreater(len(quest_bundle), 100_000)
+                for control in (b"START SIM", b"LiDAR", b"mmW", b"EGO VIEW", b"EXIT TO UI", b"immersive-ar"):
+                    self.assertIn(control, quest_bundle)
 
                 # world model endpoints (lazy build)
                 status = _get(f"{base}/worldmodel/status")
