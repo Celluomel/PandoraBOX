@@ -14,6 +14,9 @@ renderer.autoClear = false;
 
 const scene = new THREE.Scene();
 const vrDashboard = new QuestVRDashboard(THREE);
+let cameraPollTimer = null;
+let cameraPollInFlight = false;
+let lastCameraFrameId = null;
 scene.background = null;
 const camera = new THREE.PerspectiveCamera(58, window.innerWidth / window.innerHeight, 0.05, 100);
 camera.position.set(6, 9, 7);
@@ -155,6 +158,45 @@ function renderSensorLayers(perception) {
 function setStatus(text, error = false) {
   statusNode.textContent = text;
   statusNode.style.color = error ? '#ffb7a5' : '#a9c3b2';
+}
+
+async function pollCameraFrame() {
+  if (!vrDashboard.visible || cameraPollInFlight) return;
+  cameraPollInFlight = true;
+  try {
+    const response = await fetch('/body/camera/frame', { cache: 'no-store', credentials: 'same-origin' });
+    if (!response.ok) throw new Error(`Camera frame HTTP ${response.status}`);
+    const result = await response.json();
+    const frame = result.camera || {};
+    if (!result.available || !frame.image_base64) {
+      lastCameraFrameId = null;
+      vrDashboard.setCameraStatus(`CAMERA · ${String(result.status || 'NO FRAME').toUpperCase()}`);
+      return;
+    }
+    const frameId = frame.frame_id || frame.captured_at || frame.timestamp;
+    if (frameId !== lastCameraFrameId) {
+      lastCameraFrameId = frameId;
+      await vrDashboard.setCameraFrame(frame);
+    }
+  } catch (error) {
+    vrDashboard.setCameraStatus('CAMERA · STREAM ERROR');
+    setStatus(`Camera preview unavailable: ${error.message}`, true);
+  } finally {
+    cameraPollInFlight = false;
+  }
+}
+
+function startCameraPolling() {
+  stopCameraPolling();
+  void pollCameraFrame();
+  cameraPollTimer = window.setInterval(pollCameraFrame, 200);
+}
+
+function stopCameraPolling() {
+  if (cameraPollTimer !== null) window.clearInterval(cameraPollTimer);
+  cameraPollTimer = null;
+  cameraPollInFlight = false;
+  lastCameraFrameId = null;
 }
 
 function labelSprite(text) {
@@ -340,6 +382,7 @@ async function enterXR(mode) {
     await renderer.xr.setSession(session);
     orbit.enabled = false;
     vrDashboard.setVisible(mode === 'immersive-vr');
+    if (mode === 'immersive-vr') startCameraPolling();
     document.querySelector('#enter-xr').textContent = mode === 'immersive-vr' ? 'Exit VR' : 'VR view';
     document.querySelector('#enter-ar').textContent = mode === 'immersive-ar' ? 'Exit passthrough' : 'Passthrough AR';
     setStatus(mode === 'immersive-ar'
@@ -348,6 +391,7 @@ async function enterXR(mode) {
     session.addEventListener('end', () => {
       orbit.enabled = true;
       scene.background = null;
+      stopCameraPolling();
       vrDashboard.setVisible(false);
       document.querySelector('#enter-xr').textContent = 'Enter VR';
       document.querySelector('#enter-ar').textContent = 'Passthrough AR';

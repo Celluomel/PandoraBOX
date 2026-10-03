@@ -511,14 +511,16 @@ class BodyHostHttpTest(unittest.TestCase):
                 quest_source = (Path(__file__).resolve().parents[1] / "body_runtime_host" / "quest_vr.js").read_text(encoding="utf-8")
                 self.assertIn("controller input is telemetry only", quest_source)
                 self.assertNotIn("dashboardGroup", quest_source)
-                self.assertNotIn("/body/camera/frame", quest_source)
+                self.assertIn("fetch('/body/camera/frame'", quest_source)
+                self.assertIn("setInterval(pollCameraFrame, 200)", quest_source)
                 self.assertIn("configureSceneFrame(frame, position)", quest_source)
                 self.assertIn("floor.position.set(centerX, -0.035, -centerY)", quest_source)
                 dashboard_source = (Path(__file__).resolve().parents[1] / "body_runtime_host" / "quest_vr_dashboard.js").read_text(encoding="utf-8")
                 self.assertIn("new THREE.Scene()", dashboard_source)
                 self.assertIn("PANDORABOX · BODY STATUS", dashboard_source)
-                self.assertIn("PlaneGeometry(1.3, 0.5)", dashboard_source)
-                self.assertIn("panel.position.set(0, 0.72, -1.9)", dashboard_source)
+                self.assertIn("async setCameraFrame(frame)", dashboard_source)
+                self.assertIn("PlaneGeometry(1.08, 0.608)", dashboard_source)
+                self.assertIn("CAMERA · WAITING", dashboard_source)
                 self.assertIn("renderer.clearDepth()", quest_source)
                 with urllib.request.urlopen(f"{base}/quest-vr.js", timeout=5) as response:
                     quest_bundle = response.read()
@@ -526,7 +528,7 @@ class BodyHostHttpTest(unittest.TestCase):
                 self.assertGreater(len(quest_bundle), 100_000)
                 self.assertIn("immersive-ar", quest_source)
                 self.assertIn("Point at a scene object", quest_html)
-                for removed in (b"START SIM", b"FOLLOW BODY", b"camera-preview", b"dashboardGroup"):
+                for removed in (b"START SIM", b"FOLLOW BODY", b"dashboardGroup"):
                     self.assertNotIn(removed, quest_bundle)
                 self.assertIn(b"BODY STATUS", quest_bundle)
 
