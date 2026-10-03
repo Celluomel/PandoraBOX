@@ -1,5 +1,6 @@
 export class QuestVRDashboard {
   constructor(THREE) {
+    this.THREE = THREE;
     this.scene = new THREE.Scene();
     this.root = new THREE.Group();
     this.scene.add(this.root);
@@ -22,10 +23,10 @@ export class QuestVRDashboard {
     this.texture = new THREE.CanvasTexture(canvas);
     this.texture.colorSpace = THREE.SRGBColorSpace;
     const panel = new THREE.Mesh(
-      new THREE.PlaneGeometry(1.25, 0.58),
+      new THREE.PlaneGeometry(1.65, 0.76),
       new THREE.MeshBasicMaterial({ map: this.texture, transparent: true, depthTest: false, side: THREE.DoubleSide }),
     );
-    panel.position.set(0, 0.82, -2.25);
+    panel.position.set(0, 0.42, -3.2);
     panel.renderOrder = 1000;
     this.root.add(panel);
     this.panels.push(panel);
@@ -37,11 +38,11 @@ export class QuestVRDashboard {
     this.cameraTexture = new THREE.CanvasTexture(cameraCanvas);
     this.cameraTexture.colorSpace = THREE.SRGBColorSpace;
     const cameraPanel = new THREE.Mesh(
-      new THREE.PlaneGeometry(1.25, 0.703),
+      new THREE.PlaneGeometry(1.75, 0.984),
       new THREE.MeshBasicMaterial({ map: this.cameraTexture, transparent: true, depthTest: false, side: THREE.DoubleSide }),
     );
-    cameraPanel.position.set(-0.8, 0.82, -1.8);
-    cameraPanel.rotation.y = 0.48;
+    cameraPanel.position.set(-1.72, 0.42, -3);
+    cameraPanel.rotation.y = 0.42;
     cameraPanel.renderOrder = 1000;
     this.root.add(cameraPanel);
     this.panels.push(cameraPanel);
@@ -54,11 +55,11 @@ export class QuestVRDashboard {
     this.sensorTexture = new THREE.CanvasTexture(sensorCanvas);
     this.sensorTexture.colorSpace = THREE.SRGBColorSpace;
     const sensorPanel = new THREE.Mesh(
-      new THREE.PlaneGeometry(1.55, 0.775),
+      new THREE.PlaneGeometry(1.9, 0.95),
       new THREE.MeshBasicMaterial({ map: this.sensorTexture, transparent: true, depthTest: false, side: THREE.DoubleSide }),
     );
-    sensorPanel.position.set(0.8, 0.82, -1.8);
-    sensorPanel.rotation.y = -0.48;
+    sensorPanel.position.set(1.72, 0.42, -3);
+    sensorPanel.rotation.y = -0.42;
     sensorPanel.renderOrder = 1000;
     this.root.add(sensorPanel);
     this.panels.push(sensorPanel);
@@ -277,7 +278,7 @@ export class QuestVRDashboard {
 
   isControllerOverDashboard(controller, raycaster) {
     controller.updateMatrixWorld(true);
-    const rotation = new THREE.Matrix4().extractRotation(controller.matrixWorld);
+    const rotation = new this.THREE.Matrix4().extractRotation(controller.matrixWorld);
     raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
     raycaster.ray.direction.set(0, 0, -1).applyMatrix4(rotation);
     this.scene.updateMatrixWorld(true);
