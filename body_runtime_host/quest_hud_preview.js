@@ -143,8 +143,15 @@ function drawMap(canvas, mode) {
       ctx.fillText(target.classification === 'mobile_obstacle' ? 'M' : '•', x, y - 8 * scaleFactor);
     }
   }
-  ctx.fillStyle = '#d9f5e4';
-  ctx.beginPath(); ctx.moveTo(cx, cy - 13 * scaleFactor); ctx.lineTo(cx - 8 * scaleFactor, cy + 7 * scaleFactor); ctx.lineTo(cx + 8 * scaleFactor, cy + 7 * scaleFactor); ctx.closePath(); ctx.fill();
+  if (lidarMode) {
+    ctx.fillStyle = '#d9f5e4';
+    ctx.beginPath(); ctx.moveTo(cx, cy - 13 * scaleFactor); ctx.lineTo(cx - 8 * scaleFactor, cy + 7 * scaleFactor); ctx.lineTo(cx + 8 * scaleFactor, cy + 7 * scaleFactor); ctx.closePath(); ctx.fill();
+  } else {
+    const originY = height - 22 * scaleFactor;
+    ctx.strokeStyle = '#d9f5e4'; ctx.fillStyle = '#08110f'; ctx.lineWidth = Math.max(1, scaleFactor);
+    ctx.beginPath(); ctx.roundRect(cx - 7 * scaleFactor, originY - 13 * scaleFactor, 14 * scaleFactor, 11 * scaleFactor, 3 * scaleFactor); ctx.fill(); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(cx - 4 * scaleFactor, originY - 13 * scaleFactor); ctx.lineTo(cx, originY - 20 * scaleFactor); ctx.lineTo(cx + 4 * scaleFactor, originY - 13 * scaleFactor); ctx.stroke();
+  }
 }
 
 function drawRobot() {

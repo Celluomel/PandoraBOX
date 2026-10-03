@@ -471,6 +471,10 @@ export class QuestVRDashboard {
     if (mode === 'lidar') {
       ctx.fillStyle = '#d9f5e4'; ctx.beginPath();
       ctx.moveTo(cx, cy - 17); ctx.lineTo(cx - 11, cy + 8); ctx.lineTo(cx + 11, cy + 8); ctx.closePath(); ctx.fill();
+    } else {
+      ctx.strokeStyle = '#d9f5e4'; ctx.fillStyle = '#0b1512'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.roundRect(cx - 9, plotBottom - 16, 18, 15, 4); ctx.fill(); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(cx - 5, plotBottom - 15); ctx.lineTo(cx, plotBottom - 24); ctx.lineTo(cx + 5, plotBottom - 15); ctx.stroke();
     }
     ctx.restore();
     ctx.fillStyle = '#779586'; ctx.font = '13px ui-monospace, monospace'; ctx.textAlign = 'right';
