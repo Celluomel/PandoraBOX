@@ -16,6 +16,8 @@ export class QuestVRDashboard {
     this.scratchQuaternion = new THREE.Quaternion();
     this.scratchOffset = new THREE.Vector3();
     this.grabForward = new THREE.Vector3(0, 0, -1);
+    this.grabRight = new THREE.Vector3(1, 0, 0);
+    this.adjustmentOffset = new THREE.Vector3();
     this.depthOffset = 0;
     this.frame = null;
     this.telemetry = null;
@@ -55,7 +57,7 @@ export class QuestVRDashboard {
       for (let column = 0; column <= segments; column += 1) {
         const u = column / segments;
         const theta = (u - 0.5) * angle;
-        positions.push(Math.sin(theta) * radius, row === 0 ? 1.62 : -1.62, -radius * (1 - Math.cos(theta)) - (row === 0 ? 0 : depth));
+        positions.push(Math.sin(theta) * radius, row === 0 ? 1.62 : -1.62, radius * (1 - Math.cos(theta)) - (row === 0 ? 0 : depth));
         uvs.push(u, row === 0 ? 1 : 0);
       }
     }
@@ -93,11 +95,12 @@ export class QuestVRDashboard {
   }
 
   panel(ctx, x, y, width, height, title, meta = '') {
+    const radius = 32;
     ctx.fillStyle = 'rgba(7, 16, 14, .92)';
-    ctx.beginPath(); ctx.roundRect(x, y, width, height, 26); ctx.fill();
+    ctx.beginPath(); ctx.roundRect(x, y, width, height, radius); ctx.fill();
     ctx.strokeStyle = 'rgba(135, 206, 166, .48)';
     ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.roundRect(x + 1, y + 1, width - 2, height - 2, 25); ctx.stroke();
+    ctx.beginPath(); ctx.roundRect(x + 1, y + 1, width - 2, height - 2, radius - 1); ctx.stroke();
     ctx.fillStyle = '#a9e8c2';
     ctx.font = '600 25px system-ui';
     ctx.textAlign = 'left';
@@ -120,11 +123,23 @@ export class QuestVRDashboard {
     const ctx = this.context;
     const { width, height } = this.canvas;
     ctx.clearRect(0, 0, width, height);
+    const frameInset = 5;
+    const frameRadius = 58;
+    ctx.beginPath();
+    ctx.roundRect(frameInset, frameInset, width - frameInset * 2, height - frameInset * 2, frameRadius);
     ctx.fillStyle = 'rgba(4, 12, 11, .94)';
-    ctx.fillRect(0, 0, width, height);
+    ctx.fill();
+    ctx.save();
+    ctx.beginPath();
+    ctx.roundRect(frameInset, frameInset, width - frameInset * 2, height - frameInset * 2, frameRadius);
+    ctx.clip();
+    ctx.fillStyle = 'rgba(4, 12, 11, .94)';
+    ctx.fillRect(frameInset, frameInset, width - frameInset * 2, height - frameInset * 2);
     ctx.strokeStyle = '#76d6a1';
     ctx.lineWidth = 4;
-    ctx.strokeRect(4, 4, width - 8, height - 8);
+    ctx.beginPath();
+    ctx.roundRect(frameInset + 2, frameInset + 2, width - (frameInset + 2) * 2, height - (frameInset + 2) * 2, frameRadius - 2);
+    ctx.stroke();
 
     const perception = this.frame?.perception || {};
     const fnk = this.controller || {};
@@ -147,10 +162,11 @@ export class QuestVRDashboard {
     ctx.font = '17px ui-monospace, monospace';
     ctx.textAlign = 'left';
     ctx.fillText(this.grabbedController
-      ? 'HUD GRABBED · STICK ↑↓ DISTANCE · ←→ SCALE'
-      : 'SQUEEZE GRIP TO MOVE HUD · STICK ↑↓ DISTANCE · ←→ SCALE', margin + 8, height - 28);
+      ? 'HUD GRABBED · STICK XY MOVE · HOLD STICK CLICK: Y DEPTH · X SCALE'
+      : 'SQUEEZE GRIP TO EDIT · MOVE CONTROLLER OR USE STICK XY', margin + 8, height - 28);
     ctx.textAlign = 'right';
     ctx.fillText(this.following ? 'CAMERA FOLLOW · BODY' : 'SCENE VIEW · FIXED', width - margin - 8, height - 28);
+    ctx.restore();
     this.texture.needsUpdate = true;
   }
 
@@ -223,7 +239,7 @@ export class QuestVRDashboard {
     this.panel(ctx, x, y, width, height, 'Body telemetry', `${objects.length} OBJECTS`);
     const cx = x + 270;
     const cy = y + 360;
-    this.drawHexapod(ctx, cx, cy, Number(fnk.body_heading_deg ?? heading), fnk);
+    this.drawHexapod(ctx, cx, cy, Number(fnk.body_heading_deg ?? heading), fnk, 1.3);
     const headingDeg = Number(fnk.compass_heading_deg ?? fnk.body_heading_deg ?? heading);
     const headingX = x + width * .75;
     const headingY = y + 245;
@@ -260,8 +276,8 @@ export class QuestVRDashboard {
     ctx.textAlign = 'right'; ctx.fillText(`L ${left}   R ${right}`, x + width - 28, y + height - 38);
   }
 
-  drawHexapod(ctx, cx, cy, heading, fnk) {
-    ctx.save(); ctx.translate(cx, cy); ctx.rotate(-heading * Math.PI / 180);
+  drawHexapod(ctx, cx, cy, heading, fnk, scale = 1) {
+    ctx.save(); ctx.translate(cx, cy); ctx.rotate(-heading * Math.PI / 180); ctx.scale(scale, scale);
     ctx.lineCap = 'round';
     const visualToPhysical = [0, 2, 4, 1, 3, 5];
     const jointColors = ['#83cbd1', '#9ce0b4', '#efcb76'];
@@ -539,7 +555,7 @@ export class QuestVRDashboard {
     this.grabOffsetQuaternion.copy(this.scratchQuaternion).invert().multiply(this.root.quaternion);
     this.grabbedController = controller;
     this.grabInputSource = inputSource || null;
-    this.depthOffset = 0;
+    this.adjustmentOffset.set(0, 0, 0);
     this.headLocked = false;
     this.drawDashboard();
     return true;
@@ -549,7 +565,7 @@ export class QuestVRDashboard {
     if (this.grabbedController !== controller) return false;
     this.grabbedController = null;
     this.grabInputSource = null;
-    this.depthOffset = 0;
+    this.adjustmentOffset.set(0, 0, 0);
     this.drawDashboard();
     return true;
   }
@@ -562,23 +578,36 @@ export class QuestVRDashboard {
     this.root.position.copy(this.scratchPosition).add(this.scratchOffset);
     this.root.quaternion.copy(this.scratchQuaternion).multiply(this.grabOffsetQuaternion);
     const axes = this.grabInputSource?.gamepad?.axes || [];
-    const stickX = Number(axes.length >= 4 ? axes[2] : axes[0]) || 0;
-    const stickY = Number(axes.length >= 4 ? axes[3] : axes[1]) || 0;
+    const primaryMagnitude = Math.hypot(Number(axes[0]) || 0, Number(axes[1]) || 0);
+    const secondaryMagnitude = Math.hypot(Number(axes[2]) || 0, Number(axes[3]) || 0);
+    const axisOffset = secondaryMagnitude > primaryMagnitude ? 2 : 0;
+    const stickX = Number(axes[axisOffset]) || 0;
+    const stickY = Number(axes[axisOffset + 1]) || 0;
+    const buttons = this.grabInputSource?.gamepad?.buttons || [];
+    const depthAndScaleMode = Boolean(buttons[2]?.pressed || buttons[3]?.pressed);
     const elapsed = Math.max(0, Math.min(0.05, Number(deltaSeconds) || 0));
-    if (Math.abs(stickY) > 0.12) this.depthOffset = Math.max(-1, Math.min(4, this.depthOffset - stickY * elapsed * 1.6));
     this.grabForward.set(0, 0, -1).applyQuaternion(this.scratchQuaternion);
-    this.root.position.addScaledVector(this.grabForward, this.depthOffset);
-    if (Math.abs(stickX) > 0.12) {
-      this.userScale = Math.max(0.6, Math.min(2, this.userScale * Math.exp(stickX * elapsed * 0.9)));
+    this.grabRight.set(1, 0, 0).applyQuaternion(this.scratchQuaternion);
+    this.grabRight.y = 0;
+    if (this.grabRight.lengthSq() > 0.001) this.grabRight.normalize();
+    if (Math.abs(stickX) > 0.12 || Math.abs(stickY) > 0.12) {
+      if (depthAndScaleMode) {
+        this.adjustmentOffset.addScaledVector(this.grabForward, -stickY * elapsed * 1.2);
+        this.userScale = Math.max(0.45, Math.min(2.5, this.userScale * Math.exp(stickX * elapsed * 1.1)));
+      } else {
+        this.adjustmentOffset.addScaledVector(this.grabRight, stickX * elapsed * 1.2);
+        this.adjustmentOffset.y = Math.max(-1.5, Math.min(2.5, this.adjustmentOffset.y - stickY * elapsed * 1.2));
+      }
       this.root.scale.setScalar(this.userScale);
     }
+    this.root.position.add(this.adjustmentOffset);
   }
 
   resetPose() {
     this.grabbedController = null;
     this.grabInputSource = null;
     this.headLocked = true;
-    this.depthOffset = 0;
+    this.adjustmentOffset.set(0, 0, 0);
     this.userScale = 1;
     this.root.scale.setScalar(1);
     this.drawDashboard();

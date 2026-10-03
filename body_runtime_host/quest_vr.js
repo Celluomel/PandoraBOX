@@ -482,11 +482,14 @@ renderer.setAnimationLoop(time => {
     const active = [...session.inputSources].filter(source => source.gamepad);
     const controllers = active.map(source => {
       const axes = source.gamepad.axes || [];
+      const primaryMagnitude = Math.hypot(Number(axes[0]) || 0, Number(axes[1]) || 0);
+      const secondaryMagnitude = Math.hypot(Number(axes[2]) || 0, Number(axes[3]) || 0);
+      const axisOffset = secondaryMagnitude > primaryMagnitude ? 2 : 0;
       const pressed = source.gamepad.buttons?.some(button => button.pressed) || false;
       return {
         handedness: source.handedness || 'controller',
-        x: Number(axes[2] ?? axes[0] ?? 0),
-        y: Number(axes[3] ?? axes[1] ?? 0),
+        x: Number(axes[axisOffset] ?? 0),
+        y: Number(axes[axisOffset + 1] ?? 0),
         pressed,
       };
     });
