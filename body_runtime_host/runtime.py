@@ -1845,7 +1845,11 @@ class BodyHost:
                     "running": bool(summary.get("running")),
                     "mode": summary.get("mode"),
                     "steps": summary.get("steps", 0),
-                    "source": summary.get("source"),
+                    "source": (
+                        summary.get("source", {}).get("source", "unknown")
+                        if isinstance(summary.get("source"), dict)
+                        else summary.get("source")
+                    ),
                 })
             except Exception as exc:
                 worldmodel_status["error"] = str(exc)[:180]

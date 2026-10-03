@@ -2853,8 +2853,11 @@ Memory honesty — two distinct cases:
                     "handled": True,
                     "status": "reported",
                     "response": response,
-                    "body_status": bridge_status,
-                    "observations": observations,
+                    "body_status": {
+                        "bridge_connected": connected,
+                        "observation_count": len(observations),
+                        "worldmodel_http_available": worldmodel is not None,
+                    },
                 }
             objective = str(active.get("objective") or "objectif Body")
             state = str(active.get("state") or "unknown")
