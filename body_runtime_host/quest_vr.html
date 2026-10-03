@@ -30,7 +30,7 @@
 <body>
   <canvas id="scene" aria-label="Three-dimensional Body perception scene"></canvas>
   <header class="hud">
-    <section class="brand"><div class="eyebrow">PandoraBOX · embodied view</div><h1>Body scene<span class="badge">XR DASHBOARD</span></h1><p>Use the arc controls in VR to manage simulation and sensor overlays.</p></section>
+    <section class="brand"><div class="eyebrow">PandoraBOX · embodied view</div><h1>Body scene<span class="badge">INPUT PREVIEW</span></h1><p>Metric scene view · controller input is telemetry only.</p></section>
     <section class="telemetry" aria-label="Live Body telemetry">
       <div class="metric"><small>Body pose</small><b id="pose">Waiting</b></div>
       <div class="metric"><small>Scene source</small><b id="source">—</b></div>
@@ -39,7 +39,7 @@
     </section>
   </header>
   <div id="status" role="status">Connecting to Body world model…</div>
-  <aside id="selection"><b>No object selected</b><small>In VR, point at the arc dashboard or a scene object and press the controller trigger.</small></aside>
+  <aside id="selection"><b>No object selected</b><small>Point at a scene object and press the controller trigger. Selection sends no robot command.</small></aside>
   <nav class="controls" aria-label="Scene controls">
     <button id="enter-xr" type="button">Enter VR</button>
     <button id="enter-ar" type="button">Passthrough AR</button>

@@ -72,242 +72,7 @@ let latestObjects = [];
 let latestWorldStatus = null;
 let showLidar = true;
 let showRadar = true;
-let followBody = false;
 let mapCenter = { x: 5, z: -6 };
-const dashboardGroup = new THREE.Group();
-const dashboardButtons = [];
-const dashboardTextures = new Map();
-let cameraPollTimer = null;
-let cameraPollInFlight = false;
-let cameraFrameKey = null;
-dashboardGroup.visible = false;
-scene.add(dashboardGroup);
-
-function syncXRDashboardPose() {
-  if (!renderer.xr.isPresenting) return;
-  camera.updateMatrixWorld(true);
-  camera.getWorldPosition(dashboardGroup.position);
-  camera.getWorldQuaternion(dashboardGroup.quaternion);
-}
-
-function dashboardTexture(id, title, detail = '', tone = 'normal') {
-  let entry = dashboardTextures.get(id);
-  if (!entry) {
-    const canvas = document.createElement('canvas');
-    canvas.width = 512;
-    canvas.height = 256;
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.colorSpace = THREE.SRGBColorSpace;
-    const material = new THREE.MeshBasicMaterial({ map: texture, transparent: true, depthTest: false, side: THREE.DoubleSide });
-    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(0.43, 0.25), material);
-    mesh.renderOrder = 20;
-    mesh.userData.action = id;
-    dashboardButtons.push(mesh);
-    dashboardGroup.add(mesh);
-    entry = { canvas, texture, mesh };
-    dashboardTextures.set(id, entry);
-  }
-  const ctx = entry.canvas.getContext('2d');
-  const color = tone === 'active' ? '#103d2a' : tone === 'disabled' ? '#202827' : '#0a2018';
-  const stroke = tone === 'active' ? '#83e5ac' : tone === 'disabled' ? '#58645e' : '#6cbf8e';
-  ctx.clearRect(0, 0, 512, 256);
-  ctx.fillStyle = '#06100ee8';
-  ctx.fillRect(4, 4, 504, 248);
-  ctx.fillStyle = color;
-  ctx.fillRect(12, 12, 488, 232);
-  ctx.strokeStyle = stroke;
-  ctx.lineWidth = 5;
-  ctx.strokeRect(12, 12, 488, 232);
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillStyle = tone === 'disabled' ? '#91a096' : '#e5f5eb';
-  ctx.font = '600 40px system-ui';
-  ctx.fillText(String(title).slice(0, 22), 256, 92);
-  ctx.fillStyle = tone === 'disabled' ? '#87958c' : '#9dc9ad';
-  ctx.font = '26px system-ui';
-  ctx.fillText(String(detail).slice(0, 34), 256, 165);
-  entry.texture.needsUpdate = true;
-  return entry.mesh;
-}
-
-function dashboardBanner(text) {
-  let entry = dashboardTextures.get('banner');
-  if (!entry) {
-    const canvas = document.createElement('canvas');
-    canvas.width = 1024;
-    canvas.height = 112;
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.colorSpace = THREE.SRGBColorSpace;
-    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(1.55, 0.17), new THREE.MeshBasicMaterial({ map: texture, transparent: true, depthTest: false }));
-    mesh.position.set(0, 1.99, -1.65);
-    mesh.renderOrder = 20;
-    dashboardGroup.add(mesh);
-    entry = { canvas, texture, mesh };
-    dashboardTextures.set('banner', entry);
-  }
-  const ctx = entry.canvas.getContext('2d');
-  ctx.clearRect(0, 0, 1024, 112);
-  ctx.fillStyle = '#07130fec';
-  ctx.fillRect(4, 4, 1016, 104);
-  ctx.strokeStyle = '#70c997';
-  ctx.lineWidth = 3;
-  ctx.strokeRect(4, 4, 1016, 104);
-  ctx.fillStyle = '#dff7e8';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.font = '600 32px system-ui';
-  ctx.fillText(String(text).slice(0, 70), 512, 56);
-  entry.texture.needsUpdate = true;
-}
-
-function drawCameraPreview(frame) {
-  let entry = dashboardTextures.get('camera-preview');
-  if (!entry) {
-    const canvas = document.createElement('canvas');
-    canvas.width = 640;
-    canvas.height = 360;
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.colorSpace = THREE.SRGBColorSpace;
-    const material = new THREE.MeshBasicMaterial({ map: texture, transparent: true, depthTest: false, side: THREE.DoubleSide });
-    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(1.34, 0.75), material);
-    mesh.position.set(0, 1.38, -1.65);
-    mesh.renderOrder = 19;
-    dashboardGroup.add(mesh);
-    entry = { canvas, texture, mesh };
-    dashboardTextures.set('camera-preview', entry);
-  }
-  const ctx = entry.canvas.getContext('2d');
-  ctx.fillStyle = '#07130f';
-  ctx.fillRect(0, 0, entry.canvas.width, entry.canvas.height);
-  if (!frame) {
-    ctx.fillStyle = '#dff7e8';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.font = '600 26px system-ui';
-    ctx.fillText('NO CAMERA FRAME · START CAMERA IN BODY VLM', 320, 180);
-    entry.texture.needsUpdate = true;
-    return;
-  }
-  const image = new Image();
-  image.onload = () => {
-    const scale = Math.min(entry.canvas.width / image.width, entry.canvas.height / image.height);
-    const width = image.width * scale;
-    const height = image.height * scale;
-    ctx.fillStyle = '#07130f';
-    ctx.fillRect(0, 0, entry.canvas.width, entry.canvas.height);
-    ctx.drawImage(image, (entry.canvas.width - width) / 2, (entry.canvas.height - height) / 2, width, height);
-    ctx.fillStyle = '#06100edb';
-    ctx.fillRect(0, 0, entry.canvas.width, 42);
-    ctx.fillStyle = '#e5f5eb';
-    ctx.textAlign = 'left';
-    ctx.textBaseline = 'middle';
-    ctx.font = '600 22px system-ui';
-    ctx.fillText(`BODY CAMERA · ${frame.width || image.width}×${frame.height || image.height}`, 14, 21);
-    entry.texture.needsUpdate = true;
-  };
-  image.onerror = () => drawCameraPreview(null);
-  image.src = `data:${frame.mime_type || 'image/jpeg'};base64,${frame.image_base64}`;
-}
-
-async function pollCameraFrame() {
-  if (!renderer.xr.isPresenting || cameraPollInFlight) return;
-  cameraPollInFlight = true;
-  try {
-    const response = await fetch('/body/camera/frame', { cache: 'no-store', credentials: 'same-origin' });
-    if (!response.ok) throw new Error(`Camera frame HTTP ${response.status}`);
-    const result = await response.json();
-    const frame = result.camera || {};
-    if (!result.available || !frame.image_base64) {
-      cameraFrameKey = null;
-      drawCameraPreview(null);
-      return;
-    }
-    const key = `${frame.captured_at || frame.timestamp || ''}:${frame.image_base64.length}`;
-    if (key !== cameraFrameKey) {
-      cameraFrameKey = key;
-      drawCameraPreview(frame);
-    }
-  } catch {
-    drawCameraPreview(null);
-  } finally {
-    cameraPollInFlight = false;
-  }
-}
-
-function startCameraPolling() {
-  stopCameraPolling();
-  void pollCameraFrame();
-  cameraPollTimer = window.setInterval(pollCameraFrame, 125);
-}
-
-function stopCameraPolling() {
-  if (cameraPollTimer !== null) window.clearInterval(cameraPollTimer);
-  cameraPollTimer = null;
-  cameraPollInFlight = false;
-  cameraFrameKey = null;
-}
-
-function updateXRDashboard() {
-  const status = latestWorldStatus || {};
-  const perception = status.perception || {};
-  const projections = perception.sensor_projections || {};
-  const lidar = projections.lidar || {};
-  const modalities = perception.modalities || {};
-  const radar = modalities.mmwave_radar || {};
-  const targets = radar.targets || [];
-  const points = lidar.points || [];
-  const source = status.source || {};
-  const simulationAvailable = status.mode === 'sim' && source.source === 'sim_robot';
-  const running = !!status.running;
-  dashboardBanner(`LIVE · ${status.mode || 'offline'} · ${points.length} LiDAR · ${targets.length} RADAR`);
-  const data = [
-    ['simulation', running ? 'PAUSE SIM' : 'START SIM', simulationAvailable ? (running ? 'Running' : 'Simulator ready') : 'Simulation source required', simulationAvailable ? (running ? 'active' : 'normal') : 'disabled'],
-    ['lidar', showLidar ? 'LiDAR ON' : 'LiDAR OFF', `${points.length} · ${lidar.source || 'no data'}`, showLidar ? 'active' : 'normal'],
-    ['radar', showRadar ? 'mmW ON' : 'mmW OFF', `${targets.length} · ${radar.source || 'no data'}`, showRadar ? 'active' : 'normal'],
-    ['follow', followBody ? 'FOLLOW ON' : 'FOLLOW BODY', simulationAvailable && running ? 'Track Body pose' : 'Start simulation first', simulationAvailable && running ? (followBody ? 'active' : 'normal') : 'disabled'],
-    ['exit', 'EXIT TO UI', 'End immersive view', 'normal'],
-  ];
-  data.forEach(([id, title, detail, tone], index) => {
-    const mesh = dashboardTexture(id, title, detail, id === 'simulation' && !simulationAvailable ? 'disabled' : tone);
-    const angle = (index - 2) * 0.19;
-    mesh.position.set(1.95 * Math.sin(angle), 0.72, -1.62 * Math.cos(angle));
-    mesh.rotation.y = angle;
-  });
-}
-
-async function sendJSON(path, payload) {
-  const response = await fetch(path, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    credentials: 'same-origin',
-    cache: 'no-store',
-    body: JSON.stringify(payload),
-  });
-  const result = await response.json();
-  if (!response.ok) throw new Error(result.error || `Body returned HTTP ${response.status}`);
-  return result;
-}
-
-function applySceneView() {
-  if (!followBody || !lastFrame?.perception) {
-    world.position.set(0, 0, 0);
-    world.rotation.y = 0;
-    orbit.enabled = !renderer.xr.isPresenting;
-    return;
-  }
-  const body = lastFrame.perception.body || {};
-  const position = body.position || [0, 0, 0];
-  const bx = (Number(position[0]) || 0) - (basePosition?.[0] || 0);
-  const bz = -((Number(position[1]) || 0) - (basePosition?.[1] || 0));
-  const yaw = Number(body.orientation) || 0;
-  const rotation = Math.PI / 2 + yaw;
-  const rx = Math.cos(rotation) * bx + Math.sin(rotation) * bz;
-  const rz = -Math.sin(rotation) * bx + Math.cos(rotation) * bz;
-  world.rotation.y = rotation;
-  world.position.set(-rx, 0, -1.65 - rz);
-  orbit.enabled = !renderer.xr.isPresenting;
-}
-
 function configureSceneFrame(frame, bodyPosition) {
   const source = frame.source || {};
   const reportedWidth = Number(source.width);
@@ -382,45 +147,6 @@ function renderSensorLayers(perception) {
   }
   lidarGroup.visible = showLidar;
   radarGroup.visible = showRadar;
-  updateXRDashboard();
-}
-
-async function dashboardAction(action) {
-  try {
-    if (action === 'simulation') {
-      const status = latestWorldStatus || {};
-      if (status.mode !== 'sim' || status.source?.source !== 'sim_robot') {
-        setStatus('Simulation control is disabled: select the simulated Body source first.', true);
-        return;
-      }
-      await sendJSON('/worldmodel/run', { running: !status.running });
-      await pollBody();
-      setStatus(status.running ? 'World-model simulation paused.' : 'World-model simulation started.');
-    } else if (action === 'lidar') {
-      showLidar = !showLidar;
-      lidarGroup.visible = showLidar;
-      updateXRDashboard();
-    } else if (action === 'radar') {
-      showRadar = !showRadar;
-      radarGroup.visible = showRadar;
-      updateXRDashboard();
-    } else if (action === 'follow') {
-      const status = latestWorldStatus || {};
-      if (status.mode !== 'sim' || status.source?.source !== 'sim_robot' || !status.running) {
-        setStatus('Follow Body is available while the simulated Body is running.', true);
-        return;
-      }
-      followBody = !followBody;
-      applySceneView();
-      updateXRDashboard();
-    } else if (action === 'exit') {
-      const session = renderer.xr.getSession();
-      if (session) await session.end();
-      window.location.assign('/worldmodel');
-    }
-  } catch (error) {
-    setStatus(`Dashboard action failed: ${error.message}`, true);
-  }
 }
 
 function setStatus(text, error = false) {
@@ -525,7 +251,6 @@ function rebuildScene(frame) {
   const age = Number(perception.age_seconds || 0);
   document.querySelector('#age').textContent = `${age.toFixed(1)} s`;
   const sensorCount = Object.values(modal).filter(value => value && (value.available || value.status === 'available')).length;
-  applySceneView();
   renderSensorLayers(perception);
   if (firstData) {
     setStatus(`${latestObjects.length} perceived objects · ${sensorCount} sensor modalities reporting · WebXR can be entered from this page`);
@@ -543,7 +268,6 @@ async function pollBody() {
     if (!response.ok) throw new Error(`Body status HTTP ${response.status}`);
     const frame = await response.json();
     latestWorldStatus = frame;
-    updateXRDashboard();
     if (!frame.perception?.available) {
       setStatus(frame.perception?.note || 'Body has not produced a perception frame yet.', true);
       return;
@@ -560,11 +284,6 @@ function selectAt(controller) {
   raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
   raycaster.ray.direction.set(0, 0, -1).applyMatrix4(ray);
   scene.updateMatrixWorld(true);
-  const dashboardHits = raycaster.intersectObjects(dashboardButtons, false);
-  if (dashboardHits.length) {
-    void dashboardAction(dashboardHits[0].object.userData.action);
-    return;
-  }
   const hits = raycaster.intersectObjects(selectable, false);
   if (!hits.length) return;
   const item = hits[0].object.userData.entity;
@@ -615,22 +334,15 @@ async function enterXR(mode) {
       optionalFeatures: ['local-floor', 'bounded-floor', 'hand-tracking'],
     });
     await renderer.xr.setSession(session);
-    scene.background = mode === 'immersive-vr' ? new THREE.Color('#101a16') : null;
     orbit.enabled = false;
-    dashboardGroup.visible = true;
-    drawCameraPreview(null);
-    startCameraPolling();
-    updateXRDashboard();
     document.querySelector('#enter-xr').textContent = mode === 'immersive-vr' ? 'Exit VR' : 'VR view';
     document.querySelector('#enter-ar').textContent = mode === 'immersive-ar' ? 'Exit passthrough' : 'Passthrough AR';
     setStatus(mode === 'immersive-ar'
-      ? 'Passthrough is active. The Body map is an unaligned overlay; use the controller ray to operate the dashboard.'
-      : 'VR is active. Use the controller ray to operate the dashboard.');
+      ? 'Passthrough is active. The Body map is an unaligned overlay; controller input is telemetry only.'
+      : 'VR is active. Controller input is telemetry only.');
     session.addEventListener('end', () => {
       orbit.enabled = true;
       scene.background = null;
-      dashboardGroup.visible = false;
-      stopCameraPolling();
       document.querySelector('#enter-xr').textContent = 'Enter VR';
       document.querySelector('#enter-ar').textContent = 'Passthrough AR';
       document.querySelector('#xr-input').textContent = 'Not in XR';
@@ -670,11 +382,6 @@ window.addEventListener('resize', () => {
   renderer.setSize(width, height, false);
 });
 
-document.addEventListener('visibilitychange', () => {
-  if (document.hidden) stopCameraPolling();
-  else if (renderer.xr.isPresenting) startCameraPolling();
-});
-
 setInterval(pollBody, 1200);
 void pollBody();
 renderer.setAnimationLoop(() => {
@@ -689,13 +396,8 @@ renderer.setAnimationLoop(() => {
       const pressed = source.gamepad.buttons?.some(button => button.pressed) || false;
       return `${source.handedness || 'controller'} ${Number(axes[2] ?? axes[0] ?? 0).toFixed(1)},${Number(axes[3] ?? axes[1] ?? 0).toFixed(1)}${pressed ? ' · button' : ''}`;
     });
-    const telemetry = `HEAD ${Math.round(headYaw * 180 / Math.PI)}° · ${sticks.join(' | ') || 'NO CONTROLLER'} · LIDAR ${latestWorldStatus?.perception?.sensor_projections?.lidar?.points?.length || 0} · RADAR ${latestWorldStatus?.perception?.modalities?.mmwave_radar?.targets?.length || 0}`;
+    const telemetry = `HEAD ${Math.round(headYaw * 180 / Math.PI)}° · ${sticks.join(' | ') || 'NO CONTROLLER'}`;
     document.querySelector('#xr-input').textContent = telemetry;
-    if (!renderer.userData.dashboardTelemetryAt || performance.now() - renderer.userData.dashboardTelemetryAt > 120) {
-      dashboardBanner(telemetry);
-      renderer.userData.dashboardTelemetryAt = performance.now();
-    }
-    syncXRDashboardPose();
   }
   renderer.render(scene, camera);
 });
