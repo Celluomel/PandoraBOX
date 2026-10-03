@@ -1,5 +1,6 @@
 import * as THREE from '../frontend/node_modules/three/build/three.module.js';
 import { OrbitControls } from '../frontend/node_modules/three/examples/jsm/controls/OrbitControls.js';
+import { QuestVRDashboard } from './quest_vr_dashboard.js';
 
 const canvas = document.querySelector('#scene');
 const statusNode = document.querySelector('#status');
@@ -9,8 +10,10 @@ renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.7));
 renderer.setSize(window.innerWidth, window.innerHeight, false);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.xr.enabled = true;
+renderer.autoClear = false;
 
 const scene = new THREE.Scene();
+const vrDashboard = new QuestVRDashboard(THREE);
 scene.background = null;
 const camera = new THREE.PerspectiveCamera(58, window.innerWidth / window.innerHeight, 0.05, 100);
 camera.position.set(6, 9, 7);
@@ -260,6 +263,7 @@ function rebuildScene(frame) {
   } else {
     setStatus(`${latestObjects.length} perceived objects · frame ${new Date(Number(perception.timestamp || Date.now() / 1000) * 1000).toLocaleTimeString()}`);
   }
+  vrDashboard.update(frame);
 }
 
 async function pollBody() {
@@ -335,6 +339,7 @@ async function enterXR(mode) {
     });
     await renderer.xr.setSession(session);
     orbit.enabled = false;
+    vrDashboard.setVisible(mode === 'immersive-vr');
     document.querySelector('#enter-xr').textContent = mode === 'immersive-vr' ? 'Exit VR' : 'VR view';
     document.querySelector('#enter-ar').textContent = mode === 'immersive-ar' ? 'Exit passthrough' : 'Passthrough AR';
     setStatus(mode === 'immersive-ar'
@@ -343,6 +348,7 @@ async function enterXR(mode) {
     session.addEventListener('end', () => {
       orbit.enabled = true;
       scene.background = null;
+      vrDashboard.setVisible(false);
       document.querySelector('#enter-xr').textContent = 'Enter VR';
       document.querySelector('#enter-ar').textContent = 'Passthrough AR';
       document.querySelector('#xr-input').textContent = 'Not in XR';
@@ -387,6 +393,8 @@ void pollBody();
 renderer.setAnimationLoop(() => {
   if (!renderer.xr.isPresenting) orbit.update();
   const session = renderer.xr.getSession();
+  renderer.clear();
+  renderer.render(scene, camera);
   if (session) {
     const xrCamera = renderer.xr.getCamera(camera);
     const headYaw = new THREE.Euler().setFromQuaternion(xrCamera.quaternion, 'YXZ').y;
@@ -398,6 +406,10 @@ renderer.setAnimationLoop(() => {
     });
     const telemetry = `HEAD ${Math.round(headYaw * 180 / Math.PI)}° · ${sticks.join(' | ') || 'NO CONTROLLER'}`;
     document.querySelector('#xr-input').textContent = telemetry;
+    if (vrDashboard.visible) {
+      vrDashboard.syncPose(xrCamera);
+      renderer.clearDepth();
+      renderer.render(vrDashboard.scene, camera);
+    }
   }
-  renderer.render(scene, camera);
 });

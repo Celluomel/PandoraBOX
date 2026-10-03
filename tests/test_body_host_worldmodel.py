@@ -505,7 +505,7 @@ class BodyHostHttpTest(unittest.TestCase):
                     quest_html = response.read().decode("utf-8")
                     self.assertEqual(response.headers.get_content_type(), "text/html")
                 self.assertIn("/quest-vr.js", quest_html)
-                self.assertIn("INPUT PREVIEW", quest_html)
+                self.assertIn("XR · STATUS", quest_html)
                 self.assertIn("Passthrough AR", quest_html)
                 self.assertIn("Head / controller", quest_html)
                 quest_source = (Path(__file__).resolve().parents[1] / "body_runtime_host" / "quest_vr.js").read_text(encoding="utf-8")
@@ -514,6 +514,10 @@ class BodyHostHttpTest(unittest.TestCase):
                 self.assertNotIn("/body/camera/frame", quest_source)
                 self.assertIn("configureSceneFrame(frame, position)", quest_source)
                 self.assertIn("floor.position.set(centerX, -0.035, -centerY)", quest_source)
+                dashboard_source = (Path(__file__).resolve().parents[1] / "body_runtime_host" / "quest_vr_dashboard.js").read_text(encoding="utf-8")
+                self.assertIn("new THREE.Scene()", dashboard_source)
+                self.assertIn("PANDORABOX · BODY STATUS", dashboard_source)
+                self.assertIn("renderer.clearDepth()", quest_source)
                 with urllib.request.urlopen(f"{base}/quest-vr.js", timeout=5) as response:
                     quest_bundle = response.read()
                     self.assertEqual(response.headers.get_content_type(), "text/javascript")
@@ -522,6 +526,7 @@ class BodyHostHttpTest(unittest.TestCase):
                 self.assertIn("Point at a scene object", quest_html)
                 for removed in (b"START SIM", b"FOLLOW BODY", b"camera-preview", b"dashboardGroup"):
                     self.assertNotIn(removed, quest_bundle)
+                self.assertIn(b"BODY STATUS", quest_bundle)
 
                 # world model endpoints (lazy build)
                 status = _get(f"{base}/worldmodel/status")
