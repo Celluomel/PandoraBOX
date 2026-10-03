@@ -370,23 +370,22 @@ function escapeText(value) {
 
 for (let index = 0; index < 2; index += 1) {
   const controller = renderer.xr.getController(index);
+  const grip = renderer.xr.getControllerGrip(index);
   controller.addEventListener('select', () => selectAt(controller));
   controller.addEventListener('squeezestart', event => {
     try {
-      if (vrDashboard.beginAdjust(controller, raycaster, event.data)) {
-        setStatus('HUD grabbed · move the controller; tilt its thumbstick up/down to resize.');
-      }
+      vrDashboard.beginAdjust(grip, event.data);
     } catch (error) {
       setStatus(`HUD adjustment failed: ${error.message}`, true);
     }
   });
   controller.addEventListener('squeezeend', () => {
-    vrDashboard.endAdjust(controller);
-    setStatus('HUD placed in the room. Use Recenter view / HUD to restore the default layout.');
+    vrDashboard.endAdjust(grip);
   });
   const beam = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, -4)]), new THREE.LineBasicMaterial({ color: '#b6f1d3' }));
   controller.add(beam);
   scene.add(controller);
+  scene.add(grip);
   controllerRays.push(controller);
 }
 
@@ -413,7 +412,7 @@ async function enterXR(mode) {
     document.querySelector('#enter-ar').textContent = mode === 'immersive-ar' ? 'Exit passthrough' : 'Passthrough AR';
     setStatus(mode === 'immersive-ar'
       ? 'Passthrough is active. The Body map is an unaligned overlay; controller input is telemetry only.'
-      : 'VR is active. HUD is 3 m ahead. Point at any HUD panel and hold grip to move it; tilt the thumbstick vertically to resize.');
+      : 'VR is active. HUD is about 4 m ahead. Hold either controller grip anywhere to move it; stick up/down changes distance, left/right changes size.');
     session.addEventListener('end', () => {
       orbit.enabled = true;
       scene.background = null;
