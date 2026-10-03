@@ -18,6 +18,8 @@ let cameraPollTimer = null;
 let cameraPollInFlight = false;
 let lastCameraFrameId = null;
 let lastDashboardTelemetryAt = 0;
+let xrFollowYaw = null;
+let xrSceneFollowing = false;
 scene.background = null;
 const camera = new THREE.PerspectiveCamera(58, window.innerWidth / window.innerHeight, 0.05, 100);
 camera.position.set(6, 9, 7);
@@ -123,6 +125,52 @@ function configureSceneFrame(frame, bodyPosition) {
 function setStatus(text, error = false) {
   statusNode.textContent = text;
   statusNode.style.color = error ? '#ffb7a5' : '#a9c3b2';
+}
+
+const xrFollowHeadPosition = new THREE.Vector3();
+const xrFollowForward = new THREE.Vector3();
+const xrFollowTarget = new THREE.Vector3();
+const xrFollowBodyOffset = new THREE.Vector3();
+const xrFollowYawAxis = new THREE.Vector3(0, 1, 0);
+
+function updateXRSceneFollow(xrCamera) {
+  const status = latestWorldStatus || {};
+  const simulationRunning = status.mode === 'sim'
+    && status.source?.source === 'sim_robot'
+    && status.running === true;
+  const position = status.perception?.body?.position;
+  if (!simulationRunning || !Array.isArray(position) || !basePosition) {
+    if (xrSceneFollowing) {
+      world.position.set(0, 0, 0);
+      world.rotation.set(0, 0, 0);
+      world.scale.set(1, 1, 1);
+      xrSceneFollowing = false;
+      vrDashboard.setFollowing(false);
+    }
+    xrFollowYaw = null;
+    return;
+  }
+
+  if (!xrSceneFollowing) {
+    const orientation = new THREE.Euler().setFromQuaternion(xrCamera.quaternion, 'YXZ');
+    xrFollowYaw = orientation.y;
+    xrSceneFollowing = true;
+    vrDashboard.setFollowing(true);
+  }
+
+  const scale = 0.4;
+  xrCamera.getWorldPosition(xrFollowHeadPosition);
+  xrFollowForward.set(-Math.sin(xrFollowYaw), 0, -Math.cos(xrFollowYaw));
+  xrFollowTarget.copy(xrFollowHeadPosition).addScaledVector(xrFollowForward, 5.5);
+  xrFollowTarget.y -= 1.35;
+  xrFollowBodyOffset.set(
+    Number(position[0] || 0) - basePosition[0],
+    0,
+    -(Number(position[1] || 0) - basePosition[1]),
+  ).applyAxisAngle(xrFollowYawAxis, xrFollowYaw).multiplyScalar(scale);
+  world.rotation.set(0, xrFollowYaw, 0);
+  world.scale.setScalar(scale);
+  world.position.copy(xrFollowTarget).sub(xrFollowBodyOffset);
 }
 
 async function pollCameraFrame() {
@@ -355,6 +403,12 @@ async function enterXR(mode) {
     session.addEventListener('end', () => {
       orbit.enabled = true;
       scene.background = null;
+      world.position.set(0, 0, 0);
+      world.rotation.set(0, 0, 0);
+      world.scale.set(1, 1, 1);
+      xrSceneFollowing = false;
+      xrFollowYaw = null;
+      vrDashboard.setFollowing(false);
       stopCameraPolling();
       vrDashboard.setVisible(false);
       document.querySelector('#enter-xr').textContent = 'Enter VR';
@@ -402,9 +456,9 @@ renderer.setAnimationLoop(() => {
   if (!renderer.xr.isPresenting) orbit.update();
   const session = renderer.xr.getSession();
   renderer.clear();
-  renderer.render(scene, camera);
   if (session) {
     const xrCamera = renderer.xr.getCamera(camera);
+    updateXRSceneFollow(xrCamera);
     const headYaw = new THREE.Euler().setFromQuaternion(xrCamera.quaternion, 'YXZ').y;
     const active = [...session.inputSources].filter(source => source.gamepad);
     const controllers = active.map(source => {
@@ -420,14 +474,16 @@ renderer.setAnimationLoop(() => {
     const headingDegrees = Math.round(headYaw * 180 / Math.PI);
     const telemetry = `HEAD ${headingDegrees}° · ${controllers.map(item => `${item.handedness} ${item.x.toFixed(1)},${item.y.toFixed(1)}${item.pressed ? ' · button' : ''}`).join(' | ') || 'NO CONTROLLER'}`;
     document.querySelector('#xr-input').textContent = telemetry;
-    if (vrDashboard.visible) {
-      vrDashboard.syncPose(xrCamera);
-      if (performance.now() - lastDashboardTelemetryAt >= 200) {
-        vrDashboard.updateTelemetry({ headingDegrees, controllers });
-        lastDashboardTelemetryAt = performance.now();
-      }
-      renderer.clearDepth();
-      renderer.render(vrDashboard.scene, camera);
+    if (vrDashboard.visible && performance.now() - lastDashboardTelemetryAt >= 200) {
+      vrDashboard.updateTelemetry({ headingDegrees, controllers });
+      lastDashboardTelemetryAt = performance.now();
     }
+  }
+  renderer.render(scene, camera);
+  if (session && vrDashboard.visible) {
+    const xrCamera = renderer.xr.getCamera(camera);
+    vrDashboard.syncPose(xrCamera);
+    renderer.clearDepth();
+    renderer.render(vrDashboard.scene, camera);
   }
 });

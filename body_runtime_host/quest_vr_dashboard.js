@@ -12,10 +12,10 @@ export class QuestVRDashboard {
     this.texture = new THREE.CanvasTexture(canvas);
     this.texture.colorSpace = THREE.SRGBColorSpace;
     const panel = new THREE.Mesh(
-      new THREE.PlaneGeometry(1.08, 0.5),
+      new THREE.PlaneGeometry(1.25, 0.58),
       new THREE.MeshBasicMaterial({ map: this.texture, transparent: true, depthTest: false, side: THREE.DoubleSide }),
     );
-    panel.position.set(-0.02, 0.72, -2.2);
+    panel.position.set(0, 0.82, -2.25);
     panel.renderOrder = 1000;
     this.root.add(panel);
 
@@ -26,10 +26,11 @@ export class QuestVRDashboard {
     this.cameraTexture = new THREE.CanvasTexture(cameraCanvas);
     this.cameraTexture.colorSpace = THREE.SRGBColorSpace;
     const cameraPanel = new THREE.Mesh(
-      new THREE.PlaneGeometry(1.08, 0.608),
+      new THREE.PlaneGeometry(1.25, 0.703),
       new THREE.MeshBasicMaterial({ map: this.cameraTexture, transparent: true, depthTest: false, side: THREE.DoubleSide }),
     );
-    cameraPanel.position.set(-1.2, 0.72, -2.2);
+    cameraPanel.position.set(-1.27, 0.82, -1.96);
+    cameraPanel.rotation.y = 0.55;
     cameraPanel.renderOrder = 1000;
     this.root.add(cameraPanel);
     this.drawCameraMessage('CAMERA · WAITING');
@@ -41,14 +42,16 @@ export class QuestVRDashboard {
     this.sensorTexture = new THREE.CanvasTexture(sensorCanvas);
     this.sensorTexture.colorSpace = THREE.SRGBColorSpace;
     const sensorPanel = new THREE.Mesh(
-      new THREE.PlaneGeometry(1.3, 0.65),
+      new THREE.PlaneGeometry(1.45, 0.725),
       new THREE.MeshBasicMaterial({ map: this.sensorTexture, transparent: true, depthTest: false, side: THREE.DoubleSide }),
     );
-    sensorPanel.position.set(1.2, 0.72, -2.2);
+    sensorPanel.position.set(1.27, 0.82, -1.96);
+    sensorPanel.rotation.y = -0.55;
     sensorPanel.renderOrder = 1000;
     this.root.add(sensorPanel);
     this.frame = null;
     this.telemetry = null;
+    this.following = false;
     this.update(null);
   }
 
@@ -60,6 +63,12 @@ export class QuestVRDashboard {
 
   updateTelemetry(telemetry) {
     this.telemetry = telemetry;
+    this.drawStatus();
+  }
+
+  setFollowing(following) {
+    if (this.following === Boolean(following)) return;
+    this.following = Boolean(following);
     this.drawStatus();
   }
 
@@ -88,20 +97,21 @@ export class QuestVRDashboard {
     const objects = perception.objects?.length || 0;
     ctx.fillText(pose, 52, 135);
     ctx.fillText(`Scene objects  ${objects}`, 52, 190);
+    ctx.fillText(`View  ${this.following ? 'FOLLOW BODY' : 'FIXED SCENE'}`, 52, 238);
     ctx.fillStyle = '#e1f6e9';
     ctx.font = '600 28px system-ui';
-    ctx.fillText('LIVE CONTROLLER TELEMETRY', 52, 274);
+    ctx.fillText('LIVE CONTROLLER TELEMETRY', 52, 292);
     ctx.fillStyle = '#9fc5ac';
     ctx.font = '28px system-ui';
     const telemetry = this.telemetry || {};
-    ctx.fillText(`Head  ${telemetry.headingDegrees ?? '--'}°`, 52, 332);
+    ctx.fillText(`Head  ${telemetry.headingDegrees ?? '--'}°`, 52, 348);
     const controllers = telemetry.controllers || [];
     for (const [index, hand] of ['left', 'right'].entries()) {
       const controller = controllers.find(item => item.handedness === hand);
       const row = controller
         ? `${hand === 'left' ? 'L' : 'R'} ctrl  ${controller.x.toFixed(1)}, ${controller.y.toFixed(1)}${controller.pressed ? ' · button' : ''}`
         : `${hand === 'left' ? 'L' : 'R'} ctrl  not detected`;
-      ctx.fillText(row, 52, 390 + index * 58);
+      ctx.fillText(row, 52, 405 + index * 50);
     }
     this.texture.needsUpdate = true;
   }

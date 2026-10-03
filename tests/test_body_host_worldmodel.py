@@ -513,6 +513,9 @@ class BodyHostHttpTest(unittest.TestCase):
                 self.assertNotIn("dashboardGroup", quest_source)
                 self.assertIn("fetch('/body/camera/frame'", quest_source)
                 self.assertIn("setInterval(pollCameraFrame, 200)", quest_source)
+                self.assertIn("function updateXRSceneFollow(xrCamera)", quest_source)
+                self.assertIn("status.running === true", quest_source)
+                self.assertIn("const scale = 0.4", quest_source)
                 self.assertNotIn("renderSensorLayers", quest_source)
                 self.assertNotIn("lidarGroup", quest_source)
                 self.assertNotIn("radarGroup", quest_source)
@@ -524,7 +527,9 @@ class BodyHostHttpTest(unittest.TestCase):
                 self.assertIn("drawSensorViews(perception)", dashboard_source)
                 self.assertIn("updateTelemetry(telemetry)", dashboard_source)
                 self.assertIn("async setCameraFrame(frame)", dashboard_source)
-                self.assertIn("PlaneGeometry(1.08, 0.608)", dashboard_source)
+                self.assertIn("PlaneGeometry(1.25, 0.703)", dashboard_source)
+                self.assertIn("cameraPanel.rotation.y = 0.55", dashboard_source)
+                self.assertIn("sensorPanel.rotation.y = -0.55", dashboard_source)
                 self.assertIn("CAMERA · WAITING", dashboard_source)
                 self.assertIn("renderer.clearDepth()", quest_source)
                 with urllib.request.urlopen(f"{base}/quest-vr.js", timeout=5) as response:
@@ -533,7 +538,7 @@ class BodyHostHttpTest(unittest.TestCase):
                 self.assertGreater(len(quest_bundle), 100_000)
                 self.assertIn("immersive-ar", quest_source)
                 self.assertIn("Point at a scene object", quest_html)
-                for removed in (b"START SIM", b"FOLLOW BODY", b"dashboardGroup"):
+                for removed in (b"START SIM", b"dashboardGroup"):
                     self.assertNotIn(removed, quest_bundle)
                 self.assertIn(b"BODY STATUS", quest_bundle)
 
