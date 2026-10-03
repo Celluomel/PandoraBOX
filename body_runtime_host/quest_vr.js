@@ -16,7 +16,17 @@ const scene = new THREE.Scene();
 const vrDashboard = new QuestVRDashboard(THREE);
 const cameraBackgroundTexture = new THREE.Texture();
 cameraBackgroundTexture.colorSpace = THREE.SRGBColorSpace;
+cameraBackgroundTexture.repeat.set(1, -1);
+cameraBackgroundTexture.offset.set(0, 1);
 let cameraBackgroundActive = false;
+let cameraArcAspect = null;
+const cameraArcRoot = new THREE.Group();
+scene.add(cameraArcRoot);
+const cameraArcMaterial = new THREE.MeshBasicMaterial({ map: cameraBackgroundTexture, side: THREE.DoubleSide, depthWrite: false });
+const cameraArc = new THREE.Mesh(new THREE.BufferGeometry(), cameraArcMaterial);
+cameraArc.visible = false;
+cameraArc.renderOrder = -1;
+cameraArcRoot.add(cameraArc);
 let cameraPollTimer = null;
 let cameraPollInFlight = false;
 let lastCameraFrameId = null;
@@ -187,6 +197,7 @@ async function pollCameraFrame() {
     const frame = result.camera || {};
     if (!result.available || !frame.image_base64) {
       lastCameraFrameId = null;
+      if (cameraBackgroundActive) toggleCameraBackground();
       vrDashboard.setCameraStatus(`CAMERA · ${String(result.status || 'NO FRAME').toUpperCase()}`);
       return;
     }
@@ -197,9 +208,11 @@ async function pollCameraFrame() {
       if (cameraBackgroundActive && vrDashboard.cameraBitmap) {
         cameraBackgroundTexture.image = vrDashboard.cameraBitmap;
         cameraBackgroundTexture.needsUpdate = true;
+        updateCameraArcGeometry(vrDashboard.cameraBitmap);
       }
     }
   } catch (error) {
+    if (cameraBackgroundActive) toggleCameraBackground();
     vrDashboard.setCameraStatus('CAMERA · STREAM ERROR');
     setStatus(`Camera preview unavailable: ${error.message}`, true);
   } finally {
@@ -423,6 +436,7 @@ async function exitVrFromHud() {
   }
   setStatus('Exiting VR…');
   try {
+    vrDashboard.persistPose(renderer.xr.getCamera(camera), true);
     await session.end();
   } catch (error) {
     setStatus(`Could not exit VR: ${error.message}`, true);
@@ -432,7 +446,7 @@ async function exitVrFromHud() {
 function toggleCameraBackground() {
   if (cameraBackgroundActive) {
     cameraBackgroundActive = false;
-    scene.background = null;
+    cameraArc.visible = false;
     vrDashboard.setCameraBackgroundActive(false);
     setStatus('Standard 3D VR view restored.');
     return;
@@ -443,10 +457,45 @@ function toggleCameraBackground() {
   }
   cameraBackgroundTexture.image = vrDashboard.cameraBitmap;
   cameraBackgroundTexture.needsUpdate = true;
-  scene.background = cameraBackgroundTexture;
+  updateCameraArcGeometry(vrDashboard.cameraBitmap);
+  cameraArc.visible = true;
   cameraBackgroundActive = true;
   vrDashboard.setCameraBackgroundActive(true);
-  setStatus('Live camera is behind the 3D scene. Virtual objects do not occlude real objects.');
+  setStatus('Live camera arc is 12 m behind the 3D scene. Virtual objects do not occlude real objects.');
+}
+
+function updateCameraArcGeometry(bitmap) {
+  const aspect = Math.max(0.5, Math.min(3, Number(bitmap?.width) / Math.max(1, Number(bitmap?.height)) || 16 / 9));
+  if (cameraArcAspect !== null && Math.abs(aspect - cameraArcAspect) < 0.01) return;
+  cameraArcAspect = aspect;
+  const radius = 12;
+  const halfAngle = Math.PI * 0.305;
+  const width = 2 * radius * Math.sin(halfAngle);
+  const height = width / aspect;
+  const segments = 72;
+  const positions = [];
+  const uvs = [];
+  const indices = [];
+  for (let row = 0; row < 2; row += 1) {
+    for (let column = 0; column <= segments; column += 1) {
+      const u = column / segments;
+      const angle = (u * 2 - 1) * halfAngle;
+      positions.push(radius * Math.sin(angle), (row === 0 ? -0.5 : 0.5) * height, -radius * Math.cos(angle));
+      uvs.push(u, row);
+    }
+  }
+  for (let column = 0; column < segments; column += 1) {
+    const bottom = column;
+    const top = column + segments + 1;
+    indices.push(bottom, bottom + 1, top, bottom + 1, top + 1, top);
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+  cameraArc.geometry.dispose();
+  cameraArc.geometry = geometry;
 }
 
 function escapeText(value) {
@@ -467,7 +516,7 @@ for (let index = 0; index < 2; index += 1) {
     }
   });
   controller.addEventListener('squeezeend', () => {
-    vrDashboard.endAdjust(grip);
+    vrDashboard.endAdjust(grip, renderer.xr.isPresenting ? renderer.xr.getCamera(camera) : null);
   });
   const beam = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, -4)]), new THREE.LineBasicMaterial({ color: '#b6f1d3' }));
   controller.add(beam);
@@ -502,8 +551,8 @@ async function enterXR(mode) {
       : 'VR is active. HUD is about 4 m ahead. Hold either controller grip anywhere to move it; stick up/down changes distance, left/right changes size.');
     session.addEventListener('end', () => {
       orbit.enabled = true;
-      scene.background = null;
       cameraBackgroundActive = false;
+      cameraArc.visible = false;
       vrDashboard.setCameraBackgroundActive(false);
       world.position.set(0, 0, 0);
       world.rotation.set(0, 0, 0);
@@ -511,7 +560,7 @@ async function enterXR(mode) {
       xrSceneFollowing = false;
       xrFollowYaw = null;
       vrDashboard.setFollowing(false);
-      vrDashboard.resetPose();
+      vrDashboard.leaveSession();
       stopCameraPolling();
       vrDashboard.setVisible(false);
       document.querySelector('#enter-xr').textContent = 'Enter VR';
@@ -567,6 +616,10 @@ renderer.setAnimationLoop(time => {
     const xrCamera = renderer.xr.getCamera(camera);
     updateXRSceneFollow(xrCamera);
     const headYaw = new THREE.Euler().setFromQuaternion(xrCamera.quaternion, 'YXZ').y;
+    if (cameraBackgroundActive) {
+      xrCamera.getWorldPosition(cameraArcRoot.position);
+      cameraArcRoot.rotation.set(0, headYaw, 0);
+    }
     const active = [...session.inputSources].filter(source => source.gamepad);
     const controllers = active.map(source => {
       const axes = source.gamepad.axes || [];
@@ -601,6 +654,7 @@ renderer.setAnimationLoop(time => {
     const xrCamera = renderer.xr.getCamera(camera);
     vrDashboard.updateAdjustment(deltaSeconds);
     vrDashboard.syncPose(xrCamera);
+    vrDashboard.persistPose(xrCamera);
     renderer.clearDepth();
     renderer.render(vrDashboard.scene, camera);
   }

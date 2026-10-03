@@ -8,6 +8,9 @@ export class QuestVRDashboard {
     this.visible = false;
     this.headLocked = true;
     this.userScale = 1;
+    this.headOffsetPosition = new THREE.Vector3();
+    this.headOffsetQuaternion = new THREE.Quaternion();
+    this.lastPosePersistAt = 0;
     this.grabbedController = null;
     this.grabInputSource = null;
     this.grabOffsetPosition = new THREE.Vector3();
@@ -33,6 +36,7 @@ export class QuestVRDashboard {
     canvas.height = 1152;
     this.canvas = canvas;
     this.context = canvas.getContext('2d');
+    this.loadSavedPose();
     this.texture = new THREE.CanvasTexture(canvas);
     this.texture.colorSpace = THREE.SRGBColorSpace;
     const geometry = this.createArcGeometry(8.4, 0.18, 64);
@@ -624,11 +628,12 @@ export class QuestVRDashboard {
     return true;
   }
 
-  endAdjust(controller) {
+  endAdjust(controller, xrCamera = null) {
     if (this.grabbedController !== controller) return false;
     this.grabbedController = null;
     this.grabInputSource = null;
     this.depthOffset = 0;
+    if (xrCamera) this.persistPose(xrCamera, true);
     this.drawDashboard();
     return true;
   }
@@ -662,13 +667,60 @@ export class QuestVRDashboard {
     this.headLocked = true;
     this.depthOffset = 0;
     this.userScale = 1;
+    this.headOffsetPosition.set(0, 0, 0);
+    this.headOffsetQuaternion.identity();
     this.root.scale.setScalar(1);
+    try { localStorage.removeItem('pandorabox.quest-hud-pose.v1'); } catch {}
     this.drawDashboard();
   }
 
   syncPose(xrCamera) {
-    if (!this.headLocked) return;
-    xrCamera.getWorldPosition(this.root.position);
-    xrCamera.getWorldQuaternion(this.root.quaternion);
+    if (this.grabbedController) return;
+    xrCamera.getWorldPosition(this.scratchPosition);
+    xrCamera.getWorldQuaternion(this.scratchQuaternion);
+    if (this.headLocked) {
+      this.root.position.copy(this.scratchPosition);
+      this.root.quaternion.copy(this.scratchQuaternion);
+      return;
+    }
+    this.root.position.copy(this.headOffsetPosition).applyQuaternion(this.scratchQuaternion).add(this.scratchPosition);
+    this.root.quaternion.copy(this.scratchQuaternion).multiply(this.headOffsetQuaternion);
+  }
+
+  loadSavedPose() {
+    try {
+      const saved = JSON.parse(localStorage.getItem('pandorabox.quest-hud-pose.v1') || 'null');
+      if (!Array.isArray(saved?.position) || saved.position.length !== 3 || !Array.isArray(saved?.quaternion) || saved.quaternion.length !== 4) return;
+      const values = [...saved.position, ...saved.quaternion, saved.scale].map(Number);
+      if (!values.every(Number.isFinite) || values.slice(0, 3).some(value => Math.abs(value) > 20)) return;
+      this.headOffsetPosition.fromArray(saved.position);
+      this.headOffsetQuaternion.fromArray(saved.quaternion).normalize();
+      this.userScale = Math.max(0.45, Math.min(2.5, Number(saved.scale)));
+      this.root.scale.setScalar(this.userScale);
+      this.headLocked = false;
+    } catch {}
+  }
+
+  persistPose(xrCamera, force = false) {
+    if (!xrCamera || this.headLocked || (!force && performance.now() - this.lastPosePersistAt < 750)) return;
+    xrCamera.getWorldPosition(this.scratchPosition);
+    xrCamera.getWorldQuaternion(this.scratchQuaternion);
+    const inverseHead = this.scratchQuaternion.clone().invert();
+    this.headOffsetPosition.copy(this.root.position).sub(this.scratchPosition).applyQuaternion(inverseHead);
+    this.headOffsetQuaternion.copy(inverseHead).multiply(this.root.quaternion).normalize();
+    const pose = {
+      position: this.headOffsetPosition.toArray(),
+      quaternion: this.headOffsetQuaternion.toArray(),
+      scale: this.userScale,
+    };
+    try {
+      localStorage.setItem('pandorabox.quest-hud-pose.v1', JSON.stringify(pose));
+      this.lastPosePersistAt = performance.now();
+    } catch {}
+  }
+
+  leaveSession() {
+    this.grabbedController = null;
+    this.grabInputSource = null;
   }
 }
