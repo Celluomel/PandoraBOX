@@ -341,6 +341,7 @@ function selectAt(controller) {
   const ray = new THREE.Matrix4().extractRotation(controller.matrixWorld);
   raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
   raycaster.ray.direction.set(0, 0, -1).applyMatrix4(ray);
+  if (vrDashboard.visible && vrDashboard.isControllerOverDashboard(controller, raycaster)) return;
   scene.updateMatrixWorld(true);
   const hits = raycaster.intersectObjects(selectable, false);
   if (!hits.length) return;
@@ -370,6 +371,10 @@ function escapeText(value) {
 for (let index = 0; index < 2; index += 1) {
   const controller = renderer.xr.getController(index);
   controller.addEventListener('select', () => selectAt(controller));
+  controller.addEventListener('squeezestart', event => {
+    vrDashboard.beginAdjust(controller, raycaster, event.data);
+  });
+  controller.addEventListener('squeezeend', () => vrDashboard.endAdjust(controller));
   const beam = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, -4)]), new THREE.LineBasicMaterial({ color: '#b6f1d3' }));
   controller.add(beam);
   scene.add(controller);
@@ -399,7 +404,7 @@ async function enterXR(mode) {
     document.querySelector('#enter-ar').textContent = mode === 'immersive-ar' ? 'Exit passthrough' : 'Passthrough AR';
     setStatus(mode === 'immersive-ar'
       ? 'Passthrough is active. The Body map is an unaligned overlay; controller input is telemetry only.'
-      : 'VR is active. Controller input is telemetry only.');
+      : 'VR is active. Point at the dashboard and hold grip to move it; use the thumbstick vertically to resize.');
     session.addEventListener('end', () => {
       orbit.enabled = true;
       scene.background = null;
@@ -409,6 +414,7 @@ async function enterXR(mode) {
       xrSceneFollowing = false;
       xrFollowYaw = null;
       vrDashboard.setFollowing(false);
+      vrDashboard.resetPose();
       stopCameraPolling();
       vrDashboard.setVisible(false);
       document.querySelector('#enter-xr').textContent = 'Enter VR';
@@ -440,6 +446,7 @@ document.querySelector('#recenter').addEventListener('click', () => {
   orbit.target.set(mapCenter.x, 0, mapCenter.z);
   orbit.update();
   renderer.xr.getReferenceSpace()?.reset?.();
+  vrDashboard.resetPose();
 });
 
 window.addEventListener('resize', () => {
@@ -452,7 +459,10 @@ window.addEventListener('resize', () => {
 
 setInterval(pollBody, 1200);
 void pollBody();
-renderer.setAnimationLoop(() => {
+let previousFrameAt = 0;
+renderer.setAnimationLoop(time => {
+  const deltaSeconds = previousFrameAt ? (time - previousFrameAt) / 1000 : 1 / 90;
+  previousFrameAt = time;
   if (!renderer.xr.isPresenting) orbit.update();
   const session = renderer.xr.getSession();
   renderer.clear();
@@ -482,6 +492,7 @@ renderer.setAnimationLoop(() => {
   renderer.render(scene, camera);
   if (session && vrDashboard.visible) {
     const xrCamera = renderer.xr.getCamera(camera);
+    vrDashboard.updateAdjustment(deltaSeconds);
     vrDashboard.syncPose(xrCamera);
     renderer.clearDepth();
     renderer.render(vrDashboard.scene, camera);

@@ -3,7 +3,17 @@ export class QuestVRDashboard {
     this.scene = new THREE.Scene();
     this.root = new THREE.Group();
     this.scene.add(this.root);
+    this.panels = [];
     this.visible = false;
+    this.headLocked = true;
+    this.userScale = 1;
+    this.grabbedController = null;
+    this.grabInputSource = null;
+    this.grabOffsetPosition = new THREE.Vector3();
+    this.grabOffsetQuaternion = new THREE.Quaternion();
+    this.scratchPosition = new THREE.Vector3();
+    this.scratchQuaternion = new THREE.Quaternion();
+    this.scratchOffset = new THREE.Vector3();
 
     const canvas = document.createElement('canvas');
     canvas.width = 1024;
@@ -18,6 +28,7 @@ export class QuestVRDashboard {
     panel.position.set(0, 0.82, -2.25);
     panel.renderOrder = 1000;
     this.root.add(panel);
+    this.panels.push(panel);
 
     const cameraCanvas = document.createElement('canvas');
     cameraCanvas.width = 640;
@@ -33,6 +44,7 @@ export class QuestVRDashboard {
     cameraPanel.rotation.y = 0.55;
     cameraPanel.renderOrder = 1000;
     this.root.add(cameraPanel);
+    this.panels.push(cameraPanel);
     this.drawCameraMessage('CAMERA · WAITING');
 
     const sensorCanvas = document.createElement('canvas');
@@ -49,6 +61,7 @@ export class QuestVRDashboard {
     sensorPanel.rotation.y = -0.55;
     sensorPanel.renderOrder = 1000;
     this.root.add(sensorPanel);
+    this.panels.push(sensorPanel);
     this.frame = null;
     this.telemetry = null;
     this.following = false;
@@ -113,6 +126,9 @@ export class QuestVRDashboard {
         : `${hand === 'left' ? 'L' : 'R'} ctrl  not detected`;
       ctx.fillText(row, 52, 405 + index * 50);
     }
+    ctx.fillStyle = '#74a989';
+    ctx.font = '20px system-ui';
+    ctx.fillText('POINT + HOLD GRIP · MOVE  |  STICK ↑↓ · SCALE', 52, 493);
     this.texture.needsUpdate = true;
   }
 
@@ -259,7 +275,60 @@ export class QuestVRDashboard {
     this.visible = Boolean(visible);
   }
 
+  isControllerOverDashboard(controller, raycaster) {
+    controller.updateMatrixWorld(true);
+    const rotation = new THREE.Matrix4().extractRotation(controller.matrixWorld);
+    raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
+    raycaster.ray.direction.set(0, 0, -1).applyMatrix4(rotation);
+    this.scene.updateMatrixWorld(true);
+    return raycaster.intersectObjects(this.panels, false).length > 0;
+  }
+
+  beginAdjust(controller, raycaster, inputSource) {
+    if (!this.isControllerOverDashboard(controller, raycaster)) return false;
+    controller.getWorldPosition(this.scratchPosition);
+    controller.getWorldQuaternion(this.scratchQuaternion);
+    this.grabOffsetPosition.copy(this.root.position).sub(this.scratchPosition)
+      .applyQuaternion(this.scratchQuaternion.clone().invert());
+    this.grabOffsetQuaternion.copy(this.scratchQuaternion).invert().multiply(this.root.quaternion);
+    this.grabbedController = controller;
+    this.grabInputSource = inputSource || null;
+    this.headLocked = false;
+    return true;
+  }
+
+  endAdjust(controller) {
+    if (this.grabbedController !== controller) return;
+    this.grabbedController = null;
+    this.grabInputSource = null;
+  }
+
+  updateAdjustment(deltaSeconds = 1 / 90) {
+    if (!this.grabbedController) return;
+    this.grabbedController.getWorldPosition(this.scratchPosition);
+    this.grabbedController.getWorldQuaternion(this.scratchQuaternion);
+    this.scratchOffset.copy(this.grabOffsetPosition).applyQuaternion(this.scratchQuaternion);
+    this.root.position.copy(this.scratchPosition).add(this.scratchOffset);
+    this.root.quaternion.copy(this.scratchQuaternion).multiply(this.grabOffsetQuaternion);
+    const axes = this.grabInputSource?.gamepad?.axes || [];
+    const scaleAxis = Number(axes[3] ?? axes[1] ?? 0);
+    if (Math.abs(scaleAxis) > 0.12) {
+      const elapsed = Math.max(0, Math.min(0.05, Number(deltaSeconds) || 0));
+      this.userScale = Math.max(0.65, Math.min(1.8, this.userScale * Math.exp(-scaleAxis * elapsed * 0.8)));
+      this.root.scale.setScalar(this.userScale);
+    }
+  }
+
+  resetPose() {
+    this.grabbedController = null;
+    this.grabInputSource = null;
+    this.headLocked = true;
+    this.userScale = 1;
+    this.root.scale.setScalar(1);
+  }
+
   syncPose(xrCamera) {
+    if (!this.headLocked) return;
     xrCamera.getWorldPosition(this.root.position);
     xrCamera.getWorldQuaternion(this.root.quaternion);
   }
