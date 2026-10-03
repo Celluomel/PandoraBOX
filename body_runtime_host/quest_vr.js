@@ -22,10 +22,10 @@ let cameraBackgroundActive = false;
 let cameraArcAspect = null;
 let cameraArcWorldScale = null;
 const cameraArcRoot = new THREE.Group();
-const cameraArcMaterial = new THREE.MeshBasicMaterial({ map: cameraBackgroundTexture, side: THREE.DoubleSide, depthWrite: false });
+const cameraArcMaterial = new THREE.MeshBasicMaterial({ map: cameraBackgroundTexture, side: THREE.DoubleSide, depthTest: false, depthWrite: false });
 const cameraArc = new THREE.Mesh(new THREE.BufferGeometry(), cameraArcMaterial);
 cameraArc.visible = false;
-cameraArc.renderOrder = -1;
+cameraArc.renderOrder = -1000;
 cameraArcRoot.add(cameraArc);
 let cameraPollTimer = null;
 let cameraPollInFlight = false;
@@ -34,6 +34,8 @@ let lastDashboardTelemetryAt = 0;
 let lastFnkTelemetryAt = 0;
 let xrFollowYaw = null;
 let xrSceneFollowing = false;
+const xrSceneOffset = new THREE.Vector3();
+let xrSceneYawOffset = 0;
 scene.background = null;
 const camera = new THREE.PerspectiveCamera(58, window.innerWidth / window.innerHeight, 0.05, 100);
 camera.position.set(6, 9, 7);
@@ -156,12 +158,12 @@ function updateXRSceneFollow(xrCamera) {
   const position = status.perception?.body?.position;
   if (!simulationRunning || !Array.isArray(position) || !basePosition) {
     if (xrSceneFollowing) {
-      world.position.set(0, 0, 0);
-      world.rotation.set(0, 0, 0);
-      world.scale.set(1, 1, 1);
       xrSceneFollowing = false;
       vrDashboard.setFollowing(false);
     }
+    world.position.copy(xrSceneOffset);
+    world.rotation.set(0, xrSceneYawOffset, 0);
+    world.scale.set(1, 1, 1);
     xrFollowYaw = null;
     return;
   }
@@ -178,14 +180,46 @@ function updateXRSceneFollow(xrCamera) {
   xrFollowForward.set(-Math.sin(xrFollowYaw), 0, -Math.cos(xrFollowYaw));
   xrFollowTarget.copy(xrFollowHeadPosition).addScaledVector(xrFollowForward, 5.5);
   xrFollowTarget.y -= 1.35;
+  xrFollowTarget.add(xrSceneOffset);
   xrFollowBodyOffset.set(
     Number(position[0] || 0) - basePosition[0],
     0,
     -(Number(position[1] || 0) - basePosition[1]),
-  ).applyAxisAngle(xrFollowYawAxis, xrFollowYaw).multiplyScalar(scale);
-  world.rotation.set(0, xrFollowYaw, 0);
+  ).applyAxisAngle(xrFollowYawAxis, xrFollowYaw + xrSceneYawOffset).multiplyScalar(scale);
+  world.rotation.set(0, xrFollowYaw + xrSceneYawOffset, 0);
   world.scale.setScalar(scale);
   world.position.copy(xrFollowTarget).sub(xrFollowBodyOffset);
+}
+
+function readThumbstick(gamepad) {
+  const axes = gamepad?.axes || [];
+  const primary = [Number(axes[0]) || 0, Number(axes[1]) || 0];
+  const secondary = [Number(axes[2]) || 0, Number(axes[3]) || 0];
+  return Math.hypot(...secondary) > Math.hypot(...primary) ? secondary : primary;
+}
+
+function applyDeadzone(value, deadzone = 0.16) {
+  const magnitude = Math.abs(value);
+  if (magnitude <= deadzone) return 0;
+  return Math.sign(value) * Math.min(1, (magnitude - deadzone) / (1 - deadzone));
+}
+
+function updateXRLocomotion(inputSources, xrCamera, deltaSeconds) {
+  if (vrDashboard.grabbedController) return;
+  const elapsed = Math.max(0, Math.min(0.05, Number(deltaSeconds) || 0));
+  if (!elapsed) return;
+  const sources = [...inputSources].filter(source => source.gamepad);
+  const left = sources.find(source => source.handedness === 'left');
+  const right = sources.find(source => source.handedness === 'right');
+  const fallback = sources[0];
+  const moveStick = readThumbstick((left || fallback)?.gamepad);
+  const turnStick = right ? readThumbstick(right.gamepad) : [0, 0];
+  const moveX = applyDeadzone(moveStick[0]);
+  const moveForward = -applyDeadzone(moveStick[1]);
+  const headYaw = new THREE.Euler().setFromQuaternion(xrCamera.quaternion, 'YXZ').y;
+  const move = new THREE.Vector3(moveX, 0, -moveForward).applyAxisAngle(xrFollowYawAxis, headYaw);
+  xrSceneOffset.addScaledVector(move, -2.4 * elapsed);
+  xrSceneYawOffset -= applyDeadzone(turnStick[0]) * 1.35 * elapsed;
 }
 
 async function pollCameraFrame() {
@@ -197,9 +231,7 @@ async function pollCameraFrame() {
     const result = await response.json();
     const frame = result.camera || {};
     if (!result.available || !frame.image_base64) {
-      lastCameraFrameId = null;
-      if (cameraBackgroundActive) toggleCameraBackground();
-      vrDashboard.setCameraStatus(`CAMERA · ${String(result.status || 'NO FRAME').toUpperCase()}`);
+      vrDashboard.setCameraStatus(`CAMERA · ${String(result.status || 'NO FRAME').toUpperCase()}`, true);
       return;
     }
     const frameId = frame.frame_id || frame.captured_at || frame.timestamp;
@@ -213,8 +245,7 @@ async function pollCameraFrame() {
       }
     }
   } catch (error) {
-    if (cameraBackgroundActive) toggleCameraBackground();
-    vrDashboard.setCameraStatus('CAMERA · STREAM ERROR');
+    vrDashboard.setCameraStatus('CAMERA · RECONNECTING', true);
     setStatus(`Camera preview unavailable: ${error.message}`, true);
   } finally {
     cameraPollInFlight = false;
@@ -421,7 +452,7 @@ async function toggleSimulationFromHud() {
     }
     await pollBody();
     const nowRunning = latestWorldStatus?.running === true;
-    setStatus(nowRunning ? 'World Model simulation running.' : 'World Model simulation paused.');
+    setStatus(nowRunning ? 'World Model simulation running · left stick moves through the scene, right stick turns.' : 'World Model simulation paused · left stick moves through the scene, right stick turns.');
   } catch (error) {
     setStatus(`Simulation control failed: ${error.message}`, true);
   } finally {
@@ -568,7 +599,7 @@ async function enterXR(mode) {
     document.querySelector('#enter-ar').textContent = mode === 'immersive-ar' ? 'Exit passthrough' : 'Passthrough AR';
     setStatus(mode === 'immersive-ar'
       ? 'Passthrough is active. The Body map is an unaligned overlay; controller input is telemetry only.'
-      : 'VR is active. HUD is about 4 m ahead. Hold either controller grip anywhere to move it; stick up/down changes distance, left/right changes size.');
+      : 'VR is active. Left stick moves through the scene; right stick turns. Hold either controller grip to reposition the HUD.');
     session.addEventListener('end', () => {
       orbit.enabled = true;
       cameraBackgroundActive = false;
@@ -579,6 +610,8 @@ async function enterXR(mode) {
       world.scale.set(1, 1, 1);
       xrSceneFollowing = false;
       xrFollowYaw = null;
+      xrSceneOffset.set(0, 0, 0);
+      xrSceneYawOffset = 0;
       vrDashboard.setFollowing(false);
       vrDashboard.leaveSession();
       stopCameraPolling();
@@ -637,6 +670,7 @@ renderer.setAnimationLoop(time => {
     updateXRSceneFollow(xrCamera);
     const headYaw = new THREE.Euler().setFromQuaternion(xrCamera.quaternion, 'YXZ').y;
     const active = [...session.inputSources].filter(source => source.gamepad);
+    updateXRLocomotion(active, xrCamera, deltaSeconds);
     const controllers = active.map(source => {
       const axes = source.gamepad.axes || [];
       const primaryMagnitude = Math.hypot(Number(axes[0]) || 0, Number(axes[1]) || 0);

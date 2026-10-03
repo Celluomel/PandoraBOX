@@ -249,7 +249,7 @@ export class QuestVRDashboard {
     this.cameraHitArea = { x: imageX, y: imageY, width: imageWidth, height: imageHeight };
     ctx.fillStyle = '#0b1512';
     ctx.beginPath(); ctx.roundRect(imageX, imageY, imageWidth, imageHeight, 20); ctx.fill();
-    if (this.cameraBitmap) {
+    if (this.cameraBitmap && !this.cameraBackgroundActive) {
       const scale = Math.max(imageWidth / this.cameraBitmap.width, imageHeight / this.cameraBitmap.height);
       const drawWidth = this.cameraBitmap.width * scale;
       const drawHeight = this.cameraBitmap.height * scale;
@@ -262,6 +262,14 @@ export class QuestVRDashboard {
       ctx.fillStyle = '#d9f5e4'; ctx.font = '600 15px ui-monospace, monospace';
       ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
       ctx.fillText(this.cameraBackgroundActive ? 'TRIGGER · RESTORE 3D VIEW' : 'TRIGGER · USE AS 3D BACKGROUND', imageX + 28, imageY + imageHeight - 31);
+    } else if (this.cameraBackgroundActive) {
+      ctx.fillStyle = 'rgba(4, 13, 11, .72)';
+      ctx.beginPath(); ctx.roundRect(imageX + 16, imageY + 16, imageWidth - 32, imageHeight - 32, 18); ctx.fill();
+      ctx.fillStyle = '#d9f5e4'; ctx.font = '700 24px ui-monospace, monospace';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText('CAMERA · SCENE BACKGROUND', imageX + imageWidth / 2, imageY + imageHeight / 2 - 14);
+      ctx.fillStyle = '#a9c3b2'; ctx.font = '17px ui-monospace, monospace';
+      ctx.fillText('TRIGGER TO RESTORE 3D VIEW', imageX + imageWidth / 2, imageY + imageHeight / 2 + 24);
     } else {
       ctx.fillStyle = '#bbd6c5';
       ctx.font = '600 22px ui-monospace, monospace';
@@ -566,9 +574,11 @@ export class QuestVRDashboard {
     }
   }
 
-  setCameraStatus(message) {
-    this.cameraBitmap?.close?.();
-    this.cameraBitmap = null;
+  setCameraStatus(message, preserveFrame = false) {
+    if (!preserveFrame) {
+      this.cameraBitmap?.close?.();
+      this.cameraBitmap = null;
+    }
     this.cameraMessage = message;
     this.drawDashboard();
   }
