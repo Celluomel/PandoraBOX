@@ -13,10 +13,10 @@ renderer.xr.enabled = true;
 const scene = new THREE.Scene();
 scene.background = null;
 const camera = new THREE.PerspectiveCamera(58, window.innerWidth / window.innerHeight, 0.05, 100);
-camera.position.set(0, 7.2, 10.5);
-camera.lookAt(0, 0, -4);
+camera.position.set(6, 9, 7);
+camera.lookAt(5, 0, -6);
 const orbit = new OrbitControls(camera, renderer.domElement);
-orbit.target.set(0, 0, -4);
+orbit.target.set(5, 0, -6);
 orbit.enableDamping = true;
 orbit.maxPolarAngle = Math.PI * 0.48;
 orbit.minDistance = 3;
@@ -28,16 +28,17 @@ keyLight.position.set(-5, 10, 3);
 scene.add(keyLight);
 
 const world = new THREE.Group();
-world.position.set(0, 0, -4);
+world.position.set(0, 0, 0);
 scene.add(world);
 const floor = new THREE.Mesh(
-  new THREE.PlaneGeometry(16, 16),
+  new THREE.PlaneGeometry(14, 14),
   new THREE.MeshStandardMaterial({ color: '#14241b', roughness: 0.94, metalness: 0.02, side: THREE.DoubleSide, transparent: true, opacity: 0.2 }),
 );
 floor.rotation.x = -Math.PI / 2;
 floor.position.y = -0.035;
 world.add(floor);
-world.add(new THREE.GridHelper(16, 32, '#4e8d69', '#294c3a'));
+let sceneGrid = new THREE.GridHelper(14, 28, '#4e8d69', '#294c3a');
+world.add(sceneGrid);
 
 const roomLine = new THREE.LineSegments(
   new THREE.EdgesGeometry(new THREE.BoxGeometry(16, 0.08, 16)),
@@ -59,6 +60,7 @@ selectionMarker.position.y = 0.025;
 selectionMarker.visible = false;
 world.add(selectionMarker);
 let selectedLabel = null;
+let mapFrameKey = '';
 const raycaster = new THREE.Raycaster();
 const selectable = [];
 const controllerRays = [];
@@ -71,6 +73,7 @@ let latestWorldStatus = null;
 let showLidar = true;
 let showRadar = true;
 let followBody = false;
+let mapCenter = { x: 5, z: -6 };
 const dashboardGroup = new THREE.Group();
 const dashboardButtons = [];
 const dashboardTextures = new Map();
@@ -287,7 +290,7 @@ async function sendJSON(path, payload) {
 
 function applySceneView() {
   if (!followBody || !lastFrame?.perception) {
-    world.position.set(0, 0, -4);
+    world.position.set(0, 0, 0);
     world.rotation.y = 0;
     orbit.enabled = !renderer.xr.isPresenting;
     return;
@@ -303,6 +306,51 @@ function applySceneView() {
   world.rotation.y = rotation;
   world.position.set(-rx, 0, -1.65 - rz);
   orbit.enabled = !renderer.xr.isPresenting;
+}
+
+function configureSceneFrame(frame, bodyPosition) {
+  const source = frame.source || {};
+  const reportedWidth = Number(source.width);
+  const reportedHeight = Number(source.height);
+  const objects = frame.perception?.objects || [];
+  const xs = [Number(bodyPosition[0]) || 0, ...objects.map(item => Number(item.position?.[0])).filter(Number.isFinite)];
+  const ys = [Number(bodyPosition[1]) || 0, ...objects.map(item => Number(item.position?.[1])).filter(Number.isFinite)];
+  const minX = Math.min(...xs);
+  const maxX = Math.max(...xs);
+  const minY = Math.min(...ys);
+  const maxY = Math.max(...ys);
+  const width = Number.isFinite(reportedWidth) && reportedWidth > 0 ? reportedWidth : Math.max(8, maxX - minX + 2);
+  const height = Number.isFinite(reportedHeight) && reportedHeight > 0 ? reportedHeight : Math.max(8, maxY - minY + 2);
+  const explicitOrigin = Number.isFinite(reportedWidth) && Number.isFinite(reportedHeight);
+  const centerX = (explicitOrigin ? width / 2 : (minX + maxX) / 2) - basePosition[0];
+  const centerY = (explicitOrigin ? height / 2 : (minY + maxY) / 2) - basePosition[1];
+  const key = [width, height, centerX, centerY].join(':');
+  if (key === mapFrameKey) return;
+  mapFrameKey = key;
+
+  const planeWidth = width + 2;
+  const planeHeight = height + 2;
+  floor.geometry.dispose();
+  floor.geometry = new THREE.PlaneGeometry(planeWidth, planeHeight);
+  floor.position.set(centerX, -0.035, -centerY);
+  world.remove(sceneGrid);
+  sceneGrid.geometry.dispose();
+  sceneGrid.material.dispose();
+  const gridSize = Math.max(planeWidth, planeHeight);
+  sceneGrid = new THREE.GridHelper(gridSize, Math.ceil(gridSize * 2), '#4e8d69', '#294c3a');
+  sceneGrid.position.set(centerX, 0, -centerY);
+  world.add(sceneGrid);
+  roomLine.geometry.dispose();
+  roomLine.geometry = new THREE.EdgesGeometry(new THREE.BoxGeometry(width, 0.08, height));
+  roomLine.position.set(centerX, 0.01, -centerY);
+
+  const targetZ = -centerY;
+  mapCenter = { x: centerX, z: targetZ };
+  const distance = Math.max(width, height) * 1.3;
+  orbit.target.set(centerX, 0, targetZ);
+  camera.position.set(centerX, distance * 0.62, targetZ + distance);
+  camera.lookAt(centerX, 0, targetZ);
+  orbit.update();
 }
 
 function renderSensorLayers(perception) {
@@ -433,6 +481,7 @@ function rebuildScene(frame) {
   const body = perception.body || {};
   const position = Array.isArray(body.position) ? body.position : [0, 0, 0];
   if (!basePosition) basePosition = [Number(position[0]) || 0, Number(position[1]) || 0, Number(position[2]) || 0];
+  configureSceneFrame(frame, position);
   const bodyX = (Number(position[0]) || 0) - basePosition[0];
   const bodyZ = -((Number(position[1]) || 0) - basePosition[1]);
   const bodyMarker = new THREE.Group();
@@ -606,8 +655,9 @@ document.querySelector('#enter-xr').addEventListener('click', () => enterXR('imm
 document.querySelector('#enter-ar').addEventListener('click', () => enterXR('immersive-ar'));
 
 document.querySelector('#recenter').addEventListener('click', () => {
-  camera.position.set(0, 7.2, 10.5);
-  orbit.target.set(0, 0, -4);
+  const distance = Math.max(12, Number(latestWorldStatus?.source?.width) || 12, Number(latestWorldStatus?.source?.height) || 12) * 1.3;
+  camera.position.set(mapCenter.x, distance * 0.62, mapCenter.z + distance);
+  orbit.target.set(mapCenter.x, 0, mapCenter.z);
   orbit.update();
   renderer.xr.getReferenceSpace()?.reset?.();
 });

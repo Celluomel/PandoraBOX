@@ -512,6 +512,8 @@ class BodyHostHttpTest(unittest.TestCase):
                 self.assertIn("scene.add(dashboardGroup)", quest_source)
                 self.assertIn("syncXRDashboardPose()", quest_source)
                 self.assertIn("mode === 'immersive-vr' ? new THREE.Color", quest_source)
+                self.assertIn("configureSceneFrame(frame, position)", quest_source)
+                self.assertIn("floor.position.set(centerX, -0.035, -centerY)", quest_source)
                 with urllib.request.urlopen(f"{base}/quest-vr.js", timeout=5) as response:
                     quest_bundle = response.read()
                     self.assertEqual(response.headers.get_content_type(), "text/javascript")
