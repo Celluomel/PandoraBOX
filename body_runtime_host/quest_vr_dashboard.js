@@ -273,9 +273,16 @@ export class QuestVRDashboard {
     this.panel(ctx, x, y, width, height, 'Egocentric · spatial sensors', 'TOP VIEW · METRIC');
     const lidar = perception.sensor_projections?.lidar?.points || [];
     const radar = perception.modalities?.mmwave_radar?.targets || [];
-    const split = Math.floor((height - 86) / 2);
-    this.drawMetricMap(ctx, x + 20, y + 74, width - 40, split, lidar, radar, perception, 'LiDAR POINT CLOUD', 'lidar');
-    this.drawMetricMap(ctx, x + 20, y + 82 + split, width - 40, height - split - 104, lidar, radar, perception, 'mmWAVE TARGETS', 'radar');
+    const inset = 20;
+    const gap = 14;
+    const mapWidth = (width - inset * 2 - gap) / 2;
+    const mapHeight = height - 86;
+    const mapY = y + 74;
+    const dividerX = x + inset + mapWidth + gap / 2;
+    ctx.strokeStyle = 'rgba(135, 206, 166, .22)';
+    ctx.beginPath(); ctx.moveTo(dividerX, mapY + 8); ctx.lineTo(dividerX, y + height - 24); ctx.stroke();
+    this.drawMetricMap(ctx, x + inset, mapY, mapWidth, mapHeight, lidar, radar, perception, 'LiDAR POINT CLOUD', 'lidar');
+    this.drawMetricMap(ctx, x + inset + mapWidth + gap, mapY, mapWidth, mapHeight, lidar, radar, perception, 'mmWAVE TARGETS', 'radar');
   }
 
   drawMetricMap(ctx, x, y, width, height, lidar, radar, perception, title, mode) {
