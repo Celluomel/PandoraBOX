@@ -20,8 +20,8 @@ cameraBackgroundTexture.repeat.set(1, -1);
 cameraBackgroundTexture.offset.set(0, 1);
 let cameraBackgroundActive = false;
 let cameraArcAspect = null;
+let cameraArcWorldScale = null;
 const cameraArcRoot = new THREE.Group();
-scene.add(cameraArcRoot);
 const cameraArcMaterial = new THREE.MeshBasicMaterial({ map: cameraBackgroundTexture, side: THREE.DoubleSide, depthWrite: false });
 const cameraArc = new THREE.Mesh(new THREE.BufferGeometry(), cameraArcMaterial);
 cameraArc.visible = false;
@@ -53,6 +53,7 @@ scene.add(keyLight);
 const world = new THREE.Group();
 world.position.set(0, 0, 0);
 scene.add(world);
+world.add(cameraArcRoot);
 const floor = new THREE.Mesh(
   new THREE.PlaneGeometry(14, 14),
   new THREE.MeshStandardMaterial({ color: '#14241b', roughness: 0.94, metalness: 0.02, side: THREE.DoubleSide, transparent: true, opacity: 0.2 }),
@@ -461,14 +462,16 @@ function toggleCameraBackground() {
   cameraArc.visible = true;
   cameraBackgroundActive = true;
   vrDashboard.setCameraBackgroundActive(true);
-  setStatus('Live camera arc is 12 m behind the 3D scene. Virtual objects do not occlude real objects.');
+  setStatus('Live camera arc is anchored to the Body in the planar scene, 12 m out. Turn your head to look around it.');
 }
 
 function updateCameraArcGeometry(bitmap) {
   const aspect = Math.max(0.5, Math.min(3, Number(bitmap?.width) / Math.max(1, Number(bitmap?.height)) || 16 / 9));
-  if (cameraArcAspect !== null && Math.abs(aspect - cameraArcAspect) < 0.01) return;
+  const worldScale = Math.max(0.01, Math.abs(Number(world.scale.x) || 1));
+  if (cameraArcAspect !== null && Math.abs(aspect - cameraArcAspect) < 0.01 && Math.abs(worldScale - cameraArcWorldScale) < 0.005) return;
   cameraArcAspect = aspect;
-  const radius = 12;
+  cameraArcWorldScale = worldScale;
+  const radius = 12 / worldScale;
   const halfAngle = Math.PI * 0.305;
   const width = 2 * radius * Math.sin(halfAngle);
   const height = width / aspect;
@@ -617,8 +620,17 @@ renderer.setAnimationLoop(time => {
     updateXRSceneFollow(xrCamera);
     const headYaw = new THREE.Euler().setFromQuaternion(xrCamera.quaternion, 'YXZ').y;
     if (cameraBackgroundActive) {
-      xrCamera.getWorldPosition(cameraArcRoot.position);
-      cameraArcRoot.rotation.set(0, headYaw, 0);
+      const bodyPose = latestWorldStatus?.perception?.body;
+      const position = bodyPose?.position;
+      if (Array.isArray(position) && basePosition) {
+        cameraArcRoot.position.set(
+          (Number(position[0]) || 0) - basePosition[0],
+          0.75,
+          -((Number(position[1]) || 0) - basePosition[1]),
+        );
+        cameraArcRoot.rotation.set(0, -Math.PI / 2 - (Number(bodyPose.orientation) || 0), 0);
+        updateCameraArcGeometry(vrDashboard.cameraBitmap);
+      }
     }
     const active = [...session.inputSources].filter(source => source.gamepad);
     const controllers = active.map(source => {
