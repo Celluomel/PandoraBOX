@@ -70,10 +70,13 @@ let latestObjects = [];
 let latestWorldStatus = null;
 let showLidar = true;
 let showRadar = true;
-let egocentricView = false;
+let followBody = false;
 const dashboardGroup = new THREE.Group();
 const dashboardButtons = [];
 const dashboardTextures = new Map();
+let cameraPollTimer = null;
+let cameraPollInFlight = false;
+let cameraFrameKey = null;
 dashboardGroup.visible = false;
 camera.add(dashboardGroup);
 
@@ -126,7 +129,7 @@ function dashboardBanner(text) {
     const texture = new THREE.CanvasTexture(canvas);
     texture.colorSpace = THREE.SRGBColorSpace;
     const mesh = new THREE.Mesh(new THREE.PlaneGeometry(1.55, 0.17), new THREE.MeshBasicMaterial({ map: texture, transparent: true, depthTest: false }));
-    mesh.position.set(0, 0.94, -1.65);
+    mesh.position.set(0, 1.99, -1.65);
     mesh.renderOrder = 20;
     dashboardGroup.add(mesh);
     entry = { canvas, texture, mesh };
@@ -147,6 +150,93 @@ function dashboardBanner(text) {
   entry.texture.needsUpdate = true;
 }
 
+function drawCameraPreview(frame) {
+  let entry = dashboardTextures.get('camera-preview');
+  if (!entry) {
+    const canvas = document.createElement('canvas');
+    canvas.width = 640;
+    canvas.height = 360;
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    const material = new THREE.MeshBasicMaterial({ map: texture, transparent: true, depthTest: false, side: THREE.DoubleSide });
+    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(1.34, 0.75), material);
+    mesh.position.set(0, 1.38, -1.65);
+    mesh.renderOrder = 19;
+    dashboardGroup.add(mesh);
+    entry = { canvas, texture, mesh };
+    dashboardTextures.set('camera-preview', entry);
+  }
+  const ctx = entry.canvas.getContext('2d');
+  ctx.fillStyle = '#07130f';
+  ctx.fillRect(0, 0, entry.canvas.width, entry.canvas.height);
+  if (!frame) {
+    ctx.fillStyle = '#dff7e8';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = '600 26px system-ui';
+    ctx.fillText('NO CAMERA FRAME · START CAMERA IN BODY VLM', 320, 180);
+    entry.texture.needsUpdate = true;
+    return;
+  }
+  const image = new Image();
+  image.onload = () => {
+    const scale = Math.min(entry.canvas.width / image.width, entry.canvas.height / image.height);
+    const width = image.width * scale;
+    const height = image.height * scale;
+    ctx.fillStyle = '#07130f';
+    ctx.fillRect(0, 0, entry.canvas.width, entry.canvas.height);
+    ctx.drawImage(image, (entry.canvas.width - width) / 2, (entry.canvas.height - height) / 2, width, height);
+    ctx.fillStyle = '#06100edb';
+    ctx.fillRect(0, 0, entry.canvas.width, 42);
+    ctx.fillStyle = '#e5f5eb';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.font = '600 22px system-ui';
+    ctx.fillText(`BODY CAMERA · ${frame.width || image.width}×${frame.height || image.height}`, 14, 21);
+    entry.texture.needsUpdate = true;
+  };
+  image.onerror = () => drawCameraPreview(null);
+  image.src = `data:${frame.mime_type || 'image/jpeg'};base64,${frame.image_base64}`;
+}
+
+async function pollCameraFrame() {
+  if (!renderer.xr.isPresenting || cameraPollInFlight) return;
+  cameraPollInFlight = true;
+  try {
+    const response = await fetch('/body/camera/frame', { cache: 'no-store', credentials: 'same-origin' });
+    if (!response.ok) throw new Error(`Camera frame HTTP ${response.status}`);
+    const result = await response.json();
+    const frame = result.camera || {};
+    if (!result.available || !frame.image_base64) {
+      cameraFrameKey = null;
+      drawCameraPreview(null);
+      return;
+    }
+    const key = `${frame.captured_at || frame.timestamp || ''}:${frame.image_base64.length}`;
+    if (key !== cameraFrameKey) {
+      cameraFrameKey = key;
+      drawCameraPreview(frame);
+    }
+  } catch {
+    drawCameraPreview(null);
+  } finally {
+    cameraPollInFlight = false;
+  }
+}
+
+function startCameraPolling() {
+  stopCameraPolling();
+  void pollCameraFrame();
+  cameraPollTimer = window.setInterval(pollCameraFrame, 125);
+}
+
+function stopCameraPolling() {
+  if (cameraPollTimer !== null) window.clearInterval(cameraPollTimer);
+  cameraPollTimer = null;
+  cameraPollInFlight = false;
+  cameraFrameKey = null;
+}
+
 function updateXRDashboard() {
   const status = latestWorldStatus || {};
   const perception = status.perception || {};
@@ -159,18 +249,18 @@ function updateXRDashboard() {
   const source = status.source || {};
   const simulationAvailable = status.mode === 'sim' && source.source === 'sim_robot';
   const running = !!status.running;
-  dashboardBanner(`BODY · ${status.mode || 'offline'} · ${points.length} LiDAR returns · ${targets.length} radar targets`);
+  dashboardBanner(`LIVE · ${status.mode || 'offline'} · ${points.length} LiDAR · ${targets.length} RADAR`);
   const data = [
     ['simulation', running ? 'PAUSE SIM' : 'START SIM', simulationAvailable ? (running ? 'Running' : 'Simulator ready') : 'Simulation source required', simulationAvailable ? (running ? 'active' : 'normal') : 'disabled'],
     ['lidar', showLidar ? 'LiDAR ON' : 'LiDAR OFF', `${points.length} · ${lidar.source || 'no data'}`, showLidar ? 'active' : 'normal'],
     ['radar', showRadar ? 'mmW ON' : 'mmW OFF', `${targets.length} · ${radar.source || 'no data'}`, showRadar ? 'active' : 'normal'],
-    ['egocentric', egocentricView ? 'MAP VIEW' : 'EGO VIEW', egocentricView ? 'Body-centered' : 'Room view', egocentricView ? 'active' : 'normal'],
+    ['follow', followBody ? 'FOLLOW ON' : 'FOLLOW BODY', simulationAvailable && running ? 'Track Body pose' : 'Start simulation first', simulationAvailable && running ? (followBody ? 'active' : 'normal') : 'disabled'],
     ['exit', 'EXIT TO UI', 'End immersive view', 'normal'],
   ];
   data.forEach(([id, title, detail, tone], index) => {
     const mesh = dashboardTexture(id, title, detail, id === 'simulation' && !simulationAvailable ? 'disabled' : tone);
-    const angle = (index - 2) * 0.24;
-    mesh.position.set(1.95 * Math.sin(angle), 0.66, -1.62 * Math.cos(angle));
+    const angle = (index - 2) * 0.19;
+    mesh.position.set(1.95 * Math.sin(angle), 0.72, -1.62 * Math.cos(angle));
     mesh.rotation.y = angle;
   });
 }
@@ -189,7 +279,7 @@ async function sendJSON(path, payload) {
 }
 
 function applySceneView() {
-  if (!egocentricView || !lastFrame?.perception) {
+  if (!followBody || !lastFrame?.perception) {
     world.position.set(0, 0, -4);
     world.rotation.y = 0;
     orbit.enabled = !renderer.xr.isPresenting;
@@ -259,8 +349,13 @@ async function dashboardAction(action) {
       showRadar = !showRadar;
       radarGroup.visible = showRadar;
       updateXRDashboard();
-    } else if (action === 'egocentric') {
-      egocentricView = !egocentricView;
+    } else if (action === 'follow') {
+      const status = latestWorldStatus || {};
+      if (status.mode !== 'sim' || status.source?.source !== 'sim_robot' || !status.running) {
+        setStatus('Follow Body is available while the simulated Body is running.', true);
+        return;
+      }
+      followBody = !followBody;
       applySceneView();
       updateXRDashboard();
     } else if (action === 'exit') {
@@ -466,15 +561,18 @@ async function enterXR(mode) {
     await renderer.xr.setSession(session);
     orbit.enabled = false;
     dashboardGroup.visible = true;
+    drawCameraPreview(null);
+    startCameraPolling();
     updateXRDashboard();
     document.querySelector('#enter-xr').textContent = mode === 'immersive-vr' ? 'Exit VR' : 'VR view';
     document.querySelector('#enter-ar').textContent = mode === 'immersive-ar' ? 'Exit passthrough' : 'Passthrough AR';
     setStatus(mode === 'immersive-ar'
-      ? 'Passthrough is active. The Body map is an unaligned overlay; controller input is telemetry only.'
-      : 'VR is active. Controller input is telemetry only.');
+      ? 'Passthrough is active. The Body map is an unaligned overlay; use the controller ray to operate the dashboard.'
+      : 'VR is active. Use the controller ray to operate the dashboard.');
     session.addEventListener('end', () => {
       orbit.enabled = true;
       dashboardGroup.visible = false;
+      stopCameraPolling();
       document.querySelector('#enter-xr').textContent = 'Enter VR';
       document.querySelector('#enter-ar').textContent = 'Passthrough AR';
       document.querySelector('#xr-input').textContent = 'Not in XR';
@@ -500,6 +598,11 @@ window.addEventListener('resize', () => {
   camera.aspect = width / height;
   camera.updateProjectionMatrix();
   renderer.setSize(width, height, false);
+});
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) stopCameraPolling();
+  else if (renderer.xr.isPresenting) startCameraPolling();
 });
 
 setInterval(pollBody, 1200);

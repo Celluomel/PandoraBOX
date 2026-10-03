@@ -512,7 +512,7 @@ class BodyHostHttpTest(unittest.TestCase):
                     quest_bundle = response.read()
                     self.assertEqual(response.headers.get_content_type(), "text/javascript")
                 self.assertGreater(len(quest_bundle), 100_000)
-                for control in (b"START SIM", b"LiDAR", b"mmW", b"EGO VIEW", b"EXIT TO UI", b"immersive-ar"):
+                for control in (b"START SIM", b"LiDAR", b"mmW", b"FOLLOW BODY", b"EXIT TO UI", b"CAMERA", b"/body/camera/frame", b"immersive-ar"):
                     self.assertIn(control, quest_bundle)
 
                 # world model endpoints (lazy build)
