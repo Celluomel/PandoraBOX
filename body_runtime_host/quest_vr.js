@@ -78,7 +78,14 @@ let cameraPollTimer = null;
 let cameraPollInFlight = false;
 let cameraFrameKey = null;
 dashboardGroup.visible = false;
-camera.add(dashboardGroup);
+scene.add(dashboardGroup);
+
+function syncXRDashboardPose() {
+  if (!renderer.xr.isPresenting) return;
+  camera.updateMatrixWorld(true);
+  camera.getWorldPosition(dashboardGroup.position);
+  camera.getWorldQuaternion(dashboardGroup.quaternion);
+}
 
 function dashboardTexture(id, title, detail = '', tone = 'normal') {
   let entry = dashboardTextures.get(id);
@@ -625,6 +632,7 @@ renderer.setAnimationLoop(() => {
       dashboardBanner(telemetry);
       renderer.userData.dashboardTelemetryAt = performance.now();
     }
+    syncXRDashboardPose();
   }
   renderer.render(scene, camera);
 });
