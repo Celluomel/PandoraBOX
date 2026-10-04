@@ -876,14 +876,16 @@ class BodySceneInterpreter:
             # that optional constraint, then fall back to text-only input for
             # instruct models that reject a vision content part with 400/422.
             if exc.code not in {400, 422}:
-                raise
+                detail = describe_http_error(exc, "json+image")
+                return self._error(f"VLM provider HTTP {exc.code}: {detail}")
             first_detail = describe_http_error(exc, "json+image")
             payload.pop("response_format", None)
             try:
                 result = request_completion("image-no-format")
             except HTTPError as retry_exc:
                 if retry_exc.code not in {400, 422} or not isinstance(user_content, list):
-                    raise
+                    detail = describe_http_error(retry_exc, "image-no-format")
+                    return self._error(f"VLM provider HTTP {retry_exc.code}: {detail}")
                 second_detail = describe_http_error(retry_exc, "image-no-format")
                 payload["messages"][1]["content"] = prompt
                 try:

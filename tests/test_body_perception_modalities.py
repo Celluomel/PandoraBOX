@@ -574,6 +574,32 @@ class BodyPerceptionModalitiesTest(unittest.TestCase):
         self.assertEqual(len(calls), 3)
         interpreter.close()
 
+    def test_scene_interpreter_surfaces_nonretryable_provider_http_errors(self):
+        from body_runtime_host.worldmodel.scene_interpreter import BodySceneInterpreter
+
+        interpreter = BodySceneInterpreter({
+            "BODY_LLM_ENABLED": True,
+            "BODY_LLM_MODEL": "qualcomm/Intern3.5-VL-2B:W4A16",
+            "BODY_LLM_BASE_URL": "http://127.0.0.1:18181/v1",
+        })
+        packet = {
+            "frame_id": "frame-provider-error",
+            "timestamp": 123.0,
+            "objects": [],
+            "modalities": {"camera": {"image_base64": "aGVsbG8=", "mime_type": "image/jpeg"}},
+        }
+
+        def fake_urlopen(request, timeout):
+            raise HTTPError(request.full_url, 500, "internal error", {}, BytesIO(b"NPU memory allocation failed"))
+
+        with patch("body_runtime_host.worldmodel.scene_interpreter.urlopen", side_effect=fake_urlopen):
+            result = interpreter._interpret(packet)
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("VLM provider HTTP 500", result["error"])
+        self.assertIn("NPU memory allocation failed", result["error"])
+        interpreter.close()
+
     def test_scene_interpreter_bounds_multimodal_prompt_for_small_context_models(self):
         import json
         from body_runtime_host.worldmodel.scene_interpreter import BodySceneInterpreter
