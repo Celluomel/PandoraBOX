@@ -450,6 +450,51 @@ function ensureSensorProjectionPanel(){
   anchor.append(panel);
 }
 
+function ensureSemanticScenePanel(anchor){
+  if(document.getElementById('semantic-scene-panel'))return;
+  const panel=document.createElement('section');
+  panel.id='semantic-scene-panel';panel.className='panel';panel.style.marginBottom='14px';
+  panel.innerHTML='<div class="panel-head"><div><h2>VLM-grounded spatial scene</h2><small id="semantic-scene-meta">Waiting for Body perception</small></div><button type="button" id="semantic-scene-run" onclick="interpretCurrentSceneVlm()">Interpret current scene</button></div>'+
+    '<p class="map-intro">Measured Body geometry is shown in muted green; cyan semantic Gaussian samples appear only for VLM entities grounded to that geometry and frame. This is a semantic preview, not photogrammetric reconstruction.</p>'+
+    '<svg id="semantic-scene-view" viewBox="0 0 900 360" role="img" aria-label="Metric Body scene with grounded VLM semantic Gaussian groups" style="display:block;width:100%;height:360px;background:#07120f;border:1px solid #29483a"></svg>'+
+    '<div id="semantic-scene-legend" class="scene-legend"></div><pre id="semantic-scene-result" class="semantic-result" hidden></pre>';
+  const style=document.createElement('style');style.id='semantic-scene-style';style.textContent='.semantic-result{max-height:240px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;background:#08130f;border:1px solid #29483a;padding:10px;color:#b9d8c5;font:11px ui-monospace,monospace}.scene-legend{display:flex;flex-wrap:wrap;gap:8px 18px;margin-top:10px;color:#a9c0b2;font-size:11px}.scene-legend span{display:inline-flex;align-items:center;gap:6px}.scene-legend i{width:8px;height:8px;border-radius:50%;background:#56e0c2;box-shadow:0 0 8px #56e0c288}';
+  if(!document.getElementById(style.id))document.head.appendChild(style);
+  (anchor||document.getElementById('worldmodel-perception-panels')||document.getElementById('sensor-layer-container'))?.append(panel);
+}
+
+function renderSemanticScene(perception,sim){
+  ensureSemanticScenePanel();
+  const svg=document.getElementById('semantic-scene-view');if(!svg)return;
+  const scene=perception?.semantic_splats||{},groups=Array.isArray(scene.groups)?scene.groups.slice(0,24):[];
+  const objects=Array.isArray(perception?.objects)?perception.objects.slice(0,80):[];
+  const body=Array.isArray(sim?.body)?sim.body:[Number(sim?.body?.x||0),Number(sim?.body?.y||0),Number(sim?.body?.z||0)];
+  const validPos=value=>Array.isArray(value)&&value.length>=2&&value.slice(0,3).every(n=>Number.isFinite(Number(n)));
+  const positions=[...objects.map(o=>o.position),...groups.map(g=>g.center_m),body].filter(validPos).map(p=>[Number(p[0]),Number(p[1]),Number(p[2]||0)]);
+  let minX=-1,maxX=1,minY=-1,maxY=1;if(positions.length){minX=Math.min(...positions.map(p=>p[0]))-1;maxX=Math.max(...positions.map(p=>p[0]))+1;minY=Math.min(...positions.map(p=>p[1]))-1;maxY=Math.max(...positions.map(p=>p[1]))+1}
+  const raw=p=>[(p[0]-p[1]),(p[0]+p[1])*.5-(p[2]||0)];
+  const corners=[[minX,minY,0],[minX,maxY,0],[maxX,minY,0],[maxX,maxY,0]].map(raw);
+  const loX=Math.min(...corners.map(p=>p[0])),hiX=Math.max(...corners.map(p=>p[0])),loY=Math.min(...corners.map(p=>p[1])),hiY=Math.max(...corners.map(p=>p[1]));
+  const scale=Math.min(680/Math.max(1,hiX-loX),240/Math.max(1,hiY-loY));
+  const project=p=>{const q=raw([Number(p[0]),Number(p[1]),Number(p[2]||0)]);return [450+(q[0]-(loX+hiX)/2)*scale,190+(q[1]-(loY+hiY)/2)*scale]};
+  const parts=['<rect width="900" height="360" fill="#07120f"/>'];
+  for(let i=0;i<11;i++){const y=48+i*26;parts.push('<path d="M55 '+y+' L845 '+y+'" stroke="#17362c" stroke-width="1"/>')}
+  const colors=['#56e0c2','#78c7ff','#f0c879','#e89ac7','#b6a0ff','#a9dc86'];
+  objects.forEach((o,index)=>{if(!validPos(o.position))return;const [x,y]=project(o.position),label=esc(o.label||o.kind||'observed object');parts.push('<circle cx="'+x.toFixed(1)+'" cy="'+y.toFixed(1)+'" r="5" fill="#90a99b" fill-opacity=".65" stroke="#d9eee2" stroke-width="1"><title>'+label+' · measured Body geometry</title></circle><text x="'+(x+8).toFixed(1)+'" y="'+(y-7).toFixed(1)+'" fill="#a9c0b2" font-size="11">'+label+'</text>')});
+  groups.forEach((g,index)=>{if(!validPos(g.center_m))return;const [cx,cy]=project(g.center_m),extent=Math.max(.08,Math.min(1.5,Number(g.extent_m)||.3)),radius=Math.max(4,Math.min(28,extent*scale*.36)),color=colors[index%colors.length],seed=String(g.entity_id||g.group_id||index).split('').reduce((a,c)=>a+c.charCodeAt(0),0);for(let n=0;n<30;n++){const a=(n*2.399963+seed%17)*1.0,r=radius*Math.sqrt((n+.5)/30),x=cx+Math.cos(a)*r,y=cy+Math.sin(a)*r*.68;parts.push('<circle cx="'+x.toFixed(1)+'" cy="'+y.toFixed(1)+'" r="'+(1.3+(n%4)*.35).toFixed(1)+'" fill="'+color+'" fill-opacity="'+(.35+(n%5)*.1).toFixed(2)+'"/>')}const title=esc((g.label||g.entity_id||'Object')+' · confidence '+(Number(g.confidence)||0).toFixed(2));parts.push('<ellipse cx="'+cx.toFixed(1)+'" cy="'+cy.toFixed(1)+'" rx="'+radius.toFixed(1)+'" ry="'+(radius*.68).toFixed(1)+'" fill="none" stroke="'+color+'" stroke-opacity=".75" stroke-dasharray="3 3"><title>'+title+'</title></ellipse><text x="'+(cx+radius+5).toFixed(1)+'" y="'+(cy+4).toFixed(1)+'" fill="'+color+'" font-size="12" font-weight="600">'+esc(g.label||g.entity_id||'Object')+' · '+((Number(g.confidence)||0)*100).toFixed(0)+'%</text>')});
+  const bp=validPos(body)?project(body):[450,315];parts.push('<path d="M'+bp[0].toFixed(1)+' '+(bp[1]-9).toFixed(1)+' l8 14 h-16 z" fill="#f0c879" stroke="#fff0bf"/><text x="'+(bp[0]+11).toFixed(1)+'" y="'+(bp[1]+4).toFixed(1)+'" fill="#f0c879" font-size="11">BODY</text>');
+  parts.push('<text x="18" y="24" fill="#8fa99a" font-size="11">metric local map · x/y meters · z projected</text>');svg.innerHTML=parts.join('');
+  const state=scene.status||'waiting_for_grounded_vlm';document.getElementById('semantic-scene-meta').textContent=state.replaceAll('_',' ')+' · '+groups.length+' grounded groups · '+objects.length+' measured objects';
+  document.getElementById('semantic-scene-legend').innerHTML='<span><i style="background:#90a99b"></i>Measured Body geometry</span><span><i></i>Grounded VLM semantic Gaussian</span><span><i style="background:#f0c879"></i>Body pose</span>'+(groups.length?'':`<span>${objects.length?'No grounded VLM groups yet. Run “Interpret current scene” to request one.':'Waiting for the first Body observation.'}</span>`);
+}
+
+async function interpretCurrentSceneVlm(){
+  const button=document.getElementById('semantic-scene-run'),output=document.getElementById('semantic-scene-result');if(button){button.disabled=true;button.textContent='Interpreting…'}if(output){output.hidden=false;output.textContent='Sending the latest Body frame to the configured VLM…'}
+  try{const result=await post('/body/camera/test-vlm',{});if(output)output.textContent=JSON.stringify(result,null,2);const w=await get('/worldmodel/status');lastStatus=w;renderWorld(w);document.getElementById('semantic-scene-meta').textContent=(result.status||result.stage||'VLM complete')+' · '+(result.model||'configured Body VLM')+' · '+(w.perception?.semantic_splats?.groups?.length||0)+' grounded groups'}
+  catch(error){if(output)output.textContent='VLM request failed: '+error.message;document.getElementById('semantic-scene-meta').textContent='VLM request failed · '+error.message}
+  finally{if(button){button.disabled=false;button.textContent='Interpret current scene'}}
+}
+
 async function runVideoLidarReplay(){
   const file=document.getElementById('video-replay-file')?.files?.[0];
   let path=document.getElementById('video-replay-path')?.value?.trim();
@@ -519,6 +564,7 @@ const renderWorldWithSensors=renderWorld;
 renderWorld=function(w){
   renderWorldWithSensors(w);
   renderSensorProjections(w?.perception?.sensor_projections,w?.perception?.modalities||w?.perception?.perception_frame?.modalities);
+  renderSemanticScene(w?.perception,w?.sim);
 };
 const refreshBodyLlmWithSensors=refreshBodyLlm;
 refreshBodyLlm=async function(){
@@ -526,6 +572,7 @@ refreshBodyLlm=async function(){
   try{const w=await get('/worldmodel/status');renderSensorProjections(w?.perception?.sensor_projections,w?.perception?.modalities||w?.perception?.perception_frame?.modalities);$('message').textContent='Body connected'}catch{}
 };
 ensureSensorProjectionPanel();
+ensureSemanticScenePanel(document.getElementById('worldmodel-perception-panels'));
 if(currentView==='llm')void refreshBodyLlm();
 </script></body></html>""",
 )
