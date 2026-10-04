@@ -553,7 +553,7 @@ def run_vlm_sensorimotor_scenario(
         room = SimulatedRoom()
         room.reset_episode(shuffle=False, seed=int(seed))
         room.objects = {
-            "obstacle": {"id": "obstacle", "label": "pillar", "kind": "obstacle",
+            "obstacle": {"id": "obstacle", "label": "purple cube", "kind": "obstacle",
                          "x": 4.0, "y": 1.0, "mass": 999.0, "size": 1.0},
         }
         scenario_id = f"vlm-nav-{int(seed)}-{time.time_ns()}"
@@ -599,7 +599,8 @@ def run_vlm_sensorimotor_scenario(
                 packet, visual_options={"include_sensor_context": include_sensor_context, "bypass_cache": True},
             )
             semantic = result.get("semantic_scene") or {}
-            interpretation = result.get("interpretation") or {}
+            raw_interpretation = result.get("interpretation") or {}
+            interpretation = BodySceneInterpreter._normalize_interpretation_schema(raw_interpretation)
             descriptions = interpretation.get("object_descriptions") if isinstance(interpretation, dict) else []
             described_labels = [
                 str(item.get("label") or item.get("name") or item.get("description") or "").strip()
@@ -639,7 +640,8 @@ def run_vlm_sensorimotor_scenario(
                 "vlm_status": result.get("status"), "vlm_mode": result.get("interpretation_mode"),
                 "vlm_latency_ms": result.get("latency_ms"),
                 "scene_summary": scene_summary,
-                "vlm_interpretation": interpretation if isinstance(interpretation, dict) else {},
+                "vlm_interpretation": interpretation,
+                "vlm_raw_output": raw_interpretation if isinstance(raw_interpretation, dict) else {},
                 "grounding": semantic.get("grounding"), "error": result.get("error"),
             })
             if result.get("status") != "interpreted":

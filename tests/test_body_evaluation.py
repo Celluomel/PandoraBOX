@@ -121,6 +121,7 @@ class BodyEvaluationTests(unittest.TestCase):
         self.assertEqual([item["stage"] for item in result["snapshots"]], ["camera_only", "camera_plus_lidar"])
         self.assertEqual(result["snapshots"][0]["frame_id"], result["snapshots"][1]["frame_id"])
         self.assertEqual(result["snapshots"][0]["timestamp"], result["snapshots"][1]["timestamp"])
+        self.assertEqual(captured[0][0]["objects"][0]["label"], "purple cube")
         self.assertEqual(result["snapshots"][0]["vlm_mode"], "image_only")
         self.assertEqual(result["snapshots"][1]["vlm_mode"], "sensor_packet")
         self.assertEqual(result["snapshots"][0]["vlm_interpretation"]["object_descriptions"][0]["label"], "pillar")

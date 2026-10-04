@@ -261,6 +261,33 @@ class BodyPerceptionModalitiesTest(unittest.TestCase):
         finally:
             interpreter.close()
 
+    def test_open_vocabulary_root_description_is_normalized_and_semantically_grounded(self):
+        from body_runtime_host.worldmodel.scene_interpreter import BodySceneInterpreter
+
+        packet = {
+            "frame_id": "open-vocabulary-frame", "timestamp": 12.0,
+            "objects": [{"id": "obstacle", "label": "pillar", "kind": "obstacle",
+                         "position": [2.0, 0.0, 0.0]}],
+        }
+        calls = []
+
+        def resolve(values, known):
+            calls.extend(values)
+            self.assertIn("obstacle", known)
+            return {"purple_cube": "obstacle"}
+
+        scene = BodySceneInterpreter._ground_interpretation(
+            {"label": "purple_cube", "visual_description": "A purple cube centered ahead", "confidence": 0.98},
+            packet,
+            label_resolver=resolve,
+        )
+
+        self.assertEqual(scene["primary_object_ids"], [])
+        self.assertIn("purple_cube", calls)
+        self.assertEqual(scene["grounding"]["valid_described_object_references"], 1)
+        self.assertEqual(scene["entities"][0]["description"], "A purple cube centered ahead")
+        self.assertEqual(scene["grounding"]["semantic_match_labels"]["purple_cube"], "obstacle")
+
     def test_native_modalities_are_preferred_and_provenanced(self):
         from body_runtime_host.worldmodel.perception import sensor_projections
         from body_runtime_host.worldmodel.types import BodyState, SceneObject

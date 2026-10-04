@@ -595,6 +595,71 @@ class BodySceneInterpreter:
             return image, metadata
 
     @staticmethod
+    def _normalize_interpretation_schema(interpretation: Dict[str, Any]) -> Dict[str, Any]:
+        """Normalize common VLM JSON shapes without constraining its vocabulary."""
+        normalized = dict(interpretation)
+
+        def get_text(item: Dict[str, Any], names: tuple[str, ...]) -> str:
+            for name in names:
+                value = item.get(name)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+            return ""
+
+        if not get_text(normalized, ("scene_summary", "summary")):
+            caption = get_text(normalized, ("scene_description", "caption", "overview"))
+            if caption:
+                normalized["scene_summary"] = caption
+
+        descriptions = normalized.get("object_descriptions")
+        if not descriptions:
+            for key in ("objects", "entities", "detections", "items"):
+                candidate = normalized.get(key)
+                if isinstance(candidate, (list, tuple, dict)) and candidate:
+                    descriptions = candidate
+                    break
+
+        if isinstance(descriptions, dict):
+            descriptions = [
+                ({"id": key, **value} if isinstance(value, dict) else {"id": key, "label": value})
+                for key, value in descriptions.items()
+            ]
+        elif not isinstance(descriptions, (list, tuple)):
+            descriptions = []
+
+        canonical_descriptions = []
+        for value in descriptions:
+            if isinstance(value, dict):
+                item = dict(value)
+                label = get_text(item, ("label", "name", "class", "category", "object"))
+                description = get_text(item, ("description", "visual_description", "appearance", "caption"))
+                if label and not item.get("label"):
+                    item["label"] = label
+                if description and not item.get("description"):
+                    item["description"] = description
+                if item.get("confidence") is None:
+                    item["confidence"] = item.get("score", item.get("probability"))
+                canonical_descriptions.append(item)
+            elif isinstance(value, str) and value.strip():
+                canonical_descriptions.append({"label": value.strip()})
+
+        root_label = get_text(normalized, ("label", "name", "class", "category", "object"))
+        root_description = get_text(normalized, ("description", "visual_description", "appearance"))
+        existing_labels = {
+            get_text(item, ("label", "name", "class", "category", "object")).casefold()
+            for item in canonical_descriptions if isinstance(item, dict)
+        }
+        if (root_label or root_description) and root_label.casefold() not in existing_labels:
+            canonical_descriptions.append({
+                "label": root_label or root_description[:80],
+                "description": root_description,
+                "confidence": normalized.get("confidence", normalized.get("score")),
+            })
+        if canonical_descriptions:
+            normalized["object_descriptions"] = canonical_descriptions
+        return normalized
+
+    @staticmethod
     def _ground_interpretation(interpretation: Dict[str, Any], packet: Dict[str, Any], label_resolver=None) -> Dict[str, Any]:
         """Turn free-form LLM semantics into a Body-owned scene model.
 
@@ -602,6 +667,7 @@ class BodySceneInterpreter:
         packet. Positions, ranges and collision geometry always come from the
         sensor projection and are copied here without modification.
         """
+        interpretation = BodySceneInterpreter._normalize_interpretation_schema(interpretation)
         objects = [item for item in packet.get("objects") or [] if isinstance(item, dict)]
         known = {str(item.get("id")): item for item in objects if item.get("id")}
         labels = {
