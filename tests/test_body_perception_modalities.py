@@ -122,6 +122,37 @@ class BodyPerceptionModalitiesTest(unittest.TestCase):
         self.assertEqual(interpreter.status()["embedding"]["requests"], 2)
         interpreter.close()
 
+    def test_local_embeddings_compare_free_label_without_mixing_ids_or_categories(self):
+        from body_runtime_host.worldmodel.scene_interpreter import BodySceneInterpreter
+
+        embedded_inputs = []
+
+        class FakeEmbedding:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+
+            def embed(self, texts, batch_size):
+                texts = list(texts)
+                embedded_inputs.append(texts)
+                return ([1.0, 0.0] for _ in texts)
+
+        fake_module = types.ModuleType("fastembed")
+        fake_module.TextEmbedding = FakeEmbedding
+        interpreter = BodySceneInterpreter({
+            "BODY_LLM_EMBEDDING_PROVIDER": "local_fastembed",
+            "BODY_LLM_EMBEDDING_MODEL": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+            "BODY_LLM_EMBEDDING_THRESHOLD": 0.78,
+        })
+        known = {"obstacle": {"id": "obstacle", "label": "purple cube", "kind": "obstacle"}}
+        with patch.dict(sys.modules, {"fastembed": fake_module}), \
+                patch("body_runtime_host.worldmodel.scene_interpreter.importlib.util.find_spec", return_value=object()):
+            result = interpreter.test_embedding_resolution("purple_cube", known)
+
+        self.assertEqual(result["status"], "accepted")
+        self.assertEqual(result["matched_object_id"], "obstacle")
+        self.assertEqual(embedded_inputs, [["purple cube"], ["purple cube"]])
+        interpreter.close()
+
     def test_body_llm_settings_persist_local_embedding_provider(self):
         from body_runtime_host.runtime import BodyHost
 
@@ -916,6 +947,7 @@ class BodyPerceptionModalitiesTest(unittest.TestCase):
 
         prompt = calls[0]["messages"][1]["content"][0]["text"]
         self.assertIn("Every concrete object named in scene_summary must also appear in object_descriptions", prompt)
+        self.assertIn("required short open-vocabulary label", prompt)
         self.assertIn("Use free-form labels grounded in the image, not a fixed category list", prompt)
         self.assertIn("support proximity or obstacle relevance", prompt)
         self.assertIn("Do not classify floor grids, camera reticles", prompt)

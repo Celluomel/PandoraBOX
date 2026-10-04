@@ -292,9 +292,7 @@ class BodySceneInterpreter:
         candidates = []
         candidate_ids = []
         for object_id, item in known.items():
-            text = " ".join(str(value) for value in (
-                object_id, item.get("label"), item.get("kind"), canonical_category(object_id),
-            ) if value).strip()
+            text = str(item.get("label") or canonical_category(object_id) or object_id).strip()
             if nomic_v15:
                 text = f"search_document: {text}"
             candidates.append(text)
@@ -401,7 +399,7 @@ class BodySceneInterpreter:
         self, label: str, known: Dict[str, Dict[str, Any]],
     ) -> Dict[str, Any]:
         """Exercise the configured embedding endpoint against current scene objects."""
-        normalized = " ".join(str(label or "").split())[:160]
+        normalized = " ".join(re.sub(r"[_-]+", " ", str(label or "").lower()).split())[:160]
         if not normalized:
             return {"ok": False, "status": "invalid_input", "error": "Enter a label to test."}
         if not known:
@@ -739,7 +737,7 @@ class BodySceneInterpreter:
         if label_resolver:
             raw_values = list(as_items(interpretation.get("primary_objects")))
             raw_values.extend(
-                item.get("id") or item.get("label")
+                item.get("label") or item.get("id")
                 for item in as_items(interpretation.get("object_descriptions"))
                 if isinstance(item, dict)
             )
@@ -757,7 +755,7 @@ class BodySceneInterpreter:
         for item in raw_descriptions:
             if not isinstance(item, dict):
                 continue
-            object_id = resolve_reference(item.get("id") or item.get("label"))
+            object_id = resolve_reference(item.get("label") or item.get("id"))
             if object_id not in known:
                 continue
             descriptions[object_id] = {
@@ -984,7 +982,8 @@ class BodySceneInterpreter:
             "about timestamps and provenance. Return JSON only with keys: "
             "scene_summary (one concise global sentence), primary_objects (array of ids or semantic labels for "
             "near, actionable or hazardous objects only), object_descriptions (array of at most five "
-            "near/actionable/hazardous objects with id, description, role, affordances, confidence 0..1, optional "
+            "near/actionable/hazardous objects with a required short open-vocabulary label, description, role, "
+            "affordances and confidence 0..1; include id only when the packet provides a stable track ID; optional "
             "open-vocabulary scalar attributes, optional image_region {x,y,width,height} normalized to 0..1, and "
             "optional relations [{type,target_id}] referencing another observed object), environment (array of "
             "observed facts), possible_paths (array of objects with action and reason), "
