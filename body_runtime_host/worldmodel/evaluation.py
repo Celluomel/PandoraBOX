@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import heapq
 import inspect
+import logging
 import math
 import tempfile
 import time
@@ -22,6 +23,8 @@ from .plan_runtime import BodyPlanRuntime
 from .perception import sensor_projections
 from .scene_interpreter import BodySceneInterpreter
 from .virtual_camera import render_camera
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -555,7 +558,7 @@ def run_vlm_sensorimotor_scenario(
         }
         scenario_id = f"vlm-nav-{int(seed)}-{time.time_ns()}"
 
-        def observe_and_interpret(stage: str) -> tuple[Any, Any, Dict[str, Any], Dict[str, Any]]:
+        def capture_frame(stage: str) -> tuple[Any, Any, Dict[str, Any], Dict[str, Any]]:
             observation = room.observe()
             body = room.body_state()
             timestamp = float(observation.timestamp)
@@ -584,8 +587,16 @@ def run_vlm_sensorimotor_scenario(
                 "navigation": {"goal_m": list(goal), "mode": "scan_grounded_simulation"},
                 "visual_blind": True,
             }
+            return observation, body, lidar, packet
+
+        def interpret_frame(stage: str, frame: tuple[Any, Any, Dict[str, Any], Dict[str, Any]],
+                            *, include_sensor_context: bool) -> Dict[str, Any]:
+            observation, body, lidar, packet = frame
+            camera = observation.modalities["camera"]
+            frame_id = str(packet["frame_id"])
+            timestamp = float(packet["timestamp"])
             result = interpreter.interpret_now(
-                packet, visual_options={"include_sensor_context": True, "bypass_cache": True},
+                packet, visual_options={"include_sensor_context": include_sensor_context, "bypass_cache": True},
             )
             semantic = result.get("semantic_scene") or {}
             interpretation = result.get("interpretation") or {}
@@ -597,6 +608,7 @@ def run_vlm_sensorimotor_scenario(
                 "camera_mime_type": camera.get("mime_type", "image/png"),
                 "camera_source": camera.get("source"), "lidar_source": lidar.get("source"),
                 "lidar_returns": len(lidar.get("points") or []),
+                "vlm_input_modalities": ["camera", "lidar", "pose"] if include_sensor_context else ["camera"],
                 "sensor_packet": {
                     "contract": "body_perception_frame.v2", "frame_id": frame_id,
                     "timestamp": timestamp,
@@ -605,10 +617,10 @@ def run_vlm_sensorimotor_scenario(
                                "height": camera.get("height"), "image_attached": bool(camera.get("image_base64"))},
                     "lidar": {"source": lidar.get("source"), "coordinate_frame": lidar.get("frame"),
                               "returns": len(lidar.get("points") or []),
-                              "points_sent_to_vlm": [
+                              "points_sent_to_vlm": ([
                                   {key: point[key] for key in ("x", "y", "z", "range", "intensity") if key in point}
                                   for point in (lidar.get("points") or [])[:24]
-                              ]},
+                              ] if include_sensor_context else [])},
                 },
                 "vlm_status": result.get("status"), "vlm_mode": result.get("interpretation_mode"),
                 "vlm_latency_ms": result.get("latency_ms"),
@@ -617,15 +629,20 @@ def run_vlm_sensorimotor_scenario(
             })
             if result.get("status") != "interpreted":
                 raise RuntimeError(f"VLM {stage} frame failed: {result.get('error') or result.get('status')}")
-            return observation, body, lidar, result
+            return result
 
         def publish(stage: str, **values: Any) -> None:
             if progress_callback:
                 progress_callback({"scenario": scenario_id, "stage": stage, "step": room.steps, **values})
 
-        _observation, _body, _lidar, initial_vlm = observe_and_interpret("before")
-        publish("initial_perception", frame_id=snapshots[-1]["frame_id"],
-                lidar_returns=snapshots[-1]["lidar_returns"], vlm_latency_ms=initial_vlm.get("latency_ms"))
+        paired_frame = capture_frame("same-scene")
+        paired_frame_id = paired_frame[3]["frame_id"]
+        publish("STEP 1/2 - CAMERA ONLY", frame_id=paired_frame_id, sensor_stage="camera only")
+        camera_vlm = interpret_frame("camera_only", paired_frame, include_sensor_context=False)
+        publish("STEP 2/2 - SAME IMAGE + LIDAR", frame_id=paired_frame_id,
+                sensor_stage="same image + synchronized LiDAR and pose")
+        lidar_vlm = interpret_frame("camera_plus_lidar", paired_frame, include_sensor_context=True)
+        publish("moving", action="starting", reason="local LiDAR safety planner; VLM scored separately")
 
         action_limit = max(1, min(64, int(max_actions)))
         for _action_index in range(action_limit):
@@ -669,7 +686,6 @@ def run_vlm_sensorimotor_scenario(
             if outcome.kind == "danger" or room.collision_count:
                 break
 
-        _observation, _body, _lidar, final_vlm = observe_and_interpret("after")
         final_distance = math.hypot(goal[0] - room.px, goal[1] - room.py)
         reached = final_distance <= 0.65
         status = "completed" if reached and room.collision_count == 0 else "incomplete"
@@ -682,13 +698,25 @@ def run_vlm_sensorimotor_scenario(
             "sensor_source": "virtual_camera_and_virtual_lidar",
             "vlm_model": str(config.get("BODY_LLM_MODEL") or ""),
             "vlm_calls": len(snapshots),
-            "vlm_multimodal": all(item.get("vlm_mode") == "sensor_packet" for item in snapshots),
+            "vlm_multimodal": lidar_vlm.get("interpretation_mode") == "sensor_packet",
+            "modality_comparison": {
+                "same_frame_id": snapshots[0]["frame_id"] == snapshots[1]["frame_id"],
+                "same_timestamp": snapshots[0]["timestamp"] == snapshots[1]["timestamp"],
+                "camera_only_latency_ms": camera_vlm.get("latency_ms"),
+                "camera_plus_lidar_latency_ms": lidar_vlm.get("latency_ms"),
+                "camera_only_summary": snapshots[0].get("scene_summary"),
+                "camera_plus_lidar_summary": snapshots[1].get("scene_summary"),
+                "camera_only_grounding": snapshots[0].get("grounding"),
+                "camera_plus_lidar_grounding": snapshots[1].get("grounding"),
+                "movement_uses_vlm_output": False,
+                "movement_uses": "fresh LiDAR scans only",
+            },
             "goal_m": list(goal), "final_position_m": [round(room.px, 3), round(room.py, 3)],
             "distance_to_goal_m": round(final_distance, 3), "goal_reached": reached,
             "collisions": room.collision_count, "near_misses": room.near_miss_count,
             "actions": len(timeline), "timeline": timeline, "snapshots": snapshots,
             "vlm_confirmation": {
-                "status": final_vlm.get("status"), "latency_ms": final_vlm.get("latency_ms"),
+                "status": lidar_vlm.get("status"), "latency_ms": lidar_vlm.get("latency_ms"),
                 "scene_summary": snapshots[-1].get("scene_summary"),
                 "grounding": snapshots[-1].get("grounding"),
             },

@@ -88,7 +88,7 @@ class BodyEvaluationTests(unittest.TestCase):
             captured.append((packet, visual_options))
             return {
                 "status": "interpreted",
-                "interpretation_mode": "sensor_packet",
+                "interpretation_mode": "sensor_packet" if visual_options["include_sensor_context"] else "image_only",
                 "latency_ms": 12.5,
                 "interpretation": {"scene_summary": "A clear route bends around an obstacle."},
                 "semantic_scene": {"grounding": {
@@ -115,20 +115,29 @@ class BodyEvaluationTests(unittest.TestCase):
         self.assertEqual(result["vlm_calls"], 2)
         self.assertGreater(result["actions"], 0)
         self.assertEqual(len(captured), 2)
+        self.assertEqual([item["stage"] for item in result["snapshots"]], ["camera_only", "camera_plus_lidar"])
+        self.assertEqual(result["snapshots"][0]["frame_id"], result["snapshots"][1]["frame_id"])
+        self.assertEqual(result["snapshots"][0]["timestamp"], result["snapshots"][1]["timestamp"])
+        self.assertEqual(result["snapshots"][0]["vlm_mode"], "image_only")
+        self.assertEqual(result["snapshots"][1]["vlm_mode"], "sensor_packet")
+        self.assertEqual(result["snapshots"][0]["sensor_packet"]["lidar"]["points_sent_to_vlm"], [])
+        self.assertGreater(len(result["snapshots"][1]["sensor_packet"]["lidar"]["points_sent_to_vlm"]), 0)
+        self.assertTrue(result["modality_comparison"]["same_frame_id"])
+        self.assertTrue(result["modality_comparison"]["same_timestamp"])
+        self.assertFalse(result["modality_comparison"]["movement_uses_vlm_output"])
         first_sensor_packet = result["snapshots"][0]["sensor_packet"]
         self.assertEqual(first_sensor_packet["frame_id"], result["snapshots"][0]["frame_id"])
         self.assertEqual(first_sensor_packet["timestamp"], result["snapshots"][0]["timestamp"])
         self.assertTrue(first_sensor_packet["camera"]["image_attached"])
-        self.assertGreater(len(first_sensor_packet["lidar"]["points_sent_to_vlm"]), 0)
+        self.assertEqual(first_sensor_packet["lidar"]["points_sent_to_vlm"], [])
         for packet, options in captured:
-            self.assertTrue(options["include_sensor_context"])
             self.assertTrue(packet["visual_blind"])
             self.assertEqual(packet["modalities"]["camera"]["frame_id"], packet["frame_id"])
             self.assertEqual(packet["modalities"]["lidar"]["frame_id"], packet["frame_id"])
             self.assertEqual(packet["modalities"]["camera"]["timestamp"], packet["timestamp"])
             self.assertEqual(packet["modalities"]["lidar"]["timestamp"], packet["timestamp"])
             self.assertGreater(len(packet["modalities"]["lidar"]["points"]), 0)
-        self.assertNotEqual(captured[0][0]["frame_id"], captured[1][0]["frame_id"])
+        self.assertEqual(captured[0][0]["frame_id"], captured[1][0]["frame_id"])
 
 
 if __name__ == "__main__":
