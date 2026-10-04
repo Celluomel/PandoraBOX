@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import json
 import importlib.util
+import hashlib
 import logging
 import math
 import re
 import threading
 import time
+from collections import OrderedDict
 from pathlib import Path
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any, Dict, Optional
@@ -64,6 +66,11 @@ class BodySceneInterpreter:
         self._embedding_accepted = 0
         self._embedding_rejected = 0
         self._embedding_last_resolution: Dict[str, Any] = {"status": "not_run"}
+        self._visual_cache: OrderedDict[str, tuple[float, Dict[str, Any]]] = OrderedDict()
+        self._visual_cache_hits = 0
+        self._visual_cache_misses = 0
+        self._qnn_cooldown_until = 0.0
+        self._qnn_cooldown_model = ""
         self._latest: Dict[str, Any] = {
             "status": "disabled",
             "model": str(config.get("BODY_LLM_MODEL") or ""),
@@ -145,6 +152,14 @@ class BodySceneInterpreter:
                 "last_resolution": dict(self._embedding_last_resolution),
             }
             current["in_flight"] = bool(self._future and not self._future.done())
+            current["visual_cache"] = {
+                "hits": self._visual_cache_hits,
+                "misses": self._visual_cache_misses,
+                "entries": len(self._visual_cache),
+            }
+            current["provider_cooldown_seconds"] = round(
+                max(0.0, self._qnn_cooldown_until - time.monotonic()), 1
+            )
             current["effective_interval"] = round(float(self._last_effective_interval), 3)
             current["cadence_reason"] = self._last_cadence_reason
             current["grounding_metrics"] = {
@@ -467,12 +482,60 @@ class BodySceneInterpreter:
         return result
 
     def _error(self, message: str) -> Dict[str, Any]:
-        return {
+        error = {
             "status": "error",
             "error": str(message)[:240],
             "updated_at": time.time(),
             "model": str(self._config.get("BODY_LLM_MODEL") or ""),
         }
+        if "-100201" in message or "model loading failed" in message.lower():
+            error["diagnosis"] = {
+                "code": "qnn_model_load_failed",
+                "stage": "htp_graph_initialization",
+                "payload_related": False,
+                "summary": "GenieX/QAIRT could not initialize the compiled model graph. This happens before scene interpretation; shrinking the prompt or camera image is unlikely to fix it.",
+                "checks": [
+                    "FastRPC shared-buffer/CMA capacity, device-tree reservation, and cDSP mapping/address-space limits",
+                    "GenieX, QAIRT and VENTUNO Q firmware compatibility",
+                    "whether another QNN graph holds HTP shared buffers",
+                ],
+            }
+        return error
+
+    def _visual_cache_key(self, image: str, camera: Dict[str, Any], model: str) -> str:
+        calibration = camera.get("calibration") if isinstance(camera.get("calibration"), dict) else {}
+        identity = {
+            "image_sha256": hashlib.sha256(image.encode("utf-8")).hexdigest(),
+            "model": model,
+            "endpoint": self._base_url(),
+            "profile": camera.get("camera_profile"),
+            "calibration": calibration,
+            "prompt": "visual-scene-v2",
+        }
+        return hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+    def _visual_cache_get(self, key: str) -> Optional[Dict[str, Any]]:
+        now = time.monotonic()
+        with self._lock:
+            cached = self._visual_cache.get(key)
+            if cached is None:
+                self._visual_cache_misses += 1
+                return None
+            expires_at, value = cached
+            if expires_at <= now:
+                del self._visual_cache[key]
+                self._visual_cache_misses += 1
+                return None
+            self._visual_cache.move_to_end(key)
+            self._visual_cache_hits += 1
+            return json.loads(json.dumps(value))
+
+    def _visual_cache_put(self, key: str, value: Dict[str, Any]) -> None:
+        with self._lock:
+            self._visual_cache[key] = (time.monotonic() + 300.0, json.loads(json.dumps(value)))
+            self._visual_cache.move_to_end(key)
+            while len(self._visual_cache) > 24:
+                self._visual_cache.popitem(last=False)
 
     @staticmethod
     def _ground_interpretation(interpretation: Dict[str, Any], packet: Dict[str, Any], label_resolver=None) -> Dict[str, Any]:
@@ -679,9 +742,17 @@ class BodySceneInterpreter:
         return None
 
     def _interpret(self, packet: Dict[str, Any]) -> Dict[str, Any]:
+        call_started = time.monotonic()
         model = str(self._config.get("BODY_LLM_MODEL") or "").strip()
         if not model:
             return self._error("BODY_LLM_MODEL is not configured")
+        with self._lock:
+            cooldown = self._qnn_cooldown_until - time.monotonic()
+            cooldown_model = self._qnn_cooldown_model
+        if cooldown > 0 and cooldown_model == model:
+            return self._error(
+                f"GenieX QNN model loading failed recently; retry suppressed for {cooldown:.0f}s to avoid repeating the same HTP allocation failure"
+            )
         # Keep the provider prompt compact.  The full perception frame is
         # still exposed through the Body API, but sending it here duplicates
         # the same LiDAR, projections and fusion data several times.  The
@@ -790,15 +861,37 @@ class BodySceneInterpreter:
             "This is advisory perception; never issue actuator commands.\n\n"
             + json.dumps(prompt_packet, ensure_ascii=False, separators=(",", ":"))
         )
+        visual_only = bool(camera_image)
+        if visual_only:
+            camera_context = compact_fields(
+                camera_meta, ("camera_profile", "width", "height", "calibration", "source")
+            )
+            prompt = (
+                "Describe only what is visibly supported by this robot camera image. "
+                "Do not infer metric position, distance, object size, motion, free space, "
+                "or a safe path. Do not use any simulator or sensor object list. "
+                "Return compact JSON only with keys: scene_summary (one short sentence), "
+                "primary_objects (at most three salient visible object labels), "
+                "object_descriptions (at most five objects with label, description, role, "
+                "visible scalar attributes, confidence 0..1, and optional normalized image_region), "
+                "environment (at most four directly visible facts), uncertainty (short strings). "
+                "Use an empty array when uncertain; never invent an object. Image regions are "
+                "normalized x/y/width/height in 0..1. This is semantic perception only, "
+                "not navigation or actuator control. "
+                + self._camera_view_note(camera_context)
+                + " Camera metadata: "
+                + json.dumps(camera_context, ensure_ascii=False, separators=(",", ":"))
+            )
         logger.info(
-            "[BodyVLM] prompt model=%s chars=%d estimated_tokens=%d context_window=%s image=%s image_chars=%d lidar_points=%d",
+            "[BodyVLM] prompt mode=%s model=%s chars=%d estimated_tokens=%d context_window=%s image=%s image_chars=%d lidar_points_sent=%d",
+            "image_only" if visual_only else "sensor_packet",
             model,
             len(prompt),
             max(1, len(prompt) // 4),
             self._config.get("BODY_LLM_CONTEXT_WINDOW", "unknown"),
             bool(camera_image),
             camera_image_size,
-            len(lidar.get("points") or []),
+            0 if visual_only else len(lidar.get("points") or []),
         )
         user_content: Any = prompt
         camera = packet.get("modalities", {}).get("camera") if isinstance(packet.get("modalities"), dict) else None
@@ -823,7 +916,10 @@ class BodySceneInterpreter:
                 {"role": "user", "content": user_content},
             ],
             "temperature": 0.1,
-            "max_tokens": int(self._config.get("BODY_LLM_MAX_TOKENS", 360) or 360),
+            "max_tokens": min(
+                192 if visual_only else 2048,
+                max(64, int(self._config.get("BODY_LLM_MAX_TOKENS", 360) or 360)),
+            ),
             # LM Studio vision providers differ in structured-output support.
             # Text mode is the interoperable contract; the bounded JSON parser
             # below remains responsible for validating the returned object.
@@ -839,6 +935,7 @@ class BodySceneInterpreter:
         timeout = float(self._config.get("BODY_LLM_TIMEOUT", 8.0) or 8.0)
         def request_completion(attempt: str) -> Dict[str, Any]:
             request_data = json.dumps(payload).encode("utf-8")
+            started = time.monotonic()
             logger.info(
                 "[BodyVLM] request attempt=%s bytes=%d response_format=%s image=%s",
                 attempt,
@@ -850,8 +947,20 @@ class BodySceneInterpreter:
                 f"{self._base_url()}/chat/completions",
                 data=request_data, headers=headers, method="POST",
             )
-            with urlopen(request, timeout=timeout) as response:
-                return json.loads(response.read().decode("utf-8"))
+            try:
+                with urlopen(request, timeout=timeout) as response:
+                    raw = response.read()
+                logger.info(
+                    "[BodyVLM] response attempt=%s status=200 latency_ms=%.1f response_bytes=%d",
+                    attempt, (time.monotonic() - started) * 1000.0, len(raw),
+                )
+                return json.loads(raw.decode("utf-8"))
+            except HTTPError as exc:
+                logger.warning(
+                    "[BodyVLM] response attempt=%s status=%d latency_ms=%.1f",
+                    attempt, exc.code, (time.monotonic() - started) * 1000.0,
+                )
+                raise
 
         def describe_http_error(exc: HTTPError, attempt: str) -> str:
             try:
@@ -869,39 +978,51 @@ class BodySceneInterpreter:
             )
             return detail or str(exc.reason or "provider rejected request")
 
-        try:
-            result = request_completion("json+image")
-        except HTTPError as exc:
+        visual_cache_key = self._visual_cache_key(str(camera_image), camera_meta, model) if visual_only else ""
+        cached_interpretation = self._visual_cache_get(visual_cache_key) if visual_cache_key else None
+        if cached_interpretation is not None:
+            logger.info("[BodyVLM] visual cache hit model=%s frame=%s", model, packet.get("frame_id"))
+            content = json.dumps(cached_interpretation, ensure_ascii=False)
+            result = None
+        else:
+            logger.info("[BodyVLM] visual cache miss model=%s frame=%s", model, packet.get("frame_id"))
+            try:
+                result = request_completion("json+image")
+            except HTTPError as exc:
             # LM Studio versions differ in JSON-schema support. First remove
             # that optional constraint, then fall back to text-only input for
             # instruct models that reject a vision content part with 400/422.
-            if exc.code not in {400, 422}:
-                detail = describe_http_error(exc, "json+image")
-                return self._error(f"VLM provider HTTP {exc.code}: {detail}")
-            first_detail = describe_http_error(exc, "json+image")
-            payload.pop("response_format", None)
-            try:
-                result = request_completion("image-no-format")
-            except HTTPError as retry_exc:
-                if retry_exc.code not in {400, 422} or not isinstance(user_content, list):
-                    detail = describe_http_error(retry_exc, "image-no-format")
-                    return self._error(f"VLM provider HTTP {retry_exc.code}: {detail}")
-                second_detail = describe_http_error(retry_exc, "image-no-format")
-                payload["messages"][1]["content"] = prompt
+                if exc.code not in {400, 422}:
+                    detail = describe_http_error(exc, "json+image")
+                    if exc.code == 500 and ("-100201" in detail or "Model loading failed" in detail):
+                        with self._lock:
+                            self._qnn_cooldown_until = time.monotonic() + 60.0
+                            self._qnn_cooldown_model = model
+                    return self._error(f"VLM provider HTTP {exc.code}: {detail}")
+                first_detail = describe_http_error(exc, "json+image")
+                payload.pop("response_format", None)
                 try:
-                    result = request_completion("text-only-fallback")
-                except HTTPError as final_exc:
-                    final_detail = describe_http_error(final_exc, "text-only-fallback")
-                    def short(value: str) -> str:
-                        return " ".join(value.split())[:48]
+                    result = request_completion("image-no-format")
+                except HTTPError as retry_exc:
+                    if retry_exc.code not in {400, 422} or not isinstance(user_content, list):
+                        detail = describe_http_error(retry_exc, "image-no-format")
+                        return self._error(f"VLM provider HTTP {retry_exc.code}: {detail}")
+                    second_detail = describe_http_error(retry_exc, "image-no-format")
+                    payload["messages"][1]["content"] = prompt
+                    try:
+                        result = request_completion("text-only-fallback")
+                    except HTTPError as final_exc:
+                        final_detail = describe_http_error(final_exc, "text-only-fallback")
+                        def short(value: str) -> str:
+                            return " ".join(value.split())[:48]
 
-                    return self._error(
-                        "Provider rejected Body request: "
-                        f"JSON+image {exc.code} {short(first_detail)}; "
-                        f"image {retry_exc.code} {short(second_detail)}; "
-                        f"text {final_exc.code} {short(final_detail)}"
-                    )
-        content = (((result.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+                        return self._error(
+                            "Provider rejected Body request: "
+                            f"JSON+image {exc.code} {short(first_detail)}; "
+                            f"image {retry_exc.code} {short(second_detail)}; "
+                            f"text {final_exc.code} {short(final_detail)}"
+                        )
+            content = (((result.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
         if not content:
             return self._error("Body LLM returned no content")
         interpretation = self._parse_json_object(content)
@@ -945,6 +1066,8 @@ class BodySceneInterpreter:
                 logger.debug("Body LLM JSON repair failed: %s", exc)
         if interpretation is None:
             return self._error("Body LLM returned malformed JSON interpretation")
+        if visual_cache_key and cached_interpretation is None:
+            self._visual_cache_put(visual_cache_key, interpretation)
         semantic_scene = self._ground_interpretation(
             interpretation, packet, self._semantic_reference_resolver
         )
@@ -977,6 +1100,9 @@ class BodySceneInterpreter:
         return {
             "status": "interpreted",
             "model": model,
+            "interpretation_mode": "image_only" if visual_only else "sensor_packet",
+            "visual_cache_hit": cached_interpretation is not None,
+            "latency_ms": round((time.monotonic() - call_started) * 1000.0, 1),
             "observed_at": packet.get("timestamp"),
             "updated_at": time.time(),
             "interpretation": interpretation,

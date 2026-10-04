@@ -161,6 +161,9 @@ class BodyHost:
         self._robot_sim_lock = threading.RLock()
         self._local_camera: LocalCameraCapture | None = None
         self._local_camera_lock = threading.RLock()
+        self._body_vlm_test_lock = threading.Lock()
+        self._body_vlm_test_status: dict = {"status": "idle", "job_id": None}
+        self._body_vlm_test_thread: threading.Thread | None = None
         self._ros2_bridge = None
         self._workflow_manager = None
         self._repository_updater = RepositoryUpdater(ROOT)
@@ -500,12 +503,17 @@ class BodyHost:
             result = wm.scene_interpreter.interpret_now(packet)
             interpreted = result.get("status") == "interpreted"
             grounding = (result.get("semantic_scene") or {}).get("grounding") or {}
+            diagnosis = result.get("diagnosis")
+            if isinstance(diagnosis, dict) and diagnosis.get("code") == "qnn_model_load_failed":
+                diagnosis = self._qnn_memory_snapshot(diagnosis)
+                LOG.error("[BodyVLM-QNN] model initialization failed: %s", diagnosis)
             return {
                 "ok": interpreted,
                 "stage": "complete" if interpreted else "interpret",
                 "model": result.get("model") or self.body_llm_settings().get("model"),
                 "status": result.get("status"),
                 "error": result.get("error"),
+                "diagnosis": diagnosis,
                 "grounding": grounding,
                 "interpretation": result.get("interpretation"),
                 "semantic_scene": result.get("semantic_scene"),
@@ -514,6 +522,65 @@ class BodyHost:
         except Exception as exc:
             LOG.exception("Body VLM test failed during %s", stage)
             return {"ok": False, "stage": stage, "error": str(exc)[:300]}
+
+    @staticmethod
+    def _qnn_memory_snapshot(diagnosis: dict) -> dict:
+        """Attach Linux shared-memory figures to QNN load diagnostics when available."""
+        enriched = dict(diagnosis)
+        try:
+            values = {}
+            for line in Path("/proc/meminfo").read_text(encoding="ascii").splitlines():
+                key, _, rest = line.partition(":")
+                if key in {"MemAvailable", "CmaTotal", "CmaFree"}:
+                    values[key] = int(rest.strip().split()[0])
+            enriched["linux_memory_mib"] = {
+                key: round(value / 1024, 1) for key, value in values.items()
+            }
+            if "CmaTotal" in values and "CmaFree" in values:
+                enriched["shared_memory_pressure"] = round(
+                    1.0 - values["CmaFree"] / max(1, values["CmaTotal"]), 3
+                )
+        except (OSError, ValueError, IndexError):
+            pass
+        return enriched
+
+    def start_body_vlm_test(self) -> dict:
+        """Start a VLM diagnostic without holding the HTTP request open."""
+        with self._body_vlm_test_lock:
+            if self._body_vlm_test_status.get("status") == "running":
+                return {"ok": True, **self._body_vlm_test_status, "reused": True}
+            job_id = f"vlm-{time.time_ns()}"
+            self._body_vlm_test_status = {
+                "ok": True, "status": "running", "job_id": job_id,
+                "started_at": time.time(), "result": None,
+            }
+            self._body_vlm_test_thread = threading.Thread(
+                target=self._run_body_vlm_test_job, args=(job_id,),
+                name="body-vlm-diagnostic", daemon=True,
+            )
+            self._body_vlm_test_thread.start()
+            return dict(self._body_vlm_test_status)
+
+    def _run_body_vlm_test_job(self, job_id: str) -> None:
+        started = time.monotonic()
+        result = self.test_body_vlm()
+        finished_at = time.time()
+        with self._body_vlm_test_lock:
+            if self._body_vlm_test_status.get("job_id") != job_id:
+                return
+            self._body_vlm_test_status = {
+                "ok": bool(result.get("ok")),
+                "status": "completed" if result.get("ok") else "failed",
+                "job_id": job_id,
+                "started_at": self._body_vlm_test_status.get("started_at"),
+                "completed_at": finished_at,
+                "latency_ms": round((time.monotonic() - started) * 1000, 1),
+                "result": result,
+            }
+
+    def body_vlm_test_status(self) -> dict:
+        with self._body_vlm_test_lock:
+            return dict(self._body_vlm_test_status)
 
     def restart_geniex(self) -> dict:
         """Restart only the local GenieX user service used by the Ventuno VLM."""
@@ -2494,6 +2561,8 @@ class BodyHost:
                     self._send(owner.camera_settings())
                 elif path == "/body/camera/frame":
                     self._send(owner.camera_frame())
+                elif path == "/body/camera/test-vlm":
+                    self._send(owner.body_vlm_test_status())
                 elif path == "/body/llm/models":
                     self._send(owner.body_llm_models())
                 elif path == "/observations":
@@ -2680,6 +2749,8 @@ class BodyHost:
                     self._send(owner.set_camera_capture(_payload_bool(body.get("enabled"))))
                 elif path == "/body/camera/test-vlm":
                     self._send(owner.test_body_vlm())
+                elif path == "/body/camera/test-vlm/start":
+                    self._send(owner.start_body_vlm_test(), 202)
                 elif path == "/body/llm/restart":
                     try:
                         is_loopback = ipaddress.ip_address(self.client_address[0].split("%", 1)[0]).is_loopback

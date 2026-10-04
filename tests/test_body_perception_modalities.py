@@ -651,10 +651,106 @@ class BodyPerceptionModalitiesTest(unittest.TestCase):
         prompt = calls[0]["messages"][1]["content"][0]["text"]
         self.assertEqual(result["status"], "interpreted")
         self.assertLess(len(prompt), 6000)
-        self.assertEqual(len(json.loads(prompt.split("\n\n", 1)[1])["modalities"]["lidar"]["points"]), 24)
+        self.assertIn("Describe only what is visibly supported", prompt)
+        self.assertNotIn("compact-frame", prompt)
+        self.assertNotIn('"cup"', prompt)
+        self.assertNotIn("lidar", prompt.lower())
         self.assertNotIn("vision_projection", prompt)
         self.assertNotIn("debug_payload", prompt)
         self.assertTrue(any(part.get("type") == "image_url" for part in calls[0]["messages"][1]["content"]))
+        self.assertLessEqual(calls[0]["max_tokens"], 192)
+        interpreter.close()
+
+    def test_scene_interpreter_reuses_image_semantics_but_regrounds_fresh_geometry(self):
+        import json
+        from body_runtime_host.worldmodel.scene_interpreter import BodySceneInterpreter
+
+        interpreter = BodySceneInterpreter({
+            "BODY_LLM_ENABLED": True,
+            "BODY_LLM_MODEL": "qualcomm/Intern3.5-VL-2B:W4A16",
+            "BODY_LLM_BASE_URL": "http://127.0.0.1:18181/v1",
+        })
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def read(self):
+                return b'{"choices":[{"message":{"content":"{\\"primary_objects\\":[\\"cup\\"],\\"object_descriptions\\":[{\\"label\\":\\"cup\\",\\"description\\":\\"small handled vessel\\",\\"confidence\\":0.9}]}"}}]}'
+
+        calls = []
+
+        def fake_urlopen(request, timeout):
+            calls.append(json.loads(request.data.decode("utf-8")))
+            return Response()
+
+        camera = {"image_base64": "same-frame-image", "mime_type": "image/jpeg", "camera_profile": "low_body_front"}
+        first = {
+            "frame_id": "frame-1", "timestamp": 1,
+            "objects": [{"id": "cup", "label": "cup", "kind": "target", "position": [1, 2, 0]}],
+            "modalities": {"camera": dict(camera)},
+        }
+        second = {
+            "frame_id": "frame-2", "timestamp": 2,
+            "objects": [{"id": "cup", "label": "cup", "kind": "target", "position": [8, 9, 0]}],
+            "modalities": {"camera": dict(camera)},
+        }
+        with patch("body_runtime_host.worldmodel.scene_interpreter.urlopen", side_effect=fake_urlopen):
+            result1 = interpreter._interpret(first)
+            result2 = interpreter._interpret(second)
+
+        self.assertEqual(result1["status"], "interpreted")
+        self.assertEqual(result2["status"], "interpreted")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(result1["semantic_scene"]["entities"][0]["position"], [1.0, 2.0, 0.0])
+        self.assertEqual(result2["semantic_scene"]["entities"][0]["position"], [8.0, 9.0, 0.0])
+        self.assertEqual(interpreter.status()["visual_cache"], {"hits": 1, "misses": 1, "entries": 1})
+        interpreter.close()
+
+    def test_qnn_model_load_error_has_payload_independent_diagnosis(self):
+        from body_runtime_host.worldmodel.scene_interpreter import BodySceneInterpreter
+
+        result = BodySceneInterpreter({"BODY_LLM_MODEL": "qualcomm/Intern3.5-VL-2B:W4A16"})._error(
+            'VLM provider HTTP 500: {"code":-100201,"error":"SDKError(Model loading failed)"}'
+        )
+        self.assertEqual(result["diagnosis"]["code"], "qnn_model_load_failed")
+        self.assertFalse(result["diagnosis"]["payload_related"])
+        self.assertIn("CMA", result["diagnosis"]["checks"][0])
+
+    def test_qnn_model_load_failure_uses_short_circuit_cooldown(self):
+        from body_runtime_host.worldmodel.scene_interpreter import BodySceneInterpreter
+
+        interpreter = BodySceneInterpreter({
+            "BODY_LLM_ENABLED": True,
+            "BODY_LLM_MODEL": "qualcomm/Intern3.5-VL-2B:W4A16",
+            "BODY_LLM_BASE_URL": "http://127.0.0.1:18181/v1",
+        })
+        packet = {
+            "frame_id": "qnn-fail",
+            "objects": [],
+            "modalities": {"camera": {"image_base64": "image", "mime_type": "image/jpeg"}},
+        }
+        calls = []
+
+        def fail_load(request, timeout):
+            calls.append(request)
+            raise HTTPError(
+                request.full_url, 500, "model load failed", {},
+                BytesIO(b'{"code":-100201,"error":"SDKError(Model loading failed)"}'),
+            )
+
+        with patch("body_runtime_host.worldmodel.scene_interpreter.urlopen", side_effect=fail_load):
+            first = interpreter._interpret(packet)
+            second = interpreter._interpret(packet)
+
+        self.assertEqual(first["diagnosis"]["code"], "qnn_model_load_failed")
+        self.assertEqual(second["diagnosis"]["code"], "qnn_model_load_failed")
+        self.assertIn("retry suppressed", second["error"])
+        self.assertEqual(len(calls), 1)
+        self.assertGreater(interpreter.status()["provider_cooldown_seconds"], 0)
         interpreter.close()
 
     def test_body_vlm_test_identifies_observation_stage_failures(self):
@@ -674,6 +770,33 @@ class BodyPerceptionModalitiesTest(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["stage"], "observe")
         self.assertIn("HTTP Error 400", result["error"])
+
+    def test_body_vlm_diagnostic_runs_as_pollable_background_job(self):
+        import threading
+        import time
+        from body_runtime_host.runtime import BodyHost
+
+        host = BodyHost.__new__(BodyHost)
+        host._body_vlm_test_lock = threading.Lock()
+        host._body_vlm_test_status = {"status": "idle", "job_id": None}
+        gate = threading.Event()
+
+        def fake_test():
+            gate.wait(1)
+            return {"ok": True, "stage": "complete", "model": "test-vlm"}
+
+        host.test_body_vlm = fake_test
+        started = host.start_body_vlm_test()
+        self.assertEqual(started["status"], "running")
+        self.assertIsNotNone(started["job_id"])
+        gate.set()
+        deadline = time.monotonic() + 1
+        while host.body_vlm_test_status()["status"] == "running" and time.monotonic() < deadline:
+            time.sleep(0.01)
+        completed = host.body_vlm_test_status()
+        self.assertEqual(completed["status"], "completed")
+        self.assertTrue(completed["ok"])
+        self.assertGreaterEqual(completed["latency_ms"], 0)
 
 
 if __name__ == "__main__":
