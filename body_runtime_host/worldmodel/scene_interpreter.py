@@ -812,6 +812,16 @@ class BodySceneInterpreter:
                     return value.strip()
             return ""
 
+        def descriptive_text(item: Dict[str, Any]) -> str:
+            value = get_text(item, ("description", "visual_description", "appearance", "caption"))
+            if value:
+                return value
+            for key, raw in item.items():
+                if (str(key).lower().endswith("_description")
+                        and isinstance(raw, str) and raw.strip()):
+                    return raw.strip()
+            return ""
+
         if not get_text(normalized, ("scene_summary", "summary")):
             caption = get_text(normalized, ("scene_description", "caption", "overview"))
             if caption:
@@ -838,7 +848,7 @@ class BodySceneInterpreter:
             if isinstance(value, dict):
                 item = dict(value)
                 label = get_text(item, ("label", "name", "class", "category", "object"))
-                description = get_text(item, ("description", "visual_description", "appearance", "caption"))
+                description = descriptive_text(item)
                 if label and not item.get("label"):
                     item["label"] = label
                 if description and not item.get("description"):
@@ -850,7 +860,7 @@ class BodySceneInterpreter:
                 canonical_descriptions.append({"label": value.strip()})
 
         root_label = get_text(normalized, ("label", "name", "class", "category", "object"))
-        root_description = get_text(normalized, ("description", "visual_description", "appearance"))
+        root_description = descriptive_text(normalized)
         existing_labels = {
             get_text(item, ("label", "name", "class", "category", "object")).casefold()
             for item in canonical_descriptions if isinstance(item, dict)

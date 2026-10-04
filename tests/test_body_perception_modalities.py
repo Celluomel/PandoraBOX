@@ -461,6 +461,22 @@ class BodyPerceptionModalitiesTest(unittest.TestCase):
         finally:
             interpreter.close()
 
+    def test_open_vocabulary_short_description_is_groundable(self):
+        from body_runtime_host.worldmodel.scene_interpreter import BodySceneInterpreter
+
+        interpretation = BodySceneInterpreter._normalize_interpretation_schema({
+            "object_descriptions": [{"label": "purple cube",
+                                     "short_visual_description": "a purple cube on the floor"}],
+        })
+        self.assertEqual(interpretation["object_descriptions"][0]["description"],
+                         "a purple cube on the floor")
+        scene = BodySceneInterpreter._ground_interpretation(interpretation, {
+            "frame_id": "sample", "timestamp": 1.0,
+            "objects": [{"id": "target", "label": "purple cube", "kind": "obstacle",
+                         "position": [4.0, 1.0, 0.0], "size": 1.0}],
+        })
+        self.assertEqual(scene["entities"][0]["description"], "a purple cube on the floor")
+
     def test_open_vocabulary_root_description_is_normalized_and_semantically_grounded(self):
         from body_runtime_host.worldmodel.scene_interpreter import BodySceneInterpreter
 
