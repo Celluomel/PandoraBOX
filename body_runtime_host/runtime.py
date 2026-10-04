@@ -668,6 +668,7 @@ class BodyHost:
 
     def start_vlm_sensorimotor_test(self, request: dict | None = None) -> dict:
         """Start an explicit VLM + paired-sensor scene suite."""
+        roi_compare = bool((request or {}).get("roi_compare", False))
         try:
             scene_count = max(1, min(5, int((request or {}).get("scenes", 3))))
         except (TypeError, ValueError):
@@ -681,13 +682,13 @@ class BodyHost:
                 "progress": {"stage": "starting"}, "result": None,
             }
             self._sensorimotor_test_thread = threading.Thread(
-                target=self._run_vlm_sensorimotor_test, args=(job_id, scene_count),
+                target=self._run_vlm_sensorimotor_test, args=(job_id, scene_count, roi_compare),
                 name="body-vlm-sensorimotor-test", daemon=True,
             )
             self._sensorimotor_test_thread.start()
             return dict(self._sensorimotor_test_status)
 
-    def _run_vlm_sensorimotor_test(self, job_id: str, scene_count: int) -> None:
+    def _run_vlm_sensorimotor_test(self, job_id: str, scene_count: int, roi_compare: bool = False) -> None:
         started = time.monotonic()
         try:
             from body_runtime_host.worldmodel.evaluation import run_vlm_sensorimotor_suite
@@ -698,7 +699,8 @@ class BodyHost:
                         self._sensorimotor_test_status["progress"] = dict(update)
 
             result = run_vlm_sensorimotor_suite(
-                self.config, scene_count=scene_count, progress_callback=progress,
+                self.config, scene_count=scene_count, roi_compare=roi_compare,
+                progress_callback=progress,
             )
             status = str(result.get("status") or "failed")
         except Exception as exc:

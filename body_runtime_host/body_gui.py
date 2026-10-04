@@ -976,6 +976,27 @@ refreshBody=async function(){const result=await refreshBodyWithBridge();void ref
 BODY_GUI_HTML = BODY_GUI_HTML.replace(
     "</body></html>",
     """<script>
+function mountMmwaveRoiExperiment(){
+  const panel=document.getElementById('sensorimotor-panel');
+  const run=document.getElementById('sensorimotor-run');
+  if(panel&&run&&!document.getElementById('mmwave-roi-run')){
+    const button=document.createElement('button');button.id='mmwave-roi-run';button.type='button';
+    button.textContent='Compare mmWave-guided crops';button.title='One matched simulated scene; one full-frame call and one full-frame + up to 2 radar-guided crops call';
+    button.onclick=runMmwaveRoiExperiment;run.after(button);
+  }
+}
+async function runMmwaveRoiExperiment(){
+  const button=document.getElementById('mmwave-roi-run'),panel=document.getElementById('sensorimotor-panel');
+  if(button)button.disabled=true;
+  document.getElementById('sensorimotor-state').textContent='Starting';
+  document.getElementById('sensorimotor-live').textContent='Same-frame A/B · 1 simulated scene · full image versus full image + at most 2 mmWave-guided crops · no robot actuation';
+  for(const key of ['rendered','groundingRendered','autonomyRendered','suiteRendered','comparisonLabeled','outputRendered','roiComparisonRendered'])panel.dataset[key]='';
+  try{await post('/worldmodel/sensorimotor-test/run',{scenes:1,roi_compare:true});await refreshSensorimotorScenario()}
+  catch(error){document.getElementById('sensorimotor-state').textContent='Failed';document.getElementById('sensorimotor-summary').textContent=error.message;if(button)button.disabled=false}
+}
+const refreshSensorimotorRoiBase=refreshSensorimotorScenario;
+refreshSensorimotorScenario=async function(){await refreshSensorimotorRoiBase();mountMmwaveRoiExperiment();const panel=document.getElementById('sensorimotor-panel'),button=document.getElementById('mmwave-roi-run');if(button)button.disabled=document.getElementById('sensorimotor-state')?.textContent==='running';if(!panel||!['completed','incomplete','failed'].includes(document.getElementById('sensorimotor-state')?.textContent)||panel.dataset.roiComparisonRendered===panel.dataset.rendered)return;let report;try{report=JSON.parse(document.getElementById('sensorimotor-report')?.textContent||'{}')}catch{return}const comparison=report.roi_comparison;if(!comparison)return;const ms=value=>value==null?'—':(Number(value)/1000).toFixed(1)+' s';const summary=document.getElementById('sensorimotor-summary');if(summary)summary.textContent=`mmWave ROI A/B · same frame ${comparison.same_frame_id?'yes':'NO'} · full image ${ms(comparison.full_image_latency_ms)} · global + ${comparison.roi_count} crops ${ms(comparison.roi_latency_ms)} · target covered ${comparison.task_target_covered?'yes':'NO'} · grounding ${comparison.full_image_grounding_accepted?'full accepted':'full rejected'} / ${comparison.roi_grounding_accepted?'ROI accepted':'ROI rejected'}`;panel.dataset.roiComparisonRendered=panel.dataset.rendered};
+mountMmwaveRoiExperiment();
 function mountFnkUsbSettings(){
   const settings=document.querySelector('#fnk0031-panel .plugin-settings');
   if(settings&&!document.getElementById('fnk0031-serial-port')){

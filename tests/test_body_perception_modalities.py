@@ -300,6 +300,93 @@ class BodyPerceptionModalitiesTest(unittest.TestCase):
         finally:
             interpreter.close()
 
+    def test_mmwave_projects_conservative_camera_roi_without_semantic_identity(self):
+        import json
+        from types import SimpleNamespace
+        from body_runtime_host.worldmodel.scene_interpreter import BodySceneInterpreter
+        from body_runtime_host.worldmodel.virtual_camera import render_camera
+
+        body = SimpleNamespace(position=[1.0, 1.0, 0.0], orientation=0.0)
+        camera = render_camera(body, [], width=640, height=480)
+        packet = {
+            "frame_id": "roi-same-frame", "timestamp": 123.0, "visual_blind": True,
+            "body": {"position": [1.0, 1.0, 0.0], "orientation": 0.0,
+                     "coordinate_frame": "world"},
+            "modalities": {"camera": camera, "mmwave_radar": {
+                "frame": "local_map", "coordinate_frame": "local_map", "targets": [
+                    {"target_id": "hidden-track-id", "position_m": [5.0, 1.0, 0.0],
+                     "confidence": 0.9, "classification": "hidden-class"},
+                ],
+            }},
+        }
+        image = "data:image/png;base64," + camera["image_base64"]
+        crops, boxes = BodySceneInterpreter._mmwave_roi_crops(
+            image, camera, packet, max_rois=2
+        )
+        self.assertEqual(len(crops), 1)
+        self.assertEqual(len(boxes), 1)
+        self.assertAlmostEqual(boxes[0]["bearing_deg"], 0.0, places=1)
+        self.assertGreaterEqual(boxes[0]["width"], 128)
+        self.assertGreater(boxes[0]["height"], 250)
+        self.assertNotIn("hidden-track-id", json.dumps(boxes))
+        self.assertNotIn("hidden-class", json.dumps(boxes))
+        packet["modalities"]["mmwave_radar"]["coordinate_frame"] = "unknown_frame"
+        self.assertEqual(BodySceneInterpreter._mmwave_roi_crops(image, camera, packet)[0], [])
+
+    def test_mmwave_roi_images_share_one_vision_request_with_global_frame(self):
+        import json
+        from types import SimpleNamespace
+        from body_runtime_host.worldmodel.scene_interpreter import BodySceneInterpreter
+        from body_runtime_host.worldmodel.virtual_camera import render_camera
+
+        camera = render_camera(SimpleNamespace(position=[0.0, 0.0, 0.0], orientation=0.0), [],
+                               width=320, height=240)
+        sent = {}
+
+        class Response:
+            def __enter__(self): return self
+            def __exit__(self, *_): return False
+            def read(self):
+                return json.dumps({"choices": [{"message": {"content": json.dumps({
+                    "scene_summary": "A visible structure ahead.",
+                    "object_descriptions": [{"label": "structure", "description": "upright object"}],
+                })}}]}).encode()
+
+        def fake_urlopen(request, timeout):
+            sent.update(json.loads(request.data.decode()))
+            return Response()
+
+        interpreter = BodySceneInterpreter({
+            "BODY_LLM_ENABLED": True, "BODY_LLM_MODEL": "test-vlm",
+            "BODY_LLM_BASE_URL": "http://vlm.test/v1",
+        })
+        packet = {
+            "frame_id": "roi-one-call", "timestamp": 123.0, "visual_blind": True,
+            "body": {"position": [0.0, 0.0, 0.0], "orientation": 0.0,
+                     "coordinate_frame": "world"},
+            "objects": [{"id": "target", "label": "purple cube", "position": [4.0, 0.0, 0.0]}],
+            "modalities": {"camera": camera, "mmwave_radar": {
+                "frame_id": "roi-one-call", "timestamp": 123.0,
+                "coordinate_frame": "local_map", "targets": [
+                    {"target_id": "must-not-leak", "position_m": [4.0, 0.0, 0.0], "confidence": 0.8},
+                ],
+            }, "lidar": {"points": []}},
+        }
+        try:
+            with patch("body_runtime_host.worldmodel.scene_interpreter.urlopen", side_effect=fake_urlopen):
+                result = interpreter.interpret_now(
+                    packet, visual_options={"include_sensor_context": True, "mmwave_roi": True}
+                )
+            content = sent["messages"][1]["content"]
+            self.assertEqual(result["status"], "interpreted")
+            self.assertEqual([part["type"] for part in content].count("image_url"), 2)
+            self.assertEqual(len(result["visual_input"]["mmwave_rois"]), 1)
+            self.assertNotIn("must-not-leak", content[0]["text"])
+            self.assertIn("mmWave-guided camera crop", content[2]["text"])
+            self.assertEqual(result["interpretation_mode"], "sensor_packet")
+        finally:
+            interpreter.close()
+
     def test_open_vocabulary_root_description_is_normalized_and_semantically_grounded(self):
         from body_runtime_host.worldmodel.scene_interpreter import BodySceneInterpreter
 

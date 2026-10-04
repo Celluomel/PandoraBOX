@@ -594,6 +594,112 @@ class BodySceneInterpreter:
             return image, metadata
 
     @staticmethod
+    def _mmwave_roi_crops(
+        image: str, camera: Dict[str, Any], packet: Dict[str, Any], *, max_rois: int = 2,
+    ) -> tuple[list[tuple[str, Dict[str, Any]]], list[Dict[str, Any]]]:
+        """Make conservative, lower-field crops around radar-projected bearings.
+
+        The full frame remains in the request as global context. Radar IDs and
+        classifications are intentionally excluded from the descriptors sent
+        to the VLM: radar selects where to inspect, not what the object is.
+        """
+        if not image or image.startswith("http"):
+            return [], []
+        raw_radar = ((packet.get("modalities") or {}).get("mmwave_radar") or {})
+        coordinate_frame = str(raw_radar.get("coordinate_frame") or raw_radar.get("frame") or "").lower()
+        body = packet.get("body") if isinstance(packet.get("body"), dict) else {}
+        body_frame = str(body.get("coordinate_frame") or "").lower()
+        frame = coordinate_frame or body_frame
+        if frame in {"map", "world", "local_map"} and not isinstance(body.get("position"), (list, tuple)):
+            return [], []
+        if frame not in {"map", "world", "local_map", "body", "base_link", "base_footprint"}:
+            return [], []
+        encoded = image.partition(",")[2] if image.startswith("data:") else image
+        if image.startswith("data:") and "," not in image:
+            return [], []
+        try:
+            import cv2
+            import numpy as np
+
+            raw = base64.b64decode(encoded, validate=False)
+            frame_image = cv2.imdecode(np.frombuffer(raw, dtype=np.uint8), cv2.IMREAD_COLOR)
+            if frame_image is None:
+                return [], []
+            height, width = frame_image.shape[:2]
+            calibration = camera.get("calibration") if isinstance(camera.get("calibration"), dict) else {}
+            fov = float(calibration.get("fov_deg") or camera.get("fov_deg") or 90.0)
+            fov = max(20.0, min(170.0, fov))
+            pose = body.get("position") or [0.0, 0.0, 0.0]
+            bx, by = float(pose[0]), float(pose[1])
+            yaw = float(body.get("orientation") or 0.0)
+            camera_yaw = math.radians(float(calibration.get("yaw_offset_deg") or 0.0))
+            candidates = []
+            for target in raw_radar.get("targets") or []:
+                if not isinstance(target, dict):
+                    continue
+                try:
+                    position = target.get("position_m") or target.get("position")
+                    tx, ty = float(position[0]), float(position[1])
+                    if frame in {"map", "world", "local_map"}:
+                        dx, dy = tx - bx, ty - by
+                        bearing = math.atan2(dy, dx) - yaw - camera_yaw
+                        distance = math.hypot(dx, dy)
+                    else:
+                        bearing = math.atan2(ty, tx) - camera_yaw
+                        distance = math.hypot(tx, ty)
+                    bearing = math.atan2(math.sin(bearing), math.cos(bearing))
+                    confidence = max(0.0, min(1.0, float(target.get("confidence", 0.5))))
+                except (IndexError, TypeError, ValueError):
+                    continue
+                if distance < 0.15 or distance > float(calibration.get("far_m") or 12.0):
+                    continue
+                if abs(bearing) > math.radians(fov / 2.0):
+                    continue
+                candidates.append((confidence, distance, bearing))
+            candidates.sort(key=lambda item: (-item[0], item[1]))
+            crops = []
+            descriptors = []
+            used_ranges: list[tuple[int, int]] = []
+            half_fov = math.radians(fov) / 2.0
+            for confidence, distance, bearing in candidates:
+                if len(crops) >= max(0, min(2, int(max_rois))):
+                    break
+                center_x = int(round(width * (0.5 + (bearing / half_fov) * 0.46)))
+                # A 12-degree minimum angular margin absorbs radar/camera
+                # extrinsic error; low-confidence detections get a wider crop.
+                half_angle = min(32.0, 12.0 + (1.0 - confidence) * 12.0)
+                half_px = max(int(width * 0.125), int(round(width * 0.46 * half_angle / (fov / 2.0))))
+                x0, x1 = max(0, center_x - half_px), min(width, center_x + half_px)
+                if x1 - x0 < width * 0.20:
+                    extra = int(width * 0.20 - (x1 - x0)) // 2 + 1
+                    x0, x1 = max(0, x0 - extra), min(width, x1 + extra)
+                if any(max(x0, left) < min(x1, right) for left, right in used_ranges):
+                    continue
+                # Floor-level robot cameras see actionable objects below the
+                # horizon. Keep a generous vertical band because radar has no
+                # object-height measurement.
+                y0, y1 = int(height * 0.38), int(height * 0.98)
+                crop = frame_image[y0:y1, x0:x1]
+                ok, jpeg = cv2.imencode(".jpg", crop, [int(cv2.IMWRITE_JPEG_QUALITY), 82])
+                if not ok:
+                    continue
+                image_url = "data:image/jpeg;base64," + base64.b64encode(jpeg.tobytes()).decode("ascii")
+                descriptor = {
+                    "x": x0, "y": y0, "width": x1 - x0, "height": y1 - y0,
+                    "normalized": [round(x0 / width, 4), round(y0 / height, 4),
+                                   round((x1 - x0) / width, 4), round((y1 - y0) / height, 4)],
+                    "bearing_deg": round(math.degrees(bearing), 1),
+                    "range_m": round(distance, 2), "confidence": round(confidence, 2),
+                }
+                crops.append((image_url, descriptor))
+                descriptors.append(descriptor)
+                used_ranges.append((x0, x1))
+            return crops, descriptors
+        except Exception as exc:
+            logger.warning("[BodyVLM] mmWave ROI skipped: %s", str(exc)[:160])
+            return [], []
+
+    @staticmethod
     def _normalize_interpretation_schema(interpretation: Dict[str, Any]) -> Dict[str, Any]:
         """Normalize common VLM JSON shapes without constraining its vocabulary."""
         normalized = dict(interpretation)
@@ -929,6 +1035,21 @@ class BodySceneInterpreter:
             camera_meta.update({key: value for key, value in visual_input.items() if key != "image_resized_for_vlm"})
         visual_input["max_width"] = visual_image_max_width
         camera_image_size = len(str(camera_image)) if camera_image else 0
+        roi_crops: list[tuple[str, Dict[str, Any]]] = []
+        roi_descriptors: list[Dict[str, Any]] = []
+        if visual_options.get("mmwave_roi") and camera_image:
+            roi_crops, roi_descriptors = self._mmwave_roi_crops(
+                str(camera_image), camera_meta, packet,
+                max_rois=int(visual_options.get("max_rois", 2) or 2),
+            )
+            visual_input["mmwave_roi_count"] = len(roi_crops)
+            visual_input["mmwave_rois"] = roi_descriptors
+            if roi_crops:
+                camera_image, global_meta = self._resize_visual_input(
+                    str(camera_image), camera_meta,
+                    max(320, min(480, int(visual_options.get("global_context_width", 320) or 320))),
+                )
+                visual_input["global_context_width"] = global_meta.get("analysis_width") or global_meta.get("width")
         depth_image = camera_meta.pop("depth_base64", None)
         camera_meta["image_attached"] = bool(camera_image)
         camera_meta["depth_attached"] = bool(depth_image)
@@ -1021,6 +1142,13 @@ class BodySceneInterpreter:
             "This is advisory perception; never issue actuator commands.\n\n"
             + json.dumps(prompt_packet, ensure_ascii=False, separators=(",", ":"))
         )
+        if roi_crops:
+            prompt += (
+                "\nThe following additional images are crops selected only by metric mmWave bearing/range. "
+                "The first image is the complete scene for context; inspect each crop closely for visual "
+                "evidence. Radar does not identify objects. Crops: "
+                + json.dumps(roi_descriptors, separators=(",", ":"))
+            )
         visual_only = bool(camera_image) and not bool(visual_options.get("include_sensor_context"))
         visual_max_objects = max(1, min(10, int(self._config.get("BODY_LLM_VISUAL_MAX_OBJECTS", 5) or 5)))
         visual_max_tokens = max(32, min(512, int(self._config.get("BODY_LLM_VISUAL_MAX_TOKENS", 128) or 128)))
@@ -1068,6 +1196,17 @@ class BodySceneInterpreter:
                     {"type": "text", "text": prompt},
                     {"type": "image_url", "image_url": {"url": image_url}},
                 ]
+                for crop_url, descriptor in roi_crops:
+                    user_content.append({"type": "text", "text": (
+                        "mmWave-guided camera crop; bearing " + str(descriptor["bearing_deg"])
+                        + " degrees, range " + str(descriptor["range_m"]) + " m."
+                    )})
+                    user_content.append({"type": "image_url", "image_url": {"url": crop_url}})
+        if roi_crops:
+            logger.info(
+                "[BodyVLM] mmWave ROI images=%d frame=%s boxes=%s",
+                len(roi_crops), packet.get("frame_id"), json.dumps(roi_descriptors, separators=(",", ":")),
+            )
         payload = {
             "model": model,
             "messages": [
@@ -1264,7 +1403,7 @@ class BodySceneInterpreter:
             "interpretation_mode": "image_only" if visual_only else "sensor_packet",
             "visual_cache_hit": cached_interpretation is not None,
             "latency_ms": round((time.monotonic() - call_started) * 1000.0, 1),
-            "visual_input": visual_input if visual_only else None,
+            "visual_input": visual_input if visual_only or roi_crops else None,
             "observed_at": packet.get("timestamp"),
             "updated_at": time.time(),
             "interpretation": interpretation,

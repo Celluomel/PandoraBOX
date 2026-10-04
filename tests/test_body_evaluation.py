@@ -216,6 +216,50 @@ class BodyEvaluationTests(unittest.TestCase):
             self.assertEqual(packet["modalities"]["lidar"]["timestamp"], timestamp)
             self.assertEqual(packet["modalities"]["mmwave_radar"]["timestamp"], timestamp)
 
+    def test_mmwave_roi_suite_compares_two_inputs_on_identical_frame(self):
+        captured = []
+
+        def fake_interpret(_interpreter, packet, *, visual_options=None):
+            captured.append((packet, visual_options))
+            target = next(item for item in packet["objects"] if item["id"] == "target")
+            frame_id = packet["frame_id"]
+            return {
+                "status": "interpreted", "interpretation_mode": "sensor_packet", "latency_ms": 10.0,
+                "visual_input": ({"mmwave_rois": [{"x": 500, "y": 100, "width": 130, "height": 200}]}
+                                 if visual_options.get("mmwave_roi") else {}),
+                "interpretation": {"object_descriptions": [{
+                    "label": "purple cube", "description": "purple cube on the floor", "role": "goal",
+                }]},
+                "semantic_scene": {
+                    "frame_id": frame_id,
+                    "entities": [{"id": "target", "semantic_label": "purple cube", "role": "goal",
+                                  "description": "purple cube on the floor",
+                                  "position": target["position"], "size": target["size"]}],
+                    "grounding": {"frame_id": frame_id, "accepted_for_context": True},
+                },
+            }
+
+        with patch("body_runtime_host.worldmodel.evaluation.BodySceneInterpreter.interpret_now", new=fake_interpret), \
+                patch("body_runtime_host.worldmodel.evaluation.BodySceneInterpreter._semantic_reference_resolver",
+                      return_value={"purple cube": "target"}):
+            result = run_vlm_sensorimotor_suite({
+                "BODY_LLM_ENABLED": True, "BODY_LLM_MODEL": "test-vlm",
+            }, scene_count=1, roi_compare=True)
+
+        self.assertEqual(result["status"], "completed", result)
+        self.assertEqual(result["vlm_calls"], 2)
+        self.assertEqual(len(captured), 2)
+        self.assertEqual(captured[0][0]["frame_id"], captured[1][0]["frame_id"])
+        self.assertEqual(captured[0][0]["timestamp"], captured[1][0]["timestamp"])
+        self.assertFalse(captured[0][1]["mmwave_roi"])
+        self.assertTrue(captured[1][1]["mmwave_roi"])
+        self.assertEqual(result["roi_comparison"]["roi_count"], 1)
+        self.assertTrue(result["roi_comparison"]["same_frame_id"])
+        self.assertTrue(result["roi_comparison"]["task_target_covered"])
+        self.assertEqual(result["roi_comparison"]["full_image_latency_ms"], 10.0)
+        roi_snapshot = next(item for item in result["snapshots"] if item["stage"] == "mmwave_roi")
+        self.assertTrue(roi_snapshot["roi_evaluation"]["same_frame_as_full_image"])
+
     def test_sensorimotor_scenario_stops_when_multimodal_grounding_is_rejected(self):
         def fake_interpret(_interpreter, packet, *, visual_options=None):
             frame_id = packet["frame_id"]

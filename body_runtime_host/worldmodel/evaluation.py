@@ -553,6 +553,7 @@ def _sensor_route(body: Any, lidar: Dict[str, Any], goal: tuple[int, int], room:
 def run_vlm_sensorimotor_scenario(
     config: Dict[str, Any], *, progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     seed: int = 31, max_actions: int = 32, compare_modalities: bool = True,
+    roi_compare: bool = False,
     interpreter: Optional[BodySceneInterpreter] = None,
 ) -> Dict[str, Any]:
     """Run a simulation-only camera + LiDAR + VLM closed-loop navigation check."""
@@ -625,14 +626,15 @@ def run_vlm_sensorimotor_scenario(
             return observation, body, lidar, packet
 
         def interpret_frame(stage: str, frame: tuple[Any, Any, Dict[str, Any], Dict[str, Any]],
-                            *, include_sensor_context: bool) -> Dict[str, Any]:
+                            *, include_sensor_context: bool, mmwave_roi: bool = False) -> Dict[str, Any]:
             observation, body, lidar, packet = frame
             camera = observation.modalities["camera"]
             radar = observation.modalities.get("mmwave_radar") or {}
             frame_id = str(packet["frame_id"])
             timestamp = float(packet["timestamp"])
             result = interpreter.interpret_now(
-                packet, visual_options={"include_sensor_context": include_sensor_context, "bypass_cache": True},
+                packet, visual_options={"include_sensor_context": include_sensor_context, "bypass_cache": True,
+                                        "mmwave_roi": mmwave_roi, "max_rois": 2},
             )
             semantic = result.get("semantic_scene") or {}
             raw_interpretation = result.get("interpretation") or {}
@@ -686,6 +688,7 @@ def run_vlm_sensorimotor_scenario(
                 "scene_summary": scene_summary,
                 "vlm_interpretation": interpretation,
                 "vlm_raw_output": raw_interpretation if isinstance(raw_interpretation, dict) else {},
+                "visual_input": result.get("visual_input"),
                 "grounding": semantic.get("grounding"), "error": result.get("error"),
             })
             if result.get("status") != "interpreted":
@@ -708,6 +711,46 @@ def run_vlm_sensorimotor_scenario(
                 sensor_stage="same image + synchronized LiDAR, mmWave and pose")
         lidar_vlm = interpret_frame("camera_plus_sensors", paired_frame, include_sensor_context=True)
         paired_snapshot = snapshots[-1]
+        if roi_compare:
+            publish("SAME-FRAME mmWAVE ROI A/B", frame_id=paired_frame_id,
+                    sensor_stage="same global image + up to 2 radar-guided crops")
+            try:
+                interpret_frame("mmwave_roi", paired_frame, include_sensor_context=True, mmwave_roi=True)
+                roi_snapshot = snapshots[-1]
+                camera_meta = paired_frame[0].modalities.get("camera") or {}
+                fov = math.radians(float((camera_meta.get("calibration") or {}).get("fov_deg")
+                                     or camera_meta.get("fov_deg") or 100.0))
+                target = room.objects.get("target") or {}
+                dx, dy = float(target.get("x", 0)) - room.px, float(target.get("y", 0)) - room.py
+                bearing = math.atan2(dy, dx) - float(paired_frame[1].orientation)
+                bearing = math.atan2(math.sin(bearing), math.cos(bearing))
+                image_width = int(camera_meta.get("width") or 640)
+                target_x = image_width * (0.5 + (bearing / (fov / 2.0)) * 0.46)
+                target_size = max(5, min(74, int(110 * float(target.get("size") or 0.5)
+                                              / max(math.hypot(dx, dy), 0.8))))
+                boxes = (roi_snapshot.get("visual_input") or {}).get("mmwave_rois") or []
+                roi_snapshot["roi_evaluation"] = {
+                    "same_frame_as_full_image": roi_snapshot["frame_id"] == paired_snapshot["frame_id"],
+                    "crop_count": len(boxes),
+                    "task_target_covered": any(
+                        box["x"] <= target_x + target_size and box["x"] + box["width"] >= target_x - target_size
+                        for box in boxes
+                    ),
+                    "target_visible_in_camera_fov": abs(bearing) <= fov / 2.0,
+                }
+            except Exception as exc:
+                roi_snapshot = {"stage": "mmwave_roi", "frame_id": paired_frame_id,
+                                "error": str(exc)[:240], "roi_evaluation": {"crop_count": 0}}
+            paired_snapshot["roi_ab_comparison"] = {
+                "same_frame_id": paired_snapshot.get("frame_id") == paired_frame_id,
+                "full_image_latency_ms": paired_snapshot.get("vlm_latency_ms"),
+                "roi_latency_ms": roi_snapshot.get("vlm_latency_ms"),
+                "full_image_grounding_accepted": (paired_snapshot.get("grounding") or {}).get("accepted_for_context"),
+                "roi_grounding_accepted": (roi_snapshot.get("grounding") or {}).get("accepted_for_context"),
+                "roi_count": (roi_snapshot.get("roi_evaluation") or {}).get("crop_count", 0),
+                "task_target_covered": (roi_snapshot.get("roi_evaluation") or {}).get("task_target_covered", False),
+                "roi_error": roi_snapshot.get("error"),
+            }
         semantic_scene = lidar_vlm.get("semantic_scene") or {}
         grounding = semantic_scene.get("grounding") or {}
         if (grounding.get("accepted_for_context") is not True
@@ -939,6 +982,7 @@ def run_vlm_sensorimotor_scenario(
 
 def run_vlm_sensorimotor_suite(
     config: Dict[str, Any], *, scene_count: int = 3,
+    roi_compare: bool = False,
     progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> Dict[str, Any]:
     """Run reproducible, paired camera/LiDAR/mmWave scenes through the VLM."""
@@ -957,7 +1001,8 @@ def run_vlm_sensorimotor_suite(
 
             result = run_vlm_sensorimotor_scenario(
                 config, progress_callback=report_progress, seed=seed,
-                compare_modalities=index == 0, interpreter=interpreter,
+                compare_modalities=index == 0 and not roi_compare,
+                roi_compare=roi_compare, interpreter=interpreter,
             )
             results.append(result)
             for snapshot in result.get("snapshots") or []:
@@ -1022,6 +1067,8 @@ def run_vlm_sensorimotor_suite(
             "scenes": scene_reports,
         },
         "modality_comparison": results[0].get("modality_comparison") if results else {},
+        "roi_comparison": (results[0].get("snapshots", [{}])[0].get("roi_ab_comparison")
+                           if results and roi_compare else None),
         "scene_results": scene_reports, "snapshots": snapshots, "timeline": timeline,
         "safety": "Each camera image, LiDAR scan, mmWave frame and pose shares one scene manifest, frame id and timestamp. No actuator command is sent.",
     }
