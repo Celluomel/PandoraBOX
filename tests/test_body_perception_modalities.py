@@ -442,7 +442,7 @@ class BodyPerceptionModalitiesTest(unittest.TestCase):
                 )
             content = sent["messages"][1]["content"]
             self.assertEqual(result["status"], "interpreted")
-            self.assertEqual(result["visual_input"]["strategy"], "single_radar_focus")
+            self.assertEqual(result["visual_input"]["strategy"], "radar_attention_strip")
             self.assertEqual(len(result["visual_input"]["mmwave_rois"]), 1)
             self.assertEqual([part["type"] for part in content], ["text", "image_url"])
             self.assertLess(len(content[0]["text"]), 900)
@@ -453,6 +453,11 @@ class BodyPerceptionModalitiesTest(unittest.TestCase):
             image = content[1]["image_url"]["url"]
             self.assertEqual(image.partition(",")[2], result["visual_input"]["preview_base64"])
             self.assertEqual(base64.b64decode(image.partition(",")[2])[:2], b"\xff\xd8")
+            import cv2
+            import numpy as np
+            decoded = cv2.imdecode(np.frombuffer(base64.b64decode(image.partition(",")[2]),
+                                               dtype=np.uint8), cv2.IMREAD_COLOR)
+            self.assertEqual(decoded.shape[:2], (240, 640))
         finally:
             interpreter.close()
 

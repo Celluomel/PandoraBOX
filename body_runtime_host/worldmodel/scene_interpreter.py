@@ -700,6 +700,44 @@ class BodySceneInterpreter:
             return [], []
 
     @staticmethod
+    def _mmwave_focus_strip(
+        image: str, crop: str,
+    ) -> tuple[Optional[str], Optional[str]]:
+        """Keep scene context and one radar region in a single, small image."""
+        try:
+            import cv2
+            import numpy as np
+
+            def decode(value: str):
+                encoded = value.partition(",")[2] if value.startswith("data:") else value
+                return cv2.imdecode(np.frombuffer(base64.b64decode(encoded), dtype=np.uint8),
+                                    cv2.IMREAD_COLOR)
+
+            overview, detail = decode(image), decode(crop)
+            if overview is None or detail is None:
+                return None, None
+            canvas = np.full((240, 640, 3), (20, 30, 34), dtype=np.uint8)
+            for index, (label, source) in enumerate((("SCENE", overview), ("RADAR FOCUS", detail))):
+                x0 = index * 320
+                cv2.putText(canvas, label, (x0 + 8, 18), cv2.FONT_HERSHEY_SIMPLEX,
+                            0.43, (206, 230, 225), 1, cv2.LINE_AA)
+                scale = min(308 / source.shape[1], 210 / source.shape[0])
+                resized = cv2.resize(source, (max(1, round(source.shape[1] * scale)),
+                                              max(1, round(source.shape[0] * scale))),
+                                     interpolation=cv2.INTER_AREA if scale < 1 else cv2.INTER_LINEAR)
+                px = x0 + (320 - resized.shape[1]) // 2
+                py = 24 + (210 - resized.shape[0]) // 2
+                canvas[py:py + resized.shape[0], px:px + resized.shape[1]] = resized
+            ok, encoded = cv2.imencode(".jpg", canvas, [int(cv2.IMWRITE_JPEG_QUALITY), 82])
+            if not ok:
+                return None, None
+            preview = base64.b64encode(encoded.tobytes()).decode("ascii")
+            return "data:image/jpeg;base64," + preview, preview
+        except Exception as exc:
+            logger.warning("[BodyVLM] radar focus strip skipped: %s", str(exc)[:160])
+            return None, None
+
+    @staticmethod
     def _mmwave_roi_mosaic(
         image: str, crops: list[tuple[str, Dict[str, Any]]],
     ) -> tuple[Optional[str], Optional[str]]:
@@ -1110,10 +1148,17 @@ class BodySceneInterpreter:
             visual_input["mmwave_rois"] = roi_descriptors
             if roi_crops:
                 if focused_crop:
-                    camera_image = roi_crops[0][0]
-                    camera_image_size = len(camera_image)
-                    visual_input.update({"strategy": "single_radar_focus", "image_count": 1,
-                                         "preview_base64": camera_image.partition(",")[2]})
+                    strip, preview = self._mmwave_focus_strip(str(camera_image), roi_crops[0][0])
+                    if strip:
+                        camera_image = strip
+                        camera_image_size = len(camera_image)
+                        visual_input.update({"strategy": "radar_attention_strip", "image_count": 1,
+                                             "preview_base64": preview})
+                    else:
+                        focused_crop = False
+                        roi_crops, roi_descriptors = [], []
+                        visual_input.update({"mmwave_roi_count": 0, "mmwave_rois": [],
+                                             "strategy": "full_frame_fallback", "image_count": 1})
                 else:
                     mosaic, preview = self._mmwave_roi_mosaic(str(camera_image), roi_crops)
                     if mosaic:
@@ -1222,8 +1267,9 @@ class BodySceneInterpreter:
         if focused_crop and roi_crops:
             task = str((packet.get("navigation") or {}).get("task") or "identify nearby objects")[:180]
             prompt = (
-                "Describe only objects visibly present in this radar-selected robot camera crop. "
-                "Radar selected the region but cannot identify an object. "
+                "The attached robot camera image has the full scene on the left and one radar-selected "
+                "detail on the right. Radar cannot identify objects. "
+                "Describe objects only when visually supported; the detail may enlarge the task object. "
                 "Return compact JSON with scene_summary and object_descriptions (at most 3 items, "
                 "each with label, short visual description, role and confidence 0..1). "
                 "Use role goal only if the requested object is visible. Do not infer distance, "

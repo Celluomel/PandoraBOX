@@ -225,7 +225,7 @@ class BodyEvaluationTests(unittest.TestCase):
             frame_id = packet["frame_id"]
             return {
                 "status": "interpreted", "interpretation_mode": "sensor_packet", "latency_ms": 10.0,
-                "visual_input": ({"mmwave_rois": [{"x": 500, "y": 100, "width": 130, "height": 200}]}
+                "visual_input": ({"mmwave_rois": [{"x": 500, "y": 300, "width": 130, "height": 150}]}
                                  if visual_options.get("mmwave_roi") else {}),
                 "interpretation": {"object_descriptions": [{
                     "label": "purple cube", "description": "purple cube on the floor", "role": "goal",

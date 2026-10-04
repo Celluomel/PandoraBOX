@@ -728,15 +728,24 @@ def run_vlm_sensorimotor_scenario(
                 bearing = math.atan2(dy, dx) - float(paired_frame[1].orientation)
                 bearing = math.atan2(math.sin(bearing), math.cos(bearing))
                 image_width = int(camera_meta.get("width") or 640)
+                image_height = int(camera_meta.get("height") or 480)
                 target_x = image_width * (0.5 + (bearing / (fov / 2.0)) * 0.46)
+                target_distance = math.hypot(dx, dy)
                 target_size = max(5, min(74, int(110 * float(target.get("size") or 0.5)
-                                              / max(math.hypot(dx, dy), 0.8))))
+                                              / max(target_distance, 0.8))))
+                ground_fraction = {"low_body_front": 0.82, "level_body_front": 0.79,
+                                   "high_body_front": 0.75}.get(camera_meta.get("camera_profile"), 0.82)
+                target_bottom = image_height * ground_fraction - min(72, target_distance * 4.0)
+                target_top = target_bottom - target_size
                 boxes = (roi_snapshot.get("visual_input") or {}).get("mmwave_rois") or []
                 roi_snapshot["roi_evaluation"] = {
                     "same_frame_as_full_image": roi_snapshot["frame_id"] == paired_snapshot["frame_id"],
                     "crop_count": len(boxes),
                     "task_target_covered": any(
-                        box["x"] <= target_x + target_size and box["x"] + box["width"] >= target_x - target_size
+                        box["x"] <= target_x + target_size / 2
+                        and box["x"] + box["width"] >= target_x - target_size / 2
+                        and box["y"] <= target_bottom
+                        and box["y"] + box["height"] >= target_top
                         for box in boxes
                     ),
                     "target_visible_in_camera_fov": abs(bearing) <= fov / 2.0,
