@@ -759,6 +759,7 @@ class BodySceneInterpreter:
             if object_id not in known:
                 continue
             descriptions[object_id] = {
+                "semantic_label": normalize_label(item.get("label") or item.get("id"))[:120],
                 "description": str(item.get("description") or "")[:240],
                 "role": str(item.get("role") or known[object_id].get("kind") or "object")[:80],
                 "affordances": [str(value)[:50] for value in as_items(item.get("affordances"))][:8],
@@ -959,7 +960,7 @@ class BodySceneInterpreter:
         raw_navigation = packet.get("navigation")
         if isinstance(raw_navigation, dict):
             prompt_packet["navigation"] = compact_fields(
-                raw_navigation, ("recommended", "reason", "recovery_mode", "mobile_obstacle")
+                raw_navigation, ("task", "recommended", "reason", "recovery_mode", "mobile_obstacle")
             )
         if packet.get("visual_blind"):
             # Do not leak simulator identities through the derived projections.
@@ -993,6 +994,8 @@ class BodySceneInterpreter:
             "Every concrete object named in scene_summary must also appear in object_descriptions with a short "
             "open-vocabulary label and a visual description; do not leave object_descriptions empty when the "
             "summary names a visible object. Use free-form labels grounded in the image, not a fixed category list. "
+            "If navigation.task is present, identify its requested object in the image and set its role to goal; "
+            "the task object remains relevant even when it is farther than the focus range. "
             "For camera/LiDAR matches, describe only image-visible appearance and use the LiDAR packet solely to "
             "support proximity or obstacle relevance; do not invent an association when evidence is ambiguous. "
             "Do not classify floor grids, camera reticles, crosshairs, LiDAR rays, projected points, or reference "

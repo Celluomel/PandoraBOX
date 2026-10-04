@@ -15,7 +15,7 @@ from typing import Any, Callable, Dict, List, Optional
 from .contracts import BodyPlan, BodySnapshot, PlanStep
 from .core import EmbodiedWorldModel
 from .dynamics import LatentWorldDynamics
-from .sim_world import SimulatedRoom
+from .sim_world import BODY_RADIUS_M, CONTACT_MARGIN_M, SimulatedRoom
 from .task_graph import TaskGraphExecutor
 from .local_planner import LocalRoutePlanner
 from .types import Action
@@ -546,15 +546,19 @@ def run_vlm_sensorimotor_scenario(
     timeline: list[Dict[str, Any]] = []
     snapshots: list[Dict[str, Any]] = []
     scenario_id = ""
-    goal = (9, 1)
+    goal: Optional[tuple[int, int]] = None
+    task_target_label = "purple cube"
+    task_description = "Approach the purple cube and stop at a LiDAR-safe distance without touching it."
     try:
         if not config.get("BODY_LLM_ENABLED") or not str(config.get("BODY_LLM_MODEL") or "").strip():
             return {"status": "failed", "error": "Configure and enable the Body VLM before running this scenario."}
         room = SimulatedRoom()
         room.reset_episode(shuffle=False, seed=int(seed))
         room.objects = {
-            "obstacle": {"id": "obstacle", "label": "purple cube", "kind": "obstacle",
-                         "x": 4.0, "y": 1.0, "mass": 999.0, "size": 1.0},
+            "target": {"id": "target", "label": "purple cube", "kind": "obstacle",
+                       "x": 5.0, "y": 4.0, "mass": 999.0, "size": 1.0},
+            "chair": {"id": "chair", "label": "chair", "kind": "chair",
+                      "x": 3.0, "y": 1.0, "mass": 6.0, "size": 0.8},
         }
         scenario_id = f"vlm-nav-{int(seed)}-{time.time_ns()}"
 
@@ -584,7 +588,7 @@ def run_vlm_sensorimotor_scenario(
                 "motion": {"speed": float(body.capabilities.get("speed", 0.0)),
                            "relative_speed": 0.0,
                            "moving": room.steps > 0, "perception_risk": 0.0},
-                "navigation": {"goal_m": list(goal), "mode": "scan_grounded_simulation"},
+                "navigation": {"task": task_description, "mode": "scan_grounded_simulation"},
                 "visual_blind": True,
             }
             return observation, body, lidar, packet
@@ -659,7 +663,118 @@ def run_vlm_sensorimotor_scenario(
         publish("STEP 2/2 - SAME IMAGE + LIDAR", frame_id=paired_frame_id,
                 sensor_stage="same image + synchronized LiDAR and pose")
         lidar_vlm = interpret_frame("camera_plus_lidar", paired_frame, include_sensor_context=True)
-        publish("moving", action="starting", reason="local LiDAR safety planner; VLM scored separately")
+        semantic_scene = lidar_vlm.get("semantic_scene") or {}
+        grounding = semantic_scene.get("grounding") or {}
+        if (grounding.get("accepted_for_context") is not True
+                or grounding.get("frame_id") != paired_frame_id
+                or semantic_scene.get("frame_id") != paired_frame_id):
+            reason = "multimodal VLM grounding was not accepted for this synchronized frame"
+            publish("stopped", reason=reason, movement_started=False)
+            return {
+                "status": "incomplete", "scenario_id": scenario_id,
+                "execution": "simulation_only", "physical_actuation": False,
+                "sensor_contract": "body_perception_frame.v2",
+                "sensor_source": "virtual_camera_and_virtual_lidar",
+                "vlm_model": str(config.get("BODY_LLM_MODEL") or ""),
+                "vlm_calls": len(snapshots), "vlm_multimodal": True,
+                "task": task_description,
+                "autonomy": {"status": "safety_stop", "reason": reason,
+                             "movement_started": False, "target_selected_by": None},
+                "modality_comparison": {
+                    "same_frame_id": snapshots[0]["frame_id"] == snapshots[1]["frame_id"],
+                    "same_timestamp": snapshots[0]["timestamp"] == snapshots[1]["timestamp"],
+                    "camera_only_latency_ms": camera_vlm.get("latency_ms"),
+                    "camera_plus_lidar_latency_ms": lidar_vlm.get("latency_ms"),
+                    "camera_only_summary": snapshots[0].get("scene_summary"),
+                    "camera_plus_lidar_summary": snapshots[1].get("scene_summary"),
+                    "camera_only_grounding": snapshots[0].get("grounding"),
+                    "camera_plus_lidar_grounding": grounding,
+                    "movement_uses_vlm_output": False,
+                    "movement_uses": "stopped before motion: rejected or stale VLM grounding",
+                },
+                "goal_reached": False, "final_position_m": [round(room.px, 3), round(room.py, 3)],
+                "distance_to_goal_m": None, "collisions": room.collision_count,
+                "near_misses": room.near_miss_count, "actions": 0,
+                "timeline": [], "snapshots": snapshots,
+                "safety": "No movement without accepted same-frame VLM grounding.",
+            }
+
+        semantic_entities = [
+            entity for entity in (semantic_scene.get("entities") or [])
+            if isinstance(entity, dict) and entity.get("id") and entity.get("description")
+            and entity.get("semantic_label")
+        ]
+        target_candidates = {
+            str(entity["id"]): {
+                "id": str(entity["id"]), "label": str(entity["semantic_label"]),
+                "kind": str(entity.get("role") or "object"),
+            }
+            for entity in semantic_entities
+        }
+        target_matches = interpreter._semantic_reference_resolver([task_target_label], target_candidates)
+        target_id = target_matches.get(" ".join(task_target_label.lower().split()))
+        target_entity = next((entity for entity in semantic_entities if str(entity["id"]) == target_id), None)
+        if target_entity is None:
+            resolution = interpreter.status().get("embedding", {}).get("last_resolution") or {}
+            reason = "task target did not match a VLM-described, sensor-grounded entity"
+            publish("stopped", reason=reason, movement_started=False)
+            return {
+                "status": "incomplete", "scenario_id": scenario_id,
+                "execution": "simulation_only", "physical_actuation": False,
+                "sensor_contract": "body_perception_frame.v2",
+                "sensor_source": "virtual_camera_and_virtual_lidar",
+                "vlm_model": str(config.get("BODY_LLM_MODEL") or ""),
+                "vlm_calls": len(snapshots), "vlm_multimodal": True,
+                "task": task_description,
+                "autonomy": {"status": "safety_stop", "reason": reason,
+                             "movement_started": False, "target_query": task_target_label,
+                             "target_resolution": resolution},
+                "modality_comparison": {
+                    "same_frame_id": snapshots[0]["frame_id"] == snapshots[1]["frame_id"],
+                    "same_timestamp": snapshots[0]["timestamp"] == snapshots[1]["timestamp"],
+                    "camera_only_latency_ms": camera_vlm.get("latency_ms"),
+                    "camera_plus_lidar_latency_ms": lidar_vlm.get("latency_ms"),
+                    "camera_only_summary": snapshots[0].get("scene_summary"),
+                    "camera_plus_lidar_summary": snapshots[1].get("scene_summary"),
+                    "camera_only_grounding": snapshots[0].get("grounding"),
+                    "camera_plus_lidar_grounding": grounding,
+                    "movement_uses_vlm_output": False,
+                    "movement_uses": "stopped before motion: task target not grounded",
+                },
+                "goal_reached": False, "final_position_m": [round(room.px, 3), round(room.py, 3)],
+                "distance_to_goal_m": None, "collisions": room.collision_count,
+                "near_misses": room.near_miss_count, "actions": 0,
+                "timeline": [], "snapshots": snapshots,
+                "safety": "No movement unless the requested target resolves to a grounded VLM entity.",
+            }
+
+        target_position = target_entity.get("position") or []
+        if len(target_position) < 2 or not all(math.isfinite(float(value)) for value in target_position[:2]):
+            raise RuntimeError("Grounded task target has no finite metric position")
+        target_position_m = (float(target_position[0]), float(target_position[1]))
+        target_size = max(0.0, float(target_entity.get("size") or 0.0))
+        target_radius = max(0.12, target_size * 0.3)
+        safe_clearance_m = BODY_RADIUS_M + target_radius + CONTACT_MARGIN_M
+        lidar_standoff_m = target_size * 0.55 + 0.7 + 0.1
+        standoff_cells = max(1, int(math.ceil(max(safe_clearance_m, lidar_standoff_m))))
+        initial_observation, initial_body, initial_lidar, _initial_packet = paired_frame
+        candidate_goals = [
+            (round(target_position_m[0] + dx * standoff_cells),
+             round(target_position_m[1] + dy * standoff_cells))
+            for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))
+        ]
+        safe_routes = [
+            (_sensor_route(initial_body, initial_lidar, candidate, room), candidate)
+            for candidate in candidate_goals
+            if 1 <= candidate[0] <= room.width - 2 and 1 <= candidate[1] <= room.height - 2
+        ]
+        safe_routes = [(route, candidate) for route, candidate in safe_routes if len(route) >= 2]
+        if not safe_routes:
+            raise RuntimeError("No LiDAR-safe standoff route to the grounded target")
+        _initial_route, goal = min(safe_routes, key=lambda item: (len(item[0]), item[1]))
+        resolution = interpreter.status().get("embedding", {}).get("last_resolution") or {}
+        publish("moving", action="starting", target_id=target_id,
+                reason="VLM-grounded task target; local LiDAR planner validates every waypoint")
 
         action_limit = max(1, min(64, int(max_actions)))
         for _action_index in range(action_limit):
@@ -678,10 +793,10 @@ def run_vlm_sensorimotor_scenario(
             delta = math.atan2(math.sin(desired - float(body.orientation)), math.cos(desired - float(body.orientation)))
             if abs(delta) > math.pi / 4:
                 action = Action(type="turn_left" if delta > 0 else "turn_right")
-                reason = "reorient toward the next LiDAR-cleared waypoint"
+                reason = "turn toward the VLM-grounded target along the current LiDAR-safe route"
             else:
                 action = Action(type="forward", params={"continuous_physics": True, "speed": 1.0})
-                reason = "advance one metre; replan against a fresh scan on the next step"
+                reason = "advance toward the VLM-grounded target; replan from a fresh LiDAR scan next step"
             if action.type == "forward" and not (lidar.get("points") or []):
                 timeline.append({"step": room.steps, "action": "stop", "reason": "empty_lidar_scan"})
                 break
@@ -704,8 +819,9 @@ def run_vlm_sensorimotor_scenario(
                 break
 
         final_distance = math.hypot(goal[0] - room.px, goal[1] - room.py)
-        reached = final_distance <= 0.65
-        status = "completed" if reached and room.collision_count == 0 else "incomplete"
+        target_clearance = math.hypot(target_position_m[0] - room.px, target_position_m[1] - room.py)
+        reached = final_distance <= 0.65 and target_clearance >= safe_clearance_m
+        status = "completed" if reached and room.collision_count == 0 and room.near_miss_count == 0 else "incomplete"
         publish("completed", distance_to_goal_m=round(final_distance, 3),
                 collisions=room.collision_count, moved=room.steps > 0)
         return {
@@ -716,6 +832,21 @@ def run_vlm_sensorimotor_scenario(
             "vlm_model": str(config.get("BODY_LLM_MODEL") or ""),
             "vlm_calls": len(snapshots),
             "vlm_multimodal": lidar_vlm.get("interpretation_mode") == "sensor_packet",
+            "task": task_description,
+            "autonomy": {
+                "status": "completed" if reached and status == "completed" else "incomplete",
+                "movement_started": bool(timeline),
+                "target_selected_by": "accepted VLM description + local semantic embedding",
+                "target_query": task_target_label,
+                "target_id": target_id,
+                "target_semantic_label": target_entity.get("semantic_label"),
+                "target_position_m": [round(target_position_m[0], 3), round(target_position_m[1], 3)],
+                "standoff_goal_m": list(goal),
+                "target_clearance_m": round(target_clearance, 3),
+                "minimum_clearance_m": round(safe_clearance_m, 3),
+                "target_resolution": resolution,
+                "grounding_frame_id": grounding.get("frame_id"),
+            },
             "modality_comparison": {
                 "same_frame_id": snapshots[0]["frame_id"] == snapshots[1]["frame_id"],
                 "same_timestamp": snapshots[0]["timestamp"] == snapshots[1]["timestamp"],
@@ -725,10 +856,11 @@ def run_vlm_sensorimotor_scenario(
                 "camera_plus_lidar_summary": snapshots[1].get("scene_summary"),
                 "camera_only_grounding": snapshots[0].get("grounding"),
                 "camera_plus_lidar_grounding": snapshots[1].get("grounding"),
-                "movement_uses_vlm_output": False,
-                "movement_uses": "fresh LiDAR scans only",
+                "movement_uses_vlm_output": True,
+                "movement_uses": "accepted VLM-grounded target; fresh LiDAR scans gate every route segment",
             },
-            "goal_m": list(goal), "final_position_m": [round(room.px, 3), round(room.py, 3)],
+            "goal_m": list(goal), "target_position_m": [round(target_position_m[0], 3), round(target_position_m[1], 3)],
+            "final_position_m": [round(room.px, 3), round(room.py, 3)],
             "distance_to_goal_m": round(final_distance, 3), "goal_reached": reached,
             "collisions": room.collision_count, "near_misses": room.near_miss_count,
             "actions": len(timeline), "timeline": timeline, "snapshots": snapshots,
@@ -736,8 +868,9 @@ def run_vlm_sensorimotor_scenario(
                 "status": lidar_vlm.get("status"), "latency_ms": lidar_vlm.get("latency_ms"),
                 "scene_summary": snapshots[-1].get("scene_summary"),
                 "grounding": snapshots[-1].get("grounding"),
+                "target_selected": target_id,
             },
-            "safety": "Every move is replanned from a new LiDAR scan; no actuator command is sent.",
+            "safety": "VLM must ground the task target in the paired frame. Every route segment and standoff is LiDAR-validated; no actuator command is sent.",
         }
     except Exception as exc:
         logger.exception("VLM sensorimotor scenario failed")

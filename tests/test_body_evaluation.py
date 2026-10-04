@@ -86,24 +86,32 @@ class BodyEvaluationTests(unittest.TestCase):
 
         def fake_interpret(_interpreter, packet, *, visual_options=None):
             captured.append((packet, visual_options))
+            frame_id = packet["frame_id"]
             return {
                 "status": "interpreted",
                 "interpretation_mode": "sensor_packet" if visual_options["include_sensor_context"] else "image_only",
                 "latency_ms": 12.5,
                 "interpretation": {
                     "scene_summary": "A clear route bends around an obstacle.",
-                    "object_descriptions": [{"label": "pillar", "description": "purple cube"}],
+                    "object_descriptions": [{"label": "purple cube", "description": "A purple cube on the floor.", "role": "goal"}],
                 },
-                "semantic_scene": {"grounding": {
-                    "reference_precision": 1.0, "accepted_for_context": True,
-                    "geometry_authoritative": True,
-                }},
+                "semantic_scene": {
+                    "frame_id": frame_id,
+                    "entities": [{
+                        "id": "target", "semantic_label": "purple cube",
+                        "description": "A purple cube on the floor.", "role": "goal",
+                        "position": [5.0, 4.0, 0.0], "size": 1.0,
+                    }],
+                    "grounding": {
+                        "frame_id": frame_id, "reference_precision": 1.0,
+                        "accepted_for_context": True, "geometry_authoritative": True,
+                    },
+                },
             }
 
-        with patch(
-            "body_runtime_host.worldmodel.evaluation.BodySceneInterpreter.interpret_now",
-            new=fake_interpret,
-        ):
+        with patch("body_runtime_host.worldmodel.evaluation.BodySceneInterpreter.interpret_now", new=fake_interpret), \
+                patch("body_runtime_host.worldmodel.evaluation.BodySceneInterpreter._semantic_reference_resolver",
+                      return_value={"purple cube": "target"}):
             result = run_vlm_sensorimotor_scenario({
                 "BODY_LLM_ENABLED": True,
                 "BODY_LLM_MODEL": "test-vlm",
@@ -124,12 +132,15 @@ class BodyEvaluationTests(unittest.TestCase):
         self.assertEqual(captured[0][0]["objects"][0]["label"], "purple cube")
         self.assertEqual(result["snapshots"][0]["vlm_mode"], "image_only")
         self.assertEqual(result["snapshots"][1]["vlm_mode"], "sensor_packet")
-        self.assertEqual(result["snapshots"][0]["vlm_interpretation"]["object_descriptions"][0]["label"], "pillar")
+        self.assertEqual(result["snapshots"][0]["vlm_interpretation"]["object_descriptions"][0]["label"], "purple cube")
         self.assertEqual(result["snapshots"][0]["sensor_packet"]["lidar"]["points_sent_to_vlm"], [])
         self.assertGreater(len(result["snapshots"][1]["sensor_packet"]["lidar"]["points_sent_to_vlm"]), 0)
         self.assertTrue(result["modality_comparison"]["same_frame_id"])
         self.assertTrue(result["modality_comparison"]["same_timestamp"])
-        self.assertFalse(result["modality_comparison"]["movement_uses_vlm_output"])
+        self.assertTrue(result["modality_comparison"]["movement_uses_vlm_output"])
+        self.assertEqual(result["autonomy"]["target_id"], "target")
+        self.assertEqual(result["autonomy"]["target_semantic_label"], "purple cube")
+        self.assertGreaterEqual(result["autonomy"]["target_clearance_m"], result["autonomy"]["minimum_clearance_m"])
         first_sensor_packet = result["snapshots"][0]["sensor_packet"]
         self.assertEqual(first_sensor_packet["frame_id"], result["snapshots"][0]["frame_id"])
         self.assertEqual(first_sensor_packet["timestamp"], result["snapshots"][0]["timestamp"])
@@ -143,6 +154,32 @@ class BodyEvaluationTests(unittest.TestCase):
             self.assertEqual(packet["modalities"]["lidar"]["timestamp"], packet["timestamp"])
             self.assertGreater(len(packet["modalities"]["lidar"]["points"]), 0)
         self.assertEqual(captured[0][0]["frame_id"], captured[1][0]["frame_id"])
+
+    def test_sensorimotor_scenario_stops_when_multimodal_grounding_is_rejected(self):
+        def fake_interpret(_interpreter, packet, *, visual_options=None):
+            frame_id = packet["frame_id"]
+            return {
+                "status": "interpreted",
+                "interpretation_mode": "sensor_packet" if visual_options["include_sensor_context"] else "image_only",
+                "latency_ms": 1.0,
+                "semantic_scene": {
+                    "frame_id": frame_id,
+                    "grounding": {"frame_id": frame_id, "accepted_for_context": False},
+                },
+            }
+
+        with patch("body_runtime_host.worldmodel.evaluation.BodySceneInterpreter.interpret_now", new=fake_interpret):
+            result = run_vlm_sensorimotor_scenario({
+                "BODY_LLM_ENABLED": True,
+                "BODY_LLM_MODEL": "test-vlm",
+            })
+
+        self.assertEqual(result["status"], "incomplete")
+        self.assertEqual(result["autonomy"]["status"], "safety_stop")
+        self.assertFalse(result["autonomy"]["movement_started"])
+        self.assertFalse(result["modality_comparison"]["movement_uses_vlm_output"])
+        self.assertEqual(result["actions"], 0)
+        self.assertEqual(result["final_position_m"], [1.0, 1.0])
 
 
 if __name__ == "__main__":
