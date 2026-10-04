@@ -127,10 +127,15 @@ class BodyPerceptionModalitiesTest(unittest.TestCase):
 
         host = BodyHost()
         host.config = {}
+        defaults = host.body_llm_settings()
+        self.assertEqual(defaults["visual_max_objects"], 5)
+        self.assertEqual(defaults["visual_max_tokens"], 128)
         with patch.object(host, "save_config") as save_config:
             result = host.update_body_llm_settings({
                 "embedding_provider": "local_fastembed",
                 "embedding_model": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+                "visual_max_objects": 7,
+                "visual_max_tokens": 256,
             })
         save_config.assert_called_once()
         self.assertEqual(host.config["BODY_LLM_EMBEDDING_PROVIDER"], "local_fastembed")
@@ -139,6 +144,10 @@ class BodyPerceptionModalitiesTest(unittest.TestCase):
             result["settings"]["embedding_model"],
             "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
         )
+        self.assertEqual(host.config["BODY_LLM_VISUAL_MAX_OBJECTS"], 7)
+        self.assertEqual(host.config["BODY_LLM_VISUAL_MAX_TOKENS"], 256)
+        self.assertEqual(result["settings"]["visual_max_objects"], 7)
+        self.assertEqual(result["settings"]["visual_max_tokens"], 256)
 
     def test_native_modalities_are_preferred_and_provenanced(self):
         from body_runtime_host.worldmodel.perception import sensor_projections
@@ -608,6 +617,8 @@ class BodyPerceptionModalitiesTest(unittest.TestCase):
             "BODY_LLM_ENABLED": True,
             "BODY_LLM_MODEL": "qualcomm/Intern3.5-VL-2B:W4A16",
             "BODY_LLM_BASE_URL": "http://127.0.0.1:18181/v1",
+            "BODY_LLM_VISUAL_MAX_OBJECTS": 7,
+            "BODY_LLM_VISUAL_MAX_TOKENS": 256,
         })
         points = [
             {"x": float(index), "y": 1.0, "z": 0.0, "range_m": float(index + 1),
@@ -651,16 +662,15 @@ class BodyPerceptionModalitiesTest(unittest.TestCase):
         prompt = calls[0]["messages"][1]["content"][0]["text"]
         self.assertEqual(result["status"], "interpreted")
         self.assertLess(len(prompt), 6000)
-        self.assertIn("at most three salient objects clearly visible", prompt)
-        self.assertIn("primary_objects (array of short labels)", prompt)
-        self.assertNotIn("object_descriptions", prompt)
+        self.assertIn("up to 7 salient objects clearly visible", prompt)
+        self.assertIn("object_descriptions (up to 7 objects", prompt)
         self.assertNotIn("compact-frame", prompt)
         self.assertNotIn('"cup"', prompt)
         self.assertNotIn("lidar", prompt.lower())
         self.assertNotIn("vision_projection", prompt)
         self.assertNotIn("debug_payload", prompt)
         self.assertTrue(any(part.get("type") == "image_url" for part in calls[0]["messages"][1]["content"]))
-        self.assertLessEqual(calls[0]["max_tokens"], 64)
+        self.assertEqual(calls[0]["max_tokens"], 256)
         interpreter.close()
 
     def test_scene_interpreter_reuses_image_semantics_but_regrounds_fresh_geometry(self):

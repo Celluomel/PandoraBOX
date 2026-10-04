@@ -822,6 +822,8 @@ class BodyHost:
             "interval": float(self.value("BODY_LLM_INTERVAL", 8.0) or 8.0),
             "timeout": float(self.value("BODY_LLM_TIMEOUT", 8.0) or 8.0),
             "max_tokens": int(self.value("BODY_LLM_MAX_TOKENS", 360) or 360),
+            "visual_max_tokens": max(32, min(512, int(self.value("BODY_LLM_VISUAL_MAX_TOKENS", 128) or 128))),
+            "visual_max_objects": max(1, min(10, int(self.value("BODY_LLM_VISUAL_MAX_OBJECTS", 5) or 5))),
             "context_window": int(self.value("BODY_LLM_CONTEXT_WINDOW", 50000) or 50000),
             "focus_range_m": float(self.value("BODY_LLM_FOCUS_RANGE_M", 5.0) or 5.0),
             "json_mode": bool(self.value("BODY_LLM_JSON_MODE", True)),
@@ -967,6 +969,8 @@ class BodyHost:
             "BODY_LLM_INTERVAL": max(2.0, float(payload.get("interval", 8.0) or 8.0)),
             "BODY_LLM_TIMEOUT": max(1.0, float(payload.get("timeout", 8.0) or 8.0)),
             "BODY_LLM_MAX_TOKENS": max(64, min(2048, int(payload.get("max_tokens", 360) or 360))),
+            "BODY_LLM_VISUAL_MAX_TOKENS": max(32, min(512, int(payload.get("visual_max_tokens", 128) or 128))),
+            "BODY_LLM_VISUAL_MAX_OBJECTS": max(1, min(10, int(payload.get("visual_max_objects", 5) or 5))),
             "BODY_LLM_CONTEXT_WINDOW": max(2048, min(131072, int(payload.get("context_window", 50000) or 50000))),
             "BODY_LLM_JSON_MODE": bool(payload.get("json_mode", True)),
             "BODY_LLM_EMBEDDING_PROVIDER": str(payload.get("embedding_provider", "openai") or "openai").strip().lower()
@@ -994,7 +998,7 @@ class BodyHost:
         wm = self._worldmodel
         if wm is not None:
             with wm._lock:
-                for key in ("BODY_LLM_ENABLED", "BODY_LLM_BASE_URL", "BODY_LLM_MODEL", "BODY_LLM_INTERVAL", "BODY_LLM_TIMEOUT", "BODY_LLM_MAX_TOKENS", "BODY_LLM_CONTEXT_WINDOW", "BODY_LLM_JSON_MODE", "BODY_LLM_EMBEDDING_PROVIDER", "BODY_LLM_EMBEDDING_MODEL", "BODY_LLM_EMBEDDING_THRESHOLD", "BODY_LLM_EMBEDDING_TIMEOUT"):
+                for key in ("BODY_LLM_ENABLED", "BODY_LLM_BASE_URL", "BODY_LLM_MODEL", "BODY_LLM_INTERVAL", "BODY_LLM_TIMEOUT", "BODY_LLM_MAX_TOKENS", "BODY_LLM_VISUAL_MAX_TOKENS", "BODY_LLM_VISUAL_MAX_OBJECTS", "BODY_LLM_CONTEXT_WINDOW", "BODY_LLM_JSON_MODE", "BODY_LLM_EMBEDDING_PROVIDER", "BODY_LLM_EMBEDDING_MODEL", "BODY_LLM_EMBEDDING_THRESHOLD", "BODY_LLM_EMBEDDING_TIMEOUT"):
                     wm._cfg[key] = self.config.get(key)
                 wm._cfg["BODY_LLM_TOKEN"] = self.value("BODY_LLM_TOKEN", "")
                 wm.scene_interpreter._config = wm._cfg

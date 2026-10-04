@@ -862,18 +862,20 @@ class BodySceneInterpreter:
             + json.dumps(prompt_packet, ensure_ascii=False, separators=(",", ":"))
         )
         visual_only = bool(camera_image)
+        visual_max_objects = max(1, min(10, int(self._config.get("BODY_LLM_VISUAL_MAX_OBJECTS", 5) or 5)))
+        visual_max_tokens = max(32, min(512, int(self._config.get("BODY_LLM_VISUAL_MAX_TOKENS", 128) or 128)))
         if visual_only:
             camera_context = compact_fields(
                 camera_meta, ("camera_profile", "width", "height", "calibration", "source")
             )
             prompt = (
-                "Identify at most three salient objects clearly visible in this robot camera image. "
+                "Identify up to " + str(visual_max_objects) + " salient objects clearly visible in this robot camera image. "
                 "Return compact JSON only with scene_summary (one short sentence) and "
-                "primary_objects (array of short labels). Do not add descriptions, roles, "
-                "attributes, environment lists, coordinates, distance, motion, free space, "
-                "or path advice. Do not use simulator or sensor object lists. Use an empty "
-                "array when uncertain; never invent an object. This is semantic perception "
-                "only, not navigation or actuator control. "
+                "object_descriptions (up to " + str(visual_max_objects) + " objects, each with label, "
+                "a brief visual description, and confidence 0..1). Do not add coordinates, "
+                "distance, motion, free space, or path advice. Do not use simulator or sensor "
+                "object lists. Use an empty array when uncertain; never invent an object. "
+                "This is semantic perception only, not navigation or actuator control. "
                 + self._camera_view_note(camera_context)
                 + " Camera metadata: "
                 + json.dumps(camera_context, ensure_ascii=False, separators=(",", ":"))
@@ -912,9 +914,8 @@ class BodySceneInterpreter:
                 {"role": "user", "content": user_content},
             ],
             "temperature": 0.1,
-            "max_tokens": min(
-                64 if visual_only else 2048,
-                max(64, int(self._config.get("BODY_LLM_MAX_TOKENS", 360) or 360)),
+            "max_tokens": visual_max_tokens if visual_only else min(
+                2048, max(64, int(self._config.get("BODY_LLM_MAX_TOKENS", 360) or 360))
             ),
             # LM Studio vision providers differ in structured-output support.
             # Text mode is the interoperable contract; the bounded JSON parser
