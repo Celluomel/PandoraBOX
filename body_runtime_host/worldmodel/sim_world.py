@@ -26,6 +26,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from .types import Action, BodyState, Observation, Outcome, SceneObject
 from .virtual_camera import render_camera, render_lidar
 from body_runtime_host.coordinate_frames import compass_heading_degrees, north_up_svg_rotation_degrees
+from body_runtime_host.mmwave_radar import SimulatedMmWaveRadarSource
 
 METERS_PER_GRID_UNIT = 1.0  # physical coordinates are metres; grid is planner-only
 CENTIMETERS_PER_METER = 100.0
@@ -64,6 +65,7 @@ class SimulatedRoom:
         self._mobile_motion_phase = 0.5
         self._mobile_current_speed = MOBILE_OBSTACLE_SPEED
         self._mobile_patrol_index = 0
+        self._mmwave_sequence = 0
         self.success_count = 0
 
     # ── setup ───────────────────────────────────────────────────────────────
@@ -108,6 +110,7 @@ class SimulatedRoom:
         self._mobile_motion_phase = 0.5
         self._mobile_current_speed = MOBILE_OBSTACLE_SPEED
         self._mobile_patrol_index = 0
+        self._mmwave_sequence = 0
         self.success_count = 0
         self.simulation_time_s = 0.0
 
@@ -191,9 +194,13 @@ class SimulatedRoom:
     def _scene(self) -> List[SceneObject]:
         out = []
         for o in self.objects.values():
+            props = dict(o.get("props") or {})
+            if o.get("id") == "mobile_obstacle":
+                props["velocity_x"], props["velocity_y"] = self._mobile_velocity
             out.append(SceneObject(
                 id=o["id"], label=o["label"], kind=o["kind"],
                 position=[o["x"], o["y"], 0.0], size=o["size"], mass=o["mass"],
+                props=props,
             ))
         return out
 
@@ -211,6 +218,11 @@ class SimulatedRoom:
                 frame_id=frame_id
             )
             modalities["lidar"] = render_lidar(body, scene, frame_id=frame_id)
+            radar = SimulatedMmWaveRadarSource(lambda: scene, lambda: body).read().as_dict()
+            self._mmwave_sequence += 1
+            radar.update({"frame_id": frame_id, "timestamp": body.timestamp,
+                          "coordinate_frame": "local_map", "sequence": self._mmwave_sequence})
+            modalities["mmwave_radar"] = radar
         return Observation(
             subject="scene", value=None, source="simulated_room",
             kind="scene", confidence=1.0, scene=scene, text=text,

@@ -266,6 +266,10 @@ class BodyPerceptionModalitiesTest(unittest.TestCase):
                           "frame_id": "paired-frame-1", "timestamp": 123.0,
                           "points": [{"x": 1.5, "y": 0.0, "z": 0.3,
                                       "range": 1.5, "object_id": "must-not-leak"}]},
+                "mmwave_radar": {"source": "virtual_radar", "frame": "local_map",
+                                 "frame_id": "paired-frame-1", "timestamp": 123.0,
+                                 "targets": [{"target_id": "radar-track-secret", "position_m": [2.1, 0.2, 0.0],
+                                              "velocity_mps": [-0.1, 0.0, 0.0], "confidence": 0.9}]},
             },
         }
         try:
@@ -280,6 +284,9 @@ class BodyPerceptionModalitiesTest(unittest.TestCase):
                 self.assertIn('"unit":"m"', content[0]["text"])
                 self.assertIn('"x":1.5', content[0]["text"])
                 self.assertNotIn("must-not-leak", content[0]["text"])
+                self.assertIn('"position_m":[2.1,0.2,0.0]', content[0]["text"])
+                self.assertIn('"velocity_mps":[-0.1,0.0,0.0]', content[0]["text"])
+                self.assertNotIn("radar-track-secret", content[0]["text"])
                 visual_only = interpreter.interpret_now(
                     packet, visual_options={"include_sensor_context": False, "bypass_cache": True}
                 )
@@ -289,6 +296,7 @@ class BodyPerceptionModalitiesTest(unittest.TestCase):
                 self.assertNotIn("virtual_lidar", content[0]["text"])
                 self.assertNotIn('"x":1.5', content[0]["text"])
                 self.assertNotIn("must-not-leak", content[0]["text"])
+                self.assertNotIn('"position_m":[2.1,0.2,0.0]', content[0]["text"])
         finally:
             interpreter.close()
 

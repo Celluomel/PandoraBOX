@@ -666,8 +666,12 @@ class BodyHost:
         with self._body_vlm_test_lock:
             return dict(self._body_vlm_test_status)
 
-    def start_vlm_sensorimotor_test(self) -> dict:
-        """Start one explicit VLM + paired-sensor simulation scenario."""
+    def start_vlm_sensorimotor_test(self, request: dict | None = None) -> dict:
+        """Start an explicit VLM + paired-sensor scene suite."""
+        try:
+            scene_count = max(1, min(5, int((request or {}).get("scenes", 3))))
+        except (TypeError, ValueError):
+            scene_count = 3
         with self._sensorimotor_test_lock:
             if self._sensorimotor_test_status.get("status") == "running":
                 return {**self._sensorimotor_test_status, "reused": True}
@@ -677,23 +681,25 @@ class BodyHost:
                 "progress": {"stage": "starting"}, "result": None,
             }
             self._sensorimotor_test_thread = threading.Thread(
-                target=self._run_vlm_sensorimotor_test, args=(job_id,),
+                target=self._run_vlm_sensorimotor_test, args=(job_id, scene_count),
                 name="body-vlm-sensorimotor-test", daemon=True,
             )
             self._sensorimotor_test_thread.start()
             return dict(self._sensorimotor_test_status)
 
-    def _run_vlm_sensorimotor_test(self, job_id: str) -> None:
+    def _run_vlm_sensorimotor_test(self, job_id: str, scene_count: int) -> None:
         started = time.monotonic()
         try:
-            from body_runtime_host.worldmodel.evaluation import run_vlm_sensorimotor_scenario
+            from body_runtime_host.worldmodel.evaluation import run_vlm_sensorimotor_suite
 
             def progress(update: dict) -> None:
                 with self._sensorimotor_test_lock:
                     if self._sensorimotor_test_status.get("job_id") == job_id:
                         self._sensorimotor_test_status["progress"] = dict(update)
 
-            result = run_vlm_sensorimotor_scenario(self.config, progress_callback=progress)
+            result = run_vlm_sensorimotor_suite(
+                self.config, scene_count=scene_count, progress_callback=progress,
+            )
             status = str(result.get("status") or "failed")
         except Exception as exc:
             LOG.exception("Body VLM sensorimotor scenario failed")
@@ -2956,7 +2962,7 @@ class BodyHost:
                 elif path == "/worldmodel/evaluation/run":
                     self._send(owner.start_worldmodel_evaluation(self._read_body()))
                 elif path == "/worldmodel/sensorimotor-test/run":
-                    self._send(owner.start_vlm_sensorimotor_test(), 202)
+                    self._send(owner.start_vlm_sensorimotor_test(self._read_body()), 202)
                 elif path == "/worldmodel/perception/video-upload":
                     self._send(owner.upload_video_replay(self._read_body()))
                 elif path == "/worldmodel/perception/video-replay":

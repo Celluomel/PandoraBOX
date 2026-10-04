@@ -5,6 +5,7 @@ from body_runtime_host.worldmodel.evaluation import (
     _restart_resume_probe,
     collect_body_llm_grounding,
     run_vlm_sensorimotor_scenario,
+    run_vlm_sensorimotor_suite,
     run_shuffled_trials,
 )
 
@@ -87,6 +88,7 @@ class BodyEvaluationTests(unittest.TestCase):
         def fake_interpret(_interpreter, packet, *, visual_options=None):
             captured.append((packet, visual_options))
             frame_id = packet["frame_id"]
+            target = next(item for item in packet["objects"] if item["id"] == "target")
             return {
                 "status": "interpreted",
                 "interpretation_mode": "sensor_packet" if visual_options["include_sensor_context"] else "image_only",
@@ -100,7 +102,7 @@ class BodyEvaluationTests(unittest.TestCase):
                     "entities": [{
                         "id": "target", "semantic_label": "purple cube",
                         "description": "A purple cube on the floor.", "role": "goal",
-                        "position": [5.0, 4.0, 0.0], "size": 1.0,
+                        "position": target["position"], "size": target["size"],
                     }],
                     "grounding": {
                         "frame_id": frame_id, "reference_precision": 1.0,
@@ -126,7 +128,7 @@ class BodyEvaluationTests(unittest.TestCase):
         self.assertEqual(result["vlm_calls"], 2)
         self.assertGreater(result["actions"], 0)
         self.assertEqual(len(captured), 2)
-        self.assertEqual([item["stage"] for item in result["snapshots"]], ["camera_only", "camera_plus_lidar"])
+        self.assertEqual([item["stage"] for item in result["snapshots"]], ["camera_only", "camera_plus_sensors"])
         self.assertEqual(result["snapshots"][0]["frame_id"], result["snapshots"][1]["frame_id"])
         self.assertEqual(result["snapshots"][0]["timestamp"], result["snapshots"][1]["timestamp"])
         self.assertEqual(captured[0][0]["objects"][0]["label"], "purple cube")
@@ -154,6 +156,65 @@ class BodyEvaluationTests(unittest.TestCase):
             self.assertEqual(packet["modalities"]["lidar"]["timestamp"], packet["timestamp"])
             self.assertGreater(len(packet["modalities"]["lidar"]["points"]), 0)
         self.assertEqual(captured[0][0]["frame_id"], captured[1][0]["frame_id"])
+        mmwave = captured[1][0]["modalities"]["mmwave_radar"]
+        self.assertEqual(mmwave["frame_id"], captured[1][0]["frame_id"])
+        self.assertEqual(mmwave["timestamp"], captured[1][0]["timestamp"])
+        self.assertEqual(mmwave["targets"][0]["position_m"], captured[1][0]["objects"][0]["position"])
+
+    def test_sensorimotor_suite_pairs_varied_scene_geometry_across_camera_lidar_and_mmwave(self):
+        captured = []
+
+        def fake_interpret(_interpreter, packet, *, visual_options=None):
+            captured.append((packet, visual_options))
+            target = next(item for item in packet["objects"] if item["id"] == "target")
+            frame_id = packet["frame_id"]
+            return {
+                "status": "interpreted",
+                "interpretation_mode": "sensor_packet" if visual_options["include_sensor_context"] else "image_only",
+                "latency_ms": 10.0,
+                "interpretation": {"object_descriptions": [{
+                    "label": "purple cube", "description": "purple cube on the floor", "role": "goal",
+                }]},
+                "semantic_scene": {
+                    "frame_id": frame_id,
+                    "entities": [{
+                        "id": "target", "semantic_label": "purple cube",
+                        "description": "purple cube on the floor", "role": "goal",
+                        "position": target["position"], "size": target["size"],
+                    }],
+                    "grounding": {"frame_id": frame_id, "accepted_for_context": True},
+                },
+            }
+
+        with patch("body_runtime_host.worldmodel.evaluation.BodySceneInterpreter.interpret_now", new=fake_interpret), \
+                patch("body_runtime_host.worldmodel.evaluation.BodySceneInterpreter._semantic_reference_resolver",
+                      return_value={"purple cube": "target"}):
+            result = run_vlm_sensorimotor_suite({
+                "BODY_LLM_ENABLED": True, "BODY_LLM_MODEL": "test-vlm",
+            }, scene_count=3)
+
+        self.assertEqual(result["status"], "completed", result["scene_results"])
+        self.assertEqual(result["successes"], 3)
+        self.assertEqual(result["collisions"], 0)
+        self.assertEqual(result["near_misses"], 0)
+        self.assertEqual(result["grounding_acceptance_rate"], 1.0)
+        self.assertEqual(result["invented_object_references"], 0)
+        self.assertEqual(result["vlm_calls"], 4)
+        self.assertEqual([scene["target_id"] for scene in result["scene_results"]], ["target"] * 3)
+        paired_scenes = [packet for packet, options in captured if options["include_sensor_context"]]
+        self.assertEqual(len(paired_scenes), 3)
+        geometry = [next(item for item in packet["objects"] if item["id"] == "target")["position"][:2]
+                    for packet in paired_scenes]
+        self.assertEqual(geometry, [[5.0, 4.0], [6.0, 5.0], [5.0, 5.0]])
+        for packet, _options in captured:
+            frame = packet["frame_id"]
+            timestamp = packet["timestamp"]
+            self.assertEqual(packet["modalities"]["camera"]["frame_id"], frame)
+            self.assertEqual(packet["modalities"]["lidar"]["frame_id"], frame)
+            self.assertEqual(packet["modalities"]["mmwave_radar"]["frame_id"], frame)
+            self.assertEqual(packet["modalities"]["camera"]["timestamp"], timestamp)
+            self.assertEqual(packet["modalities"]["lidar"]["timestamp"], timestamp)
+            self.assertEqual(packet["modalities"]["mmwave_radar"]["timestamp"], timestamp)
 
     def test_sensorimotor_scenario_stops_when_multimodal_grounding_is_rejected(self):
         def fake_interpret(_interpreter, packet, *, visual_options=None):

@@ -477,7 +477,8 @@ def collect_body_llm_grounding(
         interpreter.close()
 
 
-def _sensor_route(body: Any, lidar: Dict[str, Any], goal: tuple[int, int], room: SimulatedRoom) -> list[tuple[int, int]]:
+def _sensor_route(body: Any, lidar: Dict[str, Any], goal: tuple[int, int], room: SimulatedRoom,
+                  mmwave: Optional[Dict[str, Any]] = None) -> list[tuple[int, int]]:
     """Plan a coarse route from the current scan, without reading scene objects."""
     x0, y0 = float(body.position[0]), float(body.position[1])
     yaw = float(body.orientation)
@@ -500,6 +501,21 @@ def _sensor_route(body: Any, lidar: Dict[str, Any], goal: tuple[int, int], room:
                 # rather than blocking an entire 3x3 neighbourhood per return.
                 if math.hypot(candidate[0] - wx, candidate[1] - wy) <= 0.7:
                     occupied.add(candidate)
+    for target in (mmwave or {}).get("targets") or []:
+        if not isinstance(target, dict):
+            continue
+        try:
+            position = target.get("position_m") or []
+            velocity = target.get("velocity_mps") or []
+            px, py = float(position[0]) + float(velocity[0]), float(position[1]) + float(velocity[1])
+        except (IndexError, TypeError, ValueError):
+            continue
+        if math.hypot(float(velocity[0]), float(velocity[1])) < 0.05:
+            continue
+        for x in range(int(math.floor(px - 1.0)), int(math.ceil(px + 1.0)) + 1):
+            for y in range(int(math.floor(py - 1.0)), int(math.ceil(py + 1.0)) + 1):
+                if math.hypot(x - px, y - py) <= 0.9:
+                    occupied.add((x, y))
 
     start = (int(round(x0)), int(round(y0)))
     if start == goal:
@@ -536,12 +552,14 @@ def _sensor_route(body: Any, lidar: Dict[str, Any], goal: tuple[int, int], room:
 
 def run_vlm_sensorimotor_scenario(
     config: Dict[str, Any], *, progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
-    seed: int = 31, max_actions: int = 32,
+    seed: int = 31, max_actions: int = 32, compare_modalities: bool = True,
+    interpreter: Optional[BodySceneInterpreter] = None,
 ) -> Dict[str, Any]:
     """Run a simulation-only camera + LiDAR + VLM closed-loop navigation check."""
     from .types import Action
 
-    interpreter = BodySceneInterpreter(dict(config or {}))
+    owns_interpreter = interpreter is None
+    interpreter = interpreter or BodySceneInterpreter(dict(config or {}))
     room = None
     timeline: list[Dict[str, Any]] = []
     snapshots: list[Dict[str, Any]] = []
@@ -554,11 +572,21 @@ def run_vlm_sensorimotor_scenario(
             return {"status": "failed", "error": "Configure and enable the Body VLM before running this scenario."}
         room = SimulatedRoom()
         room.reset_episode(shuffle=False, seed=int(seed))
+        layouts = (
+            ((5.0, 4.0), (8.0, 1.0), (7.0, 8.0)),
+            ((6.0, 5.0), (3.0, 9.0), (9.0, 9.0)),
+            ((5.0, 5.0), (8.0, 1.0), (10.0, 10.0)),
+        )
+        target_xy, chair_xy, mobile_xy = layouts[(int(seed) - 31) % len(layouts)]
         room.objects = {
             "target": {"id": "target", "label": "purple cube", "kind": "obstacle",
-                       "x": 5.0, "y": 4.0, "mass": 999.0, "size": 1.0},
+                       "x": target_xy[0], "y": target_xy[1], "mass": 999.0, "size": 1.0},
             "chair": {"id": "chair", "label": "chair", "kind": "chair",
-                      "x": 3.0, "y": 1.0, "mass": 6.0, "size": 0.8},
+                      "x": chair_xy[0], "y": chair_xy[1], "mass": 6.0, "size": 0.8},
+            "mobile_obstacle": {"id": "mobile_obstacle", "label": "moving obstacle",
+                                "kind": "mobile_obstacle", "x": mobile_xy[0], "y": mobile_xy[1],
+                                "mass": 999.0, "size": 0.7,
+                                "props": {"velocity_x": -0.15, "velocity_y": 0.08}},
         }
         scenario_id = f"vlm-nav-{int(seed)}-{time.time_ns()}"
 
@@ -572,8 +600,11 @@ def run_vlm_sensorimotor_scenario(
             camera.update({"frame_id": frame_id, "timestamp": timestamp})
             lidar.update({"frame_id": frame_id, "timestamp": timestamp,
                           "coordinate_frame": "body", "unit": "m", "native": False})
+            radar = dict(observation.modalities.get("mmwave_radar") or {})
+            radar.update({"frame_id": frame_id, "timestamp": timestamp, "coordinate_frame": "local_map"})
             observation.modalities["camera"] = camera
             observation.modalities["lidar"] = lidar
+            observation.modalities["mmwave_radar"] = radar
             projections = sensor_projections(body, observation.scene, modalities=observation.modalities)
             packet = {
                 "contract": "body_perception_frame.v2", "source": "simulated_room",
@@ -597,6 +628,7 @@ def run_vlm_sensorimotor_scenario(
                             *, include_sensor_context: bool) -> Dict[str, Any]:
             observation, body, lidar, packet = frame
             camera = observation.modalities["camera"]
+            radar = observation.modalities.get("mmwave_radar") or {}
             frame_id = str(packet["frame_id"])
             timestamp = float(packet["timestamp"])
             result = interpreter.interpret_now(
@@ -627,7 +659,7 @@ def run_vlm_sensorimotor_scenario(
                 "camera_mime_type": camera.get("mime_type", "image/png"),
                 "camera_source": camera.get("source"), "lidar_source": lidar.get("source"),
                 "lidar_returns": len(lidar.get("points") or []),
-                "vlm_input_modalities": ["camera", "lidar", "pose"] if include_sensor_context else ["camera"],
+                "vlm_input_modalities": ["camera", "lidar", "mmwave_radar", "pose"] if include_sensor_context else ["camera"],
                 "sensor_packet": {
                     "contract": "body_perception_frame.v2", "frame_id": frame_id,
                     "timestamp": timestamp,
@@ -636,10 +668,18 @@ def run_vlm_sensorimotor_scenario(
                                "height": camera.get("height"), "image_attached": bool(camera.get("image_base64"))},
                     "lidar": {"source": lidar.get("source"), "coordinate_frame": lidar.get("frame"),
                               "returns": len(lidar.get("points") or []),
-                              "points_sent_to_vlm": ([
+                    "points_sent_to_vlm": ([
                                   {key: point[key] for key in ("x", "y", "z", "range", "intensity") if key in point}
                                   for point in (lidar.get("points") or [])[:24]
                               ] if include_sensor_context else [])},
+                    "mmwave": {"source": radar.get("source"), "frame_id": frame_id,
+                               "timestamp": timestamp, "coordinate_frame": radar.get("frame"),
+                               "targets_sent_to_vlm": len(radar.get("targets") or []) if include_sensor_context else 0,
+                               "targets": ([{
+                                   key: target[key] for key in (
+                                       "target_id", "position_m", "velocity_mps", "radial_speed_mps", "confidence"
+                                   ) if key in target
+                               } for target in (radar.get("targets") or [])[:12]] if include_sensor_context else [])},
                 },
                 "vlm_status": result.get("status"), "vlm_mode": result.get("interpretation_mode"),
                 "vlm_latency_ms": result.get("latency_ms"),
@@ -658,11 +698,16 @@ def run_vlm_sensorimotor_scenario(
 
         paired_frame = capture_frame("same-scene")
         paired_frame_id = paired_frame[3]["frame_id"]
-        publish("STEP 1/2 - CAMERA ONLY", frame_id=paired_frame_id, sensor_stage="camera only")
-        camera_vlm = interpret_frame("camera_only", paired_frame, include_sensor_context=False)
-        publish("STEP 2/2 - SAME IMAGE + LIDAR", frame_id=paired_frame_id,
-                sensor_stage="same image + synchronized LiDAR and pose")
-        lidar_vlm = interpret_frame("camera_plus_lidar", paired_frame, include_sensor_context=True)
+        camera_vlm = {}
+        camera_snapshot = None
+        if compare_modalities:
+            publish("CAMERA-ONLY CONTROL", frame_id=paired_frame_id, sensor_stage="camera only")
+            camera_vlm = interpret_frame("camera_only", paired_frame, include_sensor_context=False)
+            camera_snapshot = snapshots[-1]
+        publish("CAMERA + SYNCHRONIZED SENSORS", frame_id=paired_frame_id,
+                sensor_stage="same image + synchronized LiDAR, mmWave and pose")
+        lidar_vlm = interpret_frame("camera_plus_sensors", paired_frame, include_sensor_context=True)
+        paired_snapshot = snapshots[-1]
         semantic_scene = lidar_vlm.get("semantic_scene") or {}
         grounding = semantic_scene.get("grounding") or {}
         if (grounding.get("accepted_for_context") is not True
@@ -674,21 +719,21 @@ def run_vlm_sensorimotor_scenario(
                 "status": "incomplete", "scenario_id": scenario_id,
                 "execution": "simulation_only", "physical_actuation": False,
                 "sensor_contract": "body_perception_frame.v2",
-                "sensor_source": "virtual_camera_and_virtual_lidar",
+                "sensor_source": "virtual_camera_lidar_mmwave",
                 "vlm_model": str(config.get("BODY_LLM_MODEL") or ""),
                 "vlm_calls": len(snapshots), "vlm_multimodal": True,
                 "task": task_description,
                 "autonomy": {"status": "safety_stop", "reason": reason,
                              "movement_started": False, "target_selected_by": None},
                 "modality_comparison": {
-                    "same_frame_id": snapshots[0]["frame_id"] == snapshots[1]["frame_id"],
-                    "same_timestamp": snapshots[0]["timestamp"] == snapshots[1]["timestamp"],
+                    "same_frame_id": camera_snapshot["frame_id"] == paired_snapshot["frame_id"] if camera_snapshot else None,
+                    "same_timestamp": camera_snapshot["timestamp"] == paired_snapshot["timestamp"] if camera_snapshot else None,
                     "camera_only_latency_ms": camera_vlm.get("latency_ms"),
-                    "camera_plus_lidar_latency_ms": lidar_vlm.get("latency_ms"),
-                    "camera_only_summary": snapshots[0].get("scene_summary"),
-                    "camera_plus_lidar_summary": snapshots[1].get("scene_summary"),
-                    "camera_only_grounding": snapshots[0].get("grounding"),
-                    "camera_plus_lidar_grounding": grounding,
+                    "camera_plus_sensors_latency_ms": lidar_vlm.get("latency_ms"),
+                    "camera_only_summary": camera_snapshot.get("scene_summary") if camera_snapshot else None,
+                    "camera_plus_sensors_summary": paired_snapshot.get("scene_summary"),
+                    "camera_only_grounding": camera_snapshot.get("grounding") if camera_snapshot else None,
+                    "camera_plus_sensors_grounding": grounding,
                     "movement_uses_vlm_output": False,
                     "movement_uses": "stopped before motion: rejected or stale VLM grounding",
                 },
@@ -722,7 +767,7 @@ def run_vlm_sensorimotor_scenario(
                 "status": "incomplete", "scenario_id": scenario_id,
                 "execution": "simulation_only", "physical_actuation": False,
                 "sensor_contract": "body_perception_frame.v2",
-                "sensor_source": "virtual_camera_and_virtual_lidar",
+                "sensor_source": "virtual_camera_lidar_mmwave",
                 "vlm_model": str(config.get("BODY_LLM_MODEL") or ""),
                 "vlm_calls": len(snapshots), "vlm_multimodal": True,
                 "task": task_description,
@@ -730,14 +775,14 @@ def run_vlm_sensorimotor_scenario(
                              "movement_started": False, "target_query": task_target_label,
                              "target_resolution": resolution},
                 "modality_comparison": {
-                    "same_frame_id": snapshots[0]["frame_id"] == snapshots[1]["frame_id"],
-                    "same_timestamp": snapshots[0]["timestamp"] == snapshots[1]["timestamp"],
+                    "same_frame_id": camera_snapshot["frame_id"] == paired_snapshot["frame_id"] if camera_snapshot else None,
+                    "same_timestamp": camera_snapshot["timestamp"] == paired_snapshot["timestamp"] if camera_snapshot else None,
                     "camera_only_latency_ms": camera_vlm.get("latency_ms"),
-                    "camera_plus_lidar_latency_ms": lidar_vlm.get("latency_ms"),
-                    "camera_only_summary": snapshots[0].get("scene_summary"),
-                    "camera_plus_lidar_summary": snapshots[1].get("scene_summary"),
-                    "camera_only_grounding": snapshots[0].get("grounding"),
-                    "camera_plus_lidar_grounding": grounding,
+                    "camera_plus_sensors_latency_ms": lidar_vlm.get("latency_ms"),
+                    "camera_only_summary": camera_snapshot.get("scene_summary") if camera_snapshot else None,
+                    "camera_plus_sensors_summary": paired_snapshot.get("scene_summary"),
+                    "camera_only_grounding": camera_snapshot.get("grounding") if camera_snapshot else None,
+                    "camera_plus_sensors_grounding": grounding,
                     "movement_uses_vlm_output": False,
                     "movement_uses": "stopped before motion: task target not grounded",
                 },
@@ -763,8 +808,9 @@ def run_vlm_sensorimotor_scenario(
              round(target_position_m[1] + dy * standoff_cells))
             for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))
         ]
+        initial_radar = initial_observation.modalities.get("mmwave_radar")
         safe_routes = [
-            (_sensor_route(initial_body, initial_lidar, candidate, room), candidate)
+            (_sensor_route(initial_body, initial_lidar, candidate, room, initial_radar), candidate)
             for candidate in candidate_goals
             if 1 <= candidate[0] <= room.width - 2 and 1 <= candidate[1] <= room.height - 2
         ]
@@ -781,7 +827,7 @@ def run_vlm_sensorimotor_scenario(
             observation = room.observe()
             body = room.body_state()
             lidar = dict(observation.modalities.get("lidar") or {})
-            route = _sensor_route(body, lidar, goal, room)
+            route = _sensor_route(body, lidar, goal, room, observation.modalities.get("mmwave_radar"))
             distance_to_goal = math.hypot(goal[0] - float(body.position[0]), goal[1] - float(body.position[1]))
             if distance_to_goal <= 0.65:
                 break
@@ -828,7 +874,7 @@ def run_vlm_sensorimotor_scenario(
             "status": status, "scenario_id": scenario_id,
             "execution": "simulation_only", "physical_actuation": False,
             "sensor_contract": "body_perception_frame.v2",
-            "sensor_source": "virtual_camera_and_virtual_lidar",
+            "sensor_source": "virtual_camera_lidar_mmwave",
             "vlm_model": str(config.get("BODY_LLM_MODEL") or ""),
             "vlm_calls": len(snapshots),
             "vlm_multimodal": lidar_vlm.get("interpretation_mode") == "sensor_packet",
@@ -848,14 +894,14 @@ def run_vlm_sensorimotor_scenario(
                 "grounding_frame_id": grounding.get("frame_id"),
             },
             "modality_comparison": {
-                "same_frame_id": snapshots[0]["frame_id"] == snapshots[1]["frame_id"],
-                "same_timestamp": snapshots[0]["timestamp"] == snapshots[1]["timestamp"],
+                "same_frame_id": camera_snapshot["frame_id"] == paired_snapshot["frame_id"] if camera_snapshot else None,
+                "same_timestamp": camera_snapshot["timestamp"] == paired_snapshot["timestamp"] if camera_snapshot else None,
                 "camera_only_latency_ms": camera_vlm.get("latency_ms"),
-                "camera_plus_lidar_latency_ms": lidar_vlm.get("latency_ms"),
-                "camera_only_summary": snapshots[0].get("scene_summary"),
-                "camera_plus_lidar_summary": snapshots[1].get("scene_summary"),
-                "camera_only_grounding": snapshots[0].get("grounding"),
-                "camera_plus_lidar_grounding": snapshots[1].get("grounding"),
+                "camera_plus_sensors_latency_ms": lidar_vlm.get("latency_ms"),
+                "camera_only_summary": camera_snapshot.get("scene_summary") if camera_snapshot else None,
+                "camera_plus_sensors_summary": paired_snapshot.get("scene_summary"),
+                "camera_only_grounding": camera_snapshot.get("grounding") if camera_snapshot else None,
+                "camera_plus_sensors_grounding": paired_snapshot.get("grounding"),
                 "movement_uses_vlm_output": True,
                 "movement_uses": "accepted VLM-grounded target; fresh LiDAR scans gate every route segment",
             },
@@ -878,7 +924,7 @@ def run_vlm_sensorimotor_scenario(
             "status": "failed", "error": str(exc)[:300],
             "scenario_id": scenario_id, "execution": "simulation_only",
             "physical_actuation": False, "sensor_contract": "body_perception_frame.v2",
-            "goal_m": list(goal), "timeline": timeline, "snapshots": snapshots,
+            "goal_m": list(goal or []), "timeline": timeline, "snapshots": snapshots,
         }
         if room is not None:
             failure.update({
@@ -887,7 +933,98 @@ def run_vlm_sensorimotor_scenario(
             })
         return failure
     finally:
+        if owns_interpreter:
+            interpreter.close()
+
+
+def run_vlm_sensorimotor_suite(
+    config: Dict[str, Any], *, scene_count: int = 3,
+    progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+) -> Dict[str, Any]:
+    """Run reproducible, paired camera/LiDAR/mmWave scenes through the VLM."""
+    count = max(1, min(5, int(scene_count)))
+    results = []
+    snapshots = []
+    timeline = []
+    interpreter = BodySceneInterpreter(dict(config or {}))
+    try:
+        for index in range(count):
+            seed = 31 + index
+
+            def report_progress(update: Dict[str, Any], *, scene_index: int = index) -> None:
+                if progress_callback:
+                    progress_callback({**update, "scene_index": scene_index + 1, "scene_count": count})
+
+            result = run_vlm_sensorimotor_scenario(
+                config, progress_callback=report_progress, seed=seed,
+                compare_modalities=index == 0, interpreter=interpreter,
+            )
+            results.append(result)
+            for snapshot in result.get("snapshots") or []:
+                snapshots.append({**snapshot, "scene_index": index + 1, "seed": seed})
+            timeline.extend({**action, "scene_index": index + 1, "seed": seed}
+                            for action in result.get("timeline") or [])
+    finally:
         interpreter.close()
+
+    successes = sum(result.get("status") == "completed" for result in results)
+    grounding = [
+        snapshot.get("grounding") or {}
+        for result in results for snapshot in (result.get("snapshots") or [])
+        if snapshot.get("vlm_mode") == "sensor_packet"
+    ]
+    latencies = [
+        float(snapshot["vlm_latency_ms"])
+        for result in results for snapshot in (result.get("snapshots") or [])
+        if snapshot.get("vlm_latency_ms") is not None
+    ]
+    total_calls = sum(int(result.get("vlm_calls") or 0) for result in results)
+    collisions = sum(int(result.get("collisions") or 0) for result in results)
+    near_misses = sum(int(result.get("near_misses") or 0) for result in results)
+    last = results[-1] if results else {}
+    suite_status = "completed" if successes == count else ("failed" if not successes else "incomplete")
+    scene_reports = [{
+        "scene_index": index + 1, "seed": 31 + index, "status": result.get("status"),
+        "goal_reached": result.get("goal_reached", False),
+        "target_id": (result.get("autonomy") or {}).get("target_id"),
+        "target_label": (result.get("autonomy") or {}).get("target_semantic_label"),
+        "target_resolution": (result.get("autonomy") or {}).get("target_resolution"),
+        "target_clearance_m": (result.get("autonomy") or {}).get("target_clearance_m"),
+        "minimum_clearance_m": (result.get("autonomy") or {}).get("minimum_clearance_m"),
+        "actions": result.get("actions", 0), "collisions": result.get("collisions", 0),
+        "near_misses": result.get("near_misses", 0),
+        "vlm_calls": result.get("vlm_calls", 0),
+        "vlm_latency_ms": [snapshot.get("vlm_latency_ms") for snapshot in result.get("snapshots") or []],
+        "error": result.get("error"),
+    } for index, result in enumerate(results)]
+    return {
+        "status": suite_status, "execution": "simulation_only", "physical_actuation": False,
+        "sensor_contract": "body_perception_frame.v2",
+        "sensor_source": "generated_camera_lidar_mmwave_from_shared_metric_scene",
+        "scene_count": count, "successes": successes, "success_rate": successes / count,
+        "accepted_multimodal_groundings": sum(item.get("accepted_for_context") is True for item in grounding),
+        "multimodal_grounding_count": len(grounding),
+        "grounding_acceptance_rate": (sum(item.get("accepted_for_context") is True for item in grounding) / len(grounding)) if grounding else 0.0,
+        "invented_object_references": sum(int(item.get("invented_object_references") or 0) for item in grounding),
+        "average_vlm_latency_ms": round(sum(latencies) / len(latencies), 1) if latencies else None,
+        "total_vlm_latency_ms": round(sum(latencies), 1) if latencies else None,
+        "vlm_calls": total_calls, "vlm_multimodal": all(result.get("vlm_multimodal") for result in results),
+        "vlm_model": str(config.get("BODY_LLM_MODEL") or ""),
+        "task": last.get("task"), "goal_reached": successes == count,
+        "final_position_m": last.get("final_position_m"),
+        "distance_to_goal_m": last.get("distance_to_goal_m"),
+        "collisions": collisions, "near_misses": near_misses,
+        "actions": sum(int(result.get("actions") or 0) for result in results),
+        "autonomy": {
+            "status": "completed" if successes == count else "incomplete",
+            "movement_started": any((result.get("autonomy") or {}).get("movement_started") for result in results),
+            "target_selected_by": "same-frame VLM grounding + local embeddings; LiDAR route gate; mmWave motion input",
+            "scenes": scene_reports,
+        },
+        "modality_comparison": results[0].get("modality_comparison") if results else {},
+        "scene_results": scene_reports, "snapshots": snapshots, "timeline": timeline,
+        "safety": "Each camera image, LiDAR scan, mmWave frame and pose shares one scene manifest, frame id and timestamp. No actuator command is sent.",
+    }
 
 
 def _displace_surface(room: SimulatedRoom, surface_id: str, seed: int) -> bool:

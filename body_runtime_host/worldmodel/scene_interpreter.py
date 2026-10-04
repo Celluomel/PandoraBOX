@@ -228,7 +228,8 @@ class BodySceneInterpreter:
                 "[BodyEmbeddings] request provider=fastembed model=%s kind=%s inputs=%d",
                 model, kind, len(texts),
             )
-            rows = list(self._local_embedding_engine.embed(texts, batch_size=32))
+            with self._lock:
+                rows = list(self._local_embedding_engine.embed(texts, batch_size=32))
             vectors = [[float(value) for value in row] for row in rows]
             logger.info(
                 "[BodyEmbeddings] response provider=fastembed model=%s kind=%s vectors=%d dimensions=%s",
@@ -951,6 +952,15 @@ class BodySceneInterpreter:
             "points": compact_points,
             "points_truncated": max(0, len(points) - len(compact_points)),
         }
+        raw_radar = (packet.get("modalities") or {}).get("mmwave_radar") or {}
+        radar_targets = [item for item in raw_radar.get("targets") or [] if isinstance(item, dict)]
+        modalities["mmwave_radar"] = {
+            **compact_fields(raw_radar, ("frame_id", "timestamp", "source", "quality", "frame", "coordinate_frame")),
+            "targets": [{key: item[key] for key in (
+                "position_m", "velocity_mps", "radial_speed_mps", "confidence"
+            ) if key in item} for item in radar_targets[:12]],
+            "targets_truncated": max(0, len(radar_targets) - 12),
+        }
         raw_motion = packet.get("motion")
         if isinstance(raw_motion, dict):
             prompt_packet["motion"] = compact_fields(
@@ -969,6 +979,8 @@ class BodySceneInterpreter:
                 {key: value for key, value in point.items() if key != "object_id"}
                 for point in modalities["lidar"]["points"]
             ]
+            if not visual_options.get("include_sensor_context"):
+                modalities["mmwave_radar"]["targets"] = []
         prompt_packet["modalities"] = modalities
         prompt_packet["attention"] = {
             "policy": "near_actionable_and_hazardous",
@@ -991,6 +1003,7 @@ class BodySceneInterpreter:
             "movement_support (array of monitoring or recovery suggestions), uncertainty (array). "
             f"Prioritize objects within approximately {self._focus_range():.1f} metres of the Body, objects on the "
             "current path, and hazards. Do not enumerate distant objects unless they are necessary for navigation. "
+            "Use mmWave targets only as metric motion evidence (position/velocity), never as proof of visual identity. "
             "Every concrete object named in scene_summary must also appear in object_descriptions with a short "
             "open-vocabulary label and a visual description; do not leave object_descriptions empty when the "
             "summary names a visible object. Use free-form labels grounded in the image, not a fixed category list. "
