@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import importlib.util
 import hashlib
+import base64
 import logging
 import math
 import re
@@ -468,7 +469,9 @@ class BodySceneInterpreter:
             self._last_submit = now
             self._future = self._executor.submit(self._interpret, packet)
 
-    def interpret_now(self, packet: Dict[str, Any]) -> Dict[str, Any]:
+    def interpret_now(
+        self, packet: Dict[str, Any], *, visual_options: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
         """Run one explicit diagnostic interpretation and publish its result.
 
         The Body VLM test is a user-triggered diagnostic, so it must be visible
@@ -476,7 +479,7 @@ class BodySceneInterpreter:
         also keeps the UI from showing an old ``No interpretation yet`` value
         after a successful test.
         """
-        result = self._interpret(packet)
+        result = self._interpret(packet, visual_options=visual_options)
         with self._lock:
             self._latest = dict(result)
         return result
@@ -536,6 +539,60 @@ class BodySceneInterpreter:
             self._visual_cache.move_to_end(key)
             while len(self._visual_cache) > 24:
                 self._visual_cache.popitem(last=False)
+
+    @staticmethod
+    def _resize_visual_input(image: str, camera: Dict[str, Any], max_width: int) -> tuple[str, Dict[str, Any]]:
+        """Downscale only the VLM copy; retain the original camera frame elsewhere."""
+        metadata = dict(camera)
+        if not image or image.startswith("http"):
+            return image, metadata
+        prefix = ""
+        encoded = image
+        if image.startswith("data:"):
+            prefix, separator, encoded = image.partition(",")
+            if not separator:
+                return image, metadata
+            prefix += ","
+        try:
+            declared_width = int(metadata.get("width") or 0)
+            declared_height = int(metadata.get("height") or 0)
+        except (TypeError, ValueError):
+            declared_width = declared_height = 0
+        if declared_width and declared_width <= max_width:
+            metadata.update({
+                "original_width": declared_width,
+                "original_height": declared_height,
+                "analysis_width": declared_width,
+                "analysis_height": declared_height,
+            })
+            return image, metadata
+        try:
+            import cv2
+            import numpy as np
+
+            raw = base64.b64decode(encoded, validate=False)
+            frame = cv2.imdecode(np.frombuffer(raw, dtype=np.uint8), cv2.IMREAD_COLOR)
+            if frame is None:
+                return image, metadata
+            height, width = frame.shape[:2]
+            metadata["original_width"] = int(width)
+            metadata["original_height"] = int(height)
+            if width <= max_width:
+                metadata["analysis_width"] = int(width)
+                metadata["analysis_height"] = int(height)
+                return image, metadata
+            resized_height = max(1, round(height * max_width / width))
+            resized = cv2.resize(frame, (max_width, resized_height), interpolation=cv2.INTER_AREA)
+            ok, jpeg = cv2.imencode(".jpg", resized, [int(cv2.IMWRITE_JPEG_QUALITY), 82])
+            if not ok:
+                return image, metadata
+            metadata["analysis_width"] = int(max_width)
+            metadata["analysis_height"] = int(resized_height)
+            metadata["image_resized_for_vlm"] = True
+            return prefix + base64.b64encode(jpeg.tobytes()).decode("ascii"), metadata
+        except Exception as exc:
+            logger.warning("[BodyVLM] analysis image resize skipped: %s", str(exc)[:160])
+            return image, metadata
 
     @staticmethod
     def _ground_interpretation(interpretation: Dict[str, Any], packet: Dict[str, Any], label_resolver=None) -> Dict[str, Any]:
@@ -741,7 +798,9 @@ class BodySceneInterpreter:
                 return value
         return None
 
-    def _interpret(self, packet: Dict[str, Any]) -> Dict[str, Any]:
+    def _interpret(
+        self, packet: Dict[str, Any], *, visual_options: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
         call_started = time.monotonic()
         model = str(self._config.get("BODY_LLM_MODEL") or "").strip()
         if not model:
@@ -790,6 +849,17 @@ class BodySceneInterpreter:
         modalities = dict(packet.get("modalities") or {})
         camera_meta = dict(modalities.get("camera") or {})
         camera_image = camera_meta.pop("image_base64", None) or camera_meta.pop("image_url", None)
+        visual_options = visual_options if isinstance(visual_options, dict) else {}
+        visual_image_max_width = max(320, min(640, int(
+            visual_options.get("image_max_width", self._config.get("BODY_LLM_VISUAL_IMAGE_MAX_WIDTH", 640)) or 640
+        )))
+        visual_input = {}
+        if camera_image:
+            camera_image, visual_input = self._resize_visual_input(
+                str(camera_image), camera_meta, visual_image_max_width
+            )
+            camera_meta.update({key: value for key, value in visual_input.items() if key != "image_resized_for_vlm"})
+        visual_input["max_width"] = visual_image_max_width
         camera_image_size = len(str(camera_image)) if camera_image else 0
         depth_image = camera_meta.pop("depth_base64", None)
         camera_meta["image_attached"] = bool(camera_image)
@@ -894,7 +964,7 @@ class BodySceneInterpreter:
         user_content: Any = prompt
         camera = packet.get("modalities", {}).get("camera") if isinstance(packet.get("modalities"), dict) else None
         if isinstance(camera, dict):
-            image = camera.get("image_base64") or camera.get("image_url")
+            image = camera_image
             if image:
                 if str(image).startswith("data:") or str(image).startswith("http"):
                     image_url = str(image)
@@ -975,7 +1045,10 @@ class BodySceneInterpreter:
             )
             return detail or str(exc.reason or "provider rejected request")
 
-        visual_cache_key = self._visual_cache_key(str(camera_image), camera_meta, model) if visual_only else ""
+        visual_cache_key = (
+            self._visual_cache_key(str(camera_image), camera_meta, model)
+            if visual_only and not visual_options.get("bypass_cache") else ""
+        )
         cached_interpretation = self._visual_cache_get(visual_cache_key) if visual_cache_key else None
         if cached_interpretation is not None:
             logger.info("[BodyVLM] visual cache hit model=%s frame=%s", model, packet.get("frame_id"))
@@ -1100,6 +1173,7 @@ class BodySceneInterpreter:
             "interpretation_mode": "image_only" if visual_only else "sensor_packet",
             "visual_cache_hit": cached_interpretation is not None,
             "latency_ms": round((time.monotonic() - call_started) * 1000.0, 1),
+            "visual_input": visual_input if visual_only else None,
             "observed_at": packet.get("timestamp"),
             "updated_at": time.time(),
             "interpretation": interpretation,

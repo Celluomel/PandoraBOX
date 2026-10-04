@@ -130,12 +130,16 @@ class BodyPerceptionModalitiesTest(unittest.TestCase):
         defaults = host.body_llm_settings()
         self.assertEqual(defaults["visual_max_objects"], 5)
         self.assertEqual(defaults["visual_max_tokens"], 128)
+        self.assertEqual(defaults["visual_image_max_width"], 640)
+        self.assertEqual(defaults["target_latency_s"], 5.0)
         with patch.object(host, "save_config") as save_config:
             result = host.update_body_llm_settings({
                 "embedding_provider": "local_fastembed",
                 "embedding_model": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
                 "visual_max_objects": 7,
                 "visual_max_tokens": 256,
+                "visual_image_max_width": 480,
+                "target_latency_s": 8,
             })
         save_config.assert_called_once()
         self.assertEqual(host.config["BODY_LLM_EMBEDDING_PROVIDER"], "local_fastembed")
@@ -148,6 +152,45 @@ class BodyPerceptionModalitiesTest(unittest.TestCase):
         self.assertEqual(host.config["BODY_LLM_VISUAL_MAX_TOKENS"], 256)
         self.assertEqual(result["settings"]["visual_max_objects"], 7)
         self.assertEqual(result["settings"]["visual_max_tokens"], 256)
+        self.assertEqual(host.config["BODY_LLM_VISUAL_IMAGE_MAX_WIDTH"], 480)
+        self.assertEqual(host.config["BODY_LLM_TARGET_LATENCY_S"], 8)
+        self.assertEqual(result["settings"]["visual_image_max_width"], 480)
+        self.assertEqual(result["settings"]["target_latency_s"], 8)
+
+    def test_vlm_analysis_resize_preserves_original_camera_frame(self):
+        import base64
+        from types import SimpleNamespace
+        from body_runtime_host.worldmodel.scene_interpreter import BodySceneInterpreter
+
+        class Frame:
+            shape = (480, 640, 3)
+
+        fake_cv2 = types.ModuleType("cv2")
+        fake_cv2.IMREAD_COLOR = 1
+        fake_cv2.IMWRITE_JPEG_QUALITY = 2
+        fake_cv2.INTER_AREA = 3
+        fake_cv2.imdecode = lambda *_: Frame()
+        fake_cv2.resize = lambda _frame, size, **_kwargs: SimpleNamespace(shape=(size[1], size[0], 3))
+        class Encoded:
+            def tobytes(self):
+                return b"resized-jpeg"
+        fake_cv2.imencode = lambda *_: (True, Encoded())
+        fake_numpy = types.ModuleType("numpy")
+        fake_numpy.uint8 = object()
+        fake_numpy.frombuffer = lambda *_args, **_kwargs: b"source-jpeg"
+        original = base64.b64encode(b"source-jpeg").decode("ascii")
+
+        with patch.dict(sys.modules, {"cv2": fake_cv2, "numpy": fake_numpy}):
+            resized, metadata = BodySceneInterpreter._resize_visual_input(
+                original, {"width": 640, "height": 480}, 320
+            )
+
+        self.assertEqual(base64.b64decode(resized), b"resized-jpeg")
+        self.assertEqual(metadata["original_width"], 640)
+        self.assertEqual(metadata["original_height"], 480)
+        self.assertEqual(metadata["analysis_width"], 320)
+        self.assertEqual(metadata["analysis_height"], 240)
+        self.assertTrue(metadata["image_resized_for_vlm"])
 
     def test_native_modalities_are_preferred_and_provenanced(self):
         from body_runtime_host.worldmodel.perception import sensor_projections
@@ -809,6 +852,60 @@ class BodyPerceptionModalitiesTest(unittest.TestCase):
         self.assertEqual(completed["status"], "completed")
         self.assertTrue(completed["ok"])
         self.assertGreaterEqual(completed["latency_ms"], 0)
+
+    def test_vlm_profile_benchmark_compares_one_frame_without_saving_settings(self):
+        import threading
+        import time
+        from body_runtime_host.runtime import BodyHost
+
+        class Source:
+            def observe(self):
+                return {"frame": "same"}
+
+            def body_state(self):
+                return {"position": [0, 0, 0]}
+
+        class Interpreter:
+            def __init__(self):
+                self.calls = []
+
+            def interpret_now(self, packet, *, visual_options):
+                self.calls.append((packet, visual_options["image_max_width"]))
+                time.sleep({640: 0.003, 480: 0.002, 320: 0.001}[visual_options["image_max_width"]])
+                return {
+                    "status": "interpreted", "latency_ms": 1,
+                    "interpretation": {
+                        "scene_summary": "Table and cup visible",
+                        "object_descriptions": [{"label": "table"}, {"label": "cup"}],
+                    },
+                }
+
+        interpreter = Interpreter()
+        class WorldModel:
+            source = Source()
+            scene_interpreter = interpreter
+
+            @staticmethod
+            def _scene_packet(*args):
+                return {"modalities": {"camera": {"image_base64": "image"}}}
+
+        host = BodyHost.__new__(BodyHost)
+        host._worldmodel = WorldModel()
+        host._worldmodel_lock = threading.Lock()
+        host._body_vlm_test_lock = threading.Lock()
+        host._body_vlm_test_status = {"status": "running"}
+        host.config = {"BODY_LLM_TARGET_LATENCY_S": 1.0}
+        host.value = lambda key, default=None: host.config.get(key, default)
+        host.body_llm_settings = lambda: {"model": "test-vlm", "visual_max_objects": 5, "visual_max_tokens": 128}
+
+        result = host.benchmark_body_vlm_profiles()
+
+        self.assertTrue(result["ok"])
+        self.assertEqual([width for _, width in interpreter.calls], [640, 480, 320])
+        self.assertEqual(len({id(packet) for packet, _ in interpreter.calls}), 1)
+        self.assertEqual(result["recommendation"]["image_max_width"], 320)
+        self.assertTrue(result["target_met"])
+        self.assertFalse(result["saved_settings_changed"])
 
 
 if __name__ == "__main__":

@@ -514,6 +514,7 @@ class BodyHost:
                 "status": result.get("status"),
                 "error": result.get("error"),
                 "diagnosis": diagnosis,
+                "visual_input": result.get("visual_input"),
                 "grounding": grounding,
                 "interpretation": result.get("interpretation"),
                 "semantic_scene": result.get("semantic_scene"),
@@ -522,6 +523,85 @@ class BodyHost:
         except Exception as exc:
             LOG.exception("Body VLM test failed during %s", stage)
             return {"ok": False, "stage": stage, "error": str(exc)[:300]}
+
+    def benchmark_body_vlm_profiles(self) -> dict:
+        """Compare image scales on one captured frame without changing saved settings."""
+        wm = self.worldmodel
+        if wm is None or wm.source is None:
+            return {"ok": False, "stage": "source_check", "error": "world model or sensor source unavailable"}
+        try:
+            obs = wm.source.observe()
+            body = wm.source.body_state()
+            packet = wm._scene_packet(obs, body, {}, {})
+            camera = (packet.get("modalities") or {}).get("camera") or {}
+            if not (camera.get("image_base64") or camera.get("image_url")):
+                return {"ok": False, "stage": "camera_check", "error": "No camera image available for the profile comparison"}
+        except Exception as exc:
+            return {"ok": False, "stage": "scene_capture", "error": str(exc)[:240]}
+
+        target_s = max(1.0, min(60.0, float(self.value("BODY_LLM_TARGET_LATENCY_S", 5.0) or 5.0)))
+        widths = [640, 480, 320]
+        profiles = []
+        baseline_labels: set[str] = set()
+        for index, width in enumerate(widths, start=1):
+            with self._body_vlm_test_lock:
+                self._body_vlm_test_status["progress"] = {
+                    "profile": f"{width}px", "index": index, "total": len(widths),
+                }
+            started = time.monotonic()
+            try:
+                result = wm.scene_interpreter.interpret_now(
+                    packet,
+                    visual_options={"image_max_width": width, "bypass_cache": True},
+                )
+            except Exception as exc:
+                result = {"status": "error", "error": str(exc)[:240]}
+            latency_ms = round((time.monotonic() - started) * 1000.0, 1)
+            interpretation = result.get("interpretation") or {}
+            if not isinstance(interpretation, dict):
+                interpretation = {}
+            descriptions = interpretation.get("object_descriptions") or []
+            labels = {
+                str(item.get("label") or item.get("id") or "").strip().lower()
+                for item in descriptions if isinstance(item, dict) and (item.get("label") or item.get("id"))
+            }
+            if index == 1:
+                baseline_labels = labels
+            coverage = (
+                round(len(labels & baseline_labels) / len(baseline_labels), 3)
+                if baseline_labels else (1.0 if result.get("status") == "interpreted" else 0.0)
+            )
+            summary = str(interpretation.get("scene_summary") or "").strip()
+            valid = result.get("status") == "interpreted" and bool(summary)
+            profiles.append({
+                "image_max_width": width,
+                "latency_ms": latency_ms,
+                "status": result.get("status", "error"),
+                "valid_scene_summary": bool(summary),
+                "described_objects": len(descriptions),
+                "baseline_object_coverage": coverage,
+                "quality_acceptable": valid and (index == 1 or coverage >= 0.8),
+                "summary": summary[:240],
+                "error": result.get("error"),
+                "visual_input": result.get("visual_input"),
+            })
+
+        eligible = [item for item in profiles if item["quality_acceptable"]]
+        target_candidates = [item for item in eligible if item["latency_ms"] <= target_s * 1000]
+        recommendation = min(target_candidates or eligible, key=lambda item: item["latency_ms"], default=None)
+        return {
+            "ok": any(item["status"] == "interpreted" for item in profiles),
+            "stage": "complete",
+            "status": "benchmark_complete",
+            "model": self.body_llm_settings().get("model"),
+            "target_latency_s": target_s,
+            "object_limit": self.body_llm_settings().get("visual_max_objects", 5),
+            "token_limit": self.body_llm_settings().get("visual_max_tokens", 128),
+            "saved_settings_changed": False,
+            "recommendation": recommendation,
+            "target_met": bool(target_candidates),
+            "profiles": profiles,
+        }
 
     @staticmethod
     def _qnn_memory_snapshot(diagnosis: dict) -> dict:
@@ -544,7 +624,7 @@ class BodyHost:
             pass
         return enriched
 
-    def start_body_vlm_test(self) -> dict:
+    def start_body_vlm_test(self, mode: str = "single") -> dict:
         """Start a VLM diagnostic without holding the HTTP request open."""
         with self._body_vlm_test_lock:
             if self._body_vlm_test_status.get("status") == "running":
@@ -555,15 +635,15 @@ class BodyHost:
                 "started_at": time.time(), "result": None,
             }
             self._body_vlm_test_thread = threading.Thread(
-                target=self._run_body_vlm_test_job, args=(job_id,),
+                target=self._run_body_vlm_test_job, args=(job_id, mode),
                 name="body-vlm-diagnostic", daemon=True,
             )
             self._body_vlm_test_thread.start()
             return dict(self._body_vlm_test_status)
 
-    def _run_body_vlm_test_job(self, job_id: str) -> None:
+    def _run_body_vlm_test_job(self, job_id: str, mode: str = "single") -> None:
         started = time.monotonic()
-        result = self.test_body_vlm()
+        result = self.benchmark_body_vlm_profiles() if mode == "benchmark" else self.test_body_vlm()
         finished_at = time.time()
         with self._body_vlm_test_lock:
             if self._body_vlm_test_status.get("job_id") != job_id:
@@ -575,6 +655,7 @@ class BodyHost:
                 "started_at": self._body_vlm_test_status.get("started_at"),
                 "completed_at": finished_at,
                 "latency_ms": round((time.monotonic() - started) * 1000, 1),
+                "progress": None,
                 "result": result,
             }
 
@@ -824,6 +905,8 @@ class BodyHost:
             "max_tokens": int(self.value("BODY_LLM_MAX_TOKENS", 360) or 360),
             "visual_max_tokens": max(32, min(512, int(self.value("BODY_LLM_VISUAL_MAX_TOKENS", 128) or 128))),
             "visual_max_objects": max(1, min(10, int(self.value("BODY_LLM_VISUAL_MAX_OBJECTS", 5) or 5))),
+            "visual_image_max_width": max(320, min(640, int(self.value("BODY_LLM_VISUAL_IMAGE_MAX_WIDTH", 640) or 640))),
+            "target_latency_s": max(1.0, min(60.0, float(self.value("BODY_LLM_TARGET_LATENCY_S", 5.0) or 5.0))),
             "context_window": int(self.value("BODY_LLM_CONTEXT_WINDOW", 50000) or 50000),
             "focus_range_m": float(self.value("BODY_LLM_FOCUS_RANGE_M", 5.0) or 5.0),
             "json_mode": bool(self.value("BODY_LLM_JSON_MODE", True)),
@@ -971,6 +1054,8 @@ class BodyHost:
             "BODY_LLM_MAX_TOKENS": max(64, min(2048, int(payload.get("max_tokens", 360) or 360))),
             "BODY_LLM_VISUAL_MAX_TOKENS": max(32, min(512, int(payload.get("visual_max_tokens", 128) or 128))),
             "BODY_LLM_VISUAL_MAX_OBJECTS": max(1, min(10, int(payload.get("visual_max_objects", 5) or 5))),
+            "BODY_LLM_VISUAL_IMAGE_MAX_WIDTH": max(320, min(640, int(payload.get("visual_image_max_width", 640) or 640))),
+            "BODY_LLM_TARGET_LATENCY_S": max(1.0, min(60.0, float(payload.get("target_latency_s", 5.0) or 5.0))),
             "BODY_LLM_CONTEXT_WINDOW": max(2048, min(131072, int(payload.get("context_window", 50000) or 50000))),
             "BODY_LLM_JSON_MODE": bool(payload.get("json_mode", True)),
             "BODY_LLM_EMBEDDING_PROVIDER": str(payload.get("embedding_provider", "openai") or "openai").strip().lower()
@@ -998,7 +1083,7 @@ class BodyHost:
         wm = self._worldmodel
         if wm is not None:
             with wm._lock:
-                for key in ("BODY_LLM_ENABLED", "BODY_LLM_BASE_URL", "BODY_LLM_MODEL", "BODY_LLM_INTERVAL", "BODY_LLM_TIMEOUT", "BODY_LLM_MAX_TOKENS", "BODY_LLM_VISUAL_MAX_TOKENS", "BODY_LLM_VISUAL_MAX_OBJECTS", "BODY_LLM_CONTEXT_WINDOW", "BODY_LLM_JSON_MODE", "BODY_LLM_EMBEDDING_PROVIDER", "BODY_LLM_EMBEDDING_MODEL", "BODY_LLM_EMBEDDING_THRESHOLD", "BODY_LLM_EMBEDDING_TIMEOUT"):
+                for key in ("BODY_LLM_ENABLED", "BODY_LLM_BASE_URL", "BODY_LLM_MODEL", "BODY_LLM_INTERVAL", "BODY_LLM_TIMEOUT", "BODY_LLM_MAX_TOKENS", "BODY_LLM_VISUAL_MAX_TOKENS", "BODY_LLM_VISUAL_MAX_OBJECTS", "BODY_LLM_VISUAL_IMAGE_MAX_WIDTH", "BODY_LLM_TARGET_LATENCY_S", "BODY_LLM_CONTEXT_WINDOW", "BODY_LLM_JSON_MODE", "BODY_LLM_EMBEDDING_PROVIDER", "BODY_LLM_EMBEDDING_MODEL", "BODY_LLM_EMBEDDING_THRESHOLD", "BODY_LLM_EMBEDDING_TIMEOUT"):
                     wm._cfg[key] = self.config.get(key)
                 wm._cfg["BODY_LLM_TOKEN"] = self.value("BODY_LLM_TOKEN", "")
                 wm.scene_interpreter._config = wm._cfg
@@ -2754,7 +2839,8 @@ class BodyHost:
                 elif path == "/body/camera/test-vlm":
                     self._send(owner.test_body_vlm())
                 elif path == "/body/camera/test-vlm/start":
-                    self._send(owner.start_body_vlm_test(), 202)
+                    mode = str(self._read_body().get("mode", "single") or "single")
+                    self._send(owner.start_body_vlm_test(mode=mode), 202)
                 elif path == "/body/llm/restart":
                     try:
                         is_loopback = ipaddress.ip_address(self.client_address[0].split("%", 1)[0]).is_loopback
