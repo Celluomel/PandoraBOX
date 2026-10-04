@@ -689,6 +689,7 @@ def run_vlm_sensorimotor_scenario(
                 "vlm_interpretation": interpretation,
                 "vlm_raw_output": raw_interpretation if isinstance(raw_interpretation, dict) else {},
                 "visual_input": result.get("visual_input"),
+                "vlm_input_preview": (result.get("visual_input") or {}).get("preview_base64"),
                 "grounding": semantic.get("grounding"), "error": result.get("error"),
             })
             if result.get("status") != "interpreted":

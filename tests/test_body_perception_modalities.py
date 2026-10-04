@@ -302,6 +302,7 @@ class BodyPerceptionModalitiesTest(unittest.TestCase):
 
     def test_mmwave_projects_conservative_camera_roi_without_semantic_identity(self):
         import json
+        import base64
         from types import SimpleNamespace
         from body_runtime_host.worldmodel.scene_interpreter import BodySceneInterpreter
         from body_runtime_host.worldmodel.virtual_camera import render_camera
@@ -335,6 +336,7 @@ class BodyPerceptionModalitiesTest(unittest.TestCase):
 
     def test_mmwave_roi_images_share_one_vision_request_with_global_frame(self):
         import json
+        import base64
         from types import SimpleNamespace
         from body_runtime_host.worldmodel.scene_interpreter import BodySceneInterpreter
         from body_runtime_host.worldmodel.virtual_camera import render_camera
@@ -379,10 +381,16 @@ class BodyPerceptionModalitiesTest(unittest.TestCase):
                 )
             content = sent["messages"][1]["content"]
             self.assertEqual(result["status"], "interpreted")
-            self.assertEqual([part["type"] for part in content].count("image_url"), 2)
+            self.assertEqual([part["type"] for part in content].count("image_url"), 1)
             self.assertEqual(len(result["visual_input"]["mmwave_rois"]), 1)
+            self.assertEqual(result["visual_input"]["strategy"], "single_image_attention_mosaic")
+            self.assertEqual(result["visual_input"]["image_count"], 1)
+            self.assertEqual(result["visual_input"]["global_context_width"], 320)
+            self.assertTrue(result["visual_input"]["preview_base64"])
+            mosaic_bytes = base64.b64decode(result["visual_input"]["preview_base64"])
+            self.assertIn(b"\xff\xd8", mosaic_bytes[:2])
             self.assertNotIn("must-not-leak", content[0]["text"])
-            self.assertIn("mmWave-guided camera crop", content[2]["text"])
+            self.assertIn("2x2 attention mosaic", content[0]["text"])
             self.assertEqual(result["interpretation_mode"], "sensor_packet")
         finally:
             interpreter.close()

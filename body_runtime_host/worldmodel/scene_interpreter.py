@@ -700,6 +700,69 @@ class BodySceneInterpreter:
             return [], []
 
     @staticmethod
+    def _mmwave_roi_mosaic(
+        image: str, crops: list[tuple[str, Dict[str, Any]]],
+    ) -> tuple[Optional[str], Optional[str]]:
+        """Pack one overview and up to two crops into one fixed-size vision image."""
+        try:
+            import cv2
+            import numpy as np
+
+            def decode(value: str):
+                encoded = value.partition(",")[2] if value.startswith("data:") else value
+                return cv2.imdecode(np.frombuffer(base64.b64decode(encoded, validate=False), dtype=np.uint8),
+                                    cv2.IMREAD_COLOR)
+
+            source = decode(image)
+            if source is None:
+                return None, None
+            tile_w, tile_h, header_h = 320, 240, 26
+            canvas = np.full((tile_h * 2, tile_w * 2, 3), (20, 30, 34), dtype=np.uint8)
+
+            def place(tile_x: int, tile_y: int, title: str, content, annotation: str = "") -> None:
+                x0, y0 = tile_x * tile_w, tile_y * tile_h
+                cv2.rectangle(canvas, (x0, y0), (x0 + tile_w - 1, y0 + tile_h - 1), (83, 105, 110), 1)
+                cv2.rectangle(canvas, (x0 + 1, y0 + 1), (x0 + tile_w - 2, y0 + header_h), (31, 53, 57), -1)
+                cv2.putText(canvas, title[:42], (x0 + 8, y0 + 18), cv2.FONT_HERSHEY_SIMPLEX,
+                            0.42, (206, 230, 225), 1, cv2.LINE_AA)
+                if content is not None:
+                    available_w, available_h = tile_w - 12, tile_h - header_h - 8
+                    scale = min(available_w / content.shape[1], available_h / content.shape[0])
+                    resized = cv2.resize(content, (max(1, int(content.shape[1] * scale)),
+                                                  max(1, int(content.shape[0] * scale))),
+                                         interpolation=cv2.INTER_AREA if scale < 1 else cv2.INTER_LINEAR)
+                    px = x0 + (tile_w - resized.shape[1]) // 2
+                    py = y0 + header_h + (available_h - resized.shape[0]) // 2
+                    canvas[py:py + resized.shape[0], px:px + resized.shape[1]] = resized
+                if annotation:
+                    cv2.putText(canvas, annotation[:44], (x0 + 8, y0 + tile_h - 10),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.36, (160, 206, 200), 1, cv2.LINE_AA)
+
+            place(0, 0, "GLOBAL VIEW", source)
+            for index in range(2):
+                if index < len(crops):
+                    crop_image = decode(crops[index][0])
+                    box = crops[index][1]
+                    place(1, index, f"RADAR ROI {index + 1}", crop_image,
+                          f"bearing {box['bearing_deg']} deg · range {box['range_m']} m")
+                else:
+                    place(1, index, "RADAR ROI", None, "no additional region selected")
+            note = np.full((tile_h - header_h - 8, tile_w - 12, 3), (20, 30, 34), dtype=np.uint8)
+            cv2.putText(note, "Radar guides attention only;", (8, 40), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.43, (206, 230, 225), 1, cv2.LINE_AA)
+            cv2.putText(note, "it does not identify objects.", (8, 70), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.43, (206, 230, 225), 1, cv2.LINE_AA)
+            place(0, 1, "SENSOR CUE", note)
+            ok, encoded = cv2.imencode(".jpg", canvas, [int(cv2.IMWRITE_JPEG_QUALITY), 82])
+            if not ok:
+                return None, None
+            preview = base64.b64encode(encoded.tobytes()).decode("ascii")
+            return "data:image/jpeg;base64," + preview, preview
+        except Exception as exc:
+            logger.warning("[BodyVLM] mmWave attention mosaic skipped: %s", str(exc)[:160])
+            return None, None
+
+    @staticmethod
     def _normalize_interpretation_schema(interpretation: Dict[str, Any]) -> Dict[str, Any]:
         """Normalize common VLM JSON shapes without constraining its vocabulary."""
         normalized = dict(interpretation)
@@ -1045,11 +1108,16 @@ class BodySceneInterpreter:
             visual_input["mmwave_roi_count"] = len(roi_crops)
             visual_input["mmwave_rois"] = roi_descriptors
             if roi_crops:
-                camera_image, global_meta = self._resize_visual_input(
-                    str(camera_image), camera_meta,
-                    max(320, min(480, int(visual_options.get("global_context_width", 320) or 320))),
-                )
-                visual_input["global_context_width"] = global_meta.get("analysis_width") or global_meta.get("width")
+                mosaic, preview = self._mmwave_roi_mosaic(str(camera_image), roi_crops)
+                if mosaic:
+                    camera_image = mosaic
+                    camera_image_size = len(camera_image)
+                    visual_input.update({"strategy": "single_image_attention_mosaic", "image_count": 1,
+                                         "global_context_width": 320, "preview_base64": preview})
+                else:
+                    roi_crops, roi_descriptors = [], []
+                    visual_input.update({"mmwave_roi_count": 0, "mmwave_rois": [],
+                                         "strategy": "full_frame_fallback", "image_count": 1})
         depth_image = camera_meta.pop("depth_base64", None)
         camera_meta["image_attached"] = bool(camera_image)
         camera_meta["depth_attached"] = bool(depth_image)
@@ -1144,9 +1212,10 @@ class BodySceneInterpreter:
         )
         if roi_crops:
             prompt += (
-                "\nThe following additional images are crops selected only by metric mmWave bearing/range. "
-                "The first image is the complete scene for context; inspect each crop closely for visual "
-                "evidence. Radar does not identify objects. Crops: "
+                "\nThe attached image is a 2x2 attention mosaic: top-left is the complete global scene; "
+                "top-right and bottom-right are the first and second crops; bottom-left contains only "
+                "sensor guidance text. Inspect each image region visually. Overlaid bearing/range text "
+                "is metadata, not a scene object. Radar does not identify objects. Regions: "
                 + json.dumps(roi_descriptors, separators=(",", ":"))
             )
         visual_only = bool(camera_image) and not bool(visual_options.get("include_sensor_context"))
@@ -1196,15 +1265,9 @@ class BodySceneInterpreter:
                     {"type": "text", "text": prompt},
                     {"type": "image_url", "image_url": {"url": image_url}},
                 ]
-                for crop_url, descriptor in roi_crops:
-                    user_content.append({"type": "text", "text": (
-                        "mmWave-guided camera crop; bearing " + str(descriptor["bearing_deg"])
-                        + " degrees, range " + str(descriptor["range_m"]) + " m."
-                    )})
-                    user_content.append({"type": "image_url", "image_url": {"url": crop_url}})
         if roi_crops:
             logger.info(
-                "[BodyVLM] mmWave ROI images=%d frame=%s boxes=%s",
+                "[BodyVLM] mmWave ROI regions=%d frame=%s image_parts=1 boxes=%s",
                 len(roi_crops), packet.get("frame_id"), json.dumps(roi_descriptors, separators=(",", ":")),
             )
         payload = {
