@@ -235,7 +235,8 @@ class BodyEvaluationTests(unittest.TestCase):
                     "entities": [{"id": "target", "semantic_label": "purple cube", "role": "goal",
                                   "description": "purple cube on the floor",
                                   "position": target["position"], "size": target["size"]}],
-                    "grounding": {"frame_id": frame_id, "accepted_for_context": True},
+                    "grounding": {"frame_id": frame_id,
+                                  "accepted_for_context": bool(visual_options.get("mmwave_roi"))},
                 },
             }
 
@@ -247,6 +248,7 @@ class BodyEvaluationTests(unittest.TestCase):
             }, scene_count=1, roi_compare=True)
 
         self.assertEqual(result["status"], "completed", result)
+        self.assertEqual(result["successes"], 1)
         self.assertEqual(result["vlm_calls"], 2)
         self.assertEqual(len(captured), 2)
         self.assertEqual(captured[0][0]["frame_id"], captured[1][0]["frame_id"])
@@ -257,8 +259,11 @@ class BodyEvaluationTests(unittest.TestCase):
         self.assertTrue(result["roi_comparison"]["same_frame_id"])
         self.assertTrue(result["roi_comparison"]["task_target_covered"])
         self.assertEqual(result["roi_comparison"]["full_image_latency_ms"], 10.0)
+        self.assertEqual(result["roi_comparison"]["full_image_grounding_accepted_count"], 0)
+        self.assertEqual(result["roi_comparison"]["roi_grounding_accepted_count"], 1)
         roi_snapshot = next(item for item in result["snapshots"] if item["stage"] == "mmwave_roi")
         self.assertTrue(roi_snapshot["roi_evaluation"]["same_frame_as_full_image"])
+        self.assertEqual(result["scene_results"][0]["status"], "completed")
 
     def test_sensorimotor_scenario_stops_when_multimodal_grounding_is_rejected(self):
         def fake_interpret(_interpreter, packet, *, visual_options=None):

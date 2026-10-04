@@ -712,11 +712,12 @@ def run_vlm_sensorimotor_scenario(
                 sensor_stage="same image + synchronized LiDAR, mmWave and pose")
         lidar_vlm = interpret_frame("camera_plus_sensors", paired_frame, include_sensor_context=True)
         paired_snapshot = snapshots[-1]
+        roi_vlm = None
         if roi_compare:
             publish("SAME-FRAME mmWAVE ROI A/B", frame_id=paired_frame_id,
                     sensor_stage="same global image + up to 2 radar-guided crops")
             try:
-                interpret_frame("mmwave_roi", paired_frame, include_sensor_context=True, mmwave_roi=True)
+                roi_vlm = interpret_frame("mmwave_roi", paired_frame, include_sensor_context=True, mmwave_roi=True)
                 roi_snapshot = snapshots[-1]
                 camera_meta = paired_frame[0].modalities.get("camera") or {}
                 fov = math.radians(float((camera_meta.get("calibration") or {}).get("fov_deg")
@@ -752,12 +753,14 @@ def run_vlm_sensorimotor_scenario(
                 "task_target_covered": (roi_snapshot.get("roi_evaluation") or {}).get("task_target_covered", False),
                 "roi_error": roi_snapshot.get("error"),
             }
-        semantic_scene = lidar_vlm.get("semantic_scene") or {}
+        navigation_vlm = roi_vlm if roi_compare else lidar_vlm
+        semantic_scene = (navigation_vlm or {}).get("semantic_scene") or {}
         grounding = semantic_scene.get("grounding") or {}
         if (grounding.get("accepted_for_context") is not True
                 or grounding.get("frame_id") != paired_frame_id
                 or semantic_scene.get("frame_id") != paired_frame_id):
-            reason = "multimodal VLM grounding was not accepted for this synchronized frame"
+            reason = ("mmWave ROI VLM grounding was not accepted for this synchronized frame"
+                      if roi_compare else "multimodal VLM grounding was not accepted for this synchronized frame")
             publish("stopped", reason=reason, movement_started=False)
             return {
                 "status": "incomplete", "scenario_id": scenario_id,
@@ -778,6 +781,8 @@ def run_vlm_sensorimotor_scenario(
                     "camera_plus_sensors_summary": paired_snapshot.get("scene_summary"),
                     "camera_only_grounding": camera_snapshot.get("grounding") if camera_snapshot else None,
                     "camera_plus_sensors_grounding": grounding,
+                    "navigation_vlm_variant": "mmwave_roi" if roi_compare else "full_frame",
+                    "roi_grounding": (roi_vlm.get("semantic_scene") or {}).get("grounding") if roi_vlm else None,
                     "movement_uses_vlm_output": False,
                     "movement_uses": "stopped before motion: rejected or stale VLM grounding",
                 },
@@ -827,6 +832,8 @@ def run_vlm_sensorimotor_scenario(
                     "camera_plus_sensors_summary": paired_snapshot.get("scene_summary"),
                     "camera_only_grounding": camera_snapshot.get("grounding") if camera_snapshot else None,
                     "camera_plus_sensors_grounding": grounding,
+                    "navigation_vlm_variant": "mmwave_roi" if roi_compare else "full_frame",
+                    "roi_grounding": (roi_vlm.get("semantic_scene") or {}).get("grounding") if roi_vlm else None,
                     "movement_uses_vlm_output": False,
                     "movement_uses": "stopped before motion: task target not grounded",
                 },
@@ -946,8 +953,11 @@ def run_vlm_sensorimotor_scenario(
                 "camera_plus_sensors_summary": paired_snapshot.get("scene_summary"),
                 "camera_only_grounding": camera_snapshot.get("grounding") if camera_snapshot else None,
                 "camera_plus_sensors_grounding": paired_snapshot.get("grounding"),
+                "navigation_vlm_variant": "mmwave_roi" if roi_compare else "full_frame",
+                "roi_grounding": (roi_vlm.get("semantic_scene") or {}).get("grounding") if roi_vlm else None,
                 "movement_uses_vlm_output": True,
-                "movement_uses": "accepted VLM-grounded target; fresh LiDAR scans gate every route segment",
+                "movement_uses": ("mmWave ROI-grounded target; fresh LiDAR scans gate every route segment"
+                                   if roi_compare else "accepted VLM-grounded target; fresh LiDAR scans gate every route segment"),
             },
             "goal_m": list(goal), "target_position_m": [round(target_position_m[0], 3), round(target_position_m[1], 3)],
             "final_position_m": [round(room.px, 3), round(room.py, 3)],
@@ -955,9 +965,10 @@ def run_vlm_sensorimotor_scenario(
             "collisions": room.collision_count, "near_misses": room.near_miss_count,
             "actions": len(timeline), "timeline": timeline, "snapshots": snapshots,
             "vlm_confirmation": {
-                "status": lidar_vlm.get("status"), "latency_ms": lidar_vlm.get("latency_ms"),
-                "scene_summary": snapshots[-1].get("scene_summary"),
-                "grounding": snapshots[-1].get("grounding"),
+                "status": navigation_vlm.get("status"), "latency_ms": navigation_vlm.get("latency_ms"),
+                "scene_summary": (roi_snapshot or paired_snapshot).get("scene_summary") if roi_compare else snapshots[-1].get("scene_summary"),
+                "grounding": ((roi_snapshot or paired_snapshot).get("grounding") if roi_compare
+                              else snapshots[-1].get("grounding")),
                 "target_selected": target_id,
             },
             "safety": "VLM must ground the task target in the paired frame. Every route segment and standoff is LiDAR-validated; no actuator command is sent.",
