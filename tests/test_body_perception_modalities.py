@@ -651,14 +651,16 @@ class BodyPerceptionModalitiesTest(unittest.TestCase):
         prompt = calls[0]["messages"][1]["content"][0]["text"]
         self.assertEqual(result["status"], "interpreted")
         self.assertLess(len(prompt), 6000)
-        self.assertIn("Describe only what is visibly supported", prompt)
+        self.assertIn("at most three salient objects clearly visible", prompt)
+        self.assertIn("primary_objects (array of short labels)", prompt)
+        self.assertNotIn("object_descriptions", prompt)
         self.assertNotIn("compact-frame", prompt)
         self.assertNotIn('"cup"', prompt)
         self.assertNotIn("lidar", prompt.lower())
         self.assertNotIn("vision_projection", prompt)
         self.assertNotIn("debug_payload", prompt)
         self.assertTrue(any(part.get("type") == "image_url" for part in calls[0]["messages"][1]["content"]))
-        self.assertLessEqual(calls[0]["max_tokens"], 192)
+        self.assertLessEqual(calls[0]["max_tokens"], 64)
         interpreter.close()
 
     def test_scene_interpreter_reuses_image_semantics_but_regrounds_fresh_geometry(self):

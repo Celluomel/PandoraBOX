@@ -867,17 +867,13 @@ class BodySceneInterpreter:
                 camera_meta, ("camera_profile", "width", "height", "calibration", "source")
             )
             prompt = (
-                "Describe only what is visibly supported by this robot camera image. "
-                "Do not infer metric position, distance, object size, motion, free space, "
-                "or a safe path. Do not use any simulator or sensor object list. "
-                "Return compact JSON only with keys: scene_summary (one short sentence), "
-                "primary_objects (at most three salient visible object labels), "
-                "object_descriptions (at most five objects with label, description, role, "
-                "visible scalar attributes, confidence 0..1, and optional normalized image_region), "
-                "environment (at most four directly visible facts), uncertainty (short strings). "
-                "Use an empty array when uncertain; never invent an object. Image regions are "
-                "normalized x/y/width/height in 0..1. This is semantic perception only, "
-                "not navigation or actuator control. "
+                "Identify at most three salient objects clearly visible in this robot camera image. "
+                "Return compact JSON only with scene_summary (one short sentence) and "
+                "primary_objects (array of short labels). Do not add descriptions, roles, "
+                "attributes, environment lists, coordinates, distance, motion, free space, "
+                "or path advice. Do not use simulator or sensor object lists. Use an empty "
+                "array when uncertain; never invent an object. This is semantic perception "
+                "only, not navigation or actuator control. "
                 + self._camera_view_note(camera_context)
                 + " Camera metadata: "
                 + json.dumps(camera_context, ensure_ascii=False, separators=(",", ":"))
@@ -917,7 +913,7 @@ class BodySceneInterpreter:
             ],
             "temperature": 0.1,
             "max_tokens": min(
-                192 if visual_only else 2048,
+                64 if visual_only else 2048,
                 max(64, int(self._config.get("BODY_LLM_MAX_TOKENS", 360) or 360)),
             ),
             # LM Studio vision providers differ in structured-output support.
