@@ -1040,8 +1040,34 @@ def run_vlm_sensorimotor_suite(
         "near_misses": result.get("near_misses", 0),
         "vlm_calls": result.get("vlm_calls", 0),
         "vlm_latency_ms": [snapshot.get("vlm_latency_ms") for snapshot in result.get("snapshots") or []],
+        "roi_ab_comparison": next((snapshot.get("roi_ab_comparison") for snapshot in result.get("snapshots") or []
+                                    if snapshot.get("roi_ab_comparison")), None),
         "error": result.get("error"),
     } for index, result in enumerate(results)]
+    roi_comparisons = [item["roi_ab_comparison"] for item in scene_reports if item.get("roi_ab_comparison")]
+    full_latencies = [float(item["full_image_latency_ms"]) for item in roi_comparisons
+                      if item.get("full_image_latency_ms") is not None]
+    roi_latencies = [float(item["roi_latency_ms"]) for item in roi_comparisons
+                     if item.get("roi_latency_ms") is not None]
+    roi_comparison_summary = None
+    if roi_compare:
+        covered = sum(item.get("task_target_covered") is True for item in roi_comparisons)
+        roi_comparison_summary = {
+            "scene_count": len(roi_comparisons),
+            "same_frame_id": all(item.get("same_frame_id") is True for item in roi_comparisons),
+            "full_image_latency_ms": round(sum(full_latencies) / len(full_latencies), 1) if full_latencies else None,
+            "roi_latency_ms": round(sum(roi_latencies) / len(roi_latencies), 1) if roi_latencies else None,
+            "roi_count": round(sum(int(item.get("roi_count") or 0) for item in roi_comparisons)
+                                / len(roi_comparisons), 2) if roi_comparisons else 0,
+            "task_target_covered": covered == len(roi_comparisons) and bool(roi_comparisons),
+            "task_target_covered_scene_count": covered,
+            "roi_coverage_rate": covered / len(roi_comparisons) if roi_comparisons else 0.0,
+            "full_image_grounding_accepted_count": sum(item.get("full_image_grounding_accepted") is True
+                                                        for item in roi_comparisons),
+            "roi_grounding_accepted_count": sum(item.get("roi_grounding_accepted") is True
+                                                 for item in roi_comparisons),
+            "scenes": roi_comparisons,
+        }
     return {
         "status": suite_status, "execution": "simulation_only", "physical_actuation": False,
         "sensor_contract": "body_perception_frame.v2",
@@ -1067,8 +1093,7 @@ def run_vlm_sensorimotor_suite(
             "scenes": scene_reports,
         },
         "modality_comparison": results[0].get("modality_comparison") if results else {},
-        "roi_comparison": (results[0].get("snapshots", [{}])[0].get("roi_ab_comparison")
-                           if results and roi_compare else None),
+        "roi_comparison": roi_comparison_summary,
         "scene_results": scene_reports, "snapshots": snapshots, "timeline": timeline,
         "safety": "Each camera image, LiDAR scan, mmWave frame and pose shares one scene manifest, frame id and timestamp. No actuator command is sent.",
     }
