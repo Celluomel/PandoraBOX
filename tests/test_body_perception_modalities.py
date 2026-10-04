@@ -192,6 +192,66 @@ class BodyPerceptionModalitiesTest(unittest.TestCase):
         self.assertEqual(metadata["analysis_height"], 240)
         self.assertTrue(metadata["image_resized_for_vlm"])
 
+    def test_vlm_can_receive_camera_image_and_sensor_packet_together(self):
+        import json
+        from urllib.request import Request
+        from body_runtime_host.worldmodel.scene_interpreter import BodySceneInterpreter
+
+        sent = {}
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def read(self):
+                return json.dumps({"choices": [{"message": {"content": json.dumps({
+                    "scene_summary": "Obstacle ahead.", "primary_objects": [],
+                    "object_descriptions": [], "environment": [], "possible_paths": [],
+                    "uncertainty": [],
+                })}}]}).encode()
+
+        def fake_urlopen(request, timeout):
+            self.assertIsInstance(request, Request)
+            sent.update(json.loads(request.data.decode()))
+            return Response()
+
+        interpreter = BodySceneInterpreter({
+            "BODY_LLM_ENABLED": True, "BODY_LLM_MODEL": "test-vlm",
+            "BODY_LLM_BASE_URL": "http://vlm.test/v1",
+            "BODY_LLM_VISUAL_IMAGE_MAX_WIDTH": 320,
+        })
+        packet = {
+            "timestamp": 123.0, "frame_id": "paired-frame-1", "visual_blind": True,
+            "objects": [{"id": "obstacle", "label": "pillar", "kind": "obstacle",
+                         "position": [2.0, 0.0, 0.0]}],
+            "body": {"position": [0.0, 0.0, 0.0], "orientation": 0.0},
+            "modalities": {
+                "camera": {"image_base64": "dGVzdA==", "mime_type": "image/png",
+                           "width": 320, "height": 240, "frame_id": "paired-frame-1"},
+                "lidar": {"source": "virtual_lidar", "frame": "body", "unit": "m",
+                          "frame_id": "paired-frame-1", "timestamp": 123.0,
+                          "points": [{"x": 1.5, "y": 0.0, "z": 0.3,
+                                      "range": 1.5, "object_id": "must-not-leak"}]},
+            },
+        }
+        try:
+            with patch("body_runtime_host.worldmodel.scene_interpreter.urlopen", side_effect=fake_urlopen):
+                result = interpreter.interpret_now(packet, visual_options={"include_sensor_context": True})
+            self.assertEqual(result["status"], "interpreted")
+            self.assertEqual(result["interpretation_mode"], "sensor_packet")
+            content = sent["messages"][1]["content"]
+            self.assertEqual([part["type"] for part in content], ["text", "image_url"])
+            self.assertIn("virtual_lidar", content[0]["text"])
+            self.assertIn('"frame":"body"', content[0]["text"])
+            self.assertIn('"unit":"m"', content[0]["text"])
+            self.assertIn('"x":1.5', content[0]["text"])
+            self.assertNotIn("must-not-leak", content[0]["text"])
+        finally:
+            interpreter.close()
+
     def test_native_modalities_are_preferred_and_provenanced(self):
         from body_runtime_host.worldmodel.perception import sensor_projections
         from body_runtime_host.worldmodel.types import BodyState, SceneObject

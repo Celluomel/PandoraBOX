@@ -4,6 +4,7 @@ from unittest.mock import patch
 from body_runtime_host.worldmodel.evaluation import (
     _restart_resume_probe,
     collect_body_llm_grounding,
+    run_vlm_sensorimotor_scenario,
     run_shuffled_trials,
 )
 
@@ -79,6 +80,55 @@ class BodyEvaluationTests(unittest.TestCase):
         self.assertEqual(camera["validation"], "deterministic_scene_fixture")
         self.assertTrue(camera["image_base64"].startswith("iVBOR"))
         self.assertGreater(len(camera["image_base64"]), 200)
+
+    def test_sensorimotor_scenario_pairs_vlm_frames_and_moves_without_collisions(self):
+        captured = []
+
+        def fake_interpret(_interpreter, packet, *, visual_options=None):
+            captured.append((packet, visual_options))
+            return {
+                "status": "interpreted",
+                "interpretation_mode": "sensor_packet",
+                "latency_ms": 12.5,
+                "interpretation": {"scene_summary": "A clear route bends around an obstacle."},
+                "semantic_scene": {"grounding": {
+                    "reference_precision": 1.0, "accepted_for_context": True,
+                    "geometry_authoritative": True,
+                }},
+            }
+
+        with patch(
+            "body_runtime_host.worldmodel.evaluation.BodySceneInterpreter.interpret_now",
+            new=fake_interpret,
+        ):
+            result = run_vlm_sensorimotor_scenario({
+                "BODY_LLM_ENABLED": True,
+                "BODY_LLM_MODEL": "test-vlm",
+                "BODY_LLM_VISUAL_IMAGE_MAX_WIDTH": 640,
+            })
+
+        self.assertEqual(result["status"], "completed", result)
+        self.assertEqual(result["execution"], "simulation_only")
+        self.assertFalse(result["physical_actuation"])
+        self.assertEqual(result["collisions"], 0)
+        self.assertTrue(result["vlm_multimodal"])
+        self.assertEqual(result["vlm_calls"], 2)
+        self.assertGreater(result["actions"], 0)
+        self.assertEqual(len(captured), 2)
+        first_sensor_packet = result["snapshots"][0]["sensor_packet"]
+        self.assertEqual(first_sensor_packet["frame_id"], result["snapshots"][0]["frame_id"])
+        self.assertEqual(first_sensor_packet["timestamp"], result["snapshots"][0]["timestamp"])
+        self.assertTrue(first_sensor_packet["camera"]["image_attached"])
+        self.assertGreater(len(first_sensor_packet["lidar"]["points_sent_to_vlm"]), 0)
+        for packet, options in captured:
+            self.assertTrue(options["include_sensor_context"])
+            self.assertTrue(packet["visual_blind"])
+            self.assertEqual(packet["modalities"]["camera"]["frame_id"], packet["frame_id"])
+            self.assertEqual(packet["modalities"]["lidar"]["frame_id"], packet["frame_id"])
+            self.assertEqual(packet["modalities"]["camera"]["timestamp"], packet["timestamp"])
+            self.assertEqual(packet["modalities"]["lidar"]["timestamp"], packet["timestamp"])
+            self.assertGreater(len(packet["modalities"]["lidar"]["points"]), 0)
+        self.assertNotEqual(captured[0][0]["frame_id"], captured[1][0]["frame_id"])
 
 
 if __name__ == "__main__":

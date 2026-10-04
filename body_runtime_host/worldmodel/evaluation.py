@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import heapq
 import inspect
 import math
 import tempfile
@@ -469,6 +470,244 @@ def collect_body_llm_grounding(
             "geometry_authoritative": True,
             "same_fractional_scene_protocol": True,
         }
+    finally:
+        interpreter.close()
+
+
+def _sensor_route(body: Any, lidar: Dict[str, Any], goal: tuple[int, int], room: SimulatedRoom) -> list[tuple[int, int]]:
+    """Plan a coarse route from the current scan, without reading scene objects."""
+    x0, y0 = float(body.position[0]), float(body.position[1])
+    yaw = float(body.orientation)
+    occupied: set[tuple[int, int]] = set()
+    for point in (lidar.get("points") or []):
+        try:
+            px, py = float(point["x"]), float(point["y"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if lidar.get("frame") == "body":
+            wx = x0 + math.cos(yaw) * px - math.sin(yaw) * py
+            wy = y0 + math.sin(yaw) * px + math.cos(yaw) * py
+        else:
+            wx, wy = px, py
+        cell = (int(round(wx)), int(round(wy)))
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                candidate = (cell[0] + dx, cell[1] + dy)
+                # Inflate measured surfaces by the Body footprint and margin,
+                # rather than blocking an entire 3x3 neighbourhood per return.
+                if math.hypot(candidate[0] - wx, candidate[1] - wy) <= 0.7:
+                    occupied.add(candidate)
+
+    start = (int(round(x0)), int(round(y0)))
+    if start == goal:
+        return [start]
+    frontier: list[tuple[float, tuple[int, int]]] = [(0.0, start)]
+    came_from: dict[tuple[int, int], tuple[int, int] | None] = {start: None}
+    cost = {start: 0.0}
+    while frontier:
+        _, current = heapq.heappop(frontier)
+        if current == goal:
+            break
+        for dx, dy in ((1, 0), (0, 1), (-1, 0), (0, -1)):
+            neighbor = (current[0] + dx, current[1] + dy)
+            if not (1 <= neighbor[0] <= room.width - 2 and 1 <= neighbor[1] <= room.height - 2):
+                continue
+            if neighbor in occupied and neighbor != goal:
+                continue
+            next_cost = cost[current] + 1.0
+            if next_cost >= cost.get(neighbor, float("inf")):
+                continue
+            cost[neighbor] = next_cost
+            came_from[neighbor] = current
+            heuristic = abs(goal[0] - neighbor[0]) + abs(goal[1] - neighbor[1])
+            heapq.heappush(frontier, (next_cost + heuristic, neighbor))
+    if goal not in came_from:
+        return []
+    route = []
+    current: tuple[int, int] | None = goal
+    while current is not None:
+        route.append(current)
+        current = came_from[current]
+    return list(reversed(route))
+
+
+def run_vlm_sensorimotor_scenario(
+    config: Dict[str, Any], *, progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+    seed: int = 31, max_actions: int = 32,
+) -> Dict[str, Any]:
+    """Run a simulation-only camera + LiDAR + VLM closed-loop navigation check."""
+    from .types import Action
+
+    interpreter = BodySceneInterpreter(dict(config or {}))
+    room = None
+    timeline: list[Dict[str, Any]] = []
+    snapshots: list[Dict[str, Any]] = []
+    scenario_id = ""
+    goal = (9, 1)
+    try:
+        if not config.get("BODY_LLM_ENABLED") or not str(config.get("BODY_LLM_MODEL") or "").strip():
+            return {"status": "failed", "error": "Configure and enable the Body VLM before running this scenario."}
+        room = SimulatedRoom()
+        room.reset_episode(shuffle=False, seed=int(seed))
+        room.objects = {
+            "obstacle": {"id": "obstacle", "label": "pillar", "kind": "obstacle",
+                         "x": 4.0, "y": 1.0, "mass": 999.0, "size": 1.0},
+        }
+        scenario_id = f"vlm-nav-{int(seed)}-{time.time_ns()}"
+
+        def observe_and_interpret(stage: str) -> tuple[Any, Any, Dict[str, Any], Dict[str, Any]]:
+            observation = room.observe()
+            body = room.body_state()
+            timestamp = float(observation.timestamp)
+            frame_id = f"{scenario_id}-{stage}-{room.steps}"
+            camera = dict(observation.modalities.get("camera") or {})
+            lidar = dict(observation.modalities.get("lidar") or {})
+            camera.update({"frame_id": frame_id, "timestamp": timestamp})
+            lidar.update({"frame_id": frame_id, "timestamp": timestamp,
+                          "coordinate_frame": "body", "unit": "m", "native": False})
+            observation.modalities["camera"] = camera
+            observation.modalities["lidar"] = lidar
+            projections = sensor_projections(body, observation.scene, modalities=observation.modalities)
+            packet = {
+                "contract": "body_perception_frame.v2", "source": "simulated_room",
+                "timestamp": timestamp, "frame_id": frame_id,
+                "body": {"position": list(body.position), "orientation": float(body.orientation),
+                         "coordinate_frame": "world", "position_source": "simulator_odometry"},
+                # This list is for offline grounding scores only; visual_blind
+                # strips it and all sensor object IDs from the VLM prompt.
+                "objects": [item.as_dict() for item in observation.scene],
+                "modalities": observation.modalities,
+                "sensor_fusion": projections.get("fusion"),
+                "motion": {"speed": float(body.capabilities.get("speed", 0.0)),
+                           "relative_speed": 0.0,
+                           "moving": room.steps > 0, "perception_risk": 0.0},
+                "navigation": {"goal_m": list(goal), "mode": "scan_grounded_simulation"},
+                "visual_blind": True,
+            }
+            result = interpreter.interpret_now(
+                packet, visual_options={"include_sensor_context": True, "bypass_cache": True},
+            )
+            semantic = result.get("semantic_scene") or {}
+            interpretation = result.get("interpretation") or {}
+            snapshots.append({
+                "stage": stage, "frame_id": frame_id, "timestamp": timestamp,
+                "pose_m": [round(float(body.position[0]), 3), round(float(body.position[1]), 3)],
+                "heading_deg": round(math.degrees(float(body.orientation)), 1),
+                "camera_image": camera.get("image_base64"),
+                "camera_mime_type": camera.get("mime_type", "image/png"),
+                "camera_source": camera.get("source"), "lidar_source": lidar.get("source"),
+                "lidar_returns": len(lidar.get("points") or []),
+                "sensor_packet": {
+                    "contract": "body_perception_frame.v2", "frame_id": frame_id,
+                    "timestamp": timestamp,
+                    "pose": {"position_m": list(body.position), "yaw_rad": float(body.orientation)},
+                    "camera": {"source": camera.get("source"), "width": camera.get("width"),
+                               "height": camera.get("height"), "image_attached": bool(camera.get("image_base64"))},
+                    "lidar": {"source": lidar.get("source"), "coordinate_frame": lidar.get("frame"),
+                              "returns": len(lidar.get("points") or []),
+                              "points_sent_to_vlm": [
+                                  {key: point[key] for key in ("x", "y", "z", "range", "intensity") if key in point}
+                                  for point in (lidar.get("points") or [])[:24]
+                              ]},
+                },
+                "vlm_status": result.get("status"), "vlm_mode": result.get("interpretation_mode"),
+                "vlm_latency_ms": result.get("latency_ms"),
+                "scene_summary": interpretation.get("scene_summary") if isinstance(interpretation, dict) else None,
+                "grounding": semantic.get("grounding"), "error": result.get("error"),
+            })
+            if result.get("status") != "interpreted":
+                raise RuntimeError(f"VLM {stage} frame failed: {result.get('error') or result.get('status')}")
+            return observation, body, lidar, result
+
+        def publish(stage: str, **values: Any) -> None:
+            if progress_callback:
+                progress_callback({"scenario": scenario_id, "stage": stage, "step": room.steps, **values})
+
+        _observation, _body, _lidar, initial_vlm = observe_and_interpret("before")
+        publish("initial_perception", frame_id=snapshots[-1]["frame_id"],
+                lidar_returns=snapshots[-1]["lidar_returns"], vlm_latency_ms=initial_vlm.get("latency_ms"))
+
+        action_limit = max(1, min(64, int(max_actions)))
+        for _action_index in range(action_limit):
+            observation = room.observe()
+            body = room.body_state()
+            lidar = dict(observation.modalities.get("lidar") or {})
+            route = _sensor_route(body, lidar, goal, room)
+            distance_to_goal = math.hypot(goal[0] - float(body.position[0]), goal[1] - float(body.position[1]))
+            if distance_to_goal <= 0.65:
+                break
+            if len(route) < 2:
+                timeline.append({"step": room.steps, "action": "stop", "reason": "no_lidar_safe_route"})
+                break
+            next_cell = route[1]
+            desired = math.atan2(next_cell[1] - float(body.position[1]), next_cell[0] - float(body.position[0]))
+            delta = math.atan2(math.sin(desired - float(body.orientation)), math.cos(desired - float(body.orientation)))
+            if abs(delta) > math.pi / 4:
+                action = Action(type="turn_left" if delta > 0 else "turn_right")
+                reason = "reorient toward the next LiDAR-cleared waypoint"
+            else:
+                action = Action(type="forward", params={"continuous_physics": True, "speed": 1.0})
+                reason = "advance one metre; replan against a fresh scan on the next step"
+            if action.type == "forward" and not (lidar.get("points") or []):
+                timeline.append({"step": room.steps, "action": "stop", "reason": "empty_lidar_scan"})
+                break
+            before = (float(room.px), float(room.py))
+            _next_observation, outcome = room.step(action)
+            after = (float(room.px), float(room.py))
+            entry = {
+                "step": room.steps, "action": action.type, "reason": reason,
+                "position_before_m": [round(before[0], 3), round(before[1], 3)],
+                "position_after_m": [round(after[0], 3), round(after[1], 3)],
+                "outcome": outcome.kind, "description": str(outcome.description)[:180],
+                "collisions": room.collision_count, "near_misses": room.near_miss_count,
+                "route_cells": len(route),
+            }
+            timeline.append(entry)
+            publish("moving", action=action.type, reason=reason,
+                    position_m=entry["position_after_m"], route_cells=len(route),
+                    collisions=room.collision_count)
+            if outcome.kind == "danger" or room.collision_count:
+                break
+
+        _observation, _body, _lidar, final_vlm = observe_and_interpret("after")
+        final_distance = math.hypot(goal[0] - room.px, goal[1] - room.py)
+        reached = final_distance <= 0.65
+        status = "completed" if reached and room.collision_count == 0 else "incomplete"
+        publish("completed", distance_to_goal_m=round(final_distance, 3),
+                collisions=room.collision_count, moved=room.steps > 0)
+        return {
+            "status": status, "scenario_id": scenario_id,
+            "execution": "simulation_only", "physical_actuation": False,
+            "sensor_contract": "body_perception_frame.v2",
+            "sensor_source": "virtual_camera_and_virtual_lidar",
+            "vlm_model": str(config.get("BODY_LLM_MODEL") or ""),
+            "vlm_calls": len(snapshots),
+            "vlm_multimodal": all(item.get("vlm_mode") == "sensor_packet" for item in snapshots),
+            "goal_m": list(goal), "final_position_m": [round(room.px, 3), round(room.py, 3)],
+            "distance_to_goal_m": round(final_distance, 3), "goal_reached": reached,
+            "collisions": room.collision_count, "near_misses": room.near_miss_count,
+            "actions": len(timeline), "timeline": timeline, "snapshots": snapshots,
+            "vlm_confirmation": {
+                "status": final_vlm.get("status"), "latency_ms": final_vlm.get("latency_ms"),
+                "scene_summary": snapshots[-1].get("scene_summary"),
+                "grounding": snapshots[-1].get("grounding"),
+            },
+            "safety": "Every move is replanned from a new LiDAR scan; no actuator command is sent.",
+        }
+    except Exception as exc:
+        logger.exception("VLM sensorimotor scenario failed")
+        failure = {
+            "status": "failed", "error": str(exc)[:300],
+            "scenario_id": scenario_id, "execution": "simulation_only",
+            "physical_actuation": False, "sensor_contract": "body_perception_frame.v2",
+            "goal_m": list(goal), "timeline": timeline, "snapshots": snapshots,
+        }
+        if room is not None:
+            failure.update({
+                "final_position_m": [round(room.px, 3), round(room.py, 3)],
+                "collisions": room.collision_count, "actions": len(timeline),
+            })
+        return failure
     finally:
         interpreter.close()
 

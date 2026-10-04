@@ -880,7 +880,7 @@ class BodySceneInterpreter:
             for point in points[:24]
         ]
         modalities["lidar"] = {
-            **compact_fields(raw_lidar, ("frame_id", "timestamp", "source", "quality", "coordinate_frame")),
+            **compact_fields(raw_lidar, ("frame_id", "timestamp", "source", "quality", "coordinate_frame", "frame", "unit", "native")),
             "points": compact_points,
             "points_truncated": max(0, len(points) - len(compact_points)),
         }
@@ -931,7 +931,7 @@ class BodySceneInterpreter:
             "This is advisory perception; never issue actuator commands.\n\n"
             + json.dumps(prompt_packet, ensure_ascii=False, separators=(",", ":"))
         )
-        visual_only = bool(camera_image)
+        visual_only = bool(camera_image) and not bool(visual_options.get("include_sensor_context"))
         visual_max_objects = max(1, min(10, int(self._config.get("BODY_LLM_VISUAL_MAX_OBJECTS", 5) or 5)))
         visual_max_tokens = max(32, min(512, int(self._config.get("BODY_LLM_VISUAL_MAX_TOKENS", 128) or 128)))
         if visual_only:

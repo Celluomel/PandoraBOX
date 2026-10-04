@@ -164,6 +164,9 @@ class BodyHost:
         self._body_vlm_test_lock = threading.Lock()
         self._body_vlm_test_status: dict = {"status": "idle", "job_id": None}
         self._body_vlm_test_thread: threading.Thread | None = None
+        self._sensorimotor_test_lock = threading.Lock()
+        self._sensorimotor_test_status: dict = {"status": "idle", "job_id": None}
+        self._sensorimotor_test_thread: threading.Thread | None = None
         self._ros2_bridge = None
         self._workflow_manager = None
         self._repository_updater = RepositoryUpdater(ROOT)
@@ -662,6 +665,53 @@ class BodyHost:
     def body_vlm_test_status(self) -> dict:
         with self._body_vlm_test_lock:
             return dict(self._body_vlm_test_status)
+
+    def start_vlm_sensorimotor_test(self) -> dict:
+        """Start one explicit VLM + paired-sensor simulation scenario."""
+        with self._sensorimotor_test_lock:
+            if self._sensorimotor_test_status.get("status") == "running":
+                return {**self._sensorimotor_test_status, "reused": True}
+            job_id = f"sensorimotor-{time.time_ns()}"
+            self._sensorimotor_test_status = {
+                "status": "running", "job_id": job_id, "started_at": time.time(),
+                "progress": {"stage": "starting"}, "result": None,
+            }
+            self._sensorimotor_test_thread = threading.Thread(
+                target=self._run_vlm_sensorimotor_test, args=(job_id,),
+                name="body-vlm-sensorimotor-test", daemon=True,
+            )
+            self._sensorimotor_test_thread.start()
+            return dict(self._sensorimotor_test_status)
+
+    def _run_vlm_sensorimotor_test(self, job_id: str) -> None:
+        started = time.monotonic()
+        try:
+            from body_runtime_host.worldmodel.evaluation import run_vlm_sensorimotor_scenario
+
+            def progress(update: dict) -> None:
+                with self._sensorimotor_test_lock:
+                    if self._sensorimotor_test_status.get("job_id") == job_id:
+                        self._sensorimotor_test_status["progress"] = dict(update)
+
+            result = run_vlm_sensorimotor_scenario(self.config, progress_callback=progress)
+            status = str(result.get("status") or "failed")
+        except Exception as exc:
+            LOG.exception("Body VLM sensorimotor scenario failed")
+            result, status = {"status": "failed", "error": str(exc)[:300]}, "failed"
+        with self._sensorimotor_test_lock:
+            if self._sensorimotor_test_status.get("job_id") != job_id:
+                return
+            self._sensorimotor_test_status = {
+                "status": status, "job_id": job_id,
+                "started_at": self._sensorimotor_test_status.get("started_at"),
+                "completed_at": time.time(),
+                "latency_ms": round((time.monotonic() - started) * 1000.0, 1),
+                "progress": None, "result": result,
+            }
+
+    def vlm_sensorimotor_test_status(self) -> dict:
+        with self._sensorimotor_test_lock:
+            return dict(self._sensorimotor_test_status)
 
     def restart_geniex(self) -> dict:
         """Restart only the local GenieX user service used by the Ventuno VLM."""
@@ -2737,6 +2787,8 @@ class BodyHost:
                         self._send({"context": wm.context_for_brain()})
                 elif path == "/worldmodel/evaluation":
                     self._send(owner.worldmodel_evaluation_status())
+                elif path == "/worldmodel/sensorimotor-test":
+                    self._send(owner.vlm_sensorimotor_test_status())
                 elif path == "/worldmodel/capability-gate":
                     self._send(owner.worldmodel_capability_gate())
                 elif path == "/worldmodel/plans/validate":
@@ -2903,6 +2955,8 @@ class BodyHost:
                     self._send(wm.reset(clear_memory=bool(body.get("clear_memory", False))))
                 elif path == "/worldmodel/evaluation/run":
                     self._send(owner.start_worldmodel_evaluation(self._read_body()))
+                elif path == "/worldmodel/sensorimotor-test/run":
+                    self._send(owner.start_vlm_sensorimotor_test(), 202)
                 elif path == "/worldmodel/perception/video-upload":
                     self._send(owner.upload_video_replay(self._read_body()))
                 elif path == "/worldmodel/perception/video-replay":
