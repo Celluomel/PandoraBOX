@@ -395,6 +395,67 @@ class BodyPerceptionModalitiesTest(unittest.TestCase):
         finally:
             interpreter.close()
 
+    def test_mmwave_focus_sends_one_small_crop_and_compact_task_prompt(self):
+        import base64
+        import json
+        from types import SimpleNamespace
+        from body_runtime_host.worldmodel.scene_interpreter import BodySceneInterpreter
+        from body_runtime_host.worldmodel.virtual_camera import render_camera
+
+        camera = render_camera(SimpleNamespace(position=[0.0, 0.0, 0.0], orientation=0.0), [],
+                               width=640, height=480)
+        sent = {}
+
+        class Response:
+            def __enter__(self): return self
+            def __exit__(self, *_): return False
+            def read(self):
+                content = {"scene_summary": "A purple cube is visible.", "object_descriptions": [
+                    {"label": "purple cube", "description": "purple cube", "role": "goal"}]}
+                return json.dumps({"choices": [{"message": {"content": json.dumps(content)}}]}).encode()
+
+        def fake_urlopen(request, timeout):
+            sent.update(json.loads(request.data.decode()))
+            return Response()
+
+        interpreter = BodySceneInterpreter({
+            "BODY_LLM_ENABLED": True, "BODY_LLM_MODEL": "test-vlm",
+            "BODY_LLM_BASE_URL": "http://vlm.test/v1", "BODY_LLM_MAX_TOKENS": 360,
+        })
+        packet = {
+            "frame_id": "focus-frame", "timestamp": 123.0, "visual_blind": True,
+            "body": {"position": [0.0, 0.0, 0.0], "orientation": 0.0,
+                     "coordinate_frame": "world"},
+            "navigation": {"task": "Approach the purple cube."},
+            "objects": [{"id": "secret-simulator-id", "label": "purple cube",
+                         "position": [4.0, 0.0, 0.0]}],
+            "modalities": {"camera": camera, "mmwave_radar": {
+                "coordinate_frame": "local_map", "targets": [
+                    {"target_id": "hidden-radar-id", "position_m": [4.0, 0.0, 0.0],
+                     "classification": "hidden-class", "confidence": 0.8},
+                ]}, "lidar": {"points": []}},
+        }
+        try:
+            with patch("body_runtime_host.worldmodel.scene_interpreter.urlopen", side_effect=fake_urlopen):
+                result = interpreter.interpret_now(
+                    packet, visual_options={"include_sensor_context": True, "mmwave_focus": True}
+                )
+            content = sent["messages"][1]["content"]
+            self.assertEqual(result["status"], "interpreted")
+            self.assertEqual(result["visual_input"]["strategy"], "single_radar_focus")
+            self.assertEqual(len(result["visual_input"]["mmwave_rois"]), 1)
+            self.assertEqual([part["type"] for part in content], ["text", "image_url"])
+            self.assertLess(len(content[0]["text"]), 900)
+            self.assertLess(sent["max_tokens"], 200)
+            self.assertNotIn("secret-simulator-id", content[0]["text"])
+            self.assertNotIn("hidden-radar-id", content[0]["text"])
+            self.assertNotIn("hidden-class", content[0]["text"])
+            image = content[1]["image_url"]["url"]
+            self.assertEqual(image.partition(",")[2], result["visual_input"]["preview_base64"])
+            self.assertEqual(base64.b64decode(image.partition(",")[2])[:2], b"\xff\xd8")
+        finally:
+            interpreter.close()
+
     def test_open_vocabulary_root_description_is_normalized_and_semantically_grounded(self):
         from body_runtime_host.worldmodel.scene_interpreter import BodySceneInterpreter
 

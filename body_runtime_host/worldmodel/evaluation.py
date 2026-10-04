@@ -634,7 +634,8 @@ def run_vlm_sensorimotor_scenario(
             timestamp = float(packet["timestamp"])
             result = interpreter.interpret_now(
                 packet, visual_options={"include_sensor_context": include_sensor_context, "bypass_cache": True,
-                                        "mmwave_roi": mmwave_roi, "max_rois": 2},
+                                        "mmwave_roi": mmwave_roi, "mmwave_focus": mmwave_roi,
+                                        "max_rois": 1 if mmwave_roi else 2},
             )
             semantic = result.get("semantic_scene") or {}
             raw_interpretation = result.get("interpretation") or {}

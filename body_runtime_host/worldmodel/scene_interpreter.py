@@ -1100,24 +1100,33 @@ class BodySceneInterpreter:
         camera_image_size = len(str(camera_image)) if camera_image else 0
         roi_crops: list[tuple[str, Dict[str, Any]]] = []
         roi_descriptors: list[Dict[str, Any]] = []
-        if visual_options.get("mmwave_roi") and camera_image:
+        focused_crop = bool(visual_options.get("mmwave_focus"))
+        if (visual_options.get("mmwave_roi") or focused_crop) and camera_image:
             roi_crops, roi_descriptors = self._mmwave_roi_crops(
                 str(camera_image), camera_meta, packet,
-                max_rois=int(visual_options.get("max_rois", 2) or 2),
+                max_rois=1 if focused_crop else int(visual_options.get("max_rois", 2) or 2),
             )
             visual_input["mmwave_roi_count"] = len(roi_crops)
             visual_input["mmwave_rois"] = roi_descriptors
             if roi_crops:
-                mosaic, preview = self._mmwave_roi_mosaic(str(camera_image), roi_crops)
-                if mosaic:
-                    camera_image = mosaic
+                if focused_crop:
+                    camera_image = roi_crops[0][0]
                     camera_image_size = len(camera_image)
-                    visual_input.update({"strategy": "single_image_attention_mosaic", "image_count": 1,
-                                         "global_context_width": 320, "preview_base64": preview})
+                    visual_input.update({"strategy": "single_radar_focus", "image_count": 1,
+                                         "preview_base64": camera_image.partition(",")[2]})
                 else:
-                    roi_crops, roi_descriptors = [], []
-                    visual_input.update({"mmwave_roi_count": 0, "mmwave_rois": [],
-                                         "strategy": "full_frame_fallback", "image_count": 1})
+                    mosaic, preview = self._mmwave_roi_mosaic(str(camera_image), roi_crops)
+                    if mosaic:
+                        camera_image = mosaic
+                        camera_image_size = len(camera_image)
+                        visual_input.update({"strategy": "single_image_attention_mosaic", "image_count": 1,
+                                             "global_context_width": 320, "preview_base64": preview})
+                    else:
+                        roi_crops, roi_descriptors = [], []
+                        visual_input.update({"mmwave_roi_count": 0, "mmwave_rois": [],
+                                             "strategy": "full_frame_fallback", "image_count": 1})
+            elif focused_crop:
+                visual_input.update({"strategy": "full_frame_fallback", "image_count": 1})
         depth_image = camera_meta.pop("depth_base64", None)
         camera_meta["image_attached"] = bool(camera_image)
         camera_meta["depth_attached"] = bool(depth_image)
@@ -1210,7 +1219,18 @@ class BodySceneInterpreter:
             "This is advisory perception; never issue actuator commands.\n\n"
             + json.dumps(prompt_packet, ensure_ascii=False, separators=(",", ":"))
         )
-        if roi_crops:
+        if focused_crop and roi_crops:
+            task = str((packet.get("navigation") or {}).get("task") or "identify nearby objects")[:180]
+            prompt = (
+                "Describe only objects visibly present in this radar-selected robot camera crop. "
+                "Radar selected the region but cannot identify an object. "
+                "Return compact JSON with scene_summary and object_descriptions (at most 3 items, "
+                "each with label, short visual description, role and confidence 0..1). "
+                "Use role goal only if the requested object is visible. Do not infer distance, "
+                "coordinates, identities or unseen objects. Use an empty array when uncertain. "
+                "Task: " + task + ". Camera: " + self._camera_view_note(camera_meta) + "."
+            )
+        elif roi_crops:
             prompt += (
                 "\nThe attached image is a 2x2 attention mosaic: top-left is the complete global scene; "
                 "top-right and bottom-right are the first and second crops; bottom-left contains only "
@@ -1277,9 +1297,10 @@ class BodySceneInterpreter:
                 {"role": "user", "content": user_content},
             ],
             "temperature": 0.1,
-            "max_tokens": visual_max_tokens if visual_only else min(
+            "max_tokens": (min(192, max(96, int(self._config.get("BODY_LLM_MAX_TOKENS", 360) or 360)))
+                           if focused_crop and roi_crops else visual_max_tokens if visual_only else min(
                 2048, max(64, int(self._config.get("BODY_LLM_MAX_TOKENS", 360) or 360))
-            ),
+            )),
             # LM Studio vision providers differ in structured-output support.
             # Text mode is the interoperable contract; the bounded JSON parser
             # below remains responsible for validating the returned object.
