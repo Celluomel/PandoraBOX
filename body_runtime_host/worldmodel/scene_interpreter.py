@@ -277,7 +277,7 @@ class BodySceneInterpreter:
         nomic_v15 = provider == "openai" and "nomic-embed-text-v1.5" in model.lower()
         unknown = []
         for value in values:
-            key = " ".join(str(value or "").lower().split())
+            key = " ".join(re.sub(r"[_-]+", " ", str(value or "").lower()).split())
             if key and key not in unknown:
                 unknown.append(key)
         if not model:
@@ -670,10 +670,10 @@ class BodySceneInterpreter:
         interpretation = BodySceneInterpreter._normalize_interpretation_schema(interpretation)
         objects = [item for item in packet.get("objects") or [] if isinstance(item, dict)]
         known = {str(item.get("id")): item for item in objects if item.get("id")}
-        labels = {
-            " ".join(str(item.get("label") or item_id).lower().split()): item_id
-            for item_id, item in known.items()
-        }
+        def normalize_label(value: Any) -> str:
+            return " ".join(re.sub(r"[_-]+", " ", str(value or "").lower()).split())
+
+        labels = {normalize_label(item.get("label") or item_id): item_id for item_id, item in known.items()}
         normalized_labels = {}
         for item_id, item in known.items():
             for value in (item_id, item.get("label"), item.get("kind")):
@@ -693,14 +693,15 @@ class BodySceneInterpreter:
         semantic_matches: Dict[str, str] = {}
 
         def resolve_reference(value: Any) -> str:
-            reference = " ".join(str(value or "").lower().split())
-            if reference in known:
-                return reference
+            raw_reference = str(value or "").strip().lower()
+            if raw_reference in known:
+                return raw_reference
+            reference = normalize_label(value)
             if reference in labels:
                 return labels[reference]
             resolved = normalized_labels.get(canonical_category(value), "")
             if not resolved:
-                key = " ".join(str(value or "").lower().split())
+                key = normalize_label(value)
                 if key:
                     unresolved.append(key)
                     resolved = semantic_matches.get(key, "")
@@ -742,7 +743,8 @@ class BodySceneInterpreter:
                 for item in as_items(interpretation.get("object_descriptions"))
                 if isinstance(item, dict)
             )
-            semantic_matches.update(label_resolver(raw_values, known) or {})
+            matches = label_resolver(raw_values, known) or {}
+            semantic_matches.update({normalize_label(key): value for key, value in matches.items()})
 
         primary = [resolve_reference(value) for value in as_items(interpretation.get("primary_objects"))]
         primary = [value for value in primary if value]
@@ -994,6 +996,8 @@ class BodySceneInterpreter:
             "summary names a visible object. Use free-form labels grounded in the image, not a fixed category list. "
             "For camera/LiDAR matches, describe only image-visible appearance and use the LiDAR packet solely to "
             "support proximity or obstacle relevance; do not invent an association when evidence is ambiguous. "
+            "Do not classify floor grids, camera reticles, crosshairs, LiDAR rays, projected points, or reference "
+            "markers as physical objects unless a separate object silhouette is visible in the camera image. "
             "A distant or ambiguous visual shape must go into uncertainty, not into primary_objects. "
             "Image regions describe pixels only; do not infer metric coordinates or object dimensions from them. "
             + camera_view_note + " "
@@ -1022,7 +1026,7 @@ class BodySceneInterpreter:
                 + json.dumps(camera_context, ensure_ascii=False, separators=(",", ":"))
             )
         logger.info(
-            "[BodyVLM] prompt mode=%s model=%s chars=%d estimated_tokens=%d context_window=%s image=%s image_chars=%d lidar_points_sent=%d",
+            "[BodyVLM] prompt mode=%s model=%s chars=%d estimated_tokens=%d context_window=%s image=%s image_chars=%d lidar_points_sent=%d lidar_points_available=%d",
             "image_only" if visual_only else "sensor_packet",
             model,
             len(prompt),
@@ -1030,7 +1034,8 @@ class BodySceneInterpreter:
             self._config.get("BODY_LLM_CONTEXT_WINDOW", "unknown"),
             bool(camera_image),
             camera_image_size,
-            0 if visual_only else len(lidar.get("points") or []),
+            0 if visual_only else len(compact_points),
+            0 if visual_only else len(points),
         )
         user_content: Any = prompt
         camera = packet.get("modalities", {}).get("camera") if isinstance(packet.get("modalities"), dict) else None

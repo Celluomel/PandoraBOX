@@ -286,7 +286,7 @@ class BodyPerceptionModalitiesTest(unittest.TestCase):
         self.assertIn("purple_cube", calls)
         self.assertEqual(scene["grounding"]["valid_described_object_references"], 1)
         self.assertEqual(scene["entities"][0]["description"], "A purple cube centered ahead")
-        self.assertEqual(scene["grounding"]["semantic_match_labels"]["purple_cube"], "obstacle")
+        self.assertEqual(scene["grounding"]["semantic_match_labels"]["purple cube"], "obstacle")
 
     def test_native_modalities_are_preferred_and_provenanced(self):
         from body_runtime_host.worldmodel.perception import sensor_projections
@@ -604,6 +604,21 @@ class BodyPerceptionModalitiesTest(unittest.TestCase):
         self.assertEqual(model["entities"][1]["description"], "vertical obstacle")
         self.assertEqual(model["sensor_fusion"]["matched"], 2)
 
+    def test_grounding_normalizes_open_vocabulary_snake_case_labels(self):
+        from body_runtime_host.worldmodel.scene_interpreter import BodySceneInterpreter
+
+        model = BodySceneInterpreter._ground_interpretation({
+            "primary_objects": ["purple_cube"],
+            "object_descriptions": [{"id": "purple_cube", "description": "purple cube on floor"}],
+        }, {
+            "frame_id": "frame-purple-cube",
+            "objects": [{"id": "obstacle", "label": "purple cube", "kind": "obstacle"}],
+        })
+
+        self.assertEqual(model["primary_object_ids"], ["obstacle"])
+        self.assertEqual(model["entities"][0]["description"], "purple cube on floor")
+        self.assertEqual(model["grounding"]["reference_precision"], 1.0)
+
     def test_grounding_can_use_bounded_semantic_resolver_for_unknown_label(self):
         from body_runtime_host.worldmodel.scene_interpreter import BodySceneInterpreter
 
@@ -903,6 +918,7 @@ class BodyPerceptionModalitiesTest(unittest.TestCase):
         self.assertIn("Every concrete object named in scene_summary must also appear in object_descriptions", prompt)
         self.assertIn("Use free-form labels grounded in the image, not a fixed category list", prompt)
         self.assertIn("support proximity or obstacle relevance", prompt)
+        self.assertIn("Do not classify floor grids, camera reticles", prompt)
         self.assertEqual(result["status"], "interpreted")
         self.assertEqual(result["interpretation"]["object_descriptions"][0]["label"], "purple cube")
         interpreter.close()
