@@ -861,6 +861,52 @@ class BodyPerceptionModalitiesTest(unittest.TestCase):
         self.assertEqual(interpreter.status()["visual_cache"], {"hits": 1, "misses": 1, "entries": 1})
         interpreter.close()
 
+    def test_multimodal_prompt_requires_structured_descriptions_for_named_objects(self):
+        import json
+        from body_runtime_host.worldmodel.scene_interpreter import BodySceneInterpreter
+
+        interpreter = BodySceneInterpreter({
+            "BODY_LLM_ENABLED": True,
+            "BODY_LLM_MODEL": "qualcomm/Qwen3-VL-4B-Instruct:W4A16",
+            "BODY_LLM_BASE_URL": "http://127.0.0.1:18181/v1",
+        })
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def read(self):
+                return b'{"choices":[{"message":{"content":"{\\"scene_summary\\":\\"A purple cube is ahead.\\",\\"primary_objects\\":[\\"purple cube\\"],\\"object_descriptions\\":[{\\"label\\":\\"purple cube\\",\\"description\\":\\"A purple cube on the floor\\",\\"confidence\\":0.9}]}"}}]}'
+
+        calls = []
+
+        def fake_urlopen(request, timeout):
+            calls.append(json.loads(request.data.decode("utf-8")))
+            return Response()
+
+        packet = {
+            "frame_id": "paired-frame",
+            "timestamp": 123.0,
+            "objects": [],
+            "modalities": {
+                "camera": {"image_base64": "aGVsbG8=", "mime_type": "image/jpeg"},
+                "lidar": {"points": [{"x": 1.0, "y": 0.2, "z": 0.0, "range_m": 1.02}]},
+            },
+        }
+        with patch("body_runtime_host.worldmodel.scene_interpreter.urlopen", side_effect=fake_urlopen):
+            result = interpreter._interpret(packet, visual_options={"include_sensor_context": True})
+
+        prompt = calls[0]["messages"][1]["content"][0]["text"]
+        self.assertIn("Every concrete object named in scene_summary must also appear in object_descriptions", prompt)
+        self.assertIn("Use free-form labels grounded in the image, not a fixed category list", prompt)
+        self.assertIn("support proximity or obstacle relevance", prompt)
+        self.assertEqual(result["status"], "interpreted")
+        self.assertEqual(result["interpretation"]["object_descriptions"][0]["label"], "purple cube")
+        interpreter.close()
+
     def test_qnn_model_load_error_has_payload_independent_diagnosis(self):
         from body_runtime_host.worldmodel.scene_interpreter import BodySceneInterpreter
 
