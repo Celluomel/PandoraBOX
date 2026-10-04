@@ -90,7 +90,10 @@ class BodyEvaluationTests(unittest.TestCase):
                 "status": "interpreted",
                 "interpretation_mode": "sensor_packet" if visual_options["include_sensor_context"] else "image_only",
                 "latency_ms": 12.5,
-                "interpretation": {"scene_summary": "A clear route bends around an obstacle."},
+                "interpretation": {
+                    "scene_summary": "A clear route bends around an obstacle.",
+                    "object_descriptions": [{"label": "pillar", "description": "purple cube"}],
+                },
                 "semantic_scene": {"grounding": {
                     "reference_precision": 1.0, "accepted_for_context": True,
                     "geometry_authoritative": True,
@@ -120,6 +123,7 @@ class BodyEvaluationTests(unittest.TestCase):
         self.assertEqual(result["snapshots"][0]["timestamp"], result["snapshots"][1]["timestamp"])
         self.assertEqual(result["snapshots"][0]["vlm_mode"], "image_only")
         self.assertEqual(result["snapshots"][1]["vlm_mode"], "sensor_packet")
+        self.assertEqual(result["snapshots"][0]["vlm_interpretation"]["object_descriptions"][0]["label"], "pillar")
         self.assertEqual(result["snapshots"][0]["sensor_packet"]["lidar"]["points_sent_to_vlm"], [])
         self.assertGreater(len(result["snapshots"][1]["sensor_packet"]["lidar"]["points_sent_to_vlm"]), 0)
         self.assertTrue(result["modality_comparison"]["same_frame_id"])
