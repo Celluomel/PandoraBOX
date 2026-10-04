@@ -240,15 +240,24 @@ class BodyPerceptionModalitiesTest(unittest.TestCase):
         try:
             with patch("body_runtime_host.worldmodel.scene_interpreter.urlopen", side_effect=fake_urlopen):
                 result = interpreter.interpret_now(packet, visual_options={"include_sensor_context": True})
-            self.assertEqual(result["status"], "interpreted")
-            self.assertEqual(result["interpretation_mode"], "sensor_packet")
-            content = sent["messages"][1]["content"]
-            self.assertEqual([part["type"] for part in content], ["text", "image_url"])
-            self.assertIn("virtual_lidar", content[0]["text"])
-            self.assertIn('"frame":"body"', content[0]["text"])
-            self.assertIn('"unit":"m"', content[0]["text"])
-            self.assertIn('"x":1.5', content[0]["text"])
-            self.assertNotIn("must-not-leak", content[0]["text"])
+                self.assertEqual(result["status"], "interpreted")
+                self.assertEqual(result["interpretation_mode"], "sensor_packet")
+                content = sent["messages"][1]["content"]
+                self.assertEqual([part["type"] for part in content], ["text", "image_url"])
+                self.assertIn("virtual_lidar", content[0]["text"])
+                self.assertIn('"frame":"body"', content[0]["text"])
+                self.assertIn('"unit":"m"', content[0]["text"])
+                self.assertIn('"x":1.5', content[0]["text"])
+                self.assertNotIn("must-not-leak", content[0]["text"])
+                visual_only = interpreter.interpret_now(
+                    packet, visual_options={"include_sensor_context": False, "bypass_cache": True}
+                )
+                self.assertEqual(visual_only["interpretation_mode"], "image_only")
+                content = sent["messages"][1]["content"]
+                self.assertEqual([part["type"] for part in content], ["text", "image_url"])
+                self.assertNotIn("virtual_lidar", content[0]["text"])
+                self.assertNotIn('"x":1.5', content[0]["text"])
+                self.assertNotIn("must-not-leak", content[0]["text"])
         finally:
             interpreter.close()
 

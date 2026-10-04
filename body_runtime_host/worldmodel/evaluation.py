@@ -611,6 +611,9 @@ def run_vlm_sensorimotor_scenario(
             ) if isinstance(interpretation, dict) else None
             if not scene_summary and described_labels:
                 scene_summary = "Objects described: " + "; ".join(label for label in described_labels[:5] if label)
+            if not scene_summary:
+                returned_keys = ", ".join(str(key) for key in interpretation) if isinstance(interpretation, dict) else "no JSON fields"
+                scene_summary = f"No scene summary or object descriptions returned (keys: {returned_keys or 'none'})."
             snapshots.append({
                 "stage": stage, "frame_id": frame_id, "timestamp": timestamp,
                 "pose_m": [round(float(body.position[0]), 3), round(float(body.position[1]), 3)],
@@ -636,12 +639,7 @@ def run_vlm_sensorimotor_scenario(
                 "vlm_status": result.get("status"), "vlm_mode": result.get("interpretation_mode"),
                 "vlm_latency_ms": result.get("latency_ms"),
                 "scene_summary": scene_summary,
-                "vlm_interpretation": {
-                    key: interpretation[key]
-                    for key in ("scene_summary", "summary", "description", "primary_objects",
-                                "object_descriptions", "environment", "possible_paths", "uncertainty")
-                    if isinstance(interpretation, dict) and key in interpretation
-                },
+                "vlm_interpretation": interpretation if isinstance(interpretation, dict) else {},
                 "grounding": semantic.get("grounding"), "error": result.get("error"),
             })
             if result.get("status") != "interpreted":
