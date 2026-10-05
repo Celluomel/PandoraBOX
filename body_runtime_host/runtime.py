@@ -1341,6 +1341,8 @@ class BodyHost:
 
     def fnk0031_modules(self) -> dict:
         """Return discovered FNK0031/VENTUNO modules and their Body state."""
+        from body_runtime_host.fnk0031_usb import available_serial_ports
+
         configured = self.value("FNK0031_MODULES", {})
         if not isinstance(configured, dict):
             configured = {}
@@ -1401,6 +1403,19 @@ class BodyHost:
             "url": url,
             "connected": bool(capabilities),
             "error": error,
+            "local_serial_devices": [
+                {
+                    "device": port["device"],
+                    "description": port["description"],
+                    "role": (
+                        "FNK0031 controller"
+                        if str(port["device"]) == str(self.value("FNK0031_SERIAL_PORT", "") or "")
+                        else "unassigned USB serial adapter"
+                    ),
+                    "present": True,
+                }
+                for port in available_serial_ports()
+            ],
             "modules": modules,
             "capabilities": capabilities,
         }
@@ -1462,6 +1477,7 @@ class BodyHost:
             "source": source,
             "queried_at": time.time(),
             "error": error,
+            "local_serial_devices": discovered.get("local_serial_devices", []),
             "modules": modules,
         }
 

@@ -2,9 +2,35 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 class FNK0031ModulesTest(unittest.TestCase):
+    def test_local_usb_serial_inventory_is_real_and_distinct_from_sensor_claims(self):
+        import body_runtime_host.runtime as brt
+
+        with tempfile.TemporaryDirectory() as tmp:
+            real_config_path = brt.CONFIG_PATH
+            real_dotenv = brt._load_dotenv
+            brt.CONFIG_PATH = Path(tmp) / "config.json"
+            brt.CONFIG_PATH.write_text(json.dumps({"FNK0031_URL": ""}), encoding="utf-8")
+            brt._load_dotenv = lambda: None
+            try:
+                host = brt.BodyHost()
+                host.config["FNK0031_SERIAL_PORT"] = "/dev/serial/by-id/usb-serial-adapter"
+                with patch("body_runtime_host.fnk0031_usb.available_serial_ports", return_value=[{
+                    "device": "/dev/serial/by-id/usb-serial-adapter",
+                    "description": "USB UART adapter",
+                }]):
+                    report = host.fnk0031_modules()
+                self.assertFalse(report["connected"])
+                self.assertEqual(report["local_serial_devices"][0]["role"], "FNK0031 controller")
+                self.assertTrue(report["local_serial_devices"][0]["present"])
+                self.assertFalse({item["id"]: item for item in report["modules"]}["mmwave_radar"]["detected"])
+            finally:
+                brt.CONFIG_PATH = real_config_path
+                brt._load_dotenv = real_dotenv
+
     def test_simulator_modules_are_discovered_and_activation_persists(self):
         import body_runtime_host.runtime as brt
         from body_runtime_host.robot_sim import RobotSimServer
