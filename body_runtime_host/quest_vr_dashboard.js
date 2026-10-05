@@ -62,7 +62,12 @@ export class QuestVRDashboard {
     this.robotVisual.group.rotation.y = -0.28;
     this.robotVisual.group.scale.setScalar(.9);
     this.robotVisual.group.renderOrder = 1001;
-    this.robotVisual.group.traverse(object => { if (object.isMesh) object.renderOrder = 1001; });
+    this.robotVisual.group.traverse(object => {
+      if (!object.isMesh) return;
+      // The translucent HUD panel is in Three.js's transparent pass; keep the model in that pass after it.
+      object.material.transparent = true;
+      object.renderOrder = 1001;
+    });
     this.root.add(this.robotVisual.group);
     this.pointerRing = new THREE.Mesh(
       new THREE.TorusGeometry(0.045, 0.009, 8, 32),

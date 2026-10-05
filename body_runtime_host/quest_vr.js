@@ -14,6 +14,8 @@ renderer.autoClear = false;
 
 const scene = new THREE.Scene();
 const vrDashboard = new QuestVRDashboard(THREE);
+const hudPreview = new URLSearchParams(window.location.search).get('hud_preview') === '1';
+if (hudPreview) vrDashboard.setVisible(true);
 const cameraBackgroundTexture = new THREE.Texture();
 cameraBackgroundTexture.colorSpace = THREE.SRGBColorSpace;
 cameraBackgroundTexture.repeat.set(1, -1);
@@ -856,8 +858,8 @@ renderer.setAnimationLoop(time => {
     }
   }
   renderer.render(scene, camera);
-  if (session && vrDashboard.visible) {
-    const xrCamera = renderer.xr.getCamera(camera);
+  if ((session || hudPreview) && vrDashboard.visible) {
+    const xrCamera = session ? renderer.xr.getCamera(camera) : camera;
     vrDashboard.updateAdjustment(deltaSeconds);
     vrDashboard.syncPose(xrCamera);
     vrDashboard.persistPose(xrCamera);
