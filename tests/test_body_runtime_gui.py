@@ -34,7 +34,7 @@ class BodyRuntimeGuiTests(unittest.TestCase):
 
         self.assertIn("function setStableHtml(node,html)", BODY_GUI_HTML)
         self.assertIn("fnk-serial-devices", BODY_GUI_HTML)
-        self.assertIn("No USB serial devices detected by this Body host.", BODY_GUI_HTML)
+        self.assertIn("No USB serial adapters detected by this Body host.", BODY_GUI_HTML)
         self.assertIn("(data.modules||[]).filter(m=>m.detected||m.enabled)", BODY_GUI_HTML)
 
 

@@ -1406,7 +1406,10 @@ class BodyHost:
             "local_serial_devices": [
                 {
                     "device": port["device"],
-                    "description": port["description"],
+                    "description": port.get("description") or port.get("product") or "USB serial device",
+                    "hardware_id": port.get("hwid", ""),
+                    "usb_id": f"{port.get('vid', '')}:{port.get('pid', '')}".strip(":"),
+                    "serial_number": port.get("serial_number", ""),
                     "role": (
                         "FNK0031 controller"
                         if str(port["device"]) == str(self.value("FNK0031_SERIAL_PORT", "") or "")
@@ -1415,6 +1418,11 @@ class BodyHost:
                     "present": True,
                 }
                 for port in available_serial_ports()
+                if (
+                    "USB" in str(port.get("hwid", "")).upper()
+                    or "VID:PID=" in str(port.get("hwid", "")).upper()
+                    or "/serial/by-id/" in str(port.get("device", ""))
+                )
             ],
             "modules": modules,
             "capabilities": capabilities,

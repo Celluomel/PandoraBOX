@@ -60,7 +60,17 @@ def available_serial_ports() -> list[dict[str, str]]:
     except ImportError:
         return []
     return [
-        {"device": str(port.device), "description": str(port.description or "Serial device")}
+        {
+            "device": str(port.device),
+            "description": str(port.description or "Serial device"),
+            "hwid": str(port.hwid or ""),
+            "vid": f"{port.vid:04x}" if port.vid is not None else "",
+            "pid": f"{port.pid:04x}" if port.pid is not None else "",
+            "serial_number": str(port.serial_number or ""),
+            "manufacturer": str(port.manufacturer or ""),
+            "product": str(port.product or ""),
+            "interface": str(port.interface or ""),
+        }
         for port in list_ports.comports()
     ]
 

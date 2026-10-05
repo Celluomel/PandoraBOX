@@ -18,12 +18,20 @@ class FNK0031ModulesTest(unittest.TestCase):
             try:
                 host = brt.BodyHost()
                 host.config["FNK0031_SERIAL_PORT"] = "/dev/serial/by-id/usb-serial-adapter"
-                with patch("body_runtime_host.fnk0031_usb.available_serial_ports", return_value=[{
-                    "device": "/dev/serial/by-id/usb-serial-adapter",
-                    "description": "USB UART adapter",
-                }]):
+                with patch("body_runtime_host.fnk0031_usb.available_serial_ports", return_value=[
+                    {
+                        "device": "/dev/serial/by-id/usb-serial-adapter",
+                        "description": "USB UART adapter",
+                        "hwid": "USB VID:PID=1a86:7523",
+                        "vid": "1a86",
+                        "pid": "7523",
+                        "serial_number": "adapter-1",
+                    },
+                    {"device": "/dev/ttyS31", "description": "n/a", "hwid": "n/a"},
+                ]):
                     report = host.fnk0031_modules()
                 self.assertFalse(report["connected"])
+                self.assertEqual(len(report["local_serial_devices"]), 1)
                 self.assertEqual(report["local_serial_devices"][0]["role"], "FNK0031 controller")
                 self.assertTrue(report["local_serial_devices"][0]["present"])
                 self.assertFalse({item["id"]: item for item in report["modules"]}["mmwave_radar"]["detected"])
