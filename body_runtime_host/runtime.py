@@ -529,6 +529,8 @@ class BodyHost:
 
     def benchmark_body_vlm_profiles(self) -> dict:
         """Compare image scales on one captured frame without changing saved settings."""
+        from body_runtime_host.worldmodel.scene_interpreter import BodySceneInterpreter
+
         wm = self.worldmodel
         if wm is None or wm.source is None:
             return {"ok": False, "stage": "source_check", "error": "world model or sensor source unavailable"}
@@ -539,6 +541,17 @@ class BodyHost:
             camera = (packet.get("modalities") or {}).get("camera") or {}
             if not (camera.get("image_base64") or camera.get("image_url")):
                 return {"ok": False, "stage": "camera_check", "error": "No camera image available for the profile comparison"}
+            # Do not let simulated objects or synthetic sensor readings leak into
+            # an image-only benchmark or its downstream grounding step.
+            packet = {
+                "contract": "body_perception_frame.v2",
+                "source": "camera_profile_benchmark",
+                "timestamp": camera.get("captured_at") or packet.get("timestamp"),
+                "frame_id": camera.get("frame_id") or packet.get("frame_id"),
+                "modalities": {"camera": dict(camera)},
+                "visual_blind": True,
+                "camera_only": True,
+            }
         except Exception as exc:
             return {"ok": False, "stage": "scene_capture", "error": str(exc)[:240]}
 
@@ -555,7 +568,12 @@ class BodyHost:
             try:
                 result = wm.scene_interpreter.interpret_now(
                     packet,
-                    visual_options={"image_max_width": width, "bypass_cache": True},
+                    visual_options={
+                        "image_max_width": width,
+                        "bypass_cache": True,
+                        "include_sensor_context": False,
+                        "camera_only": True,
+                    },
                 )
             except Exception as exc:
                 result = {"status": "error", "error": str(exc)[:240]}
@@ -563,6 +581,7 @@ class BodyHost:
             interpretation = result.get("interpretation") or {}
             if not isinstance(interpretation, dict):
                 interpretation = {}
+            interpretation = BodySceneInterpreter._normalize_interpretation_schema(interpretation)
             descriptions = interpretation.get("object_descriptions") or []
             labels = {
                 str(item.get("label") or item.get("id") or "").strip().lower()
@@ -570,21 +589,25 @@ class BodyHost:
             }
             if index == 1:
                 baseline_labels = labels
-            coverage = (
-                round(len(labels & baseline_labels) / len(baseline_labels), 3)
-                if baseline_labels else (1.0 if result.get("status") == "interpreted" else 0.0)
-            )
+            coverage = round(len(labels & baseline_labels) / len(baseline_labels), 3) if baseline_labels else 0.0
             summary = str(interpretation.get("scene_summary") or "").strip()
-            valid = result.get("status") == "interpreted" and bool(summary)
+            if not summary and descriptions:
+                summary = "Objects described: " + ", ".join(sorted(labels)[:5])
+            valid = result.get("status") == "interpreted" and bool(descriptions)
             profiles.append({
                 "image_max_width": width,
                 "latency_ms": latency_ms,
                 "status": result.get("status", "error"),
                 "valid_scene_summary": bool(summary),
+                "valid_visual_interpretation": valid,
                 "described_objects": len(descriptions),
                 "baseline_object_coverage": coverage,
-                "quality_acceptable": valid and (index == 1 or coverage >= 0.8),
+                "label_consistency_vs_640": coverage if index > 1 else 1.0,
+                "ground_truth_available": False,
+                "grounding_evaluated": False,
+                "quality_acceptable": valid and (index == 1 or (bool(baseline_labels) and coverage >= 0.8)),
                 "summary": summary[:240],
+                "object_labels": sorted(labels),
                 "error": result.get("error"),
                 "visual_input": result.get("visual_input"),
             })
@@ -601,6 +624,15 @@ class BodyHost:
             "object_limit": self.body_llm_settings().get("visual_max_objects", 5),
             "token_limit": self.body_llm_settings().get("visual_max_tokens", 128),
             "saved_settings_changed": False,
+            "camera_source": camera.get("source"),
+            "camera_frame_id": camera.get("frame_id"),
+            "camera_captured_at": camera.get("captured_at"),
+            "ground_truth_available": False,
+            "object_accuracy": None,
+            "evaluation_note": (
+                "Camera-only benchmark on one captured frame. No annotated ground truth is available; "
+                "cross-resolution label consistency is not object accuracy."
+            ),
             "recommendation": recommendation,
             "target_met": bool(target_candidates),
             "profiles": profiles,

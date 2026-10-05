@@ -1174,13 +1174,15 @@ class BodySceneInterpreter:
             packet.get("body"), ("position", "orientation", "posture", "coordinate_frame", "position_source")
         )
         if packet.get("visual_blind"):
-            # Evaluation mode: the image and LiDAR are the evidence. The
-            # simulator's object list remains outside the prompt for scoring.
+            # Evaluation mode keeps simulator identities outside the prompt.
             prompt_packet.pop("objects", None)
             prompt_packet["visual_validation"] = (
-                "Identify only objects visibly supported by the attached image "
-                "and LiDAR. Use semantic names such as table, chair, cup or "
-                "obstacle when appropriate; do not assume unseen objects."
+                "Identify only objects visibly supported by the attached camera image. "
+                "No LiDAR or radar evidence is available; do not infer metric distances, "
+                "coordinates, or unseen objects. Use open-vocabulary descriptions."
+                if packet.get("camera_only") else
+                "Identify only objects visibly supported by the attached image and LiDAR. "
+                "Use semantic names when appropriate; do not assume unseen objects."
             )
         else:
             prompt_packet["objects"] = [
@@ -1285,13 +1287,13 @@ class BodySceneInterpreter:
                 raw_navigation, ("task", "recommended", "reason", "recovery_mode", "mobile_obstacle")
             )
         if packet.get("visual_blind"):
-            # Do not leak simulator identities through the derived projections.
-            # The vision model must infer them from pixels and unlabeled ranges.
+            # Do not leak simulator identities through derived projections.
             modalities["lidar"]["points"] = [
                 {key: value for key, value in point.items() if key != "object_id"}
                 for point in modalities["lidar"]["points"]
             ]
             if not visual_options.get("include_sensor_context"):
+                modalities["lidar"]["points"] = []
                 modalities["mmwave_radar"]["targets"] = []
         prompt_packet["modalities"] = modalities
         prompt_packet["attention"] = {
@@ -1302,6 +1304,20 @@ class BodySceneInterpreter:
             "uncertainty_rule": "use uncertain instead of inventing an object",
         }
         camera_view_note = self._camera_view_note(modalities.get("camera") or {})
+        camera_only_prompt = bool(visual_options.get("camera_only") or packet.get("camera_only"))
+        metric_evidence_prompt = (
+            "No LiDAR or mmWave data is available; describe appearance from pixels only and do not infer metric range or position. "
+            if camera_only_prompt else
+            "Use mmWave targets only as metric motion evidence (position/velocity), never as proof of visual identity. "
+        )
+        association_prompt = (
+            "Do not infer metric coordinates or object dimensions from image regions. "
+            if camera_only_prompt else
+            "For camera/LiDAR matches, describe only image-visible appearance and use the LiDAR packet solely to "
+            "support proximity or obstacle relevance; do not invent an association when evidence is ambiguous. "
+            "Do not classify floor grids, camera reticles, crosshairs, LiDAR rays, projected points, or reference "
+            "markers as physical objects unless a separate object silhouette is visible in the camera image. "
+        )
         prompt = (
             "Interpret this timestamped Body sensor packet. The packet contract is authoritative "
             "about timestamps and provenance. Return JSON only with keys: "
@@ -1315,18 +1331,15 @@ class BodySceneInterpreter:
             "movement_support (array of monitoring or recovery suggestions), uncertainty (array). "
             f"Prioritize objects within approximately {self._focus_range():.1f} metres of the Body, objects on the "
             "current path, and hazards. Do not enumerate distant objects unless they are necessary for navigation. "
-            "Use mmWave targets only as metric motion evidence (position/velocity), never as proof of visual identity. "
+            + metric_evidence_prompt +
             "Every concrete object named in scene_summary must also appear in object_descriptions with a short "
             "open-vocabulary label and a visual description; do not leave object_descriptions empty when the "
             "summary names a visible object. Use free-form labels grounded in the image, not a fixed category list. "
             "If navigation.task is present, identify its requested object in the image and set its role to goal; "
             "the task object remains relevant even when it is farther than the focus range. "
-            "For camera/LiDAR matches, describe only image-visible appearance and use the LiDAR packet solely to "
-            "support proximity or obstacle relevance; do not invent an association when evidence is ambiguous. "
-            "Do not classify floor grids, camera reticles, crosshairs, LiDAR rays, projected points, or reference "
-            "markers as physical objects unless a separate object silhouette is visible in the camera image. "
+            + association_prompt +
             "A distant or ambiguous visual shape must go into uncertainty, not into primary_objects. "
-            "Image regions describe pixels only; do not infer metric coordinates or object dimensions from them. "
+            "Image regions describe pixels only; "
             + camera_view_note + " "
             "Use only observed data. Prefer native camera/LiDAR returns when quality says native; "
             "label derived projections as inferred. Do not invent objects, coordinates, or completion. "

@@ -1303,14 +1303,21 @@ class BodyPerceptionModalitiesTest(unittest.TestCase):
 
             def interpret_now(self, packet, *, visual_options):
                 self.calls.append((packet, visual_options["image_max_width"]))
+                self.assert_camera_only_packet(packet, visual_options)
                 time.sleep({640: 0.003, 480: 0.002, 320: 0.001}[visual_options["image_max_width"]])
                 return {
                     "status": "interpreted", "latency_ms": 1,
-                    "interpretation": {
-                        "scene_summary": "Table and cup visible",
-                        "object_descriptions": [{"label": "table"}, {"label": "cup"}],
-                    },
+                    "interpretation": {"label": "person", "description": "A seated person"},
                 }
+
+            @staticmethod
+            def assert_camera_only_packet(packet, visual_options):
+                if set(packet["modalities"]) != {"camera"}:
+                    raise AssertionError("benchmark must send camera modality only")
+                if "objects" in packet or "lidar" in packet or "mmwave" in packet:
+                    raise AssertionError("benchmark packet leaked non-camera scene data")
+                if visual_options.get("include_sensor_context") is not False:
+                    raise AssertionError("sensor context must be disabled")
 
         interpreter = Interpreter()
         class WorldModel:
@@ -1319,7 +1326,14 @@ class BodyPerceptionModalitiesTest(unittest.TestCase):
 
             @staticmethod
             def _scene_packet(*args):
-                return {"modalities": {"camera": {"image_base64": "image"}}}
+                return {
+                    "objects": [{"id": "simulated-cup"}],
+                    "modalities": {
+                        "camera": {"image_base64": "image", "source": "pc_camera", "frame_id": "frame-1"},
+                        "lidar": {"points": [[1, 2, 3]]},
+                        "mmwave": {"targets": [{"id": "target-1"}]},
+                    },
+                }
 
         host = BodyHost.__new__(BodyHost)
         host._worldmodel = WorldModel()
@@ -1338,6 +1352,12 @@ class BodyPerceptionModalitiesTest(unittest.TestCase):
         self.assertEqual(result["recommendation"]["image_max_width"], 320)
         self.assertTrue(result["target_met"])
         self.assertFalse(result["saved_settings_changed"])
+        self.assertFalse(result["ground_truth_available"])
+        self.assertIsNone(result["object_accuracy"])
+        self.assertEqual(result["camera_source"], "pc_camera")
+        self.assertEqual(result["camera_frame_id"], "frame-1")
+        self.assertEqual(result["profiles"][0]["object_labels"], ["person"])
+        self.assertTrue(all(profile["quality_acceptable"] for profile in result["profiles"]))
 
 
 if __name__ == "__main__":
