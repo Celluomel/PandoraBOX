@@ -1,8 +1,58 @@
+import * as THREE from '../frontend/node_modules/three/build/three.module.js';
+import { createFnk0031Visual } from './fnk0031_visual.js';
+
 const $ = id => document.getElementById(id);
 let world = null;
 let controller = null;
 let cameraFrameId = null;
 let cameraBusy = false;
+let robotVisual = null;
+let robotRenderer = null;
+let robotScene = null;
+let robotCamera = null;
+
+function renderRobotVisual() {
+  if (!robotRenderer) return;
+  const area = $('robot-3d').parentElement;
+  const width = Math.max(1, area.clientWidth);
+  const height = Math.max(1, area.clientHeight);
+  robotCamera.aspect = width / height;
+  robotCamera.updateProjectionMatrix();
+  robotRenderer.setSize(width, height, false);
+  robotRenderer.render(robotScene, robotCamera);
+}
+
+function initRobotVisual() {
+  try {
+    const target = $('robot-3d');
+    robotRenderer = new THREE.WebGLRenderer({ alpha: true, antialias: true, powerPreference: 'low-power' });
+    robotRenderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
+    robotRenderer.outputColorSpace = THREE.SRGBColorSpace;
+    robotRenderer.setClearColor('#07120f', 0);
+    target.appendChild(robotRenderer.domElement);
+    robotScene = new THREE.Scene();
+    robotScene.add(new THREE.HemisphereLight('#ebfaf5', '#1a2828', 2.1));
+    const key = new THREE.DirectionalLight('#e2f7ed', 2.7);
+    key.position.set(-2, 4, 5);
+    robotScene.add(key);
+    const rim = new THREE.DirectionalLight('#72cde1', 1.4);
+    rim.position.set(3, 2, -3);
+    robotScene.add(rim);
+    robotVisual = createFnk0031Visual(THREE);
+    robotVisual.group.rotation.y = -.28;
+    robotScene.add(robotVisual.group);
+    robotCamera = new THREE.PerspectiveCamera(38, 1, .1, 40);
+    robotCamera.position.set(1.8, 1.65, 4.3);
+    robotCamera.lookAt(0, .52, 0);
+    target.parentElement.classList.add('model-ready');
+    renderRobotVisual();
+  } catch (error) {
+    robotRenderer?.dispose();
+    robotRenderer = null;
+    robotVisual = null;
+    console.warn('FNK0031 3D preview unavailable; showing schematic.', error);
+  }
+}
 
 function setText(id, value) { $(id).textContent = String(value); }
 
@@ -155,6 +205,11 @@ function drawMap(canvas, mode) {
 }
 
 function drawRobot() {
+  if (robotVisual) {
+    robotVisual.setTelemetry(controller || {});
+    renderRobotVisual();
+    return;
+  }
   const group = $('robot-drawing');
   const heading = Number(controller?.body_heading_deg ?? (world?.perception?.body?.orientation ?? 0) * 180 / Math.PI);
   const visualHeading = ((90 - heading) % 360 + 360) % 360;
@@ -268,6 +323,7 @@ async function pollCamera() {
   } finally { cameraBusy = false; }
 }
 
+initRobotVisual();
 window.addEventListener('resize', updateStatus);
 void poll(); void pollCamera();
 setInterval(poll, 800); setInterval(pollCamera, 400);

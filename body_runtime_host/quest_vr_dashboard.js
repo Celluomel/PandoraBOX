@@ -1,9 +1,18 @@
+import { createFnk0031Visual } from './fnk0031_visual.js';
+
 export class QuestVRDashboard {
   constructor(THREE) {
     this.THREE = THREE;
     this.scene = new THREE.Scene();
     this.root = new THREE.Group();
     this.scene.add(this.root);
+    this.scene.add(new THREE.HemisphereLight('#e6f6f0', '#152224', 2.2));
+    const modelLight = new THREE.DirectionalLight('#d5f8ea', 2.8);
+    modelLight.position.set(-2, 4, 5);
+    this.scene.add(modelLight);
+    const edgeLight = new THREE.DirectionalLight('#86d9e8', 1.1);
+    edgeLight.position.set(3, 2, -2);
+    this.scene.add(edgeLight);
     this.panels = [];
     this.visible = false;
     this.headLocked = true;
@@ -42,12 +51,19 @@ export class QuestVRDashboard {
     const geometry = this.createArcGeometry(8.4, 0.18, 64);
     const panel = new THREE.Mesh(
       geometry,
-      new THREE.MeshBasicMaterial({ map: this.texture, transparent: true, depthTest: false, side: THREE.DoubleSide }),
+      new THREE.MeshBasicMaterial({ map: this.texture, transparent: true, depthTest: false, depthWrite: false, side: THREE.DoubleSide }),
     );
     panel.position.set(0, 0.05, -4.6);
     panel.renderOrder = 1000;
     this.root.add(panel);
     this.panels.push(panel);
+    this.robotVisual = createFnk0031Visual(THREE);
+    this.robotVisual.group.position.set(-0.58, -0.5, -4.08);
+    this.robotVisual.group.rotation.y = -0.28;
+    this.robotVisual.group.scale.setScalar(.9);
+    this.robotVisual.group.renderOrder = 1001;
+    this.robotVisual.group.traverse(object => { if (object.isMesh) object.renderOrder = 1001; });
+    this.root.add(this.robotVisual.group);
     this.pointerRing = new THREE.Mesh(
       new THREE.TorusGeometry(0.045, 0.009, 8, 32),
       new THREE.MeshBasicMaterial({ color: '#ffffff', transparent: true, depthTest: false, depthWrite: false, side: THREE.DoubleSide }),
@@ -101,6 +117,7 @@ export class QuestVRDashboard {
 
   updateController(controller) {
     this.controller = controller;
+    this.robotVisual.setTelemetry(controller || {});
     this.drawDashboard();
   }
 
@@ -111,17 +128,19 @@ export class QuestVRDashboard {
   }
 
   panel(ctx, x, y, width, height, title, meta = '') {
-    const radius = 32;
-    ctx.fillStyle = 'rgba(7, 16, 14, .92)';
+    const radius = 38;
+    ctx.fillStyle = 'rgba(13, 23, 29, .88)';
     ctx.beginPath(); ctx.roundRect(x, y, width, height, radius); ctx.fill();
-    ctx.strokeStyle = 'rgba(135, 206, 166, .48)';
+    ctx.strokeStyle = 'rgba(126, 209, 193, .48)';
     ctx.lineWidth = 2;
     ctx.beginPath(); ctx.roundRect(x + 1, y + 1, width - 2, height - 2, radius - 1); ctx.stroke();
-    ctx.fillStyle = '#a9e8c2';
+    ctx.fillStyle = '#d0eee4';
     ctx.font = '600 25px system-ui';
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
     ctx.fillText(title.toUpperCase(), x + 24, y + 29);
+    ctx.fillStyle = '#64e4be';
+    ctx.fillRect(x + 14, y + 15, 5, 26);
     if (meta) {
       ctx.fillStyle = '#83a594';
       ctx.font = '18px ui-monospace, monospace';
@@ -143,15 +162,15 @@ export class QuestVRDashboard {
     const frameRadius = 58;
     ctx.beginPath();
     ctx.roundRect(frameInset, frameInset, width - frameInset * 2, height - frameInset * 2, frameRadius);
-    ctx.fillStyle = 'rgba(4, 12, 11, .94)';
+    ctx.fillStyle = 'rgba(7, 18, 22, .87)';
     ctx.fill();
     ctx.save();
     ctx.beginPath();
     ctx.roundRect(frameInset, frameInset, width - frameInset * 2, height - frameInset * 2, frameRadius);
     ctx.clip();
-    ctx.fillStyle = 'rgba(4, 12, 11, .94)';
+    ctx.fillStyle = 'rgba(7, 18, 22, .87)';
     ctx.fillRect(frameInset, frameInset, width - frameInset * 2, height - frameInset * 2);
-    ctx.strokeStyle = '#76d6a1';
+    ctx.strokeStyle = '#80dfc6';
     ctx.lineWidth = 4;
     ctx.beginPath();
     ctx.roundRect(frameInset + 2, frameInset + 2, width - (frameInset + 2) * 2, height - (frameInset + 2) * 2, frameRadius - 2);
@@ -293,9 +312,13 @@ export class QuestVRDashboard {
     const heading = Number(perception.body?.orientation || 0) * 180 / Math.PI;
     const objects = perception.objects || [];
     this.panel(ctx, x, y, width, height, 'Body telemetry', `${objects.length} OBJECTS`);
-    const cx = x + 270;
-    const cy = y + 360;
-    this.drawHexapod(ctx, cx, cy, Number(fnk.body_heading_deg ?? heading), fnk, 1.3);
+    ctx.strokeStyle = 'rgba(113, 209, 194, .24)';
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.ellipse(x + 355, y + 620, 270, 72, 0, 0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath(); ctx.ellipse(x + 355, y + 620, 205, 52, 0, 0, Math.PI * 2); ctx.stroke();
+    ctx.fillStyle = '#a5bdba'; ctx.font = '16px ui-monospace, monospace'; ctx.textAlign = 'left';
+    ctx.fillText('FNK0031 · ESTIMATED 3D MODEL', x + 56, y + 718);
+    ctx.fillStyle = '#6bdac1'; ctx.fillRect(x + 56, y + 729, 100, 3);
     const headingDeg = Number(fnk.compass_heading_deg ?? fnk.body_heading_deg ?? heading);
     const headingX = x + width * .75;
     const headingY = y + 245;

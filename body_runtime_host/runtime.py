@@ -2629,7 +2629,7 @@ class BodyHost:
                     preview_page = ROOT / "body_runtime_host" / "quest_hud_preview.html"
                     self._send_html(preview_page.read_text(encoding="utf-8"), check_version=False)
                 elif path == "/quest-hud-preview.js":
-                    preview_script = ROOT / "body_runtime_host" / "quest_hud_preview.js"
+                    preview_script = ROOT / "body_runtime_host" / "quest-hud-preview.bundle.js"
                     try:
                         data = preview_script.read_bytes()
                         self.send_response(200)
