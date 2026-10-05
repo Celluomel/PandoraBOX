@@ -186,6 +186,7 @@ class SimulatedRoom:
                 "simulation_step": self.steps,
                 "strength": STRENGTH, "gripper": 1.0,
                 "world_width": float(self.width), "world_height": float(self.height),
+                "body_radius_m": BODY_RADIUS_M,
                 "task_stage": self.task_stage,
                 "goal": list(self.shelf),
             },
@@ -260,9 +261,21 @@ class SimulatedRoom:
 
     def _metric_position_clear(self, x: float, y: float, ignore_id: str | None = None) -> bool:
         """Continuous metric collision geometry for the physical integrator."""
-        if x < BODY_RADIUS_M or y < BODY_RADIUS_M:
-            return False
-        if x > self.width - BODY_RADIUS_M or y > self.height - BODY_RADIUS_M:
+        def boundary_violation(px: float, py: float) -> float:
+            return (
+                max(0.0, BODY_RADIUS_M - px)
+                + max(0.0, BODY_RADIUS_M - py)
+                + max(0.0, px - (self.width - BODY_RADIUS_M))
+                + max(0.0, py - (self.height - BODY_RADIUS_M))
+            )
+
+        current_violation = boundary_violation(self.px, self.py)
+        next_violation = boundary_violation(x, y)
+        if current_violation > 1e-8:
+            # Recover old grid-era poses only by moving inward.
+            if next_violation >= current_violation - 1e-8:
+                return False
+        elif next_violation > 1e-8:
             return False
         for obj in self.objects.values():
             if obj["id"] in {self.carrying, ignore_id}:

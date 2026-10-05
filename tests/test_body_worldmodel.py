@@ -323,6 +323,43 @@ class SimWorldTest(unittest.TestCase):
         guidance = navigation_guidance(room.observe(), room.body_state())
         self.assertEqual(guidance["recommended"], "retreat")
 
+    def test_metric_navigation_recovers_from_legacy_boundary_pose(self):
+        from body_runtime_host.worldmodel import Action, SimulatedRoom
+        from body_runtime_host.worldmodel.navigation import navigation_guidance
+
+        room = SimulatedRoom()
+        room.px, room.py, room.heading = 4.0, 0.0, -math.pi
+        room.carrying = "cup"
+        room.task_stage = "to_shelf"
+        room.shelf = (4.0, 6.0)
+        room.objects["table"].update(x=3.0, y=2.0)
+        room.objects["chair"].update(x=3.0, y=10.0)
+        room.objects["obstacle"].update(x=10.0, y=5.0)
+        room.objects["mobile_obstacle"].update(x=5.0, y=1.0)
+        room.objects["cup"].update(x=4.0, y=0.0)
+
+        guidance = navigation_guidance(room.observe(include_camera=False), room.body_state(), carrying=True)
+        self.assertEqual(guidance["recovery_reason"], "continuous_boundary_escape")
+        self.assertEqual(guidance["recommended"], "turn_right")
+        room.step(Action(type=guidance["recommended"]))
+
+        guidance = navigation_guidance(room.observe(include_camera=False), room.body_state(), carrying=True)
+        self.assertEqual(guidance["recommended"], "forward")
+        _, outcome = room.step(Action(type="forward", params={"speed": 1.0, "continuous_physics": True}))
+        self.assertGreater(room.py, 0.3)
+        self.assertEqual(room.collision_count, 0)
+        self.assertNotEqual(outcome.kind, "failure")
+
+        for _ in range(100):
+            guidance = navigation_guidance(room.observe(include_camera=False), room.body_state(), carrying=True)
+            action = guidance["recommended"] or "wait"
+            speed = 2.0 if action in {"sprint", "retreat"} else 1.0
+            room.step(Action(type=action, params={"speed": speed, "continuous_physics": True}))
+            if room.done:
+                break
+        self.assertTrue(room.done, "the Body should recover from the border and complete delivery")
+        self.assertLess(room.collision_count, 8)
+
     def test_navigation_changes_attitude_after_stagnation_near_mobile_obstacle(self):
         from body_runtime_host.worldmodel import SimulatedRoom
         from body_runtime_host.worldmodel.navigation import navigation_guidance

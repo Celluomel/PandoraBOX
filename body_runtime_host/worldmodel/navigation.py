@@ -118,7 +118,15 @@ def _grid_route_action(
     if width is None or height is None:
         return None
     width, height = int(width), int(height)
-    start = (int(round(float(body.position[0]))), int(round(float(body.position[1]))))
+    radius = max(0.0, float(body.capabilities.get("body_radius_m", 0.0)))
+    min_x = math.ceil(radius)
+    min_y = math.ceil(radius)
+    max_x = min(width - 1, math.floor(width - radius))
+    max_y = min(height - 1, math.floor(height - radius))
+    start = (
+        min(max(int(round(float(body.position[0]))), min_x), max_x),
+        min(max(int(round(float(body.position[1]))), min_y), max_y),
+    )
     goal = (float(target[0]), float(target[1]))
     if not (0 <= start[0] < width and 0 <= start[1] < height):
         return None
@@ -198,7 +206,7 @@ def _grid_route_action(
                         break
                     dx, dy = round(math.cos(heading_angle)), round(math.sin(heading_angle))
                     cell = (nx + sign * dx, ny + sign * dy)
-                    if not (0 <= cell[0] < width and 0 <= cell[1] < height) or cell in static_blocked or cell == (mx, my):
+                    if not (min_x <= cell[0] <= max_x and min_y <= cell[1] <= max_y) or cell in static_blocked or cell == (mx, my):
                         break
                     nx, ny = cell
                 if distance and (nx, ny) == (x, y):
@@ -267,7 +275,7 @@ def _grid_route_action(
         cell = queue.popleft()
         for dx, dy in directions:
             nxt = (cell[0] + dx, cell[1] + dy)
-            if not (0 <= nxt[0] < width and 0 <= nxt[1] < height):
+            if not (min_x <= nxt[0] <= max_x and min_y <= nxt[1] <= max_y):
                 continue
             if nxt in parents or nxt in blocked:
                 continue
@@ -304,7 +312,7 @@ def _grid_route_action(
                 int(round(float(body.position[0]) + math.cos(turn_heading))),
                 int(round(float(body.position[1]) + math.sin(turn_heading))),
             )
-            if next_cell not in blocked and 0 <= next_cell[0] < width and 0 <= next_cell[1] < height:
+            if next_cell not in blocked and min_x <= next_cell[0] <= max_x and min_y <= next_cell[1] <= max_y:
                 safe_turns.append(action)
         if safe_turns:
             return safe_turns[0]
@@ -320,6 +328,7 @@ def navigation_guidance(
     objects = list(getattr(observation, "scene", []) or [])
     px, py = float(body.position[0]), float(body.position[1])
     heading = float(body.orientation)
+    radius = max(0.0, float(body.capabilities.get("body_radius_m", 0.0)))
     shelf = None
     text = str(getattr(observation, "text", "") or "")
     import re
@@ -409,7 +418,8 @@ def navigation_guidance(
                 cell = (px + math.cos(heading) * step, py + math.sin(heading) * step)
                 out_of_bounds = (
                     width is not None and height is not None
-                    and (cell[0] < 0 or cell[1] < 0 or cell[0] >= float(width) or cell[1] >= float(height))
+                    and (cell[0] < radius or cell[1] < radius
+                         or cell[0] > float(width) - radius or cell[1] > float(height) - radius)
                 )
                 if out_of_bounds or (mobile_predicted is not None and math.hypot(mobile_predicted[0] - cell[0], mobile_predicted[1] - cell[1]) < 0.6) or any(
                     obj is not mobile
@@ -447,7 +457,10 @@ def navigation_guidance(
 
                 def clear_translation(dx: float, dy: float) -> bool:
                     nx, ny = px + dx, py + dy
-                    if width is not None and height is not None and not (0 <= nx < float(width) and 0 <= ny < float(height)):
+                    if width is not None and height is not None and not (
+                        radius <= nx <= float(width) - radius
+                        and radius <= ny <= float(height) - radius
+                    ):
                         return False
                     for item in objects:
                         kind = str(getattr(item, "kind", ""))
@@ -508,11 +521,13 @@ def navigation_guidance(
     height = body.capabilities.get("world_height")
     boundary_ahead = (
         width is not None and height is not None and
-        (forward[0] < 0 or forward[1] < 0 or forward[0] >= float(width) or forward[1] >= float(height))
+        (forward[0] < radius or forward[1] < radius
+         or forward[0] > float(width) - radius or forward[1] > float(height) - radius)
     )
     boundary_behind = (
         width is not None and height is not None
-        and (backward[0] < 0 or backward[1] < 0 or backward[0] >= float(width) or backward[1] >= float(height))
+        and (backward[0] < radius or backward[1] < radius
+             or backward[0] > float(width) - radius or backward[1] > float(height) - radius)
     )
     if boundary_behind:
         forbidden.update({"backward", "retreat"})
@@ -577,6 +592,23 @@ def navigation_guidance(
         # instead of turning away from the table or target.
         if recommended not in {"grab", "release", "sprint", "retreat", "backward", "wait"}:
             recommended = preferred
+
+    if width is not None and height is not None and radius > 0 and (
+        px < radius or py < radius
+        or px > float(width) - radius or py > float(height) - radius
+    ):
+        recovery_point = (
+            min(max(px, radius + 0.1), float(width) - radius - 0.1),
+            min(max(py, radius + 0.1), float(height) - radius - 0.1),
+        )
+        bearing = math.atan2(recovery_point[1] - py, recovery_point[0] - px)
+        recommended = (
+            "forward" if abs(_angle_delta(heading, bearing)) <= math.radians(20)
+            else _turn_toward_target(heading, recovery_point, (px, py))
+        )
+        recovery_mode = True
+        recovery_reason = "continuous_boundary_escape"
+        prior[recommended] = max(prior.get(recommended, 0.0), 5.0)
 
     return {
         "prior": prior,

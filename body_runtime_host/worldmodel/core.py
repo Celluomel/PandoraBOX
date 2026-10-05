@@ -433,6 +433,8 @@ class EmbodiedWorldModel:
                 navigation["recommended"] = escape_turn
                 prior[escape_turn] = max(float(prior.get(escape_turn, 0.0)), 4.0)
                 navigation["recovery_reason"] = "turn_after_repeated_wait"
+            elif repeated_turn and navigation.get("recovery_reason") == "continuous_boundary_escape":
+                pass
             elif repeated_turn:
                 navigation = dict(navigation)
                 if "forward" not in set(navigation.get("forbidden", [])) and not navigation.get("obstacle_ahead"):
@@ -585,6 +587,9 @@ class EmbodiedWorldModel:
                 task_decision = self.task_graph.recovery_action(active_plan, plan_snapshot, body_state)
                 chosen = task_decision.action.as_dict() if task_decision.action else {"type": "wait"}
                 decision["reason"] = task_decision.reason
+            if navigation.get("recovery_reason") == "continuous_boundary_escape":
+                chosen = {"type": navigation["recommended"]}
+                decision["reason"] = navigation["recovery_reason"]
               # 9) execute (robot actuators, sandbox physics, or legacy bridge)
             chosen = self._adapt_motion_speed(chosen, body_state, navigation)
             if self.source is not None:
