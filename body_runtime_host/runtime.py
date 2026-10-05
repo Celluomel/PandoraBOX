@@ -670,7 +670,7 @@ class BodyHost:
         """Start an explicit VLM + paired-sensor scene suite."""
         roi_compare = bool((request or {}).get("roi_compare", False))
         try:
-            scene_count = max(1, min(5, int((request or {}).get("scenes", 3))))
+            scene_count = max(1, min(20, int((request or {}).get("scenes", 3))))
         except (TypeError, ValueError):
             scene_count = 3
         with self._sensorimotor_test_lock:

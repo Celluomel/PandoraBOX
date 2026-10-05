@@ -20,6 +20,15 @@ class BodyRuntimeGuiTests(unittest.TestCase):
         self.assertIn("renderSemanticScene(w?.perception,w?.sim)", BODY_GUI_HTML)
         self.assertIn("not photogrammetric reconstruction", BODY_GUI_HTML)
 
+    def test_sensorimotor_benchmark_exposes_blind_scene_count_and_paired_metrics(self):
+        from body_runtime_host.body_gui import BODY_GUI_HTML
+
+        self.assertIn("sensorimotor-scene-count", BODY_GUI_HTML)
+        self.assertIn("new Option(`${count} scene${count===1?'':'s'}`,String(count))", BODY_GUI_HTML)
+        self.assertIn("camera_only", BODY_GUI_HTML)
+        self.assertIn("camera_plus_sensors", BODY_GUI_HTML)
+        self.assertIn("paired_scene_count", BODY_GUI_HTML)
+
 
 if __name__ == "__main__":
     unittest.main()

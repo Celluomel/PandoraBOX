@@ -6,6 +6,7 @@ import heapq
 import inspect
 import logging
 import math
+import random
 import tempfile
 import time
 from dataclasses import dataclass, field
@@ -550,6 +551,24 @@ def _sensor_route(body: Any, lidar: Dict[str, Any], goal: tuple[int, int], room:
     return list(reversed(route))
 
 
+def _sensorimotor_layout(seed: int) -> tuple[tuple[float, float], tuple[float, float], tuple[float, float]]:
+    """Generate a repeatable, spatially varied scene with separated objects."""
+    rng = random.Random(int(seed))
+    cells = [(float(x), float(y)) for x in range(2, 10) for y in range(2, 10)]
+    targets = [point for point in cells if math.dist(point, (1.0, 1.0)) >= 4.0]
+    rng.shuffle(targets)
+    for target in targets:
+        remaining = [point for point in cells if math.dist(point, target) >= 2.5]
+        rng.shuffle(remaining)
+        for chair in remaining:
+            mobiles = [point for point in remaining
+                       if point != chair and math.dist(point, chair) >= 2.5
+                       and math.dist(point, target) >= 2.5 and point[0] >= 5.0]
+            if mobiles:
+                return target, chair, rng.choice(mobiles)
+    raise RuntimeError(f"Unable to generate a separated sensorimotor scene for seed {seed}")
+
+
 def run_vlm_sensorimotor_scenario(
     config: Dict[str, Any], *, progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     seed: int = 31, max_actions: int = 32, compare_modalities: bool = True,
@@ -573,12 +592,7 @@ def run_vlm_sensorimotor_scenario(
             return {"status": "failed", "error": "Configure and enable the Body VLM before running this scenario."}
         room = SimulatedRoom()
         room.reset_episode(shuffle=False, seed=int(seed))
-        layouts = (
-            ((5.0, 4.0), (8.0, 1.0), (7.0, 8.0)),
-            ((6.0, 5.0), (3.0, 9.0), (9.0, 9.0)),
-            ((5.0, 5.0), (8.0, 1.0), (10.0, 10.0)),
-        )
-        target_xy, chair_xy, mobile_xy = layouts[(int(seed) - 31) % len(layouts)]
+        target_xy, chair_xy, mobile_xy = _sensorimotor_layout(int(seed))
         room.objects = {
             "target": {"id": "target", "label": "purple cube", "kind": "obstacle",
                        "x": target_xy[0], "y": target_xy[1], "mass": 999.0, "size": 1.0},
@@ -1008,7 +1022,7 @@ def run_vlm_sensorimotor_suite(
     progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> Dict[str, Any]:
     """Run reproducible, paired camera/LiDAR/mmWave scenes through the VLM."""
-    count = max(1, min(5, int(scene_count)))
+    count = max(1, min(20, int(scene_count)))
     results = []
     snapshots = []
     timeline = []
@@ -1023,7 +1037,7 @@ def run_vlm_sensorimotor_suite(
 
             result = run_vlm_sensorimotor_scenario(
                 config, progress_callback=report_progress, seed=seed,
-                compare_modalities=index == 0 and not roi_compare,
+                compare_modalities=True,
                 roi_compare=roi_compare, interpreter=interpreter,
             )
             results.append(result)
@@ -1090,6 +1104,35 @@ def run_vlm_sensorimotor_suite(
                                                  for item in roi_comparisons),
             "scenes": roi_comparisons,
         }
+    variant_metrics = {}
+    for stage, name in (("camera_only", "camera_only"),
+                        ("camera_plus_sensors", "camera_plus_sensors"),
+                        ("mmwave_roi", "mmwave_roi")):
+        variant_snapshots = [snapshot for snapshot in snapshots if snapshot.get("stage") == stage]
+        if not variant_snapshots:
+            continue
+        variant_groundings = [snapshot.get("grounding") or {} for snapshot in variant_snapshots]
+        variant_latencies = [float(snapshot["vlm_latency_ms"]) for snapshot in variant_snapshots
+                             if snapshot.get("vlm_latency_ms") is not None]
+        accepted = sum(item.get("accepted_for_context") is True for item in variant_groundings)
+        variant_metrics[name] = {
+            "calls": len(variant_snapshots),
+            "grounding_accepted": accepted,
+            "grounding_acceptance_rate": accepted / len(variant_snapshots),
+            "average_latency_ms": round(sum(variant_latencies) / len(variant_latencies), 1)
+            if variant_latencies else None,
+            "latency_samples_ms": variant_latencies,
+            "errors": sum(snapshot.get("vlm_status") != "interpreted" for snapshot in variant_snapshots),
+        }
+    paired_scene_count = sum(
+        any(snapshot.get("stage") == "camera_only" for snapshot in result.get("snapshots") or [])
+        and any(snapshot.get("stage") == "camera_plus_sensors" for snapshot in result.get("snapshots") or [])
+        and next((snapshot.get("frame_id") for snapshot in result.get("snapshots") or []
+                  if snapshot.get("stage") == "camera_only"), None)
+        == next((snapshot.get("frame_id") for snapshot in result.get("snapshots") or []
+                 if snapshot.get("stage") == "camera_plus_sensors"), None)
+        for result in results
+    )
     return {
         "status": suite_status, "execution": "simulation_only", "physical_actuation": False,
         "sensor_contract": "body_perception_frame.v2",
@@ -1115,6 +1158,8 @@ def run_vlm_sensorimotor_suite(
             "scenes": scene_reports,
         },
         "modality_comparison": results[0].get("modality_comparison") if results else {},
+        "modality_metrics": variant_metrics,
+        "paired_scene_count": paired_scene_count,
         "roi_comparison": roi_comparison_summary,
         "scene_results": scene_reports, "snapshots": snapshots, "timeline": timeline,
         "safety": "Each camera image, LiDAR scan, mmWave frame and pose shares one scene manifest, frame id and timestamp. No actuator command is sent.",

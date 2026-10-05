@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 from body_runtime_host.worldmodel.evaluation import (
     _restart_resume_probe,
+    _sensorimotor_layout,
     collect_body_llm_grounding,
     run_vlm_sensorimotor_scenario,
     run_vlm_sensorimotor_suite,
@@ -11,6 +12,17 @@ from body_runtime_host.worldmodel.evaluation import (
 
 
 class BodyEvaluationTests(unittest.TestCase):
+    def test_sensorimotor_layouts_are_repeatable_varied_and_separated(self):
+        layouts = [_sensorimotor_layout(seed) for seed in range(31, 51)]
+
+        self.assertEqual(len(set(layouts)), 20)
+        self.assertEqual(_sensorimotor_layout(31), layouts[0])
+        for target, chair, mobile in layouts:
+            self.assertGreaterEqual(((target[0] - 1) ** 2 + (target[1] - 1) ** 2) ** 0.5, 4.0)
+            self.assertGreaterEqual(((target[0] - chair[0]) ** 2 + (target[1] - chair[1]) ** 2) ** 0.5, 2.5)
+            self.assertGreaterEqual(((target[0] - mobile[0]) ** 2 + (target[1] - mobile[1]) ** 2) ** 0.5, 2.5)
+            self.assertGreaterEqual(((chair[0] - mobile[0]) ** 2 + (chair[1] - mobile[1]) ** 2) ** 0.5, 2.5)
+
     def test_restart_resume_probe_restores_next_step_and_lease(self):
         result = _restart_resume_probe()
 
@@ -199,13 +211,18 @@ class BodyEvaluationTests(unittest.TestCase):
         self.assertEqual(result["near_misses"], 0)
         self.assertEqual(result["grounding_acceptance_rate"], 1.0)
         self.assertEqual(result["invented_object_references"], 0)
-        self.assertEqual(result["vlm_calls"], 4)
+        self.assertEqual(result["vlm_calls"], 6)
+        self.assertEqual(result["paired_scene_count"], 3)
+        self.assertEqual(result["modality_metrics"]["camera_only"]["calls"], 3)
+        self.assertEqual(result["modality_metrics"]["camera_plus_sensors"]["calls"], 3)
+        self.assertEqual(result["modality_metrics"]["camera_only"]["grounding_acceptance_rate"], 1.0)
+        self.assertEqual(result["modality_metrics"]["camera_plus_sensors"]["average_latency_ms"], 10.0)
         self.assertEqual([scene["target_id"] for scene in result["scene_results"]], ["target"] * 3)
         paired_scenes = [packet for packet, options in captured if options["include_sensor_context"]]
         self.assertEqual(len(paired_scenes), 3)
-        geometry = [next(item for item in packet["objects"] if item["id"] == "target")["position"][:2]
+        geometry = [tuple(next(item for item in packet["objects"] if item["id"] == "target")["position"][:2])
                     for packet in paired_scenes]
-        self.assertEqual(geometry, [[5.0, 4.0], [6.0, 5.0], [5.0, 5.0]])
+        self.assertEqual(len(set(geometry)), 3)
         for packet, _options in captured:
             frame = packet["frame_id"]
             timestamp = packet["timestamp"]
@@ -225,7 +242,7 @@ class BodyEvaluationTests(unittest.TestCase):
             frame_id = packet["frame_id"]
             return {
                 "status": "interpreted", "interpretation_mode": "sensor_packet", "latency_ms": 10.0,
-                "visual_input": ({"mmwave_rois": [{"x": 500, "y": 300, "width": 130, "height": 150}]}
+                "visual_input": ({"mmwave_rois": [{"x": 0, "y": 0, "width": 4096, "height": 4096}]}
                                  if visual_options.get("mmwave_roi") else {}),
                 "interpretation": {"object_descriptions": [{
                     "label": "purple cube", "description": "purple cube on the floor", "role": "goal",
@@ -249,18 +266,23 @@ class BodyEvaluationTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "completed", result)
         self.assertEqual(result["successes"], 1)
-        self.assertEqual(result["vlm_calls"], 2)
-        self.assertEqual(len(captured), 2)
+        self.assertEqual(result["vlm_calls"], 3)
+        self.assertEqual(len(captured), 3)
         self.assertEqual(captured[0][0]["frame_id"], captured[1][0]["frame_id"])
-        self.assertEqual(captured[0][0]["timestamp"], captured[1][0]["timestamp"])
+        self.assertEqual(captured[1][0]["frame_id"], captured[2][0]["frame_id"])
+        self.assertEqual(captured[0][0]["timestamp"], captured[2][0]["timestamp"])
         self.assertFalse(captured[0][1]["mmwave_roi"])
-        self.assertTrue(captured[1][1]["mmwave_roi"])
+        self.assertFalse(captured[1][1]["mmwave_roi"])
+        self.assertTrue(captured[2][1]["mmwave_roi"])
         self.assertEqual(result["roi_comparison"]["roi_count"], 1)
         self.assertTrue(result["roi_comparison"]["same_frame_id"])
         self.assertTrue(result["roi_comparison"]["task_target_covered"])
         self.assertEqual(result["roi_comparison"]["full_image_latency_ms"], 10.0)
         self.assertEqual(result["roi_comparison"]["full_image_grounding_accepted_count"], 0)
         self.assertEqual(result["roi_comparison"]["roi_grounding_accepted_count"], 1)
+        self.assertEqual(result["modality_metrics"]["camera_only"]["calls"], 1)
+        self.assertEqual(result["modality_metrics"]["camera_plus_sensors"]["calls"], 1)
+        self.assertEqual(result["modality_metrics"]["mmwave_roi"]["calls"], 1)
         roi_snapshot = next(item for item in result["snapshots"] if item["stage"] == "mmwave_roi")
         self.assertTrue(roi_snapshot["roi_evaluation"]["same_frame_as_full_image"])
         self.assertEqual(result["scene_results"][0]["status"], "completed")
