@@ -477,6 +477,63 @@ class BodyPerceptionModalitiesTest(unittest.TestCase):
         })
         self.assertEqual(scene["entities"][0]["description"], "a purple cube on the floor")
 
+    def test_adaptive_radar_focus_requires_synchronized_evidence_and_falls_back(self):
+        from body_runtime_host.worldmodel.scene_interpreter import BodySceneInterpreter
+
+        packet = {"frame_id": "frame-1", "modalities": {
+            "camera": {"image_base64": "image", "source": "virtual_camera", "timestamp": 10.0,
+                       "calibration": {"fov_deg": 90.0}},
+            "mmwave_radar": {"timestamp": 10.1, "coordinate_frame": "body",
+                             "targets": [{"position_m": [2.0, 0.0, 0.0], "confidence": 0.85}]},
+        }}
+        interpreter = BodySceneInterpreter({"BODY_LLM_RADAR_FOCUS_ENABLED": True})
+        try:
+            self.assertTrue(interpreter._radar_focus_ready(packet))
+            with patch.object(interpreter, "_interpret", side_effect=[
+                {"status": "interpreted", "latency_ms": 1000,
+                 "visual_input": {"strategy": "radar_attention_strip"},
+                 "semantic_scene": {"grounding": {"accepted_for_context": False}}},
+                {"status": "interpreted", "latency_ms": 2000,
+                 "semantic_scene": {"grounding": {"accepted_for_context": True}}},
+            ]) as interpret:
+                result = interpreter._interpret_adaptive(packet)
+            self.assertEqual(interpret.call_count, 2)
+            self.assertTrue(interpret.call_args_list[0].kwargs["visual_options"]["mmwave_focus"])
+            self.assertEqual(result["latency_ms"], 3000)
+            self.assertTrue(result["radar_focus_fallback"])
+            packet["modalities"]["mmwave_radar"]["timestamp"] = 10.4
+            self.assertFalse(interpreter._radar_focus_ready(packet))
+            packet["modalities"]["mmwave_radar"]["timestamp"] = 10.0
+            packet["modalities"]["camera"]["source"] = "physical_camera"
+            self.assertFalse(interpreter._radar_focus_ready(packet))
+            with patch.object(interpreter, "_interpret", return_value={"status": "interpreted"}) as interpret:
+                interpreter._interpret_adaptive(packet)
+            interpret.assert_called_once_with(packet)
+        finally:
+            interpreter.close()
+
+    def test_background_vlm_cadence_uses_measured_provider_latency(self):
+        import time
+        from concurrent.futures import Future
+        from body_runtime_host.worldmodel.scene_interpreter import BodySceneInterpreter
+
+        interpreter = BodySceneInterpreter({"BODY_LLM_ENABLED": True, "BODY_LLM_INTERVAL": 2})
+        completed = Future()
+        completed.set_result({"status": "interpreted", "latency_ms": 12000})
+        interpreter._future = completed
+        interpreter._last_submit = time.time() - 10
+        try:
+            with patch.object(interpreter._executor, "submit") as submit:
+                interpreter.submit({})
+                submit.assert_not_called()
+                self.assertEqual(interpreter.status()["cadence_reason"], "provider-limited")
+                self.assertEqual(interpreter.status()["effective_interval"], 18.0)
+                interpreter._last_submit = time.time() - 19
+                interpreter.submit({})
+                submit.assert_called_once()
+        finally:
+            interpreter.close()
+
     def test_open_vocabulary_root_description_is_normalized_and_semantically_grounded(self):
         from body_runtime_host.worldmodel.scene_interpreter import BodySceneInterpreter
 

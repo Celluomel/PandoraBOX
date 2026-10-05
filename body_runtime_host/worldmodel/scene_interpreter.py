@@ -57,6 +57,7 @@ class BodySceneInterpreter:
         self._last_submit = 0.0
         self._last_effective_interval = self._interval()
         self._last_cadence_reason = "initial"
+        self._last_provider_latency_s = 0.0
         self._grounding_samples = 0
         self._grounding_precision_sum = 0.0
         self._grounding_rejected = 0
@@ -131,12 +132,7 @@ class BodySceneInterpreter:
 
     def status(self) -> Dict[str, Any]:
         with self._lock:
-            if self._future is not None and self._future.done():
-                try:
-                    self._latest = dict(self._future.result())
-                except Exception as exc:
-                    self._latest = self._error(str(exc))
-                self._future = None
+            self._consume_completed_locked()
             current = dict(self._latest)
             current["enabled"] = self._enabled()
             if not current.get("updated_at"):
@@ -162,6 +158,7 @@ class BodySceneInterpreter:
                 max(0.0, self._qnn_cooldown_until - time.monotonic()), 1
             )
             current["effective_interval"] = round(float(self._last_effective_interval), 3)
+            current["last_provider_latency_seconds"] = round(self._last_provider_latency_s, 3)
             current["cadence_reason"] = self._last_cadence_reason
             current["grounding_metrics"] = {
                 "samples": self._grounding_samples,
@@ -175,6 +172,18 @@ class BodySceneInterpreter:
                 current["age_seconds"] = round(max(0.0, time.time() - float(current["observed_at"])), 3)
                 current["fresh"] = current["age_seconds"] <= max(10.0, self._interval() * 2.0)
             return current
+
+    def _consume_completed_locked(self) -> None:
+        if self._future is None or not self._future.done():
+            return
+        try:
+            self._latest = dict(self._future.result())
+        except Exception as exc:
+            self._latest = self._error(str(exc))
+        self._last_provider_latency_s = max(
+            0.0, self._number(self._latest.get("latency_ms")) / 1000.0
+        )
+        self._future = None
 
     def _grounding_threshold(self) -> float:
         try:
@@ -458,15 +467,65 @@ class BodySceneInterpreter:
             return
         now = time.time()
         with self._lock:
+            self._consume_completed_locked()
             if self._future is not None and not self._future.done():
                 return
             interval, reason = self._interval_for_packet(packet)
+            provider_interval = min(60.0, self._last_provider_latency_s * 1.5)
+            if provider_interval > interval:
+                interval, reason = provider_interval, "provider-limited"
             self._last_effective_interval = interval
             self._last_cadence_reason = reason
             if now - self._last_submit < interval:
                 return
             self._last_submit = now
-            self._future = self._executor.submit(self._interpret, packet)
+            self._future = self._executor.submit(self._interpret_adaptive, packet)
+
+    @staticmethod
+    def _radar_focus_ready(packet: Dict[str, Any]) -> bool:
+        modalities = packet.get("modalities") or {}
+        camera = modalities.get("camera") or {}
+        radar = modalities.get("mmwave_radar") or {}
+        calibration = camera.get("calibration") or {}
+        if not (camera.get("image_base64") or camera.get("image_url")):
+            return False
+        if not (calibration.get("fov_deg") or camera.get("fov_deg")):
+            return False
+        if (camera.get("source") != "virtual_camera"
+                and calibration.get("radar_alignment_verified") is not True):
+            return False
+        if str(radar.get("coordinate_frame") or radar.get("frame") or "").lower() not in {
+            "world", "map", "local_map", "body", "base_link", "base_footprint"
+        }:
+            return False
+        if not any(isinstance(item, dict) and BodySceneInterpreter._number(item.get("confidence")) >= 0.6
+                   for item in radar.get("targets") or []):
+            return False
+        camera_stamp = BodySceneInterpreter._number(camera.get("timestamp"))
+        radar_stamp = BodySceneInterpreter._number(radar.get("timestamp"))
+        if camera_stamp and radar_stamp:
+            return abs(camera_stamp - radar_stamp) <= 0.2
+        return bool(camera.get("frame_id") and camera.get("frame_id") == radar.get("frame_id"))
+
+    def _interpret_adaptive(self, packet: Dict[str, Any]) -> Dict[str, Any]:
+        if not self._config.get("BODY_LLM_RADAR_FOCUS_ENABLED", True) or not self._radar_focus_ready(packet):
+            return self._interpret(packet)
+        focused = self._interpret(packet, visual_options={"include_sensor_context": True,
+                                                          "mmwave_focus": True})
+        strategy = (focused.get("visual_input") or {}).get("strategy")
+        if strategy != "radar_attention_strip":
+            return focused
+        grounding = ((focused.get("semantic_scene") or {}).get("grounding") or {})
+        if focused.get("status") != "interpreted" or grounding.get("accepted_for_context") is True:
+            return focused
+        logger.info("[BodyVLM] radar focus ungrounded; retrying full frame=%s", packet.get("frame_id"))
+        fallback = self._interpret(packet)
+        fallback["radar_focus_fallback"] = True
+        fallback["radar_focus_latency_ms"] = focused.get("latency_ms")
+        fallback["latency_ms"] = round(
+            self._number(focused.get("latency_ms")) + self._number(fallback.get("latency_ms")), 1
+        )
+        return fallback
 
     def interpret_now(
         self, packet: Dict[str, Any], *, visual_options: Optional[Dict[str, Any]] = None

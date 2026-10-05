@@ -964,6 +964,7 @@ class BodyHost:
             "visual_max_tokens": max(32, min(512, int(self.value("BODY_LLM_VISUAL_MAX_TOKENS", 128) or 128))),
             "visual_max_objects": max(1, min(10, int(self.value("BODY_LLM_VISUAL_MAX_OBJECTS", 5) or 5))),
             "visual_image_max_width": max(320, min(640, int(self.value("BODY_LLM_VISUAL_IMAGE_MAX_WIDTH", 640) or 640))),
+            "radar_focus_enabled": bool(self.value("BODY_LLM_RADAR_FOCUS_ENABLED", True)),
             "target_latency_s": max(1.0, min(60.0, float(self.value("BODY_LLM_TARGET_LATENCY_S", 5.0) or 5.0))),
             "context_window": int(self.value("BODY_LLM_CONTEXT_WINDOW", 50000) or 50000),
             "focus_range_m": float(self.value("BODY_LLM_FOCUS_RANGE_M", 5.0) or 5.0),
@@ -1113,6 +1114,7 @@ class BodyHost:
             "BODY_LLM_VISUAL_MAX_TOKENS": max(32, min(512, int(payload.get("visual_max_tokens", 128) or 128))),
             "BODY_LLM_VISUAL_MAX_OBJECTS": max(1, min(10, int(payload.get("visual_max_objects", 5) or 5))),
             "BODY_LLM_VISUAL_IMAGE_MAX_WIDTH": max(320, min(640, int(payload.get("visual_image_max_width", 640) or 640))),
+            "BODY_LLM_RADAR_FOCUS_ENABLED": bool(payload.get("radar_focus_enabled", True)),
             "BODY_LLM_TARGET_LATENCY_S": max(1.0, min(60.0, float(payload.get("target_latency_s", 5.0) or 5.0))),
             "BODY_LLM_CONTEXT_WINDOW": max(2048, min(131072, int(payload.get("context_window", 50000) or 50000))),
             "BODY_LLM_JSON_MODE": bool(payload.get("json_mode", True)),
@@ -1141,7 +1143,7 @@ class BodyHost:
         wm = self._worldmodel
         if wm is not None:
             with wm._lock:
-                for key in ("BODY_LLM_ENABLED", "BODY_LLM_BASE_URL", "BODY_LLM_MODEL", "BODY_LLM_INTERVAL", "BODY_LLM_TIMEOUT", "BODY_LLM_MAX_TOKENS", "BODY_LLM_VISUAL_MAX_TOKENS", "BODY_LLM_VISUAL_MAX_OBJECTS", "BODY_LLM_VISUAL_IMAGE_MAX_WIDTH", "BODY_LLM_TARGET_LATENCY_S", "BODY_LLM_CONTEXT_WINDOW", "BODY_LLM_JSON_MODE", "BODY_LLM_EMBEDDING_PROVIDER", "BODY_LLM_EMBEDDING_MODEL", "BODY_LLM_EMBEDDING_THRESHOLD", "BODY_LLM_EMBEDDING_TIMEOUT"):
+                for key in ("BODY_LLM_ENABLED", "BODY_LLM_BASE_URL", "BODY_LLM_MODEL", "BODY_LLM_INTERVAL", "BODY_LLM_TIMEOUT", "BODY_LLM_MAX_TOKENS", "BODY_LLM_VISUAL_MAX_TOKENS", "BODY_LLM_VISUAL_MAX_OBJECTS", "BODY_LLM_VISUAL_IMAGE_MAX_WIDTH", "BODY_LLM_RADAR_FOCUS_ENABLED", "BODY_LLM_TARGET_LATENCY_S", "BODY_LLM_CONTEXT_WINDOW", "BODY_LLM_JSON_MODE", "BODY_LLM_EMBEDDING_PROVIDER", "BODY_LLM_EMBEDDING_MODEL", "BODY_LLM_EMBEDDING_THRESHOLD", "BODY_LLM_EMBEDDING_TIMEOUT"):
                     wm._cfg[key] = self.config.get(key)
                 wm._cfg["BODY_LLM_TOKEN"] = self.value("BODY_LLM_TOKEN", "")
                 wm.scene_interpreter._config = wm._cfg

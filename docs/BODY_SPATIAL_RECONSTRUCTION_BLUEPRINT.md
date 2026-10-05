@@ -151,6 +151,32 @@ accepted, rejected and ambiguous associations with reasons.
 association precision, invented-object rate and stability across viewpoints;
 all accepted metric positions cite range/depth evidence.
 
+#### Runtime attention and timing
+
+Keep two loops independent. The fast loop consumes current range, pose and
+velocity for collision checks, route validation and safe stops. The slower
+Body VLM adds open-vocabulary labels to tracked sensor entities; its prose
+cannot authorize motion or create free space. A camera frame and radar scan
+may be combined only when calibration and timestamps agree. Radar projects an
+attention region into the camera image, but never supplies an object identity.
+
+The current attention input is one 640x240 image: a scene overview and one
+radar-selected detail. A rejected grounding triggers one full-frame retry.
+Without synchronized radar evidence, the Body uses the full frame directly.
+The Body VLM setting can disable radar focus. Background calls are paced by
+measured provider latency to avoid saturating the Ventuno NPU while the fast
+sensor loop continues.
+
+On 2026-10-05, a three-scene simulated A/B test on Ventuno Q with
+Qwen3-VL-4B-Instruct W4A16 measured 12.44 s per attention call versus 41.20 s
+per full-frame call. Attention grounded the task target in 3/3 scenes and
+completed 3/3 simulated routes with zero collisions or near misses. This is
+evidence for the input format, not a real-sensor or physical autonomy result.
+Before relying on it for a mounted robot, repeat with calibrated camera/radar
+timestamps, moving objects, occlusion, varied goals and viewpoints, and report
+both worst-case latency and safe-stop behavior. A 4x4 or 8x8 image grid is not
+part of the runtime path because every additional region costs vision tokens.
+
 ### Stage 4 - Persistent map and dynamics
 
 Accumulate geometry and static semantic entities across robot motion using the
