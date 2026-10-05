@@ -231,6 +231,8 @@ class SimRobotSource:
         # the pose and LiDAR frame without becoming the navigation authority.
         if self.mmwave_radar is not None:
             observation.modalities["mmwave_radar"] = self.mmwave_radar.read().as_dict()
+        else:
+            observation.modalities.pop("mmwave_radar", None)
         if (capture or external_camera) and observation.modalities.get("camera"):
             self._last_camera = dict(observation.modalities["camera"])
             self._last_camera.setdefault("captured_at", now)
