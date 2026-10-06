@@ -57,10 +57,12 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertIn("ATTITUDE · 3D HORIZON", source)
         self.assertIn("pitch_rad", source)
         self.assertIn("ctx.rotate(-roll * Math.PI / 180)", source)
-        self.assertIn("CAP · ${headingSource}", source)
+        self.assertIn("HDG ${Number.isFinite(heading)", source)
         self.assertIn("gps.fix_quality", source)
         self.assertIn("NO VALID FIX", source)
         self.assertIn("GPS COG", source)
+        self.assertIn("drawAzimuthRing(ctx, centerX, centerY, radius + 18, heading)", source)
+        self.assertIn("indexY - 11", source)
 
     def test_2d_hud_preview_contains_live_imu_gps_navigation_brick(self):
         root = Path(__file__).resolve().parents[1]
@@ -73,6 +75,8 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertIn("function drawNavigation(", source)
         self.assertIn("WAITING FOR FIX", html)
         self.assertIn("drawNavigation();", source)
+        self.assertIn("const ring = radius + 15", source)
+        self.assertIn("pointerY - 6", source)
 
 
 if __name__ == "__main__":

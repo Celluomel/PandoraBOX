@@ -292,7 +292,7 @@ function drawNavigation(perception = world?.perception || {}, telemetry = contro
   const ctx = canvas.getContext('2d');
   ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
   const w = width / ratio; const h = height / ratio;
-  const cx = w / 2; const cy = h / 2; const radius = Math.max(12, Math.min(w, h) * .43);
+  const cx = w / 2; const cy = h / 2; const radius = Math.max(12, Math.min(w, h) * .31);
   ctx.clearRect(0, 0, w, h);
   ctx.save(); ctx.beginPath(); ctx.arc(cx, cy, radius, 0, Math.PI * 2); ctx.clip();
   ctx.fillStyle = '#173b43'; ctx.fillRect(cx - radius, cy - radius, radius * 2, radius);
@@ -305,6 +305,23 @@ function drawNavigation(perception = world?.perception || {}, telemetry = contro
   ctx.restore();
   ctx.strokeStyle = '#9ce5ba'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(cx, cy, radius, 0, Math.PI * 2); ctx.stroke();
   ctx.strokeStyle = '#f0f5e9'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(cx - radius * .28, cy); ctx.lineTo(cx - radius * .1, cy); ctx.lineTo(cx, cy + radius * .08); ctx.lineTo(cx + radius * .1, cy); ctx.lineTo(cx + radius * .28, cy); ctx.stroke();
+  const ring = radius + 15;
+  ctx.strokeStyle = 'rgba(169,232,194,.6)'; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(cx, cy, ring, 0, Math.PI * 2); ctx.stroke();
+  ctx.save(); ctx.translate(cx, cy);
+  for (let bearing = 0; bearing < 360; bearing += 15) {
+    const angle = (-90 + bearing - (Number.isFinite(headingDeg) ? headingDeg : 0)) * Math.PI / 180;
+    const major = bearing % 45 === 0;
+    ctx.strokeStyle = major ? '#a9e8c2' : 'rgba(169,232,194,.55)'; ctx.lineWidth = major ? 1.5 : 1;
+    ctx.beginPath(); ctx.moveTo(Math.cos(angle) * (ring - (major ? 6 : 3)), Math.sin(angle) * (ring - (major ? 6 : 3))); ctx.lineTo(Math.cos(angle) * (ring - 1), Math.sin(angle) * (ring - 1)); ctx.stroke();
+    if (bearing % 90 === 0) {
+      ctx.fillStyle = '#d5eee1'; ctx.font = '8px ui-monospace,monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(['N', 'E', 'S', 'W'][bearing / 90], Math.cos(angle) * (ring - 12), Math.sin(angle) * (ring - 12));
+    }
+  }
+  ctx.restore();
+  const pointerY = cy - ring;
+  ctx.fillStyle = '#59e0bc'; ctx.beginPath(); ctx.moveTo(cx, pointerY - 4); ctx.lineTo(cx - 4, pointerY + 3); ctx.lineTo(cx, pointerY + 1); ctx.lineTo(cx + 4, pointerY + 3); ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = '#e8f7ee'; ctx.lineWidth = 1.4; ctx.beginPath(); ctx.moveTo(cx - 6, pointerY - 6); ctx.lineTo(cx + 6, pointerY - 6); ctx.moveTo(cx, pointerY - 9); ctx.lineTo(cx, pointerY - 3); ctx.stroke();
 }
 
 function updateStatus() {
