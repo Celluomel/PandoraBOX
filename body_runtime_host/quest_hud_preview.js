@@ -254,7 +254,61 @@ function drawRobot() {
   }).join('');
 }
 
+function drawNavigation(perception = world?.perception || {}, telemetry = controller || {}) {
+  const modalities = perception.modalities || {};
+  const imuSource = modalities.imu || telemetry.imu || {};
+  const unwrap = value => value?.data && typeof value.data === 'object' ? value.data : value || {};
+  const imu = unwrap(imuSource);
+  const gps = unwrap(modalities.gps || modalities.gnss || perception.body?.geo || telemetry.gps);
+  const number = value => value === null || value === undefined || value === '' ? NaN : Number(value);
+  const unit = imu.angle_unit || imu.unit || (imuSource === telemetry.imu ? 'rad' : '');
+  const degrees = (value, sourceUnit) => Number.isFinite(number(value)) ? (String(sourceUnit).toLowerCase().includes('rad') ? number(value) * 180 / Math.PI : number(value)) : NaN;
+  const pitch = degrees(imu.pitch_deg ?? imu.pitch_rad ?? imu.pitch, imu.pitch_deg !== undefined ? 'deg' : unit);
+  const roll = degrees(imu.roll_deg ?? imu.roll_rad ?? imu.roll, imu.roll_deg !== undefined ? 'deg' : unit);
+  const hasImu = Number.isFinite(pitch) && Number.isFinite(roll);
+  setText('nav-attitude-value', hasImu ? `R ${roll.toFixed(1)}° · P ${pitch.toFixed(1)}°` : 'NO IMU DATA');
+  setText('nav-attitude-source', hasImu ? String(imu.source || imuSource.source || 'IMU').toUpperCase() : 'Waiting for attitude');
+
+  const heading = number(telemetry.magnetic_heading_deg ?? telemetry.compass_heading_deg);
+  const moving = number(telemetry.speed_mps ?? perception.body?.velocity_mps) > .4;
+  const course = number(gps.course_deg);
+  const yawRad = number(perception.body?.orientation);
+  const headingDeg = Number.isFinite(heading) ? heading : moving && Number.isFinite(course) ? course : Number.isFinite(yawRad) ? 90 - yawRad * 180 / Math.PI : NaN;
+  const headingSource = Number.isFinite(number(telemetry.magnetic_heading_deg)) ? 'MAG' : Number.isFinite(heading) ? String(telemetry.heading_source || 'ODOM').toUpperCase() : moving && Number.isFinite(course) ? 'GPS COG' : 'EST';
+  setText('nav-heading-value', Number.isFinite(headingDeg) ? `${Math.round((headingDeg % 360 + 360) % 360)}°` : '—°');
+  setText('nav-heading-source', `CAP · ${headingSource}`);
+
+  const lat = number(gps.latitude_deg ?? gps.latitude ?? gps.lat);
+  const lon = number(gps.longitude_deg ?? gps.longitude ?? gps.lon ?? gps.lng);
+  const quality = number(gps.fix_quality ?? gps.fixQuality);
+  const hasFix = Number.isFinite(lat) && Math.abs(lat) <= 90 && Number.isFinite(lon) && Math.abs(lon) <= 180
+    && (gps.fix === true || gps.valid === true || gps.status === 'fix' || gps.status === 'valid' || quality > 0);
+  const accuracy = number(gps.horizontal_accuracy_m ?? gps.accuracy_m);
+  const hdop = number(gps.hdop);
+  $('nav-gps').innerHTML = `<small>GPS · ${hasFix ? 'FIX' : 'WAITING FOR FIX'}</small>${hasFix ? `${lat.toFixed(6)}°, ${lon.toFixed(6)}°` : 'NO POSITION'}${hasFix && Number.isFinite(accuracy) ? `<small>±${accuracy.toFixed(1)} m</small>` : hasFix && Number.isFinite(hdop) ? `<small>HDOP ${hdop.toFixed(1)}</small>` : ''}`;
+
+  const canvas = $('nav-horizon');
+  const { width, height, ratio } = resizeCanvas(canvas);
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+  const w = width / ratio; const h = height / ratio;
+  const cx = w / 2; const cy = h / 2; const radius = Math.max(12, Math.min(w, h) * .43);
+  ctx.clearRect(0, 0, w, h);
+  ctx.save(); ctx.beginPath(); ctx.arc(cx, cy, radius, 0, Math.PI * 2); ctx.clip();
+  ctx.fillStyle = '#173b43'; ctx.fillRect(cx - radius, cy - radius, radius * 2, radius);
+  ctx.fillStyle = '#665743'; ctx.fillRect(cx - radius, cy, radius * 2, radius);
+  ctx.translate(cx, cy); if (hasImu) ctx.rotate(-roll * Math.PI / 180);
+  ctx.translate(0, hasImu ? Math.max(-radius * .65, Math.min(radius * .65, pitch * .85)) : 0);
+  ctx.strokeStyle = '#d7eee6'; ctx.lineWidth = 1.4;
+  ctx.beginPath(); ctx.moveTo(-radius * .8, 0); ctx.lineTo(radius * .8, 0); ctx.stroke();
+  for (const deg of [-30, -20, -10, 10, 20, 30]) { const yy = deg * radius / 42; const half = deg % 20 === 0 ? radius * .24 : radius * .15; ctx.beginPath(); ctx.moveTo(-half, yy); ctx.lineTo(half, yy); ctx.stroke(); }
+  ctx.restore();
+  ctx.strokeStyle = '#9ce5ba'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(cx, cy, radius, 0, Math.PI * 2); ctx.stroke();
+  ctx.strokeStyle = '#f0f5e9'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(cx - radius * .28, cy); ctx.lineTo(cx - radius * .1, cy); ctx.lineTo(cx, cy + radius * .08); ctx.lineTo(cx + radius * .1, cy); ctx.lineTo(cx + radius * .28, cy); ctx.stroke();
+}
+
 function updateStatus() {
+  drawNavigation();
   if (!world?.perception?.available) {
     setText('status', world?.perception?.note || 'Waiting for Body perception…');
     return;

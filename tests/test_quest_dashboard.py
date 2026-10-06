@@ -62,6 +62,18 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertIn("NO VALID FIX", source)
         self.assertIn("GPS COG", source)
 
+    def test_2d_hud_preview_contains_live_imu_gps_navigation_brick(self):
+        root = Path(__file__).resolve().parents[1]
+        html = (root / "body_runtime_host" / "quest_hud_preview.html").read_text(encoding="utf-8")
+        source = (root / "body_runtime_host" / "quest_hud_preview.js").read_text(encoding="utf-8")
+
+        self.assertIn('id="nav-horizon"', html)
+        self.assertIn('id="nav-gps"', html)
+        self.assertIn('id="nav-heading-value"', html)
+        self.assertIn("function drawNavigation(", source)
+        self.assertIn("WAITING FOR FIX", html)
+        self.assertIn("drawNavigation();", source)
+
 
 if __name__ == "__main__":
     unittest.main()
