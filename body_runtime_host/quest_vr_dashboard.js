@@ -56,8 +56,8 @@ export class QuestVRDashboard {
     this.loadSavedPose();
     this.texture = new THREE.CanvasTexture(canvas);
     this.texture.colorSpace = THREE.SRGBColorSpace;
-    this.texture.generateMipmaps = false;
-    this.texture.minFilter = THREE.LinearFilter;
+    this.texture.generateMipmaps = true;
+    this.texture.minFilter = THREE.LinearMipmapLinearFilter;
     this.texture.magFilter = THREE.LinearFilter;
     this.texture.anisotropy = Math.min(8, Number(maxAnisotropy) || 1);
     const geometry = this.createArcGeometry(8.4, 0.5, 64);
@@ -155,7 +155,7 @@ export class QuestVRDashboard {
     ctx.lineWidth = 2;
     ctx.beginPath(); ctx.roundRect(x + 1, y + 1, width - 2, height - 2, radius - 1); ctx.stroke();
     ctx.fillStyle = '#d0eee4';
-    ctx.font = '600 25px system-ui';
+    ctx.font = '700 30px system-ui';
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
     ctx.fillText(title.toUpperCase(), x + 24, y + 29);
@@ -163,7 +163,7 @@ export class QuestVRDashboard {
     ctx.fillRect(x + 14, y + 15, 5, 26);
     if (meta) {
       ctx.fillStyle = '#83a594';
-      ctx.font = '18px ui-monospace, monospace';
+      ctx.font = '600 22px ui-monospace, monospace';
       ctx.textAlign = 'right';
       ctx.fillText(meta, x + width - 22, y + 29);
     }
@@ -216,7 +216,7 @@ export class QuestVRDashboard {
     this.drawSensorPanel(ctx, sensorX, top, sensorWidth, panelHeight, perception);
     this.drawHudActions(ctx);
     ctx.fillStyle = this.grabbedController ? '#f0cd79' : '#91b6a0';
-    ctx.font = '17px ui-monospace, monospace';
+    ctx.font = '600 21px ui-monospace, monospace';
     ctx.textAlign = 'left';
     ctx.fillText(this.grabbedController
       ? 'HUD GRABBED · GRAB STICK ↑↓ DEPTH / ←→ WIDTH · OTHER STICK ↑↓ HEIGHT · MOVE HAND TO REPOSITION'
@@ -243,7 +243,7 @@ export class QuestVRDashboard {
       ctx.lineWidth = 2;
       ctx.beginPath(); ctx.roundRect(x, buttonY, width, height, 18); ctx.fill(); ctx.stroke();
       ctx.fillStyle = textColor;
-      ctx.font = '700 18px ui-monospace, monospace';
+      ctx.font = '700 22px ui-monospace, monospace';
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       ctx.fillText(label, x + width / 2, buttonY + height / 2);
       ctx.globalAlpha = 1;
@@ -277,10 +277,10 @@ export class QuestVRDashboard {
       }
       ctx.textAlign = 'left';
       ctx.fillStyle = '#839e8d';
-      ctx.font = '15px ui-monospace, monospace';
+      ctx.font = '600 19px ui-monospace, monospace';
       ctx.fillText(label, cellX + 18, y + 83);
       ctx.fillStyle = index < 3 ? '#e2f4e9' : '#b9ebcd';
-      ctx.font = '600 23px ui-monospace, monospace';
+      ctx.font = '700 28px ui-monospace, monospace';
       ctx.fillText(String(value).slice(0, 17), cellX + 18, y + 115);
     });
   }
@@ -309,7 +309,7 @@ export class QuestVRDashboard {
       ctx.restore();
       ctx.fillStyle = 'rgba(4, 13, 11, .78)';
       ctx.beginPath(); ctx.roundRect(imageX + 16, imageY + imageHeight - 48, 390, 34, 12); ctx.fill();
-      ctx.fillStyle = '#d9f5e4'; ctx.font = '600 15px ui-monospace, monospace';
+      ctx.fillStyle = '#d9f5e4'; ctx.font = '700 19px ui-monospace, monospace';
       ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
       ctx.fillText(this.cameraBackgroundActive ? 'TRIGGER · RESTORE 3D VIEW' : 'TRIGGER · USE AS 3D BACKGROUND', imageX + 28, imageY + imageHeight - 31);
     } else if (this.cameraBackgroundActive) {
@@ -318,11 +318,11 @@ export class QuestVRDashboard {
       ctx.fillStyle = '#d9f5e4'; ctx.font = '700 24px ui-monospace, monospace';
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       ctx.fillText('CAMERA · SCENE BACKGROUND', imageX + imageWidth / 2, imageY + imageHeight / 2 - 14);
-      ctx.fillStyle = '#a9c3b2'; ctx.font = '17px ui-monospace, monospace';
+      ctx.fillStyle = '#a9c3b2'; ctx.font = '600 21px ui-monospace, monospace';
       ctx.fillText('TRIGGER TO RESTORE 3D VIEW', imageX + imageWidth / 2, imageY + imageHeight / 2 + 24);
     } else {
       ctx.fillStyle = '#bbd6c5';
-      ctx.font = '600 22px ui-monospace, monospace';
+      ctx.font = '700 27px ui-monospace, monospace';
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       ctx.fillText(this.cameraMessage, imageX + imageWidth / 2, imageY + imageHeight / 2);
     }
@@ -337,7 +337,7 @@ export class QuestVRDashboard {
     ctx.lineWidth = 2;
     ctx.beginPath(); ctx.ellipse(x + 267, y + 620, 270, 72, 0, 0, Math.PI * 2); ctx.stroke();
     ctx.beginPath(); ctx.ellipse(x + 267, y + 620, 205, 52, 0, 0, Math.PI * 2); ctx.stroke();
-    ctx.fillStyle = '#a5bdba'; ctx.font = '16px ui-monospace, monospace'; ctx.textAlign = 'left';
+    ctx.fillStyle = '#a5bdba'; ctx.font = '600 20px ui-monospace, monospace'; ctx.textAlign = 'left';
     ctx.fillText('FNK0031 · ESTIMATED 3D MODEL', x + 56, y + 718);
     ctx.fillStyle = '#6bdac1'; ctx.fillRect(x + 56, y + 729, 100, 3);
     const headingDeg = Number(fnk.compass_heading_deg ?? fnk.body_heading_deg ?? heading);
@@ -347,13 +347,13 @@ export class QuestVRDashboard {
     ctx.beginPath(); ctx.arc(headingX, headingY, 47, 0, Math.PI * 2); ctx.stroke();
     ctx.save(); ctx.translate(headingX, headingY); ctx.rotate(-headingDeg * Math.PI / 180);
     ctx.fillStyle = '#59e0bc'; ctx.beginPath(); ctx.moveTo(0, -26); ctx.lineTo(-12, 13); ctx.lineTo(0, 7); ctx.lineTo(12, 13); ctx.closePath(); ctx.fill(); ctx.restore();
-    ctx.fillStyle = '#829d8d'; ctx.font = '15px ui-monospace, monospace'; ctx.textAlign = 'left';
+    ctx.fillStyle = '#829d8d'; ctx.font = '600 19px ui-monospace, monospace'; ctx.textAlign = 'left';
     ctx.fillText('HEADING', headingX + 70, headingY - 18);
     ctx.fillStyle = '#e4f4ea'; ctx.font = '600 42px system-ui';
     ctx.fillText(Number.isFinite(headingDeg) ? `${Math.round(headingDeg)}°` : '—', headingX + 70, headingY + 28);
     const velocity = perception.body?.velocity_mps ?? perception.motion?.velocity_mps ?? perception.modalities?.odometry?.velocity_mps;
     const speed = Array.isArray(velocity) ? Math.hypot(...velocity.map(Number)) : Number(velocity);
-    ctx.fillStyle = '#829d8d'; ctx.font = '15px ui-monospace, monospace'; ctx.fillText('BODY SPEED', headingX + 8, headingY + 112);
+    ctx.fillStyle = '#829d8d'; ctx.font = '600 19px ui-monospace, monospace'; ctx.fillText('BODY SPEED', headingX + 8, headingY + 112);
     ctx.fillStyle = '#e4f4ea'; ctx.font = '600 32px system-ui';
     ctx.fillText(Number.isFinite(speed) ? `${speed.toFixed(2)} m/s` : '— m/s', headingX + 8, headingY + 153);
     this.drawNavigationInstruments(ctx, x, y, width, headingX, perception, fnk, headingDeg, speed);
@@ -364,15 +364,15 @@ export class QuestVRDashboard {
       const rowY = y + height - 210 + index * 66;
       ctx.fillStyle = 'rgba(8,20,17,.78)'; ctx.strokeStyle = 'rgba(135,206,166,.32)'; ctx.lineWidth = 1;
       ctx.beginPath(); ctx.roundRect(x + 28, rowY, width - 56, 52, 12); ctx.fill(); ctx.stroke();
-      ctx.fillStyle = '#a5ddba'; ctx.font = '14px ui-monospace, monospace'; ctx.textAlign = 'left'; ctx.fillText(label, x + 50, rowY + 31);
+      ctx.fillStyle = '#a5ddba'; ctx.font = '600 18px ui-monospace, monospace'; ctx.textAlign = 'left'; ctx.fillText(label, x + 50, rowY + 31);
       const bx = x + 265; const bw = width - 390;
       ctx.fillStyle = '#243a32'; ctx.fillRect(bx, rowY + 21, bw, 11);
       ctx.fillStyle = '#58e3ba'; ctx.fillRect(bx, rowY + 21, bw * Math.max(0, Math.min(1, ratio)), 11);
-      ctx.fillStyle = '#dff4e6'; ctx.textAlign = 'right'; ctx.font = '600 16px ui-monospace, monospace'; ctx.fillText(value, x + width - 42, rowY + 32);
+      ctx.fillStyle = '#dff4e6'; ctx.textAlign = 'right'; ctx.font = '700 20px ui-monospace, monospace'; ctx.fillText(value, x + width - 42, rowY + 32);
     });
     const left = this.controllerText(xr.controllers, 'left');
     const right = this.controllerText(xr.controllers, 'right');
-    ctx.fillStyle = '#7e9889'; ctx.textAlign = 'left'; ctx.font = '14px ui-monospace, monospace';
+    ctx.fillStyle = '#a8c3b1'; ctx.textAlign = 'left'; ctx.font = '600 18px ui-monospace, monospace';
     ctx.fillText(`GAIT ${fnk.gait || 'waiting'}   ·   CPG ${Number.isFinite(Number(fnk.cpg_phase)) ? `${Math.round(Number(fnk.cpg_phase) * 180 / Math.PI)}°` : '—'}   ·   STEP ${fnk.step ?? '—'}`, x + 32, y + height - 38);
     ctx.textAlign = 'right'; ctx.fillText(`L ${left}   R ${right}`, x + width - 28, y + height - 38);
   }
@@ -437,7 +437,8 @@ export class QuestVRDashboard {
     this.drawAzimuthRing(ctx, centerX, centerY, radius + 18, heading);
     ctx.fillStyle = hasAttitude ? '#e4f4ea' : '#f0cd79'; ctx.font = '18px ui-monospace, monospace';
     ctx.textAlign = 'center';
-    ctx.fillText(`${hasAttitude ? `${imuSource}  R ${roll.toFixed(1)}°  P ${pitch.toFixed(1)}°` : 'IMU · NO ATTITUDE DATA'}  ·  HDG ${Number.isFinite(heading) ? `${Math.round((heading % 360 + 360) % 360)}° ${headingSource}` : '—'}`, centerX, centerY + radius + 42);
+    ctx.fillText(hasAttitude ? `${imuSource} · R ${roll.toFixed(1)}° · P ${pitch.toFixed(1)}°` : 'IMU · NO ATTITUDE DATA', centerX, centerY + radius + 23);
+    ctx.fillText(`HDG ${Number.isFinite(heading) ? `${Math.round((heading % 360 + 360) % 360)}°` : '—'} · ${headingSource}`, centerX, centerY + radius + 47);
 
     const gpsX = centerX;
     const gpsY = y + 742;
@@ -460,7 +461,7 @@ export class QuestVRDashboard {
       ctx.strokeStyle = major ? '#a9e8c2' : 'rgba(169,232,194,.55)'; ctx.lineWidth = major ? 2 : 1;
       ctx.beginPath(); ctx.moveTo(Math.cos(angle) * inner, Math.sin(angle) * inner); ctx.lineTo(Math.cos(angle) * (radius - 2), Math.sin(angle) * (radius - 2)); ctx.stroke();
       if (bearing % 90 === 0) {
-        ctx.fillStyle = '#d5eee1'; ctx.font = '17px ui-monospace, monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillStyle = '#e4f4ea'; ctx.font = '700 20px ui-monospace, monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
         ctx.fillText(['N', 'E', 'S', 'W'][bearing / 90], Math.cos(angle) * (radius - 23), Math.sin(angle) * (radius - 23));
       }
     }
