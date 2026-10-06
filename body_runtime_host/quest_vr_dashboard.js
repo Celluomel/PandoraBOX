@@ -55,7 +55,7 @@ export class QuestVRDashboard {
     this.texture = new THREE.CanvasTexture(canvas);
     this.texture.colorSpace = THREE.SRGBColorSpace;
     this.texture.anisotropy = Math.min(8, Number(maxAnisotropy) || 1);
-    const geometry = this.createArcGeometry(8.4, 0.18, 64);
+    const geometry = this.createArcGeometry(8.4, 0.5, 64);
     const panel = new THREE.Mesh(
       geometry,
       new THREE.MeshBasicMaterial({ map: this.texture, transparent: true, depthTest: false, depthWrite: false, side: THREE.DoubleSide }),
@@ -103,7 +103,8 @@ export class QuestVRDashboard {
       for (let column = 0; column <= segments; column += 1) {
         const u = column / segments;
         const theta = (u - 0.5) * angle;
-        positions.push(Math.sin(theta) * radius, row === 0 ? 1.62 : -1.62, radius * (1 - Math.cos(theta)) - (row === 0 ? 0 : depth));
+        const topForwardTilt = row === 0 ? depth / 2 : -depth / 2;
+        positions.push(Math.sin(theta) * radius, row === 0 ? 1.62 : -1.62, radius * (1 - Math.cos(theta)) + topForwardTilt);
         uvs.push(u, row === 0 ? 1 : 0);
       }
     }

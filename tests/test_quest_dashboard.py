@@ -22,6 +22,13 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertIn("#quest-simulation').addEventListener('click', () => toggleSimulationFromHud())", quest_source)
         self.assertIn("syncSimulationControl(frame)", quest_source)
 
+    def test_hud_arc_tilts_its_top_toward_the_viewer(self):
+        source = (Path(__file__).resolve().parents[1] / "body_runtime_host" / "quest_vr_dashboard.js").read_text(encoding="utf-8")
+
+        self.assertIn("createArcGeometry(8.4, 0.5, 64)", source)
+        self.assertIn("const topForwardTilt = row === 0 ? depth / 2 : -depth / 2", source)
+        self.assertIn("+ topForwardTilt", source)
+
 
 if __name__ == "__main__":
     unittest.main()
