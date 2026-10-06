@@ -19,6 +19,12 @@ stock firmware is running.
 
 ## Physical topology
 
+![Connectivity plan for the ordered Body sensors, VENTUNO Q and FNK0031](BODY_SENSOR_CONNECTIVITY.svg)
+
+This diagram is a data-path and interface plan, not a pin-by-pin wiring
+instruction. Confirm the board and breakout labels, signal voltage, power
+source and connector pin order before plugging anything in.
+
 ```text
 HLK-LD2450 -- UART / USB-UART ----┐
 GPSV3-M9N -- UART / USB-UART -----┤

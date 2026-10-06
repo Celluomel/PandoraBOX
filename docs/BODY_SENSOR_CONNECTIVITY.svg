@@ -1,0 +1,124 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1760 1220" role="img" aria-labelledby="title desc">
+  <title id="title">PandoraBOX sensor connectivity: VENTUNO Q and FNK0031</title>
+  <desc id="desc">Wiring and data-flow diagram for the ordered GPS, LD2450, IMU, time-of-flight sensor and three ultrasonic sensors. The FNK0031 remains on its dedicated stock-firmware USB link.</desc>
+  <defs>
+    <linearGradient id="bg" x2="0" y2="1"><stop stop-color="#101a18"/><stop offset="1" stop-color="#09100f"/></linearGradient>
+    <linearGradient id="panel" x2="0" y2="1"><stop stop-color="#172622"/><stop offset="1" stop-color="#101a18"/></linearGradient>
+    <marker id="arrow-data" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0 10 5 0 10z" fill="#64d8d0"/></marker>
+    <marker id="arrow-power" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0 10 5 0 10z" fill="#e9c86d"/></marker>
+    <style>
+      text{font-family:Inter,Segoe UI,Arial,sans-serif;fill:#e3eee8}.title{font-size:30px;font-weight:700}.subtitle{font-size:15px;fill:#9cb3a7}.section{font-size:14px;font-weight:700;letter-spacing:1px;fill:#86dbc7}.name{font-size:19px;font-weight:700}.detail{font-size:14px;fill:#b1c3b9}.tiny{font-size:12px;fill:#a4b7ab}.node{fill:url(#panel);stroke:#44675a;stroke-width:2}.node-serial{stroke:#5aaeb4}.node-i2c{stroke:#7fae79}.node-gpio{stroke:#ce9c63}.node-body{fill:#152521;stroke:#58c9aa;stroke-width:2.5}.node-mcu{fill:#192825;stroke:#78a9cc;stroke-width:2}.warn{fill:#2b2518;stroke:#c9a859;stroke-width:1.5}.line-data{fill:none;stroke:#64d8d0;stroke-width:3;marker-end:url(#arrow-data)}.line-i2c{fill:none;stroke:#9bd486;stroke-width:3;stroke-dasharray:9 6;marker-end:url(#arrow-data)}.line-gpio{fill:none;stroke:#e1a76c;stroke-width:3;marker-end:url(#arrow-data)}.line-power{fill:none;stroke:#e9c86d;stroke-width:2.5;stroke-dasharray:7 6;marker-end:url(#arrow-power)}.line-uncertain{fill:none;stroke:#9aa7a0;stroke-width:2;stroke-dasharray:5 7}.pill{fill:#24352d;stroke:#567565;stroke-width:1}.pilltext{font-size:12px;font-weight:600;fill:#c8ddd0}
+    </style>
+  </defs>
+  <rect width="1760" height="1220" fill="url(#bg)"/>
+  <text x="54" y="58" class="title">PandoraBOX · Sensor connectivity</text>
+  <text x="54" y="87" class="subtitle">Ordered modules · VENTUNO Q runs Body perception · FNK0031 remains the stock servo controller</text>
+
+  <text x="55" y="128" class="section">SENSORS AND SIGNALS</text>
+  <text x="630" y="128" class="section">INTERFACES / CONDITIONING</text>
+  <text x="1115" y="128" class="section">VENTUNO Q · BODY HOST</text>
+
+  <!-- Sensor modules -->
+  <rect x="54" y="151" width="480" height="126" rx="12" class="node node-serial"/>
+  <text x="78" y="183" class="name">HLK-LD2450 mmWave</text>
+  <text x="78" y="210" class="detail">5 V supply · UART TX/RX at 3.3 V logic</text>
+  <text x="78" y="234" class="detail">256000 baud · 10 Hz · up to 3 moving targets</text>
+  <text x="78" y="258" class="tiny">Dedicated USB-UART adapter #1; separate USB host port</text>
+
+  <rect x="54" y="296" width="480" height="126" rx="12" class="node node-serial"/>
+  <text x="78" y="328" class="name">GPSV3-M9N GNSS</text>
+  <text x="78" y="355" class="detail">UART NMEA TX/RX · outdoor fix only</text>
+  <text x="78" y="379" class="detail">Module is 2.7-3.6 V; verify breakout power marking</text>
+  <text x="78" y="403" class="tiny">Dedicated USB-UART adapter #2 for initial bring-up</text>
+
+  <rect x="54" y="441" width="480" height="126" rx="12" class="node node-i2c"/>
+  <text x="78" y="473" class="name">Arduino Modulino Movement · LSM6DSOX</text>
+  <text x="78" y="500" class="detail">3-axis accelerometer + 3-axis gyroscope</text>
+  <text x="78" y="524" class="detail">Qwiic / I2C · 3.3 V</text>
+  <text x="78" y="548" class="tiny">Relative attitude / angular rate; no absolute compass by itself</text>
+
+  <rect x="54" y="586" width="480" height="126" rx="12" class="node node-i2c"/>
+  <text x="78" y="618" class="name">VL53L1X ToF breakout</text>
+  <text x="78" y="645" class="detail">I2C distance / short-range ROI</text>
+  <text x="78" y="669" class="detail">Sensor IC is 2.8 V; breakout regulators/pull-ups vary</text>
+  <text x="78" y="693" class="tiny">Join the I2C bus only after checking this board's pinout</text>
+
+  <rect x="54" y="731" width="480" height="150" rx="12" class="node node-gpio"/>
+  <text x="78" y="763" class="name">3 × HC-SR04 ultrasonic</text>
+  <text x="78" y="790" class="detail">Each sensor: TRIG out + ECHO in · 5 V supply</text>
+  <text x="78" y="814" class="detail">ECHO is 5 V: level-shift / divide to 3.3 V first</text>
+  <text x="78" y="838" class="tiny">Use real-time MCU GPIO; stagger pings by ≥60 ms</text>
+  <text x="78" y="861" class="tiny">No direct connection to VENTUNO Linux GPIO</text>
+
+  <!-- Interface adapters -->
+  <rect x="626" y="174" width="390" height="82" rx="11" class="node node-serial"/>
+  <text x="648" y="207" class="name">USB-UART adapter #1</text>
+  <text x="648" y="233" class="detail">LD2450 serial bridge · 3.3 V UART logic</text>
+  <rect x="626" y="319" width="390" height="82" rx="11" class="node node-serial"/>
+  <text x="648" y="352" class="name">USB-UART adapter #2</text>
+  <text x="648" y="378" class="detail">M9N serial bridge · stable /dev/serial/by-id</text>
+  <rect x="626" y="468" width="390" height="112" rx="11" class="node node-i2c"/>
+  <text x="648" y="501" class="name">Shared I2C / Qwiic bus</text>
+  <text x="648" y="528" class="detail">SDA + SCL + 3.3 V + GND</text>
+  <text x="648" y="553" class="tiny">Only after confirming connector routing and bus access</text>
+  <rect x="626" y="751" width="390" height="100" rx="11" class="node node-gpio"/>
+  <text x="648" y="784" class="name">3.3 V input conditioning</text>
+  <text x="648" y="811" class="detail">ECHO level shifters / dividers · shared GND</text>
+  <text x="648" y="835" class="tiny">Required before MCU GPIO; protect every input</text>
+
+  <!-- VENTUNO -->
+  <rect x="1090" y="151" width="615" height="730" rx="18" class="node-body"/>
+  <text x="1122" y="190" class="name">Arduino VENTUNO Q</text>
+  <text x="1122" y="218" class="detail">Single onboard host · Body owns sensor plugins and frame sync</text>
+
+  <rect x="1120" y="253" width="555" height="164" rx="12" class="node"/>
+  <text x="1147" y="289" class="section">LINUX MPU · BODY RUNTIME</text>
+  <text x="1147" y="320" class="detail">USB host serial readers: LD2450 + M9N</text>
+  <text x="1147" y="347" class="detail">Sensor timestamps / calibration / health + quality</text>
+  <text x="1147" y="374" class="detail">body_perception_frame.v2 → World Model → Body UI</text>
+  <text x="1147" y="400" class="tiny">Optional Brain link uses Body API; sensors stay Body-owned</text>
+
+  <rect x="1120" y="457" width="555" height="156" rx="12" class="node-mcu"/>
+  <text x="1147" y="493" class="section">STM32H5 · ZEPHYR REAL-TIME MCU</text>
+  <text x="1147" y="524" class="detail">Qwiic / I2C acquisition: LSM6DSOX + VL53L1X*</text>
+  <text x="1147" y="551" class="detail">Conditioned 3.3 V GPIO: 3 × HC-SR04*</text>
+  <text x="1147" y="578" class="detail">Timestamped readings → RPC bridge → Linux Body</text>
+  <text x="1147" y="601" class="tiny">*Connector and MCU routing must be verified before wiring</text>
+
+  <rect x="1120" y="650" width="555" height="177" rx="12" class="warn"/>
+  <text x="1147" y="685" class="section" style="fill:#f0d584">FNK0031 · KEEP THIS LINK DEDICATED</text>
+  <text x="1147" y="716" class="detail">Stock FNHR firmware · servos / motors remain FNK-owned</text>
+  <text x="1147" y="743" class="detail">VENTUNO USB ↔ FNK0031 USB · existing command protocol</text>
+  <text x="1147" y="770" class="detail">Do not attach sensors to this USB link or overwrite firmware</text>
+  <text x="1147" y="799" class="tiny">FNK P3 is not assumed available while stock firmware runs</text>
+
+  <!-- Signal paths -->
+  <path d="M534 214 H626" class="line-data"/>
+  <path d="M1016 214 H1050 V335 H1120" class="line-data"/>
+  <path d="M534 359 H626" class="line-data"/>
+  <path d="M1016 359 H1067 V335 H1120" class="line-data"/>
+  <path d="M534 504 H626" class="line-i2c"/>
+  <path d="M534 649 H590 V524 H626" class="line-i2c"/>
+  <path d="M1016 524 H1120" class="line-i2c"/>
+  <path d="M534 806 H626" class="line-gpio"/>
+  <path d="M1016 801 H1060 V535 H1120" class="line-gpio"/>
+  <path d="M1398 417 V457" class="line-data"/>
+  <path d="M1398 613 V650" class="line-uncertain"/>
+
+  <!-- FNK dedicated transport -->
+  <rect x="627" y="923" width="390" height="82" rx="11" class="node"/>
+  <text x="649" y="956" class="name">Dedicated USB FNHR link</text>
+  <text x="649" y="982" class="detail">Independent from all sensor interfaces</text>
+  <path d="M1017 964 H1050 V739 H1120" class="line-data"/>
+
+  <!-- Power, data legend and wiring cautions -->
+  <rect x="54" y="923" width="480" height="82" rx="11" class="pill"/>
+  <text x="78" y="955" class="name">Power rails · verify first</text>
+  <text x="78" y="981" class="detail">Use rated external rails; common ground for signal links</text>
+
+  <rect x="54" y="1031" width="1651" height="126" rx="13" class="warn"/>
+  <text x="82" y="1069" class="section" style="fill:#f0d584">BEFORE CONNECTING</text>
+  <text x="82" y="1099" class="detail">1. Confirm each breakout's exact VCC / GND / TX / RX / SDA / SCL pin order and voltage markings.</text>
+  <text x="82" y="1125" class="detail">2. Never feed 5 V UART/GPIO into 3.3 V inputs. Do not power sensors from an unverified board rail.</text>
+  <text x="82" y="1151" class="detail">3. Dupont / JST-SH are wiring only: verify end-to-end pin order. Bring up one module at a time, motors disabled.</text>
+</svg>
