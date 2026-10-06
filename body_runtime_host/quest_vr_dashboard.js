@@ -56,6 +56,9 @@ export class QuestVRDashboard {
     this.loadSavedPose();
     this.texture = new THREE.CanvasTexture(canvas);
     this.texture.colorSpace = THREE.SRGBColorSpace;
+    this.texture.generateMipmaps = false;
+    this.texture.minFilter = THREE.LinearFilter;
+    this.texture.magFilter = THREE.LinearFilter;
     this.texture.anisotropy = Math.min(8, Number(maxAnisotropy) || 1);
     const geometry = this.createArcGeometry(8.4, 0.5, 64);
     const panel = new THREE.Mesh(
@@ -68,7 +71,7 @@ export class QuestVRDashboard {
     this.root.add(panel);
     this.panels.push(panel);
     this.robotVisual = createFnk0031Visual(THREE);
-    this.robotVisual.group.position.set(-0.58, -0.5, -4.08);
+    this.robotVisual.group.position.set(-0.82, -0.5, -4.08);
     this.robotVisual.group.rotation.y = -0.28;
     this.robotVisual.group.scale.setScalar(.9);
     this.robotVisual.group.renderOrder = 1001;
@@ -332,8 +335,8 @@ export class QuestVRDashboard {
     this.drawPanel(ctx, x, y, width, height, 'Body telemetry', `${objects.length} OBJECTS`);
     ctx.strokeStyle = 'rgba(113, 209, 194, .24)';
     ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.ellipse(x + 355, y + 620, 270, 72, 0, 0, Math.PI * 2); ctx.stroke();
-    ctx.beginPath(); ctx.ellipse(x + 355, y + 620, 205, 52, 0, 0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath(); ctx.ellipse(x + 267, y + 620, 270, 72, 0, 0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath(); ctx.ellipse(x + 267, y + 620, 205, 52, 0, 0, Math.PI * 2); ctx.stroke();
     ctx.fillStyle = '#a5bdba'; ctx.font = '16px ui-monospace, monospace'; ctx.textAlign = 'left';
     ctx.fillText('FNK0031 · ESTIMATED 3D MODEL', x + 56, y + 718);
     ctx.fillStyle = '#6bdac1'; ctx.fillRect(x + 56, y + 729, 100, 3);
@@ -399,7 +402,7 @@ export class QuestVRDashboard {
     const gpsAccuracy = asNumber(gps.horizontal_accuracy_m ?? gps.accuracy_m);
     const gpsHdop = asNumber(gps.hdop);
     const imuSource = String(imu.source || modalities.imu?.source || 'IMU').toUpperCase();
-    const centerX = headingX + 5;
+    const centerX = x + width * .84;
     const centerY = y + 565;
     const radius = 82;
     const heading = Number.isFinite(asNumber(fnk.magnetic_heading_deg)) ? asNumber(fnk.magnetic_heading_deg)
@@ -409,7 +412,7 @@ export class QuestVRDashboard {
       : Number.isFinite(asNumber(fnk.compass_heading_deg)) ? (fnk.heading_source || 'ODOM').toString().toUpperCase()
         : Number.isFinite(asNumber(gps.course_deg)) && Number(speed) > .4 ? 'GPS COG' : 'EST';
 
-    ctx.fillStyle = '#a5bdba'; ctx.font = '600 16px ui-monospace, monospace'; ctx.textAlign = 'center';
+    ctx.fillStyle = '#a5bdba'; ctx.font = '600 19px ui-monospace, monospace'; ctx.textAlign = 'center';
     ctx.fillText('ATTITUDE · 3D HORIZON + AZIMUTH', centerX, centerY - radius - 48);
     ctx.save();
     ctx.beginPath(); ctx.arc(centerX, centerY, radius, 0, Math.PI * 2); ctx.clip();
@@ -432,17 +435,17 @@ export class QuestVRDashboard {
     ctx.strokeStyle = '#e8f7ee'; ctx.lineWidth = 3;
     ctx.beginPath(); ctx.moveTo(centerX - 25, centerY); ctx.lineTo(centerX - 9, centerY); ctx.lineTo(centerX, centerY + 7); ctx.lineTo(centerX + 9, centerY); ctx.lineTo(centerX + 25, centerY); ctx.stroke();
     this.drawAzimuthRing(ctx, centerX, centerY, radius + 18, heading);
-    ctx.fillStyle = hasAttitude ? '#e4f4ea' : '#f0cd79'; ctx.font = '15px ui-monospace, monospace';
+    ctx.fillStyle = hasAttitude ? '#e4f4ea' : '#f0cd79'; ctx.font = '18px ui-monospace, monospace';
     ctx.textAlign = 'center';
     ctx.fillText(`${hasAttitude ? `${imuSource}  R ${roll.toFixed(1)}°  P ${pitch.toFixed(1)}°` : 'IMU · NO ATTITUDE DATA'}  ·  HDG ${Number.isFinite(heading) ? `${Math.round((heading % 360 + 360) % 360)}° ${headingSource}` : '—'}`, centerX, centerY + radius + 42);
 
-    const gpsX = x + width * .55;
+    const gpsX = centerX;
     const gpsY = y + 742;
-    ctx.textAlign = 'left'; ctx.fillStyle = '#a5bdba'; ctx.font = '600 15px ui-monospace, monospace';
+    ctx.textAlign = 'center'; ctx.fillStyle = '#a5bdba'; ctx.font = '600 18px ui-monospace, monospace';
     ctx.fillText('GPS POSITION', gpsX, gpsY);
-    ctx.fillStyle = hasGps ? '#59e0bc' : '#f0cd79'; ctx.font = '14px ui-monospace, monospace';
+    ctx.fillStyle = hasGps ? '#59e0bc' : '#f0cd79'; ctx.font = '17px ui-monospace, monospace';
     ctx.fillText(hasGps ? `${gpsLat.toFixed(6)}°, ${gpsLon.toFixed(6)}°` : 'NO VALID FIX', gpsX, gpsY + 28);
-    ctx.fillStyle = '#829d8d';
+    ctx.fillStyle = '#829d8d'; ctx.font = '16px ui-monospace, monospace';
     ctx.fillText(hasGps ? `FIX${Number.isFinite(gpsAccuracy) ? ` · ±${gpsAccuracy.toFixed(1)} m` : Number.isFinite(gpsHdop) ? ` · HDOP ${gpsHdop.toFixed(1)}` : ''}` : 'Waiting for GNSS fix', gpsX, gpsY + 51);
   }
 
@@ -457,7 +460,7 @@ export class QuestVRDashboard {
       ctx.strokeStyle = major ? '#a9e8c2' : 'rgba(169,232,194,.55)'; ctx.lineWidth = major ? 2 : 1;
       ctx.beginPath(); ctx.moveTo(Math.cos(angle) * inner, Math.sin(angle) * inner); ctx.lineTo(Math.cos(angle) * (radius - 2), Math.sin(angle) * (radius - 2)); ctx.stroke();
       if (bearing % 90 === 0) {
-        ctx.fillStyle = '#d5eee1'; ctx.font = '13px ui-monospace, monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillStyle = '#d5eee1'; ctx.font = '17px ui-monospace, monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
         ctx.fillText(['N', 'E', 'S', 'W'][bearing / 90], Math.cos(angle) * (radius - 23), Math.sin(angle) * (radius - 23));
       }
     }
@@ -845,7 +848,7 @@ export class QuestVRDashboard {
   applyHudSize() {
     if (!this.panel || !this.robotVisual) return;
     this.panel.scale.set(this.widthScale, this.heightScale, 1);
-    this.robotVisual.group.position.x = -0.58 * this.widthScale;
+    this.robotVisual.group.position.x = -0.82 * this.widthScale;
     this.robotVisual.group.position.y = -0.5 * this.heightScale;
     this.robotVisual.group.scale.setScalar(0.9 * Math.min(this.widthScale, this.heightScale));
   }

@@ -78,6 +78,15 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertIn("const ring = radius + 15", source)
         self.assertIn("pointerY - 6", source)
 
+    def test_vr_horizon_column_clears_robot_and_uses_sharp_canvas_filtering(self):
+        source = (Path(__file__).resolve().parents[1] / "body_runtime_host" / "quest_vr_dashboard.js").read_text(encoding="utf-8")
+
+        self.assertIn("this.texture.generateMipmaps = false", source)
+        self.assertIn("this.texture.minFilter = THREE.LinearFilter", source)
+        self.assertIn("this.robotVisual.group.position.set(-0.82, -0.5, -4.08)", source)
+        self.assertIn("const centerX = x + width * .84", source)
+        self.assertIn("ctx.ellipse(x + 267, y + 620", source)
+
 
 if __name__ == "__main__":
     unittest.main()
