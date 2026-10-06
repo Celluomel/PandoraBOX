@@ -353,6 +353,7 @@ export class QuestVRDashboard {
     ctx.fillStyle = '#829d8d'; ctx.font = '15px ui-monospace, monospace'; ctx.fillText('BODY SPEED', headingX + 8, headingY + 112);
     ctx.fillStyle = '#e4f4ea'; ctx.font = '600 32px system-ui';
     ctx.fillText(Number.isFinite(speed) ? `${speed.toFixed(2)} m/s` : '— m/s', headingX + 8, headingY + 153);
+    this.drawNavigationInstruments(ctx, x, y, width, headingX, perception, fnk, headingDeg, speed);
     const spikes = (fnk.spikes || []).filter(Boolean).length;
     const servoTargets = fnk.servo_targets || [];
     const bars = [['SERVO TARGETS', `${servoTargets.length}/18`, servoTargets.length / 18], ['SNN ACTIVE', `${spikes}/18`, spikes / 18]];
@@ -371,6 +372,91 @@ export class QuestVRDashboard {
     ctx.fillStyle = '#7e9889'; ctx.textAlign = 'left'; ctx.font = '14px ui-monospace, monospace';
     ctx.fillText(`GAIT ${fnk.gait || 'waiting'}   ·   CPG ${Number.isFinite(Number(fnk.cpg_phase)) ? `${Math.round(Number(fnk.cpg_phase) * 180 / Math.PI)}°` : '—'}   ·   STEP ${fnk.step ?? '—'}`, x + 32, y + height - 38);
     ctx.textAlign = 'right'; ctx.fillText(`L ${left}   R ${right}`, x + width - 28, y + height - 38);
+  }
+
+  drawNavigationInstruments(ctx, x, y, width, headingX, perception, fnk, fallbackHeading, speed) {
+    const modalities = perception.modalities || {};
+    const unwrap = value => value?.data && typeof value.data === 'object' ? value.data : value || {};
+    const imuSourceData = modalities.imu || fnk.imu || {};
+    const imu = unwrap(imuSourceData);
+    const gps = unwrap(modalities.gps || modalities.gnss || perception.body?.geo || fnk.gps);
+    const asNumber = value => value === null || value === undefined || value === '' ? NaN : Number(value);
+    const angleDeg = (value, unit) => {
+      const n = asNumber(value);
+      if (!Number.isFinite(n)) return NaN;
+      return /rad/i.test(String(unit || '')) ? n * 180 / Math.PI : n;
+    };
+    const imuUnit = imu.angle_unit || imu.unit || (imuSourceData === fnk.imu ? 'rad' : '');
+    const pitch = angleDeg(imu.pitch_deg ?? imu.pitch_rad ?? imu.pitch, imu.pitch_deg !== undefined ? 'deg' : imuUnit);
+    const roll = angleDeg(imu.roll_deg ?? imu.roll_rad ?? imu.roll, imu.roll_deg !== undefined ? 'deg' : imuUnit);
+    const hasAttitude = Number.isFinite(pitch) && Number.isFinite(roll);
+    const gpsLat = asNumber(gps.latitude_deg ?? gps.latitude ?? gps.lat);
+    const gpsLon = asNumber(gps.longitude_deg ?? gps.longitude ?? gps.lon ?? gps.lng);
+    const fixQuality = asNumber(gps.fix_quality ?? gps.fixQuality);
+    const explicitFix = gps.fix === true || gps.valid === true || gps.status === 'fix' || gps.status === 'valid';
+    const hasGps = Number.isFinite(gpsLat) && Math.abs(gpsLat) <= 90 && Number.isFinite(gpsLon) && Math.abs(gpsLon) <= 180
+      && (explicitFix || (Number.isFinite(fixQuality) && fixQuality > 0));
+    const gpsAccuracy = asNumber(gps.horizontal_accuracy_m ?? gps.accuracy_m);
+    const gpsHdop = asNumber(gps.hdop);
+    const imuSource = String(imu.source || modalities.imu?.source || 'IMU').toUpperCase();
+    const centerX = headingX + 5;
+    const centerY = y + 565;
+    const radius = 82;
+
+    ctx.fillStyle = '#a5bdba'; ctx.font = '600 16px ui-monospace, monospace'; ctx.textAlign = 'center';
+    ctx.fillText('ATTITUDE · 3D HORIZON', centerX, centerY - radius - 19);
+    ctx.save();
+    ctx.beginPath(); ctx.arc(centerX, centerY, radius, 0, Math.PI * 2); ctx.clip();
+    ctx.fillStyle = '#173b43'; ctx.fillRect(centerX - radius, centerY - radius, radius * 2, radius);
+    ctx.fillStyle = '#665743'; ctx.fillRect(centerX - radius, centerY, radius * 2, radius);
+    ctx.translate(centerX, centerY);
+    if (hasAttitude) ctx.rotate(-roll * Math.PI / 180);
+    const horizonOffset = hasAttitude ? Math.max(-radius * .72, Math.min(radius * .72, pitch * 1.7)) : 0;
+    ctx.translate(0, horizonOffset);
+    ctx.strokeStyle = '#d7eee6'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(-radius * .82, 0); ctx.lineTo(radius * .82, 0); ctx.stroke();
+    for (const degrees of [-30, -20, -10, 10, 20, 30]) {
+      const lineY = degrees * 1.7;
+      const half = degrees % 20 === 0 ? 25 : 15;
+      ctx.beginPath(); ctx.moveTo(-half, lineY); ctx.lineTo(half, lineY); ctx.stroke();
+    }
+    ctx.restore();
+    ctx.strokeStyle = '#a9e8c2'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(centerX, centerY, radius, 0, Math.PI * 2); ctx.stroke();
+    ctx.strokeStyle = '#e8f7ee'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(centerX - 25, centerY); ctx.lineTo(centerX - 9, centerY); ctx.lineTo(centerX, centerY + 7); ctx.lineTo(centerX + 9, centerY); ctx.lineTo(centerX + 25, centerY); ctx.stroke();
+    ctx.fillStyle = hasAttitude ? '#e4f4ea' : '#f0cd79'; ctx.font = '15px ui-monospace, monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText(hasAttitude ? `${imuSource}  R ${roll.toFixed(1)}°  P ${pitch.toFixed(1)}°` : 'IMU · NO ATTITUDE DATA', centerX, centerY + radius + 23);
+
+    const compassX = x + width - 122;
+    const compassY = y + 515;
+    const heading = Number.isFinite(asNumber(fnk.magnetic_heading_deg)) ? asNumber(fnk.magnetic_heading_deg)
+      : Number.isFinite(asNumber(fnk.compass_heading_deg)) ? asNumber(fnk.compass_heading_deg)
+        : Number.isFinite(asNumber(gps.course_deg)) && Number(speed) > .4 ? asNumber(gps.course_deg) : 90 - fallbackHeading;
+    const headingSource = Number.isFinite(asNumber(fnk.magnetic_heading_deg)) ? 'MAG'
+      : Number.isFinite(asNumber(fnk.compass_heading_deg)) ? (fnk.heading_source || 'ODOM').toString().toUpperCase()
+        : Number.isFinite(asNumber(gps.course_deg)) && Number(speed) > .4 ? 'GPS COG' : 'EST';
+    ctx.strokeStyle = 'rgba(169,232,194,.45)'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(compassX, compassY, 57, 0, Math.PI * 2); ctx.stroke();
+    ctx.save(); ctx.translate(compassX, compassY); ctx.rotate(-heading * Math.PI / 180);
+    ctx.fillStyle = '#59e0bc'; ctx.beginPath(); ctx.moveTo(0, -43); ctx.lineTo(-7, 8); ctx.lineTo(0, 2); ctx.lineTo(7, 8); ctx.closePath(); ctx.fill(); ctx.restore();
+    ctx.fillStyle = '#afc7b8'; ctx.font = '13px ui-monospace, monospace'; ctx.textAlign = 'center';
+    ctx.fillText('N', compassX, compassY - 63); ctx.fillText('E', compassX + 64, compassY + 5);
+    ctx.fillText('S', compassX, compassY + 70); ctx.fillText('W', compassX - 64, compassY + 5);
+    ctx.fillStyle = '#e4f4ea'; ctx.font = '600 22px system-ui';
+    ctx.fillText(Number.isFinite(heading) ? `${Math.round((heading % 360 + 360) % 360)}°` : '—', compassX, compassY + 108);
+    ctx.fillStyle = '#a5bdba'; ctx.font = '13px ui-monospace, monospace';
+    ctx.fillText(`CAP · ${headingSource}`, compassX, compassY + 130);
+
+    const gpsX = x + width * .55;
+    const gpsY = y + 742;
+    ctx.textAlign = 'left'; ctx.fillStyle = '#a5bdba'; ctx.font = '600 15px ui-monospace, monospace';
+    ctx.fillText('GPS POSITION', gpsX, gpsY);
+    ctx.fillStyle = hasGps ? '#59e0bc' : '#f0cd79'; ctx.font = '14px ui-monospace, monospace';
+    ctx.fillText(hasGps ? `${gpsLat.toFixed(6)}°, ${gpsLon.toFixed(6)}°` : 'NO VALID FIX', gpsX, gpsY + 28);
+    ctx.fillStyle = '#829d8d';
+    ctx.fillText(hasGps ? `FIX${Number.isFinite(gpsAccuracy) ? ` · ±${gpsAccuracy.toFixed(1)} m` : Number.isFinite(gpsHdop) ? ` · HDOP ${gpsHdop.toFixed(1)}` : ''}` : 'Waiting for GNSS fix', gpsX, gpsY + 51);
   }
 
   drawHexapod(ctx, cx, cy, heading, fnk, scale = 1) {

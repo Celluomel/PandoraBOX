@@ -50,6 +50,18 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertIn("cameraArcRoot.rotation.set(0, -Math.PI / 2 - (Number(bodyPose.orientation) || 0), 0)", source)
         self.assertIn("It stays put as the Body turns", source)
 
+    def test_navigation_brick_distinguishes_imu_attitude_heading_and_valid_gps_fix(self):
+        source = (Path(__file__).resolve().parents[1] / "body_runtime_host" / "quest_vr_dashboard.js").read_text(encoding="utf-8")
+
+        self.assertIn("drawNavigationInstruments(ctx, x, y, width, headingX, perception, fnk, headingDeg, speed)", source)
+        self.assertIn("ATTITUDE · 3D HORIZON", source)
+        self.assertIn("pitch_rad", source)
+        self.assertIn("ctx.rotate(-roll * Math.PI / 180)", source)
+        self.assertIn("CAP · ${headingSource}", source)
+        self.assertIn("gps.fix_quality", source)
+        self.assertIn("NO VALID FIX", source)
+        self.assertIn("GPS COG", source)
+
 
 if __name__ == "__main__":
     unittest.main()
