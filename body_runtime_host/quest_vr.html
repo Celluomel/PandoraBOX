@@ -38,7 +38,7 @@
       <div class="metric"><small>Head / controller</small><b id="xr-input">Not in XR</b></div>
     </section>
   </header>
-  <div id="status" role="status">Connecting to Body world model…</div>
+  <div id="status" role="status">Starting 3D scene…</div>
   <aside id="selection"><b>No object selected</b><small>Point at a scene object and press the controller trigger. Selection sends no robot command.</small></aside>
   <nav class="controls" aria-label="Scene controls">
     <button id="enter-xr" type="button">Enter VR</button>
@@ -47,6 +47,39 @@
     <a href="/quest-hud-preview">2D HUD preview</a>
     <a href="/worldmodel">Body dashboard</a>
   </nav>
+  <script>
+    (() => {
+      const status = document.querySelector('#status');
+      const showError = message => {
+        status.textContent = message;
+        status.dataset.error = 'true';
+        status.style.color = '#ffb5a8';
+        console.error(`[PandoraBOX Quest] ${message}`);
+      };
+      window.__pbQuestShowError = showError;
+      window.addEventListener('error', event => {
+        if (event.target instanceof HTMLScriptElement) {
+          showError(`Quest renderer script failed to load: ${event.target.src}`);
+        } else if (event.message) {
+          showError(`Quest renderer error: ${event.message}`);
+        }
+      }, true);
+      window.addEventListener('unhandledrejection', event => {
+        showError(`Quest renderer startup failed: ${event.reason?.message || String(event.reason)}`);
+      });
+      document.querySelector('#enter-xr').addEventListener('click', () => {
+        if (!window.__pbQuestReady) showError('VR controls are not initialized; the 3D renderer script did not finish loading.');
+      }, true);
+      document.querySelector('#enter-ar').addEventListener('click', () => {
+        if (!window.__pbQuestReady) showError('XR controls are not initialized; the 3D renderer script did not finish loading.');
+      }, true);
+      window.setTimeout(() => {
+        if (!window.__pbQuestReady && !status.dataset.error) {
+          showError('3D renderer did not initialize. Check the Quest renderer script and WebGL support, then reload this page.');
+        }
+      }, 10000);
+    })();
+  </script>
   <script type="module" src="/quest-vr.js"></script>
 </body>
 </html>

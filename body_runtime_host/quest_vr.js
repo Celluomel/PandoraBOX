@@ -798,6 +798,8 @@ renderer.domElement.addEventListener('webglcontextlost', event => {
 
 document.querySelector('#enter-xr').addEventListener('click', () => enterXR('immersive-vr'));
 document.querySelector('#enter-ar').addEventListener('click', () => enterXR('immersive-ar'));
+window.__pbQuestReady = true;
+if (statusNode.textContent === 'Starting 3D scene…') setStatus('3D renderer ready · connecting to Body world model…');
 
 document.querySelector('#recenter').addEventListener('click', () => {
   const distance = Math.max(12, Number(latestWorldStatus?.source?.width) || 12, Number(latestWorldStatus?.source?.height) || 12) * 1.3;
