@@ -39,6 +39,16 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertIn("ctx.font = '16px ui-monospace, monospace'", source)
         self.assertIn("ctx.font = '15px ui-monospace, monospace'", source)
 
+    def test_camera_scene_arc_aligns_to_view_axis_and_stays_scene_anchored(self):
+        source = (Path(__file__).resolve().parents[1] / "body_runtime_host" / "quest_vr.js").read_text(encoding="utf-8")
+
+        self.assertIn("const viewCamera = renderer.xr.isPresenting ? renderer.xr.getCamera(camera) : camera", source)
+        self.assertIn("viewCamera.getWorldDirection(cameraArcFacingDirection)", source)
+        self.assertIn("cameraArcFacingDirection.applyQuaternion(cameraArcWorldQuaternion.invert())", source)
+        self.assertIn("const viewYaw = Math.atan2(-cameraArcFacingDirection.z, cameraArcFacingDirection.x)", source)
+        self.assertIn("cameraArcRoot.rotation.set(0, -Math.PI / 2 - viewYaw, 0)", source)
+        self.assertIn("It stays put as the Body turns", source)
+
 
 if __name__ == "__main__":
     unittest.main()

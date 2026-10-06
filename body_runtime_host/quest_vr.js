@@ -23,6 +23,8 @@ cameraBackgroundTexture.offset.set(0, 1);
 let cameraBackgroundActive = false;
 let cameraArcAspect = null;
 let cameraArcWorldScale = null;
+const cameraArcFacingDirection = new THREE.Vector3();
+const cameraArcWorldQuaternion = new THREE.Quaternion();
 const cameraArcRoot = new THREE.Group();
 const cameraArcMaterial = new THREE.MeshBasicMaterial({ map: cameraBackgroundTexture, side: THREE.DoubleSide, depthTest: false, depthWrite: false });
 const cameraArc = new THREE.Mesh(new THREE.BufferGeometry(), cameraArcMaterial);
@@ -666,7 +668,19 @@ function anchorCameraArcInScene() {
     0.75,
     -((Number(position[1]) || 0) - basePosition[1]),
   );
-  cameraArcRoot.rotation.set(0, -Math.PI / 2 - (Number(bodyPose.orientation) || 0), 0);
+  const viewCamera = renderer.xr.isPresenting ? renderer.xr.getCamera(camera) : camera;
+  viewCamera.getWorldDirection(cameraArcFacingDirection);
+  world.updateMatrixWorld(true);
+  world.getWorldQuaternion(cameraArcWorldQuaternion);
+  cameraArcFacingDirection.applyQuaternion(cameraArcWorldQuaternion.invert());
+  cameraArcFacingDirection.y = 0;
+  if (cameraArcFacingDirection.lengthSq() < 1e-4) {
+    cameraArcFacingDirection.set(Math.cos(Number(bodyPose.orientation) || 0), 0, -Math.sin(Number(bodyPose.orientation) || 0));
+  } else {
+    cameraArcFacingDirection.normalize();
+  }
+  const viewYaw = Math.atan2(-cameraArcFacingDirection.z, cameraArcFacingDirection.x);
+  cameraArcRoot.rotation.set(0, -Math.PI / 2 - viewYaw, 0);
   return true;
 }
 
