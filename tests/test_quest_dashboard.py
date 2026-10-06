@@ -28,6 +28,8 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertIn("createArcGeometry(8.4, 0.5, 64)", source)
         self.assertIn("const topForwardTilt = row === 0 ? depth / 2 : -depth / 2", source)
         self.assertIn("+ topForwardTilt", source)
+        self.assertIn("radius * (Math.cos(theta) - 1)", source)
+        self.assertNotIn("radius * (1 - Math.cos(theta))", source)
 
 
 if __name__ == "__main__":

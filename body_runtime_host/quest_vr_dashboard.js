@@ -104,7 +104,7 @@ export class QuestVRDashboard {
         const u = column / segments;
         const theta = (u - 0.5) * angle;
         const topForwardTilt = row === 0 ? depth / 2 : -depth / 2;
-        positions.push(Math.sin(theta) * radius, row === 0 ? 1.62 : -1.62, radius * (1 - Math.cos(theta)) + topForwardTilt);
+        positions.push(Math.sin(theta) * radius, row === 0 ? 1.62 : -1.62, radius * (Math.cos(theta) - 1) + topForwardTilt);
         uvs.push(u, row === 0 ? 1 : 0);
       }
     }
