@@ -1,7 +1,7 @@
 import { createFnk0031Visual } from './fnk0031_visual.js';
 
 export class QuestVRDashboard {
-  constructor(THREE) {
+  constructor(THREE, maxAnisotropy = 1) {
     this.THREE = THREE;
     this.scene = new THREE.Scene();
     this.root = new THREE.Group();
@@ -16,7 +16,8 @@ export class QuestVRDashboard {
     this.panels = [];
     this.visible = false;
     this.headLocked = true;
-    this.userScale = 1;
+    this.widthScale = 1;
+    this.heightScale = 1;
     this.headOffsetPosition = new THREE.Vector3();
     this.headOffsetQuaternion = new THREE.Quaternion();
     this.lastPosePersistAt = 0;
@@ -29,6 +30,7 @@ export class QuestVRDashboard {
     this.scratchOffset = new THREE.Vector3();
     this.grabForward = new THREE.Vector3(0, 0, -1);
     this.depthOffset = 0;
+    this.cachedPose = null;
     this.frame = null;
     this.telemetry = null;
     this.controller = null;
@@ -41,19 +43,25 @@ export class QuestVRDashboard {
     this.cameraHitArea = null;
 
     const canvas = document.createElement('canvas');
-    canvas.width = 3072;
-    canvas.height = 1152;
+    const renderScale = 4 / 3;
+    canvas.width = 4096;
+    canvas.height = 1536;
     this.canvas = canvas;
     this.context = canvas.getContext('2d');
+    this.context.setTransform(renderScale, 0, 0, renderScale, 0, 0);
+    this.logicalWidth = 3072;
+    this.logicalHeight = 1152;
     this.loadSavedPose();
     this.texture = new THREE.CanvasTexture(canvas);
     this.texture.colorSpace = THREE.SRGBColorSpace;
+    this.texture.anisotropy = Math.min(8, Number(maxAnisotropy) || 1);
     const geometry = this.createArcGeometry(8.4, 0.18, 64);
     const panel = new THREE.Mesh(
       geometry,
       new THREE.MeshBasicMaterial({ map: this.texture, transparent: true, depthTest: false, depthWrite: false, side: THREE.DoubleSide }),
     );
     panel.position.set(0, 0.05, -4.6);
+    this.panel = panel;
     panel.renderOrder = 1000;
     this.root.add(panel);
     this.panels.push(panel);
@@ -69,6 +77,7 @@ export class QuestVRDashboard {
       object.renderOrder = 1001;
     });
     this.root.add(this.robotVisual.group);
+    this.applyHudSize();
     this.pointerRing = new THREE.Mesh(
       new THREE.TorusGeometry(0.045, 0.009, 8, 32),
       new THREE.MeshBasicMaterial({ color: '#ffffff', transparent: true, depthTest: false, depthWrite: false, side: THREE.DoubleSide }),
@@ -161,7 +170,8 @@ export class QuestVRDashboard {
 
   drawDashboard() {
     const ctx = this.context;
-    const { width, height } = this.canvas;
+    const width = this.logicalWidth;
+    const height = this.logicalHeight;
     ctx.clearRect(0, 0, width, height);
     const frameInset = 5;
     const frameRadius = 58;
@@ -203,8 +213,8 @@ export class QuestVRDashboard {
     ctx.font = '17px ui-monospace, monospace';
     ctx.textAlign = 'left';
     ctx.fillText(this.grabbedController
-      ? 'HUD GRABBED · STICK ↑↓ PUSH / PULL · ←→ RESIZE · MOVE HAND TO REPOSITION'
-      : 'HOLD GRIP TO EDIT · MOVE HAND TO POSITION · STICK TO ADJUST DEPTH / SIZE', margin + 8, height - 28);
+      ? 'HUD GRABBED · GRAB STICK ↑↓ DEPTH / ←→ WIDTH · OTHER STICK ↑↓ HEIGHT · MOVE HAND TO REPOSITION'
+      : 'HOLD GRIP TO EDIT · MOVE HAND TO POSITION · GRAB STICK: DEPTH + WIDTH · OTHER STICK: HEIGHT', margin + 8, height - 28);
     ctx.textAlign = 'right';
     ctx.fillText(this.following ? 'CAMERA FOLLOW · BODY' : 'SCENE VIEW · FIXED', width - margin - 8, height - 28);
     ctx.restore();
@@ -212,12 +222,12 @@ export class QuestVRDashboard {
   }
 
   drawHudActions(ctx) {
-    const buttonY = this.canvas.height - 62;
+    const buttonY = this.logicalHeight - 62;
     const simulationReady = this.frame?.mode === 'sim';
     const simulationRunning = Boolean(this.frame?.running);
     const simulationLabel = simulationRunning ? 'PAUSE SIMULATION' : 'START SIMULATION';
-    const simulationX = this.canvas.width / 2 - 360;
-    const exitX = this.canvas.width / 2 + 40;
+    const simulationX = this.logicalWidth / 2 - 360;
+    const exitX = this.logicalWidth / 2 + 40;
     const drawButton = (key, x, width, label, fill, stroke, textColor, enabled = true) => {
       const height = 48;
       this.actionHitAreas[key] = { x: x - 16, y: buttonY - 12, width: width + 32, height: height + 24, enabled: enabled && !this.actionBusy };
@@ -239,7 +249,7 @@ export class QuestVRDashboard {
   drawTopTelemetry(ctx, perception, fnk, xr) {
     const x = 28;
     const y = 24;
-    const width = this.canvas.width - 56;
+    const width = this.logicalWidth - 56;
     const height = 136;
     this.panel(ctx, x, y, width, height, 'LIVE CONTROLLER TELEMETRY', 'QUEST INPUT + FNK0031');
     const entries = [
@@ -674,8 +684,8 @@ export class QuestVRDashboard {
     this.scene.updateMatrixWorld(true);
     const hit = raycaster.intersectObjects(this.panels, false)[0];
     if (!hit?.uv) return null;
-    const x = hit.uv.x * this.canvas.width;
-    const y = (1 - hit.uv.y) * this.canvas.height;
+    const x = hit.uv.x * this.logicalWidth;
+    const y = (1 - hit.uv.y) * this.logicalHeight;
     const cameraArea = this.cameraHitArea;
     if (cameraArea && x >= cameraArea.x && x <= cameraArea.x + cameraArea.width && y >= cameraArea.y && y <= cameraArea.y + cameraArea.height) return 'camera-background';
     for (const [key, area] of Object.entries(this.actionHitAreas)) {
@@ -709,27 +719,37 @@ export class QuestVRDashboard {
     return true;
   }
 
-  updateAdjustment(deltaSeconds = 1 / 90) {
+  updateAdjustment(deltaSeconds = 1 / 90, inputSources = []) {
     if (!this.grabbedController) return;
     this.grabbedController.getWorldPosition(this.scratchPosition);
     this.grabbedController.getWorldQuaternion(this.scratchQuaternion);
     this.scratchOffset.copy(this.grabOffsetPosition).applyQuaternion(this.scratchQuaternion);
     this.root.position.copy(this.scratchPosition).add(this.scratchOffset);
     this.root.quaternion.copy(this.scratchQuaternion).multiply(this.grabOffsetQuaternion);
-    const axes = this.grabInputSource?.gamepad?.axes || [];
-    const primaryMagnitude = Math.hypot(Number(axes[0]) || 0, Number(axes[1]) || 0);
-    const secondaryMagnitude = Math.hypot(Number(axes[2]) || 0, Number(axes[3]) || 0);
-    const axisOffset = secondaryMagnitude > primaryMagnitude ? 2 : 0;
-    const stickX = Number(axes[axisOffset]) || 0;
-    const stickY = Number(axes[axisOffset + 1]) || 0;
     const elapsed = Math.max(0, Math.min(0.05, Number(deltaSeconds) || 0));
+    const stick = source => {
+      const axes = source?.gamepad?.axes || [];
+      const first = [Number(axes[0]) || 0, Number(axes[1]) || 0];
+      const second = [Number(axes[2]) || 0, Number(axes[3]) || 0];
+      return Math.hypot(...second) > Math.hypot(...first) ? second : first;
+    };
+    const [widthInput, depthInput] = stick(this.grabInputSource);
+    const otherSource = inputSources.find(source => source !== this.grabInputSource && source.handedness !== this.grabInputSource?.handedness);
+    const [, heightInput] = stick(otherSource);
     this.grabForward.set(0, 0, -1).applyQuaternion(this.scratchQuaternion);
-    if (Math.abs(stickY) > 0.12) this.depthOffset = Math.max(-1, Math.min(4, this.depthOffset - stickY * elapsed * 1.8));
+    if (Math.abs(depthInput) > 0.12) this.depthOffset = Math.max(-1, Math.min(4, this.depthOffset - depthInput * elapsed * 1.8));
     this.root.position.addScaledVector(this.grabForward, this.depthOffset);
-    if (Math.abs(stickX) > 0.12) {
-      this.userScale = Math.max(0.45, Math.min(2.5, this.userScale * Math.exp(stickX * elapsed * 1.1)));
-      this.root.scale.setScalar(this.userScale);
-    }
+    if (Math.abs(widthInput) > 0.12) this.widthScale = Math.max(0.45, Math.min(2.5, this.widthScale * Math.exp(widthInput * elapsed * 1.1)));
+    if (Math.abs(heightInput) > 0.12) this.heightScale = Math.max(0.45, Math.min(2.5, this.heightScale * Math.exp(-heightInput * elapsed * 1.1)));
+    this.applyHudSize();
+  }
+
+  applyHudSize() {
+    if (!this.panel || !this.robotVisual) return;
+    this.panel.scale.set(this.widthScale, this.heightScale, 1);
+    this.robotVisual.group.position.x = -0.58 * this.widthScale;
+    this.robotVisual.group.position.y = -0.5 * this.heightScale;
+    this.robotVisual.group.scale.setScalar(0.9 * Math.min(this.widthScale, this.heightScale));
   }
 
   resetPose() {
@@ -737,10 +757,11 @@ export class QuestVRDashboard {
     this.grabInputSource = null;
     this.headLocked = true;
     this.depthOffset = 0;
-    this.userScale = 1;
+    this.widthScale = 1;
+    this.heightScale = 1;
     this.headOffsetPosition.set(0, 0, 0);
     this.headOffsetQuaternion.identity();
-    this.root.scale.setScalar(1);
+    this.applyHudSize();
     try { localStorage.removeItem('pandorabox.quest-hud-pose.v1'); } catch {}
     this.drawDashboard();
   }
@@ -766,8 +787,9 @@ export class QuestVRDashboard {
       if (!values.every(Number.isFinite) || values.slice(0, 3).some(value => Math.abs(value) > 20)) return;
       this.headOffsetPosition.fromArray(saved.position);
       this.headOffsetQuaternion.fromArray(saved.quaternion).normalize();
-      this.userScale = Math.max(0.45, Math.min(2.5, Number(saved.scale)));
-      this.root.scale.setScalar(this.userScale);
+      const legacyScale = Number(saved.scale) || 1;
+      this.widthScale = Math.max(0.45, Math.min(2.5, Number(saved.widthScale ?? legacyScale)));
+      this.heightScale = Math.max(0.45, Math.min(2.5, Number(saved.heightScale ?? legacyScale)));
       this.headLocked = false;
     } catch {}
   }
@@ -779,18 +801,44 @@ export class QuestVRDashboard {
     const inverseHead = this.scratchQuaternion.clone().invert();
     this.headOffsetPosition.copy(this.root.position).sub(this.scratchPosition).applyQuaternion(inverseHead);
     this.headOffsetQuaternion.copy(inverseHead).multiply(this.root.quaternion).normalize();
-    const pose = {
+    this.cachedPose = this.makeSavedPose();
+    this.writeSavedPose();
+  }
+
+  cachePose(xrCamera) {
+    if (!xrCamera || this.headLocked) return;
+    xrCamera.getWorldPosition(this.scratchPosition);
+    xrCamera.getWorldQuaternion(this.scratchQuaternion);
+    const inverseHead = this.scratchQuaternion.clone().invert();
+    this.headOffsetPosition.copy(this.root.position).sub(this.scratchPosition).applyQuaternion(inverseHead);
+    this.headOffsetQuaternion.copy(inverseHead).multiply(this.root.quaternion).normalize();
+    this.cachedPose = this.makeSavedPose();
+  }
+
+  makeSavedPose() {
+    return {
       position: this.headOffsetPosition.toArray(),
       quaternion: this.headOffsetQuaternion.toArray(),
-      scale: this.userScale,
+      widthScale: this.widthScale,
+      heightScale: this.heightScale,
+      scale: Math.sqrt(this.widthScale * this.heightScale),
     };
+  }
+
+  writeSavedPose() {
+    if (!this.cachedPose) return;
     try {
-      localStorage.setItem('pandorabox.quest-hud-pose.v1', JSON.stringify(pose));
+      localStorage.setItem('pandorabox.quest-hud-pose.v1', JSON.stringify(this.cachedPose));
       this.lastPosePersistAt = performance.now();
     } catch {}
   }
 
+  flushSavedPose() {
+    if (!this.headLocked && this.cachedPose) this.writeSavedPose();
+  }
+
   leaveSession() {
+    this.flushSavedPose();
     this.grabbedController = null;
     this.grabInputSource = null;
   }

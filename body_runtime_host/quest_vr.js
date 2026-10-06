@@ -13,7 +13,7 @@ renderer.xr.enabled = true;
 renderer.autoClear = false;
 
 const scene = new THREE.Scene();
-const vrDashboard = new QuestVRDashboard(THREE);
+const vrDashboard = new QuestVRDashboard(THREE, renderer.capabilities.getMaxAnisotropy());
 const hudPreview = new URLSearchParams(window.location.search).get('hud_preview') === '1';
 if (hudPreview) vrDashboard.setVisible(true);
 const cameraBackgroundTexture = new THREE.Texture();
@@ -784,6 +784,10 @@ async function enterXR(mode) {
 window.addEventListener('error', event => {
   setStatus(`VR page error: ${event.message || 'unknown JavaScript error'}`, true);
 });
+window.addEventListener('pagehide', () => vrDashboard.flushSavedPose());
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') vrDashboard.flushSavedPose();
+});
 window.addEventListener('unhandledrejection', event => {
   setStatus(`VR page error: ${event.reason?.message || String(event.reason || 'unhandled async error')}`, true);
 });
@@ -826,7 +830,7 @@ renderer.setAnimationLoop(time => {
     updateXRSceneFollow(xrCamera);
     const headYaw = new THREE.Euler().setFromQuaternion(xrCamera.quaternion, 'YXZ').y;
     const active = [...session.inputSources].filter(source => source.gamepad);
-    updateXRLocomotion(active, xrCamera, deltaSeconds);
+    if (!vrDashboard.grabbedController) updateXRLocomotion(active, xrCamera, deltaSeconds);
     vrDashboard.clearPointer();
     for (const ray of controllerRays) updateControllerPointer(ray.controller, ray.beam, ray.reticle);
     const controllers = active.map(source => {
@@ -860,8 +864,9 @@ renderer.setAnimationLoop(time => {
   renderer.render(scene, camera);
   if ((session || hudPreview) && vrDashboard.visible) {
     const xrCamera = session ? renderer.xr.getCamera(camera) : camera;
-    vrDashboard.updateAdjustment(deltaSeconds);
+    vrDashboard.updateAdjustment(deltaSeconds, session ? [...session.inputSources].filter(source => source.gamepad) : []);
     vrDashboard.syncPose(xrCamera);
+    vrDashboard.cachePose(xrCamera);
     vrDashboard.persistPose(xrCamera);
     renderer.clearDepth();
     renderer.render(vrDashboard.scene, camera);
