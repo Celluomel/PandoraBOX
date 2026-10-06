@@ -141,7 +141,7 @@ export class QuestVRDashboard {
     this.drawDashboard();
   }
 
-  panel(ctx, x, y, width, height, title, meta = '') {
+  drawPanel(ctx, x, y, width, height, title, meta = '') {
     const radius = 38;
     ctx.fillStyle = 'rgba(13, 23, 29, .88)';
     ctx.beginPath(); ctx.roundRect(x, y, width, height, radius); ctx.fill();
@@ -251,7 +251,7 @@ export class QuestVRDashboard {
     const y = 24;
     const width = this.logicalWidth - 56;
     const height = 136;
-    this.panel(ctx, x, y, width, height, 'LIVE CONTROLLER TELEMETRY', 'QUEST INPUT + FNK0031');
+    this.drawPanel(ctx, x, y, width, height, 'LIVE CONTROLLER TELEMETRY', 'QUEST INPUT + FNK0031');
     const entries = [
       ['HEAD', xr.headingDegrees == null ? '—' : `${xr.headingDegrees}°`],
       ['LEFT CONTROLLER', this.controllerText(xr.controllers, 'left')],
@@ -285,7 +285,7 @@ export class QuestVRDashboard {
   }
 
   drawCamera(ctx, x, y, width, height) {
-    this.panel(ctx, x, y, width, height, 'Camera · egocentric', this.cameraBackgroundActive ? 'BACKGROUND ON' : this.cameraBitmap ? 'LIVE' : 'BODY CAMERA');
+    this.drawPanel(ctx, x, y, width, height, 'Camera · egocentric', this.cameraBackgroundActive ? 'BACKGROUND ON' : this.cameraBitmap ? 'LIVE' : 'BODY CAMERA');
     const imageX = x + 18;
     const imageWidth = width - 36;
     const imageHeight = Math.min(height - 112, imageWidth * .78);
@@ -326,7 +326,7 @@ export class QuestVRDashboard {
     const position = perception.body?.position || [];
     const heading = Number(perception.body?.orientation || 0) * 180 / Math.PI;
     const objects = perception.objects || [];
-    this.panel(ctx, x, y, width, height, 'Body telemetry', `${objects.length} OBJECTS`);
+    this.drawPanel(ctx, x, y, width, height, 'Body telemetry', `${objects.length} OBJECTS`);
     ctx.strokeStyle = 'rgba(113, 209, 194, .24)';
     ctx.lineWidth = 2;
     ctx.beginPath(); ctx.ellipse(x + 355, y + 620, 270, 72, 0, 0, Math.PI * 2); ctx.stroke();
@@ -429,7 +429,7 @@ export class QuestVRDashboard {
   }
 
   drawSensorPanel(ctx, x, y, width, height, perception) {
-    this.panel(ctx, x, y, width, height, 'Egocentric sensors', 'METRIC · 6 M');
+    this.drawPanel(ctx, x, y, width, height, 'Egocentric sensors', 'METRIC · 6 M');
     const lidar = perception.sensor_projections?.lidar?.points || [];
     const radar = perception.modalities?.mmwave_radar?.targets || [];
     const inset = 20;
