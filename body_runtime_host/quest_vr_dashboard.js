@@ -28,6 +28,8 @@ export class QuestVRDashboard {
     this.scratchPosition = new THREE.Vector3();
     this.scratchQuaternion = new THREE.Quaternion();
     this.scratchOffset = new THREE.Vector3();
+    this.headUp = new THREE.Vector3(0, 1, 0);
+    this.facingMatrix = new THREE.Matrix4();
     this.grabForward = new THREE.Vector3(0, 0, -1);
     this.depthOffset = 0;
     this.cachedPose = null;
@@ -470,7 +472,7 @@ export class QuestVRDashboard {
         const angle = Math.PI + spoke * Math.PI / 12;
         ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(cx + Math.cos(angle) * radius, cy + Math.sin(angle) * radius); ctx.stroke();
       }
-      ctx.fillStyle = '#a8c3b1'; ctx.font = '12px ui-monospace, monospace'; ctx.textAlign = 'center';
+      ctx.fillStyle = '#a8c3b1'; ctx.font = '16px ui-monospace, monospace'; ctx.textAlign = 'center';
       ctx.fillText('LEFT', plotLeft, cy - 3); ctx.fillText('FRONT', cx, plotTop + 12); ctx.fillText('RIGHT', plotRight, cy - 3);
     } else {
       ctx.fillStyle = 'rgba(15,34,30,.46)'; ctx.fillRect(plotLeft, plotTop, plotRight - plotLeft, plotBottom - plotTop);
@@ -481,7 +483,7 @@ export class QuestVRDashboard {
         ctx.beginPath(); ctx.moveTo(gx, plotTop); ctx.lineTo(gx, plotBottom); ctx.stroke();
         ctx.beginPath(); ctx.moveTo(plotLeft, gy); ctx.lineTo(plotRight, gy); ctx.stroke();
       }
-      ctx.fillStyle = '#a8c3b1'; ctx.font = '12px ui-monospace, monospace'; ctx.textAlign = 'center';
+      ctx.fillStyle = '#a8c3b1'; ctx.font = '16px ui-monospace, monospace'; ctx.textAlign = 'center';
       ctx.fillText('−60°', plotLeft, plotBottom + 14); ctx.fillText('0°', cx, plotBottom + 14); ctx.fillText('+60°', plotRight, plotBottom + 14);
       ctx.textAlign = 'left'; ctx.fillText('RANGE', plotLeft + 6, plotTop + 14);
     }
@@ -534,7 +536,7 @@ export class QuestVRDashboard {
         ctx.fillStyle = `rgba(94, 221, 228, ${intensity})`;
         ctx.beginPath(); ctx.arc(mapped.x, mapped.y, dot, 0, Math.PI * 2); ctx.fill();
       }
-      ctx.fillStyle = '#83a99a'; ctx.font = '12px ui-monospace, monospace'; ctx.textAlign = 'left';
+      ctx.fillStyle = '#83a99a'; ctx.font = '15px ui-monospace, monospace'; ctx.textAlign = 'left';
       ctx.fillText('Measured returns · dashed links show local continuity', x + 6, y + height - 5);
     } else {
       for (const target of radar) {
@@ -573,10 +575,10 @@ export class QuestVRDashboard {
         }
         ctx.fillStyle = color; ctx.beginPath(); ctx.arc(mapped.x, mapped.y, 8, 0, Math.PI * 2); ctx.fill();
         ctx.strokeStyle = '#fff3cf'; ctx.lineWidth = 2; ctx.stroke();
-        ctx.fillStyle = '#f8e8b8'; ctx.font = '600 12px ui-monospace, monospace'; ctx.textAlign = 'center';
+        ctx.fillStyle = '#f8e8b8'; ctx.font = '600 15px ui-monospace, monospace'; ctx.textAlign = 'center';
         ctx.fillText(target.classification === 'mobile_obstacle' ? 'M' : '•', mapped.x, mapped.y - 12);
       }
-      ctx.fillStyle = '#83a99a'; ctx.font = '12px ui-monospace, monospace'; ctx.textAlign = 'left';
+      ctx.fillStyle = '#83a99a'; ctx.font = '15px ui-monospace, monospace'; ctx.textAlign = 'left';
       ctx.fillText('Target range · direction vectors use measured velocity', x + 6, y + height - 5);
     }
     if (mode === 'lidar') {
@@ -777,7 +779,14 @@ export class QuestVRDashboard {
       return;
     }
     this.root.position.copy(this.headOffsetPosition).applyQuaternion(this.scratchQuaternion).add(this.scratchPosition);
-    this.root.quaternion.copy(this.scratchQuaternion).multiply(this.headOffsetQuaternion);
+    if (this.root.position.distanceToSquared(this.scratchPosition) < 0.01) {
+      this.root.quaternion.copy(this.scratchQuaternion);
+      return;
+    }
+      // Keep the convex dashboard facing the wearer when it is moved away from the headset origin.
+      this.headUp.set(0, 1, 0).applyQuaternion(this.scratchQuaternion);
+    this.facingMatrix.lookAt(this.scratchPosition, this.root.position, this.headUp);
+    this.root.quaternion.setFromRotationMatrix(this.facingMatrix);
   }
 
   loadSavedPose() {

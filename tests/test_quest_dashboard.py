@@ -31,6 +31,14 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertIn("radius * (Math.cos(theta) - 1)", source)
         self.assertNotIn("radius * (1 - Math.cos(theta))", source)
 
+    def test_hud_faces_the_headset_when_moved_and_sensor_labels_are_legible(self):
+        source = (Path(__file__).resolve().parents[1] / "body_runtime_host" / "quest_vr_dashboard.js").read_text(encoding="utf-8")
+
+        self.assertIn("this.facingMatrix.lookAt(this.scratchPosition, this.root.position, this.headUp)", source)
+        self.assertIn("this.root.position.copy(this.headOffsetPosition).applyQuaternion(this.scratchQuaternion).add(this.scratchPosition)", source)
+        self.assertIn("ctx.font = '16px ui-monospace, monospace'", source)
+        self.assertIn("ctx.font = '15px ui-monospace, monospace'", source)
+
 
 if __name__ == "__main__":
     unittest.main()
