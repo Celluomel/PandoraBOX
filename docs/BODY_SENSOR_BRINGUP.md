@@ -21,9 +21,13 @@ stock firmware is running.
 
 ![Connectivity plan for the ordered Body sensors, VENTUNO Q and FNK0031](BODY_SENSOR_CONNECTIVITY.svg)
 
-This diagram is a data-path and interface plan, not a pin-by-pin wiring
-instruction. Confirm the board and breakout labels, signal voltage, power
-source and connector pin order before plugging anything in.
+For the pin-by-pin cable plan, including the HC-SR04 ECHO dividers, see
+[BODY_SENSOR_WIRING.svg](BODY_SENSOR_WIRING.svg).
+
+The first image is the architecture overview; the detailed wiring sheet gives
+pin-to-pin routes for the documented interfaces. The GPS breakout input and
+LD2450 UART levels remain explicitly unverified. Confirm board labels, signal
+voltage, power source and connector pin order before plugging anything in.
 
 ```text
 HLK-LD2450 -- UART / USB-UART ----┐

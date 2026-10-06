@@ -1,0 +1,141 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1840 1450" role="img" aria-labelledby="title desc">
+  <title id="title">VENTUNO Q sensor wiring plan</title>
+  <desc id="desc">Pin-by-pin cabling plan for the ordered LD2450, GPSV3-M9N, Arduino Modulino Movement, CQRobot VL53L1X and three HC-SR04 sensors, with explicit verification gates for unknown breakout details.</desc>
+  <defs>
+    <linearGradient id="bg" x2="0" y2="1"><stop stop-color="#101a18"/><stop offset="1" stop-color="#08100f"/></linearGradient>
+    <linearGradient id="panel" x2="0" y2="1"><stop stop-color="#192722"/><stop offset="1" stop-color="#111a17"/></linearGradient>
+    <style>
+      text{font-family:Inter,Segoe UI,Arial,sans-serif;fill:#e6efe9}.title{font-size:29px;font-weight:700}.sub{font-size:15px;fill:#a6b9ad}.head{font-size:17px;font-weight:700;fill:#8de0ca}.label{font-size:14px;font-weight:700}.body{font-size:14px;fill:#c0cec5}.small{font-size:12px;fill:#a8b9ae}.tiny{font-size:11px;fill:#9daf9f}.panel{fill:url(#panel);stroke:#456357;stroke-width:1.5}.module{fill:#15211d;stroke:#587a69;stroke-width:1.5}.warning{fill:#2a2518;stroke:#c8a854;stroke-width:1.5}.good{fill:#13251e;stroke:#4cb997;stroke-width:1.5}.stop{fill:#2b1d1a;stroke:#cd8169;stroke-width:1.5}.pin{fill:#24352e;stroke:#708b79;stroke-width:1}.sig{stroke:#64d8d0;stroke-width:3;fill:none}.gnd{stroke:#b5c4bb;stroke-width:3;fill:none}.v3{stroke:#8ed28e;stroke-width:3;fill:none}.v5{stroke:#e9c86d;stroke-width:3;fill:none}.uartout{stroke:#63d5d0;stroke-width:3;fill:none}.uartin{stroke:#84aaf0;stroke-width:3;stroke-dasharray:8 5;fill:none}.echo{stroke:#e49b62;stroke-width:3;fill:none}.trig{stroke:#d98bd0;stroke-width:3;fill:none}.divider{stroke:#e49b62;stroke-width:3;fill:none}
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 10 5 0 10Z" fill="#64d8d0"/></marker>
+  </defs>
+  <rect width="1840" height="1450" fill="url(#bg)"/>
+  <text x="42" y="48" class="title">Body sensors · pin-to-pin wiring</text>
+  <text x="42" y="76" class="sub">VENTUNO Q is the sensor host · FNK0031 USB remains dedicated to stock FNHR control</text>
+
+  <rect x="42" y="98" width="1756" height="44" rx="8" class="panel"/>
+  <text x="62" y="125" class="small">WIRE KEY</text>
+  <path d="M155 120h64" class="uartout"/><text x="229" y="125" class="small">UART data out</text>
+  <path d="M350 120h64" class="uartin"/><text x="424" y="125" class="small">UART command (optional)</text>
+  <path d="M640 120h64" class="v3"/><text x="714" y="125" class="small">3V3</text>
+  <path d="M790 120h64" class="v5"/><text x="864" y="125" class="small">5V</text>
+  <path d="M940 120h64" class="gnd"/><text x="1014" y="125" class="small">GND</text>
+  <path d="M1090 120h64" class="echo"/><text x="1164" y="125" class="small">ECHO via divider</text>
+  <path d="M1300 120h64" class="trig"/><text x="1374" y="125" class="small">TRIG</text>
+  <text x="1490" y="125" class="tiny">Dashed / amber notes = verify before connection</text>
+
+  <!-- serial sensors -->
+  <rect x="42" y="158" width="1756" height="322" rx="12" class="panel"/>
+  <text x="64" y="190" class="head">1 · UART sensors → USB-UART → VENTUNO Linux</text>
+  <text x="65" y="219" class="small">Use TTL USB-UART adapters only (never RS-232). Connect sensor TX to adapter RX; cross TX/RX for optional commands.</text>
+
+  <rect x="64" y="238" width="455" height="94" rx="8" class="module"/>
+  <text x="82" y="264" class="label">HLK-LD2450 · 5V power, &gt;200mA</text>
+  <text x="82" y="289" class="body">TX → adapter RXD  ·  RX ← adapter TXD*</text>
+  <text x="82" y="313" class="body">GND ↔ adapter GND  ·  256000 baud, 8N1</text>
+  <rect x="552" y="238" width="445" height="94" rx="8" class="good"/>
+  <text x="570" y="264" class="label">USB-UART #1 · VENTUNO USB-A</text>
+  <text x="570" y="289" class="body">VCC pin: leave disconnected</text>
+  <text x="570" y="313" class="body">5V sensor power comes from a rated 5V rail</text>
+  <rect x="1030" y="238" width="738" height="94" rx="8" class="module"/>
+  <text x="1050" y="264" class="label">Body Runtime · Linux serial device</text>
+  <text x="1050" y="289" class="body">Sensor streams at 10 Hz → serial reader → timestamped Body frame</text>
+  <text x="1050" y="313" class="small">*Official manual states PA9 is 3.3V; verify UART TX/RX logic on this board before connecting.</text>
+  <path d="M519 284H552" class="uartout" marker-end="url(#arrow)"/>
+  <path d="M997 284H1030" class="uartout" marker-end="url(#arrow)"/>
+  <path d="M64 346H1768" class="v5"/>
+  <text x="82" y="369" class="small">LD2450 supply: 5V, ≥200mA capability · common GND with adapter · do not feed it from adapter VCC</text>
+  <rect x="64" y="388" width="455" height="72" rx="8" class="module"/>
+  <text x="82" y="414" class="label">GPSV3-M9N breakout</text>
+  <text x="82" y="439" class="body">TX → adapter RXD · GND ↔ GND · RX ← TXD*</text>
+  <rect x="552" y="388" width="445" height="72" rx="8" class="good"/>
+  <text x="570" y="414" class="label">USB-UART #2 · optional for simultaneous use</text>
+  <text x="570" y="439" class="body">One adapter can be shared for sequential tests</text>
+  <rect x="1030" y="388" width="738" height="72" rx="8" class="stop"/>
+  <text x="1050" y="414" class="label">STOP: breakout VIN / UART level not verified</text>
+  <text x="1050" y="439" class="body">Do not power until PCB marking or seller schematic confirms input voltage.</text>
+  <path d="M519 423H552" class="uartout" marker-end="url(#arrow)"/>
+  <path d="M997 423H1030" class="uartout" marker-end="url(#arrow)"/>
+
+  <!-- shared i2c -->
+  <rect x="42" y="496" width="1756" height="224" rx="12" class="panel"/>
+  <text x="64" y="528" class="head">2 · Shared Qwiic / I²C bus · 3.3V</text>
+  <rect x="64" y="548" width="335" height="137" rx="8" class="good"/>
+  <text x="82" y="576" class="label">VENTUNO Q · Qwiic</text>
+  <text x="82" y="603" class="body">1 GND · 2 3V3</text>
+  <text x="82" y="628" class="body">3 SDA · 4 SCL</text>
+  <text x="82" y="658" class="small">MCU I²C bus; not Linux GPIO</text>
+  <rect x="460" y="548" width="390" height="137" rx="8" class="module"/>
+  <text x="478" y="576" class="label">Modulino Movement · J1 → J2</text>
+  <text x="478" y="603" class="body">GND ↔ GND · 3V3 ↔ VCC</text>
+  <text x="478" y="628" class="body">SDA ↔ SDA · SCL ↔ SCL</text>
+  <text x="478" y="658" class="small">LSM6DSOX address 0x6A (default)</text>
+  <rect x="915" y="548" width="390" height="137" rx="8" class="module"/>
+  <text x="933" y="576" class="label">CQRobot VL53L1X breakout</text>
+  <text x="933" y="603" class="body">Red VCC → 3V3 · Black GND → GND</text>
+  <text x="933" y="628" class="body">Green SDA → SDA · Blue SCL → SCL</text>
+  <text x="933" y="658" class="small">Yellow SHUT / Orange INT: leave open initially</text>
+  <rect x="1370" y="548" width="398" height="137" rx="8" class="good"/>
+  <text x="1388" y="576" class="label">Bus / cable checks</text>
+  <text x="1388" y="603" class="body">ToF address 0x29 · no address clash</text>
+  <text x="1388" y="628" class="body">Qwiic cable to J1; J2 daisy-chain to ToF</text>
+  <text x="1388" y="658" class="small">Match wire signals, not just connector shape</text>
+  <path d="M399 616H460" class="sig"/><path d="M850 616H915" class="sig"/><path d="M1305 616H1370" class="sig"/>
+  <text x="64" y="706" class="tiny">Confirm the delivered CQRobot lead colors and Modulino J1/J2 pin orientation before fitting the JST-SH harness.</text>
+
+  <!-- ultrasonic -->
+  <rect x="42" y="736" width="1756" height="400" rx="12" class="panel"/>
+  <text x="64" y="768" class="head">3 · Three HC-SR04 · 5V supply, MCU GPIO timing</text>
+  <text x="65" y="796" class="small">Use the VENTUNO shield-header MCU digital pins D2-D7. Do not connect these signals to Linux GPIO or the FNK0031.</text>
+  <text x="65" y="824" class="small">Power all VCC pins from regulated 5V; tie all grounds together. Fire pings sequentially, at least 60ms apart.</text>
+
+  <rect x="64" y="845" width="330" height="238" rx="8" class="module"/>
+  <text x="84" y="875" class="label">HC-SR04 #1</text>
+  <text x="84" y="908" class="body">VCC → +5V</text>
+  <text x="84" y="936" class="body">GND → common GND</text>
+  <text x="84" y="964" class="body">TRIG ← MCU D2</text>
+  <text x="84" y="992" class="body">ECHO → divider → MCU D3</text>
+  <text x="84" y="1041" class="small">Addressless pulse sensor</text>
+  <rect x="430" y="845" width="330" height="238" rx="8" class="module"/>
+  <text x="450" y="875" class="label">HC-SR04 #2</text>
+  <text x="450" y="908" class="body">VCC → +5V</text>
+  <text x="450" y="936" class="body">GND → common GND</text>
+  <text x="450" y="964" class="body">TRIG ← MCU D4</text>
+  <text x="450" y="992" class="body">ECHO → divider → MCU D5</text>
+  <text x="450" y="1041" class="small">One ping at a time</text>
+  <rect x="796" y="845" width="330" height="238" rx="8" class="module"/>
+  <text x="816" y="875" class="label">HC-SR04 #3</text>
+  <text x="816" y="908" class="body">VCC → +5V</text>
+  <text x="816" y="936" class="body">GND → common GND</text>
+  <text x="816" y="964" class="body">TRIG ← MCU D6</text>
+  <text x="816" y="992" class="body">ECHO → divider → MCU D7</text>
+  <text x="816" y="1041" class="small">One ping at a time</text>
+
+  <rect x="1162" y="845" width="606" height="238" rx="8" class="warning"/>
+  <text x="1182" y="875" class="label">Build this divider separately for each ECHO</text>
+  <text x="1182" y="910" class="small">ECHO</text>
+  <path d="M1222 905H1275" class="echo"/>
+  <rect x="1275" y="895" width="74" height="20" fill="none" stroke="#e49b62" stroke-width="2"/>
+  <text x="1286" y="910" class="tiny">10kΩ</text>
+  <path d="M1349 905H1382" class="echo"/>
+  <circle cx="1382" cy="905" r="4" fill="#e49b62"/>
+  <path d="M1382 905H1440" class="echo" marker-end="url(#arrow)"/>
+  <text x="1452" y="910" class="small">MCU input D3 / D5 / D7</text>
+  <path d="M1382 909V928" class="echo"/>
+  <rect x="1370" y="928" width="24" height="43" fill="none" stroke="#e49b62" stroke-width="2"/>
+  <text x="1403" y="954" class="tiny">20kΩ</text>
+  <path d="M1382 971V992M1366 992H1398M1372 999H1392M1378 1006H1386" class="gnd"/>
+  <text x="1182" y="1030" class="small">5V ECHO gives ~3.33V at the tap.</text>
+  <text x="1182" y="1057" class="small">Build 3: total 3 × 10kΩ + 3 × 20kΩ. Test TRIG at 3.3V on sensor #1.</text>
+  <text x="64" y="1112" class="tiny">VENTUNO shield-header D pins are STM32 MCU pins. The Body Linux runtime needs an MCU sketch/RPC sensor bridge to receive these readings.</text>
+
+  <!-- bringup and warnings -->
+  <rect x="42" y="1152" width="1756" height="256" rx="12" class="warning"/>
+  <text x="64" y="1185" class="head" style="fill:#f0d584">SAFE FIRST POWER-ON SEQUENCE</text>
+  <text x="66" y="1217" class="body">1. With all power off, identify board labels and verify every cable pin order with continuity mode.</text>
+  <text x="66" y="1245" class="body">2. Start only the Qwiic branch: VENTUNO Q → Modulino → VL53L1X. Scan I²C for 0x6A and 0x29.</text>
+  <text x="66" y="1273" class="body">3. Test one HC-SR04 with a divider and motors disabled; confirm MCU input never exceeds 3.3V.</text>
+  <text x="66" y="1301" class="body">4. Test each UART sensor alone. Keep adapter VCC disconnected; verify module TX idle voltage before adapter RX.</text>
+  <text x="66" y="1329" class="body">5. GPS board VIN is still unknown: do not energize it until the exact breakout marking/schematic is confirmed.</text>
+  <text x="66" y="1369" class="small">USB note: VENTUNO Q has 2 USB-A ports. Two UART adapters are optional for simultaneous use; sharing one is fine for sequential tests.</text>
+</svg>
