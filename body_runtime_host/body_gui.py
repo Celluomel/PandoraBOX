@@ -1037,6 +1037,9 @@ refreshFnkPanel=async function(){await refreshFnkUsbAware();mountFnkUsbSettings(
 const refreshRobotUsbAware=refreshRobotManagement;
 refreshRobotManagement=async function(){await refreshRobotUsbAware();try{const s=await get('/plugins/fnk0031_wifi/settings');if(s.platform==='usb_serial'){const label=document.querySelector('#view-robot .stat:nth-child(2) span');if(label)label.textContent='Transport';document.getElementById('robot-page-gateway').textContent=`USB serial · ${s.serial_port||'port not set'}`;document.getElementById('robot-page-status').textContent=s.actuation_enabled?'USB selected · check connection before approved commands':'USB selected · physical actuation is disabled';}}catch{}};
 mountFnkUsbSettings();
+function ensureWorldSimulationButton(){const head=document.querySelector('#view-worldmodel .map-panel .panel-head');if(!head||document.getElementById('wm-simulation-toggle'))return;const button=document.createElement('button');button.id='wm-simulation-toggle';button.type='button';button.className='primary-action';button.textContent='Start simulation';button.addEventListener('click',()=>toggleSimulation());const expand=head.querySelector('button');head.insertBefore(button,expand||null)}
+const renderWorldWithDirectSimulation=renderWorld;renderWorld=function(world){renderWorldWithDirectSimulation(world);ensureWorldSimulationButton();const button=document.getElementById('wm-simulation-toggle');if(button){button.textContent=world.running?'Pause simulation':'Start simulation';button.setAttribute('aria-pressed',String(Boolean(world.running)));button.disabled=world.mode!=='sim'}};
+ensureWorldSimulationButton();
 </script></body></html>""",
     1,
 )

@@ -501,6 +501,7 @@ async function pollBody() {
     if (!response.ok) throw new Error(`Body status HTTP ${response.status}`);
     const frame = await response.json();
     latestWorldStatus = frame;
+    syncSimulationControl(frame);
     if (!frame.perception?.available) {
       setStatus(frame.perception?.note || 'Body has not produced a perception frame yet.', true);
       return;
@@ -510,6 +511,15 @@ async function pollBody() {
   } catch (error) {
     setStatus(`Cannot read Body perception: ${error.message}`, true);
   }
+}
+
+function syncSimulationControl(frame = latestWorldStatus) {
+  const button = document.querySelector('#quest-simulation');
+  if (!button) return;
+  const available = frame?.mode === 'sim';
+  button.disabled = !available || vrDashboard.actionBusy;
+  button.textContent = !available ? 'Simulation unavailable' : frame.running ? 'Pause simulation' : 'Start simulation';
+  button.setAttribute('aria-pressed', String(Boolean(frame?.running)));
 }
 
 function selectAt(controller) {
@@ -581,6 +591,7 @@ async function toggleSimulationFromHud() {
   if (vrDashboard.actionBusy) return;
   const running = latestWorldStatus.running === true;
   vrDashboard.setActionBusy(true);
+  syncSimulationControl();
   setStatus(running ? 'Pausing World Model simulation…' : 'Starting World Model simulation…');
   try {
     const response = await fetch('/worldmodel/run', {
@@ -602,6 +613,7 @@ async function toggleSimulationFromHud() {
     setStatus(`Simulation control failed: ${error.message}`, true);
   } finally {
     vrDashboard.setActionBusy(false);
+    syncSimulationControl();
   }
 }
 
@@ -798,6 +810,7 @@ renderer.domElement.addEventListener('webglcontextlost', event => {
 
 document.querySelector('#enter-xr').addEventListener('click', () => enterXR('immersive-vr'));
 document.querySelector('#enter-ar').addEventListener('click', () => enterXR('immersive-ar'));
+document.querySelector('#quest-simulation').addEventListener('click', () => toggleSimulationFromHud());
 window.__pbQuestReady = true;
 if (statusNode.textContent === 'Starting 3D scene…') setStatus('3D renderer ready · connecting to Body world model…');
 

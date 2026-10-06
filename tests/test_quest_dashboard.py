@@ -11,6 +11,17 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertEqual(source.count("this.drawPanel(ctx,"), 4)
         self.assertNotIn("this.panel(ctx,", source)
 
+    def test_simulation_controls_are_visible_before_entering_vr(self):
+        root = Path(__file__).resolve().parents[1]
+        gui_source = (root / "body_runtime_host" / "body_gui.py").read_text(encoding="utf-8")
+        quest_html = (root / "body_runtime_host" / "quest_vr.html").read_text(encoding="utf-8")
+        quest_source = (root / "body_runtime_host" / "quest_vr.js").read_text(encoding="utf-8")
+
+        self.assertIn("wm-simulation-toggle", gui_source)
+        self.assertIn('id="quest-simulation"', quest_html)
+        self.assertIn("#quest-simulation').addEventListener('click', () => toggleSimulationFromHud())", quest_source)
+        self.assertIn("syncSimulationControl(frame)", quest_source)
+
 
 if __name__ == "__main__":
     unittest.main()
