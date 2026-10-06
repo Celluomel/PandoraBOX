@@ -21,15 +21,15 @@
   <!-- Sensor modules -->
   <rect x="54" y="151" width="480" height="126" rx="12" class="node node-serial"/>
   <text x="78" y="183" class="name">HLK-LD2450 mmWave</text>
-  <text x="78" y="210" class="detail">5 V supply · UART TX/RX at 3.3 V logic</text>
+  <text x="78" y="210" class="detail">5 V supply · 256000 baud · verify UART TX/RX logic</text>
   <text x="78" y="234" class="detail">256000 baud · 10 Hz · up to 3 moving targets</text>
-  <text x="78" y="258" class="tiny">Dedicated USB-UART adapter #1; separate USB host port</text>
+  <text x="78" y="258" class="tiny">USB-UART #1 if simultaneous Linux use; verify adapter and signal levels</text>
 
   <rect x="54" y="296" width="480" height="126" rx="12" class="node node-serial"/>
   <text x="78" y="328" class="name">GPSV3-M9N GNSS</text>
   <text x="78" y="355" class="detail">UART NMEA TX/RX · outdoor fix only</text>
-  <text x="78" y="379" class="detail">Module is 2.7-3.6 V; verify breakout power marking</text>
-  <text x="78" y="403" class="tiny">Dedicated USB-UART adapter #2 for initial bring-up</text>
+  <text x="78" y="379" class="detail">NEO-M9N chip: 2.7-3.6 V; breakout VIN is unverified</text>
+  <text x="78" y="403" class="tiny">USB-UART #2 only if both sensors stay connected to Linux</text>
 
   <rect x="54" y="441" width="480" height="126" rx="12" class="node node-i2c"/>
   <text x="78" y="473" class="name">Arduino Modulino Movement · LSM6DSOX</text>
@@ -40,20 +40,20 @@
   <rect x="54" y="586" width="480" height="126" rx="12" class="node node-i2c"/>
   <text x="78" y="618" class="name">VL53L1X ToF breakout</text>
   <text x="78" y="645" class="detail">I2C distance / short-range ROI</text>
-  <text x="78" y="669" class="detail">Sensor IC is 2.8 V; breakout regulators/pull-ups vary</text>
-  <text x="78" y="693" class="tiny">Join the I2C bus only after checking this board's pinout</text>
+  <text x="78" y="669" class="detail">CQRobot breakout: 3.3/5 V supply and level conversion</text>
+  <text x="78" y="693" class="tiny">Use 3.3 V; black GND, red VCC, green SDA, blue SCL</text>
 
   <rect x="54" y="731" width="480" height="150" rx="12" class="node node-gpio"/>
   <text x="78" y="763" class="name">3 × HC-SR04 ultrasonic</text>
   <text x="78" y="790" class="detail">Each sensor: TRIG out + ECHO in · 5 V supply</text>
-  <text x="78" y="814" class="detail">ECHO is 5 V: level-shift / divide to 3.3 V first</text>
+  <text x="78" y="814" class="detail">ECHO is 5 V: one divider / level shifter per input (3 total)</text>
   <text x="78" y="838" class="tiny">Use real-time MCU GPIO; stagger pings by ≥60 ms</text>
   <text x="78" y="861" class="tiny">No direct connection to VENTUNO Linux GPIO</text>
 
   <!-- Interface adapters -->
   <rect x="626" y="174" width="390" height="82" rx="11" class="node node-serial"/>
   <text x="648" y="207" class="name">USB-UART adapter #1</text>
-  <text x="648" y="233" class="detail">LD2450 serial bridge · 3.3 V UART logic</text>
+  <text x="648" y="233" class="detail">LD2450 serial bridge · TTL USB-UART, not RS-232</text>
   <rect x="626" y="319" width="390" height="82" rx="11" class="node node-serial"/>
   <text x="648" y="352" class="name">USB-UART adapter #2</text>
   <text x="648" y="378" class="detail">M9N serial bridge · stable /dev/serial/by-id</text>
@@ -62,8 +62,8 @@
   <text x="648" y="528" class="detail">SDA + SCL + 3.3 V + GND</text>
   <text x="648" y="553" class="tiny">Only after confirming connector routing and bus access</text>
   <rect x="626" y="751" width="390" height="100" rx="11" class="node node-gpio"/>
-  <text x="648" y="784" class="name">3.3 V input conditioning</text>
-  <text x="648" y="811" class="detail">ECHO level shifters / dividers · shared GND</text>
+  <text x="648" y="784" class="name">3 × ECHO voltage dividers</text>
+  <text x="648" y="811" class="detail">Each 5 V ECHO to a separate 3.3 V MCU input</text>
   <text x="648" y="835" class="tiny">Required before MCU GPIO; protect every input</text>
 
   <!-- VENTUNO -->
@@ -118,7 +118,7 @@
 
   <rect x="54" y="1031" width="1651" height="126" rx="13" class="warn"/>
   <text x="82" y="1069" class="section" style="fill:#f0d584">BEFORE CONNECTING</text>
-  <text x="82" y="1099" class="detail">1. Confirm each breakout's exact VCC / GND / TX / RX / SDA / SCL pin order and voltage markings.</text>
-  <text x="82" y="1125" class="detail">2. Never feed 5 V UART/GPIO into 3.3 V inputs. Do not power sensors from an unverified board rail.</text>
-  <text x="82" y="1151" class="detail">3. Dupont / JST-SH are wiring only: verify end-to-end pin order. Bring up one module at a time, motors disabled.</text>
+  <text x="82" y="1099" class="detail">1. Verify GPS breakout VIN and every cable pin order; the NEO-M9N chip spec does not define the breakout input.</text>
+  <text x="82" y="1125" class="detail">2. Verify UART signal levels; use separate 5 V sensor power where specified. Add 3 ECHO dividers before MCU GPIO.</text>
+  <text x="82" y="1151" class="detail">3. Two USB-UART adapters are for simultaneous Linux use, not mandatory. Dupont/JST-SH are wiring only; motors off.</text>
 </svg>

@@ -4,11 +4,11 @@
 
 | Module | First connection target | Body role | Important constraint |
 | --- | --- | --- | --- |
-| HLK-LD2450 | VENTUNO Q, dedicated USB-UART adapter | Up to 3 moving metric targets | 5 V supply (>200 mA), 256000 baud, 3.3 V UART, 10 Hz |
-| Arduino Modulino Movement (LSM6DSOX) | VENTUNO Q Qwiic | 3-axis acceleration and gyro | Qwiic/I2C is 3.3 V; confirm VENTUNO Q's Linux/MCU access path before selecting the reader |
-| GPSV3-M9N | VENTUNO Q, dedicated USB-UART adapter for initial bring-up | Outdoor GNSS/map anchor | Check the breakout's input-voltage marking; the u-blox module itself is 2.7-3.6 V |
-| VL53L1X breakout | VENTUNO Q MCU I2C/Qwiic only after pinout check | Short-range ToF distance/ROI | The sensor IC is 2.8 V; breakout voltage regulation and pull-ups vary by board |
-| 3 x HC-SR04 | VENTUNO Q real-time MCU GPIO, not Linux GPIO | Narrow-beam short-range range checks | 5 V supply; ECHO is 5 V and needs a divider/level shifter before any 3.3 V input |
+| HLK-LD2450 | VENTUNO Q Linux via USB-UART, or MCU UART with a data-forwarding sketch | Up to 3 moving metric targets | 5 V supply (>200 mA), 256000 baud, 10 Hz; official manual states PA9 is 3.3 V but does not specify UART TX/RX logic in text; verify those pins |
+| Arduino Modulino Movement (LSM6DSOX) | VENTUNO Q Qwiic / MCU I2C | 3-axis acceleration and gyro | Qwiic is 3.3 V; Qwiic pin order is GND, 3V3, SDA, SCL |
+| GPSV3-M9N | VENTUNO Q Linux via USB-UART, or MCU UART with a data-forwarding sketch | Outdoor GNSS/map anchor | NEO-M9N chip is 2.7-3.6 V; exact GPSV3 breakout regulator and I/O level are unverified, so identify its VIN label before power |
+| CQRobot VL53L1X (B07F3TV3G4 / CQRWX00744US) | VENTUNO Q Qwiic / MCU I2C | Short-range ToF distance/ROI | CQRobot manual specifies 3.3/5 V supply and level conversion; use 3.3 V on VENTUNO and verify cable colors/pin labels |
+| 3 x HC-SR04 | VENTUNO Q real-time MCU GPIO, not Linux GPIO | Narrow-beam short-range range checks | 5 V supply; add one divider/level shifter per ECHO before each 3.3 V GPIO |
 | Dupont and JST-SH leads | Wiring only | Prototyping | Connector fit does not guarantee matching pin order; verify every cable end-to-end |
 
 The VENTUNO Q owns perception and sensor acquisition. The FNK0031 remains
@@ -35,12 +35,29 @@ HC-SR04 x3 -- conditioned GPIO ---┘
 FNK0031 stock controller <------ dedicated USB FNHR command link
 ```
 
-For initial UART tests, use one sensor at a time and a separate USB-UART
-adapter per module. On Linux, configure stable `/dev/serial/by-id/...` paths,
-not transient `/dev/ttyUSB0` numbering. Never connect a 5 V TX output to a
-3.3 V-only input. The sensor grounds and VENTUNO ground must be common when
-using UART/GPIO, while sensor power should come from a rail with measured
-headroom rather than an unverified logic pin.
+For initial UART tests, one USB-UART adapter can be moved between sensors;
+two adapters are only needed to leave both connected to Linux simultaneously.
+Use TTL USB-UART adapters (not RS-232). A 3.3 V adapter is the conservative
+choice, but verify the sensor TX/RX logic and adapter pinout before connecting;
+cross TX/RX and connect GND.
+Keep sensor power separate from the adapter's VCC pin unless that exact board's
+power input is confirmed. On Linux, configure stable `/dev/serial/by-id/...`
+paths, not transient `/dev/ttyUSB0` numbering. The VENTUNO Q has two USB-A
+ports, so using FNK USB, two adapters, and a USB camera together requires a hub
+or a different acquisition route. Sensor grounds and VENTUNO ground must be
+common for wired UART/GPIO signals.
+
+For the CQRobot VL53L1X breakout (B07F3TV3G4), its published manual gives the
+wire colors as black=GND, red=VCC, green=SDA, blue=SCL, yellow=SHUT, orange=INT
+and claims 3.3/5 V level conversion. Prefer 3.3 V VCC on the VENTUNO Q. Its
+I2C address is 0x29; Modulino Movement defaults to 0x6A, so they do not collide
+on the same Qwiic bus. Still verify the actual delivered cable and board labels.
+
+The GPSV3-M9N product listing identifies the receiver family but does not
+provide a trustworthy schematic for the seller's breakout. The u-blox NEO-M9N
+chip itself is 2.7-3.6 V and its I/O levels track VCC. Do not infer that the
+breakout accepts 5 V from the chip specification: check the PCB's VIN marking
+or seller schematic first, and use 3.3 V UART logic regardless.
 
 The LD2450 reports X lateral, Y forward in millimetres, and signed velocity in
 centimetres/second. Body converts these to metres and metres/second in a
