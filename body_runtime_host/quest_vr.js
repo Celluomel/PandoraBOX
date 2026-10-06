@@ -23,8 +23,6 @@ cameraBackgroundTexture.offset.set(0, 1);
 let cameraBackgroundActive = false;
 let cameraArcAspect = null;
 let cameraArcWorldScale = null;
-const cameraArcFacingDirection = new THREE.Vector3();
-const cameraArcWorldQuaternion = new THREE.Quaternion();
 const cameraArcRoot = new THREE.Group();
 const cameraArcMaterial = new THREE.MeshBasicMaterial({ map: cameraBackgroundTexture, side: THREE.DoubleSide, depthTest: false, depthWrite: false });
 const cameraArc = new THREE.Mesh(new THREE.BufferGeometry(), cameraArcMaterial);
@@ -189,15 +187,16 @@ function updateXRSceneFollow(xrCamera) {
   const scale = 0.4;
   xrCamera.getWorldPosition(xrFollowHeadPosition);
   xrFollowForward.set(-Math.sin(xrFollowYaw), 0, -Math.cos(xrFollowYaw));
-  xrFollowTarget.copy(xrFollowHeadPosition).addScaledVector(xrFollowForward, 5.5);
+  xrFollowTarget.copy(xrFollowHeadPosition).addScaledVector(xrFollowForward, 3.0);
   xrFollowTarget.y -= 1.35;
   xrFollowTarget.add(xrSceneOffset);
+  const sceneYaw = xrFollowYaw + Math.PI / 2 + xrSceneYawOffset;
   xrFollowBodyOffset.set(
     Number(position[0] || 0) - basePosition[0],
     0,
     -(Number(position[1] || 0) - basePosition[1]),
-  ).applyAxisAngle(xrFollowYawAxis, xrFollowYaw + xrSceneYawOffset).multiplyScalar(scale);
-  world.rotation.set(0, xrFollowYaw + xrSceneYawOffset, 0);
+  ).applyAxisAngle(xrFollowYawAxis, sceneYaw).multiplyScalar(scale);
+  world.rotation.set(0, sceneYaw, 0);
   world.scale.setScalar(scale);
   world.position.copy(xrFollowTarget).sub(xrFollowBodyOffset);
 }
@@ -421,7 +420,7 @@ function rebuildScene(frame) {
   nose.position.set(0.38, 0.22, 0);
   bodyMarker.add(nose);
   const yaw = Number(body.orientation) || 0;
-  bodyMarker.rotation.y = -yaw;
+  bodyMarker.rotation.y = yaw;
   const bodyLabel = labelSprite('BODY');
   bodyLabel.position.y = 0.85;
   bodyMarker.add(bodyLabel);
@@ -668,19 +667,7 @@ function anchorCameraArcInScene() {
     0.75,
     -((Number(position[1]) || 0) - basePosition[1]),
   );
-  const viewCamera = renderer.xr.isPresenting ? renderer.xr.getCamera(camera) : camera;
-  viewCamera.getWorldDirection(cameraArcFacingDirection);
-  world.updateMatrixWorld(true);
-  world.getWorldQuaternion(cameraArcWorldQuaternion);
-  cameraArcFacingDirection.applyQuaternion(cameraArcWorldQuaternion.invert());
-  cameraArcFacingDirection.y = 0;
-  if (cameraArcFacingDirection.lengthSq() < 1e-4) {
-    cameraArcFacingDirection.set(Math.cos(Number(bodyPose.orientation) || 0), 0, -Math.sin(Number(bodyPose.orientation) || 0));
-  } else {
-    cameraArcFacingDirection.normalize();
-  }
-  const viewYaw = Math.atan2(-cameraArcFacingDirection.z, cameraArcFacingDirection.x);
-  cameraArcRoot.rotation.set(0, -Math.PI / 2 - viewYaw, 0);
+  cameraArcRoot.rotation.set(0, -Math.PI / 2 - (Number(bodyPose.orientation) || 0), 0);
   return true;
 }
 
