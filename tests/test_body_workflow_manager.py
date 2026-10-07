@@ -83,7 +83,7 @@ class WorkflowManagerTests(unittest.TestCase):
         geometry_msgs_msg.PoseStamped = type("PoseStamped", (), {})
         geometry_msgs.msg = geometry_msgs_msg
         bridge = Ros2ObservationBridge(lambda _observation: None)
-        bridge._node = SimpleNamespace(get_action_names_and_types=lambda: [])
+        bridge._node = SimpleNamespace(get_service_names_and_types=lambda: [])
 
         with patch.dict(sys.modules, {
             "action_msgs": action_msgs, "action_msgs.msg": action_msgs_msg,
@@ -94,6 +94,38 @@ class WorkflowManagerTests(unittest.TestCase):
 
         self.assertTrue(status["nav2_packages_available"])
         self.assertTrue(status["nav2_action_available"])
+        self.assertFalse(status["nav2_server_available"])
+
+    def test_ros2_status_reports_mock_action_without_mistaking_it_for_real_nav2(self):
+        import sys
+        from types import ModuleType, SimpleNamespace
+        from body_runtime_host.ros2_bridge import Ros2ObservationBridge
+
+        action_msgs = ModuleType("action_msgs")
+        action_msgs_msg = ModuleType("action_msgs.msg")
+        action_msgs_msg.GoalStatus = type("GoalStatus", (), {})
+        action_msgs.msg = action_msgs_msg
+        nav2_msgs = ModuleType("nav2_msgs")
+        nav2_action = ModuleType("nav2_msgs.action")
+        nav2_action.NavigateToPose = type("NavigateToPose", (), {})
+        nav2_msgs.action = nav2_action
+        geometry_msgs = ModuleType("geometry_msgs")
+        geometry_msgs_msg = ModuleType("geometry_msgs.msg")
+        geometry_msgs_msg.PoseStamped = type("PoseStamped", (), {})
+        geometry_msgs.msg = geometry_msgs_msg
+        bridge = Ros2ObservationBridge(lambda _observation: None)
+        bridge._node = SimpleNamespace(get_service_names_and_types=lambda: [
+            ("/pandorabox/mock_navigate_to_pose/_action/send_goal", ["nav2_msgs/action/NavigateToPose_SendGoal"]),
+        ])
+
+        with patch.dict(sys.modules, {
+            "action_msgs": action_msgs, "action_msgs.msg": action_msgs_msg,
+            "nav2_msgs": nav2_msgs, "nav2_msgs.action": nav2_action,
+            "geometry_msgs": geometry_msgs, "geometry_msgs.msg": geometry_msgs_msg,
+        }):
+            status = bridge.status()
+
+        self.assertTrue(status["nav2_mock_server_available"])
         self.assertFalse(status["nav2_server_available"])
 
     def workflow(self, edges=None, extra_nodes=None):

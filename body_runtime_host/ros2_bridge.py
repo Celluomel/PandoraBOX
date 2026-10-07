@@ -56,9 +56,18 @@ class Ros2ObservationBridge:
         mock_action_server_available = False
         if nav2_packages_available and node is not None:
             try:
-                actions = node.get_action_names_and_types()
-                action_server_available = any(name.rstrip("/") == "/navigate_to_pose" and "nav2_msgs/action/NavigateToPose" in types for name, types in actions)
-                mock_action_server_available = any(name.rstrip("/") == self._mock_nav2_action and "nav2_msgs/action/NavigateToPose" in types for name, types in actions)
+                services = node.get_service_names_and_types()
+                expected_type = "nav2_msgs/action/NavigateToPose_SendGoal"
+                action_server_available = any(
+                    name.rstrip("/").endswith("/navigate_to_pose/_action/send_goal")
+                    and expected_type in types
+                    for name, types in services
+                )
+                mock_action_server_available = any(
+                    name.rstrip("/") == f"{self._mock_nav2_action}/_action/send_goal"
+                    and expected_type in types
+                    for name, types in services
+                )
             except Exception:
                 action_server_available = False
                 mock_action_server_available = False
