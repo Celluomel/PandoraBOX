@@ -33,6 +33,38 @@ class WorkflowManagerTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
+    def test_ros2_bridge_publish_serializes_observations_and_updates_status(self):
+        import json
+        import sys
+        from types import ModuleType
+        from body_runtime_host.ros2_bridge import Ros2ObservationBridge
+
+        class String:
+            data = ""
+
+        class Publisher:
+            def __init__(self):
+                self.messages = []
+
+            def publish(self, message):
+                self.messages.append(message)
+
+        std_msgs = ModuleType("std_msgs")
+        std_msgs_msg = ModuleType("std_msgs.msg")
+        std_msgs_msg.String = String
+        std_msgs.msg = std_msgs_msg
+        bridge = Ros2ObservationBridge(lambda _observation: None)
+        publisher = Publisher()
+        bridge._publisher = publisher
+        bridge._node = object()
+
+        with patch.dict(sys.modules, {"std_msgs": std_msgs, "std_msgs.msg": std_msgs_msg}):
+            self.assertTrue(bridge.publish({"subject": "range", "value": 1.2}))
+
+        message = json.loads(publisher.messages[0].data)
+        self.assertEqual(message["observation"]["subject"], "range")
+        self.assertEqual(bridge.status()["output_count"], 1)
+
     def workflow(self, edges=None, extra_nodes=None):
         nodes = [
             {"id": "sensor", "type": "lidar", "x": 0, "y": 0},
@@ -124,13 +156,171 @@ class WorkflowManagerTests(unittest.TestCase):
         from body_runtime_host.body_gui import BODY_GUI_HTML
 
         self.assertIn("if(view==='ros2')", BODY_GUI_HTML)
-        self.assertIn("mountWorkflowEditor(rosView)", BODY_GUI_HTML)
+        self.assertIn("ensureWorkflowEditor()", BODY_GUI_HTML)
         self.assertIn("Analyze with Body VLM", BODY_GUI_HTML)
         self.assertIn("/workflows/'+encodeURIComponent(workflowId)+'/analyze", BODY_GUI_HTML)
         self.assertIn("new Set(Object.values(workflowBrickTypes).map(meta=>meta.group))", BODY_GUI_HTML)
         self.assertIn("view.dataset.workflowEditor='mounting'", BODY_GUI_HTML)
         self.assertIn("view.dataset.workflowEditor='1';", BODY_GUI_HTML)
         self.assertIn("max-width:1200px", BODY_GUI_HTML)
+        self.assertIn("function ensureWorkflowEditor()", BODY_GUI_HTML)
+        self.assertIn("path!=='/ros2'", BODY_GUI_HTML)
+        self.assertIn("window.addEventListener('pageshow',ensureWorkflowEditor)", BODY_GUI_HTML)
+        self.assertIn("function retryWorkflowEditor()", BODY_GUI_HTML)
+        self.assertIn("Workflow builder could not load", BODY_GUI_HTML)
+        self.assertIn("Run on robot", BODY_GUI_HTML)
+        self.assertIn("confirm_physical:true", BODY_GUI_HTML)
+        self.assertIn("Nav2 · navigate to pose", BODY_GUI_HTML)
+        self.assertIn("FNK gait commands are not closed-loop navigation", BODY_GUI_HTML)
+
+    def test_fnk_execution_requires_per_run_confirmation_before_nodes_run(self):
+        workflow = {
+            "name": "Guarded FNK command",
+            "nodes": [
+                {"id": "safety", "type": "safety"},
+                {"id": "robot", "type": "fnk", "config": {"action": "forward"}},
+            ],
+            "edges": [["safety", "robot"]],
+        }
+        saved = self.manager.save(workflow)
+        with self.assertRaisesRegex(WorkflowError, "explicit confirmation"):
+            self.manager.execute(saved["id"])
+        self.assertIsNone(self.manager.get(saved["id"])["last_execution"])
+
+    def test_physical_action_requires_a_direct_safety_parent(self):
+        workflow = {
+            "name": "Ungated FNK command",
+            "nodes": [
+                {"id": "sensor", "type": "lidar"},
+                {"id": "robot", "type": "fnk", "config": {"action": "forward"}},
+            ],
+            "edges": [["sensor", "robot"]],
+        }
+        saved = self.manager.save(workflow)
+        with self.assertRaisesRegex(WorkflowError, "directly to the physical robot action"):
+            self.manager.execute(saved["id"], confirm_physical=True)
+        self.assertIsNone(self.manager.get(saved["id"])["last_execution"])
+
+    def test_fnk_execution_requires_direct_safety_gate_and_enabled_driver(self):
+        import time
+        workflow = {
+            "name": "Guarded FNK command",
+            "nodes": [
+                {"id": "safety", "type": "safety"},
+                {"id": "robot", "type": "fnk", "config": {"action": "forward"}},
+            ],
+            "edges": [["safety", "robot"]],
+        }
+        self.host.worldmodel = type("WorldModel", (), {"status_summary": staticmethod(lambda: {"navigation_alert": None})})()
+        now = time.time()
+        self.host.latest = {
+            "range": {"kind": "lidar", "source": "usb_lidar", "observed_at": now},
+            "imu": {"kind": "imu", "source": "usb_imu", "observed_at": now},
+        }
+        saved = self.manager.save(workflow)
+        run = self.manager.execute(saved["id"], confirm_physical=True)
+        self.assertEqual(run["status"], "failed")
+        self.assertIn("disabled", run["error"])
+        self.assertEqual([node["type"] for node in run["nodes"] if node["status"] == "success"], ["safety"])
+
+    def test_confirmed_fnk_workflow_dispatches_one_authorized_driver_action(self):
+        import time
+        import sys
+        from types import ModuleType, SimpleNamespace
+        class WorldModel:
+            source = type("Source", (), {"name": "fnk0031_usb"})()
+
+            def __init__(self):
+                self.actions = []
+
+            @staticmethod
+            def status_summary():
+                return {"navigation_alert": None}
+
+            def execute_external(self, action):
+                self.actions.append(action)
+                return {"outcome": {"kind": "success", "description": "FNHR acknowledged and completed"}}
+
+        self.host.worldmodel = WorldModel()
+        self.host.fnk0031_settings = lambda: {"actuation_enabled": True}
+        now = time.time()
+        self.host.latest = {
+            "range": {"kind": "lidar", "source": "usb_lidar", "observed_at": now},
+            "imu": {"kind": "imu", "source": "usb_imu", "observed_at": now},
+        }
+        saved = self.manager.save({
+            "name": "One confirmed gait",
+            "nodes": [
+                {"id": "safety", "type": "safety"},
+                {"id": "robot", "type": "fnk", "config": {"action": "forward"}},
+            ],
+            "edges": [["safety", "robot"]],
+        })
+
+        worldmodel_types = ModuleType("body_runtime_host.worldmodel.types")
+        worldmodel_types.Action = lambda **kwargs: SimpleNamespace(**kwargs)
+        with patch.dict(sys.modules, {"body_runtime_host.worldmodel.types": worldmodel_types}):
+            result = self.manager.execute(saved["id"], confirm_physical=True)
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["execution_mode"], "hardware")
+        self.assertEqual(len(self.host.worldmodel.actions), 1)
+        self.assertEqual(self.host.worldmodel.actions[0].type, "forward")
+        self.assertTrue(result["nodes"][-1]["output"]["operator_confirmed"])
+
+    def test_physical_safety_gate_rejects_stale_and_simulated_sensor_data(self):
+        import time
+        self.host.latest = {
+            "range": {"kind": "lidar", "source": "sim_lidar", "observed_at": time.time()},
+            "imu": {"kind": "imu", "source": "usb_imu", "observed_at": time.time() - 5},
+        }
+        gate = self.manager._execute_node("safety", [], {})
+        self.assertEqual(gate["state"], "blocked")
+        self.assertEqual(gate["evidence"], "insufficient")
+
+    def test_nav2_action_runs_only_after_confirmed_clear_safety_and_live_sensors(self):
+        import time
+        class WorldModel:
+            source = None
+
+            @staticmethod
+            def status_summary():
+                return {"navigation_alert": None}
+
+        class Nav2Bridge:
+            def __init__(self):
+                self.goals = []
+
+            @staticmethod
+            def status():
+                return {"available": True, "nav2_action_available": True}
+
+            def navigate_to_pose(self, **goal):
+                self.goals.append(goal)
+                return {"status": "succeeded", **goal}
+
+        self.host.worldmodel = WorldModel()
+        self.host._ros2_bridge = Nav2Bridge()
+        now = time.time()
+        self.host.latest = {
+            "range": {"kind": "lidar", "source": "usb_lidar", "observed_at": now},
+            "imu": {"kind": "imu", "source": "usb_imu", "observed_at": now},
+        }
+        saved = self.manager.save({
+            "name": "Nav2 point goal",
+            "nodes": [
+                {"id": "safety", "type": "safety"},
+                {"id": "navigate", "type": "nav2_navigate", "config": {"frame_id": "map", "x": 1.25, "y": -0.5, "heading_deg": 90}},
+            ],
+            "edges": [["safety", "navigate"]],
+        })
+        with self.assertRaisesRegex(WorkflowError, "explicit confirmation"):
+            self.manager.execute(saved["id"])
+        result = self.manager.execute(saved["id"], confirm_physical=True)
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["execution_mode"], "hardware")
+        self.assertEqual(self.host._ros2_bridge.goals[0]["frame_id"], "map")
+        self.assertAlmostEqual(self.host._ros2_bridge.goals[0]["yaw"], 1.57079632679)
 
     def test_workflow_analysis_uses_saved_outputs_and_never_applies_suggestions(self):
         import json

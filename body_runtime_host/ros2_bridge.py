@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import threading
 import time
@@ -21,6 +22,8 @@ class Ros2ObservationBridge:
         self._thread = None
         self._rclpy = None
         self._context = None
+        self._nav2_client = None
+        self._nav2_lock = threading.Lock()
         self._status = {"state": "stopped", "available": False, "last_error": ""}
 
     def status(self):
@@ -37,6 +40,13 @@ class Ros2ObservationBridge:
             result["rclpy_version"] = version("rclpy")
         except PackageNotFoundError:
             result["rclpy_version"] = "system package not discoverable"
+        try:
+            from action_msgs.msg import GoalStatus as _GoalStatus  # noqa: F401
+            from nav2_msgs.action import NavigateToPose as _NavigateToPose  # noqa: F401
+            from geometry_msgs.msg import PoseStamped as _PoseStamped  # noqa: F401
+            result["nav2_action_available"] = True
+        except Exception:
+            result["nav2_action_available"] = False
         return result
 
     def start(self):
@@ -114,11 +124,63 @@ class Ros2ObservationBridge:
                 self._status["last_error"] = str(exc)
             return False
 
+    def navigate_to_pose(self, *, x: float, y: float, yaw: float, frame_id: str = "map", timeout: float = 120.0):
+        """Send one explicitly requested Nav2 NavigateToPose action and await its result."""
+        from action_msgs.msg import GoalStatus
+        from geometry_msgs.msg import PoseStamped
+        from nav2_msgs.action import NavigateToPose
+        from rclpy.action import ActionClient
+
+        with self._nav2_lock:
+            with self._lock:
+                node, executor = self._node, self._executor
+            if node is None or executor is None or not self.status().get("available"):
+                raise RuntimeError("ROS 2 bridge is not running")
+            if self._nav2_client is None:
+                self._nav2_client = ActionClient(node, NavigateToPose, "navigate_to_pose")
+            client = self._nav2_client
+            if not client.wait_for_server(timeout_sec=min(5.0, max(0.1, timeout))):
+                raise RuntimeError("Nav2 NavigateToPose action server is unavailable")
+
+            goal = NavigateToPose.Goal()
+            goal.pose = PoseStamped()
+            goal.pose.header.frame_id = frame_id
+            goal.pose.header.stamp = node.get_clock().now().to_msg()
+            goal.pose.pose.position.x = x
+            goal.pose.pose.position.y = y
+            goal.pose.pose.position.z = 0.0
+            goal.pose.pose.orientation.z = math.sin(yaw / 2.0)
+            goal.pose.pose.orientation.w = math.cos(yaw / 2.0)
+
+            def await_future(future, wait_seconds, label):
+                done = threading.Event()
+                box = {}
+                future.add_done_callback(lambda completed: (box.setdefault("value", completed), done.set()))
+                if not done.wait(wait_seconds):
+                    raise TimeoutError(f"timed out waiting for Nav2 {label}")
+                return box["value"].result()
+
+            goal_handle = await_future(client.send_goal_async(goal), min(10.0, timeout), "goal acceptance")
+            if not goal_handle.accepted:
+                raise RuntimeError("Nav2 rejected the navigation goal")
+            try:
+                result = await_future(goal_handle.get_result_async(), timeout, "result")
+            except TimeoutError:
+                goal_handle.cancel_goal_async()
+                raise
+            status = int(getattr(result, "status", -1))
+            if status != GoalStatus.STATUS_SUCCEEDED:
+                raise RuntimeError(f"Nav2 navigation ended with action status {status}")
+            with self._lock:
+                self._status["last_nav2_goal_at"] = time.time()
+                self._status["nav2_goal_count"] = int(self._status.get("nav2_goal_count", 0)) + 1
+            return {"status": "succeeded", "frame_id": frame_id, "x": x, "y": y, "yaw": yaw, "action_status": status}
     def stop(self):
         with self._lock:
             executor, node, context, rclpy = self._executor, self._node, self._context, self._rclpy
             self._executor = self._node = self._publisher = self._context = None
             self._thread = None
+            self._nav2_client = None
             self._status.update(state="stopped", available=rclpy is not None)
         if executor is not None:
             executor.shutdown(timeout_sec=1.0)

@@ -36,7 +36,7 @@ class WorkflowManager:
     NODE_TYPES = {
         "camera", "lidar", "imu", "ros2_in", "perception", "fusion",
         "world", "safety", "brain", "ros2_out", "fnk",
-        "sim_base_navigate", "frame_guard", "sim_arm_action",
+        "sim_base_navigate", "frame_guard", "sim_arm_action", "nav2_navigate",
     }
     NODE_CONTRACTS = {
         "camera": {"group": "Input", "output": "camera_frame"},
@@ -53,6 +53,7 @@ class WorkflowManager:
         "sim_base_navigate": {"group": "Robot · simulation", "input": "any", "output": "pose"},
         "frame_guard": {"group": "Robot · simulation", "input": "pose", "output": "safe_pose"},
         "sim_arm_action": {"group": "Robot · simulation", "input": "safe_pose", "output": "task_result"},
+        "nav2_navigate": {"group": "Robot · ROS 2 action", "input": "safety_decision", "output": "nav2_result"},
     }
 
     MOBILE_MANIPULATION_DEMO = {
@@ -118,7 +119,7 @@ class WorkflowManager:
                     "capabilities": ["reach", "grasp", "release"],
                 },
             ],
-            "physical_actuation_enabled": False,
+            "physical_actuation_enabled": bool(settings.get("actuation_enabled")),
         }
 
     @classmethod
@@ -250,7 +251,7 @@ class WorkflowManager:
         row = self.get(workflow_id)
         return {"workflow_id": workflow_id, "executions": list(row.get("executions", []))}
 
-    def execute(self, workflow_id: str) -> dict[str, Any]:
+    def execute(self, workflow_id: str, *, confirm_physical: bool = False) -> dict[str, Any]:
         with self._lock:
             row = self._workflows.get(workflow_id)
             if row is None:
@@ -258,8 +259,20 @@ class WorkflowManager:
             row = dict(row)
         graph = self.validate(row["nodes"], row["edges"])
         node_by_id = {node["id"]: node for node in row["nodes"]}
-        if any(node["type"] == "fnk" for node in row["nodes"]):
-            raise WorkflowError("workflow contains FNK physical actuation, which is not available in this executor; no nodes were run")
+        actuator_nodes = [node for node in row["nodes"] if node["type"] in {"fnk", "nav2_navigate"}]
+        if len(actuator_nodes) > 1:
+            raise WorkflowError("one physical robot action per workflow run is allowed")
+        if actuator_nodes:
+            if not confirm_physical:
+                raise WorkflowError("robot output is physical: use Run on robot and provide explicit confirmation; no nodes were run")
+            if any(node["type"].startswith("sim_") or node["type"] == "frame_guard" for node in row["nodes"]):
+                raise WorkflowError("simulation and physical robot nodes cannot share one workflow run")
+            actuator = actuator_nodes[0]
+            if any(source == actuator["id"] for source, _target in graph["edges"]):
+                raise WorkflowError("physical robot action must be the final workflow node; no nodes were run")
+            parents = [source for source, target in graph["edges"] if target == actuator["id"]]
+            if len(parents) != 1 or node_by_id[parents[0]]["type"] != "safety":
+                raise WorkflowError("connect one Safety gate directly to the physical robot action; no nodes were run")
         if any(node["type"] == "ros2_out" for node in row["nodes"]):
             bridge = self.host._ros2_bridge
             if bridge is None or not bridge.status().get("available"):
@@ -268,7 +281,7 @@ class WorkflowManager:
         for source, target in graph["edges"]:
             incoming[target].append(source)
         simulated = any(node["type"].startswith("sim_") or node["type"] == "frame_guard" for node in row["nodes"])
-        run = {"id": uuid.uuid4().hex, "workflow_id": workflow_id, "started_at": time.time(), "status": "running", "execution_mode": "simulation" if simulated else "body_dataflow", "nodes": [], "error": ""}
+        run = {"id": uuid.uuid4().hex, "workflow_id": workflow_id, "started_at": time.time(), "status": "running", "execution_mode": "simulation" if simulated else "hardware" if actuator_nodes else "body_dataflow", "nodes": [], "error": ""}
         values: dict[str, Any] = {}
         try:
             for node_id in graph["order"]:
@@ -366,7 +379,16 @@ class WorkflowManager:
             wm = self.host.worldmodel
             status = wm.status_summary() if wm is not None else {}
             alert = status.get("navigation_alert")
-            return {"state": "blocked" if alert else "clear", "navigation_alert": alert, "note": "Reports Body navigation safety state; this node does not authorize physical actuation."}
+            try:
+                self._require_live_safety_evidence()
+                evidence = "fresh_real_range_and_imu"
+            except WorkflowError as exc:
+                return {"kind": "safety_decision", "state": "blocked", "navigation_alert": alert,
+                        "evidence": "insufficient", "reason": str(exc),
+                        "note": "Physical output fails closed unless real range and IMU observations are fresh."}
+            return {"kind": "safety_decision", "state": "blocked" if alert else "clear",
+                    "navigation_alert": alert, "evidence": evidence,
+                    "note": "No active Body navigation alert and fresh real range + IMU evidence; this is not an emergency-stop or certified collision guarantee. Operator confirmation is still required."}
         upstream = inputs[-1] if inputs else {}
         if node_type == "brain":
             observation = {"entity_id": f"body.workflow.{int(time.time() * 1000)}", "source": "body_workflow", "kind": "workflow_result", "subject": "workflow observation", "value": upstream, "unit": "", "confidence": 1.0, "observed_at": time.time(), "provenance": {"transport": "body_bridge"}}
@@ -381,8 +403,68 @@ class WorkflowManager:
                 raise WorkflowError("ROS 2 observation publish failed")
             return {"accepted": True, "destination": "ROS 2 observation topic"}
         if node_type == "fnk":
-            raise WorkflowError("FNK physical actuation is not an executable workflow node; use the confirmation-gated Body command path")
+            safety = next((item for item in reversed(inputs) if isinstance(item, dict) and item.get("kind") == "safety_decision"), None)
+            if not safety or safety.get("state") != "clear":
+                raise WorkflowError("FNK output requires a clear Safety gate result")
+            settings = self.host.fnk0031_settings()
+            if not settings.get("actuation_enabled"):
+                raise WorkflowError("FNK physical actuation is disabled in Robots & hardware settings")
+            wm = self.host.worldmodel
+            source = getattr(wm, "source", None) if wm is not None else None
+            if getattr(source, "name", "") not in {"fnk0031_wifi", "fnk0031_usb"}:
+                raise WorkflowError("FNK hardware is not the active World Model source")
+            self._require_live_safety_evidence()
+            action_name = str(config.get("action") or "").strip().lower()
+            allowed = {"forward", "backward", "turn_left", "turn_right"}
+            if action_name not in allowed:
+                raise WorkflowError("configure FNK action as forward, backward, turn_left or turn_right")
+            if config.get("params") not in (None, {}):
+                raise WorkflowError("FNK workflow commands do not accept free-form parameters")
+            from body_runtime_host.worldmodel.types import Action
+            action = Action(type=action_name, target="fnk0031", params={})
+            execution = wm.execute_external(action)
+            outcome = execution.get("outcome") or {}
+            if outcome.get("kind") != "success":
+                raise WorkflowError(str(outcome.get("description") or "FNK command did not complete successfully"))
+            return {"kind": "actuation_result", "device_id": "fnk0031", "action": action_name,
+                    "status": "executed", "mode": "hardware", "operator_confirmed": True,
+                    "feedback": outcome.get("description", "")}
+        if node_type == "nav2_navigate":
+            safety = next((item for item in reversed(inputs) if isinstance(item, dict) and item.get("kind") == "safety_decision"), None)
+            if not safety or safety.get("state") != "clear":
+                raise WorkflowError("Nav2 navigation requires a clear Safety gate result")
+            self._require_live_safety_evidence()
+            bridge = self.host._ros2_bridge
+            if bridge is None or not bridge.status().get("nav2_action_available"):
+                raise WorkflowError("Nav2 action support is unavailable; source ROS 2 and install nav2_msgs + geometry_msgs")
+            if "x" not in config or "y" not in config:
+                raise WorkflowError("Nav2 goal requires x and y coordinates in metres")
+            pose = self._pose_from_config(config)
+            result = bridge.navigate_to_pose(
+                x=pose["position"][0], y=pose["position"][1],
+                yaw=pose["heading_deg"] * 3.141592653589793 / 180.0,
+                frame_id=pose["frame_id"],
+                timeout=self._bounded_number(config.get("timeout_s", 120), "timeout_s", 1, 600),
+            )
+            return {"kind": "nav2_result", "device_id": "ros2_nav2", "mode": "hardware",
+                    "operator_confirmed": True, **result}
         raise WorkflowError(f"node type has no execution handler: {node_type}")
+
+    def _require_live_safety_evidence(self) -> None:
+        now = time.time()
+        fresh = []
+        for entry in self.host.latest.values():
+            kind = str(entry.get("kind", "")).lower()
+            source = str(entry.get("source", "")).lower()
+            try:
+                age = now - float(entry.get("observed_at") or 0)
+            except (TypeError, ValueError):
+                continue
+            if (kind in {"lidar", "range", "point_cloud", "radar", "mmwave", "imu"}
+                    and not source.startswith(("sim", "replay")) and 0 <= age <= 2.0):
+                fresh.append(kind)
+        if not set(fresh).intersection({"lidar", "range", "point_cloud", "radar", "mmwave"}) or "imu" not in fresh:
+            raise WorkflowError("physical action requires fresh real LiDAR/range/mmWave and IMU observations (max age 2 s)")
 
     @staticmethod
     def _bounded_number(value: Any, field: str, minimum: float, maximum: float) -> float:

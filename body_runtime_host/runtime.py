@@ -2895,7 +2895,10 @@ class BodyHost:
                 elif path.startswith("/workflows/") and path.endswith("/execute"):
                     workflow_id = path[len("/workflows/"):-len("/execute")].strip("/")
                     try:
-                        self._send(owner.workflow_manager.execute(workflow_id))
+                        self._send(owner.workflow_manager.execute(
+                            workflow_id,
+                            confirm_physical=_payload_bool(self._read_body().get("confirm_physical")),
+                        ))
                     except KeyError:
                         self._send({"error": "workflow not found"}, 404)
                     except (ValueError, OSError) as exc:

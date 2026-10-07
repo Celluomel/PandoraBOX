@@ -70,6 +70,11 @@ https://${LAN_HOST} {
 	basic_auth {
 		${PROXY_USER} ${PROXY_HASH}
 	}
+	header {
+		Cache-Control "no-store, no-cache, must-revalidate, max-age=0"
+		Pragma "no-cache"
+		Expires "0"
+	}
 	reverse_proxy 127.0.0.1:8766
 }
 EOF
