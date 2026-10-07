@@ -368,6 +368,24 @@ class WorkflowManager:
                 goal = plan["goal"]
                 bridge = self.host._ros2_bridge
                 action_result = None
+                host_config = getattr(self.host, "config", {})
+                value = getattr(self.host, "value", None)
+                simulation_enabled = bool(value("BODY_NAV2_SIMULATION_ENABLED", False)) if callable(value) else bool(host_config.get("BODY_NAV2_SIMULATION_ENABLED", False))
+                ros_status = bridge.status() if bridge is not None and callable(getattr(bridge, "status", None)) else {}
+                sim_status = ros_status.get("nav2_simulation", {})
+                if simulation_enabled and sim_status.get("enabled") and ros_status.get("nav2_server_available"):
+                    try:
+                        action_result = bridge.navigate_to_pose(
+                            x=float(goal[0]), y=float(goal[1]), yaw=0.0, frame_id="map",
+                            timeout=self._bounded_number(config.get("timeout_s", 120), "timeout_s", 5, 600),
+                        )
+                        return {"kind": "sim_nav_result", "status": "succeeded", "server": "nav2_bringup_simulation",
+                                "frame_id": "map", "goal": goal, "path": plan.get("path", []), "detail": action_result,
+                                "note": "Real Nav2 planner/controller on synthetic Body sensor inputs; FNK hardware untouched.",
+                                "simulated": True, "actuation": False}
+                    except Exception as exc:
+                        return {"kind": "sim_nav_result", "status": "failed", "server": "nav2_bringup_simulation",
+                                "error": str(exc), "simulated": True, "actuation": False}
                 if bridge is not None and hasattr(bridge, "navigate_to_pose_mock"):
                     try:
                         action_result = bridge.navigate_to_pose_mock(x=float(goal[0]), y=float(goal[1]), yaw=0.0, frame_id="map", timeout=10)

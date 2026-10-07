@@ -11,7 +11,7 @@ from importlib.metadata import PackageNotFoundError, version
 
 
 class Ros2ObservationBridge:
-    def __init__(self, on_observation, *, publish_topic="/body/observations", input_topic="/body/observations_in"):
+    def __init__(self, on_observation, *, publish_topic="/body/observations", input_topic="/body/observations_in", nav2_simulation_enabled=False):
         self.on_observation = on_observation
         self.publish_topic = publish_topic
         self.input_topic = input_topic
@@ -27,6 +27,8 @@ class Ros2ObservationBridge:
         self._mock_nav2_client = None
         self._mock_nav2_server = None
         self._mock_nav2_action = "/pandorabox/mock_navigate_to_pose"
+        self._nav2_simulation_enabled = bool(nav2_simulation_enabled)
+        self._nav2_simulation = None
         self._status = {"state": "stopped", "available": False, "last_error": ""}
 
     def status(self):
@@ -54,9 +56,11 @@ class Ros2ObservationBridge:
             pass
         action_server_available = False
         mock_action_server_available = False
+        graph = {"topics": {}, "services": []}
         if nav2_packages_available and node is not None:
             try:
                 services = node.get_service_names_and_types()
+                graph["services"] = [name for name, _types in services]
                 expected_type = "nav2_msgs/action/NavigateToPose_SendGoal"
                 action_server_available = any(
                     name.rstrip("/").endswith("/navigate_to_pose/_action/send_goal")
@@ -71,12 +75,57 @@ class Ros2ObservationBridge:
             except Exception:
                 action_server_available = False
                 mock_action_server_available = False
+        if node is not None:
+            try:
+                graph["topics"] = {
+                    name: types for name, types in node.get_topic_names_and_types()
+                }
+            except Exception:
+                graph["topics"] = {}
         result["nav2_packages_available"] = nav2_packages_available
         # Keep the old field as a compatibility alias for package availability.
         result["nav2_action_available"] = nav2_packages_available
         result["nav2_server_available"] = action_server_available
         result["nav2_mock_server_available"] = mock_action_server_available
+        result["nav2_preflight"] = self._nav2_preflight(
+            nav2_packages_available, action_server_available, graph["topics"], graph["services"]
+        )
+        result["nav2_simulation"] = self._nav2_simulation.status() if self._nav2_simulation else {
+            "enabled": False, "simulation_only": True, "note": "Enable the Nav2 simulation in Body ROS 2 settings."
+        }
         return result
+
+    @staticmethod
+    def _nav2_preflight(packages_available, action_server_available, topics, services):
+        """Report graph prerequisites without treating package presence as robot readiness."""
+        requirements = {
+            "/odom": {"nav_msgs/msg/Odometry"},
+            "/tf": {"tf2_msgs/msg/TFMessage"},
+            "/scan": {"sensor_msgs/msg/LaserScan", "sensor_msgs/msg/PointCloud2"},
+            "/cmd_vel": {"geometry_msgs/msg/Twist", "geometry_msgs/msg/TwistStamped"},
+        }
+        present = {}
+        for topic, accepted in requirements.items():
+            types = set(topics.get(topic, []))
+            present[topic] = bool(types & accepted)
+        blockers = []
+        if not packages_available:
+            blockers.append("ROS 2 navigation message packages are unavailable")
+        if not action_server_available:
+            blockers.append("Nav2 NavigateToPose action server is not running")
+        for topic in ("/odom", "/tf", "/scan", "/cmd_vel"):
+            if not present[topic]:
+                blockers.append(f"required ROS graph topic/type missing: {topic}")
+        if action_server_available and not present["/cmd_vel"]:
+            blockers.append("Nav2 controller output is not visible to a robot adapter")
+        return {
+            "ready": not blockers,
+            "packages_available": bool(packages_available),
+            "action_server_available": bool(action_server_available),
+            "topics": present,
+            "blockers": blockers,
+            "scope": "ROS graph preflight only; does not certify frames, sensor freshness, calibration, or physical safety",
+        }
 
     def start(self):
         with self._lock:
@@ -109,6 +158,8 @@ class Ros2ObservationBridge:
                     )
                 except Exception:
                     self._mock_nav2_server = None
+                if self._nav2_simulation_enabled:
+                    self._start_nav2_simulation(node)
                 executor = SingleThreadedExecutor(context=context)
                 executor.add_node(node)
                 self._node, self._executor, self._context = node, executor, context
@@ -118,6 +169,30 @@ class Ros2ObservationBridge:
             except Exception as exc:
                 self._status = {"state": "error", "available": False, "last_error": str(exc)}
             return self.status()
+
+    def _start_nav2_simulation(self, node=None):
+        node = node or self._node
+        if node is None:
+            raise RuntimeError("ROS 2 bridge must be running before starting Nav2 simulation inputs")
+        if self._nav2_simulation is None:
+            from .nav2_simulation import Nav2Simulation
+            self._nav2_simulation = Nav2Simulation(node)
+        self._nav2_simulation_enabled = True
+        return self._nav2_simulation.status()
+
+    def set_nav2_simulation(self, enabled):
+        enabled = bool(enabled)
+        if enabled:
+            if self._node is None:
+                status = self.start()
+                if not status.get("available"):
+                    raise RuntimeError(status.get("last_error") or "ROS 2 is unavailable")
+            return self._start_nav2_simulation()
+        if self._nav2_simulation is not None:
+            self._nav2_simulation.stop()
+            self._nav2_simulation = None
+        self._nav2_simulation_enabled = False
+        return {"enabled": False, "simulation_only": True}
 
     def _spin(self, executor):
         try:
@@ -275,13 +350,17 @@ class Ros2ObservationBridge:
                     "yaw": yaw, "action_status": int(response.status), "simulation_only": True}
     def stop(self):
         with self._lock:
+            simulation = self._nav2_simulation
             executor, node, context, rclpy = self._executor, self._node, self._context, self._rclpy
             self._executor = self._node = self._publisher = self._context = None
             self._thread = None
             self._nav2_client = None
             self._mock_nav2_client = None
             self._mock_nav2_server = None
+            self._nav2_simulation = None
             self._status.update(state="stopped", available=rclpy is not None)
+        if simulation is not None:
+            simulation.stop()
         if executor is not None:
             executor.shutdown(timeout_sec=1.0)
         if node is not None:

@@ -12,6 +12,7 @@ class FakeHost:
         self.worldmodel = None
         self._ros2_bridge = None
         self.sent = []
+        self.config = {}
 
     def robot_status(self):
         return {"last_ok": None}
@@ -95,6 +96,26 @@ class WorkflowManagerTests(unittest.TestCase):
         self.assertTrue(status["nav2_packages_available"])
         self.assertTrue(status["nav2_action_available"])
         self.assertFalse(status["nav2_server_available"])
+        self.assertFalse(status["nav2_preflight"]["ready"])
+        self.assertIn("required ROS graph topic/type missing: /odom", status["nav2_preflight"]["blockers"])
+
+    def test_nav2_preflight_requires_robot_graph_contract_not_only_packages(self):
+        from body_runtime_host.ros2_bridge import Ros2ObservationBridge
+
+        preflight = Ros2ObservationBridge._nav2_preflight(
+            True,
+            True,
+            {
+                "/odom": ["nav_msgs/msg/Odometry"],
+                "/tf": ["tf2_msgs/msg/TFMessage"],
+                "/scan": ["sensor_msgs/msg/LaserScan"],
+                "/cmd_vel": ["geometry_msgs/msg/Twist"],
+            },
+            [],
+        )
+        self.assertTrue(preflight["ready"])
+        self.assertEqual(preflight["blockers"], [])
+        self.assertIn("does not certify", preflight["scope"])
 
     def test_ros2_status_reports_mock_action_without_mistaking_it_for_real_nav2(self):
         import sys
@@ -215,6 +236,33 @@ class WorkflowManagerTests(unittest.TestCase):
         self.assertTrue(outputs["sim_nav_plan"]["replanned_for_dynamic_target"])
         self.assertEqual(outputs["sim_mission_check"]["status"], "goal_reached")
         self.assertEqual(self.host.sent, [])
+
+    def test_autonomy_workflow_uses_real_nav2_action_only_for_enabled_simulation_stack(self):
+        class RunningNav2Simulation:
+            def __init__(self):
+                self.goals = []
+
+            def status(self):
+                return {"nav2_server_available": True, "nav2_simulation": {"enabled": True}}
+
+            def navigate_to_pose(self, **goal):
+                self.goals.append(goal)
+                return {"status": "succeeded", **goal}
+
+        bridge = RunningNav2Simulation()
+        self.host._ros2_bridge = bridge
+        self.host.config["BODY_NAV2_SIMULATION_ENABLED"] = True
+        workflow = self.manager.save(self.manager.autonomy_mock_workflow())
+
+        run = self.manager.execute(workflow["id"])
+
+        self.assertEqual(run["status"], "completed", run["error"])
+        outputs = {row["type"]: row.get("output") for row in run["nodes"]}
+        self.assertEqual(outputs["sim_nav2_action"]["server"], "nav2_bringup_simulation")
+        self.assertTrue(outputs["sim_nav2_action"]["simulated"])
+        self.assertFalse(outputs["sim_nav2_action"]["actuation"])
+        self.assertEqual(len(bridge.goals), 1)
+        self.assertEqual(bridge.goals[0]["frame_id"], "map")
 
     def test_autonomy_mock_workflow_fails_closed_on_stale_sensors_and_blocked_route(self):
         for config_key in ("inject_stale_data", "inject_blocked_route"):

@@ -25,6 +25,7 @@ import logging
 import math
 import os
 import signal
+import shlex
 import ssl
 import subprocess
 import threading
@@ -168,6 +169,9 @@ class BodyHost:
         self._sensorimotor_test_status: dict = {"status": "idle", "job_id": None}
         self._sensorimotor_test_thread: threading.Thread | None = None
         self._ros2_bridge = None
+        self._nav2_process_lock = threading.Lock()
+        self._nav2_process = None
+        self._nav2_log_handle = None
         self._workflow_manager = None
         self._repository_updater = RepositoryUpdater(ROOT)
 
@@ -291,16 +295,105 @@ class BodyHost:
 
     def ros2_settings(self) -> dict:
         enabled = bool(self.value("BODY_ROS2_ENABLED", False))
+        nav2_simulation_enabled = bool(self.value("BODY_NAV2_SIMULATION_ENABLED", False))
         bridge = self._ros2_bridge
         status = bridge.status() if bridge is not None else self._ros2_probe_status()
         return {
             "enabled": enabled,
+            "nav2_simulation_enabled": nav2_simulation_enabled,
             "publish_topic": str(self.value("BODY_ROS2_PUBLISH_TOPIC", "/body/observations")),
             "input_topic": str(self.value("BODY_ROS2_INPUT_TOPIC", "/body/observations_in")),
             "status": status,
+            "nav2_stack": self.nav2_stack_status(),
             "contract": "pandorabox.body_observation.v1",
             "actuation_enabled": False,
         }
+
+    def nav2_stack_status(self) -> dict:
+        process = self._nav2_process
+        if process is None:
+            return {"state": "stopped", "simulation_only": True, "log": str(ROOT / "logs" / "body_nav2_sim.log")}
+        code = process.poll()
+        return {
+            "state": "running" if code is None else "exited",
+            "pid": process.pid,
+            "returncode": code,
+            "simulation_only": True,
+            "log": str(ROOT / "logs" / "body_nav2_sim.log"),
+        }
+
+    def start_nav2_simulation_stack(self) -> dict:
+        with self._nav2_process_lock:
+            return self._start_nav2_simulation_stack_locked()
+
+    def _start_nav2_simulation_stack_locked(self) -> dict:
+        if os.name != "posix":
+            raise RuntimeError("The Nav2 launch manager runs on the Linux Body host")
+        if not bool(self.value("BODY_ROS2_ENABLED", False)) or not bool(self.value("BODY_NAV2_SIMULATION_ENABLED", False)):
+            raise RuntimeError("Enable the ROS 2 bridge and synthetic Nav2 inputs first")
+        if self._ros2_bridge is None or not self._ros2_bridge.status().get("available"):
+            raise RuntimeError("ROS 2 bridge is not running")
+        if not self._ros2_bridge.status().get("nav2_packages_available"):
+            raise RuntimeError("Nav2 packages are unavailable in the sourced ROS environment")
+        current = self.nav2_stack_status()
+        if current["state"] == "running":
+            return current
+        distro = str(self._ros2_bridge.status().get("ros_distro") or os.environ.get("ROS_DISTRO") or "jazzy")
+        setup = Path("/opt/ros") / distro / "setup.bash"
+        params = ROOT / "deploy" / "nav2_fnk_sim_params.yaml"
+        if not setup.is_file() or not params.is_file():
+            raise RuntimeError(f"ROS setup or Nav2 parameters missing: {setup} / {params}")
+        log_path = ROOT / "logs" / "body_nav2_sim.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        command = (
+            f"source {shlex.quote(str(setup))} && exec ros2 launch nav2_bringup "
+            f"navigation_launch.py params_file:={shlex.quote(str(params))} "
+            "use_sim_time:=False autostart:=True"
+        )
+        handle = log_path.open("ab", buffering=0)
+        try:
+            process = subprocess.Popen(
+                ["bash", "-lc", command], cwd=ROOT,
+                stdin=subprocess.DEVNULL, stdout=handle, stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+        except Exception:
+            handle.close()
+            raise
+        self._nav2_log_handle = handle
+        self._nav2_process = process
+        time.sleep(0.15)
+        status = self.nav2_stack_status()
+        if status["state"] != "running":
+            self._nav2_process = None
+            handle.close()
+            self._nav2_log_handle = None
+            raise RuntimeError(f"Nav2 launch exited immediately; inspect {log_path}")
+        return status
+
+    def stop_nav2_simulation_stack(self) -> dict:
+        with self._nav2_process_lock:
+            return self._stop_nav2_simulation_stack_locked()
+
+    def _stop_nav2_simulation_stack_locked(self) -> dict:
+        process = self._nav2_process
+        if process is not None and process.poll() is None:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+                process.wait(timeout=8)
+            except ProcessLookupError:
+                process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                    process.wait(timeout=3)
+                except ProcessLookupError:
+                    pass
+        self._nav2_process = None
+        if self._nav2_log_handle is not None:
+            self._nav2_log_handle.close()
+            self._nav2_log_handle = None
+        return self.nav2_stack_status()
 
     @staticmethod
     def _ros2_probe_status() -> dict:
@@ -346,6 +439,12 @@ class BodyHost:
         self._bridge_put(entry)
 
     def update_ros2_settings(self, payload: dict) -> dict:
+        enabled = _payload_bool(payload.get("enabled"))
+        nav2_simulation_enabled = _payload_bool(
+            payload.get("nav2_simulation_enabled", self.value("BODY_NAV2_SIMULATION_ENABLED", False))
+        )
+        if nav2_simulation_enabled and not enabled:
+            raise ValueError("Enable the ROS 2 bridge before enabling Nav2 simulation topics")
         publish_topic = str(payload.get("publish_topic") or "/body/observations").strip()
         input_topic = str(payload.get("input_topic") or "/body/observations_in").strip()
         for topic in (publish_topic, input_topic):
@@ -354,7 +453,8 @@ class BodyHost:
         if publish_topic == input_topic:
             raise ValueError("ROS 2 input and output topics must differ to prevent observation loops")
         self.config.update({
-            "BODY_ROS2_ENABLED": _payload_bool(payload.get("enabled")),
+            "BODY_ROS2_ENABLED": enabled,
+            "BODY_NAV2_SIMULATION_ENABLED": nav2_simulation_enabled,
             "BODY_ROS2_PUBLISH_TOPIC": publish_topic,
             "BODY_ROS2_INPUT_TOPIC": input_topic,
         })
@@ -362,6 +462,9 @@ class BodyHost:
         persisted = self._load_config()
         if bool(persisted.get("BODY_ROS2_ENABLED", False)) != bool(self.config["BODY_ROS2_ENABLED"]):
             raise OSError("ROS 2 settings were not persisted")
+        if bool(persisted.get("BODY_NAV2_SIMULATION_ENABLED", False)) != bool(self.config["BODY_NAV2_SIMULATION_ENABLED"]):
+            raise OSError("Nav2 simulation setting was not persisted")
+        self.stop_nav2_simulation_stack()
         self._stop_ros2_bridge()
         if self.config["BODY_ROS2_ENABLED"]:
             self._start_ros2_bridge()
@@ -374,12 +477,14 @@ class BodyHost:
                 self._accept_ros2_observation,
                 publish_topic=str(self.value("BODY_ROS2_PUBLISH_TOPIC", "/body/observations")),
                 input_topic=str(self.value("BODY_ROS2_INPUT_TOPIC", "/body/observations_in")),
+                nav2_simulation_enabled=bool(self.value("BODY_NAV2_SIMULATION_ENABLED", False)),
             )
         return self._ros2_bridge.start()
 
     def _stop_ros2_bridge(self) -> None:
         if self._ros2_bridge is not None:
             self._ros2_bridge.stop()
+            self._ros2_bridge = None
 
     def camera_settings(self) -> dict:
         startup_enabled = bool(self.value("BODY_CAMERA_STARTUP_ENABLED", False))
@@ -2577,6 +2682,7 @@ class BodyHost:
         with self._local_camera_lock:
             if self._local_camera is not None:
                 self._local_camera.stop()
+        self.stop_nav2_simulation_stack()
         self._stop_ros2_bridge()
         self.stop_robot_sim()
 
@@ -2951,6 +3057,13 @@ class BodyHost:
                         self._send(owner.update_ros2_settings(self._read_body()))
                     except (OSError, ValueError) as exc:
                         self._send({"ok": False, "error": str(exc)}, 400)
+                elif path == "/ros2/nav2/simulation/start":
+                    try:
+                        self._send({"ok": True, **owner.start_nav2_simulation_stack()})
+                    except (OSError, RuntimeError, ValueError) as exc:
+                        self._send({"ok": False, "error": str(exc)}, 409)
+                elif path == "/ros2/nav2/simulation/stop":
+                    self._send({"ok": True, **owner.stop_nav2_simulation_stack()})
                 elif path == "/body/camera":
                     try:
                         self._send(owner.update_camera_settings(self._read_body()))
