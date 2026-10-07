@@ -140,7 +140,9 @@ fi
 if [[ -n "${ROS_DISTRO:-}" && -f "/opt/ros/${ROS_DISTRO}/setup.bash" ]]; then
   # ROS 2 Python modules are provided by the distro environment, not pip.
   # shellcheck disable=SC1090
+  set +u
   source "/opt/ros/${ROS_DISTRO}/setup.bash"
+  set -u
 fi
 BODY_PYTHON="body_venv/bin/python"
 if [[ ! -x "$BODY_PYTHON" ]] || ! "$BODY_PYTHON" -c "import sys" >/dev/null 2>&1; then
