@@ -163,6 +163,37 @@ class WorkflowManagerTests(unittest.TestCase):
                 "sim_base_navigate", [], base["config"]
             )], {**guard["config"], "x": 8.0})
 
+    def test_autonomy_mock_workflow_runs_sensor_to_fnhr_intent_without_hardware(self):
+        workflow = self.manager.autonomy_mock_workflow()
+        saved = self.manager.save(workflow)
+
+        run = self.manager.execute(saved["id"])
+
+        self.assertEqual(run["status"], "completed", run["error"])
+        self.assertEqual(run["execution_mode"], "simulation")
+        outputs = {row["type"]: row.get("output") for row in run["nodes"]}
+        self.assertEqual(len(outputs["sim_sensor_suite"]["sensors"]), 5)
+        self.assertEqual(outputs["sim_safety"]["state"], "clear")
+        self.assertEqual(outputs["sim_nav2_action"]["server"], "body_mock_fallback")
+        self.assertGreater(outputs["sim_fnk_gateway"]["command_count"], 0)
+        self.assertEqual(outputs["sim_fnk_gateway"]["controller_owner"], "FNK0031 firmware / FNHR")
+        self.assertEqual(outputs["sim_fnk_gateway"]["actuation"], False)
+        self.assertGreater(outputs["sim_nav_plan"]["length_m"], 4.0)
+        self.assertTrue(outputs["sim_nav_plan"]["replanned_for_dynamic_target"])
+        self.assertEqual(outputs["sim_mission_check"]["status"], "goal_reached")
+        self.assertEqual(self.host.sent, [])
+
+    def test_autonomy_mock_workflow_fails_closed_on_stale_sensors_and_blocked_route(self):
+        for config_key in ("inject_stale_data", "inject_blocked_route"):
+            workflow = self.manager.autonomy_mock_workflow()
+            workflow["nodes"][0 if config_key == "inject_stale_data" else 3]["config"][config_key] = True
+            saved = self.manager.save(workflow)
+            run = self.manager.execute(saved["id"])
+            self.assertEqual(run["status"], "failed")
+            self.assertIn("mock Nav2 action refuses", run["error"])
+            self.assertEqual(run["execution_mode"], "simulation")
+        self.assertEqual(self.host.sent, [])
+
     def test_typed_workflow_connections_reject_incompatible_pose_handoff(self):
         with self.assertRaisesRegex(WorkflowError, "incompatible connection"):
             self.manager.save({

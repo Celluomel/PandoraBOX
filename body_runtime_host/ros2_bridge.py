@@ -24,6 +24,9 @@ class Ros2ObservationBridge:
         self._context = None
         self._nav2_client = None
         self._nav2_lock = threading.Lock()
+        self._mock_nav2_client = None
+        self._mock_nav2_server = None
+        self._mock_nav2_action = "/pandorabox/mock_navigate_to_pose"
         self._status = {"state": "stopped", "available": False, "last_error": ""}
 
     def status(self):
@@ -50,19 +53,20 @@ class Ros2ObservationBridge:
         except Exception:
             pass
         action_server_available = False
+        mock_action_server_available = False
         if nav2_packages_available and node is not None:
             try:
-                action_server_available = any(
-                    name.rstrip("/").rsplit("/", 1)[-1] == "navigate_to_pose"
-                    and "nav2_msgs/action/NavigateToPose" in types
-                    for name, types in node.get_action_names_and_types()
-                )
+                actions = node.get_action_names_and_types()
+                action_server_available = any(name.rstrip("/") == "/navigate_to_pose" and "nav2_msgs/action/NavigateToPose" in types for name, types in actions)
+                mock_action_server_available = any(name.rstrip("/") == self._mock_nav2_action and "nav2_msgs/action/NavigateToPose" in types for name, types in actions)
             except Exception:
                 action_server_available = False
+                mock_action_server_available = False
         result["nav2_packages_available"] = nav2_packages_available
         # Keep the old field as a compatibility alias for package availability.
         result["nav2_action_available"] = nav2_packages_available
         result["nav2_server_available"] = action_server_available
+        result["nav2_mock_server_available"] = mock_action_server_available
         return result
 
     def start(self):
@@ -84,6 +88,18 @@ class Ros2ObservationBridge:
                 node = rclpy.create_node("pandorabox_body_bridge", context=context)
                 self._publisher = node.create_publisher(String, self.publish_topic, 10)
                 node.create_subscription(String, self.input_topic, self._receive, 10)
+                try:
+                    from nav2_msgs.action import NavigateToPose
+                    from rclpy.action import ActionServer, CancelResponse, GoalResponse
+
+                    self._mock_nav2_server = ActionServer(
+                        node, NavigateToPose, self._mock_nav2_action,
+                        execute_callback=self._execute_mock_nav2_goal,
+                        goal_callback=lambda _request: GoalResponse.ACCEPT,
+                        cancel_callback=lambda _goal: CancelResponse.ACCEPT,
+                    )
+                except Exception:
+                    self._mock_nav2_server = None
                 executor = SingleThreadedExecutor(context=context)
                 executor.add_node(node)
                 self._node, self._executor, self._context = node, executor, context
@@ -191,12 +207,71 @@ class Ros2ObservationBridge:
                 self._status["last_nav2_goal_at"] = time.time()
                 self._status["nav2_goal_count"] = int(self._status.get("nav2_goal_count", 0)) + 1
             return {"status": "succeeded", "frame_id": frame_id, "x": x, "y": y, "yaw": yaw, "action_status": status}
+
+    def _execute_mock_nav2_goal(self, goal_handle):
+        from nav2_msgs.action import NavigateToPose
+
+        result = NavigateToPose.Result()
+        result.error_code = NavigateToPose.Result.NONE
+        result.error_msg = "Simulation only: goal acknowledged; no robot motion"
+        goal_handle.succeed()
+        with self._lock:
+            self._status["mock_nav2_goal_count"] = int(self._status.get("mock_nav2_goal_count", 0)) + 1
+            self._status["last_mock_nav2_goal_at"] = time.time()
+        return result
+
+    def navigate_to_pose_mock(self, *, x: float, y: float, yaw: float, frame_id: str = "map", timeout: float = 10.0):
+        """Exercise the ROS 2 NavigateToPose action protocol on a non-hardware mock endpoint."""
+        from action_msgs.msg import GoalStatus
+        from geometry_msgs.msg import PoseStamped
+        from nav2_msgs.action import NavigateToPose
+        from rclpy.action import ActionClient
+
+        with self._nav2_lock:
+            node, executor = self._node, self._executor
+            if node is None or executor is None or not self.status().get("available"):
+                raise RuntimeError("ROS 2 bridge is not running")
+            if self._mock_nav2_client is None:
+                self._mock_nav2_client = ActionClient(node, NavigateToPose, self._mock_nav2_action)
+            client = self._mock_nav2_client
+            if not client.wait_for_server(timeout_sec=min(3.0, max(0.1, timeout))):
+                raise RuntimeError("PandoraBOX mock Nav2 action server is unavailable")
+            goal = NavigateToPose.Goal()
+            goal.pose = PoseStamped()
+            goal.pose.header.frame_id = frame_id
+            goal.pose.header.stamp = node.get_clock().now().to_msg()
+            goal.pose.pose.position.x = x
+            goal.pose.pose.position.y = y
+            goal.pose.pose.orientation.z = math.sin(yaw / 2.0)
+            goal.pose.pose.orientation.w = math.cos(yaw / 2.0)
+            event = threading.Event()
+            box = {}
+            future = client.send_goal_async(goal)
+            future.add_done_callback(lambda done: (box.setdefault("goal", done.result()), event.set()))
+            if not event.wait(min(5.0, timeout)):
+                raise TimeoutError("timed out waiting for mock Nav2 goal acceptance")
+            handle = box["goal"]
+            if not handle.accepted:
+                raise RuntimeError("mock Nav2 action rejected goal")
+            event.clear()
+            future = handle.get_result_async()
+            future.add_done_callback(lambda done: (box.setdefault("result", done.result()), event.set()))
+            if not event.wait(timeout):
+                handle.cancel_goal_async()
+                raise TimeoutError("timed out waiting for mock Nav2 result")
+            response = box["result"]
+            if int(getattr(response, "status", -1)) != GoalStatus.STATUS_SUCCEEDED:
+                raise RuntimeError(f"mock Nav2 action ended with status {response.status}")
+            return {"status": "succeeded", "frame_id": frame_id, "x": x, "y": y,
+                    "yaw": yaw, "action_status": int(response.status), "simulation_only": True}
     def stop(self):
         with self._lock:
             executor, node, context, rclpy = self._executor, self._node, self._context, self._rclpy
             self._executor = self._node = self._publisher = self._context = None
             self._thread = None
             self._nav2_client = None
+            self._mock_nav2_client = None
+            self._mock_nav2_server = None
             self._status.update(state="stopped", available=rclpy is not None)
         if executor is not None:
             executor.shutdown(timeout_sec=1.0)

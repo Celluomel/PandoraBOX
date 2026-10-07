@@ -2702,6 +2702,8 @@ class BodyHost:
                     self._send(owner.workflow_manager.catalog())
                 elif path == "/workflows/templates/mobile-manipulation":
                     self._send(owner.workflow_manager.mobile_manipulation_demo())
+                elif path == "/workflows/templates/autonomy-mock":
+                    self._send(owner.workflow_manager.autonomy_mock_workflow())
                 elif path == "/workflows":
                     self._send(owner.workflow_manager.list())
                 elif path.startswith("/workflows/"):

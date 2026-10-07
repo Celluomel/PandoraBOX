@@ -37,6 +37,8 @@ class WorkflowManager:
         "camera", "lidar", "imu", "ros2_in", "perception", "fusion",
         "world", "safety", "brain", "ros2_out", "fnk",
         "sim_base_navigate", "frame_guard", "sim_arm_action", "nav2_navigate",
+        "sim_sensor_suite", "sim_localize", "sim_fusion", "sim_nav_plan", "sim_safety",
+        "sim_nav2_action", "sim_fnk_gateway", "sim_mission_check",
     }
     NODE_CONTRACTS = {
         "camera": {"group": "Input", "output": "camera_frame"},
@@ -54,6 +56,14 @@ class WorkflowManager:
         "frame_guard": {"group": "Robot · simulation", "input": "pose", "output": "safe_pose"},
         "sim_arm_action": {"group": "Robot · simulation", "input": "safe_pose", "output": "task_result"},
         "nav2_navigate": {"group": "Robot · ROS 2 action", "input": "safety_decision", "output": "nav2_result"},
+        "sim_sensor_suite": {"group": "Simulation · inputs", "output": "sim_sensor_bundle"},
+        "sim_localize": {"group": "Simulation · autonomy", "input": "sim_sensor_bundle", "output": "sim_localization"},
+        "sim_fusion": {"group": "Simulation · autonomy", "input": "sim_sensor_bundle", "output": "sim_fused_scene"},
+        "sim_nav_plan": {"group": "Simulation · autonomy", "input": "any", "output": "sim_nav_plan"},
+        "sim_safety": {"group": "Simulation · safety", "input": "any", "output": "sim_safety_decision"},
+        "sim_nav2_action": {"group": "Simulation · ROS 2", "input": "any", "output": "sim_nav_result"},
+        "sim_fnk_gateway": {"group": "Simulation · robot adapter", "input": "sim_nav_result", "output": "sim_fnk_command_intents"},
+        "sim_mission_check": {"group": "Simulation · autonomy", "input": "any", "output": "sim_mission_report"},
     }
 
     MOBILE_MANIPULATION_DEMO = {
@@ -67,6 +77,24 @@ class WorkflowManager:
              "config": {"device_id": "sim_manipulator", "action": "grasp", "object_id": "demo_object", "frame_id": "map"}},
         ],
         "edges": [["approach", "shared_frame"], ["shared_frame", "manipulate"]],
+    }
+
+    AUTONOMY_MOCK_WORKFLOW = {
+        "name": "Maximum autonomy · sensors → planning → FNHR (simulation)",
+        "nodes": [
+            {"id": "sensors", "type": "sim_sensor_suite", "label": "Scenario · camera + LiDAR + mmWave + IMU + odometry", "x": 30, "y": 190, "config": {}},
+            {"id": "localization", "type": "sim_localize", "label": "Time sync + state estimation", "x": 270, "y": 65, "config": {}},
+            {"id": "fusion", "type": "sim_fusion", "label": "Semantic / metric sensor fusion", "x": 270, "y": 315, "config": {}},
+            {"id": "planner", "type": "sim_nav_plan", "label": "Body planner · route + dynamic replan", "x": 515, "y": 190, "config": {}},
+            {"id": "safety", "type": "sim_safety", "label": "Freshness + confidence + stop gate", "x": 760, "y": 190, "config": {}},
+            {"id": "nav2", "type": "sim_nav2_action", "label": "Nav2 NavigateToPose · mock action", "x": 1005, "y": 190, "config": {}},
+            {"id": "fnk", "type": "sim_fnk_gateway", "label": "Body USB → FNK0031 / FNHR intent adapter", "x": 1245, "y": 65, "config": {}},
+            {"id": "mission", "type": "sim_mission_check", "label": "Feedback · recovery · mission audit", "x": 1245, "y": 315, "config": {}},
+        ],
+        "edges": [["sensors", "localization"], ["sensors", "fusion"], ["localization", "planner"],
+                  ["fusion", "planner"], ["planner", "safety"], ["fusion", "safety"], ["localization", "safety"],
+                  ["safety", "nav2"], ["planner", "nav2"], ["nav2", "fnk"], ["sensors", "mission"], ["fusion", "mission"],
+                  ["planner", "mission"], ["safety", "mission"], ["nav2", "mission"], ["fnk", "mission"]],
     }
 
     def __init__(self, host, path: Path):
@@ -125,6 +153,10 @@ class WorkflowManager:
     @classmethod
     def mobile_manipulation_demo(cls) -> dict[str, Any]:
         return json.loads(json.dumps(cls.MOBILE_MANIPULATION_DEMO))
+
+    @classmethod
+    def autonomy_mock_workflow(cls) -> dict[str, Any]:
+        return json.loads(json.dumps(cls.AUTONOMY_MOCK_WORKFLOW))
 
     def _load(self) -> None:
         if not self.path.exists():
@@ -310,6 +342,47 @@ class WorkflowManager:
 
     def _execute_node(self, node_type: str, inputs: list[Any], config: dict[str, Any] | None = None) -> Any:
         config = config or {}
+        if node_type.startswith("sim_"):
+            from body_runtime_host import autonomy_mock
+
+            if node_type == "sim_sensor_suite":
+                return autonomy_mock.sensor_suite(config)
+            bundle = next((item for item in reversed(inputs) if isinstance(item, dict) and item.get("kind") == "sim_sensor_bundle"), None)
+            localization = next((item for item in reversed(inputs) if isinstance(item, dict) and item.get("kind") == "sim_localization"), None)
+            scene = next((item for item in reversed(inputs) if isinstance(item, dict) and item.get("kind") == "sim_fused_scene"), None)
+            plan = next((item for item in reversed(inputs) if isinstance(item, dict) and item.get("kind") == "sim_nav_plan"), None)
+            gate = next((item for item in reversed(inputs) if isinstance(item, dict) and item.get("kind") == "sim_safety_decision"), None)
+            nav = next((item for item in reversed(inputs) if isinstance(item, dict) and item.get("kind") == "sim_nav_result"), None)
+            fnk = next((item for item in reversed(inputs) if isinstance(item, dict) and item.get("kind") == "sim_fnk_command_intents"), None)
+            if node_type == "sim_localize":
+                return autonomy_mock.localize(bundle or {})
+            if node_type == "sim_fusion":
+                return autonomy_mock.fuse_scene(bundle or {})
+            if node_type == "sim_nav_plan":
+                return autonomy_mock.plan_route(scene or {}, localization or {}, config)
+            if node_type == "sim_safety":
+                return autonomy_mock.safety_check(scene or {}, localization or {}, plan or {})
+            if node_type == "sim_nav2_action":
+                if not gate or gate.get("state") != "clear":
+                    raise WorkflowError("mock Nav2 action refuses a blocked simulation safety gate")
+                goal = plan["goal"]
+                bridge = self.host._ros2_bridge
+                action_result = None
+                if bridge is not None and hasattr(bridge, "navigate_to_pose_mock"):
+                    try:
+                        action_result = bridge.navigate_to_pose_mock(x=float(goal[0]), y=float(goal[1]), yaw=0.0, frame_id="map", timeout=10)
+                    except Exception as exc:
+                        return {"kind": "sim_nav_result", "status": "failed", "server": "mock_action_server", "error": str(exc), "simulated": True, "actuation": False}
+                return {"kind": "sim_nav_result", "status": "succeeded", "server": "ros2_mock_action" if action_result else "body_mock_fallback",
+                        "frame_id": "map", "goal": goal, "path": plan.get("path", []), "detail": action_result,
+                        "note": "Mock Nav2 action only; no /navigate_to_pose goal and no robot movement.", "simulated": True, "actuation": False}
+            if node_type == "sim_fnk_gateway":
+                return autonomy_mock.fnk_command_intents(nav or {})
+            if node_type == "sim_mission_check":
+                if not all((bundle, scene, plan, gate, nav, fnk)):
+                    raise WorkflowError("mission audit requires sensor, scene, plan, safety, Nav2 and FNK-adapter results")
+                return autonomy_mock.mission_result(scene, plan, nav, gate, fnk)
+
         if node_type == "sim_base_navigate":
             target = self._pose_from_config(config)
             return {

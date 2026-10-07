@@ -253,6 +253,8 @@ The architecture and data-flow diagrams are maintained in
 separation, perception fusion, Brain-to-Body planning, robot transport and the
 deployment path. The development sequence and acceptance gates remain in
 [`docs/EMBODIED_DEVELOPMENT_BLUEPRINT.md`](docs/EMBODIED_DEVELOPMENT_BLUEPRINT.md).
+The end-to-end autonomy loop, Nav2/FNK ownership boundary and simulation
+workflow are documented in [`docs/BODY_AUTONOMY_WORKFLOW.md`](docs/BODY_AUTONOMY_WORKFLOW.md).
 
 ## Cognitive cycle
 
