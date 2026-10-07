@@ -17,6 +17,6 @@ pyserial>=3.5,<4
 # Local multilingual text embeddings. FastEmbed uses ONNX Runtime; model
 # weights are downloaded lazily into Body-owned data on first use.
 fastembed>=0.7,<1
-# Optional ROS 2 integration is provided by the OS ROS installation, not pip.
+# ROS 2, its message packages, and Nav2 are OS packages, not pip dependencies.
 # On Ubuntu/VENTUNO Q run ./install_body_ros2.sh (or start with
-# BODY_INSTALL_ROS2=1); the Body GUI reports ROS_DISTRO/rclpy availability.
+# BODY_INSTALL_ROS2=1); start_body.sh then sources the installed ROS distro.

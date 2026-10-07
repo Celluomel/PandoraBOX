@@ -130,6 +130,13 @@ fi
 if [[ "${BODY_INSTALL_ROS2:-0}" == "1" ]]; then
   bash ./install_body_ros2.sh
 fi
+if [[ -z "${ROS_DISTRO:-}" ]]; then
+  if [[ -f /opt/ros/jazzy/setup.bash ]]; then
+    export ROS_DISTRO=jazzy
+  elif [[ -f /opt/ros/humble/setup.bash ]]; then
+    export ROS_DISTRO=humble
+  fi
+fi
 if [[ -n "${ROS_DISTRO:-}" && -f "/opt/ros/${ROS_DISTRO}/setup.bash" ]]; then
   # ROS 2 Python modules are provided by the distro environment, not pip.
   # shellcheck disable=SC1090
