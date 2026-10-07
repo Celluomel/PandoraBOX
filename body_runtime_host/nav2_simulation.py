@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import os
 import time
 
 
@@ -26,8 +27,7 @@ class Nav2Simulation:
         from tf2_ros import StaticTransformBroadcaster, TransformBroadcaster
 
         self.node = node
-        self._Twist = Twist
-        self._TwistStamped = TwistStamped
+        distro = os.environ.get("ROS_DISTRO", "").lower()
         self._last_tick = time.monotonic()
         self._last_cmd = 0.0
         self._vx = self._vy = self._wz = 0.0
@@ -44,8 +44,14 @@ class Nav2Simulation:
         self._scan_pub = node.create_publisher(LaserScan, "/scan", 10)
         self._tf = TransformBroadcaster(node)
         self._static_tf = StaticTransformBroadcaster(node)
-        self._twist_sub = node.create_subscription(Twist, "/cmd_vel", self._receive_twist, 10)
-        self._stamped_sub = node.create_subscription(TwistStamped, "/cmd_vel", self._receive_stamped, 10)
+        # ROS 2 distributions expose only one command type on a topic. Jazzy's
+        # Nav2 controller publishes TwistStamped; older distributions use Twist.
+        if distro in {"jazzy", "kilted", "rolling"}:
+            self._twist_sub = None
+            self._stamped_sub = node.create_subscription(TwistStamped, "/cmd_vel", self._receive_stamped, 10)
+        else:
+            self._twist_sub = node.create_subscription(Twist, "/cmd_vel", self._receive_twist, 10)
+            self._stamped_sub = None
 
         static = TransformStamped()
         static.header.frame_id = "map"
@@ -182,8 +188,10 @@ class Nav2Simulation:
     def stop(self):
         self._timer.cancel()
         self.node.destroy_timer(self._timer)
-        self.node.destroy_subscription(self._twist_sub)
-        self.node.destroy_subscription(self._stamped_sub)
+        if self._twist_sub is not None:
+            self.node.destroy_subscription(self._twist_sub)
+        if self._stamped_sub is not None:
+            self.node.destroy_subscription(self._stamped_sub)
         self.node.destroy_publisher(self._map_pub)
         self.node.destroy_publisher(self._odom_pub)
         self.node.destroy_publisher(self._scan_pub)
