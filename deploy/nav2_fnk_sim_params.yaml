@@ -164,8 +164,8 @@ local_costmap:
       global_frame: odom
       robot_base_frame: base_link
       rolling_window: true
-      width: 6.0
-      height: 6.0
+      width: 6
+      height: 6
       resolution: 0.1
       update_frequency: 8.0
       publish_frequency: 4.0
