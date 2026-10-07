@@ -13,7 +13,7 @@ GRID = 0.25
 
 
 def sensor_suite(config: dict[str, Any]) -> dict[str, Any]:
-    now = time.time()
+    now = float(config.get("scenario_timestamp", time.time()))
     if config.get("inject_stale_data"):
         now -= 10
     return {
@@ -37,6 +37,45 @@ def sensor_suite(config: dict[str, Any]) -> dict[str, Any]:
             "odometry": {"timestamp": now, "frame_id": FRAME_ID, "position": [0.5, 0.0], "heading_deg": 0.0, "linear_speed_mps": 0.0, "confidence": 0.97},
         },
     }
+
+
+def scenario_start(config: dict[str, Any] | None = None) -> dict[str, Any]:
+    timestamp = time.time() - (10.0 if (config or {}).get("inject_stale_data") else 0.0)
+    return {"kind": "sim_scenario_clock", "scenario_id": SCENARIO_ID,
+            "timestamp": timestamp, "source": "simulation", "actuation": False}
+
+
+def sensor_fragment(modality: str, timestamp: float) -> dict[str, Any]:
+    if modality not in {"camera", "lidar", "mmwave", "imu", "odometry"}:
+        raise ValueError(f"unsupported simulated sensor modality: {modality}")
+    suite = sensor_suite({"scenario_timestamp": timestamp})
+    return {"kind": "sim_sensor_fragment", "scenario_id": SCENARIO_ID,
+            "source": "simulation", "simulated": True, "actuation": False,
+            "frame_id": FRAME_ID, "timestamp": float(timestamp), "modality": modality,
+            "sensor": suite["sensors"][modality]}
+
+
+def merge_sensor_fragments(fragments: list[dict[str, Any]]) -> dict[str, Any]:
+    required = {"camera", "lidar", "mmwave", "imu", "odometry"}
+    sensors = {}
+    timestamps = []
+    for fragment in fragments:
+        if not isinstance(fragment, dict) or fragment.get("kind") != "sim_sensor_fragment":
+            continue
+        modality = fragment.get("modality")
+        if modality in required and modality not in sensors:
+            sensors[modality] = fragment["sensor"]
+            timestamps.append(float(fragment["timestamp"]))
+    missing = sorted(required - sensors.keys())
+    if missing:
+        raise ValueError("sensor synchronizer missing inputs: " + ", ".join(missing))
+    skew = max(timestamps) - min(timestamps)
+    if skew > 0.1:
+        raise ValueError(f"sensor time skew too high ({skew:.3f}s > 0.100s)")
+    return {"kind": "sim_sensor_bundle", "scenario_id": SCENARIO_ID,
+            "source": "simulation", "simulated": True, "actuation": False,
+            "frame_id": FRAME_ID, "timestamp": max(timestamps), "sensors": sensors,
+            "sensor_time_skew_s": round(skew, 4)}
 
 
 def localize(bundle: dict[str, Any]) -> dict[str, Any]:

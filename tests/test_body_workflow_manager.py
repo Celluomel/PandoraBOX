@@ -218,6 +218,10 @@ class WorkflowManagerTests(unittest.TestCase):
 
     def test_autonomy_mock_workflow_runs_sensor_to_fnhr_intent_without_hardware(self):
         workflow = self.manager.autonomy_mock_workflow()
+        self.assertEqual({node["type"] for node in workflow["nodes"] if node["type"].endswith("_input")}, {
+            "sim_camera_input", "sim_lidar_input", "sim_mmwave_input", "sim_imu_input", "sim_odometry_input",
+        })
+        self.assertTrue(any(node["type"] == "sim_sensor_merge" for node in workflow["nodes"]))
         saved = self.manager.save(workflow)
 
         run = self.manager.execute(saved["id"])
@@ -225,7 +229,7 @@ class WorkflowManagerTests(unittest.TestCase):
         self.assertEqual(run["status"], "completed", run["error"])
         self.assertEqual(run["execution_mode"], "simulation")
         outputs = {row["type"]: row.get("output") for row in run["nodes"]}
-        self.assertEqual(len(outputs["sim_sensor_suite"]["sensors"]), 5)
+        self.assertEqual(len(outputs["sim_sensor_merge"]["sensors"]), 5)
         self.assertEqual(outputs["sim_safety"]["state"], "clear")
         self.assertTrue(outputs["sim_fusion"]["goal"]["range_confirmed"])
         self.assertEqual(outputs["sim_nav2_action"]["server"], "body_mock_fallback")
@@ -267,7 +271,8 @@ class WorkflowManagerTests(unittest.TestCase):
     def test_autonomy_mock_workflow_fails_closed_on_stale_sensors_and_blocked_route(self):
         for config_key in ("inject_stale_data", "inject_blocked_route"):
             workflow = self.manager.autonomy_mock_workflow()
-            workflow["nodes"][0 if config_key == "inject_stale_data" else 3]["config"][config_key] = True
+            target_type = "sim_scenario_start" if config_key == "inject_stale_data" else "sim_nav_plan"
+            next(node for node in workflow["nodes"] if node["type"] == target_type)["config"][config_key] = True
             saved = self.manager.save(workflow)
             run = self.manager.execute(saved["id"])
             self.assertEqual(run["status"], "failed")
@@ -316,6 +321,10 @@ class WorkflowManagerTests(unittest.TestCase):
         self.assertIn("ensureWorkflowEditor()", BODY_GUI_HTML)
         self.assertIn("Analyze with Body VLM", BODY_GUI_HTML)
         self.assertIn("/workflows/'+encodeURIComponent(workflowId)+'/analyze", BODY_GUI_HTML)
+        self.assertIn("Load full autonomy flow", BODY_GUI_HTML)
+        self.assertIn("Five independent sensor streams", BODY_GUI_HTML)
+        self.assertIn("y1=a.y+49", BODY_GUI_HTML)
+        self.assertIn("sim_sensor_merge", BODY_GUI_HTML)
         self.assertIn("new Set(Object.values(workflowBrickTypes).map(meta=>meta.group))", BODY_GUI_HTML)
         self.assertIn("view.dataset.workflowEditor='mounting'", BODY_GUI_HTML)
         self.assertIn("view.dataset.workflowEditor='1';", BODY_GUI_HTML)

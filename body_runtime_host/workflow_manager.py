@@ -37,7 +37,9 @@ class WorkflowManager:
         "camera", "lidar", "imu", "ros2_in", "perception", "fusion",
         "world", "safety", "brain", "ros2_out", "fnk",
         "sim_base_navigate", "frame_guard", "sim_arm_action", "nav2_navigate",
-        "sim_sensor_suite", "sim_localize", "sim_fusion", "sim_nav_plan", "sim_safety",
+        "sim_sensor_suite", "sim_scenario_start", "sim_camera_input", "sim_lidar_input",
+        "sim_mmwave_input", "sim_imu_input", "sim_odometry_input", "sim_sensor_merge",
+        "sim_localize", "sim_fusion", "sim_nav_plan", "sim_safety",
         "sim_nav2_action", "sim_fnk_gateway", "sim_mission_check",
     }
     NODE_CONTRACTS = {
@@ -57,6 +59,13 @@ class WorkflowManager:
         "sim_arm_action": {"group": "Robot · simulation", "input": "safe_pose", "output": "task_result"},
         "nav2_navigate": {"group": "Robot · ROS 2 action", "input": "safety_decision", "output": "nav2_result"},
         "sim_sensor_suite": {"group": "Simulation · inputs", "output": "sim_sensor_bundle"},
+        "sim_scenario_start": {"group": "Simulation · trigger", "output": "sim_scenario_clock"},
+        "sim_camera_input": {"group": "Simulation · sensors", "input": "sim_scenario_clock", "output": "sim_sensor_fragment"},
+        "sim_lidar_input": {"group": "Simulation · sensors", "input": "sim_scenario_clock", "output": "sim_sensor_fragment"},
+        "sim_mmwave_input": {"group": "Simulation · sensors", "input": "sim_scenario_clock", "output": "sim_sensor_fragment"},
+        "sim_imu_input": {"group": "Simulation · sensors", "input": "sim_scenario_clock", "output": "sim_sensor_fragment"},
+        "sim_odometry_input": {"group": "Simulation · sensors", "input": "sim_scenario_clock", "output": "sim_sensor_fragment"},
+        "sim_sensor_merge": {"group": "Simulation · synchronization", "input": "sim_sensor_fragment", "output": "sim_sensor_bundle"},
         "sim_localize": {"group": "Simulation · autonomy", "input": "sim_sensor_bundle", "output": "sim_localization"},
         "sim_fusion": {"group": "Simulation · autonomy", "input": "sim_sensor_bundle", "output": "sim_fused_scene"},
         "sim_nav_plan": {"group": "Simulation · autonomy", "input": "any", "output": "sim_nav_plan"},
@@ -82,18 +91,27 @@ class WorkflowManager:
     AUTONOMY_MOCK_WORKFLOW = {
         "name": "Maximum autonomy · sensors → planning → FNHR (simulation)",
         "nodes": [
-            {"id": "sensors", "type": "sim_sensor_suite", "label": "Scenario · camera + LiDAR + mmWave + IMU + odometry", "x": 30, "y": 190, "config": {}},
-            {"id": "localization", "type": "sim_localize", "label": "Time sync + state estimation", "x": 270, "y": 65, "config": {}},
-            {"id": "fusion", "type": "sim_fusion", "label": "Semantic / metric sensor fusion", "x": 270, "y": 315, "config": {}},
-            {"id": "planner", "type": "sim_nav_plan", "label": "Body planner · route + dynamic replan", "x": 515, "y": 190, "config": {}},
-            {"id": "safety", "type": "sim_safety", "label": "Freshness + confidence + stop gate", "x": 760, "y": 190, "config": {}},
-            {"id": "nav2", "type": "sim_nav2_action", "label": "Nav2 NavigateToPose · mock action", "x": 1005, "y": 190, "config": {}},
-            {"id": "fnk", "type": "sim_fnk_gateway", "label": "Body USB → FNK0031 / FNHR intent adapter", "x": 1245, "y": 65, "config": {}},
-            {"id": "mission", "type": "sim_mission_check", "label": "Feedback · recovery · mission audit", "x": 1245, "y": 315, "config": {}},
+            {"id": "scenario", "type": "sim_scenario_start", "label": "Start synthetic scene", "x": 20, "y": 225, "config": {}},
+            {"id": "camera", "type": "sim_camera_input", "label": "Camera · VLM objects", "x": 250, "y": 35, "config": {}},
+            {"id": "lidar", "type": "sim_lidar_input", "label": "LiDAR · geometry", "x": 250, "y": 135, "config": {}},
+            {"id": "mmwave", "type": "sim_mmwave_input", "label": "mmWave · moving tracks", "x": 250, "y": 235, "config": {}},
+            {"id": "imu", "type": "sim_imu_input", "label": "IMU · attitude", "x": 250, "y": 335, "config": {}},
+            {"id": "odometry", "type": "sim_odometry_input", "label": "Odometry · body pose", "x": 250, "y": 435, "config": {}},
+            {"id": "sync", "type": "sim_sensor_merge", "label": "Timestamp sync · sensor packet", "x": 480, "y": 235, "config": {}},
+            {"id": "localization", "type": "sim_localize", "label": "State estimation", "x": 710, "y": 85, "config": {}},
+            {"id": "fusion", "type": "sim_fusion", "label": "Semantic + metric fusion", "x": 710, "y": 365, "config": {}},
+            {"id": "planner", "type": "sim_nav_plan", "label": "Body planner · route + replan", "x": 940, "y": 225, "config": {}},
+            {"id": "safety", "type": "sim_safety", "label": "Freshness + confidence gate", "x": 1170, "y": 225, "config": {}},
+            {"id": "nav2", "type": "sim_nav2_action", "label": "Nav2 · NavigateToPose", "x": 1400, "y": 225, "config": {}},
+            {"id": "fnk", "type": "sim_fnk_gateway", "label": "FNHR intent · no USB actuation", "x": 1630, "y": 85, "config": {}},
+            {"id": "mission", "type": "sim_mission_check", "label": "Recovery + mission audit", "x": 1630, "y": 365, "config": {}},
         ],
-        "edges": [["sensors", "localization"], ["sensors", "fusion"], ["localization", "planner"],
-                  ["fusion", "planner"], ["planner", "safety"], ["fusion", "safety"], ["localization", "safety"],
-                  ["safety", "nav2"], ["planner", "nav2"], ["nav2", "fnk"], ["sensors", "mission"], ["fusion", "mission"],
+        "edges": [["scenario", "camera"], ["scenario", "lidar"], ["scenario", "mmwave"],
+                  ["scenario", "imu"], ["scenario", "odometry"], ["camera", "sync"], ["lidar", "sync"],
+                  ["mmwave", "sync"], ["imu", "sync"], ["odometry", "sync"], ["sync", "localization"],
+                  ["sync", "fusion"], ["localization", "planner"], ["fusion", "planner"],
+                  ["planner", "safety"], ["fusion", "safety"], ["localization", "safety"],
+                  ["safety", "nav2"], ["planner", "nav2"], ["nav2", "fnk"], ["sync", "mission"], ["fusion", "mission"],
                   ["planner", "mission"], ["safety", "mission"], ["nav2", "mission"], ["fnk", "mission"]],
     }
 
@@ -347,6 +365,21 @@ class WorkflowManager:
 
             if node_type == "sim_sensor_suite":
                 return autonomy_mock.sensor_suite(config)
+            if node_type == "sim_scenario_start":
+                return autonomy_mock.scenario_start(config)
+            sensor_modalities = {
+                "sim_camera_input": "camera", "sim_lidar_input": "lidar",
+                "sim_mmwave_input": "mmwave", "sim_imu_input": "imu",
+                "sim_odometry_input": "odometry",
+            }
+            if node_type in sensor_modalities:
+                clock = next((item for item in reversed(inputs)
+                              if isinstance(item, dict) and item.get("kind") == "sim_scenario_clock"), None)
+                if clock is None:
+                    raise WorkflowError("simulated sensor input requires a scenario trigger")
+                return autonomy_mock.sensor_fragment(sensor_modalities[node_type], clock["timestamp"])
+            if node_type == "sim_sensor_merge":
+                return autonomy_mock.merge_sensor_fragments(inputs)
             bundle = next((item for item in reversed(inputs) if isinstance(item, dict) and item.get("kind") == "sim_sensor_bundle"), None)
             localization = next((item for item in reversed(inputs) if isinstance(item, dict) and item.get("kind") == "sim_localization"), None)
             scene = next((item for item in reversed(inputs) if isinstance(item, dict) and item.get("kind") == "sim_fused_scene"), None)
