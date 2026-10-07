@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import math
-import os
 import time
 
 
@@ -19,7 +18,7 @@ class Nav2Simulation:
     )
 
     def __init__(self, node):
-        from geometry_msgs.msg import TransformStamped, Twist, TwistStamped
+        from geometry_msgs.msg import TransformStamped, Twist
         from nav_msgs.msg import OccupancyGrid, Odometry
         from rclpy.duration import Duration
         from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
@@ -27,7 +26,6 @@ class Nav2Simulation:
         from tf2_ros import StaticTransformBroadcaster, TransformBroadcaster
 
         self.node = node
-        distro = os.environ.get("ROS_DISTRO", "").lower()
         self._last_tick = time.monotonic()
         self._last_cmd = 0.0
         self._vx = self._vy = self._wz = 0.0
@@ -44,14 +42,7 @@ class Nav2Simulation:
         self._scan_pub = node.create_publisher(LaserScan, "/scan", 10)
         self._tf = TransformBroadcaster(node)
         self._static_tf = StaticTransformBroadcaster(node)
-        # ROS 2 distributions expose only one command type on a topic. Jazzy's
-        # Nav2 controller publishes TwistStamped; older distributions use Twist.
-        if distro in {"jazzy", "kilted", "rolling"}:
-            self._twist_sub = None
-            self._stamped_sub = node.create_subscription(TwistStamped, "/cmd_vel", self._receive_stamped, 10)
-        else:
-            self._twist_sub = node.create_subscription(Twist, "/cmd_vel", self._receive_twist, 10)
-            self._stamped_sub = None
+        self._cmd_sub = node.create_subscription(Twist, "/cmd_vel", self._receive_twist, 10)
 
         static = TransformStamped()
         static.header.frame_id = "map"
@@ -96,10 +87,6 @@ class Nav2Simulation:
 
     def _receive_twist(self, msg):
         self._set_velocity(msg.linear.x, msg.linear.y, msg.angular.z)
-
-    def _receive_stamped(self, msg):
-        twist = msg.twist
-        self._set_velocity(twist.linear.x, twist.linear.y, twist.angular.z)
 
     def _set_velocity(self, vx, vy, wz):
         self._vx = max(-0.15, min(0.15, float(vx)))

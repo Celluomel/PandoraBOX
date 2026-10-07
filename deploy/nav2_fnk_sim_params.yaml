@@ -21,7 +21,7 @@ controller_server:
       stateful: true
       xy_goal_tolerance: 0.20
       yaw_goal_tolerance: 0.25
-    enable_stamped_cmd_vel: true
+    enable_stamped_cmd_vel: false
     controller_plugins: [FollowPath]
     FollowPath:
       plugin: dwb_core::DWBLocalPlanner
