@@ -217,7 +217,7 @@ collision_monitor:
     polygons: [StopZone]
     StopZone:
       type: polygon
-      points: "0.45,0.30 0.45,-0.30 -0.30,-0.30 -0.30,0.30"
+      points: "[[0.45, 0.30], [0.45, -0.30], [-0.30, -0.30], [-0.30, 0.30]]"
       action_type: stop
       min_points: 4
       visualize: false
