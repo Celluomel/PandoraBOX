@@ -27,6 +27,8 @@ def sensor_suite(config: dict[str, Any]) -> dict[str, Any]:
             ]},
             "lidar": {"timestamp": now, "frame_id": FRAME_ID, "obstacles": [
                 {"id": "table-1", "kind": "static", "position": [2.5, 0.0], "radius_m": 0.48},
+            ], "detections": [
+                {"id": "goal-cup", "position": [4.5, 0.0], "range_m": 4.0, "confidence": 0.9},
             ], "returns": 240, "confidence": 0.98},
             "mmwave": {"timestamp": now, "frame_id": FRAME_ID, "targets": [
                 {"id": "person-1", "kind": "dynamic", "position": [2.5, 1.2], "velocity_mps": [0.0, -0.15], "confidence": 0.86},
@@ -55,12 +57,12 @@ def fuse_scene(bundle: dict[str, Any]) -> dict[str, Any]:
     _require_sim_bundle(bundle)
     sensors = bundle["sensors"]
     camera_objects = sensors["camera"]["objects"]
-    ranged = {item["id"]: item for item in sensors["lidar"]["obstacles"]}
+    ranged = {item["id"]: item for item in sensors["lidar"]["obstacles"] + sensors["lidar"].get("detections", [])}
     semantic_objects = []
     for item in camera_objects:
         match = ranged.get(item["id"])
         semantic_objects.append({**item, "range_confirmed": match is not None,
-                                 "kind": match["kind"] if match else "goal",
+                                 "kind": match.get("kind", "goal") if match else "goal",
                                  "association_confidence": round(min(item["confidence"], sensors["lidar"]["confidence"]), 3) if match else item["confidence"]})
     dynamic = sensors["mmwave"]["targets"]
     obstacles = [dict(item) for item in sensors["lidar"]["obstacles"]]
@@ -70,7 +72,9 @@ def fuse_scene(bundle: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("camera did not identify the configured goal")
     return {"kind": "sim_fused_scene", "scenario_id": bundle["scenario_id"], "frame_id": bundle["frame_id"],
             "objects": semantic_objects, "obstacles": obstacles, "dynamic_targets": dynamic,
-            "goal": {"id": target["id"], "position": target["position"]},
+            "goal": {"id": target["id"], "position": target["position"],
+                     "range_confirmed": target["range_confirmed"],
+                     "confidence": target["association_confidence"]},
             "sensor_sources": ["camera", "lidar", "mmwave", "imu", "odometry"],
             "timestamp": bundle["timestamp"], "simulated": True, "actuation": False}
 
@@ -111,10 +115,13 @@ def safety_check(scene: dict[str, Any], localization: dict[str, Any], plan: dict
     age = now - float(scene.get("timestamp", 0))
     fresh = 0 <= age <= 2.0
     confidence = float(localization.get("confidence", 0))
-    valid = fresh and confidence >= 0.8 and bool(plan.get("path"))
+    goal_confirmed = bool(scene.get("goal", {}).get("range_confirmed"))
+    goal_confidence = float(scene.get("goal", {}).get("confidence", 0))
+    valid = fresh and confidence >= 0.8 and bool(plan.get("path")) and goal_confirmed and goal_confidence >= 0.8
     return {"kind": "sim_safety_decision", "state": "clear" if valid else "blocked",
             "checks": {"simulated_input_provenance": scene.get("simulated") is True,
                        "sensor_data_fresh_under_2s": fresh, "localization_confidence_ge_0_8": confidence >= 0.8,
+                       "goal_range_confirmed": goal_confirmed, "goal_association_confidence_ge_0_8": goal_confidence >= 0.8,
                        "route_exists": bool(plan.get("path"))},
             "sensor_age_s": round(age, 3), "warning": "Simulation-only gate; not evidence for physical motion or a certified safety system.",
             "simulated": True, "actuation": False}

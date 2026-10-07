@@ -206,6 +206,7 @@ class WorkflowManagerTests(unittest.TestCase):
         outputs = {row["type"]: row.get("output") for row in run["nodes"]}
         self.assertEqual(len(outputs["sim_sensor_suite"]["sensors"]), 5)
         self.assertEqual(outputs["sim_safety"]["state"], "clear")
+        self.assertTrue(outputs["sim_fusion"]["goal"]["range_confirmed"])
         self.assertEqual(outputs["sim_nav2_action"]["server"], "body_mock_fallback")
         self.assertGreater(outputs["sim_fnk_gateway"]["command_count"], 0)
         self.assertEqual(outputs["sim_fnk_gateway"]["controller_owner"], "FNK0031 firmware / FNHR")
@@ -225,6 +226,20 @@ class WorkflowManagerTests(unittest.TestCase):
             self.assertIn("mock Nav2 action refuses", run["error"])
             self.assertEqual(run["execution_mode"], "simulation")
         self.assertEqual(self.host.sent, [])
+
+    def test_autonomy_mock_safety_gate_requires_range_confirmation_for_vlm_goal(self):
+        from body_runtime_host import autonomy_mock
+
+        bundle = autonomy_mock.sensor_suite({})
+        bundle["sensors"]["lidar"]["detections"] = []
+        localization = autonomy_mock.localize(bundle)
+        scene = autonomy_mock.fuse_scene(bundle)
+        plan = autonomy_mock.plan_route(scene, localization, {})
+
+        decision = autonomy_mock.safety_check(scene, localization, plan)
+
+        self.assertEqual(decision["state"], "blocked")
+        self.assertFalse(decision["checks"]["goal_range_confirmed"])
 
     def test_typed_workflow_connections_reject_incompatible_pose_handoff(self):
         with self.assertRaisesRegex(WorkflowError, "incompatible connection"):
