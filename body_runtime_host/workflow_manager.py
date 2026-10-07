@@ -435,8 +435,14 @@ class WorkflowManager:
                 raise WorkflowError("Nav2 navigation requires a clear Safety gate result")
             self._require_live_safety_evidence()
             bridge = self.host._ros2_bridge
-            if bridge is None or not bridge.status().get("nav2_action_available"):
+            ros_status = bridge.status() if bridge is not None else {}
+            if not ros_status.get("nav2_packages_available", ros_status.get("nav2_action_available", False)):
                 raise WorkflowError("Nav2 action support is unavailable; source ROS 2 and install nav2_msgs + geometry_msgs")
+            if not ros_status.get("nav2_server_available", False):
+                raise WorkflowError(
+                    "Nav2 packages are installed, but no /navigate_to_pose action server is running. "
+                    "Start a robot-configured Nav2 stack with map, TF, odometry, costmaps and a compatible controller."
+                )
             if "x" not in config or "y" not in config:
                 raise WorkflowError("Nav2 goal requires x and y coordinates in metres")
             pose = self._pose_from_config(config)

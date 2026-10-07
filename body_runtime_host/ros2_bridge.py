@@ -29,6 +29,7 @@ class Ros2ObservationBridge:
     def status(self):
         with self._lock:
             result = dict(self._status)
+            node = self._node
         result.update({
             "ros_distro": os.environ.get("ROS_DISTRO", ""),
             "domain_id": os.environ.get("ROS_DOMAIN_ID", "0"),
@@ -40,13 +41,28 @@ class Ros2ObservationBridge:
             result["rclpy_version"] = version("rclpy")
         except PackageNotFoundError:
             result["rclpy_version"] = "system package not discoverable"
+        nav2_packages_available = False
         try:
             from action_msgs.msg import GoalStatus as _GoalStatus  # noqa: F401
             from nav2_msgs.action import NavigateToPose as _NavigateToPose  # noqa: F401
             from geometry_msgs.msg import PoseStamped as _PoseStamped  # noqa: F401
-            result["nav2_action_available"] = True
+            nav2_packages_available = True
         except Exception:
-            result["nav2_action_available"] = False
+            pass
+        action_server_available = False
+        if nav2_packages_available and node is not None:
+            try:
+                action_server_available = any(
+                    name.rstrip("/").rsplit("/", 1)[-1] == "navigate_to_pose"
+                    and "nav2_msgs/action/NavigateToPose" in types
+                    for name, types in node.get_action_names_and_types()
+                )
+            except Exception:
+                action_server_available = False
+        result["nav2_packages_available"] = nav2_packages_available
+        # Keep the old field as a compatibility alias for package availability.
+        result["nav2_action_available"] = nav2_packages_available
+        result["nav2_server_available"] = action_server_available
         return result
 
     def start(self):

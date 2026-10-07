@@ -65,6 +65,37 @@ class WorkflowManagerTests(unittest.TestCase):
         self.assertEqual(message["observation"]["subject"], "range")
         self.assertEqual(bridge.status()["output_count"], 1)
 
+    def test_ros2_status_distinguishes_installed_nav2_packages_from_live_action_server(self):
+        import sys
+        from types import ModuleType, SimpleNamespace
+        from body_runtime_host.ros2_bridge import Ros2ObservationBridge
+
+        action_msgs = ModuleType("action_msgs")
+        action_msgs_msg = ModuleType("action_msgs.msg")
+        action_msgs_msg.GoalStatus = type("GoalStatus", (), {})
+        action_msgs.msg = action_msgs_msg
+        nav2_msgs = ModuleType("nav2_msgs")
+        nav2_action = ModuleType("nav2_msgs.action")
+        nav2_action.NavigateToPose = type("NavigateToPose", (), {})
+        nav2_msgs.action = nav2_action
+        geometry_msgs = ModuleType("geometry_msgs")
+        geometry_msgs_msg = ModuleType("geometry_msgs.msg")
+        geometry_msgs_msg.PoseStamped = type("PoseStamped", (), {})
+        geometry_msgs.msg = geometry_msgs_msg
+        bridge = Ros2ObservationBridge(lambda _observation: None)
+        bridge._node = SimpleNamespace(get_action_names_and_types=lambda: [])
+
+        with patch.dict(sys.modules, {
+            "action_msgs": action_msgs, "action_msgs.msg": action_msgs_msg,
+            "nav2_msgs": nav2_msgs, "nav2_msgs.action": nav2_action,
+            "geometry_msgs": geometry_msgs, "geometry_msgs.msg": geometry_msgs_msg,
+        }):
+            status = bridge.status()
+
+        self.assertTrue(status["nav2_packages_available"])
+        self.assertTrue(status["nav2_action_available"])
+        self.assertFalse(status["nav2_server_available"])
+
     def workflow(self, edges=None, extra_nodes=None):
         nodes = [
             {"id": "sensor", "type": "lidar", "x": 0, "y": 0},
@@ -293,7 +324,8 @@ class WorkflowManagerTests(unittest.TestCase):
 
             @staticmethod
             def status():
-                return {"available": True, "nav2_action_available": True}
+                return {"available": True, "nav2_action_available": True,
+                        "nav2_packages_available": True, "nav2_server_available": True}
 
             def navigate_to_pose(self, **goal):
                 self.goals.append(goal)
@@ -321,6 +353,40 @@ class WorkflowManagerTests(unittest.TestCase):
         self.assertEqual(result["execution_mode"], "hardware")
         self.assertEqual(self.host._ros2_bridge.goals[0]["frame_id"], "map")
         self.assertAlmostEqual(self.host._ros2_bridge.goals[0]["yaw"], 1.57079632679)
+
+    def test_nav2_workflow_reports_missing_server_separately_from_installed_packages(self):
+        import time
+        class WorldModel:
+            source = None
+
+            @staticmethod
+            def status_summary():
+                return {"navigation_alert": None}
+
+        class Nav2Bridge:
+            @staticmethod
+            def status():
+                return {"available": True, "nav2_packages_available": True,
+                        "nav2_action_available": True, "nav2_server_available": False}
+
+        self.host.worldmodel = WorldModel()
+        self.host._ros2_bridge = Nav2Bridge()
+        now = time.time()
+        self.host.latest = {
+            "range": {"kind": "lidar", "source": "usb_lidar", "observed_at": now},
+            "imu": {"kind": "imu", "source": "usb_imu", "observed_at": now},
+        }
+        saved = self.manager.save({
+            "name": "Nav2 server readiness",
+            "nodes": [
+                {"id": "safety", "type": "safety"},
+                {"id": "navigate", "type": "nav2_navigate", "config": {"x": 1, "y": 2}},
+            ],
+            "edges": [["safety", "navigate"]],
+        })
+        result = self.manager.execute(saved["id"], confirm_physical=True)
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("no /navigate_to_pose action server is running", result["error"])
 
     def test_workflow_analysis_uses_saved_outputs_and_never_applies_suggestions(self):
         import json
