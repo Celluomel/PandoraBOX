@@ -139,7 +139,7 @@ def run(args: argparse.Namespace) -> Path:
     _run([
         args.ns_process_data, "images", "--data", str(staged / "images"),
         "--output-dir", str(processed), "--matching-method", "sequential",
-        "--camera-type", "perspective",
+        "--camera-type", "perspective", "--num-downscales", "0",
     ], run_dir)
     train_command = [
         args.ns_train, "splatfacto", "--data", str(processed),

@@ -69,8 +69,14 @@ class ReconstructionJobTests(unittest.TestCase):
                 iterations=1000,
                 device="cuda",
             )
-            with patch.object(job, "_run", side_effect=fake_run):
+            with patch.object(job, "_run", side_effect=fake_run) as run_patch:
                 published = job.run(args)
+
+            process_command = next(
+                call.args[0] for call in run_patch.call_args_list
+                if call.args[0][0] == "ns-process-data"
+            )
+            self.assertEqual(process_command[process_command.index("--num-downscales") + 1], "0")
 
             self.assertEqual(published, capture_root / "assets" / "current" / "scene.ply")
             status = ReconstructionCaptureStore(capture_root).asset_status()
