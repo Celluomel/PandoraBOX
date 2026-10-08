@@ -178,6 +178,27 @@ class ReconstructionCaptureStoreTests(unittest.TestCase):
             self.assertEqual(closed["readiness"]["measured_pose_count"], 0)
             self.assertFalse(closed["readiness"]["metric_scale_available"])
 
+    def test_real_camera_frames_remain_eligible_with_explicitly_simulated_pose(self):
+        with tempfile.TemporaryDirectory(dir=TEMP_ROOT) as directory:
+            store = ReconstructionCaptureStore(directory)
+            session = store.create("real camera, no physical odometry")
+            sample = frame(
+                image=b"\xff\xd8\xffreal-camera-frame",
+                pose={"position_m": [1, 2, 0], "yaw_rad": 0.4, "position_source": "simulated_odometry"},
+            )
+            sample["camera"]["source"] = "pc_camera"
+            sample["simulated"] = False
+            sample["pose_simulated"] = True
+            stored = store.capture(session["session_id"], sample)
+            closed = store.close(session["session_id"])
+
+            self.assertTrue(stored["accepted"])
+            self.assertFalse(stored["frame"]["provenance"]["simulated"])
+            self.assertTrue(stored["frame"]["provenance"]["pose_simulated"])
+            self.assertEqual(stored["frame"]["pose_status"], "simulated")
+            self.assertEqual(closed["readiness"]["measured_pose_count"], 0)
+            self.assertEqual(store.worker_session_manifest(session["session_id"])["frame_count"], 1)
+
     def test_duplicate_image_is_not_recorded_twice(self):
         with tempfile.TemporaryDirectory(dir=TEMP_ROOT) as directory:
             store = ReconstructionCaptureStore(directory)

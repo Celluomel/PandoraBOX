@@ -80,6 +80,7 @@ class ReconstructionCaptureStore:
         pose = pose.get("pose") if isinstance(pose.get("pose"), dict) else {}
         pose_record = self._pose_record(pose)
         simulated = bool(frame.get("simulated", False))
+        pose_simulated = bool(frame.get("pose_simulated", simulated))
         modalities = frame.get("modalities") if isinstance(frame.get("modalities"), dict) else {}
         sensor_data = {
             key: modalities[key]
@@ -115,7 +116,7 @@ class ReconstructionCaptureStore:
                 "camera_calibration": self._json_safe(camera.get("calibration") or {}),
                 "pose": pose_record,
                 "pose_status": (
-                    "simulated" if pose_record and simulated
+                    "simulated" if pose_record and pose_simulated
                     else "measured" if pose_record
                     else "unavailable_visual_sfm_required"
                 ),
@@ -123,7 +124,9 @@ class ReconstructionCaptureStore:
                 "synchronization": self._json_safe(frame.get("synchronization") or {}),
                 "provenance": {
                     "frame_source": str(frame.get("source") or "unknown")[:80],
+                    "body_source": str(frame.get("body_source") or "unknown")[:80],
                     "simulated": simulated,
+                    "pose_simulated": pose_simulated,
                     "replayed": bool(frame.get("replayed", False)),
                 },
             }

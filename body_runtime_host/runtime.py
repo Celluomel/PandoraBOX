@@ -201,12 +201,18 @@ class BodyHost:
             camera = modalities.get("camera") or {}
             if not camera.get("image_base64"):
                 return {"ok": False, "error": "No captured camera image is available"}
+            camera_source = str(camera.get("source") or "").strip().lower()
+            image_simulated = not camera_source or camera_source.startswith(("sim", "virtual", "replay"))
+            body_source = type(wm.source).__name__
+            pose_simulated = body_source.lower().startswith("sim")
             frame = {
                 "contract": "body_perception_frame.v2",
                 "frame_id": packet.get("frame_id"),
                 "timestamp": packet.get("timestamp"),
-                "source": packet.get("source"),
-                "simulated": type(wm.source).__name__.lower().startswith("sim"),
+                "source": camera.get("source") or packet.get("source"),
+                "body_source": body_source,
+                "simulated": image_simulated,
+                "pose_simulated": pose_simulated,
                 "camera": camera,
                 "body": {"pose": {
                     "position_m": list(body_state.position)[:3],
@@ -215,7 +221,10 @@ class BodyHost:
                     "position_source": body_state.position_source,
                     "accuracy_m": body_state.position_accuracy_m,
                 }},
-                "modalities": modalities,
+                # A real camera may be paired with a simulated Body source for
+                # capture-only work. Never attach that source's synthetic
+                # radar, IMU, or odometry as if it were physical sensor data.
+                "modalities": {} if pose_simulated else modalities,
                 "synchronization": (packet.get("perception_frame") or {}).get("synchronization", {}),
             }
             result = self._reconstruction_capture.capture(session_id, frame)
