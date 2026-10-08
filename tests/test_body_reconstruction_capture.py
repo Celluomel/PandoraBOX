@@ -30,6 +30,53 @@ def frame(image=b"\xff\xd8\xffcamera-frame", *, frame_id="frame-1", pose=None, m
 
 
 class ReconstructionCaptureStoreTests(unittest.TestCase):
+    def test_worker_can_read_only_a_closed_real_session_and_verified_images(self):
+        with tempfile.TemporaryDirectory(dir=TEMP_ROOT) as directory:
+            store = ReconstructionCaptureStore(directory)
+            session = store.create("worker input")
+            session_id = session["session_id"]
+            image = b"\xff\xd8\xffframe-one"
+            store.capture(session_id, frame(image=image))
+            with self.assertRaisesRegex(ValueError, "closed"):
+                store.worker_session_manifest(session_id)
+            store.close(session_id)
+            self.assertEqual(store.worker_session_manifest(session_id)["frame_count"], 1)
+            self.assertEqual(store.worker_image_file(session_id, "000000.jpg").read_bytes(), image)
+            with self.assertRaisesRegex(ValueError, "invalid capture image filename"):
+                store.worker_image_file(session_id, "../manifest.json")
+            (Path(directory) / session_id / "images" / "000000.jpg").write_bytes(b"tampered")
+            with self.assertRaisesRegex(ValueError, "SHA-256"):
+                store.worker_image_file(session_id, "000000.jpg")
+
+    def test_worker_publish_validates_and_atomically_exposes_gaussian_asset(self):
+        with tempfile.TemporaryDirectory(dir=TEMP_ROOT) as directory:
+            store = ReconstructionCaptureStore(directory)
+            session = store.create("worker publish provenance")
+            for index in range(10):
+                store.capture(session["session_id"], frame(image=b"\xff\xd8\xff" + f"publish-{index}".encode(), frame_id=f"publish-{index}"))
+            store.close(session["session_id"])
+            fields = "x y z scale_0 scale_1 scale_2 rot_0 rot_1 rot_2 rot_3 opacity f_dc_0 f_dc_1 f_dc_2".split()
+            data = ("ply\nformat ascii 1.0\nelement vertex 1\n" + "".join(f"property float {name}\n" for name in fields) + "end_header\n0 0 0 -3 -3 -3 1 0 0 0 1 0.2 0.1 0.0\n").encode()
+            source = Path(directory) / "worker.ply"
+            source.write_bytes(data)
+            manifest = {
+                "contract": "body_gaussian_asset.v1", "asset_id": "session-splatfacto",
+                "file": "scene.ply", "format": "ply", "sha256": hashlib.sha256(data).hexdigest(),
+            }
+            provenance = {
+                "capture_contract": store.CONTRACT, "session_id": session["session_id"],
+                "source": "real_body_camera_capture", "frame_count": 10,
+                "simulated_or_replayed": False,
+            }
+            published = store.publish_asset(source, manifest, provenance)
+            self.assertTrue(published["ok"])
+            self.assertTrue(published["asset"]["available"])
+            self.assertEqual(store.asset_file().read_bytes(), data)
+            self.assertTrue((Path(directory) / "assets/current/provenance.json").is_file())
+
+            with self.assertRaisesRegex(ValueError, "SHA-256"):
+                store.publish_asset(source, {**manifest, "sha256": "0" * 64}, provenance)
+
     def test_asset_status_does_not_expose_simulation_as_real_gaussian_scene(self):
         with tempfile.TemporaryDirectory(dir=TEMP_ROOT) as directory:
             status = ReconstructionCaptureStore(directory).asset_status()

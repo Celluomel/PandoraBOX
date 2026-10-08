@@ -389,7 +389,34 @@ VLM entity-to-splat association and sensor-constrained scale/alignment. LiDAR
 remains optional for visual reconstruction, but metric/safety claims still need
 measured geometry and independent validation.
 
-## 8. References
+## 8. Ventuno-to-Jetson worker transfer
+
+The Body remains the capture owner and Quest asset server on the Ventuno. The
+Jetson is an optional network worker; it does not host or replace Body Runtime.
+The worker API only serves closed, non-simulated sessions and is authenticated
+with `BODY_RECONSTRUCTION_WORKER_TOKEN`. Its Caddy route must remain HTTPS;
+the API bearer token is not sent over plain HTTP. The Body validates every
+transferred image hash and checks the returned Gaussian PLY, manifest, source
+session and provenance before atomically publishing `assets/current`.
+
+On the Jetson, from the PandoraBOX checkout and reconstruction environment:
+
+```sh
+python scripts/run_remote_reconstruction.py <session-id> \
+  --body-url https://192.168.0.14 \
+  --ca-cert /path/to/caddy-local-root.crt \
+  --device cuda --iterations 15000
+```
+
+The shared token is read from `BODY_RECONSTRUCTION_WORKER_TOKEN` or the
+mode-restricted `~/.config/pandorabox/reconstruction-worker.env`. The worker
+requires at least ten distinct real JPEG frames, verifies their SHA-256 hashes,
+trains locally, then uploads the validated PLY and provenance to the Body.
+Neither a simulation session nor the Body's safety/planning state is modified
+by training. The first real capture is still required to validate actual
+network transfer, GPU reconstruction, and Quest rendering end to end.
+
+## 9. References
 
 - Kerbl et al., [3D Gaussian Splatting for Real-Time Radiance Field
   Rendering](https://doi.org/10.1145/3592433), ACM TOG 2023.

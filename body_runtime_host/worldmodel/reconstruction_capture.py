@@ -156,6 +156,97 @@ class ReconstructionCaptureStore:
                 continue
         return {"contract": self.CONTRACT, "sessions": sessions[:100]}
 
+    def worker_session_manifest(self, session_id: str) -> dict[str, Any]:
+        """Return a closed, real capture session for the remote reconstruction worker."""
+        directory = self._session_dir(session_id)
+        manifest = self._read_manifest(directory)
+        if manifest.get("state") not in {"ready_for_review", "insufficient_views"}:
+            raise ValueError("capture session must be closed before worker download")
+        if any(
+            item.get("provenance", {}).get("simulated")
+            or item.get("provenance", {}).get("replayed")
+            for item in manifest.get("frames", [])
+        ):
+            raise ValueError("simulated or replayed sessions cannot be reconstructed as real captures")
+        return manifest
+
+    def worker_image_file(self, session_id: str, filename: str) -> Path:
+        manifest = self.worker_session_manifest(session_id)
+        if not re.fullmatch(r"\d{6}\.jpg", filename):
+            raise ValueError("invalid capture image filename")
+        relative = f"images/{filename}"
+        record = next((item for item in manifest.get("frames", []) if item.get("image") == relative), None)
+        if record is None:
+            raise ValueError("image is not part of this capture session")
+        path = self._session_dir(session_id) / relative
+        if not path.is_file() or path.stat().st_size > self.MAX_IMAGE_BYTES:
+            raise ValueError("capture image is missing or exceeds the image size limit")
+        if hashlib.sha256(path.read_bytes()).hexdigest() != record.get("image_sha256"):
+            raise ValueError("capture image failed SHA-256 verification")
+        return path
+
+    def publish_asset(self, asset_path: str | Path, manifest: dict[str, Any], provenance: dict[str, Any]) -> dict[str, Any]:
+        """Validate and atomically publish a remote worker's Gaussian asset."""
+        source = Path(asset_path).resolve()
+        if not source.is_file() or source.stat().st_size <= 0 or source.stat().st_size > self.MAX_GAUSSIAN_ASSET_BYTES:
+            raise ValueError("worker asset must be non-empty and no larger than 256 MiB")
+        if not isinstance(manifest, dict) or manifest.get("contract") != "body_gaussian_asset.v1":
+            raise ValueError("unsupported Gaussian asset manifest contract")
+        if manifest.get("format") != "ply" or manifest.get("file") != "scene.ply":
+            raise ValueError("worker publication must contain a scene.ply Gaussian PLY")
+        expected = str(manifest.get("sha256") or "").lower()
+        digest = hashlib.sha256()
+        with source.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        if not re.fullmatch(r"[a-f0-9]{64}", expected) or digest.hexdigest() != expected:
+            raise ValueError("worker asset SHA-256 does not match its manifest")
+        self._validate_gaussian_ply(source)
+        transform = self._asset_transform(manifest.get("transform"))
+        asset_id = str(manifest.get("asset_id") or "").strip()
+        if not asset_id or len(asset_id) > 120:
+            raise ValueError("worker asset manifest requires a valid asset_id")
+        if not isinstance(provenance, dict) or provenance.get("simulated_or_replayed") is not False:
+            raise ValueError("worker provenance must confirm a real, non-replayed capture")
+        session_id = str(provenance.get("session_id") or "")
+        source_manifest = self.worker_session_manifest(session_id)
+        if provenance.get("capture_contract") != self.CONTRACT or provenance.get("frame_count") != source_manifest.get("frame_count"):
+            raise ValueError("worker provenance does not match the closed Body capture session")
+        safe_manifest = {
+            "contract": "body_gaussian_asset.v1", "asset_id": asset_id,
+            "file": "scene.ply", "format": "ply", "sha256": expected,
+            "coordinate_frame": str(manifest.get("coordinate_frame") or "reconstruction")[:80],
+            "transform": transform, "provenance": "provenance.json",
+        }
+        target_root = self.root / "assets" / "current"
+        target_root.parent.mkdir(parents=True, exist_ok=True)
+        staging = target_root.parent / f".current-{uuid.uuid4().hex}.tmp"
+        staging.mkdir()
+        try:
+            import shutil
+            shutil.copyfile(source, staging / "scene.ply")
+            self._write_json(staging / "manifest.json", safe_manifest)
+            self._write_json(staging / "provenance.json", provenance)
+            backup = target_root.parent / f".previous-{uuid.uuid4().hex}"
+            if target_root.exists():
+                os.replace(target_root, backup)
+            try:
+                os.replace(staging, target_root)
+            except Exception:
+                if backup.exists() and not target_root.exists():
+                    os.replace(backup, target_root)
+                raise
+        finally:
+            if staging.exists():
+                import shutil
+                shutil.rmtree(staging, ignore_errors=True)
+        with self._lock:
+            self._asset_validation_cache = None
+        status = self.asset_status()
+        if not status.get("available"):
+            raise ValueError(f"published asset did not pass Body validation: {status.get('message')}")
+        return {"ok": True, "asset": status, "provenance": provenance}
+
     def asset_status(self) -> dict[str, Any]:
         """Validate the published local 3DGS asset before enabling Quest rendering."""
         manifest_path = self.root / "assets" / "current" / "manifest.json"

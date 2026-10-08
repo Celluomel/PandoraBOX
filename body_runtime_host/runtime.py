@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import hmac
 import importlib.util
 import ipaddress
 import json
@@ -29,6 +30,7 @@ import shlex
 import ssl
 import subprocess
 import threading
+import tempfile
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -295,7 +297,7 @@ class BodyHost:
         """Persist Body settings while keeping secret values environment-backed."""
         CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
         safe = dict(self.config)
-        for key in ("HOME_ASSISTANT_TOKEN", "BODY_BRIDGE_TOKEN", "ROBOT_TOKEN", "FNK0031_TOKEN", "FNK0050_TOKEN", "BODY_LLM_TOKEN"):
+        for key in ("HOME_ASSISTANT_TOKEN", "BODY_BRIDGE_TOKEN", "ROBOT_TOKEN", "FNK0031_TOKEN", "FNK0050_TOKEN", "BODY_LLM_TOKEN", "BODY_RECONSTRUCTION_WORKER_TOKEN"):
             if safe.get(key) and not str(safe[key]).startswith("@env:"):
                 safe[key] = f"@env:{key}"
         CONFIG_PATH.write_text(json.dumps(safe, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -2748,6 +2750,30 @@ class BodyHost:
         from .body_gui import BODY_GUI_HTML
 
         class Handler(BaseHTTPRequestHandler):
+            def _reconstruction_worker_authorized(self) -> bool:
+                configured = str(owner.value("BODY_RECONSTRUCTION_WORKER_TOKEN", "") or "")
+                supplied = str(self.headers.get("Authorization", ""))
+                if not configured:
+                    self._send({"ok": False, "error": "reconstruction worker token is not configured"}, 503)
+                    return False
+                expected = f"Bearer {configured}"
+                if not hmac.compare_digest(supplied, expected):
+                    self._send({"ok": False, "error": "unauthorized reconstruction worker"}, 401)
+                    return False
+                return True
+
+            def _stream_reconstruction_image(self, path: Path) -> None:
+                size = path.stat().st_size
+                self.send_response(200)
+                self.send_header("Content-Type", "image/jpeg")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.send_header("Content-Length", str(size))
+                self.end_headers()
+                with path.open("rb") as stream:
+                    while chunk := stream.read(256 * 1024):
+                        self._write_response(chunk)
+
             def _write_response(self, data: bytes) -> None:
                 """Ignore a browser closing a polling request mid-response."""
                 try:
@@ -2997,6 +3023,23 @@ class BodyHost:
                         })
                 elif path == "/worldmodel/reconstruction/sessions":
                     self._send(owner.reconstruction_sessions())
+                elif path.startswith("/worldmodel/reconstruction/worker/sessions/"):
+                    if not self._reconstruction_worker_authorized():
+                        return
+                    parts = path.strip("/").split("/")
+                    if len(parts) == 5:
+                        try:
+                            self._send(owner._reconstruction_capture.worker_session_manifest(parts[4]))
+                        except (OSError, ValueError) as exc:
+                            self._send({"ok": False, "error": str(exc)[:240]}, 404)
+                    elif len(parts) == 7 and parts[5] == "images":
+                        try:
+                            image = owner._reconstruction_capture.worker_image_file(parts[4], parts[6])
+                            self._stream_reconstruction_image(image)
+                        except (OSError, ValueError) as exc:
+                            self._send({"ok": False, "error": str(exc)[:240]}, 404)
+                    else:
+                        self._send({"ok": False, "error": "not found"}, 404)
                 elif path == "/worldmodel/reconstruction/asset":
                     self._send(owner._reconstruction_capture.asset_status())
                 elif path == "/worldmodel/reconstruction/asset/file":
@@ -3077,7 +3120,32 @@ class BodyHost:
 
             def do_POST(self):  # noqa: N802
                 path = self.path.split("?", 1)[0].rstrip("/")
-                if path == "/worldmodel/reconstruction/session":
+                if path == "/worldmodel/reconstruction/worker/assets":
+                    if not self._reconstruction_worker_authorized():
+                        return
+                    length = int(self.headers.get("Content-Length") or 0)
+                    if length <= 0 or length > owner._reconstruction_capture.MAX_GAUSSIAN_ASSET_BYTES:
+                        self._send({"ok": False, "error": "asset request must be between 1 byte and 256 MiB"}, 413)
+                        return
+                    try:
+                        manifest = json.loads(base64.b64decode(self.headers.get("X-Body-Asset-Manifest", ""), validate=True))
+                        provenance = json.loads(base64.b64decode(self.headers.get("X-Body-Asset-Provenance", ""), validate=True))
+                        with tempfile.NamedTemporaryFile(prefix="body-gaussian-", suffix=".ply", dir=owner._reconstruction_capture.root, delete=False) as temporary:
+                            temp_path = Path(temporary.name)
+                            remaining = length
+                            while remaining:
+                                chunk = self.rfile.read(min(1024 * 1024, remaining))
+                                if not chunk:
+                                    raise ValueError("incomplete worker asset upload")
+                                temporary.write(chunk)
+                                remaining -= len(chunk)
+                        self._send(owner._reconstruction_capture.publish_asset(temp_path, manifest, provenance), 201)
+                    except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+                        self._send({"ok": False, "error": str(exc)[:240]}, 400)
+                    finally:
+                        if "temp_path" in locals():
+                            temp_path.unlink(missing_ok=True)
+                elif path == "/worldmodel/reconstruction/session":
                     try:
                         self._send(owner.create_reconstruction_session(self._read_body()), 201)
                     except (OSError, ValueError) as exc:

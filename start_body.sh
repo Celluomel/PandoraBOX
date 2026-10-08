@@ -67,15 +67,21 @@ setup_secure_proxy() {
   cat >"$CADDY_TMP" <<EOF
 https://${LAN_HOST} {
 	tls internal
-	basic_auth {
-		${PROXY_USER} ${PROXY_HASH}
-	}
 	header {
 		Cache-Control "no-store, no-cache, must-revalidate, max-age=0"
 		Pragma "no-cache"
 		Expires "0"
 	}
-	reverse_proxy 127.0.0.1:8766
+	@reconstruction_worker path /worldmodel/reconstruction/worker/*
+	handle @reconstruction_worker {
+		reverse_proxy 127.0.0.1:8766
+	}
+	handle {
+		basic_auth {
+			${PROXY_USER} ${PROXY_HASH}
+		}
+		reverse_proxy 127.0.0.1:8766
+	}
 }
 EOF
   sudo install -D -m 0644 "$CADDY_TMP" /etc/caddy/Caddyfile

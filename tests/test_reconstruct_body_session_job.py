@@ -10,6 +10,8 @@ from unittest.mock import patch
 from body_runtime_host.worldmodel.reconstruction_capture import ReconstructionCaptureStore
 from scripts import reconstruct_body_session as job
 
+TEMP_ROOT = Path(__file__).resolve().parents[1] / ".test-tmp"
+TEMP_ROOT.mkdir(exist_ok=True)
 
 GAUSSIAN_PLY = (
     "ply\nformat ascii 1.0\nelement vertex 1\n"
@@ -40,7 +42,7 @@ def make_session(root: Path, *, simulated=False) -> str:
 
 class ReconstructionJobTests(unittest.TestCase):
     def test_end_to_end_job_publishes_valid_asset_with_provenance(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory(dir=TEMP_ROOT) as directory:
             capture_root = Path(directory) / "captures"
             session_id = make_session(capture_root)
             work_dir = Path(directory) / "job"
@@ -80,7 +82,7 @@ class ReconstructionJobTests(unittest.TestCase):
             self.assertFalse(provenance["safety_authoritative"])
 
     def test_simulated_capture_is_rejected_before_toolchain_runs(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory(dir=TEMP_ROOT) as directory:
             capture_root = Path(directory) / "captures"
             session_id = make_session(capture_root, simulated=True)
             args = argparse.Namespace(
