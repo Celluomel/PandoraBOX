@@ -54,7 +54,7 @@ class ReconstructionJobTests(unittest.TestCase):
                     config = model_root / "splatfacto" / "test" / "config.yml"
                     config.parent.mkdir(parents=True)
                     config.write_text("fixture", encoding="utf-8")
-                elif command[0] == "ns-export":
+                elif Path(command[1]).name == "export_gaussian_splat.py":
                     output = Path(command[command.index("--output-dir") + 1])
                     output.mkdir(parents=True)
                     (output / "splat.ply").write_bytes(GAUSSIAN_PLY)
@@ -62,7 +62,9 @@ class ReconstructionJobTests(unittest.TestCase):
             args = argparse.Namespace(
                 capture_root=str(capture_root), session_id=session_id,
                 work_dir=str(work_dir), ns_process_data="ns-process-data",
-                ns_train="ns-train", ns_export="ns-export", iterations=1000,
+                ns_train="ns-train",
+                ns_export="export_gaussian_splat.py",
+                iterations=1000,
                 device="cuda",
             )
             with patch.object(job, "_run", side_effect=fake_run):
@@ -84,7 +86,10 @@ class ReconstructionJobTests(unittest.TestCase):
             args = argparse.Namespace(
                 capture_root=str(capture_root), session_id=session_id,
                 work_dir=str(Path(directory) / "job"), ns_process_data="ns-process-data",
-                ns_train="ns-train", ns_export="ns-export", iterations=1000, device="cuda",
+                ns_train="ns-train",
+                ns_export="export_gaussian_splat.py",
+                iterations=1000,
+                device="cuda",
             )
             with patch.object(job, "_run") as run_command:
                 with self.assertRaisesRegex(job.ReconstructionError, "simulated or replayed"):

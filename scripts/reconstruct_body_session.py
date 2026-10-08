@@ -151,10 +151,18 @@ def run(args: argparse.Namespace) -> Path:
     configs = list(model_dir.rglob("config.yml"))
     if len(configs) != 1:
         raise ReconstructionError(f"expected one Nerfstudio config.yml, found {len(configs)}")
-    _run([
-        args.ns_export, "gaussian-splat", "--load-config", str(configs[0]),
-        "--output-dir", str(exports),
-    ], run_dir)
+    _run(
+        [
+            sys.executable,
+            args.ns_export,
+            "gaussian-splat",
+            "--load-config",
+            str(configs[0]),
+            "--output-dir",
+            str(exports),
+        ],
+        run_dir,
+    )
     asset = _find_export(exports)
 
     provenance = {
@@ -226,7 +234,11 @@ def main() -> int:
     parser.add_argument("--device", choices=("cuda", "cpu"), default="cuda")
     parser.add_argument("--ns-process-data", default="ns-process-data")
     parser.add_argument("--ns-train", default="ns-train")
-    parser.add_argument("--ns-export", default="ns-export")
+    parser.add_argument(
+        "--ns-export",
+        default=str(ROOT / "scripts" / "export_gaussian_splat.py"),
+        help="Nerfstudio Gaussian export launcher (keeps mesh-only PyMeshLab optional)",
+    )
     args = parser.parse_args()
     if not 1000 <= args.iterations <= 100000:
         parser.error("--iterations must be between 1000 and 100000")
