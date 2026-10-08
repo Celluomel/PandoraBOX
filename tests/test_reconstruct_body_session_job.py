@@ -76,7 +76,8 @@ class ReconstructionJobTests(unittest.TestCase):
                 call.args[0] for call in run_patch.call_args_list
                 if call.args[0][0] == "ns-process-data"
             )
-            self.assertEqual(process_command[process_command.index("--num-downscales") + 1], "0")
+            self.assertIn("--skip-image-processing", process_command)
+            self.assertIn("--no-gpu", process_command)
 
             self.assertEqual(published, capture_root / "assets" / "current" / "scene.ply")
             status = ReconstructionCaptureStore(capture_root).asset_status()

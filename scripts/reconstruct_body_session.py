@@ -136,10 +136,12 @@ def run(args: argparse.Namespace) -> Path:
     processed = run_dir / "nerfstudio-data"
     model_dir = run_dir / "models"
     exports = run_dir / "exports"
+    if not os.environ.get("DISPLAY") and not os.environ.get("QT_QPA_PLATFORM"):
+        os.environ["QT_QPA_PLATFORM"] = "offscreen"
     _run([
         args.ns_process_data, "images", "--data", str(staged / "images"),
         "--output-dir", str(processed), "--matching-method", "sequential",
-        "--camera-type", "perspective", "--num-downscales", "0",
+        "--camera-type", "perspective", "--skip-image-processing", "--no-gpu",
     ], run_dir)
     train_command = [
         args.ns_train, "splatfacto", "--data", str(processed),
