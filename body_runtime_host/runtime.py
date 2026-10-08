@@ -44,6 +44,7 @@ from body_runtime_host.coordinate_frames import (
 from body_runtime_host.deployment import build_bundle
 from body_runtime_host.local_camera import LocalCameraCapture
 from body_runtime_host.repository_update import RepositoryUpdater
+from body_runtime_host.worldmodel.reconstruction_capture import ReconstructionCaptureStore
 
 LOG = logging.getLogger("lumina.body")
 ROOT = Path(__file__).resolve().parents[1]
@@ -174,6 +175,58 @@ class BodyHost:
         self._nav2_log_handle = None
         self._workflow_manager = None
         self._repository_updater = RepositoryUpdater(ROOT)
+        self._reconstruction_capture = ReconstructionCaptureStore(
+            ROOT / "data" / "body" / "reconstruction"
+        )
+
+    def reconstruction_sessions(self) -> dict:
+        return self._reconstruction_capture.list_sessions()
+
+    def create_reconstruction_session(self, payload: dict) -> dict:
+        name = str((payload or {}).get("name") or "camera-first")
+        return {"ok": True, "session": self._reconstruction_capture.create(name)}
+
+    def capture_reconstruction_frame(self, payload: dict) -> dict:
+        session_id = str((payload or {}).get("session_id") or "")
+        wm = self.worldmodel
+        if wm is None or wm.source is None:
+            return {"ok": False, "error": "Body perception source is unavailable"}
+        try:
+            observation = wm.source.observe()
+            body_state = wm.source.body_state()
+            packet = wm._scene_packet(observation, body_state, {}, {})
+            modalities = packet.get("modalities") or {}
+            camera = modalities.get("camera") or {}
+            if not camera.get("image_base64"):
+                return {"ok": False, "error": "No captured camera image is available"}
+            frame = {
+                "contract": "body_perception_frame.v2",
+                "frame_id": packet.get("frame_id"),
+                "timestamp": packet.get("timestamp"),
+                "source": packet.get("source"),
+                "simulated": type(wm.source).__name__.lower().startswith("sim"),
+                "camera": camera,
+                "body": {"pose": {
+                    "position_m": list(body_state.position)[:3],
+                    "yaw_rad": body_state.orientation,
+                    "coordinate_frame": body_state.coordinate_frame,
+                    "position_source": body_state.position_source,
+                    "accuracy_m": body_state.position_accuracy_m,
+                }},
+                "modalities": modalities,
+                "synchronization": (packet.get("perception_frame") or {}).get("synchronization", {}),
+            }
+            result = self._reconstruction_capture.capture(session_id, frame)
+            return result
+        except (OSError, ValueError) as exc:
+            return {"ok": False, "error": str(exc)[:240]}
+
+    def close_reconstruction_session(self, payload: dict) -> dict:
+        try:
+            session = self._reconstruction_capture.close(str((payload or {}).get("session_id") or ""))
+            return {"ok": True, "session": session}
+        except (OSError, ValueError) as exc:
+            return {"ok": False, "error": str(exc)[:240]}
 
     @property
     def workflow_manager(self):
@@ -2739,6 +2792,29 @@ class BodyHost:
                 except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
                     LOG.debug("Body HTTP client disconnected before JSON response completed")
 
+            def _send_reconstruction_asset(self) -> None:
+                asset = owner._reconstruction_capture.asset_file()
+                if asset is None:
+                    self._send(owner._reconstruction_capture.asset_status(), 404)
+                    return
+                try:
+                    size = asset.stat().st_size
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/octet-stream")
+                    self.send_header("Content-Disposition", "inline")
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("X-Content-Type-Options", "nosniff")
+                    self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+                    self.send_header("Content-Length", str(size))
+                    self.end_headers()
+                    with asset.open("rb") as stream:
+                        while chunk := stream.read(1024 * 1024):
+                            self._write_response(chunk)
+                except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                    LOG.debug("Quest disconnected while loading the reconstruction asset")
+                except OSError as exc:
+                    LOG.warning("Could not stream Quest reconstruction asset: %s", exc)
+
             def _read_body(self) -> dict:
                 length = int(self.headers.get("Content-Length") or 0)
                 if length <= 0:
@@ -2919,6 +2995,12 @@ class BodyHost:
                             **wm.spatial_map.snapshot(limit=limit),
                             "last_update": dict(wm._last_spatial_map_update),
                         })
+                elif path == "/worldmodel/reconstruction/sessions":
+                    self._send(owner.reconstruction_sessions())
+                elif path == "/worldmodel/reconstruction/asset":
+                    self._send(owner._reconstruction_capture.asset_status())
+                elif path == "/worldmodel/reconstruction/asset/file":
+                    self._send_reconstruction_asset()
                 elif path == "/worldmodel/semantic-splats":
                     wm = owner.worldmodel
                     if wm is None:
@@ -2995,7 +3077,18 @@ class BodyHost:
 
             def do_POST(self):  # noqa: N802
                 path = self.path.split("?", 1)[0].rstrip("/")
-                if path == "/workflows":
+                if path == "/worldmodel/reconstruction/session":
+                    try:
+                        self._send(owner.create_reconstruction_session(self._read_body()), 201)
+                    except (OSError, ValueError) as exc:
+                        self._send({"ok": False, "error": str(exc)[:240]}, 400)
+                elif path == "/worldmodel/reconstruction/capture":
+                    result = owner.capture_reconstruction_frame(self._read_body())
+                    self._send(result, 200 if result.get("ok") else 409)
+                elif path == "/worldmodel/reconstruction/close":
+                    result = owner.close_reconstruction_session(self._read_body())
+                    self._send(result, 200 if result.get("ok") else 400)
+                elif path == "/workflows":
                     try:
                         self._send({"ok": True, "workflow": owner.workflow_manager.save(self._read_body())})
                     except (ValueError, OSError) as exc:

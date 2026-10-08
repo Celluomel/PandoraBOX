@@ -20,6 +20,7 @@
     .controls{position:absolute;z-index:2;left:50%;bottom:22px;transform:translateX(-50%);display:flex;align-items:center;gap:9px;max-width:calc(100vw - 24px);pointer-events:auto}
     button,a{border:1px solid #75c99a88;background:#0c2117e8;color:#d9f5e4;padding:11px 15px;font:12px inherit;text-decoration:none;cursor:pointer;backdrop-filter:blur(14px)}
     button:hover,a:hover{background:#17402a}button:disabled{opacity:.5;cursor:default}
+    #scene-mode-simulation[aria-pressed="true"],#scene-mode-gaussian[aria-pressed="true"]{border-color:#75edbd;background:#17402a;color:#effff5}
     #status{position:absolute;z-index:2;left:50%;top:86px;transform:translateX(-50%);max-width:min(700px,calc(100vw - 32px));padding:8px 12px;background:#09130edb;color:#a9c3b2;border:1px solid #ffffff1b;text-align:center;font-size:11px}
     #selection{position:absolute;z-index:2;right:18px;bottom:22px;max-width:min(280px,40vw);padding:12px 14px;background:#09130edb;border-left:2px solid #81d9ab;color:#d6e9dc;pointer-events:none}
     #selection small{display:block;color:#8ca497;margin-top:4px;line-height:1.4}
@@ -42,6 +43,8 @@
   <div id="status" role="status">Starting 3D scene…</div>
   <aside id="selection"><b>No object selected</b><small>Point at a scene object and press the controller trigger. Selection sends no robot command.</small></aside>
   <nav class="controls" aria-label="Scene controls">
+    <button id="scene-mode-simulation" type="button" aria-pressed="true">Planar simulation</button>
+    <button id="scene-mode-gaussian" type="button" aria-pressed="false" disabled title="No renderable 3DGS scene is published yet">Real 3DGS view · unavailable</button>
     <button id="quest-simulation" type="button" disabled>Loading simulation…</button>
     <button id="enter-xr" type="button">Enter VR</button>
     <button id="enter-ar" type="button">Passthrough AR</button>

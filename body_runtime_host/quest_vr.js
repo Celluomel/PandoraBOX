@@ -1,5 +1,6 @@
 import * as THREE from '../frontend/node_modules/three/build/three.module.js';
 import { OrbitControls } from '../frontend/node_modules/three/examples/jsm/controls/OrbitControls.js';
+import * as GaussianSplats3D from '../frontend/node_modules/@mkkellogg/gaussian-splats-3d/build/gaussian-splats-3d.module.js';
 import { QuestVRDashboard } from './quest_vr_dashboard.js';
 
 const canvas = document.querySelector('#scene');
@@ -102,6 +103,10 @@ let basePosition = null;
 let firstData = true;
 let latestObjects = [];
 let latestWorldStatus = null;
+let gaussianAssetStatus = null;
+let gaussianViewer = null;
+let gaussianLoadPromise = null;
+let activeSceneMode = 'simulation';
 let mapCenter = { x: 5, z: -6 };
 function configureSceneFrame(frame, bodyPosition) {
   const source = frame.source || {};
@@ -523,6 +528,115 @@ function syncSimulationControl(frame = latestWorldStatus) {
   button.setAttribute('aria-pressed', String(Boolean(frame?.running)));
 }
 
+async function refreshGaussianAssetStatus() {
+  const button = document.querySelector('#scene-mode-gaussian');
+  if (!button) return;
+  try {
+    const response = await fetch('/worldmodel/reconstruction/asset', { cache: 'no-store', credentials: 'same-origin' });
+    if (!response.ok) throw new Error(`Asset status HTTP ${response.status}`);
+    gaussianAssetStatus = await response.json();
+    const ready = gaussianAssetStatus.available === true && gaussianAssetStatus.renderer_available === true;
+    button.disabled = !ready;
+    button.title = gaussianAssetStatus.message || (ready ? 'Switch to the reconstructed Gaussian scene' : 'Real 3DGS view is not ready');
+    button.textContent = ready ? 'Real 3DGS view' : 'Real 3DGS view · unavailable';
+  } catch (error) {
+    gaussianAssetStatus = null;
+    button.disabled = true;
+    button.title = `Cannot check for a reconstructed scene: ${error.message}`;
+    button.textContent = 'Real 3DGS view · unavailable';
+  }
+}
+
+async function loadGaussianReconstruction() {
+  if (gaussianViewer?.splatRenderReady) return gaussianViewer;
+  if (gaussianLoadPromise) return gaussianLoadPromise;
+  gaussianLoadPromise = (async () => {
+    const host = document.createElement('div');
+    host.setAttribute('aria-hidden', 'true');
+    host.style.cssText = 'position:fixed;inset:0;opacity:0;pointer-events:none;z-index:-1';
+    document.body.appendChild(host);
+    const viewer = new GaussianSplats3D.Viewer({
+      rootElement: host,
+      threeScene: scene,
+      renderer,
+      camera,
+      selfDrivenMode: false,
+      useBuiltInControls: false,
+      webXRMode: GaussianSplats3D.WebXRMode.VR,
+      webXRSessionInit: { optionalFeatures: ['local-floor', 'bounded-floor'] },
+      sharedMemoryForWorkers: false,
+      gpuAcceleratedSort: false,
+      integerBasedSort: true,
+      renderMode: GaussianSplats3D.RenderMode.Always,
+      sceneRevealMode: GaussianSplats3D.SceneRevealMode.Instant,
+      sphericalHarmonicsDegree: 0,
+      optimizeSplatData: true,
+      inMemoryCompressionLevel: 1,
+      freeIntermediateSplatData: true,
+      logLevel: GaussianSplats3D.LogLevel.None,
+    });
+    gaussianViewer = viewer;
+    const format = {
+      ply: GaussianSplats3D.SceneFormat.Ply,
+      splat: GaussianSplats3D.SceneFormat.Splat,
+      ksplat: GaussianSplats3D.SceneFormat.KSplat,
+    }[gaussianAssetStatus.format];
+    await viewer.addSplatScene(gaussianAssetStatus.file_url, {
+      format,
+      progressiveLoad: true,
+      showLoadingUI: false,
+      position: gaussianAssetStatus.transform.position,
+      rotation: gaussianAssetStatus.transform.rotation,
+      scale: gaussianAssetStatus.transform.scale,
+      splatAlphaRemovalThreshold: 1,
+    });
+    if (!viewer.splatRenderReady) throw new Error('Gaussian renderer did not finish preparing the asset');
+    return viewer;
+  })().catch(async error => {
+    await gaussianViewer?.dispose().catch(() => {});
+    gaussianViewer = null;
+    throw error;
+  }).finally(() => { gaussianLoadPromise = null; });
+  return gaussianLoadPromise;
+}
+
+async function selectSceneMode(mode) {
+  const planar = document.querySelector('#scene-mode-simulation');
+  const gaussian = document.querySelector('#scene-mode-gaussian');
+  if (mode === 'gaussian') {
+    if (!gaussianAssetStatus?.available || !gaussianAssetStatus?.renderer_available) {
+      setStatus(gaussianAssetStatus?.message || 'No renderable real 3DGS reconstruction is available yet.', true);
+      return;
+    }
+    gaussian.disabled = true;
+    gaussian.textContent = 'Loading real reconstruction…';
+    setStatus(`Loading ${gaussianAssetStatus.asset_id} · ${(gaussianAssetStatus.byte_length / (1024 * 1024)).toFixed(1)} MiB`);
+    try {
+      await loadGaussianReconstruction();
+      activeSceneMode = 'gaussian';
+      world.visible = false;
+      planar?.setAttribute('aria-pressed', 'false');
+      gaussian?.setAttribute('aria-pressed', 'true');
+      setStatus(`Real 3D Gaussian reconstruction · ${gaussianAssetStatus.coordinate_frame} · visualization only, not a safety map`);
+    } catch (error) {
+      activeSceneMode = 'simulation';
+      world.visible = true;
+      planar?.setAttribute('aria-pressed', 'true');
+      gaussian?.setAttribute('aria-pressed', 'false');
+      setStatus(`Could not load real reconstruction: ${error.message}`, true);
+    } finally {
+      gaussian.disabled = !(gaussianAssetStatus?.available && gaussianAssetStatus?.renderer_available);
+      gaussian.textContent = 'Real 3DGS view';
+    }
+    return;
+  }
+  activeSceneMode = 'simulation';
+  world.visible = true;
+  planar?.setAttribute('aria-pressed', 'true');
+  gaussian?.setAttribute('aria-pressed', 'false');
+  setStatus('Planar Body world-model view selected.');
+}
+
 function selectAt(controller) {
   const hudAction = vrDashboard.visible ? vrDashboard.activateAt(controller, raycaster) : null;
   if (hudAction === 'simulation') {
@@ -812,6 +926,10 @@ renderer.domElement.addEventListener('webglcontextlost', event => {
 document.querySelector('#enter-xr').addEventListener('click', () => enterXR('immersive-vr'));
 document.querySelector('#enter-ar').addEventListener('click', () => enterXR('immersive-ar'));
 document.querySelector('#quest-simulation').addEventListener('click', () => toggleSimulationFromHud());
+document.querySelector('#scene-mode-simulation').addEventListener('click', () => selectSceneMode('simulation'));
+document.querySelector('#scene-mode-gaussian').addEventListener('click', () => selectSceneMode('gaussian'));
+void refreshGaussianAssetStatus();
+setInterval(refreshGaussianAssetStatus, 10000);
 window.__pbQuestReady = true;
 if (statusNode.textContent === 'Starting 3D scene…') setStatus('3D renderer ready · connecting to Body world model…');
 
@@ -877,7 +995,17 @@ renderer.setAnimationLoop(time => {
         .catch(() => {});
     }
   }
-  renderer.render(scene, camera);
+  if (activeSceneMode === 'gaussian' && gaussianViewer?.splatRenderReady) {
+    gaussianViewer.splatMesh.position.copy(world.position);
+    gaussianViewer.splatMesh.quaternion.copy(world.quaternion);
+    gaussianViewer.splatMesh.scale.copy(world.scale);
+    gaussianViewer.splatMesh.updateMatrix();
+    gaussianViewer.camera = session ? renderer.xr.getCamera(camera) : camera;
+    gaussianViewer.update();
+    gaussianViewer.render();
+  } else {
+    renderer.render(scene, camera);
+  }
   if ((session || hudPreview) && vrDashboard.visible) {
     const xrCamera = session ? renderer.xr.getCamera(camera) : camera;
     vrDashboard.updateAdjustment(deltaSeconds, session ? [...session.inputSources].filter(source => source.gamepad) : []);

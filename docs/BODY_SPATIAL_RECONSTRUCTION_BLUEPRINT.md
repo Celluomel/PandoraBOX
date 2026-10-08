@@ -1,6 +1,6 @@
 # Body Spatial Reconstruction Blueprint
 
-Status: in progress (software groundwork; no physical sensors available yet)
+Status: in progress (camera-first capture contract implemented; reconstruction backend and physical validation remain)
 Owner: Body Runtime
 Related contracts: `body_perception_frame.v2`, Body world model, Body sensor plugins
 Primary visualization target: Body UI and Meta Quest 3S
@@ -20,6 +20,15 @@ preview. With the simulator this is explicitly a preview, not camera-derived
 Gaussian Splatting or real-world reconstruction. A real Gaussian backend
 still needs camera keyframes, calibrated poses and captured appearance
 primitives.
+
+Camera-first capture sessions are persisted by the Body API under
+`data/body/reconstruction`: `POST /worldmodel/reconstruction/session`,
+`POST /worldmodel/reconstruction/capture`, `POST /worldmodel/reconstruction/close`,
+and `GET /worldmodel/reconstruction/sessions`. Captures retain JPEGs,
+timestamps, camera calibration, pose provenance, synchronization metadata and
+optional sensor constraints. Missing pose and metric scale are reported as
+missing, not inferred from VLM text. This is a dataset/ingestion foundation,
+not yet a Gaussian training or rendering backend.
 
 ## 1. Objective
 
@@ -66,11 +75,12 @@ layer wins for actuation.
 
 ```text
 Camera ───────────────┐
-LiDAR / depth ────────┤
-IMU + odometry + pose ├─> body_perception_frame.v2
+IMU + visual odometry ├─> body_perception_frame.v2
+LiDAR / depth (later) ┤
 Calibration ──────────┘          │
                                  ├─> synchronization and quality gate
-                                 ├─> metric geometry + localization
+                                 ├─> camera keyframes + pose recovery (SfM/VIO)
+                                 ├─> metric geometry + localization (range when available)
                                  ├─> VLM image interpretation
                                  ├─> vision/range association + tracks
                                  ├─> Body metric/semantic spatial map
@@ -192,9 +202,24 @@ observations remain visible as such.
 
 ### Stage 5 - Visual reconstruction and Gaussian Splatting evaluation
 
-First produce a calibrated keyframe/depth replay and compare it with the metric
-map. Then evaluate offline 3DGS on a short, static, calibrated sequence with
-known camera poses. Feed the grounded VLM annotations from those keyframes into
+The LiDAR-free path is camera-first: capture overlapping images and intrinsics,
+then recover camera poses with visual SfM when Body VIO/odometry is unavailable.
+The reconstruction can be visually useful but is not metric-scale reliable
+until a measured scale/pose source is supplied. IMU can stabilize orientation
+and VIO; GPS is only a coarse global constraint outdoors. ToF and mmWave can
+add sparse constraints, not dense surfaces. Keep each modality optional in the
+frame contract so LiDAR later improves geometry/scale without changing the
+capture API or VLM semantic contract.
+
+The Body on Ventuno should capture and serve bounded reconstruction sessions;
+offline training should run on a PC/workstation GPU using an established
+COLMAP + 3DGS toolchain. Do not assume the Ventuno NPU accelerates Gaussian
+training. The processed splat is then imported as a versioned visual asset for
+Body/Quest rendering. Quest exposes separate planar-simulation and real-3DGS
+view modes; real mode remains unavailable until a published asset passes the
+Body manifest, format, size and checksum validation. First produce a calibrated keyframe replay and compare
+it with any available metric map. Evaluate offline 3DGS on a short, static
+sequence with known or SfM-recovered camera poses. Feed the grounded VLM annotations from those keyframes into
 the reconstruction pipeline to create semantic splat groups, not just a
 separate text panel. The renderer must support per-entity labels/highlights,
 category visibility, relationship/context overlays, confidence visualization
@@ -222,6 +247,12 @@ range data, acceptable held-out-view quality, and a measured resource budget.
 If these do not beat a simpler textured mesh/point-cloud view for the intended
 VR use, retain the simpler renderer.
 
+**No-LiDAR acceptance:** reconstruct a camera-only static room from overlapping
+keyframes; report pose-recovery success, held-out-view quality, holes/floaters,
+scale status and resource cost. Do not claim metric obstacle distance or safe
+free space from this result. Later LiDAR acceptance repeats the same session
+with synchronized range data and measures scale/alignment improvement.
+
 ### Stage 6 - Live visualization and VR integration
 
 Expose distinct controls/layers for camera, metric geometry, semantic splats,
@@ -237,6 +268,40 @@ Provide an explicit fallback to 2D/point-cloud views.
 users can distinguish measured geometry, VLM-grounded semantic splats,
 unmatched hypotheses and camera-derived appearance at a glance; semantic
 selection/visibility controls act on the correct stable entity groups.
+
+The Quest page now bundles a real Three.js Gaussian renderer locally (no CDN
+request) and loads a published PLY, SPLAT or KSPLAT through the Body asset
+endpoint. The Quest selector switches between the existing planar simulation
+and the reconstructed splat scene; an absent, malformed, oversized, or
+checksum-mismatched asset keeps the real-view option unavailable. Renderer
+loading is lazy so users who stay in simulation do not pay its memory or
+startup cost. The renderer is visualization only and never feeds the planner.
+
+To publish a reconstruction, place the renderer-compatible asset under
+`data/body/reconstruction/assets/current/` and add `manifest.json` with this
+shape (the PLY must contain Gaussian scale, rotation, opacity and SH/DC color
+fields, not only xyz point-cloud vertices):
+
+```json
+{
+  "contract": "body_gaussian_asset.v1",
+  "asset_id": "capture-20261008",
+  "file": "scene.ply",
+  "format": "ply",
+  "sha256": "<64 lowercase hex characters>",
+  "coordinate_frame": "map",
+  "transform": {
+    "position": [0, 0, 0],
+    "rotation": [0, 0, 0, 1],
+    "scale": [1, 1, 1]
+  }
+}
+```
+
+The Body validates the file against its manifest before serving it and limits
+Quest assets to 256 MiB. Publishing a manifest is not reconstruction: the
+camera capture-session path still needs an offline/edge worker to recover
+camera poses and produce this asset.
 
 ### Stage 7 - Physical acceptance
 
@@ -289,12 +354,14 @@ benchmark success rate. Keep per-scene failures and raw replay artifacts.
 
 ## 7. Immediate next step
 
-Complete **Stage 0 with a read-only audit and deterministic replay report**:
-list each current camera, LiDAR/depth, pose and calibration input with its real
-provenance; serialize representative `body_perception_frame.v2` samples; and
-identify schema gaps without changing the planner. This establishes whether the
-next engineering task is calibration, timestamp quality, real range capture or
-map accumulation, based on evidence rather than the simulated scene.
+The Quest renderer and validated asset-loading path are implemented. The
+remaining end-to-end gate is to capture real overlapping camera frames, recover
+camera poses, generate and publish a Gaussian PLY/KSPLAT with provenance, then
+verify the scene on desktop and Quest. Until a reconstruction worker produces
+that asset, the Quest correctly stays on the planar simulation. Run camera-only
+pose recovery first and report scale as unknown unless measured pose or
+synchronized range constraints establish it. LiDAR remains an optional later
+constraint, not a prerequisite for visual reconstruction.
 
 ## 8. References
 

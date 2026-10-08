@@ -10,6 +10,7 @@ Covers:
 Run:  venv/Scripts/python.exe -m pytest tests/test_body_host_worldmodel.py -v
 """
 import json
+import hashlib
 import importlib.util
 import types
 import sys
@@ -516,6 +517,9 @@ class BodyHostHttpTest(unittest.TestCase):
                 self.assertIn("XR · STATUS", quest_html)
                 self.assertIn("Passthrough AR", quest_html)
                 self.assertIn("Head / controller", quest_html)
+                self.assertIn("Planar simulation", quest_html)
+                self.assertIn("Real 3DGS view · unavailable", quest_html)
+                self.assertIn("aria-pressed=\"true\"", quest_html)
                 with urllib.request.urlopen(f"{base}/quest-hud-preview", timeout=5) as response:
                     preview_html = response.read().decode("utf-8")
                     self.assertEqual(response.headers.get_content_type(), "text/html")
@@ -525,8 +529,9 @@ class BodyHostHttpTest(unittest.TestCase):
                 with urllib.request.urlopen(f"{base}/quest-hud-preview.js", timeout=5) as response:
                     preview_script = response.read().decode("utf-8")
                     self.assertEqual(response.headers.get_content_type(), "text/javascript")
-                self.assertIn("function drawMap(canvas, mode)", preview_script)
-                self.assertIn("worldLocal", preview_script)
+                preview_source = (Path(__file__).resolve().parents[1] / "body_runtime_host" / "quest_hud_preview.js").read_text(encoding="utf-8")
+                self.assertIn("function drawMap(canvas, mode)", preview_source)
+                self.assertIn("worldLocal", preview_source)
                 quest_source = (Path(__file__).resolve().parents[1] / "body_runtime_host" / "quest_vr.js").read_text(encoding="utf-8")
                 self.assertIn("controller input is telemetry only", quest_source)
                 self.assertIn("squeezestart", quest_source)
@@ -595,6 +600,9 @@ class BodyHostHttpTest(unittest.TestCase):
                 self.assertIn("/plugins/fnk0031_wifi/controller", quest_source)
                 self.assertIn("function updateControllerPointer(controller, beam, reticle)", quest_source)
                 self.assertIn("function updateGaussianPreview(points, group)", quest_source)
+                self.assertIn("async function loadGaussianReconstruction()", quest_source)
+                self.assertIn("gaussianViewer.update()", quest_source)
+                self.assertIn("gaussianViewer.render()", quest_source)
                 self.assertIn("VLM Gaussian groups", quest_source)
                 self.assertIn("vrDashboard.clearPointer()", quest_source)
                 self.assertIn("renderer.clearDepth()", quest_source)
@@ -613,6 +621,25 @@ class BodyHostHttpTest(unittest.TestCase):
                 self.assertIn(b"mmWave", quest_bundle)
                 self.assertIn(b"RANGE", quest_bundle)
                 self.assertIn(b"VLM Gaussian groups", quest_bundle)
+                self.assertIn(b"Real 3DGS view", quest_bundle)
+                from body_runtime_host.worldmodel.reconstruction_capture import ReconstructionCaptureStore
+                host._reconstruction_capture = ReconstructionCaptureStore(Path(tmp) / "reconstruction")
+                current = Path(tmp) / "reconstruction" / "assets" / "current"
+                current.mkdir(parents=True)
+                fields = "x y z scale_0 scale_1 scale_2 rot_0 rot_1 rot_2 rot_3 opacity f_dc_0 f_dc_1 f_dc_2".split()
+                ply = "ply\nformat ascii 1.0\nelement vertex 1\n" + "".join(f"property float {name}\n" for name in fields)
+                ply += "end_header\n0 0 0 -3 -3 -3 1 0 0 0 1 0.2 0.1 0.0\n"
+                asset = ply.encode("ascii")
+                (current / "fixture.ply").write_bytes(asset)
+                (current / "manifest.json").write_text(json.dumps({
+                    "contract": "body_gaussian_asset.v1", "asset_id": "fixture",
+                    "file": "fixture.ply", "format": "ply", "sha256": hashlib.sha256(asset).hexdigest(),
+                }), encoding="utf-8")
+                gaussian_status = _get(f"{base}/worldmodel/reconstruction/asset")
+                self.assertTrue(gaussian_status["available"])
+                with urllib.request.urlopen(f"{base}{gaussian_status['file_url']}", timeout=5) as response:
+                    self.assertEqual(response.read(), asset)
+                    self.assertEqual(response.headers.get_content_type(), "application/octet-stream")
 
                 # world model endpoints (lazy build)
                 status = _get(f"{base}/worldmodel/status")
