@@ -354,14 +354,40 @@ benchmark success rate. Keep per-scene failures and raw replay artifacts.
 
 ## 7. Immediate next step
 
-The Quest renderer and validated asset-loading path are implemented. The
-remaining end-to-end gate is to capture real overlapping camera frames, recover
-camera poses, generate and publish a Gaussian PLY/KSPLAT with provenance, then
-verify the scene on desktop and Quest. Until a reconstruction worker produces
-that asset, the Quest correctly stays on the planar simulation. Run camera-only
-pose recovery first and report scale as unknown unless measured pose or
-synchronized range constraints establish it. LiDAR remains an optional later
-constraint, not a prerequisite for visual reconstruction.
+The Quest renderer, validated asset-loading path, and an offline workstation
+job are implemented. `scripts/reconstruct_body_session.py` consumes a closed
+real Body capture session, verifies every JPEG digest and capture provenance,
+runs Nerfstudio image processing (COLMAP sequential SfM), trains Splatfacto,
+exports a Gaussian PLY, validates it against the Body's exact asset contract,
+and atomically publishes it to `data/body/reconstruction/assets/current/` with
+its SHA-256 and provenance. The job is intentionally workstation-side: it does
+not add COLMAP/CUDA dependencies to Body startup on Ventuno, and never emits
+planner or motor commands.
+
+Example from the repository root after installing COLMAP, FFmpeg and a
+hardware-compatible Nerfstudio environment on a GPU workstation:
+
+```powershell
+python scripts/reconstruct_body_session.py <closed-session-id> --device cuda --iterations 15000
+```
+
+The first run requires at least 10 distinct real camera frames. Simulated or
+replayed sessions are rejected, input files are hash-checked, and each run gets
+a fresh work directory so a failed attempt remains inspectable. `--device cpu`
+is available for debugging but is expected to be much slower. Publication
+replaces `assets/current`; the previous version is retained beside it as a
+`.previous-*` directory. A camera-only result is in SfM's arbitrary scale and
+is explicitly marked non-metric unless reliable measured pose/range constraints
+are established. The validation/publish flow is covered with a mocked
+toolchain; this checkout currently has no COLMAP/Nerfstudio executables, so a
+real capture-to-splat run and physical Quest rendering remain unverified.
+
+Next acceptance work is a real capture with adequate viewpoint overlap and
+static scene texture, pose-recovery and held-out-view inspection, followed by
+desktop and Quest loading. After this first genuine asset works, add explicit
+VLM entity-to-splat association and sensor-constrained scale/alignment. LiDAR
+remains optional for visual reconstruction, but metric/safety claims still need
+measured geometry and independent validation.
 
 ## 8. References
 
