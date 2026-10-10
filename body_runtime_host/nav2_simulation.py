@@ -56,6 +56,7 @@ class Nav2Simulation:
         self._static_tf.sendTransform([static, laser])
         self._map = self._make_map(OccupancyGrid)
         self._timer = node.create_timer(0.05, self._tick)
+        self._stopped = False
 
     @classmethod
     def _occupied(cls, x: float, y: float) -> bool:
@@ -173,12 +174,20 @@ class Nav2Simulation:
         }
 
     def stop(self):
-        self._timer.cancel()
-        self.node.destroy_timer(self._timer)
-        if self._twist_sub is not None:
-            self.node.destroy_subscription(self._twist_sub)
-        if self._stamped_sub is not None:
-            self.node.destroy_subscription(self._stamped_sub)
-        self.node.destroy_publisher(self._map_pub)
-        self.node.destroy_publisher(self._odom_pub)
-        self.node.destroy_publisher(self._scan_pub)
+        if getattr(self, "_stopped", False):
+            return
+        self._stopped = True
+        timer = getattr(self, "_timer", None)
+        if timer is not None:
+            timer.cancel()
+            self.node.destroy_timer(timer)
+            self._timer = None
+        subscription = getattr(self, "_cmd_sub", None)
+        if subscription is not None:
+            self.node.destroy_subscription(subscription)
+            self._cmd_sub = None
+        for name in ("_map_pub", "_odom_pub", "_scan_pub"):
+            publisher = getattr(self, name, None)
+            if publisher is not None:
+                self.node.destroy_publisher(publisher)
+                setattr(self, name, None)

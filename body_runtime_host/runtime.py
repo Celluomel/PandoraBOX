@@ -360,6 +360,12 @@ class BodyHost:
     def ros2_settings(self) -> dict:
         enabled = bool(self.value("BODY_ROS2_ENABLED", False))
         nav2_simulation_enabled = bool(self.value("BODY_NAV2_SIMULATION_ENABLED", False))
+        from body_runtime_host.ros2_bridge import DEFAULT_SENSOR_TOPICS
+        sensor_topics = dict(DEFAULT_SENSOR_TOPICS)
+        configured_topics = self.value("BODY_ROS2_SENSOR_TOPICS", {})
+        if isinstance(configured_topics, dict):
+            sensor_topics.update({key: str(value or "") for key, value in configured_topics.items()
+                                  if key in DEFAULT_SENSOR_TOPICS})
         bridge = self._ros2_bridge
         status = bridge.status() if bridge is not None else self._ros2_probe_status()
         return {
@@ -367,6 +373,7 @@ class BodyHost:
             "nav2_simulation_enabled": nav2_simulation_enabled,
             "publish_topic": str(self.value("BODY_ROS2_PUBLISH_TOPIC", "/body/observations")),
             "input_topic": str(self.value("BODY_ROS2_INPUT_TOPIC", "/body/observations_in")),
+            "sensor_topics": sensor_topics,
             "status": status,
             "nav2_stack": self.nav2_stack_status(),
             "contract": "pandorabox.body_observation.v1",
@@ -438,6 +445,50 @@ class BodyHost:
     def stop_nav2_simulation_stack(self) -> dict:
         with self._nav2_process_lock:
             return self._stop_nav2_simulation_stack_locked()
+
+    def run_nav2_simulation_route(self) -> dict:
+        """Run an obstacle-avoidance goal against synthetic ROS topics only."""
+        if not bool(self.value("BODY_ROS2_ENABLED", False)):
+            raise RuntimeError("Enable the ROS 2 bridge first")
+        if not bool(self.value("BODY_NAV2_SIMULATION_ENABLED", False)):
+            raise RuntimeError("Enable synthetic Nav2 inputs first")
+        bridge = self._ros2_bridge
+        if bridge is None or not bridge.status().get("available"):
+            raise RuntimeError("ROS 2 bridge is not running")
+        simulation = bridge.status().get("nav2_simulation", {})
+        if not simulation.get("enabled"):
+            raise RuntimeError("Synthetic map, scan, odometry and TF are not running")
+        if not simulation.get("cmd_vel_hardware_isolated"):
+            raise RuntimeError(
+                "Simulation blocked: /cmd_vel has an unknown or additional subscriber; "
+                "remove hardware drivers from this ROS domain before testing"
+            )
+        if self.nav2_stack_status().get("state") != "running":
+            raise RuntimeError("Start the Nav2 simulation stack first")
+        started = time.monotonic()
+        goal = {"x": 5.0, "y": 0.0, "yaw": 0.0, "frame_id": "map"}
+        result = bridge.navigate_to_pose(**goal, timeout=120.0)
+        if result.get("status") != "succeeded":
+            raise RuntimeError(f"Nav2 simulation goal did not succeed: {result.get('status', 'unknown')}")
+        simulation = bridge.status().get("nav2_simulation", {})
+        pose = simulation.get("pose") or {}
+        position_error = math.hypot(float(pose.get("x", 0.0)) - goal["x"],
+                                    float(pose.get("y", 0.0)) - goal["y"])
+        if position_error > 0.35:
+            raise RuntimeError(
+                f"Nav2 reported success but simulated base stopped {position_error:.2f} m from the goal"
+            )
+        return {
+            "status": result.get("status", "succeeded"),
+            "simulation_only": True,
+            "hardware_actuation": False,
+            "goal": goal,
+            "final_pose": pose,
+            "position_error_m": round(position_error, 3),
+            "elapsed_s": round(time.monotonic() - started, 2),
+            "action_status": result.get("action_status"),
+            "route_note": "Synthetic obstacle course; no FNK USB command or physical motion was issued.",
+        }
 
     def _stop_nav2_simulation_stack_locked(self) -> dict:
         process = self._nav2_process
@@ -516,11 +567,28 @@ class BodyHost:
                 raise ValueError("ROS 2 topics must be absolute names, e.g. /body/observations")
         if publish_topic == input_topic:
             raise ValueError("ROS 2 input and output topics must differ to prevent observation loops")
+        from body_runtime_host.ros2_bridge import DEFAULT_SENSOR_TOPICS
+        requested_sensor_topics = payload.get("sensor_topics", self.value("BODY_ROS2_SENSOR_TOPICS", {}))
+        if not isinstance(requested_sensor_topics, dict):
+            raise ValueError("sensor_topics must be an object of ROS topic names")
+        unknown_sensor_topics = set(requested_sensor_topics) - set(DEFAULT_SENSOR_TOPICS)
+        if unknown_sensor_topics:
+            raise ValueError("unsupported ROS sensor modalities: " + ", ".join(sorted(unknown_sensor_topics)))
+        sensor_topics = dict(DEFAULT_SENSOR_TOPICS)
+        sensor_topics.update({key: str(value or "").strip() for key, value in requested_sensor_topics.items()
+                              if key in DEFAULT_SENSOR_TOPICS})
+        active_sensor_topics = [topic for topic in sensor_topics.values() if topic]
+        if any(not topic.startswith("/") or any(part in {"", ".", ".."} for part in topic.split("/")[1:])
+               for topic in active_sensor_topics):
+            raise ValueError("sensor topics must be absolute ROS names; use a blank value to disable a modality")
+        if len(active_sensor_topics) != len(set(active_sensor_topics)):
+            raise ValueError("each ROS sensor modality must use a distinct topic")
         self.config.update({
             "BODY_ROS2_ENABLED": enabled,
             "BODY_NAV2_SIMULATION_ENABLED": nav2_simulation_enabled,
             "BODY_ROS2_PUBLISH_TOPIC": publish_topic,
             "BODY_ROS2_INPUT_TOPIC": input_topic,
+            "BODY_ROS2_SENSOR_TOPICS": sensor_topics,
         })
         self.save_config()
         persisted = self._load_config()
@@ -528,6 +596,8 @@ class BodyHost:
             raise OSError("ROS 2 settings were not persisted")
         if bool(persisted.get("BODY_NAV2_SIMULATION_ENABLED", False)) != bool(self.config["BODY_NAV2_SIMULATION_ENABLED"]):
             raise OSError("Nav2 simulation setting was not persisted")
+        if persisted.get("BODY_ROS2_SENSOR_TOPICS", {}) != sensor_topics:
+            raise OSError("ROS 2 sensor topic settings were not persisted")
         self.stop_nav2_simulation_stack()
         self._stop_ros2_bridge()
         if self.config["BODY_ROS2_ENABLED"]:
@@ -542,6 +612,7 @@ class BodyHost:
                 publish_topic=str(self.value("BODY_ROS2_PUBLISH_TOPIC", "/body/observations")),
                 input_topic=str(self.value("BODY_ROS2_INPUT_TOPIC", "/body/observations_in")),
                 nav2_simulation_enabled=bool(self.value("BODY_NAV2_SIMULATION_ENABLED", False)),
+                sensor_topics=self.ros2_settings()["sensor_topics"],
             )
         return self._ros2_bridge.start()
 
@@ -3234,6 +3305,11 @@ class BodyHost:
                         self._send({"ok": False, "error": str(exc)}, 409)
                 elif path == "/ros2/nav2/simulation/stop":
                     self._send({"ok": True, **owner.stop_nav2_simulation_stack()})
+                elif path == "/ros2/nav2/simulation/route-test":
+                    try:
+                        self._send({"ok": True, **owner.run_nav2_simulation_route()})
+                    except (RuntimeError, ValueError, TimeoutError) as exc:
+                        self._send({"ok": False, "error": str(exc)}, 409)
                 elif path == "/body/camera":
                     try:
                         self._send(owner.update_camera_settings(self._read_body()))

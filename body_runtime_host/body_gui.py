@@ -1072,3 +1072,40 @@ ensureWorldSimulationButton();
 </script></body></html>""",
     1,
 )
+
+BODY_GUI_HTML = BODY_GUI_HTML.replace(
+    "</body></html>",
+    """<script>
+function ensureNav2RouteTestButton(){
+  const panel=document.querySelector('#view-ros2 .ros2-fields');
+  if(!panel||document.getElementById('ros2-route-test'))return;
+  const anchor=[...panel.querySelectorAll('button')].find(button=>button.textContent.includes('Start Nav2 simulation'))?.closest('.plugin-actions');
+  if(!anchor)return;
+  const row=document.createElement('div');row.className='plugin-actions';
+  const button=document.createElement('button');button.id='ros2-route-test';button.type='button';button.className='primary-action';button.textContent='Run obstacle-course goal';button.title='Requires the synthetic Nav2 stack and exclusive /cmd_vel ownership by the simulated base.';button.disabled=true;button.onclick=runNav2SimulationRouteTest;
+  row.append(button);anchor.after(row);
+  const result=document.createElement('pre');result.id='ros2-route-test-result';result.className='json';result.style.cssText='margin:0;max-height:200px;overflow:auto';result.textContent='No route test run yet.';row.after(result);
+}
+async function runNav2SimulationRouteTest(){
+  const button=document.getElementById('ros2-route-test'),result=document.getElementById('ros2-route-test-result');
+  if(button)button.disabled=true;if(result)result.textContent='Running Nav2 against the synthetic obstacle course. This does not command the FNK0031…';
+  try{const data=await post('/ros2/nav2/simulation/route-test',{});if(result)result.textContent=JSON.stringify(data,null,2)}
+  catch(error){if(result)result.textContent='Route test failed: '+error.message}
+  finally{await refreshRos2Flow()}
+}
+function ensureRos2SensorTopicFields(){
+  const panel=document.querySelector('#view-ros2 .ros2-fields'),anchor=panel?.querySelector('.plugin-actions');
+  if(!panel||!anchor||document.getElementById('ros2-topic-imu'))return;
+  const group=document.createElement('section');group.className='ros2-sensor-topics';group.innerHTML='<h3>Standard ROS sensor inputs</h3><p class="muted">Map future drivers to Body observations. Leave a topic blank to disable it.</p>';
+  for(const [key,label,topic]of [['imu','IMU','/imu/data'],['gps','GPS / GNSS','/gps/fix'],['lidar','LiDAR / LaserScan','/scan'],['odometry','Odometry','/odom'],['range','Range sensor','/range/front']]){const field=document.createElement('label');field.className='field';field.textContent=label;const input=document.createElement('input');input.id='ros2-topic-'+key;input.value=topic;input.autocomplete='off';input.placeholder='Disabled when blank';field.append(input);group.append(field)}
+  const health=document.createElement('div');health.id='ros2-sensor-health';health.className='ros2-sensor-health';health.style.cssText='display:grid;gap:5px;padding:10px;border-top:1px solid #29483a;font-size:11px';health.setAttribute('role','status');health.textContent='Waiting for ROS 2 bridge status.';group.append(health);
+  anchor.before(group);
+}
+const refreshRos2WithRouteTest=refreshRos2Flow;
+refreshRos2Flow=async function(){await refreshRos2WithRouteTest();ensureRos2SensorTopicFields();ensureNav2RouteTestButton();try{const d=await get('/ros2/settings'),s=d.status||{},sim=s.nav2_simulation||{},button=document.getElementById('ros2-route-test');for(const [key,topic]of Object.entries(d.sensor_topics||{})){const input=document.getElementById('ros2-topic-'+key);if(input&&!input.matches(':focus'))input.value=topic||''}const health=document.getElementById('ros2-sensor-health'),sensorStatus=s.sensor_subscriptions||{};if(health){health.replaceChildren();for(const [key,label]of [['imu','IMU'],['gps','GPS / GNSS'],['lidar','LiDAR'],['odometry','Odometry'],['range','Range']]){const item=sensorStatus[key]||{},line=document.createElement('div');line.style.cssText='display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap';const title=document.createElement('span');title.textContent=label;const detail=document.createElement('span');detail.textContent=item.error||item.last_error?`${item.state||'error'}: ${item.error||item.last_error} · rejected ${item.rejected_count||0}`:`${item.state||'not reported'} · ${item.topic||'no topic'} · ${item.count||0} msgs`;line.append(title,detail);health.append(line)}}if(button){const ready=!!d.enabled&&!!d.nav2_simulation_enabled&&d.nav2_stack?.state==='running'&&!!sim.cmd_vel_hardware_isolated;button.disabled=!ready;button.title=ready?'Run the synthetic obstacle course. FNK hardware is not connected to this simulation.':!sim.cmd_vel_hardware_isolated?'Blocked until /cmd_vel has only the synthetic base as subscriber.':'Start the ROS 2 bridge, synthetic inputs and Nav2 simulation first.'}const isolation=document.getElementById('ros2-nav2-stack-status');if(isolation)isolation.textContent=`Nav2 simulation stack · ${d.nav2_stack?.state||'unknown'}`+(sim.enabled?(sim.cmd_vel_hardware_isolated?' · /cmd_vel isolated':` · blocked: ${sim.cmd_vel_subscribers?.length||0} /cmd_vel subscribers`):'')}catch{}};
+saveRos2Settings=async function(){const nav2=$('ros2-nav2-simulation'),sensor_topics={};for(const key of ['imu','gps','lidar','odometry','range'])sensor_topics[key]=document.getElementById('ros2-topic-'+key)?.value.trim()||'';const payload={enabled:$('ros2-enabled').checked,nav2_simulation_enabled:!!nav2?.checked,publish_topic:$('ros2-publish-topic').value,input_topic:$('ros2-input-topic').value,sensor_topics};try{const d=await post('/ros2/settings',payload);$('ros2-message').textContent=d.ok?'ROS 2 and sensor topic settings saved · subscriptions restart with bridge':(d.error||'Could not save settings');await refreshRos2Flow()}catch(e){$('ros2-message').textContent='Could not save ROS 2 settings: '+e.message}};
+ensureNav2RouteTestButton();
+ensureRos2SensorTopicFields();
+</script></body></html>""",
+    1,
+)

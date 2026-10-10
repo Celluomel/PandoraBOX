@@ -22,9 +22,17 @@ ROS_PACKAGES=(
   "ros-${ROS_DISTRO}-ros-base"
   "ros-${ROS_DISTRO}-std-msgs"
   "ros-${ROS_DISTRO}-geometry-msgs"
+  "ros-${ROS_DISTRO}-sensor-msgs"
+  "ros-${ROS_DISTRO}-nav-msgs"
   "ros-${ROS_DISTRO}-action-msgs"
+  "ros-${ROS_DISTRO}-diagnostic-msgs"
+  "ros-${ROS_DISTRO}-tf2-msgs"
+  "ros-${ROS_DISTRO}-tf2-ros"
   "ros-${ROS_DISTRO}-navigation2"
   "ros-${ROS_DISTRO}-nav2-bringup"
+  "ros-${ROS_DISTRO}-joy"
+  "ros-${ROS_DISTRO}-teleop-twist-keyboard"
+  "ros-${ROS_DISTRO}-teleop-twist-joy"
 )
 missing=()
 for package in "${ROS_PACKAGES[@]}"; do

@@ -101,6 +101,32 @@ VENTUNO has the Nav2 software packages, but a robot-configured Nav2 stack and a
 FNK-compatible `cmd_vel` adapter are separate runtime components and must be
 verified before selecting Nav2 for real motion.
 
+## ROS 2 software-only acceptance run
+
+The Runtime > ROS 2 page can start the synthetic map, scan, odometry and TF,
+then launch Nav2 and run **Run obstacle-course goal**. That goal crosses the
+synthetic map and is considered successful only when Nav2 succeeds and the
+simulated base ends within 0.35 m of the goal. The status/result explicitly
+marks this path `simulation_only`; `/cmd_vel` is consumed only by the synthetic
+base. No FNK USB transport is opened and no physical motion is possible from
+this test.
+
+The Nav2 simulation node owns its timer, `/cmd_vel` subscription and publishers;
+stopping it destroys those resources idempotently. For later manual simulation
+control, the ROS installer also includes the standard keyboard and joystick
+teleoperation packages. Their output must stay remapped to the synthetic
+`/cmd_vel` while validating the simulated base.
+
+The ROS 2 settings in the Body GUI also configure standard input topics for
+`sensor_msgs/Imu`, `sensor_msgs/NavSatFix`, `sensor_msgs/LaserScan`,
+`nav_msgs/Odometry`, and `sensor_msgs/Range`. Defaults are `/imu/data`,
+`/gps/fix`, `/scan`, `/odom`, and `/range/front`; blank disables that input.
+The bridge normalizes each message to a Body observation and preserves its
+source topic, frame, and ROS timestamp as provenance. Laser scans are capped
+at 720 samples before entering the Body event stream. A status counter/error is
+reported per input topic. This prepares the contracts; it does not claim those
+topics are already being published by attached hardware.
+
 ## Physical rollout gates
 
 1. Confirm the exact FNK USB port and read-only echo/voltage diagnostics.

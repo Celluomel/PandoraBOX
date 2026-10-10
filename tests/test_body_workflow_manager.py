@@ -117,6 +117,97 @@ class WorkflowManagerTests(unittest.TestCase):
         self.assertEqual(preflight["blockers"], [])
         self.assertIn("does not certify", preflight["scope"])
 
+    def test_nav2_simulation_isolation_fails_closed_on_any_extra_cmd_vel_subscriber(self):
+        from types import SimpleNamespace
+        from body_runtime_host.ros2_bridge import Ros2ObservationBridge
+
+        own = SimpleNamespace(node_name="pandorabox_body_bridge", node_namespace="/", topic_type="geometry_msgs/msg/Twist")
+        hardware = SimpleNamespace(node_name="fnk_driver", node_namespace="/", topic_type="geometry_msgs/msg/Twist")
+        node = SimpleNamespace(
+            get_name=lambda: "pandorabox_body_bridge",
+            get_subscriptions_info_by_topic=lambda _topic: [own],
+        )
+        self.assertTrue(Ros2ObservationBridge._cmd_vel_isolation(node)["cmd_vel_hardware_isolated"])
+        node.get_subscriptions_info_by_topic = lambda _topic: [own, hardware]
+        self.assertFalse(Ros2ObservationBridge._cmd_vel_isolation(node)["cmd_vel_hardware_isolated"])
+
+    def test_ros2_sensor_messages_normalize_to_bounded_body_observations(self):
+        from types import SimpleNamespace as NS
+        from body_runtime_host.ros2_bridge import Ros2ObservationBridge
+
+        scan = NS(header=NS(frame_id="laser"), ranges=[1.0, float("inf"), 2.0],
+                  angle_min=-1.0, angle_increment=0.1, range_min=0.1, range_max=8.0)
+        normalized_scan = Ros2ObservationBridge.normalize_sensor_message("lidar", scan)
+        self.assertEqual(normalized_scan["frame_id"], "laser")
+        self.assertEqual(normalized_scan["value"]["ranges_m"], [1.0, None, 2.0])
+
+        imu = NS(header=NS(frame_id="imu_link"),
+                 orientation=NS(x=0.0, y=0.0, z=0.0, w=1.0),
+                 angular_velocity=NS(x=0.1, y=0.2, z=0.3),
+                 linear_acceleration=NS(x=0.0, y=0.0, z=9.81))
+        normalized_imu = Ros2ObservationBridge.normalize_sensor_message("imu", imu)
+        self.assertAlmostEqual(normalized_imu["value"]["yaw_rad"], 0.0)
+        self.assertEqual(normalized_imu["value"]["linear_acceleration_m_s2"][2], 9.81)
+
+        gps = NS(header=NS(frame_id="gps"), status=NS(status=0), latitude=48.0,
+                 longitude=2.0, altitude=35.0)
+        self.assertTrue(Ros2ObservationBridge.normalize_sensor_message("gps", gps)["value"]["fix_valid"])
+
+        ranger = NS(header=NS(frame_id="tof"), range=0.42, min_range=0.02,
+                    max_range=4.0, field_of_view=0.3)
+        self.assertEqual(Ros2ObservationBridge.normalize_sensor_message("range", ranger)["value"]["range_m"], 0.42)
+
+        odom = NS(header=NS(frame_id="odom"), child_frame_id="base_link",
+                  pose=NS(pose=NS(position=NS(x=1.0, y=2.0, z=0.0),
+                                   orientation=NS(x=0.0, y=0.0, z=0.0, w=1.0))),
+                  twist=NS(twist=NS(linear=NS(x=0.1, y=0.0, z=0.0),
+                                    angular=NS(x=0.0, y=0.0, z=0.2))))
+        normalized_odom = Ros2ObservationBridge.normalize_sensor_message("odometry", odom)
+        self.assertEqual(normalized_odom["value"]["position_m"], [1.0, 2.0, 0.0])
+        self.assertEqual(normalized_odom["value"]["child_frame_id"], "base_link")
+
+    def test_ros2_sensor_subscriptions_apply_topics_and_mark_synthetic_nav2_data(self):
+        import sys
+        from types import ModuleType, SimpleNamespace as NS
+        from body_runtime_host.ros2_bridge import Ros2ObservationBridge
+
+        sensor_msgs = ModuleType("sensor_msgs")
+        sensor_msg_types = ModuleType("sensor_msgs.msg")
+        for name in ("Imu", "LaserScan", "NavSatFix", "Range"):
+            setattr(sensor_msg_types, name, type(name, (), {}))
+        sensor_msgs.msg = sensor_msg_types
+        nav_msgs = ModuleType("nav_msgs")
+        nav_msg_types = ModuleType("nav_msgs.msg")
+        nav_msg_types.Odometry = type("Odometry", (), {})
+        nav_msgs.msg = nav_msg_types
+        with patch.dict(sys.modules, {
+            "sensor_msgs": sensor_msgs, "sensor_msgs.msg": sensor_msg_types,
+            "nav_msgs": nav_msgs, "nav_msgs.msg": nav_msg_types,
+        }):
+            observations = []
+            bridge = Ros2ObservationBridge(observations.append, nav2_simulation_enabled=True)
+
+            class Node:
+                def __init__(self):
+                    self.subscriptions = {}
+
+                def create_subscription(self, message_type, topic, callback, _depth):
+                    self.subscriptions[topic] = (message_type, callback)
+                    return (message_type, topic)
+
+            node = Node()
+            bridge._start_sensor_subscriptions(node)
+            self.assertEqual(set(node.subscriptions), {
+                "/imu/data", "/gps/fix", "/scan", "/odom", "/range/front",
+            })
+            scan = NS(header=NS(frame_id="laser", stamp=NS(sec=12, nanosec=500_000_000)),
+                      ranges=[1.2], angle_min=0.0, angle_increment=0.1,
+                      range_min=0.1, range_max=8.0)
+            node.subscriptions["/scan"][1](scan)
+            self.assertEqual(observations[0]["source"], "ros2_simulation")
+            self.assertTrue(observations[0]["provenance"]["simulated"])
+            self.assertEqual(observations[0]["provenance"]["source_stamp_s"], 12.5)
+
     def test_ros2_status_reports_mock_action_without_mistaking_it_for_real_nav2(self):
         import sys
         from types import ModuleType, SimpleNamespace
