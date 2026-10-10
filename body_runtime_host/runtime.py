@@ -380,6 +380,13 @@ class BodyHost:
             "actuation_enabled": False,
         }
 
+    def ros2_visualization(self) -> dict:
+        bridge = self._ros2_bridge
+        if bridge is None:
+            return {"available": False, "source": "none", "simulation_only": True,
+                    "reason": "ROS 2 bridge is not running."}
+        return bridge.visualization()
+
     def nav2_stack_status(self) -> dict:
         process = self._nav2_process
         if process is None:
@@ -2932,7 +2939,7 @@ class BodyHost:
 
             def do_GET(self):  # noqa: N802
                 path = self.path.split("?", 1)[0].rstrip("/") or "/"
-                if path in {"", "/", "/body", "/worldmodel", "/camera", "/llm", "/robot", "/ros2", "/runtime"}:
+                if path in {"", "/", "/body", "/worldmodel", "/camera", "/llm", "/robot", "/ros2", "/navigation", "/runtime"}:
                     self._send_html(BODY_GUI_HTML)
                 elif path == "/quest":
                     quest_page = ROOT / "body_runtime_host" / "quest_vr.html"
@@ -2986,6 +2993,8 @@ class BodyHost:
                     })
                 elif path in {"/ros2/status", "/ros2/settings"}:
                     self._send(owner.ros2_settings())
+                elif path == "/ros2/visualization":
+                    self._send(owner.ros2_visualization())
                 elif path == "/workflows/catalog":
                     self._send(owner.workflow_manager.catalog())
                 elif path == "/workflows/templates/mobile-manipulation":

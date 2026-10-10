@@ -1,0 +1,44 @@
+.navops { color: #1c302b; }
+.navops * { box-sizing: border-box; }
+.navops-head { display:flex; justify-content:space-between; align-items:end; gap:18px; flex-wrap:wrap; padding:3px 0 18px; }
+.navops-kicker { color:#197a62; font:600 10px ui-monospace,monospace; text-transform:uppercase; }
+.navops-head h2 { margin:4px 0 3px; font-size:19px; font-weight:650; }
+.navops-head p { margin:0; color:#607870; font-size:11px; }
+.navops-actions { display:flex; gap:8px; flex-wrap:wrap; }
+.navops-actions button { min-width:92px; }
+.navops-actions button:first-child { border-color:#64c8a4; background:#3ba97e; color:#09221b; }
+.navops-switch { display:inline-flex; gap:2px; padding:3px; border:1px solid #35494c; background:#111b20; border-radius:5px; margin-bottom:16px; }
+.navops-switch button { min-width:118px; border:0; background:transparent; color:#a1b5b4; }
+.navops-switch button[aria-selected="true"] { background:#2d4846; color:#effff8; }
+.navops-metrics { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); border-top:1px solid #344448; border-bottom:1px solid #344448; margin-bottom:18px; }
+.navops-metric { min-width:0; padding:13px 16px; border-right:1px solid #cad9d3; }
+.navops-metric:first-child { padding-left:0; }.navops-metric:last-child { border:0; }
+.navops-metric span { display:block; color:#68837a; font:10px ui-monospace,monospace; text-transform:uppercase; }
+.navops-metric strong { display:block; overflow-wrap:anywhere; margin-top:6px; color:#1c302b; font:600 16px ui-monospace,monospace; }
+.navops-metric small { color:#66877b; font-size:10px; }
+.navops-layout { display:grid; grid-template-columns:minmax(0,1.65fr) minmax(290px,.8fr); gap:14px; }
+.navops-tool { min-width:0; border:1px solid #33464a; background:#161f23; color:#e5efed; border-radius:5px; overflow:hidden; }
+.navops-layout > .navops-tool { display:flex; flex-direction:column; }
+.navops-tool-head { display:flex; justify-content:space-between; align-items:center; gap:10px; min-height:44px; padding:0 14px; border-bottom:1px solid #33464a; }
+.navops-tool-head b { font-size:11px; font-weight:650; }.navops-tool-head small { color:#8caca9; font:10px ui-monospace,monospace; }
+.navops-map-wrap { position:relative; flex:1; min-height:390px; background:#0a171c; }
+.navops-map-wrap canvas { display:block; width:100%; height:100%; }
+.navops-map-empty { position:absolute; inset:0; display:grid; place-content:center; text-align:center; padding:25px; background:#0b171cdb; color:#b5ccc7; }
+.navops-map-empty[hidden] { display:none; }.navops-map-empty strong { font-size:13px; }.navops-map-empty small { max-width:290px; line-height:1.5; margin-top:6px; color:#8da5a2; }
+.navops-map-foot { display:flex; justify-content:space-between; gap:8px; padding:10px 14px; border-top:1px solid #33464a; color:#91aaa8; font:10px ui-monospace,monospace; }
+.navops-side { display:grid; grid-template-rows:minmax(0,1fr) auto; gap:14px; min-width:0; }
+.navops-camera-stage { display:grid; place-items:center; min-height:220px; aspect-ratio:16/9; background:#091317; position:relative; }
+.navops-camera-stage img { display:block; max-width:100%; max-height:100%; object-fit:contain; }.navops-camera-stage img:not([src]) { display:none; }
+.navops-camera-stage span { position:absolute; padding:7px 10px; color:#b7c8c5; background:#101b1de0; font-size:11px; }.navops-camera-stage img[src]+span { display:none; }
+.navops-readouts { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); border-top:1px solid #33464a; }
+.navops-readouts div { padding:10px 14px; border-right:1px solid #33464a; }.navops-readouts div:last-child { border:0; }
+.navops-readouts small { display:block; color:#87a2a0; font:10px ui-monospace,monospace; }.navops-readouts b { font:600 12px ui-monospace,monospace; }
+.navops-sensor-list { padding:3px 14px; }.navops-sensor { display:grid; grid-template-columns:1fr auto; gap:3px 8px; align-items:center; padding:8px 0; border-bottom:1px solid #2c3c3f; }.navops-sensor:last-child { border:0; }
+.navops-sensor b { font-size:11px; }.navops-sensor span { color:#a8bdb9; font:10px ui-monospace,monospace; }.navops-sensor small { grid-column:1/-1; color:#789996; font:10px ui-monospace,monospace; overflow-wrap:anywhere; }
+.navops-bottom { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; margin-top:14px; }.navops-bottom .navops-tool { padding-bottom:9px; }
+.navops-lines { padding:8px 14px; }.navops-line { display:flex; justify-content:space-between; gap:12px; padding:8px 0; border-bottom:1px solid #2c3c3f; color:#a7bab8; font:11px ui-monospace,monospace; }.navops-line:last-child { border:0; }.navops-line b { color:#e2eee9; font-weight:550; text-align:right; overflow-wrap:anywhere; }
+.navops-message { min-height:28px; padding:0 14px 10px; color:#9cc6ba; font:11px/1.5 ui-monospace,monospace; }.navops-message.error { color:#e9a2a0; }
+.navops-settings { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:13px 18px; padding:16px; }.navops-settings label { display:grid; gap:5px; color:#acbfbb; font-size:11px; }.navops-settings label.check { display:flex; align-items:center; gap:9px; }.navops-settings input[type=text] { width:100%; min-width:0; padding:9px; border:1px solid #40575a; border-radius:4px; background:#0e191d; color:#e2efea; font:11px ui-monospace,monospace; }.navops-settings input[type=checkbox] { accent-color:#55d9ab; width:16px; height:16px; }.navops-settings button { justify-self:start; }.navops-settings .wide { grid-column:1/-1; }
+.navops-alert { display:block; color:#d5bd83; }.navops-hidden[hidden] { display:none; }
+@media(max-width:1000px) { .navops-layout { grid-template-columns:1fr; }.navops-side { grid-template-columns:1fr 1fr; grid-template-rows:auto; }.navops-map-wrap { min-height:350px; } }
+@media(max-width:700px) { .navops-metrics { grid-template-columns:repeat(2,minmax(0,1fr)); }.navops-metric:nth-child(2) { border-right:0; }.navops-metric:nth-child(-n+2) { border-bottom:1px solid #cad9d3; }.navops-side,.navops-bottom,.navops-settings { grid-template-columns:1fr; }.navops-settings .wide { grid-column:1; }.navops-map-wrap { min-height:300px; aspect-ratio:1.2; }.navops-head { align-items:start; } }

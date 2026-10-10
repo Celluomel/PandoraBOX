@@ -147,6 +147,13 @@ showView(location.pathname==='/worldmodel'?'worldmodel':location.pathname==='/ll
 async function refreshDetails(){try{const [a,e]=await Promise.all([get('/worldmodel/anchors'),get('/worldmodel/episodes?limit=12')]);$('memory').textContent=JSON.stringify(a,null,2);const steps=Array.isArray(e)?e:[];$('episodes').innerHTML=steps.slice().reverse().map(x=>`<div class="row"><span><b>${esc(x.action)}</b><small>step ${x.step} · reward ${x.reward} · error ${x.pred_error}</small></span><strong>${esc(x.outcome)}</strong></div>`).join('')||'<span class="muted">No episodes recorded yet.</span>'}catch{}}
 </script></body></html>'''
 
+# The base page schedules this callback before later extensions define its body.
+BODY_GUI_HTML = BODY_GUI_HTML.replace(
+    "let fnkSettingsLoaded=false,fnkTickBusy=false,fnkVisualHeading=90;",
+    "let fnkSettingsLoaded=false,fnkTickBusy=false,fnkVisualHeading=90;async function refreshFnkPanel(){}",
+    1,
+).replace("setInterval(refreshFnkPanel,2500)", "setInterval(()=>refreshFnkPanel(),2500)", 1)
+
 BODY_GUI_HTML = BODY_GUI_HTML.replace(
     "</script></body></html>",
     """</script><script>
@@ -1107,5 +1114,18 @@ saveRos2Settings=async function(){const nav2=$('ros2-nav2-simulation'),sensor_to
 ensureNav2RouteTestButton();
 ensureRos2SensorTopicFields();
 </script></body></html>""",
+    1,
+)
+
+# The navigation operator console is kept separate from the workflow editor.
+BODY_GUI_HTML = BODY_GUI_HTML.replace(
+    "</head>",
+    "<style>" + _Path(__file__).with_name("body_ros_nav.css").read_text(encoding="utf-8")
+    + "</style><script>window.__bodyInitialPath=location.pathname;</script></head>",
+    1,
+)
+BODY_GUI_HTML = BODY_GUI_HTML.replace(
+    "</body></html>",
+    "<script>" + _Path(__file__).with_name("body_ros_nav.js").read_text(encoding="utf-8") + "</script></body></html>",
     1,
 )

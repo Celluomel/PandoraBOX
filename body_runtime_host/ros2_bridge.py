@@ -114,6 +114,14 @@ class Ros2ObservationBridge:
         result["nav2_simulation"] = simulation_status
         return result
 
+    def visualization(self):
+        with self._lock:
+            simulation = self._nav2_simulation
+        if simulation is None:
+            return {"available": False, "source": "none", "simulation_only": True,
+                    "reason": "Synthetic Nav2 inputs are not running; no live ROS map is available."}
+        return simulation.visualization()
+
     @staticmethod
     def _cmd_vel_isolation(node):
         """Fail closed if anything besides this synthetic base consumes /cmd_vel."""

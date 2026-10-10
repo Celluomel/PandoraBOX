@@ -19,6 +19,42 @@ class Nav2SimulationTests(unittest.TestCase):
         self.assertAlmostEqual(Nav2Simulation.SIZE * Nav2Simulation.RESOLUTION, 16.0)
         self.assertEqual(Nav2Simulation.ORIGIN, -8.0)
 
+    def test_visualization_is_bounded_and_excludes_infinite_scan_ranges(self):
+        import math
+
+        simulation = object.__new__(Nav2Simulation)
+        simulation.x, simulation.y, simulation.yaw = 1.5, -0.2, 0.3
+        simulation._scan_angles = (-1.0, 0.0, 1.0)
+        simulation._last_scan = (2.3456, math.inf, 0.8)
+        simulation._last_scan_at = 123.0
+        data = simulation.visualization()
+
+        self.assertEqual(data["source"], "synthetic_nav2")
+        self.assertTrue(data["simulation_only"])
+        self.assertEqual(data["map"]["size_m"], 16.0)
+        self.assertEqual(data["pose"]["x"], 1.5)
+        self.assertEqual(data["scan"]["returns"], [[-1.0, 2.346], [1.0, 0.8]])
+        json.dumps(data, allow_nan=False)
+
+    def test_visualization_does_not_invent_a_real_ros_map(self):
+        from body_runtime_host.ros2_bridge import Ros2ObservationBridge
+
+        bridge = Ros2ObservationBridge(lambda _: None)
+        data = bridge.visualization()
+        self.assertFalse(data["available"])
+        self.assertEqual(data["source"], "none")
+        self.assertNotIn("map", data)
+
+    def test_body_visualization_endpoint_contract_delegates_to_bridge(self):
+        from types import SimpleNamespace
+        from body_runtime_host.runtime import BodyHost
+
+        host = object.__new__(BodyHost)
+        host._ros2_bridge = None
+        self.assertFalse(host.ros2_visualization()["available"])
+        host._ros2_bridge = SimpleNamespace(visualization=lambda: {"available": True, "source": "synthetic_nav2"})
+        self.assertEqual(host.ros2_visualization()["source"], "synthetic_nav2")
+
     def test_nav2_simulation_cannot_be_enabled_without_ros_bridge(self):
         import body_runtime_host.runtime as runtime
 

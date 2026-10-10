@@ -31,6 +31,8 @@ class Nav2Simulation:
         self._vx = self._vy = self._wz = 0.0
         self.x, self.y, self.yaw = 0.5, 0.0, 0.0
         self._scan_angles = tuple(math.radians(deg) for deg in range(-180, 180, 2))
+        self._last_scan = ()
+        self._last_scan_at = None
 
         map_qos = QoSProfile(
             depth=1,
@@ -161,7 +163,34 @@ class Nav2Simulation:
         scan.range_min = 0.12
         scan.range_max = 8.0
         scan.ranges = [self._ray_range(angle) for angle in self._scan_angles]
+        self._last_scan = tuple(scan.ranges)
+        self._last_scan_at = time.time()
         self._scan_pub.publish(scan)
+
+    def visualization(self):
+        """Small read-only snapshot for the operator map; never exposes motor control."""
+        angles = getattr(self, "_scan_angles", ())
+        ranges = getattr(self, "_last_scan", ())
+        return {
+            "available": True,
+            "source": "synthetic_nav2",
+            "simulation_only": True,
+            "map": {
+                "frame_id": "map", "origin": self.ORIGIN,
+                "size_m": self.SIZE * self.RESOLUTION,
+                "obstacles": [list(rect) for rect in self.OBSTACLES],
+            },
+            "pose": {"x": self.x, "y": self.y, "yaw_rad": self.yaw},
+            "scan": {
+                "frame_id": "laser_link", "offset_x_m": 0.12,
+                "captured_at": getattr(self, "_last_scan_at", None),
+                "returns": [
+                    [round(angle, 4), round(distance, 3)]
+                    for angle, distance in zip(angles, ranges)
+                    if math.isfinite(distance)
+                ],
+            },
+        }
 
     def status(self):
         return {
