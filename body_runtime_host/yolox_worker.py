@@ -5,6 +5,7 @@ import argparse
 import base64
 import gc
 import json
+import os
 import sys
 import time
 
@@ -139,6 +140,9 @@ def main():
     parser.add_argument("--model", required=True)
     parser.add_argument("--runtime", choices=("htp_auto", "htp", "cpu"), default="htp_auto")
     args = parser.parse_args()
+    # Keep AppBuilder/QNN diagnostics out of the line-oriented JSON protocol.
+    protocol_out = os.fdopen(os.dup(sys.stdout.fileno()), "w", buffering=1)
+    os.dup2(sys.stderr.fileno(), sys.stdout.fileno())
     model, actual_runtime = _load_model(args.model, args.runtime)
     try:
         input_shapes = model.getInputShapes()
@@ -152,7 +156,6 @@ def main():
     if not input_shapes:
         raise RuntimeError("YOLOX model reports no input tensor")
     shape = tuple(int(value) for value in input_shapes[0])
-    protocol_out = sys.__stdout__
     for line in sys.stdin:
         try:
             request = json.loads(line)
