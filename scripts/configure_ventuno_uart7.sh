@@ -9,15 +9,9 @@ if [[ ${#overlays[@]} -eq 0 ]]; then
 fi
 
 overlay="${overlays[-1]}"
-serials_line='serials = <&usart3>;'
-serials_uart7_line='serials = <&usart3 &uart7>;'
-if grep -Fq "$serials_uart7_line" "$overlay" && grep -Fq '&uart7 {' "$overlay"; then
-  echo "UART7 already exposed as Serial2 in $overlay"
+if grep -Fq '/* PandoraBOX: enable LD2450 UART7 on JDIGITAL. */' "$overlay"; then
+  echo "UART7 already enabled in $overlay"
   exit 0
-fi
-if ! grep -Fq "$serials_line" "$overlay"; then
-  echo "Expected default USART3 serial mapping was not found; refusing to patch $overlay" >&2
-  exit 1
 fi
 
 backup="${overlay}.pandorabox-pre-uart7.bak"
@@ -25,10 +19,9 @@ if [[ ! -e "$backup" ]]; then
   cp -p "$overlay" "$backup"
 fi
 
-sed -i "s/${serials_line}/${serials_uart7_line}/" "$overlay"
 cat >> "$overlay" <<'EOF'
 
-/* PandoraBOX: expose the Ventuno Q JDIGITAL UART7 pins as Arduino Serial2. */
+/* PandoraBOX: enable LD2450 UART7 on JDIGITAL. */
 &uart7 {
     pinctrl-0 = <&uart7_tx_pb4 &uart7_rx_pb3>;
     pinctrl-names = "default";
@@ -37,5 +30,5 @@ cat >> "$overlay" <<'EOF'
 };
 EOF
 
-echo "Configured Serial2=UART7 (D8/TX, D7/RX) in $overlay"
+echo "Enabled direct Zephyr UART7 access (D8/TX, D7/RX) in $overlay"
 echo "Original overlay backup: $backup"

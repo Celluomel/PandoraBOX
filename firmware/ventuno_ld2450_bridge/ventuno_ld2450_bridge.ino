@@ -1,9 +1,11 @@
 #include <Arduino_RouterBridge.h>
+#include <zephyr/device.h>
+#include <zephyr/drivers/uart.h>
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
 
-// The companion board-overlay helper maps Serial2 to UART7 on D7/D8.
+// Use UART7 directly so Serial1 remains available for GPS on USART3.
 static const uint32_t RADAR_BAUD = 256000;
 static const uint32_t FRAME_STALE_MS = 1000;
 static const uint8_t FRAME_SIZE = 30;
@@ -15,6 +17,7 @@ uint8_t frameLength = 0;
 char latestJson[512] = "{\"available\":false,\"targets\":[],\"error\":\"waiting_for_ld2450\"}";
 uint32_t latestFrameAt = 0;
 uint32_t frameSequence = 0;
+const struct device *radarUart = DEVICE_DT_GET(DT_NODELABEL(uart7));
 
 float signedMagnitude(uint16_t value, float scale) {
   const float magnitude = static_cast<float>(value & 0x7FFF);
@@ -83,12 +86,24 @@ String readLatestLd2450() {
 }
 
 void setup() {
-  Serial2.begin(RADAR_BAUD);
+  const struct uart_config radarConfig = {
+      .baudrate = RADAR_BAUD,
+      .parity = UART_CFG_PARITY_NONE,
+      .stop_bits = UART_CFG_STOP_BITS_1,
+      .data_bits = UART_CFG_DATA_BITS_8,
+      .flow_ctrl = UART_CFG_FLOW_CTRL_NONE,
+  };
+  if (!device_is_ready(radarUart) || uart_configure(radarUart, &radarConfig) != 0) {
+    strncpy(latestJson, "{\"available\":false,\"targets\":[],\"error\":\"uart7_unavailable\"}", sizeof(latestJson));
+  }
   Bridge.begin();
   Bridge.provide("body_ld2450_read", readLatestLd2450);
 }
 
 void loop() {
-  while (Serial2.available() > 0) feedRadarByte(static_cast<uint8_t>(Serial2.read()));
+  if (device_is_ready(radarUart)) {
+    unsigned char value;
+    while (uart_poll_in(radarUart, &value) == 0) feedRadarByte(value);
+  }
   delay(1);
 }
