@@ -94,6 +94,27 @@ class YoloXPipelineTests(unittest.TestCase):
         self.assertEqual(service.analyzed_frame()["frame_id"], "frame-3")
         self.assertIsNone(service.analyzed_frame("missing"))
 
+    def test_worker_adds_ventuno_cdsp_runtime_search_path(self):
+        service = YoloXService(lambda key, default: {
+            "BODY_YOLO_PYTHON": "/fake/python",
+            "BODY_YOLO_MODEL_PATH": "/fake/yolox.dlc",
+            "BODY_YOLO_RUNTIME": "htp",
+        }.get(key, default), lambda: {})
+        with patch("body_runtime_host.yolox_service.os.path.isfile", return_value=True), \
+             patch("body_runtime_host.yolox_service.subprocess.Popen") as popen:
+            service._worker()
+
+        env = popen.call_args.kwargs["env"]
+        paths = env["ADSP_LIBRARY_PATH"].split(";")
+        self.assertEqual(paths[:2], ["/usr/lib/dsp/cdsp", "/usr/lib/rfsa/adsp"])
+
+    def test_yolox_installer_installs_system_qairt_and_v75_skeleton(self):
+        installer = Path("install_body_yolox.sh").read_text(encoding="utf-8")
+        self.assertIn("qairt-libs qairt-dsp-binaries", installer)
+        self.assertIn("/usr/lib/dsp/cdsp/libQnnHtpV75Skel.so", installer)
+        self.assertIn("libQnnHtpV75Skel.so.2", installer)
+        self.assertIn("ADSP_LIBRARY_PATH", Path("body_runtime_host/yolox_service.py").read_text(encoding="utf-8"))
+
     def test_percentage_scores_are_normalized_to_probability(self):
         rows = np.zeros((1, 85), dtype=np.float32)
         rows[0, :5] = [320, 320, 100, 100, 90]

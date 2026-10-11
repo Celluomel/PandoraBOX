@@ -109,6 +109,11 @@ class YoloXService:
         env = os.environ.copy()
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         env["PYTHONPATH"] = root + os.pathsep + env.get("PYTHONPATH", "")
+        dsp_paths = ["/usr/lib/dsp/cdsp", "/usr/lib/rfsa/adsp"]
+        configured_dsp_path = env.get("ADSP_LIBRARY_PATH", "")
+        env["ADSP_LIBRARY_PATH"] = ";".join(
+            [*dsp_paths, *(path for path in configured_dsp_path.split(";") if path)]
+        )
         process = subprocess.Popen(
             [python, "-u", "-m", "body_runtime_host.yolox_worker", "--model", model, "--runtime", runtime],
             cwd=root, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,

@@ -13,6 +13,32 @@ if [[ "$(uname -s)" != "Linux" || "$(uname -m)" != "aarch64" ]]; then
   exit 1
 fi
 
+ensure_qairt_system_runtime() {
+  local install_cmd=(apt-get install --yes qairt-libs qairt-dsp-binaries)
+  if ! dpkg-query -W -f='${db:Status-Status}\n' qairt-libs qairt-dsp-binaries 2>/dev/null \
+      | grep -c '^installed$' | grep -qx '2'; then
+    echo "[*] Installing the Ventuno Q Qualcomm AI Runtime and Hexagon DSP binaries..."
+    if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
+      apt-get update
+      "${install_cmd[@]}"
+    elif command -v sudo >/dev/null 2>&1; then
+      sudo apt-get update
+      sudo "${install_cmd[@]}"
+    else
+      echo "[ERROR] sudo is required to install qairt-libs and qairt-dsp-binaries."
+      exit 1
+    fi
+  fi
+
+  if [[ ! -s /usr/lib/dsp/cdsp/libQnnHtpV75Skel.so ]]; then
+    echo "[ERROR] qairt-dsp-binaries did not provide /usr/lib/dsp/cdsp/libQnnHtpV75Skel.so."
+    exit 1
+  fi
+  echo "[OK] Qualcomm HTP v75 DSP runtime is installed."
+}
+
+ensure_qairt_system_runtime
+
 PYTHON_BASE="${BODY_YOLOX_BASE_PYTHON:-$(command -v python3.12 || command -v python3)}"
 if [[ -z "$PYTHON_BASE" ]]; then
   echo "[ERROR] Install Python 3.12 for ARM64, then rerun this script."
@@ -24,11 +50,30 @@ if [[ ! -x "$YOLOX_PYTHON" ]]; then
   "$PYTHON_BASE" -m venv "$YOLOX_VENV"
 fi
 
-if ! "$YOLOX_PYTHON" -c 'import qai_appbuilder, cv2, numpy' >/dev/null 2>&1; then
+if ! "$YOLOX_PYTHON" -c 'import cv2, numpy; from importlib.metadata import version; assert version("qai-appbuilder") == "2.48.40"' >/dev/null 2>&1; then
   echo "[*] Installing isolated Qualcomm QNN and image dependencies..."
   "$YOLOX_PYTHON" -m pip install --upgrade pip
   "$YOLOX_PYTHON" -m pip install 'qai-appbuilder==2.48.40' 'opencv-python-headless>=4.8,<5' 'numpy>=1.24,<3'
 fi
+
+DSP_SKEL_SOURCE="$($YOLOX_PYTHON -c 'from pathlib import Path; import qai_appbuilder; print(Path(qai_appbuilder.__file__).parent / "libs" / "libQnnHtpV75Skel.so')')"
+if [[ ! -s "$DSP_SKEL_SOURCE" ]]; then
+  echo "[ERROR] qai-appbuilder 2.48.40 did not provide its matching HTP v75 DSP skeleton."
+  exit 1
+fi
+DSP_SKEL_LINK=/usr/lib/dsp/cdsp/libQnnHtpV75Skel.so.2
+if [[ "$(readlink -f "$DSP_SKEL_LINK" 2>/dev/null || true)" != "$DSP_SKEL_SOURCE" ]]; then
+  echo "[*] Linking the matching AppBuilder HTP v75 skeleton for FastRPC..."
+  if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
+    ln -sfn "$DSP_SKEL_SOURCE" "$DSP_SKEL_LINK"
+  elif command -v sudo >/dev/null 2>&1; then
+    sudo ln -sfn "$DSP_SKEL_SOURCE" "$DSP_SKEL_LINK"
+  else
+    echo "[ERROR] sudo is required to register the HTP v75 DSP skeleton."
+    exit 1
+  fi
+fi
+echo "[OK] FastRPC HTP skeleton: $(readlink -f "$DSP_SKEL_LINK")"
 
 if [[ ! -s "$MODEL_PATH" ]]; then
   echo "[*] Installing Qualcomm AI Hub Models CLI to fetch the precompiled IQ-8275 W8A8 model..."
