@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 import json
+import struct
 import time
 import urllib.request
 from typing import Any, Callable, Dict, Iterable, List, Optional
@@ -129,6 +130,151 @@ class HttpMmWaveRadarSource(MmWaveRadarSource):
             "last_error": self.last_error,
             "targets": len(self.last_frame.targets) if self.last_frame else 0,
         }
+
+
+def parse_ld2450_frame(frame_data: bytes, timestamp: Optional[float] = None,
+                       sequence: Optional[int] = None) -> MmWaveFrame:
+    """Decode one 30-byte HLK-LD2450 reporting frame into metric targets."""
+    if len(frame_data) != 30 or frame_data[:4] != b"\xaa\xff\x03\x00" or frame_data[-2:] != b"\x55\xcc":
+        raise ValueError("invalid LD2450 reporting frame")
+
+    targets: List[MmWaveTarget] = []
+    for slot in range(3):
+        offset = 4 + slot * 8
+        raw_x, raw_y, raw_speed, distance_gate_mm = struct.unpack_from("<HHHH", frame_data, offset)
+        if not (raw_x or raw_y or raw_speed or distance_gate_mm):
+            continue
+
+        def signed_magnitude(value: int, scale: float) -> float:
+            magnitude = value & 0x7fff
+            return (magnitude if value & 0x8000 else -magnitude) / scale
+
+        x_m = signed_magnitude(raw_x, 1000.0)
+        y_m = signed_magnitude(raw_y, 1000.0)
+        speed_mps = signed_magnitude(raw_speed, 100.0)
+        targets.append(MmWaveTarget(
+            target_id=f"ld2450-{slot + 1}",
+            position_m=[x_m, y_m, 0.0],
+            radial_speed_mps=speed_mps,
+            confidence=1.0,
+            classification="moving_target" if abs(speed_mps) >= 0.05 else "target",
+        ))
+
+    return MmWaveFrame(
+        timestamp=float(timestamp or time.time()),
+        frame="body",
+        targets=targets,
+        source="hlk_ld2450",
+        sequence=sequence,
+        metadata={"protocol": "ld2450_uart_v1", "distance_gate_mm": [
+            struct.unpack_from("<H", frame_data, 10 + slot * 8)[0] for slot in range(3)
+        ]},
+    )
+
+
+class LD2450SerialSource(MmWaveRadarSource):
+    """Persistent UART reader for the HLK-LD2450 target-reporting protocol."""
+
+    name = "hlk_ld2450"
+
+    def __init__(self, port: str = "/dev/ttyUSB0", baudrate: int = 256000,
+                 timeout: float = 0.35, serial_factory=None):
+        self.port = str(port or "/dev/ttyUSB0")
+        self.baudrate = int(baudrate or 256000)
+        self.timeout = max(0.05, float(timeout or 0.35))
+        self._serial_factory = serial_factory
+        self._serial = None
+        self._buffer = bytearray()
+        self._sequence = 0
+        self.last_error = ""
+        self.last_ok: Optional[float] = None
+        self.last_frame: Optional[MmWaveFrame] = None
+
+    def _open(self):
+        if self._serial is None:
+            factory = self._serial_factory
+            if factory is None:
+                import serial
+                factory = serial.Serial
+            self._serial = factory(self.port, self.baudrate, timeout=0.05)
+        return self._serial
+
+    def read(self) -> MmWaveFrame:
+        deadline = time.monotonic() + self.timeout
+        try:
+            port = self._open()
+            while time.monotonic() < deadline:
+                chunk = port.read(max(1, min(int(getattr(port, "in_waiting", 0) or 1), 256)))
+                if chunk:
+                    self._buffer.extend(chunk)
+                while True:
+                    start = self._buffer.find(b"\xaa\xff\x03\x00")
+                    if start < 0:
+                        if len(self._buffer) > 3:
+                            del self._buffer[:-3]
+                        break
+                    if start:
+                        del self._buffer[:start]
+                    if len(self._buffer) < 30:
+                        break
+                    candidate = bytes(self._buffer[:30])
+                    if candidate[-2:] != b"\x55\xcc":
+                        del self._buffer[0]
+                        continue
+                    del self._buffer[:30]
+                    self._sequence += 1
+                    self.last_frame = parse_ld2450_frame(candidate, sequence=self._sequence)
+                    self.last_ok = time.time()
+                    self.last_error = ""
+                    return self.last_frame
+            raise TimeoutError("no complete LD2450 frame received before timeout")
+        except Exception as exc:
+            self.last_error = str(exc)
+            raise
+
+    def close(self) -> None:
+        if self._serial is not None:
+            self._serial.close()
+            self._serial = None
+
+    def status(self) -> Dict[str, Any]:
+        return {
+            "source": self.name,
+            "port": self.port,
+            "baudrate": self.baudrate,
+            "last_ok_age_s": round(time.time() - self.last_ok, 1) if self.last_ok else None,
+            "last_error": self.last_error,
+            "targets": len(self.last_frame.targets) if self.last_frame else 0,
+        }
+
+
+class MmWaveAugmentedSource:
+    """Add an independent radar feed to a primary Body source."""
+
+    def __init__(self, source, radar: MmWaveRadarSource):
+        self.source = source
+        self.radar = radar
+        self.name = getattr(source, "name", "body")
+        self.simulated = bool(getattr(source, "simulated", False))
+
+    def __getattr__(self, name):
+        return getattr(self.source, name)
+
+    def observe(self):
+        observation = self.source.observe()
+        try:
+            observation.modalities["mmwave_radar"] = self.radar.read().as_dict()
+        except Exception as exc:
+            observation.modalities["mmwave_radar"] = {
+                "timestamp": time.time(), "frame": "body", "targets": [],
+                "source": getattr(self.radar, "name", "mmwave_radar"),
+                "available": False, "error": str(exc),
+            }
+        return observation
+
+    def status(self):
+        base = self.source.status() if callable(getattr(self.source, "status", None)) else {}
+        return {**(base if isinstance(base, dict) else {}), "mmwave_radar": self.radar.status()}
 
 
 class SimulatedMmWaveRadarSource(MmWaveRadarSource):

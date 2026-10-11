@@ -6,6 +6,35 @@ from unittest.mock import patch
 
 
 class FNK0031ModulesTest(unittest.TestCase):
+    def test_mmwave_settings_select_only_a_detected_host_serial_device(self):
+        import body_runtime_host.runtime as brt
+
+        with tempfile.TemporaryDirectory() as tmp:
+            real_config_path = brt.CONFIG_PATH
+            real_dotenv = brt._load_dotenv
+            brt.CONFIG_PATH = Path(tmp) / "config.json"
+            brt.CONFIG_PATH.write_text("{}", encoding="utf-8")
+            brt._load_dotenv = lambda: None
+            ports = [{"device": "/dev/ttyUSB1", "description": "USB UART", "vid": "0403", "pid": "6001"}]
+            try:
+                host = brt.BodyHost()
+                with patch("body_runtime_host.fnk0031_usb.available_serial_ports", return_value=ports):
+                    result = host.update_mmwave_radar_settings({
+                        "enabled": True, "protocol": "serial_ld2450",
+                        "port": "/dev/ttyUSB1", "baudrate": 256000,
+                    })
+                    self.assertTrue(result["ok"])
+                    self.assertEqual(result["settings"]["host"]["hostname"], brt.platform.node())
+                    self.assertEqual(result["settings"]["devices"][0]["assignments"], ["mmwave_radar"])
+                    with self.assertRaisesRegex(ValueError, "currently detected"):
+                        host.update_mmwave_radar_settings({"port": "/dev/ttyUSB9"})
+                saved = json.loads(brt.CONFIG_PATH.read_text(encoding="utf-8"))
+                self.assertEqual(saved["MMWAVE_RADAR_PORT"], "/dev/ttyUSB1")
+                self.assertTrue(saved["BODY_PLUGIN_MMWAVE_RADAR_ENABLED"])
+            finally:
+                brt.CONFIG_PATH = real_config_path
+                brt._load_dotenv = real_dotenv
+
     def test_local_usb_serial_inventory_is_real_and_distinct_from_sensor_claims(self):
         import body_runtime_host.runtime as brt
 

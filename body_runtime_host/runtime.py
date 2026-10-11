@@ -25,6 +25,7 @@ import json
 import logging
 import math
 import os
+import platform
 import signal
 import shlex
 import ssl
@@ -204,7 +205,7 @@ class BodyHost:
             camera_source = str(camera.get("source") or "").strip().lower()
             image_simulated = not camera_source or camera_source.startswith(("sim", "virtual", "replay"))
             body_source = type(wm.source).__name__
-            pose_simulated = body_source.lower().startswith("sim")
+            pose_simulated = bool(getattr(wm.source, "simulated", body_source.lower().startswith("sim")))
             frame = {
                 "contract": "body_perception_frame.v2",
                 "frame_id": packet.get("frame_id"),
@@ -1539,6 +1540,77 @@ class BodyHost:
             "plugin_enabled": bool(self.value("BODY_PLUGIN_ROBOT_ENABLED", False)),
         }
 
+    def serial_device_inventory(self) -> dict:
+        """List serial devices visible to the machine that runs Body."""
+        from body_runtime_host.fnk0031_usb import available_serial_ports
+
+        ports = available_serial_ports()
+        configured_ports = {
+            "mmwave_radar": str(self.value("MMWAVE_RADAR_PORT", "") or ""),
+            "fnk0031": str(self.value("FNK0031_SERIAL_PORT", "") or ""),
+        }
+        devices = []
+        for port in ports:
+            device = str(port.get("device") or "")
+            if not device:
+                continue
+            devices.append({
+                "device": device,
+                "description": str(port.get("description") or port.get("product") or "Serial device"),
+                "manufacturer": str(port.get("manufacturer") or ""),
+                "product": str(port.get("product") or ""),
+                "usb_id": f"{port.get('vid', '')}:{port.get('pid', '')}".strip(":"),
+                "serial_number": str(port.get("serial_number") or ""),
+                "hwid": str(port.get("hwid") or ""),
+                "assignments": [name for name, assigned in configured_ports.items() if assigned == device],
+            })
+        return {
+            "host": {"hostname": platform.node(), "os": platform.system()},
+            "scope": "local_body_host",
+            "devices": devices,
+            "remote_ventuno": {
+                "available": False,
+                "reason": "VENTUNO Q UART pins terminate at its onboard STM32; they are not Jetson /dev/tty devices. A Ventuno firmware/gateway sensor stream is needed for remote selection.",
+            },
+        }
+
+    def mmwave_radar_settings(self) -> dict:
+        return {
+            "enabled": bool(self.value("BODY_PLUGIN_MMWAVE_RADAR_ENABLED", False)),
+            "protocol": str(self.value("MMWAVE_RADAR_PROTOCOL", "serial_ld2450") or "serial_ld2450"),
+            "port": str(self.value("MMWAVE_RADAR_PORT", "/dev/ttyUSB0") or "/dev/ttyUSB0"),
+            "baudrate": int(self.value("MMWAVE_RADAR_BAUDRATE", 256000) or 256000),
+            "timeout": float(self.value("MMWAVE_RADAR_TIMEOUT", 0.35) or 0.35),
+            **self.serial_device_inventory(),
+        }
+
+    def update_mmwave_radar_settings(self, payload: dict) -> dict:
+        from body_runtime_host.fnk0031_usb import available_serial_ports
+
+        protocol = str(payload.get("protocol", "serial_ld2450") or "serial_ld2450").strip().lower()
+        if protocol not in {"serial_ld2450", "http_json"}:
+            raise ValueError("unsupported mmWave transport")
+        port = str(payload.get("port", self.value("MMWAVE_RADAR_PORT", "/dev/ttyUSB0")) or "").strip()
+        if protocol == "serial_ld2450":
+            discovered = {str(item.get("device") or "") for item in available_serial_ports()}
+            if not port or port not in discovered:
+                raise ValueError("select a serial device currently detected by this Body host")
+        baudrate = int(payload.get("baudrate", 256000) or 256000)
+        if baudrate < 1200 or baudrate > 3000000:
+            raise ValueError("baud rate must be between 1200 and 3000000")
+        self.config.update({
+            "BODY_PLUGIN_MMWAVE_RADAR_ENABLED": bool(payload.get("enabled", False)),
+            "MMWAVE_RADAR_PROTOCOL": protocol,
+            "MMWAVE_RADAR_PORT": port,
+            "MMWAVE_RADAR_BAUDRATE": baudrate,
+            "MMWAVE_RADAR_TIMEOUT": max(0.05, min(5.0, float(payload.get("timeout", 0.35) or 0.35))),
+        })
+        self.save_config()
+        self.config = self._load_config()
+        if self._worldmodel is not None:
+            self.reload_worldmodel_source()
+        return {"ok": True, "settings": self.mmwave_radar_settings()}
+
     def publish_fnk0031_usb_status(self) -> bool:
         """Forward a read-only FNK USB health snapshot to the Brain bridge."""
         if (
@@ -2691,6 +2763,7 @@ class BodyHost:
         silently replace ``mode=sim`` with an unavailable robot endpoint.
         """
         from .worldmodel import SimRobotSource, resolve_source
+        from .worldmodel.sources import augment_with_mmwave
 
         model_config_path = ROOT / "data" / "body" / "worldmodel" / "config.json"
         model_config: dict = {}
@@ -2701,15 +2774,16 @@ class BodyHost:
         except Exception:
             pass
         mode = str(model_config.get("mode") or "sim").strip().lower()
+        real_mmwave_selected = bool(self.value("BODY_PLUGIN_MMWAVE_RADAR_ENABLED", False))
         usb_robot_selected = (
             bool(self.value("BODY_PLUGIN_ROBOT_ENABLED", False))
             and str(self.value("FNK0031_PLATFORM", "") or "").strip().lower() == "usb_serial"
         )
         if mode == "sim" and not usb_robot_selected:
             try:
-                return SimRobotSource(
+                source = SimRobotSource(
                     camera_interval=float(self.value("BODY_CAMERA_INTERVAL", 0.5) or 0.5),
-                    mmwave_enabled=bool(self.value("BODY_PLUGIN_MMWAVE_RADAR_ENABLED", True)),
+                    mmwave_enabled=not real_mmwave_selected,
                     camera_width=int(self.value("BODY_CAMERA_WIDTH", 640) or 640),
                     camera_height=int(self.value("BODY_CAMERA_HEIGHT", 480) or 480),
                     camera_profile=str(self.value("BODY_CAMERA_PROFILE", "low_body_front") or "low_body_front"),
@@ -2718,10 +2792,11 @@ class BodyHost:
             except TypeError:
                 # Keep compatibility with lightweight test doubles and older
                 # Body plugin implementations that accept no constructor args.
-                return SimRobotSource()
+                source = SimRobotSource()
+            return augment_with_mmwave(source, self.config)
         if mode == "bridge":
             return None
-        return resolve_source(self.config, self.latest)
+        return augment_with_mmwave(resolve_source(self.config, self.latest), self.config)
 
     def plugins(self) -> list[dict]:
         return [
@@ -2769,7 +2844,9 @@ class BodyHost:
                 "enabled": bool(self.value("BODY_PLUGIN_MMWAVE_RADAR_ENABLED", False)),
                 "url": str(self.value("MMWAVE_RADAR_URL", "") or ""),
                 "role": "vendor-neutral metric targets and relative motion",
-                "protocol": str(self.value("MMWAVE_RADAR_PROTOCOL", "http_json") or "http_json"),
+                "protocol": str(self.value("MMWAVE_RADAR_PROTOCOL", "serial_ld2450") or "serial_ld2450"),
+                "port": str(self.value("MMWAVE_RADAR_PORT", "/dev/ttyUSB0") or "/dev/ttyUSB0"),
+                "baudrate": int(self.value("MMWAVE_RADAR_BAUDRATE", 256000) or 256000),
             },
             {
                 "id": "world_model",
@@ -3025,6 +3102,8 @@ class BodyHost:
                     self._send(owner.fnk0050_settings())
                 elif path == "/plugins/fnk0031_wifi/settings":
                     self._send(owner.fnk0031_settings())
+                elif path == "/plugins/mmwave_radar/settings":
+                    self._send(owner.mmwave_radar_settings())
                 elif path == "/plugins/fnk0031_wifi/usb/status":
                     self._send(owner.fnk0031_usb_status())
                 elif path == "/plugins/fnk0031_wifi/modules":
@@ -3280,6 +3359,11 @@ class BodyHost:
                         self._send(owner.update_fnk0050_settings(body))
                     elif path == "/plugins/fnk0031_wifi/settings":
                         self._send(owner.update_fnk0031_settings(body))
+                    elif path == "/plugins/mmwave_radar/settings":
+                        try:
+                            self._send(owner.update_mmwave_radar_settings(body))
+                        except (ValueError, OSError) as exc:
+                            self._send({"ok": False, "error": str(exc)}, 400)
                     elif path == "/plugins/fnk0031_wifi/modules":
                         self._send(owner.update_fnk0031_module(body))
                     elif path == "/plugins/fnk0031_wifi/diagnostic":

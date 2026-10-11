@@ -264,7 +264,7 @@ class EmbodiedWorldModel:
             atomic_write_json(self.data_dir / "config.json", payload)
         except Exception as exc:
             logger.warning("[worldmodel] config save failed: %s", exc)
-        if mode_changed == "sim" and not isinstance(self.source, SimRobotSource):
+        if mode_changed == "sim" and not bool(getattr(self.source, "simulated", isinstance(self.source, SimRobotSource))):
             self.source = SimRobotSource()
         if mode_changed == "bridge":
             self.source = None
@@ -1631,7 +1631,7 @@ class EmbodiedWorldModel:
             observed_objects,
             semantic_scene,
             frame_id=frame_id,
-            simulated=isinstance(self.source, SimRobotSource),
+            simulated=bool(getattr(self.source, "simulated", isinstance(self.source, SimRobotSource))),
         )
         return {
             "available": True,
@@ -1648,7 +1648,7 @@ class EmbodiedWorldModel:
                 "where2act": list(self._last_affordances.get("where2act", []))[:12],
                 "how2act": list(self._last_affordances.get("how2act", []))[:16],
             },
-            "ground_truth_available": isinstance(self.source, SimRobotSource),
+            "ground_truth_available": bool(getattr(self.source, "simulated", isinstance(self.source, SimRobotSource))),
             "sensor_projections": projections,
             "perception_frame": perception_frame,
             "scene_interpreter": interpreter,

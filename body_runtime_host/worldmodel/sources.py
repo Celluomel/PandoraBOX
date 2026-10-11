@@ -37,7 +37,10 @@ from typing import Any, Dict, List, Optional, Tuple
 from .sim_world import SimulatedRoom
 from .spatial import LocalMapReference, geo_fix
 from .types import Action, BodyState, Observation, Outcome, SceneObject
-from ..mmwave_radar import SimulatedMmWaveRadarSource
+from ..mmwave_radar import (
+    HttpMmWaveRadarSource, LD2450SerialSource, MmWaveAugmentedSource,
+    SimulatedMmWaveRadarSource,
+)
 from .virtual_camera import render_camera
 from ..fnk0031_usb import FNK0031USBSource
 
@@ -101,6 +104,7 @@ class SimRobotSource:
     """
 
     name = "sim_robot"
+    simulated = True
 
     def __init__(
         self,
@@ -703,3 +707,30 @@ def resolve_source(config: Dict[str, Any], latest: Optional[Dict[str, Dict[str, 
         return HAFallbackSource(latest)
     # 5) nothing attached
     return NullSource("no sensor source enabled (set FNK0050_URL, ROBOT_URL, or BODY_PLUGIN_SIM_ROBOT_ENABLED)")
+
+
+def augment_with_mmwave(source: Any, config: Dict[str, Any]) -> Any:
+    """Attach the configured independent radar without replacing the robot source."""
+    config = config or {}
+    if source is None or not bool(config.get("BODY_PLUGIN_MMWAVE_RADAR_ENABLED", False)):
+        return source
+    protocol = str(config.get("MMWAVE_RADAR_PROTOCOL", "serial_ld2450") or "serial_ld2450").lower()
+    if protocol in {"serial_ld2450", "ld2450_uart"}:
+        radar = LD2450SerialSource(
+            port=str(config.get("MMWAVE_RADAR_PORT", "/dev/ttyUSB0") or "/dev/ttyUSB0"),
+            baudrate=int(config.get("MMWAVE_RADAR_BAUDRATE", 256000) or 256000),
+            timeout=float(config.get("MMWAVE_RADAR_TIMEOUT", 0.35) or 0.35),
+        )
+    elif protocol == "http_json":
+        url = str(config.get("MMWAVE_RADAR_URL", "") or "").strip()
+        if not url:
+            logger.warning("[body] mmWave HTTP source enabled without MMWAVE_RADAR_URL")
+            return source
+        radar = HttpMmWaveRadarSource(
+            url, token=str(config.get("MMWAVE_RADAR_TOKEN", "") or ""),
+            timeout=float(config.get("MMWAVE_RADAR_TIMEOUT", 3.0) or 3.0),
+        )
+    else:
+        logger.warning("[body] unsupported mmWave protocol %r", protocol)
+        return source
+    return MmWaveAugmentedSource(source, radar)
