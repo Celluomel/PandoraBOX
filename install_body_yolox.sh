@@ -56,7 +56,7 @@ if ! "$YOLOX_PYTHON" -c 'import cv2, numpy; from importlib.metadata import versi
   "$YOLOX_PYTHON" -m pip install 'qai-appbuilder==2.48.40' 'opencv-python-headless>=4.8,<5' 'numpy>=1.24,<3'
 fi
 
-DSP_SKEL_SOURCE="$($YOLOX_PYTHON -c 'from pathlib import Path; import qai_appbuilder; print(Path(qai_appbuilder.__file__).parent / "libs" / "libQnnHtpV75Skel.so')')"
+DSP_SKEL_SOURCE="$($YOLOX_PYTHON -c 'from pathlib import Path; import qai_appbuilder; print(Path(qai_appbuilder.__file__).parent.joinpath("libs", "libQnnHtpV75Skel.so"))')"
 if [[ ! -s "$DSP_SKEL_SOURCE" ]]; then
   echo "[ERROR] qai-appbuilder 2.48.40 did not provide its matching HTP v75 DSP skeleton."
   exit 1
@@ -103,3 +103,4 @@ fi
 echo "[OK] YOLOX QNN model: $MODEL_PATH"
 echo "[OK] YOLOX Python: $YOLOX_PYTHON"
 echo "[NOTE] Runtime selection defaults to HTP with explicit CPU fallback if HTP cannot initialize."
+
