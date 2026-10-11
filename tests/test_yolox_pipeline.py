@@ -59,6 +59,21 @@ class YoloXPipelineTests(unittest.TestCase):
         self.assertEqual(detections[0]["bbox"], [0.42188, 0.22917, 0.57812, 0.4375])
         self.assertFalse(ambiguous)
 
+    def test_ai_hub_dlc_class_ids_scores_boxes_output_order(self):
+        classes = np.array([[0, 73, 56, 79, 3]], dtype=np.float32)
+        boxes = np.array([[[20, 30, 80, 100], [120, 30, 180, 100],
+                           [220, 30, 280, 100], [320, 30, 380, 100],
+                           [420, 30, 480, 100]]], dtype=np.float32)
+        scores = np.array([[0.83, 0.71, 0.19, 0.62, 0.10]], dtype=np.float32)
+
+        detections, _ = _decode_outputs(
+            [classes, boxes, scores], 0.25, (640, 640), (640, 480), (0, 80), 1.0,
+        )
+
+        self.assertEqual([item["class_id"] for item in detections], [0, 73, 79])
+        self.assertEqual([item["label"] for item in detections], ["person", "book", "toothbrush"])
+        self.assertEqual([item["confidence"] for item in detections], [0.83, 0.71, 0.62])
+
     def test_percentage_scores_are_normalized_to_probability(self):
         rows = np.zeros((1, 85), dtype=np.float32)
         rows[0, :5] = [320, 320, 100, 100, 90]
@@ -89,6 +104,7 @@ class YoloXPipelineTests(unittest.TestCase):
         self.assertIn('id="camera-yolo-overlay"', preview_html)
         self.assertIn("const yolo = result.yolo || {}", preview_script)
         self.assertIn("cameraFrames.get(detectionId)", preview_script)
+        self.assertIn("/body/camera/yolo-frame?frame_id=", preview_script)
         self.assertIn("drawCameraYoloOverlay(displayFrame, detections)", preview_script)
 
     def test_camera_yolox_settings_are_written_to_body_config(self):

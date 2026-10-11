@@ -23,7 +23,7 @@ COCO = (
 ).split(",")
 
 
-def _nms(boxes, scores, threshold=0.45, limit=40):
+def _nms(boxes, scores, classes=None, threshold=0.45, limit=40):
     order = np.argsort(scores)[::-1]
     kept = []
     while len(order) and len(kept) < limit:
@@ -39,7 +39,10 @@ def _nms(boxes, scores, threshold=0.45, limit=40):
         intersection = np.maximum(0, x2 - x1) * np.maximum(0, y2 - y1)
         area = np.maximum(0, boxes[:, 2] - boxes[:, 0]) * np.maximum(0, boxes[:, 3] - boxes[:, 1])
         iou = intersection / np.maximum(1e-8, area[index] + area[rest] - intersection)
-        order = rest[iou <= threshold]
+        keep = iou <= threshold
+        if classes is not None:
+            keep |= np.asarray(classes)[rest] != np.asarray(classes)[index]
+        order = rest[keep]
     return kept
 
 
@@ -64,10 +67,28 @@ def _decode_outputs(outputs, confidence, input_size, original_size, pad, scale, 
                 if score >= confidence:
                     detections.append((box.astype(float), float(score), int(cls), []))
         elif score_array is not None:
-            scores = score_array.reshape(-1)
+            vectors = [item.reshape(-1) for item in remainder
+                       if item.ndim >= 1 and item.size == len(box_array)]
+            # AI Hub's exported YOLO-X DLC returns class IDs, xyxy boxes, then
+            # confidence scores. Other exports commonly put scores first.
+            # Identify the class vector from its bounded integer values instead
+            # of relying on the output tensor ordering.
+            integer_vectors = [item for item in vectors if item.size and
+                               np.all(np.isfinite(item)) and
+                               np.max(np.abs(item - np.rint(item))) < 1e-3 and
+                               np.min(item) >= 0 and np.max(item) < len(COCO)]
+            if len(vectors) >= 2 and len(integer_vectors) == 1:
+                class_vector = integer_vectors[0]
+                score_vector = next(item for item in vectors if item is not class_vector)
+            else:
+                score_vector = score_array.reshape(-1)
+                class_vector = next((item.reshape(-1) for item in remainder
+                                     if item is not score_array and item.ndim >= 1
+                                     and item.size == len(box_array)), None)
+            scores = score_vector
             if scores.size and float(np.nanmax(scores)) > 1.0:
                 scores = scores / 100.0
-            classes = class_array.reshape(-1).astype(int) if class_array is not None else np.zeros(len(scores), dtype=int)
+            classes = class_vector.astype(int) if class_vector is not None else np.zeros(len(scores), dtype=int)
             for box, score, cls in zip(box_array, scores, classes):
                 if score >= confidence:
                     detections.append((box.astype(float), float(score), int(cls), []))
@@ -106,7 +127,8 @@ def _decode_outputs(outputs, confidence, input_size, original_size, pad, scale, 
 
     boxes = np.stack([item[0] for item in detections]).astype(np.float32)
     scores = np.array([item[1] for item in detections], dtype=np.float32)
-    kept = _nms(boxes, scores)
+    classes = np.array([item[2] for item in detections], dtype=np.int32)
+    kept = _nms(boxes, scores, classes=classes)
     input_w, input_h = input_size
     original_w, original_h = original_size
     pad_x, pad_y = pad

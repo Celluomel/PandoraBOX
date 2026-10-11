@@ -28,6 +28,7 @@ class YoloXService:
         self._failure_count = 0
         self._retry_at = 0.0
         self._status: dict[str, Any] = {"state": "disabled", "detections": [], "latency_ms": None}
+        self._analyzed_frame: dict[str, Any] | None = None
 
     def _value(self, suffix: str, default: Any) -> Any:
         return self._config("BODY_YOLO_" + suffix, default)
@@ -49,6 +50,13 @@ class YoloXService:
     def status(self) -> dict:
         with self._lock:
             return dict(self._status)
+
+    def analyzed_frame(self, frame_id: str | None = None) -> dict | None:
+        with self._lock:
+            frame = self._analyzed_frame
+            if not frame or (frame_id is not None and str(frame.get("frame_id")) != str(frame_id)):
+                return None
+            return dict(frame)
 
     def start(self) -> None:
         if not bool(self._value("ENABLED", False)):
@@ -145,6 +153,7 @@ class YoloXService:
                                        "latency_ms": round((time.monotonic() - started) * 1000, 1)})
                         with self._lock:
                             self._status = result
+                            self._analyzed_frame = dict(frame)
                         self._failure_count = 0
                         self._retry_at = 0.0
                         self._maybe_fallback(frame, result)

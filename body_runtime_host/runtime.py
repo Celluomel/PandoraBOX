@@ -683,6 +683,12 @@ class BodyHost:
             "error": settings.get("capture", {}).get("last_error", ""),
         }
 
+    def camera_yolo_frame(self, frame_id: str | None = None) -> dict:
+        frame = self._yolox_service.analyzed_frame(frame_id)
+        if not frame:
+            return {"available": False, "error": "Analyzed camera frame is no longer available"}
+        return {"available": True, "camera": frame}
+
     def _configure_local_camera(self, start: bool | None = None) -> dict:
         settings = self.camera_settings()
         should_start = settings["startup_enabled"] if start is None else bool(start)
@@ -3258,6 +3264,11 @@ class BodyHost:
                     self._send(owner.camera_settings())
                 elif path == "/body/camera/frame":
                     self._send(owner.camera_frame())
+                elif path == "/body/camera/yolo-frame":
+                    query = parse_qs(urlparse(self.path).query)
+                    frame_id = (query.get("frame_id") or [None])[0]
+                    result = owner.camera_yolo_frame(frame_id)
+                    self._send(result, 200 if result.get("available") else 404)
                 elif path == "/body/camera/test-vlm":
                     self._send(owner.body_vlm_test_status())
                 elif path == "/body/llm/models":

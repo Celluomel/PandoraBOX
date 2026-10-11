@@ -745,11 +745,11 @@ export class QuestVRDashboard {
       }
       const detectionId = yolo.state === 'ready' && yolo.frame_id != null ? String(yolo.frame_id) : '';
       if (detectionId && detectionId === this.cameraDetectionFrameId) return;
-      const analyzedFrame = detectionId ? this.cameraSourceFrames.get(detectionId) || source : source;
+      const analyzedFrame = detectionId ? this.cameraSourceFrames.get(detectionId) : null;
       const matchingFrame = Boolean(detectionId && analyzedFrame);
       const fresh = Number(yolo.captured_at) > 0 && Math.abs(Date.now() / 1000 - Number(yolo.captured_at)) < 2.5;
       const detections = matchingFrame && fresh && Array.isArray(yolo.detections) ? yolo.detections : [];
-      const displaySource = analyzedFrame || source;
+      const displaySource = matchingFrame ? analyzedFrame : source;
       let bitmap = await createImageBitmap(displaySource);
       this.cameraDetectionCount = detections.length;
       if (detections.length) {

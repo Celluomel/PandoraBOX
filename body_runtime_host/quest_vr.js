@@ -252,11 +252,24 @@ async function pollCameraFrame() {
       return;
     }
     const frameId = frame.frame_id || frame.captured_at || frame.timestamp;
-    const yoloFrameId = result.yolo?.state === 'ready' ? result.yolo.frame_id : null;
-    if (frameId !== lastCameraFrameId || yoloFrameId !== lastCameraDetectionFrameId) {
+    const yolo = result.yolo || {};
+    const yoloFrameId = yolo.state === 'ready' && yolo.frame_id != null ? String(yolo.frame_id) : null;
+    let displayFrame = frame;
+    let exactDetectionFrame = false;
+    if (yoloFrameId && yoloFrameId !== lastCameraDetectionFrameId) {
+      const exactResponse = await fetch(`/body/camera/yolo-frame?frame_id=${encodeURIComponent(yoloFrameId)}`, { cache: 'no-store', credentials: 'same-origin' });
+      if (exactResponse.ok) {
+        const exactResult = await exactResponse.json();
+        if (exactResult.available && String(exactResult.camera?.frame_id) === yoloFrameId) {
+          displayFrame = exactResult.camera;
+          exactDetectionFrame = true;
+        }
+      }
+    }
+    if (frameId !== lastCameraFrameId || (yoloFrameId && exactDetectionFrame)) {
       if (frameId !== lastCameraFrameId) lastCameraFrameId = frameId;
-      if (yoloFrameId !== lastCameraDetectionFrameId) lastCameraDetectionFrameId = yoloFrameId;
-      await vrDashboard.setCameraFrame(frame, result.yolo || {});
+      if (exactDetectionFrame) lastCameraDetectionFrameId = yoloFrameId;
+      await vrDashboard.setCameraFrame(displayFrame, exactDetectionFrame ? yolo : { ...yolo, detections: [] });
       if (cameraBackgroundActive && vrDashboard.cameraBitmap) {
         cameraBackgroundTexture.image = vrDashboard.cameraBitmap;
         cameraBackgroundTexture.needsUpdate = true;
