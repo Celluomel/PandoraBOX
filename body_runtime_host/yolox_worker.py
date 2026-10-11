@@ -153,6 +153,11 @@ def main():
         gc.collect()
         model, actual_runtime = _load_model(args.model, "cpu")
         input_shapes = model.getInputShapes()
+    if not input_shapes and args.runtime == "htp_auto" and actual_runtime == "htp":
+        model = None
+        gc.collect()
+        model, actual_runtime = _load_model(args.model, "cpu")
+        input_shapes = model.getInputShapes()
     if not input_shapes:
         raise RuntimeError("YOLOX model reports no input tensor")
     shape = tuple(int(value) for value in input_shapes[0])
