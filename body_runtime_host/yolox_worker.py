@@ -58,11 +58,15 @@ def _decode_outputs(outputs, confidence, input_size, original_size, pad, scale, 
         if score_matrix is not None:
             class_ids = np.argmax(score_matrix, axis=1)
             scores = np.max(score_matrix, axis=1)
+            if scores.size and float(np.nanmax(scores)) > 1.0:
+                scores = scores / 100.0
             for box, score, cls in zip(box_array, scores, class_ids):
                 if score >= confidence:
                     detections.append((box.astype(float), float(score), int(cls), []))
         elif score_array is not None:
             scores = score_array.reshape(-1)
+            if scores.size and float(np.nanmax(scores)) > 1.0:
+                scores = scores / 100.0
             classes = class_array.reshape(-1).astype(int) if class_array is not None else np.zeros(len(scores), dtype=int)
             for box, score, cls in zip(box_array, scores, classes):
                 if score >= confidence:
@@ -77,6 +81,10 @@ def _decode_outputs(outputs, confidence, input_size, original_size, pad, scale, 
             for row in rows:
                 objectness = float(row[4])
                 class_scores = row[5:]
+                if objectness > 1.0:
+                    objectness /= 100.0
+                if class_scores.size and float(np.nanmax(class_scores)) > 1.0:
+                    class_scores = class_scores / 100.0
                 cls = int(np.argmax(class_scores)) if class_scores.size else 0
                 score = objectness * float(class_scores[cls]) if class_scores.size else objectness
                 if score < confidence:

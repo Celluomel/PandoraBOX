@@ -59,6 +59,17 @@ class YoloXPipelineTests(unittest.TestCase):
         self.assertEqual(detections[0]["bbox"], [0.42188, 0.22917, 0.57812, 0.4375])
         self.assertFalse(ambiguous)
 
+    def test_percentage_scores_are_normalized_to_probability(self):
+        rows = np.zeros((1, 85), dtype=np.float32)
+        rows[0, :5] = [320, 320, 100, 100, 90]
+        rows[0, 5] = 79
+
+        detections, _ = _decode_outputs(
+            [rows], 0.25, (640, 640), (640, 480), (0, 80), 1.0,
+        )
+
+        self.assertAlmostEqual(detections[0]["confidence"], 0.711, places=3)
+
     def test_dashboard_has_overlay_and_camera_settings_are_persisted(self):
         from body_runtime_host.body_gui import BODY_GUI_HTML
         from pathlib import Path
