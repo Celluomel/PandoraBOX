@@ -254,22 +254,25 @@ async function pollCameraFrame() {
     const frameId = frame.frame_id || frame.captured_at || frame.timestamp;
     const yolo = result.yolo || {};
     const yoloFrameId = yolo.state === 'ready' && yolo.frame_id != null ? String(yolo.frame_id) : null;
-    let displayFrame = frame;
-    let exactDetectionFrame = false;
-    if (yoloFrameId && yoloFrameId !== lastCameraDetectionFrameId) {
+    let displayFrame = null;
+    let displayDetections = {};
+    if (yolo.state === 'disabled') {
+      if (frameId === lastCameraFrameId) return;
+      displayFrame = frame;
+      lastCameraFrameId = frameId;
+    } else {
+      if (!yoloFrameId || yoloFrameId === lastCameraDetectionFrameId) return;
       const exactResponse = await fetch(`/body/camera/yolo-frame?frame_id=${encodeURIComponent(yoloFrameId)}`, { cache: 'no-store', credentials: 'same-origin' });
-      if (exactResponse.ok) {
-        const exactResult = await exactResponse.json();
-        if (exactResult.available && String(exactResult.camera?.frame_id) === yoloFrameId) {
-          displayFrame = exactResult.camera;
-          exactDetectionFrame = true;
-        }
-      }
+      if (!exactResponse.ok) return;
+      const exactResult = await exactResponse.json();
+      if (!exactResult.available || String(exactResult.camera?.frame_id) !== yoloFrameId) return;
+      displayFrame = exactResult.camera;
+      displayDetections = yolo;
+      lastCameraFrameId = yoloFrameId;
+      lastCameraDetectionFrameId = yoloFrameId;
     }
-    if (frameId !== lastCameraFrameId || (yoloFrameId && exactDetectionFrame)) {
-      if (frameId !== lastCameraFrameId) lastCameraFrameId = frameId;
-      if (exactDetectionFrame) lastCameraDetectionFrameId = yoloFrameId;
-      await vrDashboard.setCameraFrame(displayFrame, exactDetectionFrame ? yolo : { ...yolo, detections: [] });
+    if (displayFrame) {
+      await vrDashboard.setCameraFrame(displayFrame, displayDetections);
       if (cameraBackgroundActive && vrDashboard.cameraBitmap) {
         cameraBackgroundTexture.image = vrDashboard.cameraBitmap;
         cameraBackgroundTexture.needsUpdate = true;

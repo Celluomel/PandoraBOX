@@ -10,6 +10,14 @@ from body_runtime_host.yolox_service import YoloXService
 
 
 class YoloXPipelineTests(unittest.TestCase):
+    def test_vr_camera_holds_frame_until_matching_yolox_result(self):
+        source = (Path(__file__).resolve().parents[1] / "body_runtime_host" / "quest_vr.js").read_text()
+
+        self.assertIn("if (!yoloFrameId || yoloFrameId === lastCameraDetectionFrameId) return;", source)
+        self.assertIn("if (!exactResult.available || String(exactResult.camera?.frame_id) !== yoloFrameId) return;", source)
+        self.assertIn("if (yolo.state === 'disabled')", source)
+        self.assertNotIn("setCameraFrame(displayFrame, exactDetectionFrame ? yolo", source)
+
     def test_decodes_candidates_and_maps_boxes_back_from_letterbox(self):
         rows = np.zeros((2, 85), dtype=np.float32)
         rows[0, :5] = [320, 320, 100, 100, 0.9]
