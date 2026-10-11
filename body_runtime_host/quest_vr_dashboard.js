@@ -35,11 +35,15 @@ export class QuestVRDashboard {
     this.cachedPose = null;
     this.frame = null;
     this.telemetry = null;
+    this.imuStatus = null;
     this.controller = null;
     this.following = false;
     this.actionHitAreas = {};
     this.actionBusy = false;
     this.cameraBitmap = null;
+    this.cameraDetectionCount = 0;
+    this.cameraSourceFrames = new Map();
+    this.cameraDetectionFrameId = null;
     this.cameraMessage = 'CAMERA · WAITING';
     this.cameraBackgroundActive = false;
     this.cameraHitArea = null;
@@ -132,6 +136,11 @@ export class QuestVRDashboard {
 
   updateTelemetry(telemetry) {
     this.telemetry = telemetry;
+    this.drawDashboard();
+  }
+
+  updateImuStatus(status) {
+    this.imuStatus = status || null;
     this.drawDashboard();
   }
 
@@ -291,7 +300,7 @@ export class QuestVRDashboard {
   }
 
   drawCamera(ctx, x, y, width, height) {
-    this.drawPanel(ctx, x, y, width, height, 'Camera · egocentric', this.cameraBackgroundActive ? 'BACKGROUND ON' : this.cameraBitmap ? 'LIVE' : 'BODY CAMERA');
+    this.drawPanel(ctx, x, y, width, height, 'Camera · egocentric', this.cameraBackgroundActive ? 'BACKGROUND ON' : this.cameraBitmap ? `LIVE · ${this.cameraDetectionCount} YOLO` : 'BODY CAMERA');
     const imageX = x + 18;
     const imageWidth = width - 36;
     const imageHeight = Math.min(height - 112, imageWidth * .78);
@@ -380,7 +389,9 @@ export class QuestVRDashboard {
   drawNavigationInstruments(ctx, x, y, width, headingX, perception, fnk, fallbackHeading, speed) {
     const modalities = perception.modalities || {};
     const unwrap = value => value?.data && typeof value.data === 'object' ? value.data : value || {};
-    const imuSourceData = modalities.imu || fnk.imu || {};
+    const imuSourceData = this.imuStatus?.enabled
+      ? (this.imuStatus.available ? this.imuStatus.sample : {})
+      : (modalities.imu || fnk.imu || {});
     const imu = unwrap(imuSourceData);
     const gps = unwrap(modalities.gps || modalities.gnss || perception.body?.geo || fnk.gps);
     const asNumber = value => value === null || value === undefined || value === '' ? NaN : Number(value);
@@ -393,6 +404,7 @@ export class QuestVRDashboard {
     const pitch = angleDeg(imu.pitch_deg ?? imu.pitch_rad ?? imu.pitch, imu.pitch_deg !== undefined ? 'deg' : imuUnit);
     const roll = angleDeg(imu.roll_deg ?? imu.roll_rad ?? imu.roll, imu.roll_deg !== undefined ? 'deg' : imuUnit);
     const hasAttitude = Number.isFinite(pitch) && Number.isFinite(roll);
+    const yawRate = asNumber(imu.yaw_rate_dps ?? imu.angular_velocity_dps?.[2]);
     const gpsLat = asNumber(gps.latitude_deg ?? gps.latitude ?? gps.lat);
     const gpsLon = asNumber(gps.longitude_deg ?? gps.longitude ?? gps.lon ?? gps.lng);
     const fixQuality = asNumber(gps.fix_quality ?? gps.fixQuality);
@@ -402,6 +414,10 @@ export class QuestVRDashboard {
     const gpsAccuracy = asNumber(gps.horizontal_accuracy_m ?? gps.accuracy_m);
     const gpsHdop = asNumber(gps.hdop);
     const imuSource = String(imu.source || modalities.imu?.source || 'IMU').toUpperCase();
+    const imuUnavailable = this.imuStatus?.error?.includes('404') ? 'BODY UPDATE REQUIRED'
+      : !this.imuStatus?.enabled ? 'WAITING FOR ATTITUDE'
+        : this.imuStatus.bridge_available === false ? 'NO LOCAL ARDUINO BRIDGE'
+        : this.imuStatus.error ? 'BRIDGE / SENSOR UNAVAILABLE' : 'WAITING FOR IMU SAMPLE';
     const centerX = x + width * .84;
     const centerY = y + 565;
     const radius = 82;
@@ -437,8 +453,10 @@ export class QuestVRDashboard {
     this.drawAzimuthRing(ctx, centerX, centerY, radius + 18, heading);
     ctx.fillStyle = hasAttitude ? '#e4f4ea' : '#f0cd79'; ctx.font = '18px ui-monospace, monospace';
     ctx.textAlign = 'center';
-    ctx.fillText(hasAttitude ? `${imuSource} · R ${roll.toFixed(1)}° · P ${pitch.toFixed(1)}°` : 'IMU · NO ATTITUDE DATA', centerX, centerY + radius + 23);
+    ctx.fillText(hasAttitude ? `${imuSource} · R ${roll.toFixed(1)}° · P ${pitch.toFixed(1)}°` : `IMU · ${imuUnavailable}`, centerX, centerY + radius + 23);
     ctx.fillText(`HDG ${Number.isFinite(heading) ? `${Math.round((heading % 360 + 360) % 360)}°` : '—'} · ${headingSource}`, centerX, centerY + radius + 47);
+    ctx.fillStyle = Number.isFinite(yawRate) ? '#9ec8b5' : '#829d8d'; ctx.font = '16px ui-monospace, monospace';
+    ctx.fillText(Number.isFinite(yawRate) ? `YAW RATE ${yawRate.toFixed(1)}°/s · NO MAGNETOMETER` : 'YAW RATE · NO IMU DATA', centerX, centerY + radius + 69);
 
     const gpsX = centerX;
     const gpsY = y + 742;
@@ -706,7 +724,7 @@ export class QuestVRDashboard {
     return { forward, left, distance: Math.hypot(forward, left) };
   }
 
-  async setCameraFrame(frame) {
+  async setCameraFrame(frame, yolo = {}) {
     const encoded = frame?.image_base64;
     if (!encoded || encoded.length > 5_000_000) {
       this.setCameraStatus(encoded ? 'FRAME TOO LARGE' : 'CAMERA · NO FRAME');
@@ -714,7 +732,51 @@ export class QuestVRDashboard {
     }
     try {
       const bytes = Uint8Array.from(atob(encoded), character => character.charCodeAt(0));
-      const bitmap = await createImageBitmap(new Blob([bytes], { type: frame.mime_type || 'image/jpeg' }));
+      const source = await createImageBitmap(new Blob([bytes], { type: frame.mime_type || 'image/jpeg' }));
+      const sourceId = String(frame.frame_id || frame.captured_at || frame.timestamp || '');
+      if (sourceId) {
+        this.cameraSourceFrames.get(sourceId)?.close?.();
+        this.cameraSourceFrames.set(sourceId, source);
+      }
+      while (this.cameraSourceFrames.size > 12) {
+        const oldest = this.cameraSourceFrames.keys().next().value;
+        this.cameraSourceFrames.get(oldest)?.close?.();
+        this.cameraSourceFrames.delete(oldest);
+      }
+      const detectionId = yolo.state === 'ready' && yolo.frame_id != null ? String(yolo.frame_id) : '';
+      if (detectionId && detectionId === this.cameraDetectionFrameId) return;
+      const analyzedFrame = detectionId ? this.cameraSourceFrames.get(detectionId) || source : source;
+      const matchingFrame = Boolean(detectionId && analyzedFrame);
+      const fresh = Number(yolo.captured_at) > 0 && Math.abs(Date.now() / 1000 - Number(yolo.captured_at)) < 2.5;
+      const detections = matchingFrame && fresh && Array.isArray(yolo.detections) ? yolo.detections : [];
+      const displaySource = analyzedFrame || source;
+      let bitmap = await createImageBitmap(displaySource);
+      this.cameraDetectionCount = detections.length;
+      if (detections.length) {
+        const canvas = document.createElement('canvas');
+        canvas.width = displaySource.width; canvas.height = displaySource.height;
+        const context = canvas.getContext('2d');
+        context.drawImage(displaySource, 0, 0);
+        const lineWidth = Math.max(2, displaySource.width / 480);
+        context.lineWidth = lineWidth;
+        context.font = `600 ${Math.max(14, displaySource.width / 32)}px sans-serif`;
+        for (const detection of detections) {
+          const box = detection.bbox;
+          if (!Array.isArray(box) || box.length !== 4 || !box.every(Number.isFinite)) continue;
+          const [x1, y1, x2, y2] = box.map(value => Math.max(0, Math.min(1, value)));
+          const left = x1 * displaySource.width, top = y1 * displaySource.height;
+          const width = (x2 - x1) * displaySource.width, height = (y2 - y1) * displaySource.height;
+          if (width <= 1 || height <= 1) continue;
+          context.strokeStyle = '#42f5bd'; context.strokeRect(left, top, width, height);
+          const label = `${String(detection.label || 'object')} ${Math.round(Number(detection.confidence || 0) * 100)}%`;
+          const textWidth = context.measureText(label).width;
+          const labelTop = Math.max(0, top - lineWidth - displaySource.width / 28);
+          context.fillStyle = '#06231c'; context.fillRect(left, labelTop, textWidth + 10, displaySource.width / 28);
+          context.fillStyle = '#a7ffdf'; context.fillText(label, left + 5, labelTop + displaySource.width / 45);
+        }
+        bitmap = await createImageBitmap(canvas);
+      }
+      if (detectionId) this.cameraDetectionFrameId = detectionId;
       this.cameraBitmap?.close?.();
       this.cameraBitmap = bitmap;
       this.cameraMessage = 'LIVE';
@@ -728,6 +790,7 @@ export class QuestVRDashboard {
     if (!preserveFrame) {
       this.cameraBitmap?.close?.();
       this.cameraBitmap = null;
+      this.cameraDetectionCount = 0;
     }
     this.cameraMessage = message;
     this.drawDashboard();

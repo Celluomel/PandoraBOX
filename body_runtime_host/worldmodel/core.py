@@ -106,6 +106,15 @@ DEFAULT_CONFIG = {
     "BODY_LLM_EMBEDDING_THRESHOLD": 0.55,
     "BODY_LLM_EMBEDDING_TIMEOUT": 4.0,
     "BODY_CAMERA_INTERVAL": 0.5,
+    "BODY_YOLO_ENABLED": False,
+    "BODY_YOLO_PYTHON": "/home/arduino/.venvs/yolox-infer/bin/python",
+    "BODY_YOLO_MODEL_PATH": "/home/arduino/models/yolox-qairt245/yolox-qnn_dlc-w8a8/yolox.dlc",
+    "BODY_YOLO_RUNTIME": "htp_auto",
+    "BODY_YOLO_CONFIDENCE": 0.25,
+    "BODY_YOLO_AMBIGUITY_MARGIN": 0.12,
+    "BODY_YOLO_VLM_FALLBACK": True,
+    "BODY_YOLO_VLM_COOLDOWN_S": 15.0,
+    "BODY_YOLO_INTERVAL_S": 0.5,
 }
 
 

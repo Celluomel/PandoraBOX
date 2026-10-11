@@ -461,7 +461,7 @@ class BodySceneInterpreter:
             " Do not infer range, height or object size from pixels alone; use LiDAR geometry." + occlusion
         )
 
-    def submit(self, packet: Dict[str, Any]) -> None:
+    def submit(self, packet: Dict[str, Any], *, urgent: bool = False) -> None:
         """Schedule at most one bounded interpretation at a time."""
         if not self._enabled():
             return
@@ -476,7 +476,7 @@ class BodySceneInterpreter:
                 interval, reason = provider_interval, "provider-limited"
             self._last_effective_interval = interval
             self._last_cadence_reason = reason
-            if now - self._last_submit < interval:
+            if not urgent and now - self._last_submit < interval:
                 return
             self._last_submit = now
             self._future = self._executor.submit(self._interpret_adaptive, packet)
@@ -1189,6 +1189,12 @@ class BodySceneInterpreter:
                 {key: item.get(key) for key in ("id", "label", "kind")}
                 for item in (packet.get("objects") or [])[:5] if isinstance(item, dict)
             ]
+        camera_yolo = ((packet.get("modalities") or {}).get("camera") or {}).get("yolo_detections")
+        if isinstance(camera_yolo, list) and camera_yolo:
+            prompt_packet["camera_detection_hints"] = [
+                {key: item[key] for key in ("label", "confidence", "bbox") if key in item}
+                for item in camera_yolo[:12] if isinstance(item, dict)
+            ]
         # The image is attached as a vision part below. Never duplicate its
         # Base64 bytes inside the JSON prompt; that doubles latency and token
         # transport for every Body interpretation.
@@ -1310,6 +1316,12 @@ class BodySceneInterpreter:
             if camera_only_prompt else
             "Use mmWave targets only as metric motion evidence (position/velocity), never as proof of visual identity. "
         )
+        yolo_guidance = (
+            "YOLO hints are candidate image detections only: use each box to focus inspection, verify the label "
+            "against the attached pixels, and preserve uncertainty when the object is unclear. A box is not "
+            "metric range, world position, or proof that an object exists. "
+            if prompt_packet.get("camera_detection_hints") else ""
+        )
         association_prompt = (
             "Do not infer metric coordinates or object dimensions from image regions. "
             if camera_only_prompt else
@@ -1331,7 +1343,7 @@ class BodySceneInterpreter:
             "movement_support (array of monitoring or recovery suggestions), uncertainty (array). "
             f"Prioritize objects within approximately {self._focus_range():.1f} metres of the Body, objects on the "
             "current path, and hazards. Do not enumerate distant objects unless they are necessary for navigation. "
-            + metric_evidence_prompt +
+            + metric_evidence_prompt + yolo_guidance +
             "Every concrete object named in scene_summary must also appear in object_descriptions with a short "
             "open-vocabulary label and a visual description; do not leave object_descriptions empty when the "
             "summary names a visible object. Use free-form labels grounded in the image, not a fixed category list. "

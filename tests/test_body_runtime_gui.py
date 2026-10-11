@@ -2,6 +2,14 @@ import unittest
 
 
 class BodyRuntimeGuiTests(unittest.TestCase):
+    def test_modulino_movement_controls_expose_persistent_body_setting_and_live_sample(self):
+        from body_runtime_host.body_gui import BODY_GUI_HTML
+
+        self.assertIn("VENTUNO Q · Modulino Movement", BODY_GUI_HTML)
+        self.assertIn("Use physical IMU in Body and Quest HUD", BODY_GUI_HTML)
+        self.assertIn("/plugins/imu/status", BODY_GUI_HTML)
+        self.assertIn("Save IMU setting", BODY_GUI_HTML)
+
     def test_brain_bridge_settings_are_mounted_in_runtime_view(self):
         from body_runtime_host.body_gui import BODY_GUI_HTML
 

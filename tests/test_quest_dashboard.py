@@ -60,6 +60,8 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertIn("HDG ${Number.isFinite(heading)", source)
         self.assertIn("gps.fix_quality", source)
         self.assertIn("NO VALID FIX", source)
+        self.assertIn("yaw_rate_dps", source)
+        self.assertIn("NO MAGNETOMETER", source)
         self.assertIn("GPS COG", source)
         self.assertIn("drawAzimuthRing(ctx, centerX, centerY, radius + 18, heading)", source)
         self.assertIn("indexY - 11", source)
@@ -75,11 +77,16 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertIn("function drawNavigation(", source)
         self.assertIn("WAITING FOR FIX", html)
         self.assertIn("drawNavigation();", source)
+        self.assertIn("fetch('/plugins/imu/status'", source)
+        self.assertIn("setInterval(pollImu, 1000)", source)
+        self.assertIn("No local Arduino Bridge", source)
         self.assertIn("const ring = radius + 15", source)
         self.assertIn("pointerY - 6", source)
 
     def test_vr_horizon_column_clears_robot_and_uses_sharp_canvas_filtering(self):
-        source = (Path(__file__).resolve().parents[1] / "body_runtime_host" / "quest_vr_dashboard.js").read_text(encoding="utf-8")
+        root = Path(__file__).resolve().parents[1]
+        source = (root / "body_runtime_host" / "quest_vr_dashboard.js").read_text(encoding="utf-8")
+        quest_source = (root / "body_runtime_host" / "quest_vr.js").read_text(encoding="utf-8")
 
         self.assertIn("this.texture.generateMipmaps = true", source)
         self.assertIn("this.texture.minFilter = THREE.LinearMipmapLinearFilter", source)
@@ -88,6 +95,8 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertIn("ctx.ellipse(x + 267, y + 620", source)
         self.assertIn("700 30px system-ui", source)
         self.assertIn("HDG ${Number.isFinite(heading)", source)
+        self.assertIn("updateImuStatus(status)", source)
+        self.assertIn("fetch('/plugins/imu/status'", quest_source)
 
 
 if __name__ == "__main__":

@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 import time
 import urllib.error
 import urllib.request
@@ -42,6 +43,7 @@ from ..mmwave_radar import (
     VentunoBridgeMmWaveSource,
     SimulatedMmWaveRadarSource,
 )
+from ..imu import ImuAugmentedSource, VentunoBridgeImuSource
 from .virtual_camera import render_camera
 from ..fnk0031_usb import FNK0031USBSource
 
@@ -737,3 +739,16 @@ def augment_with_mmwave(source: Any, config: Dict[str, Any]) -> Any:
         logger.warning("[body] unsupported mmWave protocol %r", protocol)
         return source
     return MmWaveAugmentedSource(source, radar)
+
+
+def augment_with_imu(source: Any, config: Dict[str, Any], imu=None) -> Any:
+    """Attach the Qwiic Modulino when enabled, defaulting on local Ventuno."""
+    enabled = bool((config or {}).get(
+        "BODY_PLUGIN_IMU_ENABLED", os.path.exists("/run/arduino-router.sock")
+    ))
+    if source is None or not enabled:
+        return source
+    if not os.path.exists("/run/arduino-router.sock"):
+        logger.warning("[body] Modulino IMU selected but local Arduino Router socket is unavailable")
+        return source
+    return ImuAugmentedSource(source, imu or VentunoBridgeImuSource())

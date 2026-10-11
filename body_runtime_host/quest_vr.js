@@ -32,7 +32,9 @@ cameraArc.renderOrder = -1000;
 cameraArcRoot.add(cameraArc);
 let cameraPollTimer = null;
 let cameraPollInFlight = false;
+let imuPollInFlight = false;
 let lastCameraFrameId = null;
+let lastCameraDetectionFrameId = null;
 let lastDashboardTelemetryAt = 0;
 let lastFnkTelemetryAt = 0;
 let xrFollowYaw = null;
@@ -250,9 +252,11 @@ async function pollCameraFrame() {
       return;
     }
     const frameId = frame.frame_id || frame.captured_at || frame.timestamp;
-    if (frameId !== lastCameraFrameId) {
-      lastCameraFrameId = frameId;
-      await vrDashboard.setCameraFrame(frame);
+    const yoloFrameId = result.yolo?.state === 'ready' ? result.yolo.frame_id : null;
+    if (frameId !== lastCameraFrameId || yoloFrameId !== lastCameraDetectionFrameId) {
+      if (frameId !== lastCameraFrameId) lastCameraFrameId = frameId;
+      if (yoloFrameId !== lastCameraDetectionFrameId) lastCameraDetectionFrameId = yoloFrameId;
+      await vrDashboard.setCameraFrame(frame, result.yolo || {});
       if (cameraBackgroundActive && vrDashboard.cameraBitmap) {
         cameraBackgroundTexture.image = vrDashboard.cameraBitmap;
         cameraBackgroundTexture.needsUpdate = true;
@@ -278,6 +282,7 @@ function stopCameraPolling() {
   cameraPollTimer = null;
   cameraPollInFlight = false;
   lastCameraFrameId = null;
+  lastCameraDetectionFrameId = null;
 }
 
 function labelSprite(text) {
@@ -517,6 +522,18 @@ async function pollBody() {
   } catch (error) {
     setStatus(`Cannot read Body perception: ${error.message}`, true);
   }
+}
+
+async function pollImuStatus() {
+  if (imuPollInFlight) return;
+  imuPollInFlight = true;
+  try {
+    const response = await fetch('/plugins/imu/status', { cache: 'no-store', credentials: 'same-origin' });
+    if (!response.ok) throw new Error(`IMU status HTTP ${response.status}`);
+    vrDashboard.updateImuStatus(await response.json());
+  } catch (error) {
+    vrDashboard.updateImuStatus({ enabled: true, available: false, bridge_available: null, error: error.message });
+  } finally { imuPollInFlight = false; }
 }
 
 function syncSimulationControl(frame = latestWorldStatus) {
@@ -930,6 +947,8 @@ document.querySelector('#scene-mode-simulation').addEventListener('click', () =>
 document.querySelector('#scene-mode-gaussian').addEventListener('click', () => selectSceneMode('gaussian'));
 void refreshGaussianAssetStatus();
 setInterval(refreshGaussianAssetStatus, 10000);
+void pollImuStatus();
+setInterval(pollImuStatus, 1000);
 window.__pbQuestReady = true;
 if (statusNode.textContent === 'Starting 3D scene…') setStatus('3D renderer ready · connecting to Body world model…');
 

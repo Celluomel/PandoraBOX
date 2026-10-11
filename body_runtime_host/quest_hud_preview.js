@@ -4,8 +4,10 @@ import { createFnk0031Visual } from './fnk0031_visual.js';
 const $ = id => document.getElementById(id);
 let world = null;
 let controller = null;
+let liveImu = null;
 let cameraFrameId = null;
 let cameraBusy = false;
+let imuBusy = false;
 let robotVisual = null;
 let robotRenderer = null;
 let robotScene = null;
@@ -256,7 +258,7 @@ function drawRobot() {
 
 function drawNavigation(perception = world?.perception || {}, telemetry = controller || {}) {
   const modalities = perception.modalities || {};
-  const imuSource = modalities.imu || telemetry.imu || {};
+  const imuSource = liveImu?.available ? liveImu.sample : (modalities.imu || telemetry.imu || {});
   const unwrap = value => value?.data && typeof value.data === 'object' ? value.data : value || {};
   const imu = unwrap(imuSource);
   const gps = unwrap(modalities.gps || modalities.gnss || perception.body?.geo || telemetry.gps);
@@ -267,7 +269,12 @@ function drawNavigation(perception = world?.perception || {}, telemetry = contro
   const roll = degrees(imu.roll_deg ?? imu.roll_rad ?? imu.roll, imu.roll_deg !== undefined ? 'deg' : unit);
   const hasImu = Number.isFinite(pitch) && Number.isFinite(roll);
   setText('nav-attitude-value', hasImu ? `R ${roll.toFixed(1)}° · P ${pitch.toFixed(1)}°` : 'NO IMU DATA');
-  setText('nav-attitude-source', hasImu ? String(imu.source || imuSource.source || 'IMU').toUpperCase() : 'Waiting for attitude');
+  const imuUnavailable = !liveImu ? 'Waiting for IMU'
+    : liveImu.error?.includes('404') ? 'Body update required'
+      : !liveImu.enabled ? 'Enable Modulino in Robot hardware'
+      : !liveImu.bridge_available ? 'No local Arduino Bridge'
+        : liveImu.error ? 'Bridge or sensor unavailable' : 'Waiting for sample';
+  setText('nav-attitude-source', hasImu ? String(imu.source || imuSource.source || 'IMU').toUpperCase() : imuUnavailable);
 
   const heading = number(telemetry.magnetic_heading_deg ?? telemetry.compass_heading_deg);
   const moving = number(telemetry.speed_mps ?? perception.body?.velocity_mps) > .4;
@@ -394,7 +401,21 @@ async function pollCamera() {
   } finally { cameraBusy = false; }
 }
 
+async function pollImu() {
+  if (imuBusy) return;
+  imuBusy = true;
+  try {
+    const response = await fetch('/plugins/imu/status', { cache: 'no-store' });
+    if (!response.ok) throw new Error(`IMU status HTTP ${response.status}`);
+    liveImu = { ...(await response.json()), endpoint_available: true };
+    drawNavigation();
+  } catch (error) {
+    liveImu = { available: false, endpoint_available: false, error: error.message };
+    drawNavigation();
+  } finally { imuBusy = false; }
+}
+
 initRobotVisual();
 window.addEventListener('resize', updateStatus);
-void poll(); void pollCamera();
-setInterval(poll, 800); setInterval(pollCamera, 400);
+void poll(); void pollCamera(); void pollImu();
+setInterval(poll, 800); setInterval(pollCamera, 400); setInterval(pollImu, 1000);

@@ -74,7 +74,7 @@
   <text x="933" y="576" class="label">CQRobot VL53L1X breakout</text>
   <text x="933" y="603" class="body">Red VCC → 3V3 · Black GND → GND</text>
   <text x="933" y="628" class="body">Green SDA → SDA · Blue SCL → SCL</text>
-  <text x="933" y="658" class="small">Yellow SHUT / Orange INT: leave open initially</text>
+  <text x="933" y="658" class="small">INT: open · SHUT: confirm onboard bias; never float</text>
   <rect x="1370" y="548" width="398" height="137" rx="8" class="good"/>
   <text x="1388" y="576" class="label">Bus / cable checks</text>
   <text x="1388" y="603" class="body">ToF address 0x29 · no address clash</text>
@@ -123,10 +123,10 @@
   <text x="1452" y="910" class="small">MCU input D3 / D5 / D7</text>
   <path d="M1382 909V928" class="echo"/>
   <rect x="1370" y="928" width="24" height="43" fill="none" stroke="#e49b62" stroke-width="2"/>
-  <text x="1403" y="954" class="tiny">20kΩ</text>
+  <text x="1403" y="954" class="tiny">1.8kΩ</text>
   <path d="M1382 971V992M1366 992H1398M1372 999H1392M1378 1006H1386" class="gnd"/>
-  <text x="1182" y="1030" class="small">5V ECHO gives ~3.33V at the tap.</text>
-  <text x="1182" y="1057" class="small">Build 3: total 3 × 10kΩ + 3 × 20kΩ. Test TRIG at 3.3V on sensor #1.</text>
+  <text x="1182" y="1030" class="small">5V ECHO gives ~3.21V at the tap.</text>
+  <text x="1182" y="1057" class="small">Build 3: total 3 × 1kΩ + 3 × 1.8kΩ. Test TRIG at 3.3V on sensor #1.</text>
   <text x="64" y="1112" class="tiny">VENTUNO shield-header D pins are STM32 MCU pins. The Body Linux runtime needs an MCU sketch/RPC sensor bridge to receive these readings.</text>
 
   <!-- bringup and warnings -->

@@ -144,6 +144,7 @@ class BodyHost:
         self.http_server: ThreadingHTTPServer | None = None
         self._worldmodel = None
         self._worldmodel_lock = threading.Lock()
+        self._imu_bridge_source = None
         self._robot_last_ok: float | None = None
         self._robot_last_error = ""
         self._fnk_usb_last_publish = 0.0
@@ -166,6 +167,9 @@ class BodyHost:
         self._robot_sim_lock = threading.RLock()
         self._local_camera: LocalCameraCapture | None = None
         self._local_camera_lock = threading.RLock()
+        from body_runtime_host.yolox_service import YoloXService
+        self._yolox_service = YoloXService(self.value, self._camera_provider, self._queue_yolo_vlm_fallback)
+        self._yolo_fallback_lock = threading.Lock()
         self._body_vlm_test_lock = threading.Lock()
         self._body_vlm_test_status: dict = {"status": "idle", "job_id": None}
         self._body_vlm_test_thread: threading.Thread | None = None
@@ -657,6 +661,7 @@ class BodyHost:
             "vlm_model": str(self.value("BODY_LLM_MODEL", "") or ""),
             "face_detection_enabled": bool(self.value("BODY_FACE_DETECTION_ENABLED", False)),
             "face_detection_status": "configured" if bool(self.value("BODY_FACE_DETECTION_ENABLED", False)) else "disabled",
+            "yolox": self._yolox_service.settings(),
             "capture": capture_status,
         }
 
@@ -668,7 +673,8 @@ class BodyHost:
     def camera_frame(self) -> dict:
         frame = self._camera_provider() or {}
         if frame:
-            return {"available": True, "camera": frame}
+            yolo = self._yolox_service.status()
+            return {"available": True, "camera": frame, "yolo": yolo}
         settings = self.camera_settings()
         return {
             "available": False,
@@ -697,6 +703,10 @@ class BodyHost:
     def set_camera_capture(self, enabled: bool) -> dict:
         """Start or stop the live camera without changing its boot preference."""
         capture = self._configure_local_camera(start=bool(enabled))
+        if enabled:
+            self._yolox_service.start()
+        else:
+            self._yolox_service.stop()
         return {"ok": capture.get("status") in {"starting", "capturing", "stopped"}, **capture}
 
     def update_camera_settings(self, payload: dict) -> dict:
@@ -728,11 +738,55 @@ class BodyHost:
         )
         self.config["BODY_CAMERA_DEVICE_INDEX"] = max(0, int(payload.get("device_index", self.value("BODY_CAMERA_DEVICE_INDEX", 0)) or 0))
         self.config["BODY_FACE_DETECTION_ENABLED"] = _payload_bool(payload.get("face_detection_enabled"))
+        yolo_values = {
+            "BODY_YOLO_ENABLED": _payload_bool(payload.get("yolox_enabled"), _payload_bool(self.value("BODY_YOLO_ENABLED", False))),
+            "BODY_YOLO_PYTHON": str(payload.get("yolox_python", self.value("BODY_YOLO_PYTHON", "/home/arduino/.venvs/yolox-infer/bin/python")) or "").strip(),
+            "BODY_YOLO_MODEL_PATH": str(payload.get("yolox_model_path", self.value("BODY_YOLO_MODEL_PATH", "/home/arduino/models/yolox-qairt245/yolox-qnn_dlc-w8a8/yolox.dlc")) or "").strip(),
+            "BODY_YOLO_RUNTIME": str(payload.get("yolox_runtime", self.value("BODY_YOLO_RUNTIME", "htp_auto")) or "htp_auto").strip().lower(),
+            "BODY_YOLO_CONFIDENCE": max(0.01, min(0.95, float(payload.get("yolox_confidence", self.value("BODY_YOLO_CONFIDENCE", 0.25))))),
+            "BODY_YOLO_AMBIGUITY_MARGIN": max(0.0, min(0.5, float(payload.get("yolox_ambiguity_margin", self.value("BODY_YOLO_AMBIGUITY_MARGIN", 0.12))))),
+            "BODY_YOLO_VLM_FALLBACK": _payload_bool(payload.get("yolox_vlm_fallback"), _payload_bool(self.value("BODY_YOLO_VLM_FALLBACK", True))),
+            "BODY_YOLO_VLM_COOLDOWN_S": max(5.0, min(300.0, float(payload.get("yolox_vlm_cooldown_s", self.value("BODY_YOLO_VLM_COOLDOWN_S", 15.0))))),
+            "BODY_YOLO_INTERVAL_S": max(0.15, min(5.0, float(payload.get("yolox_interval_s", self.value("BODY_YOLO_INTERVAL_S", 0.5))))),
+        }
+        if yolo_values["BODY_YOLO_RUNTIME"] not in {"htp_auto", "htp", "cpu"}:
+            raise ValueError("YOLOX runtime must be htp_auto, htp, or cpu")
+        self.config.update(yolo_values)
         self.save_config()
-        self._configure_local_camera(start=was_capturing)
+        self._configure_local_camera(start=was_capturing or yolo_values["BODY_YOLO_ENABLED"])
+        self._yolox_service.reconfigure()
         if self._worldmodel is not None:
             self.reload_worldmodel_source()
         return {"ok": True, **self.camera_settings()}
+
+    def _queue_yolo_vlm_fallback(self, frame: dict, result: dict) -> None:
+        if not bool(self.value("BODY_LLM_ENABLED", False)) or not self._yolo_fallback_lock.acquire(blocking=False):
+            return
+
+        def interpret_ambiguous_frame():
+            try:
+                wm = self.worldmodel
+                if wm is None or wm.source is None:
+                    return
+                observation = wm.source.observe()
+                body_state = wm.source.body_state()
+                packet = wm._scene_packet(observation, body_state, {}, {})
+                modalities = packet.setdefault("modalities", {})
+                camera = modalities.setdefault("camera", {})
+                camera.update({key: frame[key] for key in (
+                    "image_base64", "mime_type", "width", "height", "captured_at", "camera_profile", "source"
+                ) if key in frame})
+                camera["frame_id"] = result.get("frame_id") or frame.get("frame_id")
+                camera["yolo_detections"] = result.get("detections", [])[:12]
+                packet["frame_id"] = camera["frame_id"]
+                wm.scene_interpreter.submit(packet, urgent=True)
+                LOG.info("Queued VLM ambiguity fallback for YOLOX frame=%s", packet.get("frame_id"))
+            except Exception as exc:
+                LOG.warning("Could not queue VLM ambiguity fallback: %s", str(exc)[:200])
+            finally:
+                self._yolo_fallback_lock.release()
+
+        threading.Thread(target=interpret_ambiguous_frame, name="body-yolox-vlm-fallback", daemon=True).start()
 
     def test_body_vlm(self) -> dict:
         """Run one synchronous Body VLM interpretation on the latest scene."""
@@ -1584,6 +1638,47 @@ class BodyHost:
             "timeout": float(self.value("MMWAVE_RADAR_TIMEOUT", 0.35) or 0.35),
             **self.serial_device_inventory(),
         }
+
+    def _get_imu_bridge_source(self):
+        if self._imu_bridge_source is None:
+            from body_runtime_host.imu import VentunoBridgeImuSource
+            self._imu_bridge_source = VentunoBridgeImuSource()
+        return self._imu_bridge_source
+
+    def imu_settings(self) -> dict:
+        bridge_available = os.path.exists("/run/arduino-router.sock")
+        return {
+            "enabled": bool(self.value("BODY_PLUGIN_IMU_ENABLED", bridge_available)),
+            "device": "Arduino Modulino Movement / LSM6DSOX",
+            "transport": "Qwiic I2C on STM32 -> local Arduino Bridge RPC",
+            "method": "body_imu_read",
+            "bridge_available": bridge_available,
+            "host": {"hostname": platform.node(), "os": platform.system()},
+        }
+
+    def imu_status(self) -> dict:
+        settings = self.imu_settings()
+        if not settings["enabled"]:
+            return {**settings, "available": False, "error": "Modulino IMU is disabled in Body settings"}
+        if not settings["bridge_available"]:
+            return {**settings, "available": False, "error": "Local Arduino Router socket is unavailable; Body must run on VENTUNO Q"}
+        try:
+            sample = self._get_imu_bridge_source().read()
+            return {**settings, "available": True, "sample": sample}
+        except Exception as exc:
+            return {**settings, "available": False, "error": str(exc)[:240],
+                    "source_status": self._get_imu_bridge_source().status()}
+
+    def update_imu_settings(self, payload: dict) -> dict:
+        enabled = _payload_bool((payload or {}).get("enabled"), False)
+        if enabled and not os.path.exists("/run/arduino-router.sock"):
+            raise ValueError("The Modulino Movement is connected to the VENTUNO Q Qwiic bus; run Body on that board to access its local Bridge")
+        self.config["BODY_PLUGIN_IMU_ENABLED"] = enabled
+        self.save_config()
+        self.config = self._load_config()
+        if self._worldmodel is not None:
+            self.reload_worldmodel_source()
+        return {"ok": True, "settings": self.imu_settings()}
 
     def update_mmwave_radar_settings(self, payload: dict) -> dict:
         from body_runtime_host.fnk0031_usb import available_serial_ports
@@ -2766,7 +2861,7 @@ class BodyHost:
         silently replace ``mode=sim`` with an unavailable robot endpoint.
         """
         from .worldmodel import SimRobotSource, resolve_source
-        from .worldmodel.sources import augment_with_mmwave
+        from .worldmodel.sources import augment_with_imu, augment_with_mmwave
 
         model_config_path = ROOT / "data" / "body" / "worldmodel" / "config.json"
         model_config: dict = {}
@@ -2796,10 +2891,12 @@ class BodyHost:
                 # Keep compatibility with lightweight test doubles and older
                 # Body plugin implementations that accept no constructor args.
                 source = SimRobotSource()
-            return augment_with_mmwave(source, self.config)
+            source = augment_with_mmwave(source, self.config)
+            return augment_with_imu(source, self.config, self._get_imu_bridge_source())
         if mode == "bridge":
             return None
-        return augment_with_mmwave(resolve_source(self.config, self.latest), self.config)
+        source = augment_with_mmwave(resolve_source(self.config, self.latest), self.config)
+        return augment_with_imu(source, self.config, self._get_imu_bridge_source())
 
     def plugins(self) -> list[dict]:
         return [
@@ -2852,6 +2949,14 @@ class BodyHost:
                 "baudrate": int(self.value("MMWAVE_RADAR_BAUDRATE", 256000) or 256000),
             },
             {
+                "id": "modulino_imu",
+                "label": "Modulino Movement IMU",
+                "enabled": bool(self.value("BODY_PLUGIN_IMU_ENABLED", os.path.exists("/run/arduino-router.sock"))),
+                "role": "Qwiic IMU data from the local Ventuno STM32 Arduino Bridge",
+                "settings_url": "/plugins/imu/settings",
+                "status_url": "/plugins/imu/status",
+            },
+            {
                 "id": "world_model",
                 "enabled": bool(self.value("BODY_WORLDMODEL_ENABLED", False)),
                 "role": "embodied perception, physical memory and prediction",
@@ -2866,8 +2971,9 @@ class BodyHost:
         if self.http_server is None:
             LOG.error("Body host did not start; refusing to run a second sensor/plugin loop")
             return
-        if bool(self.value("BODY_CAMERA_STARTUP_ENABLED", False)):
+        if bool(self.value("BODY_CAMERA_STARTUP_ENABLED", False)) or bool(self.value("BODY_YOLO_ENABLED", False)):
             self._configure_local_camera(start=True)
+        self._yolox_service.start()
         if bool(self.value("BODY_ROS2_ENABLED", False)):
             ros_status = self._start_ros2_bridge()
             if ros_status.get("available"):
@@ -2904,6 +3010,7 @@ class BodyHost:
         with self._local_camera_lock:
             if self._local_camera is not None:
                 self._local_camera.stop()
+        self._yolox_service.stop()
         self.stop_nav2_simulation_stack()
         self._stop_ros2_bridge()
         self.stop_robot_sim()
@@ -3107,6 +3214,10 @@ class BodyHost:
                     self._send(owner.fnk0031_settings())
                 elif path == "/plugins/mmwave_radar/settings":
                     self._send(owner.mmwave_radar_settings())
+                elif path == "/plugins/imu/settings":
+                    self._send(owner.imu_settings())
+                elif path == "/plugins/imu/status":
+                    self._send(owner.imu_status())
                 elif path == "/plugins/fnk0031_wifi/usb/status":
                     self._send(owner.fnk0031_usb_status())
                 elif path == "/plugins/fnk0031_wifi/modules":
@@ -3365,6 +3476,11 @@ class BodyHost:
                     elif path == "/plugins/mmwave_radar/settings":
                         try:
                             self._send(owner.update_mmwave_radar_settings(body))
+                        except (ValueError, OSError) as exc:
+                            self._send({"ok": False, "error": str(exc)}, 400)
+                    elif path == "/plugins/imu/settings":
+                        try:
+                            self._send(owner.update_imu_settings(body))
                         except (ValueError, OSError) as exc:
                             self._send({"ok": False, "error": str(exc)}, 400)
                     elif path == "/plugins/fnk0031_wifi/modules":
