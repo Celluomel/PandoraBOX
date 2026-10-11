@@ -3,8 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 
-// Arduino's VENTUNO Q MCU guide maps Serial1 to the JDIGITAL hardware UART.
-// Wire the LD2450 TX to the documented Serial1 RX, and common GND.
+// The companion board-overlay helper maps Serial2 to UART7 on D7/D8.
 static const uint32_t RADAR_BAUD = 256000;
 static const uint32_t FRAME_STALE_MS = 1000;
 static const uint8_t FRAME_SIZE = 30;
@@ -84,12 +83,12 @@ String readLatestLd2450() {
 }
 
 void setup() {
-  Serial1.begin(RADAR_BAUD);
+  Serial2.begin(RADAR_BAUD);
   Bridge.begin();
   Bridge.provide("body_ld2450_read", readLatestLd2450);
 }
 
 void loop() {
-  while (Serial1.available() > 0) feedRadarByte(static_cast<uint8_t>(Serial1.read()));
+  while (Serial2.available() > 0) feedRadarByte(static_cast<uint8_t>(Serial2.read()));
   delay(1);
 }
