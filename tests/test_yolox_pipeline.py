@@ -83,6 +83,14 @@ class YoloXPipelineTests(unittest.TestCase):
         self.assertIn("cameraDetectionFrameId", dashboard)
         self.assertIn("result.yolo || {}", quest)
 
+    def test_2d_hud_preview_overlays_boxes_on_the_matching_camera_frame(self):
+        preview_html = Path("body_runtime_host/quest_hud_preview.html").read_text(encoding="utf-8")
+        preview_script = Path("body_runtime_host/quest_hud_preview.js").read_text(encoding="utf-8")
+        self.assertIn('id="camera-yolo-overlay"', preview_html)
+        self.assertIn("const yolo = result.yolo || {}", preview_script)
+        self.assertIn("cameraFrames.get(detectionId)", preview_script)
+        self.assertIn("drawCameraYoloOverlay(displayFrame, detections)", preview_script)
+
     def test_camera_yolox_settings_are_written_to_body_config(self):
         from body_runtime_host.runtime import BodyHost
 

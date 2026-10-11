@@ -7,6 +7,8 @@ let controller = null;
 let liveImu = null;
 let cameraFrameId = null;
 let cameraBusy = false;
+const cameraFrames = new Map();
+let cameraDisplayKey = null;
 let imuBusy = false;
 let robotVisual = null;
 let robotRenderer = null;
@@ -389,16 +391,66 @@ async function pollCamera() {
       $('camera-state').textContent = 'NO FRAME'; $('camera-source').textContent = 'Body camera · no frame'; $('camera-size').textContent = 'resolution —'; cameraFrameId = null; return;
     }
     const id = frame.frame_id || frame.captured_at || frame.timestamp;
-    if (id !== cameraFrameId) {
-      cameraFrameId = id;
-      $('camera').src = `data:${frame.mime_type || 'image/jpeg'};base64,${frame.image_base64}`;
-      $('camera-empty').hidden = true; $('camera-state').textContent = 'LIVE';
-      $('camera-source').textContent = frame.source || result.source || 'Body camera · live';
-      $('camera-size').textContent = Number(frame.width) > 0 && Number(frame.height) > 0 ? `${frame.width} × ${frame.height}` : 'resolution unavailable';
-    }
+    const frameKey = String(id);
+    cameraFrames.set(frameKey, {
+      id: frameKey,
+      src: `data:${frame.mime_type || 'image/jpeg'};base64,${frame.image_base64}`,
+      width: Number(frame.width) || 640,
+      height: Number(frame.height) || 480,
+      source: frame.source || result.source || 'Body camera · live',
+      capturedAt: Number(frame.captured_at) || 0,
+    });
+    while (cameraFrames.size > 12) cameraFrames.delete(cameraFrames.keys().next().value);
+
+    const yolo = result.yolo || {};
+    const detectionId = yolo.state === 'ready' && yolo.frame_id != null ? String(yolo.frame_id) : '';
+    const analyzedFrame = detectionId ? cameraFrames.get(detectionId) : null;
+    const fresh = Number(yolo.captured_at) > 0 && Math.abs(Date.now() / 1000 - Number(yolo.captured_at)) < 2.5;
+    const drawDetections = Boolean(analyzedFrame && fresh && detectionId === analyzedFrame.id);
+    const displayFrame = drawDetections ? analyzedFrame : cameraFrames.get(frameKey);
+    const detections = drawDetections && Array.isArray(yolo.detections) ? yolo.detections : [];
+    const displayKey = `${displayFrame.id}:${drawDetections ? detectionId : ''}`;
+    if (displayKey === cameraDisplayKey) return;
+    cameraDisplayKey = displayKey;
+    cameraFrameId = displayFrame.id;
+    $('camera').src = displayFrame.src;
+    $('camera-empty').hidden = true;
+    $('camera-state').textContent = detections.length ? `LIVE · ${detections.length} YOLO` : 'LIVE';
+    $('camera-source').textContent = displayFrame.source;
+    $('camera-size').textContent = `${displayFrame.width} × ${displayFrame.height}`;
+    drawCameraYoloOverlay(displayFrame, detections);
   } catch {
     $('camera-empty').hidden = false; $('camera-state').textContent = 'UNAVAILABLE';
   } finally { cameraBusy = false; }
+}
+
+function drawCameraYoloOverlay(frame, detections) {
+  const canvas = $('camera-yolo-overlay');
+  const context = canvas.getContext('2d');
+  canvas.width = frame.width;
+  canvas.height = frame.height;
+  context.clearRect(0, 0, canvas.width, canvas.height);
+  if (!detections.length) return;
+  context.lineWidth = Math.max(2, frame.width / 320);
+  context.font = `600 ${Math.max(14, frame.width / 32)}px system-ui, sans-serif`;
+  for (const detection of detections) {
+    const box = detection?.bbox;
+    if (!Array.isArray(box) || box.length !== 4 || !box.every(Number.isFinite)) continue;
+    const [x1, y1, x2, y2] = box.map(value => Math.max(0, Math.min(1, value)));
+    const x = x1 * frame.width, y = y1 * frame.height;
+    const width = (x2 - x1) * frame.width, height = (y2 - y1) * frame.height;
+    if (width < 2 || height < 2) continue;
+    context.strokeStyle = '#42f5bd';
+    context.strokeRect(x, y, width, height);
+    const confidence = Number(detection.confidence);
+    const label = `${String(detection.label || 'object')} ${Number.isFinite(confidence) ? Math.round(confidence * 100) : 0}%`;
+    const labelHeight = Math.max(20, frame.width / 28);
+    const labelY = Math.max(0, y - labelHeight);
+    context.fillStyle = '#06231c';
+    context.fillRect(x, labelY, context.measureText(label).width + 10, labelHeight);
+    context.fillStyle = '#a7ffdf';
+    context.fillText(label, x + 5, labelY + labelHeight * 0.72);
+  }
 }
 
 async function pollImu() {
