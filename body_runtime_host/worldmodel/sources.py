@@ -39,6 +39,7 @@ from .spatial import LocalMapReference, geo_fix
 from .types import Action, BodyState, Observation, Outcome, SceneObject
 from ..mmwave_radar import (
     HttpMmWaveRadarSource, LD2450SerialSource, MmWaveAugmentedSource,
+    VentunoBridgeMmWaveSource,
     SimulatedMmWaveRadarSource,
 )
 from .virtual_camera import render_camera
@@ -730,6 +731,8 @@ def augment_with_mmwave(source: Any, config: Dict[str, Any]) -> Any:
             url, token=str(config.get("MMWAVE_RADAR_TOKEN", "") or ""),
             timeout=float(config.get("MMWAVE_RADAR_TIMEOUT", 3.0) or 3.0),
         )
+    elif protocol == "ventuno_bridge_ld2450":
+        radar = VentunoBridgeMmWaveSource()
     else:
         logger.warning("[body] unsupported mmWave protocol %r", protocol)
         return source

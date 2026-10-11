@@ -78,6 +78,43 @@ class MmWaveRadarTest(unittest.TestCase):
         self.assertEqual(frame.targets[0].velocity_mps, [0.2, -0.1, 0.0])
         self.assertEqual(frame.targets[0].classification, "person")
 
+    def test_ventuno_bridge_source_reads_latest_local_rpc_frame(self):
+        from body_runtime_host.mmwave_radar import VentunoBridgeMmWaveSource
+
+        class Bridge:
+            def __init__(self):
+                self.connected = False
+            def connect(self, timeout):
+                self.connected = True
+                return True
+            def call(self, method, timeout):
+                self.asserted = (method, timeout)
+                return '{"available":true,"frame":"body","sequence":9,"targets":[{"id":1,"x":0.4,"y":1.2,"z":0,"vx":0,"vy":0,"vz":0,"radial_speed_mps":0.2}]}'
+
+        bridge = Bridge()
+        source = VentunoBridgeMmWaveSource(bridge_factory=lambda: bridge)
+        frame = source.read()
+
+        self.assertEqual(bridge.asserted, ("body_ld2450_read", 0.5))
+        self.assertEqual(frame.sequence, 9)
+        self.assertEqual(frame.source, "hlk_ld2450_ventuno_bridge")
+        self.assertEqual(frame.targets[0].position_m, [0.4, 1.2, 0.0])
+        self.assertEqual(source.status()["transport"], "local_arduino_router_rpc")
+
+    def test_ventuno_bridge_source_reports_stale_frame_without_fake_obstacle(self):
+        from body_runtime_host.mmwave_radar import VentunoBridgeMmWaveSource
+
+        class Bridge:
+            def connect(self, timeout):
+                return True
+            def call(self, method, timeout):
+                return '{"available":false,"targets":[],"error":"stale_or_missing_frame"}'
+
+        source = VentunoBridgeMmWaveSource(bridge_factory=Bridge)
+        with self.assertRaisesRegex(TimeoutError, "stale_or_missing_frame"):
+            source.read()
+        self.assertIn("stale_or_missing_frame", source.status()["last_error"])
+
     def test_simulated_radar_is_independent_of_aqara(self):
         from body_runtime_host.worldmodel.sim_world import SimulatedRoom
         from body_runtime_host.worldmodel.sources import SimRobotSource

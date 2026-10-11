@@ -248,6 +248,60 @@ class LD2450SerialSource(MmWaveRadarSource):
         }
 
 
+class VentunoBridgeMmWaveSource(MmWaveRadarSource):
+    """Read the latest LD2450 frame from the Ventuno STM32 over local RPC."""
+
+    name = "hlk_ld2450_ventuno_bridge"
+
+    def __init__(self, bridge_factory=None, method: str = "body_ld2450_read"):
+        self._bridge_factory = bridge_factory
+        self._bridge = None
+        self.method = str(method or "body_ld2450_read")
+        self.last_error = ""
+        self.last_ok: Optional[float] = None
+        self.last_frame: Optional[MmWaveFrame] = None
+
+    def _client(self):
+        if self._bridge is None:
+            factory = self._bridge_factory
+            if factory is None:
+                from arduino.router_bridge import Bridge
+                factory = Bridge
+            self._bridge = factory()
+            if not self._bridge.connect(timeout=1.0):
+                raise ConnectionError("Arduino Router Bridge is not available locally")
+        return self._bridge
+
+    def read(self) -> MmWaveFrame:
+        try:
+            payload = self._client().call(self.method, timeout=0.5)
+            if isinstance(payload, bytes):
+                payload = payload.decode("utf-8")
+            if isinstance(payload, str):
+                payload = json.loads(payload)
+            if not isinstance(payload, dict):
+                raise ValueError("Ventuno Bridge returned an invalid LD2450 payload")
+            if not payload.get("available", True):
+                raise TimeoutError(str(payload.get("error") or "No LD2450 frame received yet"))
+            self.last_frame = frame_from_payload(payload, source=self.name)
+            self.last_ok = time.time()
+            self.last_error = ""
+            return self.last_frame
+        except Exception as exc:
+            self.last_error = str(exc)
+            raise
+
+    def status(self) -> Dict[str, Any]:
+        return {
+            "source": self.name,
+            "transport": "local_arduino_router_rpc",
+            "method": self.method,
+            "last_ok_age_s": round(time.time() - self.last_ok, 1) if self.last_ok else None,
+            "last_error": self.last_error,
+            "targets": len(self.last_frame.targets) if self.last_frame else 0,
+        }
+
+
 class MmWaveAugmentedSource:
     """Add an independent radar feed to a primary Body source."""
 

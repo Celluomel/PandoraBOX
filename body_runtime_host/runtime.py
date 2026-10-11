@@ -1569,8 +1569,9 @@ class BodyHost:
             "scope": "local_body_host",
             "devices": devices,
             "remote_ventuno": {
-                "available": False,
-                "reason": "VENTUNO Q UART pins terminate at its onboard STM32; they are not Jetson /dev/tty devices. A Ventuno firmware/gateway sensor stream is needed for remote selection.",
+                "available": os.path.exists("/run/arduino-router.sock"),
+                "transport": "local_arduino_router_rpc",
+                "reason": "VENTUNO STM32 UART is accessed by Body through the local Arduino Bridge. On a Jetson, choose the USB-UART port attached directly to that Jetson.",
             },
         }
 
@@ -1588,7 +1589,7 @@ class BodyHost:
         from body_runtime_host.fnk0031_usb import available_serial_ports
 
         protocol = str(payload.get("protocol", "serial_ld2450") or "serial_ld2450").strip().lower()
-        if protocol not in {"serial_ld2450", "http_json"}:
+        if protocol not in {"serial_ld2450", "http_json", "ventuno_bridge_ld2450"}:
             raise ValueError("unsupported mmWave transport")
         port = str(payload.get("port", self.value("MMWAVE_RADAR_PORT", "/dev/ttyUSB0")) or "").strip()
         if protocol == "serial_ld2450":
@@ -1598,6 +1599,8 @@ class BodyHost:
         baudrate = int(payload.get("baudrate", 256000) or 256000)
         if baudrate < 1200 or baudrate > 3000000:
             raise ValueError("baud rate must be between 1200 and 3000000")
+        if protocol == "ventuno_bridge_ld2450" and not os.path.exists("/run/arduino-router.sock"):
+            raise ValueError("local Arduino Router socket is unavailable; this transport requires Body to run on VENTUNO Q")
         self.config.update({
             "BODY_PLUGIN_MMWAVE_RADAR_ENABLED": bool(payload.get("enabled", False)),
             "MMWAVE_RADAR_PROTOCOL": protocol,
