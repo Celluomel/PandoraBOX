@@ -6,6 +6,7 @@ from unittest.mock import patch
 import numpy as np
 
 from body_runtime_host.yolox_worker import _decode_outputs
+from body_runtime_host.yolox_service import YoloXService
 
 
 class YoloXPipelineTests(unittest.TestCase):
@@ -73,6 +74,17 @@ class YoloXPipelineTests(unittest.TestCase):
         self.assertEqual([item["class_id"] for item in detections], [0, 73, 79])
         self.assertEqual([item["label"] for item in detections], ["person", "book", "toothbrush"])
         self.assertEqual([item["confidence"] for item in detections], [0.83, 0.71, 0.62])
+
+    def test_yolox_retains_recent_analyzed_frames_for_exact_lookup(self):
+        service = YoloXService(lambda _key, default: default, lambda: {})
+        service._analyzed_frames.update({
+            f"frame-{index}": {"frame_id": f"frame-{index}", "image_base64": str(index)}
+            for index in range(4)
+        })
+
+        self.assertEqual(service.analyzed_frame("frame-1")["image_base64"], "1")
+        self.assertEqual(service.analyzed_frame()["frame_id"], "frame-3")
+        self.assertIsNone(service.analyzed_frame("missing"))
 
     def test_percentage_scores_are_normalized_to_probability(self):
         rows = np.zeros((1, 85), dtype=np.float32)

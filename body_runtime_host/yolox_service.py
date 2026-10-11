@@ -8,6 +8,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections import OrderedDict
 from typing import Any, Callable
 
 LOG = logging.getLogger("lumina.body.yolox")
@@ -28,7 +29,7 @@ class YoloXService:
         self._failure_count = 0
         self._retry_at = 0.0
         self._status: dict[str, Any] = {"state": "disabled", "detections": [], "latency_ms": None}
-        self._analyzed_frame: dict[str, Any] | None = None
+        self._analyzed_frames: OrderedDict[str, dict[str, Any]] = OrderedDict()
 
     def _value(self, suffix: str, default: Any) -> Any:
         return self._config("BODY_YOLO_" + suffix, default)
@@ -53,8 +54,11 @@ class YoloXService:
 
     def analyzed_frame(self, frame_id: str | None = None) -> dict | None:
         with self._lock:
-            frame = self._analyzed_frame
-            if not frame or (frame_id is not None and str(frame.get("frame_id")) != str(frame_id)):
+            if frame_id is None:
+                frame = next(reversed(self._analyzed_frames.values()), None)
+            else:
+                frame = self._analyzed_frames.get(str(frame_id))
+            if not frame:
                 return None
             return dict(frame)
 
@@ -153,7 +157,11 @@ class YoloXService:
                                        "latency_ms": round((time.monotonic() - started) * 1000, 1)})
                         with self._lock:
                             self._status = result
-                            self._analyzed_frame = dict(frame)
+                            frame_key = str(frame_id)
+                            self._analyzed_frames[frame_key] = dict(frame)
+                            self._analyzed_frames.move_to_end(frame_key)
+                            while len(self._analyzed_frames) > 4:
+                                self._analyzed_frames.popitem(last=False)
                         self._failure_count = 0
                         self._retry_at = 0.0
                         self._maybe_fallback(frame, result)
