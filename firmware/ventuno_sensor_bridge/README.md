@@ -12,9 +12,11 @@ The Body must run on the VENTUNO Q because Arduino Router Bridge is local to
 that device. Nothing here publishes sensor data to the LAN or changes the
 Linux USB, GPS USART3, FNK0031, or Body HTTP interfaces. UART7 remains D7/RX
 and D8/TX at 256000 baud. Modulino Movement and VL53L1X share Qwiic / Wire1;
-the VL53L1X uses address 0x29 and is sampled in the sketch loop. Body publishes
-its single forward beam as `perception.modalities.tof`, without fabricating a
-range when the sensor is absent.
+the VL53L1X uses address 0x29. Since probing an absent ToF sensor interferes
+with the Modulino on this shared bus, ToF probing is disabled by default. Enable
+it only after connecting the sensor with `BODY_ENABLE_TOF=1` when deploying.
+Body publishes its single forward beam as `perception.modalities.tof`, without
+fabricating a range when the sensor is absent.
 
 ## Direct CLI build and deployment
 
@@ -37,6 +39,14 @@ Only after a successful build and wiring check, upload the combined image:
 
 ```sh
 scripts/deploy_ventuno_sensor_bridge.sh --upload
+```
+
+The build stages only the `.ino` before compiling so Arduino CLI does not try
+to resolve the cloud `sketch.yaml` profile on the device. ToF probing stays off
+until the sensor is physically connected; then deploy with:
+
+```sh
+BODY_ENABLE_TOF=1 scripts/deploy_ventuno_sensor_bridge.sh --upload
 ```
 
 The upload replaces the STM32 image, so use this combined sketch rather than

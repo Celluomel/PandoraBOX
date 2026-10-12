@@ -7,6 +7,10 @@
 #include <stdio.h>
 #include <string.h>
 
+#ifndef BODY_ENABLE_TOF
+#define BODY_ENABLE_TOF 0
+#endif
+
 // Qwiic Modulino Movement and the LD2450 share one STM32 sketch while keeping
 // their existing Linux Router Bridge RPC names stable.
 ModulinoMovement movement;
@@ -150,12 +154,14 @@ void setup() {
   Modulino.begin(Wire1);
   movementReady = movement.begin();
   lastImuInitAttempt = millis();
+#if BODY_ENABLE_TOF
   tofReady = tof.begin(0x29, &Wire1);
   if (tofReady) {
     tof.setTimingBudget(50);
     tofReady = tof.startRanging();
   }
   lastTofInitAttempt = millis();
+#endif
 
   const struct uart_config radarConfig = {
       .baudrate = RADAR_BAUD,
@@ -175,6 +181,7 @@ void loop() {
     lastImuInitAttempt = millis();
     movementReady = movement.begin();
   }
+#if BODY_ENABLE_TOF
   if (!tofReady && millis() - lastTofInitAttempt >= 2000) {
     lastTofInitAttempt = millis();
     tofReady = tof.begin(0x29, &Wire1);
@@ -192,6 +199,7 @@ void loop() {
     }
     tof.clearInterrupt();
   }
+#endif
   if (device_is_ready(radarUart)) {
     unsigned char value;
     while (uart_poll_in(radarUart, &value) == 0) feedRadarByte(value);

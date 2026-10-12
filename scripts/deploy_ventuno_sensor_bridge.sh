@@ -5,16 +5,31 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 sketch_dir="${repo_root}/firmware/ventuno_sensor_bridge"
 fqbn="arduino:zephyr:ventunoq"
 upload_address="${VENTUNO_Q_UPLOAD_ADDRESS:-192.168.0.14}"
+tof_enabled="${BODY_ENABLE_TOF:-0}"
+
+if [[ "${tof_enabled}" != "0" && "${tof_enabled}" != "1" ]]; then
+  echo "BODY_ENABLE_TOF must be 0 or 1." >&2
+  exit 2
+fi
 
 if ! command -v arduino-cli >/dev/null 2>&1; then
   echo "arduino-cli is required on the VENTUNO Q." >&2
   exit 1
 fi
 
-"${repo_root}/scripts/configure_ventuno_uart7.sh"
-arduino-cli lib install "Adafruit VL53L1X" "Adafruit BusIO"
-echo "Compiling the combined Modulino IMU + VL53L1X + LD2450 bridge for ${fqbn}..."
-if ! arduino-cli compile --fqbn "${fqbn}" "${sketch_dir}"; then
+bash "${repo_root}/scripts/configure_ventuno_uart7.sh"
+arduino-cli lib install "Arduino_Modulino@0.9.1" "Adafruit VL53L1X" "Adafruit BusIO"
+build_root="$(mktemp -d)"
+build_dir="${build_root}/ventuno_sensor_bridge"
+mkdir -p "${build_dir}"
+cp "${sketch_dir}/ventuno_sensor_bridge.ino" "${build_dir}/ventuno_sensor_bridge.ino"
+trap 'rm -rf "${build_root}"' EXIT
+libraries_dir="${HOME}/Arduino/libraries"
+echo "Compiling sensor bridge for ${fqbn} (BODY_ENABLE_TOF=${tof_enabled})..."
+if ! arduino-cli compile --fqbn "${fqbn}" \
+    --libraries "${libraries_dir}" \
+    --build-property "compiler.cpp.extra_flags=-DBODY_ENABLE_TOF=${tof_enabled}" \
+    "${build_dir}"; then
   cat >&2 <<'EOF'
 Compile failed; the current STM32 firmware was not changed.
 If the error names DT_NODELABEL(uart7) or a missing device ordinal, the
@@ -32,5 +47,5 @@ fi
 
 echo "Uploading combined sensor firmware to ${upload_address}."
 echo "Arduino CLI will prompt for the network upload password."
-arduino-cli upload --fqbn "${fqbn}" --port "${upload_address}" "${sketch_dir}"
+arduino-cli upload --fqbn "${fqbn}" --port "${upload_address}" "${build_dir}"
 echo "Upload complete. Verify body_imu_read, body_tof_read, and body_ld2450_read over the local Router Bridge."
