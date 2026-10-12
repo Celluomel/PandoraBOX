@@ -177,6 +177,21 @@ if [[ ! -x "$BODY_PYTHON" ]] || ! "$BODY_PYTHON" -c "import sys" >/dev/null 2>&1
   fi
 fi
 
+HAS_NVIDIA_ACCELERATOR=0
+if { command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L >/dev/null 2>&1; } \
+  || compgen -G '/dev/nvidia[0-9]*' >/dev/null \
+  || grep -aEqi 'nvidia|tegra' /proc/device-tree/compatible 2>/dev/null; then
+  HAS_NVIDIA_ACCELERATOR=1
+  echo "[*] NVIDIA platform detected; preserving the installed Torch/CUDA stack."
+fi
+
+if [ "$HAS_NVIDIA_ACCELERATOR" -eq 0 ] && grep -aFq 'arduino,monza' /proc/device-tree/compatible 2>/dev/null; then
+  if ! "$BODY_PYTHON" -c "import torch; raise SystemExit(0 if torch.version.cuda is None else 1)" >/dev/null 2>&1; then
+    echo "[*] Installing CPU-only PyTorch on VENTUNO Q (CUDA is not available on this host)..."
+    "$BODY_PYTHON" -m pip install --index-url https://download.pytorch.org/whl/cpu "torch==2.14.1+cpu"
+  fi
+fi
+
 if ! "$BODY_PYTHON" -c "import websockets, imageio_ffmpeg, cv2, numpy, torch, mujoco, fastembed, serial" >/dev/null 2>&1; then
   echo "[*] Body dependencies are missing or incomplete. Installing them..."
   "$BODY_PYTHON" -m pip install --upgrade pip
