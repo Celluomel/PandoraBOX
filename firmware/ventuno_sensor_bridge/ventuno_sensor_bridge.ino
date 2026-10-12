@@ -139,6 +139,13 @@ String readLatestLd2450() {
 }
 
 void setup() {
+  // Register the RPC surface before probing I2C or configuring peripherals so
+  // a missing or slow sensor cannot hide every method from the Linux Body.
+  Bridge.begin();
+  Bridge.provide_safe("body_imu_read", readMovementSample);
+  Bridge.provide_safe("body_tof_read", readTofSample);
+  Bridge.provide("body_ld2450_read", readLatestLd2450);
+
   // The VENTUNO Q's Qwiic connector is on the MCU's Wire1 bus.
   Modulino.begin(Wire1);
   movementReady = movement.begin();
@@ -161,10 +168,6 @@ void setup() {
     strncpy(latestJson, "{\"available\":false,\"targets\":[],\"error\":\"uart7_unavailable\"}", sizeof(latestJson));
   }
 
-  Bridge.begin();
-  Bridge.provide_safe("body_imu_read", readMovementSample);
-  Bridge.provide_safe("body_tof_read", readTofSample);
-  Bridge.provide("body_ld2450_read", readLatestLd2450);
 }
 
 void loop() {
