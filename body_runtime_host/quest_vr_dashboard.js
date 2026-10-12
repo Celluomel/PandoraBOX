@@ -552,16 +552,74 @@ export class QuestVRDashboard {
     this.drawPanel(ctx, x, y, width, height, 'Egocentric sensors', 'METRIC · 6 M');
     const lidar = perception.sensor_projections?.lidar?.points || [];
     const radar = perception.modalities?.mmwave_radar?.targets || [];
+    const tof = perception.modalities?.tof || {};
     const inset = 20;
     const gap = 14;
     const mapWidth = width - inset * 2;
-    const mapHeight = (height - 94 - gap) / 2;
+    const tofHeight = 124;
+    const mapHeight = (height - 94 - tofHeight - gap * 2) / 2;
     const mapY = y + 72;
+    const tofY = mapY + mapHeight * 2 + gap * 2;
     ctx.strokeStyle = 'rgba(135, 206, 166, .22)';
     ctx.beginPath(); ctx.roundRect(x + inset, mapY, mapWidth, mapHeight, 20); ctx.stroke();
     ctx.beginPath(); ctx.roundRect(x + inset, mapY + mapHeight + gap, mapWidth, mapHeight, 20); ctx.stroke();
+    ctx.beginPath(); ctx.roundRect(x + inset, tofY, mapWidth, tofHeight, 18); ctx.stroke();
     this.drawMetricMap(ctx, x + inset, mapY, mapWidth, mapHeight, lidar, radar, perception, 'LiDAR', 'lidar');
     this.drawMetricMap(ctx, x + inset, mapY + mapHeight + gap, mapWidth, mapHeight, lidar, radar, perception, 'mmWave', 'radar');
+    this.drawRangeSensorStrip(ctx, x + inset + 12, tofY + 12, mapWidth - 24, tofHeight - 24, tof, perception.modalities || {});
+  }
+
+  drawRangeSensorStrip(ctx, x, y, width, height, tof, modalities) {
+    const tofWidth = 48;
+    this.drawTofRangeBar(ctx, x, y, tofWidth, height, tof);
+    const ultrasonic = modalities.ultrasonic || modalities.hc_sr04 || {};
+    const samples = Array.isArray(ultrasonic) ? ultrasonic : Array.isArray(ultrasonic.sensors) ? ultrasonic.sensors : [];
+    const positions = ['front_left', 'front_right', 'rear'];
+    const names = ['US · FRONT-L', 'US · FRONT-R', 'US · REAR'];
+    const gap = 10;
+    const cardWidth = (width - tofWidth - gap * 3) / 3;
+    positions.forEach((key, index) => {
+      const sample = ultrasonic[key] || samples.find(item => String(item?.id || item?.position || '').toLowerCase() === key) || samples[index] || {};
+      const distance = Number(sample.distance_m ?? (Number(sample.distance_mm) / 1000));
+      const fresh = sample.available === true && !sample.simulated && Number.isFinite(distance) && distance > 0 && distance <= 4;
+      const cardX = x + tofWidth + gap + index * (cardWidth + gap);
+      ctx.strokeStyle = 'rgba(135,206,166,.2)'; ctx.strokeRect(cardX, y, cardWidth, height);
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#9fc5ac';
+      ctx.font = '600 13px ui-monospace, monospace'; ctx.fillText(names[index], cardX + cardWidth / 2, y + 18);
+      ctx.fillStyle = fresh ? (distance < .35 ? '#f17c70' : distance < .8 ? '#efcb76' : '#bcebd0') : '#91a79b';
+      ctx.font = '600 18px ui-monospace, monospace'; ctx.fillText(fresh ? `${distance.toFixed(2)} m` : 'WAITING', cardX + cardWidth / 2, y + height * .52);
+      const trackX = cardX + 10; const trackY = y + height - 23; const trackWidth = Math.max(1, cardWidth - 20);
+      ctx.fillStyle = 'rgba(120,190,150,.12)'; ctx.fillRect(trackX, trackY, trackWidth, 7);
+      if (fresh) { ctx.fillStyle = distance < .35 ? '#f17c70' : distance < .8 ? '#efcb76' : '#63d7ae'; ctx.fillRect(trackX, trackY, trackWidth * Math.min(1, distance / 4), 7); }
+      ctx.strokeStyle = 'rgba(135,206,166,.35)'; ctx.strokeRect(trackX, trackY, trackWidth, 7);
+    });
+  }
+
+  drawTofRangeBar(ctx, x, y, width, height, sample) {
+    const distance = Number(sample?.distance_m);
+    const fresh = sample?.available === true && !sample?.simulated
+      && Number.isFinite(distance) && distance >= 0 && distance <= 4;
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#9fc5ac';
+    ctx.font = '600 13px ui-monospace, monospace';
+    ctx.fillText('ToF', x + width / 2, y + 5);
+    ctx.textAlign = 'center';
+    ctx.fillStyle = fresh ? (distance < .5 ? '#f17c70' : distance < 1.2 ? '#efcb76' : '#bcebd0') : '#91a79b';
+    ctx.fillText(fresh ? `${distance.toFixed(2)}m` : 'WAIT', x + width / 2, y + 23);
+    const trackX = x + width / 2 - 4;
+    const trackY = y + 40;
+    const trackHeight = Math.max(10, height - 52);
+    ctx.fillStyle = 'rgba(231,118,104,.72)'; ctx.fillRect(trackX, trackY + trackHeight * .82, 8, trackHeight * .18);
+    ctx.fillStyle = 'rgba(231,189,104,.62)'; ctx.fillRect(trackX, trackY + trackHeight * .7, 8, trackHeight * .12);
+    ctx.fillStyle = 'rgba(99,215,174,.42)'; ctx.fillRect(trackX, trackY, 8, trackHeight * .7);
+    ctx.strokeStyle = 'rgba(135,206,166,.35)'; ctx.lineWidth = 1; ctx.strokeRect(trackX, trackY, 8, trackHeight);
+    ctx.textAlign = 'center'; ctx.font = '10px ui-monospace, monospace'; ctx.fillStyle = '#91a79b';
+    ctx.fillText('4', x + width / 2, trackY - 8); ctx.fillText('0', x + width / 2, trackY + trackHeight + 8);
+    if (fresh) {
+      const markerY = trackY + trackHeight * (1 - Math.max(0, Math.min(1, distance / 4)));
+      ctx.fillStyle = '#f4fff7'; ctx.fillRect(trackX - 4, markerY - 2, 16, 4);
+    }
   }
 
   drawMetricMap(ctx, x, y, width, height, lidar, radar, perception, title, mode) {

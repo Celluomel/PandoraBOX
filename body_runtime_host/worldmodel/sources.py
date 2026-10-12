@@ -752,3 +752,14 @@ def augment_with_imu(source: Any, config: Dict[str, Any], imu=None) -> Any:
         logger.warning("[body] Modulino IMU selected but local Arduino Router socket is unavailable")
         return source
     return ImuAugmentedSource(source, imu or VentunoBridgeImuSource())
+
+
+def augment_with_tof(source: Any, config: Dict[str, Any], tof=None) -> Any:
+    """Attach the Qwiic VL53L1X whenever Body runs beside the local bridge."""
+    enabled = bool((config or {}).get(
+        "BODY_PLUGIN_TOF_ENABLED", os.path.exists("/run/arduino-router.sock")
+    ))
+    if source is None or not enabled or not os.path.exists("/run/arduino-router.sock"):
+        return source
+    from body_runtime_host.tof import TofAugmentedSource, VentunoBridgeTofSource
+    return TofAugmentedSource(source, tof or VentunoBridgeTofSource())

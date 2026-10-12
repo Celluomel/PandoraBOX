@@ -1,5 +1,6 @@
 #include <Arduino_RouterBridge.h>
 #include <Arduino_Modulino.h>
+#include <Adafruit_VL53L1X.h>
 #include <zephyr/device.h>
 #include <zephyr/drivers/uart.h>
 #include <math.h>
@@ -12,6 +13,12 @@ ModulinoMovement movement;
 bool movementReady = false;
 uint32_t lastImuInitAttempt = 0;
 uint32_t imuSequence = 0;
+Adafruit_VL53L1X tof;
+bool tofReady = false;
+uint32_t lastTofInitAttempt = 0;
+uint32_t tofSequence = 0;
+uint32_t latestTofAt = 0;
+int16_t latestTofDistanceMm = -1;
 
 static const uint32_t RADAR_BAUD = 256000;
 static const uint32_t FRAME_STALE_MS = 1000;
@@ -57,6 +64,22 @@ String readMovementSample() {
   if (written <= 0 || static_cast<size_t>(written) >= sizeof(payload)) {
     return String("{\"available\":false,\"error\":\"imu_payload_overflow\"}");
   }
+  return String(payload);
+}
+
+String readTofSample() {
+  if (!tofReady) {
+    return String("{\"available\":false,\"sensor\":\"vl53l1x\",\"error\":\"sensor_not_detected\"}");
+  }
+  if (latestTofDistanceMm < 0 || !latestTofAt || millis() - latestTofAt > 1000) {
+    return String("{\"available\":false,\"sensor\":\"vl53l1x\",\"frame\":\"body_front\",\"error\":\"no_valid_range\"}");
+  }
+  char payload[240];
+  snprintf(payload, sizeof(payload),
+           "{\"available\":true,\"sensor\":\"cqrobot_vl53l1x\",\"frame\":\"body_front\","
+           "\"direction\":\"front\",\"sequence\":%lu,\"timestamp_ms\":%lu,\"distance_mm\":%d}",
+           static_cast<unsigned long>(tofSequence),
+           static_cast<unsigned long>(latestTofAt), latestTofDistanceMm);
   return String(payload);
 }
 
@@ -120,6 +143,12 @@ void setup() {
   Modulino.begin(Wire1);
   movementReady = movement.begin();
   lastImuInitAttempt = millis();
+  tofReady = tof.begin(0x29, &Wire1);
+  if (tofReady) {
+    tof.setTimingBudget(50);
+    tofReady = tof.startRanging();
+  }
+  lastTofInitAttempt = millis();
 
   const struct uart_config radarConfig = {
       .baudrate = RADAR_BAUD,
@@ -134,6 +163,7 @@ void setup() {
 
   Bridge.begin();
   Bridge.provide_safe("body_imu_read", readMovementSample);
+  Bridge.provide_safe("body_tof_read", readTofSample);
   Bridge.provide("body_ld2450_read", readLatestLd2450);
 }
 
@@ -141,6 +171,23 @@ void loop() {
   if (!movementReady && millis() - lastImuInitAttempt >= 2000) {
     lastImuInitAttempt = millis();
     movementReady = movement.begin();
+  }
+  if (!tofReady && millis() - lastTofInitAttempt >= 2000) {
+    lastTofInitAttempt = millis();
+    tofReady = tof.begin(0x29, &Wire1);
+    if (tofReady) {
+      tof.setTimingBudget(50);
+      tofReady = tof.startRanging();
+    }
+  }
+  if (tofReady && tof.dataReady()) {
+    const int16_t distance = tof.distance();
+    if (distance > 0) {
+      latestTofDistanceMm = distance;
+      latestTofAt = millis();
+      ++tofSequence;
+    }
+    tof.clearInterrupt();
   }
   if (device_is_ready(radarUart)) {
     unsigned char value;

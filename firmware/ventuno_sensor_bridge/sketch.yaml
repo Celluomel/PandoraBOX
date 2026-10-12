@@ -4,6 +4,8 @@ profiles:
       - platform: arduino:zephyr
     libraries:
       - Arduino_Modulino (0.9.1)
+      - Adafruit VL53L1X
+      - Adafruit BusIO
       - STM32duino VL53L4CD (1.0.5)
       - STM32duino VL53L4ED (1.0.1)
       - Arduino_LSM6DSOX (1.1.2)

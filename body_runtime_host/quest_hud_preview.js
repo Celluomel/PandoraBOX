@@ -208,6 +208,41 @@ function drawMap(canvas, mode) {
   }
 }
 
+function drawTofRangeBar(sample = world?.perception?.modalities?.tof || {}) {
+  const marker = $('tof-marker');
+  const value = $('tof-value');
+  const track = marker?.parentElement;
+  if (!marker || !value || !track) return;
+  const distance = Number(sample.distance_m);
+  const fresh = sample.available === true && Number.isFinite(distance)
+    && distance >= 0 && distance <= 4 && !sample.simulated;
+  value.textContent = fresh ? `${distance.toFixed(2)}m` : 'WAIT';
+  marker.style.top = fresh ? `${100 - Math.max(0, Math.min(100, distance / 4 * 100))}%` : '100%';
+  track.setAttribute('aria-valuenow', fresh ? distance.toFixed(2) : '0');
+  track.setAttribute('aria-valuetext', fresh ? `${distance.toFixed(2)} metres` : 'No current measurement');
+  value.style.color = fresh ? (distance < 0.5 ? '#f17c70' : distance < 1.2 ? '#efcb76' : '#bcebd0') : '#91a79b';
+}
+
+function drawUltrasonicRanges(modalities = world?.perception?.modalities || {}) {
+  const group = modalities.ultrasonic || modalities.hc_sr04 || {};
+  const samples = Array.isArray(group) ? group : Array.isArray(group.sensors) ? group.sensors : [];
+  const keys = ['front_left', 'front_right', 'rear'];
+  for (const card of document.querySelectorAll('[data-ultrasonic]')) {
+    const key = card.dataset.ultrasonic;
+    const sample = group[key] || samples.find(item => String(item?.id || item?.position || '').toLowerCase() === key)
+      || samples[keys.indexOf(key)] || {};
+    const distance = Number(sample.distance_m ?? (Number(sample.distance_mm) / 1000));
+    const available = sample.available === true && Number.isFinite(distance) && distance > 0 && distance <= 4 && !sample.simulated;
+    const value = card.querySelector('.ultrasonic-value');
+    const fill = card.querySelector('.ultrasonic-fill');
+    value.textContent = available ? `${distance.toFixed(2)}m` : 'WAIT';
+    value.classList.toggle('sensor-wait', !available);
+    value.style.color = available ? (distance < .35 ? '#f17c70' : distance < .8 ? '#efcb76' : '#bcebd0') : '';
+    fill.style.width = available ? `${Math.max(0, Math.min(100, distance / 4 * 100))}%` : '0%';
+    fill.style.background = available ? (distance < .35 ? '#f17c70' : distance < .8 ? '#efcb76' : '#63d7ae') : '';
+  }
+}
+
 function drawRobot() {
   if (robotVisual) {
     robotVisual.setTelemetry(controller || {});
@@ -335,6 +370,7 @@ function drawNavigation(perception = world?.perception || {}, telemetry = contro
 
 function updateStatus() {
   drawNavigation();
+  drawTofRangeBar();
   if (!world?.perception?.available) {
     setText('status', world?.perception?.note || 'Waiting for Body perception…');
     return;
@@ -360,6 +396,7 @@ function updateStatus() {
   setText('left', 'not in XR'); setText('right', 'not in XR');
   setText('lidar-count', `${lidarCount} pts`); setText('radar-count', `${radarCount} targets`);
   drawRobot(); drawMap($('lidar-map'), 'lidar'); drawMap($('radar-map'), 'radar');
+  drawUltrasonicRanges(perception.modalities || {});
 }
 
 async function poll() {
@@ -446,29 +483,37 @@ async function pollCamera() {
 function drawCameraYoloOverlay(frame, detections) {
   const canvas = $('camera-yolo-overlay');
   const context = canvas.getContext('2d');
-  canvas.width = frame.width;
-  canvas.height = frame.height;
+  const ratio = Math.min(window.devicePixelRatio || 1, 2);
+  const bounds = canvas.getBoundingClientRect();
+  canvas.width = Math.max(1, Math.round(bounds.width * ratio));
+  canvas.height = Math.max(1, Math.round(bounds.height * ratio));
   context.clearRect(0, 0, canvas.width, canvas.height);
   if (!detections.length) return;
-  context.lineWidth = Math.max(2, frame.width / 320);
-  context.font = `600 ${Math.max(14, frame.width / 32)}px system-ui, sans-serif`;
+  const frameAspect = frame.width / Math.max(1, frame.height);
+  const canvasAspect = canvas.width / Math.max(1, canvas.height);
+  const contentWidth = frameAspect > canvasAspect ? canvas.width : canvas.height * frameAspect;
+  const contentHeight = frameAspect > canvasAspect ? canvas.width / frameAspect : canvas.height;
+  const offsetX = (canvas.width - contentWidth) / 2;
+  const offsetY = (canvas.height - contentHeight) / 2;
+  context.lineWidth = Math.max(2 * ratio, canvas.width / 320);
+  context.font = `600 ${Math.max(14 * ratio, canvas.width / 32)}px system-ui, sans-serif`;
   for (const detection of detections) {
     const box = detection?.bbox;
     if (!Array.isArray(box) || box.length !== 4 || !box.every(Number.isFinite)) continue;
     const [x1, y1, x2, y2] = box.map(value => Math.max(0, Math.min(1, value)));
-    const x = x1 * frame.width, y = y1 * frame.height;
-    const width = (x2 - x1) * frame.width, height = (y2 - y1) * frame.height;
+    const x = offsetX + x1 * contentWidth, y = offsetY + y1 * contentHeight;
+    const width = (x2 - x1) * contentWidth, height = (y2 - y1) * contentHeight;
     if (width < 2 || height < 2) continue;
     context.strokeStyle = '#42f5bd';
     context.strokeRect(x, y, width, height);
     const confidence = Number(detection.confidence);
     const label = `${String(detection.label || 'object')} ${Number.isFinite(confidence) ? Math.round(confidence * 100) : 0}%`;
-    const labelHeight = Math.max(20, frame.width / 28);
+    const labelHeight = Math.max(20 * ratio, canvas.width / 28);
     const labelY = Math.max(0, y - labelHeight);
     context.fillStyle = '#06231c';
-    context.fillRect(x, labelY, context.measureText(label).width + 10, labelHeight);
+    context.fillRect(x, labelY, context.measureText(label).width + 10 * ratio, labelHeight);
     context.fillStyle = '#a7ffdf';
-    context.fillText(label, x + 5, labelY + labelHeight * 0.72);
+    context.fillText(label, x + 5 * ratio, labelY + labelHeight * 0.72);
   }
 }
 

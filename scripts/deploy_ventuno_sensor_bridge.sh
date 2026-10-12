@@ -12,7 +12,8 @@ if ! command -v arduino-cli >/dev/null 2>&1; then
 fi
 
 "${repo_root}/scripts/configure_ventuno_uart7.sh"
-echo "Compiling the combined Modulino IMU + LD2450 bridge for ${fqbn}..."
+arduino-cli lib install "Adafruit VL53L1X" "Adafruit BusIO"
+echo "Compiling the combined Modulino IMU + VL53L1X + LD2450 bridge for ${fqbn}..."
 if ! arduino-cli compile --fqbn "${fqbn}" "${sketch_dir}"; then
   cat >&2 <<'EOF'
 Compile failed; the current STM32 firmware was not changed.
@@ -32,4 +33,4 @@ fi
 echo "Uploading combined sensor firmware to ${upload_address}."
 echo "Arduino CLI will prompt for the network upload password."
 arduino-cli upload --fqbn "${fqbn}" --port "${upload_address}" "${sketch_dir}"
-echo "Upload complete. Verify both body_imu_read and body_ld2450_read over the local Router Bridge."
+echo "Upload complete. Verify body_imu_read, body_tof_read, and body_ld2450_read over the local Router Bridge."

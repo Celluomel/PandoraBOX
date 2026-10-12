@@ -1685,6 +1685,32 @@ class BodyHost:
             return {**settings, "available": False, "error": str(exc)[:240],
                     "source_status": self._get_imu_bridge_source().status()}
 
+    def tof_status(self) -> dict:
+        bridge_available = os.path.exists("/run/arduino-router.sock")
+        settings = {
+            "enabled": bool(self.value("BODY_PLUGIN_TOF_ENABLED", bridge_available)),
+            "sensor": "CQRobot VL53L1X",
+            "transport": "Qwiic Wire1 shared with Modulino Movement -> local Arduino Bridge RPC",
+            "method": "body_tof_read",
+            "frame": "body_front",
+            "bridge_available": bridge_available,
+        }
+        if not settings["enabled"]:
+            return {**settings, "available": False, "error": "ToF is disabled in Body settings"}
+        if not bridge_available:
+            return {**settings, "available": False, "error": "Local Arduino Router socket is unavailable; Body must run on VENTUNO Q"}
+        source = getattr(getattr(self._worldmodel, "source", None), "tof", None)
+        if source is None:
+            if not hasattr(self, "_tof_bridge_source"):
+                from body_runtime_host.tof import VentunoBridgeTofSource
+                self._tof_bridge_source = VentunoBridgeTofSource()
+            source = self._tof_bridge_source
+        try:
+            sample = source.read()
+            return {**settings, "available": True, "sample": sample, "source_status": source.status()}
+        except Exception as exc:
+            return {**settings, "available": False, "error": str(exc)[:240], "source_status": source.status()}
+
     def update_imu_settings(self, payload: dict) -> dict:
         enabled = _payload_bool((payload or {}).get("enabled"), False)
         if enabled and not os.path.exists("/run/arduino-router.sock"):
@@ -2877,7 +2903,7 @@ class BodyHost:
         silently replace ``mode=sim`` with an unavailable robot endpoint.
         """
         from .worldmodel import SimRobotSource, resolve_source
-        from .worldmodel.sources import augment_with_imu, augment_with_mmwave
+        from .worldmodel.sources import augment_with_imu, augment_with_mmwave, augment_with_tof
 
         model_config_path = ROOT / "data" / "body" / "worldmodel" / "config.json"
         model_config: dict = {}
@@ -2908,11 +2934,13 @@ class BodyHost:
                 # Body plugin implementations that accept no constructor args.
                 source = SimRobotSource()
             source = augment_with_mmwave(source, self.config)
-            return augment_with_imu(source, self.config, self._get_imu_bridge_source())
+            source = augment_with_imu(source, self.config, self._get_imu_bridge_source())
+            return augment_with_tof(source, self.config)
         if mode == "bridge":
             return None
         source = augment_with_mmwave(resolve_source(self.config, self.latest), self.config)
-        return augment_with_imu(source, self.config, self._get_imu_bridge_source())
+        source = augment_with_imu(source, self.config, self._get_imu_bridge_source())
+        return augment_with_tof(source, self.config)
 
     def plugins(self) -> list[dict]:
         return [
@@ -2971,6 +2999,14 @@ class BodyHost:
                 "role": "Qwiic IMU data from the local Ventuno STM32 Arduino Bridge",
                 "settings_url": "/plugins/imu/settings",
                 "status_url": "/plugins/imu/status",
+            },
+            {
+                "id": "cqrobot_vl53l1x",
+                "label": "CQRobot VL53L1X ToF",
+                "enabled": bool(self.value("BODY_PLUGIN_TOF_ENABLED", os.path.exists("/run/arduino-router.sock"))),
+                "role": "single-beam forward metric distance on shared Qwiic I2C bus",
+                "transport": "Qwiic Wire1 on STM32 -> local Arduino Bridge RPC",
+                "status_url": "/plugins/tof/status",
             },
             {
                 "id": "world_model",
@@ -3234,6 +3270,8 @@ class BodyHost:
                     self._send(owner.imu_settings())
                 elif path == "/plugins/imu/status":
                     self._send(owner.imu_status())
+                elif path == "/plugins/tof/status":
+                    self._send(owner.tof_status())
                 elif path == "/plugins/fnk0031_wifi/usb/status":
                     self._send(owner.fnk0031_usb_status())
                 elif path == "/plugins/fnk0031_wifi/modules":
