@@ -37,6 +37,31 @@ class FakeBodySource:
 
 
 class ModulinoImuTests(unittest.TestCase):
+    def test_ventuno_firmware_uses_qwiic_and_keeps_ld2450_rpc(self):
+        from pathlib import Path
+
+        sketch = (Path(__file__).resolve().parents[1] / "firmware" / "ventuno_sensor_bridge"
+                  / "ventuno_sensor_bridge.ino").read_text(encoding="utf-8")
+
+        self.assertIn("Modulino.begin(Wire1)", sketch)
+        self.assertIn('Bridge.provide_safe("body_imu_read"', sketch)
+        self.assertIn('Bridge.provide("body_ld2450_read"', sketch)
+
+    def test_standalone_imu_firmware_uses_qwiic_without_app_lab_runtime(self):
+        from pathlib import Path
+
+        repo = Path(__file__).resolve().parents[1]
+        sketch = (repo / "firmware" / "ventuno_modulino_imu_bridge"
+                  / "ventuno_modulino_imu_bridge.ino").read_text(encoding="utf-8")
+        deploy = (repo / "scripts" / "deploy_ventuno_modulino_imu.sh")
+        deploy_text = deploy.read_text(encoding="utf-8")
+
+        self.assertIn("Modulino.begin(Wire1)", sketch)
+        self.assertIn('Bridge.provide_safe("body_imu_read"', sketch)
+        self.assertIn("arduino-cli compile", deploy_text)
+        self.assertIn("arduino-cli upload", deploy_text)
+        self.assertNotIn("arduino-app-cli", deploy_text)
+
     def test_bridge_sample_derives_gravity_attitude_and_preserves_angular_rates(self):
         bridge = FakeBridge({
             "available": True,

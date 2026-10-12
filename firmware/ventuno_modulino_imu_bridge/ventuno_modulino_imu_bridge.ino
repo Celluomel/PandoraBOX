@@ -33,7 +33,7 @@ String readMovementSample() {
 }
 
 void setup() {
-  Modulino.begin();
+  Modulino.begin(Wire1);
   movementReady = movement.begin();
   lastInitAttempt = millis();
 

@@ -938,9 +938,11 @@ class BodyHost:
             "ground_truth_available": False,
             "object_accuracy": None,
             "evaluation_note": (
-                "Camera-only benchmark on one captured frame. No annotated ground truth is available; "
+                "Camera-only benchmark on one captured frame with one timed run per resolution. "
+                "Latency can vary with device load; no annotated ground truth is available, so "
                 "cross-resolution label consistency is not object accuracy."
             ),
+            "measurement_repeats_per_profile": 1,
             "recommendation": recommendation,
             "target_met": bool(target_candidates),
             "profiles": profiles,
@@ -1636,12 +1638,20 @@ class BodyHost:
         }
 
     def mmwave_radar_settings(self) -> dict:
+        protocol = str(self.value("MMWAVE_RADAR_PROTOCOL", "serial_ld2450") or "serial_ld2450")
+        radar_status = None
+        if protocol == "ventuno_bridge_ld2450" and self._worldmodel is not None:
+            source = getattr(self._worldmodel, "source", None)
+            radar = getattr(source, "radar", None)
+            if radar is not None and callable(getattr(radar, "status", None)):
+                radar_status = radar.status()
         return {
             "enabled": bool(self.value("BODY_PLUGIN_MMWAVE_RADAR_ENABLED", False)),
-            "protocol": str(self.value("MMWAVE_RADAR_PROTOCOL", "serial_ld2450") or "serial_ld2450"),
+            "protocol": protocol,
             "port": str(self.value("MMWAVE_RADAR_PORT", "/dev/ttyUSB0") or "/dev/ttyUSB0"),
             "baudrate": int(self.value("MMWAVE_RADAR_BAUDRATE", 256000) or 256000),
             "timeout": float(self.value("MMWAVE_RADAR_TIMEOUT", 0.35) or 0.35),
+            "bridge_status": radar_status,
             **self.serial_device_inventory(),
         }
 

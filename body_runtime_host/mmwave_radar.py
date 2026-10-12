@@ -289,16 +289,20 @@ class VentunoBridgeMmWaveSource(MmWaveRadarSource):
             return self.last_frame
         except Exception as exc:
             self.last_error = str(exc)
+            self._bridge = None
             raise
 
     def status(self) -> Dict[str, Any]:
+        age = time.time() - self.last_ok if self.last_ok else None
         return {
             "source": self.name,
             "transport": "local_arduino_router_rpc",
             "method": self.method,
-            "last_ok_age_s": round(time.time() - self.last_ok, 1) if self.last_ok else None,
+            "available": bool(self.last_frame and not self.last_error and age is not None and age <= 1.0),
+            "last_ok_age_s": round(age, 1) if age is not None else None,
             "last_error": self.last_error,
             "targets": len(self.last_frame.targets) if self.last_frame else 0,
+            "sequence": self.last_frame.sequence if self.last_frame else None,
         }
 
 

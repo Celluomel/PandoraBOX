@@ -10,6 +10,14 @@ class BodyRuntimeGuiTests(unittest.TestCase):
         self.assertIn("/plugins/imu/status", BODY_GUI_HTML)
         self.assertIn("Save IMU setting", BODY_GUI_HTML)
 
+    def test_ld2450_settings_expose_ventuno_bridge_and_live_frame_state(self):
+        from body_runtime_host.body_gui import BODY_GUI_HTML
+
+        self.assertIn("Ventuno STM32 UART · local Bridge", BODY_GUI_HTML)
+        self.assertIn("Ventuno UART7 online", BODY_GUI_HTML)
+        self.assertIn("bridge_status", BODY_GUI_HTML)
+        self.assertIn("void refreshSensorDevices()", BODY_GUI_HTML)
+
     def test_brain_bridge_settings_are_mounted_in_runtime_view(self):
         from body_runtime_host.body_gui import BODY_GUI_HTML
 

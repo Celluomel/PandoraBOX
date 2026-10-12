@@ -100,6 +100,31 @@ class MmWaveRadarTest(unittest.TestCase):
         self.assertEqual(frame.source, "hlk_ld2450_ventuno_bridge")
         self.assertEqual(frame.targets[0].position_m, [0.4, 1.2, 0.0])
         self.assertEqual(source.status()["transport"], "local_arduino_router_rpc")
+        self.assertTrue(source.status()["available"])
+        self.assertEqual(source.status()["sequence"], 9)
+
+    def test_ventuno_bridge_source_invalidates_status_and_reconnects_after_rpc_error(self):
+        from body_runtime_host.mmwave_radar import VentunoBridgeMmWaveSource
+
+        class Bridge:
+            def __init__(self, fails=False):
+                self.fails = fails
+            def connect(self, timeout):
+                return True
+            def call(self, method, timeout):
+                if self.fails:
+                    raise ConnectionError("router socket reset")
+                return '{"available":true,"sequence":10,"targets":[]}'
+
+        clients = [Bridge(fails=True), Bridge()]
+        source = VentunoBridgeMmWaveSource(bridge_factory=lambda: clients.pop(0))
+        with self.assertRaisesRegex(ConnectionError, "router socket reset"):
+            source.read()
+        self.assertFalse(source.status()["available"])
+
+        frame = source.read()
+        self.assertEqual(frame.sequence, 10)
+        self.assertTrue(source.status()["available"])
 
     def test_ventuno_bridge_source_reports_stale_frame_without_fake_obstacle(self):
         from body_runtime_host.mmwave_radar import VentunoBridgeMmWaveSource
