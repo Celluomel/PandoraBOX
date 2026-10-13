@@ -191,12 +191,17 @@ function drawMap(canvas, mode) {
       const bearing = Math.atan2(-local.left, local.forward);
       if (local.forward < 0 || Math.abs(bearing) > Math.PI / 3 || Math.abs(local.left) > lateralLimit) continue;
       const x = cx - local.left * ((right - left) / (2 * lateralLimit)); const y = bottom - local.forward * ((bottom - top) / 6);
-      const color = target.classification === 'mobile_obstacle' ? '#ed91c5' : '#efcb76';
+      const velocity = hudTarget.velocity;
+      const radialSpeed = Number(target.radial_speed_mps);
+      const classification = String(target.classification || '').toLowerCase();
+      const isMoving = /moving|mobile/.test(classification)
+        || (Number.isFinite(radialSpeed) && Math.abs(radialSpeed) >= 0.05)
+        || Math.hypot(Number(velocity[0] || 0), Number(velocity[1] || 0)) >= 0.05;
+      const color = isMoving ? '#ed91c5' : '#efcb76';
       const confidence = Math.max(.3, Math.min(1, Number(target.confidence ?? .7)));
       ctx.strokeStyle = color; ctx.globalAlpha = .2 + confidence * .2; ctx.lineWidth = 1.5 * scaleFactor;
       ctx.beginPath(); ctx.arc(x, y, (11 + (1 - confidence) * 8) * scaleFactor, 0, 2 * Math.PI); ctx.stroke();
       ctx.globalAlpha = 1;
-      const velocity = hudTarget.velocity;
       let forwardSpeed = Number(velocity[0] || 0); let leftSpeed = Number(velocity[1] || 0);
       const radarFrame = radar.frame || 'body';
       if (/^(body_world|world|map|local_map|odom)$/i.test(radarFrame)) {
@@ -216,17 +221,18 @@ function drawMap(canvas, mode) {
       ctx.fillStyle = color; ctx.strokeStyle = '#fff0c1'; ctx.lineWidth = 1.5 * scaleFactor;
       ctx.beginPath(); ctx.arc(x, y, 5.5 * scaleFactor, 0, 2 * Math.PI); ctx.fill(); ctx.stroke();
       ctx.fillStyle = color; ctx.font = `600 ${Math.round(8 * scaleFactor)}px ui-monospace,monospace`; ctx.textAlign = 'center';
-      ctx.fillText(target.classification === 'mobile_obstacle' ? 'M' : '•', x, y - 8 * scaleFactor);
-      const radialSpeed = Number(target.radial_speed_mps);
+      ctx.fillText(isMoving ? 'M' : '•', x, y - 8 * scaleFactor);
       if (Number.isFinite(radialSpeed)) {
         const speedLabel = `${radialSpeed >= 0 ? '+' : ''}${radialSpeed.toFixed(2)} m/s`;
         const speedFont = Math.max(14 * ratio, Math.round(15 * scaleFactor));
         const labelPadding = 4 * ratio;
         const labelWidth = speedFont * 6.4 + labelPadding * 2;
         const labelHeight = speedFont + labelPadding * 2;
+        const labelGap = 10 * ratio;
         ctx.font = `600 ${speedFont}px ui-monospace,monospace`; ctx.textAlign = 'left';
-        const labelX = Math.max(left, Math.min(right - labelWidth, x + 7 * scaleFactor));
-        const labelY = Math.max(top + labelHeight, Math.min(bottom, y - 5 * scaleFactor));
+        const preferredX = x > cx ? x - labelGap - labelWidth : x + labelGap;
+        const labelX = Math.max(left, Math.min(right - labelWidth, preferredX));
+        const labelY = Math.max(top + labelHeight, Math.min(bottom - labelPadding, y + speedFont * .35));
         ctx.fillStyle = 'rgba(4, 13, 11, .92)'; ctx.fillRect(labelX - labelPadding, labelY - speedFont - labelPadding, labelWidth, labelHeight);
         ctx.fillStyle = color; ctx.fillText(speedLabel, labelX, labelY);
       }

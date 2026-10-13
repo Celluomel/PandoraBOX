@@ -103,7 +103,12 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertIn("target.radial_speed_mps", preview)
         self.assertIn("const speedFont = Math.max(14 * ratio", preview)
         self.assertIn("const labelPadding = 4 * ratio", preview)
+        self.assertIn("const preferredX = x > cx ? x - labelGap - labelWidth : x + labelGap", preview)
+        self.assertIn("/moving|mobile/.test(classification)", preview)
+        self.assertIn("const color = isMoving ? '#ed91c5' : '#efcb76'", preview)
         self.assertIn("target.radial_speed_mps", quest)
+        self.assertIn("const preferredX = mapped.x > cx ? mapped.x - labelGap - labelWidth : mapped.x + labelGap", quest)
+        self.assertIn("const color = isMoving ? '#ef91c5' : '#f2ce73'", quest)
 
     def test_vr_horizon_column_clears_robot_and_uses_sharp_canvas_filtering(self):
         root = Path(__file__).resolve().parents[1]

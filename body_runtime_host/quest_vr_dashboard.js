@@ -725,7 +725,12 @@ export class QuestVRDashboard {
         const bearing = Math.atan2(-local.left, local.forward);
         if (Math.abs(bearing) > Math.PI / 3) continue;
         const mapped = { x: cx + (bearing / (Math.PI / 3)) * ((plotRight - plotLeft) / 2), y: plotBottom - (local.distance / 6) * (plotBottom - plotTop), distance: local.distance };
-        const color = target.classification === 'mobile_obstacle' ? '#ef91c5' : '#f2ce73';
+        const radialSpeed = Number(target.radial_speed_mps);
+        const classification = String(target.classification || '').toLowerCase();
+        const isMoving = /moving|mobile/.test(classification)
+          || (Number.isFinite(radialSpeed) && Math.abs(radialSpeed) >= 0.05)
+          || Math.hypot(Number(radarVelocity[0] || 0), Number(radarVelocity[1] || 0)) >= 0.05;
+        const color = isMoving ? '#ef91c5' : '#f2ce73';
         const confidence = Math.max(.3, Math.min(1, Number(target.confidence ?? .7)));
         ctx.strokeStyle = color; ctx.globalAlpha = .18 + confidence * .2; ctx.lineWidth = 2;
         ctx.beginPath(); ctx.arc(mapped.x, mapped.y, 24 + (1 - confidence) * 18, 0, Math.PI * 2); ctx.stroke();
@@ -755,14 +760,19 @@ export class QuestVRDashboard {
         ctx.fillStyle = color; ctx.beginPath(); ctx.arc(mapped.x, mapped.y, 8, 0, Math.PI * 2); ctx.fill();
         ctx.strokeStyle = '#fff3cf'; ctx.lineWidth = 2; ctx.stroke();
         ctx.fillStyle = '#f8e8b8'; ctx.font = '600 15px ui-monospace, monospace'; ctx.textAlign = 'center';
-        ctx.fillText(target.classification === 'mobile_obstacle' ? 'M' : '•', mapped.x, mapped.y - 12);
-        const radialSpeed = Number(target.radial_speed_mps);
+        ctx.fillText(isMoving ? 'M' : '•', mapped.x, mapped.y - 12);
         if (Number.isFinite(radialSpeed)) {
           const speedLabel = `${radialSpeed >= 0 ? '+' : ''}${radialSpeed.toFixed(2)} m/s`;
-          ctx.font = '600 13px ui-monospace, monospace'; ctx.textAlign = 'left';
-          const labelX = Math.min(plotRight - 82, mapped.x + 12);
-          const labelY = Math.max(plotTop + 16, mapped.y - 10);
-          ctx.fillStyle = 'rgba(4, 13, 11, .88)'; ctx.fillRect(labelX - 3, labelY - 12, 82, 18);
+          const speedFont = 14;
+          const labelPadding = 4;
+          const labelWidth = speedFont * 6.4 + labelPadding * 2;
+          const labelHeight = speedFont + labelPadding * 2;
+          const labelGap = 10;
+          ctx.font = `600 ${speedFont}px ui-monospace, monospace`; ctx.textAlign = 'left';
+          const preferredX = mapped.x > cx ? mapped.x - labelGap - labelWidth : mapped.x + labelGap;
+          const labelX = Math.max(plotLeft, Math.min(plotRight - labelWidth, preferredX));
+          const labelY = Math.max(plotTop + labelHeight, Math.min(plotBottom - labelPadding, mapped.y + speedFont * .35));
+          ctx.fillStyle = 'rgba(4, 13, 11, .92)'; ctx.fillRect(labelX - labelPadding, labelY - speedFont - labelPadding, labelWidth, labelHeight);
           ctx.fillStyle = color; ctx.fillText(speedLabel, labelX, labelY);
         }
       }
