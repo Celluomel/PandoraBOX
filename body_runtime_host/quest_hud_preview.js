@@ -220,9 +220,9 @@ function drawMap(canvas, mode) {
       const radialSpeed = Number(target.radial_speed_mps);
       if (Number.isFinite(radialSpeed)) {
         const speedLabel = `${radialSpeed >= 0 ? '+' : ''}${radialSpeed.toFixed(2)} m/s`;
-        const speedFont = Math.max(11 * ratio, Math.round(12 * scaleFactor));
+        const speedFont = Math.max(14 * ratio, Math.round(15 * scaleFactor));
         const labelPadding = 4 * ratio;
-        const labelWidth = speedFont * 6.2 + labelPadding * 2;
+        const labelWidth = speedFont * 6.4 + labelPadding * 2;
         const labelHeight = speedFont + labelPadding * 2;
         ctx.font = `600 ${speedFont}px ui-monospace,monospace`; ctx.textAlign = 'left';
         const labelX = Math.max(left, Math.min(right - labelWidth, x + 7 * scaleFactor));

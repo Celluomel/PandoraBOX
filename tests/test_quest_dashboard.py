@@ -101,7 +101,7 @@ class QuestDashboardTests(unittest.TestCase):
         draw_map = preview.split("function drawMap(canvas, mode) {", 1)[1].split("function drawTofRangeBar", 1)[0]
         self.assertLess(draw_map.index("const lateralLimit ="), draw_map.index("if (lidarMode) {"))
         self.assertIn("target.radial_speed_mps", preview)
-        self.assertIn("const speedFont = Math.max(11 * ratio", preview)
+        self.assertIn("const speedFont = Math.max(14 * ratio", preview)
         self.assertIn("const labelPadding = 4 * ratio", preview)
         self.assertIn("target.radial_speed_mps", quest)
 
