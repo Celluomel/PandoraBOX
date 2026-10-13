@@ -132,6 +132,7 @@ function drawMap(canvas, mode) {
     const left = 24 * scaleFactor;
     const right = width - 12 * scaleFactor;
     const bottom = height - 22 * scaleFactor;
+    const lateralLimit = Math.tan(Math.PI / 3) * 6;
     ctx.fillStyle = 'rgba(15,34,30,.46)'; ctx.fillRect(left, top, right - left, bottom - top);
     for (let i = 0; i <= 6; i += 1) {
       const gx = left + (right - left) * i / 6;
@@ -142,7 +143,9 @@ function drawMap(canvas, mode) {
     }
     ctx.strokeStyle = 'rgba(94,221,228,.45)'; ctx.beginPath(); ctx.moveTo(cx, top); ctx.lineTo(cx, bottom); ctx.stroke();
     ctx.fillStyle = '#a8c3b1'; ctx.font = `${Math.round(8 * scaleFactor)}px ui-monospace,monospace`; ctx.textAlign = 'center';
-    ctx.fillText('LEFT', left, bottom + 10 * scaleFactor); ctx.fillText('FORWARD · 6 M', cx, top + 10 * scaleFactor); ctx.fillText('RIGHT', right, bottom + 10 * scaleFactor);
+    ctx.fillText(`-${lateralLimit.toFixed(1)} m`, left + 12 * scaleFactor, bottom + 10 * scaleFactor);
+    ctx.fillText('0 m · FORWARD 6 m', cx, top + 10 * scaleFactor);
+    ctx.fillText(`+${lateralLimit.toFixed(1)} m`, right - 12 * scaleFactor, bottom + 10 * scaleFactor);
   }
   const perception = world?.perception || {};
   if (mode === 'lidar') {
@@ -185,8 +188,9 @@ function drawMap(canvas, mode) {
       if (!local || local.distance > 6.2) continue;
       const left = 24 * scaleFactor; const right = width - 12 * scaleFactor;
       const top = 10 * scaleFactor; const bottom = height - 22 * scaleFactor;
-      if (local.forward < 0 || Math.abs(local.left) > 6) continue;
-      const x = cx - local.left * ((right - left) / 12); const y = bottom - local.forward * ((bottom - top) / 6);
+      const bearing = Math.atan2(-local.left, local.forward);
+      if (local.forward < 0 || Math.abs(bearing) > Math.PI / 3 || Math.abs(local.left) > lateralLimit) continue;
+      const x = cx - local.left * ((right - left) / (2 * lateralLimit)); const y = bottom - local.forward * ((bottom - top) / 6);
       const color = target.classification === 'mobile_obstacle' ? '#ed91c5' : '#efcb76';
       const confidence = Math.max(.3, Math.min(1, Number(target.confidence ?? .7)));
       ctx.strokeStyle = color; ctx.globalAlpha = .2 + confidence * .2; ctx.lineWidth = 1.5 * scaleFactor;
@@ -211,9 +215,17 @@ function drawMap(canvas, mode) {
       }
       ctx.fillStyle = color; ctx.strokeStyle = '#fff0c1'; ctx.lineWidth = 1.5 * scaleFactor;
       ctx.beginPath(); ctx.arc(x, y, 5.5 * scaleFactor, 0, 2 * Math.PI); ctx.fill(); ctx.stroke();
-      const speed = Math.hypot(Number(velocity[0] || 0), Number(velocity[1] || 0));
       ctx.fillStyle = color; ctx.font = `600 ${Math.round(8 * scaleFactor)}px ui-monospace,monospace`; ctx.textAlign = 'center';
       ctx.fillText(target.classification === 'mobile_obstacle' ? 'M' : '•', x, y - 8 * scaleFactor);
+      const radialSpeed = Number(target.radial_speed_mps);
+      if (Number.isFinite(radialSpeed)) {
+        const speedLabel = `${radialSpeed >= 0 ? '+' : ''}${radialSpeed.toFixed(2)} m/s`;
+        ctx.font = `600 ${Math.max(7, Math.round(8 * scaleFactor))}px ui-monospace,monospace`; ctx.textAlign = 'left';
+        const labelX = Math.min(right - 58 * scaleFactor, x + 7 * scaleFactor);
+        const labelY = Math.max(top + 9 * scaleFactor, y - 5 * scaleFactor);
+        ctx.fillStyle = 'rgba(4, 13, 11, .86)'; ctx.fillRect(labelX - 2 * scaleFactor, labelY - 8 * scaleFactor, 58 * scaleFactor, 11 * scaleFactor);
+        ctx.fillStyle = color; ctx.fillText(speedLabel, labelX, labelY);
+      }
     }
   }
   if (lidarMode) {

@@ -97,6 +97,9 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertIn("worldLocal(hudTarget.position, perception, radar.frame)", preview)
         self.assertIn("const isLd2450 = /^hlk_ld2450/i", quest)
         self.assertIn("this.sensorLocal(radarPosition, radarFrame, bodyPosition, yaw)", quest)
+        self.assertIn("const lateralLimit = Math.tan(Math.PI / 3) * 6", preview)
+        self.assertIn("target.radial_speed_mps", preview)
+        self.assertIn("target.radial_speed_mps", quest)
 
     def test_vr_horizon_column_clears_robot_and_uses_sharp_canvas_filtering(self):
         root = Path(__file__).resolve().parents[1]

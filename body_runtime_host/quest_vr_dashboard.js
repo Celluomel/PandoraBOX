@@ -756,9 +756,18 @@ export class QuestVRDashboard {
         ctx.strokeStyle = '#fff3cf'; ctx.lineWidth = 2; ctx.stroke();
         ctx.fillStyle = '#f8e8b8'; ctx.font = '600 15px ui-monospace, monospace'; ctx.textAlign = 'center';
         ctx.fillText(target.classification === 'mobile_obstacle' ? 'M' : '•', mapped.x, mapped.y - 12);
+        const radialSpeed = Number(target.radial_speed_mps);
+        if (Number.isFinite(radialSpeed)) {
+          const speedLabel = `${radialSpeed >= 0 ? '+' : ''}${radialSpeed.toFixed(2)} m/s`;
+          ctx.font = '600 13px ui-monospace, monospace'; ctx.textAlign = 'left';
+          const labelX = Math.min(plotRight - 82, mapped.x + 12);
+          const labelY = Math.max(plotTop + 16, mapped.y - 10);
+          ctx.fillStyle = 'rgba(4, 13, 11, .88)'; ctx.fillRect(labelX - 3, labelY - 12, 82, 18);
+          ctx.fillStyle = color; ctx.fillText(speedLabel, labelX, labelY);
+        }
       }
       ctx.fillStyle = '#83a99a'; ctx.font = '15px ui-monospace, monospace'; ctx.textAlign = 'left';
-      ctx.fillText('Target range · direction vectors use measured velocity', x + 6, y + height - 5);
+      ctx.fillText('Target range · radial speed labels · arrows use XY velocity', x + 6, y + height - 5);
     }
     if (mode === 'lidar') {
       ctx.fillStyle = '#d9f5e4'; ctx.beginPath();
