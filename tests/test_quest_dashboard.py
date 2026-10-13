@@ -98,6 +98,8 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertIn("const isLd2450 = /^hlk_ld2450/i", quest)
         self.assertIn("this.sensorLocal(radarPosition, radarFrame, bodyPosition, yaw)", quest)
         self.assertIn("const lateralLimit = Math.tan(Math.PI / 3) * 6", preview)
+        draw_map = preview.split("function drawMap(canvas, mode) {", 1)[1].split("function drawTofRangeBar", 1)[0]
+        self.assertLess(draw_map.index("const lateralLimit ="), draw_map.index("if (lidarMode) {"))
         self.assertIn("target.radial_speed_mps", preview)
         self.assertIn("target.radial_speed_mps", quest)
 

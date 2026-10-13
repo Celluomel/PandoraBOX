@@ -112,6 +112,11 @@ function drawMap(canvas, mode) {
   const radius = Math.min(width * .44, height * .83);
   const cy = lidarMode ? height - 12 * scaleFactor : height - 12 * scaleFactor;
   const scale = radius / 6;
+  const top = 10 * scaleFactor;
+  const left = 24 * scaleFactor;
+  const right = width - 12 * scaleFactor;
+  const bottom = height - 22 * scaleFactor;
+  const lateralLimit = Math.tan(Math.PI / 3) * 6;
   ctx.strokeStyle = 'rgba(120,190,150,.18)';
   ctx.lineWidth = Math.max(1, scaleFactor);
   if (lidarMode) {
@@ -128,11 +133,6 @@ function drawMap(canvas, mode) {
     ctx.fillText('FRONT', cx, cy - radius + 10 * scaleFactor);
     ctx.fillText('RIGHT', cx + radius - 8 * scaleFactor, cy + 3 * scaleFactor);
   } else {
-    const top = 10 * scaleFactor;
-    const left = 24 * scaleFactor;
-    const right = width - 12 * scaleFactor;
-    const bottom = height - 22 * scaleFactor;
-    const lateralLimit = Math.tan(Math.PI / 3) * 6;
     ctx.fillStyle = 'rgba(15,34,30,.46)'; ctx.fillRect(left, top, right - left, bottom - top);
     for (let i = 0; i <= 6; i += 1) {
       const gx = left + (right - left) * i / 6;
