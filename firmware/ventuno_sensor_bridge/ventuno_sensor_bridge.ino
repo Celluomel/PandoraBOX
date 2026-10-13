@@ -10,13 +10,28 @@
 #ifndef BODY_ENABLE_TOF
 #define BODY_ENABLE_TOF 0
 #endif
+#ifndef BODY_ENABLE_IMU
+#define BODY_ENABLE_IMU 1
+#endif
+#ifndef BODY_RADAR_BAUD
+#define BODY_RADAR_BAUD 256000
+#endif
 
 // Qwiic Modulino Movement and the LD2450 share one STM32 sketch while keeping
 // their existing Linux Router Bridge RPC names stable.
 ModulinoMovement movement;
 bool movementReady = false;
 uint32_t lastImuInitAttempt = 0;
+uint32_t lastImuUpdateAt = 0;
 uint32_t imuSequence = 0;
+uint32_t latestImuAt = 0;
+bool latestImuSampleValid = false;
+float latestAccelX = 0.0f;
+float latestAccelY = 0.0f;
+float latestAccelZ = 0.0f;
+float latestGyroX = 0.0f;
+float latestGyroY = 0.0f;
+float latestGyroZ = 0.0f;
 Adafruit_VL53L1X tof;
 bool tofReady = false;
 uint32_t lastTofInitAttempt = 0;
@@ -24,18 +39,53 @@ uint32_t tofSequence = 0;
 uint32_t latestTofAt = 0;
 int16_t latestTofDistanceMm = -1;
 
-static const uint32_t RADAR_BAUD = 256000;
+static const uint32_t RADAR_BAUD = BODY_RADAR_BAUD;
 static const uint32_t FRAME_STALE_MS = 1000;
 static const uint8_t FRAME_SIZE = 30;
 static const uint8_t HEADER[] = {0xAA, 0xFF, 0x03, 0x00};
 static const uint8_t FOOTER[] = {0x55, 0xCC};
+static const uint16_t RADAR_RX_BUFFER_SIZE = 512;
 
 uint8_t frameBuffer[FRAME_SIZE];
 uint8_t frameLength = 0;
+uint8_t radarRxBuffer[RADAR_RX_BUFFER_SIZE];
+volatile uint16_t radarRxHead = 0;
+volatile uint16_t radarRxTail = 0;
+volatile uint32_t radarRxOverflows = 0;
 char latestJson[512] = "{\"available\":false,\"targets\":[],\"error\":\"waiting_for_ld2450\"}";
 uint32_t latestFrameAt = 0;
 uint32_t frameSequence = 0;
+uint32_t radarBytesReceived = 0;
+uint32_t radarHeaderMatches = 0;
+uint32_t radarHeaderRejects = 0;
+uint32_t radarHeaderComplete = 0;
+uint32_t radarBadFooters = 0;
+uint8_t radarTail[16] = {};
+uint8_t radarTailNext = 0;
+uint8_t radarLastByte = 0;
+bool radarUartReady = false;
+int radarUartConfigResult = -1;
+int radarUartIrqResult = -1;
 const struct device *radarUart = DEVICE_DT_GET(DT_NODELABEL(uart7));
+
+void radarUartIsr(const struct device *dev, void *userData) {
+  (void)userData;
+  if (!uart_irq_update(dev)) return;
+  while (uart_irq_rx_ready(dev)) {
+    uint8_t received[32];
+    const int count = uart_fifo_read(dev, received, sizeof(received));
+    if (count <= 0) break;
+    for (int i = 0; i < count; ++i) {
+      const uint16_t next = (radarRxHead + 1) % RADAR_RX_BUFFER_SIZE;
+      if (next == radarRxTail) {
+        ++radarRxOverflows;
+        continue;
+      }
+      radarRxBuffer[radarRxHead] = received[i];
+      radarRxHead = next;
+    }
+  }
+}
 
 float signedMagnitude(uint16_t value, float scale) {
   const float magnitude = static_cast<float>(value & 0x7FFF);
@@ -47,11 +97,14 @@ uint16_t readU16LE(const uint8_t *data) {
 }
 
 String readMovementSample() {
+#if !BODY_ENABLE_IMU
+  return String("{\"available\":false,\"error\":\"imu_disabled_for_sensor_test\"}");
+#else
   if (!movementReady) {
     return String("{\"available\":false,\"error\":\"modulino_movement_not_detected\"}");
   }
-  if (!movement.update()) {
-    return String("{\"available\":false,\"error\":\"imu_sample_not_ready\"}");
+  if (!latestImuSampleValid || !latestImuAt || millis() - latestImuAt > 1000) {
+    return String("{\"available\":false,\"error\":\"imu_sample_stale\"}");
   }
 
   char payload[320];
@@ -61,14 +114,15 @@ String readMovementSample() {
       "\"frame\":\"imu_sensor\",\"sequence\":%lu,\"timestamp_ms\":%lu,"
       "\"acceleration_g\":[%.5f,%.5f,%.5f],"
       "\"angular_velocity_dps\":[%.5f,%.5f,%.5f]}",
-      static_cast<unsigned long>(++imuSequence),
-      static_cast<unsigned long>(millis()),
-      movement.getX(), movement.getY(), movement.getZ(),
-      movement.getRoll(), movement.getPitch(), movement.getYaw());
+      static_cast<unsigned long>(imuSequence),
+      static_cast<unsigned long>(latestImuAt),
+      latestAccelX, latestAccelY, latestAccelZ,
+      latestGyroX, latestGyroY, latestGyroZ);
   if (written <= 0 || static_cast<size_t>(written) >= sizeof(payload)) {
     return String("{\"available\":false,\"error\":\"imu_payload_overflow\"}");
   }
   return String(payload);
+#endif
 }
 
 String readTofSample() {
@@ -121,23 +175,65 @@ void acceptFrame() {
 
 void feedRadarByte(uint8_t value) {
   if (frameLength == 0) {
-    if (value == HEADER[0]) frameBuffer[frameLength++] = value;
+    if (value == HEADER[0]) {
+      ++radarHeaderMatches;
+      frameBuffer[frameLength++] = value;
+    }
     return;
   }
   frameBuffer[frameLength++] = value;
   if (frameLength <= sizeof(HEADER) && value != HEADER[frameLength - 1]) {
+    ++radarHeaderRejects;
     frameLength = value == HEADER[0] ? 1 : 0;
     if (frameLength) frameBuffer[0] = value;
     return;
   }
+  if (frameLength == sizeof(HEADER)) ++radarHeaderComplete;
   if (frameLength < FRAME_SIZE) return;
-  if (frameBuffer[28] == FOOTER[0] && frameBuffer[29] == FOOTER[1]) acceptFrame();
+  if (frameBuffer[28] == FOOTER[0] && frameBuffer[29] == FOOTER[1]) {
+    acceptFrame();
+  } else {
+    ++radarBadFooters;
+  }
   frameLength = 0;
+}
+
+void consumeRadarByte(uint8_t value) {
+  ++radarBytesReceived;
+  radarLastByte = value;
+  radarTail[radarTailNext] = value;
+  radarTailNext = (radarTailNext + 1) % sizeof(radarTail);
+  feedRadarByte(value);
 }
 
 String readLatestLd2450() {
   if (!latestFrameAt || millis() - latestFrameAt > FRAME_STALE_MS) {
-    return String("{\"available\":false,\"targets\":[],\"error\":\"stale_or_missing_frame\"}");
+    char diagnostic[480];
+    char tailHex[16 * 3 + 1];
+    size_t tailUsed = 0;
+    for (uint8_t i = 0; i < sizeof(radarTail); ++i) {
+      const uint8_t index = (radarTailNext + i) % sizeof(radarTail);
+      const int written = snprintf(tailHex + tailUsed, sizeof(tailHex) - tailUsed,
+                                   "%s%02X", i ? " " : "", radarTail[index]);
+      if (written <= 0 || static_cast<size_t>(written) >= sizeof(tailHex) - tailUsed) break;
+      tailUsed += static_cast<size_t>(written);
+    }
+    snprintf(diagnostic, sizeof(diagnostic),
+             "{\"available\":false,\"targets\":[],\"error\":\"stale_or_missing_frame\","
+             "\"uart_ready\":%s,\"uart_config_result\":%d,\"baudrate\":%lu,"
+             "\"rx_mode\":\"%s\",\"rx_overflows\":%lu,"
+             "\"bytes_received\":%lu,\"header_starts\":%lu,\"header_complete\":%lu,"
+             "\"header_rejects\":%lu,\"bad_footers\":%lu,\"partial_frame_bytes\":%u,"
+             "\"last_byte_hex\":\"%02X\",\"last_bytes_hex\":\"%s\"}",
+             radarUartReady ? "true" : "false", radarUartConfigResult,
+             static_cast<unsigned long>(RADAR_BAUD),
+             radarUartIrqResult == 0 ? "irq" : "poll", static_cast<unsigned long>(radarRxOverflows),
+             static_cast<unsigned long>(radarBytesReceived),
+             static_cast<unsigned long>(radarHeaderMatches),
+             static_cast<unsigned long>(radarHeaderComplete),
+             static_cast<unsigned long>(radarHeaderRejects),
+             static_cast<unsigned long>(radarBadFooters), frameLength, radarLastByte, tailHex);
+    return String(diagnostic);
   }
   return String(latestJson);
 }
@@ -151,9 +247,11 @@ void setup() {
   Bridge.provide("body_ld2450_read", readLatestLd2450);
 
   // The VENTUNO Q's Qwiic connector is on the MCU's Wire1 bus.
+#if BODY_ENABLE_IMU
   Modulino.begin(Wire1);
   movementReady = movement.begin();
   lastImuInitAttempt = millis();
+#endif
 #if BODY_ENABLE_TOF
   tofReady = tof.begin(0x29, &Wire1);
   if (tofReady) {
@@ -170,17 +268,41 @@ void setup() {
       .data_bits = UART_CFG_DATA_BITS_8,
       .flow_ctrl = UART_CFG_FLOW_CTRL_NONE,
   };
-  if (!device_is_ready(radarUart) || uart_configure(radarUart, &radarConfig) != 0) {
+  radarUartReady = device_is_ready(radarUart);
+  if (radarUartReady) radarUartConfigResult = uart_configure(radarUart, &radarConfig);
+  if (radarUartReady && radarUartConfigResult == 0) {
+    radarUartIrqResult = uart_irq_callback_user_data_set(radarUart, radarUartIsr, nullptr);
+    if (radarUartIrqResult == 0) uart_irq_rx_enable(radarUart);
+  }
+  if (!radarUartReady || radarUartConfigResult != 0) {
     strncpy(latestJson, "{\"available\":false,\"targets\":[],\"error\":\"uart7_unavailable\"}", sizeof(latestJson));
   }
 
 }
 
 void loop() {
+#if BODY_ENABLE_IMU
   if (!movementReady && millis() - lastImuInitAttempt >= 2000) {
     lastImuInitAttempt = millis();
     movementReady = movement.begin();
   }
+  if (movementReady && millis() - lastImuUpdateAt >= 16) {
+    lastImuUpdateAt = millis();
+    if (movement.update()) {
+      latestAccelX = movement.getX();
+      latestAccelY = movement.getY();
+      latestAccelZ = movement.getZ();
+      latestGyroX = movement.getRoll();
+      latestGyroY = movement.getPitch();
+      latestGyroZ = movement.getYaw();
+      latestImuAt = millis();
+      ++imuSequence;
+      latestImuSampleValid = isfinite(latestAccelX) && isfinite(latestAccelY)
+          && isfinite(latestAccelZ) && isfinite(latestGyroX)
+          && isfinite(latestGyroY) && isfinite(latestGyroZ);
+    }
+  }
+#endif
 #if BODY_ENABLE_TOF
   if (!tofReady && millis() - lastTofInitAttempt >= 2000) {
     lastTofInitAttempt = millis();
@@ -200,9 +322,17 @@ void loop() {
     tof.clearInterrupt();
   }
 #endif
-  if (device_is_ready(radarUart)) {
+  if (radarUartIrqResult == 0) {
+    while (radarRxTail != radarRxHead) {
+      const uint8_t value = radarRxBuffer[radarRxTail];
+      radarRxTail = (radarRxTail + 1) % RADAR_RX_BUFFER_SIZE;
+      consumeRadarByte(value);
+    }
+  } else if (device_is_ready(radarUart)) {
     unsigned char value;
-    while (uart_poll_in(radarUart, &value) == 0) feedRadarByte(value);
+    while (uart_poll_in(radarUart, &value) == 0) {
+      consumeRadarByte(value);
+    }
   }
   delay(1);
 }

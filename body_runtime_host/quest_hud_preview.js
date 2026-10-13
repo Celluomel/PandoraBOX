@@ -5,11 +5,16 @@ const $ = id => document.getElementById(id);
 let world = null;
 let controller = null;
 let liveImu = null;
+let lastValidImu = null;
+let lastValidImuAt = 0;
+let liveTof = null;
+let liveRadar = null;
 let cameraFrameId = null;
 let cameraBusy = false;
 const cameraFrames = new Map();
 let cameraDisplayKey = null;
 let imuBusy = false;
+let tofBusy = false;
 let robotVisual = null;
 let robotRenderer = null;
 let robotScene = null;
@@ -160,9 +165,10 @@ function drawMap(canvas, mode) {
       ctx.beginPath(); ctx.arc(x, y, dot, 0, 2 * Math.PI); ctx.fill();
     }
   } else {
-    const targets = perception.modalities?.mmwave_radar?.targets || [];
+    const radar = liveRadar?.sample || perception.modalities?.mmwave_radar || {};
+    const targets = radar.targets || [];
     for (const target of targets) {
-      const local = worldLocal(target.position_m || target.position, perception, perception.modalities?.mmwave_radar?.frame);
+      const local = worldLocal(target.position_m || target.position, perception, radar.frame);
       if (!local || local.distance > 6.2) continue;
       const left = 24 * scaleFactor; const right = width - 12 * scaleFactor;
       const top = 10 * scaleFactor; const bottom = height - 22 * scaleFactor;
@@ -175,7 +181,7 @@ function drawMap(canvas, mode) {
       ctx.globalAlpha = 1;
       const velocity = target.velocity_mps || target.velocity || [0, 0];
       let forwardSpeed = Number(velocity[0] || 0); let leftSpeed = Number(velocity[1] || 0);
-      const radarFrame = perception.modalities?.mmwave_radar?.frame || 'body';
+      const radarFrame = radar.frame || 'body';
       if (/^(body_world|world|map|local_map|odom)$/i.test(radarFrame)) {
         const yaw = Number(perception.sensor_projections?.frame?.yaw_rad ?? perception.body?.orientation ?? 0);
         const worldForward = forwardSpeed;
@@ -208,14 +214,16 @@ function drawMap(canvas, mode) {
   }
 }
 
-function drawTofRangeBar(sample = world?.perception?.modalities?.tof || {}) {
+function drawTofRangeBar(sample = liveTof || world?.perception?.modalities?.tof || {}) {
   const marker = $('tof-marker');
   const value = $('tof-value');
   const track = marker?.parentElement;
   if (!marker || !value || !track) return;
   const distance = Number(sample.distance_m);
+  const ageSeconds = Date.now() / 1000 - Number(sample.timestamp || 0);
   const fresh = sample.available === true && Number.isFinite(distance)
-    && distance >= 0 && distance <= 4 && !sample.simulated;
+    && distance >= 0 && distance <= 4 && !sample.simulated
+    && Number.isFinite(ageSeconds) && ageSeconds >= -1 && ageSeconds <= 2.5;
   value.textContent = fresh ? `${distance.toFixed(2)}m` : 'WAIT';
   marker.style.top = fresh ? `${100 - Math.max(0, Math.min(100, distance / 4 * 100))}%` : '100%';
   track.setAttribute('aria-valuenow', fresh ? distance.toFixed(2) : '0');
@@ -306,12 +314,17 @@ function drawNavigation(perception = world?.perception || {}, telemetry = contro
   const roll = degrees(imu.roll_deg ?? imu.roll_rad ?? imu.roll, imu.roll_deg !== undefined ? 'deg' : unit);
   const hasImu = Number.isFinite(pitch) && Number.isFinite(roll);
   setText('nav-attitude-value', hasImu ? `R ${roll.toFixed(1)}° · P ${pitch.toFixed(1)}°` : 'NO IMU DATA');
-  const imuUnavailable = !liveImu ? 'Waiting for IMU'
+  const imuUnavailable = liveImu?.available ? 'ACQUIRING ATTITUDE'
+    : !liveImu ? 'Waiting for IMU'
     : liveImu.error?.includes('404') ? 'Body update required'
       : !liveImu.enabled ? 'Enable Modulino in Robot hardware'
       : !liveImu.bridge_available ? 'No local Arduino Bridge'
         : liveImu.error ? 'Bridge or sensor unavailable' : 'Waiting for sample';
-  setText('nav-attitude-source', hasImu ? String(imu.source || imuSource.source || 'IMU').toUpperCase() : imuUnavailable);
+  const imuAge = lastValidImuAt ? (Date.now() - lastValidImuAt) / 1000 : Infinity;
+  setText('nav-attitude-source', hasImu
+    ? `${String(imu.source || imuSource.source || 'IMU').toUpperCase()}${liveImu?.held_for_s ? ` · HOLD ${liveImu.held_for_s.toFixed(1)}s` : ''}`
+    : lastValidImu && imuAge <= 2.5 ? `LAST VALID · ${imuAge.toFixed(1)}s`
+      : imuUnavailable);
 
   const heading = number(telemetry.magnetic_heading_deg ?? telemetry.compass_heading_deg);
   const moving = number(telemetry.speed_mps ?? perception.body?.velocity_mps) > .4;
@@ -370,14 +383,19 @@ function drawNavigation(perception = world?.perception || {}, telemetry = contro
 
 function updateStatus() {
   drawNavigation();
-  drawTofRangeBar();
+  drawTofRangeBar(liveTof || world?.perception?.modalities?.tof || {});
+  const radar = liveRadar?.sample || world?.perception?.modalities?.mmwave_radar || {};
+  const radarCount = radar.targets?.length || 0;
+  setText('radar-count', `${radarCount} targets`);
+  setText('lidar-count', `${world?.perception?.sensor_projections?.lidar?.points?.length || 0} pts`);
+  drawMap($('radar-map'), 'radar');
   if (!world?.perception?.available) {
     setText('status', world?.perception?.note || 'Waiting for Body perception…');
+    drawUltrasonicRanges({});
     return;
   }
   const perception = world.perception;
   const lidarCount = perception.sensor_projections?.lidar?.points?.length || 0;
-  const radarCount = perception.modalities?.mmwave_radar?.targets?.length || 0;
   setText('status', `${perception.source || 'Body'} · observation ${Number(perception.age_seconds || 0).toFixed(1)} s old · ${lidarCount} LiDAR returns · ${radarCount} radar targets`);
   setText('connection', world.running ? 'Body connected · simulation running' : 'Body connected · simulation paused');
   setText('object-count', `${(perception.objects || []).length} OBJECTS`);
@@ -394,8 +412,8 @@ function updateStatus() {
   setText('steps', controller?.step ?? controller?.worldmodel_step ?? '—');
   setText('head', 'not in XR');
   setText('left', 'not in XR'); setText('right', 'not in XR');
-  setText('lidar-count', `${lidarCount} pts`); setText('radar-count', `${radarCount} targets`);
-  drawRobot(); drawMap($('lidar-map'), 'lidar'); drawMap($('radar-map'), 'radar');
+  setText('lidar-count', `${lidarCount} pts`);
+  drawRobot(); drawMap($('lidar-map'), 'lidar');
   drawUltrasonicRanges(perception.modalities || {});
 }
 
@@ -523,7 +541,19 @@ async function pollImu() {
   try {
     const response = await fetch('/plugins/imu/status', { cache: 'no-store' });
     if (!response.ok) throw new Error(`IMU status HTTP ${response.status}`);
-    liveImu = { ...(await response.json()), endpoint_available: true };
+    const status = { ...(await response.json()), endpoint_available: true };
+    const sample = status.sample;
+    if (status.available && sample?.attitude_valid !== false
+        && Number.isFinite(Number(sample?.roll_deg)) && Number.isFinite(Number(sample?.pitch_deg))) {
+      lastValidImu = sample;
+      lastValidImuAt = Date.now();
+    }
+    const heldFor = (Date.now() - lastValidImuAt) / 1000;
+    liveImu = status.available && sample?.attitude_valid !== false
+      ? status
+      : lastValidImu && heldFor <= 2.5
+        ? { ...status, available: true, sample: lastValidImu, held_for_s: heldFor }
+        : status;
     drawNavigation();
   } catch (error) {
     liveImu = { available: false, endpoint_available: false, error: error.message };
@@ -531,7 +561,52 @@ async function pollImu() {
   } finally { imuBusy = false; }
 }
 
+async function pollTof() {
+  if (tofBusy) return;
+  tofBusy = true;
+  try {
+    const response = await fetch('/plugins/tof/status', { cache: 'no-store' });
+    if (!response.ok) throw new Error(`ToF status HTTP ${response.status}`);
+    const status = await response.json();
+    liveTof = status.available && status.sample?.available ? status.sample : null;
+  } catch {
+    liveTof = null;
+  } finally {
+    drawTofRangeBar(liveTof || world?.perception?.modalities?.tof || {});
+    tofBusy = false;
+  }
+}
+
+let radarBusy = false;
+async function pollRadar() {
+  if (radarBusy) return;
+  radarBusy = true;
+  try {
+    const response = await fetch('/plugins/mmwave_radar/status', { cache: 'no-store' });
+    if (!response.ok) throw new Error(`mmWave status HTTP ${response.status}`);
+    const status = await response.json();
+    liveRadar = status.available && status.sample ? status : { ...status, sample: null };
+  } catch (error) {
+    liveRadar = { available: false, sample: null, error: error.message };
+  } finally {
+    const radar = liveRadar?.sample || {};
+    const targets = radar.targets || [];
+    setText('radar-count', `${targets.length} targets`);
+    drawMap($('radar-map'), 'radar');
+    if (world?.perception?.available) {
+      const perception = world.perception;
+      const lidarCount = perception.sensor_projections?.lidar?.points?.length || 0;
+      setText('status', `${perception.source || 'Body'} · observation ${Number(perception.age_seconds || 0).toFixed(1)} s old · ${lidarCount} LiDAR returns · ${targets.length} radar targets`);
+    } else if (liveRadar?.error) {
+      setText('status', `Waiting for Body perception · mmWave ${liveRadar.error}`);
+    } else if (liveRadar?.available) {
+      setText('status', `Waiting for Body perception · mmWave live · ${targets.length} targets`);
+    }
+    radarBusy = false;
+  }
+}
+
 initRobotVisual();
 window.addEventListener('resize', updateStatus);
-void poll(); void pollCamera(); void pollImu();
-setInterval(poll, 800); setInterval(pollCamera, 400); setInterval(pollImu, 1000);
+void poll(); void pollCamera(); void pollImu(); void pollTof(); void pollRadar();
+setInterval(poll, 800); setInterval(pollCamera, 400); setInterval(pollImu, 1000); setInterval(pollTof, 1000); setInterval(pollRadar, 500);

@@ -80,6 +80,9 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertIn("fetch('/plugins/imu/status'", source)
         self.assertIn("setInterval(pollImu, 1000)", source)
         self.assertIn("No local Arduino Bridge", source)
+        self.assertIn("ACQUIRING ATTITUDE", source)
+        self.assertIn("LAST VALID ·", source)
+        self.assertIn("lastValidImuAt", source)
         self.assertIn("const ring = radius + 15", source)
         self.assertIn("pointerY - 6", source)
 

@@ -49,6 +49,15 @@ until the sensor is physically connected; then deploy with:
 BODY_ENABLE_TOF=1 scripts/deploy_ventuno_sensor_bridge.sh --upload
 ```
 
+For an isolated hardware check of the ToF (which temporarily disables IMU
+sampling on the shared Qwiic bus), use:
+
+```sh
+BODY_ENABLE_IMU=0 BODY_ENABLE_TOF=1 scripts/deploy_ventuno_sensor_bridge.sh --upload
+```
+
+Restore IMU sampling afterward with `BODY_ENABLE_IMU=1 BODY_ENABLE_TOF=0`.
+
 The upload replaces the STM32 image, so use this combined sketch rather than
 the standalone IMU or radar sketches. The upload tool prompts for credentials;
 the script stores none. `scripts/configure_ventuno_uart7.sh` backs up the

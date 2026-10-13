@@ -145,6 +145,7 @@ class BodyHost:
         self._worldmodel = None
         self._worldmodel_lock = threading.Lock()
         self._imu_bridge_source = None
+        self._mmwave_status_source = None
         self._robot_last_ok: float | None = None
         self._robot_last_error = ""
         self._fnk_usb_last_publish = 0.0
@@ -1655,6 +1656,60 @@ class BodyHost:
             **self.serial_device_inventory(),
         }
 
+    def mmwave_radar_status(self) -> dict:
+        """Read the configured radar independently of the World Model loop."""
+        settings = self.mmwave_radar_settings()
+        if not settings["enabled"]:
+            return {**settings, "available": False, "sample": None,
+                    "error": "mmWave radar is disabled in Body settings"}
+
+        source = getattr(self._worldmodel, "source", None)
+        radar = None
+        visited = set()
+        while source is not None and id(source) not in visited:
+            visited.add(id(source))
+            radar = getattr(source, "radar", None)
+            if radar is not None:
+                break
+            source = getattr(source, "source", None)
+
+        if radar is None:
+            protocol = settings["protocol"]
+            try:
+                if self._mmwave_status_source is None:
+                    from body_runtime_host.mmwave_radar import (
+                        HttpMmWaveRadarSource, LD2450SerialSource,
+                        VentunoBridgeMmWaveSource,
+                    )
+                    if protocol == "ventuno_bridge_ld2450":
+                        self._mmwave_status_source = VentunoBridgeMmWaveSource()
+                    elif protocol in {"serial_ld2450", "ld2450_uart"}:
+                        self._mmwave_status_source = LD2450SerialSource(
+                            port=settings["port"], baudrate=settings["baudrate"],
+                            timeout=settings["timeout"],
+                        )
+                    elif protocol == "http_json":
+                        self._mmwave_status_source = HttpMmWaveRadarSource(
+                            str(self.value("MMWAVE_RADAR_URL", "") or ""),
+                            token=str(self.value("MMWAVE_RADAR_TOKEN", "") or ""),
+                            timeout=settings["timeout"],
+                        )
+                radar = self._mmwave_status_source
+            except Exception as exc:
+                return {**settings, "available": False, "sample": None,
+                        "error": str(exc)[:240]}
+
+        if radar is None:
+            return {**settings, "available": False, "sample": None,
+                    "error": f"Unsupported radar protocol: {settings['protocol']}"}
+        try:
+            sample = radar.read().as_dict()
+            return {**settings, "available": True, "sample": sample,
+                    "source_status": radar.status()}
+        except Exception as exc:
+            return {**settings, "available": False, "sample": None,
+                    "error": str(exc)[:240], "source_status": radar.status()}
+
     def _get_imu_bridge_source(self):
         if self._imu_bridge_source is None:
             from body_runtime_host.imu import VentunoBridgeImuSource
@@ -1718,6 +1773,7 @@ class BodyHost:
         self.config["BODY_PLUGIN_IMU_ENABLED"] = enabled
         self.save_config()
         self.config = self._load_config()
+        self._mmwave_status_source = None
         if self._worldmodel is not None:
             self.reload_worldmodel_source()
         return {"ok": True, "settings": self.imu_settings()}
@@ -3266,6 +3322,8 @@ class BodyHost:
                     self._send(owner.fnk0031_settings())
                 elif path == "/plugins/mmwave_radar/settings":
                     self._send(owner.mmwave_radar_settings())
+                elif path == "/plugins/mmwave_radar/status":
+                    self._send(owner.mmwave_radar_status())
                 elif path == "/plugins/imu/settings":
                     self._send(owner.imu_settings())
                 elif path == "/plugins/imu/status":

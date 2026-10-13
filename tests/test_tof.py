@@ -83,6 +83,9 @@ class TofTests(unittest.TestCase):
         self.assertIn("tof.begin(0x29, &Wire1)", sketch)
         self.assertIn('id="tof-value"', preview)
         self.assertIn("drawTofRangeBar", preview_js)
+        self.assertIn("/plugins/tof/status", preview_js)
+        self.assertIn("setInterval(pollTof, 1000)", preview_js)
+        self.assertIn("ageSeconds <= 2.5", preview_js)
         self.assertIn("drawTofRangeBar(ctx", vr_js)
 
 

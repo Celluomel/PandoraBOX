@@ -5,6 +5,8 @@ import json
 import time
 from typing import Any, Dict, Optional
 
+from .sensor_bridge_rpc import call_sensor_rpc
+
 
 class VentunoBridgeTofSource:
     name = "cqrobot_vl53l1x_ventuno_bridge"
@@ -31,7 +33,7 @@ class VentunoBridgeTofSource:
 
     def read(self) -> Dict[str, Any]:
         try:
-            payload = self._client().call(self.method, timeout=0.5)
+            payload = call_sensor_rpc(self._client(), self.method, timeout=0.5)
             if isinstance(payload, bytes):
                 payload = payload.decode("utf-8")
             if isinstance(payload, str):

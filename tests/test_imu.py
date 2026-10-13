@@ -46,9 +46,18 @@ class ModulinoImuTests(unittest.TestCase):
         self.assertIn("Modulino.begin(Wire1)", sketch)
         self.assertIn('Bridge.provide_safe("body_imu_read"', sketch)
         self.assertIn('Bridge.provide("body_ld2450_read"', sketch)
+        self.assertIn("bytes_received", sketch)
+        self.assertIn("header_complete", sketch)
+        self.assertIn("last_bytes_hex", sketch)
         self.assertIn("#define BODY_ENABLE_TOF 0", sketch)
+        self.assertIn("#define BODY_ENABLE_IMU 1", sketch)
         setup = sketch.split("void setup()", 1)[1].split("void loop()", 1)[0]
         self.assertLess(setup.index("Bridge.begin()"), setup.index("Modulino.begin(Wire1)"))
+        reader = sketch.split("String readMovementSample()", 1)[1].split("String readTofSample()", 1)[0]
+        loop = sketch.split("void loop()", 1)[1]
+        self.assertNotIn("movement.update()", reader)
+        self.assertIn("movement.update()", loop)
+        self.assertIn("latestImuSampleValid", reader)
 
     def test_standalone_imu_firmware_uses_qwiic_without_app_lab_runtime(self):
         from pathlib import Path

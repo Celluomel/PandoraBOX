@@ -6,9 +6,19 @@ sketch_dir="${repo_root}/firmware/ventuno_sensor_bridge"
 fqbn="arduino:zephyr:ventunoq"
 upload_address="${VENTUNO_Q_UPLOAD_ADDRESS:-192.168.0.14}"
 tof_enabled="${BODY_ENABLE_TOF:-0}"
+imu_enabled="${BODY_ENABLE_IMU:-1}"
+radar_baud="${BODY_RADAR_BAUD:-256000}"
 
 if [[ "${tof_enabled}" != "0" && "${tof_enabled}" != "1" ]]; then
   echo "BODY_ENABLE_TOF must be 0 or 1." >&2
+  exit 2
+fi
+if [[ "${imu_enabled}" != "0" && "${imu_enabled}" != "1" ]]; then
+  echo "BODY_ENABLE_IMU must be 0 or 1." >&2
+  exit 2
+fi
+if ! [[ "${radar_baud}" =~ ^[0-9]+$ ]] || (( radar_baud < 1200 || radar_baud > 3000000 )); then
+  echo "BODY_RADAR_BAUD must be an integer from 1200 to 3000000." >&2
   exit 2
 fi
 
@@ -25,10 +35,10 @@ mkdir -p "${build_dir}"
 cp "${sketch_dir}/ventuno_sensor_bridge.ino" "${build_dir}/ventuno_sensor_bridge.ino"
 trap 'rm -rf "${build_root}"' EXIT
 libraries_dir="${HOME}/Arduino/libraries"
-echo "Compiling sensor bridge for ${fqbn} (BODY_ENABLE_TOF=${tof_enabled})..."
+echo "Compiling sensor bridge for ${fqbn} (BODY_ENABLE_IMU=${imu_enabled}, BODY_ENABLE_TOF=${tof_enabled}, BODY_RADAR_BAUD=${radar_baud})..."
 if ! arduino-cli compile --fqbn "${fqbn}" \
     --libraries "${libraries_dir}" \
-    --build-property "compiler.cpp.extra_flags=-DBODY_ENABLE_TOF=${tof_enabled}" \
+    --build-property "compiler.cpp.extra_flags=-DBODY_ENABLE_IMU=${imu_enabled} -DBODY_ENABLE_TOF=${tof_enabled} -DBODY_RADAR_BAUD=${radar_baud}" \
     "${build_dir}"; then
   cat >&2 <<'EOF'
 Compile failed; the current STM32 firmware was not changed.

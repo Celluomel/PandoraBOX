@@ -4,6 +4,35 @@ import time
 
 
 class MmWaveRadarTest(unittest.TestCase):
+    def test_body_radar_status_reads_live_source_without_worldmodel_observation(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from body_runtime_host.runtime import BodyHost
+        from body_runtime_host.mmwave_radar import MmWaveFrame, MmWaveTarget
+
+        class Radar:
+            def read(self):
+                return MmWaveFrame(
+                    timestamp=time.time(), sequence=12,
+                    targets=[MmWaveTarget("1", [0.2, 1.4, 0.0])],
+                )
+            def status(self):
+                return {"available": True, "sequence": 12}
+
+        host = BodyHost.__new__(BodyHost)
+        host.config = {
+            "BODY_PLUGIN_MMWAVE_RADAR_ENABLED": True,
+            "MMWAVE_RADAR_PROTOCOL": "ventuno_bridge_ld2450",
+            "MMWAVE_RADAR_BAUDRATE": 256000,
+        }
+        host._worldmodel = SimpleNamespace(source=SimpleNamespace(radar=Radar()))
+        with patch.object(host, "serial_device_inventory", return_value={"devices": []}):
+            result = host.mmwave_radar_status()
+
+        self.assertTrue(result["available"])
+        self.assertEqual(result["sample"]["sequence"], 12)
+        self.assertEqual(result["sample"]["targets"][0]["position_m"], [0.2, 1.4, 0.0])
+
     def test_ld2450_frame_decodes_signed_metric_target(self):
         from body_runtime_host.mmwave_radar import parse_ld2450_frame
 
