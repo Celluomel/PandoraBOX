@@ -102,7 +102,7 @@ function radarTargetToHud(target, radar) {
 }
 
 function drawMap(canvas, mode) {
-  const { width, height } = resizeCanvas(canvas);
+  const { width, height, ratio } = resizeCanvas(canvas);
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, width, height);
   ctx.fillStyle = '#08110f'; ctx.fillRect(0, 0, width, height);
@@ -220,10 +220,14 @@ function drawMap(canvas, mode) {
       const radialSpeed = Number(target.radial_speed_mps);
       if (Number.isFinite(radialSpeed)) {
         const speedLabel = `${radialSpeed >= 0 ? '+' : ''}${radialSpeed.toFixed(2)} m/s`;
-        ctx.font = `600 ${Math.max(7, Math.round(8 * scaleFactor))}px ui-monospace,monospace`; ctx.textAlign = 'left';
-        const labelX = Math.min(right - 58 * scaleFactor, x + 7 * scaleFactor);
-        const labelY = Math.max(top + 9 * scaleFactor, y - 5 * scaleFactor);
-        ctx.fillStyle = 'rgba(4, 13, 11, .86)'; ctx.fillRect(labelX - 2 * scaleFactor, labelY - 8 * scaleFactor, 58 * scaleFactor, 11 * scaleFactor);
+        const speedFont = Math.max(11 * ratio, Math.round(12 * scaleFactor));
+        const labelPadding = 4 * ratio;
+        const labelWidth = speedFont * 6.2 + labelPadding * 2;
+        const labelHeight = speedFont + labelPadding * 2;
+        ctx.font = `600 ${speedFont}px ui-monospace,monospace`; ctx.textAlign = 'left';
+        const labelX = Math.max(left, Math.min(right - labelWidth, x + 7 * scaleFactor));
+        const labelY = Math.max(top + labelHeight, Math.min(bottom, y - 5 * scaleFactor));
+        ctx.fillStyle = 'rgba(4, 13, 11, .92)'; ctx.fillRect(labelX - labelPadding, labelY - speedFont - labelPadding, labelWidth, labelHeight);
         ctx.fillStyle = color; ctx.fillText(speedLabel, labelX, labelY);
       }
     }
