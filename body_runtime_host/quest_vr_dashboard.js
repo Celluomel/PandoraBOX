@@ -715,7 +715,12 @@ export class QuestVRDashboard {
       ctx.fillText('Measured returns · dashed links show local continuity', x + 6, y + height - 5);
     } else {
       for (const target of radar) {
-        const local = this.sensorLocal(target.position_m || target.position, radarFrame, bodyPosition, yaw);
+        const position = target.position_m || target.position || [];
+        const velocity = target.velocity_mps || target.velocity || [0, 0];
+        const isLd2450 = /^hlk_ld2450/i.test(String(perception.modalities?.mmwave_radar?.source || ''));
+        const radarPosition = isLd2450 ? [Number(position[1]), -Number(position[0]), Number(position[2] || 0)] : position;
+        const radarVelocity = isLd2450 ? [Number(velocity[1] || 0), -Number(velocity[0] || 0)] : velocity;
+        const local = this.sensorLocal(radarPosition, radarFrame, bodyPosition, yaw);
         if (!local || local.forward < 0 || local.distance > 6.2) continue;
         const bearing = Math.atan2(-local.left, local.forward);
         if (Math.abs(bearing) > Math.PI / 3) continue;
@@ -725,9 +730,8 @@ export class QuestVRDashboard {
         ctx.strokeStyle = color; ctx.globalAlpha = .18 + confidence * .2; ctx.lineWidth = 2;
         ctx.beginPath(); ctx.arc(mapped.x, mapped.y, 24 + (1 - confidence) * 18, 0, Math.PI * 2); ctx.stroke();
         ctx.globalAlpha = 1;
-        const velocity = target.velocity_mps || target.velocity || [0, 0];
-        let forwardSpeed = Number(velocity[0] || 0);
-        let leftSpeed = Number(velocity[1] || 0);
+        let forwardSpeed = Number(radarVelocity[0] || 0);
+        let leftSpeed = Number(radarVelocity[1] || 0);
         if (/^(body_world|world|map|local_map|odom)$/.test(radarFrame)) {
           const worldForward = forwardSpeed;
           forwardSpeed = Math.cos(yaw) * worldForward + Math.sin(yaw) * leftSpeed;

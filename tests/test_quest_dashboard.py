@@ -88,12 +88,15 @@ class QuestDashboardTests(unittest.TestCase):
 
     def test_live_ld2450_targets_use_forward_lateral_axes_in_hud(self):
         root = Path(__file__).resolve().parents[1]
-        source = (root / "body_runtime_host" / "quest_hud_preview.js").read_text(encoding="utf-8")
+        preview = (root / "body_runtime_host" / "quest_hud_preview.js").read_text(encoding="utf-8")
+        quest = (root / "body_runtime_host" / "quest_vr_dashboard.js").read_text(encoding="utf-8")
 
-        self.assertIn("function radarTargetToHud(target, radar)", source)
-        self.assertIn("/^hlk_ld2450/i", source)
-        self.assertIn("[Number(position[1]), -Number(position[0])", source)
-        self.assertIn("worldLocal(hudTarget.position, perception, radar.frame)", source)
+        self.assertIn("function radarTargetToHud(target, radar)", preview)
+        self.assertIn("/^hlk_ld2450/i", preview)
+        self.assertIn("[Number(position[1]), -Number(position[0])", preview)
+        self.assertIn("worldLocal(hudTarget.position, perception, radar.frame)", preview)
+        self.assertIn("const isLd2450 = /^hlk_ld2450/i", quest)
+        self.assertIn("this.sensorLocal(radarPosition, radarFrame, bodyPosition, yaw)", quest)
 
     def test_vr_horizon_column_clears_robot_and_uses_sharp_canvas_filtering(self):
         root = Path(__file__).resolve().parents[1]
