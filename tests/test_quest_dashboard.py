@@ -86,6 +86,15 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertIn("const ring = radius + 15", source)
         self.assertIn("pointerY - 6", source)
 
+    def test_live_ld2450_targets_use_forward_lateral_axes_in_hud(self):
+        root = Path(__file__).resolve().parents[1]
+        source = (root / "body_runtime_host" / "quest_hud_preview.js").read_text(encoding="utf-8")
+
+        self.assertIn("function radarTargetToHud(target, radar)", source)
+        self.assertIn("/^hlk_ld2450/i", source)
+        self.assertIn("[Number(position[1]), -Number(position[0])", source)
+        self.assertIn("worldLocal(hudTarget.position, perception, radar.frame)", source)
+
     def test_vr_horizon_column_clears_robot_and_uses_sharp_canvas_filtering(self):
         root = Path(__file__).resolve().parents[1]
         source = (root / "body_runtime_host" / "quest_vr_dashboard.js").read_text(encoding="utf-8")

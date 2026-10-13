@@ -89,6 +89,18 @@ function worldLocal(position, perception, frameName, assumeWorld = false) {
   return { forward, left, distance: Math.hypot(forward, left) };
 }
 
+function radarTargetToHud(target, radar) {
+  const position = target.position_m || target.position || [];
+  const velocity = target.velocity_mps || target.velocity || [0, 0];
+  if (/^hlk_ld2450/i.test(String(radar.source || ''))) {
+    return {
+      position: [Number(position[1]), -Number(position[0]), Number(position[2] || 0)],
+      velocity: [Number(velocity[1] || 0), -Number(velocity[0] || 0)],
+    };
+  }
+  return { position, velocity };
+}
+
 function drawMap(canvas, mode) {
   const { width, height } = resizeCanvas(canvas);
   const ctx = canvas.getContext('2d');
@@ -168,7 +180,8 @@ function drawMap(canvas, mode) {
     const radar = liveRadar?.sample || perception.modalities?.mmwave_radar || {};
     const targets = radar.targets || [];
     for (const target of targets) {
-      const local = worldLocal(target.position_m || target.position, perception, radar.frame);
+      const hudTarget = radarTargetToHud(target, radar);
+      const local = worldLocal(hudTarget.position, perception, radar.frame);
       if (!local || local.distance > 6.2) continue;
       const left = 24 * scaleFactor; const right = width - 12 * scaleFactor;
       const top = 10 * scaleFactor; const bottom = height - 22 * scaleFactor;
@@ -179,7 +192,7 @@ function drawMap(canvas, mode) {
       ctx.strokeStyle = color; ctx.globalAlpha = .2 + confidence * .2; ctx.lineWidth = 1.5 * scaleFactor;
       ctx.beginPath(); ctx.arc(x, y, (11 + (1 - confidence) * 8) * scaleFactor, 0, 2 * Math.PI); ctx.stroke();
       ctx.globalAlpha = 1;
-      const velocity = target.velocity_mps || target.velocity || [0, 0];
+      const velocity = hudTarget.velocity;
       let forwardSpeed = Number(velocity[0] || 0); let leftSpeed = Number(velocity[1] || 0);
       const radarFrame = radar.frame || 'body';
       if (/^(body_world|world|map|local_map|odom)$/i.test(radarFrame)) {
