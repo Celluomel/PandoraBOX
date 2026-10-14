@@ -41,14 +41,17 @@ class MiDaSDepthService:
         return max(0.0, cadence - (now - started_at))
 
     def settings(self) -> dict:
+        runtime = str(self._value("RUNTIME", "htp_auto") or "htp_auto").strip().lower()
+        if runtime not in {"htp_auto", "htp", "cpu"}:
+            runtime = "htp_auto"
         return {
             "enabled": bool(self._value("ENABLED", False)),
             "interval_s": max(0.15, min(30.0, float(self._value("INTERVAL_S", 0.5) or 0.5))),
             "python": str(self._value("PYTHON", self.DEFAULT_PYTHON)),
             "model_path": str(self._value("MODEL_PATH", self.DEFAULT_MODEL)),
-            "runtime": "htp",
-            "model": self.MODEL_TYPE,
             **self.status(),
+            "runtime": runtime,
+            "model": self.MODEL_TYPE,
         }
 
     def status(self) -> dict:
@@ -65,7 +68,7 @@ class MiDaSDepthService:
             if self._thread and self._thread.is_alive():
                 return
             self._stop.clear()
-            self._latest.update(state="starting", error=None, device=None, runtime="htp")
+            self._latest.update(state="starting", error=None, device=None, runtime=self.settings()["runtime"])
             self._thread = threading.Thread(target=self._run, name="body-midas-htp", daemon=True)
             self._thread.start()
 
@@ -94,6 +97,9 @@ class MiDaSDepthService:
     def _worker(self) -> subprocess.Popen:
         python = str(self._value("PYTHON", self.DEFAULT_PYTHON) or self.DEFAULT_PYTHON).strip()
         model = str(self._value("MODEL_PATH", self.DEFAULT_MODEL) or self.DEFAULT_MODEL).strip()
+        runtime = str(self._value("RUNTIME", "htp_auto") or "htp_auto").strip().lower()
+        if runtime not in {"htp_auto", "htp", "cpu"}:
+            raise RuntimeError(f"unsupported MiDaS runtime: {runtime}")
         if not os.path.isfile(python):
             raise RuntimeError(f"MiDaS AppBuilder Python not found: {python}")
         if not os.path.isfile(model):
@@ -111,7 +117,7 @@ class MiDaSDepthService:
             [*dsp_paths, *(path for path in configured_dsp_path.split(";") if path)]
         )
         process = subprocess.Popen(
-            [python, "-u", "-m", "body_runtime_host.midas_worker", "--model", model],
+            [python, "-u", "-m", "body_runtime_host.midas_worker", "--model", model, "--runtime", runtime],
             cwd=root, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             text=True, encoding="utf-8", bufsize=1,
         )
@@ -153,8 +159,9 @@ class MiDaSDepthService:
                     started = time.monotonic()
                     try:
                         result = self._infer(frame)
+                        actual_runtime = str(result.get("runtime") or "unknown")
                         result.update({
-                            "state": "ready", "runtime": "htp", "device": "htp",
+                            "state": "ready", "runtime": actual_runtime, "device": actual_runtime,
                             "frame_id": frame_id, "captured_at": frame.get("captured_at"),
                             "depth_type": "relative",
                         })
@@ -163,12 +170,12 @@ class MiDaSDepthService:
                         self._failure_count = 0
                         self._retry_at = 0.0
                     except Exception as exc:
-                        LOG.warning("MiDaS HTP inference unavailable: %s", str(exc)[:240])
+                        LOG.warning("MiDaS inference unavailable: %s", str(exc)[:240])
                         self._failure_count = min(5, self._failure_count + 1)
                         self._retry_at = time.monotonic() + min(60.0, 2.0 ** self._failure_count)
                         with self._lock:
                             self._latest.update(
-                                state="error", runtime="htp", device=None,
+                                state="error", runtime=self.settings()["runtime"], device=None,
                                 error=str(exc)[:240], frame_id=frame_id,
                                 latency_ms=round((time.monotonic() - started) * 1000.0, 1),
                             )

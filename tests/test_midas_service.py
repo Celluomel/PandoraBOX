@@ -14,13 +14,23 @@ class MiDaSDepthServiceTests(unittest.TestCase):
         self.assertEqual(service.status()["state"], "disabled")
         self.assertEqual(service.settings()["depth_type"], "relative")
         self.assertEqual(service.settings()["model"], "MiDaS-V2-Small-HTP")
-        self.assertEqual(service.settings()["runtime"], "htp")
+        self.assertEqual(service.settings()["runtime"], "htp_auto")
 
     def test_inference_interval_is_bounded(self):
         values = {"BODY_MIDAS_ENABLED": False, "BODY_MIDAS_INTERVAL_S": 0.1}
         service = MiDaSDepthService(lambda key, default: values.get(key, default), lambda: {})
 
         self.assertEqual(service.settings()["interval_s"], 0.15)
+
+    def test_runtime_prefers_htp_and_allows_safe_cpu_fallback(self):
+        values = {"BODY_MIDAS_ENABLED": False, "BODY_MIDAS_RUNTIME": "htp_auto"}
+        service = MiDaSDepthService(lambda key, default: values.get(key, default), lambda: {})
+        self.assertEqual(service.settings()["runtime"], "htp_auto")
+
+    def test_invalid_runtime_setting_falls_back_to_htp_auto(self):
+        values = {"BODY_MIDAS_ENABLED": False, "BODY_MIDAS_RUNTIME": "cuda"}
+        service = MiDaSDepthService(lambda key, default: values.get(key, default), lambda: {})
+        self.assertEqual(service.settings()["runtime"], "htp_auto")
 
     @unittest.skipUnless(importlib.util.find_spec("cv2"), "OpenCV is not installed in the local test runtime")
     def test_qnn_preprocess_preserves_aspect_and_restores_depth_to_camera_size(self):

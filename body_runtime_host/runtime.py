@@ -771,6 +771,10 @@ class BodyHost:
         self.config["BODY_MIDAS_ENABLED"] = _payload_bool(
             payload.get("midas_enabled"), _payload_bool(self.value("BODY_MIDAS_ENABLED", False)),
         )
+        midas_runtime = str(payload.get("midas_runtime", self.value("BODY_MIDAS_RUNTIME", "htp_auto")) or "htp_auto").strip().lower()
+        if midas_runtime not in {"htp_auto", "htp", "cpu"}:
+            raise ValueError("MiDaS runtime must be htp_auto, htp, or cpu")
+        self.config["BODY_MIDAS_RUNTIME"] = midas_runtime
         self.config["BODY_MIDAS_INTERVAL_S"] = max(
             0.15, min(30.0, float(payload.get("midas_interval_s", self.value("BODY_MIDAS_INTERVAL_S", 0.5)) or 0.5)),
         )

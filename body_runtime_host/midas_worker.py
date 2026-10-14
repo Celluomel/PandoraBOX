@@ -52,17 +52,27 @@ def _restore_depth(output: np.ndarray, image_size: tuple[int, int], scale: float
     return cv2.resize(depth, image_size, interpolation=cv2.INTER_LINEAR)
 
 
-def _load_model(path: str):
+def _load_model(path: str, runtime_preference: str):
     from qai_appbuilder import LogLevel, QNNConfig, QNNContext, Runtime
 
     if not os.path.isfile(path):
         raise RuntimeError(f"MiDaS HTP DLC not found: {path}")
-    QNNConfig.Config(runtime=Runtime.HTP, log_level=LogLevel.ERROR)
-    model = QNNContext(model_name="body_midas", model_path=path)
-    input_shapes = model.getInputShapes()
-    if not input_shapes:
-        raise RuntimeError("MiDaS HTP model reports no input tensor")
-    return model, tuple(int(value) for value in input_shapes[0])
+    runtimes = [Runtime.HTP, Runtime.CPU] if runtime_preference == "htp_auto" else [
+        Runtime.HTP if runtime_preference == "htp" else Runtime.CPU
+    ]
+    errors = []
+    for runtime in runtimes:
+        try:
+            QNNConfig.Config(runtime=runtime, log_level=LogLevel.ERROR)
+            model = QNNContext(model_name="body_midas", model_path=path)
+            input_shapes = model.getInputShapes()
+            if not input_shapes:
+                raise RuntimeError("MiDaS model reports no input tensor")
+            actual_runtime = "htp" if runtime == Runtime.HTP else "cpu"
+            return model, tuple(int(value) for value in input_shapes[0]), actual_runtime
+        except Exception as exc:
+            errors.append(f"{runtime}: {str(exc)[:180]}")
+    raise RuntimeError("; ".join(errors))
 
 
 def main() -> None:
@@ -70,10 +80,11 @@ def main() -> None:
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", required=True)
+    parser.add_argument("--runtime", choices=("htp_auto", "htp", "cpu"), default="htp_auto")
     args = parser.parse_args()
     protocol_out = os.fdopen(os.dup(sys.stdout.fileno()), "w", buffering=1)
     os.dup2(sys.stderr.fileno(), sys.stdout.fileno())
-    model, input_shape = _load_model(args.model)
+    model, input_shape, actual_runtime = _load_model(args.model, args.runtime)
     for line in sys.stdin:
         try:
             request = json.loads(line)
@@ -85,7 +96,15 @@ def main() -> None:
             image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
             tensor, scale, padding = _prepare_input(image_rgb, input_shape)
             inference_started = time.monotonic()
-            output = model.Inference([tensor])
+            try:
+                output = model.Inference([tensor])
+            except Exception:
+                if args.runtime != "htp_auto" or actual_runtime != "htp":
+                    raise
+                model = None
+                model, input_shape, actual_runtime = _load_model(args.model, "cpu")
+                tensor, scale, padding = _prepare_input(image_rgb, input_shape)
+                output = model.Inference([tensor])
             inference_ms = (time.monotonic() - inference_started) * 1000.0
             if isinstance(output, (list, tuple)):
                 output = output[0]
@@ -99,7 +118,7 @@ def main() -> None:
             if not gray_ok or not color_ok:
                 raise RuntimeError("could not encode MiDaS depth output")
             protocol_out.write(json.dumps({
-                "ok": True, "runtime": "htp", "inference_ms": round(inference_ms, 1),
+                "ok": True, "runtime": actual_runtime, "inference_ms": round(inference_ms, 1),
                 "latency_ms": round((time.monotonic() - total_started) * 1000.0, 1),
                 "frame_id": request.get("frame_id"), "captured_at": request.get("captured_at"),
                 "width": int(image_rgb.shape[1]), "height": int(image_rgb.shape[0]),
