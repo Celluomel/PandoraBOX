@@ -39,13 +39,13 @@ class YoloXService:
             "enabled": bool(self._value("ENABLED", False)),
             "python": str(self._value("PYTHON", "/home/arduino/.venvs/yolox-infer/bin/python")),
             "model_path": str(self._value("MODEL_PATH", "/home/arduino/models/yolox-qairt245/yolox-qnn_dlc-w8a8/yolox.dlc")),
+            **self.status(),
             "runtime": str(self._value("RUNTIME", "htp_auto")),
             "confidence": float(self._value("CONFIDENCE", 0.25)),
             "ambiguity_margin": float(self._value("AMBIGUITY_MARGIN", 0.12)),
             "vlm_fallback": bool(self._value("VLM_FALLBACK", True)),
             "vlm_cooldown_s": float(self._value("VLM_COOLDOWN_S", 15.0)),
             "interval_s": float(self._value("INTERVAL_S", 0.5)),
-            **self.status(),
         }
 
     def status(self) -> dict:
