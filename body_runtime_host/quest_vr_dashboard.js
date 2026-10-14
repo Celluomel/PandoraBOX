@@ -42,8 +42,6 @@ export class QuestVRDashboard {
     this.actionBusy = false;
     this.cameraBitmap = null;
     this.cameraDetectionCount = 0;
-    this.cameraSourceFrames = new Map();
-    this.cameraDetectionFrameId = null;
     this.cameraMessage = 'CAMERA · WAITING';
     this.cameraBackgroundActive = false;
     this.cameraHitArea = null;
@@ -814,23 +812,10 @@ export class QuestVRDashboard {
     try {
       const bytes = Uint8Array.from(atob(encoded), character => character.charCodeAt(0));
       const source = await createImageBitmap(new Blob([bytes], { type: frame.mime_type || 'image/jpeg' }));
-      const sourceId = String(frame.frame_id || frame.captured_at || frame.timestamp || '');
-      if (sourceId) {
-        this.cameraSourceFrames.get(sourceId)?.close?.();
-        this.cameraSourceFrames.set(sourceId, source);
-      }
-      while (this.cameraSourceFrames.size > 12) {
-        const oldest = this.cameraSourceFrames.keys().next().value;
-        this.cameraSourceFrames.get(oldest)?.close?.();
-        this.cameraSourceFrames.delete(oldest);
-      }
       const detectionId = yolo.state === 'ready' && yolo.frame_id != null ? String(yolo.frame_id) : '';
-      if (detectionId && detectionId === this.cameraDetectionFrameId) return;
-      const analyzedFrame = detectionId ? this.cameraSourceFrames.get(detectionId) : null;
-      const matchingFrame = Boolean(detectionId && analyzedFrame);
       const fresh = Number(yolo.captured_at) > 0 && Math.abs(Date.now() / 1000 - Number(yolo.captured_at)) < 2.5;
-      const detections = matchingFrame && fresh && Array.isArray(yolo.detections) ? yolo.detections : [];
-      const displaySource = matchingFrame ? analyzedFrame : source;
+      const detections = fresh && Array.isArray(yolo.detections) ? yolo.detections : [];
+      const displaySource = source;
       let bitmap = await createImageBitmap(displaySource);
       this.cameraDetectionCount = detections.length;
       if (detections.length) {
@@ -857,7 +842,6 @@ export class QuestVRDashboard {
         }
         bitmap = await createImageBitmap(canvas);
       }
-      if (detectionId) this.cameraDetectionFrameId = detectionId;
       this.cameraBitmap?.close?.();
       this.cameraBitmap = bitmap;
       this.cameraMessage = 'LIVE';

@@ -11,7 +11,6 @@ let liveTof = null;
 let liveRadar = null;
 let cameraFrameId = null;
 let cameraBusy = false;
-const cameraFrames = new Map();
 let cameraDisplayKey = null;
 let imuBusy = false;
 let tofBusy = false;
@@ -482,43 +481,20 @@ async function pollCamera() {
     }
     const id = frame.frame_id || frame.captured_at || frame.timestamp;
     const frameKey = String(id);
-    cameraFrames.set(frameKey, {
+    const displayFrame = {
       id: frameKey,
       src: `data:${frame.mime_type || 'image/jpeg'};base64,${frame.image_base64}`,
       width: Number(frame.width) || 640,
       height: Number(frame.height) || 480,
       source: frame.source || result.source || 'Body camera · live',
       capturedAt: Number(frame.captured_at) || 0,
-    });
-    while (cameraFrames.size > 12) cameraFrames.delete(cameraFrames.keys().next().value);
+    };
 
     const yolo = result.yolo || {};
     const detectionId = yolo.state === 'ready' && yolo.frame_id != null ? String(yolo.frame_id) : '';
     const fresh = Number(yolo.captured_at) > 0 && Math.abs(Date.now() / 1000 - Number(yolo.captured_at)) < 2.5;
-    let analyzedFrame = detectionId ? cameraFrames.get(detectionId) : null;
-    if (detectionId && fresh && !analyzedFrame) {
-      const exactResponse = await fetch(`/body/camera/yolo-frame?frame_id=${encodeURIComponent(detectionId)}`, { cache: 'no-store' });
-      if (exactResponse.ok) {
-        const exactResult = await exactResponse.json();
-        const exact = exactResult.camera;
-        if (exactResult.available && exact?.image_base64 && String(exact.frame_id) === detectionId) {
-          analyzedFrame = {
-            id: detectionId,
-            src: `data:${exact.mime_type || 'image/jpeg'};base64,${exact.image_base64}`,
-            width: Number(exact.width) || 640,
-            height: Number(exact.height) || 480,
-            source: exact.source || 'Body camera · analyzed frame',
-            capturedAt: Number(exact.captured_at) || 0,
-          };
-          cameraFrames.set(detectionId, analyzedFrame);
-          while (cameraFrames.size > 12) cameraFrames.delete(cameraFrames.keys().next().value);
-        }
-      }
-    }
-    const drawDetections = Boolean(analyzedFrame && fresh && detectionId === analyzedFrame.id);
-    const displayFrame = drawDetections ? analyzedFrame : cameraFrames.get(frameKey);
-    const detections = drawDetections && Array.isArray(yolo.detections) ? yolo.detections : [];
-    const displayKey = `${displayFrame.id}:${drawDetections ? detectionId : ''}`;
+    const detections = fresh && Array.isArray(yolo.detections) ? yolo.detections : [];
+    const displayKey = `${frameKey}:${detectionId}:${detections.length}`;
     if (displayKey === cameraDisplayKey) return;
     cameraDisplayKey = displayKey;
     cameraFrameId = displayFrame.id;
@@ -644,4 +620,4 @@ async function pollRadar() {
 initRobotVisual();
 window.addEventListener('resize', updateStatus);
 void poll(); void pollCamera(); void pollImu(); void pollTof(); void pollRadar();
-setInterval(poll, 800); setInterval(pollCamera, 400); setInterval(pollImu, 1000); setInterval(pollTof, 1000); setInterval(pollRadar, 500);
+setInterval(poll, 800); setInterval(pollCamera, 150); setInterval(pollImu, 1000); setInterval(pollTof, 1000); setInterval(pollRadar, 500);

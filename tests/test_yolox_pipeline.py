@@ -10,13 +10,12 @@ from body_runtime_host.yolox_service import YoloXService
 
 
 class YoloXPipelineTests(unittest.TestCase):
-    def test_vr_camera_holds_frame_until_matching_yolox_result(self):
+    def test_vr_camera_keeps_live_frames_and_holds_recent_yolox_boxes(self):
         source = (Path(__file__).resolve().parents[1] / "body_runtime_host" / "quest_vr.js").read_text()
 
-        self.assertIn("if (!yoloFrameId || yoloFrameId === lastCameraDetectionFrameId) return;", source)
-        self.assertIn("if (!exactResult.available || String(exactResult.camera?.frame_id) !== yoloFrameId) return;", source)
-        self.assertIn("if (yolo.state === 'disabled')", source)
-        self.assertNotIn("setCameraFrame(displayFrame, exactDetectionFrame ? yolo", source)
+        self.assertIn("await vrDashboard.setCameraFrame(frame, displayDetections)", source)
+        self.assertIn("detectionAge <= 2.5", source)
+        self.assertNotIn("/body/camera/yolo-frame?frame_id=", source)
 
     def test_decodes_candidates_and_maps_boxes_back_from_letterbox(self):
         rows = np.zeros((2, 85), dtype=np.float32)
@@ -149,17 +148,19 @@ class YoloXPipelineTests(unittest.TestCase):
         self.assertIn("yolox_enabled", BODY_GUI_HTML)
         self.assertIn("BODY_YOLO_ENABLED", Path("body_runtime_host/worldmodel/core.py").read_text(encoding="utf-8"))
         self.assertIn("strokeRect", dashboard)
-        self.assertIn("cameraSourceFrames", dashboard)
-        self.assertIn("cameraDetectionFrameId", dashboard)
+        self.assertIn("const displaySource = source", dashboard)
+        self.assertIn("fresh && Array.isArray(yolo.detections)", dashboard)
         self.assertIn("result.yolo || {}", quest)
 
-    def test_2d_hud_preview_overlays_boxes_on_the_matching_camera_frame(self):
+    def test_2d_hud_preview_refreshes_live_video_and_holds_recent_boxes(self):
         preview_html = Path("body_runtime_host/quest_hud_preview.html").read_text(encoding="utf-8")
         preview_script = Path("body_runtime_host/quest_hud_preview.js").read_text(encoding="utf-8")
         self.assertIn('id="camera-yolo-overlay"', preview_html)
         self.assertIn("const yolo = result.yolo || {}", preview_script)
-        self.assertIn("cameraFrames.get(detectionId)", preview_script)
-        self.assertIn("/body/camera/yolo-frame?frame_id=", preview_script)
+        self.assertIn("const displayFrame = {", preview_script)
+        self.assertIn("const detections = fresh && Array.isArray(yolo.detections)", preview_script)
+        self.assertNotIn("/body/camera/yolo-frame?frame_id=", preview_script)
+        self.assertIn("setInterval(pollCamera, 150)", preview_script)
         self.assertIn("drawCameraYoloOverlay(displayFrame, detections)", preview_script)
 
     def test_camera_yolox_settings_are_written_to_body_config(self):

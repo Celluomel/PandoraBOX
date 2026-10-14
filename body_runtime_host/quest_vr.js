@@ -254,30 +254,16 @@ async function pollCameraFrame() {
     const frameId = frame.frame_id || frame.captured_at || frame.timestamp;
     const yolo = result.yolo || {};
     const yoloFrameId = yolo.state === 'ready' && yolo.frame_id != null ? String(yolo.frame_id) : null;
-    let displayFrame = null;
-    let displayDetections = {};
-    if (yolo.state === 'disabled') {
-      if (frameId === lastCameraFrameId) return;
-      displayFrame = frame;
-      lastCameraFrameId = frameId;
-    } else {
-      if (!yoloFrameId || yoloFrameId === lastCameraDetectionFrameId) return;
-      const exactResponse = await fetch(`/body/camera/yolo-frame?frame_id=${encodeURIComponent(yoloFrameId)}`, { cache: 'no-store', credentials: 'same-origin' });
-      if (!exactResponse.ok) return;
-      const exactResult = await exactResponse.json();
-      if (!exactResult.available || String(exactResult.camera?.frame_id) !== yoloFrameId) return;
-      displayFrame = exactResult.camera;
-      displayDetections = yolo;
-      lastCameraFrameId = yoloFrameId;
-      lastCameraDetectionFrameId = yoloFrameId;
-    }
-    if (displayFrame) {
-      await vrDashboard.setCameraFrame(displayFrame, displayDetections);
-      if (cameraBackgroundActive && vrDashboard.cameraBitmap) {
-        cameraBackgroundTexture.image = vrDashboard.cameraBitmap;
-        cameraBackgroundTexture.needsUpdate = true;
-        updateCameraArcGeometry(vrDashboard.cameraBitmap);
-      }
+    if (String(frameId) === String(lastCameraFrameId) && yoloFrameId === lastCameraDetectionFrameId) return;
+    const detectionAge = Number(yolo.captured_at) > 0 ? Date.now() / 1000 - Number(yolo.captured_at) : Infinity;
+    const displayDetections = yolo.state === 'ready' && detectionAge >= 0 && detectionAge <= 2.5 ? yolo : {};
+    lastCameraFrameId = frameId;
+    lastCameraDetectionFrameId = yoloFrameId;
+    await vrDashboard.setCameraFrame(frame, displayDetections);
+    if (cameraBackgroundActive && vrDashboard.cameraBitmap) {
+      cameraBackgroundTexture.image = vrDashboard.cameraBitmap;
+      cameraBackgroundTexture.needsUpdate = true;
+      updateCameraArcGeometry(vrDashboard.cameraBitmap);
     }
   } catch (error) {
     vrDashboard.setCameraStatus('CAMERA · RECONNECTING', true);
