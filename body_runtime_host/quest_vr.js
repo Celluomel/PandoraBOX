@@ -147,6 +147,8 @@ let sensorFrameId = '';
 let sensorDepthValues = null;
 let latestSensorYolo = {};
 let latestSensorDepthStatus = null;
+let sensorMetricCalibration = null;
+let sensorCalibrationCheckedAt = 0;
 let sensorYoloFrameId = '';
 let sensorRadarSignature = '';
 let sensorViewInitialized = false;
@@ -325,19 +327,19 @@ function stopCameraPolling() {
 
 function labelSprite(text) {
   const c = document.createElement('canvas');
-  c.width = 512;
+  c.width = 640;
   c.height = 96;
   const ctx = c.getContext('2d');
   ctx.fillStyle = '#07110ddd';
-  ctx.fillRect(0, 12, 512, 72);
+  ctx.fillRect(0, 12, 640, 72);
   ctx.strokeStyle = '#73bd91';
   ctx.lineWidth = 3;
-  ctx.strokeRect(2, 13, 508, 70);
+  ctx.strokeRect(2, 13, 636, 70);
   ctx.fillStyle = '#e0f4e7';
   ctx.font = 'bold 38px system-ui';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText(String(text).slice(0, 24), 256, 48);
+  ctx.fillText(String(text).slice(0, 32), 320, 48);
   const texture = new THREE.CanvasTexture(c);
   texture.colorSpace = THREE.SRGBColorSpace;
   const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false }));
@@ -376,6 +378,25 @@ function relativeDepthAt(image, u, v) {
   const y = Math.max(0, Math.min(image.height - 1, Math.round(v * (image.height - 1))));
   const gray = image.pixels[(y * image.width + x) * 4];
   return 1.1 + (1 - gray / 255) * 5.8;
+}
+
+async function refreshSensorMetricCalibration() {
+  const now = Date.now();
+  if (now - sensorCalibrationCheckedAt < 10000) return;
+  sensorCalibrationCheckedAt = now;
+  try {
+    const response = await fetch('/body/camera/depth-calibration', { cache: 'no-store', credentials: 'same-origin' });
+    if (response.ok) sensorMetricCalibration = await response.json();
+  } catch (error) {
+    console.warn('Could not load persistent MiDaS metric calibration:', error);
+  }
+}
+
+function calibratedSensorDistance(relativeDepth) {
+  const calibration = sensorMetricCalibration;
+  if (!calibration?.available) return null;
+  const distance = Number(calibration.scale_m_per_relative_unit) * relativeDepth + Number(calibration.offset_m);
+  return Number.isFinite(distance) ? Math.max(0.2, Math.min(15, distance)) : null;
 }
 
 function buildSensorDepthCloud(depth, grayImage, colorImage) {
@@ -450,7 +471,10 @@ function updateSensorYolo(yolo) {
     outline.position.set(centerX, centerY, -z);
     outline.renderOrder = 3;
     sensorObjectGroup.add(outline);
-    const label = labelSprite(`${detection.label || detection.class_name || 'object'} ${Math.round(Number(detection.confidence || detection.score || 0) * 100)}% · est.`);
+    const distance = calibratedSensorDistance(z);
+    const confidence = Math.round(Number(detection.confidence || detection.score || 0) * 100);
+    const distanceText = distance == null ? 'rel.' : `${distance.toFixed(1)} m`;
+    const label = labelSprite(`${detection.label || detection.class_name || 'object'} ${confidence}% · ${distanceText}`);
     label.scale.set(Math.max(0.9, Math.min(1.8, boxWidth)), 0.24, 1);
     label.position.set(centerX, centerY + boxHeight / 2 + 0.16, -z);
     label.renderOrder = 4;
@@ -498,13 +522,15 @@ function updateSensorReadout(depth, yoloCount, radarCount) {
   document.querySelector('#source').textContent = 'LIVE SENSORS';
   document.querySelector('#pose').textContent = 'Sensor origin · heading uncalibrated';
   document.querySelector('#age').textContent = Number.isFinite(age) ? `${age.toFixed(1)} s` : '—';
-  setStatus(`Live sensor scene · MiDaS ${depth?.runtime || depth?.state || 'waiting'}${depth?.inference_ms != null ? ` ${Number(depth.inference_ms).toFixed(1)} ms` : ''} · ${yoloCount} YOLOX labels · ${radarCount} mmWave targets · MiDaS scale is relative, not metric`);
+  const rangeStatus = sensorMetricCalibration?.available ? 'calibrated YOLOX ranges' : 'relative depth; calibrate for metres';
+  setStatus(`Live sensor scene · MiDaS ${depth?.runtime || depth?.state || 'waiting'}${depth?.inference_ms != null ? ` ${Number(depth.inference_ms).toFixed(1)} ms` : ''} · ${yoloCount} YOLOX labels · ${radarCount} mmWave targets · ${rangeStatus}`);
 }
 
 async function pollSensorDepth() {
   if (sensorDepthPollInFlight || activeSceneMode !== 'sensors') return;
   sensorDepthPollInFlight = true;
   try {
+    await refreshSensorMetricCalibration();
     const response = await fetch('/body/camera/depth', { cache: 'no-store', credentials: 'same-origin' });
     if (!response.ok) throw new Error('MiDaS endpoint unavailable');
     const depth = await response.json();
