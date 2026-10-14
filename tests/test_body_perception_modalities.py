@@ -12,6 +12,18 @@ sys.path.insert(0, str(ROOT))
 
 
 class BodyPerceptionModalitiesTest(unittest.TestCase):
+    def test_urgent_vlm_fallback_is_allowed_when_background_interpreter_is_disabled(self):
+        from concurrent.futures import Future
+        from body_runtime_host.worldmodel.scene_interpreter import BodySceneInterpreter
+
+        interpreter = BodySceneInterpreter({"BODY_LLM_ENABLED": False})
+        future = Future()
+        with patch.object(interpreter._executor, "submit", return_value=future) as submit:
+            interpreter.submit({}, urgent=True)
+
+        submit.assert_called_once()
+        self.assertIs(interpreter._future, future)
+
     def test_native_lidar_projection_bounds_points_and_reports_truncation(self):
         from types import SimpleNamespace
         from body_runtime_host.worldmodel.perception import sensor_projections

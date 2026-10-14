@@ -463,7 +463,7 @@ class BodySceneInterpreter:
 
     def submit(self, packet: Dict[str, Any], *, urgent: bool = False) -> None:
         """Schedule at most one bounded interpretation at a time."""
-        if not self._enabled():
+        if not self._enabled() and not urgent:
             return
         now = time.time()
         with self._lock:

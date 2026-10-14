@@ -783,7 +783,9 @@ class BodyHost:
         return {"ok": True, **self.camera_settings()}
 
     def _queue_yolo_vlm_fallback(self, frame: dict, result: dict) -> None:
-        if not bool(self.value("BODY_LLM_ENABLED", False)) or not self._yolo_fallback_lock.acquire(blocking=False):
+        if (not bool(self.value("BODY_YOLO_VLM_FALLBACK", True))
+                or not str(self.value("BODY_LLM_MODEL", "") or "").strip()
+                or not self._yolo_fallback_lock.acquire(blocking=False)):
             return
 
         def interpret_ambiguous_frame():
