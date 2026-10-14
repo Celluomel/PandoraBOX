@@ -195,7 +195,7 @@ if [ "$HAS_NVIDIA_ACCELERATOR" -eq 0 ] && grep -aFq 'arduino,monza' /proc/device
   fi
 fi
 
-if ! "$BODY_PYTHON" -c "import websockets, imageio_ffmpeg, cv2, numpy, torch, mujoco, fastembed, serial" >/dev/null 2>&1; then
+if ! "$BODY_PYTHON" -c "import websockets, imageio_ffmpeg, cv2, numpy, torch, timm, mujoco, fastembed, serial" >/dev/null 2>&1; then
   echo "[*] Body dependencies are missing or incomplete. Installing them..."
   "$BODY_PYTHON" -m pip install --upgrade pip
   "$BODY_PYTHON" -m pip install -r body_requirements.txt
@@ -203,7 +203,7 @@ else
   echo "[OK] Body dependencies already installed."
 fi
 
-if ! "$BODY_PYTHON" -c "import websockets, imageio_ffmpeg, cv2, numpy, torch, mujoco, fastembed, serial" >/dev/null 2>&1; then
+if ! "$BODY_PYTHON" -c "import websockets, imageio_ffmpeg, cv2, numpy, torch, timm, mujoco, fastembed, serial" >/dev/null 2>&1; then
   echo "[ERROR] Body dependencies are still unavailable after installation."
   exit 1
 fi

@@ -169,7 +169,9 @@ class BodyHost:
         self._local_camera: LocalCameraCapture | None = None
         self._local_camera_lock = threading.RLock()
         from body_runtime_host.yolox_service import YoloXService
+        from body_runtime_host.midas_service import MiDaSDepthService
         self._yolox_service = YoloXService(self.value, self._camera_provider, self._queue_yolo_vlm_fallback)
+        self._midas_service = MiDaSDepthService(self.value, self._camera_provider)
         self._yolo_fallback_lock = threading.Lock()
         self._body_vlm_test_lock = threading.Lock()
         self._body_vlm_test_status: dict = {"status": "idle", "job_id": None}
@@ -663,6 +665,7 @@ class BodyHost:
             "face_detection_enabled": bool(self.value("BODY_FACE_DETECTION_ENABLED", False)),
             "face_detection_status": "configured" if bool(self.value("BODY_FACE_DETECTION_ENABLED", False)) else "disabled",
             "yolox": self._yolox_service.settings(),
+            "midas": self._midas_service.settings(),
             "capture": capture_status,
         }
 
@@ -690,6 +693,10 @@ class BodyHost:
             return {"available": False, "error": "Analyzed camera frame is no longer available"}
         return {"available": True, "camera": frame}
 
+    def camera_depth(self) -> dict:
+        result = self._midas_service.status()
+        return {"available": bool(result.get("depth_jpeg_base64")), **result}
+
     def _configure_local_camera(self, start: bool | None = None) -> dict:
         settings = self.camera_settings()
         should_start = settings["startup_enabled"] if start is None else bool(start)
@@ -712,8 +719,10 @@ class BodyHost:
         capture = self._configure_local_camera(start=bool(enabled))
         if enabled:
             self._yolox_service.start()
+            self._midas_service.start()
         else:
             self._yolox_service.stop()
+            self._midas_service.stop()
         return {"ok": capture.get("status") in {"starting", "capturing", "stopped"}, **capture}
 
     def update_camera_settings(self, payload: dict) -> dict:
@@ -759,9 +768,16 @@ class BodyHost:
         if yolo_values["BODY_YOLO_RUNTIME"] not in {"htp_auto", "htp", "cpu"}:
             raise ValueError("YOLOX runtime must be htp_auto, htp, or cpu")
         self.config.update(yolo_values)
+        self.config["BODY_MIDAS_ENABLED"] = _payload_bool(
+            payload.get("midas_enabled"), _payload_bool(self.value("BODY_MIDAS_ENABLED", False)),
+        )
+        self.config["BODY_MIDAS_INTERVAL_S"] = max(
+            1.0, min(30.0, float(payload.get("midas_interval_s", self.value("BODY_MIDAS_INTERVAL_S", 2.0)) or 2.0)),
+        )
         self.save_config()
-        self._configure_local_camera(start=was_capturing or yolo_values["BODY_YOLO_ENABLED"])
+        self._configure_local_camera(start=was_capturing or yolo_values["BODY_YOLO_ENABLED"] or self.config["BODY_MIDAS_ENABLED"])
         self._yolox_service.reconfigure()
+        self._midas_service.reconfigure()
         if self._worldmodel is not None:
             self.reload_worldmodel_source()
         return {"ok": True, **self.camera_settings()}
@@ -3079,9 +3095,12 @@ class BodyHost:
         if self.http_server is None:
             LOG.error("Body host did not start; refusing to run a second sensor/plugin loop")
             return
-        if bool(self.value("BODY_CAMERA_STARTUP_ENABLED", False)) or bool(self.value("BODY_YOLO_ENABLED", False)):
+        if (bool(self.value("BODY_CAMERA_STARTUP_ENABLED", False))
+                or bool(self.value("BODY_YOLO_ENABLED", False))
+                or bool(self.value("BODY_MIDAS_ENABLED", False))):
             self._configure_local_camera(start=True)
         self._yolox_service.start()
+        self._midas_service.start()
         if bool(self.value("BODY_ROS2_ENABLED", False)):
             ros_status = self._start_ros2_bridge()
             if ros_status.get("available"):
@@ -3119,6 +3138,7 @@ class BodyHost:
             if self._local_camera is not None:
                 self._local_camera.stop()
         self._yolox_service.stop()
+        self._midas_service.stop()
         self.stop_nav2_simulation_stack()
         self._stop_ros2_bridge()
         self.stop_robot_sim()
@@ -3370,6 +3390,8 @@ class BodyHost:
                     self._send(owner.camera_settings())
                 elif path == "/body/camera/frame":
                     self._send(owner.camera_frame())
+                elif path == "/body/camera/depth":
+                    self._send(owner.camera_depth())
                 elif path == "/body/camera/yolo-frame":
                     query = parse_qs(urlparse(self.path).query)
                     frame_id = (query.get("frame_id") or [None])[0]

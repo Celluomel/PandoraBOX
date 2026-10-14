@@ -11,6 +11,9 @@ opencv-python>=4.8,<5
 # so a separate body venv is optional.
 numpy>=1.24
 torch>=2.0
+# MiDaS 3.1's embedded Swin2-Tiny model uses timm. MiDaS itself and model
+# weights load lazily through torch.hub only when BODY_MIDAS_ENABLED is true.
+timm>=0.9.16,<2
 mujoco>=3.3,<4
 # USB serial transport for the stock FNK0031 FNHR firmware (Ventuno Q / Linux).
 pyserial>=3.5,<4

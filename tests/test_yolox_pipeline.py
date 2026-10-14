@@ -173,19 +173,36 @@ class YoloXPipelineTests(unittest.TestCase):
                 host = BodyHost()
                 host._configure_local_camera = lambda start=None: {"status": "stopped"}
                 host._yolox_service.reconfigure = lambda: None
+                host._midas_service.reconfigure = lambda: None
                 host.update_camera_settings({
                     "yolox_enabled": True,
                     "yolox_runtime": "cpu",
                     "yolox_confidence": 0.42,
                     "yolox_vlm_fallback": False,
+                    "midas_enabled": True,
+                    "midas_interval_s": 3.5,
                 })
                 saved = json.loads(config_path.read_text(encoding="utf-8"))
                 self.assertTrue(saved["BODY_YOLO_ENABLED"])
                 self.assertEqual(saved["BODY_YOLO_RUNTIME"], "cpu")
                 self.assertEqual(saved["BODY_YOLO_CONFIDENCE"], 0.42)
                 self.assertFalse(saved["BODY_YOLO_VLM_FALLBACK"])
+                self.assertTrue(saved["BODY_MIDAS_ENABLED"])
+                self.assertEqual(saved["BODY_MIDAS_INTERVAL_S"], 3.5)
         finally:
             config_path.unlink(missing_ok=True)
+
+    def test_midas_is_optional_and_requirements_are_declared_for_body_install(self):
+        from body_runtime_host.midas_service import MiDaSDepthService
+
+        values = {"BODY_MIDAS_ENABLED": False, "BODY_MIDAS_INTERVAL_S": 2.0}
+        service = MiDaSDepthService(lambda key, default: values.get(key, default), lambda: {})
+        service.start()
+        self.assertEqual(service.status()["state"], "disabled")
+        requirements = Path("body_requirements.txt").read_text(encoding="utf-8")
+        installer = Path("start_body.sh").read_text(encoding="utf-8")
+        self.assertIn("timm>=", requirements)
+        self.assertIn("import torch, timm", installer)
 
 
 if __name__ == "__main__":
