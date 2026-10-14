@@ -83,6 +83,18 @@ world.add(bodyGroup);
 const sensorSceneGroup = new THREE.Group();
 sensorSceneGroup.visible = false;
 world.add(sensorSceneGroup);
+const sensorGround = new THREE.Group();
+const sensorGroundPlane = new THREE.Mesh(
+  new THREE.PlaneGeometry(4.2, 4.2),
+  new THREE.MeshStandardMaterial({ color: '#14241b', roughness: 0.94, metalness: 0.02, side: THREE.DoubleSide, transparent: true, opacity: 0.14 }),
+);
+sensorGroundPlane.rotation.x = -Math.PI / 2;
+sensorGroundPlane.position.y = -0.035;
+sensorGround.add(sensorGroundPlane);
+const sensorGroundGrid = new THREE.GridHelper(4.2, 14, '#4e8d69', '#294c3a');
+sensorGroundGrid.position.y = 0.005;
+sensorGround.add(sensorGroundGrid);
+sensorSceneGroup.add(sensorGround);
 const sensorDepthCloud = new THREE.Points(
   new THREE.BufferGeometry(),
   new THREE.PointsMaterial({ size: 0.035, vertexColors: true, sizeAttenuation: true, transparent: true, opacity: 0.94 }),
@@ -967,17 +979,25 @@ async function selectSceneMode(mode) {
     activeSceneMode = 'sensors';
     vrDashboard.setSceneMode('sensors');
     if (!sensorViewInitialized) {
-      orbit.target.set(0, 0.55, -3);
-      camera.position.set(0, 2.1, 5.5);
-      camera.lookAt(0, 0.55, -3);
+      await refreshSensorMetricCalibration();
+      const calibratedFarRange = Number(sensorMetricCalibration?.calibrated_range_m?.[1]);
+      const frameRange = sensorMetricCalibration?.available && Number.isFinite(calibratedFarRange)
+        ? Math.max(1.5, Math.min(5, calibratedFarRange + 0.5)) : 6.9;
+      orbit.target.set(0, 0.55, -frameRange * 0.42);
+      camera.position.set(0, 0.55 + frameRange * 0.42, frameRange * 1.05);
+      camera.lookAt(orbit.target);
       orbit.update();
       sensorViewInitialized = true;
     }
     world.visible = true;
+    floor.visible = false;
+    sceneGrid.visible = false;
+    roomLine.visible = false;
     bodyGroup.visible = false;
     objectsGroup.visible = false;
     semanticSplatGroup.visible = false;
     sensorSceneGroup.visible = true;
+    sensorGround.visible = true;
     planar?.setAttribute('aria-pressed', 'false');
     sensors?.setAttribute('aria-pressed', 'true');
     gaussian?.setAttribute('aria-pressed', 'false');
@@ -1002,6 +1022,9 @@ async function selectSceneMode(mode) {
       objectsGroup.visible = true;
       semanticSplatGroup.visible = true;
       sensorSceneGroup.visible = false;
+      floor.visible = true;
+      sceneGrid.visible = true;
+      roomLine.visible = true;
       planar?.setAttribute('aria-pressed', 'false');
       sensors?.setAttribute('aria-pressed', 'false');
       gaussian?.setAttribute('aria-pressed', 'true');
@@ -1014,6 +1037,9 @@ async function selectSceneMode(mode) {
       objectsGroup.visible = true;
       semanticSplatGroup.visible = true;
       sensorSceneGroup.visible = false;
+      floor.visible = true;
+      sceneGrid.visible = true;
+      roomLine.visible = true;
       planar?.setAttribute('aria-pressed', 'true');
       sensors?.setAttribute('aria-pressed', 'false');
       gaussian?.setAttribute('aria-pressed', 'false');
@@ -1031,6 +1057,9 @@ async function selectSceneMode(mode) {
   objectsGroup.visible = true;
   semanticSplatGroup.visible = true;
   sensorSceneGroup.visible = false;
+  floor.visible = true;
+  sceneGrid.visible = true;
+  roomLine.visible = true;
   planar?.setAttribute('aria-pressed', 'true');
   sensors?.setAttribute('aria-pressed', 'false');
   gaussian?.setAttribute('aria-pressed', 'false');
