@@ -530,7 +530,7 @@ class BodyHostHttpTest(unittest.TestCase):
                     self.assertEqual(response.headers.get_content_type(), "text/html")
                 self.assertIn("Live controller telemetry · Quest + FNK0031", preview_html)
                 self.assertIn("LiDAR · polar scan", preview_html)
-                self.assertIn("mmWave · range / azimuth", preview_html)
+                self.assertIn("mmWave · XY / range (m)", preview_html)
                 with urllib.request.urlopen(f"{base}/quest-hud-preview.js", timeout=5) as response:
                     preview_script = response.read().decode("utf-8")
                     self.assertEqual(response.headers.get_content_type(), "text/javascript")
