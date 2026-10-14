@@ -13,7 +13,7 @@ class YoloXPipelineTests(unittest.TestCase):
     def test_vr_camera_keeps_live_frames_and_holds_recent_yolox_boxes(self):
         source = (Path(__file__).resolve().parents[1] / "body_runtime_host" / "quest_vr.js").read_text()
 
-        self.assertIn("await vrDashboard.setCameraFrame(frame, displayDetections)", source)
+        self.assertIn("await vrDashboard.setCameraFrame(frame)", source)
         self.assertIn("detectionAge <= 2.5", source)
         self.assertNotIn("/body/camera/yolo-frame?frame_id=", source)
 

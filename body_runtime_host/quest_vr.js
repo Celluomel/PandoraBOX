@@ -34,7 +34,6 @@ let cameraPollTimer = null;
 let cameraPollInFlight = false;
 let imuPollInFlight = false;
 let lastCameraFrameId = null;
-let lastCameraDetectionFrameId = null;
 let lastDashboardTelemetryAt = 0;
 let lastFnkTelemetryAt = 0;
 let xrFollowYaw = null;
@@ -141,9 +140,13 @@ let gaussianAssetStatus = null;
 let gaussianViewer = null;
 let gaussianLoadPromise = null;
 let activeSceneMode = 'simulation';
-let sensorPollInFlight = false;
+let sensorDepthPollInFlight = false;
+let sensorYoloPollInFlight = false;
+let sensorRadarPollInFlight = false;
 let sensorFrameId = '';
 let sensorDepthValues = null;
+let latestSensorYolo = {};
+let latestSensorDepthStatus = null;
 let sensorYoloFrameId = '';
 let sensorRadarSignature = '';
 let sensorViewInitialized = false;
@@ -282,7 +285,7 @@ async function pollCameraFrame() {
   if (!vrDashboard.visible || cameraPollInFlight) return;
   cameraPollInFlight = true;
   try {
-    const response = await fetch('/body/camera/frame', { cache: 'no-store', credentials: 'same-origin' });
+    const response = await fetch('/body/camera/image', { cache: 'no-store', credentials: 'same-origin' });
     if (!response.ok) throw new Error(`Camera frame HTTP ${response.status}`);
     const result = await response.json();
     const frame = result.camera || {};
@@ -291,14 +294,9 @@ async function pollCameraFrame() {
       return;
     }
     const frameId = frame.frame_id || frame.captured_at || frame.timestamp;
-    const yolo = result.yolo || {};
-    const yoloFrameId = yolo.state === 'ready' && yolo.frame_id != null ? String(yolo.frame_id) : null;
-    if (String(frameId) === String(lastCameraFrameId) && yoloFrameId === lastCameraDetectionFrameId) return;
-    const detectionAge = Number(yolo.captured_at) > 0 ? Date.now() / 1000 - Number(yolo.captured_at) : Infinity;
-    const displayDetections = yolo.state === 'ready' && detectionAge >= 0 && detectionAge <= 2.5 ? yolo : {};
+    if (String(frameId) === String(lastCameraFrameId)) return;
     lastCameraFrameId = frameId;
-    lastCameraDetectionFrameId = yoloFrameId;
-    await vrDashboard.setCameraFrame(frame, displayDetections);
+    await vrDashboard.setCameraFrame(frame);
     if (cameraBackgroundActive && vrDashboard.cameraBitmap) {
       cameraBackgroundTexture.image = vrDashboard.cameraBitmap;
       cameraBackgroundTexture.needsUpdate = true;
@@ -323,7 +321,6 @@ function stopCameraPolling() {
   cameraPollTimer = null;
   cameraPollInFlight = false;
   lastCameraFrameId = null;
-  lastCameraDetectionFrameId = null;
 }
 
 function labelSprite(text) {
@@ -401,13 +398,25 @@ function buildSensorDepthCloud(depth, grayImage, colorImage) {
       colors.push(colorImage.pixels[colorIndex] / 255, colorImage.pixels[colorIndex + 1] / 255, colorImage.pixels[colorIndex + 2] / 255);
     }
   }
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-  geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
-  geometry.computeBoundingSphere();
-  sensorDepthCloud.geometry.dispose();
-  sensorDepthCloud.geometry = geometry;
+  const geometry = sensorDepthCloud.geometry;
+  const previousPositions = geometry.getAttribute('position');
+  const previousColors = geometry.getAttribute('color');
+  if (previousPositions?.array.length === positions.length && previousColors?.array.length === colors.length) {
+    previousPositions.array.set(positions);
+    previousColors.array.set(colors);
+    previousPositions.needsUpdate = true;
+    previousColors.needsUpdate = true;
+    geometry.computeBoundingSphere();
+  } else {
+    const nextGeometry = new THREE.BufferGeometry();
+    nextGeometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    nextGeometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+    nextGeometry.computeBoundingSphere();
+    sensorDepthCloud.geometry.dispose();
+    sensorDepthCloud.geometry = nextGeometry;
+  }
   sensorDepthValues = grayImage;
+  updateSensorYolo(latestSensorYolo);
   return true;
 }
 
@@ -484,17 +493,22 @@ function updateSensorRadar(perception) {
   return targets.length;
 }
 
-async function pollSensorScene() {
-  if (sensorPollInFlight || activeSceneMode !== 'sensors') return;
-  sensorPollInFlight = true;
+function updateSensorReadout(depth, yoloCount, radarCount) {
+  const age = Number(depth?.captured_at) > 0 ? Math.max(0, Date.now() / 1000 - Number(depth.captured_at)) : Infinity;
+  document.querySelector('#source').textContent = 'LIVE SENSORS';
+  document.querySelector('#pose').textContent = 'Sensor origin · heading uncalibrated';
+  document.querySelector('#age').textContent = Number.isFinite(age) ? `${age.toFixed(1)} s` : '—';
+  setStatus(`Live sensor scene · MiDaS ${depth?.runtime || depth?.state || 'waiting'}${depth?.inference_ms != null ? ` ${Number(depth.inference_ms).toFixed(1)} ms` : ''} · ${yoloCount} YOLOX labels · ${radarCount} mmWave targets · MiDaS scale is relative, not metric`);
+}
+
+async function pollSensorDepth() {
+  if (sensorDepthPollInFlight || activeSceneMode !== 'sensors') return;
+  sensorDepthPollInFlight = true;
   try {
-    const [cameraResponse, depthResponse, radarResponse] = await Promise.all([
-      fetch('/body/camera/frame', { cache: 'no-store', credentials: 'same-origin' }),
-      fetch('/body/camera/depth', { cache: 'no-store', credentials: 'same-origin' }),
-      fetch('/plugins/mmwave_radar/status', { cache: 'no-store', credentials: 'same-origin' }),
-    ]);
-    if (!cameraResponse.ok || !depthResponse.ok || !radarResponse.ok) throw new Error('Sensor endpoint unavailable');
-    const [cameraData, depth, radarStatus] = await Promise.all([cameraResponse.json(), depthResponse.json(), radarResponse.json()]);
+    const response = await fetch('/body/camera/depth', { cache: 'no-store', credentials: 'same-origin' });
+    if (!response.ok) throw new Error('MiDaS endpoint unavailable');
+    const depth = await response.json();
+    latestSensorDepthStatus = depth;
     if (depth.frame_id && depth.frame_id !== sensorFrameId && depth.depth_gray_jpeg_base64) {
       const [gray, color] = await Promise.all([
         decodeSensorImage(depth.depth_gray_jpeg_base64),
@@ -502,23 +516,57 @@ async function pollSensorScene() {
       ]);
       if (gray && color && buildSensorDepthCloud(depth, gray, color)) sensorFrameId = depth.frame_id;
     }
-    const yoloCount = updateSensorYolo(cameraData.yolo || {});
+    const yoloCount = updateSensorYolo(latestSensorYolo);
+    updateSensorReadout(depth, yoloCount, sensorRadarTargetCount);
+  } catch (error) {
+    setStatus(`Live MiDaS scene unavailable: ${error.message}`, true);
+  } finally {
+    sensorDepthPollInFlight = false;
+  }
+}
+
+async function pollSensorYolo() {
+  if (sensorYoloPollInFlight || activeSceneMode !== 'sensors') return;
+  sensorYoloPollInFlight = true;
+  try {
+    const response = await fetch('/body/camera/yolo/status', { cache: 'no-store', credentials: 'same-origin' });
+    if (!response.ok) throw new Error('YOLOX endpoint unavailable');
+    latestSensorYolo = await response.json();
+    const yoloCount = updateSensorYolo(latestSensorYolo);
+    updateSensorReadout(latestSensorDepthStatus, yoloCount, sensorRadarTargetCount);
+  } catch (error) {
+    console.warn('Could not refresh VR YOLOX detections:', error);
+  } finally {
+    sensorYoloPollInFlight = false;
+  }
+}
+
+let sensorRadarTargetCount = 0;
+async function pollSensorRadar() {
+  if (sensorRadarPollInFlight || activeSceneMode !== 'sensors') return;
+  sensorRadarPollInFlight = true;
+  try {
+    const response = await fetch('/plugins/mmwave_radar/status', { cache: 'no-store', credentials: 'same-origin' });
+    if (!response.ok) throw new Error('mmWave endpoint unavailable');
+    const radarStatus = await response.json();
     const radarSample = radarStatus.sample || {};
     const bodyPerception = latestWorldStatus?.perception || {};
-    const radarCount = updateSensorRadar({
+    sensorRadarTargetCount = updateSensorRadar({
       body: bodyPerception.body,
       modalities: { mmwave_radar: radarSample },
     });
-    const age = Number(depth.captured_at) > 0 ? Math.max(0, Date.now() / 1000 - Number(depth.captured_at)) : Infinity;
-    document.querySelector('#source').textContent = 'LIVE SENSORS';
-    document.querySelector('#pose').textContent = 'Sensor origin · heading uncalibrated';
-    document.querySelector('#age').textContent = Number.isFinite(age) ? `${age.toFixed(1)} s` : '—';
-    setStatus(`Live sensor scene · MiDaS ${depth.runtime || 'waiting'}${depth.inference_ms != null ? ` ${Number(depth.inference_ms).toFixed(1)} ms` : ''} · ${yoloCount} YOLOX labels · ${radarCount} mmWave targets · MiDaS scale is relative, not metric`);
   } catch (error) {
-    setStatus(`Live sensor scene unavailable: ${error.message}`, true);
+    console.warn('Could not refresh VR mmWave targets:', error);
   } finally {
-    sensorPollInFlight = false;
+    sensorRadarPollInFlight = false;
   }
+}
+
+function pollSensorScene() {
+  if (activeSceneMode !== 'sensors') return;
+  void pollSensorDepth();
+  void pollSensorYolo();
+  void pollSensorRadar();
 }
 
 function objectGeometry(item) {
@@ -1243,7 +1291,9 @@ window.addEventListener('resize', () => {
 });
 
 setInterval(pollBody, 1200);
-setInterval(() => { if (activeSceneMode === 'sensors') void pollSensorScene(); }, 300);
+setInterval(pollSensorScene, 120);
+setInterval(() => { if (activeSceneMode === 'sensors') void pollSensorYolo(); }, 220);
+setInterval(() => { if (activeSceneMode === 'sensors') void pollSensorRadar(); }, 800);
 void pollBody();
 let previousFrameAt = 0;
 renderer.setAnimationLoop(time => {

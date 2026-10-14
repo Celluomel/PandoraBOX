@@ -42,7 +42,6 @@ export class QuestVRDashboard {
     this.actionHitAreas = {};
     this.actionBusy = false;
     this.cameraBitmap = null;
-    this.cameraDetectionCount = 0;
     this.cameraMessage = 'CAMERA · WAITING';
     this.cameraBackgroundActive = false;
     this.cameraHitArea = null;
@@ -301,7 +300,7 @@ export class QuestVRDashboard {
   }
 
   drawCamera(ctx, x, y, width, height) {
-    this.drawPanel(ctx, x, y, width, height, 'Camera · egocentric', this.cameraBackgroundActive ? 'BACKGROUND ON' : this.cameraBitmap ? `LIVE · ${this.cameraDetectionCount} YOLO` : 'BODY CAMERA');
+    this.drawPanel(ctx, x, y, width, height, 'Camera · egocentric', this.cameraBackgroundActive ? 'BACKGROUND ON' : this.cameraBitmap ? 'LIVE' : 'BODY CAMERA');
     const imageX = x + 18;
     const imageWidth = width - 36;
     const imageHeight = Math.min(height - 112, imageWidth * .78);
@@ -806,7 +805,7 @@ export class QuestVRDashboard {
     return { forward, left, distance: Math.hypot(forward, left) };
   }
 
-  async setCameraFrame(frame, yolo = {}) {
+  async setCameraFrame(frame) {
     const encoded = frame?.image_base64;
     if (!encoded || encoded.length > 5_000_000) {
       this.setCameraStatus(encoded ? 'FRAME TOO LARGE' : 'CAMERA · NO FRAME');
@@ -815,36 +814,8 @@ export class QuestVRDashboard {
     try {
       const bytes = Uint8Array.from(atob(encoded), character => character.charCodeAt(0));
       const source = await createImageBitmap(new Blob([bytes], { type: frame.mime_type || 'image/jpeg' }));
-      const detectionId = yolo.state === 'ready' && yolo.frame_id != null ? String(yolo.frame_id) : '';
-      const fresh = Number(yolo.captured_at) > 0 && Math.abs(Date.now() / 1000 - Number(yolo.captured_at)) < 2.5;
-      const detections = fresh && Array.isArray(yolo.detections) ? yolo.detections : [];
       const displaySource = source;
-      let bitmap = await createImageBitmap(displaySource);
-      this.cameraDetectionCount = detections.length;
-      if (detections.length) {
-        const canvas = document.createElement('canvas');
-        canvas.width = displaySource.width; canvas.height = displaySource.height;
-        const context = canvas.getContext('2d');
-        context.drawImage(displaySource, 0, 0);
-        const lineWidth = Math.max(2, displaySource.width / 480);
-        context.lineWidth = lineWidth;
-        context.font = `600 ${Math.max(14, displaySource.width / 32)}px sans-serif`;
-        for (const detection of detections) {
-          const box = detection.bbox;
-          if (!Array.isArray(box) || box.length !== 4 || !box.every(Number.isFinite)) continue;
-          const [x1, y1, x2, y2] = box.map(value => Math.max(0, Math.min(1, value)));
-          const left = x1 * displaySource.width, top = y1 * displaySource.height;
-          const width = (x2 - x1) * displaySource.width, height = (y2 - y1) * displaySource.height;
-          if (width <= 1 || height <= 1) continue;
-          context.strokeStyle = '#42f5bd'; context.strokeRect(left, top, width, height);
-          const label = `${String(detection.label || 'object')} ${Math.round(Number(detection.confidence || 0) * 100)}%`;
-          const textWidth = context.measureText(label).width;
-          const labelTop = Math.max(0, top - lineWidth - displaySource.width / 28);
-          context.fillStyle = '#06231c'; context.fillRect(left, labelTop, textWidth + 10, displaySource.width / 28);
-          context.fillStyle = '#a7ffdf'; context.fillText(label, left + 5, labelTop + displaySource.width / 45);
-        }
-        bitmap = await createImageBitmap(canvas);
-      }
+      const bitmap = await createImageBitmap(displaySource);
       this.cameraBitmap?.close?.();
       this.cameraBitmap = bitmap;
       this.cameraMessage = 'LIVE';
@@ -858,7 +829,6 @@ export class QuestVRDashboard {
     if (!preserveFrame) {
       this.cameraBitmap?.close?.();
       this.cameraBitmap = null;
-      this.cameraDetectionCount = 0;
     }
     this.cameraMessage = message;
     this.drawDashboard();

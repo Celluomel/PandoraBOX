@@ -687,11 +687,20 @@ class BodyHost:
             "error": settings.get("capture", {}).get("last_error", ""),
         }
 
+    def camera_image(self) -> dict:
+        """Serve camera pixels without coupling the stream to detector metadata."""
+        frame = self._camera_provider() or {}
+        return {"available": bool(frame), "camera": frame}
+
     def camera_yolo_frame(self, frame_id: str | None = None) -> dict:
         frame = self._yolox_service.analyzed_frame(frame_id)
         if not frame:
             return {"available": False, "error": "Analyzed camera frame is no longer available"}
         return {"available": True, "camera": frame}
+
+    def camera_yolo_status(self) -> dict:
+        """Return the latest lightweight detection result without camera pixels."""
+        return self._yolox_service.status()
 
     def camera_depth(self) -> dict:
         result = self._midas_service.status()
@@ -3416,8 +3425,12 @@ class BodyHost:
                     self._send(owner.camera_settings())
                 elif path == "/body/camera/frame":
                     self._send(owner.camera_frame())
+                elif path == "/body/camera/image":
+                    self._send(owner.camera_image())
                 elif path == "/body/camera/depth":
                     self._send(owner.camera_depth())
+                elif path == "/body/camera/yolo/status":
+                    self._send(owner.camera_yolo_status())
                 elif path == "/body/camera/yolo-frame":
                     query = parse_qs(urlparse(self.path).query)
                     frame_id = (query.get("frame_id") or [None])[0]

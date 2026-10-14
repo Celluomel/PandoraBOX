@@ -581,7 +581,7 @@ class BodyHostHttpTest(unittest.TestCase):
                 self.assertIn("createArcGeometry", dashboard_source)
                 self.assertIn("updateTelemetry(telemetry)", dashboard_source)
                 self.assertIn("updateController(controller)", dashboard_source)
-                self.assertIn("async setCameraFrame(frame, yolo = {})", dashboard_source)
+                self.assertIn("async setCameraFrame(frame)", dashboard_source)
                 self.assertIn("setCameraStatus(message, preserveFrame = false)", dashboard_source)
                 self.assertIn("if (this.cameraBitmap && !this.cameraBackgroundActive)", dashboard_source)
                 self.assertIn("CAMERA · SCENE BACKGROUND", dashboard_source)
