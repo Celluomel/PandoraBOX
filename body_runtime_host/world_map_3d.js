@@ -3,6 +3,9 @@ import * as THREE from '../frontend/node_modules/three/build/three.module.js';
 const byId = (id) => document.getElementById(id);
 let latestSensorDepth = null;
 let lastSensorDepthAt = 0;
+let sensorDepthBusy = false;
+let latestSensorYolo = null;
+let displayedCameraFrameId = null;
 const panel = document.querySelector('#view-worldmodel .map-panel');
 if (panel) {
   const header = panel.querySelector('.panel-head');
@@ -355,39 +358,54 @@ async function refreshSensors() {
   if (sensorBusy || activeSource !== 'sensors') return;
   sensorBusy = true;
   try {
-    const frameRequest = fetch('/body/camera/frame', { cache: 'no-store' }).then((response) => response.json());
-    const depthRequest = !latestSensorDepth || performance.now() - lastSensorDepthAt >= 1200
-      ? fetch('/body/camera/depth', { cache: 'no-store' }).then((response) => response.json()).then((result) => {
-        latestSensorDepth = result;
-        lastSensorDepthAt = performance.now();
-        return result;
-      })
-      : Promise.resolve(latestSensorDepth);
-    const [frame, depth] = await Promise.all([frameRequest, depthRequest]);
+    const response = await fetch('/body/camera/frame', { cache: 'no-store' });
+    const frame = await response.json();
     const currentCamera = frame.camera || {};
     const yolo = frame.yolo || {};
+    latestSensorYolo = yolo;
     const cameraImage = byId('world-map-camera-image');
     const cameraEmpty = byId('world-map-camera-empty');
-    setImage(cameraImage, cameraEmpty, currentCamera.image_base64, currentCamera.mime_type || 'image/jpeg');
+    if (currentCamera.frame_id !== displayedCameraFrameId) {
+      setImage(cameraImage, cameraEmpty, currentCamera.image_base64, currentCamera.mime_type || 'image/jpeg');
+      displayedCameraFrameId = currentCamera.frame_id;
+    }
     const detectionAge = Number(yolo.captured_at) > 0 ? Date.now() / 1000 - Number(yolo.captured_at) : Infinity;
     const detections = yolo.state === 'ready' && detectionAge >= 0 && detectionAge <= 2.5
       ? yolo.detections || [] : [];
     drawBoxes(detections, currentCamera.width || 640, currentCamera.height || 480);
     byId('world-map-yolo-state').textContent = `${yolo.state || 'disabled'} · ${(yolo.detections || []).length} boxes${yolo.latency_ms != null ? ` · ${yolo.latency_ms} ms` : ''}`;
     byId('world-map-frame-state').textContent = currentCamera.frame_id ? `${currentCamera.frame_id}${currentCamera.captured_at ? ` · ${Math.max(0, Date.now() / 1000 - currentCamera.captured_at).toFixed(1)}s` : ''}` : 'No frame';
-    const depthImage = byId('world-map-depth-image');
-    const depthEmpty = byId('world-map-depth-empty');
-    setImage(depthImage, depthEmpty, depth.depth_jpeg_base64);
-    byId('world-map-midas-state').textContent = `${depth.state || 'disabled'}${depth.latency_ms != null ? ` · ${depth.latency_ms} ms` : ''}${depth.error ? ` · ${depth.error}` : ''}`;
-    byId('world-map-sensor-note').textContent = `Sensor-only view · frame ${currentCamera.frame_id || 'unavailable'} · depth ${depth.depth_type || 'relative'} · no simulation object positions or metric scale.`;
-    if (depth.depth_gray_jpeg_base64 && depth.frame_id !== cloudFrameId) {
-      await rebuildDepthCloud(depth, yolo.frame_id === depth.frame_id ? yolo.detections || [] : []);
-      cloudFrameId = depth.frame_id;
-    }
+    byId('world-map-sensor-note').textContent = `Sensor-only view · frame ${currentCamera.frame_id || 'unavailable'} · no simulation object positions or metric scale.`;
   } catch (error) {
     byId('world-map-sensor-note').textContent = `Sensor data unavailable: ${error.message}`;
   } finally {
     sensorBusy = false;
+  }
+}
+
+async function refreshSensorDepth() {
+  if (sensorDepthBusy || activeSource !== 'sensors'
+      || (latestSensorDepth && performance.now() - lastSensorDepthAt < 1200)) return;
+  sensorDepthBusy = true;
+  try {
+    const response = await fetch('/body/camera/depth', { cache: 'no-store' });
+    const depth = await response.json();
+    latestSensorDepth = depth;
+    lastSensorDepthAt = performance.now();
+    setImage(byId('world-map-depth-image'), byId('world-map-depth-empty'), depth.depth_jpeg_base64);
+    const depthAge = Number(depth.captured_at) > 0
+      ? ` · ${Math.max(0, Date.now() / 1000 - Number(depth.captured_at)).toFixed(1)}s old` : '';
+    byId('world-map-midas-state').textContent = `${depth.state || 'disabled'}${depth.device ? ` · ${depth.device}` : ''}${depth.latency_ms != null ? ` · ${depth.latency_ms} ms` : ''}${depthAge}${depth.error ? ` · ${depth.error}` : ''}`;
+    if (depth.depth_gray_jpeg_base64 && depth.frame_id !== cloudFrameId && activeRender === '3d') {
+      const depthFrameId = depth.frame_id;
+      void rebuildDepthCloud(depth, latestSensorYolo?.frame_id === depthFrameId ? latestSensorYolo.detections || [] : [])
+        .then(() => { cloudFrameId = depthFrameId; })
+        .catch((error) => console.warn('Could not rebuild MiDaS depth cloud:', error));
+    }
+  } catch (error) {
+    byId('world-map-midas-state').textContent = `unavailable · ${error.message}`;
+  } finally {
+    sensorDepthBusy = false;
   }
 }
 
@@ -478,5 +496,10 @@ window.updateBodyWorldMap3D = (world) => {
   if (activeSource === 'simulation' && activeRender === '3d') buildSimulation(world);
 };
 
-setInterval(() => { if (activeSource === 'sensors') void refreshSensors(); }, 150);
+setInterval(() => {
+  if (activeSource === 'sensors') {
+    void refreshSensors();
+    void refreshSensorDepth();
+  }
+}, 150);
 if (latestWorld) buildSimulation(latestWorld);

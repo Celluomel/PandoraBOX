@@ -772,8 +772,16 @@ class BodyHost:
             payload.get("midas_enabled"), _payload_bool(self.value("BODY_MIDAS_ENABLED", False)),
         )
         self.config["BODY_MIDAS_INTERVAL_S"] = max(
-            1.0, min(30.0, float(payload.get("midas_interval_s", self.value("BODY_MIDAS_INTERVAL_S", 1.0)) or 1.0)),
+            0.15, min(30.0, float(payload.get("midas_interval_s", self.value("BODY_MIDAS_INTERVAL_S", 0.5)) or 0.5)),
         )
+        self.config["BODY_MIDAS_PYTHON"] = str(
+            payload.get("midas_python", self.value("BODY_MIDAS_PYTHON", self._midas_service.DEFAULT_PYTHON))
+            or self._midas_service.DEFAULT_PYTHON
+        ).strip()
+        self.config["BODY_MIDAS_MODEL_PATH"] = str(
+            payload.get("midas_model_path", self.value("BODY_MIDAS_MODEL_PATH", self._midas_service.DEFAULT_MODEL))
+            or self._midas_service.DEFAULT_MODEL
+        ).strip()
         self.save_config()
         self._configure_local_camera(start=was_capturing or yolo_values["BODY_YOLO_ENABLED"] or self.config["BODY_MIDAS_ENABLED"])
         self._yolox_service.reconfigure()

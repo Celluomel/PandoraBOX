@@ -17,9 +17,14 @@ class BodyRuntimeGuiTests(unittest.TestCase):
         self.assertIn("sim?.resize(); buildSimulation(latestWorld); sim?.render()", source)
         self.assertIn("depth_gray_jpeg_base64", source)
         self.assertIn("no simulation object positions", source)
-        self.assertIn("performance.now() - lastSensorDepthAt >= 1200", source)
+        self.assertIn("performance.now() - lastSensorDepthAt < 1200", source)
         self.assertIn("detectionAge <= 2.5", source)
         self.assertIn("currentCamera.image_base64", source)
+        self.assertIn("async function refreshSensorDepth()", source)
+        self.assertIn("sensorDepthBusy", source)
+        self.assertIn("depth.device", source)
+        self.assertIn("s old", source)
+        self.assertIn("activeRender === '3d'", source)
         self.assertIn("}, 150);", source)
 
     def test_modulino_movement_controls_expose_persistent_body_setting_and_live_sample(self):

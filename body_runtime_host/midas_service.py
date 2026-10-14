@@ -1,9 +1,11 @@
-"""Optional, low-rate monocular relative-depth inference for the Body camera."""
+"""Optional HTP-backed monocular relative-depth inference for Body camera frames."""
 from __future__ import annotations
 
-import base64
+import json
 import logging
-from pathlib import Path
+import os
+import subprocess
+import sys
 import threading
 import time
 from typing import Any, Callable
@@ -12,7 +14,9 @@ LOG = logging.getLogger("lumina.body.midas")
 
 
 class MiDaSDepthService:
-    MODEL_TYPE = "MiDaS_small"
+    MODEL_TYPE = "MiDaS-V2-Small-HTP"
+    DEFAULT_PYTHON = "/home/arduino/.venvs/yolox-infer/bin/python"
+    DEFAULT_MODEL = "/home/arduino/models/midas-qualcomm/midas-float.dlc"
 
     def __init__(self, config: Callable[[str, Any], Any], frame_provider: Callable[[], dict]):
         self._config = config
@@ -20,16 +24,13 @@ class MiDaSDepthService:
         self._lock = threading.RLock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
-        self._model = None
-        self._transform = None
-        self._torchvision_ops_library = None
-        self._device = "cpu"
+        self._process: subprocess.Popen | None = None
         self._last_frame_id = None
         self._retry_at = 0.0
         self._failure_count = 0
         self._latest: dict[str, Any] = {
             "state": "disabled", "frame_id": None, "depth_jpeg_base64": None,
-            "latency_ms": None, "depth_type": "relative",
+            "latency_ms": None, "depth_type": "relative", "device": None,
         }
 
     def _value(self, suffix: str, default: Any) -> Any:
@@ -42,7 +43,10 @@ class MiDaSDepthService:
     def settings(self) -> dict:
         return {
             "enabled": bool(self._value("ENABLED", False)),
-            "interval_s": max(1.0, min(30.0, float(self._value("INTERVAL_S", 1.0) or 1.0))),
+            "interval_s": max(0.15, min(30.0, float(self._value("INTERVAL_S", 0.5) or 0.5))),
+            "python": str(self._value("PYTHON", self.DEFAULT_PYTHON)),
+            "model_path": str(self._value("MODEL_PATH", self.DEFAULT_MODEL)),
+            "runtime": "htp",
             "model": self.MODEL_TYPE,
             **self.status(),
         }
@@ -61,12 +65,23 @@ class MiDaSDepthService:
             if self._thread and self._thread.is_alive():
                 return
             self._stop.clear()
-            self._latest.update(state="starting", error=None)
-            self._thread = threading.Thread(target=self._run, name="body-midas-depth", daemon=True)
+            self._latest.update(state="starting", error=None, device=None, runtime="htp")
+            self._thread = threading.Thread(target=self._run, name="body-midas-htp", daemon=True)
             self._thread.start()
 
     def stop(self) -> None:
         self._stop.set()
+        process = self._process
+        self._process = None
+        if process is not None:
+            try:
+                process.terminate()
+                process.wait(timeout=2)
+            except Exception:
+                try:
+                    process.kill()
+                except Exception:
+                    pass
         thread = self._thread
         if thread and thread is not threading.current_thread():
             thread.join(timeout=3.0)
@@ -76,108 +91,100 @@ class MiDaSDepthService:
         self.stop()
         self.start()
 
-    def _load_model(self) -> None:
-        import torch
-
-        if not torch.cuda.is_available():
-            torch.set_num_threads(min(torch.get_num_threads(), 2))
-            try:
-                torch.set_num_interop_threads(1)
-            except RuntimeError:
-                pass
-
-        # The Ventuno CPU Torch build omits these optional torchvision operators;
-        # MiDaS needs torchvision imports but never calls either NMS operation.
-        library = torch.library.Library("torchvision", "FRAGMENT")
-        for name in ("nms", "qnms"):
-            try:
-                torch._C._dispatch_find_schema_or_throw(f"torchvision::{name}", "")
-            except RuntimeError:
-                library.define(
-                    f"{name}(Tensor boxes, Tensor scores, float iou_threshold) -> Tensor"
-                )
-        self._torchvision_ops_library = library
-        self._device = "cuda" if torch.cuda.is_available() else "cpu"
-        # MiDaS_small loads EfficientNet through nested torch.hub.load calls.
-        # A service has no stdin, so pre-approve that known upstream dependency.
-        trusted_list = Path(torch.hub.get_dir()) / "trusted_list"
-        trusted_list.parent.mkdir(parents=True, exist_ok=True)
-        trusted_repositories = set(trusted_list.read_text(encoding="utf-8").splitlines()) if trusted_list.exists() else set()
-        dependency = "rwightman_gen-efficientnet-pytorch"
-        if dependency not in trusted_repositories:
-            with trusted_list.open("a", encoding="utf-8") as trusted_file:
-                trusted_file.write(("" if not trusted_repositories else "\n") + dependency + "\n")
-        model = torch.hub.load("isl-org/MiDaS", self.MODEL_TYPE, trust_repo=True)
-        transforms = torch.hub.load("isl-org/MiDaS", "transforms", trust_repo=True)
-        model.to(self._device).eval()
-        self._model = model
-        self._transform = transforms.small_transform
+    def _worker(self) -> subprocess.Popen:
+        python = str(self._value("PYTHON", self.DEFAULT_PYTHON) or self.DEFAULT_PYTHON).strip()
+        model = str(self._value("MODEL_PATH", self.DEFAULT_MODEL) or self.DEFAULT_MODEL).strip()
+        if not os.path.isfile(python):
+            raise RuntimeError(f"MiDaS AppBuilder Python not found: {python}")
+        if not os.path.isfile(model):
+            raise RuntimeError(f"MiDaS HTP DLC not found: {model}")
+        env = os.environ.copy()
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        env["PYTHONPATH"] = root + os.pathsep + env.get("PYTHONPATH", "")
+        dsp_paths = [
+            os.path.expanduser("~/.local/share/pandorabox/yolox-dsp"),
+            "/usr/lib/dsp/cdsp",
+            "/usr/lib/rfsa/adsp",
+        ]
+        configured_dsp_path = env.get("ADSP_LIBRARY_PATH", "")
+        env["ADSP_LIBRARY_PATH"] = ";".join(
+            [*dsp_paths, *(path for path in configured_dsp_path.split(";") if path)]
+        )
+        process = subprocess.Popen(
+            [python, "-u", "-m", "body_runtime_host.midas_worker", "--model", model],
+            cwd=root, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            text=True, encoding="utf-8", bufsize=1,
+        )
+        self._process = process
+        return process
 
     def _infer(self, frame: dict) -> dict:
-        import cv2
-        import numpy as np
-        import torch
-
-        if self._model is None:
-            self._load_model()
-        raw = base64.b64decode(frame["image_base64"])
-        image = cv2.imdecode(np.frombuffer(raw, dtype=np.uint8), cv2.IMREAD_COLOR)
-        if image is None:
-            raise RuntimeError("Could not decode captured camera frame")
-        rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        started = time.monotonic()
-        with torch.inference_mode():
-            sample = self._transform(rgb).to(self._device)
-            prediction = self._model(sample)
-            prediction = torch.nn.functional.interpolate(
-                prediction.unsqueeze(1), size=rgb.shape[:2], mode="bicubic", align_corners=False,
-            ).squeeze()
-        depth = prediction.float().cpu().numpy()
-        low, high = np.percentile(depth, (2, 98))
-        normalized = np.clip((depth - low) / max(float(high - low), 1e-6), 0.0, 1.0)
-        gray = np.asarray(normalized * 255.0, dtype=np.uint8)
-        colored = cv2.applyColorMap(gray, cv2.COLORMAP_TURBO)
-        gray_ok, gray_encoded = cv2.imencode(".jpg", gray, [int(cv2.IMWRITE_JPEG_QUALITY), 72])
-        if not gray_ok:
-            raise RuntimeError("Could not encode MiDaS relative-depth samples")
-        ok, encoded = cv2.imencode(".jpg", colored, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
-        if not ok:
-            raise RuntimeError("Could not encode MiDaS depth visualization")
-        return {
-            "state": "ready", "frame_id": frame.get("frame_id"),
-            "captured_at": frame.get("captured_at"), "depth_type": "relative",
-            "width": int(rgb.shape[1]), "height": int(rgb.shape[0]),
-            "device": self._device,
-            "latency_ms": round((time.monotonic() - started) * 1000.0, 1),
-            "depth_gray_jpeg_base64": base64.b64encode(gray_encoded.tobytes()).decode("ascii"),
-            "depth_jpeg_base64": base64.b64encode(encoded.tobytes()).decode("ascii"),
+        process = self._process
+        if process is None or process.poll() is not None:
+            process = self._worker()
+        request = {
+            "frame_id": frame.get("frame_id"),
+            "captured_at": frame.get("captured_at"),
+            "image_base64": frame.get("image_base64"),
         }
+        assert process.stdin is not None and process.stdout is not None
+        process.stdin.write(json.dumps(request, separators=(",", ":")) + "\n")
+        process.stdin.flush()
+        line = process.stdout.readline()
+        if not line:
+            raise RuntimeError(f"MiDaS HTP worker exited ({process.poll()}); see Body runtime log")
+        result = json.loads(line)
+        if not result.get("ok"):
+            raise RuntimeError(str(result.get("error") or "MiDaS HTP inference failed"))
+        return result
 
     def _run(self) -> None:
-        cadence = max(1.0, min(30.0, float(self._value("INTERVAL_S", 1.0) or 1.0)))
+        cadence = max(0.15, min(30.0, float(self._value("INTERVAL_S", 0.5) or 0.5)))
         try:
             while not self._stop.is_set():
+                if time.monotonic() < self._retry_at:
+                    self._stop.wait(min(cadence, self._retry_at - time.monotonic()))
+                    continue
                 cycle_started = time.monotonic()
                 frame = self._frame_provider() or {}
                 frame_id = frame.get("frame_id")
-                if (frame.get("image_base64") and frame_id != self._last_frame_id
-                        and time.monotonic() >= self._retry_at):
+                if frame.get("image_base64") and frame_id != self._last_frame_id:
                     self._last_frame_id = frame_id
+                    started = time.monotonic()
                     try:
                         result = self._infer(frame)
+                        result.update({
+                            "state": "ready", "runtime": "htp", "device": "htp",
+                            "frame_id": frame_id, "captured_at": frame.get("captured_at"),
+                            "depth_type": "relative",
+                        })
                         with self._lock:
                             self._latest = result
                         self._failure_count = 0
                         self._retry_at = 0.0
                     except Exception as exc:
-                        LOG.warning("MiDaS depth inference unavailable: %s", str(exc)[:240])
+                        LOG.warning("MiDaS HTP inference unavailable: %s", str(exc)[:240])
                         self._failure_count = min(5, self._failure_count + 1)
                         self._retry_at = time.monotonic() + min(60.0, 2.0 ** self._failure_count)
                         with self._lock:
-                            self._latest.update(state="error", error=str(exc)[:240], frame_id=frame_id)
+                            self._latest.update(
+                                state="error", runtime="htp", device=None,
+                                error=str(exc)[:240], frame_id=frame_id,
+                                latency_ms=round((time.monotonic() - started) * 1000.0, 1),
+                            )
                 remaining = self._remaining_cadence_wait(cadence, cycle_started, time.monotonic())
                 self._stop.wait(remaining)
         finally:
+            process, self._process = self._process, None
+            if process is not None:
+                try:
+                    process.terminate()
+                    process.wait(timeout=1)
+                except Exception:
+                    try:
+                        process.kill()
+                    except Exception:
+                        pass
             with self._lock:
                 if self._latest.get("state") not in {"error", "disabled"}:
                     self._latest["state"] = "stopped"

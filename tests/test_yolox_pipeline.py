@@ -181,6 +181,8 @@ class YoloXPipelineTests(unittest.TestCase):
                     "yolox_confidence": 0.42,
                     "yolox_vlm_fallback": False,
                     "midas_enabled": True,
+                    "midas_python": "/opt/qai/bin/python",
+                    "midas_model_path": "/models/midas.dlc",
                     "midas_interval_s": 3.5,
                 })
                 saved = json.loads(config_path.read_text(encoding="utf-8"))
@@ -190,6 +192,8 @@ class YoloXPipelineTests(unittest.TestCase):
                 self.assertFalse(saved["BODY_YOLO_VLM_FALLBACK"])
                 self.assertTrue(saved["BODY_MIDAS_ENABLED"])
                 self.assertEqual(saved["BODY_MIDAS_INTERVAL_S"], 3.5)
+                self.assertEqual(saved["BODY_MIDAS_PYTHON"], "/opt/qai/bin/python")
+                self.assertEqual(saved["BODY_MIDAS_MODEL_PATH"], "/models/midas.dlc")
         finally:
             config_path.unlink(missing_ok=True)
 
@@ -200,6 +204,8 @@ class YoloXPipelineTests(unittest.TestCase):
         service = MiDaSDepthService(lambda key, default: values.get(key, default), lambda: {})
         service.start()
         self.assertEqual(service.status()["state"], "disabled")
+        self.assertEqual(service.settings()["runtime"], "htp")
+        self.assertIn("midas-float.dlc", service.settings()["model_path"])
         requirements = Path("body_requirements.txt").read_text(encoding="utf-8")
         installer = Path("start_body.sh").read_text(encoding="utf-8")
         self.assertIn("timm>=", requirements)
