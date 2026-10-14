@@ -34,6 +34,7 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertIn("/body/camera/depth", source)
         self.assertIn("/body/camera/frame", source)
         self.assertIn("/worldmodel/status", source)
+        self.assertIn("/plugins/mmwave_radar/status", source)
         self.assertIn("updateSensorRadar(perception)", source)
         self.assertIn("· est.", source)
         dashboard = (root / "body_runtime_host" / "quest_vr_dashboard.js").read_text(encoding="utf-8")

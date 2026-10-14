@@ -488,15 +488,13 @@ async function pollSensorScene() {
   if (sensorPollInFlight || activeSceneMode !== 'sensors') return;
   sensorPollInFlight = true;
   try {
-    const [cameraResponse, depthResponse, worldResponse] = await Promise.all([
+    const [cameraResponse, depthResponse, radarResponse] = await Promise.all([
       fetch('/body/camera/frame', { cache: 'no-store', credentials: 'same-origin' }),
       fetch('/body/camera/depth', { cache: 'no-store', credentials: 'same-origin' }),
-      fetch('/worldmodel/status', { cache: 'no-store', credentials: 'same-origin' }),
+      fetch('/plugins/mmwave_radar/status', { cache: 'no-store', credentials: 'same-origin' }),
     ]);
-    if (!cameraResponse.ok || !depthResponse.ok || !worldResponse.ok) throw new Error('Sensor endpoint unavailable');
-    const [cameraData, depth, worldStatus] = await Promise.all([cameraResponse.json(), depthResponse.json(), worldResponse.json()]);
-    latestWorldStatus = worldStatus;
-    const perception = worldStatus.perception || {};
+    if (!cameraResponse.ok || !depthResponse.ok || !radarResponse.ok) throw new Error('Sensor endpoint unavailable');
+    const [cameraData, depth, radarStatus] = await Promise.all([cameraResponse.json(), depthResponse.json(), radarResponse.json()]);
     if (depth.frame_id && depth.frame_id !== sensorFrameId && depth.depth_gray_jpeg_base64) {
       const [gray, color] = await Promise.all([
         decodeSensorImage(depth.depth_gray_jpeg_base64),
@@ -505,7 +503,12 @@ async function pollSensorScene() {
       if (gray && color && buildSensorDepthCloud(depth, gray, color)) sensorFrameId = depth.frame_id;
     }
     const yoloCount = updateSensorYolo(cameraData.yolo || {});
-    const radarCount = updateSensorRadar(perception);
+    const radarSample = radarStatus.sample || {};
+    const bodyPerception = latestWorldStatus?.perception || {};
+    const radarCount = updateSensorRadar({
+      body: bodyPerception.body,
+      modalities: { mmwave_radar: radarSample },
+    });
     const age = Number(depth.captured_at) > 0 ? Math.max(0, Date.now() / 1000 - Number(depth.captured_at)) : Infinity;
     document.querySelector('#source').textContent = 'LIVE SENSORS';
     document.querySelector('#pose').textContent = 'Sensor origin · heading uncalibrated';
