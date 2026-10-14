@@ -128,6 +128,8 @@ class MmWaveRadarTest(unittest.TestCase):
         self.assertEqual(frame.sequence, 9)
         self.assertEqual(frame.source, "hlk_ld2450_ventuno_bridge")
         self.assertEqual(frame.targets[0].position_m, [0.4, 1.2, 0.0])
+        self.assertEqual(frame.metadata["timestamp_source"], "bridge_rpc_midpoint")
+        self.assertGreaterEqual(frame.metadata["rpc_round_trip_s"], 0.0)
         self.assertEqual(source.status()["transport"], "local_arduino_router_rpc")
         self.assertTrue(source.status()["available"])
         self.assertEqual(source.status()["sequence"], 9)

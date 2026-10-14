@@ -541,7 +541,7 @@ async function calibrateMetricDepth() {
     lastSensorDepthAt = 0;
     await refreshSensorDepth();
   } catch (error) {
-    depthCalibrationMessage = `Calibration not saved: ${error.message}`;
+    depthCalibrationMessage = `Calibration not saved: ${error.message} · frames ${diagnostics.depth}, YOLO ${diagnostics.yolo}, radar ${diagnostics.radar}, bearing ${diagnostics.bearing}`;
   } finally {
     depthCalibrationBusy = false;
     button.disabled = false;

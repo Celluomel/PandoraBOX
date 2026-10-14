@@ -60,6 +60,7 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertIn("frameDelta <= 0.75", source)
         self.assertLess(source.index("radarHistory.push(latestRadar)"), source.index("nearest_to=${encodeURIComponent(depth.captured_at)}"))
         self.assertIn("diagnostics.bearing", source)
+        self.assertIn("frames ${diagnostics.depth}, YOLO ${diagnostics.yolo}, radar ${diagnostics.radar}, bearing ${diagnostics.bearing}", source)
         self.assertIn("time-matched camera, YOLOX, MiDaS and LD2450", source)
         self.assertIn("/body/camera/depth-calibration", runtime)
         self.assertIn("midas_metric_calibration.json", runtime)

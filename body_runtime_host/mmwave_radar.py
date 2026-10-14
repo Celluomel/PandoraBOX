@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 import json
+import math
 import struct
 import time
 import urllib.request
@@ -274,7 +275,10 @@ class VentunoBridgeMmWaveSource(MmWaveRadarSource):
 
     def read(self) -> MmWaveFrame:
         try:
-            payload = self._client().call(self.method, timeout=0.5)
+            bridge = self._client()
+            request_started = time.time()
+            payload = bridge.call(self.method, timeout=0.5)
+            request_finished = time.time()
             if isinstance(payload, bytes):
                 payload = payload.decode("utf-8")
             if isinstance(payload, str):
@@ -284,6 +288,17 @@ class VentunoBridgeMmWaveSource(MmWaveRadarSource):
             if not payload.get("available", True):
                 raise TimeoutError(str(payload.get("error") or "No LD2450 frame received yet"))
             self.last_frame = frame_from_payload(payload, source=self.name)
+            try:
+                sensor_timestamp = float(payload.get("timestamp"))
+            except (TypeError, ValueError):
+                sensor_timestamp = 0.0
+            if not math.isfinite(sensor_timestamp) or sensor_timestamp <= 0:
+                round_trip = max(0.0, request_finished - request_started)
+                self.last_frame.timestamp = (request_started + request_finished) / 2.0
+                self.last_frame.metadata.update({
+                    "timestamp_source": "bridge_rpc_midpoint",
+                    "rpc_round_trip_s": round(round_trip, 4),
+                })
             self.last_ok = time.time()
             self.last_error = ""
             return self.last_frame
