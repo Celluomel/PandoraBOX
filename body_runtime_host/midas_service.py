@@ -35,10 +35,14 @@ class MiDaSDepthService:
     def _value(self, suffix: str, default: Any) -> Any:
         return self._config("BODY_MIDAS_" + suffix, default)
 
+    @staticmethod
+    def _remaining_cadence_wait(cadence: float, started_at: float, now: float) -> float:
+        return max(0.0, cadence - (now - started_at))
+
     def settings(self) -> dict:
         return {
             "enabled": bool(self._value("ENABLED", False)),
-            "interval_s": max(1.0, min(30.0, float(self._value("INTERVAL_S", 2.0) or 2.0))),
+            "interval_s": max(1.0, min(30.0, float(self._value("INTERVAL_S", 1.0) or 1.0))),
             "model": self.MODEL_TYPE,
             **self.status(),
         }
@@ -74,6 +78,13 @@ class MiDaSDepthService:
 
     def _load_model(self) -> None:
         import torch
+
+        if not torch.cuda.is_available():
+            torch.set_num_threads(min(torch.get_num_threads(), 2))
+            try:
+                torch.set_num_interop_threads(1)
+            except RuntimeError:
+                pass
 
         # The Ventuno CPU Torch build omits these optional torchvision operators;
         # MiDaS needs torchvision imports but never calls either NMS operation.
@@ -143,9 +154,10 @@ class MiDaSDepthService:
         }
 
     def _run(self) -> None:
-        cadence = max(1.0, min(30.0, float(self._value("INTERVAL_S", 2.0) or 2.0)))
+        cadence = max(1.0, min(30.0, float(self._value("INTERVAL_S", 1.0) or 1.0)))
         try:
             while not self._stop.is_set():
+                cycle_started = time.monotonic()
                 frame = self._frame_provider() or {}
                 frame_id = frame.get("frame_id")
                 if (frame.get("image_base64") and frame_id != self._last_frame_id
@@ -163,7 +175,8 @@ class MiDaSDepthService:
                         self._retry_at = time.monotonic() + min(60.0, 2.0 ** self._failure_count)
                         with self._lock:
                             self._latest.update(state="error", error=str(exc)[:240], frame_id=frame_id)
-                self._stop.wait(cadence)
+                remaining = self._remaining_cadence_wait(cadence, cycle_started, time.monotonic())
+                self._stop.wait(remaining)
         finally:
             with self._lock:
                 if self._latest.get("state") not in {"error", "disabled"}:
