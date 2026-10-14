@@ -498,6 +498,11 @@ class BodyHostHttpTest(unittest.TestCase):
                     body_html = response.read().decode("utf-8")
                 self.assertIn("Restart GenieX", body_html)
                 self.assertIn("/body/llm/restart", body_html)
+                self.assertIn('/world-map-3d.js', body_html)
+                with urllib.request.urlopen(f"{base}/world-map-3d.js", timeout=5) as response:
+                    world_map_bundle = response.read()
+                    self.assertEqual(response.headers.get_content_type(), "text/javascript")
+                self.assertGreater(len(world_map_bundle), 100_000)
                 with patch.object(host, "restart_geniex", return_value={"ok": True, "status": "restarted"}) as restart:
                     self.assertEqual(_post(f"{base}/body/llm/restart", {}), {"ok": True, "status": "restarted"})
                     restart.assert_called_once_with()

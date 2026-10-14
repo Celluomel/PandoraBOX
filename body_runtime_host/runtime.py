@@ -3288,6 +3288,18 @@ class BodyHost:
                         self._write_response(data)
                     except FileNotFoundError:
                         self._send({"error": "Quest VR renderer bundle is not installed"}, 404)
+                elif path == "/world-map-3d.js":
+                    module = ROOT / "body_runtime_host" / "world_map_3d.bundle.js"
+                    try:
+                        data = module.read_bytes()
+                        self.send_response(200)
+                        self.send_header("Content-Type", "text/javascript; charset=utf-8")
+                        self.send_header("Cache-Control", "no-store")
+                        self.send_header("Content-Length", str(len(data)))
+                        self.end_headers()
+                        self._write_response(data)
+                    except FileNotFoundError:
+                        self._send({"error": "3D world map renderer is not installed"}, 404)
                 elif path == "/ui-version":
                     version = hashlib.sha256(BODY_GUI_HTML.encode("utf-8")).hexdigest()[:16]
                     self._send({"version": version})

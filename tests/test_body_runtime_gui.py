@@ -2,6 +2,20 @@ import unittest
 
 
 class BodyRuntimeGuiTests(unittest.TestCase):
+    def test_world_map_switches_between_simulation_and_sensor_only_renderings(self):
+        from body_runtime_host.body_gui import BODY_GUI_HTML
+
+        from pathlib import Path
+        root = Path(__file__).resolve().parents[1]
+        source = (root / "body_runtime_host" / "world_map_3d.js").read_text(encoding="utf-8")
+        self.assertIn('src="/world-map-3d.js"', BODY_GUI_HTML)
+        self.assertIn('data-source="simulation"', source)
+        self.assertIn('data-source="sensors"', source)
+        self.assertIn('data-render="2d"', source)
+        self.assertIn('data-render="3d"', source)
+        self.assertIn("depth_gray_jpeg_base64", source)
+        self.assertIn("no simulation object positions", source)
+
     def test_modulino_movement_controls_expose_persistent_body_setting_and_live_sample(self):
         from body_runtime_host.body_gui import BODY_GUI_HTML
 

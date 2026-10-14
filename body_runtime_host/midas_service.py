@@ -104,6 +104,9 @@ class MiDaSDepthService:
         normalized = np.clip((depth - low) / max(float(high - low), 1e-6), 0.0, 1.0)
         gray = np.asarray(normalized * 255.0, dtype=np.uint8)
         colored = cv2.applyColorMap(gray, cv2.COLORMAP_TURBO)
+        gray_ok, gray_encoded = cv2.imencode(".jpg", gray, [int(cv2.IMWRITE_JPEG_QUALITY), 72])
+        if not gray_ok:
+            raise RuntimeError("Could not encode MiDaS relative-depth samples")
         ok, encoded = cv2.imencode(".jpg", colored, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
         if not ok:
             raise RuntimeError("Could not encode MiDaS depth visualization")
@@ -113,6 +116,7 @@ class MiDaSDepthService:
             "width": int(rgb.shape[1]), "height": int(rgb.shape[0]),
             "device": self._device,
             "latency_ms": round((time.monotonic() - started) * 1000.0, 1),
+            "depth_gray_jpeg_base64": base64.b64encode(gray_encoded.tobytes()).decode("ascii"),
             "depth_jpeg_base64": base64.b64encode(encoded.tobytes()).decode("ascii"),
         }
 
