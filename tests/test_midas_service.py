@@ -12,7 +12,7 @@ class MiDaSDepthServiceTests(unittest.TestCase):
 
         self.assertEqual(service.status()["state"], "disabled")
         self.assertEqual(service.settings()["depth_type"], "relative")
-        self.assertEqual(service.settings()["model"], "DPT_SwinV2_T_256")
+        self.assertEqual(service.settings()["model"], "MiDaS_small")
 
     def test_inference_interval_is_bounded(self):
         values = {"BODY_MIDAS_ENABLED": False, "BODY_MIDAS_INTERVAL_S": 0.1}

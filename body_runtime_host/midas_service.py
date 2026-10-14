@@ -11,7 +11,7 @@ LOG = logging.getLogger("lumina.body.midas")
 
 
 class MiDaSDepthService:
-    MODEL_TYPE = "DPT_SwinV2_T_256"
+    MODEL_TYPE = "MiDaS_small"
 
     def __init__(self, config: Callable[[str, Any], Any], frame_provider: Callable[[], dict]):
         self._config = config
@@ -90,7 +90,7 @@ class MiDaSDepthService:
         transforms = torch.hub.load("isl-org/MiDaS", "transforms", trust_repo=True)
         model.to(self._device).eval()
         self._model = model
-        self._transform = transforms.swin256_transform
+        self._transform = transforms.small_transform
 
     def _infer(self, frame: dict) -> dict:
         import cv2
