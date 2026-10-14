@@ -394,7 +394,7 @@ function updateMetricCalibrationStatus() {
     const [near, far] = metricDepthCalibration.calibrated_range_m || [];
     status.textContent = `Persistent · ±${Number(metricDepthCalibration.rmse_m).toFixed(2)} m fit · ${metricDepthCalibration.sample_count} anchors · ${near}–${far} m. Applied to all YOLOX objects.`;
   } else {
-  status.textContent = 'Uses live camera, near-synchronized YOLOX/MiDaS frames and a bearing-matched LD2450 person. Move closer/farther to anchor all YOLOX objects.';
+  status.textContent = 'Uses time-matched camera, YOLOX, MiDaS and LD2450 samples. Move one visible person closer/farther to anchor all YOLOX objects.';
   }
 }
 
@@ -442,13 +442,14 @@ async function calibrateMetricDepth() {
   depthCalibrationBusy = true;
   depthCalibrationMessage = '';
   button.disabled = true;
-  button.textContent = 'Collecting anchors…';
-  status.textContent = 'For 12 seconds, keep one person visible and move them at least 0.8 m closer/farther (about 1–8 m).';
+  button.textContent = 'Calibrating…';
+  status.textContent = 'For 30 seconds, keep one person visible and move them at least 0.8 m closer/farther (about 1–8 m).';
   const samples = [];
   const seen = new Set();
+  const radarHistory = [];
   let cachedFrameId = '';
   let cachedDepthImage = null;
-  const stopAt = performance.now() + 12000;
+  const stopAt = performance.now() + 30000;
   try {
     while (performance.now() < stopAt) {
       const [depthResponse, radarResponse] = await Promise.all([
@@ -462,28 +463,39 @@ async function calibrateMetricDepth() {
         await new Promise(resolve => setTimeout(resolve, 350));
         continue;
       }
-      let yoloResponse = await fetch(`/body/camera/yolo/status?frame_id=${encodeURIComponent(depth.frame_id)}`, { cache: 'no-store' });
-      if (yoloResponse.status === 404) yoloResponse = await fetch('/body/camera/yolo/status', { cache: 'no-store' });
+      let yoloResponse = await fetch(`/body/camera/yolo/status?nearest_to=${encodeURIComponent(depth.captured_at)}&max_delta_s=0.75`, { cache: 'no-store' });
+      if (yoloResponse.status === 404) {
+        status.textContent = `Waiting for a time-aligned YOLOX frame · ${samples.length} anchors collected.`;
+        await new Promise(resolve => setTimeout(resolve, 350));
+        continue;
+      }
       if (!yoloResponse.ok) throw new Error('YOLOX endpoint is unavailable');
       const yolo = await yoloResponse.json();
-      const sample = radarStatus.sample || {};
+      const latestRadar = radarStatus.sample || {};
+      if (radarStatus.available && latestRadar.timestamp
+          && String(latestRadar.source || '').toLowerCase().startsWith('hlk_ld2450')) {
+        radarHistory.push(latestRadar);
+        if (radarHistory.length > 120) radarHistory.shift();
+      }
       const yoloAt = Number(yolo.captured_at);
       const depthAt = Number(depth.captured_at);
-      const radarAt = Number(sample.timestamp);
       const now = Date.now() / 1000;
-      const radarStatusAge = Number(radarStatus.source_status?.last_ok_age_s);
       const frameDelta = Math.abs(yoloAt - depthAt);
+      const anchorAt = (yoloAt + depthAt) / 2;
+      const radarMatch = radarHistory.reduce((best, item) => {
+        const delta = Math.abs(Number(item.timestamp) - anchorAt);
+        return !best || delta < best.delta ? { item, delta } : best;
+      }, null);
+      const radarDelta = radarMatch?.delta ?? Infinity;
       const synchronized = yolo.state === 'ready' && frameDelta <= 0.75
-        && now - yoloAt <= 2.0 && now - depthAt <= 2.0
-        && radarStatus.available === true && Number.isFinite(radarAt)
-        && now - radarAt <= 1.0 && (!Number.isFinite(radarStatusAge) || radarStatusAge <= 1.0)
-        && Math.abs(radarAt - yoloAt) <= 1.0;
+        && now - yoloAt <= 3.0 && now - depthAt <= 3.0
+        && radarMatch && radarDelta <= 0.75;
       if (synchronized) {
         if (cachedFrameId !== depth.frame_id) {
           cachedDepthImage = await loadGrayDepth(depth.depth_gray_jpeg_base64);
           cachedFrameId = depth.frame_id;
         }
-        const match = matchedRadarAnchor(visibleYoloDetections(yolo), sample);
+        const match = matchedRadarAnchor(yolo.detections, radarMatch.item);
         const key = `${depth.frame_id}|${yolo.frame_id}`;
         if (match && cachedDepthImage && !seen.has(key)) {
           const box = match.detection.bbox.map(Number);
@@ -504,11 +516,12 @@ async function calibrateMetricDepth() {
             distance_m: match.distance,
             bearing_error_deg: match.error,
             frame_delta_s: frameDelta,
+            radar_delta_s: radarDelta,
           });
           seen.add(key);
         }
       }
-      status.textContent = `Collecting live camera + near-synchronized YOLOX/MiDaS + LD2450 anchors · ${samples.length} · move nearer/farther.`;
+      status.textContent = `Collecting time-matched live camera/YOLOX/MiDaS/LD2450 anchors · ${samples.length} · move nearer/farther.`;
       await new Promise(resolve => setTimeout(resolve, 350));
     }
     const response = await fetch('/body/camera/depth-calibration', {

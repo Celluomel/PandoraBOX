@@ -702,9 +702,13 @@ class BodyHost:
             return {"available": False, "error": "Analyzed camera frame is no longer available"}
         return {"available": True, "camera": frame}
 
-    def camera_yolo_status(self, frame_id: str | None = None) -> dict:
+    def camera_yolo_status(self, frame_id: str | None = None, nearest_to: float | None = None,
+                           max_delta_s: float = 0.75) -> dict:
         """Return the latest lightweight detection result without camera pixels."""
-        result = self._yolox_service.detection_result(frame_id)
+        if nearest_to is not None:
+            result = self._yolox_service.nearest_detection_result(nearest_to, max_delta_s)
+        else:
+            result = self._yolox_service.detection_result(frame_id)
         return result or {"state": "unavailable", "detections": [], "frame_id": frame_id}
 
     def camera_depth(self) -> dict:
@@ -3445,7 +3449,11 @@ class BodyHost:
                 elif path == "/body/camera/yolo/status":
                     query = parse_qs(urlparse(self.path).query)
                     frame_id = (query.get("frame_id") or [None])[0]
-                    result = owner.camera_yolo_status(frame_id)
+                    nearest_to = (query.get("nearest_to") or [None])[0]
+                    max_delta_s = float((query.get("max_delta_s") or [0.75])[0])
+                    result = owner.camera_yolo_status(
+                        frame_id, float(nearest_to) if nearest_to is not None else None, max_delta_s
+                    )
                     self._send(result, 200 if result.get("state") != "unavailable" else 404)
                 elif path == "/body/camera/yolo-frame":
                     query = parse_qs(urlparse(self.path).query)

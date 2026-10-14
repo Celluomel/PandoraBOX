@@ -60,6 +60,25 @@ class YoloXService:
             result = self._detection_results.get(str(frame_id))
             return dict(result) if result else None
 
+    def nearest_detection_result(self, captured_at: float, max_delta_s: float = 0.75) -> dict | None:
+        try:
+            captured_at = float(captured_at)
+            max_delta_s = max(0.0, float(max_delta_s))
+        except (TypeError, ValueError):
+            return None
+        with self._lock:
+            candidates = [
+                (abs(float(result.get("captured_at") or 0.0) - captured_at), result)
+                for result in self._detection_results.values()
+                if result.get("state") == "ready" and result.get("captured_at") is not None
+            ]
+            if not candidates:
+                return None
+            delta, result = min(candidates, key=lambda item: item[0])
+            if delta > max_delta_s:
+                return None
+            return {**result, "frame_delta_s": round(delta, 4)}
+
     def analyzed_frame(self, frame_id: str | None = None) -> dict | None:
         with self._lock:
             if frame_id is None:

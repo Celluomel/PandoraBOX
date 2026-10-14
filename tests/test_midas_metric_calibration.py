@@ -30,6 +30,14 @@ class MiDaSMetricCalibrationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "0.8 m"):
             fit_metric_depth(samples)
 
+    def test_rejects_sensor_samples_that_are_not_time_aligned(self):
+        samples = self.make_samples()
+        for sample in samples:
+            sample["radar_delta_s"] = 1.2
+
+        with self.assertRaisesRegex(ValueError, "got 0"):
+            fit_metric_depth(samples)
+
     def test_calibration_persists_and_loads_from_disk(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[1]) as directory:
             path = Path(directory) / "midas_metric_calibration.json"

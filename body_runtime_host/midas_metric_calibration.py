@@ -20,10 +20,12 @@ def fit_metric_depth(samples: list[dict[str, Any]]) -> dict[str, Any]:
             distance = float(sample["distance_m"])
             bearing_error = abs(float(sample.get("bearing_error_deg", 0.0)))
             frame_delta = abs(float(sample.get("frame_delta_s", 0.0)))
+            radar_delta = abs(float(sample.get("radar_delta_s", 0.0)))
         except (KeyError, TypeError, ValueError):
             continue
         if (math.isfinite(relative) and math.isfinite(distance) and math.isfinite(bearing_error)
                 and math.isfinite(frame_delta) and frame_delta <= 0.75
+                and math.isfinite(radar_delta) and radar_delta <= 0.75
                 and 1.1 <= relative <= 6.9 and 0.25 <= distance <= 10.0
                 and bearing_error <= 15.0):
             valid.append((relative, distance))

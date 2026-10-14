@@ -54,9 +54,11 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertIn('id="world-map-midas-calibrate"', source)
         self.assertIn("Applied to all YOLOX objects", source)
         self.assertIn("relativeDepthToMeters", source)
-        self.assertIn("/body/camera/yolo/status?frame_id=", source)
+        self.assertIn("nearest_to=", source)
+        self.assertIn('query.get("nearest_to")', runtime)
+        self.assertIn("performance.now() + 30000", source)
         self.assertIn("frameDelta <= 0.75", source)
-        self.assertIn("near-synchronized YOLOX/MiDaS + LD2450", source)
+        self.assertIn("time-matched camera, YOLOX, MiDaS and LD2450", source)
         self.assertIn("/body/camera/depth-calibration", runtime)
         self.assertIn("midas_metric_calibration.json", runtime)
 
