@@ -117,7 +117,7 @@ DEFAULT_CONFIG = {
     "BODY_YOLO_INTERVAL_S": 0.5,
     "BODY_MIDAS_ENABLED": False,
     "BODY_MIDAS_RUNTIME": "htp_auto",
-    "BODY_MIDAS_INTERVAL_S": 0.5,
+    "BODY_MIDAS_INTERVAL_S": 0.3,
     "BODY_MIDAS_PYTHON": "/home/arduino/.venvs/yolox-infer/bin/python",
     "BODY_MIDAS_MODEL_PATH": "/home/arduino/models/midas-qualcomm/midas-float.dlc",
 }

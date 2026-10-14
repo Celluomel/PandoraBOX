@@ -6,6 +6,9 @@ let lastSensorDepthAt = 0;
 let sensorDepthBusy = false;
 let latestSensorYolo = null;
 let displayedCameraFrameId = null;
+let cloudDepthImage = null;
+let cloudBuildToken = 0;
+let cloudYoloFrameId = '';
 const panel = document.querySelector('#view-worldmodel .map-panel');
 if (panel) {
   const header = panel.querySelector('.panel-head');
@@ -138,6 +141,7 @@ let cloud = makeRenderer(byId('world-map-sensor-3d'), '#06100d');
 let cloudPoints = null;
 let boxGroup = null;
 let cloudFrameId = '';
+let cloudCameraInitialized = false;
 let activeSource = 'simulation';
 let activeRender = '2d';
 let latestWorld = null;
@@ -290,7 +294,11 @@ function setRender(render) {
   } else {
     if (sensor2d) sensor2d.hidden = render !== '2d';
     if (sensor3d) sensor3d.hidden = render !== '3d';
-    if (render === '3d') requestAnimationFrame(() => { resizeCloud(); cloud?.render(); });
+    if (render === '3d') requestAnimationFrame(() => {
+      resizeCloud();
+      if (cloudDepthImage) drawDepthDetections(cloudDepthImage, visibleYoloDetections(latestSensorYolo));
+      cloud?.render();
+    });
   }
   document.querySelectorAll('[data-render]').forEach((button) => button.setAttribute('aria-pressed', String(button.dataset.render === render)));
   updateMode();
@@ -342,6 +350,11 @@ function drawBoxes(detections, width, height) {
   }
 }
 
+function visibleYoloDetections(yolo) {
+  const age = Number(yolo?.captured_at) > 0 ? Date.now() / 1000 - Number(yolo.captured_at) : Infinity;
+  return yolo?.state === 'ready' && age >= 0 && age <= 2.5 ? yolo.detections || [] : [];
+}
+
 function setImage(image, empty, base64, mime = 'image/jpeg') {
   if (base64) {
     image.src = `data:${mime};base64,${base64}`;
@@ -369,10 +382,12 @@ async function refreshSensors() {
       setImage(cameraImage, cameraEmpty, currentCamera.image_base64, currentCamera.mime_type || 'image/jpeg');
       displayedCameraFrameId = currentCamera.frame_id;
     }
-    const detectionAge = Number(yolo.captured_at) > 0 ? Date.now() / 1000 - Number(yolo.captured_at) : Infinity;
-    const detections = yolo.state === 'ready' && detectionAge >= 0 && detectionAge <= 2.5
-      ? yolo.detections || [] : [];
+    const detections = visibleYoloDetections(yolo);
     drawBoxes(detections, currentCamera.width || 640, currentCamera.height || 480);
+    if (activeRender === '3d' && cloudDepthImage && yolo.frame_id !== cloudYoloFrameId) {
+      drawDepthDetections(cloudDepthImage, detections);
+      cloudYoloFrameId = yolo.frame_id || '';
+    }
     byId('world-map-yolo-state').textContent = `${yolo.state || 'disabled'} · ${(yolo.detections || []).length} boxes${yolo.latency_ms != null ? ` · ${yolo.latency_ms} ms` : ''}`;
     byId('world-map-frame-state').textContent = currentCamera.frame_id ? `${currentCamera.frame_id}${currentCamera.captured_at ? ` · ${Math.max(0, Date.now() / 1000 - currentCamera.captured_at).toFixed(1)}s` : ''}` : 'No frame';
     byId('world-map-sensor-note').textContent = `Sensor-only view · frame ${currentCamera.frame_id || 'unavailable'} · no simulation object positions or metric scale.`;
@@ -385,7 +400,7 @@ async function refreshSensors() {
 
 async function refreshSensorDepth() {
   if (sensorDepthBusy || activeSource !== 'sensors'
-      || (latestSensorDepth && performance.now() - lastSensorDepthAt < 1200)) return;
+      || (latestSensorDepth && performance.now() - lastSensorDepthAt < 250)) return;
   sensorDepthBusy = true;
   try {
     const response = await fetch('/body/camera/depth', { cache: 'no-store' });
@@ -398,8 +413,8 @@ async function refreshSensorDepth() {
     byId('world-map-midas-state').textContent = `${depth.state || 'disabled'}${depth.device ? ` · ${depth.device}` : ''}${depth.latency_ms != null ? ` · ${depth.latency_ms} ms` : ''}${depthAge}${depth.error ? ` · ${depth.error}` : ''}`;
     if (depth.depth_gray_jpeg_base64 && depth.frame_id !== cloudFrameId && activeRender === '3d') {
       const depthFrameId = depth.frame_id;
-      void rebuildDepthCloud(depth, latestSensorYolo?.frame_id === depthFrameId ? latestSensorYolo.detections || [] : [])
-        .then(() => { cloudFrameId = depthFrameId; })
+      void rebuildDepthCloud(depth)
+        .then((updated) => { if (updated) cloudFrameId = depthFrameId; })
         .catch((error) => console.warn('Could not rebuild MiDaS depth cloud:', error));
     }
   } catch (error) {
@@ -413,7 +428,10 @@ function resizeCloud() {
   if (!cloud) return;
   const target = new THREE.Vector3(0, 0, -3);
   cloud.camera.userData.target = target;
-  if (!cloudPoints) cloud.camera.position.set(0, 1.6, 7);
+  if (!cloudCameraInitialized) {
+    cloud.camera.position.set(0, 1.6, 7);
+    cloudCameraInitialized = true;
+  }
   cloud.camera.lookAt(target);
   cloud.render();
 }
@@ -425,7 +443,10 @@ function disposeCloudContent() {
     item.traverse?.((node) => {
       node.geometry?.dispose();
       if (Array.isArray(node.material)) node.material.forEach((entry) => entry.dispose());
-      else node.material?.dispose();
+      else {
+        node.material?.map?.dispose();
+        node.material?.dispose();
+      }
     });
   }
   cloudPoints = null;
@@ -444,13 +465,16 @@ async function loadGrayDepth(base64) {
   return { width: canvas.width, height: canvas.height, values: context.getImageData(0, 0, canvas.width, canvas.height).data };
 }
 
-async function rebuildDepthCloud(depth, detections) {
+async function rebuildDepthCloud(depth) {
   if (!cloud || !depth.depth_gray_jpeg_base64) return;
+  const token = ++cloudBuildToken;
   const image = await loadGrayDepth(depth.depth_gray_jpeg_base64);
+  const colorImage = depth.depth_jpeg_base64 ? await loadGrayDepth(depth.depth_jpeg_base64) : image;
+  if (token !== cloudBuildToken || activeSource !== 'sensors' || activeRender !== '3d') return false;
+  cloudDepthImage = image;
   const stride = Math.max(2, Math.ceil(Math.max(image.width, image.height) / 140));
   const positions = [];
   const colorsArray = [];
-  const colorsByKind = ['#55e7cc', '#f2bc65', '#e280ba', '#77d69c'];
   for (let y = 0; y < image.height; y += stride) {
     for (let x = 0; x < image.width; x += stride) {
       const index = (y * image.width + x) * 4;
@@ -459,8 +483,14 @@ async function rebuildDepthCloud(depth, detections) {
       const px = ((x / Math.max(1, image.width - 1)) - 0.5) * distance * 1.28;
       const py = (0.5 - y / Math.max(1, image.height - 1)) * distance * 0.96;
       positions.push(px, py, -distance);
-      const color = new THREE.Color().setHSL(0.47 - relative * 0.3, 0.64, 0.49 + relative * 0.13);
-      colorsArray.push(color.r, color.g, color.b);
+      const colorX = Math.min(colorImage.width - 1, Math.round(x * colorImage.width / image.width));
+      const colorY = Math.min(colorImage.height - 1, Math.round(y * colorImage.height / image.height));
+      const colorIndex = (colorY * colorImage.width + colorX) * 4;
+      colorsArray.push(
+        colorImage.values[colorIndex] / 255,
+        colorImage.values[colorIndex + 1] / 255,
+        colorImage.values[colorIndex + 2] / 255,
+      );
     }
   }
   disposeCloudContent();
@@ -469,7 +499,24 @@ async function rebuildDepthCloud(depth, detections) {
   geometry.setAttribute('color', new THREE.Float32BufferAttribute(colorsArray, 3));
   cloudPoints = new THREE.Points(geometry, new THREE.PointsMaterial({ size: 0.035, vertexColors: true, sizeAttenuation: true, transparent: true, opacity: 0.92 }));
   cloud.scene.add(cloudPoints);
+  drawDepthDetections(image, visibleYoloDetections(latestSensorYolo));
+  resizeCloud();
+  return true;
+}
+
+function drawDepthDetections(image, detections) {
+  if (!cloud || !image || activeRender !== '3d') return;
+  if (boxGroup) {
+    cloud.scene.remove(boxGroup);
+    boxGroup.traverse((node) => {
+      node.geometry?.dispose();
+      if (Array.isArray(node.material)) node.material.forEach((entry) => entry.dispose());
+      else node.material?.dispose();
+      if (node.material?.map) node.material.map.dispose();
+    });
+  }
   boxGroup = new THREE.Group();
+  const colorsByKind = ['#55e7cc', '#f2bc65', '#e280ba', '#77d69c'];
   for (const [index, item] of (detections || []).entries()) {
     const bbox = item.bbox;
     if (!Array.isArray(bbox) || bbox.length < 4) continue;
@@ -482,13 +529,18 @@ async function rebuildDepthCloud(depth, detections) {
     const height = Math.max(0.04, (y2 - y1) * distance * 0.96);
     const centerX = (((x1 + x2) / 2) - 0.5) * distance * 1.28;
     const centerY = (0.5 - (y1 + y2) / 2) * distance * 0.96;
-    const materialBox = new THREE.LineBasicMaterial({ color: colorsByKind[index % colorsByKind.length] });
+    const color = colorsByKind[index % colorsByKind.length];
+    const materialBox = new THREE.LineBasicMaterial({ color, depthTest: false, transparent: true, opacity: 0.95 });
     const edges = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(width, height, Math.max(0.035, distance * 0.035))), materialBox);
     edges.position.set(centerX, centerY, -distance);
     boxGroup.add(edges);
+    const label = makeLabel(`${item.label || item.class_name || item.class || 'object'} ${Math.round(Number(item.confidence ?? item.score ?? 0) * 100)}%`, color);
+    label.scale.set(Math.max(0.95, Math.min(2.0, width)), 0.25, 1);
+    label.position.set(centerX, centerY + height / 2 + 0.17, -distance);
+    boxGroup.add(label);
   }
   cloud.scene.add(boxGroup);
-  resizeCloud();
+  cloud.render();
 }
 
 window.updateBodyWorldMap3D = (world) => {
