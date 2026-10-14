@@ -202,7 +202,7 @@ class YoloXPipelineTests(unittest.TestCase):
         requirements = Path("body_requirements.txt").read_text(encoding="utf-8")
         installer = Path("start_body.sh").read_text(encoding="utf-8")
         self.assertIn("timm>=", requirements)
-        self.assertIn("import torch, timm", installer)
+        self.assertNotIn("torch, timm", installer)
 
 
 if __name__ == "__main__":
