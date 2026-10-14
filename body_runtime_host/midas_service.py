@@ -68,6 +68,7 @@ class MiDaSDepthService:
             if self._thread and self._thread.is_alive():
                 return
             self._stop.clear()
+            self._last_frame_id = None
             self._latest.update(state="starting", error=None, device=None, runtime=self.settings()["runtime"])
             self._thread = threading.Thread(target=self._run, name="body-midas-htp", daemon=True)
             self._thread.start()
