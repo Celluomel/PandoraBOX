@@ -16,7 +16,7 @@ if (panel) {
     simCanvas.id = 'world-map-sim-3d';
     simCanvas.className = 'world-map-canvas';
     simCanvas.hidden = true;
-    mapWrap.append(simCanvas);
+    mapLayout.insertBefore(simCanvas, mapWrap);
     const sensorPanel = document.createElement('section');
     sensorPanel.id = 'world-map-sensor-view';
     sensorPanel.className = 'world-map-sensor-view';
@@ -34,7 +34,7 @@ if (panel) {
       .world-map-canvas{width:100%;height:clamp(300px,48vh,560px);min-height:280px;overflow:hidden;background:#07120f;border:1px solid #263e32;touch-action:none}
       .world-map-canvas canvas{display:block;width:100%;height:100%}
       .world-map-sensor-view[hidden],.world-map-canvas[hidden],.world-map-sensor-2d[hidden]{display:none!important}
-      .map-layout[hidden],.map-wrap>svg[hidden],#map[hidden]{display:none!important}
+      .map-layout[hidden],.map-layout>.map-wrap[hidden],.map-layout>.world-map-canvas[hidden]{display:none!important}
       .world-map-sensor-metrics{display:flex;gap:18px;flex-wrap:wrap;padding:9px 0;color:#8eaa98;font:10px ui-monospace,monospace}
       .world-map-sensor-metrics b{color:#dceee3;font-weight:600}
       .world-map-sensor-2d{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(220px,.8fr);gap:12px;align-items:stretch}
@@ -274,12 +274,11 @@ function setSource(source) {
 function setRender(render) {
   activeRender = render;
   const mapWrap = panel?.querySelector('.map-wrap');
-  const map = byId('map');
   const simCanvas = byId('world-map-sim-3d');
   const sensor2d = byId('world-map-sensor-2d');
   const sensor3d = byId('world-map-sensor-3d');
   if (activeSource === 'simulation') {
-    if (map) map.hidden = render !== '2d';
+    if (mapWrap) mapWrap.hidden = render !== '2d';
     if (simCanvas) simCanvas.hidden = render !== '3d';
     if (mapWrap) mapWrap.classList.toggle('is-3d', render === '3d');
     if (latestWorld && render === '3d') requestAnimationFrame(() => { sim?.resize(); buildSimulation(latestWorld); sim?.render(); });
@@ -295,10 +294,10 @@ function setRender(render) {
 function updateMode() {
   const state = byId('world-map-state');
   if (state) state.textContent = `${activeSource === 'simulation' ? 'Simulation' : 'Sensors'} · ${activeRender.toUpperCase()}`;
-  const map = byId('map');
+  const mapWrap = panel?.querySelector('.map-wrap');
   const simCanvas = byId('world-map-sim-3d');
-  if (map && simCanvas && activeSource === 'simulation') {
-    map.hidden = activeRender !== '2d';
+  if (mapWrap && simCanvas && activeSource === 'simulation') {
+    mapWrap.hidden = activeRender !== '2d';
     simCanvas.hidden = activeRender !== '3d';
   }
 }

@@ -13,7 +13,7 @@ class BodyRuntimeGuiTests(unittest.TestCase):
         self.assertIn('data-source="sensors"', source)
         self.assertIn('data-render="2d"', source)
         self.assertIn('data-render="3d"', source)
-        self.assertIn("#map[hidden]{display:none!important}", source)
+        self.assertIn(".map-layout>.map-wrap[hidden]", source)
         self.assertIn("sim?.resize(); buildSimulation(latestWorld); sim?.render()", source)
         self.assertIn("depth_gray_jpeg_base64", source)
         self.assertIn("no simulation object positions", source)
