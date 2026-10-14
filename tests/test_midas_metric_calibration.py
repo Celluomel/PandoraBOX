@@ -25,6 +25,21 @@ class MiDaSMetricCalibrationTests(unittest.TestCase):
         self.assertEqual(result["rejected_sample_count"], 1)
         self.assertLess(result["rmse_m"], 0.03)
 
+    def test_accepts_five_synchronized_samples_with_range_coverage(self):
+        samples = [
+            {"relative_depth": relative, "distance_m": 0.72 * relative + 0.25,
+             "bearing_error_deg": 4.0}
+            for relative in (1.5, 2.5, 3.5, 4.5, 5.5)
+        ]
+        result = fit_metric_depth(samples)
+        self.assertEqual(result["sample_count"], 5)
+        self.assertAlmostEqual(result["scale_m_per_relative_unit"], 0.72, places=2)
+
+    def test_rejects_fewer_than_five_synchronized_samples(self):
+        samples = self.make_samples()[:4]
+        with self.assertRaisesRegex(ValueError, "at least 5.*got 4"):
+            fit_metric_depth(samples)
+
     def test_rejects_samples_without_range_variation(self):
         samples = [{"relative_depth": 2.0, "distance_m": 2.5} for _ in range(10)]
         with self.assertRaisesRegex(ValueError, "0.8 m"):

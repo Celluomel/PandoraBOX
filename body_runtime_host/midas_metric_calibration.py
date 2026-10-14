@@ -8,6 +8,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+MIN_CALIBRATION_SAMPLES = 5
+
 
 def fit_metric_depth(samples: list[dict[str, Any]]) -> dict[str, Any]:
     """Fit a robust affine mapping after rejecting poorly aligned samples."""
@@ -30,8 +32,8 @@ def fit_metric_depth(samples: list[dict[str, Any]]) -> dict[str, Any]:
                 and bearing_error <= 15.0):
             valid.append((relative, distance))
 
-    if len(valid) < 8:
-        raise ValueError(f"Need at least 8 synchronized radar/YOLOX samples; got {len(valid)}")
+    if len(valid) < MIN_CALIBRATION_SAMPLES:
+        raise ValueError(f"Need at least {MIN_CALIBRATION_SAMPLES} synchronized radar/YOLOX samples; got {len(valid)}")
     distances = [item[1] for item in valid]
     if max(distances) - min(distances) < 0.8:
         raise ValueError("Move the detected person at least 0.8 m closer/farther during calibration")
@@ -53,8 +55,8 @@ def fit_metric_depth(samples: list[dict[str, Any]]) -> dict[str, Any]:
     mad = statistics.median(abs(value - median_residual) for value in residuals)
     cutoff = max(0.35, 3.0 * mad)
     inliers = [item for item, residual in zip(valid, residuals) if abs(residual - median_residual) <= cutoff]
-    if len(inliers) < 8:
-        raise ValueError(f"Only {len(inliers)} well-matched samples remain after outlier rejection")
+    if len(inliers) < MIN_CALIBRATION_SAMPLES:
+        raise ValueError(f"Only {len(inliers)} well-matched samples remain after outlier rejection; need {MIN_CALIBRATION_SAMPLES}")
 
     slope, offset = regress(inliers)
     if not 0.05 <= slope <= 5.0 or not -10.0 <= offset <= 10.0:
