@@ -34,7 +34,7 @@ if (panel) {
       .world-map-canvas{width:100%;height:clamp(300px,48vh,560px);min-height:280px;overflow:hidden;background:#07120f;border:1px solid #263e32;touch-action:none}
       .world-map-canvas canvas{display:block;width:100%;height:100%}
       .world-map-sensor-view[hidden],.world-map-canvas[hidden],.world-map-sensor-2d[hidden]{display:none!important}
-      .map-layout[hidden],.map-wrap>svg[hidden]{display:none!important}
+      .map-layout[hidden],.map-wrap>svg[hidden],#map[hidden]{display:none!important}
       .world-map-sensor-metrics{display:flex;gap:18px;flex-wrap:wrap;padding:9px 0;color:#8eaa98;font:10px ui-monospace,monospace}
       .world-map-sensor-metrics b{color:#dceee3;font-weight:600}
       .world-map-sensor-2d{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(220px,.8fr);gap:12px;align-items:stretch}
@@ -123,7 +123,7 @@ function makeRenderer(element, background = '#07120f') {
     render();
   }, { passive: false });
   const render = () => renderer.render(scene, camera);
-  return { renderer, scene, camera, render, observer };
+  return { renderer, scene, camera, render, resize, observer };
 }
 
 const sim = makeRenderer(byId('world-map-sim-3d'));
@@ -282,7 +282,7 @@ function setRender(render) {
     if (map) map.hidden = render !== '2d';
     if (simCanvas) simCanvas.hidden = render !== '3d';
     if (mapWrap) mapWrap.classList.toggle('is-3d', render === '3d');
-    if (latestWorld && render === '3d') requestAnimationFrame(() => { buildSimulation(latestWorld); sim?.render(); });
+    if (latestWorld && render === '3d') requestAnimationFrame(() => { sim?.resize(); buildSimulation(latestWorld); sim?.render(); });
   } else {
     if (sensor2d) sensor2d.hidden = render !== '2d';
     if (sensor3d) sensor3d.hidden = render !== '3d';
