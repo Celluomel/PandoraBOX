@@ -34,6 +34,7 @@ export class QuestVRDashboard {
     this.depthOffset = 0;
     this.cachedPose = null;
     this.frame = null;
+    this.sceneMode = 'simulation';
     this.telemetry = null;
     this.imuStatus = null;
     this.controller = null;
@@ -239,8 +240,9 @@ export class QuestVRDashboard {
     const simulationReady = this.frame?.mode === 'sim';
     const simulationRunning = Boolean(this.frame?.running);
     const simulationLabel = simulationRunning ? 'PAUSE SIMULATION' : 'START SIMULATION';
-    const simulationX = this.logicalWidth / 2 - 360;
-    const exitX = this.logicalWidth / 2 + 40;
+    const simulationX = this.logicalWidth / 2 - 520;
+    const sensorX = this.logicalWidth / 2 - 160;
+    const exitX = this.logicalWidth / 2 + 200;
     const drawButton = (key, x, width, label, fill, stroke, textColor, enabled = true) => {
       const height = 48;
       this.actionHitAreas[key] = { x: x - 16, y: buttonY - 12, width: width + 32, height: height + 24, enabled: enabled && !this.actionBusy };
@@ -255,8 +257,9 @@ export class QuestVRDashboard {
       ctx.fillText(label, x + width / 2, buttonY + height / 2);
       ctx.globalAlpha = 1;
     };
-    drawButton('simulation', simulationX, 320, this.actionBusy ? 'PLEASE WAIT' : simulationReady ? simulationLabel : 'SIMULATION OFFLINE', 'rgba(31, 105, 78, .96)', '#75edbd', '#e5fff3', simulationReady);
-    drawButton('exit', exitX, 260, this.actionBusy ? 'PLEASE WAIT' : 'EXIT VR', 'rgba(91, 53, 42, .96)', '#f0a888', '#fff0e8');
+    drawButton('simulation', simulationX, 300, this.actionBusy ? 'PLEASE WAIT' : simulationReady ? simulationLabel : 'SIMULATION OFFLINE', 'rgba(31, 105, 78, .96)', '#75edbd', '#e5fff3', simulationReady);
+    drawButton('sensor-mode', sensorX, 300, this.sceneMode === 'sensors' ? 'SHOW SIMULATION' : 'SHOW LIVE SENSORS', 'rgba(31, 73, 77, .96)', '#78d8d0', '#e5fffa');
+    drawButton('exit', exitX, 220, this.actionBusy ? 'PLEASE WAIT' : 'EXIT VR', 'rgba(91, 53, 42, .96)', '#f0a888', '#fff0e8');
   }
 
   drawTopTelemetry(ctx, perception, fnk, xr) {
@@ -862,6 +865,11 @@ export class QuestVRDashboard {
   }
 
   setVisible(visible) { this.visible = Boolean(visible); }
+
+  setSceneMode(mode) {
+    this.sceneMode = mode === 'sensors' ? 'sensors' : 'simulation';
+    this.drawDashboard();
+  }
 
   setCameraBackgroundActive(active) {
     this.cameraBackgroundActive = Boolean(active);

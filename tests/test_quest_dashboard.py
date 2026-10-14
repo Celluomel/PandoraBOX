@@ -22,6 +22,25 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertIn("#quest-simulation').addEventListener('click', () => toggleSimulationFromHud())", quest_source)
         self.assertIn("syncSimulationControl(frame)", quest_source)
 
+    def test_quest_can_replace_simulation_objects_with_live_sensor_scene(self):
+        root = Path(__file__).resolve().parents[1]
+        html = (root / "body_runtime_host" / "quest_vr.html").read_text(encoding="utf-8")
+        source = (root / "body_runtime_host" / "quest_vr.js").read_text(encoding="utf-8")
+
+        self.assertIn('id="scene-mode-sensors"', html)
+        self.assertIn("selectSceneMode('sensors')", source)
+        self.assertIn("objectsGroup.visible = false", source)
+        self.assertIn("sensorSceneGroup.visible = true", source)
+        self.assertIn("/body/camera/depth", source)
+        self.assertIn("/body/camera/frame", source)
+        self.assertIn("/worldmodel/status", source)
+        self.assertIn("updateSensorRadar(perception)", source)
+        self.assertIn("· est.", source)
+        dashboard = (root / "body_runtime_host" / "quest_vr_dashboard.js").read_text(encoding="utf-8")
+        self.assertIn("drawButton('sensor-mode'", dashboard)
+        self.assertIn("this.sceneMode === 'sensors'", dashboard)
+        self.assertIn("hudAction === 'sensor-mode'", source)
+
     def test_hud_arc_tilts_its_top_toward_the_viewer(self):
         source = (Path(__file__).resolve().parents[1] / "body_runtime_host" / "quest_vr_dashboard.js").read_text(encoding="utf-8")
 

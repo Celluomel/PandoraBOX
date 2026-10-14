@@ -79,6 +79,38 @@ roomLine.position.set(0, 0.01, 0);
 world.add(roomLine);
 const objectsGroup = new THREE.Group();
 world.add(objectsGroup);
+const bodyGroup = new THREE.Group();
+world.add(bodyGroup);
+const sensorSceneGroup = new THREE.Group();
+sensorSceneGroup.visible = false;
+world.add(sensorSceneGroup);
+const sensorDepthCloud = new THREE.Points(
+  new THREE.BufferGeometry(),
+  new THREE.PointsMaterial({ size: 0.035, vertexColors: true, sizeAttenuation: true, transparent: true, opacity: 0.94 }),
+);
+sensorSceneGroup.add(sensorDepthCloud);
+const sensorObjectGroup = new THREE.Group();
+sensorSceneGroup.add(sensorObjectGroup);
+const sensorRadarGroup = new THREE.Group();
+sensorSceneGroup.add(sensorRadarGroup);
+const sensorBodyMarker = new THREE.Group();
+sensorSceneGroup.add(sensorBodyMarker);
+const sensorBodyMesh = new THREE.Mesh(
+  new THREE.CylinderGeometry(0.28, 0.32, 0.32, 24),
+  new THREE.MeshStandardMaterial({ color: '#8ee5b1', emissive: '#1a5736', emissiveIntensity: 0.55 }),
+);
+sensorBodyMesh.position.y = 0.2;
+sensorBodyMarker.add(sensorBodyMesh);
+const sensorBodyNose = new THREE.Mesh(
+  new THREE.ConeGeometry(0.12, 0.36, 16),
+  new THREE.MeshStandardMaterial({ color: '#d8ffe5' }),
+);
+sensorBodyNose.rotation.x = -Math.PI / 2;
+sensorBodyNose.position.set(0, 0.22, -0.38);
+sensorBodyMarker.add(sensorBodyNose);
+const sensorBodyLabel = labelSprite('BODY · SENSOR ORIGIN');
+sensorBodyLabel.position.set(0, 0.85, 0);
+sensorBodyMarker.add(sensorBodyLabel);
 const semanticSplatGroup = new THREE.Group();
 world.add(semanticSplatGroup);
 const semanticSplatNodes = new Map();
@@ -109,6 +141,12 @@ let gaussianAssetStatus = null;
 let gaussianViewer = null;
 let gaussianLoadPromise = null;
 let activeSceneMode = 'simulation';
+let sensorPollInFlight = false;
+let sensorFrameId = '';
+let sensorDepthValues = null;
+let sensorYoloFrameId = '';
+let sensorRadarSignature = '';
+let sensorViewInitialized = false;
 let mapCenter = { x: 5, z: -6 };
 function configureSceneFrame(frame, bodyPosition) {
   const source = frame.source || {};
@@ -168,7 +206,8 @@ const xrFollowYawAxis = new THREE.Vector3(0, 1, 0);
 
 function updateXRSceneFollow(xrCamera) {
   const status = latestWorldStatus || {};
-  const simulationRunning = status.mode === 'sim'
+  const simulationRunning = activeSceneMode === 'simulation'
+    && status.mode === 'sim'
     && status.source?.source === 'sim_robot'
     && status.running === true;
   const position = status.perception?.body?.position;
@@ -309,6 +348,176 @@ function labelSprite(text) {
   return sprite;
 }
 
+function disposeChildren(group) {
+  while (group.children.length) {
+    const child = group.children[group.children.length - 1];
+    group.remove(child);
+    child.traverse(node => {
+      node.geometry?.dispose();
+      if (Array.isArray(node.material)) node.material.forEach(material => material.dispose());
+      else { node.material?.map?.dispose(); node.material?.dispose(); }
+    });
+  }
+}
+
+async function decodeSensorImage(encoded) {
+  if (!encoded) return null;
+  const bytes = Uint8Array.from(atob(encoded), character => character.charCodeAt(0));
+  const bitmap = await createImageBitmap(new Blob([bytes], { type: 'image/jpeg' }));
+  const canvas = document.createElement('canvas');
+  canvas.width = bitmap.width;
+  canvas.height = bitmap.height;
+  const context = canvas.getContext('2d', { willReadFrequently: true });
+  context.drawImage(bitmap, 0, 0);
+  bitmap.close();
+  return { width: canvas.width, height: canvas.height, pixels: context.getImageData(0, 0, canvas.width, canvas.height).data };
+}
+
+function relativeDepthAt(image, u, v) {
+  if (!image?.pixels) return 3;
+  const x = Math.max(0, Math.min(image.width - 1, Math.round(u * (image.width - 1))));
+  const y = Math.max(0, Math.min(image.height - 1, Math.round(v * (image.height - 1))));
+  const gray = image.pixels[(y * image.width + x) * 4];
+  return 1.1 + (1 - gray / 255) * 5.8;
+}
+
+function buildSensorDepthCloud(depth, grayImage, colorImage) {
+  if (!grayImage?.pixels || !colorImage?.pixels) return false;
+  const width = grayImage.width;
+  const height = grayImage.height;
+  const step = Math.max(3, Math.ceil(Math.max(width, height) / 100));
+  const horizontalFov = 70 * Math.PI / 180;
+  const focalX = width / (2 * Math.tan(horizontalFov / 2));
+  const focalY = focalX;
+  const positions = [];
+  const colors = [];
+  for (let v = 0; v < height; v += step) {
+    for (let u = 0; u < width; u += step) {
+      const z = relativeDepthAt(grayImage, u / (width - 1), v / (height - 1));
+      positions.push(((u - (width - 1) / 2) * z) / focalX, 0.72 + (((height - 1) / 2 - v) * z) / focalY, -z);
+      const colorX = Math.min(colorImage.width - 1, Math.round(u * (colorImage.width - 1) / Math.max(1, width - 1)));
+      const colorY = Math.min(colorImage.height - 1, Math.round(v * (colorImage.height - 1) / Math.max(1, height - 1)));
+      const colorIndex = (colorY * colorImage.width + colorX) * 4;
+      colors.push(colorImage.pixels[colorIndex] / 255, colorImage.pixels[colorIndex + 1] / 255, colorImage.pixels[colorIndex + 2] / 255);
+    }
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+  geometry.computeBoundingSphere();
+  sensorDepthCloud.geometry.dispose();
+  sensorDepthCloud.geometry = geometry;
+  sensorDepthValues = grayImage;
+  return true;
+}
+
+function updateSensorYolo(yolo) {
+  const age = Number(yolo?.captured_at) > 0 ? Date.now() / 1000 - Number(yolo.captured_at) : Infinity;
+  const detections = yolo?.state === 'ready' && age >= 0 && age <= 2.5 ? yolo.detections || [] : [];
+  const frameId = detections.length ? String(yolo.frame_id || yolo.captured_at) : '';
+  if (frameId === sensorYoloFrameId) return detections.length;
+  sensorYoloFrameId = frameId;
+  disposeChildren(sensorObjectGroup);
+  if (!sensorDepthValues) return detections.length;
+  const width = sensorDepthValues.width;
+  const height = sensorDepthValues.height;
+  const focalX = width / (2 * Math.tan(35 * Math.PI / 180));
+  const focalY = focalX;
+  const color = '#55e7cc';
+  for (const detection of detections) {
+    const box = detection.bbox;
+    if (!Array.isArray(box) || box.length !== 4 || !box.every(Number.isFinite)) continue;
+    const [x1, y1, x2, y2] = box.map(value => Math.max(0, Math.min(1, Number(value))));
+    if (x2 <= x1 || y2 <= y1) continue;
+    const u = (x1 + x2) / 2;
+    const v = (y1 + y2) / 2;
+    const z = relativeDepthAt(sensorDepthValues, u, v);
+    const boxWidth = Math.max(0.08, (x2 - x1) * width * z / focalX);
+    const boxHeight = Math.max(0.08, (y2 - y1) * height * z / focalY);
+    const centerX = (u - 0.5) * z * width / focalX;
+    const centerY = 0.72 + (0.5 - v) * z * height / focalY;
+    const boxGeometry = new THREE.EdgesGeometry(new THREE.BoxGeometry(boxWidth, boxHeight, Math.max(0.04, z * 0.025)));
+    const outline = new THREE.LineSegments(boxGeometry, new THREE.LineBasicMaterial({ color, depthTest: false, transparent: true, opacity: 0.95 }));
+    outline.position.set(centerX, centerY, -z);
+    outline.renderOrder = 3;
+    sensorObjectGroup.add(outline);
+    const label = labelSprite(`${detection.label || detection.class_name || 'object'} ${Math.round(Number(detection.confidence || detection.score || 0) * 100)}% · est.`);
+    label.scale.set(Math.max(0.9, Math.min(1.8, boxWidth)), 0.24, 1);
+    label.position.set(centerX, centerY + boxHeight / 2 + 0.16, -z);
+    label.renderOrder = 4;
+    sensorObjectGroup.add(label);
+  }
+  return detections.length;
+}
+
+function updateSensorRadar(perception) {
+  const radar = perception?.modalities?.mmwave_radar || {};
+  const targets = Array.isArray(radar.targets) ? radar.targets : [];
+  const bodyPosition = perception?.body?.position || [0, 0, 0];
+  const yaw = Number(perception?.body?.orientation || 0);
+  const sourceFrame = String(radar.frame || 'body').toLowerCase();
+  const isLd2450 = /^hlk_ld2450/i.test(String(radar.source || ''));
+  const signature = JSON.stringify([radar.source, sourceFrame, targets.map(target => [target.id, target.position_m || target.position, target.velocity_mps || target.velocity, target.radial_speed_mps, target.classification])]);
+  if (signature === sensorRadarSignature) return targets.length;
+  sensorRadarSignature = signature;
+  disposeChildren(sensorRadarGroup);
+  for (const target of targets) {
+    const rawPosition = target.position_m || target.position || [];
+    const rawVelocity = target.velocity_mps || target.velocity || [0, 0];
+    const position = isLd2450 ? [Number(rawPosition[1]), -Number(rawPosition[0]), Number(rawPosition[2] || 0)] : rawPosition;
+    const local = vrDashboard.sensorLocal(position, sourceFrame, bodyPosition, yaw);
+    if (!local || !Number.isFinite(local.forward) || !Number.isFinite(local.left)) continue;
+    const velocity = isLd2450 ? [Number(rawVelocity[1] || 0), -Number(rawVelocity[0] || 0)] : rawVelocity;
+    const radial = Number(target.radial_speed_mps);
+    const moving = /moving|mobile/i.test(String(target.classification || ''))
+      || (Number.isFinite(radial) && Math.abs(radial) >= 0.05)
+      || Math.hypot(Number(velocity[0] || 0), Number(velocity[1] || 0)) >= 0.05;
+    const color = moving ? '#ef91c5' : '#f2ce73';
+    const marker = new THREE.Mesh(new THREE.SphereGeometry(0.085, 12, 10), new THREE.MeshBasicMaterial({ color }));
+    marker.position.set(-local.left, 0.12, -local.forward);
+    sensorRadarGroup.add(marker);
+    const speedText = Number.isFinite(radial) ? ` ${radial >= 0 ? '+' : ''}${radial.toFixed(2)} m/s` : '';
+    const label = labelSprite(`${target.classification || 'mmWave target'}${speedText}`);
+    label.position.set(-local.left, 0.38, -local.forward);
+    sensorRadarGroup.add(label);
+  }
+  return targets.length;
+}
+
+async function pollSensorScene() {
+  if (sensorPollInFlight || activeSceneMode !== 'sensors') return;
+  sensorPollInFlight = true;
+  try {
+    const [cameraResponse, depthResponse, worldResponse] = await Promise.all([
+      fetch('/body/camera/frame', { cache: 'no-store', credentials: 'same-origin' }),
+      fetch('/body/camera/depth', { cache: 'no-store', credentials: 'same-origin' }),
+      fetch('/worldmodel/status', { cache: 'no-store', credentials: 'same-origin' }),
+    ]);
+    if (!cameraResponse.ok || !depthResponse.ok || !worldResponse.ok) throw new Error('Sensor endpoint unavailable');
+    const [cameraData, depth, worldStatus] = await Promise.all([cameraResponse.json(), depthResponse.json(), worldResponse.json()]);
+    latestWorldStatus = worldStatus;
+    const perception = worldStatus.perception || {};
+    if (depth.frame_id && depth.frame_id !== sensorFrameId && depth.depth_gray_jpeg_base64) {
+      const [gray, color] = await Promise.all([
+        decodeSensorImage(depth.depth_gray_jpeg_base64),
+        decodeSensorImage(depth.depth_jpeg_base64 || depth.depth_gray_jpeg_base64),
+      ]);
+      if (gray && color && buildSensorDepthCloud(depth, gray, color)) sensorFrameId = depth.frame_id;
+    }
+    const yoloCount = updateSensorYolo(cameraData.yolo || {});
+    const radarCount = updateSensorRadar(perception);
+    const age = Number(depth.captured_at) > 0 ? Math.max(0, Date.now() / 1000 - Number(depth.captured_at)) : Infinity;
+    document.querySelector('#source').textContent = 'LIVE SENSORS';
+    document.querySelector('#pose').textContent = 'Sensor origin · heading uncalibrated';
+    document.querySelector('#age').textContent = Number.isFinite(age) ? `${age.toFixed(1)} s` : '—';
+    setStatus(`Live sensor scene · MiDaS ${depth.runtime || 'waiting'}${depth.inference_ms != null ? ` ${Number(depth.inference_ms).toFixed(1)} ms` : ''} · ${yoloCount} YOLOX labels · ${radarCount} mmWave targets · MiDaS scale is relative, not metric`);
+  } catch (error) {
+    setStatus(`Live sensor scene unavailable: ${error.message}`, true);
+  } finally {
+    sensorPollInFlight = false;
+  }
+}
+
 function objectGeometry(item) {
   const kind = String(item.kind || 'object').toLowerCase();
   const width = Math.max(0.25, Math.min(2.2, Number(item.size) || 0.6));
@@ -436,7 +645,16 @@ function rebuildScene(frame) {
   const bodyLabel = labelSprite('BODY');
   bodyLabel.position.y = 0.85;
   bodyMarker.add(bodyLabel);
-  objectsGroup.add(bodyMarker);
+  while (bodyGroup.children.length) {
+    const child = bodyGroup.children[bodyGroup.children.length - 1];
+    bodyGroup.remove(child);
+    child.traverse(node => {
+      node.geometry?.dispose();
+      if (Array.isArray(node.material)) node.material.forEach(material => material.dispose());
+      else { node.material?.map?.dispose(); node.material?.dispose(); }
+    });
+  }
+  bodyGroup.add(bodyMarker);
 
   latestObjects = objects;
   const semanticByEntity = new Map(semanticGroups.map(group => [String(group.entity_id), group]));
@@ -515,6 +733,10 @@ async function pollBody() {
     const frame = await response.json();
     latestWorldStatus = frame;
     syncSimulationControl(frame);
+    if (activeSceneMode === 'sensors') {
+      vrDashboard.update(frame);
+      return;
+    }
     if (!frame.perception?.available) {
       setStatus(frame.perception?.note || 'Body has not produced a perception frame yet.', true);
       return;
@@ -621,7 +843,30 @@ async function loadGaussianReconstruction() {
 
 async function selectSceneMode(mode) {
   const planar = document.querySelector('#scene-mode-simulation');
+  const sensors = document.querySelector('#scene-mode-sensors');
   const gaussian = document.querySelector('#scene-mode-gaussian');
+  if (mode === 'sensors') {
+    activeSceneMode = 'sensors';
+    vrDashboard.setSceneMode('sensors');
+    if (!sensorViewInitialized) {
+      orbit.target.set(0, 0.55, -3);
+      camera.position.set(0, 2.1, 5.5);
+      camera.lookAt(0, 0.55, -3);
+      orbit.update();
+      sensorViewInitialized = true;
+    }
+    world.visible = true;
+    bodyGroup.visible = false;
+    objectsGroup.visible = false;
+    semanticSplatGroup.visible = false;
+    sensorSceneGroup.visible = true;
+    planar?.setAttribute('aria-pressed', 'false');
+    sensors?.setAttribute('aria-pressed', 'true');
+    gaussian?.setAttribute('aria-pressed', 'false');
+    setStatus('Connecting live MiDaS, YOLOX and mmWave sensors…');
+    void pollSensorScene();
+    return;
+  }
   if (mode === 'gaussian') {
     if (!gaussianAssetStatus?.available || !gaussianAssetStatus?.renderer_available) {
       setStatus(gaussianAssetStatus?.message || 'No renderable real 3DGS reconstruction is available yet.', true);
@@ -633,14 +878,26 @@ async function selectSceneMode(mode) {
     try {
       await loadGaussianReconstruction();
       activeSceneMode = 'gaussian';
+      vrDashboard.setSceneMode('simulation');
       world.visible = false;
+      bodyGroup.visible = true;
+      objectsGroup.visible = true;
+      semanticSplatGroup.visible = true;
+      sensorSceneGroup.visible = false;
       planar?.setAttribute('aria-pressed', 'false');
+      sensors?.setAttribute('aria-pressed', 'false');
       gaussian?.setAttribute('aria-pressed', 'true');
       setStatus(`Real 3D Gaussian reconstruction · ${gaussianAssetStatus.coordinate_frame} · visualization only, not a safety map`);
     } catch (error) {
       activeSceneMode = 'simulation';
+      vrDashboard.setSceneMode('simulation');
       world.visible = true;
+      bodyGroup.visible = true;
+      objectsGroup.visible = true;
+      semanticSplatGroup.visible = true;
+      sensorSceneGroup.visible = false;
       planar?.setAttribute('aria-pressed', 'true');
+      sensors?.setAttribute('aria-pressed', 'false');
       gaussian?.setAttribute('aria-pressed', 'false');
       setStatus(`Could not load real reconstruction: ${error.message}`, true);
     } finally {
@@ -650,8 +907,14 @@ async function selectSceneMode(mode) {
     return;
   }
   activeSceneMode = 'simulation';
+  vrDashboard.setSceneMode('simulation');
   world.visible = true;
+  bodyGroup.visible = true;
+  objectsGroup.visible = true;
+  semanticSplatGroup.visible = true;
+  sensorSceneGroup.visible = false;
   planar?.setAttribute('aria-pressed', 'true');
+  sensors?.setAttribute('aria-pressed', 'false');
   gaussian?.setAttribute('aria-pressed', 'false');
   setStatus('Planar Body world-model view selected.');
 }
@@ -660,6 +923,10 @@ function selectAt(controller) {
   const hudAction = vrDashboard.visible ? vrDashboard.activateAt(controller, raycaster) : null;
   if (hudAction === 'simulation') {
     void toggleSimulationFromHud();
+    return;
+  }
+  if (hudAction === 'sensor-mode') {
+    void selectSceneMode(activeSceneMode === 'sensors' ? 'simulation' : 'sensors');
     return;
   }
   if (hudAction === 'exit') {
@@ -946,6 +1213,7 @@ document.querySelector('#enter-xr').addEventListener('click', () => enterXR('imm
 document.querySelector('#enter-ar').addEventListener('click', () => enterXR('immersive-ar'));
 document.querySelector('#quest-simulation').addEventListener('click', () => toggleSimulationFromHud());
 document.querySelector('#scene-mode-simulation').addEventListener('click', () => selectSceneMode('simulation'));
+document.querySelector('#scene-mode-sensors').addEventListener('click', () => selectSceneMode('sensors'));
 document.querySelector('#scene-mode-gaussian').addEventListener('click', () => selectSceneMode('gaussian'));
 void refreshGaussianAssetStatus();
 setInterval(refreshGaussianAssetStatus, 10000);
@@ -972,6 +1240,7 @@ window.addEventListener('resize', () => {
 });
 
 setInterval(pollBody, 1200);
+setInterval(() => { if (activeSceneMode === 'sensors') void pollSensorScene(); }, 300);
 void pollBody();
 let previousFrameAt = 0;
 renderer.setAnimationLoop(time => {
