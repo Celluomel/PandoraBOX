@@ -443,14 +443,14 @@ async function calibrateMetricDepth() {
   depthCalibrationMessage = '';
   button.disabled = true;
   button.textContent = 'Calibrating…';
-  status.textContent = 'For 30 seconds, keep one person visible and move them at least 0.8 m closer/farther (about 1–8 m).';
+  status.textContent = 'For 60 seconds, keep one person visible and move them at least 0.8 m closer/farther (about 1–8 m).';
   const samples = [];
   const seen = new Set();
   const radarHistory = [];
   const diagnostics = { depth: 0, yolo: 0, radar: 0, bearing: 0 };
   let cachedFrameId = '';
   let cachedDepthImage = null;
-  const stopAt = performance.now() + 30000;
+  const stopAt = performance.now() + 60000;
   try {
     while (performance.now() < stopAt) {
       const [depthResponse, radarResponse] = await Promise.all([

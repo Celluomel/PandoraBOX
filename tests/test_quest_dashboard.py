@@ -56,7 +56,7 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertIn("relativeDepthToMeters", source)
         self.assertIn("nearest_to=", source)
         self.assertIn('query.get("nearest_to")', runtime)
-        self.assertIn("performance.now() + 30000", source)
+        self.assertIn("performance.now() + 60000", source)
         self.assertIn("frameDelta <= 0.75", source)
         self.assertLess(source.index("radarHistory.push(latestRadar)"), source.index("nearest_to=${encodeURIComponent(depth.captured_at)}"))
         self.assertIn("diagnostics.bearing", source)
