@@ -38,6 +38,7 @@ class LocalCameraCapture:
         self._capture_backend = ""
         self._latest: dict[str, Any] = {}
         self._frame_times: deque[float] = deque(maxlen=30)
+        self._stage_timings: deque[dict[str, float]] = deque(maxlen=30)
         self._driver_fps = 0.0
         self._status = "stopped"
         self._error = ""
@@ -48,6 +49,7 @@ class LocalCameraCapture:
             return self.status()
         with self._lock:
             self._frame_times.clear()
+            self._stage_timings.clear()
             self._driver_fps = 0.0
         self._stop.clear()
         self._status = "starting"
@@ -94,6 +96,7 @@ class LocalCameraCapture:
         with self._lock:
             frame = dict(self._latest)
             frame_times = tuple(self._frame_times)
+            stage_timings = tuple(self._stage_timings)
             driver_fps = self._driver_fps
         captured_at = float(frame.get("captured_at") or 0.0)
         observed_fps = (
@@ -117,6 +120,10 @@ class LocalCameraCapture:
             "last_error": self._error,
             "opencv": self._opencv_available(),
             "backend": self._capture_backend or None,
+            "stage_timings_ms": {
+                name: round(sum(sample[name] for sample in stage_timings) / len(stage_timings), 2)
+                for name in stage_timings[-1]
+            } if stage_timings else {},
         }
 
     @staticmethod
@@ -215,21 +222,29 @@ class LocalCameraCapture:
             while not self._stop.is_set():
                 frame_started_at = time.monotonic()
                 ok, frame = self._capture.read()
+                read_finished_at = time.monotonic()
                 if not ok:
                     self._error = "camera read failed"
                     self._pace_capture(frame_started_at)
                     continue
+                captured_at = time.time()
+                resize_started_at = time.monotonic()
                 actual_height, actual_width = frame.shape[:2]
                 if actual_width != self.width or actual_height != self.height:
                     frame = cv2.resize(frame, (self.width, self.height), interpolation=cv2.INTER_AREA)
+                resize_finished_at = time.monotonic()
+                encode_started_at = resize_finished_at
                 ok, encoded = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 82])
+                encode_finished_at = time.monotonic()
                 if not ok:
                     self._error = "JPEG encoding failed"
                     self._pace_capture(frame_started_at)
                     continue
-                captured_at = time.time()
+                publish_started_at = encode_finished_at
+                image_base64 = base64.b64encode(encoded.tobytes()).decode("ascii")
+                publish_finished_at = time.monotonic()
                 payload = {
-                    "image_base64": base64.b64encode(encoded.tobytes()).decode("ascii"),
+                    "image_base64": image_base64,
                     "mime_type": "image/jpeg",
                     "width": self.width,
                     "height": self.height,
@@ -242,6 +257,13 @@ class LocalCameraCapture:
                 with self._lock:
                     self._latest = payload
                     self._frame_times.append(captured_at)
+                    self._stage_timings.append({
+                        "read": (read_finished_at - frame_started_at) * 1000,
+                        "resize": (resize_finished_at - resize_started_at) * 1000,
+                        "jpeg_encode": (encode_finished_at - encode_started_at) * 1000,
+                        "publish": (publish_finished_at - publish_started_at) * 1000,
+                        "cycle": (publish_finished_at - frame_started_at) * 1000,
+                    })
                     self._error = ""
                 self._pace_capture(frame_started_at)
         finally:
