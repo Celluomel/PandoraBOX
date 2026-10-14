@@ -40,6 +40,16 @@ class LocalCameraTests(unittest.TestCase):
         self.assertAlmostEqual(camera.status()["driver_fps"], 60.0)
         self.assertAlmostEqual(camera.status()["target_fps"], 60.0)
 
+    def test_capture_pacing_waits_only_for_remaining_frame_interval(self):
+        camera = LocalCameraCapture(interval=1 / 30)
+        camera._stop.wait = unittest.mock.Mock()
+
+        with patch("body_runtime_host.local_camera.time.monotonic", return_value=10.01):
+            camera._pace_capture(10.0)
+
+        camera._stop.wait.assert_called_once()
+        self.assertAlmostEqual(camera._stop.wait.call_args.args[0], (1 / 30) - 0.01)
+
     def test_sim_source_prefers_external_camera_frame(self):
         frame = {
             "image_base64": "aGVsbG8=",

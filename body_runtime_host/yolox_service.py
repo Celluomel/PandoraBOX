@@ -109,7 +109,11 @@ class YoloXService:
         env = os.environ.copy()
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         env["PYTHONPATH"] = root + os.pathsep + env.get("PYTHONPATH", "")
-        dsp_paths = ["/usr/lib/dsp/cdsp", "/usr/lib/rfsa/adsp"]
+        dsp_paths = [
+            os.path.expanduser("~/.local/share/pandorabox/yolox-dsp"),
+            "/usr/lib/dsp/cdsp",
+            "/usr/lib/rfsa/adsp",
+        ]
         configured_dsp_path = env.get("ADSP_LIBRARY_PATH", "")
         env["ADSP_LIBRARY_PATH"] = ";".join(
             [*dsp_paths, *(path for path in configured_dsp_path.split(";") if path)]

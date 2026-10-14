@@ -139,6 +139,9 @@ fi
 if [[ "${BODY_INSTALL_YOLOX:-0}" == "1" ]]; then
   bash ./install_body_yolox.sh
 fi
+if [[ "$(uname -s)" == "Linux" ]] && command -v systemctl >/dev/null 2>&1; then
+  bash ./configure_geniex_qairt.sh
+fi
 if [[ -z "${ROS_DISTRO:-}" ]]; then
   if [[ -f /opt/ros/jazzy/setup.bash ]]; then
     export ROS_DISTRO=jazzy

@@ -160,6 +160,11 @@ class LocalCameraCapture:
             accepted,
         )
 
+    def _pace_capture(self, frame_started_at: float) -> None:
+        remaining = self.interval - (time.monotonic() - frame_started_at)
+        if remaining > 0:
+            self._stop.wait(remaining)
+
     @staticmethod
     def _open_capture(cv2, device_index: int):
         system = platform.system()
@@ -208,10 +213,11 @@ class LocalCameraCapture:
         LOG.info("Local camera capture started (device=%d, backend=%s, requested=%dx%d)", self.device_index, self._capture_backend, self.width, self.height)
         try:
             while not self._stop.is_set():
+                frame_started_at = time.monotonic()
                 ok, frame = self._capture.read()
                 if not ok:
                     self._error = "camera read failed"
-                    self._stop.wait(min(1.0, self.interval))
+                    self._pace_capture(frame_started_at)
                     continue
                 actual_height, actual_width = frame.shape[:2]
                 if actual_width != self.width or actual_height != self.height:
@@ -219,6 +225,7 @@ class LocalCameraCapture:
                 ok, encoded = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 82])
                 if not ok:
                     self._error = "JPEG encoding failed"
+                    self._pace_capture(frame_started_at)
                     continue
                 captured_at = time.time()
                 payload = {
@@ -236,7 +243,7 @@ class LocalCameraCapture:
                     self._latest = payload
                     self._frame_times.append(captured_at)
                     self._error = ""
-                self._stop.wait(self.interval)
+                self._pace_capture(frame_started_at)
         finally:
             self._release()
             if self._status == "capturing":

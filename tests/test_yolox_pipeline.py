@@ -106,7 +106,11 @@ class YoloXPipelineTests(unittest.TestCase):
 
         env = popen.call_args.kwargs["env"]
         paths = env["ADSP_LIBRARY_PATH"].split(";")
-        self.assertEqual(paths[:2], ["/usr/lib/dsp/cdsp", "/usr/lib/rfsa/adsp"])
+        self.assertEqual([path.replace("\\", "/") for path in paths[:3]], [
+            str(Path.home() / ".local" / "share" / "pandorabox" / "yolox-dsp").replace("\\", "/"),
+            "/usr/lib/dsp/cdsp",
+            "/usr/lib/rfsa/adsp",
+        ])
 
     def test_yolox_installer_installs_system_qairt_and_v75_skeleton(self):
         installer = Path("install_body_yolox.sh").read_text(encoding="utf-8")
@@ -114,6 +118,16 @@ class YoloXPipelineTests(unittest.TestCase):
         self.assertIn("/usr/lib/dsp/cdsp/libQnnHtpV75Skel.so", installer)
         self.assertIn("libQnnHtpV75Skel.so.2", installer)
         self.assertIn("ADSP_LIBRARY_PATH", Path("body_runtime_host/yolox_service.py").read_text(encoding="utf-8"))
+        self.assertIn("yolox-dsp", installer)
+        self.assertNotIn("sudo ln -sfn", installer)
+
+    def test_geniex_skeleton_is_restored_without_changing_yolox_runtime(self):
+        setup = Path("configure_geniex_qairt.sh").read_text(encoding="utf-8")
+        self.assertIn("geniex/qairt/htp-files", setup)
+        self.assertIn("libQnnHtpV75Skel.so.2", setup)
+        self.assertIn("yolox-infer/", setup)
+        self.assertIn("yolox-dsp", Path("body_runtime_host/yolox_service.py").read_text(encoding="utf-8"))
+        self.assertIn("systemctl --user restart geniex.service", setup)
 
     def test_percentage_scores_are_normalized_to_probability(self):
         rows = np.zeros((1, 85), dtype=np.float32)

@@ -61,19 +61,11 @@ if [[ ! -s "$DSP_SKEL_SOURCE" ]]; then
   echo "[ERROR] qai-appbuilder 2.48.40 did not provide its matching HTP v75 DSP skeleton."
   exit 1
 fi
-DSP_SKEL_LINK=/usr/lib/dsp/cdsp/libQnnHtpV75Skel.so.2
-if [[ "$(readlink -f "$DSP_SKEL_LINK" 2>/dev/null || true)" != "$DSP_SKEL_SOURCE" ]]; then
-  echo "[*] Linking the matching AppBuilder HTP v75 skeleton for FastRPC..."
-  if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
-    ln -sfn "$DSP_SKEL_SOURCE" "$DSP_SKEL_LINK"
-  elif command -v sudo >/dev/null 2>&1; then
-    sudo ln -sfn "$DSP_SKEL_SOURCE" "$DSP_SKEL_LINK"
-  else
-    echo "[ERROR] sudo is required to register the HTP v75 DSP skeleton."
-    exit 1
-  fi
-fi
-echo "[OK] FastRPC HTP skeleton: $(readlink -f "$DSP_SKEL_LINK")"
+DSP_SKEL_DIR="$HOME/.local/share/pandorabox/yolox-dsp"
+mkdir -p "$DSP_SKEL_DIR"
+ln -sfn "$DSP_SKEL_SOURCE" "$DSP_SKEL_DIR/libQnnHtpV75Skel.so"
+ln -sfn "$DSP_SKEL_SOURCE" "$DSP_SKEL_DIR/libQnnHtpV75Skel.so.2"
+echo "[OK] YOLOX FastRPC HTP skeleton: $DSP_SKEL_DIR/libQnnHtpV75Skel.so.2"
 
 if [[ ! -s "$MODEL_PATH" ]]; then
   echo "[*] Installing Qualcomm AI Hub Models CLI to fetch the precompiled IQ-8275 W8A8 model..."
