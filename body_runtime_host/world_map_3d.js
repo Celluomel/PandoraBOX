@@ -9,6 +9,9 @@ let displayedCameraFrameId = null;
 let cloudDepthImage = null;
 let cloudBuildToken = 0;
 let cloudYoloFrameId = '';
+let metricDepthCalibration = null;
+let depthCalibrationBusy = false;
+let depthCalibrationMessage = '';
 const panel = document.querySelector('#view-worldmodel .map-panel');
 if (panel) {
   const header = panel.querySelector('.panel-head');
@@ -29,7 +32,7 @@ if (panel) {
     sensorPanel.id = 'world-map-sensor-view';
     sensorPanel.className = 'world-map-sensor-view';
     sensorPanel.hidden = true;
-    sensorPanel.innerHTML = `<div class="world-map-sensor-metrics"><span>YOLOX <b id="world-map-yolo-state">Waiting</b></span><span>MiDaS <b id="world-map-midas-state">Waiting</b></span><span>Frame <b id="world-map-frame-state">—</b></span></div><div id="world-map-sensor-2d" class="world-map-sensor-2d"><div class="world-map-camera"><div class="world-map-sensor-heading">CAMERA · YOLOX</div><div class="world-map-image-wrap"><img id="world-map-camera-image" alt="Live camera frame with YOLOX detections"><svg id="world-map-yolo-overlay" viewBox="0 0 1 1" preserveAspectRatio="xMidYMid meet" aria-hidden="true"></svg><span id="world-map-camera-empty" class="world-map-empty">Waiting for a camera frame</span></div></div><div class="world-map-depth"><div class="world-map-sensor-heading">MiDaS · RELATIVE DEPTH</div><img id="world-map-depth-image" alt="MiDaS relative depth image"><span id="world-map-depth-empty" class="world-map-empty">MiDaS disabled or waiting for inference</span><small>Relative depth only · not calibrated in metres</small></div></div><div id="world-map-sensor-3d" class="world-map-canvas world-map-sensor-cloud" hidden></div><p id="world-map-sensor-note" class="world-map-sensor-note">Sensor-only view · no simulation object positions are used.</p>`;
+    sensorPanel.innerHTML = `<div class="world-map-sensor-metrics"><span>YOLOX <b id="world-map-yolo-state">Waiting</b></span><span>MiDaS <b id="world-map-midas-state">Waiting</b></span><span>Frame <b id="world-map-frame-state">—</b></span></div><div id="world-map-sensor-2d" class="world-map-sensor-2d"><div class="world-map-camera"><div class="world-map-sensor-heading">CAMERA · YOLOX</div><div class="world-map-image-wrap"><img id="world-map-camera-image" alt="Live camera frame with YOLOX detections"><svg id="world-map-yolo-overlay" viewBox="0 0 1 1" preserveAspectRatio="xMidYMid meet" aria-hidden="true"></svg><span id="world-map-camera-empty" class="world-map-empty">Waiting for a camera frame</span></div></div><div class="world-map-depth"><div class="world-map-sensor-heading">MiDaS · RELATIVE DEPTH</div><img id="world-map-depth-image" alt="MiDaS relative depth image"><span id="world-map-depth-empty" class="world-map-empty">MiDaS disabled or waiting for inference</span><div class="world-map-depth-calibration"><button type="button" id="world-map-midas-calibrate">Calibrate with radar</button><small id="world-map-midas-calibration-status" role="status">Relative depth only · not calibrated in metres</small></div></div></div><div id="world-map-sensor-3d" class="world-map-canvas world-map-sensor-cloud" hidden></div><p id="world-map-sensor-note" class="world-map-sensor-note">Sensor-only view · no simulation object positions are used.</p>`;
     mapLayout.after(sensorPanel);
     const style = document.createElement('style');
     style.textContent = `
@@ -54,6 +57,10 @@ if (panel) {
       .world-map-depth{display:flex;flex-direction:column}
       .world-map-depth img{display:block;width:100%;height:100%;min-height:220px;max-height:500px;object-fit:contain;background:#020805}
       .world-map-depth>small{padding:7px 10px;color:#9eb5a6;font:10px ui-monospace,monospace}
+      .world-map-depth-calibration{display:flex;align-items:center;gap:9px;flex-wrap:wrap;padding:8px 10px;border-top:1px solid #263e32}
+      .world-map-depth-calibration button{border:1px solid #416b54;border-radius:3px;background:#10251a;color:#d9f5e5;padding:7px 10px;cursor:pointer}
+      .world-map-depth-calibration button:disabled{opacity:.6;cursor:wait}
+      .world-map-depth-calibration small{color:#9eb5a6;font:10px ui-monospace,monospace}
       .world-map-empty{position:absolute;inset:0;display:grid;place-items:center;padding:20px;color:#91a79a;font:11px ui-monospace,monospace;text-align:center;pointer-events:none}
       .world-map-empty[hidden]{display:none}
       .world-map-sensor-note{margin:9px 0 0;color:#a9c0b2;font-size:11px}
@@ -317,6 +324,8 @@ function updateMode() {
 
 document.querySelectorAll('[data-source]').forEach((button) => button.addEventListener('click', () => setSource(button.dataset.source)));
 document.querySelectorAll('[data-render]').forEach((button) => button.addEventListener('click', () => setRender(button.dataset.render)));
+byId('world-map-midas-calibrate')?.addEventListener('click', () => void calibrateMetricDepth());
+void loadMetricCalibration();
 
 function drawBoxes(detections, width, height) {
   const svg = byId('world-map-yolo-overlay');
@@ -367,6 +376,162 @@ function setImage(image, empty, base64, mime = 'image/jpeg') {
   }
 }
 
+function relativeDepthToMeters(relativeDepth) {
+  const calibration = metricDepthCalibration;
+  if (!calibration?.available) return relativeDepth;
+  const meters = Number(calibration.scale_m_per_relative_unit) * relativeDepth + Number(calibration.offset_m);
+  return Math.max(0.2, Math.min(15, meters));
+}
+
+function updateMetricCalibrationStatus() {
+  const status = byId('world-map-midas-calibration-status');
+  if (!status || depthCalibrationBusy) return;
+  if (depthCalibrationMessage) {
+    status.textContent = depthCalibrationMessage;
+    return;
+  }
+  if (metricDepthCalibration?.available) {
+    const [near, far] = metricDepthCalibration.calibrated_range_m || [];
+    status.textContent = `Persistent · ±${Number(metricDepthCalibration.rmse_m).toFixed(2)} m fit · ${metricDepthCalibration.sample_count} anchors · ${near}–${far} m. Applied to all YOLOX objects.`;
+  } else {
+  status.textContent = 'Uses live camera, near-synchronized YOLOX/MiDaS frames and a bearing-matched LD2450 person. Move closer/farther to anchor all YOLOX objects.';
+  }
+}
+
+async function loadMetricCalibration() {
+  try {
+    const response = await fetch('/body/camera/depth-calibration', { cache: 'no-store' });
+    if (response.ok) metricDepthCalibration = await response.json();
+  } catch (error) {
+    console.warn('Could not read persistent MiDaS calibration:', error);
+  }
+  updateMetricCalibrationStatus();
+}
+
+function matchedRadarAnchor(detections, sample) {
+  const source = String(sample?.source || '').toLowerCase();
+  if (!source.startsWith('hlk_ld2450')) return null;
+  const targets = Array.isArray(sample.targets) ? sample.targets : [];
+  const people = (detections || []).filter(item => /person|human/i.test(String(item.label || item.class_name || item.class || ''))
+    && Number(item.confidence ?? item.score ?? 0) >= 0.4 && Array.isArray(item.bbox) && item.bbox.length === 4);
+  const matches = [];
+  for (const target of targets) {
+    const position = target.position_m || target.position;
+    if (!Array.isArray(position) || position.length < 2) continue;
+    const lateralRight = Number(position[0]);
+    const forward = Number(position[1]);
+    const distance = Math.hypot(lateralRight, forward);
+    if (!Number.isFinite(distance) || distance < 0.25 || distance > 10 || forward <= 0) continue;
+    const radarBearing = Math.atan2(lateralRight, forward);
+    for (const detection of people) {
+      const centerU = (Number(detection.bbox[0]) + Number(detection.bbox[2])) / 2;
+      const cameraBearing = Math.atan((centerU - 0.5) * 2 * Math.tan(35 * Math.PI / 180));
+      const error = Math.abs((cameraBearing - radarBearing) * 180 / Math.PI);
+      if (error <= 15) matches.push({ detection, distance, error });
+    }
+  }
+  matches.sort((a, b) => a.error - b.error);
+  return matches[0] || null;
+}
+
+async function calibrateMetricDepth() {
+  if (depthCalibrationBusy) return;
+  const button = byId('world-map-midas-calibrate');
+  const status = byId('world-map-midas-calibration-status');
+  if (!button || !status) return;
+  depthCalibrationBusy = true;
+  depthCalibrationMessage = '';
+  button.disabled = true;
+  button.textContent = 'Collecting anchors…';
+  status.textContent = 'For 12 seconds, keep one person visible and move them at least 0.8 m closer/farther (about 1–8 m).';
+  const samples = [];
+  const seen = new Set();
+  let cachedFrameId = '';
+  let cachedDepthImage = null;
+  const stopAt = performance.now() + 12000;
+  try {
+    while (performance.now() < stopAt) {
+      const [depthResponse, radarResponse] = await Promise.all([
+        fetch('/body/camera/depth', { cache: 'no-store' }),
+        fetch('/plugins/mmwave_radar/status', { cache: 'no-store' }),
+      ]);
+      if (!depthResponse.ok || !radarResponse.ok) throw new Error('MiDaS or radar endpoint is unavailable');
+      const [depth, radarStatus] = await Promise.all([depthResponse.json(), radarResponse.json()]);
+      if (!depth.frame_id || !depth.depth_gray_jpeg_base64) {
+        status.textContent = `Waiting for MiDaS frame · ${samples.length} anchors collected.`;
+        await new Promise(resolve => setTimeout(resolve, 350));
+        continue;
+      }
+      let yoloResponse = await fetch(`/body/camera/yolo/status?frame_id=${encodeURIComponent(depth.frame_id)}`, { cache: 'no-store' });
+      if (yoloResponse.status === 404) yoloResponse = await fetch('/body/camera/yolo/status', { cache: 'no-store' });
+      if (!yoloResponse.ok) throw new Error('YOLOX endpoint is unavailable');
+      const yolo = await yoloResponse.json();
+      const sample = radarStatus.sample || {};
+      const yoloAt = Number(yolo.captured_at);
+      const depthAt = Number(depth.captured_at);
+      const radarAt = Number(sample.timestamp);
+      const now = Date.now() / 1000;
+      const radarStatusAge = Number(radarStatus.source_status?.last_ok_age_s);
+      const frameDelta = Math.abs(yoloAt - depthAt);
+      const synchronized = yolo.state === 'ready' && frameDelta <= 0.75
+        && now - yoloAt <= 2.0 && now - depthAt <= 2.0
+        && radarStatus.available === true && Number.isFinite(radarAt)
+        && now - radarAt <= 1.0 && (!Number.isFinite(radarStatusAge) || radarStatusAge <= 1.0)
+        && Math.abs(radarAt - yoloAt) <= 1.0;
+      if (synchronized) {
+        if (cachedFrameId !== depth.frame_id) {
+          cachedDepthImage = await loadGrayDepth(depth.depth_gray_jpeg_base64);
+          cachedFrameId = depth.frame_id;
+        }
+        const match = matchedRadarAnchor(visibleYoloDetections(yolo), sample);
+        const key = `${depth.frame_id}|${yolo.frame_id}`;
+        if (match && cachedDepthImage && !seen.has(key)) {
+          const box = match.detection.bbox.map(Number);
+          const x1 = Math.max(0, Math.min(cachedDepthImage.width - 1, Math.round((box[0] * 0.7 + box[2] * 0.3) * cachedDepthImage.width)));
+          const x2 = Math.max(x1 + 1, Math.min(cachedDepthImage.width, Math.round((box[0] * 0.3 + box[2] * 0.7) * cachedDepthImage.width)));
+          const y1 = Math.max(0, Math.min(cachedDepthImage.height - 1, Math.round((box[1] * 0.65 + box[3] * 0.35) * cachedDepthImage.height)));
+          const y2 = Math.max(y1 + 1, Math.min(cachedDepthImage.height, Math.round((box[1] * 0.35 + box[3] * 0.65) * cachedDepthImage.height)));
+          const roi = [];
+          const step = Math.max(1, Math.floor(Math.min(x2 - x1, y2 - y1) / 8));
+          for (let y = y1; y < y2; y += step) for (let x = x1; x < x2; x += step) {
+            roi.push(cachedDepthImage.values[(y * cachedDepthImage.width + x) * 4] / 255);
+          }
+          roi.sort((a, b) => a - b);
+          if (!roi.length) continue;
+          const gray = roi[Math.floor(roi.length / 2)];
+          samples.push({
+            relative_depth: 1.1 + (1 - gray) * 5.8,
+            distance_m: match.distance,
+            bearing_error_deg: match.error,
+            frame_delta_s: frameDelta,
+          });
+          seen.add(key);
+        }
+      }
+      status.textContent = `Collecting live camera + near-synchronized YOLOX/MiDaS + LD2450 anchors · ${samples.length} · move nearer/farther.`;
+      await new Promise(resolve => setTimeout(resolve, 350));
+    }
+    const response = await fetch('/body/camera/depth-calibration', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ samples }),
+    });
+    const result = await response.json();
+    if (!response.ok || !result.available) throw new Error(result.error || 'Calibration was rejected');
+    metricDepthCalibration = result;
+    cloudFrameId = '';
+    depthCalibrationMessage = '';
+    lastSensorDepthAt = 0;
+    await refreshSensorDepth();
+  } catch (error) {
+    depthCalibrationMessage = `Calibration not saved: ${error.message}`;
+  } finally {
+    depthCalibrationBusy = false;
+    button.disabled = false;
+    button.textContent = metricDepthCalibration?.available ? 'Recalibrate with radar' : 'Calibrate with radar';
+    updateMetricCalibrationStatus();
+  }
+}
+
 async function refreshSensors() {
   if (sensorBusy || activeSource !== 'sensors') return;
   sensorBusy = true;
@@ -411,6 +576,7 @@ async function refreshSensorDepth() {
     const depthAge = Number(depth.captured_at) > 0
       ? ` · ${Math.max(0, Date.now() / 1000 - Number(depth.captured_at)).toFixed(1)}s old` : '';
     byId('world-map-midas-state').textContent = `${depth.state || 'disabled'}${depth.device ? ` · ${depth.device}` : ''}${depth.latency_ms != null ? ` · ${depth.latency_ms} ms` : ''}${depthAge}${depth.error ? ` · ${depth.error}` : ''}`;
+    updateMetricCalibrationStatus();
     if (depth.depth_gray_jpeg_base64 && depth.frame_id !== cloudFrameId && activeRender === '3d') {
       const depthFrameId = depth.frame_id;
       void rebuildDepthCloud(depth)
@@ -479,7 +645,7 @@ async function rebuildDepthCloud(depth) {
     for (let x = 0; x < image.width; x += stride) {
       const index = (y * image.width + x) * 4;
       const relative = image.values[index] / 255;
-      const distance = 1.1 + (1 - relative) * 5.8;
+      const distance = relativeDepthToMeters(1.1 + (1 - relative) * 5.8);
       const px = ((x / Math.max(1, image.width - 1)) - 0.5) * distance * 1.28;
       const py = (0.5 - y / Math.max(1, image.height - 1)) * distance * 0.96;
       positions.push(px, py, -distance);
@@ -524,7 +690,8 @@ function drawDepthDetections(image, detections) {
     const sampleX = Math.max(0, Math.min(image.width - 1, Math.round((x1 + x2) * image.width / 2)));
     const sampleY = Math.max(0, Math.min(image.height - 1, Math.round((y1 + y2) * image.height / 2)));
     const gray = image.values[(sampleY * image.width + sampleX) * 4] / 255;
-    const distance = 1.1 + (1 - gray) * 5.8;
+    const relativeDistance = 1.1 + (1 - gray) * 5.8;
+    const distance = relativeDepthToMeters(relativeDistance);
     const width = Math.max(0.04, (x2 - x1) * distance * 1.28);
     const height = Math.max(0.04, (y2 - y1) * distance * 0.96);
     const centerX = (((x1 + x2) / 2) - 0.5) * distance * 1.28;
@@ -534,7 +701,8 @@ function drawDepthDetections(image, detections) {
     const edges = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(width, height, Math.max(0.035, distance * 0.035))), materialBox);
     edges.position.set(centerX, centerY, -distance);
     boxGroup.add(edges);
-    const label = makeLabel(`${item.label || item.class_name || item.class || 'object'} ${Math.round(Number(item.confidence ?? item.score ?? 0) * 100)}%`, color);
+    const metricLabel = metricDepthCalibration?.available ? ` · ~${distance.toFixed(1)} m` : '';
+    const label = makeLabel(`${item.label || item.class_name || item.class || 'object'} ${Math.round(Number(item.confidence ?? item.score ?? 0) * 100)}%${metricLabel}`, color);
     label.scale.set(Math.max(0.95, Math.min(2.0, width)), 0.25, 1);
     label.position.set(centerX, centerY + height / 2 + 0.17, -distance);
     boxGroup.add(label);

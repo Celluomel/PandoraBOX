@@ -30,6 +30,7 @@ class YoloXService:
         self._retry_at = 0.0
         self._status: dict[str, Any] = {"state": "disabled", "detections": [], "latency_ms": None}
         self._analyzed_frames: OrderedDict[str, dict[str, Any]] = OrderedDict()
+        self._detection_results: OrderedDict[str, dict[str, Any]] = OrderedDict()
 
     def _value(self, suffix: str, default: Any) -> Any:
         return self._config("BODY_YOLO_" + suffix, default)
@@ -51,6 +52,13 @@ class YoloXService:
     def status(self) -> dict:
         with self._lock:
             return dict(self._status)
+
+    def detection_result(self, frame_id: str | None = None) -> dict | None:
+        with self._lock:
+            if frame_id is None:
+                return dict(self._status)
+            result = self._detection_results.get(str(frame_id))
+            return dict(result) if result else None
 
     def analyzed_frame(self, frame_id: str | None = None) -> dict | None:
         with self._lock:
@@ -168,6 +176,10 @@ class YoloXService:
                         with self._lock:
                             self._status = result
                             frame_key = str(frame_id)
+                            self._detection_results[frame_key] = dict(result)
+                            self._detection_results.move_to_end(frame_key)
+                            while len(self._detection_results) > 12:
+                                self._detection_results.popitem(last=False)
                             self._analyzed_frames[frame_key] = dict(frame)
                             self._analyzed_frames.move_to_end(frame_key)
                             while len(self._analyzed_frames) > 4:

@@ -47,6 +47,19 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertIn("this.sceneMode === 'sensors'", dashboard)
         self.assertIn("hudAction === 'sensor-mode'", source)
 
+    def test_world_model_has_persistent_radar_anchored_midas_calibration(self):
+        root = Path(__file__).resolve().parents[1]
+        source = (root / "body_runtime_host" / "world_map_3d.js").read_text(encoding="utf-8")
+        runtime = (root / "body_runtime_host" / "runtime.py").read_text(encoding="utf-8")
+        self.assertIn('id="world-map-midas-calibrate"', source)
+        self.assertIn("Applied to all YOLOX objects", source)
+        self.assertIn("relativeDepthToMeters", source)
+        self.assertIn("/body/camera/yolo/status?frame_id=", source)
+        self.assertIn("frameDelta <= 0.75", source)
+        self.assertIn("near-synchronized YOLOX/MiDaS + LD2450", source)
+        self.assertIn("/body/camera/depth-calibration", runtime)
+        self.assertIn("midas_metric_calibration.json", runtime)
+
     def test_hud_arc_tilts_its_top_toward_the_viewer(self):
         source = (Path(__file__).resolve().parents[1] / "body_runtime_host" / "quest_vr_dashboard.js").read_text(encoding="utf-8")
 

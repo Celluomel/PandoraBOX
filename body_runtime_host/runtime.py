@@ -188,6 +188,10 @@ class BodyHost:
         self._reconstruction_capture = ReconstructionCaptureStore(
             ROOT / "data" / "body" / "reconstruction"
         )
+        from body_runtime_host.midas_metric_calibration import MiDaSMetricCalibrationStore
+        self._midas_metric_calibration = MiDaSMetricCalibrationStore(
+            ROOT / "data" / "body" / "midas_metric_calibration.json"
+        )
 
     def reconstruction_sessions(self) -> dict:
         return self._reconstruction_capture.list_sessions()
@@ -698,13 +702,20 @@ class BodyHost:
             return {"available": False, "error": "Analyzed camera frame is no longer available"}
         return {"available": True, "camera": frame}
 
-    def camera_yolo_status(self) -> dict:
+    def camera_yolo_status(self, frame_id: str | None = None) -> dict:
         """Return the latest lightweight detection result without camera pixels."""
-        return self._yolox_service.status()
+        result = self._yolox_service.detection_result(frame_id)
+        return result or {"state": "unavailable", "detections": [], "frame_id": frame_id}
 
     def camera_depth(self) -> dict:
         result = self._midas_service.status()
         return {"available": bool(result.get("depth_jpeg_base64")), **result}
+
+    def midas_metric_calibration(self) -> dict:
+        return self._midas_metric_calibration.status()
+
+    def calibrate_midas_metric_depth(self, payload: dict) -> dict:
+        return self._midas_metric_calibration.calibrate(payload or {})
 
     def _configure_local_camera(self, start: bool | None = None) -> dict:
         settings = self.camera_settings()
@@ -3429,8 +3440,13 @@ class BodyHost:
                     self._send(owner.camera_image())
                 elif path == "/body/camera/depth":
                     self._send(owner.camera_depth())
+                elif path == "/body/camera/depth-calibration":
+                    self._send(owner.midas_metric_calibration())
                 elif path == "/body/camera/yolo/status":
-                    self._send(owner.camera_yolo_status())
+                    query = parse_qs(urlparse(self.path).query)
+                    frame_id = (query.get("frame_id") or [None])[0]
+                    result = owner.camera_yolo_status(frame_id)
+                    self._send(result, 200 if result.get("state") != "unavailable" else 404)
                 elif path == "/body/camera/yolo-frame":
                     query = parse_qs(urlparse(self.path).query)
                     frame_id = (query.get("frame_id") or [None])[0]
@@ -3704,6 +3720,11 @@ class BodyHost:
                     try:
                         self._send(owner.update_camera_settings(self._read_body()))
                     except (TypeError, ValueError) as exc:
+                        self._send({"ok": False, "error": str(exc)}, 400)
+                elif path == "/body/camera/depth-calibration":
+                    try:
+                        self._send(owner.calibrate_midas_metric_depth(self._read_body()))
+                    except (TypeError, ValueError, OSError) as exc:
                         self._send({"ok": False, "error": str(exc)}, 400)
                 elif path == "/body/camera/capture":
                     body = self._read_body()
