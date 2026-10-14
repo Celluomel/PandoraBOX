@@ -95,20 +95,21 @@ sensorSceneGroup.add(sensorRadarGroup);
 const sensorBodyMarker = new THREE.Group();
 sensorSceneGroup.add(sensorBodyMarker);
 const sensorBodyMesh = new THREE.Mesh(
-  new THREE.CylinderGeometry(0.28, 0.32, 0.32, 24),
+  new THREE.CylinderGeometry(0.12, 0.14, 0.14, 24),
   new THREE.MeshStandardMaterial({ color: '#8ee5b1', emissive: '#1a5736', emissiveIntensity: 0.55 }),
 );
-sensorBodyMesh.position.y = 0.2;
+sensorBodyMesh.position.y = 0.07;
 sensorBodyMarker.add(sensorBodyMesh);
 const sensorBodyNose = new THREE.Mesh(
-  new THREE.ConeGeometry(0.12, 0.36, 16),
+  new THREE.ConeGeometry(0.06, 0.18, 16),
   new THREE.MeshStandardMaterial({ color: '#d8ffe5' }),
 );
 sensorBodyNose.rotation.x = -Math.PI / 2;
-sensorBodyNose.position.set(0, 0.22, -0.38);
+sensorBodyNose.position.set(0, 0.08, -0.17);
 sensorBodyMarker.add(sensorBodyNose);
 const sensorBodyLabel = labelSprite('BODY · SENSOR ORIGIN');
-sensorBodyLabel.position.set(0, 0.85, 0);
+sensorBodyLabel.scale.set(0.9, 0.17, 1);
+sensorBodyLabel.position.set(0, 0.43, 0);
 sensorBodyMarker.add(sensorBodyLabel);
 const semanticSplatGroup = new THREE.Group();
 world.add(semanticSplatGroup);
@@ -411,7 +412,8 @@ function buildSensorDepthCloud(depth, grayImage, colorImage) {
   const colors = [];
   for (let v = 0; v < height; v += step) {
     for (let u = 0; u < width; u += step) {
-      const z = relativeDepthAt(grayImage, u / (width - 1), v / (height - 1));
+      const relative = relativeDepthAt(grayImage, u / (width - 1), v / (height - 1));
+      const z = calibratedSensorDistance(relative) ?? relative;
       positions.push(((u - (width - 1) / 2) * z) / focalX, 0.72 + (((height - 1) / 2 - v) * z) / focalY, -z);
       const colorX = Math.min(colorImage.width - 1, Math.round(u * (colorImage.width - 1) / Math.max(1, width - 1)));
       const colorY = Math.min(colorImage.height - 1, Math.round(v * (colorImage.height - 1) / Math.max(1, height - 1)));
@@ -461,7 +463,8 @@ function updateSensorYolo(yolo) {
     if (x2 <= x1 || y2 <= y1) continue;
     const u = (x1 + x2) / 2;
     const v = (y1 + y2) / 2;
-    const z = relativeDepthAt(sensorDepthValues, u, v);
+    const relative = relativeDepthAt(sensorDepthValues, u, v);
+    const z = calibratedSensorDistance(relative) ?? relative;
     const boxWidth = Math.max(0.08, (x2 - x1) * width * z / focalX);
     const boxHeight = Math.max(0.08, (y2 - y1) * height * z / focalY);
     const centerX = (u - 0.5) * z * width / focalX;
@@ -490,7 +493,7 @@ function updateSensorRadar(perception) {
   const yaw = Number(perception?.body?.orientation || 0);
   const sourceFrame = String(radar.frame || 'body').toLowerCase();
   const isLd2450 = /^hlk_ld2450/i.test(String(radar.source || ''));
-  const signature = JSON.stringify([radar.source, sourceFrame, targets.map(target => [target.id, target.position_m || target.position, target.velocity_mps || target.velocity, target.radial_speed_mps, target.classification])]);
+  const signature = JSON.stringify([radar.source, sourceFrame, latestSensorYolo.frame_id, targets.map(target => [target.id, target.position_m || target.position, target.velocity_mps || target.velocity, target.radial_speed_mps, target.classification])]);
   if (signature === sensorRadarSignature) return targets.length;
   sensorRadarSignature = signature;
   disposeChildren(sensorRadarGroup);
@@ -502,6 +505,11 @@ function updateSensorRadar(perception) {
     if (!local || !Number.isFinite(local.forward) || !Number.isFinite(local.left)) continue;
     const velocity = isLd2450 ? [Number(rawVelocity[1] || 0), -Number(rawVelocity[0] || 0)] : rawVelocity;
     const radial = Number(target.radial_speed_mps);
+    const yoloMatch = isLd2450 ? matchRadarTargetToYolo(rawPosition) : null;
+    const rawClass = String(target.classification || 'unknown');
+    const classification = /^(unknown|target|object)$/i.test(rawClass) && yoloMatch
+      ? String(yoloMatch.label || yoloMatch.class_name || yoloMatch.class || 'person')
+      : rawClass;
     const moving = /moving|mobile/i.test(String(target.classification || ''))
       || (Number.isFinite(radial) && Math.abs(radial) >= 0.05)
       || Math.hypot(Number(velocity[0] || 0), Number(velocity[1] || 0)) >= 0.05;
@@ -510,11 +518,44 @@ function updateSensorRadar(perception) {
     marker.position.set(-local.left, 0.12, -local.forward);
     sensorRadarGroup.add(marker);
     const speedText = Number.isFinite(radial) ? ` ${radial >= 0 ? '+' : ''}${radial.toFixed(2)} m/s` : '';
-    const label = labelSprite(`${target.classification || 'mmWave target'}${speedText}`);
+    const label = labelSprite(`${classification}${speedText}`);
     label.position.set(-local.left, 0.38, -local.forward);
     sensorRadarGroup.add(label);
   }
   return targets.length;
+}
+
+function matchRadarTargetToYolo(radarPosition) {
+  if (!sensorDepthValues || !Array.isArray(radarPosition) || radarPosition.length < 2) return null;
+  const yoloAge = Number(latestSensorYolo?.captured_at) > 0
+    ? Date.now() / 1000 - Number(latestSensorYolo.captured_at) : Infinity;
+  if (yoloAge < 0 || yoloAge > 2.5) return null;
+  const lateral = Number(radarPosition[0]);
+  const forward = Number(radarPosition[1]);
+  if (!Number.isFinite(lateral) || !Number.isFinite(forward) || forward <= 0) return null;
+  const radarRange = Math.hypot(lateral, forward);
+  const radarBearing = Math.atan2(lateral, forward);
+  const detections = latestSensorYolo?.state === 'ready' ? latestSensorYolo.detections || [] : [];
+  let best = null;
+  for (const detection of detections) {
+    const box = detection.bbox;
+    const confidence = Number(detection.confidence ?? detection.score ?? 0);
+    if (!Array.isArray(box) || box.length !== 4 || confidence < 0.4) continue;
+    const u = (Number(box[0]) + Number(box[2])) / 2;
+    if (!Number.isFinite(u)) continue;
+    const cameraBearing = Math.atan((u - 0.5) * 2 * Math.tan(35 * Math.PI / 180));
+    const bearingError = Math.abs(cameraBearing - radarBearing);
+    if (bearingError > 14 * Math.PI / 180) continue;
+    const v = (Number(box[1]) + Number(box[3])) / 2;
+    const visualRange = calibratedSensorDistance(relativeDepthAt(sensorDepthValues, u, v));
+    if (visualRange == null) continue;
+    const rangeTolerance = Math.max(0.65, radarRange * 0.3);
+    const rangeError = Math.abs(visualRange - radarRange);
+    if (rangeError > rangeTolerance) continue;
+    const score = bearingError / (14 * Math.PI / 180) + rangeError / rangeTolerance;
+    if (!best || score < best.score) best = { ...detection, score };
+  }
+  return best;
 }
 
 function updateSensorReadout(depth, yoloCount, radarCount) {
