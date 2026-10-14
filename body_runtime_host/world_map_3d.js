@@ -1,6 +1,8 @@
 import * as THREE from '../frontend/node_modules/three/build/three.module.js';
 
 const byId = (id) => document.getElementById(id);
+let latestSensorDepth = null;
+let lastSensorDepthAt = 0;
 const panel = document.querySelector('#view-worldmodel .map-panel');
 if (panel) {
   const header = panel.querySelector('.panel-head');
@@ -353,30 +355,31 @@ async function refreshSensors() {
   if (sensorBusy || activeSource !== 'sensors') return;
   sensorBusy = true;
   try {
-    const [frame, depth] = await Promise.all([
-      fetch('/body/camera/frame', { cache: 'no-store' }).then((response) => response.json()),
-      fetch('/body/camera/depth', { cache: 'no-store' }).then((response) => response.json()),
-    ]);
+    const frameRequest = fetch('/body/camera/frame', { cache: 'no-store' }).then((response) => response.json());
+    const depthRequest = !latestSensorDepth || performance.now() - lastSensorDepthAt >= 1200
+      ? fetch('/body/camera/depth', { cache: 'no-store' }).then((response) => response.json()).then((result) => {
+        latestSensorDepth = result;
+        lastSensorDepthAt = performance.now();
+        return result;
+      })
+      : Promise.resolve(latestSensorDepth);
+    const [frame, depth] = await Promise.all([frameRequest, depthRequest]);
     const currentCamera = frame.camera || {};
     const yolo = frame.yolo || {};
-    let displayCamera = currentCamera;
-    if (yolo.frame_id) {
-      try {
-        const analyzed = await fetch(`/body/camera/yolo-frame?frame_id=${encodeURIComponent(yolo.frame_id)}`, { cache: 'no-store' });
-        if (analyzed.ok) displayCamera = (await analyzed.json()).camera || currentCamera;
-      } catch (_) {}
-    }
     const cameraImage = byId('world-map-camera-image');
     const cameraEmpty = byId('world-map-camera-empty');
-    setImage(cameraImage, cameraEmpty, displayCamera.image_base64, displayCamera.mime_type || 'image/jpeg');
-    drawBoxes(yolo.frame_id === displayCamera.frame_id ? yolo.detections : [], displayCamera.width || 640, displayCamera.height || 480);
+    setImage(cameraImage, cameraEmpty, currentCamera.image_base64, currentCamera.mime_type || 'image/jpeg');
+    const detectionAge = Number(yolo.captured_at) > 0 ? Date.now() / 1000 - Number(yolo.captured_at) : Infinity;
+    const detections = yolo.state === 'ready' && detectionAge >= 0 && detectionAge <= 2.5
+      ? yolo.detections || [] : [];
+    drawBoxes(detections, currentCamera.width || 640, currentCamera.height || 480);
     byId('world-map-yolo-state').textContent = `${yolo.state || 'disabled'} · ${(yolo.detections || []).length} boxes${yolo.latency_ms != null ? ` · ${yolo.latency_ms} ms` : ''}`;
-    byId('world-map-frame-state').textContent = displayCamera.frame_id ? `${displayCamera.frame_id}${displayCamera.captured_at ? ` · ${Math.max(0, Date.now() / 1000 - displayCamera.captured_at).toFixed(1)}s` : ''}` : 'No frame';
+    byId('world-map-frame-state').textContent = currentCamera.frame_id ? `${currentCamera.frame_id}${currentCamera.captured_at ? ` · ${Math.max(0, Date.now() / 1000 - currentCamera.captured_at).toFixed(1)}s` : ''}` : 'No frame';
     const depthImage = byId('world-map-depth-image');
     const depthEmpty = byId('world-map-depth-empty');
     setImage(depthImage, depthEmpty, depth.depth_jpeg_base64);
     byId('world-map-midas-state').textContent = `${depth.state || 'disabled'}${depth.latency_ms != null ? ` · ${depth.latency_ms} ms` : ''}${depth.error ? ` · ${depth.error}` : ''}`;
-    byId('world-map-sensor-note').textContent = `Sensor-only view · frame ${displayCamera.frame_id || 'unavailable'} · depth ${depth.depth_type || 'relative'} · no simulation object positions or metric scale.`;
+    byId('world-map-sensor-note').textContent = `Sensor-only view · frame ${currentCamera.frame_id || 'unavailable'} · depth ${depth.depth_type || 'relative'} · no simulation object positions or metric scale.`;
     if (depth.depth_gray_jpeg_base64 && depth.frame_id !== cloudFrameId) {
       await rebuildDepthCloud(depth, yolo.frame_id === depth.frame_id ? yolo.detections || [] : []);
       cloudFrameId = depth.frame_id;
@@ -475,5 +478,5 @@ window.updateBodyWorldMap3D = (world) => {
   if (activeSource === 'simulation' && activeRender === '3d') buildSimulation(world);
 };
 
-setInterval(() => { if (activeSource === 'sensors') void refreshSensors(); }, 1200);
+setInterval(() => { if (activeSource === 'sensors') void refreshSensors(); }, 150);
 if (latestWorld) buildSimulation(latestWorld);

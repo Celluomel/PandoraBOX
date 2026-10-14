@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 import logging
+from pathlib import Path
 import threading
 import time
 from typing import Any, Callable
@@ -86,6 +87,15 @@ class MiDaSDepthService:
                 )
         self._torchvision_ops_library = library
         self._device = "cuda" if torch.cuda.is_available() else "cpu"
+        # MiDaS_small loads EfficientNet through nested torch.hub.load calls.
+        # A service has no stdin, so pre-approve that known upstream dependency.
+        trusted_list = Path(torch.hub.get_dir()) / "trusted_list"
+        trusted_list.parent.mkdir(parents=True, exist_ok=True)
+        trusted_repositories = set(trusted_list.read_text(encoding="utf-8").splitlines()) if trusted_list.exists() else set()
+        dependency = "rwightman_gen-efficientnet-pytorch"
+        if dependency not in trusted_repositories:
+            with trusted_list.open("a", encoding="utf-8") as trusted_file:
+                trusted_file.write(("" if not trusted_repositories else "\n") + dependency + "\n")
         model = torch.hub.load("isl-org/MiDaS", self.MODEL_TYPE, trust_repo=True)
         transforms = torch.hub.load("isl-org/MiDaS", "transforms", trust_repo=True)
         model.to(self._device).eval()
