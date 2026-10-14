@@ -21,6 +21,7 @@ class MiDaSDepthService:
         self._thread: threading.Thread | None = None
         self._model = None
         self._transform = None
+        self._torchvision_ops_library = None
         self._device = "cpu"
         self._last_frame_id = None
         self._retry_at = 0.0
@@ -73,6 +74,17 @@ class MiDaSDepthService:
     def _load_model(self) -> None:
         import torch
 
+        # The Ventuno CPU Torch build omits these optional torchvision operators;
+        # MiDaS needs torchvision imports but never calls either NMS operation.
+        library = torch.library.Library("torchvision", "FRAGMENT")
+        for name in ("nms", "qnms"):
+            try:
+                torch._C._dispatch_find_schema_or_throw(f"torchvision::{name}", "")
+            except RuntimeError:
+                library.define(
+                    f"{name}(Tensor boxes, Tensor scores, float iou_threshold) -> Tensor"
+                )
+        self._torchvision_ops_library = library
         self._device = "cuda" if torch.cuda.is_available() else "cpu"
         model = torch.hub.load("isl-org/MiDaS", self.MODEL_TYPE, trust_repo=True)
         transforms = torch.hub.load("isl-org/MiDaS", "transforms", trust_repo=True)
