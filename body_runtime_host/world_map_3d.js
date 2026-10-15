@@ -454,7 +454,7 @@ async function renderSemanticMask(segmentation, cameraFrame) {
   const pixels = context.createImageData(canvas.width, canvas.height);
   const palette = new Map();
   for (let index = 0; index < sourcePixels.length; index += 4) {
-    const classId = sourcePixels[index];
+    const classId = sourcePixels[index + 2];
     if (!palette.has(classId)) {
       const hex = semanticColor(classId).getHexString();
       palette.set(classId, [parseInt(hex.slice(0, 2), 16), parseInt(hex.slice(2, 4), 16), parseInt(hex.slice(4, 6), 16)]);
@@ -972,7 +972,7 @@ async function rebuildDepthCloud(depth, segmentation = latestSegmentation) {
       if (classMask && classMask.values[classMaskIndex + 3] > 0) {
         const maskX = Math.min(classMask.width - 1, Math.round(x * classMask.width / image.width));
         const maskY = Math.min(classMask.height - 1, Math.round(y * classMask.height / image.height));
-        const classId = classMask.values[(maskY * classMask.width + maskX) * 4];
+        const classId = classMask.values[(maskY * classMask.width + maskX) * 4 + 2];
         const semantic = semanticColor(classId);
         colorsArray.push(semantic.r, semantic.g, semantic.b);
       } else {

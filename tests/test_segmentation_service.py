@@ -4,7 +4,7 @@ from unittest.mock import patch
 import numpy as np
 
 from body_runtime_host.segmentation_service import SemanticSegmentationService
-from body_runtime_host.segmentation_worker import _decode_logits, _decode_logits_with_confidence, _run_inference, _summarize
+from body_runtime_host.segmentation_worker import _decode_logits, _decode_logits_with_confidence, _mask_bgra_for_png, _run_inference, _summarize
 
 
 class SemanticSegmentationTests(unittest.TestCase):
@@ -48,6 +48,14 @@ class SemanticSegmentationTests(unittest.TestCase):
         self.assertLess(confidence[0, 1], 0.4)
         classes = _summarize(mask, {"0": "wall", "1": "person"}, confidence)
         self.assertEqual(classes, [{"id": 1, "label": "person", "ratio": 1.0}])
+
+    def test_png_mask_places_class_ids_in_opencv_bgra_red_channel(self):
+        mask = np.asarray([[0, 22, 130]], dtype=np.uint8)
+        confidence = np.ones(mask.shape, dtype=np.float32)
+        encoded_pixels = _mask_bgra_for_png(mask, confidence)
+        np.testing.assert_array_equal(encoded_pixels[0, :, 2], mask[0])
+        np.testing.assert_array_equal(encoded_pixels[0, :, 0], [0, 0, 0])
+        np.testing.assert_array_equal(encoded_pixels[0, :, 3], [255, 255, 255])
 
     def test_resizes_class_scores_before_selecting_full_resolution_labels(self):
         class FakeCv2:

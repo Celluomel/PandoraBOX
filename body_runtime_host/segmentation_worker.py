@@ -126,6 +126,13 @@ def _summarize(
     ]
 
 
+def _mask_bgra_for_png(mask: np.ndarray, confidence: np.ndarray) -> np.ndarray:
+    bgra = np.zeros((*mask.shape, 4), dtype=np.uint8)
+    bgra[:, :, 2] = mask
+    bgra[:, :, 3] = np.clip((confidence - 0.35) * (255 / 0.4), 0, 255).astype(np.uint8)
+    return bgra
+
+
 def _run_inference(model, tensor, image_rgb, model_path, runtime_preference, input_shape, actual_runtime):
     try:
         return model.Inference([tensor]), model, input_shape, actual_runtime
@@ -170,10 +177,8 @@ def main() -> None:
             mask, confidence = _decode_logits_with_confidence(
                 output, class_count, (image_rgb.shape[1], image_rgb.shape[0]),
             )
-            rgba_mask = np.zeros((*mask.shape, 4), dtype=np.uint8)
-            rgba_mask[:, :, 0] = mask
-            rgba_mask[:, :, 3] = np.clip((confidence - 0.35) * (255 / 0.4), 0, 255).astype(np.uint8)
-            ok, encoded = cv2.imencode(".png", rgba_mask, [int(cv2.IMWRITE_PNG_COMPRESSION), 3])
+            bgra_mask = _mask_bgra_for_png(mask, confidence)
+            ok, encoded = cv2.imencode(".png", bgra_mask, [int(cv2.IMWRITE_PNG_COMPRESSION), 3])
             if not ok:
                 raise RuntimeError("could not encode semantic class mask")
             protocol_out.write(json.dumps({

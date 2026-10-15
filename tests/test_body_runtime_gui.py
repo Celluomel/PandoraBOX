@@ -34,6 +34,8 @@ class BodyRuntimeGuiTests(unittest.TestCase):
         self.assertIn("[89, '#3a86ff']", source)
         self.assertIn("[130, '#c77dff']", source)
         self.assertIn("[22, '#e76f51']", source)
+        self.assertIn("const classId = sourcePixels[index + 2]", source)
+        self.assertIn("* 4 + 2];", source)
         self.assertIn("padding:9px 0;color:#40574a", source)
         self.assertIn("padding:8px 10px;color:#33483d", source)
         self.assertIn("function segmentationMatchesDepth(segmentation, depth)", source)
