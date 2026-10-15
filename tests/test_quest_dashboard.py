@@ -91,6 +91,10 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertIn("cv2.solvePnPRansac", estimator)
         self.assertIn("radar-anchored MiDaS metric calibration", estimator)
         self.assertIn("too few consistent inliers", estimator)
+        self.assertIn('id="world-map-odometry-map"', source)
+        self.assertIn('id="world-map-odometry-trail"', source)
+        self.assertIn("function renderVisualOdometryMap(odometry)", source)
+        self.assertIn("Session-local estimate", source)
 
     def test_hud_arc_tilts_its_top_toward_the_viewer(self):
         source = (Path(__file__).resolve().parents[1] / "body_runtime_host" / "quest_vr_dashboard.js").read_text(encoding="utf-8")

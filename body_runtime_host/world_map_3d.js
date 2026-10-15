@@ -16,6 +16,8 @@ let cloudSegmentationFrameId = '';
 let metricDepthCalibration = null;
 let depthCalibrationBusy = false;
 let depthCalibrationMessage = '';
+const visualOdometryTrail = [];
+let visualOdometryFrameId = '';
 const panel = document.querySelector('#view-worldmodel .map-panel');
 if (panel) {
   const header = panel.querySelector('.panel-head');
@@ -36,7 +38,7 @@ if (panel) {
     sensorPanel.id = 'world-map-sensor-view';
     sensorPanel.className = 'world-map-sensor-view';
     sensorPanel.hidden = true;
-    sensorPanel.innerHTML = `<div class="world-map-sensor-metrics"><span>YOLOX <b id="world-map-yolo-state">Waiting</b></span><span>MiDaS <b id="world-map-midas-state">Waiting</b></span><span>Visual odometry <b id="world-map-odometry-state">Waiting</b></span><span>Frame <b id="world-map-frame-state">—</b></span><span>SegFormer <b id="world-map-segmentation-state">disabled</b></span></div><div id="world-map-sensor-2d" class="world-map-sensor-2d"><div class="world-map-camera"><div class="world-map-sensor-heading">CAMERA · YOLOX + SEGFORMER</div><div class="world-map-image-wrap"><img id="world-map-camera-image" alt="Live camera frame with YOLOX detections"><canvas id="world-map-segmentation-overlay" aria-label="SegFormer semantic classes overlaid on the camera frame" hidden></canvas><svg id="world-map-yolo-overlay" viewBox="0 0 1 1" preserveAspectRatio="xMidYMid meet" aria-hidden="true"></svg><span id="world-map-camera-empty" class="world-map-empty">Waiting for a camera frame</span></div><label class="world-map-segmentation-toggle"><input id="world-map-segmentation-toggle" type="checkbox" checked> Segmentation overlay</label></div><div class="world-map-depth"><div class="world-map-sensor-heading">MiDaS · RELATIVE DEPTH</div><img id="world-map-depth-image" alt="MiDaS relative depth image"><span id="world-map-depth-empty" class="world-map-empty">MiDaS disabled or waiting for inference</span><div class="world-map-depth-calibration"><button type="button" id="world-map-midas-calibrate">Calibrate with radar</button><small id="world-map-midas-calibration-status" role="status">Relative depth only · not calibrated in metres</small></div></div></div><div id="world-map-sensor-3d" class="world-map-canvas world-map-sensor-cloud" hidden></div><p id="world-map-sensor-note" class="world-map-sensor-note">Sensor-only view · no simulation object positions are used.</p>`;
+    sensorPanel.innerHTML = `<div class="world-map-sensor-metrics"><span>YOLOX <b id="world-map-yolo-state">Waiting</b></span><span>MiDaS <b id="world-map-midas-state">Waiting</b></span><span>Visual odometry <b id="world-map-odometry-state">Waiting</b></span><span>Frame <b id="world-map-frame-state">—</b></span><span>SegFormer <b id="world-map-segmentation-state">disabled</b></span></div><div id="world-map-sensor-2d" class="world-map-sensor-2d"><div class="world-map-camera"><div class="world-map-sensor-heading">CAMERA · YOLOX + SEGFORMER</div><div class="world-map-image-wrap"><img id="world-map-camera-image" alt="Live camera frame with YOLOX detections"><canvas id="world-map-segmentation-overlay" aria-label="SegFormer semantic classes overlaid on the camera frame" hidden></canvas><svg id="world-map-yolo-overlay" viewBox="0 0 1 1" preserveAspectRatio="xMidYMid meet" aria-hidden="true"></svg><span id="world-map-camera-empty" class="world-map-empty">Waiting for a camera frame</span></div><label class="world-map-segmentation-toggle"><input id="world-map-segmentation-toggle" type="checkbox" checked> Segmentation overlay</label></div><div class="world-map-depth"><div class="world-map-sensor-heading">MiDaS · RELATIVE DEPTH</div><img id="world-map-depth-image" alt="MiDaS relative depth image"><span id="world-map-depth-empty" class="world-map-empty">MiDaS disabled or waiting for inference</span><div class="world-map-depth-calibration"><button type="button" id="world-map-midas-calibrate">Calibrate with radar</button><small id="world-map-midas-calibration-status" role="status">Relative depth only · not calibrated in metres</small></div></div></div><section class="world-map-odometry-view" aria-label="Experimental visual odometry trajectory"><div class="world-map-sensor-heading"><span>VISUAL ODOMETRY · LOCAL TRAJECTORY</span><small id="world-map-odometry-map-status">Waiting for tracking</small></div><svg id="world-map-odometry-map" viewBox="0 0 640 260" role="img" aria-label="Top-down estimated Body trajectory in the local visual odometry frame"><rect class="odom-map-bg" x="0" y="0" width="640" height="260"/><g class="odom-grid"><path d="M40 45H600M40 85H600M40 125H600M40 165H600M40 205H600M80 25V225M160 25V225M240 25V225M320 25V225M400 25V225M480 25V225M560 25V225"/><path class="odom-axis" d="M40 205H600M320 25V225"/></g><text class="odom-axis-label" x="320" y="18" text-anchor="middle">FORWARD ↑</text><text class="odom-axis-label" x="320" y="249" text-anchor="middle">← LEFT · RIGHT →</text><g id="world-map-odometry-grid-labels"></g><polyline id="world-map-odometry-trail" points=""/><circle id="world-map-odometry-start" cx="320" cy="205" r="4"/><g id="world-map-odometry-body" transform="translate(320 205)"><path d="M0 -11 L7 8 L0 5 L-7 8 Z"/></g><text id="world-map-odometry-position" class="odom-position-label" x="332" y="200">0.00, 0.00 m</text><text id="world-map-odometry-empty" class="odom-empty-label" x="320" y="130" text-anchor="middle">Move the Body to trace its estimated path</text></svg><p class="world-map-odometry-footnote">Session-local estimate · visual odometry only · drift accumulates · not a persistent map</p></section><div id="world-map-sensor-3d" class="world-map-canvas world-map-sensor-cloud" hidden></div><p id="world-map-sensor-note" class="world-map-sensor-note">Sensor-only view · no simulation object positions are used.</p>`;
     const semanticPanel = document.createElement('div');
     semanticPanel.className = 'world-map-segmentation-classes';
     semanticPanel.id = 'world-map-segmentation-classes';
@@ -57,6 +59,15 @@ if (panel) {
       .map-layout[hidden],.map-layout>.map-wrap[hidden],.map-layout>.world-map-canvas[hidden]{display:none!important}
       .world-map-sensor-metrics{display:flex;gap:18px;flex-wrap:wrap;padding:9px 0;color:#8eaa98;font:10px ui-monospace,monospace}
       .world-map-sensor-metrics b{color:#dceee3;font-weight:600}
+      .world-map-odometry-view{margin-top:12px;background:#07120f;border:1px solid #263e32}
+      .world-map-odometry-view>.world-map-sensor-heading{display:flex;justify-content:space-between;gap:12px;align-items:center}
+      .world-map-odometry-view>.world-map-sensor-heading small{color:#a9c0b2;font:10px ui-monospace,monospace}
+      #world-map-odometry-map{display:block;width:100%;height:clamp(220px,28vh,300px);background:#07120f}
+      .odom-map-bg{fill:#07120f}.odom-grid{fill:none;stroke:#254235;stroke-width:1}.odom-grid .odom-axis{stroke:#48745a;stroke-width:1.5}
+      .odom-axis-label,.odom-empty-label{fill:#89a895;font:10px ui-monospace,monospace}.odom-position-label{fill:#dceee3;font:11px ui-monospace,monospace}
+      #world-map-odometry-trail{fill:none;stroke:#42d6b1;stroke-width:3;stroke-linecap:round;stroke-linejoin:round}
+      #world-map-odometry-start{fill:#edbd69;stroke:#07120f;stroke-width:2}#world-map-odometry-body path{fill:#75dfa2;stroke:#d9f5e5;stroke-width:1.5}
+      .world-map-odometry-footnote{margin:0;padding:0 10px 9px;color:#89a895;font:10px ui-monospace,monospace}
       .world-map-sensor-2d{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(220px,.8fr);gap:12px;align-items:stretch}
       .world-map-camera,.world-map-depth{min-width:0;position:relative;background:#07120f;border:1px solid #263e32;overflow:hidden}
       .world-map-sensor-heading{padding:9px 11px;border-bottom:1px solid #263e32;color:#91c9aa;font:10px ui-monospace,monospace}
@@ -739,11 +750,23 @@ async function refreshVisualOdometry() {
     const odometry = await response.json();
     const status = byId('world-map-odometry-state');
     if (!status) return;
+    const mapStatus = byId('world-map-odometry-map-status');
+    const mapEmpty = byId('world-map-odometry-empty');
+    if (mapStatus) mapStatus.textContent = odometry.state === 'tracking' ? 'TRACKING' : String(odometry.state || 'waiting').toUpperCase();
     if (odometry.available) {
       const [forward = 0, lateral = 0] = odometry.position_m || [];
       status.textContent = `${forward.toFixed(2)}m fwd · ${lateral.toFixed(2)}m left · ${Math.round(odometry.confidence * 100)}% · experimental`;
+      const frameId = String(odometry.frame_id || '');
+      if (frameId && frameId !== visualOdometryFrameId) {
+        visualOdometryFrameId = frameId;
+        visualOdometryTrail.push({ forward, lateral });
+        if (visualOdometryTrail.length > 600) visualOdometryTrail.shift();
+      }
+      renderVisualOdometryMap(odometry);
+      if (mapEmpty) mapEmpty.hidden = visualOdometryTrail.length > 1;
     } else {
       status.textContent = `${odometry.state || 'waiting'} · ${odometry.reason || 'need synchronized camera, MiDaS and radar calibration'}`;
+      if (mapStatus) mapStatus.title = odometry.reason || '';
     }
   } catch (error) {
     const status = byId('world-map-odometry-state');
@@ -751,6 +774,46 @@ async function refreshVisualOdometry() {
   } finally {
     visualOdometryBusy = false;
   }
+}
+
+function renderVisualOdometryMap(odometry) {
+  const trail = byId('world-map-odometry-trail');
+  const body = byId('world-map-odometry-body');
+  const position = byId('world-map-odometry-position');
+  if (!trail || !body || !position || !visualOdometryTrail.length) return;
+  const width = 640, height = 260;
+  const plot = { left: 56, right: 584, top: 32, bottom: 220 };
+  const forwards = visualOdometryTrail.map(point => point.forward);
+  const laterals = visualOdometryTrail.map(point => point.lateral);
+  const minForward = Math.min(0, ...forwards), maxForward = Math.max(0, ...forwards);
+  const minLateral = Math.min(0, ...laterals), maxLateral = Math.max(0, ...laterals);
+  const spanForward = Math.max(2.0, maxForward - minForward + 0.8);
+  const spanLateral = Math.max(2.8, maxLateral - minLateral + 0.8);
+  const scale = Math.min((plot.bottom - plot.top) / spanForward, (plot.right - plot.left) / spanLateral);
+  const centerLateral = (minLateral + maxLateral) / 2;
+  const centerForward = (minForward + maxForward) / 2;
+  const mapPoint = point => ({
+    x: width / 2 - (point.lateral - centerLateral) * scale,
+    y: (plot.top + plot.bottom) / 2 - (point.forward - centerForward) * scale,
+  });
+  trail.setAttribute('points', visualOdometryTrail.map(point => {
+    const mapped = mapPoint(point);
+    return `${mapped.x.toFixed(1)},${mapped.y.toFixed(1)}`;
+  }).join(' '));
+  const start = mapPoint(visualOdometryTrail[0]);
+  const startMarker = byId('world-map-odometry-start');
+  if (startMarker) {
+    startMarker.setAttribute('cx', start.x.toFixed(1));
+    startMarker.setAttribute('cy', start.y.toFixed(1));
+  }
+  const current = mapPoint(visualOdometryTrail.at(-1));
+  body.setAttribute('transform', `translate(${current.x.toFixed(1)} ${current.y.toFixed(1)}) rotate(${(Number(odometry.yaw_rad) || 0) * 180 / Math.PI})`);
+  position.setAttribute('x', Math.min(width - 130, current.x + 12).toFixed(1));
+  position.setAttribute('y', Math.max(28, current.y - 12).toFixed(1));
+  const [forward = 0, lateral = 0] = odometry.position_m || [];
+  position.textContent = `${forward.toFixed(2)} fwd · ${lateral.toFixed(2)} left m`;
+  const mapStatus = byId('world-map-odometry-map-status');
+  if (mapStatus) mapStatus.textContent = `TRACKING · ${Number(odometry.speed_mps || 0).toFixed(2)} m/s · view ${spanLateral.toFixed(1)} × ${spanForward.toFixed(1)} m`;
 }
 
 function resizeCloud() {
