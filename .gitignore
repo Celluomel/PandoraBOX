@@ -50,3 +50,6 @@ __pycache__/
 /_debug_*.py
 /_test_*.py
 /session_log_*.md
+
+# QNN/AppBuilder runtime companion cache generated beside deployed DLC models
+/models/indoor-segmentation/segformer-ade-coco-247.dlc.bin
