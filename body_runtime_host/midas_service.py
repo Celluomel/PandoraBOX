@@ -26,6 +26,7 @@ class MiDaSDepthService:
         self._thread: threading.Thread | None = None
         self._process: subprocess.Popen | None = None
         self._last_frame_id = None
+        self._analyzed_frame: dict[str, Any] | None = None
         self._retry_at = 0.0
         self._failure_count = 0
         self._latest: dict[str, Any] = {
@@ -57,6 +58,14 @@ class MiDaSDepthService:
     def status(self) -> dict:
         with self._lock:
             return dict(self._latest)
+
+    def analyzed_frame(self, frame_id: str | None = None) -> dict[str, Any] | None:
+        """Return the bounded camera frame used for the latest MiDaS result."""
+        with self._lock:
+            frame = self._analyzed_frame
+            if not frame or (frame_id is not None and str(frame.get("frame_id")) != str(frame_id)):
+                return None
+            return dict(frame)
 
     def start(self) -> None:
         if not bool(self._value("ENABLED", False)):
@@ -168,6 +177,12 @@ class MiDaSDepthService:
                         })
                         with self._lock:
                             self._latest = result
+                            self._analyzed_frame = {
+                                key: frame[key] for key in (
+                                    "frame_id", "captured_at", "image_base64", "mime_type",
+                                    "width", "height", "source", "camera_profile",
+                                ) if key in frame
+                            }
                         self._failure_count = 0
                         self._retry_at = 0.0
                     except Exception as exc:

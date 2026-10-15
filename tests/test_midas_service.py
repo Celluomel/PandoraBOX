@@ -27,6 +27,14 @@ class MiDaSDepthServiceTests(unittest.TestCase):
         service = MiDaSDepthService(lambda key, default: values.get(key, default), lambda: {})
         self.assertEqual(service.settings()["runtime"], "htp_auto")
 
+    def test_analyzed_frame_returns_exact_camera_input_for_depth_frame(self):
+        service = MiDaSDepthService(lambda key, default: default, lambda: {})
+        service._analyzed_frame = {
+            "frame_id": "camera-7", "captured_at": 7.0, "image_base64": "jpeg",
+        }
+        self.assertEqual(service.analyzed_frame("camera-7")["captured_at"], 7.0)
+        self.assertIsNone(service.analyzed_frame("camera-8"))
+
     def test_invalid_runtime_setting_falls_back_to_htp_auto(self):
         values = {"BODY_MIDAS_ENABLED": False, "BODY_MIDAS_RUNTIME": "cuda"}
         service = MiDaSDepthService(lambda key, default: values.get(key, default), lambda: {})

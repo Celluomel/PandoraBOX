@@ -726,12 +726,12 @@ class BodyHost:
 
     def visual_odometry_status(self) -> dict:
         """Estimate experimental relative body motion from synchronized live sensors."""
-        frame = self._camera_provider() or {}
         depth = self._midas_service.status()
+        frame = self._midas_service.analyzed_frame(depth.get("frame_id")) or {}
         calibration = self._midas_metric_calibration.status()
         if not frame:
             return {**self._visual_odometry.status(), "state": "waiting",
-                    "available": False, "reason": "camera frame unavailable"}
+                    "available": False, "reason": "waiting for MiDaS frame and its source camera image"}
         yolo = self._yolox_service.nearest_detection_result(
             float(frame.get("captured_at") or 0.0), max_delta_s=0.5
         )

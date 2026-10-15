@@ -151,7 +151,13 @@ class VisualOdometry:
                 camera_delta = -rotation_matrix.T @ translation.reshape(3)
                 dt = captured_at - previous["captured_at"]
                 if not 0.03 <= dt <= 2.0:
-                    raise ValueError("camera frame interval is outside the odometry window")
+                    self._previous = current
+                    self._last = {"state": "reacquiring", "available": False,
+                                  "source": "camera_midas_rgbd", "frame_id": frame_id,
+                                  "captured_at": captured_at, "simulated": False,
+                                  "position_m": list(self._position), "yaw_rad": self._yaw,
+                                  "reason": "waiting for consecutive synchronized frames within 2 seconds"}
+                    return dict(self._last)
                 travel = float(np.linalg.norm(camera_delta))
                 if not math.isfinite(travel) or travel > 1.0:
                     raise ValueError("estimated frame-to-frame motion is implausible")
