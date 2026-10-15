@@ -95,6 +95,8 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertIn('id="world-map-odometry-trail"', source)
         self.assertIn("function renderVisualOdometryMap(odometry)", source)
         self.assertIn("Session-local estimate", source)
+        self.assertNotIn("Move the Body to trace its estimated path", source)
+        self.assertIn("LAST FIX RETAINED", source)
 
     def test_hud_arc_tilts_its_top_toward_the_viewer(self):
         source = (Path(__file__).resolve().parents[1] / "body_runtime_host" / "quest_vr_dashboard.js").read_text(encoding="utf-8")
