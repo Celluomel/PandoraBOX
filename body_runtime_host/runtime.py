@@ -171,9 +171,11 @@ class BodyHost:
         from body_runtime_host.yolox_service import YoloXService
         from body_runtime_host.midas_service import MiDaSDepthService
         from body_runtime_host.segmentation_service import SemanticSegmentationService
+        from body_runtime_host.visual_odometry import VisualOdometry
         self._yolox_service = YoloXService(self.value, self._camera_provider, self._queue_yolo_vlm_fallback)
         self._midas_service = MiDaSDepthService(self.value, self._camera_provider)
         self._segmentation_service = SemanticSegmentationService(self.value, self._camera_provider)
+        self._visual_odometry = VisualOdometry()
         self._yolo_fallback_lock = threading.Lock()
         self._body_vlm_test_lock = threading.Lock()
         self._body_vlm_test_status: dict = {"status": "idle", "job_id": None}
@@ -721,6 +723,20 @@ class BodyHost:
     def camera_segmentation(self) -> dict:
         result = self._segmentation_service.status()
         return {"available": bool(result.get("mask_png_base64")), **result}
+
+    def visual_odometry_status(self) -> dict:
+        """Estimate experimental relative body motion from synchronized live sensors."""
+        frame = self._camera_provider() or {}
+        depth = self._midas_service.status()
+        calibration = self._midas_metric_calibration.status()
+        if not frame:
+            return {**self._visual_odometry.status(), "state": "waiting",
+                    "available": False, "reason": "camera frame unavailable"}
+        yolo = self._yolox_service.nearest_detection_result(
+            float(frame.get("captured_at") or 0.0), max_delta_s=0.5
+        )
+        detections = (yolo or {}).get("detections") or []
+        return self._visual_odometry.update(frame, depth, calibration, detections)
 
     def midas_metric_calibration(self) -> dict:
         return self._midas_metric_calibration.status()
@@ -3484,6 +3500,8 @@ class BodyHost:
                     self._send(owner.camera_image())
                 elif path == "/body/camera/depth":
                     self._send(owner.camera_depth())
+                elif path == "/body/odometry/visual":
+                    self._send(owner.visual_odometry_status())
                 elif path == "/body/camera/segmentation":
                     self._send(owner.camera_segmentation())
                 elif path == "/body/camera/depth-calibration":

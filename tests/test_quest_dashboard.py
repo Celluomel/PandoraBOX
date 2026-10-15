@@ -79,6 +79,19 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertIn("/body/camera/depth-calibration", runtime)
         self.assertIn("midas_metric_calibration.json", runtime)
 
+    def test_world_model_exposes_experimental_camera_odometry(self):
+        root = Path(__file__).resolve().parents[1]
+        source = (root / "body_runtime_host" / "world_map_3d.js").read_text(encoding="utf-8")
+        runtime = (root / "body_runtime_host" / "runtime.py").read_text(encoding="utf-8")
+        estimator = (root / "body_runtime_host" / "visual_odometry.py").read_text(encoding="utf-8")
+        self.assertIn('id="world-map-odometry-state"', source)
+        self.assertIn("/body/odometry/visual", source)
+        self.assertIn('path == "/body/odometry/visual"', runtime)
+        self.assertIn("nearest_detection_result", runtime)
+        self.assertIn("cv2.solvePnPRansac", estimator)
+        self.assertIn("radar-anchored MiDaS metric calibration", estimator)
+        self.assertIn("too few consistent inliers", estimator)
+
     def test_hud_arc_tilts_its_top_toward_the_viewer(self):
         source = (Path(__file__).resolve().parents[1] / "body_runtime_host" / "quest_vr_dashboard.js").read_text(encoding="utf-8")
 

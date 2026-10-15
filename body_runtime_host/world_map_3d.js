@@ -36,7 +36,7 @@ if (panel) {
     sensorPanel.id = 'world-map-sensor-view';
     sensorPanel.className = 'world-map-sensor-view';
     sensorPanel.hidden = true;
-    sensorPanel.innerHTML = `<div class="world-map-sensor-metrics"><span>YOLOX <b id="world-map-yolo-state">Waiting</b></span><span>MiDaS <b id="world-map-midas-state">Waiting</b></span><span>Frame <b id="world-map-frame-state">—</b></span><span>SegFormer <b id="world-map-segmentation-state">disabled</b></span></div><div id="world-map-sensor-2d" class="world-map-sensor-2d"><div class="world-map-camera"><div class="world-map-sensor-heading">CAMERA · YOLOX + SEGFORMER</div><div class="world-map-image-wrap"><img id="world-map-camera-image" alt="Live camera frame with YOLOX detections"><canvas id="world-map-segmentation-overlay" aria-label="SegFormer semantic classes overlaid on the camera frame" hidden></canvas><svg id="world-map-yolo-overlay" viewBox="0 0 1 1" preserveAspectRatio="xMidYMid meet" aria-hidden="true"></svg><span id="world-map-camera-empty" class="world-map-empty">Waiting for a camera frame</span></div><label class="world-map-segmentation-toggle"><input id="world-map-segmentation-toggle" type="checkbox" checked> Segmentation overlay</label></div><div class="world-map-depth"><div class="world-map-sensor-heading">MiDaS · RELATIVE DEPTH</div><img id="world-map-depth-image" alt="MiDaS relative depth image"><span id="world-map-depth-empty" class="world-map-empty">MiDaS disabled or waiting for inference</span><div class="world-map-depth-calibration"><button type="button" id="world-map-midas-calibrate">Calibrate with radar</button><small id="world-map-midas-calibration-status" role="status">Relative depth only · not calibrated in metres</small></div></div></div><div id="world-map-sensor-3d" class="world-map-canvas world-map-sensor-cloud" hidden></div><p id="world-map-sensor-note" class="world-map-sensor-note">Sensor-only view · no simulation object positions are used.</p>`;
+    sensorPanel.innerHTML = `<div class="world-map-sensor-metrics"><span>YOLOX <b id="world-map-yolo-state">Waiting</b></span><span>MiDaS <b id="world-map-midas-state">Waiting</b></span><span>Visual odometry <b id="world-map-odometry-state">Waiting</b></span><span>Frame <b id="world-map-frame-state">—</b></span><span>SegFormer <b id="world-map-segmentation-state">disabled</b></span></div><div id="world-map-sensor-2d" class="world-map-sensor-2d"><div class="world-map-camera"><div class="world-map-sensor-heading">CAMERA · YOLOX + SEGFORMER</div><div class="world-map-image-wrap"><img id="world-map-camera-image" alt="Live camera frame with YOLOX detections"><canvas id="world-map-segmentation-overlay" aria-label="SegFormer semantic classes overlaid on the camera frame" hidden></canvas><svg id="world-map-yolo-overlay" viewBox="0 0 1 1" preserveAspectRatio="xMidYMid meet" aria-hidden="true"></svg><span id="world-map-camera-empty" class="world-map-empty">Waiting for a camera frame</span></div><label class="world-map-segmentation-toggle"><input id="world-map-segmentation-toggle" type="checkbox" checked> Segmentation overlay</label></div><div class="world-map-depth"><div class="world-map-sensor-heading">MiDaS · RELATIVE DEPTH</div><img id="world-map-depth-image" alt="MiDaS relative depth image"><span id="world-map-depth-empty" class="world-map-empty">MiDaS disabled or waiting for inference</span><div class="world-map-depth-calibration"><button type="button" id="world-map-midas-calibrate">Calibrate with radar</button><small id="world-map-midas-calibration-status" role="status">Relative depth only · not calibrated in metres</small></div></div></div><div id="world-map-sensor-3d" class="world-map-canvas world-map-sensor-cloud" hidden></div><p id="world-map-sensor-note" class="world-map-sensor-note">Sensor-only view · no simulation object positions are used.</p>`;
     const semanticPanel = document.createElement('div');
     semanticPanel.className = 'world-map-segmentation-classes';
     semanticPanel.id = 'world-map-segmentation-classes';
@@ -730,6 +730,29 @@ async function refreshSensorDepth() {
   }
 }
 
+let visualOdometryBusy = false;
+async function refreshVisualOdometry() {
+  if (visualOdometryBusy || activeSource !== 'sensors') return;
+  visualOdometryBusy = true;
+  try {
+    const response = await fetch('/body/odometry/visual', { cache: 'no-store' });
+    const odometry = await response.json();
+    const status = byId('world-map-odometry-state');
+    if (!status) return;
+    if (odometry.available) {
+      const [forward = 0, lateral = 0] = odometry.position_m || [];
+      status.textContent = `${forward.toFixed(2)}m fwd · ${lateral.toFixed(2)}m left · ${Math.round(odometry.confidence * 100)}% · experimental`;
+    } else {
+      status.textContent = `${odometry.state || 'waiting'} · ${odometry.reason || 'need synchronized camera, MiDaS and radar calibration'}`;
+    }
+  } catch (error) {
+    const status = byId('world-map-odometry-state');
+    if (status) status.textContent = `unavailable · ${error.message}`;
+  } finally {
+    visualOdometryBusy = false;
+  }
+}
+
 function resizeCloud() {
   if (!cloud) return;
   const target = new THREE.Vector3(0, 0, -3);
@@ -899,4 +922,7 @@ setInterval(() => {
     void refreshSensorDepth();
   }
 }, 150);
+setInterval(() => {
+  if (activeSource === 'sensors') void refreshVisualOdometry();
+}, 500);
 if (latestWorld) buildSimulation(latestWorld);
