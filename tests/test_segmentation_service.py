@@ -39,6 +39,27 @@ class SemanticSegmentationTests(unittest.TestCase):
         mask = _decode_logits(logits, 3)
         np.testing.assert_array_equal(mask, [[0, 2], [0, 0]])
 
+    def test_resizes_class_scores_before_selecting_full_resolution_labels(self):
+        class FakeCv2:
+            INTER_LINEAR = 1
+
+            @staticmethod
+            def resize(scores, size, interpolation):
+                self.assertEqual(interpolation, FakeCv2.INTER_LINEAR)
+                width, height = size
+                return np.repeat(np.repeat(scores, height // scores.shape[0], axis=0),
+                                 width // scores.shape[1], axis=1)
+
+        logits = np.zeros((1, 2, 2, 2), dtype=np.float32)
+        logits[0, 0, :, 0] = 2
+        logits[0, 1, :, 1] = 2
+        with patch.dict("sys.modules", {"cv2": FakeCv2}):
+            mask = _decode_logits(logits, 2, target_size=(8, 4))
+        self.assertEqual(mask.shape, (4, 8))
+        self.assertTrue(np.all(mask[:, :4] == 0))
+        self.assertTrue(np.all(mask[:, 4:] == 1))
+        self.assertEqual(set(np.unique(mask)), {0, 1})
+
     def test_inference_failure_on_htp_reloads_cpu_only_in_auto_mode(self):
         class FailingHtp:
             def Inference(self, _inputs):

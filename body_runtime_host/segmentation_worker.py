@@ -57,7 +57,11 @@ def _load_model(path: str, runtime_preference: str):
     raise RuntimeError("; ".join(errors))
 
 
-def _decode_logits(outputs: object, class_count: int) -> np.ndarray:
+def _decode_logits(
+    outputs: object,
+    class_count: int,
+    target_size: tuple[int, int] | None = None,
+) -> np.ndarray:
     if isinstance(outputs, (list, tuple)):
         if not outputs:
             raise RuntimeError("SegFormer returned no outputs")
@@ -74,7 +78,22 @@ def _decode_logits(outputs: object, class_count: int) -> np.ndarray:
         raise RuntimeError(f"no {class_count}-class axis in SegFormer output: {logits.shape}")
     if not np.isfinite(class_first).any():
         raise RuntimeError("SegFormer output contains no finite logits")
-    return np.nan_to_num(class_first, copy=False).argmax(axis=0).astype(np.uint8)
+    class_first = np.nan_to_num(class_first, copy=False)
+    if target_size is None or class_first.shape[1:] == (target_size[1], target_size[0]):
+        return class_first.argmax(axis=0).astype(np.uint8)
+
+    import cv2
+
+    # Upscale each score plane before argmax so boundaries are interpolated
+    # without allocating a full-resolution tensor for every semantic class.
+    width, height = target_size
+    mask = np.zeros((height, width), dtype=np.uint8)
+    best_score = np.full((height, width), -np.inf, dtype=np.float32)
+    for class_id, scores in enumerate(class_first):
+        resized = cv2.resize(scores, (width, height), interpolation=cv2.INTER_LINEAR)
+        np.copyto(mask, np.uint8(class_id), where=resized > best_score)
+        np.maximum(best_score, resized, out=best_score)
+    return mask
 
 
 def _summarize(mask: np.ndarray, labels: dict[str, str]) -> list[dict[str, object]]:
@@ -129,8 +148,7 @@ def main() -> None:
                 model, tensor, image_rgb, args.model, args.runtime, input_shape, actual_runtime,
             )
             inference_ms = (time.monotonic() - inference_started) * 1000.0
-            mask = _decode_logits(output, class_count)
-            mask = cv2.resize(mask, (image_rgb.shape[1], image_rgb.shape[0]), interpolation=cv2.INTER_NEAREST)
+            mask = _decode_logits(output, class_count, (image_rgb.shape[1], image_rgb.shape[0]))
             ok, encoded = cv2.imencode(".png", mask, [int(cv2.IMWRITE_PNG_COMPRESSION), 3])
             if not ok:
                 raise RuntimeError("could not encode semantic class mask")
