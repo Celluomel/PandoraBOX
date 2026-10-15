@@ -44,6 +44,11 @@ class BodyRuntimeGuiTests(unittest.TestCase):
         self.assertIn("CAMERA · YOLOX + SEGFORMER", source)
         self.assertNotIn("image-rendering:pixelated", source)
         self.assertIn("fetch('/body/camera/segmentation'", source)
+        camera_refresh = source.split("async function refreshSensors()", 1)[1].split("async function refreshSensorSegmentation()", 1)[0]
+        segmentation_refresh = source.split("async function refreshSensorSegmentation()", 1)[1].split("async function refreshSensorDepth()", 1)[0]
+        self.assertNotIn("/body/camera/segmentation", camera_refresh)
+        self.assertIn("!byId('world-map-segmentation-toggle')?.checked", segmentation_refresh)
+        self.assertIn("}, 500);", source)
         quest = (root / "body_runtime_host" / "quest_vr.js").read_text(encoding="utf-8")
         self.assertNotIn("pollSensorSegmentation", quest)
         self.assertNotIn("sensorSemanticColor", quest)

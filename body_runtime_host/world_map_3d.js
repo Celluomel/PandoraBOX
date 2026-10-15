@@ -180,6 +180,7 @@ let activeSource = 'simulation';
 let activeRender = '2d';
 let latestWorld = null;
 let sensorBusy = false;
+let sensorSegmentationBusy = false;
 
 function makeFloor(scene, width, height) {
   const floor = new THREE.Mesh(new THREE.PlaneGeometry(width, height), material('#0d1b15'));
@@ -353,7 +354,16 @@ document.querySelectorAll('[data-source]').forEach((button) => button.addEventLi
 document.querySelectorAll('[data-render]').forEach((button) => button.addEventListener('click', () => setRender(button.dataset.render)));
 byId('world-map-midas-calibrate')?.addEventListener('click', () => void calibrateMetricDepth());
 byId('world-map-segmentation-toggle')?.addEventListener('change', () => {
-  void renderSemanticMask(latestSegmentation, latestCameraFrame);
+  const toggle = byId('world-map-segmentation-toggle');
+  if (toggle?.checked) {
+    void refreshSensorSegmentation();
+  } else {
+    latestSegmentation = null;
+    renderedSegmentationFrameId = '';
+    void renderSemanticMask(null, latestCameraFrame);
+    const state = byId('world-map-segmentation-state');
+    if (state) state.textContent = 'overlay off';
+  }
 });
 void loadMetricCalibration();
 
@@ -657,15 +667,11 @@ async function refreshSensors() {
   if (sensorBusy || activeSource !== 'sensors') return;
   sensorBusy = true;
   try {
-    const [response, segmentationResponse] = await Promise.all([
-      fetch('/body/camera/frame', { cache: 'no-store' }),
-      fetch('/body/camera/segmentation', { cache: 'no-store' }),
-    ]);
-    const [frame, segmentation] = await Promise.all([response.json(), segmentationResponse.json()]);
+    const response = await fetch('/body/camera/frame', { cache: 'no-store' });
+    const frame = await response.json();
     const currentCamera = frame.camera || {};
     const yolo = frame.yolo || {};
     latestCameraFrame = currentCamera;
-    latestSegmentation = segmentation;
     latestSensorYolo = yolo;
     const cameraImage = byId('world-map-camera-image');
     const cameraEmpty = byId('world-map-camera-empty');
@@ -677,7 +683,7 @@ async function refreshSensors() {
     if (imageWrap && currentCamera.width && currentCamera.height) {
       imageWrap.style.aspectRatio = `${currentCamera.width}/${currentCamera.height}`;
     }
-    void renderSemanticMask(segmentation, currentCamera).catch((error) => {
+    void renderSemanticMask(latestSegmentation, currentCamera).catch((error) => {
       const classes = byId('world-map-segmentation-classes');
       if (classes) classes.textContent = `SegFormer overlay unavailable · ${error.message}`;
     });
@@ -690,10 +696,13 @@ async function refreshSensors() {
     byId('world-map-yolo-state').textContent = `${yolo.state || 'disabled'} · ${(yolo.detections || []).length} boxes${yolo.latency_ms != null ? ` · ${yolo.latency_ms} ms` : ''}`;
     const segmentationState = byId('world-map-segmentation-state');
     if (segmentationState) {
-      const maskAge = Number(currentCamera.captured_at) - Number(segmentation.captured_at);
+      const segmentation = latestSegmentation;
+      const maskAge = Number(currentCamera.captured_at) - Number(segmentation?.captured_at);
       const overlayStatus = segmentationMatchesFrame(segmentation, currentCamera)
         ? ` · overlay${Number.isFinite(maskAge) && maskAge > 0.25 ? ` · ${maskAge.toFixed(1)}s lag` : ''}` : '';
-      segmentationState.textContent = `${segmentation.state || 'disabled'}${segmentation.device ? ` · ${segmentation.device}` : ''}${segmentation.latency_ms != null ? ` · ${segmentation.latency_ms} ms` : ''}${overlayStatus}`;
+      segmentationState.textContent = !byId('world-map-segmentation-toggle')?.checked
+        ? 'overlay off'
+        : `${segmentation?.state || 'waiting'}${segmentation?.device ? ` · ${segmentation.device}` : ''}${segmentation?.latency_ms != null ? ` · ${segmentation.latency_ms} ms` : ''}${overlayStatus}`;
     }
     byId('world-map-frame-state').textContent = currentCamera.frame_id ? `${currentCamera.frame_id}${currentCamera.captured_at ? ` · ${Math.max(0, Date.now() / 1000 - currentCamera.captured_at).toFixed(1)}s` : ''}` : 'No frame';
     byId('world-map-sensor-note').textContent = `Sensor-only view · frame ${currentCamera.frame_id || 'unavailable'} · no simulation object positions or metric scale.`;
@@ -701,6 +710,34 @@ async function refreshSensors() {
     byId('world-map-sensor-note').textContent = `Sensor data unavailable: ${error.message}`;
   } finally {
     sensorBusy = false;
+  }
+}
+
+async function refreshSensorSegmentation() {
+  if (sensorSegmentationBusy || activeSource !== 'sensors'
+      || !byId('world-map-segmentation-toggle')?.checked) return;
+  sensorSegmentationBusy = true;
+  try {
+    const response = await fetch('/body/camera/segmentation', { cache: 'no-store' });
+    const segmentation = await response.json();
+    if (!byId('world-map-segmentation-toggle')?.checked) return;
+    latestSegmentation = segmentation;
+    void renderSemanticMask(segmentation, latestCameraFrame).catch((error) => {
+      const classes = byId('world-map-segmentation-classes');
+      if (classes) classes.textContent = `SegFormer overlay unavailable · ${error.message}`;
+    });
+    const state = byId('world-map-segmentation-state');
+    if (state) {
+      const maskAge = Number(latestCameraFrame?.captured_at) - Number(segmentation.captured_at);
+      const overlayStatus = segmentationMatchesFrame(segmentation, latestCameraFrame)
+        ? ` · overlay${Number.isFinite(maskAge) && maskAge > 0.25 ? ` · ${maskAge.toFixed(1)}s lag` : ''}` : '';
+      state.textContent = `${segmentation.state || 'disabled'}${segmentation.device ? ` · ${segmentation.device}` : ''}${segmentation.latency_ms != null ? ` · ${segmentation.latency_ms} ms` : ''}${overlayStatus}`;
+    }
+  } catch (error) {
+    const state = byId('world-map-segmentation-state');
+    if (state) state.textContent = `SegFormer unavailable · ${error.message}`;
+  } finally {
+    sensorSegmentationBusy = false;
   }
 }
 
@@ -986,6 +1023,11 @@ setInterval(() => {
     void refreshSensorDepth();
   }
 }, 150);
+setInterval(() => {
+  if (activeSource === 'sensors' && byId('world-map-segmentation-toggle')?.checked) {
+    void refreshSensorSegmentation();
+  }
+}, 500);
 setInterval(() => {
   if (activeSource === 'sensors') void refreshVisualOdometry();
 }, 500);
