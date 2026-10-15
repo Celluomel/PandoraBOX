@@ -57,8 +57,8 @@ if (panel) {
       .world-map-canvas canvas{display:block;width:100%;height:100%}
       .world-map-sensor-view[hidden],.world-map-canvas[hidden],.world-map-sensor-2d[hidden]{display:none!important}
       .map-layout[hidden],.map-layout>.map-wrap[hidden],.map-layout>.world-map-canvas[hidden]{display:none!important}
-      .world-map-sensor-metrics{display:flex;gap:18px;flex-wrap:wrap;padding:9px 0;color:#8eaa98;font:10px ui-monospace,monospace}
-      .world-map-sensor-metrics b{color:#dceee3;font-weight:600}
+      .world-map-sensor-metrics{display:flex;gap:18px;flex-wrap:wrap;padding:9px 0;color:#40574a;font:10px ui-monospace,monospace}
+      .world-map-sensor-metrics b{color:#172820;font-weight:600}
       .world-map-odometry-view{margin-top:12px;background:#07120f;border:1px solid #263e32}
       .world-map-odometry-view>.world-map-sensor-heading{display:flex;justify-content:space-between;gap:12px;align-items:center}
       .world-map-odometry-view>.world-map-sensor-heading small{color:#a9c0b2;font:10px ui-monospace,monospace}
@@ -78,7 +78,7 @@ if (panel) {
       .world-map-segmentation-toggle{display:flex;align-items:center;gap:7px;padding:7px 10px;color:#dceee3;font:11px ui-monospace,monospace}
       .world-map-segmentation-toggle input{accent-color:#34c9a2}
       .world-map-depth{display:flex;flex-direction:column}
-      .world-map-segmentation-classes{display:flex;gap:7px 12px;flex-wrap:wrap;margin:0;padding:8px 10px;color:#dceee3;font:10px ui-monospace,monospace;line-height:1.6}
+      .world-map-segmentation-classes{display:flex;gap:7px 12px;flex-wrap:wrap;margin:0;padding:8px 10px;color:#33483d;font:10px ui-monospace,monospace;line-height:1.6}
       .world-map-segmentation-classes span{display:inline-flex;align-items:center;gap:5px}
       .world-map-segmentation-classes i{width:8px;height:8px;flex:0 0 8px;border-radius:50%}
       .world-map-depth img{display:block;width:100%;height:100%;min-height:220px;max-height:500px;object-fit:contain;background:#020805}
