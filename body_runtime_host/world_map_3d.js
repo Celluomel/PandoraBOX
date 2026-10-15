@@ -463,7 +463,7 @@ async function renderSemanticMask(segmentation, cameraFrame) {
     pixels.data[index] = color[0];
     pixels.data[index + 1] = color[1];
     pixels.data[index + 2] = color[2];
-    pixels.data[index + 3] = 255;
+    pixels.data[index + 3] = sourcePixels[index + 3];
   }
   context.putImageData(pixels, 0, 0);
   canvas.hidden = false;
@@ -945,7 +945,11 @@ async function rebuildDepthCloud(depth, segmentation = latestSegmentation) {
       const colorX = Math.min(colorImage.width - 1, Math.round(x * colorImage.width / image.width));
       const colorY = Math.min(colorImage.height - 1, Math.round(y * colorImage.height / image.height));
       const colorIndex = (colorY * colorImage.width + colorX) * 4;
-      if (classMask) {
+      const classMaskIndex = classMask
+        ? (Math.min(classMask.height - 1, Math.round(y * classMask.height / image.height)) * classMask.width
+          + Math.min(classMask.width - 1, Math.round(x * classMask.width / image.width))) * 4
+        : -1;
+      if (classMask && classMask.values[classMaskIndex + 3] > 0) {
         const maskX = Math.min(classMask.width - 1, Math.round(x * classMask.width / image.width));
         const maskY = Math.min(classMask.height - 1, Math.round(y * classMask.height / image.height));
         const classId = classMask.values[(maskY * classMask.width + maskX) * 4];

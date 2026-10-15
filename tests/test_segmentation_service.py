@@ -4,7 +4,7 @@ from unittest.mock import patch
 import numpy as np
 
 from body_runtime_host.segmentation_service import SemanticSegmentationService
-from body_runtime_host.segmentation_worker import _decode_logits, _run_inference, _summarize
+from body_runtime_host.segmentation_worker import _decode_logits, _decode_logits_with_confidence, _run_inference, _summarize
 
 
 class SemanticSegmentationTests(unittest.TestCase):
@@ -38,6 +38,16 @@ class SemanticSegmentationTests(unittest.TestCase):
         logits[0, 1, 2] = 4
         mask = _decode_logits(logits, 3)
         np.testing.assert_array_equal(mask, [[0, 2], [0, 0]])
+
+    def test_confidence_uses_pixelwise_softmax_and_filters_uncertain_summary_classes(self):
+        logits = np.zeros((1, 3, 2, 2), dtype=np.float32)
+        logits[0, 1, 0, 0] = 5
+        mask, confidence = _decode_logits_with_confidence(logits, 3)
+        self.assertEqual(mask[0, 0], 1)
+        self.assertGreater(confidence[0, 0], 0.9)
+        self.assertLess(confidence[0, 1], 0.4)
+        classes = _summarize(mask, {"0": "wall", "1": "person"}, confidence)
+        self.assertEqual(classes, [{"id": 1, "label": "person", "ratio": 1.0}])
 
     def test_resizes_class_scores_before_selecting_full_resolution_labels(self):
         class FakeCv2:

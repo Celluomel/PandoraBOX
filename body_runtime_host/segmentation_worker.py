@@ -62,6 +62,14 @@ def _decode_logits(
     class_count: int,
     target_size: tuple[int, int] | None = None,
 ) -> np.ndarray:
+    return _decode_logits_with_confidence(outputs, class_count, target_size)[0]
+
+
+def _decode_logits_with_confidence(
+    outputs: object,
+    class_count: int,
+    target_size: tuple[int, int] | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
     if isinstance(outputs, (list, tuple)):
         if not outputs:
             raise RuntimeError("SegFormer returned no outputs")
@@ -79,8 +87,13 @@ def _decode_logits(
     if not np.isfinite(class_first).any():
         raise RuntimeError("SegFormer output contains no finite logits")
     class_first = np.nan_to_num(class_first, copy=False)
+    native_max = np.max(class_first, axis=0)
+    normalizer = np.zeros_like(native_max)
+    for scores in class_first:
+        normalizer += np.exp(scores - native_max)
+    confidence = 1.0 / np.maximum(normalizer, np.finfo(np.float32).tiny)
     if target_size is None or class_first.shape[1:] == (target_size[1], target_size[0]):
-        return class_first.argmax(axis=0).astype(np.uint8)
+        return class_first.argmax(axis=0).astype(np.uint8), confidence
 
     import cv2
 
@@ -93,12 +106,18 @@ def _decode_logits(
         resized = cv2.resize(scores, (width, height), interpolation=cv2.INTER_LINEAR)
         np.copyto(mask, np.uint8(class_id), where=resized > best_score)
         np.maximum(best_score, resized, out=best_score)
-    return mask
+    confidence = cv2.resize(confidence, (width, height), interpolation=cv2.INTER_LINEAR)
+    return mask, np.clip(confidence, 0.0, 1.0)
 
 
-def _summarize(mask: np.ndarray, labels: dict[str, str]) -> list[dict[str, object]]:
-    ids, counts = np.unique(mask, return_counts=True)
-    total = max(1, int(mask.size))
+def _summarize(
+    mask: np.ndarray,
+    labels: dict[str, str],
+    confidence: np.ndarray | None = None,
+) -> list[dict[str, object]]:
+    valid = confidence > 0.35 if confidence is not None else np.ones(mask.shape, dtype=bool)
+    ids, counts = np.unique(mask[valid], return_counts=True)
+    total = max(1, int(valid.sum()))
     ranked = sorted(zip(ids.tolist(), counts.tolist()), key=lambda row: row[1], reverse=True)[:8]
     return [
         {"id": int(class_id), "label": labels.get(str(class_id), f"class_{class_id}"),
@@ -148,8 +167,13 @@ def main() -> None:
                 model, tensor, image_rgb, args.model, args.runtime, input_shape, actual_runtime,
             )
             inference_ms = (time.monotonic() - inference_started) * 1000.0
-            mask = _decode_logits(output, class_count, (image_rgb.shape[1], image_rgb.shape[0]))
-            ok, encoded = cv2.imencode(".png", mask, [int(cv2.IMWRITE_PNG_COMPRESSION), 3])
+            mask, confidence = _decode_logits_with_confidence(
+                output, class_count, (image_rgb.shape[1], image_rgb.shape[0]),
+            )
+            rgba_mask = np.zeros((*mask.shape, 4), dtype=np.uint8)
+            rgba_mask[:, :, 0] = mask
+            rgba_mask[:, :, 3] = np.clip((confidence - 0.35) * (255 / 0.4), 0, 255).astype(np.uint8)
+            ok, encoded = cv2.imencode(".png", rgba_mask, [int(cv2.IMWRITE_PNG_COMPRESSION), 3])
             if not ok:
                 raise RuntimeError("could not encode semantic class mask")
             protocol_out.write(json.dumps({
@@ -158,7 +182,7 @@ def main() -> None:
                 "frame_id": request.get("frame_id"), "captured_at": request.get("captured_at"),
                 "width": int(image_rgb.shape[1]), "height": int(image_rgb.shape[0]),
                 "mask_png_base64": base64.b64encode(encoded.tobytes()).decode("ascii"),
-                "classes": _summarize(mask, labels),
+                "classes": _summarize(mask, labels, confidence),
             }, separators=(",", ":")) + "\n")
         except Exception as exc:
             protocol_out.write(json.dumps({"ok": False, "error": str(exc)[:300]}, separators=(",", ":")) + "\n")
