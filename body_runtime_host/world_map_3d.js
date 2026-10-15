@@ -763,7 +763,7 @@ async function refreshVisualOdometry() {
         if (visualOdometryTrail.length > 600) visualOdometryTrail.shift();
       }
       renderVisualOdometryMap(odometry);
-      if (mapEmpty) mapEmpty.hidden = visualOdometryTrail.length > 1;
+      if (mapEmpty) mapEmpty.hidden = visualOdometryTrail.length > 0;
     } else {
       status.textContent = `${odometry.state || 'waiting'} · ${odometry.reason || 'need synchronized camera, MiDaS and radar calibration'}`;
       if (mapStatus) mapStatus.title = odometry.reason || '';

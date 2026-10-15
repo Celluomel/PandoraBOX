@@ -57,6 +57,7 @@ class VisualOdometry:
         with self._lock:
             if frame_id and self._previous and frame_id == self._previous["frame_id"]:
                 return dict(self._last)
+        current: dict[str, Any] | None = None
         try:
             captured_at = float(frame["captured_at"])
             depth_at = float(depth["captured_at"])
@@ -182,6 +183,8 @@ class VisualOdometry:
                 return dict(self._last)
         except Exception as exc:
             with self._lock:
+                if current is not None:
+                    self._previous = current
                 self._last = {"state": "degraded", "available": False,
                               "source": "camera_midas_rgbd", "frame_id": frame_id or None,
                               "simulated": False, "position_m": list(self._position),
