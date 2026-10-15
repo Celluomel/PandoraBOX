@@ -170,8 +170,10 @@ class BodyHost:
         self._local_camera_lock = threading.RLock()
         from body_runtime_host.yolox_service import YoloXService
         from body_runtime_host.midas_service import MiDaSDepthService
+        from body_runtime_host.segmentation_service import SemanticSegmentationService
         self._yolox_service = YoloXService(self.value, self._camera_provider, self._queue_yolo_vlm_fallback)
         self._midas_service = MiDaSDepthService(self.value, self._camera_provider)
+        self._segmentation_service = SemanticSegmentationService(self.value, self._camera_provider)
         self._yolo_fallback_lock = threading.Lock()
         self._body_vlm_test_lock = threading.Lock()
         self._body_vlm_test_status: dict = {"status": "idle", "job_id": None}
@@ -670,6 +672,7 @@ class BodyHost:
             "face_detection_status": "configured" if bool(self.value("BODY_FACE_DETECTION_ENABLED", False)) else "disabled",
             "yolox": self._yolox_service.settings(),
             "midas": self._midas_service.settings(),
+            "segmentation": self._segmentation_service.settings(),
             "capture": capture_status,
         }
 
@@ -715,6 +718,10 @@ class BodyHost:
         result = self._midas_service.status()
         return {"available": bool(result.get("depth_jpeg_base64")), **result}
 
+    def camera_segmentation(self) -> dict:
+        result = self._segmentation_service.status()
+        return {"available": bool(result.get("mask_png_base64")), **result}
+
     def midas_metric_calibration(self) -> dict:
         return self._midas_metric_calibration.status()
 
@@ -744,9 +751,11 @@ class BodyHost:
         if enabled:
             self._yolox_service.start()
             self._midas_service.start()
+            self._segmentation_service.start()
         else:
             self._yolox_service.stop()
             self._midas_service.stop()
+            self._segmentation_service.stop()
         return {"ok": capture.get("status") in {"starting", "capturing", "stopped"}, **capture}
 
     def update_camera_settings(self, payload: dict) -> dict:
@@ -810,10 +819,38 @@ class BodyHost:
             payload.get("midas_model_path", self.value("BODY_MIDAS_MODEL_PATH", self._midas_service.DEFAULT_MODEL))
             or self._midas_service.DEFAULT_MODEL
         ).strip()
+        segmentation_enabled = _payload_bool(
+            payload.get("segmentation_enabled"), _payload_bool(self.value("BODY_SEGMENTATION_ENABLED", False)),
+        )
+        segmentation_runtime = str(
+            payload.get("segmentation_runtime", self.value("BODY_SEGMENTATION_RUNTIME", "htp_auto")) or "htp_auto"
+        ).strip().lower()
+        if segmentation_runtime not in {"htp_auto", "htp", "cpu"}:
+            raise ValueError("Segmentation runtime must be htp_auto, htp, or cpu")
+        self.config.update({
+            "BODY_SEGMENTATION_ENABLED": segmentation_enabled,
+            "BODY_SEGMENTATION_RUNTIME": segmentation_runtime,
+            "BODY_SEGMENTATION_INTERVAL_S": max(0.2, min(30.0, float(payload.get(
+                "segmentation_interval_s", self.value("BODY_SEGMENTATION_INTERVAL_S", 1.0),
+            ) or 1.0))),
+            "BODY_SEGMENTATION_PYTHON": str(payload.get(
+                "segmentation_python", self.value("BODY_SEGMENTATION_PYTHON", self._segmentation_service.DEFAULT_PYTHON),
+            ) or self._segmentation_service.DEFAULT_PYTHON).strip(),
+            "BODY_SEGMENTATION_MODEL_PATH": str(payload.get(
+                "segmentation_model_path", self.value("BODY_SEGMENTATION_MODEL_PATH", self._segmentation_service.DEFAULT_MODEL),
+            ) or self._segmentation_service.DEFAULT_MODEL).strip(),
+            "BODY_SEGMENTATION_TAXONOMY_PATH": str(payload.get(
+                "segmentation_taxonomy_path", self.value("BODY_SEGMENTATION_TAXONOMY_PATH", self._segmentation_service.DEFAULT_TAXONOMY),
+            ) or self._segmentation_service.DEFAULT_TAXONOMY).strip(),
+        })
         self.save_config()
-        self._configure_local_camera(start=was_capturing or yolo_values["BODY_YOLO_ENABLED"] or self.config["BODY_MIDAS_ENABLED"])
+        self._configure_local_camera(start=(
+            was_capturing or yolo_values["BODY_YOLO_ENABLED"] or self.config["BODY_MIDAS_ENABLED"]
+            or segmentation_enabled
+        ))
         self._yolox_service.reconfigure()
         self._midas_service.reconfigure()
+        self._segmentation_service.reconfigure()
         if self._worldmodel is not None:
             self.reload_worldmodel_source()
         return {"ok": True, **self.camera_settings()}
@@ -3135,10 +3172,12 @@ class BodyHost:
             return
         if (bool(self.value("BODY_CAMERA_STARTUP_ENABLED", False))
                 or bool(self.value("BODY_YOLO_ENABLED", False))
-                or bool(self.value("BODY_MIDAS_ENABLED", False))):
+                or bool(self.value("BODY_MIDAS_ENABLED", False))
+                or bool(self.value("BODY_SEGMENTATION_ENABLED", False))):
             self._configure_local_camera(start=True)
         self._yolox_service.start()
         self._midas_service.start()
+        self._segmentation_service.start()
         if bool(self.value("BODY_ROS2_ENABLED", False)):
             ros_status = self._start_ros2_bridge()
             if ros_status.get("available"):
@@ -3177,6 +3216,7 @@ class BodyHost:
                 self._local_camera.stop()
         self._yolox_service.stop()
         self._midas_service.stop()
+        self._segmentation_service.stop()
         self.stop_nav2_simulation_stack()
         self._stop_ros2_bridge()
         self.stop_robot_sim()
@@ -3444,6 +3484,8 @@ class BodyHost:
                     self._send(owner.camera_image())
                 elif path == "/body/camera/depth":
                     self._send(owner.camera_depth())
+                elif path == "/body/camera/segmentation":
+                    self._send(owner.camera_segmentation())
                 elif path == "/body/camera/depth-calibration":
                     self._send(owner.midas_metric_calibration())
                 elif path == "/body/camera/yolo/status":

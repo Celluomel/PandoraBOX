@@ -5,6 +5,7 @@ let latestSensorDepth = null;
 let lastSensorDepthAt = 0;
 let sensorDepthBusy = false;
 let latestSensorYolo = null;
+let latestSegmentation = null;
 let displayedCameraFrameId = null;
 let cloudDepthImage = null;
 let cloudBuildToken = 0;
@@ -33,6 +34,13 @@ if (panel) {
     sensorPanel.className = 'world-map-sensor-view';
     sensorPanel.hidden = true;
     sensorPanel.innerHTML = `<div class="world-map-sensor-metrics"><span>YOLOX <b id="world-map-yolo-state">Waiting</b></span><span>MiDaS <b id="world-map-midas-state">Waiting</b></span><span>Frame <b id="world-map-frame-state">—</b></span></div><div id="world-map-sensor-2d" class="world-map-sensor-2d"><div class="world-map-camera"><div class="world-map-sensor-heading">CAMERA · YOLOX</div><div class="world-map-image-wrap"><img id="world-map-camera-image" alt="Live camera frame with YOLOX detections"><svg id="world-map-yolo-overlay" viewBox="0 0 1 1" preserveAspectRatio="xMidYMid meet" aria-hidden="true"></svg><span id="world-map-camera-empty" class="world-map-empty">Waiting for a camera frame</span></div></div><div class="world-map-depth"><div class="world-map-sensor-heading">MiDaS · RELATIVE DEPTH</div><img id="world-map-depth-image" alt="MiDaS relative depth image"><span id="world-map-depth-empty" class="world-map-empty">MiDaS disabled or waiting for inference</span><div class="world-map-depth-calibration"><button type="button" id="world-map-midas-calibrate">Calibrate with radar</button><small id="world-map-midas-calibration-status" role="status">Relative depth only · not calibrated in metres</small></div></div></div><div id="world-map-sensor-3d" class="world-map-canvas world-map-sensor-cloud" hidden></div><p id="world-map-sensor-note" class="world-map-sensor-note">Sensor-only view · no simulation object positions are used.</p>`;
+    const semanticMetric = document.createElement('span');
+    semanticMetric.append('SegFormer ');
+    const semanticStatus = document.createElement('b');
+    semanticStatus.id = 'world-map-segmentation-state';
+    semanticStatus.textContent = 'disabled';
+    semanticMetric.append(semanticStatus);
+    sensorPanel.querySelector('.world-map-sensor-metrics')?.append(semanticMetric);
     mapLayout.after(sensorPanel);
     const style = document.createElement('style');
     style.textContent = `
@@ -586,10 +594,16 @@ async function refreshSensorDepth() {
       || (latestSensorDepth && performance.now() - lastSensorDepthAt < 250)) return;
   sensorDepthBusy = true;
   try {
-    const response = await fetch('/body/camera/depth', { cache: 'no-store' });
-    const depth = await response.json();
+    const [response, segmentationResponse] = await Promise.all([
+      fetch('/body/camera/depth', { cache: 'no-store' }),
+      fetch('/body/camera/segmentation', { cache: 'no-store' }),
+    ]);
+    const [depth, segmentation] = await Promise.all([response.json(), segmentationResponse.json()]);
     latestSensorDepth = depth;
+    latestSegmentation = segmentation;
     lastSensorDepthAt = performance.now();
+    const semanticState = byId('world-map-segmentation-state');
+    if (semanticState) semanticState.textContent = `${segmentation.state || 'disabled'}${segmentation.device ? ` · ${segmentation.device}` : ''}${segmentation.classes?.length ? ` · ${segmentation.classes.slice(0, 3).map(item => item.label).join(', ')}` : ''}`;
     setImage(byId('world-map-depth-image'), byId('world-map-depth-empty'), depth.depth_jpeg_base64);
     const depthAge = Number(depth.captured_at) > 0
       ? ` · ${Math.max(0, Date.now() / 1000 - Number(depth.captured_at)).toFixed(1)}s old` : '';
@@ -597,7 +611,7 @@ async function refreshSensorDepth() {
     updateMetricCalibrationStatus();
     if (depth.depth_gray_jpeg_base64 && depth.frame_id !== cloudFrameId && activeRender === '3d') {
       const depthFrameId = depth.frame_id;
-      void rebuildDepthCloud(depth)
+      void rebuildDepthCloud(depth, segmentation)
         .then((updated) => { if (updated) cloudFrameId = depthFrameId; })
         .catch((error) => console.warn('Could not rebuild MiDaS depth cloud:', error));
     }
@@ -649,11 +663,40 @@ async function loadGrayDepth(base64) {
   return { width: canvas.width, height: canvas.height, values: context.getImageData(0, 0, canvas.width, canvas.height).data };
 }
 
-async function rebuildDepthCloud(depth) {
+async function loadClassMask(base64) {
+  if (!base64) return null;
+  const image = new Image();
+  image.src = `data:image/png;base64,${base64}`;
+  await image.decode();
+  const canvas = document.createElement('canvas');
+  canvas.width = image.naturalWidth;
+  canvas.height = image.naturalHeight;
+  const context = canvas.getContext('2d', { willReadFrequently: true });
+  context.drawImage(image, 0, 0);
+  return { width: canvas.width, height: canvas.height, values: context.getImageData(0, 0, canvas.width, canvas.height).data };
+}
+
+function semanticColor(classId) {
+  const hue = (Number(classId) * 137.508 + 18) % 360;
+  return new THREE.Color(`hsl(${hue} 72% 58%)`);
+}
+
+function segmentationMatchesDepth(segmentation, depth) {
+  if (!segmentation?.available || !segmentation.mask_png_base64) return false;
+  if (segmentation.frame_id && segmentation.frame_id === depth.frame_id) return true;
+  const segmentationTime = Number(segmentation.captured_at);
+  const depthTime = Number(depth.captured_at);
+  return Number.isFinite(segmentationTime) && Number.isFinite(depthTime)
+    && Math.abs(segmentationTime - depthTime) <= 0.25;
+}
+
+async function rebuildDepthCloud(depth, segmentation = latestSegmentation) {
   if (!cloud || !depth.depth_gray_jpeg_base64) return;
   const token = ++cloudBuildToken;
   const image = await loadGrayDepth(depth.depth_gray_jpeg_base64);
   const colorImage = depth.depth_jpeg_base64 ? await loadGrayDepth(depth.depth_jpeg_base64) : image;
+  const classMask = segmentationMatchesDepth(segmentation, depth)
+    ? await loadClassMask(segmentation.mask_png_base64) : null;
   if (token !== cloudBuildToken || activeSource !== 'sensors' || activeRender !== '3d') return false;
   cloudDepthImage = image;
   const stride = Math.max(2, Math.ceil(Math.max(image.width, image.height) / 140));
@@ -670,11 +713,19 @@ async function rebuildDepthCloud(depth) {
       const colorX = Math.min(colorImage.width - 1, Math.round(x * colorImage.width / image.width));
       const colorY = Math.min(colorImage.height - 1, Math.round(y * colorImage.height / image.height));
       const colorIndex = (colorY * colorImage.width + colorX) * 4;
-      colorsArray.push(
-        colorImage.values[colorIndex] / 255,
-        colorImage.values[colorIndex + 1] / 255,
-        colorImage.values[colorIndex + 2] / 255,
-      );
+      if (classMask) {
+        const maskX = Math.min(classMask.width - 1, Math.round(x * classMask.width / image.width));
+        const maskY = Math.min(classMask.height - 1, Math.round(y * classMask.height / image.height));
+        const classId = classMask.values[(maskY * classMask.width + maskX) * 4];
+        const semantic = semanticColor(classId);
+        colorsArray.push(semantic.r, semantic.g, semantic.b);
+      } else {
+        colorsArray.push(
+          colorImage.values[colorIndex] / 255,
+          colorImage.values[colorIndex + 1] / 255,
+          colorImage.values[colorIndex + 2] / 255,
+        );
+      }
     }
   }
   disposeCloudContent();

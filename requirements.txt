@@ -98,6 +98,8 @@ openai>=1.30.0,<2.0.0
 numpy<2.0
 pandas<2.0
 transformers>=4.43.0,<=4.46.2
+# Public ADE20K / COCO-Stuff dataset streaming for the optional segmentation training pipeline.
+datasets>=2.20.0,<5.0.0
 coqui-tts==0.25.3
 # Installed together with torch by start.bat/setup.sh so versions stay matched.
 librosa>=0.10.0

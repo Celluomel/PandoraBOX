@@ -34,6 +34,7 @@ __pycache__/
 # Historical snapshots and local progress files
 /archive/
 /scribe_progress.json
+/.training-runtime/
 
 # Frontend dependencies and build output
 /frontend/node_modules/

@@ -1,0 +1,1352 @@
+{
+  "ade_labels": {
+    "0": "wall",
+    "1": "building",
+    "2": "sky",
+    "3": "floor",
+    "4": "tree",
+    "5": "ceiling",
+    "6": "road",
+    "7": "bed ",
+    "8": "windowpane",
+    "9": "grass",
+    "10": "cabinet",
+    "11": "sidewalk",
+    "12": "person",
+    "13": "earth",
+    "14": "door",
+    "15": "table",
+    "16": "mountain",
+    "17": "plant",
+    "18": "curtain",
+    "19": "chair",
+    "20": "car",
+    "21": "water",
+    "22": "painting",
+    "23": "sofa",
+    "24": "shelf",
+    "25": "house",
+    "26": "sea",
+    "27": "mirror",
+    "28": "rug",
+    "29": "field",
+    "30": "armchair",
+    "31": "seat",
+    "32": "fence",
+    "33": "desk",
+    "34": "rock",
+    "35": "wardrobe",
+    "36": "lamp",
+    "37": "bathtub",
+    "38": "railing",
+    "39": "cushion",
+    "40": "base",
+    "41": "box",
+    "42": "column",
+    "43": "signboard",
+    "44": "chest of drawers",
+    "45": "counter",
+    "46": "sand",
+    "47": "sink",
+    "48": "skyscraper",
+    "49": "fireplace",
+    "50": "refrigerator",
+    "51": "grandstand",
+    "52": "path",
+    "53": "stairs",
+    "54": "runway",
+    "55": "case",
+    "56": "pool table",
+    "57": "pillow",
+    "58": "screen door",
+    "59": "stairway",
+    "60": "river",
+    "61": "bridge",
+    "62": "bookcase",
+    "63": "blind",
+    "64": "coffee table",
+    "65": "toilet",
+    "66": "flower",
+    "67": "book",
+    "68": "hill",
+    "69": "bench",
+    "70": "countertop",
+    "71": "stove",
+    "72": "palm",
+    "73": "kitchen island",
+    "74": "computer",
+    "75": "swivel chair",
+    "76": "boat",
+    "77": "bar",
+    "78": "arcade machine",
+    "79": "hovel",
+    "80": "bus",
+    "81": "towel",
+    "82": "light",
+    "83": "truck",
+    "84": "tower",
+    "85": "chandelier",
+    "86": "awning",
+    "87": "streetlight",
+    "88": "booth",
+    "89": "television receiver",
+    "90": "airplane",
+    "91": "dirt track",
+    "92": "apparel",
+    "93": "pole",
+    "94": "land",
+    "95": "bannister",
+    "96": "escalator",
+    "97": "ottoman",
+    "98": "bottle",
+    "99": "buffet",
+    "100": "poster",
+    "101": "stage",
+    "102": "van",
+    "103": "ship",
+    "104": "fountain",
+    "105": "conveyer belt",
+    "106": "canopy",
+    "107": "washer",
+    "108": "plaything",
+    "109": "swimming pool",
+    "110": "stool",
+    "111": "barrel",
+    "112": "basket",
+    "113": "waterfall",
+    "114": "tent",
+    "115": "bag",
+    "116": "minibike",
+    "117": "cradle",
+    "118": "oven",
+    "119": "ball",
+    "120": "food",
+    "121": "step",
+    "122": "tank",
+    "123": "trade name",
+    "124": "microwave",
+    "125": "pot",
+    "126": "animal",
+    "127": "bicycle",
+    "128": "lake",
+    "129": "dishwasher",
+    "130": "screen",
+    "131": "blanket",
+    "132": "sculpture",
+    "133": "hood",
+    "134": "sconce",
+    "135": "vase",
+    "136": "traffic light",
+    "137": "tray",
+    "138": "ashcan",
+    "139": "fan",
+    "140": "pier",
+    "141": "crt screen",
+    "142": "plate",
+    "143": "monitor",
+    "144": "bulletin board",
+    "145": "shower",
+    "146": "radiator",
+    "147": "glass",
+    "148": "clock",
+    "149": "flag"
+  },
+  "coco_to_output": {
+    "1": 12,
+    "2": 127,
+    "3": 20,
+    "5": 90,
+    "6": 80,
+    "8": 83,
+    "9": 76,
+    "10": 136,
+    "15": 69,
+    "37": 119,
+    "44": 98,
+    "62": 19,
+    "63": 23,
+    "64": 17,
+    "65": 7,
+    "67": 15,
+    "70": 65,
+    "72": 130,
+    "78": 124,
+    "79": 118,
+    "81": 47,
+    "82": 50,
+    "84": 67,
+    "85": 148,
+    "86": 135,
+    "93": 131,
+    "95": 61,
+    "96": 1,
+    "98": 10,
+    "102": 5,
+    "103": 5,
+    "106": 2,
+    "107": 45,
+    "109": 18,
+    "110": 33,
+    "112": 14,
+    "113": 32,
+    "114": 3,
+    "115": 3,
+    "116": 3,
+    "117": 3,
+    "118": 3,
+    "119": 66,
+    "124": 9,
+    "127": 68,
+    "128": 25,
+    "130": 82,
+    "133": 27,
+    "135": 16,
+    "141": 57,
+    "146": 38,
+    "148": 60,
+    "149": 6,
+    "150": 34,
+    "152": 28,
+    "154": 46,
+    "155": 26,
+    "156": 24,
+    "157": 2,
+    "158": 48,
+    "161": 53,
+    "165": 15,
+    "166": 114,
+    "168": 81,
+    "169": 4,
+    "171": 0,
+    "172": 0,
+    "173": 0,
+    "174": 0,
+    "175": 0,
+    "176": 0,
+    "177": 0,
+    "180": 8,
+    "181": 8,
+    "4": 150,
+    "7": 151,
+    "11": 152,
+    "13": 153,
+    "14": 154,
+    "16": 155,
+    "17": 156,
+    "18": 157,
+    "19": 158,
+    "20": 159,
+    "21": 160,
+    "22": 161,
+    "23": 162,
+    "24": 163,
+    "25": 164,
+    "27": 165,
+    "28": 166,
+    "31": 167,
+    "32": 168,
+    "33": 169,
+    "34": 170,
+    "35": 171,
+    "36": 172,
+    "38": 173,
+    "39": 174,
+    "40": 175,
+    "41": 176,
+    "42": 177,
+    "43": 178,
+    "46": 179,
+    "47": 180,
+    "48": 181,
+    "49": 182,
+    "50": 183,
+    "51": 184,
+    "52": 185,
+    "53": 186,
+    "54": 187,
+    "55": 188,
+    "56": 189,
+    "57": 190,
+    "58": 191,
+    "59": 192,
+    "60": 193,
+    "61": 194,
+    "73": 195,
+    "74": 196,
+    "75": 197,
+    "76": 198,
+    "77": 199,
+    "80": 200,
+    "87": 201,
+    "88": 202,
+    "89": 203,
+    "90": 204,
+    "92": 205,
+    "94": 206,
+    "97": 207,
+    "99": 208,
+    "100": 209,
+    "101": 210,
+    "104": 211,
+    "105": 212,
+    "108": 213,
+    "111": 214,
+    "120": 215,
+    "121": 216,
+    "122": 217,
+    "123": 218,
+    "125": 219,
+    "126": 220,
+    "129": 221,
+    "131": 222,
+    "132": 223,
+    "134": 224,
+    "136": 225,
+    "137": 226,
+    "138": 227,
+    "139": 228,
+    "140": 229,
+    "142": 230,
+    "143": 231,
+    "144": 232,
+    "145": 233,
+    "147": 234,
+    "151": 235,
+    "153": 236,
+    "159": 237,
+    "160": 238,
+    "162": 239,
+    "163": 240,
+    "164": 241,
+    "167": 242,
+    "170": 243,
+    "178": 244,
+    "179": 245,
+    "182": 246
+  },
+  "output_labels": {
+    "0": "wall",
+    "1": "building",
+    "2": "sky",
+    "3": "floor",
+    "4": "tree",
+    "5": "ceiling",
+    "6": "road",
+    "7": "bed ",
+    "8": "windowpane",
+    "9": "grass",
+    "10": "cabinet",
+    "11": "sidewalk",
+    "12": "person",
+    "13": "earth",
+    "14": "door",
+    "15": "table",
+    "16": "mountain",
+    "17": "plant",
+    "18": "curtain",
+    "19": "chair",
+    "20": "car",
+    "21": "water",
+    "22": "painting",
+    "23": "sofa",
+    "24": "shelf",
+    "25": "house",
+    "26": "sea",
+    "27": "mirror",
+    "28": "rug",
+    "29": "field",
+    "30": "armchair",
+    "31": "seat",
+    "32": "fence",
+    "33": "desk",
+    "34": "rock",
+    "35": "wardrobe",
+    "36": "lamp",
+    "37": "bathtub",
+    "38": "railing",
+    "39": "cushion",
+    "40": "base",
+    "41": "box",
+    "42": "column",
+    "43": "signboard",
+    "44": "chest of drawers",
+    "45": "counter",
+    "46": "sand",
+    "47": "sink",
+    "48": "skyscraper",
+    "49": "fireplace",
+    "50": "refrigerator",
+    "51": "grandstand",
+    "52": "path",
+    "53": "stairs",
+    "54": "runway",
+    "55": "case",
+    "56": "pool table",
+    "57": "pillow",
+    "58": "screen door",
+    "59": "stairway",
+    "60": "river",
+    "61": "bridge",
+    "62": "bookcase",
+    "63": "blind",
+    "64": "coffee table",
+    "65": "toilet",
+    "66": "flower",
+    "67": "book",
+    "68": "hill",
+    "69": "bench",
+    "70": "countertop",
+    "71": "stove",
+    "72": "palm",
+    "73": "kitchen island",
+    "74": "computer",
+    "75": "swivel chair",
+    "76": "boat",
+    "77": "bar",
+    "78": "arcade machine",
+    "79": "hovel",
+    "80": "bus",
+    "81": "towel",
+    "82": "light",
+    "83": "truck",
+    "84": "tower",
+    "85": "chandelier",
+    "86": "awning",
+    "87": "streetlight",
+    "88": "booth",
+    "89": "television receiver",
+    "90": "airplane",
+    "91": "dirt track",
+    "92": "apparel",
+    "93": "pole",
+    "94": "land",
+    "95": "bannister",
+    "96": "escalator",
+    "97": "ottoman",
+    "98": "bottle",
+    "99": "buffet",
+    "100": "poster",
+    "101": "stage",
+    "102": "van",
+    "103": "ship",
+    "104": "fountain",
+    "105": "conveyer belt",
+    "106": "canopy",
+    "107": "washer",
+    "108": "plaything",
+    "109": "swimming pool",
+    "110": "stool",
+    "111": "barrel",
+    "112": "basket",
+    "113": "waterfall",
+    "114": "tent",
+    "115": "bag",
+    "116": "minibike",
+    "117": "cradle",
+    "118": "oven",
+    "119": "ball",
+    "120": "food",
+    "121": "step",
+    "122": "tank",
+    "123": "trade name",
+    "124": "microwave",
+    "125": "pot",
+    "126": "animal",
+    "127": "bicycle",
+    "128": "lake",
+    "129": "dishwasher",
+    "130": "screen",
+    "131": "blanket",
+    "132": "sculpture",
+    "133": "hood",
+    "134": "sconce",
+    "135": "vase",
+    "136": "traffic light",
+    "137": "tray",
+    "138": "ashcan",
+    "139": "fan",
+    "140": "pier",
+    "141": "crt screen",
+    "142": "plate",
+    "143": "monitor",
+    "144": "bulletin board",
+    "145": "shower",
+    "146": "radiator",
+    "147": "glass",
+    "148": "clock",
+    "149": "flag",
+    "150": "motorcycle",
+    "151": "train",
+    "152": "fire hydrant",
+    "153": "stop sign",
+    "154": "parking meter",
+    "155": "bird",
+    "156": "cat",
+    "157": "dog",
+    "158": "horse",
+    "159": "sheep",
+    "160": "cow",
+    "161": "elephant",
+    "162": "bear",
+    "163": "zebra",
+    "164": "giraffe",
+    "165": "backpack",
+    "166": "umbrella",
+    "167": "handbag",
+    "168": "tie",
+    "169": "suitcase",
+    "170": "frisbee",
+    "171": "skis",
+    "172": "snowboard",
+    "173": "kite",
+    "174": "baseball bat",
+    "175": "baseball glove",
+    "176": "skateboard",
+    "177": "surfboard",
+    "178": "tennis racket",
+    "179": "wine glass",
+    "180": "cup",
+    "181": "fork",
+    "182": "knife",
+    "183": "spoon",
+    "184": "bowl",
+    "185": "banana",
+    "186": "apple",
+    "187": "sandwich",
+    "188": "orange",
+    "189": "broccoli",
+    "190": "carrot",
+    "191": "hot dog",
+    "192": "pizza",
+    "193": "donut",
+    "194": "cake",
+    "195": "laptop",
+    "196": "mouse",
+    "197": "remote",
+    "198": "keyboard",
+    "199": "cell phone",
+    "200": "toaster",
+    "201": "scissors",
+    "202": "teddy bear",
+    "203": "hair drier",
+    "204": "toothbrush",
+    "205": "banner",
+    "206": "branch",
+    "207": "bush",
+    "208": "cage",
+    "209": "cardboard",
+    "210": "carpet",
+    "211": "cloth",
+    "212": "clothes",
+    "213": "cupboard",
+    "214": "dirt",
+    "215": "fog",
+    "216": "food-other",
+    "217": "fruit",
+    "218": "furniture-other",
+    "219": "gravel",
+    "220": "ground-other",
+    "221": "leaves",
+    "222": "mat",
+    "223": "metal",
+    "224": "moss",
+    "225": "mud",
+    "226": "napkin",
+    "227": "net",
+    "228": "paper",
+    "229": "pavement",
+    "230": "plant-other",
+    "231": "plastic",
+    "232": "platform",
+    "233": "playingfield",
+    "234": "railroad",
+    "235": "roof",
+    "236": "salad",
+    "237": "snow",
+    "238": "solid-other",
+    "239": "stone",
+    "240": "straw",
+    "241": "structural-other",
+    "242": "textile-other",
+    "243": "vegetable",
+    "244": "water-other",
+    "245": "waterdrops",
+    "246": "wood"
+  },
+  "new_coco_classes": [
+    [
+      4,
+      "motorcycle"
+    ],
+    [
+      7,
+      "train"
+    ],
+    [
+      11,
+      "fire hydrant"
+    ],
+    [
+      13,
+      "stop sign"
+    ],
+    [
+      14,
+      "parking meter"
+    ],
+    [
+      16,
+      "bird"
+    ],
+    [
+      17,
+      "cat"
+    ],
+    [
+      18,
+      "dog"
+    ],
+    [
+      19,
+      "horse"
+    ],
+    [
+      20,
+      "sheep"
+    ],
+    [
+      21,
+      "cow"
+    ],
+    [
+      22,
+      "elephant"
+    ],
+    [
+      23,
+      "bear"
+    ],
+    [
+      24,
+      "zebra"
+    ],
+    [
+      25,
+      "giraffe"
+    ],
+    [
+      27,
+      "backpack"
+    ],
+    [
+      28,
+      "umbrella"
+    ],
+    [
+      31,
+      "handbag"
+    ],
+    [
+      32,
+      "tie"
+    ],
+    [
+      33,
+      "suitcase"
+    ],
+    [
+      34,
+      "frisbee"
+    ],
+    [
+      35,
+      "skis"
+    ],
+    [
+      36,
+      "snowboard"
+    ],
+    [
+      38,
+      "kite"
+    ],
+    [
+      39,
+      "baseball bat"
+    ],
+    [
+      40,
+      "baseball glove"
+    ],
+    [
+      41,
+      "skateboard"
+    ],
+    [
+      42,
+      "surfboard"
+    ],
+    [
+      43,
+      "tennis racket"
+    ],
+    [
+      46,
+      "wine glass"
+    ],
+    [
+      47,
+      "cup"
+    ],
+    [
+      48,
+      "fork"
+    ],
+    [
+      49,
+      "knife"
+    ],
+    [
+      50,
+      "spoon"
+    ],
+    [
+      51,
+      "bowl"
+    ],
+    [
+      52,
+      "banana"
+    ],
+    [
+      53,
+      "apple"
+    ],
+    [
+      54,
+      "sandwich"
+    ],
+    [
+      55,
+      "orange"
+    ],
+    [
+      56,
+      "broccoli"
+    ],
+    [
+      57,
+      "carrot"
+    ],
+    [
+      58,
+      "hot dog"
+    ],
+    [
+      59,
+      "pizza"
+    ],
+    [
+      60,
+      "donut"
+    ],
+    [
+      61,
+      "cake"
+    ],
+    [
+      73,
+      "laptop"
+    ],
+    [
+      74,
+      "mouse"
+    ],
+    [
+      75,
+      "remote"
+    ],
+    [
+      76,
+      "keyboard"
+    ],
+    [
+      77,
+      "cell phone"
+    ],
+    [
+      80,
+      "toaster"
+    ],
+    [
+      87,
+      "scissors"
+    ],
+    [
+      88,
+      "teddy bear"
+    ],
+    [
+      89,
+      "hair drier"
+    ],
+    [
+      90,
+      "toothbrush"
+    ],
+    [
+      92,
+      "banner"
+    ],
+    [
+      94,
+      "branch"
+    ],
+    [
+      97,
+      "bush"
+    ],
+    [
+      99,
+      "cage"
+    ],
+    [
+      100,
+      "cardboard"
+    ],
+    [
+      101,
+      "carpet"
+    ],
+    [
+      104,
+      "cloth"
+    ],
+    [
+      105,
+      "clothes"
+    ],
+    [
+      108,
+      "cupboard"
+    ],
+    [
+      111,
+      "dirt"
+    ],
+    [
+      120,
+      "fog"
+    ],
+    [
+      121,
+      "food-other"
+    ],
+    [
+      122,
+      "fruit"
+    ],
+    [
+      123,
+      "furniture-other"
+    ],
+    [
+      125,
+      "gravel"
+    ],
+    [
+      126,
+      "ground-other"
+    ],
+    [
+      129,
+      "leaves"
+    ],
+    [
+      131,
+      "mat"
+    ],
+    [
+      132,
+      "metal"
+    ],
+    [
+      134,
+      "moss"
+    ],
+    [
+      136,
+      "mud"
+    ],
+    [
+      137,
+      "napkin"
+    ],
+    [
+      138,
+      "net"
+    ],
+    [
+      139,
+      "paper"
+    ],
+    [
+      140,
+      "pavement"
+    ],
+    [
+      142,
+      "plant-other"
+    ],
+    [
+      143,
+      "plastic"
+    ],
+    [
+      144,
+      "platform"
+    ],
+    [
+      145,
+      "playingfield"
+    ],
+    [
+      147,
+      "railroad"
+    ],
+    [
+      151,
+      "roof"
+    ],
+    [
+      153,
+      "salad"
+    ],
+    [
+      159,
+      "snow"
+    ],
+    [
+      160,
+      "solid-other"
+    ],
+    [
+      162,
+      "stone"
+    ],
+    [
+      163,
+      "straw"
+    ],
+    [
+      164,
+      "structural-other"
+    ],
+    [
+      167,
+      "textile-other"
+    ],
+    [
+      170,
+      "vegetable"
+    ],
+    [
+      178,
+      "water-other"
+    ],
+    [
+      179,
+      "waterdrops"
+    ],
+    [
+      182,
+      "wood"
+    ]
+  ],
+  "merged_coco_classes": [
+    [
+      1,
+      "person",
+      12
+    ],
+    [
+      2,
+      "bicycle",
+      127
+    ],
+    [
+      3,
+      "car",
+      20
+    ],
+    [
+      5,
+      "airplane",
+      90
+    ],
+    [
+      6,
+      "bus",
+      80
+    ],
+    [
+      8,
+      "truck",
+      83
+    ],
+    [
+      9,
+      "boat",
+      76
+    ],
+    [
+      10,
+      "traffic light",
+      136
+    ],
+    [
+      15,
+      "bench",
+      69
+    ],
+    [
+      37,
+      "sports ball",
+      119
+    ],
+    [
+      44,
+      "bottle",
+      98
+    ],
+    [
+      62,
+      "chair",
+      19
+    ],
+    [
+      63,
+      "couch",
+      23
+    ],
+    [
+      64,
+      "potted plant",
+      17
+    ],
+    [
+      65,
+      "bed",
+      7
+    ],
+    [
+      67,
+      "dining table",
+      15
+    ],
+    [
+      70,
+      "toilet",
+      65
+    ],
+    [
+      72,
+      "tv",
+      130
+    ],
+    [
+      78,
+      "microwave",
+      124
+    ],
+    [
+      79,
+      "oven",
+      118
+    ],
+    [
+      81,
+      "sink",
+      47
+    ],
+    [
+      82,
+      "refrigerator",
+      50
+    ],
+    [
+      84,
+      "book",
+      67
+    ],
+    [
+      85,
+      "clock",
+      148
+    ],
+    [
+      86,
+      "vase",
+      135
+    ],
+    [
+      93,
+      "blanket",
+      131
+    ],
+    [
+      95,
+      "bridge",
+      61
+    ],
+    [
+      96,
+      "building-other",
+      1
+    ],
+    [
+      98,
+      "cabinet",
+      10
+    ],
+    [
+      102,
+      "ceiling-other",
+      5
+    ],
+    [
+      103,
+      "ceiling-tile",
+      5
+    ],
+    [
+      106,
+      "clouds",
+      2
+    ],
+    [
+      107,
+      "counter",
+      45
+    ],
+    [
+      109,
+      "curtain",
+      18
+    ],
+    [
+      110,
+      "desk-stuff",
+      33
+    ],
+    [
+      112,
+      "door-stuff",
+      14
+    ],
+    [
+      113,
+      "fence",
+      32
+    ],
+    [
+      114,
+      "floor-marble",
+      3
+    ],
+    [
+      115,
+      "floor-other",
+      3
+    ],
+    [
+      116,
+      "floor-stone",
+      3
+    ],
+    [
+      117,
+      "floor-tile",
+      3
+    ],
+    [
+      118,
+      "floor-wood",
+      3
+    ],
+    [
+      119,
+      "flower",
+      66
+    ],
+    [
+      124,
+      "grass",
+      9
+    ],
+    [
+      127,
+      "hill",
+      68
+    ],
+    [
+      128,
+      "house",
+      25
+    ],
+    [
+      130,
+      "light",
+      82
+    ],
+    [
+      133,
+      "mirror-stuff",
+      27
+    ],
+    [
+      135,
+      "mountain",
+      16
+    ],
+    [
+      141,
+      "pillow",
+      57
+    ],
+    [
+      146,
+      "railing",
+      38
+    ],
+    [
+      148,
+      "river",
+      60
+    ],
+    [
+      149,
+      "road",
+      6
+    ],
+    [
+      150,
+      "rock",
+      34
+    ],
+    [
+      152,
+      "rug",
+      28
+    ],
+    [
+      154,
+      "sand",
+      46
+    ],
+    [
+      155,
+      "sea",
+      26
+    ],
+    [
+      156,
+      "shelf",
+      24
+    ],
+    [
+      157,
+      "sky-other",
+      2
+    ],
+    [
+      158,
+      "skyscraper",
+      48
+    ],
+    [
+      161,
+      "stairs",
+      53
+    ],
+    [
+      165,
+      "table",
+      15
+    ],
+    [
+      166,
+      "tent",
+      114
+    ],
+    [
+      168,
+      "towel",
+      81
+    ],
+    [
+      169,
+      "tree",
+      4
+    ],
+    [
+      171,
+      "wall-brick",
+      0
+    ],
+    [
+      172,
+      "wall-concrete",
+      0
+    ],
+    [
+      173,
+      "wall-other",
+      0
+    ],
+    [
+      174,
+      "wall-panel",
+      0
+    ],
+    [
+      175,
+      "wall-stone",
+      0
+    ],
+    [
+      176,
+      "wall-tile",
+      0
+    ],
+    [
+      177,
+      "wall-wood",
+      0
+    ],
+    [
+      180,
+      "window-blind",
+      8
+    ],
+    [
+      181,
+      "window-other",
+      8
+    ]
+  ],
+  "ignore_coco_ids": [
+    0,
+    12,
+    26,
+    29,
+    30,
+    45,
+    66,
+    68,
+    69,
+    71,
+    83,
+    91
+  ]
+}
