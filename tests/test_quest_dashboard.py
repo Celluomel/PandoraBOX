@@ -36,6 +36,8 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertIn("/body/camera/image", source)
         self.assertIn("function pollSensorDepth()", source)
         self.assertIn("function pollSensorRadar()", source)
+        self.assertNotIn("pollSensorSegmentation", source)
+        self.assertNotIn("/body/camera/segmentation", source)
         self.assertNotIn("drawCameraYoloOverlay", (root / "body_runtime_host" / "quest_vr_dashboard.js").read_text(encoding="utf-8"))
         self.assertNotIn("LIVE · ${this.cameraDetectionCount} YOLO", (root / "body_runtime_host" / "quest_vr_dashboard.js").read_text(encoding="utf-8"))
         self.assertIn("/worldmodel/status", source)
