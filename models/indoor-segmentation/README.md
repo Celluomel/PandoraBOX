@@ -35,3 +35,6 @@ Training, ONNX export, and AI Hub compile scripts are in
 `scripts/indoor_segmentation/`. Their datasets, checkpoints, credentials, and
 temporary exports stay outside Git in `.training-runtime/`. The DLC and taxonomy
 are versioned here so a Ventuno checkout can recover them with Git.
+
+For a clean Body/vision deployment, including the separate QNN environment and
+external YOLOX/MiDaS artifacts, see [`docs/BODY_VISION_DEPLOYMENT.md`](../../docs/BODY_VISION_DEPLOYMENT.md).
