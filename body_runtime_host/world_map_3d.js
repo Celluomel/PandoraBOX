@@ -908,7 +908,27 @@ async function loadClassMask(base64) {
   return { width: canvas.width, height: canvas.height, values: context.getImageData(0, 0, canvas.width, canvas.height).data };
 }
 
+const semanticClassColors = new Map([
+  [0, '#ef8354'],   // wall
+  [3, '#00b4d8'],   // floor
+  [5, '#9b5de5'],   // ceiling
+  [12, '#ff4d6d'],  // person
+  [14, '#ff9f1c'],  // door
+  [15, '#ffd166'],  // table
+  [17, '#70e000'],  // plant
+  [19, '#00f5d4'],  // chair
+  [22, '#e76f51'],  // painting
+  [27, '#4361ee'],  // mirror
+  [89, '#3a86ff'],  // television receiver
+  [130, '#c77dff'], // screen
+  [141, '#fb5607'], // crt screen
+  [143, '#80ed99'], // monitor
+]);
+
 function semanticColor(classId) {
+  if (semanticClassColors.has(Number(classId))) {
+    return new THREE.Color(semanticClassColors.get(Number(classId)));
+  }
   const hue = (Number(classId) * 137.508 + 18) % 360;
   return new THREE.Color().setHSL(hue / 360, 0.72, 0.58);
 }
