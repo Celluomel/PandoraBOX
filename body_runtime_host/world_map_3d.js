@@ -763,7 +763,7 @@ async function loadClassMask(base64) {
 
 function semanticColor(classId) {
   const hue = (Number(classId) * 137.508 + 18) % 360;
-  return new THREE.Color(`hsl(${hue} 72% 58%)`);
+  return new THREE.Color().setHSL(hue / 360, 0.72, 0.58);
 }
 
 function segmentationMatchesDepth(segmentation, depth) {

@@ -401,7 +401,8 @@ const sensorSemanticColors = new Map();
 function sensorSemanticColor(classId) {
   const id = Number(classId) || 0;
   if (!sensorSemanticColors.has(id)) {
-    sensorSemanticColors.set(id, new THREE.Color(`hsl(${(id * 137.508 + 18) % 360} 72% 58%)`));
+    const hue = (id * 137.508 + 18) % 360;
+    sensorSemanticColors.set(id, new THREE.Color().setHSL(hue / 360, 0.72, 0.58));
   }
   return sensorSemanticColors.get(id);
 }
