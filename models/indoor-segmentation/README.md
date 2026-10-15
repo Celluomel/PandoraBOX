@@ -9,17 +9,25 @@ contains 247 classes, merging equivalent labels across datasets.
 - `segformer-ade-coco-247.dlc`: Qualcomm QNN DLC, INT8, compiled for Arduino
   VENTUNO Q / IQ-8275.
 - `taxonomy.json`: class ID to label mapping used to report and visualize masks.
-- Validation (1,024 images/dataset): ADE20K mIoU 0.3268 (baseline 0.3001),
-  COCO-Stuff mIoU 0.1814 (baseline 0.1118).
+- Fine-tuning ran on the AMD Radeon RX 9070 XT via PyTorch ROCm, using 9,000
+  training examples from each public dataset. On held-out validation data,
+  ADE20K mIoU is 0.3268 vs. 0.3001 baseline (1,024 images); COCO-Stuff mIoU
+  is 0.1814 vs. 0.1118 baseline (1,000 images).
 - Runtime default: HTP first, CPU fallback on HTP load/inference failure.
 - HTP inference validation: AI Hub job `jp4e14j2g`; output shape
   `(1, 247, 128, 128)`, 327/327 profiled layers assigned to NPU, estimated
-  warm inference about 6.5 ms.
+  warm inference about 6.5 ms. This is the AI Hub benchmark, not the full
+  on-device service latency.
 
-The AI Hub smoke test used a generated input tensor. It verifies target runtime
-execution and output schema, not semantic accuracy on camera scenes. The actual
-Ventuno AppBuilder service still requires on-device verification before enabling
-segmentation in production.
+On the physical Ventuno Q, the AppBuilder service was verified on a live camera
+frame: HTP reported `ready` and predicted scene labels including wall, person,
+ceiling, screen and table. A separate explicit CPU-runtime check also reported
+`ready`; the service was then restored to HTP-first and verified on HTP again.
+Observed service latency was about 59-103 ms on HTP and 459 ms on CPU during
+these checks; timings vary with system load. The CPU check verifies the CPU
+runtime path, while unit tests exercise automatic HTP-inference-failure to CPU
+fallback. AI Hub's generated-tensor smoke test verifies target output/runtime,
+not semantic accuracy; dataset mIoU is the semantic quality evidence.
 
 ## Training and export
 
