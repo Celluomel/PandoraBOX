@@ -6,10 +6,12 @@ let lastSensorDepthAt = 0;
 let sensorDepthBusy = false;
 let latestSensorYolo = null;
 let latestSegmentation = null;
+let renderedSegmentationFrameId = '';
 let displayedCameraFrameId = null;
 let cloudDepthImage = null;
 let cloudBuildToken = 0;
 let cloudYoloFrameId = '';
+let cloudSegmentationFrameId = '';
 let metricDepthCalibration = null;
 let depthCalibrationBusy = false;
 let depthCalibrationMessage = '';
@@ -34,6 +36,10 @@ if (panel) {
     sensorPanel.className = 'world-map-sensor-view';
     sensorPanel.hidden = true;
     sensorPanel.innerHTML = `<div class="world-map-sensor-metrics"><span>YOLOX <b id="world-map-yolo-state">Waiting</b></span><span>MiDaS <b id="world-map-midas-state">Waiting</b></span><span>Frame <b id="world-map-frame-state">—</b></span></div><div id="world-map-sensor-2d" class="world-map-sensor-2d"><div class="world-map-camera"><div class="world-map-sensor-heading">CAMERA · YOLOX</div><div class="world-map-image-wrap"><img id="world-map-camera-image" alt="Live camera frame with YOLOX detections"><svg id="world-map-yolo-overlay" viewBox="0 0 1 1" preserveAspectRatio="xMidYMid meet" aria-hidden="true"></svg><span id="world-map-camera-empty" class="world-map-empty">Waiting for a camera frame</span></div></div><div class="world-map-depth"><div class="world-map-sensor-heading">MiDaS · RELATIVE DEPTH</div><img id="world-map-depth-image" alt="MiDaS relative depth image"><span id="world-map-depth-empty" class="world-map-empty">MiDaS disabled or waiting for inference</span><div class="world-map-depth-calibration"><button type="button" id="world-map-midas-calibrate">Calibrate with radar</button><small id="world-map-midas-calibration-status" role="status">Relative depth only · not calibrated in metres</small></div></div></div><div id="world-map-sensor-3d" class="world-map-canvas world-map-sensor-cloud" hidden></div><p id="world-map-sensor-note" class="world-map-sensor-note">Sensor-only view · no simulation object positions are used.</p>`;
+    const semanticPanel = document.createElement('div');
+    semanticPanel.className = 'world-map-segmentation';
+    semanticPanel.innerHTML = `<div class="world-map-sensor-heading">SEGFORMER · SEMANTIC CLASS MASK</div><div class="world-map-segmentation-wrap"><canvas id="world-map-segmentation-mask" aria-label="Color-coded SegFormer semantic segmentation mask" hidden></canvas><span id="world-map-segmentation-empty" class="world-map-empty">Waiting for SegFormer mask</span></div><p id="world-map-segmentation-classes" class="world-map-segmentation-classes">No class predictions</p>`;
+    sensorPanel.querySelector('.world-map-sensor-2d')?.append(semanticPanel);
     const semanticMetric = document.createElement('span');
     semanticMetric.append('SegFormer ');
     const semanticStatus = document.createElement('b');
@@ -63,6 +69,12 @@ if (panel) {
       .world-map-image-wrap img{display:block;width:100%;max-height:500px;object-fit:contain}
       #world-map-yolo-overlay{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
       .world-map-depth{display:flex;flex-direction:column}
+      .world-map-segmentation{min-width:0;background:#07120f;border:1px solid #263e32;overflow:hidden}
+      .world-map-segmentation-wrap{position:relative;display:grid;place-items:center;min-height:220px;max-height:500px;background:#020805;overflow:hidden}
+      #world-map-segmentation-mask{display:block;width:100%;max-height:500px;object-fit:contain;image-rendering:pixelated}
+      .world-map-segmentation-classes{display:flex;gap:7px 12px;flex-wrap:wrap;margin:0;padding:8px 10px;color:#dceee3;font:10px ui-monospace,monospace;line-height:1.6}
+      .world-map-segmentation-classes span{display:inline-flex;align-items:center;gap:5px}
+      .world-map-segmentation-classes i{width:8px;height:8px;flex:0 0 8px;border-radius:50%}
       .world-map-depth img{display:block;width:100%;height:100%;min-height:220px;max-height:500px;object-fit:contain;background:#020805}
       .world-map-depth>small{padding:7px 10px;color:#9eb5a6;font:10px ui-monospace,monospace}
       .world-map-depth-calibration{display:flex;align-items:center;gap:9px;flex-wrap:wrap;padding:8px 10px;border-top:1px solid #263e32}
@@ -384,6 +396,67 @@ function setImage(image, empty, base64, mime = 'image/jpeg') {
   }
 }
 
+async function renderSemanticMask(segmentation) {
+  const canvas = byId('world-map-segmentation-mask');
+  const empty = byId('world-map-segmentation-empty');
+  const classes = byId('world-map-segmentation-classes');
+  if (!canvas || !empty || !classes) return;
+  const mask = segmentation?.mask_png_base64;
+  const frameId = String(segmentation?.frame_id || '');
+  if (!segmentation?.available || !mask) {
+    canvas.hidden = true;
+    empty.hidden = false;
+    empty.textContent = segmentation?.state === 'disabled' ? 'Enable SegFormer in Camera settings' : `SegFormer ${segmentation?.state || 'waiting'}`;
+    classes.textContent = segmentation?.error || 'No class predictions';
+    renderedSegmentationFrameId = '';
+    return;
+  }
+  empty.hidden = true;
+  if (frameId === renderedSegmentationFrameId) return;
+  const image = new Image();
+  image.src = `data:image/png;base64,${mask}`;
+  await image.decode();
+  const source = document.createElement('canvas');
+  source.width = image.naturalWidth;
+  source.height = image.naturalHeight;
+  const sourceContext = source.getContext('2d', { willReadFrequently: true });
+  sourceContext.drawImage(image, 0, 0);
+  const sourcePixels = sourceContext.getImageData(0, 0, source.width, source.height).data;
+  const output = document.createElement('canvas');
+  output.width = source.width;
+  output.height = source.height;
+  const context = output.getContext('2d');
+  const pixels = context.createImageData(output.width, output.height);
+  const palette = new Map();
+  for (let index = 0; index < sourcePixels.length; index += 4) {
+    const classId = sourcePixels[index];
+    if (!palette.has(classId)) {
+      const hex = semanticColor(classId).getHexString();
+      palette.set(classId, [parseInt(hex.slice(0, 2), 16), parseInt(hex.slice(2, 4), 16), parseInt(hex.slice(4, 6), 16)]);
+    }
+    const color = palette.get(classId);
+    pixels.data[index] = color[0];
+    pixels.data[index + 1] = color[1];
+    pixels.data[index + 2] = color[2];
+    pixels.data[index + 3] = 255;
+  }
+  context.putImageData(pixels, 0, 0);
+  canvas.width = output.width;
+  canvas.height = output.height;
+  canvas.getContext('2d').drawImage(output, 0, 0);
+  canvas.hidden = false;
+  renderedSegmentationFrameId = frameId;
+  const labels = (segmentation.classes || []).slice(0, 7).map(item => {
+    const entry = document.createElement('span');
+    const swatch = document.createElement('i');
+    swatch.style.backgroundColor = `#${semanticColor(item.id).getHexString()}`;
+    entry.append(swatch, `${item.label} ${Math.round(Number(item.ratio || 0) * 100)}%`);
+    return entry;
+  });
+  classes.replaceChildren(...labels);
+  if (!labels.length) classes.textContent = 'Mask available';
+}
+
 function relativeDepthToMeters(relativeDepth) {
   const calibration = metricDepthCalibration;
   if (!calibration?.available) return relativeDepth;
@@ -603,16 +676,28 @@ async function refreshSensorDepth() {
     latestSegmentation = segmentation;
     lastSensorDepthAt = performance.now();
     const semanticState = byId('world-map-segmentation-state');
-    if (semanticState) semanticState.textContent = `${segmentation.state || 'disabled'}${segmentation.device ? ` · ${segmentation.device}` : ''}${segmentation.classes?.length ? ` · ${segmentation.classes.slice(0, 3).map(item => item.label).join(', ')}` : ''}`;
+    if (semanticState) semanticState.textContent = `${segmentation.state || 'disabled'}${segmentation.device ? ` · ${segmentation.device}` : ''}${segmentation.classes?.length ? ` · ${segmentation.classes.slice(0, 3).map(item => item.label).join(', ')}` : ''}${segmentationMatchesDepth(segmentation, depth) ? ' · time-aligned' : ''}`;
+    void renderSemanticMask(segmentation).catch((error) => {
+      const empty = byId('world-map-segmentation-empty');
+      if (empty) { empty.hidden = false; empty.textContent = `Mask unavailable · ${error.message}`; }
+    });
     setImage(byId('world-map-depth-image'), byId('world-map-depth-empty'), depth.depth_jpeg_base64);
     const depthAge = Number(depth.captured_at) > 0
       ? ` · ${Math.max(0, Date.now() / 1000 - Number(depth.captured_at)).toFixed(1)}s old` : '';
     byId('world-map-midas-state').textContent = `${depth.state || 'disabled'}${depth.device ? ` · ${depth.device}` : ''}${depth.latency_ms != null ? ` · ${depth.latency_ms} ms` : ''}${depthAge}${depth.error ? ` · ${depth.error}` : ''}`;
     updateMetricCalibrationStatus();
-    if (depth.depth_gray_jpeg_base64 && depth.frame_id !== cloudFrameId && activeRender === '3d') {
+    const alignedSegmentationFrameId = segmentationMatchesDepth(segmentation, depth)
+      ? String(segmentation.frame_id || segmentation.captured_at || '') : '';
+    if (depth.depth_gray_jpeg_base64 && activeRender === '3d'
+        && (depth.frame_id !== cloudFrameId || alignedSegmentationFrameId !== cloudSegmentationFrameId)) {
       const depthFrameId = depth.frame_id;
       void rebuildDepthCloud(depth, segmentation)
-        .then((updated) => { if (updated) cloudFrameId = depthFrameId; })
+        .then((updated) => {
+          if (updated) {
+            cloudFrameId = depthFrameId;
+            cloudSegmentationFrameId = alignedSegmentationFrameId;
+          }
+        })
         .catch((error) => console.warn('Could not rebuild MiDaS depth cloud:', error));
     }
   } catch (error) {

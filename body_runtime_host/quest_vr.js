@@ -156,10 +156,15 @@ let activeSceneMode = 'simulation';
 let sensorDepthPollInFlight = false;
 let sensorYoloPollInFlight = false;
 let sensorRadarPollInFlight = false;
+let sensorSegmentationPollInFlight = false;
 let sensorFrameId = '';
 let sensorDepthValues = null;
 let latestSensorYolo = {};
 let latestSensorDepthStatus = null;
+let latestSensorSegmentation = null;
+let sensorSegmentationMask = null;
+let sensorSegmentationFrameId = '';
+let sensorSegmentationCheckedAt = 0;
 let sensorMetricCalibration = null;
 let sensorCalibrationCheckedAt = 0;
 let sensorYoloFrameId = '';
@@ -372,10 +377,10 @@ function disposeChildren(group) {
   }
 }
 
-async function decodeSensorImage(encoded) {
+async function decodeSensorImage(encoded, mime = 'image/jpeg') {
   if (!encoded) return null;
   const bytes = Uint8Array.from(atob(encoded), character => character.charCodeAt(0));
-  const bitmap = await createImageBitmap(new Blob([bytes], { type: 'image/jpeg' }));
+  const bitmap = await createImageBitmap(new Blob([bytes], { type: mime }));
   const canvas = document.createElement('canvas');
   canvas.width = bitmap.width;
   canvas.height = bitmap.height;
@@ -383,6 +388,22 @@ async function decodeSensorImage(encoded) {
   context.drawImage(bitmap, 0, 0);
   bitmap.close();
   return { width: canvas.width, height: canvas.height, pixels: context.getImageData(0, 0, canvas.width, canvas.height).data };
+}
+
+function segmentationMatchesSensorDepth(segmentation, depth) {
+  if (!segmentation?.available || !segmentation.mask_png_base64) return false;
+  if (segmentation.frame_id && segmentation.frame_id === depth?.frame_id) return true;
+  const delta = Math.abs(Number(segmentation.captured_at) - Number(depth?.captured_at));
+  return Number.isFinite(delta) && delta <= 0.75;
+}
+
+const sensorSemanticColors = new Map();
+function sensorSemanticColor(classId) {
+  const id = Number(classId) || 0;
+  if (!sensorSemanticColors.has(id)) {
+    sensorSemanticColors.set(id, new THREE.Color(`hsl(${(id * 137.508 + 18) % 360} 72% 58%)`));
+  }
+  return sensorSemanticColors.get(id);
 }
 
 function relativeDepthAt(image, u, v) {
@@ -412,7 +433,7 @@ function calibratedSensorDistance(relativeDepth) {
   return Number.isFinite(distance) ? Math.max(0.2, Math.min(15, distance)) : null;
 }
 
-function buildSensorDepthCloud(depth, grayImage, colorImage) {
+function buildSensorDepthCloud(depth, grayImage, colorImage, classMask = null) {
   if (!grayImage?.pixels || !colorImage?.pixels) return false;
   const width = grayImage.width;
   const height = grayImage.height;
@@ -430,7 +451,14 @@ function buildSensorDepthCloud(depth, grayImage, colorImage) {
       const colorX = Math.min(colorImage.width - 1, Math.round(u * (colorImage.width - 1) / Math.max(1, width - 1)));
       const colorY = Math.min(colorImage.height - 1, Math.round(v * (colorImage.height - 1) / Math.max(1, height - 1)));
       const colorIndex = (colorY * colorImage.width + colorX) * 4;
-      colors.push(colorImage.pixels[colorIndex] / 255, colorImage.pixels[colorIndex + 1] / 255, colorImage.pixels[colorIndex + 2] / 255);
+      if (classMask?.pixels) {
+        const maskX = Math.min(classMask.width - 1, Math.round(u * (classMask.width - 1) / Math.max(1, width - 1)));
+        const maskY = Math.min(classMask.height - 1, Math.round(v * (classMask.height - 1) / Math.max(1, height - 1)));
+        const semantic = sensorSemanticColor(classMask.pixels[(maskY * classMask.width + maskX) * 4]);
+        colors.push(semantic.r, semantic.g, semantic.b);
+      } else {
+        colors.push(colorImage.pixels[colorIndex] / 255, colorImage.pixels[colorIndex + 1] / 255, colorImage.pixels[colorIndex + 2] / 255);
+      }
     }
   }
   const geometry = sensorDepthCloud.geometry;
@@ -576,7 +604,11 @@ function updateSensorReadout(depth, yoloCount, radarCount) {
   document.querySelector('#pose').textContent = 'Sensor origin · heading uncalibrated';
   document.querySelector('#age').textContent = Number.isFinite(age) ? `${age.toFixed(1)} s` : '—';
   const rangeStatus = sensorMetricCalibration?.available ? 'calibrated YOLOX ranges' : 'relative depth; calibrate for metres';
-  setStatus(`Live sensor scene · MiDaS ${depth?.runtime || depth?.state || 'waiting'}${depth?.inference_ms != null ? ` ${Number(depth.inference_ms).toFixed(1)} ms` : ''} · ${yoloCount} YOLOX labels · ${radarCount} mmWave targets · ${rangeStatus}`);
+  const segmentation = latestSensorSegmentation || {};
+  const maskStatus = segmentationMatchesSensorDepth(segmentation, depth)
+    ? `SegFormer ${segmentation.device || segmentation.state} · colorized${segmentation.classes?.length ? ` · ${segmentation.classes.slice(0, 3).map(item => item.label).join(', ')}` : ''}`
+    : `SegFormer ${segmentation.state || 'waiting'} · waiting for aligned mask`;
+  setStatus(`Live sensor scene · MiDaS ${depth?.runtime || depth?.state || 'waiting'}${depth?.inference_ms != null ? ` ${Number(depth.inference_ms).toFixed(1)} ms` : ''} · ${maskStatus} · ${yoloCount} YOLOX labels · ${radarCount} mmWave targets · ${rangeStatus}`);
 }
 
 async function pollSensorDepth() {
@@ -593,7 +625,9 @@ async function pollSensorDepth() {
         decodeSensorImage(depth.depth_gray_jpeg_base64),
         decodeSensorImage(depth.depth_jpeg_base64 || depth.depth_gray_jpeg_base64),
       ]);
-      if (gray && color && buildSensorDepthCloud(depth, gray, color)) sensorFrameId = depth.frame_id;
+      const classMask = segmentationMatchesSensorDepth(latestSensorSegmentation, depth)
+        ? sensorSegmentationMask : null;
+      if (gray && color && buildSensorDepthCloud(depth, gray, color, classMask)) sensorFrameId = depth.frame_id;
     }
     const yoloCount = updateSensorYolo(latestSensorYolo);
     updateSensorReadout(depth, yoloCount, sensorRadarTargetCount);
@@ -601,6 +635,31 @@ async function pollSensorDepth() {
     setStatus(`Live MiDaS scene unavailable: ${error.message}`, true);
   } finally {
     sensorDepthPollInFlight = false;
+  }
+}
+
+async function pollSensorSegmentation() {
+  if (sensorSegmentationPollInFlight || activeSceneMode !== 'sensors'
+      || Date.now() - sensorSegmentationCheckedAt < 500) return;
+  sensorSegmentationPollInFlight = true;
+  sensorSegmentationCheckedAt = Date.now();
+  try {
+    const response = await fetch('/body/camera/segmentation', { cache: 'no-store', credentials: 'same-origin' });
+    if (!response.ok) throw new Error('SegFormer endpoint unavailable');
+    const segmentation = await response.json();
+    latestSensorSegmentation = segmentation;
+    if (segmentation.available && segmentation.mask_png_base64
+        && segmentation.frame_id !== sensorSegmentationFrameId) {
+      sensorSegmentationMask = await decodeSensorImage(segmentation.mask_png_base64, 'image/png');
+      sensorSegmentationFrameId = segmentation.frame_id || '';
+      sensorFrameId = '';
+    }
+    const yoloCount = updateSensorYolo(latestSensorYolo);
+    updateSensorReadout(latestSensorDepthStatus, yoloCount, sensorRadarTargetCount);
+  } catch (error) {
+    console.warn('Could not refresh Quest SegFormer mask:', error);
+  } finally {
+    sensorSegmentationPollInFlight = false;
   }
 }
 
@@ -644,6 +703,7 @@ async function pollSensorRadar() {
 function pollSensorScene() {
   if (activeSceneMode !== 'sensors') return;
   void pollSensorDepth();
+  void pollSensorSegmentation();
   void pollSensorYolo();
   void pollSensorRadar();
 }
