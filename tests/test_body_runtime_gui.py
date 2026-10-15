@@ -38,6 +38,8 @@ class BodyRuntimeGuiTests(unittest.TestCase):
         self.assertIn("world-map-segmentation-state", source)
         self.assertIn("async function renderSemanticMask(segmentation, cameraFrame)", source)
         self.assertIn("segmentationMatchesFrame(segmentation, cameraFrame)", source)
+        self.assertIn("maskAge <= 2.5", source)
+        self.assertIn("s lag", source)
         self.assertIn("world-map-segmentation-overlay", source)
         self.assertIn("CAMERA · YOLOX + SEGFORMER", source)
         self.assertNotIn("image-rendering:pixelated", source)

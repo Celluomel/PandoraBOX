@@ -403,13 +403,11 @@ async function renderSemanticMask(segmentation, cameraFrame) {
   const mask = segmentation?.mask_png_base64;
   const frameId = String(segmentation?.frame_id || '');
   const maskKey = frameId || String(segmentation?.captured_at || '');
-  const cameraFrameId = String(cameraFrame?.frame_id || '');
-  const cameraKey = cameraFrameId || String(cameraFrame?.captured_at || '');
   if (!toggle?.checked || !segmentationMatchesFrame(segmentation, cameraFrame)) {
     canvas.hidden = true;
     if (!toggle?.checked) return;
     classes.textContent = segmentation?.available && mask
-      ? `Waiting for a SegFormer mask matching camera frame ${cameraFrameId || '—'}`
+      ? 'Waiting for a fresh SegFormer mask'
       : `${segmentation?.state === 'disabled' ? 'Enable SegFormer in Camera settings' : `SegFormer ${segmentation?.state || 'waiting'}`}${segmentation?.error ? ` · ${segmentation.error}` : ''}`;
     renderedSegmentationFrameId = '';
     return;
@@ -422,7 +420,7 @@ async function renderSemanticMask(segmentation, cameraFrame) {
   image.src = `data:image/png;base64,${mask}`;
   await image.decode();
   if (maskKey !== String(latestSegmentation?.frame_id || latestSegmentation?.captured_at || '')
-      || cameraKey !== String(latestCameraFrame?.frame_id || latestCameraFrame?.captured_at || '')) return;
+      || !segmentationMatchesFrame(latestSegmentation, latestCameraFrame)) return;
   const source = document.createElement('canvas');
   source.width = image.naturalWidth;
   source.height = image.naturalHeight;
@@ -465,8 +463,9 @@ function segmentationMatchesFrame(segmentation, frame) {
   if (segmentation.frame_id && frame.frame_id && segmentation.frame_id === frame.frame_id) return true;
   const segmentationTime = Number(segmentation.captured_at);
   const frameTime = Number(frame.captured_at);
-  return Number.isFinite(segmentationTime) && Number.isFinite(frameTime)
-    && Math.abs(segmentationTime - frameTime) <= 0.25;
+  if (!Number.isFinite(segmentationTime) || !Number.isFinite(frameTime)) return false;
+  const maskAge = frameTime - segmentationTime;
+  return maskAge >= -0.25 && maskAge <= 2.5;
 }
 
 function relativeDepthToMeters(relativeDepth) {
@@ -679,7 +678,12 @@ async function refreshSensors() {
     }
     byId('world-map-yolo-state').textContent = `${yolo.state || 'disabled'} · ${(yolo.detections || []).length} boxes${yolo.latency_ms != null ? ` · ${yolo.latency_ms} ms` : ''}`;
     const segmentationState = byId('world-map-segmentation-state');
-    if (segmentationState) segmentationState.textContent = `${segmentation.state || 'disabled'}${segmentation.device ? ` · ${segmentation.device}` : ''}${segmentation.latency_ms != null ? ` · ${segmentation.latency_ms} ms` : ''}${segmentationMatchesFrame(segmentation, currentCamera) ? ' · synced' : ''}`;
+    if (segmentationState) {
+      const maskAge = Number(currentCamera.captured_at) - Number(segmentation.captured_at);
+      const overlayStatus = segmentationMatchesFrame(segmentation, currentCamera)
+        ? ` · overlay${Number.isFinite(maskAge) && maskAge > 0.25 ? ` · ${maskAge.toFixed(1)}s lag` : ''}` : '';
+      segmentationState.textContent = `${segmentation.state || 'disabled'}${segmentation.device ? ` · ${segmentation.device}` : ''}${segmentation.latency_ms != null ? ` · ${segmentation.latency_ms} ms` : ''}${overlayStatus}`;
+    }
     byId('world-map-frame-state').textContent = currentCamera.frame_id ? `${currentCamera.frame_id}${currentCamera.captured_at ? ` · ${Math.max(0, Date.now() / 1000 - currentCamera.captured_at).toFixed(1)}s` : ''}` : 'No frame';
     byId('world-map-sensor-note').textContent = `Sensor-only view · frame ${currentCamera.frame_id || 'unavailable'} · no simulation object positions or metric scale.`;
   } catch (error) {
