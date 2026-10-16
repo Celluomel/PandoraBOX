@@ -504,18 +504,18 @@ function ensureSensorProjectionPanel(){
   panel.id='sensor-layer-panel';
   panel.className='panel';
   panel.style.marginBottom='14px';
-  panel.innerHTML='<div class="panel-head"><h2>Embodied sensor layers</h2><small id="sensor-layer-status">Waiting for Body frame</small></div>'+
-    '<p class="map-intro">The geometric Body frame is converted into a camera-like projection and a sparse volumetric LiDAR return. A future vision model can interpret this payload; it never bypasses the Body safety boundary.</p>'+
+  panel.innerHTML='<div class="panel-head"><h2>Sensor projections · source per layer</h2><small id="sensor-layer-status">Waiting for Body frame</small></div>'+
+    '<p class="map-intro">This section can combine native sensor measurements with derived or virtual projections. Each layer reports its provenance: native means measured by hardware; derived/virtual means generated from world-model geometry. Video replay is a separate offline input, not a live camera. Select Sensors in the observatory above for the live camera, YOLOX, MiDaS and SegFormer view.</p>'+
     '<div class="plugin-settings" style="display:grid;margin:0 0 14px;padding:12px;border-top:1px solid #29382f">'+
-    '<label class="field wide">Video replay path<input id="video-replay-path" type="text" placeholder="C:\\video\\capture.mp4"><small class="muted">Use Browse to send a local video to this Body Runtime.</small></label>'+
+    '<label class="field wide">Video replay · offline input<input id="video-replay-path" type="text" placeholder="C:\\video\\capture.mp4"><small class="muted">Use Browse to send a recorded clip to this Body Runtime; this does not start the live camera.</small></label>'+
     '<label class="field wide">Browse local video<input id="video-replay-file" type="file" accept="video/*,.mp4,.mov,.mkv,.avi,.webm"></label>'+
     '<label class="field">Capture width<select id="video-replay-width"><option value="640">640 px</option><option value="1280" selected>1280 px</option><option value="1920">1920 px</option><option value="3840">3840 px</option></select></label>'+
     '<label class="field">Capture height<select id="video-replay-height"><option value="480">480 px</option><option value="720" selected>720 px</option><option value="1080">1080 px</option><option value="2160">2160 px</option></select></label>'+
     '<div class="plugin-actions"><button type="button" onclick="runVideoLidarReplay()">Replay video + estimate LiDAR</button><small id="video-replay-status" class="muted">Minimum capture size: 640 × 480</small></div></div>'+
     '<div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px">'+
-    '<div style="border:1px solid #315044;background:#07120f;padding:10px"><div class="panel-head"><h2>2D vision projection</h2><small id="vision-layer-meta">—</small></div><svg id="vision-projection" viewBox="0 0 100 100" role="img" aria-label="2D Body vision projection" style="display:block;width:100%;height:300px;background:#06100d"></svg></div>'+
-    '<div style="border:1px solid #315044;background:#07120f;padding:10px"><div class="panel-head"><h2>3D LiDAR volume</h2><small id="lidar-layer-meta">—</small></div><svg id="lidar-projection" viewBox="0 0 300 180" role="img" aria-label="3D LiDAR point cloud" style="display:block;width:100%;height:300px;background:#06100d"></svg></div>'+
-    '</div><div style="margin-top:14px;border:1px solid #315044;background:#07120f;padding:10px"><div class="panel-head"><h2>mmWave radar targets</h2><small id="mmwave-layer-meta">—</small></div><svg id="mmwave-projection" viewBox="0 0 300 180" role="img" aria-label="mmWave radar target view" style="display:block;width:100%;height:240px;background:#06100d"></svg><div id="mmwave-target-list" class="event-list muted">Waiting for radar data.</div></div><div id="vision-layer-guidance" class="truth-note" style="margin-top:10px"><b>Vision interpretation boundary</b><span>Waiting for the first timestamped Body frame.</span></div>';
+    '<div style="border:1px solid #315044;background:#07120f;padding:10px"><div class="panel-head"><h2>2D vision projection</h2><small id="vision-layer-meta">—</small></div><svg id="vision-projection" viewBox="0 0 100 100" role="img" aria-label="2D Body vision projection; provenance is shown in the layer status" style="display:block;width:100%;height:300px;background:#06100d"></svg></div>'+
+    '<div style="border:1px solid #315044;background:#07120f;padding:10px"><div class="panel-head"><h2>3D LiDAR volume</h2><small id="lidar-layer-meta">—</small></div><svg id="lidar-projection" viewBox="0 0 300 180" role="img" aria-label="3D point cloud; provenance is shown in the layer status" style="display:block;width:100%;height:300px;background:#06100d"></svg></div>'+
+    '</div><div style="margin-top:14px;border:1px solid #315044;background:#07120f;padding:10px"><div class="panel-head"><h2>mmWave targets · plugin source</h2><small id="mmwave-layer-meta">—</small></div><svg id="mmwave-projection" viewBox="0 0 300 180" role="img" aria-label="mmWave radar target view; source and hardware status shown above" style="display:block;width:100%;height:240px;background:#06100d"></svg><div id="mmwave-target-list" class="event-list muted">Waiting for radar data.</div></div><div id="vision-layer-guidance" class="truth-note" style="margin-top:10px"><b>Source and interpretation boundary</b><span>Object projections are derived from the active world model; radar provenance is listed with its source.</span></div>';
   anchor.append(panel);
 }
 
@@ -524,7 +524,7 @@ function ensureSemanticScenePanel(anchor){
   const panel=document.createElement('section');
   panel.id='semantic-scene-panel';panel.className='panel';panel.style.marginBottom='14px';
   panel.innerHTML='<div class="panel-head"><div><h2>VLM-grounded spatial scene</h2><small id="semantic-scene-meta">Waiting for Body perception</small></div><button type="button" id="semantic-scene-run" onclick="interpretCurrentSceneVlm()">Interpret current scene</button></div>'+
-    '<p class="map-intro">Measured Body geometry is shown in muted green; cyan semantic Gaussian samples appear only for VLM entities grounded to that geometry and frame. This is a semantic preview, not photogrammetric reconstruction.</p>'+
+    '<p class="map-intro" id="semantic-scene-source-note">This view follows the active world-model source. With sim_robot, positions are simulator ground truth, not camera-measured geometry. Grounded VLM samples are semantic annotations, not photogrammetric reconstruction.</p>'+
     '<p id="semantic-scene-vlm-status" class="muted" role="status">VLM has not interpreted this scene yet.</p><svg id="semantic-scene-view" viewBox="0 0 900 360" role="img" aria-label="Metric Body scene with grounded VLM semantic Gaussian groups" style="display:block;width:100%;height:360px;background:#07120f;border:1px solid #29483a"></svg>'+
     '<div id="semantic-scene-legend" class="scene-legend"></div><div id="semantic-scene-result" hidden class="semantic-result"><strong id="semantic-scene-latency"></strong><span id="semantic-scene-summary"></span><details><summary>Full VLM result</summary><pre id="semantic-scene-raw"></pre></details></div>';
   const style=document.createElement('style');style.id='semantic-scene-style';style.textContent='.semantic-result{margin-top:10px;padding:10px;border:1px solid #29483a;background:#08130f;color:#b9d8c5}.semantic-result>strong{display:inline-block;margin-right:12px;color:#56e0c2;font-size:20px}.semantic-result>span{font-size:13px}.semantic-result details{margin-top:8px}.semantic-result pre{max-height:220px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font:11px ui-monospace,monospace}#semantic-scene-vlm-status{overflow-wrap:anywhere;margin:10px 0}.scene-legend{display:flex;flex-wrap:wrap;gap:8px 18px;margin-top:10px;color:#a9c0b2;font-size:11px}.scene-legend span{display:inline-flex;align-items:center;gap:6px}.scene-legend i{width:8px;height:8px;border-radius:50%;background:#56e0c2;box-shadow:0 0 8px #56e0c288}';
@@ -534,6 +534,11 @@ function ensureSemanticScenePanel(anchor){
 
 function renderSemanticScene(perception,sim){
   ensureSemanticScenePanel();
+  const simulationSource=document.getElementById('wm-source')?.textContent==='sim_robot';
+  const sourceNote=document.getElementById('semantic-scene-source-note');
+  if(sourceNote)sourceNote.textContent=simulationSource
+    ?'SIMULATION SOURCE · Object positions and body pose come from sim_robot ground truth. YOLOX / MiDaS live sensor outputs are shown only in the Sensors observatory above; this semantic view is not a sensor-built map.'
+    :'LIVE / ACTIVE BODY SOURCE · Geometry follows the source and availability shown above. Do not treat missing or ungrounded regions as observed.';
   const svg=document.getElementById('semantic-scene-view');if(!svg)return;
   const scene=perception?.semantic_splats||{},groups=Array.isArray(scene.groups)?scene.groups.slice(0,24):[];
   const objects=Array.isArray(perception?.objects)?perception.objects.slice(0,80):[];
@@ -553,10 +558,10 @@ function renderSemanticScene(perception,sim){
   groups.forEach((g,index)=>{if(!validPos(g.center_m))return;const [cx,cy]=project(g.center_m),extent=Math.max(.08,Math.min(1.5,Number(g.extent_m)||.3)),radius=Math.max(4,Math.min(28,extent*scale*.36)),color=colors[index%colors.length],seed=String(g.entity_id||g.group_id||index).split('').reduce((a,c)=>a+c.charCodeAt(0),0);for(let n=0;n<30;n++){const a=(n*2.399963+seed%17)*1.0,r=radius*Math.sqrt((n+.5)/30),x=cx+Math.cos(a)*r,y=cy+Math.sin(a)*r*.68;parts.push('<circle cx="'+x.toFixed(1)+'" cy="'+y.toFixed(1)+'" r="'+(1.3+(n%4)*.35).toFixed(1)+'" fill="'+color+'" fill-opacity="'+(.35+(n%5)*.1).toFixed(2)+'"/>')}const title=esc((g.label||g.entity_id||'Object')+' · confidence '+(Number(g.confidence)||0).toFixed(2));parts.push('<ellipse cx="'+cx.toFixed(1)+'" cy="'+cy.toFixed(1)+'" rx="'+radius.toFixed(1)+'" ry="'+(radius*.68).toFixed(1)+'" fill="none" stroke="'+color+'" stroke-opacity=".75" stroke-dasharray="3 3"><title>'+title+'</title></ellipse><text x="'+(cx+radius+5).toFixed(1)+'" y="'+(cy+4).toFixed(1)+'" fill="'+color+'" font-size="12" font-weight="600">'+esc(g.label||g.entity_id||'Object')+' · '+((Number(g.confidence)||0)*100).toFixed(0)+'%</text>')});
   const bp=validPos(body)?project(body):[450,315];parts.push('<path d="M'+bp[0].toFixed(1)+' '+(bp[1]-9).toFixed(1)+' l8 14 h-16 z" fill="#f0c879" stroke="#fff0bf"/><text x="'+(bp[0]+11).toFixed(1)+'" y="'+(bp[1]+4).toFixed(1)+'" fill="#f0c879" font-size="11">BODY</text>');
   parts.push('<text x="18" y="24" fill="#8fa99a" font-size="11">metric local map · x/y meters · z projected</text>');svg.innerHTML=parts.join('');
-  const state=scene.status||'waiting_for_grounded_vlm';document.getElementById('semantic-scene-meta').textContent=state.replaceAll('_',' ')+' · '+groups.length+' grounded groups · '+objects.length+' measured objects';
+  const state=scene.status||'waiting_for_grounded_vlm';document.getElementById('semantic-scene-meta').textContent=state.replaceAll('_',' ')+' · '+groups.length+' grounded groups · '+objects.length+(simulationSource?' simulator objects':' observed objects');
   const interpreter=perception?.scene_interpreter||{},vlmStatus=document.getElementById('semantic-scene-vlm-status');
   if(vlmStatus)vlmStatus.textContent=interpreter.status==='error'?'VLM error · '+(interpreter.error||'provider failed'):interpreter.status==='interpreted'?'VLM interpreted frame · '+(interpreter.model||'model unavailable')+' · grounding '+(Number(interpreter.semantic_scene?.grounding?.reference_precision||0)*100).toFixed(0)+'%':interpreter.in_flight?'VLM interpretation in progress…':'VLM · '+(interpreter.status||'not run')+' · model '+(interpreter.model||'not configured');
-  document.getElementById('semantic-scene-legend').innerHTML='<span><i style="background:#90a99b"></i>Measured Body geometry</span><span><i></i>Grounded VLM semantic Gaussian</span><span><i style="background:#f0c879"></i>Body pose</span>'+(groups.length?'':`<span>${objects.length?'No grounded VLM groups yet. Run “Interpret current scene” to request one.':'Waiting for the first Body observation.'}</span>`);
+  document.getElementById('semantic-scene-legend').innerHTML='<span><i style="background:#90a99b"></i>'+(simulationSource?'Simulator geometry':'Body geometry')+'</span><span><i></i>Grounded VLM semantic Gaussian</span><span><i style="background:#f0c879"></i>Body pose</span>'+(groups.length?'':`<span>${objects.length?'No grounded VLM groups yet. Run “Interpret current scene” to request one.':'Waiting for the first Body observation.'}</span>`);
 }
 
 async function interpretCurrentSceneVlm(){
@@ -624,8 +629,8 @@ function renderSensorProjections(projections,modalities){
   }
   document.getElementById('sensor-layer-status').textContent='Frame '+new Date(Number(frame.timestamp||Date.now()/1000)*1000).toLocaleTimeString();
   const quality=projections.quality||{};
-  document.getElementById('vision-layer-meta').textContent=objects.length+' objects · '+(quality.camera||vision.source||'unknown');
-  document.getElementById('lidar-layer-meta').textContent=(lidar.returns||points.length)+' returns · '+(quality.lidar||lidar.source||'unknown');
+  document.getElementById('vision-layer-meta').textContent=objects.length+' objects · '+(quality.camera==='native'?'native camera':quality.camera==='derived'?'derived from world model':(vision.source||'source unknown'));
+  document.getElementById('lidar-layer-meta').textContent=(lidar.returns||points.length)+' returns · '+(lidar.native?'native LiDAR':lidar.source==='virtual_lidar'?'virtual from scene':lidar.source==='derived_scene'?'derived from scene':(lidar.source||quality.lidar||'source unknown'));
   document.getElementById('mmwave-layer-meta').textContent=targets.length+' targets · '+(radar.source||'not available')+' · q '+Number(radar.quality||0).toFixed(2);
   document.getElementById('mmwave-target-list').innerHTML=targets.map(function(target){const p=target.position_m||[],v=target.velocity_mps||[];return '<div class="row"><span><b>'+esc(target.target_id||'target')+'</b><small>'+esc(target.classification||'unknown')+' · '+p.slice(0,3).map(function(n){return Number(n).toFixed(2)}).join(', ')+' m</small></span><strong>'+v.slice(0,2).map(function(n){return Number(n).toFixed(2)}).join(', ')+' m/s</strong></div>'}).join('')||'<span class="muted">No mmWave targets.</span>';
   document.getElementById('vision-layer-guidance').innerHTML='<b>Vision interpretation boundary</b><span>'+esc(vision.guidance||'Interpret only timestamped, visible returns and preserve uncertainty.')+'</span>';
@@ -1174,5 +1179,22 @@ refreshCamera=async function(){mountYoloCameraSettings();const result=await refr
 BODY_GUI_HTML = BODY_GUI_HTML.replace(
     "</body></html>",
     '<script src="/world-map-3d.js"></script></body></html>',
+    1,
+)
+BODY_GUI_HTML = BODY_GUI_HTML.replace(
+    "</body></html>",
+    """<script>
+const renderMapWithSourceBoundary=renderMap;
+renderMap=function(world){
+  renderMapWithSourceBoundary(world);
+  const sensorSelected=document.querySelector('[data-source="sensors"]')?.getAttribute('aria-pressed')==='true';
+  const note=document.getElementById('truth-note');
+  const heading=note?.querySelector('b');
+  if(heading)heading.textContent='DATA SOURCE BOUNDARY';
+  if(note)note.textContent=sensorSelected
+    ?'Only the observatory above switches to the live sensor-only camera view. Other scene, object and VLM panels still follow the world-model Source shown above; with sim_robot, those positions are simulator ground truth. The projection cards below show their own native / derived / virtual provenance.'
+    :'The map and object positions are simulator ground truth when Source is sim_robot. Projection cards below identify whether each layer is native, derived or virtual. The video tool is offline replay. Select Sensors above for the live camera and model view.';
+};
+</script></body></html>""",
     1,
 )
