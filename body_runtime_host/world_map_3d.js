@@ -1007,7 +1007,7 @@ async function refreshSystemMetrics() {
       : 'Utilization counter unavailable';
     byId('world-map-system-energy').textContent = power.available
       ? `${power.energy_wh_session.toFixed(3)} Wh` : 'Unavailable';
-    byId('world-map-system-note').textContent = `${power.available ? `${power.source}. ` : ''}INA232 measures the onboard input rail and may exclude external motor loads. Temperature dials show the hottest reported sensor in each group; GPU/HTP utilization is unavailable because the kernel exports no reliable busy counter.`;
+    byId('world-map-system-note').textContent = `The INA232 monitors the onboard input rail; external motor loads may be excluded. Temperature dials show the hottest reported sensor in each group; GPU/HTP utilization is unavailable because the kernel exports no reliable busy counter.`;
   } catch (error) {
     byId('world-map-system-state').textContent = `Unavailable · ${error.message}`;
   } finally { systemMetricsBusy = false; }

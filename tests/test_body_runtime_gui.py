@@ -73,7 +73,7 @@ class BodyRuntimeGuiTests(unittest.TestCase):
         self.assertIn("world-map-imu-gyro", source)
         self.assertIn("data-source=\"tof\"", source)
         self.assertIn("staleAfterSeconds = { camera: 5", source)
-        self.assertIn("INA232 measures the onboard input rail and may exclude external motor loads", source)
+        self.assertIn("The INA232 monitors the onboard input rail; external motor loads may be excluded", source)
         self.assertIn("#world-map-radar-state')?.closest('.sensor-readout-card')", source)
         self.assertIn("@container (max-width:760px)", source)
         self.assertIn("justify-items:stretch;align-items:stretch", source)
