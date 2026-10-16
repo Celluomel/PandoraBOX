@@ -28,6 +28,13 @@ function setFeedStatus(id, source, state, detail) {
 }
 const classifyAge = (source, age, available) => !available ? 'offline'
   : Number.isFinite(age) && age > staleAfterSeconds[source] ? 'stale' : 'live';
+const sensorFetchFailures = new Set();
+function setSensorFetchFailure(source, failed) {
+  if (failed) sensorFetchFailures.add(source);
+  else sensorFetchFailures.delete(source);
+  const banner = byId('world-map-cloud-fetch');
+  if (banner) banner.hidden = sensorFetchFailures.size === 0;
+}
 let latestSensorDepth = null;
 let lastSensorDepthAt = 0;
 let sensorDepthBusy = false;
@@ -47,6 +54,10 @@ let depthCalibrationMessage = '';
 const visualOdometryTrail = [];
 let visualOdometryFrameId = '';
 let latestVisualOdometry = null;
+let latestRadarSample = null;
+let latestDepthCapturedAt = 0;
+let cloudPointCount = 0;
+let cloudLabelItems = [];
 const panel = document.querySelector('#view-worldmodel .map-panel');
 if (panel) {
   const header = panel.querySelector('.panel-head');
@@ -67,7 +78,7 @@ if (panel) {
     sensorPanel.id = 'world-map-sensor-view';
     sensorPanel.className = 'world-map-sensor-view';
     sensorPanel.hidden = true;
-    sensorPanel.innerHTML = `<div class="world-map-sensor-metrics"><span>Camera <b id="world-map-camera-state">Waiting</b></span><span>YOLOX <b id="world-map-yolo-state">Waiting</b></span><span>MiDaS <b id="world-map-midas-state">Waiting</b></span><span>Visual odometry <b id="world-map-odometry-state">Waiting</b></span><span>SegFormer <b id="world-map-segmentation-state">disabled</b></span><span>Frame <b id="world-map-frame-state">—</b></span></div><div id="world-map-sensor-2d" class="world-map-sensor-2d"><div class="world-map-camera"><div class="world-map-sensor-heading">CAMERA · YOLOX</div><div class="world-map-image-wrap"><img id="world-map-camera-image" alt="Live camera frame with YOLOX detections"><svg id="world-map-yolo-overlay" viewBox="0 0 1 1" preserveAspectRatio="xMidYMid meet" aria-hidden="true"></svg><span id="world-map-camera-empty" class="world-map-empty">Waiting for a camera frame</span></div></div><div class="world-map-depth"><div class="world-map-sensor-heading">MiDaS · RELATIVE DEPTH</div><img id="world-map-depth-image" alt="MiDaS relative depth image"><span id="world-map-depth-empty" class="world-map-empty">MiDaS disabled or waiting for inference</span><div class="world-map-depth-calibration"><button type="button" id="world-map-midas-calibrate">Calibrate with radar</button><small id="world-map-midas-calibration-status" role="status">Relative depth only · not calibrated in metres</small></div></div></div><section class="world-map-odometry-view" aria-label="Experimental visual odometry trajectory"><div class="world-map-sensor-heading"><span>VISUAL ODOMETRY · LOCAL TRAJECTORY</span><small id="world-map-odometry-map-status">Waiting for tracking</small></div><div class="odom-plot"><canvas id="world-map-odometry-map" role="img" aria-label="Top-down estimated Body trajectory in the local visual odometry frame"></canvas><span class="odom-edge-label odom-forward">FORWARD ↑</span><span class="odom-edge-label odom-lateral">← LEFT · RIGHT →</span><span id="world-map-odometry-position" class="odom-position-label">0.00, 0.00 m</span></div><p class="world-map-odometry-footnote">Session-local estimate · drift accumulates · not a persistent map</p></section><section class="world-map-segmentation-panel" aria-label="SegFormer semantic segmentation"><div class="world-map-sensor-heading"><span>SEGFORMER · SEMANTIC MASK</span><small>Independent of camera preview</small></div><div class="world-map-segmentation-preview"><canvas id="world-map-segmentation-overlay" aria-label="Standalone SegFormer semantic class mask" hidden></canvas><span id="world-map-segmentation-empty" class="world-map-empty">Waiting for a SegFormer mask</span></div><div id="world-map-segmentation-classes" class="world-map-segmentation-classes">Waiting for SegFormer classes</div></section><div id="world-map-sensor-3d" class="world-map-canvas world-map-sensor-cloud" hidden></div><p id="world-map-sensor-note" class="world-map-sensor-note">Sensor-only view · no simulation object positions are used.</p>`;
+    sensorPanel.innerHTML = `<div class="world-map-sensor-metrics"><span>Camera <b id="world-map-camera-state">Waiting</b></span><span>YOLOX <b id="world-map-yolo-state">Waiting</b></span><span>MiDaS <b id="world-map-midas-state">Waiting</b></span><span>Visual odometry <b id="world-map-odometry-state">Waiting</b></span><span>SegFormer <b id="world-map-segmentation-state">disabled</b></span><span>Frame <b id="world-map-frame-state">—</b></span></div><div id="world-map-sensor-2d" class="world-map-sensor-2d"><div class="world-map-camera"><div class="world-map-sensor-heading">CAMERA · YOLOX</div><div class="world-map-image-wrap"><img id="world-map-camera-image" alt="Live camera frame with YOLOX detections"><svg id="world-map-yolo-overlay" viewBox="0 0 1 1" preserveAspectRatio="xMidYMid meet" aria-hidden="true"></svg><span id="world-map-camera-empty" class="world-map-empty">Waiting for a camera frame</span></div></div><div class="world-map-depth"><div class="world-map-sensor-heading">MiDaS · RELATIVE DEPTH</div><img id="world-map-depth-image" alt="MiDaS relative depth image"><span id="world-map-depth-empty" class="world-map-empty">MiDaS disabled or waiting for inference</span><div class="world-map-depth-calibration"><button type="button" id="world-map-midas-calibrate">Calibrate with radar</button><small id="world-map-midas-calibration-status" role="status">Relative depth only · not calibrated in metres</small></div></div></div><section class="world-map-odometry-view" aria-label="Experimental visual odometry trajectory"><div class="world-map-sensor-heading"><span>VISUAL ODOMETRY · LOCAL TRAJECTORY</span><small id="world-map-odometry-map-status">Waiting for tracking</small></div><div class="odom-plot"><canvas id="world-map-odometry-map" role="img" aria-label="Top-down estimated Body trajectory in the local visual odometry frame"></canvas><span class="odom-edge-label odom-forward">FORWARD ↑</span><span class="odom-edge-label odom-lateral">← LEFT · RIGHT →</span><span id="world-map-odometry-position" class="odom-position-label">0.00, 0.00 m</span></div><p class="world-map-odometry-footnote">Session-local estimate · drift accumulates · not a persistent map</p></section><section class="world-map-segmentation-panel" aria-label="SegFormer semantic segmentation"><div class="world-map-sensor-heading"><span>SEGFORMER · SEMANTIC MASK</span><small>Independent of camera preview</small></div><div class="world-map-segmentation-preview"><canvas id="world-map-segmentation-overlay" aria-label="Standalone SegFormer semantic class mask" hidden></canvas><span id="world-map-segmentation-empty" class="world-map-empty">Waiting for a SegFormer mask</span></div><div id="world-map-segmentation-classes" class="world-map-segmentation-classes">Waiting for SegFormer classes</div></section><div id="world-map-sensor-3d" class="world-map-sensor-cloud-layout" hidden><div id="world-map-sensor-3d-viewport" class="world-map-canvas world-map-sensor-cloud"><div class="world-map-cloud-hud"><span id="world-map-cloud-hud-points">0 points</span><span id="world-map-cloud-hud-depth">MiDaS —</span><span id="world-map-cloud-hud-age">Frame —</span><span id="world-map-cloud-hud-fps">3D — FPS</span></div><div class="world-map-cloud-controls"><button type="button" data-cloud-action="reset" title="Reset camera to fit point cloud">Reset</button><button type="button" data-cloud-view="top">Top</button><button type="button" data-cloud-view="side">Side</button><button type="button" data-cloud-view="follow">Follow</button><label>Point size <input id="world-map-cloud-point-size" type="range" min="10" max="50" value="25" aria-label="Point cloud point size"></label></div><div class="world-map-cloud-labels" aria-hidden="true"></div><div class="world-map-cloud-scale">1 m</div><div class="world-map-cloud-fetch" hidden>Sensor data unavailable: fetch failed, retrying</div></div><aside class="world-map-cloud-side"><strong>Scene layers</strong><label><input type="checkbox" data-cloud-layer="cloud" checked> MiDaS point cloud</label><label><input type="checkbox" data-cloud-layer="detections" checked> YOLOX detections</label><label><input type="checkbox" data-cloud-layer="radar" checked> mmWave targets</label><label><input type="checkbox" data-cloud-layer="odometry" checked> Odometry trail</label><strong>Relative depth</strong><div class="world-map-depth-legend"><i></i><div><span>Near</span><span>Far</span></div></div><small id="world-map-cloud-depth-caption">Relative scale · not metric</small><div class="world-map-cloud-axis" aria-label="XYZ orientation: X right, Y up, Z forward"><span>X →</span><span>Y ↑</span><span>Z ⊙</span></div></aside></div><p id="world-map-sensor-note" class="world-map-sensor-note">Sensor-only view · no simulation object positions are used.</p>`;
     for (const id of ['world-map-camera-state', 'world-map-yolo-state', 'world-map-midas-state', 'world-map-odometry-state', 'world-map-segmentation-state', 'world-map-radar-state', 'world-map-gps-state', 'world-map-imu-state', 'world-map-tof-state']) {
       const state = byId(id);
       if (state) state.dataset.state = 'loading';
@@ -115,6 +126,7 @@ if (panel) {
     statusBar.className = 'world-map-status-bar';
     statusBar.setAttribute('aria-label', 'Live Body and sensor status');
     statusBar.innerHTML = '<span>BODY <b id="world-map-body-status" data-state="loading">Connecting</b></span><span>BOARD INPUT <b id="world-map-summary-power">— W</b></span><span>ENERGY <b id="world-map-summary-energy">— Wh</b></span><span>LATEST FRAME <b id="world-map-summary-frame">—</b></span><span>SENSORS LIVE <b id="world-map-summary-live">0 / 7</b></span>';
+    statusBar.append(byId('world-map-cloud-fetch'), sensorPanel.querySelector('.world-map-sensor-metrics'));
     sensorPanel.prepend(statusBar);
     const bodyMessage = document.querySelector('#message');
     const syncBodyStatus = () => {
@@ -218,7 +230,35 @@ if (panel) {
       .world-map-empty{position:absolute;inset:0;display:grid;place-items:center;padding:20px;color:#91a79a;font:11px ui-monospace,monospace;text-align:center;pointer-events:none}
       .world-map-empty[hidden]{display:none}
       .world-map-sensor-note{margin:0;color:#9aafc0;font:12px/1.45 ui-sans-serif,system-ui,sans-serif}
-      .world-map-sensor-cloud{height:clamp(360px,54vh,620px)}
+      .world-map-sensor-cloud-layout{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:16px;width:100%;margin-top:16px}
+      .world-map-sensor-cloud-layout[hidden]{display:none!important}
+      .world-map-sensor-cloud{position:relative;height:clamp(420px,60vh,720px);min-height:420px}
+      .world-map-cloud-hud,.world-map-cloud-controls{position:absolute;z-index:3;display:flex;align-items:center;gap:8px;font:12px/1.3 ui-monospace,monospace}
+      .world-map-cloud-hud{top:12px;left:12px;flex-wrap:wrap;max-width:55%;pointer-events:none}
+      .world-map-cloud-hud span,.world-map-cloud-controls button,.world-map-cloud-controls label{padding:6px 8px;border:1px solid #263b50;border-radius:4px;background:#080e18ed;color:#e2edf5}
+      .world-map-cloud-controls{top:54px;right:12px;flex-wrap:wrap;justify-content:flex-end;max-width:58%}
+      .world-map-cloud-controls::before{content:"Shift/right drag: pan";padding:6px 8px;border:1px solid #263b50;border-radius:4px;background:#080e18ed;color:#9aafc0;font:12px ui-sans-serif,system-ui,sans-serif}
+      .world-map-cloud-controls button{cursor:pointer;font:12px ui-sans-serif,system-ui,sans-serif}
+      .world-map-cloud-controls button:hover{border-color:#00d6df}
+      .world-map-cloud-controls label{display:flex;align-items:center;gap:6px}
+      .world-map-cloud-controls input{width:72px;accent-color:#00d6df}
+      .world-map-cloud-labels{position:absolute;inset:0;z-index:2;overflow:hidden;pointer-events:none}
+      .world-map-cloud-object-label{position:absolute;max-width:180px;transform:translate(-50%,-100%);padding:4px 7px;border:1px solid #7290a3;border-radius:4px;background:#05070df2;color:#f4f8fb;font:12px/1.2 ui-sans-serif,system-ui,sans-serif;white-space:nowrap;text-shadow:0 1px #000}
+      .world-map-cloud-object-label::after{position:absolute;top:100%;left:50%;height:9px;border-left:1px solid #a9c6d6;content:""}
+      .world-map-cloud-scale{position:absolute;z-index:3;bottom:16px;left:16px;width:72px;border-top:2px solid #d7eaf4;color:#d7eaf4;text-align:center;font:12px ui-monospace,monospace}
+      .world-map-cloud-fetch{position:absolute;z-index:4;right:12px;bottom:12px;padding:7px 10px;border:1px solid #9f493c;border-radius:4px;background:#351510ed;color:#ffd6cc;font:12px ui-sans-serif,system-ui,sans-serif}
+      .world-map-status-bar .world-map-cloud-fetch{position:static;z-index:auto;order:8;flex-basis:100%;padding:7px 10px}
+      .world-map-cloud-side{display:flex;min-width:0;flex-direction:column;gap:12px;padding:16px;border:1px solid var(--wm-border);border-radius:8px;background:var(--wm-surface);color:var(--wm-text);font:14px ui-sans-serif,system-ui,sans-serif}
+      .world-map-cloud-side>strong{padding-bottom:8px;border-bottom:1px solid var(--wm-border);font-size:14px}
+      .world-map-cloud-side label{display:flex;align-items:center;gap:8px;min-height:30px;color:var(--wm-muted)}
+      .world-map-cloud-side input{accent-color:#00d6df}
+      .world-map-depth-legend{display:grid;gap:6px}
+      .world-map-depth-legend>i{height:12px;border-radius:2px;background:linear-gradient(90deg,#ed35c5,#4836d9,#00b8d4,#75e45b,#f8cb36,#ef4d27)}
+      .world-map-depth-legend>div{display:flex;justify-content:space-between;color:var(--wm-muted);font-size:12px}
+      .world-map-cloud-side small{color:var(--wm-muted);font-size:12px}
+      .world-map-cloud-axis{display:flex;gap:10px;margin-top:auto;padding-top:10px;border-top:1px solid var(--wm-border);color:#9cdce1;font:12px ui-monospace,monospace}
+      @media(max-width:1100px){.world-map-sensor-cloud-layout{grid-template-columns:minmax(0,1fr)}.world-map-cloud-side{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}.world-map-cloud-side>strong,.world-map-cloud-axis{grid-column:1/-1}}
+      @media(max-width:700px){.world-map-cloud-hud,.world-map-cloud-controls{position:static;max-width:none;padding:6px;background:#05070d}.world-map-cloud-controls{justify-content:flex-start}.world-map-cloud-hud{padding-top:8px}.world-map-cloud-side{grid-template-columns:minmax(0,1fr)}}
       .world-map-live-readouts{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,340px),1fr));gap:12px;margin-top:14px}
       .sensor-readout-card{min-width:0;padding:14px;border:1px solid #d7e1da;background:#f7faf8;color:#1c2b22}
       .sensor-readout-card header{display:flex;align-items:center;justify-content:space-between;gap:10px;padding-bottom:9px;border-bottom:1px solid #d7e1da}
@@ -267,6 +307,27 @@ if (panel) {
       @container (max-width:760px){.world-map-sensor-2d,.world-map-analysis-grid,.world-map-live-readouts{grid-template-columns:minmax(0,1fr)}.world-map-analysis-grid{grid-template-columns:minmax(0,1fr)}.world-map-depth img{max-height:320px}}
       @media(max-width:700px){.world-map-sensor-2d,.world-map-analysis-grid,.world-map-live-readouts{grid-template-columns:minmax(0,1fr)}.world-map-depth img{max-height:320px}.world-map-controls{gap:7px}}
       body.worldmodel-sensors-active,body.worldmodel-sensors-active #view-worldmodel,body.worldmodel-sensors-active #worldmodel-live-sensor-panels,body.worldmodel-sensors-active #view-worldmodel .shell{background:#05070d!important;color:#e2edf5!important}
+      body.worldmodel-sensors-active #page-title,body.worldmodel-sensors-active #page-description,body.worldmodel-sensors-active #view-worldmodel h2,body.worldmodel-sensors-active #view-worldmodel .map-intro,body.worldmodel-sensors-active header.topbar .eyebrow{color:#e2edf5!important}
+      body.worldmodel-sensors-active #page-description,body.worldmodel-sensors-active #view-worldmodel .map-intro,body.worldmodel-sensors-active header.topbar .eyebrow{color:#a9b9c8!important}
+      body.worldmodel-sensors-active #view-worldmodel #worldmodel-subtabs{border-color:#263b50!important}
+      body.worldmodel-sensors-active #view-worldmodel #worldmodel-subtabs button{color:#a9b9c8!important}
+      body.worldmodel-sensors-active #view-worldmodel #worldmodel-subtabs button.active,body.worldmodel-sensors-active #view-worldmodel #worldmodel-subtabs button[aria-selected="true"]{color:#00d6df!important}
+      body.worldmodel-sensors-active #view-worldmodel .world-map-status-bar{top:0}
+      body.worldmodel-sensors-active .world-map-sensor-metrics{flex:1 1 420px;max-width:100%;flex-wrap:nowrap;gap:4px 9px;padding:0;margin-left:auto;overflow:hidden}
+      body.worldmodel-sensors-active .world-map-sensor-metrics span{display:flex;min-width:0;gap:4px;padding:0;border:0;background:transparent;color:#9aafc0;font-size:11px;white-space:nowrap}
+      body.worldmodel-sensors-active .world-map-sensor-metrics span:has(#world-map-frame-state){display:none}
+      body.worldmodel-sensors-active .world-map-sensor-metrics b{max-width:112px;overflow:hidden;color:#e2edf5;text-overflow:ellipsis;white-space:nowrap}
+      body.worldmodel-sensors-active .world-map-sensor-metrics b[data-state="offline"]{color:#ff7373!important}
+      body.worldmodel-sensors-active .world-map-sensor-metrics b[data-state="stale"]{color:#ffb547!important}
+      body.worldmodel-sensors-active .world-map-sensor-metrics b[data-state="live"]{color:#39e59a!important}
+      body.worldmodel-sensors-active .sensor-readout-card:has(.sensor-state-chip[data-state="stale"]) .sensor-readout-values,body.worldmodel-sensors-active .sensor-readout-card:has(.sensor-state-chip[data-state="stale"]) canvas{opacity:.55}
+      body.worldmodel-sensors-active .world-map-live-readouts{grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr))}
+      body.worldmodel-sensors-active .system-gauge-center strong{font-size:15px!important}
+      body.worldmodel-sensors-active .system-gauge{width:88px}
+      body.worldmodel-sensors-active .system-gauge::after{right:-15px}
+      body.worldmodel-sensors-active .sensor-readout-values b{overflow-wrap:normal;white-space:nowrap}
+      body.worldmodel-sensors-active #world-map-gps-signals{overflow:hidden;scrollbar-width:none}
+      body.worldmodel-sensors-active #world-map-gps-signals::-webkit-scrollbar{display:none}
       body.worldmodel-sensors-active #view-worldmodel>.stats,body.worldmodel-sensors-active #goal-success{display:none!important}
       body.worldmodel-sensors-active #view-worldmodel .shell{max-width:1680px;padding:76px 24px 24px}
       .world-map-sensor-view{--wm-bg:#05070d;--wm-surface:#0a0f1a;--wm-raised:#101b29;--wm-border:#263b50;--wm-text:#e2edf5;--wm-muted:#9aafc0;--wm-cyan:#00d6df;--wm-magenta:#ed35c5;color:var(--wm-text);margin-top:8px}
@@ -377,7 +438,7 @@ function makeRenderer(element, background = '#07120f') {
   }
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
   renderer.setClearColor(background, 1);
-  element.replaceChildren(renderer.domElement);
+  element.prepend(renderer.domElement);
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(background);
   const camera = new THREE.PerspectiveCamera(42, 1, 0.05, 200);
@@ -396,22 +457,31 @@ function makeRenderer(element, background = '#07120f') {
   observer.observe(element);
   resize();
   let pointer = null;
+  element.addEventListener('contextmenu', event => event.preventDefault());
   element.addEventListener('pointerdown', (event) => {
-    pointer = [event.clientX, event.clientY];
+    pointer = { x: event.clientX, y: event.clientY, pan: event.button === 2 || event.shiftKey };
     camera.userData.userAdjusted = true;
     element.setPointerCapture(event.pointerId);
   });
   element.addEventListener('pointermove', (event) => {
     if (!pointer) return;
-    const dx = event.clientX - pointer[0];
-    const dy = event.clientY - pointer[1];
-    pointer = [event.clientX, event.clientY];
-    const offset = camera.position.clone().sub(camera.userData.target || new THREE.Vector3());
-    const spherical = new THREE.Spherical().setFromVector3(offset);
-    spherical.theta -= dx * 0.006;
-    spherical.phi = THREE.MathUtils.clamp(spherical.phi + dy * 0.006, 0.12, Math.PI - 0.12);
-    camera.position.copy(new THREE.Vector3().setFromSpherical(spherical).add(camera.userData.target || new THREE.Vector3()));
-    camera.lookAt(camera.userData.target || new THREE.Vector3());
+    const dx = event.clientX - pointer.x;
+    const dy = event.clientY - pointer.y;
+    pointer.x = event.clientX; pointer.y = event.clientY;
+    const target = camera.userData.target || new THREE.Vector3();
+    if (pointer.pan) {
+      const scale = camera.position.distanceTo(target) * 0.0018;
+      const right = new THREE.Vector3().setFromMatrixColumn(camera.matrix, 0);
+      const up = new THREE.Vector3().setFromMatrixColumn(camera.matrix, 1);
+      const shift = right.multiplyScalar(-dx * scale).add(up.multiplyScalar(dy * scale));
+      camera.position.add(shift); target.add(shift); camera.userData.target = target;
+    } else {
+      const spherical = new THREE.Spherical().setFromVector3(camera.position.clone().sub(target));
+      spherical.theta -= dx * 0.006;
+      spherical.phi = THREE.MathUtils.clamp(spherical.phi + dy * 0.006, 0.12, Math.PI - 0.12);
+      camera.position.copy(new THREE.Vector3().setFromSpherical(spherical).add(target));
+    }
+    camera.lookAt(target);
     render();
   });
   element.addEventListener('pointerup', () => { pointer = null; });
@@ -432,11 +502,55 @@ function makeRenderer(element, background = '#07120f') {
 const sim = makeRenderer(byId('world-map-sim-3d'));
 let simRoot;
 let simSignature = '';
-let cloud = makeRenderer(byId('world-map-sensor-3d'), '#06100d');
+let cloud = makeRenderer(byId('world-map-sensor-3d-viewport'), '#05070d');
 let cloudPoints = null;
 let boxGroup = null;
 let cloudFrameId = '';
 let cloudCameraInitialized = false;
+const cloudGuides = new THREE.Group();
+const cloudRadarGroup = new THREE.Group();
+const cloudOdometryGroup = new THREE.Group();
+if (cloud) {
+  const positions = [], colors = [];
+  for (let index = -10; index <= 10; index += 1) {
+    const color = new THREE.Color(index % 5 === 0 ? '#426078' : '#23394a');
+    positions.push(index, -1.55, 1, index, -1.55, -15, -10, -1.55, -4 + index, 10, -1.55, -4 + index);
+    for (let vertex = 0; vertex < 4; vertex += 1) colors.push(color.r, color.g, color.b);
+  }
+  const grid = new THREE.BufferGeometry();
+  grid.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  grid.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+  cloudGuides.add(new THREE.LineSegments(grid, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.78 })));
+  cloudGuides.add(new THREE.Mesh(new THREE.SphereGeometry(0.075, 16, 10), new THREE.MeshBasicMaterial({ color: '#f4f7ff' })));
+  const addAxis = (to, color) => {
+    const direction = new THREE.Vector3(...to).normalize();
+    cloudGuides.add(new THREE.ArrowHelper(direction, new THREE.Vector3(), 0.8, color, 0.12, 0.08));
+  };
+  addAxis([1, 0, 0], '#ef6a73'); addAxis([0, 1, 0], '#62d994'); addAxis([0, 0, -1], '#66a8ff');
+  const scale = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(-0.5, -1.48, -2), new THREE.Vector3(0.5, -1.48, -2)]);
+  cloudGuides.add(new THREE.Line(scale, new THREE.LineBasicMaterial({ color: '#d7eaf4' })));
+  cloud.scene.add(cloudGuides, cloudRadarGroup, cloudOdometryGroup);
+}
+const cloudViewport = byId('world-map-sensor-3d-viewport');
+const cloudLabelRoot = cloudViewport?.querySelector('.world-map-cloud-labels');
+let cloudFpsFrames = 0;
+let cloudFpsStartedAt = performance.now();
+if (cloud) {
+  setCloudLayerLabels('origin', [{ position: new THREE.Vector3(0, 0, 0), text: 'BODY SENSOR ORIGIN' }]);
+  const baseRender = cloud.render;
+  cloud.render = () => { baseRender(); cloudFpsFrames += 1; updateCloudHud(); updateCloudLabelPositions(); };
+  cloudViewport?.querySelector('[data-cloud-action="reset"]')?.addEventListener('click', () => { cloud.camera.userData.userAdjusted = false; cloudCameraInitialized = false; resizeCloud(); });
+  cloudViewport?.querySelectorAll('[data-cloud-view]').forEach(button => button.addEventListener('click', () => setCloudPreset(button.dataset.cloudView)));
+  cloudViewport?.querySelectorAll('[data-cloud-layer]').forEach(input => input.addEventListener('change', () => {
+    const layer = input.dataset.cloudLayer;
+    if (layer === 'cloud' && cloudPoints) cloudPoints.visible = input.checked;
+    if (layer === 'detections' && boxGroup) boxGroup.visible = input.checked;
+    if (layer === 'radar') cloudRadarGroup.visible = input.checked;
+    if (layer === 'odometry') cloudOdometryGroup.visible = input.checked;
+    cloud.render();
+  }));
+  byId('world-map-cloud-point-size')?.addEventListener('input', event => { if (cloudPoints) cloudPoints.material.size = Number(event.target.value) / 1000; cloud.render(); });
+}
 let activeSource = window.bodyWorldModelView === 'sensors' ? 'sensors' : 'simulation';
 let activeRender = '2d';
 let latestWorld = null;
@@ -925,6 +1039,7 @@ async function refreshSensors() {
   try {
     const response = await fetch('/body/camera/frame', { cache: 'no-store' });
     const frame = await response.json();
+    setSensorFetchFailure('camera', false);
     const currentCamera = frame.camera || {};
     const yolo = frame.yolo || {};
     latestCameraFrame = currentCamera;
@@ -955,7 +1070,8 @@ async function refreshSensors() {
       drawBoxes(detections, currentCamera.width || 640, currentCamera.height || 480);
       displayedYoloOverlayKey = yoloOverlayKey;
     }
-    if (activeRender === '3d' && cloudDepthImage && yolo.frame_id !== cloudYoloFrameId) {
+    if (activeRender === '3d' && cloudDepthImage
+        && (yolo.frame_id !== cloudYoloFrameId || (!detections.length && cloudLabelItems.some(item => item.layer === 'detections')))) {
       drawDepthDetections(cloudDepthImage, detections);
       cloudYoloFrameId = yolo.frame_id || '';
     }
@@ -969,7 +1085,11 @@ async function refreshSensors() {
   } catch (error) {
     setFeedStatus('world-map-camera-state', 'camera', 'offline', `Offline · ${error.message}`);
     setFeedStatus('world-map-yolo-state', 'yolo', 'offline', 'Offline · waiting for camera frame');
-    byId('world-map-sensor-note').textContent = `Sensor data unavailable: ${error.message}`;
+    setSensorFetchFailure('camera', true);
+    if (activeRender === '3d' && cloudDepthImage) drawDepthDetections(cloudDepthImage, []);
+    byId('world-map-sensor-note').textContent = latestCameraFrame?.frame_id
+      ? `Sensor-only view · last camera frame ${latestCameraFrame.frame_id} is retained but not current.`
+      : 'Sensor-only view · waiting for a current camera frame.';
   } finally {
     sensorBusy = false;
   }
@@ -1100,6 +1220,7 @@ async function refreshLiveRadar() {
   try {
     const status = await sensorJson('/plugins/mmwave_radar/status');
     const sample = status.sample || {};
+    latestRadarSample = status.available ? sample : null;
     const targets = Array.isArray(sample.targets) ? sample.targets : [];
     const age = Number(sample.timestamp) > 0 ? Math.max(0, Date.now() / 1000 - Number(sample.timestamp)) : NaN;
     const targetLabel = `${targets.length} target${targets.length === 1 ? '' : 's'}`;
@@ -1118,11 +1239,14 @@ async function refreshLiveRadar() {
       return row;
     }) : [Object.assign(document.createElement('span'), { textContent: status.available ? 'No targets in current radar frame.' : 'Waiting for a live radar frame.' })]));
     drawLiveRadar(sample);
+    updateCloudRadar(latestRadarSample);
   } catch (error) {
+    latestRadarSample = null;
     setFeedStatus('world-map-radar-state', 'radar', 'offline', `Unavailable · ${error.message}`);
     byId('world-map-radar-state').textContent = `Unavailable · ${error.message}`;
     byId('world-map-radar-targets').textContent = 'No live radar data.';
     drawLiveRadar();
+    updateCloudRadar(null);
   } finally { readoutBusy.radar = false; }
 }
 
@@ -1141,7 +1265,7 @@ async function refreshLiveGps() {
     const latitude = Number(sample.latitude_deg ?? sample.latitude ?? sample.lat);
     const longitude = Number(sample.longitude_deg ?? sample.longitude ?? sample.lon ?? sample.lng);
     byId('world-map-gps-position').textContent = fix && Number.isFinite(latitude) && Number.isFinite(longitude) ? `${latitude.toFixed(6)}, ${longitude.toFixed(6)}` : 'No valid fix';
-    byId('world-map-gps-fix').textContent = `${fix ? 'Valid' : 'No fix'} · quality ${sample.fix_quality ?? '—'}`;
+    byId('world-map-gps-fix').textContent = `${gpsState === 'stale' ? 'Stale fix' : gpsState === 'live' && fix ? 'Valid' : 'No fix'} · quality ${sample.fix_quality ?? '—'}`;
     byId('world-map-gps-satellites').textContent = `${sample.satellites ?? '—'} used · ${sample.satellites_in_view ?? '—'} in view`;
     byId('world-map-gps-quality').textContent = `HDOP ${displayNumber(sample.hdop)} · ${displayNumber(sample.altitude_m, 1, ' m')}`;
     const signals = Array.isArray(sample.satellite_signals) ? sample.satellite_signals : [];
@@ -1253,6 +1377,7 @@ async function refreshSensorDepth() {
   try {
     const response = await fetch('/body/camera/depth', { cache: 'no-store' });
     const depth = await response.json();
+    setSensorFetchFailure('depth', false);
     const segmentation = latestSegmentation;
     latestSensorDepth = depth;
     latestSegmentation = segmentation;
@@ -1263,6 +1388,12 @@ async function refreshSensorDepth() {
     const ageSeconds = Number(depth.captured_at) > 0 ? Math.max(0, Date.now() / 1000 - Number(depth.captured_at)) : NaN;
     const midasState = classifyAge('midas', ageSeconds, Boolean(depth.depth_jpeg_base64) && depth.state !== 'disabled');
     setFeedStatus('world-map-midas-state', 'midas', midasState, `${depth.state || 'disabled'}${depth.device ? ` · ${depth.device}` : ''}${depth.latency_ms != null ? ` · ${depth.latency_ms} ms` : ''}${depthAge}${depth.error ? ` · ${depth.error}` : ''}`);
+    if (cloudPoints) {
+      cloudPoints.material.vertexColors = midasState !== 'stale';
+      cloudPoints.material.color.set(midasState === 'stale' ? '#89939b' : '#ffffff');
+      cloudPoints.material.opacity = midasState === 'stale' ? 0.38 : 0.92;
+      cloudPoints.material.needsUpdate = true;
+    }
     updateMetricCalibrationStatus();
     const alignedSegmentationFrameId = segmentationMatchesDepth(segmentation, depth)
       ? String(segmentation.frame_id || segmentation.captured_at || '') : '';
@@ -1280,6 +1411,8 @@ async function refreshSensorDepth() {
     }
   } catch (error) {
     setFeedStatus('world-map-midas-state', 'midas', 'offline', `unavailable · ${error.message}`);
+    if (cloudPoints) { cloudPoints.visible = false; cloud.render(); }
+    setSensorFetchFailure('depth', true);
   } finally {
     sensorDepthBusy = false;
   }
@@ -1309,6 +1442,7 @@ async function refreshVisualOdometry() {
         visualOdometryFrameId = frameId;
         visualOdometryTrail.push({ forward, lateral });
         if (visualOdometryTrail.length > 600) visualOdometryTrail.shift();
+        updateCloudOdometry();
       }
       renderVisualOdometryMap(odometry);
     } else {
@@ -1397,13 +1531,141 @@ function resizeCloud() {
     const horizontalFov = 2 * Math.atan(Math.tan(verticalFov / 2) * cloud.camera.aspect);
     const verticalDistance = size.y / (2 * Math.tan(verticalFov / 2));
     const horizontalDistance = size.x / (2 * Math.tan(horizontalFov / 2));
-    const distance = (Math.max(verticalDistance, horizontalDistance, 0.8) + size.z / 2) * 1.2;
+    const distance = (Math.max(verticalDistance, horizontalDistance, 0.8) + size.z / 2) * 1.06;
     cloud.camera.userData.target = target;
-    cloud.camera.position.copy(target).add(new THREE.Vector3(0, Math.max(0.2, size.y * 0.12), distance));
+    cloud.camera.position.copy(target).add(new THREE.Vector3(0, Math.max(0.2, size.y * 0.1), distance));
     cloudCameraInitialized = true;
   }
   cloud.camera.lookAt(cloud.camera.userData.target || new THREE.Vector3());
   cloud.render();
+}
+
+function setCloudPreset(preset) {
+  if (!cloud || !cloudPoints) return;
+  if (!cloudPoints.geometry.boundingBox) cloudPoints.geometry.computeBoundingBox();
+  const bounds = cloudPoints.geometry.boundingBox;
+  const target = bounds.getCenter(new THREE.Vector3());
+  const size = bounds.getSize(new THREE.Vector3());
+  const distance = Math.max(size.x, size.y, size.z, 2) * 1.35;
+  const offsets = {
+    top: new THREE.Vector3(0, distance, -0.01),
+    side: new THREE.Vector3(distance, Math.max(0.2, size.y * 0.12), 0),
+    follow: new THREE.Vector3(0, Math.max(0.7, size.y * 0.24), distance * 0.78),
+  };
+  cloud.camera.userData.userAdjusted = true;
+  cloud.camera.userData.target = target;
+  cloud.camera.position.copy(target).add(offsets[preset] || offsets.follow);
+  cloud.camera.up.set(0, preset === 'top' ? 0 : 1, preset === 'top' ? -1 : 0);
+  cloud.camera.lookAt(target);
+  cloud.render();
+}
+
+function updateCloudHud() {
+  const points = byId('world-map-cloud-hud-points');
+  const depth = byId('world-map-cloud-hud-depth');
+  const age = byId('world-map-cloud-hud-age');
+  const fps = byId('world-map-cloud-hud-fps');
+  if (points) points.textContent = `${cloudPointCount.toLocaleString()} points`;
+  if (depth) depth.textContent = `MiDaS ${latestSensorDepth?.latency_ms == null ? '—' : `${Number(latestSensorDepth.latency_ms).toFixed(1)} ms`}`;
+  const frameAge = latestDepthCapturedAt > 0 ? Math.max(0, Date.now() / 1000 - latestDepthCapturedAt) : NaN;
+  if (age) age.textContent = Number.isFinite(frameAge) ? `Frame ${frameAge.toFixed(1)} s` : 'Frame —';
+  const now = performance.now();
+  const elapsed = now - cloudFpsStartedAt;
+  if (fps && elapsed >= 500) {
+    fps.textContent = `3D ${Math.round(cloudFpsFrames * 1000 / elapsed)} FPS`;
+    cloudFpsFrames = 0; cloudFpsStartedAt = now;
+  }
+  const caption = byId('world-map-cloud-depth-caption');
+  if (caption) caption.textContent = metricDepthCalibration?.available ? 'Relative scale · radar-calibrated' : 'Relative scale · not metric';
+}
+
+function updateCloudLabelPositions() {
+  if (!cloud || !cloudLabelRoot || !cloudViewport || cloudLabelRoot.hidden) return;
+  const rect = cloudViewport.getBoundingClientRect();
+  if (!rect.width || !rect.height) return;
+  cloud.camera.updateMatrixWorld();
+  const occupied = [];
+  for (const item of cloudLabelItems) {
+    const point = item.position.clone().project(cloud.camera);
+    const label = item.element;
+    const visible = point.z >= -1 && point.z <= 1 && point.x >= -1.15 && point.x <= 1.15 && point.y >= -1.15 && point.y <= 1.15;
+    label.hidden = !visible;
+    if (!visible) continue;
+    const x = THREE.MathUtils.clamp((point.x + 1) * rect.width / 2, 8, rect.width - 8);
+    let y = THREE.MathUtils.clamp((1 - point.y) * rect.height / 2 - 12, 36, rect.height - 24);
+    label.style.left = `${x}px`;
+    label.style.top = `${y}px`;
+    const labelWidth = Math.min(label.offsetWidth || 150, rect.width - 16);
+    const labelHeight = label.offsetHeight || 24;
+    let tries = 0;
+    while (tries < 12) {
+      const candidate = { left: THREE.MathUtils.clamp(x - labelWidth / 2, 8, rect.width - labelWidth - 8), top: y - labelHeight, right: 0, bottom: y };
+      candidate.right = candidate.left + labelWidth;
+      const collides = occupied.some(other => candidate.left < other.right + 4 && candidate.right > other.left - 4 && candidate.top < other.bottom + 3 && candidate.bottom > other.top - 3);
+      if (!collides) { occupied.push(candidate); label.style.left = `${candidate.left + labelWidth / 2}px`; break; }
+      y = y - labelHeight - 5;
+      if (y < labelHeight + 28) y = Math.min(rect.height - 8, y + (tries + 1) * (labelHeight + 5));
+      label.style.top = `${y}px`;
+      tries += 1;
+    }
+    if (tries === 12) label.hidden = true;
+  }
+}
+
+function setCloudLayerLabels(layer, entries) {
+  cloudLabelItems = cloudLabelItems.filter(item => item.layer !== layer);
+  for (const entry of entries) {
+    const element = document.createElement('span');
+    element.className = 'world-map-cloud-object-label';
+    element.textContent = entry.text;
+    cloudLabelRoot?.append(element);
+    cloudLabelItems.push({ ...entry, layer, element });
+  }
+  cloudLabelRoot?.querySelectorAll('.world-map-cloud-object-label').forEach(element => {
+    if (!cloudLabelItems.some(item => item.element === element)) element.remove();
+  });
+  updateCloudLabelPositions();
+}
+
+function updateCloudRadar(sample = latestRadarSample) {
+  if (!cloud) return;
+  clearCloudGroup(cloudRadarGroup);
+  const labels = [];
+  const enabled = cloudViewport?.querySelector('[data-cloud-layer="radar"]')?.checked !== false;
+  cloudRadarGroup.visible = enabled;
+  for (const [index, target] of (sample?.targets || []).entries()) {
+    const position = target.position_m || target.position || [];
+    const lateral = Number(position[0]), forward = Number(position[1]);
+    if (!Number.isFinite(lateral) || !Number.isFinite(forward) || forward < 0 || forward > 12) continue;
+    const point = new THREE.Vector3(lateral, -0.2, -forward);
+    const moving = Math.abs(Number(target.radial_speed_mps) || 0) >= 0.05;
+    const marker = new THREE.Mesh(new THREE.SphereGeometry(0.075, 12, 8), new THREE.MeshBasicMaterial({ color: moving ? '#ed35c5' : '#f2bc65' }));
+    marker.position.copy(point);
+    cloudRadarGroup.add(marker);
+    const range = Math.hypot(lateral, forward);
+    labels.push({ position: point.clone().add(new THREE.Vector3(0, 0.16, 0)), text: `${target.id || target.target_id || `Radar ${index + 1}`} · ${range.toFixed(1)} m` });
+  }
+  setCloudLayerLabels('radar', labels);
+  cloud.render();
+}
+
+function updateCloudOdometry() {
+  if (!cloud) return;
+  clearCloudGroup(cloudOdometryGroup);
+  const enabled = cloudViewport?.querySelector('[data-cloud-layer="odometry"]')?.checked !== false;
+  cloudOdometryGroup.visible = enabled;
+  if (visualOdometryTrail.length < 2) return;
+  const points = visualOdometryTrail.map(point => new THREE.Vector3(-point.lateral, -1.48, -point.forward));
+  const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(points), new THREE.LineBasicMaterial({ color: '#ed35c5', linewidth: 2 }));
+  cloudOdometryGroup.add(line);
+  cloud.render();
+}
+
+function clearCloudGroup(group) {
+  for (const child of [...group.children]) {
+    group.remove(child);
+    child.traverse?.(node => { node.geometry?.dispose(); node.material?.dispose?.(); });
+  }
 }
 
 function disposeCloudContent() {
@@ -1491,6 +1753,7 @@ async function rebuildDepthCloud(depth, segmentation = latestSegmentation) {
     ? await loadClassMask(segmentation.mask_png_base64) : null;
   if (token !== cloudBuildToken || activeSource !== 'sensors' || activeRender !== '3d') return false;
   cloudDepthImage = image;
+  latestDepthCapturedAt = Number(depth.captured_at) || 0;
   const stride = Math.max(2, Math.ceil(Math.max(image.width, image.height) / 140));
   const positions = [];
   const colorsArray = [];
@@ -1529,9 +1792,14 @@ async function rebuildDepthCloud(depth, segmentation = latestSegmentation) {
   geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
   geometry.setAttribute('color', new THREE.Float32BufferAttribute(colorsArray, 3));
   geometry.computeBoundingBox();
-  cloudPoints = new THREE.Points(geometry, new THREE.PointsMaterial({ size: 0.035, vertexColors: true, sizeAttenuation: true, transparent: true, opacity: 0.92 }));
+  cloudPointCount = positions.length / 3;
+  const layerEnabled = cloudViewport?.querySelector('[data-cloud-layer="cloud"]')?.checked !== false;
+  cloudPoints = new THREE.Points(geometry, new THREE.PointsMaterial({ size: Number(byId('world-map-cloud-point-size')?.value || 25) / 1000, vertexColors: true, sizeAttenuation: true, transparent: true, opacity: 0.92 }));
+  cloudPoints.visible = layerEnabled;
   cloud.scene.add(cloudPoints);
   drawDepthDetections(image, visibleYoloDetections(latestSensorYolo));
+  updateCloudRadar();
+  updateCloudOdometry();
   resizeCloud();
   return true;
 }
@@ -1548,6 +1816,9 @@ function drawDepthDetections(image, detections) {
     });
   }
   boxGroup = new THREE.Group();
+  const htmlLabels = [];
+  const layerEnabled = cloudViewport?.querySelector('[data-cloud-layer="detections"]')?.checked !== false;
+  boxGroup.visible = layerEnabled;
   const colorsByKind = ['#55e7cc', '#f2bc65', '#e280ba', '#77d69c'];
   for (const [index, item] of (detections || []).entries()) {
     const bbox = item.bbox;
@@ -1567,13 +1838,13 @@ function drawDepthDetections(image, detections) {
     const edges = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(width, height, Math.max(0.035, distance * 0.035))), materialBox);
     edges.position.set(centerX, centerY, -distance);
     boxGroup.add(edges);
-    const metricLabel = metricDepthCalibration?.available ? ` · ~${distance.toFixed(1)} m` : '';
-    const label = makeLabel(`${item.label || item.class_name || item.class || 'object'} ${Math.round(Number(item.confidence ?? item.score ?? 0) * 100)}%${metricLabel}`, color);
-    label.scale.set(Math.max(0.95, Math.min(2.0, width)), 0.25, 1);
-    label.position.set(centerX, centerY + height / 2 + 0.17, -distance);
-    boxGroup.add(label);
+    const labelPosition = new THREE.Vector3(centerX, centerY + height / 2, -distance);
+    const identity = item.label || item.class_name || item.class || 'object';
+    const confidence = Math.round(Number(item.confidence ?? item.score ?? 0) * 100);
+    htmlLabels.push({ position: labelPosition, text: `${identity} ${confidence}% · ~${distance.toFixed(1)} m (est.)` });
   }
   cloud.scene.add(boxGroup);
+  setCloudLayerLabels('detections', htmlLabels);
   cloud.render();
 }
 
