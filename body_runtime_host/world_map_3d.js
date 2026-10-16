@@ -51,12 +51,18 @@ if (panel) {
     sensorPanel.append(liveReadouts);
     const analysisGrid = document.createElement('div');
     analysisGrid.className = 'world-map-analysis-grid';
+    const analysisStack = document.createElement('div');
+    analysisStack.className = 'world-map-analysis-stack';
+    const trajectory = sensorPanel.querySelector('.world-map-odometry-view');
+    const radarCard = liveReadouts.querySelector('#world-map-radar-state')?.closest('.sensor-readout-card');
+    radarCard?.classList.remove('sensor-readout-wide');
+    if (trajectory) analysisStack.append(trajectory);
+    if (radarCard) analysisStack.append(radarCard);
     analysisGrid.append(
-      sensorPanel.querySelector('.world-map-odometry-view'),
+      analysisStack,
       sensorPanel.querySelector('.world-map-segmentation-panel'),
     );
     sensorPanel.querySelector('.world-map-sensor-2d')?.after(analysisGrid);
-    liveReadouts.querySelector('.sensor-readout-wide')?.classList.remove('sensor-readout-wide');
     sensorPanel.querySelector('.world-map-segmentation-panel .world-map-sensor-heading small')?.remove();
     mapLayout.after(sensorPanel);
     const style = document.createElement('style');
@@ -85,6 +91,7 @@ if (panel) {
       .world-map-odometry-footnote{margin:0;padding:0 10px 9px;color:#89a895;font:10px ui-monospace,monospace}
       .world-map-sensor-2d{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;align-items:stretch}
       .world-map-analysis-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:12px;align-items:start}
+      .world-map-analysis-stack{display:grid;min-width:0;gap:12px;align-content:start}
       .world-map-camera,.world-map-depth{min-width:0;position:relative;background:#07120f;border:1px solid #263e32;overflow:hidden}
       .world-map-sensor-heading{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;min-width:0;padding:9px 11px;border-bottom:1px solid #263e32;color:#91c9aa;font:10px ui-monospace,monospace}
       .world-map-image-wrap{position:relative;display:grid;place-items:center;width:100%;aspect-ratio:4/3;max-height:500px;background:#020805;overflow:hidden}
