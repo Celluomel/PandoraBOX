@@ -116,7 +116,7 @@ if (panel) {
     }
     const visionFooter = document.createElement('div');
     visionFooter.className = 'world-map-vision-footer';
-    visionFooter.append(byId('world-map-sensor-note'));
+    visionFooter.append(sensorPanel.querySelector('#world-map-sensor-note'));
     visionGrid?.after(visionFooter);
     const radarCard = liveReadouts.querySelector('#world-map-radar-state')?.closest('.sensor-readout-card');
     radarCard?.classList.remove('sensor-readout-wide');
@@ -126,7 +126,7 @@ if (panel) {
     statusBar.className = 'world-map-status-bar';
     statusBar.setAttribute('aria-label', 'Live Body and sensor status');
     statusBar.innerHTML = '<span>BODY <b id="world-map-body-status" data-state="loading">Connecting</b></span><span>BOARD INPUT <b id="world-map-summary-power">— W</b></span><span>ENERGY <b id="world-map-summary-energy">— Wh</b></span><span>LATEST FRAME <b id="world-map-summary-frame">—</b></span><span>SENSORS LIVE <b id="world-map-summary-live">0 / 7</b></span>';
-    statusBar.append(byId('world-map-cloud-fetch'), sensorPanel.querySelector('.world-map-sensor-metrics'));
+    statusBar.append(sensorPanel.querySelector('#world-map-cloud-fetch'), sensorPanel.querySelector('.world-map-sensor-metrics'));
     sensorPanel.prepend(statusBar);
     const bodyMessage = document.querySelector('#message');
     const syncBodyStatus = () => {

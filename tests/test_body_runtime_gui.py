@@ -99,6 +99,8 @@ class BodyRuntimeGuiTests(unittest.TestCase):
         self.assertIn("targets.length === 1 ? '' : 's'", source)
         self.assertIn(".odom-edge-label", source)
         self.assertIn("world-map-vision-footer", source)
+        self.assertIn("visionFooter.append(sensorPanel.querySelector('#world-map-sensor-note'))", source)
+        self.assertIn("statusBar.append(sensorPanel.querySelector('#world-map-cloud-fetch')", source)
         self.assertIn("data-source=\"tof\"", source)
         self.assertIn("staleAfterSeconds = { camera: 5", source)
         self.assertIn("The INA232 monitors the onboard input rail; external motor loads may be excluded", source)
