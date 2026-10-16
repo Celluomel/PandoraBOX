@@ -9,6 +9,7 @@ let latestSegmentation = null;
 let latestCameraFrame = null;
 let renderedSegmentationFrameId = '';
 let displayedCameraFrameId = null;
+let displayedYoloOverlayKey = '';
 let cloudDepthImage = null;
 let cloudBuildToken = 0;
 let cloudYoloFrameId = '';
@@ -755,7 +756,11 @@ async function refreshSensors() {
       if (classes) classes.textContent = `SegFormer overlay unavailable · ${error.message}`;
     });
     const detections = visibleYoloDetections(yolo);
-    drawBoxes(detections, currentCamera.width || 640, currentCamera.height || 480);
+    const yoloOverlayKey = `${yolo.state || 'disabled'}:${yolo.frame_id || ''}:${detections.length}`;
+    if (yoloOverlayKey !== displayedYoloOverlayKey) {
+      drawBoxes(detections, currentCamera.width || 640, currentCamera.height || 480);
+      displayedYoloOverlayKey = yoloOverlayKey;
+    }
     if (activeRender === '3d' && cloudDepthImage && yolo.frame_id !== cloudYoloFrameId) {
       drawDepthDetections(cloudDepthImage, detections);
       cloudYoloFrameId = yolo.frame_id || '';
@@ -1329,18 +1334,18 @@ setInterval(() => {
     void refreshSensors();
     void refreshSensorDepth();
   }
-}, 150);
+}, 75);
 setInterval(() => {
   if (activeSource !== 'sensors') return;
   void refreshLiveRadar();
-}, 3000);
+}, 250);
 setInterval(() => { void refreshSystemMetrics(); }, 1000);
 setInterval(() => {
   if (activeSource !== 'sensors') return;
   void refreshLiveGps();
   void refreshLiveImu();
   void refreshLiveTof();
-}, 500);
+}, 250);
 setInterval(() => {
   if (activeSource === 'sensors' && byId('world-map-segmentation-toggle')?.checked) {
     void refreshSensorSegmentation();
@@ -1348,5 +1353,5 @@ setInterval(() => {
 }, 500);
 setInterval(() => {
   if (activeSource === 'sensors') void refreshVisualOdometry();
-}, 500);
+}, 250);
 if (latestWorld) buildSimulation(latestWorld);
