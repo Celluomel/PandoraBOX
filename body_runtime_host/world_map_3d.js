@@ -123,6 +123,9 @@ if (panel) {
       #worldmodel-live-sensor-panels .map-layout{min-height:0}
       #worldmodel-live-sensor-panels .map-intro{max-width:100ch;line-height:1.55}
       .world-map-sensor-view{margin-top:12px}
+      body.worldmodel-sensors-active .simulation-actions,
+      body.worldmodel-sensors-active #view-worldmodel #wm-simulation-toggle,
+      body.worldmodel-sensors-active #view-worldmodel .map-panel .panel-head>button[onclick="expandMap()"]{display:none!important}
       body.worldmodel-sensors-active #view-worldmodel>.stats,body.worldmodel-sensors-active #goal-success{display:none!important}
       @media(max-width:700px){.world-map-sensor-2d,.world-map-live-readouts{grid-template-columns:minmax(0,1fr)}.sensor-readout-wide{grid-column:auto}.world-map-depth img{max-height:320px}.world-map-controls{gap:7px}}
     `;
