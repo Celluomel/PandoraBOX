@@ -9,7 +9,8 @@ function setFeedStatus(id, source, state, detail) {
   const element = byId(id);
   if (element) {
     element.dataset.state = state;
-    element.textContent = detail;
+    const stateLabel = state === 'live' ? 'LIVE' : state === 'stale' ? 'STALE' : state === 'offline' ? 'OFFLINE' : 'LOADING';
+    element.textContent = detail.toUpperCase().startsWith(`${stateLabel} ·`) ? detail : `${stateLabel} · ${detail}`;
   }
   const tofCard = source === 'tof' ? element?.closest('.sensor-readout-card') : null;
   if (tofCard) {
@@ -133,6 +134,7 @@ if (panel) {
         source.dataset.offlinePill = 'true';
         pill.prepend(source);
         source.dataset.state = 'offline';
+        source.textContent = 'OFFLINE';
       }
       sourceStates[label === 'LiDAR' ? 'lidar' : 'ultrasonic'] = 'offline';
       offlineStrip.append(pill);
