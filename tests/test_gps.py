@@ -84,6 +84,40 @@ class GpsTests(unittest.TestCase):
         self.assertIn('DT_NODELABEL(uart7)', sketch)
         self.assertIn("Serial1_USART3_D0_D1", sketch)
         self.assertIn("checksum_errors", sketch)
+        self.assertIn("latest_gsv", sketch)
+        self.assertIn("GPS_GSV_CAPACITY", sketch)
+
+    def test_gsv_fragments_expose_per_satellite_cn0_and_sky_angles(self):
+        bridge = FakeBridge({
+            "available": True,
+            "latest_gga": "$GNGGA,123519,4807.038,N,01131.000,E,1,05,0.9,545.4,M,46.9,M,,",
+            "latest_gsv": [
+                "$GPGSV,2,1,05,01,40,083,41,02,17,273,30,03,12,123,25,04,22,180,18",
+                "$GPGSV,2,2,05,05,05,300,12",
+            ],
+        })
+
+        sample = VentunoBridgeGpsSource(bridge_factory=lambda: bridge).read()
+
+        self.assertEqual(sample["satellites_in_view"], 5)
+        strongest = sample["satellite_signals"][0]
+        self.assertEqual(strongest["svid"], 1)
+        self.assertEqual(strongest["elevation_deg"], 40)
+        self.assertEqual(strongest["azimuth_deg"], 83)
+        self.assertEqual(strongest["cn0_db_hz"], 41.0)
+
+    def test_gsv_empty_cn0_still_reports_satellites_in_view(self):
+        bridge = FakeBridge({
+            "available": True,
+            "latest_gga": "$GNGGA,123519,4807.038,N,01131.000,E,1,05,0.9,545.4,M,46.9,M,,",
+            "latest_gsv": ["$GNGSV,1,1,02,01,40,083,,02,17,273,,1"],
+        })
+
+        sample = VentunoBridgeGpsSource(bridge_factory=lambda: bridge).read()
+
+        self.assertEqual(sample["satellites_in_view"], 2)
+        self.assertEqual(len(sample["satellite_signals"]), 2)
+        self.assertTrue(all(signal["cn0_db_hz"] is None for signal in sample["satellite_signals"]))
 
     def test_body_exposes_gps_diagnostic_endpoint_and_plugin_entry(self):
         from pathlib import Path

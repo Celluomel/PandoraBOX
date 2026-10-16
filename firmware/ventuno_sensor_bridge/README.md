@@ -8,7 +8,8 @@ VENTUNO Q's local Arduino Router Bridge:
 - `body_ld2450_read()` returns the latest UART7 target frame, unchanged from
   the existing LD2450 bridge.
 - `body_gps_read()` validates NMEA on `Serial1` / USART3 (D0 RX, D1 TX),
-  reports UART byte/checksum counters, and retains the latest GGA sentence.
+  reports UART byte/checksum counters, retains the latest GGA sentence, and
+  publishes recent GSV sentences with per-satellite C/N0, azimuth, and elevation.
 
 The Body must run on the VENTUNO Q because Arduino Router Bridge is local to
 that device. Nothing here publishes sensor data to the LAN or changes the
@@ -75,7 +76,9 @@ flash a different sketch as a workaround.
 After upload/reboot, enable the physical radar in Body's **Sensor device
 selection** and choose **Ventuno STM32 UART · local Bridge**. Confirm the
 selector reports fresh UART7 frames and targets. Check `/plugins/gps/status`
-for D0/D1 UART byte counts, NMEA checksum validation, and GPS fix state. Check `/worldmodel/status`
+for D0/D1 UART byte counts, NMEA checksum validation, GPS fix state, satellites
+used/in view, and per-satellite C/N0 from GSV. Signal values are in dB-Hz;
+azimuth/elevation are included when the receiver provides them. Check `/worldmodel/status`
 for the real `mmwave_radar` and `tof` modalities, `/plugins/imu/status` for
 the IMU, and `/plugins/tof/status` for the VL53L1X.
 Neither source fabricates targets when its bridge is unavailable or stale.

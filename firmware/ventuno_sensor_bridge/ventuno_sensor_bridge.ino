@@ -44,10 +44,16 @@ int16_t latestTofDistanceMm = -1;
 
 static const uint32_t GPS_BAUD = BODY_GPS_BAUD;
 static const uint16_t GPS_STALE_MS = 3000;
+static const uint16_t GPS_GSV_STALE_MS = 6000;
+static const uint8_t GPS_GSV_CAPACITY = 16;
 char gpsLine[128];
 uint8_t gpsLineLength = 0;
 char latestNmea[128] = "";
 char latestGga[128] = "";
+char gpsGsvLines[GPS_GSV_CAPACITY][128] = {};
+uint32_t gpsGsvAt[GPS_GSV_CAPACITY] = {};
+uint8_t gpsGsvNext = 0;
+uint8_t gpsGsvCount = 0;
 uint32_t gpsBytesReceived = 0;
 uint32_t gpsValidSentences = 0;
 uint32_t gpsChecksumErrors = 0;
@@ -187,6 +193,13 @@ void acceptGpsLine() {
     strncpy(latestGga, gpsLine, sizeof(latestGga) - 1);
     latestGga[sizeof(latestGga) - 1] = '\0';
     latestGgaAt = latestGpsAt;
+  } else if (identifierEnd && identifierEnd - gpsLine >= 6
+             && memcmp(identifierEnd - 3, "GSV", 3) == 0) {
+    strncpy(gpsGsvLines[gpsGsvNext], gpsLine, sizeof(gpsGsvLines[0]) - 1);
+    gpsGsvLines[gpsGsvNext][sizeof(gpsGsvLines[0]) - 1] = '\0';
+    gpsGsvAt[gpsGsvNext] = latestGpsAt;
+    gpsGsvNext = (gpsGsvNext + 1) % GPS_GSV_CAPACITY;
+    if (gpsGsvCount < GPS_GSV_CAPACITY) ++gpsGsvCount;
   }
 }
 
@@ -214,20 +227,40 @@ void consumeGpsByte(uint8_t value) {
 
 String readGpsSample() {
   const bool fresh = latestGgaAt && millis() - latestGgaAt <= GPS_STALE_MS;
-  char payload[500];
-  snprintf(payload, sizeof(payload),
+  char payload[2400];
+  int used = snprintf(payload, sizeof(payload),
            "{\"available\":%s,\"transport\":\"Serial1_USART3_D0_D1\","
            "\"baudrate\":%lu,\"bytes_received\":%lu,\"valid_sentences\":%lu,"
            "\"checksum_errors\":%lu,\"sequence\":%lu,\"age_ms\":%lu,"
-           "\"latest_nmea\":\"%s\",\"latest_gga\":\"%s\",\"error\":\"%s\"}",
+           "\"latest_nmea\":\"%s\",\"latest_gga\":\"%s\",\"latest_gsv\":[",
            fresh ? "true" : "false", static_cast<unsigned long>(GPS_BAUD),
            static_cast<unsigned long>(gpsBytesReceived),
            static_cast<unsigned long>(gpsValidSentences),
            static_cast<unsigned long>(gpsChecksumErrors),
            static_cast<unsigned long>(gpsSequence),
            latestGgaAt ? static_cast<unsigned long>(millis() - latestGgaAt) : 0UL,
-           latestNmea, latestGga,
-           fresh ? "" : (gpsBytesReceived ? "waiting_for_fresh_gga" : "no_uart_bytes"));
+           latestNmea, latestGga);
+  if (used <= 0 || static_cast<size_t>(used) >= sizeof(payload)) {
+    return String("{\"available\":false,\"error\":\"gps_payload_overflow\"}");
+  }
+  bool first = true;
+  const uint32_t now = millis();
+  for (uint8_t i = 0; i < gpsGsvCount; ++i) {
+    if (!gpsGsvAt[i] || now - gpsGsvAt[i] > GPS_GSV_STALE_MS) continue;
+    const int written = snprintf(payload + used, sizeof(payload) - used,
+                                 "%s\"%s\"", first ? "" : ",", gpsGsvLines[i]);
+    if (written <= 0 || static_cast<size_t>(written) >= sizeof(payload) - used) {
+      return String("{\"available\":false,\"error\":\"gps_payload_overflow\"}");
+    }
+    used += written;
+    first = false;
+  }
+  const int written = snprintf(payload + used, sizeof(payload) - used,
+                               "],\"error\":\"%s\"}",
+                               fresh ? "" : (gpsBytesReceived ? "waiting_for_fresh_gga" : "no_uart_bytes"));
+  if (written <= 0 || static_cast<size_t>(written) >= sizeof(payload) - used) {
+    return String("{\"available\":false,\"error\":\"gps_payload_overflow\"}");
+  }
   return String(payload);
 }
 

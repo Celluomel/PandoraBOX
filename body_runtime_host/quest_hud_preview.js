@@ -378,10 +378,20 @@ function drawNavigation(perception = world?.perception || {}, telemetry = contro
   const accuracy = number(gps.horizontal_accuracy_m ?? gps.accuracy_m);
   const hdop = number(gps.hdop);
   const satellites = number(gps.satellites);
+  const satellitesInView = number(gps.satellites_in_view);
   const gpsDiagnostic = liveGps?.source_status?.diagnostic || {};
   const streamOnline = Boolean(gps.connected || liveGps?.available || Number(gpsDiagnostic.bytes_received) > 0);
   const state = hasFix ? 'FIX' : streamOnline ? 'UART LIVE · NO FIX' : 'NO GPS DATA';
-  $('nav-gps').innerHTML = `<small>GPS · ${state}</small>${hasFix ? `${lat.toFixed(6)}°, ${lon.toFixed(6)}°` : streamOnline ? 'WAITING FOR FIX' : 'CHECK D0/D1'}<small>${Number.isFinite(satellites) ? `${satellites} SAT USED` : 'SATELLITES —'}${Number.isFinite(hdop) ? ` · HDOP ${hdop.toFixed(1)}` : ''}</small>`;
+  $('nav-gps').innerHTML = `<small>GPS · ${state}</small>${hasFix ? `${lat.toFixed(6)}°, ${lon.toFixed(6)}°` : streamOnline ? 'WAITING FOR FIX' : 'CHECK D0/D1'}<small>${Number.isFinite(satellites) ? `${satellites} USED` : 'USED —'}${Number.isFinite(satellitesInView) ? ` · ${satellitesInView} VIEW` : ''}${Number.isFinite(hdop) ? ` · HDOP ${hdop.toFixed(1)}` : ''}</small>`;
+  const signals = Array.isArray(gps.satellite_signals) ? gps.satellite_signals.slice(0, 6) : [];
+  $('nav-gps-satellites').innerHTML = signals.map(satellite => {
+    const cn0 = number(satellite.cn0_db_hz);
+    const height = Number.isFinite(cn0) ? Math.max(2, Math.min(20, cn0 * .34)) : 2;
+    const tone = cn0 >= 35 ? '#69d49c' : cn0 >= 25 ? '#efcb76' : '#e88775';
+    const id = `${String(satellite.talker || 'GN').replace(/[^A-Z0-9]/gi, '')}-${Math.round(number(satellite.svid) || 0)}`;
+    const title = `${id} · C/N₀ ${Number.isFinite(cn0) ? cn0.toFixed(0) : '—'} dB-Hz · az ${satellite.azimuth_deg ?? '—'}° · el ${satellite.elevation_deg ?? '—'}°`;
+    return `<div class="gps-signal" title="${title}"><span>${Number.isFinite(cn0) ? cn0.toFixed(0) : '—'}</span><i style="height:${height}px;background:${tone}"></i><span>${id}</span></div>`;
+  }).join('');
 
   const canvas = $('nav-horizon');
   const { width, height, ratio } = resizeCanvas(canvas);

@@ -19,6 +19,67 @@ def _coordinate(raw: str, hemisphere: str) -> float:
     return result
 
 
+def _satellite_signals(sentences: Any) -> list[dict[str, Any]]:
+    if isinstance(sentences, str):
+        sentences = [sentences]
+    if not isinstance(sentences, (list, tuple)):
+        return []
+    satellites: dict[tuple[str, int], dict[str, Any]] = {}
+    for sentence in sentences:
+        fields = str(sentence).split(",")
+        if len(fields) < 4 or not fields[0].endswith("GSV"):
+            continue
+        try:
+            message_number = int(fields[2] or 0)
+            total_in_view = int(fields[3] or 0)
+        except ValueError:
+            continue
+        if message_number < 1:
+            continue
+        talker = fields[0][1:3]
+        record_count = min(4, max(0, total_in_view - (message_number - 1) * 4))
+        for index in range(record_count):
+            offset = 4 + index * 4
+            if offset + 3 >= len(fields) or not fields[offset]:
+                continue
+            try:
+                svid = int(fields[offset])
+                elevation = int(fields[offset + 1]) if fields[offset + 1] else None
+                azimuth = int(fields[offset + 2]) if fields[offset + 2] else None
+                cn0 = float(fields[offset + 3]) if fields[offset + 3] else None
+            except ValueError:
+                continue
+            if not 0 <= svid <= 999 or (cn0 is not None and not 0 <= cn0 <= 99):
+                continue
+            satellites[(talker, svid)] = {
+                "talker": talker,
+                "svid": svid,
+                "elevation_deg": elevation,
+                "azimuth_deg": azimuth,
+                "cn0_db_hz": cn0,
+            }
+    return sorted(satellites.values(), key=lambda sat: (
+        sat["cn0_db_hz"] is None, -(sat["cn0_db_hz"] or 0), sat["talker"], sat["svid"]
+    ))
+
+
+def _satellites_in_view(sentences: Any) -> int:
+    if isinstance(sentences, str):
+        sentences = [sentences]
+    if not isinstance(sentences, (list, tuple)):
+        return 0
+    totals = []
+    for sentence in sentences:
+        fields = str(sentence).split(",")
+        if len(fields) < 4 or not fields[0].endswith("GSV"):
+            continue
+        try:
+            totals.append(int(fields[3] or 0))
+        except ValueError:
+            continue
+    return max((total for total in totals if 0 <= total <= 999), default=0)
+
+
 class VentunoBridgeGpsSource:
     name = "ventuno_usart3_gps"
     method = "body_gps_read"
@@ -62,6 +123,7 @@ class VentunoBridgeGpsSource:
             if not fields or not fields[0].endswith("GGA") or len(fields) < 10:
                 raise TimeoutError("UART receives valid NMEA, but no GGA position sentence is available yet")
             quality = int(fields[6] or 0)
+            satellite_signals = _satellite_signals(payload.get("latest_gsv", []))
             sample = {
                 "timestamp": time.time(),
                 "source": self.name,
@@ -71,6 +133,8 @@ class VentunoBridgeGpsSource:
                 "fix": quality > 0,
                 "fix_quality": quality,
                 "satellites": int(fields[7] or 0),
+                "satellites_in_view": _satellites_in_view(payload.get("latest_gsv", [])),
+                "satellite_signals": satellite_signals,
                 "hdop": float(fields[8]) if fields[8] else None,
                 "latitude": _coordinate(fields[2], fields[3]) if fields[2] and fields[3] else None,
                 "longitude": _coordinate(fields[4], fields[5]) if fields[4] and fields[5] else None,

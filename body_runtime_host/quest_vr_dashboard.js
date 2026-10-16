@@ -419,6 +419,7 @@ export class QuestVRDashboard {
       && (explicitFix || (Number.isFinite(fixQuality) && fixQuality > 0));
     const gpsAccuracy = asNumber(gps.horizontal_accuracy_m ?? gps.accuracy_m);
     const gpsHdop = asNumber(gps.hdop);
+    const satelliteSignals = Array.isArray(gps.satellite_signals) ? gps.satellite_signals : [];
     const imuSource = String(imu.source || modalities.imu?.source || 'IMU').toUpperCase();
     const imuUnavailable = this.imuStatus?.error?.includes('404') ? 'BODY UPDATE REQUIRED'
       : !this.imuStatus?.enabled ? 'WAITING FOR ATTITUDE'
@@ -474,7 +475,32 @@ export class QuestVRDashboard {
     const satelliteCount = asNumber(gps.satellites);
     const gpsStreamOnline = Boolean(this.gpsStatus?.available || gps.connected || Number(this.gpsStatus?.source_status?.diagnostic?.bytes_received) > 0);
     ctx.fillText(hasGps ? `FIX${Number.isFinite(gpsAccuracy) ? ` · ±${gpsAccuracy.toFixed(1)} m` : Number.isFinite(gpsHdop) ? ` · HDOP ${gpsHdop.toFixed(1)}` : ''}` : gpsStreamOnline ? 'UART LIVE · WAITING FOR FIX' : 'NO GPS DATA · CHECK D0/D1', gpsX, gpsY + 51);
-    ctx.fillText(`${Number.isFinite(satelliteCount) ? `${satelliteCount} SATELLITES USED` : 'SATELLITES —'} · AZ/EL NOT AVAILABLE`, gpsX, gpsY + 74);
+    const inView = asNumber(gps.satellites_in_view);
+    ctx.fillText(`${Number.isFinite(satelliteCount) ? `${satelliteCount} USED` : 'USED —'} · ${Number.isFinite(inView) ? `${inView} IN VIEW` : 'VIEW —'} · C/N₀ dB-Hz`, gpsX, gpsY + 74);
+    const plottedSignals = satelliteSignals.slice(0, 10);
+    if (plottedSignals.length) {
+      const barWidth = 13;
+      const gap = 7;
+      const chartWidth = plottedSignals.length * (barWidth + gap) - gap;
+      const startX = gpsX - chartWidth / 2;
+      const baselineY = gpsY + 126;
+      ctx.strokeStyle = 'rgba(169,232,194,.28)'; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(startX - 5, baselineY); ctx.lineTo(startX + chartWidth + 5, baselineY); ctx.stroke();
+      plottedSignals.forEach((satellite, index) => {
+        const cn0 = asNumber(satellite.cn0_db_hz);
+        const barHeight = Number.isFinite(cn0) ? Math.max(2, Math.min(35, cn0 * .58)) : 2;
+        ctx.fillStyle = cn0 >= 35 ? '#69d49c' : cn0 >= 25 ? '#efcb76' : '#e88775';
+        const bx = startX + index * (barWidth + gap);
+        ctx.fillRect(bx, baselineY - barHeight, barWidth, barHeight);
+        ctx.fillStyle = '#dcebe2'; ctx.font = '10px ui-monospace, monospace'; ctx.textAlign = 'center';
+        ctx.fillText(Number.isFinite(cn0) ? `${Math.round(cn0)}` : '—', bx + barWidth / 2, baselineY - barHeight - 3);
+        ctx.fillStyle = '#829d8d'; ctx.font = '9px ui-monospace, monospace';
+        ctx.fillText(String(satellite.svid).slice(-3), bx + barWidth / 2, baselineY + 12);
+      });
+    } else {
+      ctx.fillStyle = '#829d8d'; ctx.font = '14px ui-monospace, monospace';
+      ctx.fillText('WAITING FOR GSV SIGNAL DATA', gpsX, gpsY + 112);
+    }
   }
 
   drawAzimuthRing(ctx, cx, cy, radius, heading) {
