@@ -83,8 +83,8 @@ if (panel) {
       #world-map-odometry-trail{fill:none;stroke:#42d6b1;stroke-width:3;stroke-linecap:round;stroke-linejoin:round}
       #world-map-odometry-start{fill:#edbd69;stroke:#07120f;stroke-width:2}#world-map-odometry-body path{fill:#75dfa2;stroke:#d9f5e5;stroke-width:1.5}
       .world-map-odometry-footnote{margin:0;padding:0 10px 9px;color:#89a895;font:10px ui-monospace,monospace}
-      .world-map-sensor-2d{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(220px,.8fr);gap:12px;align-items:stretch}
-      .world-map-analysis-grid{display:grid;grid-template-columns:minmax(220px,.8fr) minmax(0,1fr);gap:12px;margin-top:12px;align-items:start}
+      .world-map-sensor-2d{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;align-items:stretch}
+      .world-map-analysis-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:12px;align-items:start}
       .world-map-camera,.world-map-depth{min-width:0;position:relative;background:#07120f;border:1px solid #263e32;overflow:hidden}
       .world-map-sensor-heading{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;min-width:0;padding:9px 11px;border-bottom:1px solid #263e32;color:#91c9aa;font:10px ui-monospace,monospace}
       .world-map-image-wrap{position:relative;display:grid;place-items:center;width:100%;aspect-ratio:4/3;max-height:500px;background:#020805;overflow:hidden}
@@ -220,6 +220,7 @@ function makeRenderer(element, background = '#07120f') {
   element.addEventListener('pointercancel', () => { pointer = null; });
   element.addEventListener('wheel', (event) => {
     event.preventDefault();
+    camera.userData.userAdjusted = true;
     const target = camera.userData.target || new THREE.Vector3();
     const direction = camera.position.clone().sub(target);
     direction.multiplyScalar(THREE.MathUtils.clamp(1 + event.deltaY * 0.001, 0.82, 1.2));
@@ -416,6 +417,9 @@ function updateMode() {
 }
 
 window.addEventListener('body-worldmodel-viewchange', (event) => setSource(event.detail?.view === 'sensors' ? 'sensors' : 'simulation'));
+window.addEventListener('resize', () => {
+  if (activeSource === 'sensors' && activeRender === '3d') requestAnimationFrame(resizeCloud);
+});
 document.querySelectorAll('[data-render]').forEach((button) => button.addEventListener('click', () => setRender(button.dataset.render)));
 byId('world-map-midas-calibrate')?.addEventListener('click', () => void calibrateMetricDepth());
 void loadMetricCalibration();
@@ -1120,13 +1124,22 @@ function renderVisualOdometryMap(odometry) {
 
 function resizeCloud() {
   if (!cloud) return;
-  const target = new THREE.Vector3(0, 0, -3);
-  cloud.camera.userData.target = target;
-  if (!cloudCameraInitialized) {
-    cloud.camera.position.set(0, 1.6, 7);
+  cloud.resize();
+  if (cloudPoints && (!cloudCameraInitialized || !cloud.camera.userData.userAdjusted)) {
+    if (!cloudPoints.geometry.boundingBox) cloudPoints.geometry.computeBoundingBox();
+    const bounds = cloudPoints.geometry.boundingBox;
+    const target = bounds.getCenter(new THREE.Vector3());
+    const size = bounds.getSize(new THREE.Vector3());
+    const verticalFov = THREE.MathUtils.degToRad(cloud.camera.fov);
+    const horizontalFov = 2 * Math.atan(Math.tan(verticalFov / 2) * cloud.camera.aspect);
+    const verticalDistance = size.y / (2 * Math.tan(verticalFov / 2));
+    const horizontalDistance = size.x / (2 * Math.tan(horizontalFov / 2));
+    const distance = (Math.max(verticalDistance, horizontalDistance, 0.8) + size.z / 2) * 1.2;
+    cloud.camera.userData.target = target;
+    cloud.camera.position.copy(target).add(new THREE.Vector3(0, Math.max(0.2, size.y * 0.12), distance));
     cloudCameraInitialized = true;
   }
-  cloud.camera.lookAt(target);
+  cloud.camera.lookAt(cloud.camera.userData.target || new THREE.Vector3());
   cloud.render();
 }
 
@@ -1252,6 +1265,7 @@ async function rebuildDepthCloud(depth, segmentation = latestSegmentation) {
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
   geometry.setAttribute('color', new THREE.Float32BufferAttribute(colorsArray, 3));
+  geometry.computeBoundingBox();
   cloudPoints = new THREE.Points(geometry, new THREE.PointsMaterial({ size: 0.035, vertexColors: true, sizeAttenuation: true, transparent: true, opacity: 0.92 }));
   cloud.scene.add(cloudPoints);
   drawDepthDetections(image, visibleYoloDetections(latestSensorYolo));
