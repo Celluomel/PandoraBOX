@@ -68,7 +68,7 @@ class BodyRuntimeGuiTests(unittest.TestCase):
         self.assertIn("height:clamp(110px,13vh,150px)", source)
         self.assertIn("height:145px", source)
         self.assertIn("justify-items:stretch;align-items:stretch", source)
-        self.assertIn("minmax(220px,.62fr) minmax(0,1.38fr)", source)
+        self.assertIn("minmax(220px,.8fr) minmax(0,1fr)", source)
         self.assertIn("Standalone SegFormer semantic class mask", source)
         self.assertNotIn("Segmentation overlay", source)
         self.assertNotIn("world-map-segmentation-toggle", source)
