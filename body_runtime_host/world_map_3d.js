@@ -1398,7 +1398,8 @@ async function refreshSensorDepth() {
     const alignedSegmentationFrameId = segmentationMatchesDepth(segmentation, depth)
       ? String(segmentation.frame_id || segmentation.captured_at || '') : '';
     if (depth.depth_gray_jpeg_base64 && activeRender === '3d'
-        && (depth.frame_id !== cloudFrameId || alignedSegmentationFrameId !== cloudSegmentationFrameId)) {
+        && (depth.frame_id !== cloudFrameId || Number(depth.captured_at) !== latestDepthCapturedAt
+          || alignedSegmentationFrameId !== cloudSegmentationFrameId)) {
       const depthFrameId = depth.frame_id;
       void rebuildDepthCloud(depth, segmentation)
         .then((updated) => {
