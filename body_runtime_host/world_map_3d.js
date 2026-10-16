@@ -46,6 +46,7 @@ let depthCalibrationBusy = false;
 let depthCalibrationMessage = '';
 const visualOdometryTrail = [];
 let visualOdometryFrameId = '';
+let latestVisualOdometry = null;
 const panel = document.querySelector('#view-worldmodel .map-panel');
 if (panel) {
   const header = panel.querySelector('.panel-head');
@@ -66,7 +67,7 @@ if (panel) {
     sensorPanel.id = 'world-map-sensor-view';
     sensorPanel.className = 'world-map-sensor-view';
     sensorPanel.hidden = true;
-    sensorPanel.innerHTML = `<div class="world-map-sensor-metrics"><span>Camera <b id="world-map-camera-state">Waiting</b></span><span>YOLOX <b id="world-map-yolo-state">Waiting</b></span><span>MiDaS <b id="world-map-midas-state">Waiting</b></span><span>Visual odometry <b id="world-map-odometry-state">Waiting</b></span><span>SegFormer <b id="world-map-segmentation-state">disabled</b></span><span>Frame <b id="world-map-frame-state">—</b></span></div><div id="world-map-sensor-2d" class="world-map-sensor-2d"><div class="world-map-camera"><div class="world-map-sensor-heading">CAMERA · YOLOX</div><div class="world-map-image-wrap"><img id="world-map-camera-image" alt="Live camera frame with YOLOX detections"><svg id="world-map-yolo-overlay" viewBox="0 0 1 1" preserveAspectRatio="xMidYMid meet" aria-hidden="true"></svg><span id="world-map-camera-empty" class="world-map-empty">Waiting for a camera frame</span></div></div><div class="world-map-depth"><div class="world-map-sensor-heading">MiDaS · RELATIVE DEPTH</div><img id="world-map-depth-image" alt="MiDaS relative depth image"><span id="world-map-depth-empty" class="world-map-empty">MiDaS disabled or waiting for inference</span><div class="world-map-depth-calibration"><button type="button" id="world-map-midas-calibrate">Calibrate with radar</button><small id="world-map-midas-calibration-status" role="status">Relative depth only · not calibrated in metres</small></div></div></div><section class="world-map-odometry-view" aria-label="Experimental visual odometry trajectory"><div class="world-map-sensor-heading"><span>VISUAL ODOMETRY · LOCAL TRAJECTORY</span><small id="world-map-odometry-map-status">Waiting for tracking</small></div><svg id="world-map-odometry-map" viewBox="0 0 640 260" role="img" aria-label="Top-down estimated Body trajectory in the local visual odometry frame"><rect class="odom-map-bg" x="0" y="0" width="640" height="260"/><g class="odom-grid"><path d="M40 45H600M40 85H600M40 125H600M40 165H600M40 205H600M80 25V225M160 25V225M240 25V225M320 25V225M400 25V225M480 25V225M560 25V225"/><path class="odom-axis" d="M40 205H600M320 25V225"/></g><text class="odom-axis-label" x="320" y="18" text-anchor="middle">FORWARD ↑</text><text class="odom-axis-label" x="320" y="249" text-anchor="middle">← LEFT · RIGHT →</text><g id="world-map-odometry-grid-labels"></g><polyline id="world-map-odometry-trail" points=""/><circle id="world-map-odometry-start" cx="320" cy="205" r="4"/><g id="world-map-odometry-body" transform="translate(320 205)"><path d="M0 -11 L7 8 L0 5 L-7 8 Z"/></g><text id="world-map-odometry-position" class="odom-position-label" x="332" y="200">0.00, 0.00 m</text></svg><p class="world-map-odometry-footnote">Session-local estimate · drift accumulates · not a persistent map</p></section><section class="world-map-segmentation-panel" aria-label="SegFormer semantic segmentation"><div class="world-map-sensor-heading"><span>SEGFORMER · SEMANTIC MASK</span><small>Independent of camera preview</small></div><div class="world-map-segmentation-preview"><canvas id="world-map-segmentation-overlay" aria-label="Standalone SegFormer semantic class mask" hidden></canvas><span id="world-map-segmentation-empty" class="world-map-empty">Waiting for a SegFormer mask</span></div><div id="world-map-segmentation-classes" class="world-map-segmentation-classes">Waiting for SegFormer classes</div></section><div id="world-map-sensor-3d" class="world-map-canvas world-map-sensor-cloud" hidden></div><p id="world-map-sensor-note" class="world-map-sensor-note">Sensor-only view · no simulation object positions are used.</p>`;
+    sensorPanel.innerHTML = `<div class="world-map-sensor-metrics"><span>Camera <b id="world-map-camera-state">Waiting</b></span><span>YOLOX <b id="world-map-yolo-state">Waiting</b></span><span>MiDaS <b id="world-map-midas-state">Waiting</b></span><span>Visual odometry <b id="world-map-odometry-state">Waiting</b></span><span>SegFormer <b id="world-map-segmentation-state">disabled</b></span><span>Frame <b id="world-map-frame-state">—</b></span></div><div id="world-map-sensor-2d" class="world-map-sensor-2d"><div class="world-map-camera"><div class="world-map-sensor-heading">CAMERA · YOLOX</div><div class="world-map-image-wrap"><img id="world-map-camera-image" alt="Live camera frame with YOLOX detections"><svg id="world-map-yolo-overlay" viewBox="0 0 1 1" preserveAspectRatio="xMidYMid meet" aria-hidden="true"></svg><span id="world-map-camera-empty" class="world-map-empty">Waiting for a camera frame</span></div></div><div class="world-map-depth"><div class="world-map-sensor-heading">MiDaS · RELATIVE DEPTH</div><img id="world-map-depth-image" alt="MiDaS relative depth image"><span id="world-map-depth-empty" class="world-map-empty">MiDaS disabled or waiting for inference</span><div class="world-map-depth-calibration"><button type="button" id="world-map-midas-calibrate">Calibrate with radar</button><small id="world-map-midas-calibration-status" role="status">Relative depth only · not calibrated in metres</small></div></div></div><section class="world-map-odometry-view" aria-label="Experimental visual odometry trajectory"><div class="world-map-sensor-heading"><span>VISUAL ODOMETRY · LOCAL TRAJECTORY</span><small id="world-map-odometry-map-status">Waiting for tracking</small></div><div class="odom-plot"><canvas id="world-map-odometry-map" role="img" aria-label="Top-down estimated Body trajectory in the local visual odometry frame"></canvas><span class="odom-edge-label odom-forward">FORWARD ↑</span><span class="odom-edge-label odom-lateral">← LEFT · RIGHT →</span><span id="world-map-odometry-position" class="odom-position-label">0.00, 0.00 m</span></div><p class="world-map-odometry-footnote">Session-local estimate · drift accumulates · not a persistent map</p></section><section class="world-map-segmentation-panel" aria-label="SegFormer semantic segmentation"><div class="world-map-sensor-heading"><span>SEGFORMER · SEMANTIC MASK</span><small>Independent of camera preview</small></div><div class="world-map-segmentation-preview"><canvas id="world-map-segmentation-overlay" aria-label="Standalone SegFormer semantic class mask" hidden></canvas><span id="world-map-segmentation-empty" class="world-map-empty">Waiting for a SegFormer mask</span></div><div id="world-map-segmentation-classes" class="world-map-segmentation-classes">Waiting for SegFormer classes</div></section><div id="world-map-sensor-3d" class="world-map-canvas world-map-sensor-cloud" hidden></div><p id="world-map-sensor-note" class="world-map-sensor-note">Sensor-only view · no simulation object positions are used.</p>`;
     for (const id of ['world-map-camera-state', 'world-map-yolo-state', 'world-map-midas-state', 'world-map-odometry-state', 'world-map-segmentation-state', 'world-map-radar-state', 'world-map-gps-state', 'world-map-imu-state', 'world-map-tof-state']) {
       const state = byId(id);
       if (state) state.dataset.state = 'loading';
@@ -75,6 +76,21 @@ if (panel) {
     liveReadouts.id = 'world-map-live-readouts';
     liveReadouts.className = 'world-map-live-readouts';
     liveReadouts.innerHTML = `<article class="sensor-readout-card"><header><strong>mmWave · LD2450</strong><small id="world-map-radar-state">Waiting</small></header><canvas id="world-map-radar-plot" height="190" aria-label="Live mmWave target positions and radial velocities"></canvas><div id="world-map-radar-targets" class="sensor-target-list">Waiting for radar data.</div></article><article class="sensor-readout-card"><header><strong>GPS / GNSS · D0/D1</strong><small id="world-map-gps-state">Waiting</small></header><div class="sensor-readout-values"><span>Position<b id="world-map-gps-position">No fix</b></span><span>Fix / quality<b id="world-map-gps-fix">—</b></span><span>Satellites<b id="world-map-gps-satellites">— used · — in view</b></span><span>HDOP / altitude<b id="world-map-gps-quality">—</b></span></div><div id="world-map-gps-signals" class="sensor-gps-signals" role="img" aria-label="GPS satellite signal strength by satellite"></div></article><article class="sensor-readout-card"><header><strong>Modulino Movement · IMU</strong><small id="world-map-imu-state">Waiting</small></header><div id="world-map-imu-attitude" class="imu-attitude" role="img" aria-label="IMU attitude indicator based on roll and pitch"><div class="imu-attitude-disc" aria-hidden="true"><div class="imu-attitude-horizon"><span></span></div><i class="imu-attitude-mark"></i></div><div><b>ATTITUDE</b><small>Roll / pitch · no magnetic heading</small></div></div><div class="sensor-readout-values"><span>Roll<b id="world-map-imu-roll">—</b></span><span>Pitch<b id="world-map-imu-pitch">—</b></span><span>Yaw rate<b id="world-map-imu-yaw">—</b></span><span>Acceleration · g<b id="world-map-imu-accel">—</b></span><span>Angular rate · °/s<b id="world-map-imu-gyro">—</b></span></div><p class="sensor-readout-note">Six-axis IMU; yaw is relative angular rate, not a magnetic heading.</p></article><article class="sensor-readout-card"><header><strong>ToF · VL53L1X</strong><small id="world-map-tof-state">Waiting</small></header><div class="sensor-distance"><b id="world-map-tof-distance">—</b><span id="world-map-tof-meta">Forward single-beam range</span></div></article><article class="sensor-readout-card"><header><strong>LiDAR</strong><small id="world-map-lidar-state">No live source</small></header><p class="sensor-readout-note">No physical LiDAR stream is connected to this Body view. Any LiDAR volume shown in Simulation is virtual and is kept out of this live sensor view.</p></article><article class="sensor-readout-card"><header><strong>Ultrasonic · HC-SR04</strong><small id="world-map-ultrasonic-state">No live source</small></header><div class="sensor-readout-values sensor-range-channels"><span>Front-left<b id="world-map-ultrasonic-left">No data</b></span><span>Front-right<b id="world-map-ultrasonic-right">No data</b></span><span>Rear<b id="world-map-ultrasonic-rear">No data</b></span></div><p class="sensor-readout-note">Waiting for the ultrasonic firmware/gateway data channel; no simulated ranges are shown here.</p></article>`;
+    const addSensorSubtitle = (stateId, source) => {
+      const state = liveReadouts.querySelector(`#${stateId}`);
+      const header = state?.closest('header');
+      const title = header?.querySelector('strong');
+      if (!state || !header || !title) return;
+      const copy = document.createElement('div'); copy.className = 'sensor-heading-copy';
+      title.title = source;
+      const subtitle = document.createElement('span'); subtitle.className = 'sensor-card-source'; subtitle.textContent = source; subtitle.title = source;
+      copy.append(title, subtitle);
+      state.classList.add('sensor-state-chip');
+      header.replaceChildren(copy, state);
+    };
+    addSensorSubtitle('world-map-radar-state', 'hlk_ld2450_ventuno_bridge');
+    addSensorSubtitle('world-map-gps-state', 'Serial1 USART3 · D0/D1 via Ventuno STM32 Bridge');
+    addSensorSubtitle('world-map-imu-state', 'Arduino Modulino Movement / LSM6DSOX');
     const computeCard = document.createElement('article');
     computeCard.id = 'world-map-compute-power';
     computeCard.className = 'sensor-readout-card world-map-compute-card';
@@ -83,22 +99,14 @@ if (panel) {
     const visionGrid = sensorPanel.querySelector('.world-map-sensor-2d');
     const trajectory = sensorPanel.querySelector('.world-map-odometry-view');
     const segmentation = sensorPanel.querySelector('.world-map-segmentation-panel');
-    const odometrySvg = byId('world-map-odometry-map');
-    if (odometrySvg) {
-      odometrySvg.setAttribute('viewBox', '0 0 640 480');
-      const background = odometrySvg.querySelector('.odom-map-bg');
-      if (background) background.setAttribute('height', '480');
-      const gridPath = odometrySvg.querySelector('.odom-grid path:not(.odom-axis)');
-      if (gridPath) gridPath.setAttribute('d', 'M40 80H600M40 160H600M40 240H600M40 320H600M40 400H600M80 55V420M160 55V420M240 55V420M320 55V420M400 55V420M480 55V420M560 55V420');
-      const axis = odometrySvg.querySelector('.odom-axis');
-      if (axis) axis.setAttribute('d', 'M40 370H600M320 55V420');
-      const labels = odometrySvg.querySelectorAll('.odom-axis-label');
-      labels[0]?.setAttribute('y', '36');
-      labels[1]?.setAttribute('y', '462');
-      byId('world-map-odometry-start')?.setAttribute('cy', '370');
-      byId('world-map-odometry-body')?.setAttribute('transform', 'translate(320 370)');
-      byId('world-map-odometry-position')?.setAttribute('y', '358');
+    const odometryCanvas = byId('world-map-odometry-map');
+    if (odometryCanvas && typeof ResizeObserver !== 'undefined') {
+      new ResizeObserver(() => drawVisualOdometryMap()).observe(odometryCanvas.parentElement);
     }
+    const visionFooter = document.createElement('div');
+    visionFooter.className = 'world-map-vision-footer';
+    visionFooter.append(byId('world-map-sensor-note'));
+    visionGrid?.after(visionFooter);
     const radarCard = liveReadouts.querySelector('#world-map-radar-state')?.closest('.sensor-readout-card');
     radarCard?.classList.remove('sensor-readout-wide');
     if (trajectory) visionGrid?.append(trajectory);
@@ -209,7 +217,7 @@ if (panel) {
       .world-map-depth-calibration small{color:#9eb5a6;font:10px ui-monospace,monospace}
       .world-map-empty{position:absolute;inset:0;display:grid;place-items:center;padding:20px;color:#91a79a;font:11px ui-monospace,monospace;text-align:center;pointer-events:none}
       .world-map-empty[hidden]{display:none}
-      .world-map-sensor-note{margin:9px 0 0;color:#a9c0b2;font-size:11px}
+      .world-map-sensor-note{margin:0;color:#9aafc0;font:12px/1.45 ui-sans-serif,system-ui,sans-serif}
       .world-map-sensor-cloud{height:clamp(360px,54vh,620px)}
       .world-map-live-readouts{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,340px),1fr));gap:12px;margin-top:14px}
       .sensor-readout-card{min-width:0;padding:14px;border:1px solid #d7e1da;background:#f7faf8;color:#1c2b22}
@@ -250,7 +258,7 @@ if (panel) {
       #worldmodel-live-sensor-panels .map-panel{margin-bottom:14px}
       #worldmodel-live-sensor-panels .map-layout{min-height:0}
       #worldmodel-live-sensor-panels .map-intro{max-width:100ch;line-height:1.55}
-      .world-map-sensor-view{container-type:inline-size;margin-top:12px}
+      .world-map-sensor-view{--wm-gap:16px;--wm-section-gap:24px;container-type:inline-size;margin-top:12px}
       body.worldmodel-sensors-active .simulation-actions,
       body.worldmodel-sensors-active #view-worldmodel #wm-simulation-toggle,
       body.worldmodel-sensors-active #view-worldmodel .map-panel .panel-head>button[onclick="expandMap()"]{display:none!important}
@@ -258,64 +266,78 @@ if (panel) {
       @media(max-width:760px){.system-instrument-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.system-telemetry-strip{grid-template-columns:repeat(2,minmax(0,1fr))}.system-telemetry-strip>div:nth-child(2){border-right:0}.system-telemetry-strip>div:nth-child(-n+2){border-bottom:1px solid #d7e1da}}
       @container (max-width:760px){.world-map-sensor-2d,.world-map-analysis-grid,.world-map-live-readouts{grid-template-columns:minmax(0,1fr)}.world-map-analysis-grid{grid-template-columns:minmax(0,1fr)}.world-map-depth img{max-height:320px}}
       @media(max-width:700px){.world-map-sensor-2d,.world-map-analysis-grid,.world-map-live-readouts{grid-template-columns:minmax(0,1fr)}.world-map-depth img{max-height:320px}.world-map-controls{gap:7px}}
+      body.worldmodel-sensors-active,body.worldmodel-sensors-active #view-worldmodel,body.worldmodel-sensors-active #worldmodel-live-sensor-panels,body.worldmodel-sensors-active #view-worldmodel .shell{background:#05070d!important;color:#e2edf5!important}
       body.worldmodel-sensors-active #view-worldmodel>.stats,body.worldmodel-sensors-active #goal-success{display:none!important}
-      body.worldmodel-sensors-active #view-worldmodel .shell{max-width:1680px;padding-inline:24px}
-      .world-map-sensor-view{--wm-bg:#050b12;--wm-surface:#0b1420;--wm-raised:#101b29;--wm-border:#263b50;--wm-text:#e2edf5;--wm-muted:#9aafc0;--wm-cyan:#00d6df;--wm-magenta:#ed35c5;color:var(--wm-text);margin-top:8px}
-      .world-map-status-bar{position:sticky;top:0;z-index:8;display:flex;align-items:center;gap:clamp(14px,2.5vw,36px);flex-wrap:wrap;padding:10px 16px;margin:0 -2px 14px;border:1px solid var(--wm-border);border-radius:8px;background:rgba(5,11,18,.96);box-shadow:0 6px 18px #02060a44;backdrop-filter:blur(10px)}
+      body.worldmodel-sensors-active #view-worldmodel .shell{max-width:1680px;padding:76px 24px 24px}
+      .world-map-sensor-view{--wm-bg:#05070d;--wm-surface:#0a0f1a;--wm-raised:#101b29;--wm-border:#263b50;--wm-text:#e2edf5;--wm-muted:#9aafc0;--wm-cyan:#00d6df;--wm-magenta:#ed35c5;color:var(--wm-text);margin-top:8px}
+      .world-map-status-bar{position:sticky;top:0;z-index:8;scroll-margin-top:76px;display:flex;align-items:center;gap:clamp(14px,2.5vw,36px);flex-wrap:wrap;padding:10px 16px;margin:0 -2px 14px;border:1px solid var(--wm-border);border-radius:8px;background:rgba(5,7,13,.98);box-shadow:0 6px 18px #02060a44}
       .world-map-status-bar>span{display:grid;gap:3px;color:var(--wm-muted);font:12px/1.2 ui-sans-serif,system-ui,sans-serif}
       .world-map-status-bar b{color:var(--wm-text);font:600 14px/1.2 ui-monospace,monospace;font-variant-numeric:tabular-nums}
       [data-state="live"], [data-state="ready"]{color:#39e59a!important}[data-state="stale"]{color:#ffb547!important}[data-state="offline"]{color:#91a0ad!important}[data-state="loading"]{color:#68cfe0!important}
-      .world-map-sensor-metrics{gap:6px;padding:8px 0 12px;color:var(--wm-muted);font:12px ui-monospace,monospace}
+      .world-map-sensor-metrics{gap:8px;padding:8px 0 12px;color:var(--wm-muted);font:12px ui-monospace,monospace}
       .world-map-sensor-metrics span{padding:6px 9px;border:1px solid var(--wm-border);border-radius:6px;background:var(--wm-surface);color:var(--wm-muted)}
       .world-map-sensor-metrics b{color:var(--wm-text)}
-      .world-map-sensor-2d{grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;align-items:stretch}
+      .world-map-sensor-2d{grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--wm-gap);align-items:stretch}
       .world-map-camera,.world-map-depth,.world-map-odometry-view,.world-map-segmentation-panel,.sensor-readout-card,.system-instrument{border:1px solid var(--wm-border);border-radius:8px;background:var(--wm-surface);color:var(--wm-text)}
       .world-map-camera,.world-map-depth,.world-map-odometry-view,.world-map-segmentation-panel{display:flex;flex-direction:column;min-width:0;aspect-ratio:4/3;overflow:hidden}
       .world-map-sensor-heading,.sensor-readout-card header{min-height:42px;padding:10px 12px;border-bottom:1px solid var(--wm-border);background:var(--wm-raised);color:var(--wm-cyan);font:600 12px/1.25 ui-sans-serif,system-ui,sans-serif}
       .world-map-sensor-heading small,.sensor-readout-card header small{color:var(--wm-muted);font:12px ui-monospace,monospace}
       .world-map-image-wrap,.world-map-segmentation-preview{width:100%;flex:1;aspect-ratio:auto;max-height:none;min-height:0;background:#02060a}
       .world-map-image-wrap img{object-fit:contain}
-      .world-map-depth img{width:100%;height:0;flex:1;min-height:0;max-height:none;aspect-ratio:auto;object-fit:contain;background:#02060a}
+      .world-map-depth img{width:100%;height:0;flex:1;min-height:0;max-height:none;aspect-ratio:auto;object-fit:cover;background:#02060a}
       .world-map-depth-calibration{margin-top:auto;border-top:1px solid var(--wm-border)}
       .world-map-depth-calibration small,.world-map-odometry-footnote,.world-map-empty,.world-map-sensor-note{color:var(--wm-muted);font:12px/1.45 ui-sans-serif,system-ui,sans-serif}
       .world-map-depth-calibration button{border-color:#126d76;border-radius:6px;background:#102b36;color:#bdf9f3}
       .world-map-segmentation-panel{margin:0}
       .world-map-segmentation-preview{display:grid;flex:1}
-      #world-map-segmentation-overlay{width:100%;height:100%;object-fit:contain}
+      #world-map-segmentation-overlay{width:100%;height:100%;object-fit:cover}
       .world-map-segmentation-classes{gap:8px 14px;padding:10px 12px;color:var(--wm-muted);font:12px/1.5 ui-sans-serif,system-ui,sans-serif;border-top:1px solid var(--wm-border)}
+      .world-map-vision-footer{grid-column:1/-1;padding:10px 12px;border-top:1px solid var(--wm-border);background:var(--wm-surface)}
+      .world-map-vision-footer{margin-top:12px}
       .world-map-odometry-view{justify-content:flex-start}
-      #world-map-odometry-map{width:100%;height:0;flex:1;aspect-ratio:auto;background:#050b12}
-      .odom-grid{stroke:#233c50}.odom-grid .odom-axis{stroke:#168c98}.odom-axis-label{fill:#a9c2d0;font:13px ui-monospace,monospace}.odom-position-label{fill:#00e2dd;font:14px ui-monospace,monospace}
-      #world-map-odometry-trail{stroke:#ed35c5;stroke-width:3}#world-map-odometry-start{stroke:#050b12}#world-map-odometry-body path{fill:#00d6df;stroke:#e8ffff}
+      .odom-plot{position:relative;flex:1;min-height:0;background:#050b12}
+      #world-map-odometry-map{display:block;width:100%;height:100%;background:#050b12}
+      .odom-edge-label,.odom-position-label{position:absolute;z-index:1;color:#a9c2d0;font:12px ui-monospace,monospace;pointer-events:none}
+      .odom-forward{top:8px;left:50%;transform:translateX(-50%)}
+      .odom-lateral{bottom:8px;left:50%;transform:translateX(-50%)}
+      .odom-position-label{top:8px;right:10px;padding:5px 7px;border-radius:4px;background:#0a0f1ae8;color:#00e2dd;font-size:12px;white-space:nowrap}
       .world-map-odometry-footnote{padding:8px 12px 10px;color:var(--wm-muted);font:12px/1.4 ui-sans-serif,system-ui,sans-serif}
-      .world-map-live-readouts{grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:14px;align-items:stretch}
-      .world-map-compute-card{margin-top:14px}
-      .sensor-readout-card{padding:0 12px 12px}
+      .world-map-live-readouts{grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:var(--wm-gap);margin-top:var(--wm-section-gap);align-items:stretch}
+      .world-map-compute-card{margin-top:var(--wm-section-gap)}
+      .sensor-readout-card{display:flex;min-width:0;min-height:100%;flex-direction:column;padding:0 12px 12px}
       .sensor-readout-card[hidden],.world-map-offline-pill[hidden]{display:none!important}
-      .sensor-readout-card header{margin:0 -12px 8px}
-      .sensor-readout-card header strong{font:600 14px ui-sans-serif,system-ui,sans-serif;color:var(--wm-text)}
-      .sensor-readout-card header small{font-size:12px}
-      #world-map-radar-plot{height:auto;aspect-ratio:2/1;background:#050b12;border:1px solid var(--wm-border);border-radius:5px}
+      .sensor-readout-card header{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:10px;margin:0 -12px 8px;padding:8px 12px}
+      .sensor-heading-copy{display:grid;min-width:0;gap:2px}
+      .sensor-readout-card header strong{overflow:hidden;color:var(--wm-text);font:600 14px/1.25 ui-sans-serif,system-ui,sans-serif;text-overflow:ellipsis;white-space:nowrap}
+      .sensor-card-source{overflow:hidden;color:var(--wm-muted);font:12px/1.3 ui-sans-serif,system-ui,sans-serif;text-overflow:ellipsis;white-space:nowrap}
+      .sensor-readout-card header .sensor-state-chip{max-width:140px;overflow:hidden;padding:4px 7px;border:1px solid var(--wm-border);border-radius:999px;background:#0a0f1a;font:12px/1.2 ui-sans-serif,system-ui,sans-serif;text-overflow:ellipsis;white-space:nowrap}
+      #world-map-radar-plot{display:block;width:100%;height:auto;min-height:160px;flex:1;aspect-ratio:2/1;background:#050b12;border:1px solid var(--wm-border);border-radius:5px}
       .sensor-target-list{grid-template-columns:1fr;color:var(--wm-text);font:12px ui-monospace,monospace}
       .sensor-target-row{border-color:var(--wm-border)}
       .sensor-readout-values span,.sensor-distance span,.sensor-readout-note{color:var(--wm-muted);font-size:12px;line-height:1.45}
-      .sensor-readout-values b{color:var(--wm-text);font:600 13px ui-monospace,monospace}
-      .sensor-gps-signals{min-height:100px;border-color:var(--wm-border)}
-      .sensor-gps-bar{height:84px;color:var(--wm-muted);font:12px ui-monospace,monospace}
+      .sensor-readout-values b{color:var(--wm-text);font:600 13px ui-monospace,monospace;white-space:nowrap}
+      .sensor-readout-values span{display:grid;gap:4px;align-content:start}
+      .sensor-gps-signals{display:grid;grid-template-columns:repeat(auto-fill,minmax(38px,1fr));align-items:end;gap:6px;min-height:100px;overflow:hidden;border-color:var(--wm-border)}
+      .sensor-gps-bar{width:auto;height:84px;color:var(--wm-muted);font:12px ui-monospace,monospace}
       .sensor-gps-bar small{font-size:12px}
+      .sensor-gps-more{align-self:center;justify-self:center;color:var(--wm-muted);font:12px ui-sans-serif,system-ui,sans-serif}
       .sensor-distance b{color:var(--wm-text);font-size:26px}
       .world-map-offline-strip{display:flex;align-items:center;gap:8px 14px;flex-wrap:wrap;margin-top:10px;padding:10px 12px;border:1px solid var(--wm-border);border-radius:8px;background:var(--wm-surface);color:var(--wm-muted);font:12px ui-sans-serif,system-ui,sans-serif}
       .world-map-offline-strip>strong{color:#91a0ad;font-size:12px}
       .world-map-offline-pill{display:inline-flex;align-items:center;gap:7px;padding:5px 8px;border:1px solid var(--wm-border);border-radius:5px;background:#080f17}
       .world-map-offline-pill b{color:var(--wm-text)}.world-map-offline-pill>span{color:var(--wm-muted)}
       .system-instrument-grid{grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;padding:12px 0}
-      .system-instrument{display:grid;grid-template-columns:60px minmax(0,1fr);grid-template-rows:auto auto auto;align-items:center;column-gap:10px;padding:10px}
-      .system-instrument-label{grid-column:1/-1;color:var(--wm-muted);font:600 12px ui-sans-serif,system-ui,sans-serif}
-      .system-gauge{grid-column:1;grid-row:2;width:56px;background:conic-gradient(from -90deg,var(--gauge-color) calc(var(--gauge-value)*1%),#253544 0)}
-      .system-gauge::before{inset:5px;background:var(--wm-surface)}
-      .system-gauge-center{grid-column:auto;grid-row:auto;justify-self:center;align-items:baseline;gap:1px;color:var(--wm-text)}
-      .system-gauge-center strong{font-size:13px}.system-gauge-center small{color:var(--wm-muted);font-size:8px}
-      .system-instrument-foot{grid-column:2;grid-row:2;min-height:0;color:var(--wm-muted);font:12px/1.35 ui-sans-serif,system-ui,sans-serif;text-align:left}
+      .system-instrument{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;padding:12px 10px}
+      .system-instrument-label{color:var(--wm-muted);font:600 12px ui-sans-serif,system-ui,sans-serif;text-align:center}
+      .system-gauge{position:relative;width:88px;flex:none;background:conic-gradient(from -90deg,var(--gauge-color) calc(var(--gauge-value)*1%),#253544 0)}
+      .system-gauge::before{inset:7px;background:var(--wm-surface)}
+      .system-gauge::after{position:absolute;right:-17px;top:50%;transform:translateY(-50%);color:var(--wm-muted);font:12px ui-sans-serif,system-ui,sans-serif}
+      #world-map-cpu-gauge::after,#world-map-memory-gauge::after{content:"%"}
+      #world-map-cpu-temp-gauge::after,#world-map-gpu-temp-gauge::after{content:"°C"}
+      #world-map-power-gauge::after{content:"W"}
+      .system-gauge-center{align-items:center;justify-content:center;gap:0;color:var(--wm-text)}
+      .system-gauge-center strong{font-size:16px}.system-gauge-center small{display:none}
+      .system-instrument-foot{min-height:0;color:var(--wm-muted);font:12px/1.35 ui-sans-serif,system-ui,sans-serif;text-align:center}
       .imu-attitude{display:flex;align-items:center;justify-content:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--wm-border)}
       .imu-attitude-disc{position:relative;width:72px;aspect-ratio:1;overflow:hidden;flex:none;border:2px solid var(--wm-cyan);border-radius:50%;background:#10243a}
       .imu-attitude-horizon{position:absolute;left:-30%;top:-55%;width:160%;height:210%;transform:translateY(var(--imu-pitch,0px)) rotate(var(--imu-roll,0deg));background:linear-gradient(to bottom,#1747a3 0 50%,#69432f 50% 100%)}
@@ -1079,13 +1101,11 @@ async function refreshLiveRadar() {
     const status = await sensorJson('/plugins/mmwave_radar/status');
     const sample = status.sample || {};
     const targets = Array.isArray(sample.targets) ? sample.targets : [];
-    const source = sample.source || status.protocol || status.port || 'LD2450';
     const age = Number(sample.timestamp) > 0 ? Math.max(0, Date.now() / 1000 - Number(sample.timestamp)) : NaN;
-    byId('world-map-radar-state').textContent = status.available
-      ? `${targets.length} targets · ${source}${Number.isFinite(age) ? ` · ${age.toFixed(1)}s` : ''}`
-      : status.error || 'No data';
+    const targetLabel = `${targets.length} target${targets.length === 1 ? '' : 's'}`;
+    const radarDetail = `${targetLabel}${Number.isFinite(age) ? ` · ${age.toFixed(1)} s` : ''}`;
     setFeedStatus('world-map-radar-state', 'radar', classifyAge('radar', age, Boolean(status.available)), status.available
-      ? `${targets.length} targets · ${source}${Number.isFinite(age) ? ` · ${age.toFixed(1)}s` : ''}` : status.error || 'No data');
+      ? radarDetail : status.error || 'No data');
     byId('world-map-radar-targets').replaceChildren(...(targets.length ? targets.map((target, index) => {
       const position = target.position_m || target.position || [];
       const velocity = target.velocity_mps || target.velocity || [];
@@ -1117,7 +1137,7 @@ async function refreshLiveGps() {
     const fix = sample.fix === true || sample.valid === true || Number(sample.fix_quality) > 0;
     const gpsAge = Number(sample.timestamp) > 0 ? Math.max(0, Date.now() / 1000 - Number(sample.timestamp)) : NaN;
     const gpsState = classifyAge('gps', gpsAge, streaming);
-    setFeedStatus('world-map-gps-state', 'gps', gpsState, fix ? `FIX · ${status.transport || sample.transport || 'UART'}` : streaming ? 'UART live · no fix' : status.error || 'Offline');
+    setFeedStatus('world-map-gps-state', 'gps', gpsState, fix ? 'Fix valid' : streaming ? 'UART live · no fix' : status.error || 'Offline');
     const latitude = Number(sample.latitude_deg ?? sample.latitude ?? sample.lat);
     const longitude = Number(sample.longitude_deg ?? sample.longitude ?? sample.lon ?? sample.lng);
     byId('world-map-gps-position').textContent = fix && Number.isFinite(latitude) && Number.isFinite(longitude) ? `${latitude.toFixed(6)}, ${longitude.toFixed(6)}` : 'No valid fix';
@@ -1127,7 +1147,8 @@ async function refreshLiveGps() {
     const signals = Array.isArray(sample.satellite_signals) ? sample.satellite_signals : [];
     const plot = byId('world-map-gps-signals');
     plot.setAttribute('aria-label', `GPS satellite signal strength; ${signals.length} satellites reported`);
-    plot.replaceChildren(...(signals.length ? signals.map(satellite => {
+    const visibleSignals = signals.slice(0, 12);
+    const bars = visibleSignals.map(satellite => {
       const cn0 = Number(satellite.cn0_db_hz);
       const height = Number.isFinite(cn0) ? Math.max(3, Math.min(60, cn0)) : 3;
       const bar = document.createElement('div'); bar.className = 'sensor-gps-bar';
@@ -1137,7 +1158,12 @@ async function refreshLiveGps() {
       const label = document.createElement('small'); label.textContent = id;
       bar.title = `${id} · C/N₀ ${displayNumber(cn0, 0, ' dB-Hz')} · az ${satellite.azimuth_deg ?? '—'}° · el ${satellite.elevation_deg ?? '—'}°`;
       bar.append(value, fill, label); return bar;
-    }) : [Object.assign(document.createElement('span'), { className: 'sensor-readout-note', textContent: status.available ? 'No GSV satellite signal values in the current GPS sample.' : 'Waiting for GSV data from the GPS receiver.' })]));
+    });
+    if (signals.length > visibleSignals.length) {
+      const more = document.createElement('span'); more.className = 'sensor-gps-more'; more.textContent = `+${signals.length - visibleSignals.length}`;
+      more.title = `${signals.length - visibleSignals.length} additional satellites`; bars.push(more);
+    }
+    plot.replaceChildren(...(signals.length ? bars : [Object.assign(document.createElement('span'), { className: 'sensor-readout-note', textContent: status.available ? 'No GSV satellite signal values in the current GPS sample.' : 'Waiting for GSV data from the GPS receiver.' })]));
   } catch (error) { setFeedStatus('world-map-gps-state', 'gps', 'offline', `Unavailable · ${error.message}`); }
   finally { readoutBusy.gps = false; }
 }
@@ -1150,7 +1176,7 @@ async function refreshLiveImu() {
     const sample = status.sample || {};
     const imuAge = Number(sample.timestamp) > 0 ? Math.max(0, Date.now() / 1000 - Number(sample.timestamp)) : NaN;
     setFeedStatus('world-map-imu-state', 'imu', classifyAge('imu', imuAge, Boolean(status.available)), status.available
-      ? `${sample.device || status.device || 'IMU'} · ${sample.attitude_valid ? 'attitude valid' : 'attitude invalid'}`
+      ? `${sample.attitude_valid ? 'Attitude valid' : 'Attitude invalid'}`
       : status.error || 'No data');
     byId('world-map-imu-roll').textContent = sample.attitude_valid ? displayNumber(sample.roll_deg, 1, '°') : 'Invalid';
     byId('world-map-imu-pitch').textContent = sample.attitude_valid ? displayNumber(sample.pitch_deg, 1, '°') : 'Invalid';
@@ -1298,43 +1324,65 @@ async function refreshVisualOdometry() {
 }
 
 function renderVisualOdometryMap(odometry) {
-  const trail = byId('world-map-odometry-trail');
-  const body = byId('world-map-odometry-body');
-  const position = byId('world-map-odometry-position');
-  if (!trail || !body || !position || !visualOdometryTrail.length) return;
-  const width = 640, height = 480;
-  const plot = { left: 56, right: 584, top: 58, bottom: 420 };
-  const forwards = visualOdometryTrail.map(point => point.forward);
-  const laterals = visualOdometryTrail.map(point => point.lateral);
-  const minForward = Math.min(0, ...forwards), maxForward = Math.max(0, ...forwards);
-  const minLateral = Math.min(0, ...laterals), maxLateral = Math.max(0, ...laterals);
-  const spanForward = Math.max(2.0, maxForward - minForward + 0.8);
-  const spanLateral = Math.max(2.8, maxLateral - minLateral + 0.8);
-  const scale = Math.min((plot.bottom - plot.top) / spanForward, (plot.right - plot.left) / spanLateral);
-  const centerLateral = (minLateral + maxLateral) / 2;
-  const centerForward = (minForward + maxForward) / 2;
-  const mapPoint = point => ({
-    x: width / 2 - (point.lateral - centerLateral) * scale,
-    y: (plot.top + plot.bottom) / 2 - (point.forward - centerForward) * scale,
-  });
-  trail.setAttribute('points', visualOdometryTrail.map(point => {
-    const mapped = mapPoint(point);
-    return `${mapped.x.toFixed(1)},${mapped.y.toFixed(1)}`;
-  }).join(' '));
-  const start = mapPoint(visualOdometryTrail[0]);
-  const startMarker = byId('world-map-odometry-start');
-  if (startMarker) {
-    startMarker.setAttribute('cx', start.x.toFixed(1));
-    startMarker.setAttribute('cy', start.y.toFixed(1));
-  }
-  const current = mapPoint(visualOdometryTrail.at(-1));
-  body.setAttribute('transform', `translate(${current.x.toFixed(1)} ${current.y.toFixed(1)}) rotate(${(Number(odometry.yaw_rad) || 0) * 180 / Math.PI})`);
-  position.setAttribute('x', Math.min(width - 130, current.x + 12).toFixed(1));
-  position.setAttribute('y', Math.max(28, current.y - 12).toFixed(1));
-  const [forward = 0, lateral = 0] = odometry.position_m || [];
-  position.textContent = `${forward.toFixed(2)} fwd · ${lateral.toFixed(2)} left m`;
+  latestVisualOdometry = odometry;
+  drawVisualOdometryMap();
   const mapStatus = byId('world-map-odometry-map-status');
-  if (mapStatus) mapStatus.textContent = `TRACKING · ${Number(odometry.speed_mps || 0).toFixed(2)} m/s · view ${spanLateral.toFixed(1)} × ${spanForward.toFixed(1)} m`;
+  if (mapStatus) mapStatus.textContent = `TRACKING · ${Number(odometry.speed_mps || 0).toFixed(2)} m/s`;
+}
+
+function drawVisualOdometryMap() {
+  const canvas = byId('world-map-odometry-map');
+  const plot = canvas?.parentElement;
+  if (!canvas || !plot) return;
+  const bounds = plot.getBoundingClientRect();
+  if (!bounds.width || !bounds.height) return;
+  const dpr = Math.max(1, window.devicePixelRatio || 1);
+  const width = Math.round(bounds.width * dpr), height = Math.round(bounds.height * dpr);
+  if (canvas.width !== width || canvas.height !== height) {
+    canvas.width = width;
+    canvas.height = height;
+  }
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const w = bounds.width, h = bounds.height;
+  ctx.fillStyle = '#050b12';
+  ctx.fillRect(0, 0, w, h);
+  ctx.strokeStyle = '#1b3042';
+  ctx.lineWidth = 1;
+  for (let x = 0; x <= w; x += Math.max(48, w / 8)) {
+    ctx.beginPath(); ctx.moveTo(Math.round(x) + 0.5, 0); ctx.lineTo(Math.round(x) + 0.5, h); ctx.stroke();
+  }
+  for (let y = 0; y <= h; y += Math.max(40, h / 6)) {
+    ctx.beginPath(); ctx.moveTo(0, Math.round(y) + 0.5); ctx.lineTo(w, Math.round(y) + 0.5); ctx.stroke();
+  }
+  const inset = Math.min(28, w * 0.08);
+  const plotArea = { left: inset, right: w - inset, top: inset, bottom: h - inset };
+  const center = { x: w / 2, y: h * 0.68 };
+  const forwardExtent = Math.max(1, ...visualOdometryTrail.map(point => Math.abs(point.forward)));
+  const lateralExtent = Math.max(1.4, ...visualOdometryTrail.map(point => Math.abs(point.lateral)));
+  const scale = Math.min((plotArea.right - plotArea.left) / (2 * lateralExtent), (center.y - plotArea.top) / forwardExtent, (plotArea.bottom - center.y) / forwardExtent);
+  ctx.strokeStyle = '#00aeb8';
+  ctx.beginPath(); ctx.moveTo(center.x, plotArea.top); ctx.lineTo(center.x, plotArea.bottom); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(plotArea.left, plotArea.bottom); ctx.lineTo(plotArea.right, plotArea.bottom); ctx.stroke();
+  if (visualOdometryTrail.length > 1) {
+    ctx.strokeStyle = '#ed35c5'; ctx.lineWidth = 2;
+    ctx.beginPath();
+    visualOdometryTrail.forEach((point, index) => {
+      const x = center.x - point.lateral * scale, y = center.y - point.forward * scale;
+      if (index) ctx.lineTo(x, y); else ctx.moveTo(x, y);
+    });
+    ctx.stroke();
+  }
+  const current = latestVisualOdometry;
+  const position = byId('world-map-odometry-position');
+  const [forward = 0, lateral = 0] = current?.position_m || [];
+  if (position) position.textContent = `${forward.toFixed(2)} m fwd · ${lateral.toFixed(2)} m left`;
+  ctx.save();
+  ctx.translate(center.x - lateral * scale, center.y - forward * scale);
+  ctx.rotate(Number(current?.yaw_rad) || 0);
+  ctx.fillStyle = '#00d6df'; ctx.strokeStyle = '#e8ffff'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(0, -10); ctx.lineTo(7, 8); ctx.lineTo(0, 5); ctx.lineTo(-7, 8); ctx.closePath(); ctx.fill(); ctx.stroke();
+  ctx.restore();
 }
 
 function resizeCloud() {
