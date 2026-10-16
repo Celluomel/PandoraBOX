@@ -39,8 +39,7 @@ if (panel) {
     sensorPanel.id = 'world-map-sensor-view';
     sensorPanel.className = 'world-map-sensor-view';
     sensorPanel.hidden = true;
-    sensorPanel.innerHTML = `<div class="world-map-sensor-metrics"><span>YOLOX <b id="world-map-yolo-state">Waiting</b></span><span>MiDaS <b id="world-map-midas-state">Waiting</b></span><span>Visual odometry <b id="world-map-odometry-state">Waiting</b></span><span>Frame <b id="world-map-frame-state">—</b></span><span>SegFormer <b id="world-map-segmentation-state">disabled</b></span></div><div id="world-map-sensor-2d" class="world-map-sensor-2d"><div class="world-map-camera"><div class="world-map-sensor-heading">CAMERA · YOLOX + SEGFORMER</div><div class="world-map-image-wrap"><img id="world-map-camera-image" alt="Live camera frame with YOLOX detections"><canvas id="world-map-segmentation-overlay" aria-label="SegFormer semantic classes overlaid on the camera frame" hidden></canvas><svg id="world-map-yolo-overlay" viewBox="0 0 1 1" preserveAspectRatio="xMidYMid meet" aria-hidden="true"></svg><span id="world-map-camera-empty" class="world-map-empty">Waiting for a camera frame</span></div><label class="world-map-segmentation-toggle"><input id="world-map-segmentation-toggle" type="checkbox" checked> Segmentation overlay</label></div><div class="world-map-depth"><div class="world-map-sensor-heading">MiDaS · RELATIVE DEPTH</div><img id="world-map-depth-image" alt="MiDaS relative depth image"><span id="world-map-depth-empty" class="world-map-empty">MiDaS disabled or waiting for inference</span><div class="world-map-depth-calibration"><button type="button" id="world-map-midas-calibrate">Calibrate with radar</button><small id="world-map-midas-calibration-status" role="status">Relative depth only · not calibrated in metres</small></div></div></div><section class="world-map-odometry-view" aria-label="Experimental visual odometry trajectory"><div class="world-map-sensor-heading"><span>VISUAL ODOMETRY · LOCAL TRAJECTORY</span><small id="world-map-odometry-map-status">Waiting for tracking</small></div><svg id="world-map-odometry-map" viewBox="0 0 640 260" role="img" aria-label="Top-down estimated Body trajectory in the local visual odometry frame"><rect class="odom-map-bg" x="0" y="0" width="640" height="260"/><g class="odom-grid"><path d="M40 45H600M40 85H600M40 125H600M40 165H600M40 205H600M80 25V225M160 25V225M240 25V225M320 25V225M400 25V225M480 25V225M560 25V225"/><path class="odom-axis" d="M40 205H600M320 25V225"/></g><text class="odom-axis-label" x="320" y="18" text-anchor="middle">FORWARD ↑</text><text class="odom-axis-label" x="320" y="249" text-anchor="middle">← LEFT · RIGHT →</text><g id="world-map-odometry-grid-labels"></g><polyline id="world-map-odometry-trail" points=""/><circle id="world-map-odometry-start" cx="320" cy="205" r="4"/><g id="world-map-odometry-body" transform="translate(320 205)"><path d="M0 -11 L7 8 L0 5 L-7 8 Z"/></g><text id="world-map-odometry-position" class="odom-position-label" x="332" y="200">0.00, 0.00 m</text></svg><p class="world-map-odometry-footnote">Session-local estimate · visual odometry only · drift accumulates · not a persistent map</p></section><div id="world-map-sensor-3d" class="world-map-canvas world-map-sensor-cloud" hidden></div><p id="world-map-sensor-note" class="world-map-sensor-note">Sensor-only view · no simulation object positions are used.</p>`;
-    sensorPanel.innerHTML = `<div class="world-map-sensor-metrics"><span>Camera <b id="world-map-camera-state">Waiting</b></span><span>YOLOX <b id="world-map-yolo-state">Waiting</b></span><span>MiDaS <b id="world-map-midas-state">Waiting</b></span><span>Visual odometry <b id="world-map-odometry-state">Waiting</b></span><span>SegFormer <b id="world-map-segmentation-state">disabled</b></span><span>Frame <b id="world-map-frame-state">—</b></span></div><div id="world-map-sensor-2d" class="world-map-sensor-2d"><div class="world-map-camera"><div class="world-map-sensor-heading">CAMERA · YOLOX + SEGFORMER</div><div class="world-map-image-wrap"><img id="world-map-camera-image" alt="Live camera frame with YOLOX detections"><canvas id="world-map-segmentation-overlay" aria-label="SegFormer semantic classes overlaid on the camera frame" hidden></canvas><svg id="world-map-yolo-overlay" viewBox="0 0 1 1" preserveAspectRatio="xMidYMid meet" aria-hidden="true"></svg><span id="world-map-camera-empty" class="world-map-empty">Waiting for a camera frame</span></div><label class="world-map-segmentation-toggle"><input id="world-map-segmentation-toggle" type="checkbox" checked> Segmentation overlay</label></div><div class="world-map-depth"><div class="world-map-sensor-heading">MiDaS · RELATIVE DEPTH</div><img id="world-map-depth-image" alt="MiDaS relative depth image"><span id="world-map-depth-empty" class="world-map-empty">MiDaS disabled or waiting for inference</span><div class="world-map-depth-calibration"><button type="button" id="world-map-midas-calibrate">Calibrate with radar</button><small id="world-map-midas-calibration-status" role="status">Relative depth only · not calibrated in metres</small></div></div></div><section class="world-map-odometry-view" aria-label="Experimental visual odometry trajectory"><div class="world-map-sensor-heading"><span>VISUAL ODOMETRY · LOCAL TRAJECTORY</span><small id="world-map-odometry-map-status">Waiting for tracking</small></div><svg id="world-map-odometry-map" viewBox="0 0 640 260" role="img" aria-label="Top-down estimated Body trajectory in the local visual odometry frame"><rect class="odom-map-bg" x="0" y="0" width="640" height="260"/><g class="odom-grid"><path d="M40 45H600M40 85H600M40 125H600M40 165H600M40 205H600M80 25V225M160 25V225M240 25V225M320 25V225M400 25V225M480 25V225M560 25V225"/><path class="odom-axis" d="M40 205H600M320 25V225"/></g><text class="odom-axis-label" x="320" y="18" text-anchor="middle">FORWARD ↑</text><text class="odom-axis-label" x="320" y="249" text-anchor="middle">← LEFT · RIGHT →</text><g id="world-map-odometry-grid-labels"></g><polyline id="world-map-odometry-trail" points=""/><circle id="world-map-odometry-start" cx="320" cy="205" r="4"/><g id="world-map-odometry-body" transform="translate(320 205)"><path d="M0 -11 L7 8 L0 5 L-7 8 Z"/></g><text id="world-map-odometry-position" class="odom-position-label" x="332" y="200">0.00, 0.00 m</text></svg><p class="world-map-odometry-footnote">Session-local estimate · drift accumulates · not a persistent map</p></section><div id="world-map-sensor-3d" class="world-map-canvas world-map-sensor-cloud" hidden></div><p id="world-map-sensor-note" class="world-map-sensor-note">Sensor-only view · no simulation object positions are used.</p>`;
+    sensorPanel.innerHTML = `<div class="world-map-sensor-metrics"><span>Camera <b id="world-map-camera-state">Waiting</b></span><span>YOLOX <b id="world-map-yolo-state">Waiting</b></span><span>MiDaS <b id="world-map-midas-state">Waiting</b></span><span>Visual odometry <b id="world-map-odometry-state">Waiting</b></span><span>SegFormer <b id="world-map-segmentation-state">disabled</b></span><span>Frame <b id="world-map-frame-state">—</b></span></div><div id="world-map-sensor-2d" class="world-map-sensor-2d"><div class="world-map-camera"><div class="world-map-sensor-heading">CAMERA · YOLOX</div><div class="world-map-image-wrap"><img id="world-map-camera-image" alt="Live camera frame with YOLOX detections"><svg id="world-map-yolo-overlay" viewBox="0 0 1 1" preserveAspectRatio="xMidYMid meet" aria-hidden="true"></svg><span id="world-map-camera-empty" class="world-map-empty">Waiting for a camera frame</span></div></div><div class="world-map-depth"><div class="world-map-sensor-heading">MiDaS · RELATIVE DEPTH</div><img id="world-map-depth-image" alt="MiDaS relative depth image"><span id="world-map-depth-empty" class="world-map-empty">MiDaS disabled or waiting for inference</span><div class="world-map-depth-calibration"><button type="button" id="world-map-midas-calibrate">Calibrate with radar</button><small id="world-map-midas-calibration-status" role="status">Relative depth only · not calibrated in metres</small></div></div></div><section class="world-map-odometry-view" aria-label="Experimental visual odometry trajectory"><div class="world-map-sensor-heading"><span>VISUAL ODOMETRY · LOCAL TRAJECTORY</span><small id="world-map-odometry-map-status">Waiting for tracking</small></div><svg id="world-map-odometry-map" viewBox="0 0 640 260" role="img" aria-label="Top-down estimated Body trajectory in the local visual odometry frame"><rect class="odom-map-bg" x="0" y="0" width="640" height="260"/><g class="odom-grid"><path d="M40 45H600M40 85H600M40 125H600M40 165H600M40 205H600M80 25V225M160 25V225M240 25V225M320 25V225M400 25V225M480 25V225M560 25V225"/><path class="odom-axis" d="M40 205H600M320 25V225"/></g><text class="odom-axis-label" x="320" y="18" text-anchor="middle">FORWARD ↑</text><text class="odom-axis-label" x="320" y="249" text-anchor="middle">← LEFT · RIGHT →</text><g id="world-map-odometry-grid-labels"></g><polyline id="world-map-odometry-trail" points=""/><circle id="world-map-odometry-start" cx="320" cy="205" r="4"/><g id="world-map-odometry-body" transform="translate(320 205)"><path d="M0 -11 L7 8 L0 5 L-7 8 Z"/></g><text id="world-map-odometry-position" class="odom-position-label" x="332" y="200">0.00, 0.00 m</text></svg><p class="world-map-odometry-footnote">Session-local estimate · drift accumulates · not a persistent map</p></section><section class="world-map-segmentation-panel" aria-label="SegFormer semantic segmentation"><div class="world-map-sensor-heading"><span>SEGFORMER · SEMANTIC MASK</span><small>Independent of camera preview</small></div><div class="world-map-segmentation-preview"><canvas id="world-map-segmentation-overlay" aria-label="Standalone SegFormer semantic class mask" hidden></canvas><span id="world-map-segmentation-empty" class="world-map-empty">Waiting for a SegFormer mask</span></div><div id="world-map-segmentation-classes" class="world-map-segmentation-classes">Waiting for SegFormer classes</div></section><div id="world-map-sensor-3d" class="world-map-canvas world-map-sensor-cloud" hidden></div><p id="world-map-sensor-note" class="world-map-sensor-note">Sensor-only view · no simulation object positions are used.</p>`;
     const liveReadouts = document.createElement('section');
     liveReadouts.id = 'world-map-live-readouts';
     liveReadouts.className = 'world-map-live-readouts';
@@ -50,11 +49,6 @@ if (panel) {
     computeCard.innerHTML = `<header><strong>Compute & power</strong><small id="world-map-system-state">Sampling</small></header><div class="system-instrument-grid"><article class="system-instrument"><span class="system-instrument-label">CPU LOAD</span><div class="system-gauge" id="world-map-cpu-gauge" role="img" aria-label="CPU utilization"><div class="system-gauge-center"><strong id="world-map-system-cpu-value">—</strong><small>%</small></div></div><span class="system-instrument-foot" id="world-map-system-cpu-temp">CPU temp · —</span></article><article class="system-instrument"><span class="system-instrument-label">CPU TEMP</span><div class="system-gauge system-gauge-temp" id="world-map-cpu-temp-gauge" role="img" aria-label="Maximum CPU temperature"><div class="system-gauge-center"><strong id="world-map-system-cpu-temp-value">—</strong><small>°C</small></div></div><span class="system-instrument-foot">Hottest reported CPU sensor · 0–100 °C</span></article><article class="system-instrument"><span class="system-instrument-label">GPU TEMP</span><div class="system-gauge system-gauge-temp" id="world-map-gpu-temp-gauge" role="img" aria-label="Maximum GPU temperature"><div class="system-gauge-center"><strong id="world-map-system-gpu-temp-value">—</strong><small>°C</small></div></div><span class="system-instrument-foot" id="world-map-system-gpu-meta">Load unavailable · — MHz</span></article><article class="system-instrument"><span class="system-instrument-label">MEMORY</span><div class="system-gauge" id="world-map-memory-gauge" role="img" aria-label="Memory utilization"><div class="system-gauge-center"><strong id="world-map-system-memory-value">—</strong><small>%</small></div></div><span class="system-instrument-foot" id="world-map-system-memory-meta">— free</span></article><article class="system-instrument"><span class="system-instrument-label">BOARD INPUT</span><div class="system-gauge system-gauge-power" id="world-map-power-gauge" role="img" aria-label="Measured board input power"><div class="system-gauge-center"><strong id="world-map-system-power-value">—</strong><small>W</small></div></div><span class="system-instrument-foot" id="world-map-system-power-meta">INA232 · measured rail</span></article></div><div class="system-telemetry-strip"><div><span>GPU utilization</span><strong id="world-map-system-gpu-load">Unavailable</strong></div><div><span>GPU clock</span><strong id="world-map-system-gpu-clock">—</strong></div><div><span>Qualcomm HTP</span><strong id="world-map-system-htp">Waiting for inference status</strong></div><div><span>Energy since Body start</span><strong id="world-map-system-energy">—</strong></div></div><p id="world-map-system-note" class="sensor-readout-note">GPU/HTP usage percentages require kernel counters. Board input may exclude external motor loads.</p>`;
     liveReadouts.prepend(computeCard);
     sensorPanel.append(liveReadouts);
-    const semanticPanel = document.createElement('div');
-    semanticPanel.className = 'world-map-segmentation-classes';
-    semanticPanel.id = 'world-map-segmentation-classes';
-    semanticPanel.textContent = 'Waiting for SegFormer classes';
-    sensorPanel.querySelector('.world-map-sensor-2d')?.after(semanticPanel);
     mapLayout.after(sensorPanel);
     const style = document.createElement('style');
     style.textContent = `
@@ -85,14 +79,15 @@ if (panel) {
       .world-map-sensor-heading{padding:9px 11px;border-bottom:1px solid #263e32;color:#91c9aa;font:10px ui-monospace,monospace}
       .world-map-image-wrap{position:relative;display:grid;place-items:center;width:100%;aspect-ratio:4/3;max-height:500px;background:#020805;overflow:hidden}
       .world-map-image-wrap img{display:block;width:100%;height:100%;object-fit:fill}
-      #world-map-segmentation-overlay,#world-map-yolo-overlay{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
-      #world-map-segmentation-overlay{opacity:.56;image-rendering:auto}
-      .world-map-segmentation-toggle{display:flex;align-items:center;gap:7px;padding:7px 10px;color:#dceee3;font:11px ui-monospace,monospace}
-      .world-map-segmentation-toggle input{accent-color:#34c9a2}
+      #world-map-yolo-overlay{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
       .world-map-depth{display:flex;flex-direction:column}
-      .world-map-segmentation-classes{display:flex;gap:7px 12px;flex-wrap:wrap;margin:0;padding:8px 10px;color:#33483d;font:10px ui-monospace,monospace;line-height:1.6}
+      .world-map-segmentation-classes{display:flex;gap:7px 12px;flex-wrap:wrap;margin:0;padding:8px 10px;color:#b4c9bc;font:10px ui-monospace,monospace;line-height:1.6}
       .world-map-segmentation-classes span{display:inline-flex;align-items:center;gap:5px}
       .world-map-segmentation-classes i{width:8px;height:8px;flex:0 0 8px;border-radius:50%}
+      .world-map-segmentation-panel{min-width:0;margin-top:12px;overflow:hidden;border:1px solid #263e32;background:#07120f}
+      .world-map-segmentation-preview{position:relative;display:grid;min-height:180px;max-height:380px;place-items:center;overflow:hidden;background:#020805}
+      #world-map-segmentation-overlay{display:block;width:100%;height:auto;max-height:380px;object-fit:contain}
+      #world-map-segmentation-overlay[hidden]{display:none!important}
       .world-map-depth img{display:block;width:100%;height:100%;min-height:220px;max-height:500px;object-fit:contain;background:#020805}
       .world-map-depth>small{padding:7px 10px;color:#9eb5a6;font:10px ui-monospace,monospace}
       .world-map-depth-calibration{display:flex;align-items:center;gap:9px;flex-wrap:wrap;padding:8px 10px;border-top:1px solid #263e32}
@@ -101,7 +96,6 @@ if (panel) {
       .world-map-depth-calibration small{color:#9eb5a6;font:10px ui-monospace,monospace}
       .world-map-empty{position:absolute;inset:0;display:grid;place-items:center;padding:20px;color:#91a79a;font:11px ui-monospace,monospace;text-align:center;pointer-events:none}
       .world-map-empty[hidden]{display:none}
-      #world-map-segmentation-overlay[hidden]{display:none}
       .world-map-sensor-note{margin:9px 0 0;color:#a9c0b2;font-size:11px}
       .world-map-sensor-cloud{height:clamp(360px,54vh,620px)}
       .world-map-live-readouts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:14px}
@@ -413,18 +407,6 @@ function updateMode() {
 window.addEventListener('body-worldmodel-viewchange', (event) => setSource(event.detail?.view === 'sensors' ? 'sensors' : 'simulation'));
 document.querySelectorAll('[data-render]').forEach((button) => button.addEventListener('click', () => setRender(button.dataset.render)));
 byId('world-map-midas-calibrate')?.addEventListener('click', () => void calibrateMetricDepth());
-byId('world-map-segmentation-toggle')?.addEventListener('change', () => {
-  const toggle = byId('world-map-segmentation-toggle');
-  if (toggle?.checked) {
-    void refreshSensorSegmentation();
-  } else {
-    latestSegmentation = null;
-    renderedSegmentationFrameId = '';
-    void renderSemanticMask(null, latestCameraFrame);
-    const state = byId('world-map-segmentation-state');
-    if (state) state.textContent = 'overlay off';
-  }
-});
 void loadMetricCalibration();
 setSource(window.bodyWorldModelView === 'sensors' ? 'sensors' : 'simulation');
 
@@ -477,32 +459,31 @@ function setImage(image, empty, base64, mime = 'image/jpeg') {
   }
 }
 
-async function renderSemanticMask(segmentation, cameraFrame) {
+async function renderSemanticMask(segmentation) {
   const canvas = byId('world-map-segmentation-overlay');
   const classes = byId('world-map-segmentation-classes');
-  const toggle = byId('world-map-segmentation-toggle');
-  if (!canvas || !classes) return;
+  const empty = byId('world-map-segmentation-empty');
+  if (!canvas || !classes || !empty) return;
   const mask = segmentation?.mask_png_base64;
   const frameId = String(segmentation?.frame_id || '');
   const maskKey = frameId || String(segmentation?.captured_at || '');
-  if (!toggle?.checked || !segmentationMatchesFrame(segmentation, cameraFrame)) {
+  if (!segmentation?.available || !mask) {
     canvas.hidden = true;
-    if (!toggle?.checked) return;
-    classes.textContent = segmentation?.available && mask
-      ? 'Waiting for a fresh SegFormer mask'
-      : `${segmentation?.state === 'disabled' ? 'Enable SegFormer in Camera settings' : `SegFormer ${segmentation?.state || 'waiting'}`}${segmentation?.error ? ` · ${segmentation.error}` : ''}`;
+    empty.hidden = false;
+    empty.textContent = `${segmentation?.state === 'disabled' ? 'Enable SegFormer in Camera settings' : `SegFormer ${segmentation?.state || 'waiting'}`}${segmentation?.error ? ` · ${segmentation.error}` : ''}`;
+    classes.textContent = 'No semantic classes available';
     renderedSegmentationFrameId = '';
     return;
   }
   if (maskKey === renderedSegmentationFrameId) {
     canvas.hidden = false;
+    empty.hidden = true;
     return;
   }
   const image = new Image();
   image.src = `data:image/png;base64,${mask}`;
   await image.decode();
-  if (maskKey !== String(latestSegmentation?.frame_id || latestSegmentation?.captured_at || '')
-      || !segmentationMatchesFrame(latestSegmentation, latestCameraFrame)) return;
+  if (maskKey !== String(latestSegmentation?.frame_id || latestSegmentation?.captured_at || '')) return;
   const source = document.createElement('canvas');
   source.width = image.naturalWidth;
   source.height = image.naturalHeight;
@@ -524,10 +505,11 @@ async function renderSemanticMask(segmentation, cameraFrame) {
     pixels.data[index] = color[0];
     pixels.data[index + 1] = color[1];
     pixels.data[index + 2] = color[2];
-    pixels.data[index + 3] = sourcePixels[index + 3];
+    pixels.data[index + 3] = sourcePixels[index + 3] || 255;
   }
   context.putImageData(pixels, 0, 0);
   canvas.hidden = false;
+  empty.hidden = true;
   renderedSegmentationFrameId = maskKey;
   const labels = (segmentation.classes || []).slice(0, 7).map(item => {
     const entry = document.createElement('span');
@@ -751,10 +733,6 @@ async function refreshSensors() {
     if (imageWrap && currentCamera.width && currentCamera.height) {
       imageWrap.style.aspectRatio = `${currentCamera.width}/${currentCamera.height}`;
     }
-    void renderSemanticMask(latestSegmentation, currentCamera).catch((error) => {
-      const classes = byId('world-map-segmentation-classes');
-      if (classes) classes.textContent = `SegFormer overlay unavailable · ${error.message}`;
-    });
     const detections = visibleYoloDetections(yolo);
     const yoloOverlayKey = `${yolo.state || 'disabled'}:${yolo.frame_id || ''}:${detections.length}`;
     if (yoloOverlayKey !== displayedYoloOverlayKey) {
@@ -766,16 +744,6 @@ async function refreshSensors() {
       cloudYoloFrameId = yolo.frame_id || '';
     }
     byId('world-map-yolo-state').textContent = `${yolo.state || 'disabled'} · ${(yolo.detections || []).length} boxes${yolo.latency_ms != null ? ` · ${yolo.latency_ms} ms` : ''}`;
-    const segmentationState = byId('world-map-segmentation-state');
-    if (segmentationState) {
-      const segmentation = latestSegmentation;
-      const maskAge = Number(currentCamera.captured_at) - Number(segmentation?.captured_at);
-      const overlayStatus = segmentationMatchesFrame(segmentation, currentCamera)
-        ? ` · overlay${Number.isFinite(maskAge) && maskAge > 0.25 ? ` · ${maskAge.toFixed(1)}s lag` : ''}` : '';
-      segmentationState.textContent = !byId('world-map-segmentation-toggle')?.checked
-        ? 'overlay off'
-        : `${segmentation?.state || 'waiting'}${segmentation?.device ? ` · ${segmentation.device}` : ''}${segmentation?.latency_ms != null ? ` · ${segmentation.latency_ms} ms` : ''}${overlayStatus}`;
-    }
     byId('world-map-frame-state').textContent = currentCamera.frame_id ? `${currentCamera.frame_id}${currentCamera.captured_at ? ` · ${Math.max(0, Date.now() / 1000 - currentCamera.captured_at).toFixed(1)}s` : ''}` : 'No frame';
     byId('world-map-sensor-note').textContent = `Sensor-only view · frame ${currentCamera.frame_id || 'unavailable'} · no simulation object positions or metric scale.`;
   } catch (error) {
@@ -1002,24 +970,21 @@ async function refreshLiveTof() {
 }
 
 async function refreshSensorSegmentation() {
-  if (sensorSegmentationBusy || activeSource !== 'sensors'
-      || !byId('world-map-segmentation-toggle')?.checked) return;
+  if (sensorSegmentationBusy || activeSource !== 'sensors') return;
   sensorSegmentationBusy = true;
   try {
     const response = await fetch('/body/camera/segmentation', { cache: 'no-store' });
     const segmentation = await response.json();
-    if (!byId('world-map-segmentation-toggle')?.checked) return;
     latestSegmentation = segmentation;
-    void renderSemanticMask(segmentation, latestCameraFrame).catch((error) => {
+    void renderSemanticMask(segmentation).catch((error) => {
       const classes = byId('world-map-segmentation-classes');
-      if (classes) classes.textContent = `SegFormer overlay unavailable · ${error.message}`;
+      if (classes) classes.textContent = `SegFormer mask unavailable · ${error.message}`;
     });
     const state = byId('world-map-segmentation-state');
     if (state) {
-      const maskAge = Number(latestCameraFrame?.captured_at) - Number(segmentation.captured_at);
-      const overlayStatus = segmentationMatchesFrame(segmentation, latestCameraFrame)
-        ? ` · overlay${Number.isFinite(maskAge) && maskAge > 0.25 ? ` · ${maskAge.toFixed(1)}s lag` : ''}` : '';
-      state.textContent = `${segmentation.state || 'disabled'}${segmentation.device ? ` · ${segmentation.device}` : ''}${segmentation.latency_ms != null ? ` · ${segmentation.latency_ms} ms` : ''}${overlayStatus}`;
+      const maskAge = Number(segmentation.captured_at) > 0 ? Math.max(0, Date.now() / 1000 - Number(segmentation.captured_at)) : NaN;
+      const age = Number.isFinite(maskAge) ? ` · ${maskAge.toFixed(1)}s old` : '';
+      state.textContent = `${segmentation.state || 'disabled'}${segmentation.device ? ` · ${segmentation.device}` : ''}${segmentation.latency_ms != null ? ` · ${segmentation.latency_ms} ms` : ''}${age}`;
     }
   } catch (error) {
     const state = byId('world-map-segmentation-state');
@@ -1347,9 +1312,7 @@ setInterval(() => {
   void refreshLiveTof();
 }, 250);
 setInterval(() => {
-  if (activeSource === 'sensors' && byId('world-map-segmentation-toggle')?.checked) {
-    void refreshSensorSegmentation();
-  }
+  if (activeSource === 'sensors') void refreshSensorSegmentation();
 }, 500);
 setInterval(() => {
   if (activeSource === 'sensors') void refreshVisualOdometry();
