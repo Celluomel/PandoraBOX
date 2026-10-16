@@ -13,6 +13,13 @@ class LocalCameraTests(unittest.TestCase):
         self.assertEqual(capture.status()["status"], "stopped")
         self.assertEqual(capture.latest(), {})
 
+    def test_body_camera_default_targets_15_fps(self):
+        import body_runtime_host.runtime as brt
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(brt, "CONFIG_PATH", Path(tmp) / "config.json"), patch.object(brt, "_load_dotenv"):
+                host = brt.BodyHost()
+            self.assertEqual(host.camera_settings()["fps"], 15.0)
+
     def test_requested_fps_is_applied_to_camera_driver(self):
         class Capture:
             def __init__(self):

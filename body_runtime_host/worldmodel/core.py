@@ -105,7 +105,7 @@ DEFAULT_CONFIG = {
     "BODY_LLM_EMBEDDING_MODEL": "text-embedding-nomic-embed-text-v1.5",
     "BODY_LLM_EMBEDDING_THRESHOLD": 0.55,
     "BODY_LLM_EMBEDDING_TIMEOUT": 4.0,
-    "BODY_CAMERA_INTERVAL": 0.125,
+    "BODY_CAMERA_INTERVAL": 1.0 / 15.0,
     "BODY_YOLO_ENABLED": False,
     "BODY_YOLO_PYTHON": "/home/arduino/.venvs/yolox-infer/bin/python",
     "BODY_YOLO_MODEL_PATH": "/home/arduino/models/yolox-qairt245/yolox-qnn_dlc-w8a8/yolox.dlc",
@@ -182,7 +182,7 @@ class EmbodiedWorldModel:
             self.source = None  # legacy brain-side bridge path
         else:
             self.source = SimRobotSource(
-                camera_interval=float(self._cfg.get("BODY_CAMERA_INTERVAL", 0.125) or 0.125),
+                camera_interval=float(self._cfg.get("BODY_CAMERA_INTERVAL", 1.0 / 15.0) or (1.0 / 15.0)),
                 simulation_dt_s=float(self._cfg.get("simulation_dt_s", 1.0) or 1.0),
             )
         # dynamics input dim is fixed by the cortex output dim

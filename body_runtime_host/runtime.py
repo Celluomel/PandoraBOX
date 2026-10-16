@@ -659,17 +659,17 @@ class BodyHost:
                 "last_error": "",
             }
         return {
-            "interval": max(1.0 / 60.0, float(self.value("BODY_CAMERA_INTERVAL", 0.125) or 0.125)),
+            "interval": max(1.0 / 60.0, float(self.value("BODY_CAMERA_INTERVAL", 1.0 / 15.0) or (1.0 / 15.0))),
             "width": max(640, int(self.value("BODY_CAMERA_WIDTH", 640) or 640)),
             "height": max(480, int(self.value("BODY_CAMERA_HEIGHT", 480) or 480)),
             "profile": str(self.value("BODY_CAMERA_PROFILE", "low_body_front") or "low_body_front"),
             "startup_enabled": startup_enabled,
             "device_index": max(0, int(self.value("BODY_CAMERA_DEVICE_INDEX", 0) or 0)),
-            "fps": round(1.0 / max(1.0 / 60.0, float(self.value("BODY_CAMERA_INTERVAL", 0.125) or 0.125)), 2),
+            "fps": round(1.0 / max(1.0 / 60.0, float(self.value("BODY_CAMERA_INTERVAL", 1.0 / 15.0) or (1.0 / 15.0))), 2),
             "brain_settings": {
                 "autostart": startup_enabled,
                 "camera_id": max(0, int(self.value("BODY_CAMERA_DEVICE_INDEX", 0) or 0)),
-                "fps": round(1.0 / max(1.0 / 60.0, float(self.value("BODY_CAMERA_INTERVAL", 0.125) or 0.125)), 2),
+                "fps": round(1.0 / max(1.0 / 60.0, float(self.value("BODY_CAMERA_INTERVAL", 1.0 / 15.0) or (1.0 / 15.0))), 2),
                 "resolution": f"{max(640, int(self.value('BODY_CAMERA_WIDTH', 640) or 640))}x{max(480, int(self.value('BODY_CAMERA_HEIGHT', 480) or 480))}",
                 "vlm_model": str(self.value("BODY_LLM_MODEL", "") or ""),
             },
@@ -788,9 +788,9 @@ class BodyHost:
                 self._local_camera is not None
                 and self._local_camera.status().get("status") in {"capturing", "starting"}
             )
-        self.config["BODY_CAMERA_INTERVAL"] = max(1.0 / 60.0, min(30.0, float(payload.get("interval", 0.125) or 0.125)))
+        self.config["BODY_CAMERA_INTERVAL"] = max(1.0 / 60.0, min(30.0, float(payload.get("interval", 1.0 / 15.0) or (1.0 / 15.0))))
         if payload.get("fps") is not None:
-            self.config["BODY_CAMERA_INTERVAL"] = 1.0 / max(1.0, min(60.0, float(payload.get("fps") or 5)))
+            self.config["BODY_CAMERA_INTERVAL"] = 1.0 / max(1.0, min(60.0, float(payload.get("fps") or 15)))
         self.config["BODY_CAMERA_WIDTH"] = max(640, min(3840, int(payload.get("width", 640) or 640)))
         self.config["BODY_CAMERA_HEIGHT"] = max(480, min(2160, int(payload.get("height", 480) or 480)))
         profile = str(payload.get("profile", "low_body_front") or "low_body_front").strip().lower()
@@ -3229,7 +3229,7 @@ class BodyHost:
         if mode == "sim" and not usb_robot_selected:
             try:
                 source = SimRobotSource(
-                    camera_interval=float(self.value("BODY_CAMERA_INTERVAL", 0.125) or 0.125),
+                    camera_interval=float(self.value("BODY_CAMERA_INTERVAL", 1.0 / 15.0) or (1.0 / 15.0)),
                     mmwave_enabled=not real_mmwave_selected,
                     camera_width=int(self.value("BODY_CAMERA_WIDTH", 640) or 640),
                     camera_height=int(self.value("BODY_CAMERA_HEIGHT", 480) or 480),
