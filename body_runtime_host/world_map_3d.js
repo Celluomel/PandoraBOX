@@ -1,6 +1,32 @@
 import * as THREE from '../frontend/node_modules/three/build/three.module.js';
 
 const byId = (id) => document.getElementById(id);
+const sourceStates = Object.create(null);
+const staleAfterSeconds = { camera: 5, yolo: 5, midas: 5, odometry: 5, segmentation: 5, radar: 2, gps: 5, imu: 2, tof: 2 };
+const physicalSources = ['camera', 'radar', 'gps', 'imu', 'tof', 'lidar', 'ultrasonic'];
+function setFeedStatus(id, source, state, detail) {
+  sourceStates[source] = state;
+  const element = byId(id);
+  if (element) {
+    element.dataset.state = state;
+    element.textContent = detail;
+  }
+  const tofCard = source === 'tof' ? element?.closest('.sensor-readout-card') : null;
+  if (tofCard) {
+    const offlinePill = document.querySelector('.world-map-offline-pill[data-source="tof"]');
+    tofCard.hidden = state !== 'live';
+    if (offlinePill) {
+      offlinePill.hidden = state === 'live';
+      const reason = offlinePill.querySelector('[data-offline-reason]');
+      if (reason) reason.textContent = detail;
+    }
+  }
+  const liveCount = physicalSources.filter(key => sourceStates[key] === 'live').length;
+  const count = byId('world-map-summary-live');
+  if (count) count.textContent = `${liveCount} / ${physicalSources.length}`;
+}
+const classifyAge = (source, age, available) => !available ? 'offline'
+  : Number.isFinite(age) && age > staleAfterSeconds[source] ? 'stale' : 'live';
 let latestSensorDepth = null;
 let lastSensorDepthAt = 0;
 let sensorDepthBusy = false;
@@ -40,6 +66,10 @@ if (panel) {
     sensorPanel.className = 'world-map-sensor-view';
     sensorPanel.hidden = true;
     sensorPanel.innerHTML = `<div class="world-map-sensor-metrics"><span>Camera <b id="world-map-camera-state">Waiting</b></span><span>YOLOX <b id="world-map-yolo-state">Waiting</b></span><span>MiDaS <b id="world-map-midas-state">Waiting</b></span><span>Visual odometry <b id="world-map-odometry-state">Waiting</b></span><span>SegFormer <b id="world-map-segmentation-state">disabled</b></span><span>Frame <b id="world-map-frame-state">—</b></span></div><div id="world-map-sensor-2d" class="world-map-sensor-2d"><div class="world-map-camera"><div class="world-map-sensor-heading">CAMERA · YOLOX</div><div class="world-map-image-wrap"><img id="world-map-camera-image" alt="Live camera frame with YOLOX detections"><svg id="world-map-yolo-overlay" viewBox="0 0 1 1" preserveAspectRatio="xMidYMid meet" aria-hidden="true"></svg><span id="world-map-camera-empty" class="world-map-empty">Waiting for a camera frame</span></div></div><div class="world-map-depth"><div class="world-map-sensor-heading">MiDaS · RELATIVE DEPTH</div><img id="world-map-depth-image" alt="MiDaS relative depth image"><span id="world-map-depth-empty" class="world-map-empty">MiDaS disabled or waiting for inference</span><div class="world-map-depth-calibration"><button type="button" id="world-map-midas-calibrate">Calibrate with radar</button><small id="world-map-midas-calibration-status" role="status">Relative depth only · not calibrated in metres</small></div></div></div><section class="world-map-odometry-view" aria-label="Experimental visual odometry trajectory"><div class="world-map-sensor-heading"><span>VISUAL ODOMETRY · LOCAL TRAJECTORY</span><small id="world-map-odometry-map-status">Waiting for tracking</small></div><svg id="world-map-odometry-map" viewBox="0 0 640 260" role="img" aria-label="Top-down estimated Body trajectory in the local visual odometry frame"><rect class="odom-map-bg" x="0" y="0" width="640" height="260"/><g class="odom-grid"><path d="M40 45H600M40 85H600M40 125H600M40 165H600M40 205H600M80 25V225M160 25V225M240 25V225M320 25V225M400 25V225M480 25V225M560 25V225"/><path class="odom-axis" d="M40 205H600M320 25V225"/></g><text class="odom-axis-label" x="320" y="18" text-anchor="middle">FORWARD ↑</text><text class="odom-axis-label" x="320" y="249" text-anchor="middle">← LEFT · RIGHT →</text><g id="world-map-odometry-grid-labels"></g><polyline id="world-map-odometry-trail" points=""/><circle id="world-map-odometry-start" cx="320" cy="205" r="4"/><g id="world-map-odometry-body" transform="translate(320 205)"><path d="M0 -11 L7 8 L0 5 L-7 8 Z"/></g><text id="world-map-odometry-position" class="odom-position-label" x="332" y="200">0.00, 0.00 m</text></svg><p class="world-map-odometry-footnote">Session-local estimate · drift accumulates · not a persistent map</p></section><section class="world-map-segmentation-panel" aria-label="SegFormer semantic segmentation"><div class="world-map-sensor-heading"><span>SEGFORMER · SEMANTIC MASK</span><small>Independent of camera preview</small></div><div class="world-map-segmentation-preview"><canvas id="world-map-segmentation-overlay" aria-label="Standalone SegFormer semantic class mask" hidden></canvas><span id="world-map-segmentation-empty" class="world-map-empty">Waiting for a SegFormer mask</span></div><div id="world-map-segmentation-classes" class="world-map-segmentation-classes">Waiting for SegFormer classes</div></section><div id="world-map-sensor-3d" class="world-map-canvas world-map-sensor-cloud" hidden></div><p id="world-map-sensor-note" class="world-map-sensor-note">Sensor-only view · no simulation object positions are used.</p>`;
+    for (const id of ['world-map-camera-state', 'world-map-yolo-state', 'world-map-midas-state', 'world-map-odometry-state', 'world-map-segmentation-state', 'world-map-radar-state', 'world-map-gps-state', 'world-map-imu-state', 'world-map-tof-state']) {
+      const state = byId(id);
+      if (state) state.dataset.state = 'loading';
+    }
     const liveReadouts = document.createElement('section');
     liveReadouts.id = 'world-map-live-readouts';
     liveReadouts.className = 'world-map-live-readouts';
@@ -49,20 +79,84 @@ if (panel) {
     computeCard.innerHTML = `<header><strong>Compute & power</strong><small id="world-map-system-state">Sampling</small></header><div class="system-instrument-grid"><article class="system-instrument"><span class="system-instrument-label">CPU LOAD</span><div class="system-gauge" id="world-map-cpu-gauge" role="img" aria-label="CPU utilization"><div class="system-gauge-center"><strong id="world-map-system-cpu-value">—</strong><small>%</small></div></div><span class="system-instrument-foot" id="world-map-system-cpu-temp">CPU temp · —</span></article><article class="system-instrument"><span class="system-instrument-label">CPU TEMP</span><div class="system-gauge system-gauge-temp" id="world-map-cpu-temp-gauge" role="img" aria-label="Maximum CPU temperature"><div class="system-gauge-center"><strong id="world-map-system-cpu-temp-value">—</strong><small>°C</small></div></div><span class="system-instrument-foot">Hottest reported CPU sensor · 0–100 °C</span></article><article class="system-instrument"><span class="system-instrument-label">GPU TEMP</span><div class="system-gauge system-gauge-temp" id="world-map-gpu-temp-gauge" role="img" aria-label="Maximum GPU temperature"><div class="system-gauge-center"><strong id="world-map-system-gpu-temp-value">—</strong><small>°C</small></div></div><span class="system-instrument-foot" id="world-map-system-gpu-meta">Load unavailable · — MHz</span></article><article class="system-instrument"><span class="system-instrument-label">MEMORY</span><div class="system-gauge" id="world-map-memory-gauge" role="img" aria-label="Memory utilization"><div class="system-gauge-center"><strong id="world-map-system-memory-value">—</strong><small>%</small></div></div><span class="system-instrument-foot" id="world-map-system-memory-meta">— free</span></article><article class="system-instrument"><span class="system-instrument-label">BOARD INPUT</span><div class="system-gauge system-gauge-power" id="world-map-power-gauge" role="img" aria-label="Measured board input power"><div class="system-gauge-center"><strong id="world-map-system-power-value">—</strong><small>W</small></div></div><span class="system-instrument-foot" id="world-map-system-power-meta">INA232 · measured rail</span></article></div><div class="system-telemetry-strip"><div><span>GPU utilization</span><strong id="world-map-system-gpu-load">Unavailable</strong></div><div><span>GPU clock</span><strong id="world-map-system-gpu-clock">—</strong></div><div><span>Qualcomm HTP</span><strong id="world-map-system-htp">Waiting for inference status</strong></div><div><span>Energy since Body start</span><strong id="world-map-system-energy">—</strong></div></div><p id="world-map-system-note" class="sensor-readout-note">GPU/HTP usage percentages require kernel counters. Board input may exclude external motor loads.</p>`;
     liveReadouts.append(computeCard);
     sensorPanel.append(liveReadouts);
-    const analysisGrid = document.createElement('div');
-    analysisGrid.className = 'world-map-analysis-grid';
-    const analysisStack = document.createElement('div');
-    analysisStack.className = 'world-map-analysis-stack';
+    const visionGrid = sensorPanel.querySelector('.world-map-sensor-2d');
     const trajectory = sensorPanel.querySelector('.world-map-odometry-view');
+    const segmentation = sensorPanel.querySelector('.world-map-segmentation-panel');
+    const odometrySvg = byId('world-map-odometry-map');
+    if (odometrySvg) {
+      odometrySvg.setAttribute('viewBox', '0 0 640 480');
+      const background = odometrySvg.querySelector('.odom-map-bg');
+      if (background) background.setAttribute('height', '480');
+      const gridPath = odometrySvg.querySelector('.odom-grid path:not(.odom-axis)');
+      if (gridPath) gridPath.setAttribute('d', 'M40 80H600M40 160H600M40 240H600M40 320H600M40 400H600M80 55V420M160 55V420M240 55V420M320 55V420M400 55V420M480 55V420M560 55V420');
+      const axis = odometrySvg.querySelector('.odom-axis');
+      if (axis) axis.setAttribute('d', 'M40 370H600M320 55V420');
+      const labels = odometrySvg.querySelectorAll('.odom-axis-label');
+      labels[0]?.setAttribute('y', '36');
+      labels[1]?.setAttribute('y', '462');
+      byId('world-map-odometry-start')?.setAttribute('cy', '370');
+      byId('world-map-odometry-body')?.setAttribute('transform', 'translate(320 370)');
+      byId('world-map-odometry-position')?.setAttribute('y', '358');
+    }
     const radarCard = liveReadouts.querySelector('#world-map-radar-state')?.closest('.sensor-readout-card');
     radarCard?.classList.remove('sensor-readout-wide');
-    if (trajectory) analysisStack.append(trajectory);
-    if (radarCard) analysisStack.append(radarCard);
-    analysisGrid.append(
-      analysisStack,
-      sensorPanel.querySelector('.world-map-segmentation-panel'),
-    );
-    sensorPanel.querySelector('.world-map-sensor-2d')?.after(analysisGrid);
+    if (trajectory) visionGrid?.append(trajectory);
+    if (segmentation) visionGrid?.append(segmentation);
+    const statusBar = document.createElement('div');
+    statusBar.className = 'world-map-status-bar';
+    statusBar.setAttribute('aria-label', 'Live Body and sensor status');
+    statusBar.innerHTML = '<span>BODY <b id="world-map-body-status" data-state="loading">Connecting</b></span><span>BOARD INPUT <b id="world-map-summary-power">— W</b></span><span>ENERGY <b id="world-map-summary-energy">— Wh</b></span><span>LATEST FRAME <b id="world-map-summary-frame">—</b></span><span>SENSORS LIVE <b id="world-map-summary-live">0 / 7</b></span>';
+    sensorPanel.prepend(statusBar);
+    const bodyMessage = document.querySelector('#message');
+    const syncBodyStatus = () => {
+      const text = bodyMessage?.textContent?.trim() || '';
+      const connected = /connected/i.test(text) && !/disconnected|not connected/i.test(text);
+      const target = byId('world-map-body-status');
+      if (target) {
+        target.textContent = text || 'Status unavailable';
+        target.dataset.state = connected ? 'live' : text ? 'offline' : 'loading';
+      }
+    };
+    if (bodyMessage) new MutationObserver(syncBodyStatus).observe(bodyMessage, { childList: true, characterData: true, subtree: true });
+    syncBodyStatus();
+    const offlineStrip = document.createElement('div');
+    offlineStrip.className = 'world-map-offline-strip';
+    offlineStrip.setAttribute('aria-label', 'Offline sensors');
+    offlineStrip.innerHTML = '<strong>OFFLINE</strong>';
+    const offlineState = (id, label, reason) => {
+      const source = liveReadouts.querySelector(`#${id}`);
+      const pill = document.createElement('span');
+      pill.className = 'world-map-offline-pill';
+      pill.title = reason;
+      pill.innerHTML = `<b>${label}</b> <span>${reason}</span>`;
+      if (source) {
+        source.dataset.offlinePill = 'true';
+        pill.prepend(source);
+        source.dataset.state = 'offline';
+      }
+      sourceStates[label === 'LiDAR' ? 'lidar' : 'ultrasonic'] = 'offline';
+      offlineStrip.append(pill);
+      return pill;
+    };
+    const lidarCard = liveReadouts.querySelector('#world-map-lidar-state')?.closest('.sensor-readout-card');
+    const ultrasonicCard = liveReadouts.querySelector('#world-map-ultrasonic-state')?.closest('.sensor-readout-card');
+    offlineState('world-map-lidar-state', 'LiDAR', 'No physical stream connected');
+    offlineState('world-map-ultrasonic-state', 'HC-SR04', 'Waiting for firmware/gateway channel');
+    const tofOfflinePill = document.createElement('span');
+    tofOfflinePill.className = 'world-map-offline-pill';
+    tofOfflinePill.dataset.source = 'tof';
+    tofOfflinePill.innerHTML = '<b>ToF · VL53L1X</b> <span data-offline-reason>Sensor not detected</span>';
+    offlineStrip.append(tofOfflinePill);
+    const tofCard = liveReadouts.querySelector('#world-map-tof-state')?.closest('.sensor-readout-card');
+    if (tofCard) {
+      tofCard.hidden = true;
+      tofCard.dataset.source = 'tof';
+    }
+    lidarCard?.remove();
+    ultrasonicCard?.remove();
+    const tofCardElement = liveReadouts.querySelector('#world-map-tof-state')?.closest('.sensor-readout-card');
+    if (tofCardElement) tofCardElement.hidden = true;
+    sensorPanel.append(offlineStrip);
     sensorPanel.querySelector('.world-map-segmentation-panel .world-map-sensor-heading small')?.remove();
     mapLayout.after(sensorPanel);
     const style = document.createElement('style');
@@ -162,6 +256,71 @@ if (panel) {
       @media(max-width:760px){.system-instrument-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.system-telemetry-strip{grid-template-columns:repeat(2,minmax(0,1fr))}.system-telemetry-strip>div:nth-child(2){border-right:0}.system-telemetry-strip>div:nth-child(-n+2){border-bottom:1px solid #d7e1da}}
       @container (max-width:760px){.world-map-sensor-2d,.world-map-analysis-grid,.world-map-live-readouts{grid-template-columns:minmax(0,1fr)}.world-map-analysis-grid{grid-template-columns:minmax(0,1fr)}.world-map-depth img{max-height:320px}}
       @media(max-width:700px){.world-map-sensor-2d,.world-map-analysis-grid,.world-map-live-readouts{grid-template-columns:minmax(0,1fr)}.world-map-depth img{max-height:320px}.world-map-controls{gap:7px}}
+      body.worldmodel-sensors-active #view-worldmodel>.stats,body.worldmodel-sensors-active #goal-success{display:none!important}
+      body.worldmodel-sensors-active #view-worldmodel .shell{max-width:1680px;padding-inline:24px}
+      .world-map-sensor-view{--wm-bg:#050b12;--wm-surface:#0b1420;--wm-raised:#101b29;--wm-border:#263b50;--wm-text:#e2edf5;--wm-muted:#9aafc0;--wm-cyan:#00d6df;--wm-magenta:#ed35c5;color:var(--wm-text);margin-top:8px}
+      .world-map-status-bar{position:sticky;top:0;z-index:8;display:flex;align-items:center;gap:clamp(14px,2.5vw,36px);flex-wrap:wrap;padding:10px 16px;margin:0 -2px 14px;border:1px solid var(--wm-border);border-radius:8px;background:rgba(5,11,18,.96);box-shadow:0 6px 18px #02060a44;backdrop-filter:blur(10px)}
+      .world-map-status-bar>span{display:grid;gap:3px;color:var(--wm-muted);font:12px/1.2 ui-sans-serif,system-ui,sans-serif}
+      .world-map-status-bar b{color:var(--wm-text);font:600 14px/1.2 ui-monospace,monospace;font-variant-numeric:tabular-nums}
+      [data-state="live"], [data-state="ready"]{color:#39e59a!important}[data-state="stale"]{color:#ffb547!important}[data-state="offline"]{color:#91a0ad!important}[data-state="loading"]{color:#68cfe0!important}
+      .world-map-sensor-metrics{gap:6px;padding:8px 0 12px;color:var(--wm-muted);font:12px ui-monospace,monospace}
+      .world-map-sensor-metrics span{padding:6px 9px;border:1px solid var(--wm-border);border-radius:6px;background:var(--wm-surface);color:var(--wm-muted)}
+      .world-map-sensor-metrics b{color:var(--wm-text)}
+      .world-map-sensor-2d{grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;align-items:stretch}
+      .world-map-camera,.world-map-depth,.world-map-odometry-view,.world-map-segmentation-panel,.sensor-readout-card,.system-instrument{border:1px solid var(--wm-border);border-radius:8px;background:var(--wm-surface);color:var(--wm-text)}
+      .world-map-camera,.world-map-depth,.world-map-odometry-view,.world-map-segmentation-panel{display:flex;flex-direction:column;min-width:0;aspect-ratio:4/3;overflow:hidden}
+      .world-map-sensor-heading,.sensor-readout-card header{min-height:42px;padding:10px 12px;border-bottom:1px solid var(--wm-border);background:var(--wm-raised);color:var(--wm-cyan);font:600 12px/1.25 ui-sans-serif,system-ui,sans-serif}
+      .world-map-sensor-heading small,.sensor-readout-card header small{color:var(--wm-muted);font:12px ui-monospace,monospace}
+      .world-map-image-wrap,.world-map-segmentation-preview{width:100%;flex:1;aspect-ratio:auto;max-height:none;min-height:0;background:#02060a}
+      .world-map-image-wrap img{object-fit:contain}
+      .world-map-depth img{width:100%;height:0;flex:1;min-height:0;max-height:none;aspect-ratio:auto;object-fit:contain;background:#02060a}
+      .world-map-depth-calibration{margin-top:auto;border-top:1px solid var(--wm-border)}
+      .world-map-depth-calibration small,.world-map-odometry-footnote,.world-map-empty,.world-map-sensor-note{color:var(--wm-muted);font:12px/1.45 ui-sans-serif,system-ui,sans-serif}
+      .world-map-depth-calibration button{border-color:#126d76;border-radius:6px;background:#102b36;color:#bdf9f3}
+      .world-map-segmentation-panel{margin:0}
+      .world-map-segmentation-preview{display:grid;flex:1}
+      #world-map-segmentation-overlay{width:100%;height:100%;object-fit:contain}
+      .world-map-segmentation-classes{gap:8px 14px;padding:10px 12px;color:var(--wm-muted);font:12px/1.5 ui-sans-serif,system-ui,sans-serif;border-top:1px solid var(--wm-border)}
+      .world-map-odometry-view{justify-content:flex-start}
+      #world-map-odometry-map{width:100%;height:0;flex:1;aspect-ratio:auto;background:#050b12}
+      .odom-grid{stroke:#233c50}.odom-grid .odom-axis{stroke:#168c98}.odom-axis-label{fill:#a9c2d0;font:13px ui-monospace,monospace}.odom-position-label{fill:#00e2dd;font:14px ui-monospace,monospace}
+      #world-map-odometry-trail{stroke:#ed35c5;stroke-width:3}#world-map-odometry-start{stroke:#050b12}#world-map-odometry-body path{fill:#00d6df;stroke:#e8ffff}
+      .world-map-odometry-footnote{padding:8px 12px 10px;color:var(--wm-muted);font:12px/1.4 ui-sans-serif,system-ui,sans-serif}
+      .world-map-live-readouts{grid-template-columns:repeat(auto-fit,minmax(min(100%,250px),1fr));gap:12px;margin-top:14px;align-items:stretch}
+      .sensor-readout-card{padding:0 12px 12px}
+      .sensor-readout-card[hidden],.world-map-offline-pill[hidden]{display:none!important}
+      .sensor-readout-card header{margin:0 -12px 8px}
+      .sensor-readout-card header strong{font:600 14px ui-sans-serif,system-ui,sans-serif;color:var(--wm-text)}
+      .sensor-readout-card header small{font-size:12px}
+      #world-map-radar-plot{height:auto;aspect-ratio:2/1;background:#050b12;border:1px solid var(--wm-border);border-radius:5px}
+      .sensor-target-list{grid-template-columns:1fr;color:var(--wm-text);font:12px ui-monospace,monospace}
+      .sensor-target-row{border-color:var(--wm-border)}
+      .sensor-readout-values span,.sensor-distance span,.sensor-readout-note{color:var(--wm-muted);font-size:12px;line-height:1.45}
+      .sensor-readout-values b{color:var(--wm-text);font:600 13px ui-monospace,monospace}
+      .sensor-gps-signals{min-height:100px;border-color:var(--wm-border)}
+      .sensor-gps-bar{height:84px;color:var(--wm-muted);font:12px ui-monospace,monospace}
+      .sensor-gps-bar small{font-size:12px}
+      .sensor-distance b{color:var(--wm-text);font-size:26px}
+      .world-map-offline-strip{display:flex;align-items:center;gap:8px 14px;flex-wrap:wrap;margin-top:10px;padding:10px 12px;border:1px solid var(--wm-border);border-radius:8px;background:var(--wm-surface);color:var(--wm-muted);font:12px ui-sans-serif,system-ui,sans-serif}
+      .world-map-offline-strip>strong{color:#91a0ad;font-size:12px}
+      .world-map-offline-pill{display:inline-flex;align-items:center;gap:7px;padding:5px 8px;border:1px solid var(--wm-border);border-radius:5px;background:#080f17}
+      .world-map-offline-pill b{color:var(--wm-text)}.world-map-offline-pill>span{color:var(--wm-muted)}
+      .system-instrument-grid{grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;padding:12px 0}
+      .system-instrument{display:grid;grid-template-columns:42px minmax(0,1fr);grid-template-rows:auto auto;align-items:center;column-gap:10px;padding:10px}
+      .system-instrument-label{grid-column:1/-1;color:var(--wm-muted);font:600 12px ui-sans-serif,system-ui,sans-serif}
+      .system-gauge{grid-column:1;grid-row:2;width:38px;background:conic-gradient(from -90deg,var(--gauge-color) calc(var(--gauge-value)*1%),#253544 0)}
+      .system-gauge::before{inset:4px;background:var(--wm-surface)}
+      .system-gauge-center{grid-column:2;grid-row:2;justify-self:start;color:var(--wm-text)}
+      .system-gauge-center strong{font-size:22px}.system-gauge-center small{color:var(--wm-muted);font-size:12px}
+      .system-instrument-foot{grid-column:2;grid-row:3;min-height:0;color:var(--wm-muted);font:12px/1.35 ui-sans-serif,system-ui,sans-serif;text-align:left}
+      .system-telemetry-strip{border-color:var(--wm-border)}
+      .system-telemetry-strip>div{border-color:var(--wm-border)}
+      .system-telemetry-strip span{color:var(--wm-muted);font-size:12px}
+      .system-telemetry-strip strong{color:var(--wm-text);font:600 13px ui-monospace,monospace}
+      #world-map-system-note{padding:8px 0 0;color:#c3d2dc;font-size:12px}
+      .sensor-range-channels span{border-color:var(--wm-border);background:#080f17}
+      @media(max-width:980px){.world-map-live-readouts{grid-template-columns:repeat(2,minmax(0,1fr))}.system-instrument-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
+      @media(max-width:640px){.world-map-sensor-2d,.world-map-live-readouts{grid-template-columns:minmax(0,1fr)}.world-map-status-bar{position:static;gap:12px}.system-instrument-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.system-telemetry-strip{grid-template-columns:repeat(2,minmax(0,1fr))}.world-map-controls{gap:7px}}
     `;
     document.head.append(style);
   }
@@ -739,12 +898,15 @@ async function refreshSensors() {
     latestCameraFrame = currentCamera;
     latestSensorYolo = yolo;
     const cameraState = byId('world-map-camera-state');
+    const frameAge = Number(currentCamera.captured_at) > 0 ? Math.max(0, Date.now() / 1000 - Number(currentCamera.captured_at)) : Infinity;
     if (cameraState) {
-      const frameAge = Number(currentCamera.captured_at) > 0 ? Math.max(0, Date.now() / 1000 - Number(currentCamera.captured_at)) : Infinity;
       cameraState.textContent = currentCamera.image_base64
         ? `LIVE · ${currentCamera.width || '—'}×${currentCamera.height || '—'} · ${Number.isFinite(frameAge) ? frameAge.toFixed(1) + 's' : 'age —'}`
         : `${currentCamera.state || frame.status || 'NO FRAME'}`;
     }
+    setFeedStatus('world-map-camera-state', 'camera', classifyAge('camera', frameAge, Boolean(currentCamera.image_base64)), currentCamera.image_base64
+      ? `LIVE · ${currentCamera.width || '—'}×${currentCamera.height || '—'} · ${Number.isFinite(frameAge) ? frameAge.toFixed(1) + 's' : 'age —'}`
+      : `${currentCamera.state || frame.status || 'NO FRAME'}`);
     const cameraImage = byId('world-map-camera-image');
     const cameraEmpty = byId('world-map-camera-empty');
     if (currentCamera.frame_id !== displayedCameraFrameId) {
@@ -765,10 +927,16 @@ async function refreshSensors() {
       drawDepthDetections(cloudDepthImage, detections);
       cloudYoloFrameId = yolo.frame_id || '';
     }
-    byId('world-map-yolo-state').textContent = `${yolo.state || 'disabled'} · ${(yolo.detections || []).length} boxes${yolo.latency_ms != null ? ` · ${yolo.latency_ms} ms` : ''}`;
-    byId('world-map-frame-state').textContent = currentCamera.frame_id ? `${currentCamera.frame_id}${currentCamera.captured_at ? ` · ${Math.max(0, Date.now() / 1000 - currentCamera.captured_at).toFixed(1)}s` : ''}` : 'No frame';
+    const yoloDetail = `${yolo.state || 'disabled'} · ${(yolo.detections || []).length} boxes${yolo.latency_ms != null ? ` · ${yolo.latency_ms} ms` : ''}`;
+    setFeedStatus('world-map-yolo-state', 'yolo', classifyAge('yolo', frameAge, yolo.state === 'ready' && Boolean(currentCamera.image_base64)), yoloDetail);
+    const frameDetail = currentCamera.frame_id ? `${currentCamera.frame_id}${currentCamera.captured_at ? ` · ${frameAge.toFixed(1)}s` : ''}` : 'No frame';
+    byId('world-map-frame-state').textContent = frameDetail;
+    const frameSummary = byId('world-map-summary-frame');
+    if (frameSummary) frameSummary.textContent = Number.isFinite(frameAge) ? `${frameAge.toFixed(1)} s` : '—';
     byId('world-map-sensor-note').textContent = `Sensor-only view · frame ${currentCamera.frame_id || 'unavailable'} · no simulation object positions or metric scale.`;
   } catch (error) {
+    setFeedStatus('world-map-camera-state', 'camera', 'offline', `Offline · ${error.message}`);
+    setFeedStatus('world-map-yolo-state', 'yolo', 'offline', 'Offline · waiting for camera frame');
     byId('world-map-sensor-note').textContent = `Sensor data unavailable: ${error.message}`;
   } finally {
     sensorBusy = false;
@@ -823,6 +991,10 @@ async function refreshSystemMetrics() {
       ? `Measured board input power: ${power.watts.toFixed(2)} watts on a 0 to ${powerScale} watt display scale`
       : 'Measured board input power unavailable');
     byId('world-map-system-power-value').textContent = power.available ? power.watts.toFixed(1) : '—';
+    const summaryPower = byId('world-map-summary-power');
+    const summaryEnergy = byId('world-map-summary-energy');
+    if (summaryPower) summaryPower.textContent = power.available ? `${power.watts.toFixed(1)} W` : '— W';
+    if (summaryEnergy) summaryEnergy.textContent = power.available ? `${power.energy_wh_session.toFixed(3)} Wh` : '— Wh';
     byId('world-map-system-power-meta').textContent = power.available
       ? `${power.voltage_v.toFixed(1)} V · ${power.current_a.toFixed(2)} A · scale 0–${powerScale} W`
       : 'Onboard power monitor unavailable';
@@ -833,9 +1005,7 @@ async function refreshSystemMetrics() {
       : 'Utilization counter unavailable';
     byId('world-map-system-energy').textContent = power.available
       ? `${power.energy_wh_session.toFixed(3)} Wh` : 'Unavailable';
-    byId('world-map-system-note').textContent = power.available
-      ? `${power.source}. Temperature dials show the hottest reported sensor in each group. GPU/HTP utilization remains unavailable because the kernel exports no reliable busy counter.`
-      : 'GPU/HTP utilization counters are unavailable. A battery-side shunt is needed to include external motor loads.';
+    byId('world-map-system-note').textContent = `${power.available ? `${power.source}. ` : ''}INA232 measures the onboard input rail and may exclude external motor loads. Temperature dials show the hottest reported sensor in each group; GPU/HTP utilization is unavailable because the kernel exports no reliable busy counter.`;
   } catch (error) {
     byId('world-map-system-state').textContent = `Unavailable · ${error.message}`;
   } finally { systemMetricsBusy = false; }
@@ -904,6 +1074,8 @@ async function refreshLiveRadar() {
     byId('world-map-radar-state').textContent = status.available
       ? `${targets.length} targets · ${source}${Number.isFinite(age) ? ` · ${age.toFixed(1)}s` : ''}`
       : status.error || 'No data';
+    setFeedStatus('world-map-radar-state', 'radar', classifyAge('radar', age, Boolean(status.available)), status.available
+      ? `${targets.length} targets · ${source}${Number.isFinite(age) ? ` · ${age.toFixed(1)}s` : ''}` : status.error || 'No data');
     byId('world-map-radar-targets').replaceChildren(...(targets.length ? targets.map((target, index) => {
       const position = target.position_m || target.position || [];
       const velocity = target.velocity_mps || target.velocity || [];
@@ -917,6 +1089,7 @@ async function refreshLiveRadar() {
     }) : [Object.assign(document.createElement('span'), { textContent: status.available ? 'No targets in current radar frame.' : 'Waiting for a live radar frame.' })]));
     drawLiveRadar(sample);
   } catch (error) {
+    setFeedStatus('world-map-radar-state', 'radar', 'offline', `Unavailable · ${error.message}`);
     byId('world-map-radar-state').textContent = `Unavailable · ${error.message}`;
     byId('world-map-radar-targets').textContent = 'No live radar data.';
     drawLiveRadar();
@@ -932,7 +1105,9 @@ async function refreshLiveGps() {
     const diagnostic = status.source_status?.diagnostic || {};
     const streaming = Boolean(status.available || sample.connected || Number(diagnostic.bytes_received) > 0);
     const fix = sample.fix === true || sample.valid === true || Number(sample.fix_quality) > 0;
-    byId('world-map-gps-state').textContent = fix ? `FIX · ${status.transport || sample.transport || 'UART'}` : streaming ? 'UART live · no fix' : status.error || 'Offline';
+    const gpsAge = Number(sample.timestamp) > 0 ? Math.max(0, Date.now() / 1000 - Number(sample.timestamp)) : NaN;
+    const gpsState = classifyAge('gps', gpsAge, streaming);
+    setFeedStatus('world-map-gps-state', 'gps', gpsState, fix ? `FIX · ${status.transport || sample.transport || 'UART'}` : streaming ? 'UART live · no fix' : status.error || 'Offline');
     const latitude = Number(sample.latitude_deg ?? sample.latitude ?? sample.lat);
     const longitude = Number(sample.longitude_deg ?? sample.longitude ?? sample.lon ?? sample.lng);
     byId('world-map-gps-position').textContent = fix && Number.isFinite(latitude) && Number.isFinite(longitude) ? `${latitude.toFixed(6)}, ${longitude.toFixed(6)}` : 'No valid fix';
@@ -953,7 +1128,7 @@ async function refreshLiveGps() {
       bar.title = `${id} · C/N₀ ${displayNumber(cn0, 0, ' dB-Hz')} · az ${satellite.azimuth_deg ?? '—'}° · el ${satellite.elevation_deg ?? '—'}°`;
       bar.append(value, fill, label); return bar;
     }) : [Object.assign(document.createElement('span'), { className: 'sensor-readout-note', textContent: status.available ? 'No GSV satellite signal values in the current GPS sample.' : 'Waiting for GSV data from the GPS receiver.' })]));
-  } catch (error) { byId('world-map-gps-state').textContent = `Unavailable · ${error.message}`; }
+  } catch (error) { setFeedStatus('world-map-gps-state', 'gps', 'offline', `Unavailable · ${error.message}`); }
   finally { readoutBusy.gps = false; }
 }
 
@@ -963,9 +1138,10 @@ async function refreshLiveImu() {
   try {
     const status = await sensorJson('/plugins/imu/status');
     const sample = status.sample || {};
-    byId('world-map-imu-state').textContent = status.available
+    const imuAge = Number(sample.timestamp) > 0 ? Math.max(0, Date.now() / 1000 - Number(sample.timestamp)) : NaN;
+    setFeedStatus('world-map-imu-state', 'imu', classifyAge('imu', imuAge, Boolean(status.available)), status.available
       ? `${sample.device || status.device || 'IMU'} · ${sample.attitude_valid ? 'attitude valid' : 'attitude invalid'}`
-      : status.error || 'No data';
+      : status.error || 'No data');
     byId('world-map-imu-roll').textContent = sample.attitude_valid ? displayNumber(sample.roll_deg, 1, '°') : 'Invalid';
     byId('world-map-imu-pitch').textContent = sample.attitude_valid ? displayNumber(sample.pitch_deg, 1, '°') : 'Invalid';
     byId('world-map-imu-yaw').textContent = displayNumber(sample.yaw_rate_dps ?? sample.angular_velocity_dps?.[2], 1, '°/s');
@@ -973,7 +1149,7 @@ async function refreshLiveImu() {
     byId('world-map-imu-accel').textContent = Array.isArray(acceleration) ? acceleration.map(value => displayNumber(value, 2)).join(' / ') : '—';
     const gyro = sample.angular_velocity_dps;
     byId('world-map-imu-gyro').textContent = Array.isArray(gyro) ? gyro.map(value => displayNumber(value, 1)).join(' / ') : '—';
-  } catch (error) { byId('world-map-imu-state').textContent = `Unavailable · ${error.message}`; }
+  } catch (error) { setFeedStatus('world-map-imu-state', 'imu', 'offline', `Unavailable · ${error.message}`); }
   finally { readoutBusy.imu = false; }
 }
 
@@ -983,11 +1159,16 @@ async function refreshLiveTof() {
   try {
     const status = await sensorJson('/plugins/tof/status');
     const sample = status.sample || {};
-    const available = status.available && sample.available !== false && !sample.simulated;
-    byId('world-map-tof-state').textContent = available ? `${sample.device || status.sensor || 'VL53L1X'} · live` : status.error || 'No fresh measurement';
+    const tofAge = Number(sample.timestamp) > 0 ? Math.max(0, Date.now() / 1000 - Number(sample.timestamp)) : NaN;
+    const available = status.available && sample.available !== false && !sample.simulated
+      && !/sensor_not_detected/i.test(String(status.error || ''));
+    const tofState = classifyAge('tof', tofAge, available);
+    setFeedStatus('world-map-tof-state', 'tof', tofState, tofState === 'stale'
+      ? `Stale · ${tofAge.toFixed(1)} s` : available ? `${sample.device || status.sensor || 'VL53L1X'} · live`
+        : status.error || 'No fresh measurement');
     byId('world-map-tof-distance').textContent = available ? displayNumber(sample.distance_m, 2, ' m') : 'No measurement';
     byId('world-map-tof-meta').textContent = available ? `${sample.frame || status.frame || 'body_front'} · ${displayNumber(sample.distance_mm, 0, ' mm')}` : status.transport || 'Forward single-beam range';
-  } catch (error) { byId('world-map-tof-state').textContent = `Unavailable · ${error.message}`; }
+  } catch (error) { setFeedStatus('world-map-tof-state', 'tof', 'offline', `Unavailable · ${error.message}`); }
   finally { readoutBusy.tof = false; }
 }
 
@@ -1006,11 +1187,13 @@ async function refreshSensorSegmentation() {
     if (state) {
       const maskAge = Number(segmentation.captured_at) > 0 ? Math.max(0, Date.now() / 1000 - Number(segmentation.captured_at)) : NaN;
       const age = Number.isFinite(maskAge) ? ` · ${maskAge.toFixed(1)}s old` : '';
-      state.textContent = `${segmentation.state || 'disabled'}${segmentation.device ? ` · ${segmentation.device}` : ''}${segmentation.latency_ms != null ? ` · ${segmentation.latency_ms} ms` : ''}${age}`;
+      const available = Boolean(segmentation.available || segmentation.mask_png_base64 || segmentation.class_mask);
+      const feedState = classifyAge('segmentation', maskAge, available && segmentation.state !== 'disabled');
+      setFeedStatus('world-map-segmentation-state', 'segmentation', feedState, `${segmentation.state || 'disabled'}${segmentation.device ? ` · ${segmentation.device}` : ''}${segmentation.latency_ms != null ? ` · ${segmentation.latency_ms} ms` : ''}${age}`);
     }
   } catch (error) {
     const state = byId('world-map-segmentation-state');
-    if (state) state.textContent = `SegFormer unavailable · ${error.message}`;
+    if (state) setFeedStatus('world-map-segmentation-state', 'segmentation', 'offline', `SegFormer unavailable · ${error.message}`);
   } finally {
     sensorSegmentationBusy = false;
   }
@@ -1030,7 +1213,9 @@ async function refreshSensorDepth() {
     setImage(byId('world-map-depth-image'), byId('world-map-depth-empty'), depth.depth_jpeg_base64);
     const depthAge = Number(depth.captured_at) > 0
       ? ` · ${Math.max(0, Date.now() / 1000 - Number(depth.captured_at)).toFixed(1)}s old` : '';
-    byId('world-map-midas-state').textContent = `${depth.state || 'disabled'}${depth.device ? ` · ${depth.device}` : ''}${depth.latency_ms != null ? ` · ${depth.latency_ms} ms` : ''}${depthAge}${depth.error ? ` · ${depth.error}` : ''}`;
+    const ageSeconds = Number(depth.captured_at) > 0 ? Math.max(0, Date.now() / 1000 - Number(depth.captured_at)) : NaN;
+    const midasState = classifyAge('midas', ageSeconds, Boolean(depth.depth_jpeg_base64) && depth.state !== 'disabled');
+    setFeedStatus('world-map-midas-state', 'midas', midasState, `${depth.state || 'disabled'}${depth.device ? ` · ${depth.device}` : ''}${depth.latency_ms != null ? ` · ${depth.latency_ms} ms` : ''}${depthAge}${depth.error ? ` · ${depth.error}` : ''}`);
     updateMetricCalibrationStatus();
     const alignedSegmentationFrameId = segmentationMatchesDepth(segmentation, depth)
       ? String(segmentation.frame_id || segmentation.captured_at || '') : '';
@@ -1047,7 +1232,7 @@ async function refreshSensorDepth() {
         .catch((error) => console.warn('Could not rebuild MiDaS depth cloud:', error));
     }
   } catch (error) {
-    byId('world-map-midas-state').textContent = `unavailable · ${error.message}`;
+    setFeedStatus('world-map-midas-state', 'midas', 'offline', `unavailable · ${error.message}`);
   } finally {
     sensorDepthBusy = false;
   }
@@ -1067,9 +1252,11 @@ async function refreshVisualOdometry() {
       mapStatus.textContent = odometry.available ? 'TRACKING' : `${String(odometry.state || 'waiting').toUpperCase()} · LAST FIX RETAINED`;
       mapStatus.title = odometry.reason || '';
     }
+    const odometryAge = Number(odometry.captured_at) > 0 ? Math.max(0, Date.now() / 1000 - Number(odometry.captured_at)) : NaN;
+    const odometryState = classifyAge('odometry', odometryAge, Boolean(odometry.available));
     if (odometry.available) {
       const [forward = 0, lateral = 0] = odometry.position_m || [];
-      status.textContent = `${forward.toFixed(2)}m fwd · ${lateral.toFixed(2)}m left · ${Math.round(odometry.confidence * 100)}% · experimental`;
+      setFeedStatus('world-map-odometry-state', 'odometry', odometryState, `${forward.toFixed(2)}m fwd · ${lateral.toFixed(2)}m left · ${Math.round(odometry.confidence * 100)}% · experimental`);
       const frameId = String(odometry.frame_id || '');
       if (frameId && frameId !== visualOdometryFrameId) {
         visualOdometryFrameId = frameId;
@@ -1078,12 +1265,12 @@ async function refreshVisualOdometry() {
       }
       renderVisualOdometryMap(odometry);
     } else {
-      status.textContent = `${odometry.state || 'waiting'} · ${odometry.reason || 'need synchronized camera, MiDaS and radar calibration'}`;
+      setFeedStatus('world-map-odometry-state', 'odometry', 'offline', `${odometry.state || 'waiting'} · ${odometry.reason || 'need synchronized camera, MiDaS and radar calibration'}`);
       if (mapStatus) mapStatus.title = odometry.reason || '';
     }
   } catch (error) {
     const status = byId('world-map-odometry-state');
-    if (status) status.textContent = `unavailable · ${error.message}`;
+    if (status) setFeedStatus('world-map-odometry-state', 'odometry', 'offline', `unavailable · ${error.message}`);
   } finally {
     visualOdometryBusy = false;
   }
@@ -1094,8 +1281,8 @@ function renderVisualOdometryMap(odometry) {
   const body = byId('world-map-odometry-body');
   const position = byId('world-map-odometry-position');
   if (!trail || !body || !position || !visualOdometryTrail.length) return;
-  const width = 640, height = 260;
-  const plot = { left: 56, right: 584, top: 32, bottom: 220 };
+  const width = 640, height = 480;
+  const plot = { left: 56, right: 584, top: 58, bottom: 420 };
   const forwards = visualOdometryTrail.map(point => point.forward);
   const laterals = visualOdometryTrail.map(point => point.lateral);
   const minForward = Math.min(0, ...forwards), maxForward = Math.max(0, ...forwards);
