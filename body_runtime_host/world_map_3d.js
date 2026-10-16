@@ -44,6 +44,10 @@ if (panel) {
     liveReadouts.id = 'world-map-live-readouts';
     liveReadouts.className = 'world-map-live-readouts';
     liveReadouts.innerHTML = `<article class="sensor-readout-card sensor-readout-wide"><header><strong>mmWave · LD2450</strong><small id="world-map-radar-state">Waiting</small></header><canvas id="world-map-radar-plot" height="190" aria-label="Live mmWave target positions and radial velocities"></canvas><div id="world-map-radar-targets" class="sensor-target-list">Waiting for radar data.</div></article><article class="sensor-readout-card"><header><strong>GPS / GNSS · D0/D1</strong><small id="world-map-gps-state">Waiting</small></header><div class="sensor-readout-values"><span>Position<b id="world-map-gps-position">No fix</b></span><span>Fix / quality<b id="world-map-gps-fix">—</b></span><span>Satellites<b id="world-map-gps-satellites">— used · — in view</b></span><span>HDOP / altitude<b id="world-map-gps-quality">—</b></span></div><div id="world-map-gps-signals" class="sensor-gps-signals" role="img" aria-label="GPS satellite signal strength by satellite"></div></article><article class="sensor-readout-card"><header><strong>Modulino Movement · IMU</strong><small id="world-map-imu-state">Waiting</small></header><div class="sensor-readout-values"><span>Roll<b id="world-map-imu-roll">—</b></span><span>Pitch<b id="world-map-imu-pitch">—</b></span><span>Yaw rate<b id="world-map-imu-yaw">—</b></span><span>Acceleration · g<b id="world-map-imu-accel">—</b></span><span>Angular rate · °/s<b id="world-map-imu-gyro">—</b></span></div><p class="sensor-readout-note">Six-axis IMU; yaw is relative angular rate, not a magnetic heading.</p></article><article class="sensor-readout-card"><header><strong>ToF · VL53L1X</strong><small id="world-map-tof-state">Waiting</small></header><div class="sensor-distance"><b id="world-map-tof-distance">—</b><span id="world-map-tof-meta">Forward single-beam range</span></div></article><article class="sensor-readout-card"><header><strong>LiDAR</strong><small id="world-map-lidar-state">No live source</small></header><p class="sensor-readout-note">No physical LiDAR stream is connected to this Body view. Any LiDAR volume shown in Simulation is virtual and is kept out of this live sensor view.</p></article><article class="sensor-readout-card"><header><strong>Ultrasonic · HC-SR04</strong><small id="world-map-ultrasonic-state">No live source</small></header><div class="sensor-readout-values sensor-range-channels"><span>Front-left<b id="world-map-ultrasonic-left">No data</b></span><span>Front-right<b id="world-map-ultrasonic-right">No data</b></span><span>Rear<b id="world-map-ultrasonic-rear">No data</b></span></div><p class="sensor-readout-note">Waiting for the ultrasonic firmware/gateway data channel; no simulated ranges are shown here.</p></article>`;
+    const computeCard = document.createElement('article');
+    computeCard.className = 'sensor-readout-card sensor-readout-wide';
+    computeCard.innerHTML = `<header><strong>Compute & power</strong><small id="world-map-system-state">Sampling</small></header><div class="sensor-readout-values"><span>CPU<b id="world-map-system-cpu">Sampling</b></span><span>GPU<b id="world-map-system-gpu">Sampling</b></span><span>HTP accelerator<b id="world-map-system-htp">Inference telemetry</b></span><span>Memory<b id="world-map-system-memory">Sampling</b></span><span>Measured input power<b id="world-map-system-power">Unavailable</b></span><span>Energy since Body start<b id="world-map-system-energy">Unavailable</b></span></div><p id="world-map-system-note" class="sensor-readout-note">GPU and HTP utilization are shown only when the kernel exports a valid usage counter. Input power may exclude external motor loads.</p>`;
+    liveReadouts.prepend(computeCard);
     sensorPanel.append(liveReadouts);
     const semanticPanel = document.createElement('div');
     semanticPanel.className = 'world-map-segmentation-classes';
@@ -766,10 +770,43 @@ async function sensorJson(path) {
 }
 
 const readoutBusy = { radar: false, gps: false, imu: false, tof: false };
+let systemMetricsBusy = false;
 const displayNumber = (value, digits = 1, suffix = '') => {
   const number = value === null || value === undefined || value === '' ? NaN : Number(value);
   return Number.isFinite(number) ? `${number.toFixed(digits)}${suffix}` : '—';
 };
+
+async function refreshSystemMetrics() {
+  if (systemMetricsBusy || activeSource !== 'sensors') return;
+  systemMetricsBusy = true;
+  try {
+    const metrics = await sensorJson('/system/metrics');
+    const cpu = metrics.cpu || {}, gpu = metrics.gpu || {}, memory = metrics.memory || {}, power = metrics.power || {};
+    byId('world-map-system-state').textContent = metrics.available ? 'Live · 1 s' : 'Partial telemetry';
+    byId('world-map-system-cpu').textContent = cpu.utilization_percent == null
+      ? 'Sampling…' : `${cpu.utilization_percent.toFixed(1)}%${cpu.temperature_c == null ? '' : ` · ${cpu.temperature_c.toFixed(1)}°C`}`;
+    const gpuClock = gpu.frequency_mhz == null ? 'clock unavailable' : `${gpu.frequency_mhz.toFixed(0)} MHz`;
+    const gpuLoad = gpu.utilization_percent == null ? 'usage unavailable' : `${gpu.utilization_percent.toFixed(1)}%`;
+    byId('world-map-system-gpu').textContent = `${gpuLoad} · ${gpuClock}${gpu.temperature_c == null ? '' : ` · ${gpu.temperature_c.toFixed(1)}°C`}`;
+    const yoloHtp = String(latestSensorYolo?.runtime || '').toLowerCase().includes('htp');
+    const midasHtp = String(latestSensorDepth?.device || '').toLowerCase().includes('htp');
+    byId('world-map-system-htp').textContent = yoloHtp || midasHtp
+      ? `Active · YOLOX ${yoloHtp ? 'HTP' : '—'} · MiDaS ${midasHtp ? 'HTP' : '—'} · % unavailable`
+      : 'Utilization counter unavailable';
+    byId('world-map-system-memory').textContent = memory.used_percent == null
+      ? 'Unavailable' : `${memory.used_percent.toFixed(1)}% · ${memory.available_mb} / ${memory.total_mb} MB free`;
+    byId('world-map-system-power').textContent = power.available
+      ? `${power.watts.toFixed(2)} W · ${power.voltage_v.toFixed(2)} V · ${power.current_a.toFixed(3)} A`
+      : 'No readable onboard power monitor';
+    byId('world-map-system-energy').textContent = power.available
+      ? `${power.energy_wh_session.toFixed(4)} Wh · since Body start` : 'Unavailable';
+    byId('world-map-system-note').textContent = power.available
+      ? `${power.source}. GPU clock is distinct from GPU utilization; HTP load percentage is not exported by the current kernel.`
+      : 'GPU/HTP utilization counters are unavailable. A battery-side shunt is needed to include external motor loads.';
+  } catch (error) {
+    byId('world-map-system-state').textContent = `Unavailable · ${error.message}`;
+  } finally { systemMetricsBusy = false; }
+}
 
 function drawLiveRadar(sample = {}) {
   const canvas = byId('world-map-radar-plot');
@@ -1258,10 +1295,14 @@ setInterval(() => {
 setInterval(() => {
   if (activeSource !== 'sensors') return;
   void refreshLiveRadar();
+}, 3000);
+setInterval(() => { void refreshSystemMetrics(); }, 1000);
+setInterval(() => {
+  if (activeSource !== 'sensors') return;
   void refreshLiveGps();
   void refreshLiveImu();
   void refreshLiveTof();
-}, 1500);
+}, 500);
 setInterval(() => {
   if (activeSource === 'sensors' && byId('world-map-segmentation-toggle')?.checked) {
     void refreshSensorSegmentation();

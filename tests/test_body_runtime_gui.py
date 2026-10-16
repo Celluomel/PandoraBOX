@@ -74,6 +74,12 @@ class BodyRuntimeGuiTests(unittest.TestCase):
         self.assertNotIn("latestSensorYolo?.frame_id === depthFrameId", source)
         self.assertIn("age <= 2.5", source)
         self.assertIn("}, 150);", source)
+        self.assertIn("}, 3000);", source)
+        self.assertIn("}, 500);", source)
+        self.assertIn("Compute & power", source)
+        self.assertIn("refreshSystemMetrics", source)
+        self.assertIn("/system/metrics", source)
+        self.assertIn("temperature_c", (root / "body_runtime_host" / "runtime.py").read_text(encoding="utf-8"))
 
     def test_modulino_movement_controls_expose_persistent_body_setting_and_live_sample(self):
         from body_runtime_host.body_gui import BODY_GUI_HTML

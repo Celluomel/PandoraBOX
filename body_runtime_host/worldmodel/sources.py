@@ -703,7 +703,7 @@ def resolve_source(config: Dict[str, Any], latest: Optional[Dict[str, Dict[str, 
         logger.warning("[body] FNK0031 plugin enabled but FNK0031_URL/ROBOT_URL is empty — falling through")
     # 3) simulated robot (development / tests / demos)
     if bool(config.get("BODY_PLUGIN_SIM_ROBOT_ENABLED", False)):
-        return SimRobotSource(camera_interval=float(config.get("BODY_CAMERA_INTERVAL", 0.5) or 0.5))
+        return SimRobotSource(camera_interval=float(config.get("BODY_CAMERA_INTERVAL", 0.125) or 0.125))
     # 4) HA fallback (auxiliary context)
     if latest is not None and bool(config.get("BODY_PLUGIN_HOME_ASSISTANT_ENABLED",
                                              config.get("HOME_ASSISTANT_ENABLED", False))):

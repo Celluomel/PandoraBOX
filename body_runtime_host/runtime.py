@@ -147,6 +147,11 @@ class BodyHost:
         self._imu_bridge_source = None
         self._gps_bridge_source = None
         self._mmwave_status_source = None
+        self._system_metrics_lock = threading.Lock()
+        self._system_cpu_previous: tuple[int, int] | None = None
+        self._system_gpu_previous: tuple[int, int] | None = None
+        self._system_energy_wh = 0.0
+        self._system_energy_updated_at: float | None = None
         self._robot_last_ok: float | None = None
         self._robot_last_error = ""
         self._fnk_usb_last_publish = 0.0
@@ -654,17 +659,17 @@ class BodyHost:
                 "last_error": "",
             }
         return {
-            "interval": max(1.0 / 60.0, float(self.value("BODY_CAMERA_INTERVAL", 0.5) or 0.5)),
+            "interval": max(1.0 / 60.0, float(self.value("BODY_CAMERA_INTERVAL", 0.125) or 0.125)),
             "width": max(640, int(self.value("BODY_CAMERA_WIDTH", 640) or 640)),
             "height": max(480, int(self.value("BODY_CAMERA_HEIGHT", 480) or 480)),
             "profile": str(self.value("BODY_CAMERA_PROFILE", "low_body_front") or "low_body_front"),
             "startup_enabled": startup_enabled,
             "device_index": max(0, int(self.value("BODY_CAMERA_DEVICE_INDEX", 0) or 0)),
-            "fps": round(1.0 / max(1.0 / 60.0, float(self.value("BODY_CAMERA_INTERVAL", 0.5) or 0.5)), 2),
+            "fps": round(1.0 / max(1.0 / 60.0, float(self.value("BODY_CAMERA_INTERVAL", 0.125) or 0.125)), 2),
             "brain_settings": {
                 "autostart": startup_enabled,
                 "camera_id": max(0, int(self.value("BODY_CAMERA_DEVICE_INDEX", 0) or 0)),
-                "fps": round(1.0 / max(1.0 / 60.0, float(self.value("BODY_CAMERA_INTERVAL", 0.5) or 0.5)), 2),
+                "fps": round(1.0 / max(1.0 / 60.0, float(self.value("BODY_CAMERA_INTERVAL", 0.125) or 0.125)), 2),
                 "resolution": f"{max(640, int(self.value('BODY_CAMERA_WIDTH', 640) or 640))}x{max(480, int(self.value('BODY_CAMERA_HEIGHT', 480) or 480))}",
                 "vlm_model": str(self.value("BODY_LLM_MODEL", "") or ""),
             },
@@ -783,7 +788,7 @@ class BodyHost:
                 self._local_camera is not None
                 and self._local_camera.status().get("status") in {"capturing", "starting"}
             )
-        self.config["BODY_CAMERA_INTERVAL"] = max(1.0 / 60.0, min(30.0, float(payload.get("interval", 0.5) or 0.5)))
+        self.config["BODY_CAMERA_INTERVAL"] = max(1.0 / 60.0, min(30.0, float(payload.get("interval", 0.125) or 0.125)))
         if payload.get("fps") is not None:
             self.config["BODY_CAMERA_INTERVAL"] = 1.0 / max(1.0, min(60.0, float(payload.get("fps") or 5)))
         self.config["BODY_CAMERA_WIDTH"] = max(640, min(3840, int(payload.get("width", 640) or 640)))
@@ -813,7 +818,7 @@ class BodyHost:
             "BODY_YOLO_AMBIGUITY_MARGIN": max(0.0, min(0.5, float(payload.get("yolox_ambiguity_margin", self.value("BODY_YOLO_AMBIGUITY_MARGIN", 0.12))))),
             "BODY_YOLO_VLM_FALLBACK": _payload_bool(payload.get("yolox_vlm_fallback"), _payload_bool(self.value("BODY_YOLO_VLM_FALLBACK", True))),
             "BODY_YOLO_VLM_COOLDOWN_S": max(5.0, min(300.0, float(payload.get("yolox_vlm_cooldown_s", self.value("BODY_YOLO_VLM_COOLDOWN_S", 15.0))))),
-            "BODY_YOLO_INTERVAL_S": max(0.15, min(5.0, float(payload.get("yolox_interval_s", self.value("BODY_YOLO_INTERVAL_S", 0.5))))),
+            "BODY_YOLO_INTERVAL_S": max(0.15, min(5.0, float(payload.get("yolox_interval_s", self.value("BODY_YOLO_INTERVAL_S", 0.25))))),
         }
         if yolo_values["BODY_YOLO_RUNTIME"] not in {"htp_auto", "htp", "cpu"}:
             raise ValueError("YOLOX runtime must be htp_auto, htp, or cpu")
@@ -826,7 +831,7 @@ class BodyHost:
             raise ValueError("MiDaS runtime must be htp_auto, htp, or cpu")
         self.config["BODY_MIDAS_RUNTIME"] = midas_runtime
         self.config["BODY_MIDAS_INTERVAL_S"] = max(
-            0.15, min(30.0, float(payload.get("midas_interval_s", self.value("BODY_MIDAS_INTERVAL_S", 0.5)) or 0.5)),
+            0.15, min(30.0, float(payload.get("midas_interval_s", self.value("BODY_MIDAS_INTERVAL_S", 0.25)) or 0.25)),
         )
         self.config["BODY_MIDAS_PYTHON"] = str(
             payload.get("midas_python", self.value("BODY_MIDAS_PYTHON", self._midas_service.DEFAULT_PYTHON))
@@ -1902,6 +1907,115 @@ class BodyHost:
             return {**settings, "available": True, "sample": sample, "source_status": source.status()}
         except Exception as exc:
             return {**settings, "available": False, "error": str(exc)[:240], "source_status": source.status()}
+
+    def system_metrics(self) -> dict:
+        """Expose host load and board-input telemetry without external dependencies."""
+        now = time.monotonic()
+        cpu_percent = None
+        try:
+            fields = Path("/proc/stat").read_text(encoding="ascii").splitlines()[0].split()
+            counters = [int(value) for value in fields[1:]]
+            total = sum(counters)
+            idle = counters[3] + (counters[4] if len(counters) > 4 else 0)
+            with self._system_metrics_lock:
+                previous = self._system_cpu_previous
+                self._system_cpu_previous = (total, idle)
+            if previous:
+                total_delta = total - previous[0]
+                idle_delta = idle - previous[1]
+                if total_delta > 0:
+                    cpu_percent = round(max(0.0, min(100.0, 100.0 * (1 - idle_delta / total_delta))), 1)
+        except (OSError, ValueError, IndexError):
+            pass
+
+        memory = {"used_percent": None, "total_mb": None, "available_mb": None}
+        try:
+            meminfo = {}
+            for line in Path("/proc/meminfo").read_text(encoding="ascii").splitlines():
+                key, value = line.split(":", 1)
+                meminfo[key] = int(value.strip().split()[0])
+            total_kb = meminfo.get("MemTotal", 0)
+            available_kb = meminfo.get("MemAvailable", 0)
+            if total_kb:
+                memory = {
+                    "used_percent": round(100 * (total_kb - available_kb) / total_kb, 1),
+                    "total_mb": round(total_kb / 1024),
+                    "available_mb": round(available_kb / 1024),
+                }
+        except (OSError, ValueError, KeyError):
+            pass
+
+        gpu = {"utilization_percent": None, "frequency_mhz": None, "temperature_c": None,
+               "state": "usage counter unavailable"}
+        try:
+            for device in Path("/sys/class/devfreq").iterdir():
+                if "gpu" not in device.name.lower():
+                    continue
+                frequency_path = device / "cur_freq"
+                if frequency_path.exists():
+                    gpu["frequency_mhz"] = round(int(frequency_path.read_text().strip()) / 1_000_000, 1)
+                busy_path = next((device / name for name in ("gpu_busy_percentage", "utilization")
+                                  if (device / name).exists()), None)
+                if busy_path:
+                    raw = int(busy_path.read_text().strip())
+                    gpu["utilization_percent"] = round(max(0, min(100, raw)), 1)
+                    gpu["state"] = "utilization measured"
+                break
+        except (OSError, ValueError):
+            pass
+
+        power = {"available": False, "watts": None, "voltage_v": None, "current_a": None,
+                 "energy_wh_session": None, "source": "No readable onboard power monitor"}
+        for name_path in Path("/sys/class/hwmon").glob("hwmon*/name"):
+            try:
+                if name_path.read_text(encoding="ascii").strip().lower() != "ina232":
+                    continue
+                directory = name_path.parent
+                watts = int((directory / "power1_input").read_text().strip()) / 1_000_000
+                voltage_v = int((directory / "in1_input").read_text().strip()) / 1_000
+                current_a = int((directory / "curr1_input").read_text().strip()) / 1_000
+                with self._system_metrics_lock:
+                    if self._system_energy_updated_at is not None:
+                        elapsed = min(5.0, max(0.0, now - self._system_energy_updated_at))
+                        self._system_energy_wh += watts * elapsed / 3600.0
+                    self._system_energy_updated_at = now
+                    energy_wh = self._system_energy_wh
+                power = {"available": True, "watts": round(watts, 2),
+                         "voltage_v": round(voltage_v, 2), "current_a": round(current_a, 3),
+                         "energy_wh_session": round(energy_wh, 4),
+                         "source": "INA232 onboard input rail; excludes loads outside the monitored rail"}
+                break
+            except (OSError, ValueError):
+                continue
+
+        cpu_temperature = gpu_temperature = None
+        for name_path in Path("/sys/class/hwmon").glob("hwmon*/name"):
+            try:
+                name = name_path.read_text(encoding="ascii").strip().lower()
+                if "cpu" not in name and "cpuss" not in name and "gpuss" not in name:
+                    continue
+                temperature_path = name_path.parent / "temp1_input"
+                if not temperature_path.exists():
+                    continue
+                temperature = int(temperature_path.read_text().strip()) / 1000
+                if "gpu" in name or "gpuss" in name:
+                    gpu_temperature = max(gpu_temperature or temperature, temperature)
+                else:
+                    cpu_temperature = max(cpu_temperature or temperature, temperature)
+            except (OSError, ValueError):
+                continue
+        gpu["temperature_c"] = round(gpu_temperature, 1) if gpu_temperature is not None else None
+
+        return {
+            "available": cpu_percent is not None or power["available"] or gpu["frequency_mhz"] is not None,
+            "sampled_at": time.time(),
+            "cpu": {"utilization_percent": cpu_percent, "temperature_c": round(cpu_temperature, 1) if cpu_temperature is not None else None},
+            "gpu": gpu,
+            "memory": memory,
+            "power": power,
+            "accelerator": {"name": "Qualcomm HTP", "utilization_percent": None,
+                            "note": "The current kernel does not expose a reliable HTP busy percentage; model runtime and inference latency are shown separately."},
+        }
 
     def update_imu_settings(self, payload: dict) -> dict:
         enabled = _payload_bool((payload or {}).get("enabled"), False)
@@ -3115,7 +3229,7 @@ class BodyHost:
         if mode == "sim" and not usb_robot_selected:
             try:
                 source = SimRobotSource(
-                    camera_interval=float(self.value("BODY_CAMERA_INTERVAL", 0.5) or 0.5),
+                    camera_interval=float(self.value("BODY_CAMERA_INTERVAL", 0.125) or 0.125),
                     mmwave_enabled=not real_mmwave_selected,
                     camera_width=int(self.value("BODY_CAMERA_WIDTH", 640) or 640),
                     camera_height=int(self.value("BODY_CAMERA_HEIGHT", 480) or 480),
@@ -3496,6 +3610,8 @@ class BodyHost:
                     self._send(owner.gps_status())
                 elif path == "/plugins/tof/status":
                     self._send(owner.tof_status())
+                elif path == "/system/metrics":
+                    self._send(owner.system_metrics())
                 elif path == "/plugins/fnk0031_wifi/usb/status":
                     self._send(owner.fnk0031_usb_status())
                 elif path == "/plugins/fnk0031_wifi/modules":

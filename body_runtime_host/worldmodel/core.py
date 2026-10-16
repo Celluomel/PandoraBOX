@@ -105,7 +105,7 @@ DEFAULT_CONFIG = {
     "BODY_LLM_EMBEDDING_MODEL": "text-embedding-nomic-embed-text-v1.5",
     "BODY_LLM_EMBEDDING_THRESHOLD": 0.55,
     "BODY_LLM_EMBEDDING_TIMEOUT": 4.0,
-    "BODY_CAMERA_INTERVAL": 0.5,
+    "BODY_CAMERA_INTERVAL": 0.125,
     "BODY_YOLO_ENABLED": False,
     "BODY_YOLO_PYTHON": "/home/arduino/.venvs/yolox-infer/bin/python",
     "BODY_YOLO_MODEL_PATH": "/home/arduino/models/yolox-qairt245/yolox-qnn_dlc-w8a8/yolox.dlc",
@@ -114,10 +114,10 @@ DEFAULT_CONFIG = {
     "BODY_YOLO_AMBIGUITY_MARGIN": 0.12,
     "BODY_YOLO_VLM_FALLBACK": True,
     "BODY_YOLO_VLM_COOLDOWN_S": 15.0,
-    "BODY_YOLO_INTERVAL_S": 0.5,
+    "BODY_YOLO_INTERVAL_S": 0.25,
     "BODY_MIDAS_ENABLED": False,
     "BODY_MIDAS_RUNTIME": "htp_auto",
-    "BODY_MIDAS_INTERVAL_S": 0.3,
+    "BODY_MIDAS_INTERVAL_S": 0.25,
     "BODY_MIDAS_PYTHON": "/home/arduino/.venvs/yolox-infer/bin/python",
     "BODY_MIDAS_MODEL_PATH": "/home/arduino/models/midas-qualcomm/midas-float.dlc",
 }
@@ -182,7 +182,7 @@ class EmbodiedWorldModel:
             self.source = None  # legacy brain-side bridge path
         else:
             self.source = SimRobotSource(
-                camera_interval=float(self._cfg.get("BODY_CAMERA_INTERVAL", 0.5) or 0.5),
+                camera_interval=float(self._cfg.get("BODY_CAMERA_INTERVAL", 0.125) or 0.125),
                 simulation_dt_s=float(self._cfg.get("simulation_dt_s", 1.0) or 1.0),
             )
         # dynamics input dim is fixed by the cortex output dim
