@@ -47,8 +47,16 @@ if (panel) {
     const computeCard = document.createElement('article');
     computeCard.className = 'sensor-readout-card sensor-readout-wide';
     computeCard.innerHTML = `<header><strong>Compute & power</strong><small id="world-map-system-state">Sampling</small></header><div class="system-instrument-grid"><article class="system-instrument"><span class="system-instrument-label">CPU LOAD</span><div class="system-gauge" id="world-map-cpu-gauge" role="img" aria-label="CPU utilization"><div class="system-gauge-center"><strong id="world-map-system-cpu-value">—</strong><small>%</small></div></div><span class="system-instrument-foot" id="world-map-system-cpu-temp">CPU temp · —</span></article><article class="system-instrument"><span class="system-instrument-label">CPU TEMP</span><div class="system-gauge system-gauge-temp" id="world-map-cpu-temp-gauge" role="img" aria-label="Maximum CPU temperature"><div class="system-gauge-center"><strong id="world-map-system-cpu-temp-value">—</strong><small>°C</small></div></div><span class="system-instrument-foot">Hottest reported CPU sensor · 0–100 °C</span></article><article class="system-instrument"><span class="system-instrument-label">GPU TEMP</span><div class="system-gauge system-gauge-temp" id="world-map-gpu-temp-gauge" role="img" aria-label="Maximum GPU temperature"><div class="system-gauge-center"><strong id="world-map-system-gpu-temp-value">—</strong><small>°C</small></div></div><span class="system-instrument-foot" id="world-map-system-gpu-meta">Load unavailable · — MHz</span></article><article class="system-instrument"><span class="system-instrument-label">MEMORY</span><div class="system-gauge" id="world-map-memory-gauge" role="img" aria-label="Memory utilization"><div class="system-gauge-center"><strong id="world-map-system-memory-value">—</strong><small>%</small></div></div><span class="system-instrument-foot" id="world-map-system-memory-meta">— free</span></article><article class="system-instrument"><span class="system-instrument-label">BOARD INPUT</span><div class="system-gauge system-gauge-power" id="world-map-power-gauge" role="img" aria-label="Measured board input power"><div class="system-gauge-center"><strong id="world-map-system-power-value">—</strong><small>W</small></div></div><span class="system-instrument-foot" id="world-map-system-power-meta">INA232 · measured rail</span></article></div><div class="system-telemetry-strip"><div><span>GPU utilization</span><strong id="world-map-system-gpu-load">Unavailable</strong></div><div><span>GPU clock</span><strong id="world-map-system-gpu-clock">—</strong></div><div><span>Qualcomm HTP</span><strong id="world-map-system-htp">Waiting for inference status</strong></div><div><span>Energy since Body start</span><strong id="world-map-system-energy">—</strong></div></div><p id="world-map-system-note" class="sensor-readout-note">GPU/HTP usage percentages require kernel counters. Board input may exclude external motor loads.</p>`;
-    liveReadouts.prepend(computeCard);
+    liveReadouts.append(computeCard);
     sensorPanel.append(liveReadouts);
+    const analysisGrid = document.createElement('div');
+    analysisGrid.className = 'world-map-analysis-grid';
+    analysisGrid.append(
+      sensorPanel.querySelector('.world-map-odometry-view'),
+      sensorPanel.querySelector('.world-map-segmentation-panel'),
+    );
+    sensorPanel.querySelector('.world-map-sensor-2d')?.after(analysisGrid);
+    liveReadouts.querySelector('.sensor-readout-wide')?.classList.remove('sensor-readout-wide');
     mapLayout.after(sensorPanel);
     const style = document.createElement('style');
     style.textContent = `
@@ -65,16 +73,17 @@ if (panel) {
       .world-map-sensor-metrics{display:flex;gap:8px;flex-wrap:wrap;padding:10px 0;color:#64776c;font:10px ui-monospace,monospace}
       .world-map-sensor-metrics span{padding:6px 9px;border:1px solid #d7e1da;background:#f3f7f4}
       .world-map-sensor-metrics b{color:#183d2d;font-weight:650}
-      .world-map-odometry-view{margin-top:12px;background:#07120f;border:1px solid #263e32}
+      .world-map-odometry-view{min-width:0;background:#07120f;border:1px solid #263e32}
       .world-map-odometry-view>.world-map-sensor-heading{display:flex;justify-content:space-between;gap:12px;align-items:center}
       .world-map-odometry-view>.world-map-sensor-heading small{color:#a9c0b2;font:10px ui-monospace,monospace}
-      #world-map-odometry-map{display:block;width:100%;height:clamp(220px,28vh,300px);background:#07120f}
+      #world-map-odometry-map{display:block;width:100%;height:clamp(140px,18vh,190px);background:#07120f}
       .odom-map-bg{fill:#07120f}.odom-grid{fill:none;stroke:#254235;stroke-width:1}.odom-grid .odom-axis{stroke:#48745a;stroke-width:1.5}
       .odom-axis-label,.odom-empty-label{fill:#89a895;font:10px ui-monospace,monospace}.odom-position-label{fill:#dceee3;font:11px ui-monospace,monospace}
       #world-map-odometry-trail{fill:none;stroke:#42d6b1;stroke-width:3;stroke-linecap:round;stroke-linejoin:round}
       #world-map-odometry-start{fill:#edbd69;stroke:#07120f;stroke-width:2}#world-map-odometry-body path{fill:#75dfa2;stroke:#d9f5e5;stroke-width:1.5}
       .world-map-odometry-footnote{margin:0;padding:0 10px 9px;color:#89a895;font:10px ui-monospace,monospace}
       .world-map-sensor-2d{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(220px,.8fr);gap:12px;align-items:stretch}
+      .world-map-analysis-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;margin-top:12px;align-items:start}
       .world-map-camera,.world-map-depth{min-width:0;position:relative;background:#07120f;border:1px solid #263e32;overflow:hidden}
       .world-map-sensor-heading{padding:9px 11px;border-bottom:1px solid #263e32;color:#91c9aa;font:10px ui-monospace,monospace}
       .world-map-image-wrap{position:relative;display:grid;place-items:center;width:100%;aspect-ratio:4/3;max-height:500px;background:#020805;overflow:hidden}
@@ -85,8 +94,8 @@ if (panel) {
       .world-map-segmentation-classes span{display:inline-flex;align-items:center;gap:5px}
       .world-map-segmentation-classes i{width:8px;height:8px;flex:0 0 8px;border-radius:50%}
       .world-map-segmentation-panel{min-width:0;margin-top:12px;overflow:hidden;border:1px solid #263e32;background:#07120f}
-      .world-map-segmentation-preview{position:relative;display:grid;min-height:180px;max-height:380px;place-items:center;overflow:hidden;background:#020805}
-      #world-map-segmentation-overlay{display:block;width:100%;height:auto;max-height:380px;object-fit:contain}
+      .world-map-segmentation-preview{position:relative;display:grid;aspect-ratio:4/3;min-height:140px;max-height:260px;place-items:center;overflow:hidden;background:#020805}
+      #world-map-segmentation-overlay{display:block;width:100%;height:100%;max-height:260px;object-fit:contain}
       #world-map-segmentation-overlay[hidden]{display:none!important}
       .world-map-depth img{display:block;width:100%;height:100%;min-height:220px;max-height:500px;object-fit:contain;background:#020805}
       .world-map-depth>small{padding:7px 10px;color:#9eb5a6;font:10px ui-monospace,monospace}
@@ -98,13 +107,13 @@ if (panel) {
       .world-map-empty[hidden]{display:none}
       .world-map-sensor-note{margin:9px 0 0;color:#a9c0b2;font-size:11px}
       .world-map-sensor-cloud{height:clamp(360px,54vh,620px)}
-      .world-map-live-readouts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:14px}
+      .world-map-live-readouts{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,340px),1fr));gap:12px;margin-top:14px}
       .sensor-readout-card{min-width:0;padding:14px;border:1px solid #d7e1da;background:#f7faf8;color:#1c2b22}
       .sensor-readout-card header{display:flex;align-items:center;justify-content:space-between;gap:10px;padding-bottom:9px;border-bottom:1px solid #d7e1da}
       .sensor-readout-card header strong{font:650 12px ui-monospace,monospace;color:#1b4734}
       .sensor-readout-card header small{font:10px ui-monospace,monospace;color:#5a7063;text-align:right}
       .sensor-readout-wide{grid-column:1/-1}
-      #world-map-radar-plot{display:block;width:100%;height:190px;margin-top:8px;background:#07120f;border:1px solid #203b2d}
+      #world-map-radar-plot{display:block;width:100%;height:145px;margin-top:8px;background:#07120f;border:1px solid #203b2d}
       .sensor-target-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:0 16px;color:#40574a;font:11px ui-monospace,monospace}
       .sensor-target-row{display:flex;justify-content:space-between;gap:12px;padding:8px 2px;border-top:1px solid #d7e1da}
       .sensor-readout-values{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 16px;padding:12px 0}
@@ -137,13 +146,14 @@ if (panel) {
       #worldmodel-live-sensor-panels .map-panel{margin-bottom:14px}
       #worldmodel-live-sensor-panels .map-layout{min-height:0}
       #worldmodel-live-sensor-panels .map-intro{max-width:100ch;line-height:1.55}
-      .world-map-sensor-view{margin-top:12px}
+      .world-map-sensor-view{container-type:inline-size;margin-top:12px}
       body.worldmodel-sensors-active .simulation-actions,
       body.worldmodel-sensors-active #view-worldmodel #wm-simulation-toggle,
       body.worldmodel-sensors-active #view-worldmodel .map-panel .panel-head>button[onclick="expandMap()"]{display:none!important}
       body.worldmodel-sensors-active #view-worldmodel>.stats,body.worldmodel-sensors-active #goal-success{display:none!important}
       @media(max-width:760px){.system-instrument-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.system-telemetry-strip{grid-template-columns:repeat(2,minmax(0,1fr))}.system-telemetry-strip>div:nth-child(2){border-right:0}.system-telemetry-strip>div:nth-child(-n+2){border-bottom:1px solid #d7e1da}}
-      @media(max-width:700px){.world-map-sensor-2d,.world-map-live-readouts{grid-template-columns:minmax(0,1fr)}.sensor-readout-wide{grid-column:auto}.world-map-depth img{max-height:320px}.world-map-controls{gap:7px}}
+      @container (max-width:760px){.world-map-sensor-2d,.world-map-analysis-grid,.world-map-live-readouts{grid-template-columns:minmax(0,1fr)}.world-map-depth img{max-height:320px}.world-map-segmentation-preview{max-height:320px}}
+      @media(max-width:700px){.world-map-sensor-2d,.world-map-analysis-grid,.world-map-live-readouts{grid-template-columns:minmax(0,1fr)}.world-map-depth img{max-height:320px}.world-map-controls{gap:7px}}
     `;
     document.head.append(style);
   }
@@ -496,7 +506,7 @@ async function renderSemanticMask(segmentation) {
   const pixels = context.createImageData(canvas.width, canvas.height);
   const palette = new Map();
   for (let index = 0; index < sourcePixels.length; index += 4) {
-    const classId = sourcePixels[index + 2];
+    const classId = sourcePixels[index];
     if (!palette.has(classId)) {
       const hex = semanticColor(classId).getHexString();
       palette.set(classId, [parseInt(hex.slice(0, 2), 16), parseInt(hex.slice(2, 4), 16), parseInt(hex.slice(4, 6), 16)]);
@@ -505,7 +515,7 @@ async function renderSemanticMask(segmentation) {
     pixels.data[index] = color[0];
     pixels.data[index + 1] = color[1];
     pixels.data[index + 2] = color[2];
-    pixels.data[index + 3] = sourcePixels[index + 3] || 255;
+    pixels.data[index + 3] = sourcePixels[index + 3];
   }
   context.putImageData(pixels, 0, 0);
   canvas.hidden = false;
@@ -1225,7 +1235,7 @@ async function rebuildDepthCloud(depth, segmentation = latestSegmentation) {
       if (classMask && classMask.values[classMaskIndex + 3] > 0) {
         const maskX = Math.min(classMask.width - 1, Math.round(x * classMask.width / image.width));
         const maskY = Math.min(classMask.height - 1, Math.round(y * classMask.height / image.height));
-        const classId = classMask.values[(maskY * classMask.width + maskX) * 4 + 2];
+        const classId = classMask.values[(maskY * classMask.width + maskX) * 4];
         const semantic = semanticColor(classId);
         colorsArray.push(semantic.r, semantic.g, semantic.b);
       } else {
