@@ -16,6 +16,9 @@
 #ifndef BODY_RADAR_BAUD
 #define BODY_RADAR_BAUD 256000
 #endif
+#ifndef BODY_GPS_BAUD
+#define BODY_GPS_BAUD 38400
+#endif
 
 // Qwiic Modulino Movement and the LD2450 share one STM32 sketch while keeping
 // their existing Linux Router Bridge RPC names stable.
@@ -38,6 +41,19 @@ uint32_t lastTofInitAttempt = 0;
 uint32_t tofSequence = 0;
 uint32_t latestTofAt = 0;
 int16_t latestTofDistanceMm = -1;
+
+static const uint32_t GPS_BAUD = BODY_GPS_BAUD;
+static const uint16_t GPS_STALE_MS = 3000;
+char gpsLine[128];
+uint8_t gpsLineLength = 0;
+char latestNmea[128] = "";
+char latestGga[128] = "";
+uint32_t gpsBytesReceived = 0;
+uint32_t gpsValidSentences = 0;
+uint32_t gpsChecksumErrors = 0;
+uint32_t gpsSequence = 0;
+uint32_t latestGpsAt = 0;
+uint32_t latestGgaAt = 0;
 
 static const uint32_t RADAR_BAUD = BODY_RADAR_BAUD;
 static const uint32_t FRAME_STALE_MS = 1000;
@@ -138,6 +154,80 @@ String readTofSample() {
            "\"direction\":\"front\",\"sequence\":%lu,\"timestamp_ms\":%lu,\"distance_mm\":%d}",
            static_cast<unsigned long>(tofSequence),
            static_cast<unsigned long>(latestTofAt), latestTofDistanceMm);
+  return String(payload);
+}
+
+void acceptGpsLine() {
+  if (gpsLineLength < 7 || gpsLine[0] != '$') return;
+  char *checksum = strchr(gpsLine, '*');
+  if (!checksum || !checksum[1] || !checksum[2]) {
+    ++gpsChecksumErrors;
+    return;
+  }
+  unsigned int expected = 0;
+  if (sscanf(checksum + 1, "%2x", &expected) != 1) {
+    ++gpsChecksumErrors;
+    return;
+  }
+  uint8_t actual = 0;
+  for (char *cursor = gpsLine + 1; cursor < checksum; ++cursor) actual ^= *cursor;
+  if (actual != expected) {
+    ++gpsChecksumErrors;
+    return;
+  }
+  *checksum = '\0';
+  strncpy(latestNmea, gpsLine, sizeof(latestNmea) - 1);
+  latestNmea[sizeof(latestNmea) - 1] = '\0';
+  ++gpsValidSentences;
+  ++gpsSequence;
+  latestGpsAt = millis();
+  char *identifierEnd = strchr(gpsLine, ',');
+  if (identifierEnd && identifierEnd - gpsLine >= 6
+      && memcmp(identifierEnd - 3, "GGA", 3) == 0) {
+    strncpy(latestGga, gpsLine, sizeof(latestGga) - 1);
+    latestGga[sizeof(latestGga) - 1] = '\0';
+    latestGgaAt = latestGpsAt;
+  }
+}
+
+void consumeGpsByte(uint8_t value) {
+  ++gpsBytesReceived;
+  if (value == '$') {
+    gpsLineLength = 0;
+    gpsLine[gpsLineLength++] = '$';
+    return;
+  }
+  if (!gpsLineLength) return;
+  if (value == '\n') {
+    gpsLine[gpsLineLength] = '\0';
+    acceptGpsLine();
+    gpsLineLength = 0;
+    return;
+  }
+  if (value == '\r') return;
+  if (gpsLineLength + 1 >= sizeof(gpsLine)) {
+    gpsLineLength = 0;
+    return;
+  }
+  gpsLine[gpsLineLength++] = static_cast<char>(value);
+}
+
+String readGpsSample() {
+  const bool fresh = latestGgaAt && millis() - latestGgaAt <= GPS_STALE_MS;
+  char payload[500];
+  snprintf(payload, sizeof(payload),
+           "{\"available\":%s,\"transport\":\"Serial1_USART3_D0_D1\","
+           "\"baudrate\":%lu,\"bytes_received\":%lu,\"valid_sentences\":%lu,"
+           "\"checksum_errors\":%lu,\"sequence\":%lu,\"age_ms\":%lu,"
+           "\"latest_nmea\":\"%s\",\"latest_gga\":\"%s\",\"error\":\"%s\"}",
+           fresh ? "true" : "false", static_cast<unsigned long>(GPS_BAUD),
+           static_cast<unsigned long>(gpsBytesReceived),
+           static_cast<unsigned long>(gpsValidSentences),
+           static_cast<unsigned long>(gpsChecksumErrors),
+           static_cast<unsigned long>(gpsSequence),
+           latestGgaAt ? static_cast<unsigned long>(millis() - latestGgaAt) : 0UL,
+           latestNmea, latestGga,
+           fresh ? "" : (gpsBytesReceived ? "waiting_for_fresh_gga" : "no_uart_bytes"));
   return String(payload);
 }
 
@@ -245,6 +335,9 @@ void setup() {
   Bridge.provide_safe("body_imu_read", readMovementSample);
   Bridge.provide_safe("body_tof_read", readTofSample);
   Bridge.provide("body_ld2450_read", readLatestLd2450);
+  Bridge.provide_safe("body_gps_read", readGpsSample);
+
+  Serial1.begin(GPS_BAUD);
 
   // The VENTUNO Q's Qwiic connector is on the MCU's Wire1 bus.
 #if BODY_ENABLE_IMU
@@ -281,6 +374,7 @@ void setup() {
 }
 
 void loop() {
+  while (Serial1.available() > 0) consumeGpsByte(static_cast<uint8_t>(Serial1.read()));
 #if BODY_ENABLE_IMU
   if (!movementReady && millis() - lastImuInitAttempt >= 2000) {
     lastImuInitAttempt = millis();

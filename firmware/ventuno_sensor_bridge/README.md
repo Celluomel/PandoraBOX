@@ -7,10 +7,13 @@ VENTUNO Q's local Arduino Router Bridge:
 - `body_tof_read()` returns the latest CQRobot VL53L1X front range in millimetres.
 - `body_ld2450_read()` returns the latest UART7 target frame, unchanged from
   the existing LD2450 bridge.
+- `body_gps_read()` validates NMEA on `Serial1` / USART3 (D0 RX, D1 TX),
+  reports UART byte/checksum counters, and retains the latest GGA sentence.
 
 The Body must run on the VENTUNO Q because Arduino Router Bridge is local to
 that device. Nothing here publishes sensor data to the LAN or changes the
-Linux USB, GPS USART3, FNK0031, or Body HTTP interfaces. UART7 remains D7/RX
+Linux USB, FNK0031, or Body HTTP interfaces. GPS uses USART3 / `Serial1` at
+38400 baud by default (`BODY_GPS_BAUD` overrides it); UART7 remains D7/RX
 and D8/TX at 256000 baud. Modulino Movement and VL53L1X share Qwiic / Wire1;
 the VL53L1X uses address 0x29. Since probing an absent ToF sensor interferes
 with the Modulino on this shared bus, ToF probing is disabled by default. Enable
@@ -21,8 +24,9 @@ fabricating a range when the sensor is absent.
 ## Direct CLI build and deployment
 
 This firmware is independent of App Lab. It initializes `Wire1` for the
-Qwiic Modulino, reads UART7 at 256000 baud, and provides the local Router RPCs
-`body_imu_read`, `body_tof_read`, and `body_ld2450_read`. The Body configuration selects
+Qwiic Modulino, reads GPS on `Serial1` and UART7 at 256000 baud, and provides
+the local Router RPCs `body_imu_read`, `body_tof_read`, `body_ld2450_read`,
+and `body_gps_read`. The Body configuration selects
 `ventuno_bridge_ld2450`; the runtime adds parsed physical radar targets to
 `perception.modalities.mmwave_radar` while retaining the current robot source.
 
@@ -70,7 +74,8 @@ flash a different sketch as a workaround.
 
 After upload/reboot, enable the physical radar in Body's **Sensor device
 selection** and choose **Ventuno STM32 UART · local Bridge**. Confirm the
-selector reports fresh UART7 frames and targets. Check `/worldmodel/status`
+selector reports fresh UART7 frames and targets. Check `/plugins/gps/status`
+for D0/D1 UART byte counts, NMEA checksum validation, and GPS fix state. Check `/worldmodel/status`
 for the real `mmwave_radar` and `tof` modalities, `/plugins/imu/status` for
 the IMU, and `/plugins/tof/status` for the VL53L1X.
 Neither source fabricates targets when its bridge is unavailable or stale.

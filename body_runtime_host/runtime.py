@@ -145,6 +145,7 @@ class BodyHost:
         self._worldmodel = None
         self._worldmodel_lock = threading.Lock()
         self._imu_bridge_source = None
+        self._gps_bridge_source = None
         self._mmwave_status_source = None
         self._robot_last_ok: float | None = None
         self._robot_last_error = ""
@@ -1823,6 +1824,35 @@ class BodyHost:
             self._imu_bridge_source = VentunoBridgeImuSource()
         return self._imu_bridge_source
 
+    def _get_gps_bridge_source(self):
+        if self._gps_bridge_source is None:
+            from body_runtime_host.gps import VentunoBridgeGpsSource
+            self._gps_bridge_source = VentunoBridgeGpsSource()
+        return self._gps_bridge_source
+
+    def gps_status(self) -> dict:
+        bridge_available = os.path.exists("/run/arduino-router.sock")
+        settings = {
+            "enabled": True,
+            "sensor": "u-blox NEO-M9N / GPSV3-M9N",
+            "transport": "Serial1 USART3 · D0/D1 via Ventuno STM32 Bridge",
+            "method": "body_gps_read",
+            "baudrate": 38400,
+            "bridge_available": bridge_available,
+        }
+        source = self._get_gps_bridge_source()
+        if not bridge_available:
+            return {**settings, "available": False,
+                    "error": "Local Arduino Router socket is unavailable; Body must run on VENTUNO Q",
+                    "source_status": source.status()}
+        try:
+            sample = source.read()
+            return {**settings, "available": True, "sample": sample,
+                    "source_status": source.status()}
+        except Exception as exc:
+            return {**settings, "available": False, "error": str(exc)[:240],
+                    "source_status": source.status()}
+
     def imu_settings(self) -> dict:
         bridge_available = os.path.exists("/run/arduino-router.sock")
         return {
@@ -3164,6 +3194,14 @@ class BodyHost:
                 "status_url": "/plugins/imu/status",
             },
             {
+                "id": "ventuno_gps",
+                "label": "GPS / GNSS (VENTUNO D0/D1)",
+                "enabled": os.path.exists("/run/arduino-router.sock"),
+                "role": "USART3 NMEA stream and outdoor position fix",
+                "transport": "Serial1 on STM32 -> local Arduino Bridge RPC",
+                "status_url": "/plugins/gps/status",
+            },
+            {
                 "id": "cqrobot_vl53l1x",
                 "label": "CQRobot VL53L1X ToF",
                 "enabled": bool(self.value("BODY_PLUGIN_TOF_ENABLED", os.path.exists("/run/arduino-router.sock"))),
@@ -3454,6 +3492,8 @@ class BodyHost:
                     self._send(owner.imu_settings())
                 elif path == "/plugins/imu/status":
                     self._send(owner.imu_status())
+                elif path == "/plugins/gps/status":
+                    self._send(owner.gps_status())
                 elif path == "/plugins/tof/status":
                     self._send(owner.tof_status())
                 elif path == "/plugins/fnk0031_wifi/usb/status":
