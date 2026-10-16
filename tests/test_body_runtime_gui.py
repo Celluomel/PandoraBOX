@@ -79,6 +79,11 @@ class BodyRuntimeGuiTests(unittest.TestCase):
         self.assertIn("Compute & power", source)
         self.assertIn("refreshSystemMetrics", source)
         self.assertIn("/system/metrics", source)
+        self.assertIn("system-instrument-grid", source)
+        self.assertIn("world-map-cpu-temp-gauge", source)
+        self.assertIn("world-map-gpu-temp-gauge", source)
+        self.assertIn("world-map-power-gauge", source)
+        self.assertIn("Not exposed by kernel", source)
         self.assertIn("temperature_c", (root / "body_runtime_host" / "runtime.py").read_text(encoding="utf-8"))
 
     def test_modulino_movement_controls_expose_persistent_body_setting_and_live_sample(self):

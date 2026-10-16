@@ -46,7 +46,7 @@ if (panel) {
     liveReadouts.innerHTML = `<article class="sensor-readout-card sensor-readout-wide"><header><strong>mmWave · LD2450</strong><small id="world-map-radar-state">Waiting</small></header><canvas id="world-map-radar-plot" height="190" aria-label="Live mmWave target positions and radial velocities"></canvas><div id="world-map-radar-targets" class="sensor-target-list">Waiting for radar data.</div></article><article class="sensor-readout-card"><header><strong>GPS / GNSS · D0/D1</strong><small id="world-map-gps-state">Waiting</small></header><div class="sensor-readout-values"><span>Position<b id="world-map-gps-position">No fix</b></span><span>Fix / quality<b id="world-map-gps-fix">—</b></span><span>Satellites<b id="world-map-gps-satellites">— used · — in view</b></span><span>HDOP / altitude<b id="world-map-gps-quality">—</b></span></div><div id="world-map-gps-signals" class="sensor-gps-signals" role="img" aria-label="GPS satellite signal strength by satellite"></div></article><article class="sensor-readout-card"><header><strong>Modulino Movement · IMU</strong><small id="world-map-imu-state">Waiting</small></header><div class="sensor-readout-values"><span>Roll<b id="world-map-imu-roll">—</b></span><span>Pitch<b id="world-map-imu-pitch">—</b></span><span>Yaw rate<b id="world-map-imu-yaw">—</b></span><span>Acceleration · g<b id="world-map-imu-accel">—</b></span><span>Angular rate · °/s<b id="world-map-imu-gyro">—</b></span></div><p class="sensor-readout-note">Six-axis IMU; yaw is relative angular rate, not a magnetic heading.</p></article><article class="sensor-readout-card"><header><strong>ToF · VL53L1X</strong><small id="world-map-tof-state">Waiting</small></header><div class="sensor-distance"><b id="world-map-tof-distance">—</b><span id="world-map-tof-meta">Forward single-beam range</span></div></article><article class="sensor-readout-card"><header><strong>LiDAR</strong><small id="world-map-lidar-state">No live source</small></header><p class="sensor-readout-note">No physical LiDAR stream is connected to this Body view. Any LiDAR volume shown in Simulation is virtual and is kept out of this live sensor view.</p></article><article class="sensor-readout-card"><header><strong>Ultrasonic · HC-SR04</strong><small id="world-map-ultrasonic-state">No live source</small></header><div class="sensor-readout-values sensor-range-channels"><span>Front-left<b id="world-map-ultrasonic-left">No data</b></span><span>Front-right<b id="world-map-ultrasonic-right">No data</b></span><span>Rear<b id="world-map-ultrasonic-rear">No data</b></span></div><p class="sensor-readout-note">Waiting for the ultrasonic firmware/gateway data channel; no simulated ranges are shown here.</p></article>`;
     const computeCard = document.createElement('article');
     computeCard.className = 'sensor-readout-card sensor-readout-wide';
-    computeCard.innerHTML = `<header><strong>Compute & power</strong><small id="world-map-system-state">Sampling</small></header><div class="sensor-readout-values"><span>CPU<b id="world-map-system-cpu">Sampling</b></span><span>GPU<b id="world-map-system-gpu">Sampling</b></span><span>HTP accelerator<b id="world-map-system-htp">Inference telemetry</b></span><span>Memory<b id="world-map-system-memory">Sampling</b></span><span>Measured input power<b id="world-map-system-power">Unavailable</b></span><span>Energy since Body start<b id="world-map-system-energy">Unavailable</b></span></div><p id="world-map-system-note" class="sensor-readout-note">GPU and HTP utilization are shown only when the kernel exports a valid usage counter. Input power may exclude external motor loads.</p>`;
+    computeCard.innerHTML = `<header><strong>Compute & power</strong><small id="world-map-system-state">Sampling</small></header><div class="system-instrument-grid"><article class="system-instrument"><span class="system-instrument-label">CPU LOAD</span><div class="system-gauge" id="world-map-cpu-gauge" role="img" aria-label="CPU utilization"><div class="system-gauge-center"><strong id="world-map-system-cpu-value">—</strong><small>%</small></div></div><span class="system-instrument-foot" id="world-map-system-cpu-temp">CPU temp · —</span></article><article class="system-instrument"><span class="system-instrument-label">CPU TEMP</span><div class="system-gauge system-gauge-temp" id="world-map-cpu-temp-gauge" role="img" aria-label="Maximum CPU temperature"><div class="system-gauge-center"><strong id="world-map-system-cpu-temp-value">—</strong><small>°C</small></div></div><span class="system-instrument-foot">Hottest reported CPU sensor · 0–100 °C</span></article><article class="system-instrument"><span class="system-instrument-label">GPU TEMP</span><div class="system-gauge system-gauge-temp" id="world-map-gpu-temp-gauge" role="img" aria-label="Maximum GPU temperature"><div class="system-gauge-center"><strong id="world-map-system-gpu-temp-value">—</strong><small>°C</small></div></div><span class="system-instrument-foot" id="world-map-system-gpu-meta">Load unavailable · — MHz</span></article><article class="system-instrument"><span class="system-instrument-label">MEMORY</span><div class="system-gauge" id="world-map-memory-gauge" role="img" aria-label="Memory utilization"><div class="system-gauge-center"><strong id="world-map-system-memory-value">—</strong><small>%</small></div></div><span class="system-instrument-foot" id="world-map-system-memory-meta">— free</span></article><article class="system-instrument"><span class="system-instrument-label">BOARD INPUT</span><div class="system-gauge system-gauge-power" id="world-map-power-gauge" role="img" aria-label="Measured board input power"><div class="system-gauge-center"><strong id="world-map-system-power-value">—</strong><small>W</small></div></div><span class="system-instrument-foot" id="world-map-system-power-meta">INA232 · measured rail</span></article></div><div class="system-telemetry-strip"><div><span>GPU utilization</span><strong id="world-map-system-gpu-load">Unavailable</strong></div><div><span>GPU clock</span><strong id="world-map-system-gpu-clock">—</strong></div><div><span>Qualcomm HTP</span><strong id="world-map-system-htp">Waiting for inference status</strong></div><div><span>Energy since Body start</span><strong id="world-map-system-energy">—</strong></div></div><p id="world-map-system-note" class="sensor-readout-note">GPU/HTP usage percentages require kernel counters. Board input may exclude external motor loads.</p>`;
     liveReadouts.prepend(computeCard);
     sensorPanel.append(liveReadouts);
     const semanticPanel = document.createElement('div');
@@ -122,6 +122,22 @@ if (panel) {
       .sensor-distance b{font:650 30px ui-monospace,monospace;color:#183d2d}
       .sensor-distance span,.sensor-readout-note{color:#64776c;font-size:10px;line-height:1.5}
       .sensor-readout-note{margin:0}
+      .system-instrument-grid{display:grid;grid-template-columns:repeat(5,minmax(112px,1fr));gap:12px;padding:14px 0}
+      .system-instrument{display:flex;min-width:0;flex-direction:column;align-items:center;gap:8px;padding:12px 8px 10px;border:1px solid #d7e1da;background:#fff}
+      .system-instrument-label{color:#526b5d;font:650 9px ui-monospace,monospace;letter-spacing:.08em}
+      .system-gauge{--gauge-value:0;--gauge-color:#16855d;display:grid;width:92px;aspect-ratio:1;place-items:center;border-radius:50%;background:conic-gradient(from -90deg,var(--gauge-color) calc(var(--gauge-value)*1%),#e2eae5 0);position:relative}
+      .system-gauge::before{position:absolute;inset:6px;border-radius:50%;background:#fff;content:""}
+      .system-gauge-center{z-index:1;display:flex;align-items:baseline;gap:3px;color:#183d2d;font-family:ui-monospace,monospace}
+      .system-gauge-center strong{font-size:21px;font-weight:700;font-variant-numeric:tabular-nums}
+      .system-gauge-center small{color:#63766b;font-size:10px}
+      .system-gauge-temp{--gauge-color:#d58b32}
+      .system-gauge-power{--gauge-color:#1787a0}
+      .system-instrument-foot{min-height:24px;color:#63766b;font:9px/1.35 ui-monospace,monospace;text-align:center}
+      .system-telemetry-strip{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));border-top:1px solid #d7e1da;border-bottom:1px solid #d7e1da}
+      .system-telemetry-strip>div{display:grid;gap:5px;min-width:0;padding:10px 12px;border-right:1px solid #d7e1da}
+      .system-telemetry-strip>div:last-child{border-right:0}
+      .system-telemetry-strip span{color:#63766b;font-size:9px}
+      .system-telemetry-strip strong{color:#183d2d;font:650 11px ui-monospace,monospace;overflow-wrap:anywhere}
       .sensor-range-channels span{padding:8px;border:1px solid #d7e1da;background:#fff}
       #worldmodel-live-sensor-panels .map-panel{margin-bottom:14px}
       #worldmodel-live-sensor-panels .map-layout{min-height:0}
@@ -131,6 +147,7 @@ if (panel) {
       body.worldmodel-sensors-active #view-worldmodel #wm-simulation-toggle,
       body.worldmodel-sensors-active #view-worldmodel .map-panel .panel-head>button[onclick="expandMap()"]{display:none!important}
       body.worldmodel-sensors-active #view-worldmodel>.stats,body.worldmodel-sensors-active #goal-success{display:none!important}
+      @media(max-width:760px){.system-instrument-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.system-telemetry-strip{grid-template-columns:repeat(2,minmax(0,1fr))}.system-telemetry-strip>div:nth-child(2){border-right:0}.system-telemetry-strip>div:nth-child(-n+2){border-bottom:1px solid #d7e1da}}
       @media(max-width:700px){.world-map-sensor-2d,.world-map-live-readouts{grid-template-columns:minmax(0,1fr)}.sensor-readout-wide{grid-column:auto}.world-map-depth img{max-height:320px}.world-map-controls{gap:7px}}
     `;
     document.head.append(style);
@@ -783,25 +800,46 @@ async function refreshSystemMetrics() {
     const metrics = await sensorJson('/system/metrics');
     const cpu = metrics.cpu || {}, gpu = metrics.gpu || {}, memory = metrics.memory || {}, power = metrics.power || {};
     byId('world-map-system-state').textContent = metrics.available ? 'Live · 1 s' : 'Partial telemetry';
-    byId('world-map-system-cpu').textContent = cpu.utilization_percent == null
-      ? 'Sampling…' : `${cpu.utilization_percent.toFixed(1)}%${cpu.temperature_c == null ? '' : ` · ${cpu.temperature_c.toFixed(1)}°C`}`;
-    const gpuClock = gpu.frequency_mhz == null ? 'clock unavailable' : `${gpu.frequency_mhz.toFixed(0)} MHz`;
-    const gpuLoad = gpu.utilization_percent == null ? 'usage unavailable' : `${gpu.utilization_percent.toFixed(1)}%`;
-    byId('world-map-system-gpu').textContent = `${gpuLoad} · ${gpuClock}${gpu.temperature_c == null ? '' : ` · ${gpu.temperature_c.toFixed(1)}°C`}`;
+    const setGauge = (id, value, max, label, suffix = '') => {
+      const gauge = byId(id);
+      const valid = value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value));
+      const numeric = valid ? Math.max(0, Math.min(Number(max), Number(value))) : 0;
+      gauge.style.setProperty('--gauge-value', valid ? String(numeric / Number(max) * 100) : '0');
+      gauge.setAttribute('aria-label', `${label}: ${valid ? `${Number(value).toFixed(1)}${suffix}` : 'unavailable'}`);
+    };
+    setGauge('world-map-cpu-gauge', cpu.utilization_percent, 100, 'CPU utilization', '%');
+    setGauge('world-map-cpu-temp-gauge', cpu.temperature_c, 100, 'Maximum CPU temperature', ' degrees Celsius');
+    setGauge('world-map-gpu-temp-gauge', gpu.temperature_c, 100, 'Maximum GPU temperature', ' degrees Celsius');
+    setGauge('world-map-memory-gauge', memory.used_percent, 100, 'Memory utilization', '%');
+    byId('world-map-system-cpu-value').textContent = cpu.utilization_percent == null ? '—' : cpu.utilization_percent.toFixed(0);
+    byId('world-map-system-cpu-temp-value').textContent = displayNumber(cpu.temperature_c, 1);
+    byId('world-map-system-gpu-temp-value').textContent = displayNumber(gpu.temperature_c, 1);
+    byId('world-map-system-cpu-temp').textContent = `Hottest CPU · ${displayNumber(cpu.temperature_c, 1, '°C')}`;
+    const gpuClock = gpu.frequency_mhz == null ? '—' : `${gpu.frequency_mhz.toFixed(0)} MHz`;
+    byId('world-map-system-gpu-meta').textContent = `${gpu.utilization_percent == null ? 'Load unavailable' : `${gpu.utilization_percent.toFixed(1)}% load`} · ${gpuClock}`;
+    byId('world-map-system-gpu-load').textContent = gpu.utilization_percent == null ? 'Not exposed by kernel' : `${gpu.utilization_percent.toFixed(1)}%`;
+    byId('world-map-system-gpu-clock').textContent = gpuClock;
+    byId('world-map-system-memory-value').textContent = memory.used_percent == null ? '—' : memory.used_percent.toFixed(0);
+    byId('world-map-system-memory-meta').textContent = memory.available_mb == null
+      ? 'Free memory unavailable' : `${(memory.available_mb / 1024).toFixed(1)} / ${(memory.total_mb / 1024).toFixed(1)} GB free`;
+    const powerScale = Math.max(20, Math.ceil((Number(power.watts) || 0) / 10) * 10);
+    setGauge('world-map-power-gauge', power.watts, powerScale, 'Measured board input power', ' watts');
+    byId('world-map-power-gauge').setAttribute('aria-label', power.available
+      ? `Measured board input power: ${power.watts.toFixed(2)} watts on a 0 to ${powerScale} watt display scale`
+      : 'Measured board input power unavailable');
+    byId('world-map-system-power-value').textContent = power.available ? power.watts.toFixed(1) : '—';
+    byId('world-map-system-power-meta').textContent = power.available
+      ? `${power.voltage_v.toFixed(1)} V · ${power.current_a.toFixed(2)} A · scale 0–${powerScale} W`
+      : 'Onboard power monitor unavailable';
     const yoloHtp = String(latestSensorYolo?.runtime || '').toLowerCase().includes('htp');
     const midasHtp = String(latestSensorDepth?.device || '').toLowerCase().includes('htp');
     byId('world-map-system-htp').textContent = yoloHtp || midasHtp
-      ? `Active · YOLOX ${yoloHtp ? 'HTP' : '—'} · MiDaS ${midasHtp ? 'HTP' : '—'} · % unavailable`
+      ? `ACTIVE · YOLOX ${yoloHtp ? `${displayNumber(latestSensorYolo?.inference_ms, 0, ' ms')} HTP` : '—'} · MiDaS ${midasHtp ? `${displayNumber(latestSensorDepth?.inference_ms, 0, ' ms')} HTP` : '—'}`
       : 'Utilization counter unavailable';
-    byId('world-map-system-memory').textContent = memory.used_percent == null
-      ? 'Unavailable' : `${memory.used_percent.toFixed(1)}% · ${memory.available_mb} / ${memory.total_mb} MB free`;
-    byId('world-map-system-power').textContent = power.available
-      ? `${power.watts.toFixed(2)} W · ${power.voltage_v.toFixed(2)} V · ${power.current_a.toFixed(3)} A`
-      : 'No readable onboard power monitor';
     byId('world-map-system-energy').textContent = power.available
-      ? `${power.energy_wh_session.toFixed(4)} Wh · since Body start` : 'Unavailable';
+      ? `${power.energy_wh_session.toFixed(3)} Wh` : 'Unavailable';
     byId('world-map-system-note').textContent = power.available
-      ? `${power.source}. GPU clock is distinct from GPU utilization; HTP load percentage is not exported by the current kernel.`
+      ? `${power.source}. Temperature dials show the hottest reported sensor in each group. GPU/HTP utilization remains unavailable because the kernel exports no reliable busy counter.`
       : 'GPU/HTP utilization counters are unavailable. A battery-side shunt is needed to include external motor loads.';
   } catch (error) {
     byId('world-map-system-state').textContent = `Unavailable · ${error.message}`;
