@@ -9,8 +9,10 @@ class BodyRuntimeGuiTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         source = (root / "body_runtime_host" / "world_map_3d.js").read_text(encoding="utf-8")
         self.assertIn('src="/world-map-3d.js"', BODY_GUI_HTML)
-        self.assertIn('data-source="simulation"', source)
-        self.assertIn('data-source="sensors"', source)
+        self.assertIn("['simulation','Simulation']", (root / "body_runtime_host" / "body_gui.py").read_text(encoding="utf-8"))
+        self.assertIn("['sensors','Live sensors']", (root / "body_runtime_host" / "body_gui.py").read_text(encoding="utf-8"))
+        self.assertIn("window.bodyWorldModelView=active", (root / "body_runtime_host" / "body_gui.py").read_text(encoding="utf-8"))
+        self.assertIn("body-worldmodel-viewchange", source)
         self.assertIn('data-render="2d"', source)
         self.assertIn('data-render="3d"', source)
         self.assertIn(".map-layout>.map-wrap[hidden]", source)
@@ -20,6 +22,14 @@ class BodyRuntimeGuiTests(unittest.TestCase):
         self.assertIn("performance.now() - lastSensorDepthAt < 250", source)
         self.assertIn("age <= 2.5", source)
         self.assertIn("currentCamera.image_base64", source)
+        self.assertIn("/plugins/mmwave_radar/status", source)
+        self.assertIn("/plugins/gps/status", source)
+        self.assertIn("/plugins/imu/status", source)
+        self.assertIn("/plugins/tof/status", source)
+        self.assertIn("world-map-gps-signals", source)
+        self.assertIn("No physical LiDAR stream is connected", source)
+        self.assertIn("Waiting for the ultrasonic firmware/gateway data channel", source)
+        self.assertIn("void refreshLiveRadar()", source)
         self.assertIn("async function refreshSensorDepth()", source)
         self.assertIn("sensorDepthBusy", source)
         self.assertIn("depth.device", source)
@@ -36,8 +46,8 @@ class BodyRuntimeGuiTests(unittest.TestCase):
         self.assertIn("[22, '#e76f51']", source)
         self.assertIn("const classId = sourcePixels[index + 2]", source)
         self.assertIn("* 4 + 2];", source)
-        self.assertIn("padding:9px 0;color:#40574a", source)
-        self.assertIn("padding:8px 10px;color:#33483d", source)
+        self.assertIn("color:#40574a;font:11px ui-monospace,monospace", source)
+        self.assertIn("color:#33483d;font:10px ui-monospace,monospace", source)
         self.assertIn("function segmentationMatchesDepth(segmentation, depth)", source)
         self.assertIn("Math.abs(segmentationTime - depthTime) <= 0.25", source)
         self.assertIn("Color MiDaS 3D points by semantic class", BODY_GUI_HTML)
@@ -72,6 +82,19 @@ class BodyRuntimeGuiTests(unittest.TestCase):
         self.assertIn("Use physical IMU in Body and Quest HUD", BODY_GUI_HTML)
         self.assertIn("/plugins/imu/status", BODY_GUI_HTML)
         self.assertIn("Save IMU setting", BODY_GUI_HTML)
+
+    def test_quest_hud_exposes_live_sensor_health_without_simulation_fallback(self):
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[1]
+        dashboard = (root / "body_runtime_host" / "quest_vr_dashboard.js").read_text(encoding="utf-8")
+        renderer = (root / "body_runtime_host" / "quest_vr.js").read_text(encoding="utf-8")
+        self.assertIn("drawSensorStatusStrip", dashboard)
+        self.assertIn("GPS", dashboard)
+        self.assertIn("C/N₀ dB-Hz", dashboard)
+        self.assertIn("updateSensorStatus({", renderer)
+        self.assertIn("midas:", renderer)
+        self.assertIn("yolo:", renderer)
 
     def test_ld2450_settings_expose_ventuno_bridge_and_live_frame_state(self):
         from body_runtime_host.body_gui import BODY_GUI_HTML

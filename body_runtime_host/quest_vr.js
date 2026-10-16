@@ -577,6 +577,10 @@ function updateSensorReadout(depth, yoloCount, radarCount) {
   document.querySelector('#age').textContent = Number.isFinite(age) ? `${age.toFixed(1)} s` : '—';
   const rangeStatus = sensorMetricCalibration?.available ? 'calibrated YOLOX ranges' : 'relative depth; calibrate for metres';
   setStatus(`Live sensor scene · MiDaS ${depth?.runtime || depth?.state || 'waiting'}${depth?.inference_ms != null ? ` ${Number(depth.inference_ms).toFixed(1)} ms` : ''} · ${yoloCount} YOLOX labels · ${radarCount} mmWave targets · ${rangeStatus}`);
+  vrDashboard.updateSensorStatus({
+    yolo: `${latestSensorYolo?.state || 'READY'} · ${yoloCount} OBJECTS${latestSensorYolo?.latency_ms != null ? ` · ${Number(latestSensorYolo.latency_ms).toFixed(0)} MS` : ''}`,
+    midas: `${depth?.state || depth?.runtime || 'WAITING'} · ${depth?.runtime || '—'}${depth?.inference_ms != null ? ` · ${Number(depth.inference_ms).toFixed(0)} MS` : ''}${Number.isFinite(age) ? ` · ${age.toFixed(0)}S` : ''}`,
+  });
 }
 
 async function pollSensorDepth() {

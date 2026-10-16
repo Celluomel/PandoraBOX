@@ -27,7 +27,7 @@ if (panel) {
   if (header && mapLayout && mapWrap && !byId('world-map-source')) {
     const controls = document.createElement('div');
     controls.className = 'world-map-controls';
-    controls.innerHTML = `<div class="world-map-segment" id="world-map-source" role="group" aria-label="Map data source"><button type="button" data-source="simulation" aria-pressed="true">Simulation</button><button type="button" data-source="sensors" aria-pressed="false">Sensors</button></div><div class="world-map-segment" role="group" aria-label="Map rendering"><button type="button" data-render="2d" aria-pressed="true">2D</button><button type="button" data-render="3d" aria-pressed="false">3D</button></div><small id="world-map-state" role="status">Simulation · 2D</small>`;
+    controls.innerHTML = `<div class="world-map-segment" role="group" aria-label="Map rendering"><button type="button" data-render="2d" aria-pressed="true">2D</button><button type="button" data-render="3d" aria-pressed="false">3D</button></div><small id="world-map-state" role="status">Simulation · 2D</small>`;
     header.append(controls);
     const simCanvas = document.createElement('div');
     simCanvas.id = 'world-map-sim-3d';
@@ -39,6 +39,12 @@ if (panel) {
     sensorPanel.className = 'world-map-sensor-view';
     sensorPanel.hidden = true;
     sensorPanel.innerHTML = `<div class="world-map-sensor-metrics"><span>YOLOX <b id="world-map-yolo-state">Waiting</b></span><span>MiDaS <b id="world-map-midas-state">Waiting</b></span><span>Visual odometry <b id="world-map-odometry-state">Waiting</b></span><span>Frame <b id="world-map-frame-state">—</b></span><span>SegFormer <b id="world-map-segmentation-state">disabled</b></span></div><div id="world-map-sensor-2d" class="world-map-sensor-2d"><div class="world-map-camera"><div class="world-map-sensor-heading">CAMERA · YOLOX + SEGFORMER</div><div class="world-map-image-wrap"><img id="world-map-camera-image" alt="Live camera frame with YOLOX detections"><canvas id="world-map-segmentation-overlay" aria-label="SegFormer semantic classes overlaid on the camera frame" hidden></canvas><svg id="world-map-yolo-overlay" viewBox="0 0 1 1" preserveAspectRatio="xMidYMid meet" aria-hidden="true"></svg><span id="world-map-camera-empty" class="world-map-empty">Waiting for a camera frame</span></div><label class="world-map-segmentation-toggle"><input id="world-map-segmentation-toggle" type="checkbox" checked> Segmentation overlay</label></div><div class="world-map-depth"><div class="world-map-sensor-heading">MiDaS · RELATIVE DEPTH</div><img id="world-map-depth-image" alt="MiDaS relative depth image"><span id="world-map-depth-empty" class="world-map-empty">MiDaS disabled or waiting for inference</span><div class="world-map-depth-calibration"><button type="button" id="world-map-midas-calibrate">Calibrate with radar</button><small id="world-map-midas-calibration-status" role="status">Relative depth only · not calibrated in metres</small></div></div></div><section class="world-map-odometry-view" aria-label="Experimental visual odometry trajectory"><div class="world-map-sensor-heading"><span>VISUAL ODOMETRY · LOCAL TRAJECTORY</span><small id="world-map-odometry-map-status">Waiting for tracking</small></div><svg id="world-map-odometry-map" viewBox="0 0 640 260" role="img" aria-label="Top-down estimated Body trajectory in the local visual odometry frame"><rect class="odom-map-bg" x="0" y="0" width="640" height="260"/><g class="odom-grid"><path d="M40 45H600M40 85H600M40 125H600M40 165H600M40 205H600M80 25V225M160 25V225M240 25V225M320 25V225M400 25V225M480 25V225M560 25V225"/><path class="odom-axis" d="M40 205H600M320 25V225"/></g><text class="odom-axis-label" x="320" y="18" text-anchor="middle">FORWARD ↑</text><text class="odom-axis-label" x="320" y="249" text-anchor="middle">← LEFT · RIGHT →</text><g id="world-map-odometry-grid-labels"></g><polyline id="world-map-odometry-trail" points=""/><circle id="world-map-odometry-start" cx="320" cy="205" r="4"/><g id="world-map-odometry-body" transform="translate(320 205)"><path d="M0 -11 L7 8 L0 5 L-7 8 Z"/></g><text id="world-map-odometry-position" class="odom-position-label" x="332" y="200">0.00, 0.00 m</text></svg><p class="world-map-odometry-footnote">Session-local estimate · visual odometry only · drift accumulates · not a persistent map</p></section><div id="world-map-sensor-3d" class="world-map-canvas world-map-sensor-cloud" hidden></div><p id="world-map-sensor-note" class="world-map-sensor-note">Sensor-only view · no simulation object positions are used.</p>`;
+    sensorPanel.innerHTML = `<div class="world-map-sensor-metrics"><span>Camera <b id="world-map-camera-state">Waiting</b></span><span>YOLOX <b id="world-map-yolo-state">Waiting</b></span><span>MiDaS <b id="world-map-midas-state">Waiting</b></span><span>Visual odometry <b id="world-map-odometry-state">Waiting</b></span><span>SegFormer <b id="world-map-segmentation-state">disabled</b></span><span>Frame <b id="world-map-frame-state">—</b></span></div><div id="world-map-sensor-2d" class="world-map-sensor-2d"><div class="world-map-camera"><div class="world-map-sensor-heading">CAMERA · YOLOX + SEGFORMER</div><div class="world-map-image-wrap"><img id="world-map-camera-image" alt="Live camera frame with YOLOX detections"><canvas id="world-map-segmentation-overlay" aria-label="SegFormer semantic classes overlaid on the camera frame" hidden></canvas><svg id="world-map-yolo-overlay" viewBox="0 0 1 1" preserveAspectRatio="xMidYMid meet" aria-hidden="true"></svg><span id="world-map-camera-empty" class="world-map-empty">Waiting for a camera frame</span></div><label class="world-map-segmentation-toggle"><input id="world-map-segmentation-toggle" type="checkbox" checked> Segmentation overlay</label></div><div class="world-map-depth"><div class="world-map-sensor-heading">MiDaS · RELATIVE DEPTH</div><img id="world-map-depth-image" alt="MiDaS relative depth image"><span id="world-map-depth-empty" class="world-map-empty">MiDaS disabled or waiting for inference</span><div class="world-map-depth-calibration"><button type="button" id="world-map-midas-calibrate">Calibrate with radar</button><small id="world-map-midas-calibration-status" role="status">Relative depth only · not calibrated in metres</small></div></div></div><section class="world-map-odometry-view" aria-label="Experimental visual odometry trajectory"><div class="world-map-sensor-heading"><span>VISUAL ODOMETRY · LOCAL TRAJECTORY</span><small id="world-map-odometry-map-status">Waiting for tracking</small></div><svg id="world-map-odometry-map" viewBox="0 0 640 260" role="img" aria-label="Top-down estimated Body trajectory in the local visual odometry frame"><rect class="odom-map-bg" x="0" y="0" width="640" height="260"/><g class="odom-grid"><path d="M40 45H600M40 85H600M40 125H600M40 165H600M40 205H600M80 25V225M160 25V225M240 25V225M320 25V225M400 25V225M480 25V225M560 25V225"/><path class="odom-axis" d="M40 205H600M320 25V225"/></g><text class="odom-axis-label" x="320" y="18" text-anchor="middle">FORWARD ↑</text><text class="odom-axis-label" x="320" y="249" text-anchor="middle">← LEFT · RIGHT →</text><g id="world-map-odometry-grid-labels"></g><polyline id="world-map-odometry-trail" points=""/><circle id="world-map-odometry-start" cx="320" cy="205" r="4"/><g id="world-map-odometry-body" transform="translate(320 205)"><path d="M0 -11 L7 8 L0 5 L-7 8 Z"/></g><text id="world-map-odometry-position" class="odom-position-label" x="332" y="200">0.00, 0.00 m</text></svg><p class="world-map-odometry-footnote">Session-local estimate · drift accumulates · not a persistent map</p></section><div id="world-map-sensor-3d" class="world-map-canvas world-map-sensor-cloud" hidden></div><p id="world-map-sensor-note" class="world-map-sensor-note">Sensor-only view · no simulation object positions are used.</p>`;
+    const liveReadouts = document.createElement('section');
+    liveReadouts.id = 'world-map-live-readouts';
+    liveReadouts.className = 'world-map-live-readouts';
+    liveReadouts.innerHTML = `<article class="sensor-readout-card sensor-readout-wide"><header><strong>mmWave · LD2450</strong><small id="world-map-radar-state">Waiting</small></header><canvas id="world-map-radar-plot" height="190" aria-label="Live mmWave target positions and radial velocities"></canvas><div id="world-map-radar-targets" class="sensor-target-list">Waiting for radar data.</div></article><article class="sensor-readout-card"><header><strong>GPS / GNSS · D0/D1</strong><small id="world-map-gps-state">Waiting</small></header><div class="sensor-readout-values"><span>Position<b id="world-map-gps-position">No fix</b></span><span>Fix / quality<b id="world-map-gps-fix">—</b></span><span>Satellites<b id="world-map-gps-satellites">— used · — in view</b></span><span>HDOP / altitude<b id="world-map-gps-quality">—</b></span></div><div id="world-map-gps-signals" class="sensor-gps-signals" role="img" aria-label="GPS satellite signal strength by satellite"></div></article><article class="sensor-readout-card"><header><strong>Modulino Movement · IMU</strong><small id="world-map-imu-state">Waiting</small></header><div class="sensor-readout-values"><span>Roll<b id="world-map-imu-roll">—</b></span><span>Pitch<b id="world-map-imu-pitch">—</b></span><span>Yaw rate<b id="world-map-imu-yaw">—</b></span><span>Acceleration · g<b id="world-map-imu-accel">—</b></span><span>Angular rate · °/s<b id="world-map-imu-gyro">—</b></span></div><p class="sensor-readout-note">Six-axis IMU; yaw is relative angular rate, not a magnetic heading.</p></article><article class="sensor-readout-card"><header><strong>ToF · VL53L1X</strong><small id="world-map-tof-state">Waiting</small></header><div class="sensor-distance"><b id="world-map-tof-distance">—</b><span id="world-map-tof-meta">Forward single-beam range</span></div></article><article class="sensor-readout-card"><header><strong>LiDAR</strong><small id="world-map-lidar-state">No live source</small></header><p class="sensor-readout-note">No physical LiDAR stream is connected to this Body view. Any LiDAR volume shown in Simulation is virtual and is kept out of this live sensor view.</p></article><article class="sensor-readout-card"><header><strong>Ultrasonic · HC-SR04</strong><small id="world-map-ultrasonic-state">No live source</small></header><div class="sensor-readout-values sensor-range-channels"><span>Front-left<b id="world-map-ultrasonic-left">No data</b></span><span>Front-right<b id="world-map-ultrasonic-right">No data</b></span><span>Rear<b id="world-map-ultrasonic-rear">No data</b></span></div><p class="sensor-readout-note">Waiting for the ultrasonic firmware/gateway data channel; no simulated ranges are shown here.</p></article>`;
+    sensorPanel.append(liveReadouts);
     const semanticPanel = document.createElement('div');
     semanticPanel.className = 'world-map-segmentation-classes';
     semanticPanel.id = 'world-map-segmentation-classes';
@@ -57,8 +63,9 @@ if (panel) {
       .world-map-canvas canvas{display:block;width:100%;height:100%}
       .world-map-sensor-view[hidden],.world-map-canvas[hidden],.world-map-sensor-2d[hidden]{display:none!important}
       .map-layout[hidden],.map-layout>.map-wrap[hidden],.map-layout>.world-map-canvas[hidden]{display:none!important}
-      .world-map-sensor-metrics{display:flex;gap:18px;flex-wrap:wrap;padding:9px 0;color:#40574a;font:10px ui-monospace,monospace}
-      .world-map-sensor-metrics b{color:#172820;font-weight:600}
+      .world-map-sensor-metrics{display:flex;gap:8px;flex-wrap:wrap;padding:10px 0;color:#64776c;font:10px ui-monospace,monospace}
+      .world-map-sensor-metrics span{padding:6px 9px;border:1px solid #d7e1da;background:#f3f7f4}
+      .world-map-sensor-metrics b{color:#183d2d;font-weight:650}
       .world-map-odometry-view{margin-top:12px;background:#07120f;border:1px solid #263e32}
       .world-map-odometry-view>.world-map-sensor-heading{display:flex;justify-content:space-between;gap:12px;align-items:center}
       .world-map-odometry-view>.world-map-sensor-heading small{color:#a9c0b2;font:10px ui-monospace,monospace}
@@ -92,7 +99,32 @@ if (panel) {
       #world-map-segmentation-overlay[hidden]{display:none}
       .world-map-sensor-note{margin:9px 0 0;color:#a9c0b2;font-size:11px}
       .world-map-sensor-cloud{height:clamp(360px,54vh,620px)}
-      @media(max-width:700px){.world-map-sensor-2d{grid-template-columns:minmax(0,1fr)}.world-map-depth img{max-height:320px}.world-map-controls{gap:7px}}
+      .world-map-live-readouts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:14px}
+      .sensor-readout-card{min-width:0;padding:14px;border:1px solid #d7e1da;background:#f7faf8;color:#1c2b22}
+      .sensor-readout-card header{display:flex;align-items:center;justify-content:space-between;gap:10px;padding-bottom:9px;border-bottom:1px solid #d7e1da}
+      .sensor-readout-card header strong{font:650 12px ui-monospace,monospace;color:#1b4734}
+      .sensor-readout-card header small{font:10px ui-monospace,monospace;color:#5a7063;text-align:right}
+      .sensor-readout-wide{grid-column:1/-1}
+      #world-map-radar-plot{display:block;width:100%;height:190px;margin-top:8px;background:#07120f;border:1px solid #203b2d}
+      .sensor-target-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:0 16px;color:#40574a;font:11px ui-monospace,monospace}
+      .sensor-target-row{display:flex;justify-content:space-between;gap:12px;padding:8px 2px;border-top:1px solid #d7e1da}
+      .sensor-readout-values{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 16px;padding:12px 0}
+      .sensor-readout-values span{min-width:0;color:#63766b;font-size:10px}
+      .sensor-readout-values b{display:block;margin-top:4px;color:#183d2d;font:600 12px ui-monospace,monospace;overflow-wrap:anywhere}
+      .sensor-gps-signals{display:flex;align-items:flex-end;gap:8px;min-height:94px;overflow:auto;padding:8px 0 2px;border-top:1px solid #d7e1da}
+      .sensor-gps-bar{flex:0 0 34px;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;gap:4px;height:80px;color:#40574a;font:9px ui-monospace,monospace}
+      .sensor-gps-bar i{display:block;width:15px;min-height:3px;border-radius:2px 2px 0 0}
+      .sensor-distance{display:grid;gap:6px;padding:18px 0 8px}
+      .sensor-distance b{font:650 30px ui-monospace,monospace;color:#183d2d}
+      .sensor-distance span,.sensor-readout-note{color:#64776c;font-size:10px;line-height:1.5}
+      .sensor-readout-note{margin:0}
+      .sensor-range-channels span{padding:8px;border:1px solid #d7e1da;background:#fff}
+      #worldmodel-live-sensor-panels .map-panel{margin-bottom:14px}
+      #worldmodel-live-sensor-panels .map-layout{min-height:0}
+      #worldmodel-live-sensor-panels .map-intro{max-width:100ch;line-height:1.55}
+      .world-map-sensor-view{margin-top:12px}
+      body.worldmodel-sensors-active #view-worldmodel>.stats,body.worldmodel-sensors-active #goal-success{display:none!important}
+      @media(max-width:700px){.world-map-sensor-2d,.world-map-live-readouts{grid-template-columns:minmax(0,1fr)}.sensor-readout-wide{grid-column:auto}.world-map-depth img{max-height:320px}.world-map-controls{gap:7px}}
     `;
     document.head.append(style);
   }
@@ -176,7 +208,7 @@ let cloudPoints = null;
 let boxGroup = null;
 let cloudFrameId = '';
 let cloudCameraInitialized = false;
-let activeSource = 'simulation';
+let activeSource = window.bodyWorldModelView === 'sensors' ? 'sensors' : 'simulation';
 let activeRender = '2d';
 let latestWorld = null;
 let sensorBusy = false;
@@ -306,10 +338,13 @@ function setSource(source) {
   if (mapLayout) mapLayout.hidden = source === 'sensors';
   const expand = panel?.querySelector('.panel-head button[onclick="expandMap()"]');
   if (expand) expand.hidden = source === 'sensors';
+  const title = panel?.querySelector('.panel-head h2');
+  if (title) title.textContent = source === 'sensors' ? 'Live sensor observatory' : 'Simulation · world ground truth';
   panel?.querySelector('.map-intro')?.replaceChildren(document.createTextNode(source === 'sensors'
-    ? 'Live sensor view. Only captured camera frames, YOLOX detections and MiDaS relative depth are shown; simulation ground truth is excluded.'
-    : 'Live Body position, orientation, objects, obstacles and current objective from the active simulation or observed world model.'));
-  document.querySelectorAll('[data-source]').forEach((button) => button.setAttribute('aria-pressed', String(button.dataset.source === source)));
+    ? 'Live hardware and perception feeds only. No simulator positions, virtual LiDAR returns or synthetic objects are included.'
+    : 'Synthetic room, robot pose and object positions for controlled testing. These are simulation ground truth, not live sensor measurements.'));
+  panel?.querySelector('.truth-note')?.toggleAttribute('hidden', source === 'sensors');
+  document.querySelectorAll('.simulation-actions').forEach((node) => { node.hidden = source === 'sensors'; });
   if (source === 'sensors') void refreshSensors();
   else if (latestWorld) buildSimulation(latestWorld);
   updateMode();
@@ -341,7 +376,7 @@ function setRender(render) {
 
 function updateMode() {
   const state = byId('world-map-state');
-  if (state) state.textContent = `${activeSource === 'simulation' ? 'Simulation' : 'Sensors'} · ${activeRender.toUpperCase()}`;
+  if (state) state.textContent = `${activeSource === 'simulation' ? 'Simulation' : 'Live sensors'} · ${activeRender.toUpperCase()}`;
   const mapWrap = panel?.querySelector('.map-wrap');
   const simCanvas = byId('world-map-sim-3d');
   if (mapWrap && simCanvas && activeSource === 'simulation') {
@@ -350,7 +385,7 @@ function updateMode() {
   }
 }
 
-document.querySelectorAll('[data-source]').forEach((button) => button.addEventListener('click', () => setSource(button.dataset.source)));
+window.addEventListener('body-worldmodel-viewchange', (event) => setSource(event.detail?.view === 'sensors' ? 'sensors' : 'simulation'));
 document.querySelectorAll('[data-render]').forEach((button) => button.addEventListener('click', () => setRender(button.dataset.render)));
 byId('world-map-midas-calibrate')?.addEventListener('click', () => void calibrateMetricDepth());
 byId('world-map-segmentation-toggle')?.addEventListener('change', () => {
@@ -366,6 +401,7 @@ byId('world-map-segmentation-toggle')?.addEventListener('change', () => {
   }
 });
 void loadMetricCalibration();
+setSource(window.bodyWorldModelView === 'sensors' ? 'sensors' : 'simulation');
 
 function drawBoxes(detections, width, height) {
   const svg = byId('world-map-yolo-overlay');
@@ -673,6 +709,13 @@ async function refreshSensors() {
     const yolo = frame.yolo || {};
     latestCameraFrame = currentCamera;
     latestSensorYolo = yolo;
+    const cameraState = byId('world-map-camera-state');
+    if (cameraState) {
+      const frameAge = Number(currentCamera.captured_at) > 0 ? Math.max(0, Date.now() / 1000 - Number(currentCamera.captured_at)) : Infinity;
+      cameraState.textContent = currentCamera.image_base64
+        ? `LIVE · ${currentCamera.width || '—'}×${currentCamera.height || '—'} · ${Number.isFinite(frameAge) ? frameAge.toFixed(1) + 's' : 'age —'}`
+        : `${currentCamera.state || frame.status || 'NO FRAME'}`;
+    }
     const cameraImage = byId('world-map-camera-image');
     const cameraEmpty = byId('world-map-camera-empty');
     if (currentCamera.frame_id !== displayedCameraFrameId) {
@@ -711,6 +754,168 @@ async function refreshSensors() {
   } finally {
     sensorBusy = false;
   }
+}
+
+async function sensorJson(path) {
+  const response = await fetch(path, { cache: 'no-store' });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return response.json();
+}
+
+const readoutBusy = { radar: false, gps: false, imu: false, tof: false };
+const displayNumber = (value, digits = 1, suffix = '') => {
+  const number = value === null || value === undefined || value === '' ? NaN : Number(value);
+  return Number.isFinite(number) ? `${number.toFixed(digits)}${suffix}` : '—';
+};
+
+function drawLiveRadar(sample = {}) {
+  const canvas = byId('world-map-radar-plot');
+  const context = canvas?.getContext('2d');
+  if (!context) return;
+  const ratio = Math.min(window.devicePixelRatio || 1, 2);
+  const width = Math.max(1, canvas.clientWidth);
+  const height = Math.max(1, canvas.clientHeight);
+  if (canvas.width !== Math.round(width * ratio) || canvas.height !== Math.round(height * ratio)) {
+    canvas.width = Math.round(width * ratio);
+    canvas.height = Math.round(height * ratio);
+  }
+  context.setTransform(ratio, 0, 0, ratio, 0, 0);
+  context.clearRect(0, 0, width, height);
+  const left = 38, right = width - 22, top = 18, bottom = height - 28;
+  const center = (left + right) / 2;
+  context.strokeStyle = '#294c3a';
+  context.fillStyle = '#8eaa98';
+  context.font = '10px ui-monospace,monospace';
+  for (let meters = 1; meters <= 6; meters += 1) {
+    const y = bottom - (bottom - top) * meters / 6;
+    context.globalAlpha = meters % 2 ? .55 : .9;
+    context.beginPath(); context.moveTo(left, y); context.lineTo(right, y); context.stroke();
+    context.fillText(`${meters}m`, 6, y + 3);
+  }
+  context.globalAlpha = 1;
+  for (let angle = -60; angle <= 60; angle += 30) {
+    const x = center + Math.tan(angle * Math.PI / 180) / Math.tan(Math.PI / 3) * (right - left) / 2;
+    context.beginPath(); context.moveTo(x, top); context.lineTo(x, bottom); context.stroke();
+    context.fillText(`${angle > 0 ? '+' : ''}${angle}°`, x - 10, height - 8);
+  }
+  context.fillStyle = '#b6f1d3';
+  context.beginPath(); context.moveTo(center, bottom - 9); context.lineTo(center - 6, bottom + 1); context.lineTo(center + 6, bottom + 1); context.closePath(); context.fill();
+  const targets = Array.isArray(sample.targets) ? sample.targets : [];
+  for (const target of targets) {
+    const position = target.position_m || target.position || [];
+    const lateral = Number(position[0]);
+    const forward = Number(position[1]);
+    if (!Number.isFinite(lateral) || !Number.isFinite(forward) || forward < 0 || forward > 6) continue;
+    const bearing = Math.atan2(lateral, forward);
+    if (Math.abs(bearing) > Math.PI / 3) continue;
+    const x = center + bearing / (Math.PI / 3) * (right - left) / 2;
+    const y = bottom - forward / 6 * (bottom - top);
+    const speed = Number(target.radial_speed_mps);
+    const moving = Number.isFinite(speed) && Math.abs(speed) >= .05;
+    context.fillStyle = moving ? '#ed91c5' : '#efcb76';
+    context.beginPath(); context.arc(x, y, 5, 0, Math.PI * 2); context.fill();
+    context.fillStyle = '#e7f4eb'; context.font = '10px ui-monospace,monospace';
+    context.fillText(`${forward.toFixed(1)}m`, x + 8, y - 5);
+  }
+}
+
+async function refreshLiveRadar() {
+  if (activeSource !== 'sensors' || readoutBusy.radar) return;
+  readoutBusy.radar = true;
+  try {
+    const status = await sensorJson('/plugins/mmwave_radar/status');
+    const sample = status.sample || {};
+    const targets = Array.isArray(sample.targets) ? sample.targets : [];
+    const source = sample.source || status.protocol || status.port || 'LD2450';
+    const age = Number(sample.timestamp) > 0 ? Math.max(0, Date.now() / 1000 - Number(sample.timestamp)) : NaN;
+    byId('world-map-radar-state').textContent = status.available
+      ? `${targets.length} targets · ${source}${Number.isFinite(age) ? ` · ${age.toFixed(1)}s` : ''}`
+      : status.error || 'No data';
+    byId('world-map-radar-targets').replaceChildren(...(targets.length ? targets.map((target, index) => {
+      const position = target.position_m || target.position || [];
+      const velocity = target.velocity_mps || target.velocity || [];
+      const lateral = Number(position[0]), forward = Number(position[1]);
+      const row = document.createElement('div'); row.className = 'sensor-target-row';
+      const name = document.createElement('span'); name.textContent = `${target.id || target.target_id || `Target ${index + 1}`} · ${target.classification || 'unclassified'}`;
+      const values = document.createElement('b');
+      values.textContent = `${Number.isFinite(forward) ? forward.toFixed(2) : '—'} m fwd · ${Number.isFinite(lateral) ? lateral.toFixed(2) : '—'} m lat · ${displayNumber(target.radial_speed_mps, 2, ' m/s')}`;
+      row.append(name, values); row.title = `XY velocity ${displayNumber(velocity[0], 2)} / ${displayNumber(velocity[1], 2)} m/s · confidence ${displayNumber(target.confidence, 2)}`;
+      return row;
+    }) : [Object.assign(document.createElement('span'), { textContent: status.available ? 'No targets in current radar frame.' : 'Waiting for a live radar frame.' })]));
+    drawLiveRadar(sample);
+  } catch (error) {
+    byId('world-map-radar-state').textContent = `Unavailable · ${error.message}`;
+    byId('world-map-radar-targets').textContent = 'No live radar data.';
+    drawLiveRadar();
+  } finally { readoutBusy.radar = false; }
+}
+
+async function refreshLiveGps() {
+  if (activeSource !== 'sensors' || readoutBusy.gps) return;
+  readoutBusy.gps = true;
+  try {
+    const status = await sensorJson('/plugins/gps/status');
+    const sample = status.sample || status.source_status?.sample || {};
+    const diagnostic = status.source_status?.diagnostic || {};
+    const streaming = Boolean(status.available || sample.connected || Number(diagnostic.bytes_received) > 0);
+    const fix = sample.fix === true || sample.valid === true || Number(sample.fix_quality) > 0;
+    byId('world-map-gps-state').textContent = fix ? `FIX · ${status.transport || sample.transport || 'UART'}` : streaming ? 'UART live · no fix' : status.error || 'Offline';
+    const latitude = Number(sample.latitude_deg ?? sample.latitude ?? sample.lat);
+    const longitude = Number(sample.longitude_deg ?? sample.longitude ?? sample.lon ?? sample.lng);
+    byId('world-map-gps-position').textContent = fix && Number.isFinite(latitude) && Number.isFinite(longitude) ? `${latitude.toFixed(6)}, ${longitude.toFixed(6)}` : 'No valid fix';
+    byId('world-map-gps-fix').textContent = `${fix ? 'Valid' : 'No fix'} · quality ${sample.fix_quality ?? '—'}`;
+    byId('world-map-gps-satellites').textContent = `${sample.satellites ?? '—'} used · ${sample.satellites_in_view ?? '—'} in view`;
+    byId('world-map-gps-quality').textContent = `HDOP ${displayNumber(sample.hdop)} · ${displayNumber(sample.altitude_m, 1, ' m')}`;
+    const signals = Array.isArray(sample.satellite_signals) ? sample.satellite_signals : [];
+    const plot = byId('world-map-gps-signals');
+    plot.setAttribute('aria-label', `GPS satellite signal strength; ${signals.length} satellites reported`);
+    plot.replaceChildren(...(signals.length ? signals.map(satellite => {
+      const cn0 = Number(satellite.cn0_db_hz);
+      const height = Number.isFinite(cn0) ? Math.max(3, Math.min(60, cn0)) : 3;
+      const bar = document.createElement('div'); bar.className = 'sensor-gps-bar';
+      const id = `${String(satellite.talker || 'GN').replace(/[^a-z0-9]/gi, '')}-${Number(satellite.svid) || '?'}`;
+      const value = document.createElement('span'); value.textContent = Number.isFinite(cn0) ? cn0.toFixed(0) : '—';
+      const fill = document.createElement('i'); fill.style.height = `${height}px`; fill.style.background = cn0 >= 35 ? '#3d9f70' : cn0 >= 25 ? '#c39738' : '#bd6559';
+      const label = document.createElement('small'); label.textContent = id;
+      bar.title = `${id} · C/N₀ ${displayNumber(cn0, 0, ' dB-Hz')} · az ${satellite.azimuth_deg ?? '—'}° · el ${satellite.elevation_deg ?? '—'}°`;
+      bar.append(value, fill, label); return bar;
+    }) : [Object.assign(document.createElement('span'), { className: 'sensor-readout-note', textContent: status.available ? 'No GSV satellite signal values in the current GPS sample.' : 'Waiting for GSV data from the GPS receiver.' })]));
+  } catch (error) { byId('world-map-gps-state').textContent = `Unavailable · ${error.message}`; }
+  finally { readoutBusy.gps = false; }
+}
+
+async function refreshLiveImu() {
+  if (activeSource !== 'sensors' || readoutBusy.imu) return;
+  readoutBusy.imu = true;
+  try {
+    const status = await sensorJson('/plugins/imu/status');
+    const sample = status.sample || {};
+    byId('world-map-imu-state').textContent = status.available
+      ? `${sample.device || status.device || 'IMU'} · ${sample.attitude_valid ? 'attitude valid' : 'attitude invalid'}`
+      : status.error || 'No data';
+    byId('world-map-imu-roll').textContent = sample.attitude_valid ? displayNumber(sample.roll_deg, 1, '°') : 'Invalid';
+    byId('world-map-imu-pitch').textContent = sample.attitude_valid ? displayNumber(sample.pitch_deg, 1, '°') : 'Invalid';
+    byId('world-map-imu-yaw').textContent = displayNumber(sample.yaw_rate_dps ?? sample.angular_velocity_dps?.[2], 1, '°/s');
+    const acceleration = sample.acceleration_g;
+    byId('world-map-imu-accel').textContent = Array.isArray(acceleration) ? acceleration.map(value => displayNumber(value, 2)).join(' / ') : '—';
+    const gyro = sample.angular_velocity_dps;
+    byId('world-map-imu-gyro').textContent = Array.isArray(gyro) ? gyro.map(value => displayNumber(value, 1)).join(' / ') : '—';
+  } catch (error) { byId('world-map-imu-state').textContent = `Unavailable · ${error.message}`; }
+  finally { readoutBusy.imu = false; }
+}
+
+async function refreshLiveTof() {
+  if (activeSource !== 'sensors' || readoutBusy.tof) return;
+  readoutBusy.tof = true;
+  try {
+    const status = await sensorJson('/plugins/tof/status');
+    const sample = status.sample || {};
+    const available = status.available && sample.available !== false && !sample.simulated;
+    byId('world-map-tof-state').textContent = available ? `${sample.device || status.sensor || 'VL53L1X'} · live` : status.error || 'No fresh measurement';
+    byId('world-map-tof-distance').textContent = available ? displayNumber(sample.distance_m, 2, ' m') : 'No measurement';
+    byId('world-map-tof-meta').textContent = available ? `${sample.frame || status.frame || 'body_front'} · ${displayNumber(sample.distance_mm, 0, ' mm')}` : status.transport || 'Forward single-beam range';
+  } catch (error) { byId('world-map-tof-state').textContent = `Unavailable · ${error.message}`; }
+  finally { readoutBusy.tof = false; }
 }
 
 async function refreshSensorSegmentation() {
@@ -1047,6 +1252,13 @@ setInterval(() => {
     void refreshSensorDepth();
   }
 }, 150);
+setInterval(() => {
+  if (activeSource !== 'sensors') return;
+  void refreshLiveRadar();
+  void refreshLiveGps();
+  void refreshLiveImu();
+  void refreshLiveTof();
+}, 1500);
 setInterval(() => {
   if (activeSource === 'sensors' && byId('world-map-segmentation-toggle')?.checked) {
     void refreshSensorSegmentation();

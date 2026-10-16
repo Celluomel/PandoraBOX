@@ -38,6 +38,7 @@ export class QuestVRDashboard {
     this.telemetry = null;
     this.imuStatus = null;
     this.gpsStatus = null;
+    this.sensorStatus = { camera: 'WAITING', yolo: 'WAITING', midas: 'WAITING' };
     this.controller = null;
     this.following = false;
     this.actionHitAreas = {};
@@ -140,11 +141,23 @@ export class QuestVRDashboard {
 
   updateImuStatus(status) {
     this.imuStatus = status || null;
+    const sample = this.imuStatus?.sample || {};
+    this.sensorStatus.imu = this.imuStatus?.available && sample.attitude_valid ? 'ATTITUDE OK' : 'NO FRESH SAMPLE';
     this.drawDashboard();
   }
 
   updateGpsStatus(status) {
     this.gpsStatus = status || null;
+    const sample = this.gpsStatus?.sample || this.gpsStatus?.source_status?.sample || {};
+    const inView = Number(sample.satellites_in_view);
+    this.sensorStatus.gps = this.gpsStatus?.available
+      ? `${sample.fix === true || Number(sample.fix_quality) > 0 ? 'FIX' : 'NO FIX'} · ${Number.isFinite(inView) ? `${inView} SV` : 'GSV —'}`
+      : 'OFFLINE';
+    this.drawDashboard();
+  }
+
+  updateSensorStatus(status) {
+    this.sensorStatus = { ...this.sensorStatus, ...status };
     this.drawDashboard();
   }
 
@@ -584,7 +597,8 @@ export class QuestVRDashboard {
   }
 
   drawSensorPanel(ctx, x, y, width, height, perception) {
-    this.drawPanel(ctx, x, y, width, height, 'Egocentric sensors', 'METRIC · 6 M');
+    const live = this.sceneMode === 'sensors';
+    this.drawPanel(ctx, x, y, width, height, 'Egocentric sensors', live ? 'LIVE BODY SENSORS' : 'SIMULATION · VIRTUAL RANGES');
     const lidar = perception.sensor_projections?.lidar?.points || [];
     const radar = perception.modalities?.mmwave_radar?.targets || [];
     const tof = perception.modalities?.tof || {};
@@ -592,8 +606,9 @@ export class QuestVRDashboard {
     const gap = 14;
     const mapWidth = width - inset * 2;
     const tofHeight = 124;
-    const mapHeight = (height - 94 - tofHeight - gap * 2) / 2;
-    const mapY = y + 72;
+    this.drawSensorStatusStrip(ctx, x + inset, y + 67, mapWidth, live);
+    const mapHeight = (height - 134 - tofHeight - gap * 2) / 2;
+    const mapY = y + 108;
     const tofY = mapY + mapHeight * 2 + gap * 2;
     ctx.strokeStyle = 'rgba(135, 206, 166, .22)';
     ctx.beginPath(); ctx.roundRect(x + inset, mapY, mapWidth, mapHeight, 20); ctx.stroke();
@@ -602,6 +617,32 @@ export class QuestVRDashboard {
     this.drawMetricMap(ctx, x + inset, mapY, mapWidth, mapHeight, lidar, radar, perception, 'LiDAR', 'lidar');
     this.drawMetricMap(ctx, x + inset, mapY + mapHeight + gap, mapWidth, mapHeight, lidar, radar, perception, 'mmWave', 'radar');
     this.drawRangeSensorStrip(ctx, x + inset + 12, tofY + 12, mapWidth - 24, tofHeight - 24, tof, perception.modalities || {});
+  }
+
+  drawSensorStatusStrip(ctx, x, y, width, live) {
+    const items = live ? [
+      ['CAMERA', this.sensorStatus.camera || this.cameraMessage],
+      ['YOLOX', this.sensorStatus.yolo || 'WAITING'],
+      ['MiDaS', this.sensorStatus.midas || 'WAITING'],
+      ['GPS', this.sensorStatus.gps || 'WAITING'],
+      ['IMU', this.sensorStatus.imu || 'WAITING'],
+    ] : [['SOURCE', 'SIMULATION'], ['RANGE', 'VIRTUAL'], ['GPS', 'SIM'], ['IMU', 'SIM'], ['LIVE INPUTS', 'NOT SHOWN']];
+    const gap = 8;
+    const itemWidth = (width - gap * (items.length - 1)) / items.length;
+    items.forEach(([label, value], index) => {
+      const bx = x + index * (itemWidth + gap);
+      const state = String(value);
+      const ok = !/WAIT|NO FIX|OFFLINE|ERROR|FAIL|UNAVAILABLE|INVALID/i.test(state)
+        && /LIVE|OK|FIX|READY|HTP|CPU|OBJECTS|MS/i.test(state);
+      ctx.fillStyle = 'rgba(8,20,17,.78)';
+      ctx.strokeStyle = ok ? 'rgba(99,215,174,.36)' : 'rgba(135,154,143,.28)';
+      ctx.beginPath(); ctx.roundRect(bx, y, itemWidth, 30, 7); ctx.fill(); ctx.stroke();
+      ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+      ctx.fillStyle = '#9fc5ac'; ctx.font = '600 11px ui-monospace, monospace';
+      ctx.fillText(label, bx + 8, y + 10);
+      ctx.fillStyle = ok ? '#bcebd0' : '#efcb76'; ctx.font = '600 12px ui-monospace, monospace';
+      ctx.fillText(state.slice(0, 22), bx + 8, y + 22, itemWidth - 16);
+    });
   }
 
   drawRangeSensorStrip(ctx, x, y, width, height, tof, modalities) {
@@ -854,6 +895,7 @@ export class QuestVRDashboard {
       this.cameraBitmap?.close?.();
       this.cameraBitmap = bitmap;
       this.cameraMessage = 'LIVE';
+      this.sensorStatus.camera = `LIVE · ${frame.width || bitmap.width}×${frame.height || bitmap.height}`;
       this.drawDashboard();
     } catch {
       this.setCameraStatus('CAMERA · DECODE ERROR');
@@ -866,6 +908,7 @@ export class QuestVRDashboard {
       this.cameraBitmap = null;
     }
     this.cameraMessage = message;
+    this.sensorStatus.camera = message.replace(/^CAMERA\s*·\s*/i, '');
     this.drawDashboard();
   }
 
