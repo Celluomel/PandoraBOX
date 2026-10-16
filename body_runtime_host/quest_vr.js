@@ -890,6 +890,19 @@ async function pollImuStatus() {
   } finally { imuPollInFlight = false; }
 }
 
+let gpsPollInFlight = false;
+async function pollGpsStatus() {
+  if (gpsPollInFlight) return;
+  gpsPollInFlight = true;
+  try {
+    const response = await fetch('/plugins/gps/status', { cache: 'no-store', credentials: 'same-origin' });
+    if (!response.ok) throw new Error(`GPS status HTTP ${response.status}`);
+    vrDashboard.updateGpsStatus(await response.json());
+  } catch (error) {
+    vrDashboard.updateGpsStatus({ available: false, error: error.message });
+  } finally { gpsPollInFlight = false; }
+}
+
 function syncSimulationControl(frame = latestWorldStatus) {
   const button = document.querySelector('#quest-simulation');
   if (!button) return;
@@ -1366,6 +1379,8 @@ void refreshGaussianAssetStatus();
 setInterval(refreshGaussianAssetStatus, 10000);
 void pollImuStatus();
 setInterval(pollImuStatus, 1000);
+void pollGpsStatus();
+setInterval(pollGpsStatus, 1500);
 window.__pbQuestReady = true;
 if (statusNode.textContent === 'Starting 3D scene…') setStatus('3D renderer ready · connecting to Body world model…');
 

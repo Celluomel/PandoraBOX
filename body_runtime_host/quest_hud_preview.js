@@ -9,6 +9,7 @@ let lastValidImu = null;
 let lastValidImuAt = 0;
 let liveTof = null;
 let liveRadar = null;
+let liveGps = null;
 let cameraFrameId = null;
 let cameraBusy = false;
 let cameraDisplayKey = null;
@@ -340,7 +341,7 @@ function drawNavigation(perception = world?.perception || {}, telemetry = contro
   const imuSource = liveImu?.available ? liveImu.sample : (modalities.imu || telemetry.imu || {});
   const unwrap = value => value?.data && typeof value.data === 'object' ? value.data : value || {};
   const imu = unwrap(imuSource);
-  const gps = unwrap(modalities.gps || modalities.gnss || perception.body?.geo || telemetry.gps);
+  const gps = unwrap(liveGps?.sample || liveGps?.source_status?.sample || modalities.gps || modalities.gnss || perception.body?.geo || telemetry.gps);
   const number = value => value === null || value === undefined || value === '' ? NaN : Number(value);
   const unit = imu.angle_unit || imu.unit || (imuSource === telemetry.imu ? 'rad' : '');
   const degrees = (value, sourceUnit) => Number.isFinite(number(value)) ? (String(sourceUnit).toLowerCase().includes('rad') ? number(value) * 180 / Math.PI : number(value)) : NaN;
@@ -376,7 +377,11 @@ function drawNavigation(perception = world?.perception || {}, telemetry = contro
     && (gps.fix === true || gps.valid === true || gps.status === 'fix' || gps.status === 'valid' || quality > 0);
   const accuracy = number(gps.horizontal_accuracy_m ?? gps.accuracy_m);
   const hdop = number(gps.hdop);
-  $('nav-gps').innerHTML = `<small>GPS · ${hasFix ? 'FIX' : 'WAITING FOR FIX'}</small>${hasFix ? `${lat.toFixed(6)}°, ${lon.toFixed(6)}°` : 'NO POSITION'}${hasFix && Number.isFinite(accuracy) ? `<small>±${accuracy.toFixed(1)} m</small>` : hasFix && Number.isFinite(hdop) ? `<small>HDOP ${hdop.toFixed(1)}</small>` : ''}`;
+  const satellites = number(gps.satellites);
+  const gpsDiagnostic = liveGps?.source_status?.diagnostic || {};
+  const streamOnline = Boolean(gps.connected || liveGps?.available || Number(gpsDiagnostic.bytes_received) > 0);
+  const state = hasFix ? 'FIX' : streamOnline ? 'UART LIVE · NO FIX' : 'NO GPS DATA';
+  $('nav-gps').innerHTML = `<small>GPS · ${state}</small>${hasFix ? `${lat.toFixed(6)}°, ${lon.toFixed(6)}°` : streamOnline ? 'WAITING FOR FIX' : 'CHECK D0/D1'}<small>${Number.isFinite(satellites) ? `${satellites} SAT USED` : 'SATELLITES —'}${Number.isFinite(hdop) ? ` · HDOP ${hdop.toFixed(1)}` : ''}</small>`;
 
   const canvas = $('nav-horizon');
   const { width, height, ratio } = resizeCanvas(canvas);
@@ -572,6 +577,22 @@ async function pollImu() {
   } finally { imuBusy = false; }
 }
 
+let gpsBusy = false;
+async function pollGps() {
+  if (gpsBusy) return;
+  gpsBusy = true;
+  try {
+    const response = await fetch('/plugins/gps/status', { cache: 'no-store' });
+    if (!response.ok) throw new Error(`GPS status HTTP ${response.status}`);
+    liveGps = await response.json();
+  } catch (error) {
+    liveGps = { available: false, error: error.message };
+  } finally {
+    drawNavigation();
+    gpsBusy = false;
+  }
+}
+
 async function pollTof() {
   if (tofBusy) return;
   tofBusy = true;
@@ -619,5 +640,5 @@ async function pollRadar() {
 
 initRobotVisual();
 window.addEventListener('resize', updateStatus);
-void poll(); void pollCamera(); void pollImu(); void pollTof(); void pollRadar();
-setInterval(poll, 800); setInterval(pollCamera, 150); setInterval(pollImu, 1000); setInterval(pollTof, 1000); setInterval(pollRadar, 500);
+void poll(); void pollCamera(); void pollImu(); void pollTof(); void pollRadar(); void pollGps();
+setInterval(poll, 800); setInterval(pollCamera, 150); setInterval(pollImu, 1000); setInterval(pollTof, 1000); setInterval(pollRadar, 500); setInterval(pollGps, 1500);

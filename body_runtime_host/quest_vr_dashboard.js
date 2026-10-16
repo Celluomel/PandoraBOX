@@ -37,6 +37,7 @@ export class QuestVRDashboard {
     this.sceneMode = 'simulation';
     this.telemetry = null;
     this.imuStatus = null;
+    this.gpsStatus = null;
     this.controller = null;
     this.following = false;
     this.actionHitAreas = {};
@@ -139,6 +140,11 @@ export class QuestVRDashboard {
 
   updateImuStatus(status) {
     this.imuStatus = status || null;
+    this.drawDashboard();
+  }
+
+  updateGpsStatus(status) {
+    this.gpsStatus = status || null;
     this.drawDashboard();
   }
 
@@ -393,7 +399,7 @@ export class QuestVRDashboard {
       ? (this.imuStatus.available ? this.imuStatus.sample : {})
       : (modalities.imu || fnk.imu || {});
     const imu = unwrap(imuSourceData);
-    const gps = unwrap(modalities.gps || modalities.gnss || perception.body?.geo || fnk.gps);
+    const gps = unwrap(this.gpsStatus?.sample || this.gpsStatus?.source_status?.sample || modalities.gps || modalities.gnss || perception.body?.geo || fnk.gps);
     const asNumber = value => value === null || value === undefined || value === '' ? NaN : Number(value);
     const angleDeg = (value, unit) => {
       const n = asNumber(value);
@@ -465,7 +471,10 @@ export class QuestVRDashboard {
     ctx.fillStyle = hasGps ? '#59e0bc' : '#f0cd79'; ctx.font = '17px ui-monospace, monospace';
     ctx.fillText(hasGps ? `${gpsLat.toFixed(6)}°, ${gpsLon.toFixed(6)}°` : 'NO VALID FIX', gpsX, gpsY + 28);
     ctx.fillStyle = '#829d8d'; ctx.font = '16px ui-monospace, monospace';
-    ctx.fillText(hasGps ? `FIX${Number.isFinite(gpsAccuracy) ? ` · ±${gpsAccuracy.toFixed(1)} m` : Number.isFinite(gpsHdop) ? ` · HDOP ${gpsHdop.toFixed(1)}` : ''}` : 'Waiting for GNSS fix', gpsX, gpsY + 51);
+    const satelliteCount = asNumber(gps.satellites);
+    const gpsStreamOnline = Boolean(this.gpsStatus?.available || gps.connected || Number(this.gpsStatus?.source_status?.diagnostic?.bytes_received) > 0);
+    ctx.fillText(hasGps ? `FIX${Number.isFinite(gpsAccuracy) ? ` · ±${gpsAccuracy.toFixed(1)} m` : Number.isFinite(gpsHdop) ? ` · HDOP ${gpsHdop.toFixed(1)}` : ''}` : gpsStreamOnline ? 'UART LIVE · WAITING FOR FIX' : 'NO GPS DATA · CHECK D0/D1', gpsX, gpsY + 51);
+    ctx.fillText(`${Number.isFinite(satelliteCount) ? `${satelliteCount} SATELLITES USED` : 'SATELLITES —'} · AZ/EL NOT AVAILABLE`, gpsX, gpsY + 74);
   }
 
   drawAzimuthRing(ctx, cx, cy, radius, heading) {
