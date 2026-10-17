@@ -681,8 +681,8 @@ if (cloud) {
 }
 let lastSensorCloudRenderAt = 0;
 function animateSensorCloud(now) {
-  if (activeSource === 'sensors' && activeRender === '3d' && cloud
-      && now - lastSensorCloudRenderAt >= 1000 / 30) {
+  if (document.visibilityState !== 'hidden' && activeSource === 'sensors' && activeRender === '3d' && cloud
+      && now - lastSensorCloudRenderAt >= 1000 / 24) {
     lastSensorCloudRenderAt = now;
     cloud.render();
   }
@@ -2764,27 +2764,38 @@ window.updateBodyWorldMap3D = (world) => {
   if (activeSource === 'simulation' && activeRender === '3d') buildSimulation(world);
 };
 
+const sensorPageVisible = () => document.visibilityState !== 'hidden';
 setInterval(() => {
-  if (activeSource === 'sensors') {
+  if (sensorPageVisible() && activeSource === 'sensors') {
     void refreshSensors();
     void refreshSensorDepth();
   }
-}, 75);
+}, 200);
 setInterval(() => {
-  if (activeSource !== 'sensors') return;
+  if (!sensorPageVisible() || activeSource !== 'sensors') return;
   void refreshLiveRadar();
-}, 100);
-setInterval(() => { void refreshSystemMetrics(); }, 1000);
+}, 250);
+setInterval(() => { if (sensorPageVisible()) void refreshSystemMetrics(); }, 1500);
 setInterval(() => {
-  if (activeSource !== 'sensors') return;
+  if (!sensorPageVisible() || activeSource !== 'sensors') return;
   void refreshLiveGps();
   void refreshLiveImu();
   void refreshLiveTof();
-}, 250);
-setInterval(() => {
-  if (activeSource === 'sensors') void refreshSensorSegmentation();
 }, 500);
 setInterval(() => {
-  if (activeSource === 'sensors') void refreshVisualOdometry();
-}, 250);
+  if (sensorPageVisible() && activeSource === 'sensors') void refreshSensorSegmentation();
+}, 1000);
+setInterval(() => {
+  if (sensorPageVisible() && activeSource === 'sensors') void refreshVisualOdometry();
+}, 500);
+document.addEventListener('visibilitychange', () => {
+  if (sensorPageVisible() && activeSource === 'sensors') {
+    void refreshSensors();
+    void refreshSensorDepth();
+    void refreshLiveRadar();
+    void refreshLiveGps();
+    void refreshLiveImu();
+    void refreshLiveTof();
+  }
+});
 if (latestWorld) buildSimulation(latestWorld);
