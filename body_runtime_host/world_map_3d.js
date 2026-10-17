@@ -316,7 +316,7 @@ if (panel) {
       .world-map-cloud-side label{display:flex;align-items:center;gap:8px;min-height:30px;color:var(--wm-muted)}
       .world-map-cloud-side input{accent-color:#00d6df}
       .world-map-depth-legend{display:grid;gap:6px}
-      .world-map-depth-legend>i{height:12px;border-radius:2px;background:linear-gradient(90deg,#ed35c5,#4836d9,#00b8d4,#75e45b,#f8cb36,#ef4d27)}
+      .world-map-depth-legend>i{height:12px;border-radius:2px;background:linear-gradient(90deg,#f05a28,#f9c932,#72d055,#1fa4b2,#4663d8,#30123b)}
       .world-map-depth-legend>div{display:flex;justify-content:space-between;color:var(--wm-muted);font-size:12px}
       .world-map-cloud-side small{color:var(--wm-muted);font-size:12px}
       .world-map-cloud-side .world-map-depth-calibration{display:grid;gap:8px;padding-top:10px;border-top:1px solid var(--wm-border)}
@@ -667,7 +667,7 @@ if (cloud) {
     if (layer === 'odometry') cloudOdometryGroup.visible = input.checked;
     cloud.render();
   }));
-  byId('world-map-cloud-point-size')?.addEventListener('input', event => { if (cloudPoints) cloudPoints.material.size = Number(event.target.value) / 1000; cloud.render(); });
+  byId('world-map-cloud-point-size')?.addEventListener('input', event => { if (cloudPoints) cloudPoints.material.uniforms.uPointSize.value = Number(event.target.value) / 1000; cloud.render(); });
 }
 let lastSensorCloudRenderAt = 0;
 function animateSensorCloud(now) {
@@ -1220,6 +1220,56 @@ async function loadDepthFrame(depth) {
   image.frameId = String(depth.frame_id || '');
   image.capturedAt = Number(depth.captured_at) || 0;
   return image;
+}
+
+function createMidasPointMaterial(pointSize) {
+  return new THREE.ShaderMaterial({
+    transparent: true,
+    depthWrite: false,
+    uniforms: {
+      uPointSize: { value: pointSize },
+      uViewportHeight: { value: cloud?.renderer.domElement.height || 1 },
+      uOpacity: { value: 0.92 },
+      uStale: { value: 0 },
+    },
+    vertexShader: `
+      attribute float depthValue;
+      uniform float uPointSize;
+      uniform float uViewportHeight;
+      varying float vDepth;
+      void main() {
+        vDepth = depthValue;
+        vec4 viewPosition = modelViewMatrix * vec4(position, 1.0);
+        gl_Position = projectionMatrix * viewPosition;
+        gl_PointSize = max(1.0, uPointSize * uViewportHeight * 0.5 * projectionMatrix[1][1] / max(0.1, -viewPosition.z));
+      }
+    `,
+    fragmentShader: `
+      uniform float uOpacity;
+      uniform float uStale;
+      varying float vDepth;
+      vec3 turbo(float x) {
+        float x2 = x * x;
+        float x3 = x2 * x;
+        float x4 = x3 * x;
+        float x5 = x4 * x;
+        return clamp(vec3(
+          0.13572138 + 4.61539260*x - 42.66032258*x2 + 132.13108234*x3 - 152.94239396*x4 + 59.28637943*x5,
+          0.09140261 + 2.19418839*x + 4.84296658*x2 - 14.18503333*x3 - 4.27729857*x4 + 2.82956604*x5,
+          0.10667330 + 12.64194608*x - 60.58204836*x2 + 110.36276771*x3 - 89.90310912*x4 + 27.34824973*x5
+        ), 0.0, 1.0);
+      }
+      void main() {
+        vec2 point = gl_PointCoord - vec2(0.5);
+        float edge = 1.0 - smoothstep(0.42, 0.5, length(point));
+        if (edge <= 0.01) discard;
+        vec3 color = turbo(clamp(vDepth, 0.0, 1.0));
+        float gray = dot(color, vec3(0.299, 0.587, 0.114));
+        color = mix(color, vec3(gray), uStale * 0.72);
+        gl_FragColor = vec4(color, uOpacity * edge);
+      }
+    `,
+  });
 }
 
 function updateMetricCalibrationStatus() {
@@ -1859,9 +1909,8 @@ async function refreshSensorDepth() {
     const midasState = classifyAge('midas', ageSeconds, Boolean(depth.depth_jpeg_base64) && depth.state !== 'disabled');
     setFeedStatus('world-map-midas-state', 'midas', midasState, `${depth.state || 'disabled'}${depth.device ? ` · ${depth.device}` : ''}${depth.latency_ms != null ? ` · ${depth.latency_ms} ms` : ''}${depthAge}${depth.error ? ` · ${depth.error}` : ''}`);
     if (cloudPoints) {
-      cloudPoints.material.color.set(midasState === 'stale' ? '#65747a' : '#72d7c4');
-      cloudPoints.material.opacity = midasState === 'stale' ? 0.38 : 0.92;
-      cloudPoints.material.needsUpdate = true;
+      cloudPoints.material.uniforms.uOpacity.value = midasState === 'stale' ? 0.38 : 0.92;
+      cloudPoints.material.uniforms.uStale.value = midasState === 'stale' ? 1 : 0;
     }
     updateMetricCalibrationStatus();
     const alignedSegmentationFrameId = segmentationMatchesDepth(segmentation, depth)
@@ -1997,6 +2046,7 @@ function drawVisualOdometryMap() {
 function resizeCloud() {
   if (!cloud) return;
   cloud.resize();
+  if (cloudPoints) cloudPoints.material.uniforms.uViewportHeight.value = cloud.renderer.domElement.height;
   if (cloudViewport?.classList.contains('is-camera-view')) applyCameraProjection();
   if (cloudPoints && (!cloudCameraInitialized || !cloud.camera.userData.userAdjusted)) {
     if (!cloudPoints.geometry.boundingBox) cloudPoints.geometry.computeBoundingBox();
@@ -2321,16 +2371,19 @@ async function rebuildDepthCloud(depth, segmentation = latestSegmentation) {
   const intrinsics = cameraIntrinsicsForImage(image);
   const stride = Math.max(3, Math.ceil(Math.max(image.width, image.height) / 120));
   const positions = [];
+  const depthValues = [];
   for (let y = 0; y < image.height; y += stride) {
     for (let x = 0; x < image.width; x += stride) {
       const index = (y * image.width + x) * 4;
       const distance = depthForScene(image, index, frameCalibration);
       const point = cameraPointInBodyFrame(cameraPoint(x, y, distance, intrinsics), Number(depth.captured_at) || latestDepthCapturedAt);
       positions.push(point.x, point.y, point.z);
+      depthValues.push((image.normalizedValues?.[index] ?? image.values[index]) / 255);
     }
   }
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute('depthValue', new THREE.Float32BufferAttribute(depthValues, 1));
   geometry.computeBoundingBox();
   cloudPointCount = positions.length / 3;
   const layerEnabled = cloudViewport?.querySelector('[data-cloud-layer="cloud"]')?.checked !== false;
@@ -2340,7 +2393,7 @@ async function rebuildDepthCloud(depth, segmentation = latestSegmentation) {
     cloudPoints.visible = layerEnabled;
     previousGeometry.dispose();
   } else {
-    cloudPoints = new THREE.Points(geometry, new THREE.PointsMaterial({ color: '#72d7c4', size: Number(byId('world-map-cloud-point-size')?.value || 25) / 1000, sizeAttenuation: true, transparent: true, opacity: 0.92 }));
+    cloudPoints = new THREE.Points(geometry, createMidasPointMaterial(Number(byId('world-map-cloud-point-size')?.value || 25) / 1000));
     cloudPoints.visible = layerEnabled;
     cloud.scene.add(cloudPoints);
   }
