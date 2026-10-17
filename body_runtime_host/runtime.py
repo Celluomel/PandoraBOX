@@ -650,6 +650,13 @@ class BodyHost:
             self._ros2_bridge.stop()
             self._ros2_bridge = None
 
+    def _camera_height_m(self) -> float:
+        try:
+            height = float(self.value("BODY_CAMERA_HEIGHT_M", 0.18) or 0.18)
+        except (AttributeError, TypeError, ValueError):
+            height = 0.18
+        return max(0.05, min(2.5, height))
+
     def camera_settings(self) -> dict:
         startup_enabled = bool(self.value("BODY_CAMERA_STARTUP_ENABLED", False))
         with self._local_camera_lock:
@@ -663,7 +670,7 @@ class BodyHost:
             "width": max(640, int(self.value("BODY_CAMERA_WIDTH", 640) or 640)),
             "height": max(480, int(self.value("BODY_CAMERA_HEIGHT", 480) or 480)),
             "profile": str(self.value("BODY_CAMERA_PROFILE", "low_body_front") or "low_body_front"),
-            "camera_height_m": max(0.05, min(2.5, float(self.value("BODY_CAMERA_HEIGHT_M", 0.18) or 0.18))),
+            "camera_height_m": self._camera_height_m(),
             "startup_enabled": startup_enabled,
             "device_index": max(0, int(self.value("BODY_CAMERA_DEVICE_INDEX", 0) or 0)),
             "fps": round(1.0 / max(1.0 / 60.0, float(self.value("BODY_CAMERA_INTERVAL", 1.0 / 15.0) or (1.0 / 15.0))), 2),
@@ -694,7 +701,7 @@ class BodyHost:
         frame = self._camera_provider() or {}
         if frame:
             settings = self.camera_settings()
-            frame = {**frame, "camera_height_m": settings["camera_height_m"]}
+            frame = {**frame, "camera_height_m": self._camera_height_m()}
             yolo = self._yolox_service.status()
             return {"available": True, "camera": frame, "yolo": yolo}
         settings = self.camera_settings()
@@ -709,7 +716,7 @@ class BodyHost:
         """Serve camera pixels without coupling the stream to detector metadata."""
         frame = self._camera_provider() or {}
         if frame:
-            frame = {**frame, "camera_height_m": self.camera_settings()["camera_height_m"]}
+            frame = {**frame, "camera_height_m": self._camera_height_m()}
         return {"available": bool(frame), "camera": frame}
 
     def camera_yolo_frame(self, frame_id: str | None = None) -> dict:
@@ -721,7 +728,7 @@ class BodyHost:
         if not frame:
             return {"available": False, "error": "Analyzed camera frame is no longer available"}
         return {"available": True, "camera": {
-            **frame, "camera_height_m": self.camera_settings()["camera_height_m"]
+            **frame, "camera_height_m": self._camera_height_m()
         }}
 
     def camera_yolo_status(self, frame_id: str | None = None, nearest_to: float | None = None,

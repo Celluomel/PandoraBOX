@@ -1014,6 +1014,22 @@ function depthValueAt(image, pixelIndex) {
   return normalized;
 }
 
+const depthPercentileCache = new WeakMap();
+
+function relativeDepthPercentiles(image) {
+  if (depthPercentileCache.has(image)) return depthPercentileCache.get(image);
+  const values = [];
+  const stride = Math.max(4, Math.floor(Math.sqrt(image.width * image.height / 12000)));
+  for (let y = 0; y < image.height; y += stride) {
+    for (let x = 0; x < image.width; x += stride) values.push(image.values[(y * image.width + x) * 4]);
+  }
+  values.sort((a, b) => a - b);
+  const at = percentile => values[Math.min(values.length - 1, Math.floor((values.length - 1) * percentile))] || 0;
+  const result = { low: at(0.02), high: at(0.98) };
+  depthPercentileCache.set(image, result);
+  return result;
+}
+
 function depthForScene(image, pixelIndex, calibration) {
   const raw = depthValueAt(image, pixelIndex);
   const hasRawRange = Number.isFinite(image.rawMin) && Number.isFinite(image.rawMax);
@@ -1021,11 +1037,10 @@ function depthForScene(image, pixelIndex, calibration) {
     const calibrated = relativeDepthToMeters(raw, calibration);
     if (Number.isFinite(calibrated)) return calibrated;
   }
-  const normalized = Number.isFinite(image.rawMin) && Number.isFinite(image.rawMax)
-    ? (raw - image.rawMin) / Math.max(image.rawMax - image.rawMin, 1e-6)
-    : image.values[pixelIndex] / 255;
-  // MiDaS is disparity-like here; this bounded depth is for shape only, never metres.
-  return 1 + (1 - THREE.MathUtils.clamp(normalized, 0, 1)) * 5;
+  const { low, high } = relativeDepthPercentiles(image);
+  const disparity = THREE.MathUtils.clamp((image.values[pixelIndex] - low) / Math.max(high - low, 1), 0, 1);
+  // Relative inverse-depth proxy only; robust to isolated outliers and never presented as metres.
+  return 1 / THREE.MathUtils.lerp(1 / 8, 1 / 0.7, disparity);
 }
 
 function cameraIntrinsicsForImage(image) {
@@ -1093,9 +1108,12 @@ function updateCloudOrigin() {
 
 updateCloudOrigin();
 
-function cameraPointInBodyFrame(point) {
+function cameraPointInBodyFrame(point, timestamp = latestDepthCapturedAt) {
   const mount = cameraMountPose();
-  return point.clone().applyQuaternion(mount.rotation).add(mount.position);
+  const bodyPoint = point.clone().applyQuaternion(mount.rotation).add(mount.position);
+  const attitude = attitudeQuaternion(timestamp);
+  if (attitude) bodyPoint.applyQuaternion(attitude);
+  return bodyPoint;
 }
 
 function applyCameraProjection() {
@@ -1137,10 +1155,10 @@ async function updateCloudCameraPlane(frame) {
   const intrinsics = cameraIntrinsicsForImage({ width: image.naturalWidth, height: image.naturalHeight });
   const distance = 80;
   const corners = [
-    cameraPointInBodyFrame(cameraPoint(0, 0, distance, intrinsics)),
-    cameraPointInBodyFrame(cameraPoint(image.naturalWidth, 0, distance, intrinsics)),
-    cameraPointInBodyFrame(cameraPoint(0, image.naturalHeight, distance, intrinsics)),
-    cameraPointInBodyFrame(cameraPoint(image.naturalWidth, image.naturalHeight, distance, intrinsics)),
+    cameraPointInBodyFrame(cameraPoint(0, 0, distance, intrinsics), Number(frame.captured_at) || latestDepthCapturedAt),
+    cameraPointInBodyFrame(cameraPoint(image.naturalWidth, 0, distance, intrinsics), Number(frame.captured_at) || latestDepthCapturedAt),
+    cameraPointInBodyFrame(cameraPoint(0, image.naturalHeight, distance, intrinsics), Number(frame.captured_at) || latestDepthCapturedAt),
+    cameraPointInBodyFrame(cameraPoint(image.naturalWidth, image.naturalHeight, distance, intrinsics), Number(frame.captured_at) || latestDepthCapturedAt),
   ];
   const texture = new THREE.Texture(image);
   texture.colorSpace = THREE.SRGBColorSpace;
@@ -1176,6 +1194,7 @@ async function loadDepthFrame(depth) {
     image.rawMin = Number(depth.depth_raw_min);
     image.rawMax = Number(depth.depth_raw_max);
   }
+  image.frameId = String(depth.frame_id || '');
   return image;
 }
 
@@ -2058,10 +2077,7 @@ function updateCloudHud() {
     ? `Depth in metres · ${fovText}; radar remains independent`
     : `Relative units · shape only; ${fovText}; no metric scale`;
   const scale = cloudViewport?.querySelector('.world-map-cloud-scale');
-  if (scale) {
-    scale.hidden = Boolean(cloudViewport?.classList.contains('is-camera-view'));
-    scale.textContent = metricFrame ? '1 m' : '1 relative unit';
-  }
+  if (scale) scale.hidden = true;
   // The origin axes and reference grid remain useful for shape-only depth; only
   // their units change. Hide scene furniture in the pixel-aligned Camera preset.
   if (cloudGuides) cloudGuides.visible = !cloudViewport?.classList.contains('is-camera-view');
@@ -2166,8 +2182,7 @@ function updateCloudRadar(sample = latestRadarSample, force = false) {
     marker.renderOrder = 21;
     cloudRadarGroup.add(marker);
     labels.push({ position: point, marker: true, motionClass: egoMotionLikely ? 'is-ego-motion' : moving ? 'is-moving' : '' });
-    const range = Math.hypot(lateral, forward);
-    labels.push({ position: point.clone().add(new THREE.Vector3(0, 0.16, 0)), text: `${target.id || target.target_id || `Radar ${index + 1}`} · ${range.toFixed(1)} m${egoMotionLikely ? ' · radial motion ego-uncompensated' : ''}` });
+    labels.push({ position: point.clone().add(new THREE.Vector3(0, 0.16, 0)), text: `${target.id || target.target_id || `Radar ${index + 1}`} · ${forward.toFixed(1)} m forward${egoMotionLikely ? ' · radial motion ego-uncompensated' : ''}` });
   }
   setCloudLayerLabels('radar', labels);
   if (activeRender === '3d') cloud.render();
@@ -2278,7 +2293,7 @@ async function rebuildDepthCloud(depth, segmentation = latestSegmentation) {
     for (let x = 0; x < image.width; x += stride) {
       const index = (y * image.width + x) * 4;
       const distance = depthForScene(image, index, frameCalibration);
-      const point = cameraPointInBodyFrame(cameraPoint(x, y, distance, intrinsics));
+      const point = cameraPointInBodyFrame(cameraPoint(x, y, distance, intrinsics), Number(depth.captured_at) || latestDepthCapturedAt);
       positions.push(point.x, point.y, point.z);
       const colorX = Math.min(colorImage.width - 1, Math.round(x * colorImage.width / image.width));
       const colorY = Math.min(colorImage.height - 1, Math.round(y * colorImage.height / image.height));
@@ -2320,7 +2335,8 @@ async function rebuildDepthCloud(depth, segmentation = latestSegmentation) {
   }
   updateCloudRadar();
   updateCloudOdometry();
-  drawDepthDetections(image, latestSensorYolo, frameCalibration);
+  const frameYolo = latestSensorYolo?.frame_id === depth.frame_id ? latestSensorYolo : null;
+  drawDepthDetections(image, frameYolo, frameCalibration);
   resizeCloud();
   if (cloudViewport?.classList.contains('is-camera-view')) {
     void cameraFrameForDepth(depth).then(frame => {
@@ -2354,7 +2370,8 @@ function drawDepthDetections(image, yolo, calibration = metricDepthCalibration) 
   if (!cloud || !image || activeRender !== '3d') return;
   const layerEnabled = cloudViewport?.querySelector('[data-cloud-layer="detections"]')?.checked !== false;
   const yoloAge = Number(yolo?.captured_at) > 0 ? Date.now() / 1000 - Number(yolo.captured_at) : Infinity;
-  const detections = layerEnabled && yolo?.state === 'ready' && yoloAge >= 0 && yoloAge <= 2.5
+  const frameMatches = Boolean(image.frameId && yolo?.frame_id === image.frameId);
+  const detections = layerEnabled && frameMatches && yolo?.state === 'ready' && yoloAge >= 0 && yoloAge <= 2.5
     ? (yolo.detections || []) : [];
   const detectionKey = `${layerEnabled}:${cloudFrameId}:${yolo?.frame_id || ''}:${detections.length}:${Number(latestDepthCapturedAt).toFixed(3)}`;
   if (detectionKey === cloudDetectionKey) return;
@@ -2385,21 +2402,21 @@ function drawDepthDetections(image, yolo, calibration = metricDepthCalibration) 
     const farZ = Math.max(nearZ + (metricFrame ? 0.03 : 0.01), medianDepth + depthSpan / 2);
     const intrinsics = cameraIntrinsicsForImage(image);
     const corners = [
-      cameraPointInBodyFrame(cameraPoint(x1 * image.width, y1 * image.height, nearZ, intrinsics)),
-      cameraPointInBodyFrame(cameraPoint(x2 * image.width, y1 * image.height, nearZ, intrinsics)),
-      cameraPointInBodyFrame(cameraPoint(x2 * image.width, y2 * image.height, nearZ, intrinsics)),
-      cameraPointInBodyFrame(cameraPoint(x1 * image.width, y2 * image.height, nearZ, intrinsics)),
-      cameraPointInBodyFrame(cameraPoint(x1 * image.width, y1 * image.height, farZ, intrinsics)),
-      cameraPointInBodyFrame(cameraPoint(x2 * image.width, y1 * image.height, farZ, intrinsics)),
-      cameraPointInBodyFrame(cameraPoint(x2 * image.width, y2 * image.height, farZ, intrinsics)),
-      cameraPointInBodyFrame(cameraPoint(x1 * image.width, y2 * image.height, farZ, intrinsics)),
+      cameraPointInBodyFrame(cameraPoint(x1 * image.width, y1 * image.height, nearZ, intrinsics), latestDepthCapturedAt),
+      cameraPointInBodyFrame(cameraPoint(x2 * image.width, y1 * image.height, nearZ, intrinsics), latestDepthCapturedAt),
+      cameraPointInBodyFrame(cameraPoint(x2 * image.width, y2 * image.height, nearZ, intrinsics), latestDepthCapturedAt),
+      cameraPointInBodyFrame(cameraPoint(x1 * image.width, y2 * image.height, nearZ, intrinsics), latestDepthCapturedAt),
+      cameraPointInBodyFrame(cameraPoint(x1 * image.width, y1 * image.height, farZ, intrinsics), latestDepthCapturedAt),
+      cameraPointInBodyFrame(cameraPoint(x2 * image.width, y1 * image.height, farZ, intrinsics), latestDepthCapturedAt),
+      cameraPointInBodyFrame(cameraPoint(x2 * image.width, y2 * image.height, farZ, intrinsics), latestDepthCapturedAt),
+      cameraPointInBodyFrame(cameraPoint(x1 * image.width, y2 * image.height, farZ, intrinsics), latestDepthCapturedAt),
     ];
     const edgeIndices = [0, 1, 1, 2, 2, 3, 3, 0, 4, 5, 5, 6, 6, 7, 7, 4, 0, 4, 1, 5, 2, 6, 3, 7];
     const material = new THREE.LineBasicMaterial({ color: colorsByKind[index % colorsByKind.length], depthTest: false, transparent: true, opacity: 0.95 });
     nextGroup.add(new THREE.LineSegments(
       new THREE.BufferGeometry().setFromPoints(edgeIndices.map(corner => corners[corner])), material,
     ));
-    const labelPosition = cameraPointInBodyFrame(cameraPoint((x1 + x2) * image.width / 2, y1 * image.height, nearZ, intrinsics));
+    const labelPosition = cameraPointInBodyFrame(cameraPoint((x1 + x2) * image.width / 2, y1 * image.height, nearZ, intrinsics), latestDepthCapturedAt);
     const confidence = Math.round(Number(item.confidence ?? item.score ?? 0) * 100);
     const rangeLabel = radarAnchor
       ? `${radarAnchor.forward.toFixed(2)} m · radar measured`

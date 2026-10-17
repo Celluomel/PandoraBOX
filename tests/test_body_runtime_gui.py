@@ -13,7 +13,7 @@ class BodyRuntimeGuiTests(unittest.TestCase):
 
         self.assertEqual(
             host.camera_yolo_frame("depth-1"),
-            {"available": True, "camera": source_frame},
+            {"available": True, "camera": {**source_frame, "camera_height_m": 0.18}},
         )
 
     def test_world_map_switches_between_simulation_and_sensor_only_renderings(self):
@@ -56,11 +56,12 @@ class BodyRuntimeGuiTests(unittest.TestCase):
         self.assertIn("low_body_front: { heightM: 0.12, elevationDeg: -8 }", source)
         self.assertIn("world-map-cloud-radar-dot", source)
         self.assertIn("labels.push({ position: point, marker: true", source)
-        self.assertIn("BODY SENSOR ORIGIN · 0.00 m", source)
+        self.assertIn("BODY SENSOR ORIGIN · ${mount.heightM.toFixed(2)} m above floor", source)
         self.assertIn("CAMERA MOUNT · ${mount.profile.replace(/_/g, ' ')}", source)
         self.assertLess(source.index("const cameraMountProfiles ="), source.index("updateCloudOrigin();"))
         self.assertIn("cloud.camera.up.set(0, 1, 0).applyQuaternion(mount.rotation)", source)
-        self.assertIn("cameraPointInBodyFrame(cameraPoint(x, y, distance, intrinsics))", source)
+        self.assertIn("cameraPointInBodyFrame(cameraPoint(x, y, distance, intrinsics)", source)
+        self.assertIn("Number(depth.captured_at) || latestDepthCapturedAt", source)
         self.assertIn("positions.push(index, 0, 1, index, 0, -15", source)
         self.assertIn("cameraPoint(x, y, distance, intrinsics)", source)
         self.assertIn("function applyCameraProjection()", source)
@@ -73,7 +74,11 @@ class BodyRuntimeGuiTests(unittest.TestCase):
         self.assertIn("previousGeometry.dispose()", depth_cloud)
         self.assertIn("requestAnimationFrame(animateSensorCloud)", source)
         self.assertIn("if (activeRender === '3d' && cloudDepthImage) drawDepthDetections(cloudDepthImage, yolo)", source)
-        self.assertIn("drawDepthDetections(image, latestSensorYolo, frameCalibration)", depth_cloud)
+        self.assertIn("const frameYolo = latestSensorYolo?.frame_id === depth.frame_id ? latestSensorYolo : null", depth_cloud)
+        self.assertIn("const frameMatches = Boolean(image.frameId && yolo?.frame_id === image.frameId)", source)
+        self.assertIn("relativeDepthPercentiles(image)", source)
+        self.assertIn("attitudeQuaternion(timestamp)", source)
+        self.assertIn("if (scale) scale.hidden = true", source)
         self.assertIn("Relative units · shape only; ${fovText}; no metric scale", source)
         self.assertIn("world-map-cloud-hud-sync", source)
         self.assertNotIn("distance * 1.28", source)
@@ -92,7 +97,6 @@ class BodyRuntimeGuiTests(unittest.TestCase):
         self.assertIn("3D ${Math.round(cloudFpsFrames * 1000 / elapsed)} FPS", source)
         self.assertIn("void refreshLiveRadar();\n}, 100);", source)
         self.assertIn("cloudGuides.visible = !cloudViewport?.classList.contains('is-camera-view')", source)
-        self.assertIn("scale.textContent = metricFrame ? '1 m' : '1 relative unit'", source)
         self.assertIn("data-cloud-view=\"follow\"", source)
         self.assertIn("world-map-cloud-hud-fps", source)
         self.assertIn("world-map-cloud-depth-caption", source)
