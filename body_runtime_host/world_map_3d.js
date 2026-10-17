@@ -2074,8 +2074,19 @@ function updateCloudRadar(sample = latestRadarSample, force = false) {
       && Number(latestVisualOdometry.confidence) >= 0.35
       && Number(latestVisualOdometry.speed_mps) >= 0.05;
     const moving = Math.abs(Number(target.radial_speed_mps) || 0) >= 0.05 && !egoMotionLikely;
-    const marker = new THREE.Mesh(new THREE.SphereGeometry(0.075, 12, 8), new THREE.MeshBasicMaterial({ color: egoMotionLikely ? '#9aa7ad' : moving ? '#ed35c5' : '#f2bc65' }));
+    const markerColor = egoMotionLikely ? '#9aa7ad' : moving ? '#ed35c5' : '#f2bc65';
+    // MiDaS points are dense and write depth; radar is an independent metric overlay.
+    const halo = new THREE.Mesh(new THREE.SphereGeometry(0.17, 16, 10), new THREE.MeshBasicMaterial({
+      color: markerColor, transparent: true, opacity: 0.24, depthTest: false, depthWrite: false,
+    }));
+    halo.position.copy(point);
+    halo.renderOrder = 20;
+    cloudRadarGroup.add(halo);
+    const marker = new THREE.Mesh(new THREE.SphereGeometry(0.11, 16, 12), new THREE.MeshBasicMaterial({
+      color: markerColor, depthTest: false, depthWrite: false,
+    }));
     marker.position.copy(point);
+    marker.renderOrder = 21;
     cloudRadarGroup.add(marker);
     const range = Math.hypot(lateral, forward);
     labels.push({ position: point.clone().add(new THREE.Vector3(0, 0.16, 0)), text: `${target.id || target.target_id || `Radar ${index + 1}`} · ${range.toFixed(1)} m${egoMotionLikely ? ' · radial motion ego-uncompensated' : ''}` });
