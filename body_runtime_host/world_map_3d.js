@@ -1553,7 +1553,7 @@ async function calibrateMetricDepth() {
   const samples = [];
   const seen = new Set();
   const radarHistory = [];
-  const diagnostics = { depth: 0, yolo: 0, radar: 0, bearing: 0 };
+  const diagnostics = { depth: 0, yolo: 0, radar: 0, framePairs: 0, radarPairs: 0, bearing: 0, stationary: 0, range: 0 };
   let cachedFrameId = '';
   let cachedDepthImage = null;
   let calibrationTargetId = null;
@@ -1582,7 +1582,7 @@ async function calibrateMetricDepth() {
       diagnostics.depth += 1;
       let yoloResponse = await fetch(`/body/camera/yolo/status?nearest_to=${encodeURIComponent(depth.captured_at)}&max_delta_s=${maxCalibrationPairDeltaSeconds}`, { cache: 'no-store' });
       if (yoloResponse.status === 404) {
-        setMessage(`Waiting for aligned YOLOX · ${samples.length} anchors · frames ${diagnostics.depth}, YOLO ${diagnostics.yolo}, radar ${diagnostics.radar}, matched ${diagnostics.bearing}.`);
+        setMessage(`Waiting for aligned YOLOX · ${samples.length} anchors · depth ${diagnostics.depth} · YOLO ${diagnostics.yolo} · frame pairs ${diagnostics.framePairs} · radar pairs ${diagnostics.radarPairs}.`);
         await new Promise(resolve => setTimeout(resolve, 350));
         continue;
       }
@@ -1600,6 +1600,15 @@ async function calibrateMetricDepth() {
       }, null);
       const radarDelta = radarMatch?.delta ?? Infinity;
       if (radarMatch && radarDelta <= 0.75) diagnostics.radar += 1;
+      const frameAligned = yolo.state === 'ready' && frameDelta <= maxCalibrationPairDeltaSeconds
+        && now - yoloAt <= 1.0 && now - depthAt <= 1.0;
+      if (frameAligned) diagnostics.framePairs += 1;
+      const radarAligned = frameAligned && radarMatch && radarDelta <= maxCalibrationPairDeltaSeconds;
+      if (radarAligned) diagnostics.radarPairs += 1;
+      const bearingCandidates = frameAligned && radarMatch && radarDelta <= 0.75
+        ? matchedRadarAnchors(yolo.detections, radarMatch.item) : [];
+      if (bearingCandidates.length) diagnostics.bearing += 1;
+      if (bearingCandidates.some(item => item.forward >= 1 && item.forward <= 5)) diagnostics.range += 1;
       const imuSample = imuSampleAt(anchorAt, 0.1);
       const imuDelta = imuSample ? Math.abs(Number(imuSample.timestamp) - anchorAt) : Infinity;
       const imuStationary = Boolean(imuStatus.available && imuSample?.calibration_stable
@@ -1607,20 +1616,19 @@ async function calibrateMetricDepth() {
         && Math.abs(Number(imuSample.roll_deg)) <= 5
         && Math.abs(Number(imuSample.pitch_deg)) <= 5
         && now - Number(imuSample.timestamp) <= 0.5);
-      const synchronized = yolo.state === 'ready' && frameDelta <= maxCalibrationPairDeltaSeconds
-        && now - yoloAt <= 1.0 && now - depthAt <= 1.0
-        && radarMatch && radarDelta <= maxCalibrationPairDeltaSeconds && imuStationary;
+      if (imuStationary) diagnostics.stationary += 1;
+      const synchronized = radarAligned && imuStationary && bearingCandidates.length > 0;
       if (synchronized) {
         if (cachedFrameId !== depth.frame_id) {
           cachedDepthImage = await loadDepthFrame(depth);
           cachedFrameId = depth.frame_id;
         }
-        const candidates = matchedRadarAnchors(yolo.detections, radarMatch.item, cachedDepthImage);
+        const candidates = matchedRadarAnchors(yolo.detections, radarMatch.item, cachedDepthImage)
+          .filter(item => item.forward >= 1 && item.forward <= 5);
         const match = calibrationTargetId
           ? candidates.find(item => item.targetId === calibrationTargetId) || null
           : candidates[0] || null;
         if (match && !calibrationTargetId) calibrationTargetId = match.targetId;
-        if (match) diagnostics.bearing += 1;
         const key = `${depth.frame_id}|${yolo.frame_id}`;
         if (match && cachedDepthImage && !seen.has(key)) {
           const box = match.detection.bbox.map(Number);
@@ -1663,16 +1671,27 @@ async function calibrateMetricDepth() {
           updateMetricCalibrationStatus();
         }
       }
-      setMessage(`Stationary anchors ${samples.length}/15 · aligned frames ${diagnostics.depth} · radar matches ${diagnostics.bearing} · IMU must confirm stable and <5° tilt · spread 1–5 m.`);
+      setMessage(`Anchors ${samples.length}/15 · depth ${diagnostics.depth} · YOLO/depth sync ${diagnostics.framePairs} · radar/depth sync ${diagnostics.radarPairs} · bearing ${diagnostics.bearing} · stationary IMU ${diagnostics.stationary} · 1–5 m targets ${diagnostics.range}.`);
       await new Promise(resolve => setTimeout(resolve, 350));
     }
-    if (!metricDepthCalibration?.available) throw new Error(`Fit not validated; collected ${samples.length} stationary anchors. Cover four or more distance bands from 1–5 m.`);
+    if (!metricDepthCalibration?.available) {
+      const hint = diagnostics.framePairs === 0
+        ? 'No YOLOX/depth pairs met the 100 ms sync limit; check worker cadence and frame timestamps.'
+        : diagnostics.radarPairs === 0
+          ? 'No radar/depth pairs met the 100 ms sync limit; verify radar timestamps and keep the target still.'
+          : diagnostics.bearing === 0
+            ? 'No camera-person/radar bearing match; verify target identity, camera FOV, mount yaw and lateral offset.'
+            : diagnostics.stationary === 0
+              ? 'IMU did not confirm stable stationary posture; keep the body still and wait for gyro bias.'
+              : 'Collect a person at four or more distance bands from 1–5 m; nearer/ farther radar targets are excluded.';
+      throw new Error(`Fit not validated; collected ${samples.length} anchors. ${hint}`);
+    }
     cloudFrameId = '';
     depthCalibrationMessage = '';
     lastSensorDepthAt = 0;
     await refreshSensorDepth();
   } catch (error) {
-    depthCalibrationMessage = `Calibration not saved: ${error.message} · frames ${diagnostics.depth}, YOLO ${diagnostics.yolo}, radar ${diagnostics.radar}, bearing ${diagnostics.bearing}`;
+    depthCalibrationMessage = `Calibration not saved: ${error.message} · depth ${diagnostics.depth}, YOLO ${diagnostics.yolo}, radar ≤0.75 s ${diagnostics.radar}, frame pairs ≤100 ms ${diagnostics.framePairs}, radar pairs ≤100 ms ${diagnostics.radarPairs}, bearing matches ${diagnostics.bearing}, stable IMU ${diagnostics.stationary}, in-range ${diagnostics.range}`;
   } finally {
     depthCalibrationBusy = false;
     buttons.forEach(button => {

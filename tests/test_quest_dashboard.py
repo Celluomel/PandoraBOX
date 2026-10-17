@@ -80,9 +80,9 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertIn("frameDelta <= maxCalibrationPairDeltaSeconds", source)
         self.assertLess(source.index("radarHistory.push(latestRadar)"), source.index("nearest_to=${encodeURIComponent(depth.captured_at)}"))
         self.assertIn("diagnostics.bearing", source)
-        self.assertIn("frames ${diagnostics.depth}, YOLO ${diagnostics.yolo}, radar ${diagnostics.radar}, matched ${diagnostics.bearing}", source)
+        self.assertIn("frame pairs ${diagnostics.framePairs} · radar pairs ${diagnostics.radarPairs}", source)
         self.assertIn("MiDaS fit · holdout", source)
-        self.assertIn("Stationary anchors ${samples.length}/15", source)
+        self.assertIn("Anchors ${samples.length}/15 · depth ${diagnostics.depth}", source)
         self.assertIn("/body/camera/depth-calibration", runtime)
         self.assertIn("midas_metric_calibration.json", runtime)
 
