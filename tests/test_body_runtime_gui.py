@@ -52,6 +52,8 @@ class BodyRuntimeGuiTests(unittest.TestCase):
         self.assertIn("function updateCloudLabelPositions()", source)
         self.assertIn("ResizeObserver(resize)", source)
         self.assertIn("data-cloud-layer=\"radar\"", source)
+        self.assertIn("cloudGuides.visible = !cloudViewport?.classList.contains('is-camera-view')", source)
+        self.assertIn("scale.textContent = metricFrame ? '1 m' : '1 relative unit'", source)
         self.assertIn("data-cloud-view=\"follow\"", source)
         self.assertIn("world-map-cloud-hud-fps", source)
         self.assertIn("world-map-cloud-depth-caption", source)

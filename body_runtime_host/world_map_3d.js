@@ -1990,8 +1990,13 @@ function updateCloudHud() {
     ? `Depth in metres · ${fovText}; radar remains independent`
     : `Relative units · shape only; ${fovText}; no metric scale`;
   const scale = cloudViewport?.querySelector('.world-map-cloud-scale');
-  if (scale) scale.hidden = !metricFrame || Boolean(cloudViewport?.classList.contains('is-camera-view'));
-  if (cloudGuides) cloudGuides.visible = metricFrame && !cloudViewport?.classList.contains('is-camera-view');
+  if (scale) {
+    scale.hidden = Boolean(cloudViewport?.classList.contains('is-camera-view'));
+    scale.textContent = metricFrame ? '1 m' : '1 relative unit';
+  }
+  // The origin axes and reference grid remain useful for shape-only depth; only
+  // their units change. Hide scene furniture in the pixel-aligned Camera preset.
+  if (cloudGuides) cloudGuides.visible = !cloudViewport?.classList.contains('is-camera-view');
   if (cloudCameraPlane) cloudCameraPlane.visible = Boolean(cloudViewport?.classList.contains('is-camera-view'));
 }
 
