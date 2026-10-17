@@ -57,6 +57,7 @@ class BodyRuntimeGuiTests(unittest.TestCase):
         self.assertIn("labels.push({ position: point, marker: true", source)
         self.assertIn("BODY CAMERA ORIGIN", source)
         self.assertIn("Math.max(0.02, medianDepth * 0.05)", source)
+        self.assertLess(source.index("const cameraMountProfiles ="), source.index("updateCloudOrigin();"))
         self.assertIn("cloud.camera.up.set(0, 1, 0).applyQuaternion(mount.rotation)", source)
         self.assertIn("cameraPointInBodyFrame(cameraPoint(x, y, distance, intrinsics))", source)
         self.assertIn("positions.push(index, 0, 1, index, 0, -15", source)

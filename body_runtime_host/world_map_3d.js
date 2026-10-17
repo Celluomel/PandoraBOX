@@ -635,7 +635,6 @@ const cloudLabelRoot = cloudViewport?.querySelector('.world-map-cloud-labels');
 let cloudFpsFrames = 0;
 let cloudFpsStartedAt = performance.now();
 if (cloud) {
-  updateCloudOrigin();
   const baseRender = cloud.render;
   cloud.render = () => { baseRender(); cloudFpsFrames += 1; updateCloudHud(); updateCloudLabelPositions(); };
   cloudViewport?.querySelector('[data-cloud-action="reset"]')?.addEventListener('click', () => { cloudViewport.classList.remove('is-camera-view'); cloud.camera.fov = 42; cloud.camera.userData.userAdjusted = false; cloudCameraInitialized = false; cloud.resize(); updateCloudHud(); updateCloudRadar(); updateCloudOdometry(); resizeCloud(); });
@@ -1056,6 +1055,8 @@ function updateCloudOrigin() {
     text: `BODY CAMERA ORIGIN · ${mount.profile.replace(/_/g, ' ')} · ${mount.heightM.toFixed(2)} m${heightIsMeasured ? '' : ' nominal'}`,
   }]);
 }
+
+updateCloudOrigin();
 
 function cameraPointInBodyFrame(point) {
   const mount = cameraMountPose();
