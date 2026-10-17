@@ -186,11 +186,15 @@ class YoloXService:
                 if frame.get("image_base64") and frame_id != self._last_frame_id:
                     self._last_frame_id = frame_id
                     started = time.monotonic()
+                    worker_received_at = time.time()
                     try:
                         result = self._infer(frame)
                         detections = result.get("detections") or []
+                        published_at = time.time()
                         result.update({"state": "ready", "frame_id": frame_id,
                                        "captured_at": frame.get("captured_at"),
+                                       "worker_received_at": worker_received_at,
+                                       "published_at": published_at,
                                        "latency_ms": round((time.monotonic() - started) * 1000, 1)})
                         with self._lock:
                             self._status = result

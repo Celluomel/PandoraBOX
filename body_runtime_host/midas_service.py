@@ -167,13 +167,16 @@ class MiDaSDepthService:
                 if frame.get("image_base64") and frame_id != self._last_frame_id:
                     self._last_frame_id = frame_id
                     started = time.monotonic()
+                    worker_received_at = time.time()
                     try:
                         result = self._infer(frame)
                         actual_runtime = str(result.get("runtime") or "unknown")
+                        published_at = time.time()
                         result.update({
                             "state": "ready", "runtime": actual_runtime, "device": actual_runtime,
                             "frame_id": frame_id, "captured_at": frame.get("captured_at"),
-                            "depth_type": "relative",
+                            "depth_type": "relative", "worker_received_at": worker_received_at,
+                            "published_at": published_at,
                         })
                         with self._lock:
                             self._latest = result

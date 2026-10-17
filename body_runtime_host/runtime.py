@@ -708,11 +708,15 @@ class BodyHost:
             else:
                 latest_yolo = self._yolox_service.status()
                 latest_at = float(latest_yolo.get("captured_at") or 0.0)
+                yolo_age = max(0.0, time.time() - latest_at) if latest_at else float("inf")
+                preview_detections = (latest_yolo.get("detections") or []) \
+                    if latest_yolo.get("state") == "ready" and yolo_age <= 1.0 else []
                 yolo = {
                     **latest_yolo,
                     "state": "stale" if latest_yolo.get("state") == "ready" else latest_yolo.get("state", "unavailable"),
-                    "detections": [],
+                    "detections": preview_detections,
                     "paired": False,
+                    "preview_only": bool(preview_detections),
                     "frame_delta_s": abs(camera_at - latest_at) if camera_at and latest_at else None,
                 }
             return {"available": True, "camera": frame, "yolo": yolo}
@@ -752,12 +756,17 @@ class BodyHost:
             result = self._yolox_service.detection_result(frame_id)
         return result or {"state": "unavailable", "detections": [], "frame_id": frame_id}
 
-    def camera_depth(self) -> dict:
+    def camera_depth(self, include_raw: bool = True, include_preview: bool = True) -> dict:
         result = self._midas_service.status()
-        settings = self.camera_settings()
-        return {"available": bool(result.get("depth_jpeg_base64")), **result,
-                "camera_height_m": settings["camera_height_m"],
-                "camera_profile": settings["profile"]}
+        available = bool(result.get("depth_jpeg_base64"))
+        if not include_raw:
+            result.pop("depth_raw_png_base64", None)
+        if not include_preview:
+            result.pop("depth_jpeg_base64", None)
+            result.pop("depth_gray_jpeg_base64", None)
+        return {"available": available, **result,
+                "camera_height_m": self._camera_height_m(),
+                "camera_profile": str(self.value("BODY_CAMERA_PROFILE", "low_body_front") or "low_body_front")}
 
     def camera_segmentation(self) -> dict:
         result = self._segmentation_service.status()
@@ -3699,7 +3708,10 @@ class BodyHost:
                 elif path == "/body/camera/image":
                     self._send(owner.camera_image())
                 elif path == "/body/camera/depth":
-                    self._send(owner.camera_depth())
+                    query = parse_qs(urlparse(self.path).query)
+                    include_raw = (query.get("include_raw") or ["1"])[0] != "0"
+                    include_preview = (query.get("include_preview") or ["1"])[0] != "0"
+                    self._send(owner.camera_depth(include_raw=include_raw, include_preview=include_preview))
                 elif path == "/body/odometry/visual":
                     self._send(owner.visual_odometry_status())
                 elif path == "/body/camera/segmentation":

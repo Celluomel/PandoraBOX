@@ -44,6 +44,48 @@ class LocalCameraTests(unittest.TestCase):
         self.assertEqual(result["yolo"]["state"], "stale")
         self.assertEqual(result["yolo"]["detections"], [])
 
+    def test_camera_frame_marks_recent_unpaired_yolox_as_preview_only(self):
+        import time
+        from types import SimpleNamespace
+        from body_runtime_host.runtime import BodyHost
+
+        captured_at = time.time() - 0.1
+        host = object.__new__(BodyHost)
+        host._camera_provider = lambda: {"frame_id": "camera-new", "captured_at": time.time(), "image_base64": "frame"}
+        host._camera_height_m = lambda: 0.18
+        host._yolox_service = SimpleNamespace(
+            nearest_detection_result=lambda _at, max_delta_s: None,
+            status=lambda: {"state": "ready", "frame_id": "camera-old", "captured_at": captured_at,
+                            "detections": [{"label": "person", "confidence": 0.8}]},
+        )
+
+        result = host.camera_frame()["yolo"]
+
+        self.assertEqual(result["state"], "stale")
+        self.assertFalse(result["paired"])
+        self.assertTrue(result["preview_only"])
+        self.assertEqual(len(result["detections"]), 1)
+
+    def test_camera_depth_can_omit_large_payloads_for_metadata_polling(self):
+        from types import SimpleNamespace
+        from body_runtime_host.runtime import BodyHost
+
+        host = object.__new__(BodyHost)
+        host._midas_service = SimpleNamespace(status=lambda: {
+            "state": "ready", "frame_id": "depth-1", "depth_jpeg_base64": "preview",
+            "depth_gray_jpeg_base64": "gray", "depth_raw_png_base64": "raw", "captured_at": 10.0,
+        })
+        host._camera_height_m = lambda: 0.18
+        host.value = lambda _key, default=None: default
+
+        result = host.camera_depth(include_raw=False, include_preview=False)
+
+        self.assertTrue(result["available"])
+        self.assertEqual(result["frame_id"], "depth-1")
+        self.assertNotIn("depth_raw_png_base64", result)
+        self.assertNotIn("depth_gray_jpeg_base64", result)
+        self.assertNotIn("depth_jpeg_base64", result)
+
     def test_capture_is_stopped_by_default(self):
         capture = LocalCameraCapture()
         self.assertEqual(capture.status()["status"], "stopped")
