@@ -22,6 +22,12 @@ class MiDaSDepthServiceTests(unittest.TestCase):
 
         self.assertEqual(service.settings()["interval_s"], 0.15)
 
+    def test_raw_depth_encoding_is_opt_in_and_can_be_requested_for_calibration(self):
+        service = MiDaSDepthService(lambda key, default: default, lambda: {})
+        self.assertFalse(service._raw_output_requested())
+        service.request_raw_output()
+        self.assertTrue(service._raw_output_requested())
+
     def test_runtime_prefers_htp_and_allows_safe_cpu_fallback(self):
         values = {"BODY_MIDAS_ENABLED": False, "BODY_MIDAS_RUNTIME": "htp_auto"}
         service = MiDaSDepthService(lambda key, default: values.get(key, default), lambda: {})

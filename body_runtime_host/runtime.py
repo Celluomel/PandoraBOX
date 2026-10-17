@@ -758,6 +758,8 @@ class BodyHost:
 
     def camera_depth(self, include_raw: bool = True, include_preview: bool = True,
                      since_frame_id: str | None = None, include_color: bool = True) -> dict:
+        if include_raw:
+            self._midas_service.request_raw_output()
         result = self._midas_service.status()
         available = bool(result.get("depth_jpeg_base64"))
         unchanged = bool(since_frame_id and str(result.get("frame_id") or "") == str(since_frame_id))

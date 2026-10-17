@@ -25,7 +25,7 @@ class BodyRuntimeGuiTests(unittest.TestCase):
             "depth_gray_jpeg_base64": "gray", "depth_raw_png_base64": "raw",
         }
         host = object.__new__(BodyHost)
-        host._midas_service = SimpleNamespace(status=lambda: dict(payload))
+        host._midas_service = SimpleNamespace(status=lambda: dict(payload), request_raw_output=lambda: None)
         host._camera_height_m = lambda: 0.18
         host.value = lambda _key, default=None: default
 
@@ -38,6 +38,9 @@ class BodyRuntimeGuiTests(unittest.TestCase):
         self.assertEqual(shape_only["depth_gray_jpeg_base64"], "gray")
         self.assertNotIn("depth_raw_png_base64", shape_only)
         self.assertNotIn("depth_jpeg_base64", shape_only)
+
+        calibration = host.camera_depth(include_raw=True)
+        self.assertIn("depth_raw_png_base64", calibration)
 
     def test_world_map_switches_between_simulation_and_sensor_only_renderings(self):
         from body_runtime_host.body_gui import BODY_GUI_HTML

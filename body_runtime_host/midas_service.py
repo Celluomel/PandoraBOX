@@ -26,6 +26,7 @@ class MiDaSDepthService:
         self._thread: threading.Thread | None = None
         self._process: subprocess.Popen | None = None
         self._last_frame_id = None
+        self._raw_output_until = 0.0
         self._analyzed_frame: dict[str, Any] | None = None
         self._retry_at = 0.0
         self._failure_count = 0
@@ -58,6 +59,14 @@ class MiDaSDepthService:
     def status(self) -> dict:
         with self._lock:
             return dict(self._latest)
+
+    def request_raw_output(self, seconds: float = 60.0) -> None:
+        with self._lock:
+            self._raw_output_until = max(self._raw_output_until, time.monotonic() + max(0.0, seconds))
+
+    def _raw_output_requested(self) -> bool:
+        with self._lock:
+            return time.monotonic() < self._raw_output_until
 
     def analyzed_frame(self, frame_id: str | None = None) -> dict[str, Any] | None:
         """Return the bounded camera frame used for the latest MiDaS result."""
@@ -142,6 +151,7 @@ class MiDaSDepthService:
             "frame_id": frame.get("frame_id"),
             "captured_at": frame.get("captured_at"),
             "image_base64": frame.get("image_base64"),
+            "include_raw": self._raw_output_requested(),
         }
         assert process.stdin is not None and process.stdout is not None
         process.stdin.write(json.dumps(request, separators=(",", ":")) + "\n")
