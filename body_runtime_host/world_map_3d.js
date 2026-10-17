@@ -635,6 +635,7 @@ if (cloud) {
   cloud.scene.add(cloudGuides, cloudOriginGroup, cloudRadarGroup, cloudOdometryGroup);
 }
 const cloudViewport = byId('world-map-sensor-3d-viewport');
+cloudViewport?.querySelector('.world-map-cloud-axis span:last-child')?.replaceChildren('Z− · forward');
 const cloudLabelRoot = cloudViewport?.querySelector('.world-map-cloud-labels');
 let cloudFpsFrames = 0;
 let cloudFpsStartedAt = performance.now();
@@ -1092,9 +1093,11 @@ function cameraMountPose() {
   return { profile, heightM, rotation, position: new THREE.Vector3(0, heightM, 0) };
 }
 
-function updateCloudOrigin() {
+function updateCloudOrigin(timestamp = latestDepthCapturedAt) {
   if (!cloud) return;
   const mount = cameraMountPose();
+  const attitude = attitudeQuaternion(timestamp);
+  cloudOriginGroup.quaternion.copy(attitude || new THREE.Quaternion());
   const reportedHeight = Number(latestCameraFrame?.camera_height_m
     ?? latestCameraFrame?.calibration?.height_m
     ?? latestSensorDepth?.camera_height_m);
@@ -1117,12 +1120,17 @@ function updateCloudOrigin() {
 
 updateCloudOrigin();
 
+function bodyPointToScene(point, timestamp = latestDepthCapturedAt) {
+  const origin = new THREE.Vector3(0, cameraMountPose().heightM, 0);
+  const attitude = attitudeQuaternion(timestamp);
+  const relativePoint = point.clone();
+  if (attitude) relativePoint.applyQuaternion(attitude);
+  return relativePoint.add(origin);
+}
+
 function cameraPointInBodyFrame(point, timestamp = latestDepthCapturedAt) {
   const mount = cameraMountPose();
-  const bodyPoint = point.clone().applyQuaternion(mount.rotation).add(mount.position);
-  const attitude = attitudeQuaternion(timestamp);
-  if (attitude) bodyPoint.applyQuaternion(attitude);
-  return bodyPoint;
+  return bodyPointToScene(point.clone().applyQuaternion(mount.rotation), timestamp);
 }
 
 function applyCameraProjection() {
@@ -2185,9 +2193,8 @@ function updateCloudRadar(sample = latestRadarSample, force = false) {
     const position = target.position_m || target.position || [];
     const lateral = Number(position[0]), forward = Number(position[1]);
     if (!Number.isFinite(lateral) || !Number.isFinite(forward) || forward < 0 || forward > 12) continue;
-    const point = new THREE.Vector3(lateral, cameraMountPose().heightM, -forward);
-    const radarAttitude = attitudeQuaternion(sample.timestamp);
-    if (radarAttitude) point.applyQuaternion(radarAttitude);
+    const point = bodyPointToScene(new THREE.Vector3(lateral, 0, -forward), sample.timestamp);
+    updateCloudOrigin(sample.timestamp);
     const odometryAge = Number(latestVisualOdometry?.captured_at) > 0
       ? Date.now() / 1000 - Number(latestVisualOdometry.captured_at) : Infinity;
     const egoMotionLikely = latestVisualOdometry?.available && odometryAge <= 0.35
@@ -2309,6 +2316,7 @@ async function rebuildDepthCloud(depth, segmentation = latestSegmentation) {
   if (token !== cloudBuildToken || activeSource !== 'sensors' || activeRender !== '3d') return false;
   cloudDepthImage = image;
   latestDepthCapturedAt = Number(depth.captured_at) || 0;
+  updateCloudOrigin(latestDepthCapturedAt);
   cloudCameraPlaneToken += 1;
   const frameCalibration = metricDepthCalibration;
   updateCloudHud();
