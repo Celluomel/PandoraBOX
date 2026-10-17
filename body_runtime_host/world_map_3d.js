@@ -1970,7 +1970,10 @@ function updateCloudHud() {
     const cameraAt = Number(latestCameraFrame?.captured_at);
     const depthAt = Number(latestDepthCapturedAt);
     const delta = cameraAt > 0 && depthAt > 0 ? Math.abs(cameraAt - depthAt) : NaN;
-    const yoloState = cloudYoloForDepth?.state === 'ready' ? 'YOLOX matched' : 'YOLOX unmatched';
+    const yoloDelta = Number(cloudYoloForDepth?.frame_delta_s);
+    const yoloState = cloudYoloForDepth?.state === 'ready'
+      ? `YOLOX matched${Number.isFinite(yoloDelta) && yoloDelta > 0.02 ? ` · Δ${yoloDelta.toFixed(2)} s` : ''}`
+      : 'YOLOX unmatched';
     const pairedState = cloudCameraPlane?.userData.frameId === latestSensorDepth?.frame_id ? 'camera matched' : 'no paired image';
     const frameId = String(latestSensorDepth?.frame_id || '—').slice(-14);
     sync.textContent = Number.isFinite(delta)
@@ -2255,10 +2258,21 @@ async function yoloForDepthFrame(depth) {
   if (!Number.isFinite(capturedAt) || capturedAt <= 0 || !depth?.frame_id) return null;
   try {
     const response = await fetch(`/body/camera/yolo/status?frame_id=${encodeURIComponent(depth.frame_id)}`, { cache: 'no-store' });
-    if (!response.ok) return null;
-    const result = await response.json();
-    if (result.state !== 'ready' || result.frame_id !== depth.frame_id) return null;
-    return result;
+    if (response.ok) {
+      const exact = await response.json();
+      if (exact.state === 'ready' && exact.frame_id === depth.frame_id) {
+        return { ...exact, frame_delta_s: 0, paired_depth_frame_id: depth.frame_id };
+      }
+    }
+    const nearestResponse = await fetch(
+      `/body/camera/yolo/status?nearest_to=${encodeURIComponent(capturedAt)}&max_delta_s=0.35`,
+      { cache: 'no-store' },
+    );
+    if (!nearestResponse.ok) return null;
+    const nearest = await nearestResponse.json();
+    const delta = Math.abs(Number(nearest.frame_delta_s));
+    if (nearest.state !== 'ready' || !nearest.frame_id || !Number.isFinite(delta) || delta > 0.35) return null;
+    return { ...nearest, frame_delta_s: delta, paired_depth_frame_id: depth.frame_id };
   } catch (error) {
     console.warn('Could not find YOLOX detections aligned to MiDaS frame:', error);
     return null;
@@ -2310,13 +2324,15 @@ function drawDepthDetections(image, detections, calibration = metricDepthCalibra
     const stats = detectionDepthStats(image, bbox, calibration, identity);
     if (!stats) continue;
     const radarAnchor = radarMatches.find(match => match.detection === item);
-    const centerIndex = (Math.round((y1 + y2) * image.height / 2) * image.width
-      + Math.round((x1 + x2) * image.width / 2)) * 4;
-    const medianRange = metricFrame
-      ? metricDepthEstimate(depthValueAt(image, centerIndex), calibration) : null;
-    const shift = radarAnchor ? radarAnchor.forward - stats.median : 0;
-    const nearZ = Math.max(0.15, stats.near + shift);
-    const farZ = Math.max(nearZ + 0.03, stats.far + shift);
+    const medianRange = metricFrame ? metricDepthEstimate(stats.median, calibration) : null;
+    const medianDepth = stats.median + (radarAnchor ? radarAnchor.forward - stats.median : 0);
+    const observedSpan = Math.max(0, stats.far - stats.near);
+    const maximumSpan = metricFrame
+      ? Math.min(0.6, Math.max(0.15, medianDepth * 0.3))
+      : Math.min(0.8, Math.max(0.2, medianDepth * 0.25));
+    const depthSpan = Math.min(observedSpan, maximumSpan);
+    const nearZ = Math.max(0.15, medianDepth - depthSpan / 2);
+    const farZ = Math.max(nearZ + 0.03, medianDepth + depthSpan / 2);
     const intrinsics = cameraIntrinsicsForImage(image);
     const corners = [
       cameraPoint(x1 * image.width, y1 * image.height, nearZ, intrinsics),

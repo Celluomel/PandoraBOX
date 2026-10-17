@@ -2,6 +2,20 @@ import unittest
 
 
 class BodyRuntimeGuiTests(unittest.TestCase):
+    def test_depth_frame_camera_pixels_fall_back_to_midas_source_frame(self):
+        from types import SimpleNamespace
+        from body_runtime_host.runtime import BodyHost
+
+        host = object.__new__(BodyHost)
+        host._yolox_service = SimpleNamespace(analyzed_frame=lambda frame_id: None)
+        source_frame = {"frame_id": "depth-1", "image_base64": "paired-image"}
+        host._midas_service = SimpleNamespace(analyzed_frame=lambda frame_id: source_frame)
+
+        self.assertEqual(
+            host.camera_yolo_frame("depth-1"),
+            {"available": True, "camera": source_frame},
+        )
+
     def test_world_map_switches_between_simulation_and_sensor_only_renderings(self):
         from body_runtime_host.body_gui import BODY_GUI_HTML
 
@@ -44,6 +58,8 @@ class BodyRuntimeGuiTests(unittest.TestCase):
         self.assertIn("async function cameraFrameForDepth(depth)", source)
         self.assertIn("async function yoloForDepthFrame(depth)", source)
         self.assertIn("yolo/status?frame_id=", source)
+        self.assertIn("nearest_to=${encodeURIComponent(capturedAt)}&max_delta_s=0.35", source)
+        self.assertIn("const depthSpan = Math.min(observedSpan, maximumSpan)", source)
         self.assertIn("Relative units · shape only; ${fovText}; no metric scale", source)
         self.assertIn("world-map-cloud-hud-sync", source)
         self.assertNotIn("distance * 1.28", source)

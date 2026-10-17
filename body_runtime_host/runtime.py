@@ -710,6 +710,10 @@ class BodyHost:
     def camera_yolo_frame(self, frame_id: str | None = None) -> dict:
         frame = self._yolox_service.analyzed_frame(frame_id)
         if not frame:
+            # MiDaS retains the exact source frame used to make the depth map,
+            # even when YOLOX sampled a different camera frame on its cadence.
+            frame = self._midas_service.analyzed_frame(frame_id)
+        if not frame:
             return {"available": False, "error": "Analyzed camera frame is no longer available"}
         return {"available": True, "camera": frame}
 
