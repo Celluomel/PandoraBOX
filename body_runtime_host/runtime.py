@@ -700,9 +700,21 @@ class BodyHost:
     def camera_frame(self) -> dict:
         frame = self._camera_provider() or {}
         if frame:
-            settings = self.camera_settings()
             frame = {**frame, "camera_height_m": self._camera_height_m()}
-            yolo = self._yolox_service.status()
+            camera_at = float(frame.get("captured_at") or 0.0)
+            yolo = self._yolox_service.nearest_detection_result(camera_at, max_delta_s=0.2)
+            if yolo:
+                yolo = {**yolo, "paired": True}
+            else:
+                latest_yolo = self._yolox_service.status()
+                latest_at = float(latest_yolo.get("captured_at") or 0.0)
+                yolo = {
+                    **latest_yolo,
+                    "state": "stale" if latest_yolo.get("state") == "ready" else latest_yolo.get("state", "unavailable"),
+                    "detections": [],
+                    "paired": False,
+                    "frame_delta_s": abs(camera_at - latest_at) if camera_at and latest_at else None,
+                }
             return {"available": True, "camera": frame, "yolo": yolo}
         settings = self.camera_settings()
         return {

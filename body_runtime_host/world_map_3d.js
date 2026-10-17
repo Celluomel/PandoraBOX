@@ -43,6 +43,10 @@ let lastSensorDepthAt = 0;
 let sensorDepthBusy = false;
 let latestSensorYolo = null;
 let cloudDepthYolo = null;
+let lastStableYoloFrameId = '';
+let lastStableYoloCapturedAt = 0;
+let previousYoloCandidates = [];
+const stableYoloResults = new Map();
 let latestSegmentation = null;
 let latestCameraFrame = null;
 let renderedSegmentationFrameId = '';
@@ -134,7 +138,7 @@ if (panel) {
     sensorPanel.id = 'world-map-sensor-view';
     sensorPanel.className = 'world-map-sensor-view';
     sensorPanel.hidden = true;
-    sensorPanel.innerHTML = `<div class="world-map-sensor-metrics"><span>Camera <b id="world-map-camera-state">Waiting</b></span><span>YOLOX <b id="world-map-yolo-state">Waiting</b></span><span>MiDaS <b id="world-map-midas-state">Waiting</b></span><span>Visual odometry <b id="world-map-odometry-state">Waiting</b></span><span>SegFormer <b id="world-map-segmentation-state">disabled</b></span><span>Frame <b id="world-map-frame-state">—</b></span></div><div id="world-map-sensor-2d" class="world-map-sensor-2d"><div class="world-map-camera"><div class="world-map-sensor-heading">CAMERA · YOLOX</div><div class="world-map-image-wrap"><img id="world-map-camera-image" alt="Live camera frame with YOLOX detections"><svg id="world-map-yolo-overlay" viewBox="0 0 1 1" preserveAspectRatio="xMidYMid meet" aria-hidden="true"></svg><span id="world-map-camera-empty" class="world-map-empty">Waiting for a camera frame</span></div></div><div class="world-map-depth"><div class="world-map-sensor-heading">MiDaS · RELATIVE DEPTH</div><img id="world-map-depth-image" alt="MiDaS relative depth image"><span id="world-map-depth-empty" class="world-map-empty">MiDaS disabled or waiting for inference</span><div class="world-map-depth-calibration"><button type="button" id="world-map-midas-calibrate">Calibrate with radar</button><small id="world-map-midas-calibration-status" role="status">Relative depth only · not calibrated in metres</small></div></div></div><section class="world-map-odometry-view" aria-label="Experimental visual odometry trajectory"><div class="world-map-sensor-heading"><span>VISUAL ODOMETRY · LOCAL TRAJECTORY</span><small id="world-map-odometry-map-status">Waiting for tracking</small></div><div class="odom-plot"><canvas id="world-map-odometry-map" role="img" aria-label="Top-down estimated Body trajectory in the local visual odometry frame"></canvas><span class="odom-edge-label odom-forward">FORWARD ↑</span><span class="odom-edge-label odom-lateral">← LEFT · RIGHT →</span><span id="world-map-odometry-position" class="odom-position-label">0.00, 0.00 m</span></div><p class="world-map-odometry-footnote">Session-local estimate · drift accumulates · not a persistent map</p></section><section class="world-map-segmentation-panel" aria-label="SegFormer semantic segmentation"><div class="world-map-sensor-heading"><span>SEGFORMER · SEMANTIC MASK</span><small>Independent of camera preview</small></div><div class="world-map-segmentation-preview"><canvas id="world-map-segmentation-overlay" aria-label="Standalone SegFormer semantic class mask" hidden></canvas><span id="world-map-segmentation-empty" class="world-map-empty">Waiting for a SegFormer mask</span></div><div id="world-map-segmentation-classes" class="world-map-segmentation-classes">Waiting for SegFormer classes</div></section><div id="world-map-sensor-3d" class="world-map-sensor-cloud-layout" hidden><div id="world-map-sensor-3d-viewport" class="world-map-canvas world-map-sensor-cloud"><div class="world-map-cloud-hud"><span id="world-map-cloud-hud-points">0 points</span><span id="world-map-cloud-hud-depth">MiDaS —</span><span id="world-map-cloud-hud-age">Frame —</span><span id="world-map-cloud-hud-sync">Camera/depth —</span><span id="world-map-cloud-hud-fps">3D — FPS</span></div><div class="world-map-cloud-controls"><button type="button" data-cloud-action="reset" title="Reset camera to fit point cloud">Reset</button><button type="button" data-cloud-view="camera" title="Pinhole camera view; FOV is estimated unless intrinsics are provided">Camera</button><button type="button" data-cloud-view="top">Top</button><button type="button" data-cloud-view="side">Side</button><button type="button" data-cloud-view="follow">Follow</button><label>Point size <input id="world-map-cloud-point-size" type="range" min="10" max="50" value="25" aria-label="Point cloud point size"></label></div><div class="world-map-cloud-labels" aria-hidden="true"></div><div class="world-map-cloud-scale" hidden>1 m</div><div id="world-map-cloud-fetch" class="world-map-cloud-fetch" hidden>Sensor data unavailable: fetch failed, retrying</div></div><aside class="world-map-cloud-side"><strong>Scene layers</strong><label><input type="checkbox" data-cloud-layer="cloud" checked> MiDaS point cloud</label><label><input type="checkbox" data-cloud-layer="detections" checked> YOLOX detections</label><label><input type="checkbox" data-cloud-layer="radar" checked> mmWave targets (metres)</label><label><input type="checkbox" data-cloud-layer="odometry" checked> Odometry trail</label><strong>Depth units</strong><div class="world-map-depth-legend"><i></i><div><span>Near</span><span>Far</span></div></div><small id="world-map-cloud-depth-caption">Relative units · not metric</small><small>Radar markers use metres, independently scaled from an uncalibrated MiDaS cloud.</small><div class="world-map-depth-calibration"><button type="button" id="world-map-midas-calibrate-3d">Calibrate with radar</button><small id="world-map-midas-calibration-status-3d" role="status">Relative depth only · not calibrated in metres</small></div><div class="world-map-cloud-axis" aria-label="XYZ orientation: X right, Y up, Z forward"><span>X →</span><span>Y ↑</span><span>Z ⊙</span></div></aside></div><p id="world-map-sensor-note" class="world-map-sensor-note">Sensor-only view · no simulation object positions are used.</p>`;
+      sensorPanel.innerHTML = `<div class="world-map-sensor-metrics"><span>Camera <b id="world-map-camera-state">Waiting</b></span><span>YOLOX <b id="world-map-yolo-state">Waiting</b></span><span>MiDaS <b id="world-map-midas-state">Waiting</b></span><span>Visual odometry <b id="world-map-odometry-state">Waiting</b></span><span>SegFormer <b id="world-map-segmentation-state">disabled</b></span><span>Frame <b id="world-map-frame-state">—</b></span></div><div id="world-map-sensor-2d" class="world-map-sensor-2d"><div class="world-map-camera"><div class="world-map-sensor-heading">CAMERA · YOLOX</div><div class="world-map-image-wrap"><img id="world-map-camera-image" alt="Live camera frame with YOLOX detections"><svg id="world-map-yolo-overlay" viewBox="0 0 1 1" preserveAspectRatio="xMidYMid meet" aria-hidden="true"></svg><span id="world-map-camera-empty" class="world-map-empty">Waiting for a camera frame</span></div></div><div class="world-map-depth"><div class="world-map-sensor-heading">MiDaS · RELATIVE DEPTH</div><img id="world-map-depth-image" alt="MiDaS relative depth image"><span id="world-map-depth-empty" class="world-map-empty">MiDaS disabled or waiting for inference</span><div class="world-map-depth-calibration"><button type="button" id="world-map-midas-calibrate">Calibrate with radar</button><small id="world-map-midas-calibration-status" role="status">Relative depth only · not calibrated in metres</small></div></div></div><section class="world-map-odometry-view" aria-label="Experimental visual odometry trajectory"><div class="world-map-sensor-heading"><span>VISUAL ODOMETRY · LOCAL TRAJECTORY</span><small id="world-map-odometry-map-status">Waiting for tracking</small></div><div class="odom-plot"><canvas id="world-map-odometry-map" role="img" aria-label="Top-down estimated Body trajectory in the local visual odometry frame"></canvas><span class="odom-edge-label odom-forward">FORWARD ↑</span><span class="odom-edge-label odom-lateral">← LEFT · RIGHT →</span><span id="world-map-odometry-position" class="odom-position-label">0.00, 0.00 m</span></div><p class="world-map-odometry-footnote">Session-local estimate · drift accumulates · not a persistent map</p></section><section class="world-map-segmentation-panel" aria-label="SegFormer semantic segmentation"><div class="world-map-sensor-heading"><span>SEGFORMER · SEMANTIC MASK</span><small>Independent of camera preview</small></div><div class="world-map-segmentation-preview"><canvas id="world-map-segmentation-overlay" aria-label="Standalone SegFormer semantic class mask" hidden></canvas><span id="world-map-segmentation-empty" class="world-map-empty">Waiting for a SegFormer mask</span></div><div id="world-map-segmentation-classes" class="world-map-segmentation-classes">Waiting for SegFormer classes</div></section><div id="world-map-sensor-3d" class="world-map-sensor-cloud-layout" hidden><div id="world-map-sensor-3d-viewport" class="world-map-canvas world-map-sensor-cloud"><div class="world-map-cloud-hud"><span id="world-map-cloud-hud-points">0 points</span><span id="world-map-cloud-hud-depth">MiDaS —</span><span id="world-map-cloud-hud-age">Frame —</span><span id="world-map-cloud-hud-sync">Camera/depth —</span><span id="world-map-cloud-hud-fps">3D — FPS</span></div><div class="world-map-cloud-stale" id="world-map-cloud-stale" hidden role="status"></div><div class="world-map-cloud-controls"><button type="button" data-cloud-action="reset" title="Reset camera to fit point cloud">Reset</button><button type="button" data-cloud-view="camera" title="Pinhole camera view; FOV is estimated unless intrinsics are provided">Camera</button><button type="button" data-cloud-view="top">Top</button><button type="button" data-cloud-view="side">Side</button><button type="button" data-cloud-view="follow">Follow</button><label>Point size <input id="world-map-cloud-point-size" type="range" min="10" max="50" value="25" aria-label="3D point size"></label></div><div class="world-map-cloud-labels" aria-hidden="true"></div><div class="world-map-cloud-scale" hidden>1 m</div><div id="world-map-cloud-fetch" class="world-map-cloud-fetch" hidden>Sensor data unavailable: fetch failed, retrying</div></div><aside class="world-map-cloud-side"><strong>Scene layers</strong><label><input type="checkbox" data-cloud-layer="cloud" checked> MiDaS point cloud</label><label><input type="checkbox" data-cloud-layer="detections" checked> YOLOX detections</label><label><input type="checkbox" data-cloud-layer="radar" checked> mmWave targets (metres)</label><label><input type="checkbox" data-cloud-layer="odometry" checked> Odometry trail</label><strong>Depth units</strong><div class="world-map-depth-legend"><i></i><div><span>Near</span><span>Far</span></div></div><small id="world-map-cloud-depth-caption">Relative units · not metric</small><small>Radar markers use metres, independently scaled from an uncalibrated MiDaS cloud.</small><div class="world-map-depth-calibration"><button type="button" id="world-map-midas-calibrate-3d">Calibrate with radar</button><small id="world-map-midas-calibration-status-3d" role="status">Relative depth only · not calibrated in metres</small></div><div class="world-map-cloud-axis" aria-label="XYZ orientation: X right, Y up, Z forward"><span>X →</span><span>Y ↑</span><span>Z ⊙</span></div></aside></div><p id="world-map-sensor-note" class="world-map-sensor-note">Sensor-only view · no simulation object positions are used.</p>`;
     sensorPanel.querySelector('[data-cloud-layer="radar"]').checked = true;
     sensorPanel.querySelector('#world-map-cloud-hud-fps').textContent = '3D — FPS';
     for (const id of ['world-map-camera-state', 'world-map-yolo-state', 'world-map-midas-state', 'world-map-odometry-state', 'world-map-segmentation-state', 'world-map-radar-state', 'world-map-gps-state', 'world-map-imu-state', 'world-map-tof-state']) {
@@ -301,8 +305,10 @@ if (panel) {
       .world-map-cloud-controls button:hover{border-color:#00d6df}
       .world-map-cloud-controls label{display:flex;align-items:center;gap:6px}
       .world-map-cloud-controls input{width:72px;accent-color:#00d6df}
+      .world-map-cloud-stale{position:absolute;z-index:4;top:54px;left:12px;max-width:min(360px,45%);padding:7px 10px;border:1px solid #a66d1b;border-radius:4px;background:#30210bee;color:#ffd58a;font:12px/1.35 ui-sans-serif,system-ui,sans-serif;pointer-events:none}
+      .world-map-cloud-stale[hidden]{display:none!important}
       .world-map-cloud-labels{position:absolute;inset:0;z-index:2;overflow:hidden;pointer-events:none}
-      .world-map-cloud-object-label{position:absolute;max-width:180px;transform:translate(-50%,-100%);padding:4px 7px;border:1px solid #7290a3;border-radius:4px;background:#05070df2;color:#f4f8fb;font:12px/1.2 ui-sans-serif,system-ui,sans-serif;white-space:nowrap;text-shadow:0 1px #000}
+      .world-map-cloud-object-label{position:absolute;width:max-content;max-width:min(260px,calc(100% - 16px));transform:translate(-50%,-100%);padding:4px 7px;border:1px solid #7290a3;border-radius:4px;background:#05070df2;color:#f4f8fb;font:12px/1.25 ui-sans-serif,system-ui,sans-serif;white-space:normal;overflow-wrap:anywhere;text-shadow:0 1px #000}
       .world-map-cloud-object-label::after{position:absolute;top:100%;left:50%;height:9px;border-left:1px solid #a9c6d6;content:""}
       .world-map-cloud-radar-dot{position:absolute;width:16px;height:16px;transform:translate(-50%,-50%);border:2px solid #fff;border-radius:50%;background:#f2bc65;box-shadow:0 0 0 4px #f2bc6566,0 0 16px 5px #f2bc65;z-index:4}
       .world-map-cloud-radar-dot.is-moving{background:#ed35c5;box-shadow:0 0 0 4px #ed35c566,0 0 16px 5px #ed35c5}
@@ -900,7 +906,38 @@ function drawBoxes(detections, width, height) {
 
 function visibleYoloDetections(yolo) {
   const age = Number(yolo?.captured_at) > 0 ? Date.now() / 1000 - Number(yolo.captured_at) : Infinity;
-  return yolo?.state === 'ready' && age >= 0 && age <= 2.5 ? yolo.detections || [] : [];
+  if (yolo?.state !== 'ready' || age < 0 || age > 0.5 || yolo?.paired === false) return [];
+  const frameId = String(yolo.frame_id || '');
+  const capturedAt = Number(yolo.captured_at) || 0;
+  const key = frameId || String(capturedAt);
+  if (stableYoloResults.has(key)) return stableYoloResults.get(key);
+  if (capturedAt > lastStableYoloCapturedAt) {
+    const candidates = (yolo.detections || []).filter(item => {
+      const confidence = Number(item.confidence ?? item.score ?? 0);
+      const label = String(item.label || item.class_name || item.class || '');
+      return confidence >= (/person|human/i.test(label) ? 0.5 : 0.45);
+    });
+    const confirmed = candidates.filter(item => previousYoloCandidates.some(previous =>
+      String(previous.label || previous.class_name || previous.class || '') === String(item.label || item.class_name || item.class || '')
+      && boxIou(previous.bbox, item.bbox) >= 0.25));
+    previousYoloCandidates = candidates;
+    lastStableYoloCapturedAt = capturedAt;
+    lastStableYoloFrameId = frameId;
+    stableYoloResults.set(key, confirmed);
+    if (stableYoloResults.size > 32) stableYoloResults.delete(stableYoloResults.keys().next().value);
+    return confirmed;
+  }
+  return [];
+}
+
+function boxIou(a, b) {
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length < 4 || b.length < 4) return 0;
+  const [ax1, ay1, ax2, ay2] = a.map(Number), [bx1, by1, bx2, by2] = b.map(Number);
+  const intersection = Math.max(0, Math.min(ax2, bx2) - Math.max(ax1, bx1))
+    * Math.max(0, Math.min(ay2, by2) - Math.max(ay1, by1));
+  const areaA = Math.max(0, ax2 - ax1) * Math.max(0, ay2 - ay1);
+  const areaB = Math.max(0, bx2 - bx1) * Math.max(0, by2 - by1);
+  return intersection / Math.max(1e-9, areaA + areaB - intersection);
 }
 
 function setImage(image, empty, base64, mime = 'image/jpeg') {
@@ -1011,6 +1048,8 @@ function metricDepthEstimate(relativeDepth, calibration = metricDepthCalibration
 }
 
 function depthValueAt(image, pixelIndex) {
+  const pixel = Math.floor(pixelIndex / 4);
+  if (image.rawValues && Number.isFinite(image.rawValues[pixel])) return image.rawValues[pixel];
   const normalized = image.values[pixelIndex] / 255;
   if (Number.isFinite(image.rawMin) && Number.isFinite(image.rawMax)) {
     return image.rawMin + normalized * (image.rawMax - image.rawMin);
@@ -1027,8 +1066,8 @@ function depthForScene(image, pixelIndex, calibration) {
   }
   // MiDaS worker already percentile-normalizes grayscale depth; do not remap it
   // against a second, temporally smoothed frame histogram.
-  const normalizedDepth = image.normalizedValues?.[pixelIndex] ?? image.values[pixelIndex];
-  const disparity = THREE.MathUtils.clamp(normalizedDepth / 255, 0, 1);
+  const pixel = Math.floor(pixelIndex / 4);
+  const disparity = THREE.MathUtils.clamp(image.normalizedDepth?.[pixel] ?? ((image.normalizedValues?.[pixelIndex] ?? image.values[pixelIndex]) / 255), 0, 1);
   return 1 / THREE.MathUtils.lerp(1 / 8, 1 / 0.7, disparity);
 }
 
@@ -1149,12 +1188,12 @@ async function yoloResultForDepth(depth) {
   if (latestSensorYolo?.frame_id === depth?.frame_id) return latestSensorYolo;
   if (!Number.isFinite(Number(depth?.captured_at))) return null;
   try {
-    const query = new URLSearchParams({ nearest_to: String(depth.captured_at), max_delta_s: '0.75' });
+    const query = new URLSearchParams({ nearest_to: String(depth.captured_at), max_delta_s: '0.2' });
     const response = await fetch(`/body/camera/yolo/status?${query}`, { cache: 'no-store' });
     if (!response.ok) return null;
     const result = await response.json();
     const delta = Math.abs(Number(result.captured_at) - Number(depth.captured_at));
-    return result.state === 'ready' && Number.isFinite(delta) && delta <= 0.75
+    return result.state === 'ready' && Number.isFinite(delta) && delta <= 0.2
       ? { ...result, frame_delta_s: delta } : null;
   } catch (error) {
     console.warn('Could not find YOLOX detections near MiDaS frame:', error);
@@ -1203,23 +1242,83 @@ async function updateCloudCameraPlane(frame) {
 async function loadDepthFrame(depth) {
   const rawAvailable = depth?.depth_raw_png_base64
     && Number.isFinite(Number(depth.depth_raw_min)) && Number.isFinite(Number(depth.depth_raw_max));
-  const image = await loadDepthImage(
-    rawAvailable ? depth.depth_raw_png_base64 : depth.depth_gray_jpeg_base64,
-    rawAvailable ? 'image/png' : 'image/jpeg',
-  );
   if (rawAvailable) {
-    image.rawMin = Number(depth.depth_raw_min);
-    image.rawMax = Number(depth.depth_raw_max);
-    const normalizedDepth = await loadGrayDepth(depth.depth_gray_jpeg_base64);
-    if (normalizedDepth.width === image.width && normalizedDepth.height === image.height) {
-      image.normalizedValues = normalizedDepth.values;
+    try {
+      const image = await decodeGray16Png(depth.depth_raw_png_base64);
+      image.rawMin = Number(depth.depth_raw_min);
+      image.rawMax = Number(depth.depth_raw_max);
+      image.frameId = String(depth.frame_id || '');
+      image.capturedAt = Number(depth.captured_at) || 0;
+      return image;
+    } catch (error) {
+      console.warn('Could not decode raw 16-bit MiDaS depth; using preview:', error);
     }
-  } else {
-    image.normalizedValues = image.values;
   }
+  const image = await loadDepthImage(depth.depth_gray_jpeg_base64, 'image/jpeg');
+  image.normalizedValues = image.values;
   image.frameId = String(depth.frame_id || '');
   image.capturedAt = Number(depth.captured_at) || 0;
   return image;
+}
+
+async function decodeGray16Png(base64) {
+  if (typeof DecompressionStream === 'undefined') throw new Error('PNG decompression is unavailable');
+  const bytes = Uint8Array.from(atob(base64), char => char.charCodeAt(0));
+  const signature = [137, 80, 78, 71, 13, 10, 26, 10];
+  if (!signature.every((value, index) => bytes[index] === value)) throw new Error('Invalid PNG signature');
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let width = 0, height = 0, bitDepth = 0, colorType = -1, interlace = 0;
+  const chunks = [];
+  for (let offset = 8; offset + 12 <= bytes.length;) {
+    const length = view.getUint32(offset);
+    const type = String.fromCharCode(...bytes.subarray(offset + 4, offset + 8));
+    const start = offset + 8, end = start + length;
+    if (end + 4 > bytes.length) throw new Error('Truncated PNG chunk');
+    if (type === 'IHDR') {
+      width = view.getUint32(start); height = view.getUint32(start + 4);
+      bitDepth = bytes[start + 8]; colorType = bytes[start + 9]; interlace = bytes[start + 12];
+    } else if (type === 'IDAT') chunks.push(bytes.subarray(start, end));
+    offset = end + 4;
+    if (type === 'IEND') break;
+  }
+  if (!width || !height || bitDepth !== 16 || colorType !== 0 || interlace !== 0) throw new Error('Expected non-interlaced 16-bit grayscale PNG');
+  const compressedLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+  const compressed = new Uint8Array(compressedLength);
+  let cursor = 0;
+  for (const chunk of chunks) { compressed.set(chunk, cursor); cursor += chunk.length; }
+  const stream = new Blob([compressed]).stream().pipeThrough(new DecompressionStream('deflate'));
+  const scanlines = new Uint8Array(await new Response(stream).arrayBuffer());
+  const rowBytes = width * 2;
+  if (scanlines.length !== (rowBytes + 1) * height) throw new Error('Unexpected PNG scanline size');
+  const decoded = new Uint8Array(rowBytes * height);
+  const paeth = (a, b, c) => { const p = a + b - c, pa = Math.abs(p - a), pb = Math.abs(p - b), pc = Math.abs(p - c); return pa <= pb && pa <= pc ? a : pb <= pc ? b : c; };
+  for (let y = 0; y < height; y++) {
+    const filter = scanlines[y * (rowBytes + 1)];
+    const source = y * (rowBytes + 1) + 1, target = y * rowBytes;
+    for (let x = 0; x < rowBytes; x++) {
+      const raw = scanlines[source + x], left = x >= 2 ? decoded[target + x - 2] : 0;
+      const up = y > 0 ? decoded[target + x - rowBytes] : 0;
+      const upperLeft = y > 0 && x >= 2 ? decoded[target + x - rowBytes - 2] : 0;
+      const predictor = filter === 0 ? 0 : filter === 1 ? left : filter === 2 ? up
+        : filter === 3 ? Math.floor((left + up) / 2) : filter === 4 ? paeth(left, up, upperLeft) : NaN;
+      if (!Number.isFinite(predictor)) throw new Error(`Unsupported PNG filter ${filter}`);
+      decoded[target + x] = (raw + predictor) & 255;
+    }
+  }
+  const rawValues = new Float32Array(width * height), histogram = new Uint32Array(65536);
+  const rawMin = Number.NaN, rawMax = Number.NaN;
+  for (let i = 0; i < rawValues.length; i++) { const value = (decoded[i * 2] << 8) | decoded[i * 2 + 1]; rawValues[i] = value; histogram[value]++; }
+  const quantile = q => { const target = Math.floor((rawValues.length - 1) * q); let sum = 0; for (let i = 0; i < histogram.length; i++) { sum += histogram[i]; if (sum > target) return i; } return 65535; };
+  const low = quantile(0.02), high = Math.max(low + 1, quantile(0.98));
+  const normalizedDepth = new Float32Array(rawValues.length);
+  const values = new Uint8ClampedArray(rawValues.length * 4);
+  for (let i = 0; i < rawValues.length; i++) {
+    const normalized = THREE.MathUtils.clamp((rawValues[i] - low) / (high - low), 0, 1);
+    normalizedDepth[i] = normalized;
+    const gray = Math.round(normalized * 255), pixel = i * 4;
+    values[pixel] = values[pixel + 1] = values[pixel + 2] = gray; values[pixel + 3] = 255;
+  }
+  return { width, height, values, rawValues, normalizedDepth, rawMin, rawMax };
 }
 
 function createMidasPointMaterial(pointSize) {
@@ -1303,7 +1402,7 @@ function matchedRadarAnchors(detections, sample, image = null) {
   if (!source.startsWith('hlk_ld2450')) return [];
   const targets = Array.isArray(sample.targets) ? sample.targets : [];
   const people = (detections || []).filter(item => /person|human/i.test(String(item.label || item.class_name || item.class || ''))
-    && Number(item.confidence ?? item.score ?? 0) >= 0.4 && Array.isArray(item.bbox) && item.bbox.length === 4);
+    && Number(item.confidence ?? item.score ?? 0) >= 0.5 && Array.isArray(item.bbox) && item.bbox.length === 4);
   const candidates = [];
   for (const [targetIndex, target] of targets.entries()) {
     const position = target.position_m || target.position;
@@ -1320,6 +1419,8 @@ function matchedRadarAnchors(detections, sample, image = null) {
       const width = Number(image?.width) || Number(latestCameraFrame?.width) || 640;
       const intrinsics = cameraIntrinsicsForImage({ width, height: Number(image?.height) || 480 });
       const cameraBearing = Math.atan2(centerU * width - intrinsics.cx, intrinsics.fx);
+      const horizontalFov = THREE.MathUtils.degToRad(cameraRadarGeometry.horizontalFovDeg);
+      if (Math.abs(cameraBearing) > horizontalFov / 2) continue;
       const error = Math.abs((cameraBearing - radarBearing) * 180 / Math.PI);
       if (error > maxPersonBearingErrorDeg) continue;
       candidates.push({
@@ -1582,8 +1683,11 @@ async function refreshSensors() {
     }
     if (activeRender === '3d' && cloudDepthImage) drawDepthDetections(cloudDepthImage, yolo);
     if (activeRender === '3d') updateCloudHud();
-    const yoloDetail = `${yolo.state || 'disabled'} · ${(yolo.detections || []).length} boxes${yolo.latency_ms != null ? ` · ${yolo.latency_ms} ms` : ''}`;
-    setFeedStatus('world-map-yolo-state', 'yolo', classifyAge('yolo', frameAge, yolo.state === 'ready' && Boolean(currentCamera.image_base64)), yoloDetail);
+    const yoloAge = Number(yolo.captured_at) > 0 ? Date.now() / 1000 - Number(yolo.captured_at) : Infinity;
+    const yoloDetail = `${yolo.state || 'disabled'} · ${(yolo.detections || []).length} boxes${yolo.latency_ms != null ? ` · ${yolo.latency_ms} ms` : ''}${yolo.paired === false ? ' · waiting for paired frame' : ''}`;
+    const yoloFeedState = yolo.paired === false && yolo.state === 'stale' ? 'stale'
+      : classifyAge('yolo', yoloAge, yolo.state === 'ready' && Boolean(currentCamera.image_base64) && yolo.paired !== false);
+    setFeedStatus('world-map-yolo-state', 'yolo', yoloFeedState, yoloDetail);
     const frameDetail = currentCamera.frame_id ? `${currentCamera.frame_id}${currentCamera.captured_at ? ` · ${frameAge.toFixed(1)}s` : ''}` : 'No frame';
     byId('world-map-frame-state').textContent = frameDetail;
     const frameSummary = byId('world-map-summary-frame');
@@ -2134,6 +2238,23 @@ function updateCloudHud() {
   if (depth) depth.textContent = `MiDaS ${latestSensorDepth?.latency_ms == null ? '—' : `${Number(latestSensorDepth.latency_ms).toFixed(1)} ms`}`;
   const renderedDepthAt = Number(cloudDepthImage?.capturedAt) || 0;
   const frameAge = renderedDepthAt > 0 ? Math.max(0, Date.now() / 1000 - renderedDepthAt) : NaN;
+  const cameraAtForStale = Number(latestCameraFrame?.captured_at);
+  const cameraDeltaForStale = cameraAtForStale > 0 && renderedDepthAt > 0
+    ? Math.abs(cameraAtForStale - renderedDepthAt) : NaN;
+  const stale = !Number.isFinite(frameAge) || frameAge > 0.5
+    || (Number.isFinite(cameraDeltaForStale) && cameraDeltaForStale > 0.5);
+  const staleBanner = byId('world-map-cloud-stale');
+  if (staleBanner) {
+    staleBanner.hidden = !stale;
+    staleBanner.textContent = !Number.isFinite(frameAge)
+      ? 'MiDaS frame unavailable'
+      : frameAge > 0.5 ? `STALE · MiDaS frame ${frameAge.toFixed(1)} s old · cloud dimmed`
+        : `STALE · camera/depth differ by ${cameraDeltaForStale.toFixed(1)} s · detections hidden`;
+  }
+  if (cloudPoints?.material?.uniforms) {
+    cloudPoints.material.uniforms.uOpacity.value = stale ? 0.34 : 0.92;
+    cloudPoints.material.uniforms.uStale.value = stale ? 1 : 0;
+  }
   if (age) age.textContent = Number.isFinite(frameAge) ? `Frame ${frameAge.toFixed(1)} s` : 'Frame —';
   if (sync) {
     const cameraAt = Number(latestCameraFrame?.captured_at);
@@ -2178,29 +2299,30 @@ function updateCloudLabelPositions() {
     const visible = point.z >= -1 && point.z <= 1 && point.x >= -1.15 && point.x <= 1.15 && point.y >= -1.15 && point.y <= 1.15;
     label.hidden = !visible;
     if (!visible) continue;
-    const x = THREE.MathUtils.clamp((point.x + 1) * rect.width / 2, 8, rect.width - 8);
+    let x = THREE.MathUtils.clamp((point.x + 1) * rect.width / 2, 8, rect.width - 8);
     if (item.marker) {
       label.style.left = `${x}px`;
       label.style.top = `${THREE.MathUtils.clamp((1 - point.y) * rect.height / 2, 10, rect.height - 10)}px`;
       continue;
     }
-    let y = THREE.MathUtils.clamp((1 - point.y) * rect.height / 2 - 12, 36, rect.height - 24);
-    label.style.left = `${x}px`;
-    label.style.top = `${y}px`;
     const labelWidth = Math.min(label.offsetWidth || 150, rect.width - 16);
     const labelHeight = label.offsetHeight || 24;
-    let tries = 0;
-    while (tries < 12) {
-      const candidate = { left: THREE.MathUtils.clamp(x - labelWidth / 2, 8, rect.width - labelWidth - 8), top: y - labelHeight, right: 0, bottom: y };
-      candidate.right = candidate.left + labelWidth;
+    x = THREE.MathUtils.clamp(x, labelWidth / 2 + 8, rect.width - labelWidth / 2 - 8);
+    const baseY = THREE.MathUtils.clamp((1 - point.y) * rect.height / 2 - 12, labelHeight + 8, rect.height - 8);
+    let placed = false;
+    for (let tries = 0; tries < 12; tries++) {
+      const offset = Math.ceil(tries / 2) * (labelHeight + 5) * (tries % 2 ? -1 : 1);
+      const y = THREE.MathUtils.clamp(baseY + offset, labelHeight + 8, rect.height - 8);
+      const candidate = { left: x - labelWidth / 2, top: y - labelHeight, right: x + labelWidth / 2, bottom: y };
       const collides = occupied.some(other => candidate.left < other.right + 4 && candidate.right > other.left - 4 && candidate.top < other.bottom + 3 && candidate.bottom > other.top - 3);
-      if (!collides) { occupied.push(candidate); label.style.left = `${candidate.left + labelWidth / 2}px`; break; }
-      y = y - labelHeight - 5;
-      if (y < labelHeight + 28) y = Math.min(rect.height - 8, y + (tries + 1) * (labelHeight + 5));
+      if (collides) continue;
+      occupied.push(candidate);
+      label.style.left = `${x}px`;
       label.style.top = `${y}px`;
-      tries += 1;
+      placed = true;
+      break;
     }
-    if (tries === 12) label.hidden = true;
+    label.hidden = !placed;
   }
 }
 
@@ -2235,6 +2357,13 @@ function updateCloudRadar(sample = latestRadarSample, force = false) {
   clearCloudGroup(cloudRadarGroup);
   const labels = [];
   cloudRadarGroup.visible = enabled;
+  const yoloAt = Number(latestSensorYolo?.captured_at) || 0;
+  const radarAt = Number(sample?.timestamp) || 0;
+  const yoloFresh = latestSensorYolo?.state === 'ready' && Date.now() / 1000 - yoloAt <= 0.5
+    && Math.abs(yoloAt - radarAt) <= 0.2;
+  const associatedTargets = yoloFresh
+    ? matchedRadarAnchors(visibleYoloDetections(latestSensorYolo), sample, cloudDepthImage).map(match => match.targetIndex)
+    : [];
   for (const [index, target] of targets.entries()) {
     const position = target.position_m || target.position || [];
     const lateral = Number(position[0]), forward = Number(position[1]);
@@ -2262,7 +2391,8 @@ function updateCloudRadar(sample = latestRadarSample, force = false) {
     marker.renderOrder = 21;
     cloudRadarGroup.add(marker);
     labels.push({ position: point, marker: true, motionClass: egoMotionLikely ? 'is-ego-motion' : moving ? 'is-moving' : '' });
-    labels.push({ position: point.clone().add(new THREE.Vector3(0, 0.16, 0)), text: `${target.id || target.target_id || `Radar ${index + 1}`} · ${forward.toFixed(1)} m forward${egoMotionLikely ? ' · radial motion ego-uncompensated' : ''}` });
+    const associated = associatedTargets.includes(index);
+    labels.push({ position: point.clone().add(new THREE.Vector3(0, 0.16, 0)), text: `${associated ? 'Person · YOLOX matched' : `Radar target ${index + 1} · unassociated`} · ${forward.toFixed(1)} m forward${egoMotionLikely ? ' · radial motion ego-uncompensated' : ''}` });
   }
   setCloudLayerLabels('radar', labels);
   if (activeRender === '3d') cloud.render();
@@ -2419,6 +2549,24 @@ async function rebuildDepthCloud(depth, segmentation = latestSegmentation) {
 function detectionDepthStats(image, bbox, calibration, identity) {
   const [x1, y1, x2, y2] = bbox.map(Number);
   const person = /person|human/i.test(identity);
+  if (/tv|monitor|screen|television/i.test(identity)) {
+    const padX = Math.max(0.015, (x2 - x1) * 0.12), padY = Math.max(0.02, (y2 - y1) * 0.12);
+    const left = Math.max(0, Math.floor((x1 - padX) * image.width));
+    const right = Math.min(image.width, Math.ceil((x2 + padX) * image.width));
+    const top = Math.max(0, Math.floor((y1 - padY) * image.height));
+    const bottom = Math.min(image.height, Math.ceil((y2 + padY) * image.height));
+    const step = Math.max(1, Math.floor(Math.min(right - left, bottom - top) / 16));
+    const ring = [];
+    for (let y = top; y < bottom; y += step) for (let x = left; x < right; x += step) {
+      const u = x / image.width, v = y / image.height;
+      if (u >= x1 && u <= x2 && v >= y1 && v <= y2) continue;
+      ring.push(depthForScene(image, (y * image.width + x) * 4, calibration));
+    }
+    ring.sort((a, b) => a - b);
+    if (!ring.length) return null;
+    const quantile = q => ring[Math.floor((ring.length - 1) * q)];
+    return { near: quantile(0.1), median: quantile(0.5), far: quantile(0.9), screen: true };
+  }
   const insetX = person ? 0.25 : 0.15;
   const left = Math.max(0, Math.floor((x1 + (x2 - x1) * insetX) * image.width));
   const right = Math.min(image.width, Math.ceil((x2 - (x2 - x1) * insetX) * image.width));
@@ -2443,9 +2591,10 @@ function drawDepthDetections(image, yolo, calibration = metricDepthCalibration) 
     ? Number(yolo.frame_delta_s)
     : Math.abs(Number(yolo?.captured_at) - Number(image.capturedAt));
   const frameMatches = Boolean(image.frameId && yolo?.frame_id === image.frameId)
-    || Number.isFinite(yoloFrameDelta) && yoloFrameDelta <= 0.75;
-  const detections = layerEnabled && yolo?.state === 'ready' && yoloAge >= 0 && yoloAge <= staleAfterSeconds.yolo
-    ? (yolo.detections || []) : [];
+    || Number.isFinite(yoloFrameDelta) && yoloFrameDelta <= 0.2;
+  const detections = layerEnabled && frameMatches && yolo?.state === 'ready'
+    && yoloAge >= 0 && yoloAge <= 0.5 && yolo?.paired !== false
+    ? visibleYoloDetections(yolo) : [];
   const detectionKey = `${layerEnabled}:${cloudFrameId}:${yolo?.frame_id || ''}:${detections.length}:${Number(latestDepthCapturedAt).toFixed(3)}`;
   if (detectionKey === cloudDetectionKey) return;
   cloudDetectionKey = detectionKey;
@@ -2471,7 +2620,7 @@ function drawDepthDetections(image, yolo, calibration = metricDepthCalibration) 
     const maximumSpan = metricFrame
       ? Math.min(0.6, Math.max(0.15, medianDepth * 0.3))
       : Math.min(0.35, Math.max(0.02, medianDepth * 0.05));
-    const depthSpan = Math.min(observedSpan, maximumSpan);
+    const depthSpan = stats.screen ? Math.min(observedSpan, metricFrame ? 0.04 : 0.02) : Math.min(observedSpan, maximumSpan);
     const nearZ = Math.max(0.15, medianDepth - depthSpan / 2);
     const farZ = Math.max(nearZ + (metricFrame ? 0.03 : 0.01), medianDepth + depthSpan / 2);
     const intrinsics = cameraIntrinsicsForImage(image);

@@ -8,6 +8,42 @@ from body_runtime_host.worldmodel.sources import SimRobotSource
 
 
 class LocalCameraTests(unittest.TestCase):
+    def test_camera_frame_only_exposes_yolox_results_paired_with_current_frame(self):
+        from types import SimpleNamespace
+        from body_runtime_host.runtime import BodyHost
+
+        host = object.__new__(BodyHost)
+        host._camera_provider = lambda: {"frame_id": "camera-1", "captured_at": 10.0, "image_base64": "frame"}
+        host._camera_height_m = lambda: 0.18
+        host._yolox_service = SimpleNamespace(
+            nearest_detection_result=lambda _at, max_delta_s: {"state": "ready", "frame_id": "camera-1", "captured_at": 10.1, "detections": [], "frame_delta_s": 0.1}
+                if max_delta_s == 0.2 else None,
+            status=lambda: {"state": "ready", "frame_id": "older", "captured_at": 9.0, "detections": [{"label": "stale"}]},
+        )
+
+        result = host.camera_frame()
+
+        self.assertTrue(result["yolo"]["paired"])
+        self.assertEqual(result["yolo"]["frame_id"], "camera-1")
+
+    def test_camera_frame_hides_unpaired_yolox_detections(self):
+        from types import SimpleNamespace
+        from body_runtime_host.runtime import BodyHost
+
+        host = object.__new__(BodyHost)
+        host._camera_provider = lambda: {"frame_id": "camera-2", "captured_at": 10.0, "image_base64": "frame"}
+        host._camera_height_m = lambda: 0.18
+        host._yolox_service = SimpleNamespace(
+            nearest_detection_result=lambda _at, max_delta_s: None,
+            status=lambda: {"state": "ready", "frame_id": "older", "captured_at": 9.0, "detections": [{"label": "stale"}]},
+        )
+
+        result = host.camera_frame()
+
+        self.assertFalse(result["yolo"]["paired"])
+        self.assertEqual(result["yolo"]["state"], "stale")
+        self.assertEqual(result["yolo"]["detections"], [])
+
     def test_capture_is_stopped_by_default(self):
         capture = LocalCameraCapture()
         self.assertEqual(capture.status()["status"], "stopped")
