@@ -1025,7 +1025,8 @@ function depthForScene(image, pixelIndex, calibration) {
   }
   // MiDaS worker already percentile-normalizes grayscale depth; do not remap it
   // against a second, temporally smoothed frame histogram.
-  const disparity = THREE.MathUtils.clamp(image.values[pixelIndex] / 255, 0, 1);
+  const normalizedDepth = image.normalizedValues?.[pixelIndex] ?? image.values[pixelIndex];
+  const disparity = THREE.MathUtils.clamp(normalizedDepth / 255, 0, 1);
   return 1 / THREE.MathUtils.lerp(1 / 8, 1 / 0.7, disparity);
 }
 
@@ -1203,6 +1204,12 @@ async function loadDepthFrame(depth) {
   if (rawAvailable) {
     image.rawMin = Number(depth.depth_raw_min);
     image.rawMax = Number(depth.depth_raw_max);
+    const normalizedDepth = await loadGrayDepth(depth.depth_gray_jpeg_base64);
+    if (normalizedDepth.width === image.width && normalizedDepth.height === image.height) {
+      image.normalizedValues = normalizedDepth.values;
+    }
+  } else {
+    image.normalizedValues = image.values;
   }
   image.frameId = String(depth.frame_id || '');
   image.capturedAt = Number(depth.captured_at) || 0;
@@ -2288,7 +2295,13 @@ async function rebuildDepthCloud(depth, segmentation = latestSegmentation) {
   if (!cloud || !depth.depth_gray_jpeg_base64) return;
   const token = ++cloudBuildToken;
   const image = await loadDepthFrame(depth);
-  const colorImage = depth.depth_jpeg_base64 ? await loadGrayDepth(depth.depth_jpeg_base64) : image;
+  const [pairedFrame, depthColorImage] = await Promise.all([
+    cameraFrameForDepth(depth),
+    depth.depth_jpeg_base64 ? loadGrayDepth(depth.depth_jpeg_base64) : Promise.resolve(image),
+  ]);
+  const colorImage = pairedFrame?.image_base64
+    ? await loadDepthImage(pairedFrame.image_base64, pairedFrame.mime_type || 'image/jpeg')
+    : depthColorImage;
   const classMask = segmentationMatchesDepth(segmentation, depth)
     ? await loadClassMask(segmentation.mask_png_base64) : null;
   if (token !== cloudBuildToken || activeSource !== 'sensors' || activeRender !== '3d') return false;
