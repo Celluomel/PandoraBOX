@@ -42,6 +42,7 @@ let latestSensorDepth = null;
 let lastSensorDepthAt = 0;
 let sensorDepthBusy = false;
 let latestSensorYolo = null;
+let cloudDepthYolo = null;
 let latestSegmentation = null;
 let latestCameraFrame = null;
 let renderedSegmentationFrameId = '';
@@ -59,7 +60,6 @@ let latestVisualOdometry = null;
 let latestRadarSample = null;
 let radarHistory = [];
 let latestDepthCapturedAt = 0;
-let smoothedRelativeDepthRange = null;
 let imuHistory = [];
 let cloudPointCount = 0;
 let cloudLabelItems = [];
@@ -659,7 +659,7 @@ if (cloud) {
     if (layer === 'cloud' && cloudPoints) cloudPoints.visible = input.checked;
     if (layer === 'detections') {
       if (boxGroup) boxGroup.visible = input.checked;
-      if (input.checked && cloudDepthImage) drawDepthDetections(cloudDepthImage, latestSensorYolo);
+      if (input.checked && cloudDepthImage) drawDepthDetections(cloudDepthImage, cloudDepthYolo);
     }
     if (layer === 'radar') updateCloudRadar(latestRadarSample, true);
     if (layer === 'odometry') cloudOdometryGroup.visible = input.checked;
@@ -835,7 +835,7 @@ function setRender(render) {
     if (sensor3d) sensor3d.hidden = render !== '3d';
     if (render === '3d') requestAnimationFrame(() => {
       resizeCloud();
-      if (cloudDepthImage) drawDepthDetections(cloudDepthImage, latestSensorYolo);
+      if (cloudDepthImage) drawDepthDetections(cloudDepthImage, cloudDepthYolo);
       cloud?.render();
     });
   }
@@ -1016,30 +1016,6 @@ function depthValueAt(image, pixelIndex) {
   return normalized;
 }
 
-const depthPercentileCache = new WeakMap();
-
-function relativeDepthPercentiles(image) {
-  if (depthPercentileCache.has(image)) return depthPercentileCache.get(image);
-  const values = [];
-  const stride = Math.max(4, Math.floor(Math.sqrt(image.width * image.height / 12000)));
-  for (let y = 0; y < image.height; y += stride) {
-    for (let x = 0; x < image.width; x += stride) values.push(image.values[(y * image.width + x) * 4]);
-  }
-  values.sort((a, b) => a - b);
-  const at = percentile => values[Math.min(values.length - 1, Math.floor((values.length - 1) * percentile))] || 0;
-  const measured = { low: at(0.02), high: at(0.98) };
-  const smoothing = 0.2;
-  smoothedRelativeDepthRange = smoothedRelativeDepthRange
-    ? {
-      low: THREE.MathUtils.lerp(smoothedRelativeDepthRange.low, measured.low, smoothing),
-      high: THREE.MathUtils.lerp(smoothedRelativeDepthRange.high, measured.high, smoothing),
-    }
-    : measured;
-  const result = { ...smoothedRelativeDepthRange };
-  depthPercentileCache.set(image, result);
-  return result;
-}
-
 function depthForScene(image, pixelIndex, calibration) {
   const raw = depthValueAt(image, pixelIndex);
   const hasRawRange = Number.isFinite(image.rawMin) && Number.isFinite(image.rawMax);
@@ -1047,9 +1023,9 @@ function depthForScene(image, pixelIndex, calibration) {
     const calibrated = relativeDepthToMeters(raw, calibration);
     if (Number.isFinite(calibrated)) return calibrated;
   }
-  const { low, high } = relativeDepthPercentiles(image);
-  const disparity = THREE.MathUtils.clamp((image.values[pixelIndex] - low) / Math.max(high - low, 1), 0, 1);
-  // Relative inverse-depth proxy only; robust to isolated outliers and never presented as metres.
+  // MiDaS worker already percentile-normalizes grayscale depth; do not remap it
+  // against a second, temporally smoothed frame histogram.
+  const disparity = THREE.MathUtils.clamp(image.values[pixelIndex] / 255, 0, 1);
   return 1 / THREE.MathUtils.lerp(1 / 8, 1 / 0.7, disparity);
 }
 
@@ -1166,12 +1142,12 @@ async function yoloResultForDepth(depth) {
   if (latestSensorYolo?.frame_id === depth?.frame_id) return latestSensorYolo;
   if (!Number.isFinite(Number(depth?.captured_at))) return null;
   try {
-    const query = new URLSearchParams({ nearest_to: String(depth.captured_at), max_delta_s: '1.5' });
+    const query = new URLSearchParams({ nearest_to: String(depth.captured_at), max_delta_s: '0.75' });
     const response = await fetch(`/body/camera/yolo/status?${query}`, { cache: 'no-store' });
     if (!response.ok) return null;
     const result = await response.json();
     const delta = Math.abs(Number(result.captured_at) - Number(depth.captured_at));
-    return result.state === 'ready' && Number.isFinite(delta) && delta <= 1.5
+    return result.state === 'ready' && Number.isFinite(delta) && delta <= 0.75
       ? { ...result, frame_delta_s: delta } : null;
   } catch (error) {
     console.warn('Could not find YOLOX detections near MiDaS frame:', error);
@@ -1541,7 +1517,6 @@ async function refreshSensors() {
       drawBoxes(detections, currentCamera.width || 640, currentCamera.height || 480);
       displayedYoloOverlayKey = yoloOverlayKey;
     }
-    if (activeRender === '3d' && cloudDepthImage) drawDepthDetections(cloudDepthImage, yolo);
     if (activeRender === '3d') updateCloudHud();
     const yoloDetail = `${yolo.state || 'disabled'} · ${(yolo.detections || []).length} boxes${yolo.latency_ms != null ? ` · ${yolo.latency_ms} ms` : ''}`;
     setFeedStatus('world-map-yolo-state', 'yolo', classifyAge('yolo', frameAge, yolo.state === 'ready' && Boolean(currentCamera.image_base64)), yoloDetail);
@@ -2032,10 +2007,12 @@ function setCloudPreset(preset) {
     cloud.camera.fov = THREE.MathUtils.radToDeg(2 * Math.atan((cloudDepthImage?.height || 480) / (2 * intrinsics.fy)));
     cloud.camera.userData.userAdjusted = true;
     const mount = cameraMountPose();
-    const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(mount.rotation);
+    const attitude = attitudeQuaternion(latestDepthCapturedAt) || new THREE.Quaternion();
+    const cameraRotation = attitude.multiply(mount.rotation);
+    const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(cameraRotation);
     cloud.camera.userData.target = mount.position.clone().add(forward);
     cloud.camera.position.copy(mount.position);
-    cloud.camera.up.set(0, 1, 0).applyQuaternion(mount.rotation);
+    cloud.camera.up.set(0, 1, 0).applyQuaternion(cameraRotation);
     cloud.camera.lookAt(cloud.camera.userData.target);
     applyCameraProjection();
     updateCloudRadar();
@@ -2315,6 +2292,7 @@ async function rebuildDepthCloud(depth, segmentation = latestSegmentation) {
     ? await loadClassMask(segmentation.mask_png_base64) : null;
   if (token !== cloudBuildToken || activeSource !== 'sensors' || activeRender !== '3d') return false;
   cloudDepthImage = image;
+  cloudDepthYolo = null;
   latestDepthCapturedAt = Number(depth.captured_at) || 0;
   updateCloudOrigin(latestDepthCapturedAt);
   cloudCameraPlaneToken += 1;
@@ -2372,6 +2350,7 @@ async function rebuildDepthCloud(depth, segmentation = latestSegmentation) {
   updateCloudOdometry();
   const frameYolo = await yoloResultForDepth(depth);
   if (token !== cloudBuildToken) return false;
+  cloudDepthYolo = frameYolo;
   drawDepthDetections(image, frameYolo, frameCalibration);
   resizeCloud();
   if (cloudViewport?.classList.contains('is-camera-view')) {
@@ -2410,8 +2389,8 @@ function drawDepthDetections(image, yolo, calibration = metricDepthCalibration) 
     ? Number(yolo.frame_delta_s)
     : Math.abs(Number(yolo?.captured_at) - Number(image.capturedAt));
   const frameMatches = Boolean(image.frameId && yolo?.frame_id === image.frameId)
-    || Number.isFinite(yoloFrameDelta) && yoloFrameDelta <= 1.5;
-  const detections = layerEnabled && frameMatches && yolo?.state === 'ready' && yoloAge >= 0 && yoloAge <= 2.5
+    || Number.isFinite(yoloFrameDelta) && yoloFrameDelta <= 0.75;
+  const detections = layerEnabled && frameMatches && yolo?.state === 'ready' && yoloAge >= 0 && yoloAge <= 1.25
     ? (yolo.detections || []) : [];
   const detectionKey = `${layerEnabled}:${cloudFrameId}:${yolo?.frame_id || ''}:${detections.length}:${Number(latestDepthCapturedAt).toFixed(3)}`;
   if (detectionKey === cloudDetectionKey) return;
