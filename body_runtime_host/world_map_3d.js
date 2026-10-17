@@ -2277,7 +2277,7 @@ function updateCloudHud() {
   const fovText = intrinsics.calibrated ? 'camera intrinsics calibrated' : `camera FOV estimated ${cameraRadarGeometry.horizontalFovDeg}°`;
   if (caption) caption.textContent = metricFrame
     ? `Depth in metres · ${fovText}; radar remains independent`
-    : `Relative units · shape only; ${fovText}; no metric scale`;
+    : `Pseudo-metres · uncalibrated; shape only, not range · ${fovText}`;
   const scale = cloudViewport?.querySelector('.world-map-cloud-scale');
   if (scale) scale.hidden = true;
   // The origin axes and reference grid remain useful for shape-only depth; only
@@ -2646,7 +2646,7 @@ function drawDepthDetections(image, yolo, calibration = metricDepthCalibration) 
       : medianRange
         ? `${medianRange.extrapolated ? '~' : ''}${medianRange.meters.toFixed(1)} m · MiDaS ${medianRange.extrapolated ? 'extrapolated' : 'est.'}`
         : frameMatches
-          ? `${stats.median.toFixed(1)} relative units · MiDaS`
+          ? `${stats.median.toFixed(1)} pseudo-m · uncalibrated MiDaS`
           : 'depth unpaired · relative shape only';
     const syncLabel = yolo?.frame_id !== image.frameId && yoloFrameDelta > 0.15
       ? ` · YOLOX Δ${yoloFrameDelta.toFixed(1)} s` : '';
