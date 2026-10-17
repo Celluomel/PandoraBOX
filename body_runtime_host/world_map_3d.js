@@ -624,12 +624,12 @@ if (cloud) {
     new THREE.LineBasicMaterial({ color: '#9aafc0', transparent: true, opacity: 0.8 }),
   );
   cloudGuides.add(cloudOriginStem);
-  cloudCameraMountMarker = new THREE.Mesh(new THREE.SphereGeometry(0.035, 12, 8), new THREE.MeshBasicMaterial({ color: '#62f1c1' }));
+  cloudCameraMountMarker = new THREE.Mesh(new THREE.SphereGeometry(0.022, 12, 8), new THREE.MeshBasicMaterial({ color: '#62f1c1' }));
   cloudGuides.add(cloudCameraMountMarker);
-  cloudOriginGroup.add(new THREE.Mesh(new THREE.SphereGeometry(0.055, 16, 10), new THREE.MeshBasicMaterial({ color: '#f4f7ff' })));
+  cloudOriginGroup.add(new THREE.Mesh(new THREE.SphereGeometry(0.025, 16, 10), new THREE.MeshBasicMaterial({ color: '#f4f7ff' })));
   const addAxis = (to, color) => {
     const direction = new THREE.Vector3(...to).normalize();
-    cloudOriginGroup.add(new THREE.ArrowHelper(direction, new THREE.Vector3(), 0.55, color, 0.1, 0.065));
+    cloudOriginGroup.add(new THREE.ArrowHelper(direction, new THREE.Vector3(), 0.2, color, 0.045, 0.028));
   };
   addAxis([1, 0, 0], '#ef6a73'); addAxis([0, 1, 0], '#62d994'); addAxis([0, 0, -1], '#66a8ff');
   const scale = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(-0.5, 0.03, -2), new THREE.Vector3(0.5, 0.03, -2)]);
@@ -1054,9 +1054,9 @@ function cameraPoint(u, v, z, intrinsics) {
 }
 
 const cameraMountProfiles = {
-  low_body_front: { heightM: 0.12, elevationDeg: -8 },
-  level_body_front: { heightM: 0.35, elevationDeg: -2 },
-  high_body_front: { heightM: 0.65, elevationDeg: 5 },
+  low_body_front: { heightM: 0.12 },
+  level_body_front: { heightM: 0.35 },
+  high_body_front: { heightM: 0.65 },
 };
 
 function cameraMountPose() {
@@ -1067,8 +1067,12 @@ function cameraMountPose() {
     ?? latestSensorDepth?.camera_height_m);
   const heightM = Number.isFinite(reportedHeight) && reportedHeight > 0 && reportedHeight < 3
     ? reportedHeight : mount.heightM;
+  const reportedPitch = Number(latestCameraFrame?.camera_pitch_deg
+    ?? latestCameraFrame?.calibration?.pitch_deg
+    ?? latestSensorDepth?.camera_pitch_deg);
+  const elevationDeg = Number.isFinite(reportedPitch) ? reportedPitch : 0;
   const rotation = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0),
-    THREE.MathUtils.degToRad(mount.elevationDeg));
+    THREE.MathUtils.degToRad(elevationDeg));
   return { profile, heightM, rotation, position: new THREE.Vector3(0, heightM, 0) };
 }
 
@@ -2196,13 +2200,13 @@ function updateCloudRadar(sample = latestRadarSample, force = false) {
     const moving = Math.abs(Number(target.radial_speed_mps) || 0) >= 0.05 && !egoMotionLikely;
     const markerColor = egoMotionLikely ? '#9aa7ad' : moving ? '#ed35c5' : '#f2bc65';
     // MiDaS points are dense and write depth; radar is an independent metric overlay.
-    const halo = new THREE.Mesh(new THREE.SphereGeometry(0.17, 16, 10), new THREE.MeshBasicMaterial({
+    const halo = new THREE.Mesh(new THREE.SphereGeometry(0.11, 16, 10), new THREE.MeshBasicMaterial({
       color: markerColor, transparent: true, opacity: 0.24, depthTest: false, depthWrite: false,
     }));
     halo.position.copy(point);
     halo.renderOrder = 20;
     cloudRadarGroup.add(halo);
-    const marker = new THREE.Mesh(new THREE.SphereGeometry(0.11, 16, 12), new THREE.MeshBasicMaterial({
+    const marker = new THREE.Mesh(new THREE.SphereGeometry(0.055, 16, 12), new THREE.MeshBasicMaterial({
       color: markerColor, depthTest: false, depthWrite: false,
     }));
     marker.position.copy(point);
