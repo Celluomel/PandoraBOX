@@ -16,6 +16,29 @@ class BodyRuntimeGuiTests(unittest.TestCase):
             {"available": True, "camera": {**source_frame, "camera_height_m": 0.18}},
         )
 
+    def test_depth_response_avoids_retransmitting_unchanged_frame_and_optional_blobs(self):
+        from types import SimpleNamespace
+        from body_runtime_host.runtime import BodyHost
+
+        payload = {
+            "frame_id": "depth-1", "state": "ready", "depth_jpeg_base64": "color",
+            "depth_gray_jpeg_base64": "gray", "depth_raw_png_base64": "raw",
+        }
+        host = object.__new__(BodyHost)
+        host._midas_service = SimpleNamespace(status=lambda: dict(payload))
+        host._camera_height_m = lambda: 0.18
+        host.value = lambda _key, default=None: default
+
+        unchanged = host.camera_depth(since_frame_id="depth-1")
+        shape_only = host.camera_depth(include_raw=False, include_color=False)
+
+        self.assertTrue(unchanged["unchanged"])
+        self.assertNotIn("depth_raw_png_base64", unchanged)
+        self.assertNotIn("depth_jpeg_base64", unchanged)
+        self.assertEqual(shape_only["depth_gray_jpeg_base64"], "gray")
+        self.assertNotIn("depth_raw_png_base64", shape_only)
+        self.assertNotIn("depth_jpeg_base64", shape_only)
+
     def test_world_map_switches_between_simulation_and_sensor_only_renderings(self):
         from body_runtime_host.body_gui import BODY_GUI_HTML
 
@@ -33,7 +56,8 @@ class BodyRuntimeGuiTests(unittest.TestCase):
         self.assertIn("sim?.resize(); buildSimulation(latestWorld); sim?.render()", source)
         self.assertIn("depth_gray_jpeg_base64", source)
         self.assertIn("no simulation object positions", source)
-        self.assertIn("performance.now() - lastSensorDepthAt < 250", source)
+        self.assertIn("performance.now() - lastSensorDepthAt < 100", source)
+        self.assertIn("since_frame_id", source)
         self.assertIn("age > 0.5", source)
         self.assertIn("currentCamera.image_base64", source)
         self.assertIn("/plugins/mmwave_radar/status", source)
@@ -79,7 +103,7 @@ class BodyRuntimeGuiTests(unittest.TestCase):
         self.assertIn("cloudFrameId = String(depth.frame_id || '')", depth_cloud)
         self.assertNotIn("await yoloResultForDepth(depth)", depth_cloud)
         self.assertIn("void yoloResultForDepth(depth).then(frameYolo =>", depth_cloud)
-        self.assertIn("cloudDepthYolo = frameYolo", depth_cloud)
+        self.assertIn("cloudDepthYolo = alignedYolo", depth_cloud)
         self.assertIn("async function yoloResultForDepth(depth)", source)
         self.assertIn("const frameMatches = Boolean(image.frameId && yolo?.frame_id === image.frameId)", source)
         self.assertIn("yoloFrameDelta <= maxSceneDetectionPairDeltaSeconds", source)
@@ -121,7 +145,7 @@ class BodyRuntimeGuiTests(unittest.TestCase):
         radar_refresh = source.split("async function refreshLiveRadar()", 1)[1].split("async function refreshLiveGps()", 1)[0]
         self.assertNotIn("drawDepthDetections", radar_refresh)
         self.assertIn("3D ${Math.round(cloudFpsFrames * 1000 / elapsed)} FPS", source)
-        self.assertIn("void refreshLiveRadar();\n}, 100);", source)
+        self.assertIn("void refreshLiveRadar();\n}, 250);", source)
         self.assertIn("cloudGuides.visible = !cloudViewport?.classList.contains('is-camera-view')", source)
         self.assertIn("data-cloud-view=\"follow\"", source)
         self.assertIn("world-map-cloud-hud-fps", source)
@@ -219,8 +243,8 @@ class BodyRuntimeGuiTests(unittest.TestCase):
         self.assertNotIn("fetch('/body/camera/segmentation'", quest)
         self.assertNotIn("latestSensorYolo?.frame_id === depthFrameId", source)
         self.assertIn("maskAge <= 2.5", source)
-        self.assertIn("}, 75);", source)
-        self.assertIn("}, 250);", source)
+        self.assertIn("requestAnimationFrame(animateSensorCloud)", source)
+        self.assertIn("}, 100);", source)
         self.assertIn("}, 500);", source)
         self.assertIn("Compute & power", source)
         self.assertIn("refreshSystemMetrics", source)

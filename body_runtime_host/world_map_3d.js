@@ -41,7 +41,6 @@ function setSensorFetchFailure(source, failed) {
 }
 let latestSensorDepth = null;
 let lastSensorDepthAt = 0;
-let lastFullDepthFrameKey = '';
 let sensorDepthBusy = false;
 let latestSensorYolo = null;
 let cloudDepthYolo = null;
@@ -2056,10 +2055,18 @@ async function refreshSensorSegmentation() {
 
 async function refreshSensorDepth() {
   if (sensorDepthBusy || activeSource !== 'sensors'
-      || (latestSensorDepth && performance.now() - lastSensorDepthAt < 250)) return;
+      || (latestSensorDepth && performance.now() - lastSensorDepthAt < 100)) return;
   sensorDepthBusy = true;
   try {
-    const response = await fetch('/body/camera/depth?include_raw=0&include_preview=0', { cache: 'no-store' });
+    const displayedFrameId = activeRender === '3d'
+      ? cloudFrameId : String(byId('world-map-depth-image')?.dataset.frameId || '');
+    const query = new URLSearchParams({
+      include_raw: activeRender === '3d' && Boolean(metricDepthCalibration?.available) ? '1' : '0',
+      include_preview: '1',
+      include_color: activeRender === '3d' ? '0' : '1',
+    });
+    if (displayedFrameId) query.set('since_frame_id', displayedFrameId);
+    const response = await fetch(`/body/camera/depth?${query}`, { cache: 'no-store' });
     const depthStatus = await response.json();
     setSensorFetchFailure('depth', false);
     const segmentation = latestSegmentation;
@@ -2071,6 +2078,11 @@ async function refreshSensorDepth() {
     const ageSeconds = Number(depthStatus.captured_at) > 0 ? Math.max(0, Date.now() / 1000 - Number(depthStatus.captured_at)) : NaN;
     const midasState = classifyAge('midas', ageSeconds, Boolean(depthStatus.available) && depthStatus.state !== 'disabled');
     setFeedStatus('world-map-midas-state', 'midas', midasState, `${depthStatus.state || 'disabled'}${depthStatus.device ? ` · ${depthStatus.device}` : ''}${depthStatus.latency_ms != null ? ` · ${depthStatus.latency_ms} ms` : ''}${depthAge}${depthStatus.error ? ` · ${depthStatus.error}` : ''}`);
+    if (depthStatus.unchanged || !depthStatus.frame_id) {
+      updateCloudHud();
+      return;
+    }
+    depthStatus.browser_fetched_at = Date.now() / 1000;
     if (cloudPoints) {
       cloudPoints.material.uniforms.uOpacity.value = 0.92;
     }
@@ -2084,30 +2096,20 @@ async function refreshSensorDepth() {
       && byId('world-map-depth-image')?.dataset.frameId !== String(depthStatus.frame_id);
     if ((needsCloud || needsPreview) && depthStatus.frame_id) {
       const depthFrameId = String(depthStatus.frame_id);
-      const fetchKey = `${depthFrameId}:${needsCloud ? 'raw' : 'preview'}`;
-      if (lastFullDepthFrameKey !== fetchKey) {
-        lastFullDepthFrameKey = fetchKey;
-        const fullResponse = await fetch(`/body/camera/depth?include_raw=${needsCloud ? '1' : '0'}&include_preview=1`, { cache: 'no-store' });
-        const fullDepth = await fullResponse.json();
-        if (String(fullDepth.frame_id || '') !== depthFrameId) {
-          lastFullDepthFrameKey = '';
-          return;
-        }
-        fullDepth.browser_fetched_at = Date.now() / 1000;
-        setImage(byId('world-map-depth-image'), byId('world-map-depth-empty'), fullDepth.depth_jpeg_base64);
+      if (depthStatus.depth_jpeg_base64) {
+        setImage(byId('world-map-depth-image'), byId('world-map-depth-empty'), depthStatus.depth_jpeg_base64);
         byId('world-map-depth-image').dataset.frameId = depthFrameId;
-        if (needsCloud && fullDepth.depth_gray_jpeg_base64) {
-          latestSensorDepth = fullDepth;
-          cloudBuildingKey = depthRenderKey;
-          try {
-            const updated = await rebuildDepthCloud(fullDepth, segmentation);
-            if (updated) {
-              cloudFrameId = depthFrameId;
-              cloudSegmentationFrameId = alignedSegmentationFrameId;
-            }
-          } finally {
-            if (cloudBuildingKey === depthRenderKey) cloudBuildingKey = '';
+      }
+      if (needsCloud && depthStatus.depth_gray_jpeg_base64) {
+        cloudBuildingKey = depthRenderKey;
+        try {
+          const updated = await rebuildDepthCloud(depthStatus, segmentation);
+          if (updated) {
+            cloudFrameId = depthFrameId;
+            cloudSegmentationFrameId = alignedSegmentationFrameId;
           }
+        } finally {
+          if (cloudBuildingKey === depthRenderKey) cloudBuildingKey = '';
         }
       }
     }
@@ -2625,9 +2627,13 @@ async function rebuildDepthCloud(depth, segmentation = latestSegmentation) {
   // Camera RGB and YOLO pairing are optional overlays; neither may hold up
   // the depth geometry or cause the polling loop to cancel every rebuild.
   void yoloResultForDepth(depth).then(frameYolo => {
-    if (token !== cloudBuildToken) return;
-    cloudDepthYolo = frameYolo;
-    drawDepthDetections(image, frameYolo, frameCalibration);
+    const currentImage = cloudDepthImage;
+    if (!frameYolo || activeSource !== 'sensors' || activeRender !== '3d' || !currentImage) return;
+    const delta = Math.abs(Number(frameYolo.captured_at) - Number(currentImage.capturedAt));
+    if (currentImage !== image && (!Number.isFinite(delta) || delta > maxSceneDetectionPairDeltaSeconds)) return;
+    const alignedYolo = { ...frameYolo, frame_delta_s: delta };
+    cloudDepthYolo = alignedYolo;
+    drawDepthDetections(currentImage, alignedYolo, metricDepthCalibration);
   }).catch(error => console.warn('Could not pair YOLOX with MiDaS frame:', error));
   if (cloudViewport?.classList.contains('is-camera-view')) {
     void cameraFrameForDepth(depth).then(frame => {
@@ -2770,7 +2776,7 @@ setInterval(() => {
     void refreshSensors();
     void refreshSensorDepth();
   }
-}, 200);
+}, 100);
 setInterval(() => {
   if (!sensorPageVisible() || activeSource !== 'sensors') return;
   void refreshLiveRadar();

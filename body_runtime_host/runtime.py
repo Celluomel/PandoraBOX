@@ -756,11 +756,21 @@ class BodyHost:
             result = self._yolox_service.detection_result(frame_id)
         return result or {"state": "unavailable", "detections": [], "frame_id": frame_id}
 
-    def camera_depth(self, include_raw: bool = True, include_preview: bool = True) -> dict:
+    def camera_depth(self, include_raw: bool = True, include_preview: bool = True,
+                     since_frame_id: str | None = None, include_color: bool = True) -> dict:
         result = self._midas_service.status()
         available = bool(result.get("depth_jpeg_base64"))
+        unchanged = bool(since_frame_id and str(result.get("frame_id") or "") == str(since_frame_id))
+        if unchanged:
+            for key in ("depth_raw_png_base64", "depth_jpeg_base64", "depth_gray_jpeg_base64"):
+                result.pop(key, None)
+            return {"available": available, "unchanged": True, **result,
+                    "camera_height_m": self._camera_height_m(),
+                    "camera_profile": str(self.value("BODY_CAMERA_PROFILE", "low_body_front") or "low_body_front")}
         if not include_raw:
             result.pop("depth_raw_png_base64", None)
+        if not include_color:
+            result.pop("depth_jpeg_base64", None)
         if not include_preview:
             result.pop("depth_jpeg_base64", None)
             result.pop("depth_gray_jpeg_base64", None)
@@ -3711,7 +3721,10 @@ class BodyHost:
                     query = parse_qs(urlparse(self.path).query)
                     include_raw = (query.get("include_raw") or ["1"])[0] != "0"
                     include_preview = (query.get("include_preview") or ["1"])[0] != "0"
-                    self._send(owner.camera_depth(include_raw=include_raw, include_preview=include_preview))
+                    include_color = (query.get("include_color") or ["1"])[0] != "0"
+                    since_frame_id = (query.get("since_frame_id") or [None])[0]
+                    self._send(owner.camera_depth(include_raw=include_raw, include_preview=include_preview,
+                                                  since_frame_id=since_frame_id, include_color=include_color))
                 elif path == "/body/odometry/visual":
                     self._send(owner.visual_odometry_status())
                 elif path == "/body/camera/segmentation":
