@@ -945,6 +945,17 @@ function visibleYoloDetections(yolo) {
   return [];
 }
 
+function pairedYoloDetections(yolo) {
+  if (yolo?.state !== 'ready' || yolo?.paired === false) return [];
+  const key = String(yolo.frame_id || yolo.captured_at || '');
+  if (stableYoloResults.has(key)) return stableYoloResults.get(key);
+  return (yolo.detections || []).filter(item => {
+    const confidence = Number(item.confidence ?? item.score ?? 0);
+    const label = String(item.label || item.class_name || item.class || '');
+    return confidence >= (/person|human/i.test(label) ? 0.5 : 0.45);
+  });
+}
+
 function boxIou(a, b) {
   if (!Array.isArray(a) || !Array.isArray(b) || a.length < 4 || b.length < 4) return 0;
   const [ax1, ay1, ax2, ay2] = a.map(Number), [bx1, by1, bx2, by2] = b.map(Number);
@@ -2652,15 +2663,13 @@ function detectionDepthStats(image, bbox, calibration, identity) {
 function drawDepthDetections(image, yolo, calibration = metricDepthCalibration) {
   if (!cloud || !image || activeRender !== '3d') return;
   const layerEnabled = cloudViewport?.querySelector('[data-cloud-layer="detections"]')?.checked !== false;
-  const yoloAge = Number(yolo?.captured_at) > 0 ? Date.now() / 1000 - Number(yolo.captured_at) : Infinity;
   const yoloFrameDelta = yolo?.frame_delta_s != null && Number.isFinite(Number(yolo.frame_delta_s))
     ? Number(yolo.frame_delta_s)
     : Math.abs(Number(yolo?.captured_at) - Number(image.capturedAt));
   const frameMatches = Boolean(image.frameId && yolo?.frame_id === image.frameId)
     || Number.isFinite(yoloFrameDelta) && yoloFrameDelta <= 0.2;
   const detections = layerEnabled && frameMatches && yolo?.state === 'ready'
-    && yoloAge >= 0 && yoloAge <= 0.5 && yolo?.paired !== false
-    ? visibleYoloDetections(yolo) : [];
+    && yolo?.paired !== false ? pairedYoloDetections(yolo) : [];
   const detectionKey = `${layerEnabled}:${cloudFrameId}:${yolo?.frame_id || ''}:${detections.length}:${Number(latestDepthCapturedAt).toFixed(3)}`;
   if (detectionKey === cloudDetectionKey) return;
   cloudDetectionKey = detectionKey;
