@@ -1859,8 +1859,7 @@ async function refreshSensorDepth() {
     const midasState = classifyAge('midas', ageSeconds, Boolean(depth.depth_jpeg_base64) && depth.state !== 'disabled');
     setFeedStatus('world-map-midas-state', 'midas', midasState, `${depth.state || 'disabled'}${depth.device ? ` · ${depth.device}` : ''}${depth.latency_ms != null ? ` · ${depth.latency_ms} ms` : ''}${depthAge}${depth.error ? ` · ${depth.error}` : ''}`);
     if (cloudPoints) {
-      cloudPoints.material.vertexColors = midasState !== 'stale';
-      cloudPoints.material.color.set(midasState === 'stale' ? '#89939b' : '#ffffff');
+      cloudPoints.material.color.set(midasState === 'stale' ? '#65747a' : '#72d7c4');
       cloudPoints.material.opacity = midasState === 'stale' ? 0.38 : 0.92;
       cloudPoints.material.needsUpdate = true;
     }
@@ -2307,10 +2306,6 @@ async function rebuildDepthCloud(depth, segmentation = latestSegmentation) {
   if (!cloud || !depth.depth_gray_jpeg_base64) return;
   const token = ++cloudBuildToken;
   const image = await loadDepthFrame(depth);
-  const colorImage = depth.depth_jpeg_base64
-    ? await loadGrayDepth(depth.depth_jpeg_base64) : image;
-  const classMask = segmentationMatchesDepth(segmentation, depth)
-    ? await loadClassMask(segmentation.mask_png_base64) : null;
   if (token !== cloudBuildToken || activeSource !== 'sensors' || activeRender !== '3d') return false;
   cloudDepthImage = image;
   cloudFrameId = String(depth.frame_id || '');
@@ -2326,38 +2321,16 @@ async function rebuildDepthCloud(depth, segmentation = latestSegmentation) {
   const intrinsics = cameraIntrinsicsForImage(image);
   const stride = Math.max(3, Math.ceil(Math.max(image.width, image.height) / 120));
   const positions = [];
-  const colorsArray = [];
   for (let y = 0; y < image.height; y += stride) {
     for (let x = 0; x < image.width; x += stride) {
       const index = (y * image.width + x) * 4;
       const distance = depthForScene(image, index, frameCalibration);
       const point = cameraPointInBodyFrame(cameraPoint(x, y, distance, intrinsics), Number(depth.captured_at) || latestDepthCapturedAt);
       positions.push(point.x, point.y, point.z);
-      const colorX = Math.min(colorImage.width - 1, Math.round(x * colorImage.width / image.width));
-      const colorY = Math.min(colorImage.height - 1, Math.round(y * colorImage.height / image.height));
-      const colorIndex = (colorY * colorImage.width + colorX) * 4;
-      const classMaskIndex = classMask
-        ? (Math.min(classMask.height - 1, Math.round(y * classMask.height / image.height)) * classMask.width
-          + Math.min(classMask.width - 1, Math.round(x * classMask.width / image.width))) * 4
-        : -1;
-      if (classMask && classMask.values[classMaskIndex + 3] > 0) {
-        const maskX = Math.min(classMask.width - 1, Math.round(x * classMask.width / image.width));
-        const maskY = Math.min(classMask.height - 1, Math.round(y * classMask.height / image.height));
-        const classId = classMask.values[(maskY * classMask.width + maskX) * 4];
-        const semantic = semanticColor(classId);
-        colorsArray.push(semantic.r, semantic.g, semantic.b);
-      } else {
-        colorsArray.push(
-          colorImage.values[colorIndex] / 255,
-          colorImage.values[colorIndex + 1] / 255,
-          colorImage.values[colorIndex + 2] / 255,
-        );
-      }
     }
   }
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-  geometry.setAttribute('color', new THREE.Float32BufferAttribute(colorsArray, 3));
   geometry.computeBoundingBox();
   cloudPointCount = positions.length / 3;
   const layerEnabled = cloudViewport?.querySelector('[data-cloud-layer="cloud"]')?.checked !== false;
@@ -2367,7 +2340,7 @@ async function rebuildDepthCloud(depth, segmentation = latestSegmentation) {
     cloudPoints.visible = layerEnabled;
     previousGeometry.dispose();
   } else {
-    cloudPoints = new THREE.Points(geometry, new THREE.PointsMaterial({ size: Number(byId('world-map-cloud-point-size')?.value || 25) / 1000, vertexColors: true, sizeAttenuation: true, transparent: true, opacity: 0.92 }));
+    cloudPoints = new THREE.Points(geometry, new THREE.PointsMaterial({ color: '#72d7c4', size: Number(byId('world-map-cloud-point-size')?.value || 25) / 1000, sizeAttenuation: true, transparent: true, opacity: 0.92 }));
     cloudPoints.visible = layerEnabled;
     cloud.scene.add(cloudPoints);
   }
@@ -2381,36 +2354,8 @@ async function rebuildDepthCloud(depth, segmentation = latestSegmentation) {
     cloudDepthYolo = frameYolo;
     drawDepthDetections(image, frameYolo, frameCalibration);
   }).catch(error => console.warn('Could not pair YOLOX with MiDaS frame:', error));
-  const pairedFramePromise = cameraFrameForDepth(depth);
-  void pairedFramePromise.then(async frame => {
-    if (token !== cloudBuildToken || !frame?.image_base64) return;
-    const sourceImage = await loadDepthImage(frame.image_base64, frame.mime_type || 'image/jpeg');
-    if (token !== cloudBuildToken || cloudPoints?.geometry !== geometry) return;
-    let pointIndex = 0;
-    const colors = geometry.attributes.color.array;
-    for (let y = 0; y < image.height; y += stride) {
-      for (let x = 0; x < image.width; x += stride) {
-        const maskX = classMask ? Math.min(classMask.width - 1, Math.round(x * classMask.width / image.width)) : 0;
-        const maskY = classMask ? Math.min(classMask.height - 1, Math.round(y * classMask.height / image.height)) : 0;
-        const maskIndex = classMask ? (maskY * classMask.width + maskX) * 4 : -1;
-        if (!classMask || classMask.values[maskIndex + 3] === 0) {
-          const sourceX = Math.min(sourceImage.width - 1, Math.round(x * sourceImage.width / image.width));
-          const sourceY = Math.min(sourceImage.height - 1, Math.round(y * sourceImage.height / image.height));
-          const sourceIndex = (sourceY * sourceImage.width + sourceX) * 4;
-          colors[pointIndex * 3] = sourceImage.values[sourceIndex] / 255;
-          colors[pointIndex * 3 + 1] = sourceImage.values[sourceIndex + 1] / 255;
-          colors[pointIndex * 3 + 2] = sourceImage.values[sourceIndex + 2] / 255;
-        }
-        pointIndex += 1;
-      }
-    }
-    cloudPairedCameraFrameId = frame.frame_id;
-    geometry.attributes.color.needsUpdate = true;
-    updateCloudHud();
-    cloud.render();
-  }).catch(error => console.warn('Could not color MiDaS cloud with paired camera frame:', error));
   if (cloudViewport?.classList.contains('is-camera-view')) {
-    void pairedFramePromise.then(frame => {
+    void cameraFrameForDepth(depth).then(frame => {
       if (token === cloudBuildToken && frame) return updateCloudCameraPlane(frame);
       return false;
     }).then(() => cloud.render()).catch(error => console.warn('Could not load camera-aligned 3D background:', error));
@@ -2446,7 +2391,7 @@ function drawDepthDetections(image, yolo, calibration = metricDepthCalibration) 
     : Math.abs(Number(yolo?.captured_at) - Number(image.capturedAt));
   const frameMatches = Boolean(image.frameId && yolo?.frame_id === image.frameId)
     || Number.isFinite(yoloFrameDelta) && yoloFrameDelta <= 0.75;
-  const detections = layerEnabled && frameMatches && yolo?.state === 'ready' && yoloAge >= 0 && yoloAge <= 2.5
+  const detections = layerEnabled && yolo?.state === 'ready' && yoloAge >= 0 && yoloAge <= staleAfterSeconds.yolo
     ? (yolo.detections || []) : [];
   const detectionKey = `${layerEnabled}:${cloudFrameId}:${yolo?.frame_id || ''}:${detections.length}:${Number(latestDepthCapturedAt).toFixed(3)}`;
   if (detectionKey === cloudDetectionKey) return;
