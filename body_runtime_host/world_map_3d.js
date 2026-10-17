@@ -1154,6 +1154,23 @@ async function cameraFrameForDepth(depth) {
   }
 }
 
+async function yoloResultForDepth(depth) {
+  if (latestSensorYolo?.frame_id === depth?.frame_id) return latestSensorYolo;
+  if (!Number.isFinite(Number(depth?.captured_at))) return null;
+  try {
+    const query = new URLSearchParams({ nearest_to: String(depth.captured_at), max_delta_s: '1.5' });
+    const response = await fetch(`/body/camera/yolo/status?${query}`, { cache: 'no-store' });
+    if (!response.ok) return null;
+    const result = await response.json();
+    const delta = Math.abs(Number(result.captured_at) - Number(depth.captured_at));
+    return result.state === 'ready' && Number.isFinite(delta) && delta <= 1.5
+      ? { ...result, frame_delta_s: delta } : null;
+  } catch (error) {
+    console.warn('Could not find YOLOX detections near MiDaS frame:', error);
+    return null;
+  }
+}
+
 async function updateCloudCameraPlane(frame) {
   if (!cloud || !frame?.image_base64) return false;
   const token = ++cloudCameraPlaneToken;
@@ -1204,6 +1221,7 @@ async function loadDepthFrame(depth) {
     image.rawMax = Number(depth.depth_raw_max);
   }
   image.frameId = String(depth.frame_id || '');
+  image.capturedAt = Number(depth.captured_at) || 0;
   return image;
 }
 
@@ -1988,7 +2006,7 @@ function resizeCloud() {
     const horizontalFov = 2 * Math.atan(Math.tan(verticalFov / 2) * cloud.camera.aspect);
     const verticalDistance = size.y / (2 * Math.tan(verticalFov / 2));
     const horizontalDistance = size.x / (2 * Math.tan(horizontalFov / 2));
-    const distance = (Math.max(verticalDistance, horizontalDistance, 0.8) + size.z / 2) * 0.9;
+    const distance = Math.max(verticalDistance, horizontalDistance, 0.8) * 0.82 + size.z * 0.18;
     cloud.camera.userData.target = target;
     cloud.camera.position.copy(target).add(new THREE.Vector3(0, Math.max(0.2, size.y * 0.1), distance));
     cloudCameraInitialized = true;
@@ -2035,7 +2053,7 @@ function setCloudPreset(preset) {
   const bounds = cloudPoints.geometry.boundingBox;
   const target = bounds.getCenter(new THREE.Vector3());
   const size = bounds.getSize(new THREE.Vector3());
-  const distance = Math.max(size.x, size.y, size.z, 2) * 1.35;
+  const distance = Math.max(size.x, size.y, size.z, 2) * 0.95;
   const offsets = {
     top: new THREE.Vector3(0, distance, -0.01),
     side: new THREE.Vector3(distance, Math.max(0.2, size.y * 0.12), 0),
@@ -2344,7 +2362,8 @@ async function rebuildDepthCloud(depth, segmentation = latestSegmentation) {
   }
   updateCloudRadar();
   updateCloudOdometry();
-  const frameYolo = latestSensorYolo?.frame_id === depth.frame_id ? latestSensorYolo : null;
+  const frameYolo = await yoloResultForDepth(depth);
+  if (token !== cloudBuildToken) return false;
   drawDepthDetections(image, frameYolo, frameCalibration);
   resizeCloud();
   if (cloudViewport?.classList.contains('is-camera-view')) {
@@ -2379,7 +2398,11 @@ function drawDepthDetections(image, yolo, calibration = metricDepthCalibration) 
   if (!cloud || !image || activeRender !== '3d') return;
   const layerEnabled = cloudViewport?.querySelector('[data-cloud-layer="detections"]')?.checked !== false;
   const yoloAge = Number(yolo?.captured_at) > 0 ? Date.now() / 1000 - Number(yolo.captured_at) : Infinity;
-  const frameMatches = Boolean(image.frameId && yolo?.frame_id === image.frameId);
+  const yoloFrameDelta = Number.isFinite(Number(yolo?.frame_delta_s))
+    ? Number(yolo.frame_delta_s)
+    : Math.abs(Number(yolo?.captured_at) - Number(image.capturedAt));
+  const frameMatches = Boolean(image.frameId && yolo?.frame_id === image.frameId)
+    || Number.isFinite(yoloFrameDelta) && yoloFrameDelta <= 1.5;
   const detections = layerEnabled && frameMatches && yolo?.state === 'ready' && yoloAge >= 0 && yoloAge <= 2.5
     ? (yolo.detections || []) : [];
   const detectionKey = `${layerEnabled}:${cloudFrameId}:${yolo?.frame_id || ''}:${detections.length}:${Number(latestDepthCapturedAt).toFixed(3)}`;
@@ -2432,7 +2455,9 @@ function drawDepthDetections(image, yolo, calibration = metricDepthCalibration) 
       : medianRange
         ? `${medianRange.extrapolated ? '~' : ''}${medianRange.meters.toFixed(1)} m · MiDaS ${medianRange.extrapolated ? 'extrapolated' : 'est.'}`
         : `${stats.median.toFixed(1)} relative units · MiDaS`;
-    htmlLabels.push({ position: labelPosition, text: `${identity} ${confidence}% · ${rangeLabel}` });
+    const syncLabel = yolo?.frame_id !== image.frameId && yoloFrameDelta > 0.15
+      ? ` · YOLOX Δ${yoloFrameDelta.toFixed(1)} s` : '';
+    htmlLabels.push({ position: labelPosition, text: `${identity} ${confidence}% · ${rangeLabel}${syncLabel}` });
   }
 
   if (boxGroup) {
