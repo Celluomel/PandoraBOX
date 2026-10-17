@@ -7,6 +7,7 @@ const physicalSources = ['camera', 'radar', 'gps', 'imu', 'tof', 'lidar', 'ultra
 const cameraRadarGeometry = { horizontalFovDeg: 70, yawOffsetDeg: 0, lateralOffsetM: 0, calibrated: false };
 const maxCalibrationPairDeltaSeconds = 0.1;
 const maxPersonBearingErrorDeg = 8;
+const maxSceneDetectionPairDeltaSeconds = 0.5;
 function setFeedStatus(id, source, state, detail) {
   sourceStates[source] = state;
   const element = byId(id);
@@ -947,8 +948,6 @@ function visibleYoloDetections(yolo) {
 
 function pairedYoloDetections(yolo) {
   if (yolo?.state !== 'ready' || yolo?.paired === false) return [];
-  const key = String(yolo.frame_id || yolo.captured_at || '');
-  if (stableYoloResults.has(key)) return stableYoloResults.get(key);
   return (yolo.detections || []).filter(item => {
     const confidence = Number(item.confidence ?? item.score ?? 0);
     const label = String(item.label || item.class_name || item.class || '');
@@ -1227,12 +1226,12 @@ async function yoloResultForDepth(depth) {
   if (latestSensorYolo?.frame_id === depth?.frame_id) return latestSensorYolo;
   if (!Number.isFinite(Number(depth?.captured_at))) return null;
   try {
-    const query = new URLSearchParams({ nearest_to: String(depth.captured_at), max_delta_s: '0.2' });
+    const query = new URLSearchParams({ nearest_to: String(depth.captured_at), max_delta_s: String(maxSceneDetectionPairDeltaSeconds) });
     const response = await fetch(`/body/camera/yolo/status?${query}`, { cache: 'no-store' });
     if (!response.ok) return null;
     const result = await response.json();
     const delta = Math.abs(Number(result.captured_at) - Number(depth.captured_at));
-    return result.state === 'ready' && Number.isFinite(delta) && delta <= 0.2
+    return result.state === 'ready' && Number.isFinite(delta) && delta <= maxSceneDetectionPairDeltaSeconds
       ? { ...result, frame_delta_s: delta } : null;
   } catch (error) {
     console.warn('Could not find YOLOX detections near MiDaS frame:', error);
@@ -2667,7 +2666,7 @@ function drawDepthDetections(image, yolo, calibration = metricDepthCalibration) 
     ? Number(yolo.frame_delta_s)
     : Math.abs(Number(yolo?.captured_at) - Number(image.capturedAt));
   const frameMatches = Boolean(image.frameId && yolo?.frame_id === image.frameId)
-    || Number.isFinite(yoloFrameDelta) && yoloFrameDelta <= 0.2;
+    || Number.isFinite(yoloFrameDelta) && yoloFrameDelta <= maxSceneDetectionPairDeltaSeconds;
   const detections = layerEnabled && frameMatches && yolo?.state === 'ready'
     && yolo?.paired !== false ? pairedYoloDetections(yolo) : [];
   const detectionKey = `${layerEnabled}:${cloudFrameId}:${yolo?.frame_id || ''}:${detections.length}:${Number(latestDepthCapturedAt).toFixed(3)}`;
