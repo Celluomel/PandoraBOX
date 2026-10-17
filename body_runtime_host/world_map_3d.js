@@ -303,6 +303,9 @@ if (panel) {
       .world-map-cloud-labels{position:absolute;inset:0;z-index:2;overflow:hidden;pointer-events:none}
       .world-map-cloud-object-label{position:absolute;max-width:180px;transform:translate(-50%,-100%);padding:4px 7px;border:1px solid #7290a3;border-radius:4px;background:#05070df2;color:#f4f8fb;font:12px/1.2 ui-sans-serif,system-ui,sans-serif;white-space:nowrap;text-shadow:0 1px #000}
       .world-map-cloud-object-label::after{position:absolute;top:100%;left:50%;height:9px;border-left:1px solid #a9c6d6;content:""}
+      .world-map-cloud-radar-dot{position:absolute;width:16px;height:16px;transform:translate(-50%,-50%);border:2px solid #fff;border-radius:50%;background:#f2bc65;box-shadow:0 0 0 4px #f2bc6566,0 0 16px 5px #f2bc65;z-index:4}
+      .world-map-cloud-radar-dot.is-moving{background:#ed35c5;box-shadow:0 0 0 4px #ed35c566,0 0 16px 5px #ed35c5}
+      .world-map-cloud-radar-dot.is-ego-motion{background:#c9d4db;box-shadow:0 0 0 4px #c9d4db66,0 0 16px 5px #c9d4db}
       .world-map-cloud-scale{position:absolute;z-index:3;bottom:16px;left:16px;width:72px;border-top:2px solid #d7eaf4;color:#d7eaf4;text-align:center;font:12px ui-monospace,monospace}
       .world-map-cloud-scale[hidden]{display:none}
       .world-map-cloud-fetch{position:absolute;z-index:4;right:12px;bottom:12px;padding:7px 10px;border:1px solid #9f493c;border-radius:4px;background:#351510ed;color:#ffd6cc;font:12px ui-sans-serif,system-ui,sans-serif}
@@ -596,6 +599,9 @@ let cloudCameraPlane = null;
 let cloudCameraPlaneToken = 0;
 let cloudRadarRenderKey = '';
 const cloudGuides = new THREE.Group();
+const cloudOriginGroup = new THREE.Group();
+let cloudOriginStem = null;
+let cloudOriginKey = '';
 const cloudRadarGroup = new THREE.Group();
 const cloudOdometryGroup = new THREE.Group();
 if (cloud) {
@@ -609,22 +615,27 @@ if (cloud) {
   grid.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
   grid.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
   cloudGuides.add(new THREE.LineSegments(grid, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.78 })));
-  cloudGuides.add(new THREE.Mesh(new THREE.SphereGeometry(0.075, 16, 10), new THREE.MeshBasicMaterial({ color: '#f4f7ff' })));
+  cloudOriginStem = new THREE.Line(
+    new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0.18, 0)]),
+    new THREE.LineBasicMaterial({ color: '#9aafc0', transparent: true, opacity: 0.8 }),
+  );
+  cloudGuides.add(cloudOriginStem);
+  cloudOriginGroup.add(new THREE.Mesh(new THREE.SphereGeometry(0.055, 16, 10), new THREE.MeshBasicMaterial({ color: '#f4f7ff' })));
   const addAxis = (to, color) => {
     const direction = new THREE.Vector3(...to).normalize();
-    cloudGuides.add(new THREE.ArrowHelper(direction, new THREE.Vector3(), 0.8, color, 0.12, 0.08));
+    cloudOriginGroup.add(new THREE.ArrowHelper(direction, new THREE.Vector3(), 0.55, color, 0.1, 0.065));
   };
   addAxis([1, 0, 0], '#ef6a73'); addAxis([0, 1, 0], '#62d994'); addAxis([0, 0, -1], '#66a8ff');
   const scale = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(-0.5, 0.03, -2), new THREE.Vector3(0.5, 0.03, -2)]);
   cloudGuides.add(new THREE.Line(scale, new THREE.LineBasicMaterial({ color: '#d7eaf4' })));
-  cloud.scene.add(cloudGuides, cloudRadarGroup, cloudOdometryGroup);
+  cloud.scene.add(cloudGuides, cloudOriginGroup, cloudRadarGroup, cloudOdometryGroup);
 }
 const cloudViewport = byId('world-map-sensor-3d-viewport');
 const cloudLabelRoot = cloudViewport?.querySelector('.world-map-cloud-labels');
 let cloudFpsFrames = 0;
 let cloudFpsStartedAt = performance.now();
 if (cloud) {
-  setCloudLayerLabels('origin', [{ position: new THREE.Vector3(0, 0, 0), text: 'BODY SENSOR ORIGIN' }]);
+  updateCloudOrigin();
   const baseRender = cloud.render;
   cloud.render = () => { baseRender(); cloudFpsFrames += 1; updateCloudHud(); updateCloudLabelPositions(); };
   cloudViewport?.querySelector('[data-cloud-action="reset"]')?.addEventListener('click', () => { cloudViewport.classList.remove('is-camera-view'); cloud.camera.fov = 42; cloud.camera.userData.userAdjusted = false; cloudCameraInitialized = false; cloud.resize(); updateCloudHud(); updateCloudRadar(); updateCloudOdometry(); resizeCloud(); });
@@ -1014,7 +1025,7 @@ function cameraPoint(u, v, z, intrinsics) {
 }
 
 const cameraMountProfiles = {
-  low_body_front: { heightM: 0.18, elevationDeg: -8 },
+  low_body_front: { heightM: 0.12, elevationDeg: -8 },
   level_body_front: { heightM: 0.35, elevationDeg: -2 },
   high_body_front: { heightM: 0.65, elevationDeg: 5 },
 };
@@ -1022,9 +1033,28 @@ const cameraMountProfiles = {
 function cameraMountPose() {
   const profile = latestCameraFrame?.camera_profile || 'low_body_front';
   const mount = cameraMountProfiles[profile] || cameraMountProfiles.low_body_front;
+  const reportedHeight = Number(latestCameraFrame?.camera_height_m ?? latestCameraFrame?.calibration?.height_m);
+  const heightM = Number.isFinite(reportedHeight) && reportedHeight > 0 && reportedHeight < 3
+    ? reportedHeight : mount.heightM;
   const rotation = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0),
     THREE.MathUtils.degToRad(mount.elevationDeg));
-  return { profile, heightM: mount.heightM, rotation, position: new THREE.Vector3(0, mount.heightM, 0) };
+  return { profile, heightM, rotation, position: new THREE.Vector3(0, heightM, 0) };
+}
+
+function updateCloudOrigin() {
+  if (!cloud) return;
+  const mount = cameraMountPose();
+  const heightIsMeasured = Number.isFinite(Number(latestCameraFrame?.camera_height_m ?? latestCameraFrame?.calibration?.height_m))
+    && Number(latestCameraFrame?.camera_height_m ?? latestCameraFrame?.calibration?.height_m) > 0;
+  const key = `${mount.profile}:${mount.heightM}:${heightIsMeasured}`;
+  if (key === cloudOriginKey) return;
+  cloudOriginKey = key;
+  cloudOriginGroup.position.copy(mount.position);
+  if (cloudOriginStem) cloudOriginStem.scale.y = mount.heightM / 0.18;
+  setCloudLayerLabels('origin', [{
+    position: mount.position.clone(),
+    text: `BODY CAMERA ORIGIN · ${mount.profile.replace(/_/g, ' ')} · ${mount.heightM.toFixed(2)} m${heightIsMeasured ? '' : ' nominal'}`,
+  }]);
 }
 
 function cameraPointInBodyFrame(point) {
@@ -1393,6 +1423,7 @@ async function refreshSensors() {
     const currentCamera = frame.camera || {};
     const yolo = frame.yolo || {};
     latestCameraFrame = currentCamera;
+    updateCloudOrigin();
     latestSensorYolo = yolo;
     const cameraState = byId('world-map-camera-state');
     const frameAge = Number(currentCamera.captured_at) > 0 ? Math.max(0, Date.now() / 1000 - Number(currentCamera.captured_at)) : Infinity;
@@ -2017,6 +2048,7 @@ function updateCloudHud() {
   // The origin axes and reference grid remain useful for shape-only depth; only
   // their units change. Hide scene furniture in the pixel-aligned Camera preset.
   if (cloudGuides) cloudGuides.visible = !cloudViewport?.classList.contains('is-camera-view');
+  if (cloudOriginGroup) cloudOriginGroup.visible = !cloudViewport?.classList.contains('is-camera-view');
   if (cloudCameraPlane) cloudCameraPlane.visible = Boolean(cloudViewport?.classList.contains('is-camera-view'));
 }
 
@@ -2033,6 +2065,11 @@ function updateCloudLabelPositions() {
     label.hidden = !visible;
     if (!visible) continue;
     const x = THREE.MathUtils.clamp((point.x + 1) * rect.width / 2, 8, rect.width - 8);
+    if (item.marker) {
+      label.style.left = `${x}px`;
+      label.style.top = `${THREE.MathUtils.clamp((1 - point.y) * rect.height / 2, 10, rect.height - 10)}px`;
+      continue;
+    }
     let y = THREE.MathUtils.clamp((1 - point.y) * rect.height / 2 - 12, 36, rect.height - 24);
     label.style.left = `${x}px`;
     label.style.top = `${y}px`;
@@ -2057,12 +2094,14 @@ function setCloudLayerLabels(layer, entries) {
   cloudLabelItems = cloudLabelItems.filter(item => item.layer !== layer);
   for (const entry of entries) {
     const element = document.createElement('span');
-    element.className = 'world-map-cloud-object-label';
-    element.textContent = entry.text;
+    element.className = entry.marker
+      ? `world-map-cloud-radar-dot${entry.motionClass ? ` ${entry.motionClass}` : ''}`
+      : 'world-map-cloud-object-label';
+    element.textContent = entry.text || '';
     cloudLabelRoot?.append(element);
     cloudLabelItems.push({ ...entry, layer, element });
   }
-  cloudLabelRoot?.querySelectorAll('.world-map-cloud-object-label').forEach(element => {
+  cloudLabelRoot?.querySelectorAll('.world-map-cloud-object-label,.world-map-cloud-radar-dot').forEach(element => {
     if (!cloudLabelItems.some(item => item.element === element)) element.remove();
   });
   updateCloudLabelPositions();
@@ -2109,6 +2148,7 @@ function updateCloudRadar(sample = latestRadarSample, force = false) {
     marker.position.copy(point);
     marker.renderOrder = 21;
     cloudRadarGroup.add(marker);
+    labels.push({ position: point, marker: true, motionClass: egoMotionLikely ? 'is-ego-motion' : moving ? 'is-moving' : '' });
     const range = Math.hypot(lateral, forward);
     labels.push({ position: point.clone().add(new THREE.Vector3(0, 0.16, 0)), text: `${target.id || target.target_id || `Radar ${index + 1}`} · ${range.toFixed(1)} m${egoMotionLikely ? ' · radial motion ego-uncompensated' : ''}` });
   }
@@ -2364,10 +2404,10 @@ function drawDepthDetections(image, detections, calibration = metricDepthCalibra
     const observedSpan = Math.max(0, stats.far - stats.near);
     const maximumSpan = metricFrame
       ? Math.min(0.6, Math.max(0.15, medianDepth * 0.3))
-      : Math.min(0.8, Math.max(0.2, medianDepth * 0.25));
+      : Math.min(0.35, Math.max(0.02, medianDepth * 0.05));
     const depthSpan = Math.min(observedSpan, maximumSpan);
     const nearZ = Math.max(0.15, medianDepth - depthSpan / 2);
-    const farZ = Math.max(nearZ + 0.03, medianDepth + depthSpan / 2);
+    const farZ = Math.max(nearZ + (metricFrame ? 0.03 : 0.01), medianDepth + depthSpan / 2);
     const intrinsics = cameraIntrinsicsForImage(image);
     const corners = [
       cameraPointInBodyFrame(cameraPoint(x1 * image.width, y1 * image.height, nearZ, intrinsics)),
