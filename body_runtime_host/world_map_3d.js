@@ -2580,7 +2580,6 @@ async function rebuildDepthCloud(depth, segmentation = latestSegmentation) {
   const image = await loadDepthFrame(depth);
   if (token !== cloudBuildToken || activeSource !== 'sensors' || activeRender !== '3d') return false;
   cloudDepthImage = image;
-  cloudFrameId = String(depth.frame_id || '');
   cloudPairedCameraFrameId = '';
   cloudSegmentationFrameId = segmentationMatchesDepth(segmentation, depth)
     ? String(segmentation.frame_id || segmentation.captured_at || '') : '';
@@ -2644,6 +2643,7 @@ async function rebuildDepthCloud(depth, segmentation = latestSegmentation) {
   image.cloudBuiltAt = Date.now() / 1000;
   updateCloudHud();
   cloud.render();
+  cloudFrameId = String(depth.frame_id || '');
   return true;
 }
 
