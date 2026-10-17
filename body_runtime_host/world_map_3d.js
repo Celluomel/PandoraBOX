@@ -670,7 +670,7 @@ if (cloud) {
     if (layer === 'cloud' && cloudPoints) cloudPoints.visible = input.checked;
     if (layer === 'detections') {
       if (boxGroup) boxGroup.visible = input.checked;
-      if (input.checked && cloudDepthImage) drawDepthDetections(cloudDepthImage, latestSensorYolo || cloudDepthYolo);
+      if (input.checked && cloudDepthImage) drawDepthDetections(cloudDepthImage, cloudDepthYolo);
     }
     if (layer === 'radar') updateCloudRadar(latestRadarSample, true);
     if (layer === 'odometry') cloudOdometryGroup.visible = input.checked;
@@ -846,7 +846,7 @@ function setRender(render) {
     if (sensor3d) sensor3d.hidden = render !== '3d';
     if (render === '3d') requestAnimationFrame(() => {
       resizeCloud();
-      if (cloudDepthImage) drawDepthDetections(cloudDepthImage, latestSensorYolo || cloudDepthYolo);
+      if (cloudDepthImage) drawDepthDetections(cloudDepthImage, cloudDepthYolo);
       cloud?.render();
     });
   }
@@ -910,7 +910,8 @@ function drawBoxes(detections, width, height, stale = false) {
 
 function stalePreviewDetections(yolo) {
   const age = Number(yolo?.captured_at) > 0 ? Date.now() / 1000 - Number(yolo.captured_at) : Infinity;
-  if (yolo?.paired !== false || yolo?.state !== 'stale' || age < 0 || age > 1 || !yolo?.preview_only) return [];
+  if (!['ready', 'stale'].includes(yolo?.state) || age < 0 || age > 1
+      || (yolo?.paired !== false && age <= 0.5)) return [];
   return (yolo.detections || []).filter(item => {
     const confidence = Number(item.confidence ?? item.score ?? 0);
     const label = String(item.label || item.class_name || item.class || '');
@@ -1362,7 +1363,6 @@ function createMidasPointMaterial(pointSize) {
       uPointSize: { value: pointSize },
       uViewportHeight: { value: cloud?.renderer.domElement.height || 1 },
       uOpacity: { value: 0.92 },
-      uStale: { value: 0 },
     },
     vertexShader: `
       attribute float depthValue;
@@ -1378,7 +1378,6 @@ function createMidasPointMaterial(pointSize) {
     `,
     fragmentShader: `
       uniform float uOpacity;
-      uniform float uStale;
       varying float vDepth;
       vec3 turbo(float x) {
         float x2 = x * x;
@@ -1396,8 +1395,6 @@ function createMidasPointMaterial(pointSize) {
         float edge = 1.0 - smoothstep(0.42, 0.5, length(point));
         if (edge <= 0.01) discard;
         vec3 color = turbo(clamp(vDepth, 0.0, 1.0));
-        float gray = dot(color, vec3(0.299, 0.587, 0.114));
-        color = mix(color, vec3(gray), uStale * 0.72);
         gl_FragColor = vec4(color, uOpacity * edge);
       }
     `,
@@ -1715,7 +1712,7 @@ async function refreshSensors() {
       drawBoxes(detections.length ? detections : stalePreview, currentCamera.width || 640, currentCamera.height || 480, stalePreview.length > 0);
       displayedYoloOverlayKey = yoloOverlayKey;
     }
-    if (activeRender === '3d' && cloudDepthImage) drawDepthDetections(cloudDepthImage, yolo);
+    if (activeRender === '3d' && cloudDepthImage) drawDepthDetections(cloudDepthImage, cloudDepthYolo);
     if (activeRender === '3d') updateCloudHud();
     const yoloAge = Number(yolo.captured_at) > 0 ? Date.now() / 1000 - Number(yolo.captured_at) : Infinity;
     const yoloDetail = `${yolo.state || 'disabled'} · ${(yolo.detections || []).length} boxes${yolo.latency_ms != null ? ` · ${yolo.latency_ms} ms` : ''}${yolo.paired === false ? ' · waiting for paired frame' : ''}`;
@@ -2046,8 +2043,7 @@ async function refreshSensorDepth() {
     const midasState = classifyAge('midas', ageSeconds, Boolean(depthStatus.available) && depthStatus.state !== 'disabled');
     setFeedStatus('world-map-midas-state', 'midas', midasState, `${depthStatus.state || 'disabled'}${depthStatus.device ? ` · ${depthStatus.device}` : ''}${depthStatus.latency_ms != null ? ` · ${depthStatus.latency_ms} ms` : ''}${depthAge}${depthStatus.error ? ` · ${depthStatus.error}` : ''}`);
     if (cloudPoints) {
-      cloudPoints.material.uniforms.uOpacity.value = midasState === 'stale' ? 0.68 : 0.92;
-      cloudPoints.material.uniforms.uStale.value = midasState === 'stale' ? 1 : 0;
+      cloudPoints.material.uniforms.uOpacity.value = 0.92;
     }
     updateMetricCalibrationStatus();
     const alignedSegmentationFrameId = segmentationMatchesDepth(segmentation, depthStatus)
@@ -2314,12 +2310,11 @@ function updateCloudHud() {
     staleBanner.hidden = !stale;
     staleBanner.textContent = !Number.isFinite(frameAge)
       ? 'MiDaS frame unavailable'
-      : frameAge > 0.5 ? `STALE · MiDaS frame ${frameAge.toFixed(1)} s old · cloud dimmed`
+      : frameAge > 0.5 ? `STALE · MiDaS frame ${frameAge.toFixed(1)} s old · last depth frame retained`
         : `STALE · camera/depth differ by ${cameraDeltaForStale.toFixed(1)} s · detections hidden`;
   }
   if (cloudPoints?.material?.uniforms) {
-    cloudPoints.material.uniforms.uOpacity.value = stale ? 0.68 : 0.92;
-    cloudPoints.material.uniforms.uStale.value = stale ? 1 : 0;
+    cloudPoints.material.uniforms.uOpacity.value = 0.92;
   }
   if (age) age.textContent = Number.isFinite(frameAge) ? `Frame ${frameAge.toFixed(1)} s` : 'Frame —';
   if (sync) {
