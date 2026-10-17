@@ -77,6 +77,7 @@ class BodyRuntimeGuiTests(unittest.TestCase):
         self.assertIn("const frameYolo = latestSensorYolo?.frame_id === depth.frame_id ? latestSensorYolo : null", depth_cloud)
         self.assertIn("const frameMatches = Boolean(image.frameId && yolo?.frame_id === image.frameId)", source)
         self.assertIn("relativeDepthPercentiles(image)", source)
+        self.assertIn("const smoothing = 0.2", source)
         self.assertIn("attitudeQuaternion(timestamp)", source)
         self.assertIn("if (scale) scale.hidden = true", source)
         self.assertIn("Relative units · shape only; ${fovText}; no metric scale", source)

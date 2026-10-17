@@ -59,6 +59,7 @@ let latestVisualOdometry = null;
 let latestRadarSample = null;
 let radarHistory = [];
 let latestDepthCapturedAt = 0;
+let smoothedRelativeDepthRange = null;
 let imuHistory = [];
 let cloudPointCount = 0;
 let cloudLabelItems = [];
@@ -1025,7 +1026,15 @@ function relativeDepthPercentiles(image) {
   }
   values.sort((a, b) => a - b);
   const at = percentile => values[Math.min(values.length - 1, Math.floor((values.length - 1) * percentile))] || 0;
-  const result = { low: at(0.02), high: at(0.98) };
+  const measured = { low: at(0.02), high: at(0.98) };
+  const smoothing = 0.2;
+  smoothedRelativeDepthRange = smoothedRelativeDepthRange
+    ? {
+      low: THREE.MathUtils.lerp(smoothedRelativeDepthRange.low, measured.low, smoothing),
+      high: THREE.MathUtils.lerp(smoothedRelativeDepthRange.high, measured.high, smoothing),
+    }
+    : measured;
+  const result = { ...smoothedRelativeDepthRange };
   depthPercentileCache.set(image, result);
   return result;
 }
