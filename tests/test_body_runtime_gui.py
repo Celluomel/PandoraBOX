@@ -53,6 +53,7 @@ class BodyRuntimeGuiTests(unittest.TestCase):
         self.assertIn("setCloudLayerLabels('detections', htmlLabels)", source)
         self.assertIn("function cameraPoint(u, v, z, intrinsics)", source)
         self.assertIn("low_body_front: { heightM: 0.18, elevationDeg: -8 }", source)
+        self.assertIn("cloud.camera.up.set(0, 1, 0).applyQuaternion(mount.rotation)", source)
         self.assertIn("cameraPointInBodyFrame(cameraPoint(x, y, distance, intrinsics))", source)
         self.assertIn("positions.push(index, 0, 1, index, 0, -15", source)
         self.assertIn("cameraPoint(x, y, distance, intrinsics)", source)

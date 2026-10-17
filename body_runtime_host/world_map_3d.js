@@ -1929,8 +1929,7 @@ function setCloudPreset(preset) {
     const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(mount.rotation);
     cloud.camera.userData.target = mount.position.clone().add(forward);
     cloud.camera.position.copy(mount.position);
-    cloud.camera.up.set(0, 1, 0);
-    cloud.camera.up.applyQuaternion(mount.rotation);
+    cloud.camera.up.set(0, 1, 0).applyQuaternion(mount.rotation);
     cloud.camera.lookAt(cloud.camera.userData.target);
     applyCameraProjection();
     updateCloudRadar();
