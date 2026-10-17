@@ -49,8 +49,6 @@ let displayedCameraFrameId = null;
 let displayedYoloOverlayKey = '';
 let cloudDepthImage = null;
 let cloudBuildToken = 0;
-let cloudYoloFrameId = '';
-let cloudYoloForDepth = null;
 let cloudSegmentationFrameId = '';
 let metricDepthCalibration = null;
 let depthCalibrationBusy = false;
@@ -136,6 +134,8 @@ if (panel) {
     sensorPanel.hidden = true;
     sensorPanel.innerHTML = `<div class="world-map-sensor-metrics"><span>Camera <b id="world-map-camera-state">Waiting</b></span><span>YOLOX <b id="world-map-yolo-state">Waiting</b></span><span>MiDaS <b id="world-map-midas-state">Waiting</b></span><span>Visual odometry <b id="world-map-odometry-state">Waiting</b></span><span>SegFormer <b id="world-map-segmentation-state">disabled</b></span><span>Frame <b id="world-map-frame-state">—</b></span></div><div id="world-map-sensor-2d" class="world-map-sensor-2d"><div class="world-map-camera"><div class="world-map-sensor-heading">CAMERA · YOLOX</div><div class="world-map-image-wrap"><img id="world-map-camera-image" alt="Live camera frame with YOLOX detections"><svg id="world-map-yolo-overlay" viewBox="0 0 1 1" preserveAspectRatio="xMidYMid meet" aria-hidden="true"></svg><span id="world-map-camera-empty" class="world-map-empty">Waiting for a camera frame</span></div></div><div class="world-map-depth"><div class="world-map-sensor-heading">MiDaS · RELATIVE DEPTH</div><img id="world-map-depth-image" alt="MiDaS relative depth image"><span id="world-map-depth-empty" class="world-map-empty">MiDaS disabled or waiting for inference</span><div class="world-map-depth-calibration"><button type="button" id="world-map-midas-calibrate">Calibrate with radar</button><small id="world-map-midas-calibration-status" role="status">Relative depth only · not calibrated in metres</small></div></div></div><section class="world-map-odometry-view" aria-label="Experimental visual odometry trajectory"><div class="world-map-sensor-heading"><span>VISUAL ODOMETRY · LOCAL TRAJECTORY</span><small id="world-map-odometry-map-status">Waiting for tracking</small></div><div class="odom-plot"><canvas id="world-map-odometry-map" role="img" aria-label="Top-down estimated Body trajectory in the local visual odometry frame"></canvas><span class="odom-edge-label odom-forward">FORWARD ↑</span><span class="odom-edge-label odom-lateral">← LEFT · RIGHT →</span><span id="world-map-odometry-position" class="odom-position-label">0.00, 0.00 m</span></div><p class="world-map-odometry-footnote">Session-local estimate · drift accumulates · not a persistent map</p></section><section class="world-map-segmentation-panel" aria-label="SegFormer semantic segmentation"><div class="world-map-sensor-heading"><span>SEGFORMER · SEMANTIC MASK</span><small>Independent of camera preview</small></div><div class="world-map-segmentation-preview"><canvas id="world-map-segmentation-overlay" aria-label="Standalone SegFormer semantic class mask" hidden></canvas><span id="world-map-segmentation-empty" class="world-map-empty">Waiting for a SegFormer mask</span></div><div id="world-map-segmentation-classes" class="world-map-segmentation-classes">Waiting for SegFormer classes</div></section><div id="world-map-sensor-3d" class="world-map-sensor-cloud-layout" hidden><div id="world-map-sensor-3d-viewport" class="world-map-canvas world-map-sensor-cloud"><div class="world-map-cloud-hud"><span id="world-map-cloud-hud-points">0 points</span><span id="world-map-cloud-hud-depth">MiDaS —</span><span id="world-map-cloud-hud-age">Frame —</span><span id="world-map-cloud-hud-sync">Camera/depth —</span><span id="world-map-cloud-hud-fps">3D — updates/s</span></div><div class="world-map-cloud-controls"><button type="button" data-cloud-action="reset" title="Reset camera to fit point cloud">Reset</button><button type="button" data-cloud-view="camera" title="Pinhole camera view; FOV is estimated unless intrinsics are provided">Camera</button><button type="button" data-cloud-view="top">Top</button><button type="button" data-cloud-view="side">Side</button><button type="button" data-cloud-view="follow">Follow</button><label>Point size <input id="world-map-cloud-point-size" type="range" min="10" max="50" value="25" aria-label="Point cloud point size"></label></div><div class="world-map-cloud-labels" aria-hidden="true"></div><div class="world-map-cloud-scale" hidden>1 m</div><div id="world-map-cloud-fetch" class="world-map-cloud-fetch" hidden>Sensor data unavailable: fetch failed, retrying</div></div><aside class="world-map-cloud-side"><strong>Scene layers</strong><label><input type="checkbox" data-cloud-layer="cloud" checked> MiDaS point cloud</label><label><input type="checkbox" data-cloud-layer="detections" checked> YOLOX detections</label><label><input type="checkbox" data-cloud-layer="radar" checked> mmWave targets (metres)</label><label><input type="checkbox" data-cloud-layer="odometry" checked> Odometry trail</label><strong>Depth units</strong><div class="world-map-depth-legend"><i></i><div><span>Near</span><span>Far</span></div></div><small id="world-map-cloud-depth-caption">Relative units · not metric</small><small>Radar markers use metres, independently scaled from an uncalibrated MiDaS cloud.</small><div class="world-map-depth-calibration"><button type="button" id="world-map-midas-calibrate-3d">Calibrate with radar</button><small id="world-map-midas-calibration-status-3d" role="status">Relative depth only · not calibrated in metres</small></div><div class="world-map-cloud-axis" aria-label="XYZ orientation: X right, Y up, Z forward"><span>X →</span><span>Y ↑</span><span>Z ⊙</span></div></aside></div><p id="world-map-sensor-note" class="world-map-sensor-note">Sensor-only view · no simulation object positions are used.</p>`;
     sensorPanel.querySelector('[data-cloud-layer="radar"]').checked = true;
+    sensorPanel.querySelector('[data-cloud-layer="detections"]')?.closest('label')?.remove();
+    sensorPanel.querySelector('#world-map-cloud-hud-fps').textContent = '3D — FPS';
     for (const id of ['world-map-camera-state', 'world-map-yolo-state', 'world-map-midas-state', 'world-map-odometry-state', 'world-map-segmentation-state', 'world-map-radar-state', 'world-map-gps-state', 'world-map-imu-state', 'world-map-tof-state']) {
       const state = byId(id);
       if (state) state.dataset.state = 'loading';
@@ -592,7 +592,6 @@ let simRoot;
 let simSignature = '';
 let cloud = makeRenderer(byId('world-map-sensor-3d-viewport'), '#05070d');
 let cloudPoints = null;
-let boxGroup = null;
 let cloudFrameId = '';
 let cloudCameraInitialized = false;
 let cloudCameraPlane = null;
@@ -601,6 +600,7 @@ let cloudRadarRenderKey = '';
 const cloudGuides = new THREE.Group();
 const cloudOriginGroup = new THREE.Group();
 let cloudOriginStem = null;
+let cloudCameraMountMarker = null;
 let cloudOriginKey = '';
 const cloudRadarGroup = new THREE.Group();
 const cloudOdometryGroup = new THREE.Group();
@@ -620,6 +620,8 @@ if (cloud) {
     new THREE.LineBasicMaterial({ color: '#9aafc0', transparent: true, opacity: 0.8 }),
   );
   cloudGuides.add(cloudOriginStem);
+  cloudCameraMountMarker = new THREE.Mesh(new THREE.SphereGeometry(0.035, 12, 8), new THREE.MeshBasicMaterial({ color: '#62f1c1' }));
+  cloudGuides.add(cloudCameraMountMarker);
   cloudOriginGroup.add(new THREE.Mesh(new THREE.SphereGeometry(0.055, 16, 10), new THREE.MeshBasicMaterial({ color: '#f4f7ff' })));
   const addAxis = (to, color) => {
     const direction = new THREE.Vector3(...to).normalize();
@@ -636,19 +638,38 @@ let cloudFpsFrames = 0;
 let cloudFpsStartedAt = performance.now();
 if (cloud) {
   const baseRender = cloud.render;
-  cloud.render = () => { baseRender(); cloudFpsFrames += 1; updateCloudHud(); updateCloudLabelPositions(); };
+  let lastCloudHudUpdate = 0;
+  cloud.render = () => {
+    baseRender();
+    cloudFpsFrames += 1;
+    updateCloudLabelPositions();
+    const now = performance.now();
+    if (now - lastCloudHudUpdate >= 500) {
+      updateCloudHud();
+      lastCloudHudUpdate = now;
+    }
+  };
   cloudViewport?.querySelector('[data-cloud-action="reset"]')?.addEventListener('click', () => { cloudViewport.classList.remove('is-camera-view'); cloud.camera.fov = 42; cloud.camera.userData.userAdjusted = false; cloudCameraInitialized = false; cloud.resize(); updateCloudHud(); updateCloudRadar(); updateCloudOdometry(); resizeCloud(); });
   cloudViewport?.querySelectorAll('[data-cloud-view]').forEach(button => button.addEventListener('click', () => setCloudPreset(button.dataset.cloudView)));
   cloudViewport?.querySelectorAll('[data-cloud-layer]').forEach(input => input.addEventListener('change', () => {
     const layer = input.dataset.cloudLayer;
     if (layer === 'cloud' && cloudPoints) cloudPoints.visible = input.checked;
-    if (layer === 'detections' && boxGroup) boxGroup.visible = input.checked;
     if (layer === 'radar') updateCloudRadar(latestRadarSample, true);
     if (layer === 'odometry') cloudOdometryGroup.visible = input.checked;
     cloud.render();
   }));
   byId('world-map-cloud-point-size')?.addEventListener('input', event => { if (cloudPoints) cloudPoints.material.size = Number(event.target.value) / 1000; cloud.render(); });
 }
+let lastSensorCloudRenderAt = 0;
+function animateSensorCloud(now) {
+  if (activeSource === 'sensors' && activeRender === '3d' && cloud
+      && now - lastSensorCloudRenderAt >= 1000 / 30) {
+    lastSensorCloudRenderAt = now;
+    cloud.render();
+  }
+  requestAnimationFrame(animateSensorCloud);
+}
+requestAnimationFrame(animateSensorCloud);
 let activeSource = window.bodyWorldModelView === 'sensors' ? 'sensors' : 'simulation';
 let activeRender = '2d';
 let latestWorld = null;
@@ -807,7 +828,6 @@ function setRender(render) {
     if (sensor3d) sensor3d.hidden = render !== '3d';
     if (render === '3d') requestAnimationFrame(() => {
       resizeCloud();
-      if (cloudDepthImage) drawDepthDetections(cloudDepthImage, visibleYoloDetections(latestSensorYolo));
       cloud?.render();
     });
   }
@@ -1048,11 +1068,16 @@ function updateCloudOrigin() {
   const key = `${mount.profile}:${mount.heightM}:${heightIsMeasured}`;
   if (key === cloudOriginKey) return;
   cloudOriginKey = key;
-  cloudOriginGroup.position.copy(mount.position);
+  cloudOriginGroup.position.set(0, 0, 0);
   if (cloudOriginStem) cloudOriginStem.scale.y = mount.heightM / 0.18;
+  if (cloudCameraMountMarker) cloudCameraMountMarker.position.copy(mount.position);
   setCloudLayerLabels('origin', [{
+    position: new THREE.Vector3(),
+    text: 'BODY SENSOR ORIGIN · 0.00 m',
+  }]);
+  setCloudLayerLabels('camera-mount', [{
     position: mount.position.clone(),
-    text: `BODY CAMERA ORIGIN · ${mount.profile.replace(/_/g, ' ')} · ${mount.heightM.toFixed(2)} m${heightIsMeasured ? '' : ' nominal'}`,
+    text: `CAMERA MOUNT · ${mount.profile.replace(/_/g, ' ')} · ${mount.heightM.toFixed(2)} m${heightIsMeasured ? '' : ' nominal'}`,
   }]);
 }
 
@@ -1452,22 +1477,7 @@ async function refreshSensors() {
       drawBoxes(detections, currentCamera.width || 640, currentCamera.height || 480);
       displayedYoloOverlayKey = yoloOverlayKey;
     }
-    if (activeRender === '3d' && cloudDepthImage) {
-      if (yolo.state !== 'ready') {
-        if (cloudYoloForDepth) {
-          cloudYoloForDepth = null;
-          cloudYoloFrameId = '';
-          drawDepthDetections(cloudDepthImage, [], metricDepthCalibration);
-        }
-      } else if (yolo.frame_id === cloudFrameId) {
-        if (yolo.frame_id !== cloudYoloFrameId) {
-          cloudYoloForDepth = yolo;
-          cloudYoloFrameId = yolo.frame_id || '';
-          drawDepthDetections(cloudDepthImage, detections, metricDepthCalibration);
-        }
-      }
-      updateCloudHud();
-    }
+    if (activeRender === '3d') updateCloudHud();
     const yoloDetail = `${yolo.state || 'disabled'} · ${(yolo.detections || []).length} boxes${yolo.latency_ms != null ? ` · ${yolo.latency_ms} ms` : ''}`;
     setFeedStatus('world-map-yolo-state', 'yolo', classifyAge('yolo', frameAge, yolo.state === 'ready' && Boolean(currentCamera.image_base64)), yoloDetail);
     const frameDetail = currentCamera.frame_id ? `${currentCamera.frame_id}${currentCamera.captured_at ? ` · ${frameAge.toFixed(1)}s` : ''}` : 'No frame';
@@ -1479,7 +1489,6 @@ async function refreshSensors() {
     setFeedStatus('world-map-camera-state', 'camera', 'offline', `Offline · ${error.message}`);
     setFeedStatus('world-map-yolo-state', 'yolo', 'offline', 'Offline · waiting for camera frame');
     setSensorFetchFailure('camera', true);
-    if (activeRender === '3d' && cloudDepthImage) drawDepthDetections(cloudDepthImage, []);
     byId('world-map-sensor-note').textContent = latestCameraFrame?.frame_id
       ? `Sensor-only view · last camera frame ${latestCameraFrame.frame_id} is retained but not current.`
       : 'Sensor-only view · waiting for a current camera frame.';
@@ -2019,20 +2028,16 @@ function updateCloudHud() {
     const cameraAt = Number(latestCameraFrame?.captured_at);
     const depthAt = Number(latestDepthCapturedAt);
     const delta = cameraAt > 0 && depthAt > 0 ? Math.abs(cameraAt - depthAt) : NaN;
-    const yoloDelta = Number(cloudYoloForDepth?.frame_delta_s);
-    const yoloState = cloudYoloForDepth?.state === 'ready'
-      ? `YOLOX matched${Number.isFinite(yoloDelta) && yoloDelta > 0.02 ? ` · Δ${yoloDelta.toFixed(2)} s` : ''}`
-      : 'YOLOX unmatched';
     const pairedState = cloudCameraPlane?.userData.frameId === latestSensorDepth?.frame_id ? 'camera matched' : 'no paired image';
     const frameId = String(latestSensorDepth?.frame_id || '—').slice(-14);
     sync.textContent = Number.isFinite(delta)
-      ? `D ${frameId} · live Δ ${delta.toFixed(1)} s · ${yoloState} · ${pairedState}`
-      : `D ${frameId} · ${yoloState} · ${pairedState}`;
+      ? `D ${frameId} · live Δ ${delta.toFixed(1)} s · MiDaS cloud · ${pairedState}`
+      : `D ${frameId} · MiDaS cloud · ${pairedState}`;
   }
   const now = performance.now();
   const elapsed = now - cloudFpsStartedAt;
   if (fps && elapsed >= 500) {
-    fps.textContent = `3D ${Math.round(cloudFpsFrames * 1000 / elapsed)} updates/s`;
+    fps.textContent = `3D ${Math.round(cloudFpsFrames * 1000 / elapsed)} FPS`;
     cloudFpsFrames = 0; cloudFpsStartedAt = now;
   }
   const caption = byId('world-map-cloud-depth-caption');
@@ -2177,23 +2182,6 @@ function clearCloudGroup(group) {
   }
 }
 
-function disposeCloudContent() {
-  for (const item of [cloudPoints, boxGroup]) {
-    if (!item) continue;
-    cloud.scene.remove(item);
-    item.traverse?.((node) => {
-      node.geometry?.dispose();
-      if (Array.isArray(node.material)) node.material.forEach((entry) => entry.dispose());
-      else {
-        node.material?.map?.dispose();
-        node.material?.dispose();
-      }
-    });
-  }
-  cloudPoints = null;
-  boxGroup = null;
-}
-
 async function loadGrayDepth(base64) {
   return loadDepthImage(base64, 'image/jpeg');
 }
@@ -2268,20 +2256,10 @@ async function rebuildDepthCloud(depth, segmentation = latestSegmentation) {
   cloudDepthImage = image;
   latestDepthCapturedAt = Number(depth.captured_at) || 0;
   cloudCameraPlaneToken += 1;
-  if (cloudCameraPlane) cloudCameraPlane.visible = false;
   const frameCalibration = metricDepthCalibration;
-  cloudYoloForDepth = await yoloForDepthFrame(depth);
-  if (token !== cloudBuildToken || activeSource !== 'sensors' || activeRender !== '3d') return false;
-  cloudYoloFrameId = String(cloudYoloForDepth?.frame_id || '');
-  if (cloudViewport?.classList.contains('is-camera-view')) {
-    const pairedCameraFrame = await cameraFrameForDepth(depth);
-    if (token !== cloudBuildToken || activeSource !== 'sensors' || activeRender !== '3d') return false;
-    if (pairedCameraFrame) await updateCloudCameraPlane(pairedCameraFrame);
-  }
-  if (token !== cloudBuildToken || activeSource !== 'sensors' || activeRender !== '3d') return false;
   updateCloudHud();
   const intrinsics = cameraIntrinsicsForImage(image);
-  const stride = Math.max(2, Math.ceil(Math.max(image.width, image.height) / 140));
+  const stride = Math.max(3, Math.ceil(Math.max(image.width, image.height) / 120));
   const positions = [];
   const colorsArray = [];
   for (let y = 0; y < image.height; y += stride) {
@@ -2312,132 +2290,32 @@ async function rebuildDepthCloud(depth, segmentation = latestSegmentation) {
       }
     }
   }
-  disposeCloudContent();
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
   geometry.setAttribute('color', new THREE.Float32BufferAttribute(colorsArray, 3));
   geometry.computeBoundingBox();
   cloudPointCount = positions.length / 3;
   const layerEnabled = cloudViewport?.querySelector('[data-cloud-layer="cloud"]')?.checked !== false;
-  cloudPoints = new THREE.Points(geometry, new THREE.PointsMaterial({ size: Number(byId('world-map-cloud-point-size')?.value || 25) / 1000, vertexColors: true, sizeAttenuation: true, transparent: true, opacity: 0.92 }));
-  cloudPoints.visible = layerEnabled;
-  cloud.scene.add(cloudPoints);
-  drawDepthDetections(image, visibleYoloDetections(cloudYoloForDepth), frameCalibration);
+  if (cloudPoints) {
+    const previousGeometry = cloudPoints.geometry;
+    cloudPoints.geometry = geometry;
+    cloudPoints.visible = layerEnabled;
+    previousGeometry.dispose();
+  } else {
+    cloudPoints = new THREE.Points(geometry, new THREE.PointsMaterial({ size: Number(byId('world-map-cloud-point-size')?.value || 25) / 1000, vertexColors: true, sizeAttenuation: true, transparent: true, opacity: 0.92 }));
+    cloudPoints.visible = layerEnabled;
+    cloud.scene.add(cloudPoints);
+  }
   updateCloudRadar();
   updateCloudOdometry();
   resizeCloud();
+  if (cloudViewport?.classList.contains('is-camera-view')) {
+    void cameraFrameForDepth(depth).then(frame => {
+      if (token === cloudBuildToken && frame) return updateCloudCameraPlane(frame);
+      return false;
+    }).then(() => cloud.render()).catch(error => console.warn('Could not load camera-aligned 3D background:', error));
+  }
   return true;
-}
-
-async function yoloForDepthFrame(depth) {
-  const capturedAt = Number(depth?.captured_at);
-  if (!Number.isFinite(capturedAt) || capturedAt <= 0 || !depth?.frame_id) return null;
-  try {
-    const response = await fetch(`/body/camera/yolo/status?frame_id=${encodeURIComponent(depth.frame_id)}`, { cache: 'no-store' });
-    if (response.ok) {
-      const exact = await response.json();
-      if (exact.state === 'ready' && exact.frame_id === depth.frame_id) {
-        return { ...exact, frame_delta_s: 0, paired_depth_frame_id: depth.frame_id };
-      }
-    }
-    const nearestResponse = await fetch(
-      `/body/camera/yolo/status?nearest_to=${encodeURIComponent(capturedAt)}&max_delta_s=0.35`,
-      { cache: 'no-store' },
-    );
-    if (!nearestResponse.ok) return null;
-    const nearest = await nearestResponse.json();
-    const delta = Math.abs(Number(nearest.frame_delta_s));
-    if (nearest.state !== 'ready' || !nearest.frame_id || !Number.isFinite(delta) || delta > 0.35) return null;
-    return { ...nearest, frame_delta_s: delta, paired_depth_frame_id: depth.frame_id };
-  } catch (error) {
-    console.warn('Could not find YOLOX detections aligned to MiDaS frame:', error);
-    return null;
-  }
-}
-
-function detectionDepthStats(image, bbox, calibration, identity) {
-  const [x1, y1, x2, y2] = bbox.map(Number);
-  const person = /person|human/i.test(identity);
-  const left = Math.max(0, Math.floor((x1 + (x2 - x1) * (person ? 0.25 : 0.15)) * image.width));
-  const right = Math.min(image.width, Math.ceil((x2 - (x2 - x1) * (person ? 0.25 : 0.15)) * image.width));
-  const top = Math.max(0, Math.floor((y1 + (y2 - y1) * (person ? 0.2 : 0.15)) * image.height));
-  const bottom = Math.min(image.height, Math.ceil((y1 + (y2 - y1) * (person ? 0.72 : 0.85)) * image.height));
-  const step = Math.max(1, Math.floor(Math.min(right - left, bottom - top) / 12));
-  const values = [];
-  for (let y = top; y < bottom; y += step) for (let x = left; x < right; x += step) {
-    values.push(depthForScene(image, (y * image.width + x) * 4, calibration));
-  }
-  values.sort((a, b) => a - b);
-  if (!values.length) return null;
-  const quantile = q => values[Math.min(values.length - 1, Math.floor((values.length - 1) * q))];
-  return { near: quantile(0.1), median: quantile(0.5), far: quantile(0.9) };
-}
-
-function drawDepthDetections(image, detections, calibration = metricDepthCalibration) {
-  if (!cloud || !image || activeRender !== '3d') return;
-  if (boxGroup) {
-    cloud.scene.remove(boxGroup);
-    boxGroup.traverse((node) => {
-      node.geometry?.dispose();
-      if (Array.isArray(node.material)) node.material.forEach((entry) => entry.dispose());
-      else node.material?.dispose();
-      if (node.material?.map) node.material.map.dispose();
-    });
-  }
-  boxGroup = new THREE.Group();
-  const htmlLabels = [];
-  const layerEnabled = cloudViewport?.querySelector('[data-cloud-layer="detections"]')?.checked !== false;
-  boxGroup.visible = layerEnabled;
-  const colorsByKind = ['#55e7cc', '#f2bc65', '#e280ba', '#77d69c'];
-  const metricFrame = Boolean(calibration?.available && Number.isFinite(image.rawMin) && Number.isFinite(image.rawMax));
-  const alignedRadarSample = metricFrame ? radarSampleAt(latestDepthCapturedAt, 0.1) : null;
-  const radarMatches = alignedRadarSample ? matchedRadarAnchors(detections, alignedRadarSample, image) : [];
-  for (const [index, item] of (detections || []).entries()) {
-    const bbox = item.bbox;
-    if (!Array.isArray(bbox) || bbox.length < 4) continue;
-    const [x1, y1, x2, y2] = bbox.map(Number);
-    const identity = String(item.label || item.class_name || item.class || 'object');
-    const stats = detectionDepthStats(image, bbox, calibration, identity);
-    if (!stats) continue;
-    const radarAnchor = radarMatches.find(match => match.detection === item);
-    const medianRange = metricFrame ? metricDepthEstimate(stats.median, calibration) : null;
-    const medianDepth = stats.median + (radarAnchor ? radarAnchor.forward - stats.median : 0);
-    const observedSpan = Math.max(0, stats.far - stats.near);
-    const maximumSpan = metricFrame
-      ? Math.min(0.6, Math.max(0.15, medianDepth * 0.3))
-      : Math.min(0.35, Math.max(0.02, medianDepth * 0.05));
-    const depthSpan = Math.min(observedSpan, maximumSpan);
-    const nearZ = Math.max(0.15, medianDepth - depthSpan / 2);
-    const farZ = Math.max(nearZ + (metricFrame ? 0.03 : 0.01), medianDepth + depthSpan / 2);
-    const intrinsics = cameraIntrinsicsForImage(image);
-    const corners = [
-      cameraPointInBodyFrame(cameraPoint(x1 * image.width, y1 * image.height, nearZ, intrinsics)),
-      cameraPointInBodyFrame(cameraPoint(x2 * image.width, y1 * image.height, nearZ, intrinsics)),
-      cameraPointInBodyFrame(cameraPoint(x2 * image.width, y2 * image.height, nearZ, intrinsics)),
-      cameraPointInBodyFrame(cameraPoint(x1 * image.width, y2 * image.height, nearZ, intrinsics)),
-      cameraPointInBodyFrame(cameraPoint(x1 * image.width, y1 * image.height, farZ, intrinsics)),
-      cameraPointInBodyFrame(cameraPoint(x2 * image.width, y1 * image.height, farZ, intrinsics)),
-      cameraPointInBodyFrame(cameraPoint(x2 * image.width, y2 * image.height, farZ, intrinsics)),
-      cameraPointInBodyFrame(cameraPoint(x1 * image.width, y2 * image.height, farZ, intrinsics)),
-    ];
-    const edgeIndices = [0, 1, 1, 2, 2, 3, 3, 0, 4, 5, 5, 6, 6, 7, 7, 4, 0, 4, 1, 5, 2, 6, 3, 7];
-    const color = colorsByKind[index % colorsByKind.length];
-    const materialBox = new THREE.LineBasicMaterial({ color, depthTest: false, transparent: true, opacity: 0.95 });
-    const edgePoints = edgeIndices.map(corner => corners[corner]);
-    const edges = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(edgePoints), materialBox);
-    boxGroup.add(edges);
-    const labelPosition = cameraPointInBodyFrame(cameraPoint((x1 + x2) * image.width / 2, y1 * image.height, nearZ, intrinsics));
-    const confidence = Math.round(Number(item.confidence ?? item.score ?? 0) * 100);
-    const rangeLabel = radarAnchor
-      ? `${radarAnchor.forward.toFixed(2)} m · radar measured`
-      : medianRange
-        ? `${medianRange.extrapolated ? '~' : ''}${medianRange.meters.toFixed(1)} m · MiDaS ${medianRange.extrapolated ? 'extrapolated' : 'est.'}`
-        : `${stats.median.toFixed(1)} relative units · MiDaS`;
-    htmlLabels.push({ position: labelPosition, text: `${identity} ${confidence}% · ${rangeLabel}` });
-  }
-  cloud.scene.add(boxGroup);
-  setCloudLayerLabels('detections', htmlLabels);
-  cloud.render();
 }
 
 window.updateBodyWorldMap3D = (world) => {
