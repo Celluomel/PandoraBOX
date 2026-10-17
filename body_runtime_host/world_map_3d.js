@@ -2293,14 +2293,16 @@ function updateCloudHud() {
     const published = Number(cloudDepthImage?.publishedAt) || 0;
     const fetched = Number(cloudDepthImage?.browserFetchedAt) || 0;
     const built = Number(cloudDepthImage?.cloudBuiltAt) || 0;
+    const inferenceMs = Number(latestSensorDepth?.inference_ms);
     const stage = (label, value) => `${label} ${Number.isFinite(value) ? `${Math.round(value)}ms` : '—'}`;
     pipeline.textContent = [
       stage('pre', received && renderedDepthAt ? Math.max(0, (received - renderedDepthAt) * 1000) : NaN),
-      stage('worker', received && published ? Math.max(0, (published - received) * 1000) : NaN),
+      stage('infer', inferenceMs),
+      stage('svc', received && published ? Math.max(0, (published - received) * 1000) : NaN),
       stage('fetch', published && fetched ? Math.max(0, (fetched - published) * 1000) : NaN),
       stage('build', fetched && built ? Math.max(0, (built - fetched) * 1000) : NaN),
     ].join(' · ');
-    pipeline.title = 'pre: capture to worker acceptance; worker: processing to publish; fetch: publish to browser; build: PNG decode and cloud upload.';
+    pipeline.title = 'pre: capture to worker acceptance; infer: model inference only; svc: service round-trip to publish; fetch: publish to browser; build: PNG decode and cloud upload.';
   }
   const cameraAtForStale = Number(latestCameraFrame?.captured_at);
   const cameraDeltaForStale = cameraAtForStale > 0 && renderedDepthAt > 0
