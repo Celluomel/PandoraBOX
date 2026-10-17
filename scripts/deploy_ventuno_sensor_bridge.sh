@@ -5,6 +5,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 sketch_dir="${repo_root}/firmware/ventuno_sensor_bridge"
 fqbn="arduino:zephyr:ventunoq"
 upload_address="${VENTUNO_Q_UPLOAD_ADDRESS:-192.168.0.14}"
+app_id="user:pandorabox-body-sensors"
 tof_enabled="${BODY_ENABLE_TOF:-0}"
 imu_enabled="${BODY_ENABLE_IMU:-1}"
 radar_baud="${BODY_RADAR_BAUD:-256000}"
@@ -60,7 +61,25 @@ if [[ "${1:-}" != "--upload" ]]; then
   exit 0
 fi
 
-echo "Uploading combined sensor firmware to ${upload_address}."
-echo "Arduino CLI will prompt for the network upload password."
+echo "Uploading combined sensor firmware to persistent STM32 flash on ${upload_address}."
+echo "Use this direct Arduino CLI uploader, not App Lab app start: App Lab loads its MCU sketch into volatile RAM."
+if command -v arduino-app-cli >/dev/null 2>&1; then
+  app_state="$(arduino-app-cli app list --format json | python3 -c '
+import json, sys
+apps = json.load(sys.stdin).get("apps", [])
+app = next((item for item in apps if item.get("name") == "pandorabox-body-sensors"), {})
+print(app.get("status", "missing"), str(app.get("default", False)).lower())
+')"
+  read -r app_status app_is_default <<<"${app_state}"
+  if [[ "${app_is_default}" == "true" ]]; then
+    echo "Clearing the App Lab default: its MCU sketch is RAM-loaded and not power-cycle persistent."
+    arduino-app-cli properties set default none
+  fi
+  if [[ "${app_status}" == "running" ]]; then
+    echo "Stopping ${app_id} before persistent MCU upload."
+    arduino-app-cli app stop "${app_id}"
+  fi
+fi
+echo "Arduino CLI may prompt for upload credentials, depending on the detected transport."
 arduino-cli upload --fqbn "${fqbn}" --port "${upload_address}" "${build_dir}"
 echo "Upload complete. Verify body_imu_read, body_tof_read, body_ld2450_read, and body_gps_read over the local Router Bridge."

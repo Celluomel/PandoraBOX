@@ -40,11 +40,30 @@ arduino-cli lib install "Adafruit VL53L1X" "Adafruit BusIO"
 scripts/deploy_ventuno_sensor_bridge.sh
 ```
 
-Only after a successful build and wiring check, upload the combined image:
+Only after a successful build and wiring check, upload the combined image with
+the direct Arduino CLI uploader:
 
 ```sh
 scripts/deploy_ventuno_sensor_bridge.sh --upload
 ```
+
+The direct upload targets the Ventuno STM32's nonvolatile flash. Do not use
+`arduino-app-cli app start` / App Lab Run as the persistence mechanism: App Lab
+loads its MCU sketch into volatile RAM, so that sketch disappears on a power
+cycle. The Body Linux service starts independently; it does not need a default
+App Lab app. The deployment script automatically stops the sensor App Lab app
+and clears it as the default before uploading, so its RAM sketch cannot mask the
+persistent firmware at boot. To clear that setting manually:
+
+```sh
+arduino-app-cli properties set default none
+arduino-app-cli properties get default
+```
+
+The direct upload deliberately uses `arduino:zephyr:ventunoq` (the Ventuno core's
+nonvolatile flash target), not App Lab's RAM-loaded sketch mode. Keep the
+combined source in this repository and rerun the direct upload whenever it
+changes.
 
 The build stages only the `.ino` before compiling so Arduino CLI does not try
 to resolve the cloud `sketch.yaml` profile on the device. ToF probing stays off
@@ -73,8 +92,8 @@ flash a different sketch as a workaround.
 
 ## Verify
 
-After upload/reboot, enable the physical radar in Body's **Sensor device
-selection** and choose **Ventuno STM32 UART · local Bridge**. Confirm the
+After upload and a full power cycle, enable the physical radar in Body's
+**Sensor device selection** and choose **Ventuno STM32 UART · local Bridge**. Confirm the
 selector reports fresh UART7 frames and targets. Check `/plugins/gps/status`
 for D0/D1 UART byte counts, NMEA checksum validation, GPS fix state, satellites
 used/in view, and per-satellite C/N0 from GSV. Signal values are in dB-Hz;
