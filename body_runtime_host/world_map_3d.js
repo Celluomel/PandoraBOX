@@ -659,7 +659,7 @@ if (cloud) {
     if (layer === 'cloud' && cloudPoints) cloudPoints.visible = input.checked;
     if (layer === 'detections') {
       if (boxGroup) boxGroup.visible = input.checked;
-      if (input.checked && cloudDepthImage) drawDepthDetections(cloudDepthImage, cloudDepthYolo);
+      if (input.checked && cloudDepthImage) drawDepthDetections(cloudDepthImage, latestSensorYolo || cloudDepthYolo);
     }
     if (layer === 'radar') updateCloudRadar(latestRadarSample, true);
     if (layer === 'odometry') cloudOdometryGroup.visible = input.checked;
@@ -835,7 +835,7 @@ function setRender(render) {
     if (sensor3d) sensor3d.hidden = render !== '3d';
     if (render === '3d') requestAnimationFrame(() => {
       resizeCloud();
-      if (cloudDepthImage) drawDepthDetections(cloudDepthImage, cloudDepthYolo);
+      if (cloudDepthImage) drawDepthDetections(cloudDepthImage, latestSensorYolo || cloudDepthYolo);
       cloud?.render();
     });
   }
@@ -1517,6 +1517,7 @@ async function refreshSensors() {
       drawBoxes(detections, currentCamera.width || 640, currentCamera.height || 480);
       displayedYoloOverlayKey = yoloOverlayKey;
     }
+    if (activeRender === '3d' && cloudDepthImage) drawDepthDetections(cloudDepthImage, yolo);
     if (activeRender === '3d') updateCloudHud();
     const yoloDetail = `${yolo.state || 'disabled'} · ${(yolo.detections || []).length} boxes${yolo.latency_ms != null ? ` · ${yolo.latency_ms} ms` : ''}`;
     setFeedStatus('world-map-yolo-state', 'yolo', classifyAge('yolo', frameAge, yolo.state === 'ready' && Boolean(currentCamera.image_base64)), yoloDetail);
@@ -2390,7 +2391,7 @@ function drawDepthDetections(image, yolo, calibration = metricDepthCalibration) 
     : Math.abs(Number(yolo?.captured_at) - Number(image.capturedAt));
   const frameMatches = Boolean(image.frameId && yolo?.frame_id === image.frameId)
     || Number.isFinite(yoloFrameDelta) && yoloFrameDelta <= 0.75;
-  const detections = layerEnabled && frameMatches && yolo?.state === 'ready' && yoloAge >= 0 && yoloAge <= 1.25
+  const detections = layerEnabled && yolo?.state === 'ready' && yoloAge >= 0 && yoloAge <= 2.5
     ? (yolo.detections || []) : [];
   const detectionKey = `${layerEnabled}:${cloudFrameId}:${yolo?.frame_id || ''}:${detections.length}:${Number(latestDepthCapturedAt).toFixed(3)}`;
   if (detectionKey === cloudDetectionKey) return;
@@ -2400,7 +2401,8 @@ function drawDepthDetections(image, yolo, calibration = metricDepthCalibration) 
   const htmlLabels = [];
   const colorsByKind = ['#55e7cc', '#f2bc65', '#e280ba', '#77d69c'];
   const metricFrame = Boolean(calibration?.available && Number.isFinite(image.rawMin) && Number.isFinite(image.rawMax));
-  const alignedRadarSample = metricFrame ? radarSampleAt(latestDepthCapturedAt, 0.1) : null;
+  const alignedRadarSample = frameMatches && metricFrame && yoloFrameDelta <= 0.15
+    ? radarSampleAt(latestDepthCapturedAt, 0.1) : null;
   const radarMatches = alignedRadarSample ? matchedRadarAnchors(detections, alignedRadarSample, image) : [];
   for (const [index, item] of detections.entries()) {
     const bbox = item.bbox;
@@ -2410,7 +2412,7 @@ function drawDepthDetections(image, yolo, calibration = metricDepthCalibration) 
     const stats = detectionDepthStats(image, bbox, calibration, identity);
     if (!stats) continue;
     const radarAnchor = radarMatches.find(match => match.detection === item);
-    const medianRange = metricFrame ? metricDepthEstimate(stats.median, calibration) : null;
+    const medianRange = frameMatches && metricFrame ? metricDepthEstimate(stats.median, calibration) : null;
     const medianDepth = radarAnchor ? radarAnchor.forward : stats.median;
     const observedSpan = Math.max(0, stats.far - stats.near);
     const maximumSpan = metricFrame
@@ -2441,10 +2443,14 @@ function drawDepthDetections(image, yolo, calibration = metricDepthCalibration) 
       ? `${radarAnchor.forward.toFixed(2)} m · radar measured`
       : medianRange
         ? `${medianRange.extrapolated ? '~' : ''}${medianRange.meters.toFixed(1)} m · MiDaS ${medianRange.extrapolated ? 'extrapolated' : 'est.'}`
-        : `${stats.median.toFixed(1)} relative units · MiDaS`;
+        : frameMatches
+          ? `${stats.median.toFixed(1)} relative units · MiDaS`
+          : 'depth unpaired · relative shape only';
     const syncLabel = yolo?.frame_id !== image.frameId && yoloFrameDelta > 0.15
       ? ` · YOLOX Δ${yoloFrameDelta.toFixed(1)} s` : '';
-    htmlLabels.push({ position: labelPosition, text: `${identity} ${confidence}% · ${rangeLabel}${syncLabel}` });
+    const depthAge = image.capturedAt > 0 ? Math.max(0, Date.now() / 1000 - image.capturedAt) : Infinity;
+    const staleDepthLabel = depthAge > 1.25 ? ` · MiDaS stale ${depthAge.toFixed(1)} s` : '';
+    htmlLabels.push({ position: labelPosition, text: `${identity} ${confidence}% · ${rangeLabel}${syncLabel}${staleDepthLabel}` });
   }
 
   if (boxGroup) {
