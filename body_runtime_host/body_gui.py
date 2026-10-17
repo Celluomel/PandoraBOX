@@ -842,6 +842,24 @@ async function toggleCameraCapture(enabled){
 BODY_GUI_HTML = BODY_GUI_HTML.replace(
     "</body></html>",
     """<script>
+const refreshCameraWithHeightSetting=refreshCamera;
+refreshCamera=async function(){
+  const result=await refreshCameraWithHeightSetting();
+  const input=document.getElementById('camera-setting-height-m');
+  if(input&&!cameraSettingsDirty&&!input.matches(':focus')){
+    const settings=await get('/body/camera');
+    input.value=Number(settings.camera_height_m??0.18).toFixed(2);
+    cameraSettingsDraft=readCameraSettingsDraft();
+  }
+  return result;
+};
+</script></body></html>""",
+    1,
+)
+
+BODY_GUI_HTML = BODY_GUI_HTML.replace(
+    "</body></html>",
+    """<script>
 const refreshCameraWithRateTelemetry=refreshCamera;
 refreshCamera=async function(){
   const result=await refreshCameraWithRateTelemetry();
@@ -942,6 +960,7 @@ function readCameraSettingsDraft(){
     device_index:Number(document.getElementById('camera-setting-device').value||0),
     fps:Number(document.getElementById('camera-setting-fps').value||15),
     profile:document.getElementById('camera-setting-profile').value,
+    camera_height_m:Number(document.getElementById('camera-setting-height-m')?.value||0.18),
     width:Number(document.getElementById('camera-setting-width').value||640),
     height:Number(document.getElementById('camera-setting-height').value||480),
     face_detection_enabled:document.getElementById('camera-setting-face').checked
@@ -953,6 +972,8 @@ function applyCameraSettingsDraft(draft){
   document.getElementById('camera-setting-device').value=draft.device_index;
   document.getElementById('camera-setting-fps').value=draft.fps;
   document.getElementById('camera-setting-profile').value=draft.profile;
+  const cameraHeight=document.getElementById('camera-setting-height-m');
+  if(cameraHeight&&draft.camera_height_m!==undefined)cameraHeight.value=draft.camera_height_m;
   document.getElementById('camera-setting-width').value=draft.width;
   document.getElementById('camera-setting-height').value=draft.height;
   document.getElementById('camera-setting-face').checked=draft.face_detection_enabled;
@@ -961,7 +982,7 @@ function bindCameraSettingsDraft(){
   const page=document.getElementById('view-camera');
   if(!page||page.dataset.settingsDraftBound)return;
   page.dataset.settingsDraftBound='true';
-  page.querySelectorAll('#camera-setting-startup,#camera-setting-device,#camera-setting-fps,#camera-setting-profile,#camera-setting-width,#camera-setting-height,#camera-setting-face').forEach(input=>{
+  page.querySelectorAll('#camera-setting-startup,#camera-setting-device,#camera-setting-fps,#camera-setting-profile,#camera-setting-height-m,#camera-setting-width,#camera-setting-height,#camera-setting-face').forEach(input=>{
     for(const eventName of ['input','change'])input.addEventListener(eventName,()=>{
       cameraSettingsDraft=readCameraSettingsDraft();
       cameraSettingsDirty=true;
@@ -1153,6 +1174,7 @@ function mountYoloCameraSettings(){
   if(!settings||document.getElementById('camera-setting-yolox-enabled'))return;
   const group=document.createElement('section');group.id='camera-yolox-settings';group.style.cssText='grid-column:1/-1;display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;border-top:1px solid #29483a;padding-top:12px';
   group.innerHTML='<h3 style="grid-column:1/-1;margin:0">YOLOX object detection</h3><label class="field check"><input id="camera-setting-yolox-enabled" type="checkbox"> Run YOLOX on camera frames</label><label class="field">QNN runtime<select id="camera-setting-yolox-runtime"><option value="htp_auto">HTP preferred, fall back to CPU</option><option value="htp">HTP only</option><option value="cpu">CPU only</option></select></label><label class="field">YOLOX Python<input id="camera-setting-yolox-python" placeholder="/home/arduino/.venvs/yolox-infer/bin/python"></label><label class="field">Compiled model (.dlc)<input id="camera-setting-yolox-model" placeholder="/home/arduino/models/yolox-qairt245/yolox-qnn_dlc-w8a8/yolox.dlc"></label><label class="field">Confidence threshold<input id="camera-setting-yolox-confidence" type="number" min="0.01" max="0.95" step="0.01"></label><label class="field">Inference interval (s)<input id="camera-setting-yolox-interval" type="number" min="0.15" max="5" step="0.05"></label><label class="field">Ambiguity margin<input id="camera-setting-yolox-margin" type="number" min="0" max="0.5" step="0.01"></label><label class="field check"><input id="camera-setting-yolox-vlm" type="checkbox"> Ask VLM on ambiguity</label><label class="field">VLM fallback cooldown (s)<input id="camera-setting-yolox-cooldown" type="number" min="5" max="300" step="1"></label><small id="camera-page-yolox-status" class="muted" style="grid-column:1/-1">YOLOX disabled</small><h3 style="grid-column:1/-1;margin:8px 0 0">MiDaS monocular depth</h3><label class="field check"><input id="camera-setting-midas-enabled" type="checkbox"> Estimate relative depth from camera</label><label class="field">QNN runtime<select id="camera-setting-midas-runtime"><option value="htp_auto">HTP preferred, fall back to CPU</option><option value="htp">HTP only</option><option value="cpu">CPU only</option></select></label><label class="field">MiDaS AppBuilder Python<input id="camera-setting-midas-python" placeholder="/home/arduino/.venvs/yolox-infer/bin/python"></label><label class="field">MiDaS compiled model (.dlc)<input id="camera-setting-midas-model" placeholder="/home/arduino/models/midas-qualcomm/midas-float.dlc"></label><label class="field">Inference interval (s)<input id="camera-setting-midas-interval" type="number" min="0.15" max="30" step="0.05"></label><small id="camera-page-midas-status" class="muted" style="grid-column:1/-1">Disabled · HTP preferred, CPU fallback · metric range remains sourced from LiDAR / ToF / radar</small>';
+  group.insertAdjacentHTML('afterbegin','<h3 style="grid-column:1/-1;margin:0">Body geometry</h3><label class="field">Body height above floor (m)<input id="camera-setting-height-m" type="number" min="0.05" max="2.50" step="0.01" inputmode="decimal"><small class="muted">Measure from the floor to the Body sensor origin. Sets the vertical reference for the 3D scene.</small></label>');
   settings.insertBefore(group,settings.querySelector('.plugin-actions'));
   const preview=document.createElement('section');preview.className='panel';preview.style.marginTop='12px';preview.innerHTML='<div class="panel-head"><h2>MiDaS relative depth</h2><small>NEAR / FAR · NOT METRIC</small></div><img id="camera-page-midas-image" alt="MiDaS relative depth map" style="display:block;width:100%;max-height:480px;object-fit:contain;background:#06100d"><p class="truth-note">Color shows relative depth within this frame only; use ToF, LiDAR or radar for distances in meters.</p>';
   document.getElementById('view-camera').append(preview);

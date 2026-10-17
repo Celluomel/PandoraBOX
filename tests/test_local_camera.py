@@ -154,6 +154,20 @@ class LocalCameraTests(unittest.TestCase):
                 self.assertTrue(result["startup_enabled"])
                 self.assertTrue(json.loads(config_path.read_text(encoding="utf-8"))["BODY_CAMERA_STARTUP_ENABLED"])
 
+    def test_camera_height_is_saved_and_exposed_for_3d_geometry(self):
+        import json
+        import body_runtime_host.runtime as brt
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.json"
+            with patch.object(brt, "CONFIG_PATH", config_path), patch.object(brt, "_load_dotenv"):
+                host = brt.BodyHost()
+                with patch.object(host, "_configure_local_camera", return_value={"status": "stopped"}):
+                    result = host.update_camera_settings({"camera_height_m": 0.42})
+
+            saved = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertEqual(result["camera_height_m"], 0.42)
+            self.assertEqual(saved["BODY_CAMERA_HEIGHT_M"], 0.42)
+
 
 if __name__ == "__main__":
     unittest.main()

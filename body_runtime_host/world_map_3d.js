@@ -1058,7 +1058,9 @@ const cameraMountProfiles = {
 function cameraMountPose() {
   const profile = latestCameraFrame?.camera_profile || 'low_body_front';
   const mount = cameraMountProfiles[profile] || cameraMountProfiles.low_body_front;
-  const reportedHeight = Number(latestCameraFrame?.camera_height_m ?? latestCameraFrame?.calibration?.height_m);
+  const reportedHeight = Number(latestCameraFrame?.camera_height_m
+    ?? latestCameraFrame?.calibration?.height_m
+    ?? latestSensorDepth?.camera_height_m);
   const heightM = Number.isFinite(reportedHeight) && reportedHeight > 0 && reportedHeight < 3
     ? reportedHeight : mount.heightM;
   const rotation = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0),
@@ -1069,17 +1071,19 @@ function cameraMountPose() {
 function updateCloudOrigin() {
   if (!cloud) return;
   const mount = cameraMountPose();
-  const heightIsMeasured = Number.isFinite(Number(latestCameraFrame?.camera_height_m ?? latestCameraFrame?.calibration?.height_m))
-    && Number(latestCameraFrame?.camera_height_m ?? latestCameraFrame?.calibration?.height_m) > 0;
+  const reportedHeight = Number(latestCameraFrame?.camera_height_m
+    ?? latestCameraFrame?.calibration?.height_m
+    ?? latestSensorDepth?.camera_height_m);
+  const heightIsMeasured = Number.isFinite(reportedHeight) && reportedHeight > 0;
   const key = `${mount.profile}:${mount.heightM}:${heightIsMeasured}`;
   if (key === cloudOriginKey) return;
   cloudOriginKey = key;
-  cloudOriginGroup.position.set(0, 0, 0);
+  cloudOriginGroup.position.set(0, mount.heightM, 0);
   if (cloudOriginStem) cloudOriginStem.scale.y = mount.heightM / 0.18;
   if (cloudCameraMountMarker) cloudCameraMountMarker.position.copy(mount.position);
   setCloudLayerLabels('origin', [{
-    position: new THREE.Vector3(),
-    text: 'BODY SENSOR ORIGIN · 0.00 m',
+    position: mount.position.clone(),
+    text: `BODY SENSOR ORIGIN · ${mount.heightM.toFixed(2)} m above floor${heightIsMeasured ? '' : ' nominal'}`,
   }]);
   setCloudLayerLabels('camera-mount', [{
     position: mount.position.clone(),
@@ -2138,7 +2142,7 @@ function updateCloudRadar(sample = latestRadarSample, force = false) {
     const position = target.position_m || target.position || [];
     const lateral = Number(position[0]), forward = Number(position[1]);
     if (!Number.isFinite(lateral) || !Number.isFinite(forward) || forward < 0 || forward > 12) continue;
-    const point = new THREE.Vector3(lateral, 0.05, -forward);
+    const point = new THREE.Vector3(lateral, cameraMountPose().heightM, -forward);
     const radarAttitude = attitudeQuaternion(sample.timestamp);
     if (radarAttitude) point.applyQuaternion(radarAttitude);
     const odometryAge = Number(latestVisualOdometry?.captured_at) > 0
@@ -2176,7 +2180,8 @@ function updateCloudOdometry() {
     && !cloudViewport?.classList.contains('is-camera-view');
   cloudOdometryGroup.visible = enabled;
   if (visualOdometryTrail.length < 2) return;
-  const points = visualOdometryTrail.map(point => new THREE.Vector3(-point.lateral, 0.03, -point.forward));
+  const bodyHeight = cameraMountPose().heightM;
+  const points = visualOdometryTrail.map(point => new THREE.Vector3(-point.lateral, bodyHeight, -point.forward));
   const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(points), new THREE.LineBasicMaterial({ color: '#ed35c5', linewidth: 2 }));
   cloudOdometryGroup.add(line);
   cloud.render();

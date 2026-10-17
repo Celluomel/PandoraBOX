@@ -663,6 +663,7 @@ class BodyHost:
             "width": max(640, int(self.value("BODY_CAMERA_WIDTH", 640) or 640)),
             "height": max(480, int(self.value("BODY_CAMERA_HEIGHT", 480) or 480)),
             "profile": str(self.value("BODY_CAMERA_PROFILE", "low_body_front") or "low_body_front"),
+            "camera_height_m": max(0.05, min(2.5, float(self.value("BODY_CAMERA_HEIGHT_M", 0.18) or 0.18))),
             "startup_enabled": startup_enabled,
             "device_index": max(0, int(self.value("BODY_CAMERA_DEVICE_INDEX", 0) or 0)),
             "fps": round(1.0 / max(1.0 / 60.0, float(self.value("BODY_CAMERA_INTERVAL", 1.0 / 15.0) or (1.0 / 15.0))), 2),
@@ -692,6 +693,8 @@ class BodyHost:
     def camera_frame(self) -> dict:
         frame = self._camera_provider() or {}
         if frame:
+            settings = self.camera_settings()
+            frame = {**frame, "camera_height_m": settings["camera_height_m"]}
             yolo = self._yolox_service.status()
             return {"available": True, "camera": frame, "yolo": yolo}
         settings = self.camera_settings()
@@ -705,6 +708,8 @@ class BodyHost:
     def camera_image(self) -> dict:
         """Serve camera pixels without coupling the stream to detector metadata."""
         frame = self._camera_provider() or {}
+        if frame:
+            frame = {**frame, "camera_height_m": self.camera_settings()["camera_height_m"]}
         return {"available": bool(frame), "camera": frame}
 
     def camera_yolo_frame(self, frame_id: str | None = None) -> dict:
@@ -715,7 +720,9 @@ class BodyHost:
             frame = self._midas_service.analyzed_frame(frame_id)
         if not frame:
             return {"available": False, "error": "Analyzed camera frame is no longer available"}
-        return {"available": True, "camera": frame}
+        return {"available": True, "camera": {
+            **frame, "camera_height_m": self.camera_settings()["camera_height_m"]
+        }}
 
     def camera_yolo_status(self, frame_id: str | None = None, nearest_to: float | None = None,
                            max_delta_s: float = 0.75) -> dict:
@@ -728,7 +735,10 @@ class BodyHost:
 
     def camera_depth(self) -> dict:
         result = self._midas_service.status()
-        return {"available": bool(result.get("depth_jpeg_base64")), **result}
+        settings = self.camera_settings()
+        return {"available": bool(result.get("depth_jpeg_base64")), **result,
+                "camera_height_m": settings["camera_height_m"],
+                "camera_profile": settings["profile"]}
 
     def camera_segmentation(self) -> dict:
         result = self._segmentation_service.status()
@@ -807,6 +817,9 @@ class BodyHost:
         if profile not in {"low_body_front", "level_body_front", "high_body_front"}:
             raise ValueError("unsupported camera profile")
         self.config["BODY_CAMERA_PROFILE"] = profile
+        self.config["BODY_CAMERA_HEIGHT_M"] = max(
+            0.05, min(2.5, float(payload.get("camera_height_m", self.value("BODY_CAMERA_HEIGHT_M", 0.18)) or 0.18))
+        )
         if payload.get("vision_mode") is not None:
             self.config["BODY_VISION_MODE"] = str(payload.get("vision_mode") or "keyword")
         if payload.get("vision_llm_mode") is not None:
