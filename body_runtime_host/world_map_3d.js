@@ -50,6 +50,7 @@ let displayedCameraFrameId = null;
 let displayedYoloOverlayKey = '';
 let cloudDepthImage = null;
 let cloudBuildToken = 0;
+let cloudBuildingKey = '';
 let cloudSegmentationFrameId = '';
 let metricDepthCalibration = null;
 let depthCalibrationBusy = false;
@@ -598,6 +599,7 @@ let cloudFrameId = '';
 let cloudCameraInitialized = false;
 let cloudCameraPlane = null;
 let cloudCameraPlaneToken = 0;
+let cloudPairedCameraFrameId = '';
 let cloudRadarRenderKey = '';
 const cloudGuides = new THREE.Group();
 const cloudOriginGroup = new THREE.Group();
@@ -1861,10 +1863,12 @@ async function refreshSensorDepth() {
     updateMetricCalibrationStatus();
     const alignedSegmentationFrameId = segmentationMatchesDepth(segmentation, depth)
       ? String(segmentation.frame_id || segmentation.captured_at || '') : '';
+    const depthRenderKey = `${depth.frame_id || ''}:${Number(depth.captured_at) || 0}:${alignedSegmentationFrameId}`;
+    const renderedKey = `${cloudFrameId}:${latestDepthCapturedAt}:${cloudSegmentationFrameId}`;
     if (depth.depth_gray_jpeg_base64 && activeRender === '3d'
-        && (depth.frame_id !== cloudFrameId || Number(depth.captured_at) !== latestDepthCapturedAt
-          || alignedSegmentationFrameId !== cloudSegmentationFrameId)) {
+        && depthRenderKey !== renderedKey && depthRenderKey !== cloudBuildingKey) {
       const depthFrameId = depth.frame_id;
+      cloudBuildingKey = depthRenderKey;
       void rebuildDepthCloud(depth, segmentation)
         .then((updated) => {
           if (updated) {
@@ -1872,7 +1876,10 @@ async function refreshSensorDepth() {
             cloudSegmentationFrameId = alignedSegmentationFrameId;
           }
         })
-        .catch((error) => console.warn('Could not rebuild MiDaS depth cloud:', error));
+        .catch((error) => console.warn('Could not rebuild MiDaS depth cloud:', error))
+        .finally(() => {
+          if (cloudBuildingKey === depthRenderKey) cloudBuildingKey = '';
+        });
     }
   } catch (error) {
     setFeedStatus('world-map-midas-state', 'midas', 'offline', `unavailable · ${error.message}`);
@@ -2072,16 +2079,17 @@ function updateCloudHud() {
   const fps = byId('world-map-cloud-hud-fps');
   if (points) points.textContent = `${cloudPointCount.toLocaleString()} points`;
   if (depth) depth.textContent = `MiDaS ${latestSensorDepth?.latency_ms == null ? '—' : `${Number(latestSensorDepth.latency_ms).toFixed(1)} ms`}`;
-  const frameAge = latestDepthCapturedAt > 0 ? Math.max(0, Date.now() / 1000 - latestDepthCapturedAt) : NaN;
+  const renderedDepthAt = Number(cloudDepthImage?.capturedAt) || 0;
+  const frameAge = renderedDepthAt > 0 ? Math.max(0, Date.now() / 1000 - renderedDepthAt) : NaN;
   if (age) age.textContent = Number.isFinite(frameAge) ? `Frame ${frameAge.toFixed(1)} s` : 'Frame —';
   if (sync) {
     const cameraAt = Number(latestCameraFrame?.captured_at);
-    const depthAt = Number(latestDepthCapturedAt);
+    const depthAt = Number(cloudDepthImage?.capturedAt);
     const delta = cameraAt > 0 && depthAt > 0 ? Math.abs(cameraAt - depthAt) : NaN;
-    const pairedState = cloudCameraPlane?.userData.frameId === latestSensorDepth?.frame_id ? 'camera matched' : 'no paired image';
-    const frameId = String(latestSensorDepth?.frame_id || '—').slice(-14);
+    const pairedState = cloudPairedCameraFrameId === cloudDepthImage?.frameId ? 'camera matched' : 'depth view';
+    const frameId = String(cloudDepthImage?.frameId || '—').slice(-14);
     sync.textContent = Number.isFinite(delta)
-      ? `D ${frameId} · live Δ ${delta.toFixed(1)} s · MiDaS cloud · ${pairedState}`
+      ? `D ${frameId} · camera Δ ${delta.toFixed(1)} s · MiDaS cloud · ${pairedState}`
       : `D ${frameId} · MiDaS cloud · ${pairedState}`;
   }
   const now = performance.now();
@@ -2295,17 +2303,16 @@ async function rebuildDepthCloud(depth, segmentation = latestSegmentation) {
   if (!cloud || !depth.depth_gray_jpeg_base64) return;
   const token = ++cloudBuildToken;
   const image = await loadDepthFrame(depth);
-  const [pairedFrame, depthColorImage] = await Promise.all([
-    cameraFrameForDepth(depth),
-    depth.depth_jpeg_base64 ? loadGrayDepth(depth.depth_jpeg_base64) : Promise.resolve(image),
-  ]);
-  const colorImage = pairedFrame?.image_base64
-    ? await loadDepthImage(pairedFrame.image_base64, pairedFrame.mime_type || 'image/jpeg')
-    : depthColorImage;
+  const colorImage = depth.depth_jpeg_base64
+    ? await loadGrayDepth(depth.depth_jpeg_base64) : image;
   const classMask = segmentationMatchesDepth(segmentation, depth)
     ? await loadClassMask(segmentation.mask_png_base64) : null;
   if (token !== cloudBuildToken || activeSource !== 'sensors' || activeRender !== '3d') return false;
   cloudDepthImage = image;
+  cloudFrameId = String(depth.frame_id || '');
+  cloudPairedCameraFrameId = '';
+  cloudSegmentationFrameId = segmentationMatchesDepth(segmentation, depth)
+    ? String(segmentation.frame_id || segmentation.captured_at || '') : '';
   cloudDepthYolo = null;
   latestDepthCapturedAt = Number(depth.captured_at) || 0;
   updateCloudOrigin(latestDepthCapturedAt);
@@ -2362,13 +2369,44 @@ async function rebuildDepthCloud(depth, segmentation = latestSegmentation) {
   }
   updateCloudRadar();
   updateCloudOdometry();
-  const frameYolo = await yoloResultForDepth(depth);
-  if (token !== cloudBuildToken) return false;
-  cloudDepthYolo = frameYolo;
-  drawDepthDetections(image, frameYolo, frameCalibration);
   resizeCloud();
+  // Camera RGB and YOLO pairing are optional overlays; neither may hold up
+  // the depth geometry or cause the polling loop to cancel every rebuild.
+  void yoloResultForDepth(depth).then(frameYolo => {
+    if (token !== cloudBuildToken) return;
+    cloudDepthYolo = frameYolo;
+    drawDepthDetections(image, frameYolo, frameCalibration);
+  }).catch(error => console.warn('Could not pair YOLOX with MiDaS frame:', error));
+  const pairedFramePromise = cameraFrameForDepth(depth);
+  void pairedFramePromise.then(async frame => {
+    if (token !== cloudBuildToken || !frame?.image_base64) return;
+    const sourceImage = await loadDepthImage(frame.image_base64, frame.mime_type || 'image/jpeg');
+    if (token !== cloudBuildToken || cloudPoints?.geometry !== geometry) return;
+    let pointIndex = 0;
+    const colors = geometry.attributes.color.array;
+    for (let y = 0; y < image.height; y += stride) {
+      for (let x = 0; x < image.width; x += stride) {
+        const maskX = classMask ? Math.min(classMask.width - 1, Math.round(x * classMask.width / image.width)) : 0;
+        const maskY = classMask ? Math.min(classMask.height - 1, Math.round(y * classMask.height / image.height)) : 0;
+        const maskIndex = classMask ? (maskY * classMask.width + maskX) * 4 : -1;
+        if (!classMask || classMask.values[maskIndex + 3] === 0) {
+          const sourceX = Math.min(sourceImage.width - 1, Math.round(x * sourceImage.width / image.width));
+          const sourceY = Math.min(sourceImage.height - 1, Math.round(y * sourceImage.height / image.height));
+          const sourceIndex = (sourceY * sourceImage.width + sourceX) * 4;
+          colors[pointIndex * 3] = sourceImage.values[sourceIndex] / 255;
+          colors[pointIndex * 3 + 1] = sourceImage.values[sourceIndex + 1] / 255;
+          colors[pointIndex * 3 + 2] = sourceImage.values[sourceIndex + 2] / 255;
+        }
+        pointIndex += 1;
+      }
+    }
+    cloudPairedCameraFrameId = frame.frame_id;
+    geometry.attributes.color.needsUpdate = true;
+    updateCloudHud();
+    cloud.render();
+  }).catch(error => console.warn('Could not color MiDaS cloud with paired camera frame:', error));
   if (cloudViewport?.classList.contains('is-camera-view')) {
-    void cameraFrameForDepth(depth).then(frame => {
+    void pairedFramePromise.then(frame => {
       if (token === cloudBuildToken && frame) return updateCloudCameraPlane(frame);
       return false;
     }).then(() => cloud.render()).catch(error => console.warn('Could not load camera-aligned 3D background:', error));
@@ -2399,12 +2437,12 @@ function drawDepthDetections(image, yolo, calibration = metricDepthCalibration) 
   if (!cloud || !image || activeRender !== '3d') return;
   const layerEnabled = cloudViewport?.querySelector('[data-cloud-layer="detections"]')?.checked !== false;
   const yoloAge = Number(yolo?.captured_at) > 0 ? Date.now() / 1000 - Number(yolo.captured_at) : Infinity;
-  const yoloFrameDelta = Number.isFinite(Number(yolo?.frame_delta_s))
+  const yoloFrameDelta = yolo?.frame_delta_s != null && Number.isFinite(Number(yolo.frame_delta_s))
     ? Number(yolo.frame_delta_s)
     : Math.abs(Number(yolo?.captured_at) - Number(image.capturedAt));
   const frameMatches = Boolean(image.frameId && yolo?.frame_id === image.frameId)
     || Number.isFinite(yoloFrameDelta) && yoloFrameDelta <= 0.75;
-  const detections = layerEnabled && yolo?.state === 'ready' && yoloAge >= 0 && yoloAge <= 2.5
+  const detections = layerEnabled && frameMatches && yolo?.state === 'ready' && yoloAge >= 0 && yoloAge <= 2.5
     ? (yolo.detections || []) : [];
   const detectionKey = `${layerEnabled}:${cloudFrameId}:${yolo?.frame_id || ''}:${detections.length}:${Number(latestDepthCapturedAt).toFixed(3)}`;
   if (detectionKey === cloudDetectionKey) return;
