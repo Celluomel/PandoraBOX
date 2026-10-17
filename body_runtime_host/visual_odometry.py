@@ -24,19 +24,35 @@ class VisualOdometry:
                                       "source": "camera_midas_rgbd", "simulated": False}
 
     @staticmethod
-    def _decode_jpeg(encoded: str):
+    def _decode_image(encoded: str):
         import cv2
         import numpy as np
 
         raw = base64.b64decode(encoded, validate=True)
-        image = cv2.imdecode(np.frombuffer(raw, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
+        image = cv2.imdecode(np.frombuffer(raw, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
         if image is None:
-            raise ValueError("could not decode synchronized camera/depth JPEG")
+            raise ValueError("could not decode synchronized camera/depth image")
+        if image.ndim == 3:
+            image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        if image.dtype != np.uint8:
+            maximum = float(np.iinfo(image.dtype).max)
+            image = np.clip(image.astype(np.float32) * (255.0 / maximum), 0, 255).astype(np.uint8)
         return image
 
     @staticmethod
     def _wrap_angle(value: float) -> float:
         return (value + math.pi) % (2.0 * math.pi) - math.pi
+
+    @staticmethod
+    def _imu_at(samples: list[dict] | None, timestamp: float) -> dict | None:
+        valid = [item for item in (samples or []) if isinstance(item, dict)
+                 and item.get("attitude_valid") and item.get("yaw_relative_deg") is not None]
+        if not valid:
+            return None
+        nearest = min(valid, key=lambda item: abs(float(item.get("timestamp") or 0.0) - timestamp))
+        if abs(float(nearest.get("timestamp") or 0.0) - timestamp) > 0.15:
+            return None
+        return nearest
 
     def status(self) -> dict[str, Any]:
         with self._lock:
@@ -51,7 +67,8 @@ class VisualOdometry:
                           "source": "camera_midas_rgbd", "simulated": False}
 
     def update(self, frame: dict, depth: dict, calibration: dict,
-               detections: list[dict] | None = None) -> dict[str, Any]:
+               detections: list[dict] | None = None,
+               imu_history: list[dict] | None = None) -> dict[str, Any]:
         """Consume one synchronized RGB/depth pair and estimate camera motion."""
         frame_id = str(frame.get("frame_id") or "")
         with self._lock:
@@ -63,23 +80,24 @@ class VisualOdometry:
             depth_at = float(depth["captured_at"])
             if not calibration.get("available"):
                 raise ValueError("radar-anchored MiDaS metric calibration is unavailable")
-            scale = float(calibration["scale_m_per_relative_unit"])
-            offset = float(calibration["offset_m"])
+            inverse_scale = float(calibration["inverse_scale_per_relative_unit"])
+            inverse_offset = float(calibration["inverse_offset_per_m"])
             rmse = float(calibration.get("rmse_m", 0.0))
             if not frame_id or not math.isfinite(captured_at) or not math.isfinite(depth_at):
                 raise ValueError("camera/depth timestamps are unavailable")
             if abs(captured_at - depth_at) > 0.35:
                 raise ValueError("MiDaS depth is not synchronized to the camera frame")
-            if not 0.05 <= scale <= 5.0:
+            if not 1e-6 <= abs(inverse_scale) <= 1e3 or not -1e3 <= inverse_offset <= 1e3:
                 raise ValueError("radar-anchored MiDaS metric calibration is unavailable")
-            if not frame.get("image_base64") or not depth.get("depth_gray_jpeg_base64"):
+            depth_encoded = depth.get("depth_raw_png_base64") or depth.get("depth_gray_jpeg_base64")
+            if not frame.get("image_base64") or not depth_encoded:
                 raise ValueError("camera image or MiDaS depth image is unavailable")
 
             import cv2
             import numpy as np
 
-            gray = self._decode_jpeg(frame["image_base64"])
-            depth_gray = self._decode_jpeg(depth["depth_gray_jpeg_base64"])
+            gray = self._decode_image(frame["image_base64"])
+            depth_gray = self._decode_image(depth_encoded)
             if depth_gray.shape != gray.shape:
                 depth_gray = cv2.resize(depth_gray, (gray.shape[1], gray.shape[0]), interpolation=cv2.INTER_LINEAR)
             height, width = gray.shape
@@ -102,7 +120,8 @@ class VisualOdometry:
             points = cv2.goodFeaturesToTrack(gray, maxCorners=self.max_features, qualityLevel=0.01,
                                              minDistance=8, mask=mask, blockSize=7)
             current = {"frame_id": frame_id, "captured_at": captured_at, "gray": gray,
-                       "depth": depth_gray, "points": points, "camera": camera}
+                       "depth": depth_gray, "points": points, "camera": camera,
+                       "imu_attitude": self._imu_at(imu_history, captured_at)}
             with self._lock:
                 if self._previous is None:
                     self._previous = current
@@ -130,8 +149,14 @@ class VisualOdometry:
                 old_depth = previous["depth"]
                 px = np.clip(np.rint(old_pixels[:, 0]).astype(int), 0, width - 1)
                 py = np.clip(np.rint(old_pixels[:, 1]).astype(int), 0, height - 1)
-                relative = 1.1 + (1.0 - old_depth[py, px].astype(np.float64) / 255.0) * 5.8
-                z = scale * relative + offset
+                raw_min = float(depth.get("depth_raw_min", 0.0) or 0.0)
+                raw_max = float(depth.get("depth_raw_max", 0.0) or 0.0)
+                if depth.get("depth_raw_png_base64") and raw_max > raw_min:
+                    relative = raw_min + old_depth[py, px].astype(np.float64) / 255.0 * (raw_max - raw_min)
+                else:
+                    relative = old_depth[py, px].astype(np.float64) / 255.0
+                inverse_range = inverse_scale * relative + inverse_offset
+                z = np.divide(1.0, inverse_range, out=np.full_like(inverse_range, np.nan), where=inverse_range > 1e-6)
                 valid = np.isfinite(z) & (z >= 0.25) & (z <= 10.0)
                 old_pixels, new_pixels, z = old_pixels[valid], new_pixels[valid], z[valid]
                 if len(z) < 12:
@@ -163,9 +188,19 @@ class VisualOdometry:
                 if not math.isfinite(travel) or travel > 1.0:
                     raise ValueError("estimated frame-to-frame motion is implausible")
                 # Camera coordinates (right, down, forward) -> body/map (forward, left, up).
-                self._position[0] += float(camera_delta[2])
-                self._position[1] -= float(camera_delta[0])
-                yaw_delta = math.atan2(float(rotation_matrix[0, 2]), float(rotation_matrix[2, 2]))
+                local_forward = float(camera_delta[2])
+                local_left = -float(camera_delta[0])
+                visual_yaw_delta = math.atan2(float(rotation_matrix[0, 2]), float(rotation_matrix[2, 2]))
+                previous_imu = previous.get("imu_attitude")
+                current_imu = current.get("imu_attitude")
+                imu_yaw_delta = None
+                if previous_imu and current_imu:
+                    imu_yaw_delta = self._wrap_angle(math.radians(
+                        float(current_imu["yaw_relative_deg"]) - float(previous_imu["yaw_relative_deg"])))
+                yaw_delta = (self._wrap_angle(0.7 * imu_yaw_delta + 0.3 * visual_yaw_delta)
+                             if imu_yaw_delta is not None else visual_yaw_delta)
+                self._position[0] += local_forward * math.cos(self._yaw) - local_left * math.sin(self._yaw)
+                self._position[1] += local_forward * math.sin(self._yaw) + local_left * math.cos(self._yaw)
                 self._yaw = self._wrap_angle(self._yaw + yaw_delta)
                 inlier_ratio = inlier_count / max(1, len(object_points))
                 self._previous = current
@@ -175,6 +210,10 @@ class VisualOdometry:
                     "coordinate_frame": "visual_odom", "position_m": [round(v, 4) for v in self._position],
                     "yaw_rad": round(self._yaw, 5), "delta_m": [round(float(v), 4) for v in camera_delta],
                     "delta_yaw_rad": round(yaw_delta, 5), "speed_mps": round(travel / dt, 4),
+                    "visual_yaw_delta_rad": round(visual_yaw_delta, 5),
+                    "imu_yaw_delta_rad": round(imu_yaw_delta, 5) if imu_yaw_delta is not None else None,
+                    "yaw_fusion": "imu_visual_70_30" if imu_yaw_delta is not None else "visual_only",
+                    "imu_attitude_valid": current_imu is not None,
                     "inliers": inlier_count, "features": len(object_points),
                     "confidence": round(min(1.0, inlier_ratio * min(1.0, inlier_count / 40.0)), 3),
                     "depth_calibration_rmse_m": rmse,

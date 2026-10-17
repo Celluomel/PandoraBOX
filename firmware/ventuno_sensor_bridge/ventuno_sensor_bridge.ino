@@ -35,6 +35,20 @@ float latestAccelZ = 0.0f;
 float latestGyroX = 0.0f;
 float latestGyroY = 0.0f;
 float latestGyroZ = 0.0f;
+float latestRollDeg = 0.0f;
+float latestPitchDeg = 0.0f;
+float latestYawRelativeDeg = 0.0f;
+float gyroBiasX = 0.0f;
+float gyroBiasY = 0.0f;
+float gyroBiasZ = 0.0f;
+float previousAccelNorm = 1.0f;
+float latestAccelNorm = 1.0f;
+float latestAccelJerk = 0.0f;
+uint32_t stationarySince = 0;
+bool attitudeFilterReady = false;
+bool gyroBiasReady = false;
+bool calibrationStable = false;
+bool gravityReferenceValid = false;
 Adafruit_VL53L1X tof;
 bool tofReady = false;
 uint32_t lastTofInitAttempt = 0;
@@ -118,6 +132,70 @@ uint16_t readU16LE(const uint8_t *data) {
   return static_cast<uint16_t>(data[0]) | (static_cast<uint16_t>(data[1]) << 8);
 }
 
+float wrapDegrees(float angle) {
+  while (angle > 180.0f) angle -= 360.0f;
+  while (angle < -180.0f) angle += 360.0f;
+  return angle;
+}
+
+void updateImuAttitude(float ax, float ay, float az, float gx, float gy, float gz,
+                       uint32_t now) {
+  const float dt = latestImuAt ? (now - latestImuAt) / 1000.0f : 0.016f;
+  if (!(dt > 0.0f && dt <= 0.1f)) return;
+
+  const float accelNorm = sqrtf(ax * ax + ay * ay + az * az);
+  const float gyroNorm = sqrtf(gx * gx + gy * gy + gz * gz);
+  const float accelJerk = fabsf(accelNorm - previousAccelNorm) / dt;
+  previousAccelNorm = accelNorm;
+  latestAccelNorm = accelNorm;
+  latestAccelJerk = accelJerk;
+
+  const bool nearGravity = accelNorm >= 0.88f && accelNorm <= 1.12f;
+  const bool gravityUsable = nearGravity && accelJerk <= 3.5f;
+  gravityReferenceValid = gravityUsable;
+  const bool stationaryCandidate = accelNorm >= 0.96f && accelNorm <= 1.04f
+      && gyroNorm <= 2.0f && accelJerk <= 0.35f;
+
+  if (stationaryCandidate) {
+    if (!stationarySince) stationarySince = now;
+    const float elapsed = (now - stationarySince) / 1000.0f;
+    if (elapsed >= 3.0f) {
+      const float biasGain = fminf(0.02f, dt / 10.0f);
+      gyroBiasX += biasGain * (gx - gyroBiasX);
+      gyroBiasY += biasGain * (gy - gyroBiasY);
+      gyroBiasZ += biasGain * (gz - gyroBiasZ);
+      gyroBiasReady = true;
+    }
+  } else {
+    stationarySince = 0;
+  }
+  calibrationStable = gyroBiasReady && stationarySince != 0
+      && now - stationarySince >= 500;
+
+  const float correctedGx = gx - gyroBiasX;
+  const float correctedGy = gy - gyroBiasY;
+  const float correctedGz = gz - gyroBiasZ;
+  const float accelRoll = atan2f(ay, az) * 57.2957795f;
+  const float accelPitch = atan2f(-ax, hypotf(ay, az)) * 57.2957795f;
+
+  if (!attitudeFilterReady) {
+    latestRollDeg = accelRoll;
+    latestPitchDeg = accelPitch;
+    attitudeFilterReady = gravityUsable;
+  } else {
+    latestRollDeg = wrapDegrees(latestRollDeg + correctedGx * dt);
+    latestPitchDeg = wrapDegrees(latestPitchDeg + correctedGy * dt);
+    latestYawRelativeDeg = wrapDegrees(latestYawRelativeDeg + correctedGz * dt);
+    if (gravityUsable) {
+      const float correction = 1.0f - expf(-dt / 1.5f);
+      latestRollDeg = wrapDegrees(latestRollDeg
+          + correction * wrapDegrees(accelRoll - latestRollDeg));
+      latestPitchDeg = wrapDegrees(latestPitchDeg
+          + correction * wrapDegrees(accelPitch - latestPitchDeg));
+    }
+  }
+}
+
 String readMovementSample() {
 #if !BODY_ENABLE_IMU
   return String("{\"available\":false,\"error\":\"imu_disabled_for_sensor_test\"}");
@@ -129,17 +207,31 @@ String readMovementSample() {
     return String("{\"available\":false,\"error\":\"imu_sample_stale\"}");
   }
 
-  char payload[320];
+  char payload[640];
   const int written = snprintf(
       payload, sizeof(payload),
       "{\"available\":true,\"device\":\"modulino_movement_lsm6dsox\","
       "\"frame\":\"imu_sensor\",\"sequence\":%lu,\"timestamp_ms\":%lu,"
       "\"acceleration_g\":[%.5f,%.5f,%.5f],"
-      "\"angular_velocity_dps\":[%.5f,%.5f,%.5f]}",
+      "\"angular_velocity_dps\":[%.5f,%.5f,%.5f],"
+      "\"roll_deg\":%.4f,\"pitch_deg\":%.4f,\"yaw_relative_deg\":%.4f,"
+      "\"attitude_valid\":%s,\"gravity_reference_valid\":%s,"
+      "\"gyro_bias_ready\":%s,\"calibration_stable\":%s,"
+      "\"acceleration_norm_g\":%.4f,\"acceleration_jerk_gps\":%.4f,"
+      "\"yaw_rate_dps\":%.4f,"
+      "\"motion_state\":\"%s\"}",
       static_cast<unsigned long>(imuSequence),
       static_cast<unsigned long>(latestImuAt),
       latestAccelX, latestAccelY, latestAccelZ,
-      latestGyroX, latestGyroY, latestGyroZ);
+      latestGyroX, latestGyroY, latestGyroZ,
+      latestRollDeg, latestPitchDeg, latestYawRelativeDeg,
+      attitudeFilterReady ? "true" : "false",
+      gravityReferenceValid ? "true" : "false",
+      gyroBiasReady ? "true" : "false", calibrationStable ? "true" : "false",
+      latestAccelNorm, latestAccelJerk, latestGyroZ - gyroBiasZ,
+      calibrationStable ? "stationary" : (latestAccelJerk > 3.5f ? "linear_acceleration"
+          : (sqrtf(latestGyroX * latestGyroX + latestGyroY * latestGyroY
+                   + latestGyroZ * latestGyroZ) > 2.0f ? "turning" : "moving")));
   if (written <= 0 || static_cast<size_t>(written) >= sizeof(payload)) {
     return String("{\"available\":false,\"error\":\"imu_payload_overflow\"}");
   }
@@ -422,6 +514,8 @@ void loop() {
       latestGyroX = movement.getRoll();
       latestGyroY = movement.getPitch();
       latestGyroZ = movement.getYaw();
+      updateImuAttitude(latestAccelX, latestAccelY, latestAccelZ,
+                        latestGyroX, latestGyroY, latestGyroZ, millis());
       latestImuAt = millis();
       ++imuSequence;
       latestImuSampleValid = isfinite(latestAccelX) && isfinite(latestAccelY)

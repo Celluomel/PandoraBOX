@@ -112,10 +112,15 @@ def main() -> None:
             low, high = np.percentile(depth, (2, 98))
             normalized = np.clip((depth - low) / max(float(high - low), 1e-6), 0.0, 1.0)
             gray = np.asarray(normalized * 255.0, dtype=np.uint8)
+            raw_low = float(np.min(depth))
+            raw_high = float(np.max(depth))
+            raw_span = max(raw_high - raw_low, 1e-12)
+            raw_u16 = np.rint(np.clip((depth - raw_low) / raw_span, 0.0, 1.0) * 65535.0).astype(np.uint16)
             colored = cv2.applyColorMap(gray, cv2.COLORMAP_TURBO)
             gray_ok, gray_encoded = cv2.imencode(".jpg", gray, [int(cv2.IMWRITE_JPEG_QUALITY), 72])
             color_ok, color_encoded = cv2.imencode(".jpg", colored, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
-            if not gray_ok or not color_ok:
+            raw_ok, raw_encoded = cv2.imencode(".png", raw_u16, [int(cv2.IMWRITE_PNG_COMPRESSION), 3])
+            if not gray_ok or not color_ok or not raw_ok:
                 raise RuntimeError("could not encode MiDaS depth output")
             protocol_out.write(json.dumps({
                 "ok": True, "runtime": actual_runtime, "inference_ms": round(inference_ms, 1),
@@ -124,6 +129,8 @@ def main() -> None:
                 "width": int(image_rgb.shape[1]), "height": int(image_rgb.shape[0]),
                 "depth_gray_jpeg_base64": base64.b64encode(gray_encoded.tobytes()).decode("ascii"),
                 "depth_jpeg_base64": base64.b64encode(color_encoded.tobytes()).decode("ascii"),
+                "depth_raw_png_base64": base64.b64encode(raw_encoded.tobytes()).decode("ascii"),
+                "depth_raw_min": raw_low, "depth_raw_max": raw_high,
             }, separators=(",", ":")) + "\n")
         except Exception as exc:
             protocol_out.write(json.dumps({"ok": False, "error": str(exc)[:300]}, separators=(",", ":")) + "\n")

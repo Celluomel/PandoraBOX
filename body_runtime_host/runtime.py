@@ -742,7 +742,13 @@ class BodyHost:
             float(frame.get("captured_at") or 0.0), max_delta_s=0.5
         )
         detections = (yolo or {}).get("detections") or []
-        return self._visual_odometry.update(frame, depth, calibration, detections)
+        imu_source = self._get_imu_bridge_source()
+        try:
+            imu_source.read()
+        except Exception:
+            pass
+        imu_history = imu_source.status().get("history", [])
+        return self._visual_odometry.update(frame, depth, calibration, detections, imu_history)
 
     def midas_metric_calibration(self) -> dict:
         return self._midas_metric_calibration.status()
@@ -1877,7 +1883,9 @@ class BodyHost:
             return {**settings, "available": False, "error": "Local Arduino Router socket is unavailable; Body must run on VENTUNO Q"}
         try:
             sample = self._get_imu_bridge_source().read()
-            return {**settings, "available": True, "sample": sample}
+            source_status = self._get_imu_bridge_source().status()
+            return {**settings, "available": True, "sample": sample,
+                    "history": source_status.get("history", [])}
         except Exception as exc:
             return {**settings, "available": False, "error": str(exc)[:240],
                     "source_status": self._get_imu_bridge_source().status()}

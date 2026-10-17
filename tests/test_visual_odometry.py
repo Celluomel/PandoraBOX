@@ -11,7 +11,8 @@ class VisualOdometryTests(unittest.TestCase):
         result = odometry.update(
             {"frame_id": "camera-1", "captured_at": 10.0, "image_base64": "unused"},
             {"captured_at": 9.0, "depth_gray_jpeg_base64": "unused"},
-            {"available": True, "scale_m_per_relative_unit": 0.5, "offset_m": 0.0},
+            {"available": True, "inverse_scale_per_relative_unit": 0.2,
+             "inverse_offset_per_m": 0.1, "rmse_m": 0.1},
         )
         self.assertFalse(result["available"])
         self.assertEqual(result["state"], "degraded")
@@ -51,10 +52,11 @@ class VisualOdometryTests(unittest.TestCase):
             calcOpticalFlowPyrLK=lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("synthetic LK failure")),
         )
         numpy = SimpleNamespace(array=lambda *args, **kwargs: [], full=lambda *args, **kwargs: [], float64=float, uint8=int)
-        calibration = {"available": True, "scale_m_per_relative_unit": 0.5, "offset_m": 0.0}
+        calibration = {"available": True, "inverse_scale_per_relative_unit": 0.2,
+                       "inverse_offset_per_m": 0.1, "rmse_m": 0.1}
         odometry = VisualOdometry()
         with patch.dict("sys.modules", {"cv2": cv2, "numpy": numpy}), \
-                patch.object(odometry, "_decode_jpeg", return_value=FakeImage()):
+                patch.object(odometry, "_decode_image", return_value=FakeImage()):
             first = {"frame_id": "camera-1", "captured_at": 10.0, "image_base64": "image"}
             depth = {"captured_at": 10.0, "depth_gray_jpeg_base64": "depth"}
             initial = odometry.update(first, depth, calibration)

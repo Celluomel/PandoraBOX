@@ -74,23 +74,49 @@ class ModulinoImuTests(unittest.TestCase):
         self.assertIn("arduino-cli upload", deploy_text)
         self.assertNotIn("arduino-app-cli", deploy_text)
 
-    def test_bridge_sample_derives_gravity_attitude_and_preserves_angular_rates(self):
+    def test_bridge_preserves_firmware_fused_attitude_and_gyro_rates(self):
         bridge = FakeBridge({
             "available": True,
             "sequence": 7,
+            "timestamp_ms": 1120,
             "acceleration_g": [0, math.sqrt(0.5), math.sqrt(0.5)],
             "angular_velocity_dps": [1.25, -2.5, 3.75],
+            "roll_deg": 44.5,
+            "pitch_deg": -1.2,
+            "yaw_relative_deg": 12.0,
+            "attitude_valid": True,
+            "gravity_reference_valid": False,
+            "gyro_bias_ready": True,
+            "calibration_stable": False,
+            "motion_state": "turning",
         })
         source = VentunoBridgeImuSource(bridge_factory=lambda: bridge)
 
         sample = source.read()
 
-        self.assertAlmostEqual(sample["roll_deg"], 45.0)
-        self.assertAlmostEqual(sample["pitch_deg"], 0.0)
+        self.assertAlmostEqual(sample["roll_deg"], 44.5)
+        self.assertAlmostEqual(sample["pitch_deg"], -1.2)
+        self.assertAlmostEqual(sample["yaw_relative_deg"], 12.0)
         self.assertTrue(sample["attitude_valid"])
+        self.assertFalse(sample["calibration_stable"])
+        self.assertEqual(sample["motion_state"], "turning")
         self.assertEqual(sample["yaw_rate_dps"], 3.75)
         self.assertFalse(sample["simulated"])
         self.assertEqual(bridge.calls[0][0], "body_imu_read")
+
+    def test_missing_firmware_fusion_is_not_misreported_as_valid_attitude(self):
+        bridge = FakeBridge({
+            "available": True,
+            "sequence": 1,
+            "acceleration_g": [0, 0, 1],
+            "angular_velocity_dps": [0, 0, 1],
+        })
+
+        sample = VentunoBridgeImuSource(bridge_factory=lambda: bridge).read()
+
+        self.assertFalse(sample["attitude_valid"])
+        self.assertIsNone(sample["roll_deg"])
+        self.assertEqual(sample["attitude_source"], "fused_attitude_unavailable")
 
     def test_acceleration_invalidates_gravity_attitude_during_linear_acceleration(self):
         bridge = FakeBridge({
@@ -117,6 +143,32 @@ class ModulinoImuTests(unittest.TestCase):
         self.assertEqual(observation.modalities["imu"]["source"], imu.name)
         self.assertEqual(observation.modalities["imu"]["yaw_rate_dps"], -4.0)
         self.assertFalse(observation.modalities["imu"]["simulated"])
+
+    def test_firmware_updates_fused_attitude_at_sensor_rate_and_gates_calibration(self):
+        from pathlib import Path
+
+        sketch = (Path(__file__).resolve().parents[1] / "firmware" / "ventuno_sensor_bridge"
+                  / "ventuno_sensor_bridge.ino").read_text(encoding="utf-8")
+        self.assertIn("updateImuAttitude(latestAccelX, latestAccelY, latestAccelZ", sketch)
+        self.assertIn("gyroBiasReady", sketch)
+        self.assertIn("calibrationStable", sketch)
+        self.assertIn("expf(-dt / 1.5f)", sketch)
+        self.assertIn("yaw_relative_deg", sketch)
+
+    def test_attitude_at_interpolates_only_near_capture_timestamp(self):
+        source = VentunoBridgeImuSource(bridge_factory=lambda: None)
+        source._history.extend([
+            {"timestamp": 1.0, "roll_deg": 10.0, "pitch_deg": 0.0, "yaw_relative_deg": 179.0,
+             "attitude_valid": True},
+            {"timestamp": 1.1, "roll_deg": 20.0, "pitch_deg": 4.0, "yaw_relative_deg": -179.0,
+             "attitude_valid": True},
+        ])
+
+        result = source.attitude_at(1.05)
+
+        self.assertAlmostEqual(result["roll_deg"], 15.0)
+        self.assertAlmostEqual(result["pitch_deg"], 2.0)
+        self.assertIsNone(source.attitude_at(2.0))
 
     def test_unavailable_device_is_reported_without_fabricating_a_sample(self):
         bridge = FakeBridge({"available": False, "error": "modulino_movement_not_detected"})
