@@ -8,6 +8,7 @@ const cameraRadarGeometry = { horizontalFovDeg: 70, yawOffsetDeg: 0, lateralOffs
 const maxCalibrationPairDeltaSeconds = 0.1;
 const maxPersonBearingErrorDeg = 8;
 const maxSceneDetectionPairDeltaSeconds = 0.5;
+const yoloOverlayCoastSeconds = 5;
 function setFeedStatus(id, source, state, detail) {
   sourceStates[source] = state;
   const element = byId(id);
@@ -49,6 +50,9 @@ let latestCameraFrame = null;
 let renderedSegmentationFrameId = '';
 let displayedCameraFrameId = null;
 let displayedYoloOverlayKey = '';
+let lastOverlayYoloKey = '';
+let yoloOverlayTracks = [];
+let nextYoloOverlayTrackId = 1;
 let cloudDepthImage = null;
 let cloudBuildToken = 0;
 let cloudBuildingKey = '';
@@ -871,23 +875,25 @@ byId('world-map-midas-calibrate-3d')?.addEventListener('click', openDepthCalibra
 void loadMetricCalibration();
 setSource(window.bodyWorldModelView === 'sensors' ? 'sensors' : 'simulation');
 
-function drawBoxes(detections, width, height, stale = false) {
+function drawBoxes(detections, width, height) {
   const svg = byId('world-map-yolo-overlay');
   svg.replaceChildren();
-  svg.classList.toggle('is-stale', stale);
+  svg.classList.remove('is-stale');
   svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
   for (const item of detections || []) {
     const box = item.bbox;
     if (!Array.isArray(box) || box.length < 4) continue;
     const [x1, y1, x2, y2] = box.map(Number);
     if (![x1, y1, x2, y2].every(Number.isFinite)) continue;
+    const stale = Number(item.overlayAgeS) > 0.5 || item.overlaySourceStale;
     const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
     rect.setAttribute('x', String(x1 * width));
     rect.setAttribute('y', String(y1 * height));
     rect.setAttribute('width', String(Math.max(0, x2 - x1) * width));
     rect.setAttribute('height', String(Math.max(0, y2 - y1) * height));
     rect.setAttribute('fill', 'none');
-    rect.setAttribute('stroke', '#62f1c1');
+    rect.setAttribute('stroke', stale ? '#f2bc65' : '#62f1c1');
+    rect.setAttribute('opacity', stale ? '0.72' : '1');
     rect.setAttribute('stroke-width', String(Math.max(width, height) * 0.004));
     svg.append(rect);
     const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
@@ -899,7 +905,8 @@ function drawBoxes(detections, width, height, stale = false) {
     label.setAttribute('paint-order', 'stroke');
     label.setAttribute('stroke', '#07120f');
     label.setAttribute('stroke-width', String(Math.max(2, width * 0.004)));
-    label.textContent = `${stale ? 'STALE · ' : ''}${item.label || item.class_name || item.class || 'object'} ${Math.round(Number(item.confidence || item.score || 0) * 100)}%`;
+    const ageLabel = stale ? `LAST SEEN ${Math.max(0, Number(item.overlayAgeS) || 0).toFixed(1)}s · ` : '';
+    label.textContent = `${ageLabel}${item.label || item.class_name || item.class || 'object'} ${Math.round(Number(item.confidence || item.score || 0) * 100)}%`;
     svg.append(label);
   }
 }
@@ -913,6 +920,61 @@ function visibleYoloDetections(yolo) {
     return confidence >= 0.25 && Array.isArray(box) && box.length >= 4
       && box.slice(0, 4).every(value => Number.isFinite(Number(value)));
   });
+}
+
+function overlayDetectionLabel(item) {
+  return String(item.label || item.class_name || item.class || 'object').toLowerCase();
+}
+
+function overlayBoxIou(a, b) {
+  if (!Array.isArray(a) || !Array.isArray(b)) return 0;
+  const [ax1, ay1, ax2, ay2] = a.map(Number), [bx1, by1, bx2, by2] = b.map(Number);
+  const intersection = Math.max(0, Math.min(ax2, bx2) - Math.max(ax1, bx1))
+    * Math.max(0, Math.min(ay2, by2) - Math.max(ay1, by1));
+  const areaA = Math.max(0, ax2 - ax1) * Math.max(0, ay2 - ay1);
+  const areaB = Math.max(0, bx2 - bx1) * Math.max(0, by2 - by1);
+  return intersection / Math.max(1e-9, areaA + areaB - intersection);
+}
+
+function updateYoloOverlayTracks(yolo) {
+  const now = Date.now() / 1000;
+  const capturedAt = Number(yolo?.captured_at) || 0;
+  const observationAge = capturedAt > 0 ? now - capturedAt : Infinity;
+  const detections = visibleYoloDetections(yolo);
+  const frameKey = String(yolo?.frame_id || capturedAt);
+  if (frameKey && frameKey !== lastOverlayYoloKey && detections.length
+      && observationAge >= 0 && observationAge <= 2.5) {
+    lastOverlayYoloKey = frameKey;
+    const unmatched = new Set(yoloOverlayTracks.map((_, index) => index));
+    for (const detection of detections) {
+      const label = overlayDetectionLabel(detection);
+      let bestIndex = -1;
+      let bestIou = 0.05;
+      for (const index of unmatched) {
+        const track = yoloOverlayTracks[index];
+        if (track.label !== label) continue;
+        const overlap = overlayBoxIou(track.detection.bbox, detection.bbox);
+        if (overlap > bestIou) {
+          bestIou = overlap;
+          bestIndex = index;
+        }
+      }
+      const track = bestIndex >= 0 ? yoloOverlayTracks[bestIndex] : {
+        id: nextYoloOverlayTrackId++, label, detection, lastSeenAt: capturedAt,
+      };
+      if (bestIndex >= 0) unmatched.delete(bestIndex);
+      track.detection = detection;
+      track.lastSeenAt = capturedAt;
+      track.sourceStale = yolo.state !== 'ready' || yolo.paired === false;
+      if (bestIndex < 0) yoloOverlayTracks.push(track);
+    }
+  }
+  yoloOverlayTracks = yoloOverlayTracks.filter(track => now - track.lastSeenAt <= yoloOverlayCoastSeconds);
+  return yoloOverlayTracks.map(track => ({
+    ...track.detection,
+    overlayAgeS: now - track.lastSeenAt,
+    overlaySourceStale: track.sourceStale,
+  }));
 }
 
 function pairedYoloDetections(yolo) {
@@ -1693,12 +1755,11 @@ async function refreshSensors() {
     if (imageWrap && currentCamera.width && currentCamera.height) {
       imageWrap.style.aspectRatio = `${currentCamera.width}/${currentCamera.height}`;
     }
-    const detections = visibleYoloDetections(yolo);
+    const detections = updateYoloOverlayTracks(yolo);
     const yoloAge = Number(yolo.captured_at) > 0 ? Date.now() / 1000 - Number(yolo.captured_at) : Infinity;
-    const overlayStale = yolo.state !== 'ready' || yoloAge > 0.5 || yolo.paired === false;
-    const yoloOverlayKey = `${yolo.state || 'disabled'}:${yolo.frame_id || ''}:${detections.length}:${overlayStale}`;
+    const yoloOverlayKey = `${yolo.state || 'disabled'}:${yolo.frame_id || ''}:${detections.map(item => `${item.overlayAgeS.toFixed(1)}:${item.bbox.join(',')}`).join(';')}`;
     if (yoloOverlayKey !== displayedYoloOverlayKey) {
-      drawBoxes(detections, currentCamera.width || 640, currentCamera.height || 480, overlayStale);
+      drawBoxes(detections, currentCamera.width || 640, currentCamera.height || 480);
       displayedYoloOverlayKey = yoloOverlayKey;
     }
     if (activeRender === '3d' && cloudDepthImage) drawDepthDetections(cloudDepthImage, cloudDepthYolo);
