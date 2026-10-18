@@ -61,6 +61,7 @@ let cloudSegmentationFrameId = '';
 let metricDepthCalibration = null;
 let depthCalibrationBusy = false;
 let depthCalibrationMessage = '';
+let calibrationLogStatusMessage = '';
 let cancelDepthCalibration = null;
 const visualOdometryTrail = [];
 let visualOdometryFrameId = '';
@@ -1449,7 +1450,9 @@ function updateMetricCalibrationStatus() {
     .map(byId).filter(Boolean);
   if (!statuses.length || depthCalibrationBusy) return;
   let message;
-  if (depthCalibrationMessage) {
+  if (calibrationLogStatusMessage) {
+    message = calibrationLogStatusMessage;
+  } else if (depthCalibrationMessage) {
     message = depthCalibrationMessage;
   } else if (metricDepthCalibration?.available) {
     const [near, far] = metricDepthCalibration.calibrated_range_m || [];
@@ -1464,7 +1467,10 @@ async function downloadCalibrationTrace(event) {
   const button = event.currentTarget;
   const statuses = ['world-map-midas-calibration-status', 'world-map-midas-calibration-status-3d']
     .map(byId).filter(Boolean);
-  const setMessage = message => statuses.forEach(status => { status.textContent = message; });
+  const setMessage = message => {
+    calibrationLogStatusMessage = message;
+    statuses.forEach(status => { status.textContent = message; });
+  };
   button.disabled = true;
   setMessage('Preparing calibration log…');
   try {
