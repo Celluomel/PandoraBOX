@@ -132,6 +132,18 @@ class MiDaSMetricCalibrationTests(unittest.TestCase):
         self.assertEqual(duplicate["sample_count"], 14)
         self.assertEqual(cleared["sample_count"], 0)
 
+    def test_batch_calibration_adds_and_fits_all_collected_anchors_in_one_call(self):
+        store = MiDaSMetricCalibrationStore(Path("unused.json"))
+        samples = self.make_samples()
+        with patch("body_runtime_host.midas_metric_calibration.time.time", return_value=1000.0):
+            result = store.calibrate({"samples": samples})
+            duplicate = store.calibrate({"samples": samples})
+
+        self.assertTrue(result["available"])
+        self.assertEqual(result["accepted_count"], 20)
+        self.assertEqual(duplicate["accepted_count"], 0)
+        self.assertEqual(duplicate["sample_count"], 20)
+
 
 if __name__ == "__main__":
     unittest.main()

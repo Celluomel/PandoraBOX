@@ -174,37 +174,57 @@ class MiDaSMetricCalibrationStore:
                 self._samples.clear()
                 self._seen.clear()
                 self._bad_residual_count = 0
-            sample = body.get("sample")
-            accepted = False
-            if isinstance(sample, dict):
-                sample_id = str(sample.get("sample_id") or "")
-                if sample_id and sample_id not in self._seen:
-                    current = None
-                    try:
-                        current = fit_metric_depth(self._samples)
-                    except ValueError:
-                        pass
-                    if current:
-                        try:
-                            relative = float(sample["relative_depth"])
-                            forward = float(sample["forward_m"])
-                            predicted_inverse = (current["inverse_scale_per_relative_unit"] * relative
-                                                 + current["inverse_offset_per_m"])
-                            error = abs(forward - 1 / predicted_inverse) if predicted_inverse > 0 else math.inf
-                            self._bad_residual_count = self._bad_residual_count + 1 if error > 0.65 else 0
-                        except (KeyError, TypeError, ValueError, ZeroDivisionError):
-                            self._bad_residual_count = 0
-                        if self._bad_residual_count >= 3:
-                            self._samples.clear()
-                            self._seen.clear()
-                            self._bad_residual_count = 0
+            accepted_count = 0
+            batch = body.get("samples")
+            if isinstance(batch, list):
+                if len(batch) > 5000:
+                    raise ValueError("Calibration batch must contain at most 5000 samples")
+                new_samples = []
+                for sample in batch:
+                    if not isinstance(sample, dict):
+                        continue
+                    sample_id = str(sample.get("sample_id") or "")
+                    if not sample_id or sample_id in self._seen:
+                        continue
                     stored = dict(sample)
                     stored["_received_at"] = now
                     stored["sample_id"] = sample_id
-                    self._samples.append(stored)
+                    new_samples.append(stored)
                     self._seen.add(sample_id)
-                    accepted = True
-                    self._prune(now)
+                self._samples.extend(new_samples)
+                accepted_count = len(new_samples)
+                self._prune(now)
+            else:
+                sample = body.get("sample")
+                if isinstance(sample, dict):
+                    sample_id = str(sample.get("sample_id") or "")
+                    if sample_id and sample_id not in self._seen:
+                        current = None
+                        try:
+                            current = fit_metric_depth(self._samples)
+                        except ValueError:
+                            pass
+                        if current:
+                            try:
+                                relative = float(sample["relative_depth"])
+                                forward = float(sample["forward_m"])
+                                predicted_inverse = (current["inverse_scale_per_relative_unit"] * relative
+                                                     + current["inverse_offset_per_m"])
+                                error = abs(forward - 1 / predicted_inverse) if predicted_inverse > 0 else math.inf
+                                self._bad_residual_count = self._bad_residual_count + 1 if error > 0.65 else 0
+                            except (KeyError, TypeError, ValueError, ZeroDivisionError):
+                                self._bad_residual_count = 0
+                            if self._bad_residual_count >= 3:
+                                self._samples.clear()
+                                self._seen.clear()
+                                self._bad_residual_count = 0
+                        stored = dict(sample)
+                        stored["_received_at"] = now
+                        stored["sample_id"] = sample_id
+                        self._samples.append(stored)
+                        self._seen.add(sample_id)
+                        accepted_count = 1
+                        self._prune(now)
             try:
                 result = fit_metric_depth(self._samples)
             except ValueError as exc:
@@ -212,4 +232,4 @@ class MiDaSMetricCalibrationStore:
                           "distance_model": "inverse_affine", "available": False,
                           "sample_count": len(self._samples), "window_seconds": self._window_seconds,
                           "reason": str(exc)}
-            return {**result, "accepted": accepted}
+            return {**result, "accepted": accepted_count > 0, "accepted_count": accepted_count}

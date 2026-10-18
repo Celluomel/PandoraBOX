@@ -90,8 +90,9 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertIn("YOLO/depth pairs ≤250 ms", source)
         self.assertIn("radar pairs", source)
         self.assertIn("MiDaS fit · holdout", source)
-        self.assertIn("Matched ${samples.length} unique anchors", source)
-        self.assertIn("if (fit.available) break", source)
+        self.assertIn("Analyzing ${depthBatch.length} frames", source)
+        self.assertIn("body: JSON.stringify({ samples })", source)
+        self.assertNotIn("body: JSON.stringify({ sample: calibrationSample })", source)
         collector = source.split("async function calibrateMetricDepth(selectedTargetId)", 1)[1].split("async function refreshLiveRadar()", 1)[0]
         self.assertNotIn("fetch('/plugins/mmwave_radar/status'", collector)
         self.assertIn("const maxCalibrationPairDeltaSeconds = 0.25", source)
