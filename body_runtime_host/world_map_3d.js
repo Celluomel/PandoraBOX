@@ -6,7 +6,7 @@ const staleAfterSeconds = { camera: 5, yolo: 5, midas: 5, odometry: 5, segmentat
 const physicalSources = ['camera', 'radar', 'gps', 'imu', 'tof', 'lidar', 'ultrasonic'];
 const cameraRadarGeometry = { horizontalFovDeg: 70, yawOffsetDeg: 0, lateralOffsetM: 0, calibrated: false };
 const maxCalibrationPairDeltaSeconds = 0.25;
-const maxCalibrationRadarDeltaSeconds = 4.5;
+const maxCalibrationRadarDeltaSeconds = 1.25;
 const maxPersonBearingErrorDeg = 8;
 const maxSceneDetectionPairDeltaSeconds = 0.5;
 const yoloOverlayCoastSeconds = 5;
@@ -1503,6 +1503,40 @@ function radarTargetId(target, index) {
   return String(target.id || target.target_id || `target-${index}`);
 }
 
+function selectedRadarTrackFrames(samples, selectedTargetId) {
+  const ordered = [...samples].filter(sample => Number.isFinite(Number(sample.timestamp)))
+    .sort((a, b) => Number(a.timestamp) - Number(b.timestamp));
+  const seedIndex = ordered.findIndex(sample => (sample.targets || []).some((target, index) =>
+    radarTargetId(target, index) === String(selectedTargetId)));
+  if (seedIndex < 0) return [];
+  let previous = null;
+  let previousAt = 0;
+  const tracked = [];
+  for (const sample of ordered.slice(seedIndex)) {
+    const timestamp = Number(sample.timestamp);
+    const targets = (sample.targets || []).map((target, index) => {
+      const position = target.position_m || target.position || [];
+      const x = Number(position[0]), y = Number(position[1]);
+      return { target, index, x, y };
+    }).filter(item => Number.isFinite(item.x) && Number.isFinite(item.y));
+    if (!targets.length) continue;
+    let chosen;
+    if (!previous) {
+      chosen = targets.find(item => radarTargetId(item.target, item.index) === String(selectedTargetId));
+    } else {
+      const nearest = targets.map(item => ({ ...item, delta: Math.hypot(item.x - previous.x, item.y - previous.y) }))
+        .sort((a, b) => a.delta - b.delta)[0];
+      const allowedMovement = Math.min(1.75, Math.max(0.55, (timestamp - previousAt) * 0.8 + 0.25));
+      if (nearest && nearest.delta <= allowedMovement) chosen = nearest;
+    }
+    if (!chosen) continue;
+    previous = { x: chosen.x, y: chosen.y };
+    previousAt = timestamp;
+    tracked.push({ sample, target: chosen.target, targetIndex: chosen.index });
+  }
+  return tracked;
+}
+
 function matchedRadarAnchors(detections, sample, image = null, selectedTargetId = null, options = {}) {
   const source = String(sample?.source || '').toLowerCase();
   if (!source.startsWith('hlk_ld2450')) return [];
@@ -1697,9 +1731,8 @@ async function calibrateMetricDepth(selectedTargetId) {
   const diagnostics = { depth: 0, yolo: 0, radar: 0, framePairs: 0, radarPairs: 0, bearing: 0, stationary: 0, range: 0, postFailures: 0 };
   const calibrationAssociation = {
     minConfidence: 0.2,
-    maxBearingErrorDeg: 180,
+    maxBearingErrorDeg: 6,
     ambiguityMarginDeg: 0,
-    skipFovGate: true,
   };
   const fetchForCalibration = async (url, options = {}) => {
     let lastError;
@@ -1782,8 +1815,7 @@ async function calibrateMetricDepth(selectedTargetId) {
         lastProgressAt = loopNow;
         const elapsed = Math.floor((loopNow - startedAt) / 1000);
         const remaining = Math.max(0, Math.ceil((stopAt - loopNow) / 1000));
-        const selectedReturns = [...radarBatch.values()].filter(item => (item.targets || []).some((target, index) =>
-          radarTargetId(target, index) === selectedTargetId)).length;
+        const selectedReturns = selectedRadarTrackFrames([...radarBatch.values()], selectedTargetId).length;
         const bands = new Set(samples.map(sample => Math.min(4, Math.floor((sample.forward_m - 1) / 0.8)))).size;
         setMessage(`Collecting · ${elapsed}s elapsed · ${remaining}s left · depth ${depthBatch.length} · radar ${selectedReturns} · IMU ${imuBatch.size} · anchors ${samples.length} · ${bands}/4 bands.`);
       }
@@ -1791,6 +1823,7 @@ async function calibrateMetricDepth(selectedTargetId) {
         const key = String(item.sequence ?? item.timestamp ?? '');
         if (key) {
           radarBatch.set(key, item);
+          diagnostics.radar = radarBatch.size;
           if (!tracedRadar.has(key)) {
             tracedRadar.add(key);
             traceRows.push({ type: 'radar_sample', session_id: traceSessionId,
@@ -1937,8 +1970,12 @@ async function calibrateMetricDepth(selectedTargetId) {
       if (traceResult.ok) depthCalibrationMessage = `Calibration cancelled; trace saved: data/body/midas_calibration_trace.log`;
       throw new Error('Cancelled by user');
     }
-    const radarFrames = [...radarBatch.values()].filter(item => Number.isFinite(Number(item.timestamp))
-      && (item.targets || []).some((target, index) => radarTargetId(target, index) === selectedTargetId));
+    const selectedTrack = selectedRadarTrackFrames([...radarBatch.values()], selectedTargetId);
+    const radarFrames = selectedTrack.map(({ sample, target, targetIndex }) => ({
+      ...sample,
+      targets: [target],
+      selected_track_target_id: radarTargetId(target, targetIndex),
+    }));
     selectedRadarFrameCount = radarFrames.length;
     const imuFrames = [...imuBatch.values()].filter(item => item.calibration_stable && item.attitude_valid
       && Math.abs(Number(item.roll_deg)) <= 5 && Math.abs(Number(item.pitch_deg)) <= 5);
@@ -1975,8 +2012,8 @@ async function calibrateMetricDepth(selectedTargetId) {
       }
       diagnostics.stationary += 1;
       const candidate = matchedRadarAnchors(frame.people.map(item => item.detection), radarMatch.item,
-        null, selectedTargetId, calibrationAssociation)
-        .find(item => item.targetId === selectedTargetId && item.forward >= 1 && item.forward <= 5);
+        null, radarMatch.item.selected_track_target_id, calibrationAssociation)
+        .find(item => item.forward >= 1 && item.forward <= 5);
       if (!candidate) {
         traceRows.push({ type: 'pair_rejected', session_id: traceSessionId, depth_frame_id: frame.frameId,
           reason: 'no_bearing_match_or_out_of_range', radar_at: Number(radarMatch.item.timestamp),
@@ -1993,7 +2030,8 @@ async function calibrateMetricDepth(selectedTargetId) {
       if (!person) continue;
       const calibrationSample = {
         sample_id: `${frame.frameId}|${frame.yoloFrameId}|${selectedTargetId}|${radarKey}`,
-        selected_radar_target_id: String(selectedTargetId), selected_target_confirmed: true,
+        selected_radar_target_id: String(radarMatch.item.selected_track_target_id),
+        selected_target_seed_id: String(selectedTargetId), selected_target_confirmed: true,
         relative_depth: person.relativeDepth, forward_m: candidate.forward,
         bearing_error_deg: candidate.error, frame_delta_s: frame.frameDelta,
         frame_id_match: frame.exactFrame, radar_delta_s: radarMatch.delta,
@@ -2061,7 +2099,7 @@ async function calibrateMetricDepth(selectedTargetId) {
         setMessage(depthCalibrationMessage);
         return;
       }
-      depthCalibrationMessage = `Calibration not saved: ${error.message} · recorded frames ${depthBatch.length}, YOLO/depth pairs ≤250 ms ${diagnostics.framePairs}, radar samples ${radarBatch.size} (${selectedRadarFrameCount} selected), radar pairs ≤4.5 s ${diagnostics.radarPairs}, bearing matches ${diagnostics.bearing}, stable IMU pairs ≤1 s ${diagnostics.stationary}, in-range ${diagnostics.range}, anchor upload failures ${diagnostics.postFailures}`;
+      depthCalibrationMessage = `Calibration not saved: ${error.message} · recorded frames ${depthBatch.length}, YOLO/depth pairs ≤250 ms ${diagnostics.framePairs}, radar samples ${diagnostics.radar} (${selectedRadarFrameCount} selected), radar pairs ≤1.25 s ${diagnostics.radarPairs}, bearing matches ≤6° ${diagnostics.bearing}, stable IMU pairs ≤1 s ${diagnostics.stationary}, in-range ${diagnostics.range}, anchor upload failures ${diagnostics.postFailures}`;
       if (traceResult.ok) depthCalibrationMessage += ` · trace: data/body/midas_calibration_trace.log`;
       setMessage(depthCalibrationMessage);
   } finally {
