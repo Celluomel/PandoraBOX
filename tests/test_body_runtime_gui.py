@@ -21,6 +21,10 @@ class BodyRuntimeGuiTests(unittest.TestCase):
             lines = host._midas_calibration_log_path.read_text(encoding="utf-8").splitlines()
             self.assertEqual(result["records_written"], 2)
             self.assertEqual([json.loads(line)["type"] for line in lines], ["session_start", "session_end"])
+            self.assertEqual(
+                host.read_midas_calibration_trace(),
+                host._midas_calibration_log_path.read_bytes(),
+            )
 
     def test_midas_calibration_trace_rejects_unbounded_record_count(self):
         from body_runtime_host.runtime import BodyHost

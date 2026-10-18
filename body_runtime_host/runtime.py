@@ -827,6 +827,11 @@ class BodyHost:
                         stream.write(json.dumps(record, separators=(",", ":"), ensure_ascii=True) + "\n")
         return {"ok": True, "records_written": len(records), "path": str(path)}
 
+    def read_midas_calibration_trace(self) -> bytes | None:
+        path = self._midas_calibration_log_path
+        with self._midas_calibration_log_lock:
+            return path.read_bytes() if path.is_file() else None
+
     def _configure_local_camera(self, start: bool | None = None) -> dict:
         settings = self.camera_settings()
         should_start = settings["startup_enabled"] if start is None else bool(start)
@@ -3582,7 +3587,23 @@ class BodyHost:
 
             def do_GET(self):  # noqa: N802
                 path = self.path.split("?", 1)[0].rstrip("/") or "/"
-                if path in {"", "/", "/body", "/worldmodel", "/camera", "/llm", "/robot", "/ros2", "/navigation", "/runtime"}:
+                if path == "/body/camera/depth-calibration/log":
+                    try:
+                        data = owner.read_midas_calibration_trace()
+                    except OSError as exc:
+                        self._send({"ok": False, "error": str(exc)[:240]}, 500)
+                        return
+                    if data is None:
+                        self._send({"ok": False, "error": "No MiDaS calibration trace has been recorded yet"}, 404)
+                        return
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/plain; charset=utf-8")
+                    self.send_header("Content-Disposition", 'attachment; filename="midas_calibration_trace.log"')
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("Content-Length", str(len(data)))
+                    self.end_headers()
+                    self._write_response(data)
+                elif path in {"", "/", "/body", "/worldmodel", "/camera", "/llm", "/robot", "/ros2", "/navigation", "/runtime"}:
                     self._send_html(BODY_GUI_HTML)
                 elif path == "/quest":
                     quest_page = ROOT / "body_runtime_host" / "quest_vr.html"
