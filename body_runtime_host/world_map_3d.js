@@ -1624,7 +1624,8 @@ async function calibrateMetricDepth(selectedTargetId) {
   const depthBatch = [];
   const radarBatch = new Map();
   const imuBatch = new Map();
-  const traceSessionId = crypto.randomUUID();
+  const traceSessionId = globalThis.crypto?.randomUUID?.()
+    || `midas-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
   const traceRows = [{ type: 'session_start', session_id: traceSessionId, started_at: Date.now() / 1000,
     selected_target_id: selectedTargetId, window_seconds: 60 }];
   let traceUploaded = false;

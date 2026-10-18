@@ -137,6 +137,8 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertIn("const imuBatch = new Map()", source)
         self.assertIn("const fetchForCalibration = async", source)
         self.assertIn("const captureDeadlineTimer = setTimeout(() => {", source)
+        self.assertIn("globalThis.crypto?.randomUUID?.()", source)
+        self.assertIn("midas-${Date.now()}-${Math.random().toString(36).slice(2, 10)}", source)
         self.assertIn("60-second capture ended. Analyzing the samples and saving the log…", source)
         self.assertIn("await withTimeout(loadDepthFrame(depth), 2000, 'depth decode')", source)
         self.assertIn("Cancel calibration", source)
