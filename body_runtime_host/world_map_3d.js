@@ -1619,6 +1619,10 @@ async function calibrateMetricDepth(selectedTargetId) {
   const depthBatch = [];
   const radarBatch = new Map();
   const imuBatch = new Map();
+  const traceSessionId = crypto.randomUUID();
+  const traceRows = [{ type: 'session_start', session_id: traceSessionId, started_at: Date.now() / 1000,
+    selected_target_id: selectedTargetId, window_seconds: 180 }];
+  let traceUploaded = false;
   const seen = new Set();
   const countedYolo = new Set();
   const countedFrames = new Set();
@@ -1645,6 +1649,24 @@ async function calibrateMetricDepth(selectedTargetId) {
     }
     throw lastError || new Error('Calibration request failed');
   };
+  const saveCalibrationTrace = async (result, error = '') => {
+    traceRows.push({ type: 'session_end', session_id: traceSessionId, ended_at: Date.now() / 1000,
+      result, error, depth_frames: depthBatch.length, radar_samples: radarBatch.size,
+      selected_radar_samples: selectedRadarFrameCount, accepted_anchors: samples.length,
+      diagnostics: { ...diagnostics } });
+    try {
+      const response = await fetchForCalibration('/body/camera/depth-calibration/log', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ records: traceRows }),
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const result = await response.json();
+      traceUploaded = Boolean(result.ok);
+      return result;
+    } catch (uploadError) {
+      return { ok: false, error: uploadError.message };
+    }
+  };
   let cachedFrameId = '';
   let cachedDepthImage = null;
   let lastDepthFrameId = '';
@@ -1670,6 +1692,7 @@ async function calibrateMetricDepth(selectedTargetId) {
       try {
         depthResponse = await fetchForCalibration(depthUrl, { cache: 'no-store' });
       } catch (error) {
+        traceRows.push({ type: 'fetch_retry', source: 'depth', at: Date.now() / 1000, error: error.message });
         setMessage(`Temporary MiDaS fetch failure; keeping recorded data (${depthBatch.length} paired frames). Retrying…`);
         await new Promise(resolve => setTimeout(resolve, 300));
         continue;
@@ -1703,6 +1726,8 @@ async function calibrateMetricDepth(selectedTargetId) {
           yoloResponse = await fetchForCalibration(`/body/camera/yolo/status?nearest_to=${encodeURIComponent(depth.captured_at)}&max_delta_s=${maxCalibrationPairDeltaSeconds}`, { cache: 'no-store' });
         }
       } catch (error) {
+        traceRows.push({ type: 'fetch_retry', source: 'yolox', at: Date.now() / 1000, error: error.message,
+          frame_id: depth.frame_id, depth_at: depthAt });
         setMessage(`Temporary YOLOX fetch failure; keeping ${depthBatch.length} recorded pairs. Retrying…`);
         await new Promise(resolve => setTimeout(resolve, 300));
         continue;
@@ -1760,6 +1785,12 @@ async function calibrateMetricDepth(selectedTargetId) {
         }
         depthBatch.push({ depthAt, yoloAt, frameId: depth.frame_id, yoloFrameId: yolo.frame_id,
           frameDelta, exactFrame, people });
+        traceRows.push({ type: 'vision_pair', session_id: traceSessionId, depth_at: depthAt,
+          yolo_at: yoloAt, frame_delta_s: frameDelta, exact_frame: exactFrame,
+          frame_id: depth.frame_id, yolo_frame_id: yolo.frame_id,
+          people: people.map(item => ({ class: item.detection.label || item.detection.class_name || item.detection.class,
+            confidence: Number(item.detection.confidence ?? item.detection.score),
+            bbox: item.detection.bbox.map(Number), relative_depth: item.relativeDepth })) });
         seen.add(pairKey);
       }
       const latestRadar = [...radarBatch.values()].filter(item => (item.targets || []).some((target, index) =>
@@ -1767,29 +1798,63 @@ async function calibrateMetricDepth(selectedTargetId) {
       setMessage(`Recording ${depthBatch.length} paired frames · ${radarBatch.size} radar samples · ${imuBatch.size} IMU samples · ${latestRadar} selected-target returns · anchors ${collectedAnchorCount}/15.`);
       await new Promise(resolve => setTimeout(resolve, 100));
     }
-    const radarFrames = [...radarBatch.values()].filter(item => (item.targets || []).some((target, index) =>
-      radarTargetId(target, index) === selectedTargetId));
+    const radarFrames = [...radarBatch.values()].filter(item => Number.isFinite(Number(item.timestamp))
+      && (item.targets || []).some((target, index) => radarTargetId(target, index) === selectedTargetId));
     selectedRadarFrameCount = radarFrames.length;
+    for (const item of radarBatch.values()) traceRows.push({ type: 'radar_sample', session_id: traceSessionId,
+      timestamp: Number(item.timestamp), sequence: item.sequence ?? null, source: item.source || null,
+      targets: (item.targets || []).map((target, index) => ({ id: radarTargetId(target, index),
+        position_m: target.position_m || target.position || null,
+        velocity_mps: target.velocity_mps || target.velocity || null })) });
     const imuFrames = [...imuBatch.values()].filter(item => item.calibration_stable && item.attitude_valid
       && Math.abs(Number(item.roll_deg)) <= 5 && Math.abs(Number(item.pitch_deg)) <= 5);
+    for (const item of imuBatch.values()) traceRows.push({ type: 'imu_sample', session_id: traceSessionId,
+      timestamp: Number(item.timestamp), calibration_stable: Boolean(item.calibration_stable),
+      attitude_valid: Boolean(item.attitude_valid), roll_deg: Number(item.roll_deg),
+      pitch_deg: Number(item.pitch_deg) });
     const usedRadar = new Set();
     for (const frame of depthBatch) {
       const radarMatch = radarFrames.reduce((best, item) => {
         const delta = Math.abs(Number(item.timestamp) - (frame.depthAt + frame.yoloAt) / 2);
         return !best || delta < best.delta ? { item, delta } : best;
       }, null);
-      if (!radarMatch || radarMatch.delta > maxCalibrationRadarDeltaSeconds) continue;
+      if (!radarMatch || radarMatch.delta > maxCalibrationRadarDeltaSeconds) {
+        const anyRadar = [...radarBatch.values()].reduce((best, item) => {
+          const timestamp = Number(item.timestamp);
+          const delta = Math.abs(timestamp - (frame.depthAt + frame.yoloAt) / 2);
+          return Number.isFinite(delta) && (!best || delta < best.delta) ? { item, delta } : best;
+        }, null);
+        traceRows.push({ type: 'pair_rejected', session_id: traceSessionId, depth_frame_id: frame.frameId,
+          reason: radarMatch ? 'selected_target_timestamp_outside_window' : 'selected_target_id_not_in_radar_history',
+          selected_target_id: selectedTargetId, nearest_selected_delta_s: radarMatch?.delta ?? null,
+          nearest_any_delta_s: anyRadar?.delta ?? null,
+          available_target_ids: [...new Set([...radarBatch.values()].flatMap(item => (item.targets || [])
+            .map((target, index) => radarTargetId(target, index))))] });
+        continue;
+      }
       diagnostics.radarPairs += 1;
       const imuMatch = imuFrames.reduce((best, item) => {
         const delta = Math.abs(Number(item.timestamp) - frame.depthAt);
         return !best || delta < best.delta ? { item, delta } : best;
       }, null);
-      if (!imuMatch || imuMatch.delta > 1.0) continue;
+      if (!imuMatch || imuMatch.delta > 1.0) {
+        traceRows.push({ type: 'pair_rejected', session_id: traceSessionId, depth_frame_id: frame.frameId,
+          reason: 'no_stable_imu_within_1s', radar_at: Number(radarMatch.item.timestamp),
+          radar_delta_s: radarMatch.delta, imu_delta_s: imuMatch?.delta ?? null });
+        continue;
+      }
       diagnostics.stationary += 1;
       const candidate = matchedRadarAnchors(frame.people.map(item => item.detection), radarMatch.item,
         null, selectedTargetId, calibrationAssociation)
         .find(item => item.targetId === selectedTargetId && item.forward >= 1 && item.forward <= 5);
-      if (!candidate) continue;
+      if (!candidate) {
+        traceRows.push({ type: 'pair_rejected', session_id: traceSessionId, depth_frame_id: frame.frameId,
+          reason: 'no_bearing_match_or_out_of_range', radar_at: Number(radarMatch.item.timestamp),
+          radar_delta_s: radarMatch.delta, radar_targets: (radarMatch.item.targets || []).map((target, index) => ({
+            id: radarTargetId(target, index), position_m: target.position_m || target.position || null })),
+          person_count: frame.people.length });
+        continue;
+      }
       diagnostics.bearing += 1;
       diagnostics.range += 1;
       const radarKey = String(radarMatch.item.sequence ?? radarMatch.item.timestamp);
@@ -1804,6 +1869,8 @@ async function calibrateMetricDepth(selectedTargetId) {
         frame_id_match: frame.exactFrame, radar_delta_s: radarMatch.delta,
         imu_delta_s: imuMatch.delta, stationary: true,
       };
+      traceRows.push({ type: 'pair_candidate', session_id: traceSessionId, ...calibrationSample,
+        radar_sequence: radarMatch.item.sequence ?? null });
       let postResponse;
       try {
         postResponse = await fetchForCalibration('/body/camera/depth-calibration', {
@@ -1829,6 +1896,11 @@ async function calibrateMetricDepth(selectedTargetId) {
       setMessage(`Matched ${samples.length} unique anchors · ${new Set(samples.map(sample => Math.min(4, Math.floor((sample.forward_m - 1) / 0.8)))).size}/4 distance bands · held-out fit ${fit.holdout_rmse_m ?? 'pending'} m.`);
       if (fit.available) break;
     }
+    traceRows.push({ type: 'fit_status', session_id: traceSessionId,
+      available: Boolean(metricDepthCalibration?.available), fit: metricDepthCalibration });
+    const traceResult = await saveCalibrationTrace(metricDepthCalibration?.available ? 'fit_validated' : 'fit_not_validated');
+    if (traceResult.ok) depthCalibrationMessage = `Trace saved: data/body/midas_calibration_trace.log (${traceResult.records_written} records)`;
+    else traceRows.push({ type: 'trace_upload_failed', at: Date.now() / 1000, error: traceResult.error });
     if (!metricDepthCalibration?.available) {
       const hint = diagnostics.framePairs === 0
         ? 'No YOLOX/depth pairs met the 250 ms sync limit; check worker cadence and frame timestamps.'
@@ -1848,7 +1920,11 @@ async function calibrateMetricDepth(selectedTargetId) {
     lastSensorDepthAt = 0;
     await refreshSensorDepth();
   } catch (error) {
+      traceRows.push({ type: 'fit_status', session_id: traceSessionId, available: false,
+        fit_reason: error.message });
+      const traceResult = traceUploaded ? { ok: true } : await saveCalibrationTrace('collector_error', error.message);
       depthCalibrationMessage = `Calibration not saved: ${error.message} · recorded frames ${depthBatch.length}, YOLO/depth pairs ≤250 ms ${diagnostics.framePairs}, radar samples ${radarBatch.size} (${selectedRadarFrameCount} selected), radar pairs ≤4.5 s ${diagnostics.radarPairs}, bearing matches ${diagnostics.bearing}, stable IMU pairs ≤1 s ${diagnostics.stationary}, in-range ${diagnostics.range}, anchor upload failures ${diagnostics.postFailures}`;
+      if (traceResult.ok) depthCalibrationMessage += ` · trace: data/body/midas_calibration_trace.log`;
   } finally {
     depthCalibrationBusy = false;
     buttons.forEach(button => {

@@ -202,6 +202,8 @@ class BodyHost:
         self._midas_metric_calibration = MiDaSMetricCalibrationStore(
             ROOT / "data" / "body" / "midas_metric_calibration.json"
         )
+        self._midas_calibration_log_path = ROOT / "data" / "body" / "midas_calibration_trace.log"
+        self._midas_calibration_log_lock = threading.Lock()
 
     def reconstruction_sessions(self) -> dict:
         return self._reconstruction_capture.list_sessions()
@@ -809,6 +811,21 @@ class BodyHost:
 
     def calibrate_midas_metric_depth(self, payload: dict) -> dict:
         return self._midas_metric_calibration.calibrate(payload or {})
+
+    def append_midas_calibration_trace(self, payload: dict) -> dict:
+        records = (payload or {}).get("records")
+        if not isinstance(records, list) or len(records) > 5000:
+            raise ValueError("Calibration trace must contain at most 5000 records")
+        path = self._midas_calibration_log_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with self._midas_calibration_log_lock:
+            if path.exists() and path.stat().st_size > 5 * 1024 * 1024:
+                path.replace(path.with_suffix(".log.1"))
+            with path.open("a", encoding="utf-8") as stream:
+                for record in records:
+                    if isinstance(record, dict):
+                        stream.write(json.dumps(record, separators=(",", ":"), ensure_ascii=True) + "\n")
+        return {"ok": True, "records_written": len(records), "path": str(path)}
 
     def _configure_local_camera(self, start: bool | None = None) -> dict:
         settings = self.camera_settings()
@@ -4021,6 +4038,15 @@ class BodyHost:
                         self._send(owner.calibrate_midas_metric_depth(self._read_body()))
                     except (TypeError, ValueError, OSError) as exc:
                         self._send({"ok": False, "error": str(exc)}, 400)
+                elif path == "/body/camera/depth-calibration/log":
+                    length = int(self.headers.get("Content-Length") or 0)
+                    if length <= 0 or length > 2 * 1024 * 1024:
+                        self._send({"ok": False, "error": "Calibration log upload must be under 2 MiB"}, 413)
+                        return
+                    try:
+                        self._send(owner.append_midas_calibration_trace(self._read_body()), 201)
+                    except (TypeError, ValueError, OSError) as exc:
+                        self._send({"ok": False, "error": str(exc)[:240]}, 400)
                 elif path == "/body/camera/capture":
                     body = self._read_body()
                     self._send(owner.set_camera_capture(_payload_bool(body.get("enabled"))))

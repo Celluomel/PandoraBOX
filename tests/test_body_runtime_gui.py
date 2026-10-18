@@ -1,7 +1,34 @@
 import unittest
+import json
+import tempfile
+import threading
+from pathlib import Path
 
 
 class BodyRuntimeGuiTests(unittest.TestCase):
+    def test_midas_calibration_trace_appends_structured_log_records(self):
+        from body_runtime_host.runtime import BodyHost
+
+        with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[1]) as directory:
+            host = object.__new__(BodyHost)
+            host._midas_calibration_log_path = Path(directory) / "midas_calibration_trace.log"
+            host._midas_calibration_log_lock = threading.Lock()
+            result = host.append_midas_calibration_trace({"records": [
+                {"type": "session_start", "session_id": "test"},
+                {"type": "session_end", "accepted_anchors": 0},
+            ]})
+
+            lines = host._midas_calibration_log_path.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(result["records_written"], 2)
+            self.assertEqual([json.loads(line)["type"] for line in lines], ["session_start", "session_end"])
+
+    def test_midas_calibration_trace_rejects_unbounded_record_count(self):
+        from body_runtime_host.runtime import BodyHost
+
+        host = object.__new__(BodyHost)
+        with self.assertRaisesRegex(ValueError, "5000 records"):
+            host.append_midas_calibration_trace({"records": [{}] * 5001})
+
     def test_depth_frame_camera_pixels_fall_back_to_midas_source_frame(self):
         from types import SimpleNamespace
         from body_runtime_host.runtime import BodyHost

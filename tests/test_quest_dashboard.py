@@ -116,6 +116,7 @@ class QuestDashboardTests(unittest.TestCase):
 
     def test_radar_calibration_button_opens_ordered_calibration_guide(self):
         source = (Path(__file__).resolve().parents[1] / "body_runtime_host" / "world_map_3d.js").read_text(encoding="utf-8")
+        runtime = (Path(__file__).resolve().parents[1] / "body_runtime_host" / "runtime.py").read_text(encoding="utf-8")
 
         self.assertIn("addEventListener('click', openDepthCalibrationGuide)", source)
         self.assertIn('id = \'world-map-calibration-guide\'', source)
@@ -135,6 +136,9 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertIn("Temporary MiDaS fetch failure; keeping recorded data", source)
         self.assertIn("Temporary YOLOX fetch failure; keeping", source)
         self.assertIn("anchor upload failures ${diagnostics.postFailures}", source)
+        self.assertIn("/body/camera/depth-calibration/log", source)
+        self.assertIn('elif path == "/body/camera/depth-calibration/log"', runtime)
+        self.assertIn("midas_calibration_trace.log", runtime)
         self.assertIn("matchedRadarAnchors(frame.people.map(item => item.detection), radarMatch.item", source)
         self.assertIn("maxCalibrationRadarDeltaSeconds = 4.5", source)
         self.assertIn("usedRadar.has(radarKey)", source)
