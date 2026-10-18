@@ -1525,11 +1525,17 @@ function radarTargetId(target, index) {
   return String(target.id || target.target_id || `target-${index}`);
 }
 
-function selectedRadarTrackFrames(samples, selectedTargetId) {
+function selectedRadarTrackFrames(samples, selectedTargetId, captureStartedAt = -Infinity) {
   const ordered = [...samples].filter(sample => Number.isFinite(Number(sample.timestamp)))
+    .filter(sample => Number(sample.timestamp) >= captureStartedAt)
     .sort((a, b) => Number(a.timestamp) - Number(b.timestamp));
-  const seedIndex = ordered.findIndex(sample => (sample.targets || []).some((target, index) =>
-    radarTargetId(target, index) === String(selectedTargetId)));
+  const candidateSeeds = ordered.map((sample, index) => ({ sample, index }))
+    .filter(({ sample }) => (sample.targets || []).some((target, index) =>
+      radarTargetId(target, index) === String(selectedTargetId)));
+  const seed = candidateSeeds.reduce((best, candidate) => !best
+    || Math.abs(Number(candidate.sample.timestamp) - captureStartedAt) < Math.abs(Number(best.sample.timestamp) - captureStartedAt)
+    ? candidate : best, null);
+  const seedIndex = seed?.index ?? -1;
   if (seedIndex < 0) return [];
   let previous = null;
   let previousAt = 0;
@@ -1714,8 +1720,9 @@ async function calibrateMetricDepth(selectedTargetId) {
   const imuBatch = new Map();
   const traceSessionId = globalThis.crypto?.randomUUID?.()
     || `midas-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-  const traceRows = [{ type: 'session_start', session_id: traceSessionId, started_at: Date.now() / 1000,
-    selected_target_id: selectedTargetId, window_seconds: 60 }];
+  const captureStartedAt = Date.now() / 1000;
+  const traceRows = [{ type: 'session_start', session_id: traceSessionId, started_at: captureStartedAt,
+    selected_target_id: selectedTargetId, window_seconds: 60, sensor_capture_owner: 'ventuno_runtime' }];
   let traceUploaded = false;
   let traceCursor = 0;
   let traceUploadBusy = false;
@@ -1732,6 +1739,7 @@ async function calibrateMetricDepth(selectedTargetId) {
   cancelDepthCalibration = () => {
     cancelled = true;
     captureController.abort();
+    void fetch('/body/sensors/capture/cancel', { method: 'POST' }).catch(() => {});
     buttons.forEach(button => { button.disabled = true; button.textContent = 'Stopping…'; });
     setMessage('Stopping capture and saving the diagnostic log…');
   };
@@ -1756,6 +1764,7 @@ async function calibrateMetricDepth(selectedTargetId) {
     maxBearingErrorDeg: 6,
     ambiguityMarginDeg: 0,
   };
+  traceRows[0].max_bearing_error_deg = calibrationAssociation.maxBearingErrorDeg;
   const fetchForCalibration = async (url, options = {}) => {
     let lastError;
     for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -1831,29 +1840,42 @@ async function calibrateMetricDepth(selectedTargetId) {
     if (!traceEndRecorded) void flushCalibrationTrace().then(reportTraceUpload);
   }, 5000);
   try {
+    const hardwareCaptureResponse = await fetchForCalibration('/body/sensors/capture/start', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: traceSessionId, duration_seconds: 60 }),
+    });
+    if (!hardwareCaptureResponse.ok) {
+      const payload = await hardwareCaptureResponse.json().catch(() => ({}));
+      throw new Error(payload.error || `Hardware sensor capture could not start (HTTP ${hardwareCaptureResponse.status})`);
+    }
+    const hardwareCapture = await withTimeout(hardwareCaptureResponse.json(), 1500, 'hardware capture start response');
+    traceRows.push({ type: 'hardware_capture_attached', session_id: traceSessionId,
+      capture_state: hardwareCapture.state, started_at: hardwareCapture.started_at ?? null });
+    setMessage('Hardware-side 60-second sensor capture started on Ventuno; collecting synchronized vision pairs in parallel.');
     while (performance.now() < stopAt && !captureController.signal.aborted) {
       const loopNow = performance.now();
       if (loopNow - lastProgressAt >= 1000) {
         lastProgressAt = loopNow;
         const elapsed = Math.floor((loopNow - startedAt) / 1000);
         const remaining = Math.max(0, Math.ceil((stopAt - loopNow) / 1000));
-        const selectedReturns = selectedRadarTrackFrames([...radarBatch.values()], selectedTargetId).length;
+        const selectedReturns = selectedRadarTrackFrames([...radarBatch.values()], selectedTargetId, captureStartedAt).length;
         const bands = new Set(samples.map(sample => Math.min(4, Math.floor((sample.forward_m - 1) / 0.8)))).size;
         setMessage(`Collecting · ${elapsed}s elapsed · ${remaining}s left · depth ${depthBatch.length} · radar ${selectedReturns} · IMU ${imuBatch.size} · anchors ${samples.length} · ${bands}/4 bands.`);
       }
+      // Supplemental pairing input only; the hardware log is collected by the Ventuno runtime.
       for (const item of radarHistory) {
+        if (Number(item.timestamp) < captureStartedAt) continue;
         const key = String(item.sequence ?? item.timestamp ?? '');
-        if (key) {
-          radarBatch.set(key, item);
-          diagnostics.radar = radarBatch.size;
-          if (!tracedRadar.has(key)) {
-            tracedRadar.add(key);
-            traceRows.push({ type: 'radar_sample', session_id: traceSessionId,
-              timestamp: Number(item.timestamp), sequence: item.sequence ?? null, source: item.source || null,
-              targets: (item.targets || []).map((target, index) => ({ id: radarTargetId(target, index),
-                position_m: target.position_m || target.position || null,
-                velocity_mps: target.velocity_mps || target.velocity || null })) });
-          }
+        if (!key) continue;
+        radarBatch.set(key, item);
+        diagnostics.radar = radarBatch.size;
+        if (!tracedRadar.has(key)) {
+          tracedRadar.add(key);
+          traceRows.push({ type: 'radar_sample', session_id: traceSessionId,
+            timestamp: Number(item.timestamp), sequence: item.sequence ?? null, source: item.source || null,
+            targets: (item.targets || []).map((target, index) => ({ id: radarTargetId(target, index),
+              position_m: target.position_m || target.position || null,
+              velocity_mps: target.velocity_mps || target.velocity || null })) });
         }
       }
       for (const item of imuHistory) {
@@ -1992,7 +2014,7 @@ async function calibrateMetricDepth(selectedTargetId) {
       if (traceResult.ok) depthCalibrationMessage = `Calibration cancelled; trace saved: data/body/midas_calibration_trace.log`;
       throw new Error('Cancelled by user');
     }
-    const selectedTrack = selectedRadarTrackFrames([...radarBatch.values()], selectedTargetId);
+    const selectedTrack = selectedRadarTrackFrames([...radarBatch.values()], selectedTargetId, captureStartedAt);
     const radarFrames = selectedTrack.map(({ sample, target, targetIndex }) => ({
       ...sample,
       targets: [target],

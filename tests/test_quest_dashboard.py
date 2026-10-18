@@ -92,7 +92,7 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertIn("startedAt + 60000", source)
         self.assertIn("frameDelta <= maxCalibrationPairDeltaSeconds", source)
         self.assertIn("const radarBatch = new Map()", source)
-        self.assertIn("const selectedTrack = selectedRadarTrackFrames([...radarBatch.values()], selectedTargetId)", source)
+        self.assertIn("const selectedTrack = selectedRadarTrackFrames([...radarBatch.values()], selectedTargetId, captureStartedAt)", source)
         self.assertIn("const imuFrames = [...imuBatch.values()]", source)
         self.assertIn("diagnostics.bearing", source)
         self.assertIn("YOLO/depth pairs ≤250 ms", source)
@@ -122,6 +122,23 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertIn("/body/camera/yolo/status?frame_id=${encodeURIComponent(", bundle)
         self.assertIn("frame_id_match:", bundle)
         self.assertIn("Analyzing ", bundle)
+
+    def test_calibration_starts_fixed_60_second_hardware_capture_on_runtime(self):
+        root = Path(__file__).resolve().parents[1]
+        runtime = (root / "body_runtime_host" / "runtime.py").read_text(encoding="utf-8")
+        source = (root / "body_runtime_host" / "world_map_3d.js").read_text(encoding="utf-8")
+        self.assertIn('path == "/body/sensors/capture/start"', runtime)
+        self.assertIn('path == "/body/sensors/capture"', runtime)
+        self.assertIn('path == "/body/sensors/capture/cancel"', runtime)
+        self.assertIn("Hardware sensor capture is fixed at exactly 60 seconds", runtime)
+        self.assertIn("deadline = time.monotonic() + 60.0", runtime)
+        self.assertIn("observation = source.observe()", runtime)
+        self.assertIn('with wm._lock:', runtime)
+        self.assertIn('"type": "hardware_sensor_sample"', runtime)
+        self.assertIn("self._get_gps_bridge_source().read()", runtime)
+        self.assertIn("depth_raw_png_base64", runtime)
+        self.assertIn("/body/sensors/capture/start", source)
+        self.assertIn("/body/sensors/capture/cancel", source)
 
     def test_radar_calibration_button_opens_ordered_calibration_guide(self):
         source = (Path(__file__).resolve().parents[1] / "body_runtime_host" / "world_map_3d.js").read_text(encoding="utf-8")
@@ -167,7 +184,7 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertIn("midas_calibration_trace.log", runtime)
         self.assertIn("matchedRadarAnchors(frame.people.map(item => item.detection), radarMatch.item", source)
         self.assertIn("maxCalibrationRadarDeltaSeconds = 1.25", source)
-        self.assertIn("function selectedRadarTrackFrames(samples, selectedTargetId)", source)
+        self.assertIn("function selectedRadarTrackFrames(samples, selectedTargetId, captureStartedAt = -Infinity)", source)
         self.assertIn("Math.min(1.75, Math.max(0.55", source)
         self.assertIn("usedRadar.has(radarKey)", source)
         self.assertIn("minConfidence: 0.2", source)

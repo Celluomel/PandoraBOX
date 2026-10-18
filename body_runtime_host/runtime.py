@@ -204,6 +204,10 @@ class BodyHost:
         )
         self._midas_calibration_log_path = ROOT / "data" / "body" / "midas_calibration_trace.log"
         self._midas_calibration_log_lock = threading.Lock()
+        self._hardware_capture_lock = threading.Lock()
+        self._hardware_capture_status: dict = {"state": "idle", "samples": 0}
+        self._hardware_capture_thread: threading.Thread | None = None
+        self._hardware_capture_stop = threading.Event()
 
     def reconstruction_sessions(self) -> dict:
         return self._reconstruction_capture.list_sessions()
@@ -826,6 +830,170 @@ class BodyHost:
                     if isinstance(record, dict):
                         stream.write(json.dumps(record, separators=(",", ":"), ensure_ascii=True) + "\n")
         return {"ok": True, "records_written": len(records), "path": str(path)}
+
+    def start_hardware_sensor_capture(self, payload: dict | None = None) -> dict:
+        payload = payload or {}
+        duration = float(payload.get("duration_seconds", 60))
+        if duration != 60:
+            raise ValueError("Hardware sensor capture is fixed at exactly 60 seconds")
+        session_id = str(payload.get("session_id") or f"hardware-{time.time_ns()}")[:100]
+        with self._hardware_capture_lock:
+            if self._hardware_capture_thread and self._hardware_capture_thread.is_alive():
+                return {**self._hardware_capture_status, "reused": True}
+            self._hardware_capture_stop.clear()
+            self._hardware_capture_status = {
+                "state": "starting", "session_id": session_id, "duration_seconds": 60,
+                "samples": 0, "started_at": time.time(),
+            }
+            self._hardware_capture_thread = threading.Thread(
+                target=self._capture_hardware_sensor_stream, args=(session_id,),
+                name="body-hardware-sensor-capture", daemon=True,
+            )
+            self._hardware_capture_thread.start()
+            return dict(self._hardware_capture_status)
+
+    def hardware_sensor_capture_status(self) -> dict:
+        with self._hardware_capture_lock:
+            return dict(self._hardware_capture_status)
+
+    def cancel_hardware_sensor_capture(self) -> dict:
+        with self._hardware_capture_lock:
+            if self._hardware_capture_status.get("state") != "capturing":
+                return {**self._hardware_capture_status, "cancelled": False}
+            self._hardware_capture_status["state"] = "stopping"
+            self._hardware_capture_stop.set()
+            return {**self._hardware_capture_status, "cancelled": True}
+
+    def _capture_hardware_sensor_stream(self, session_id: str) -> None:
+        started_at = 0.0
+        deadline = 0.0
+        row_number = 0
+        read_errors = 0
+        last_depth_frame = ""
+
+        def clean(value):
+            if isinstance(value, dict):
+                return {str(key): clean(item) for key, item in value.items()
+                        if str(key).lower() not in {"image_base64", "jpeg_base64", "png_base64", "depth_jpeg_base64"}}
+            if isinstance(value, (list, tuple)):
+                return [clean(item) for item in value]
+            if hasattr(value, "as_dict") and callable(value.as_dict):
+                return clean(value.as_dict())
+            return value
+
+        def write(record):
+            self.append_midas_calibration_trace({"records": [record]})
+
+        with self._hardware_capture_lock:
+            self._hardware_capture_status.update({"state": "starting"})
+        error = ""
+        sampler_stop = threading.Event()
+        sample_queue: Queue[dict] = Queue(maxsize=256)
+        sampler = None
+        try:
+            wm = self.worldmodel
+            source = getattr(wm, "source", None) if wm is not None else None
+            if source is None:
+                raise RuntimeError("Body hardware sensor source is unavailable")
+            if bool(getattr(source, "simulated", False)):
+                raise RuntimeError("Refusing to label simulated readings as hardware sensor data")
+            started_at = time.time()
+            deadline = time.monotonic() + 60.0
+            write({"type": "hardware_capture_start", "session_id": session_id,
+                   "started_at": started_at, "duration_seconds": 60,
+                   "source": "runtime_sensor_adapters", "simulated": False,
+                   "sensors": ["robot_source_modalities", "gps_uart", "camera", "yolox", "midas"]})
+            with self._hardware_capture_lock:
+                self._hardware_capture_status.update({"state": "capturing", "started_at": started_at})
+
+            def sample_hardware():
+                sample_index = 0
+                last_depth_frame = ""
+                while not sampler_stop.is_set():
+                    sampled_at = time.time()
+                    try:
+                        with wm._lock:
+                            observation = source.observe()
+                        modalities = clean(getattr(observation, "modalities", {}) or {})
+                        record = {"type": "hardware_sensor_sample", "session_id": session_id,
+                                  "sample": sample_index, "captured_at": sampled_at,
+                                  "observation_timestamp": float(getattr(observation, "timestamp", sampled_at) or sampled_at),
+                                  "source": str(getattr(observation, "source", "hardware")),
+                                  "modalities": modalities}
+                        try:
+                            record["hardware_sensors"] = {"gps": clean(self._get_gps_bridge_source().read())}
+                        except Exception as sensor_error:
+                            record["hardware_sensors"] = {"gps": {"available": False,
+                                "error": str(sensor_error)[:200], "timestamp": time.time()}}
+                        midas = self._midas_service.status()
+                        frame_id = str(midas.get("frame_id") or "")
+                        if frame_id and frame_id != last_depth_frame:
+                            record["midas"] = clean({key: midas.get(key) for key in (
+                                "frame_id", "captured_at", "completed_at", "inference_ms",
+                                "depth_raw_png_base64", "depth_encoding", "depth_width", "depth_height")
+                                if midas.get(key) is not None})
+                            last_depth_frame = frame_id
+                        yolo = self._yolox_service.status()
+                        record["yolox"] = clean({key: yolo.get(key) for key in (
+                            "frame_id", "captured_at", "completed_at", "inference_ms", "detections", "state")
+                            if yolo.get(key) is not None})
+                    except Exception as exc:
+                        record = {"type": "hardware_sensor_read_error", "session_id": session_id,
+                                  "at": time.time(), "sample": sample_index, "error": str(exc)[:240]}
+                    try:
+                        sample_queue.put(record, timeout=0.1)
+                    except Exception:
+                        pass
+                    sample_index += 1
+                    sampler_stop.wait(0.1)
+
+            sampler = threading.Thread(target=sample_hardware, name="body-hardware-sensor-reader", daemon=True)
+            sampler.start()
+            while time.monotonic() < deadline and not self._hardware_capture_stop.is_set():
+                modalities = {}
+                sampled_at = time.time()
+                try:
+                    record = sample_queue.get(timeout=min(0.1, max(0.01, deadline - time.monotonic())))
+                    write(record)
+                    if record.get("type") == "hardware_sensor_sample":
+                        row_number += 1
+                        modalities = record.get("modalities") or {}
+                        sampled_at = record.get("captured_at")
+                    else:
+                        read_errors += 1
+                    with self._hardware_capture_lock:
+                        self._hardware_capture_status.update({"samples": row_number,
+                            "last_sample_at": sampled_at,
+                            "latest_modalities": sorted(modalities) if record.get("type") == "hardware_sensor_sample" else []})
+                except Empty:
+                    pass
+            sampler_stop.set()
+            while True:
+                try:
+                    record = sample_queue.get_nowait()
+                except Empty:
+                    break
+                write(record)
+                if record.get("type") == "hardware_sensor_sample":
+                    row_number += 1
+            sampler.join(timeout=0.05)
+        except Exception as exc:
+            error = str(exc)[:300]
+        finally:
+            sampler_stop.set()
+            if sampler is not None:
+                sampler.join(timeout=0.05)
+        ended_at = time.time()
+        if not started_at:
+            started_at = ended_at
+        write({"type": "hardware_capture_end", "session_id": session_id,
+               "ended_at": ended_at, "duration_seconds": round(ended_at - started_at, 3),
+               "samples": row_number, "read_errors": read_errors, "error": error})
+        state = "failed" if error else "cancelled" if self._hardware_capture_stop.is_set() else "completed"
+        with self._hardware_capture_lock:
+            self._hardware_capture_status.update({"state": state,
+                "ended_at": ended_at, "duration_seconds": round(ended_at - started_at, 3),
+                "samples": row_number, "read_errors": read_errors, "error": error})
 
     def read_midas_calibration_trace(self) -> bytes | None:
         path = self._midas_calibration_log_path
@@ -3603,6 +3771,8 @@ class BodyHost:
                     self.send_header("Content-Length", str(len(data)))
                     self.end_headers()
                     self._write_response(data)
+                elif path == "/body/sensors/capture":
+                    self._send(owner.hardware_sensor_capture_status())
                 elif path in {"", "/", "/body", "/worldmodel", "/camera", "/llm", "/robot", "/ros2", "/navigation", "/runtime"}:
                     self._send_html(BODY_GUI_HTML)
                 elif path == "/quest":
@@ -4059,6 +4229,13 @@ class BodyHost:
                         self._send(owner.calibrate_midas_metric_depth(self._read_body()))
                     except (TypeError, ValueError, OSError) as exc:
                         self._send({"ok": False, "error": str(exc)}, 400)
+                elif path == "/body/sensors/capture/start":
+                    try:
+                        self._send(owner.start_hardware_sensor_capture(self._read_body()), 202)
+                    except (TypeError, ValueError, RuntimeError) as exc:
+                        self._send({"ok": False, "error": str(exc)[:240]}, 409)
+                elif path == "/body/sensors/capture/cancel":
+                    self._send(owner.cancel_hardware_sensor_capture())
                 elif path == "/body/camera/depth-calibration/log":
                     length = int(self.headers.get("Content-Length") or 0)
                     if length <= 0 or length > 2 * 1024 * 1024:
