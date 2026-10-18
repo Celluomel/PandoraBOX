@@ -1622,17 +1622,34 @@ async function calibrateMetricDepth(selectedTargetId) {
   const seen = new Set();
   const countedYolo = new Set();
   const countedFrames = new Set();
-  const diagnostics = { depth: 0, yolo: 0, radar: 0, framePairs: 0, radarPairs: 0, bearing: 0, stationary: 0, range: 0 };
+  const diagnostics = { depth: 0, yolo: 0, radar: 0, framePairs: 0, radarPairs: 0, bearing: 0, stationary: 0, range: 0, postFailures: 0 };
   const calibrationAssociation = {
     minConfidence: 0.2,
     maxBearingErrorDeg: 180,
     ambiguityMarginDeg: 0,
     skipFovGate: true,
   };
+  const fetchForCalibration = async (url, options = {}) => {
+    let lastError;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        const requestOptions = { ...options, signal: AbortSignal.timeout(8000) };
+        const response = await fetch(url, requestOptions);
+        if (response.status < 500 || attempt === 2) return response;
+        lastError = new Error(`HTTP ${response.status}`);
+      } catch (error) {
+        lastError = error;
+        if (attempt === 2) throw lastError;
+      }
+      await new Promise(resolve => setTimeout(resolve, 150 * (attempt + 1)));
+    }
+    throw lastError || new Error('Calibration request failed');
+  };
   let cachedFrameId = '';
   let cachedDepthImage = null;
   let lastDepthFrameId = '';
   let collectedAnchorCount = 0;
+  let selectedRadarFrameCount = 0;
   const stopAt = performance.now() + 180000;
   try {
     while (performance.now() < stopAt) {
@@ -1649,9 +1666,21 @@ async function calibrateMetricDepth(selectedTargetId) {
       depthUrl.searchParams.set('include_preview', '0');
       depthUrl.searchParams.set('include_color', '0');
       if (lastDepthFrameId) depthUrl.searchParams.set('since_frame_id', lastDepthFrameId);
-      const depthResponse = await fetch(depthUrl, { cache: 'no-store' });
-      if (!depthResponse.ok) throw new Error('MiDaS endpoint is unavailable');
-      const depth = await depthResponse.json();
+      let depthResponse;
+      try {
+        depthResponse = await fetchForCalibration(depthUrl, { cache: 'no-store' });
+      } catch (error) {
+        setMessage(`Temporary MiDaS fetch failure; keeping recorded data (${depthBatch.length} paired frames). Retrying…`);
+        await new Promise(resolve => setTimeout(resolve, 300));
+        continue;
+      }
+      if (!depthResponse.ok) {
+        if (depthResponse.status >= 500) continue;
+        throw new Error(`MiDaS endpoint returned HTTP ${depthResponse.status}`);
+      }
+      let depth;
+      try { depth = await depthResponse.json(); }
+      catch { await new Promise(resolve => setTimeout(resolve, 150)); continue; }
       if (!depth.frame_id || depth.state !== 'ready' || depth.unchanged || !depth.depth_raw_png_base64) {
         setMessage(`Waiting for live MiDaS depth · ${samples.length} anchors collected.`);
         await new Promise(resolve => setTimeout(resolve, 200));
@@ -1667,11 +1696,19 @@ async function calibrateMetricDepth(selectedTargetId) {
         await new Promise(resolve => setTimeout(resolve, 100));
         continue;
       }
-      let yoloResponse = await fetch(`/body/camera/yolo/status?frame_id=${encodeURIComponent(depth.frame_id)}`, { cache: 'no-store' });
-      if (!yoloResponse.ok) {
-        yoloResponse = await fetch(`/body/camera/yolo/status?nearest_to=${encodeURIComponent(depth.captured_at)}&max_delta_s=${maxCalibrationPairDeltaSeconds}`, { cache: 'no-store' });
+      let yoloResponse;
+      try {
+        yoloResponse = await fetchForCalibration(`/body/camera/yolo/status?frame_id=${encodeURIComponent(depth.frame_id)}`, { cache: 'no-store' });
+        if (!yoloResponse.ok) {
+          yoloResponse = await fetchForCalibration(`/body/camera/yolo/status?nearest_to=${encodeURIComponent(depth.captured_at)}&max_delta_s=${maxCalibrationPairDeltaSeconds}`, { cache: 'no-store' });
+        }
+      } catch (error) {
+        setMessage(`Temporary YOLOX fetch failure; keeping ${depthBatch.length} recorded pairs. Retrying…`);
+        await new Promise(resolve => setTimeout(resolve, 300));
+        continue;
       }
-      if (!yoloResponse.ok && yoloResponse.status !== 404) throw new Error('YOLOX endpoint is unavailable');
+      if (!yoloResponse.ok && yoloResponse.status >= 500) continue;
+      if (!yoloResponse.ok && yoloResponse.status !== 404) throw new Error(`YOLOX endpoint returned HTTP ${yoloResponse.status}`);
       const yolo = yoloResponse.ok ? await yoloResponse.json() : null;
       if (!yolo || yolo.state !== 'ready') {
         await new Promise(resolve => setTimeout(resolve, 100));
@@ -1694,7 +1731,12 @@ async function calibrateMetricDepth(selectedTargetId) {
         && now - yoloAt <= 6.0 && now - depthAt <= 6.0;
       if (frameAligned && !seen.has(pairKey)) {
         if (cachedFrameId !== depth.frame_id) {
-          cachedDepthImage = await loadDepthFrame(depth);
+          try {
+            cachedDepthImage = await loadDepthFrame(depth);
+          } catch (error) {
+            setMessage(`Could not decode one depth frame; preserving ${depthBatch.length} recorded pairs.`);
+            continue;
+          }
           cachedFrameId = depth.frame_id;
         }
         const detections = (yolo.detections || []).filter(item => /person|human/i.test(
@@ -1727,6 +1769,7 @@ async function calibrateMetricDepth(selectedTargetId) {
     }
     const radarFrames = [...radarBatch.values()].filter(item => (item.targets || []).some((target, index) =>
       radarTargetId(target, index) === selectedTargetId));
+    selectedRadarFrameCount = radarFrames.length;
     const imuFrames = [...imuBatch.values()].filter(item => item.calibration_stable && item.attitude_valid
       && Math.abs(Number(item.roll_deg)) <= 5 && Math.abs(Number(item.pitch_deg)) <= 5);
     const usedRadar = new Set();
@@ -1761,11 +1804,20 @@ async function calibrateMetricDepth(selectedTargetId) {
         frame_id_match: frame.exactFrame, radar_delta_s: radarMatch.delta,
         imu_delta_s: imuMatch.delta, stationary: true,
       };
-      const postResponse = await fetch('/body/camera/depth-calibration', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sample: calibrationSample }),
-      });
-      if (!postResponse.ok) throw new Error('Batch calibration endpoint rejected an anchor');
+      let postResponse;
+      try {
+        postResponse = await fetchForCalibration('/body/camera/depth-calibration', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sample: calibrationSample }),
+        });
+      } catch (error) {
+        diagnostics.postFailures += 1;
+        continue;
+      }
+      if (!postResponse.ok) {
+        diagnostics.postFailures += 1;
+        continue;
+      }
       const fit = await postResponse.json();
       if (!fit.accepted) continue;
       usedRadar.add(radarKey);
@@ -1796,7 +1848,7 @@ async function calibrateMetricDepth(selectedTargetId) {
     lastSensorDepthAt = 0;
     await refreshSensorDepth();
   } catch (error) {
-      depthCalibrationMessage = `Calibration not saved: ${error.message} · recorded frames ${depthBatch.length}, YOLO/depth pairs ≤250 ms ${diagnostics.framePairs}, selected radar frames ${radarBatch.size}, radar pairs ≤4.5 s ${diagnostics.radarPairs}, bearing matches ${diagnostics.bearing}, stable IMU pairs ≤1 s ${diagnostics.stationary}, in-range ${diagnostics.range}`;
+      depthCalibrationMessage = `Calibration not saved: ${error.message} · recorded frames ${depthBatch.length}, YOLO/depth pairs ≤250 ms ${diagnostics.framePairs}, radar samples ${radarBatch.size} (${selectedRadarFrameCount} selected), radar pairs ≤4.5 s ${diagnostics.radarPairs}, bearing matches ${diagnostics.bearing}, stable IMU pairs ≤1 s ${diagnostics.stationary}, in-range ${diagnostics.range}, anchor upload failures ${diagnostics.postFailures}`;
   } finally {
     depthCalibrationBusy = false;
     buttons.forEach(button => {
