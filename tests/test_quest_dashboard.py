@@ -137,6 +137,8 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertIn('"type": "hardware_sensor_sample"', runtime)
         self.assertIn("self._get_gps_bridge_source().read()", runtime)
         self.assertIn("depth_raw_png_base64", runtime)
+        self.assertIn("self._midas_service.request_raw_output(60.0)", runtime)
+        self.assertIn("128 * 1024 * 1024", runtime)
         self.assertIn("/body/sensors/capture/start", source)
         self.assertIn("/body/sensors/capture/cancel", source)
 

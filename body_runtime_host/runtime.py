@@ -823,7 +823,7 @@ class BodyHost:
         path = self._midas_calibration_log_path
         path.parent.mkdir(parents=True, exist_ok=True)
         with self._midas_calibration_log_lock:
-            if path.exists() and path.stat().st_size > 5 * 1024 * 1024:
+            if path.exists() and path.stat().st_size > 128 * 1024 * 1024:
                 path.replace(path.with_suffix(".log.1"))
             with path.open("a", encoding="utf-8") as stream:
                 for record in records:
@@ -909,6 +909,7 @@ class BodyHost:
             base_simulated = bool(getattr(base_source, "simulated", getattr(source, "simulated", False)))
             started_at = time.time()
             deadline = time.monotonic() + 60.0
+            self._midas_service.request_raw_output(60.0)
             write({"type": "hardware_capture_start", "session_id": session_id,
                    "started_at": started_at, "duration_seconds": 60,
                    "source": "runtime_sensor_adapters", "base_source_simulated": base_simulated,
