@@ -12,6 +12,7 @@ from typing import Any
 MIN_CALIBRATION_SAMPLES = 15
 MIN_TRAINING_SAMPLES = 12
 MAX_PAIR_DELTA_S = 0.25
+MAX_RADAR_PAIR_DELTA_S = 0.75
 MAX_BEARING_ERROR_DEG = 8.0
 
 
@@ -39,7 +40,7 @@ def fit_metric_depth(samples: list[dict[str, Any]]) -> dict[str, Any]:
         bearing_valid = selected_target_confirmed or bearing_error <= MAX_BEARING_ERROR_DEG
         if (math.isfinite(relative) and math.isfinite(distance) and math.isfinite(bearing_error)
                 and frame_aligned
-                and math.isfinite(radar_delta) and radar_delta <= MAX_PAIR_DELTA_S
+                and math.isfinite(radar_delta) and radar_delta <= MAX_RADAR_PAIR_DELTA_S
                 and math.isfinite(imu_delta) and imu_delta <= MAX_PAIR_DELTA_S
                 and sample.get("stationary") is True
                 and 1.0 <= distance <= 5.0

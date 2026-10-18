@@ -58,14 +58,14 @@ class MiDaSMetricCalibrationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "got 0"):
             fit_metric_depth(samples)
 
-    def test_stationary_radar_and_imu_pairs_allow_250ms_capture_skew(self):
+    def test_stationary_radar_pairs_allow_750ms_while_imu_stays_at_250ms(self):
         samples = self.make_samples()
         for sample in samples:
-            sample["radar_delta_s"] = 0.24
+            sample["radar_delta_s"] = 0.74
             sample["imu_delta_s"] = 0.24
         self.assertTrue(fit_metric_depth(samples)["available"])
         for sample in samples:
-            sample["radar_delta_s"] = 0.26
+            sample["radar_delta_s"] = 0.76
         with self.assertRaisesRegex(ValueError, "got 0"):
             fit_metric_depth(samples)
 

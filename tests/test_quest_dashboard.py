@@ -90,6 +90,8 @@ class QuestDashboardTests(unittest.TestCase):
         collector = source.split("async function calibrateMetricDepth(selectedTargetId)", 1)[1].split("async function refreshLiveRadar()", 1)[0]
         self.assertNotIn("fetch('/plugins/mmwave_radar/status'", collector)
         self.assertIn("const maxCalibrationPairDeltaSeconds = 0.25", source)
+        self.assertIn("const maxCalibrationRadarDeltaSeconds = 0.75", source)
+        self.assertIn("radarDelta <= maxCalibrationRadarDeltaSeconds", collector)
         self.assertIn("now - depthAt > 6.0", collector)
         self.assertIn("/body/camera/depth-calibration", runtime)
         self.assertIn("midas_metric_calibration.json", runtime)
