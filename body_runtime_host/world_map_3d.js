@@ -44,10 +44,6 @@ let lastSensorDepthAt = 0;
 let sensorDepthBusy = false;
 let latestSensorYolo = null;
 let cloudDepthYolo = null;
-let lastStableYoloFrameId = '';
-let lastStableYoloCapturedAt = 0;
-let previousYoloCandidates = [];
-const stableYoloResults = new Map();
 let latestSegmentation = null;
 let latestCameraFrame = null;
 let renderedSegmentationFrameId = '';
@@ -908,41 +904,15 @@ function drawBoxes(detections, width, height, stale = false) {
   }
 }
 
-function stalePreviewDetections(yolo) {
-  const age = Number(yolo?.captured_at) > 0 ? Date.now() / 1000 - Number(yolo.captured_at) : Infinity;
-  if (!['ready', 'stale'].includes(yolo?.state) || age < 0 || age > 1
-      || (yolo?.paired !== false && age <= 0.5)) return [];
-  return (yolo.detections || []).filter(item => {
-    const confidence = Number(item.confidence ?? item.score ?? 0);
-    const label = String(item.label || item.class_name || item.class || '');
-    return confidence >= (/person|human/i.test(label) ? 0.5 : 0.45);
-  });
-}
-
 function visibleYoloDetections(yolo) {
   const age = Number(yolo?.captured_at) > 0 ? Date.now() / 1000 - Number(yolo.captured_at) : Infinity;
-  if (yolo?.state !== 'ready' || age < 0 || age > 0.5 || yolo?.paired === false) return [];
-  const frameId = String(yolo.frame_id || '');
-  const capturedAt = Number(yolo.captured_at) || 0;
-  const key = frameId || String(capturedAt);
-  if (stableYoloResults.has(key)) return stableYoloResults.get(key);
-  if (capturedAt > lastStableYoloCapturedAt) {
-    const candidates = (yolo.detections || []).filter(item => {
-      const confidence = Number(item.confidence ?? item.score ?? 0);
-      const label = String(item.label || item.class_name || item.class || '');
-      return confidence >= (/person|human/i.test(label) ? 0.5 : 0.45);
-    });
-    const confirmed = candidates.filter(item => previousYoloCandidates.some(previous =>
-      String(previous.label || previous.class_name || previous.class || '') === String(item.label || item.class_name || item.class || '')
-      && boxIou(previous.bbox, item.bbox) >= 0.25));
-    previousYoloCandidates = candidates;
-    lastStableYoloCapturedAt = capturedAt;
-    lastStableYoloFrameId = frameId;
-    stableYoloResults.set(key, confirmed);
-    if (stableYoloResults.size > 32) stableYoloResults.delete(stableYoloResults.keys().next().value);
-    return confirmed;
-  }
-  return [];
+  if (!['ready', 'stale'].includes(yolo?.state) || age < 0 || age > 2.5) return [];
+  return (yolo.detections || []).filter(item => {
+    const confidence = Number(item.confidence ?? item.score ?? 0);
+    const box = item.bbox;
+    return confidence >= 0.25 && Array.isArray(box) && box.length >= 4
+      && box.slice(0, 4).every(value => Number.isFinite(Number(value)));
+  });
 }
 
 function pairedYoloDetections(yolo) {
@@ -952,16 +922,6 @@ function pairedYoloDetections(yolo) {
     const label = String(item.label || item.class_name || item.class || '');
     return confidence >= (/person|human/i.test(label) ? 0.5 : 0.45);
   });
-}
-
-function boxIou(a, b) {
-  if (!Array.isArray(a) || !Array.isArray(b) || a.length < 4 || b.length < 4) return 0;
-  const [ax1, ay1, ax2, ay2] = a.map(Number), [bx1, by1, bx2, by2] = b.map(Number);
-  const intersection = Math.max(0, Math.min(ax2, bx2) - Math.max(ax1, bx1))
-    * Math.max(0, Math.min(ay2, by2) - Math.max(ay1, by1));
-  const areaA = Math.max(0, ax2 - ax1) * Math.max(0, ay2 - ay1);
-  const areaB = Math.max(0, bx2 - bx1) * Math.max(0, by2 - by1);
-  return intersection / Math.max(1e-9, areaA + areaB - intersection);
 }
 
 function setImage(image, empty, base64, mime = 'image/jpeg') {
@@ -1734,15 +1694,15 @@ async function refreshSensors() {
       imageWrap.style.aspectRatio = `${currentCamera.width}/${currentCamera.height}`;
     }
     const detections = visibleYoloDetections(yolo);
-    const stalePreview = detections.length === 0 ? stalePreviewDetections(yolo) : [];
-    const yoloOverlayKey = `${yolo.state || 'disabled'}:${yolo.frame_id || ''}:${detections.length}:${stalePreview.length}`;
+    const yoloAge = Number(yolo.captured_at) > 0 ? Date.now() / 1000 - Number(yolo.captured_at) : Infinity;
+    const overlayStale = yolo.state !== 'ready' || yoloAge > 0.5 || yolo.paired === false;
+    const yoloOverlayKey = `${yolo.state || 'disabled'}:${yolo.frame_id || ''}:${detections.length}:${overlayStale}`;
     if (yoloOverlayKey !== displayedYoloOverlayKey) {
-      drawBoxes(detections.length ? detections : stalePreview, currentCamera.width || 640, currentCamera.height || 480, stalePreview.length > 0);
+      drawBoxes(detections, currentCamera.width || 640, currentCamera.height || 480, overlayStale);
       displayedYoloOverlayKey = yoloOverlayKey;
     }
     if (activeRender === '3d' && cloudDepthImage) drawDepthDetections(cloudDepthImage, cloudDepthYolo);
     if (activeRender === '3d') updateCloudHud();
-    const yoloAge = Number(yolo.captured_at) > 0 ? Date.now() / 1000 - Number(yolo.captured_at) : Infinity;
     const yoloDetail = `${yolo.state || 'disabled'} · ${(yolo.detections || []).length} boxes${yolo.latency_ms != null ? ` · ${yolo.latency_ms} ms` : ''}${yolo.paired === false ? ' · waiting for paired frame' : ''}`;
     const yoloFeedState = yolo.paired === false && yolo.state === 'stale' ? 'stale'
       : classifyAge('yolo', yoloAge, yolo.state === 'ready' && Boolean(currentCamera.image_base64) && yolo.paired !== false);
