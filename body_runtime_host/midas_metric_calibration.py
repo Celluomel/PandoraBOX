@@ -34,13 +34,16 @@ def fit_metric_depth(samples: list[dict[str, Any]]) -> dict[str, Any]:
         frame_aligned = math.isfinite(frame_delta) and (
             frame_delta <= MAX_PAIR_DELTA_S or frame_id_match
         )
+        selected_target_confirmed = (sample.get("selected_target_confirmed") is True
+                                     and bool(sample.get("selected_radar_target_id")))
+        bearing_valid = selected_target_confirmed or bearing_error <= MAX_BEARING_ERROR_DEG
         if (math.isfinite(relative) and math.isfinite(distance) and math.isfinite(bearing_error)
                 and frame_aligned
                 and math.isfinite(radar_delta) and radar_delta <= MAX_PAIR_DELTA_S
                 and math.isfinite(imu_delta) and imu_delta <= MAX_PAIR_DELTA_S
                 and sample.get("stationary") is True
                 and 1.0 <= distance <= 5.0
-                and bearing_error <= MAX_BEARING_ERROR_DEG):
+                and bearing_valid):
             valid.append((relative, distance))
 
     if len(valid) < MIN_CALIBRATION_SAMPLES:

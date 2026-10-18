@@ -1493,7 +1493,7 @@ function matchedRadarAnchors(detections, sample, image = null, selectedTargetId 
       const intrinsics = cameraIntrinsicsForImage({ width, height: Number(image?.height) || 480 });
       const cameraBearing = Math.atan2(centerU * width - intrinsics.cx, intrinsics.fx);
       const horizontalFov = THREE.MathUtils.degToRad(cameraRadarGeometry.horizontalFovDeg);
-      if (Math.abs(cameraBearing) > horizontalFov / 2) continue;
+      if (!options.skipFovGate && Math.abs(cameraBearing) > horizontalFov / 2) continue;
       const error = Math.abs((cameraBearing - radarBearing) * 180 / Math.PI);
       if (error > maxBearingErrorDeg) continue;
       candidates.push({
@@ -1545,7 +1545,7 @@ function openDepthCalibrationGuide() {
         <li><b>2 · Camera intrinsics · manual prerequisite</b><span>Calibrate at the live 640×480 resolution with 15–20 checkerboard views. Save fx, fy, cx, cy and distortion to calibration/camera.json; target RMS below 0.5 px (at most 1 px).</span></li>
         <li><b>3 · Camera ↔ radar alignment · manual prerequisite</b><span>At each tape mark, match a person’s camera bearing with radar atan2(x,y). Verify the mount yaw/lateral offset and keep error under 3°. Current automatic matching uses an approximate field of view; it does not fit these offsets.</span></li>
         <li><b>4 · Ground-plane check · optional</b><span>With measured camera height and IMU mount pitch, compare visible foot-point ranges to the tape marks. Target error under 0.2 m at 1–4 m. Not currently calculated by this button.</span></li>
-        <li><b>5 · Fit MiDaS to radar · automated here</b><span>Stand still at several 1–5 m marks. The collector uses torso-region median depth, radar forward distance y, synchronized frames, a stable low-tilt IMU and unambiguous person matches. It needs at least 15 accepted anchors across four distance bands; the fit is robust and validates holdout data.</span></li>
+        <li><b>5 · Fit MiDaS to radar · automated here</b><span>Stand still at several 1–5 m marks. The selected radar track is paired with the nearest visible YOLO person; bearing is advisory until camera-to-radar alignment is measured. The fit needs 15 synchronized anchors across four distance bands and validates held-out data.</span></li>
         <li><b>6 · Validate · manual</b><span>Use tape marks omitted from fitting. Compare radar and MiDaS; test seated/cropped people too. Record the held-out RMSE. Treat predictions outside the fitted range as extrapolated.</span></li>
         <li><b>7 · Runtime</b><span>Radar remains the metric reference when a person is matched; MiDaS serves other objects. The rolling fit expires old anchors, so scene changes need fresh anchors. Recheck alignment after any impact/remount; redo intrinsics if lens or resolution changes.</span></li>
       </ol>
@@ -1619,7 +1619,12 @@ async function calibrateMetricDepth(selectedTargetId) {
   const countedYolo = new Set();
   const countedFrames = new Set();
   const diagnostics = { depth: 0, yolo: 0, radar: 0, framePairs: 0, radarPairs: 0, bearing: 0, stationary: 0, range: 0 };
-  const calibrationAssociation = { minConfidence: 0.35, maxBearingErrorDeg: 15, ambiguityMarginDeg: 1 };
+  const calibrationAssociation = {
+    minConfidence: 0.2,
+    maxBearingErrorDeg: 180,
+    ambiguityMarginDeg: 0,
+    skipFovGate: true,
+  };
   let cachedFrameId = '';
   let cachedDepthImage = null;
   let lastDepthFrameId = '';
@@ -1742,6 +1747,8 @@ async function calibrateMetricDepth(selectedTargetId) {
           const rawDepth = roi[Math.floor(roi.length / 2)];
           const calibrationSample = {
             sample_id: `${depth.frame_id}|${yolo.frame_id}|${match.targetId}`,
+        selected_radar_target_id: String(selectedTargetId),
+        selected_target_confirmed: true,
             relative_depth: rawDepth,
             forward_m: match.forward,
             bearing_error_deg: match.error,

@@ -69,6 +69,17 @@ class MiDaSMetricCalibrationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "got 0"):
             fit_metric_depth(samples)
 
+    def test_manually_selected_radar_track_allows_unaligned_bearing(self):
+        samples = self.make_samples()
+        for sample in samples:
+            sample["bearing_error_deg"] = 68.0
+        with self.assertRaisesRegex(ValueError, "got 0"):
+            fit_metric_depth(samples)
+        for sample in samples:
+            sample["selected_target_confirmed"] = True
+            sample["selected_radar_target_id"] = "1"
+        self.assertTrue(fit_metric_depth(samples)["available"])
+
     def test_exact_camera_frame_identity_allows_timestamp_bookkeeping_skew(self):
         samples = self.make_samples()
         for sample in samples:
