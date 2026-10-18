@@ -58,6 +58,21 @@ class MiDaSMetricCalibrationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "got 0"):
             fit_metric_depth(samples)
 
+    def test_exact_camera_frame_identity_allows_timestamp_bookkeeping_skew(self):
+        samples = self.make_samples()
+        for sample in samples:
+            sample["frame_delta_s"] = 0.25
+            sample["frame_id_match"] = True
+        result = fit_metric_depth(samples)
+        self.assertTrue(result["available"])
+
+    def test_timestamp_only_camera_pairs_still_obey_100ms_limit(self):
+        samples = self.make_samples()
+        for sample in samples:
+            sample["frame_delta_s"] = 0.101
+        with self.assertRaisesRegex(ValueError, "got 0"):
+            fit_metric_depth(samples)
+
     def test_rejects_nonstationary_anchors(self):
         samples = self.make_samples()
         for sample in samples:

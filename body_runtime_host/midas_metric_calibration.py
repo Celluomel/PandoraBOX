@@ -30,8 +30,12 @@ def fit_metric_depth(samples: list[dict[str, Any]]) -> dict[str, Any]:
             imu_delta = abs(float(sample.get("imu_delta_s", math.inf)))
         except (KeyError, TypeError, ValueError):
             continue
+        frame_id_match = sample.get("frame_id_match") is True
+        frame_aligned = math.isfinite(frame_delta) and (
+            frame_delta <= MAX_PAIR_DELTA_S or frame_id_match
+        )
         if (math.isfinite(relative) and math.isfinite(distance) and math.isfinite(bearing_error)
-                and math.isfinite(frame_delta) and frame_delta <= MAX_PAIR_DELTA_S
+                and frame_aligned
                 and math.isfinite(radar_delta) and radar_delta <= MAX_PAIR_DELTA_S
                 and math.isfinite(imu_delta) and imu_delta <= MAX_PAIR_DELTA_S
                 and sample.get("stationary") is True
