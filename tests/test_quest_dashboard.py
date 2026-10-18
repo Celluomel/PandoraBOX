@@ -113,13 +113,13 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertIn("include_raw", bundle)
         self.assertIn("/body/camera/yolo/status?frame_id=${encodeURIComponent(", bundle)
         self.assertIn("frame_id_match:", bundle)
-        self.assertIn("Matched ", bundle)
+        self.assertIn("Analyzing ", bundle)
 
     def test_radar_calibration_button_opens_ordered_calibration_guide(self):
         source = (Path(__file__).resolve().parents[1] / "body_runtime_host" / "world_map_3d.js").read_text(encoding="utf-8")
         runtime = (Path(__file__).resolve().parents[1] / "body_runtime_host" / "runtime.py").read_text(encoding="utf-8")
 
-        self.assertIn("addEventListener('click', openDepthCalibrationGuide)", source)
+        self.assertIn("addEventListener('click', handleDepthCalibrationButton)", source)
         self.assertIn('id = \'world-map-calibration-guide\'', source)
         self.assertIn("0 · Prepare the rig", source)
         self.assertIn("1 · IMU zero", source)
@@ -134,11 +134,15 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertIn("const radarBatch = new Map()", source)
         self.assertIn("const imuBatch = new Map()", source)
         self.assertIn("const fetchForCalibration = async", source)
+        self.assertIn("const captureDeadlineTimer = setTimeout(() => captureController.abort(), 60000)", source)
+        self.assertIn("await withTimeout(loadDepthFrame(depth), 2000, 'depth decode')", source)
+        self.assertIn("Cancel calibration", source)
+        self.assertIn("traceUploadBusy && performance.now() - waitStarted < 3500", source)
         self.assertIn("Temporary MiDaS fetch failure; keeping recorded data", source)
         self.assertIn("Temporary YOLOX fetch failure; keeping", source)
         self.assertIn("anchor upload failures ${diagnostics.postFailures}", source)
         self.assertIn("/body/camera/depth-calibration/log", source)
-        self.assertIn("nowMs - lastTraceFlushAt >= 5000", source)
+        self.assertIn("loopNow - lastTraceFlushAt >= 5000", source)
         self.assertIn("traceRows.slice(traceCursor, traceCursor + 5000)", source)
         self.assertIn("type: 'radar_sample'", source)
         self.assertIn("type: 'imu_sample'", source)
@@ -156,7 +160,7 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertIn("Radar target to calibrate", source)
         self.assertIn("Start 60-second collection", source)
         self.assertIn("const stopAt = startedAt + 60000", source)
-        self.assertIn("s remaining", source)
+        self.assertIn("s left", source)
         self.assertIn("Verify the ${unchecked.length} unchecked prerequisite", source)
 
     def test_world_model_exposes_experimental_camera_odometry(self):

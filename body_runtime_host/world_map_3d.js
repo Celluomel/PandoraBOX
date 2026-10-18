@@ -61,6 +61,7 @@ let cloudSegmentationFrameId = '';
 let metricDepthCalibration = null;
 let depthCalibrationBusy = false;
 let depthCalibrationMessage = '';
+let cancelDepthCalibration = null;
 const visualOdometryTrail = [];
 let visualOdometryFrameId = '';
 let latestVisualOdometry = null;
@@ -874,8 +875,12 @@ window.addEventListener('resize', () => {
   if (activeSource === 'sensors' && activeRender === '3d') requestAnimationFrame(resizeCloud);
 });
 document.querySelectorAll('[data-render]').forEach((button) => button.addEventListener('click', () => setRender(button.dataset.render)));
-byId('world-map-midas-calibrate')?.addEventListener('click', openDepthCalibrationGuide);
-byId('world-map-midas-calibrate-3d')?.addEventListener('click', openDepthCalibrationGuide);
+const handleDepthCalibrationButton = () => {
+  if (depthCalibrationBusy) cancelDepthCalibration?.();
+  else openDepthCalibrationGuide();
+};
+byId('world-map-midas-calibrate')?.addEventListener('click', handleDepthCalibrationButton);
+byId('world-map-midas-calibrate-3d')?.addEventListener('click', handleDepthCalibrationButton);
 void loadMetricCalibration();
 setSource(window.bodyWorldModelView === 'sensors' ? 'sensors' : 'simulation');
 
@@ -1613,7 +1618,7 @@ async function calibrateMetricDepth(selectedTargetId) {
   const setMessage = message => statuses.forEach(status => { status.textContent = message; });
   depthCalibrationBusy = true;
   depthCalibrationMessage = '';
-  buttons.forEach(button => { button.disabled = true; button.textContent = 'Calibrating…'; });
+  buttons.forEach(button => { button.disabled = false; button.textContent = 'Cancel calibration'; });
   setMessage(`Collecting target ${selectedTargetId} for up to 60 s. Move through four or more distance bands from 1–5 m; calibration stops when this capture ends.`);
   const samples = [];
   const depthBatch = [];
@@ -1627,6 +1632,18 @@ async function calibrateMetricDepth(selectedTargetId) {
   let traceUploadBusy = false;
   let traceEndRecorded = false;
   let lastTraceFlushAt = performance.now();
+  const captureController = new AbortController();
+  let captureActive = true;
+  let cancelled = false;
+  const captureDeadlineTimer = setTimeout(() => captureController.abort(), 60000);
+  cancelDepthCalibration = () => {
+    cancelled = true;
+    captureController.abort();
+  };
+  const withTimeout = (promise, ms, label) => Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error(`${label} timed out`)), ms)),
+  ]);
   const tracedRadar = new Set();
   const tracedImu = new Set();
   const seen = new Set();
@@ -1642,21 +1659,32 @@ async function calibrateMetricDepth(selectedTargetId) {
   const fetchForCalibration = async (url, options = {}) => {
     let lastError;
     for (let attempt = 0; attempt < 2; attempt += 1) {
+      if (captureActive && captureController.signal.aborted) throw new Error(cancelled ? 'Cancelled by user' : 'Capture deadline reached');
+      const requestController = new AbortController();
+      const timeoutId = setTimeout(() => requestController.abort(), 3000);
+      const abortCapture = () => requestController.abort();
+      if (captureActive) captureController.signal.addEventListener('abort', abortCapture, { once: true });
       try {
-        const requestOptions = { ...options, signal: AbortSignal.timeout(3000) };
+        const requestOptions = { ...options, signal: requestController.signal };
         const response = await fetch(url, requestOptions);
         if (response.status < 500 || attempt === 1) return response;
         lastError = new Error(`HTTP ${response.status}`);
       } catch (error) {
         lastError = error;
+        if (captureActive && captureController.signal.aborted) throw new Error(cancelled ? 'Cancelled by user' : 'Capture deadline reached');
         if (attempt === 1) throw lastError;
+      } finally {
+        clearTimeout(timeoutId);
+        if (captureActive) captureController.signal.removeEventListener('abort', abortCapture);
       }
       await new Promise(resolve => setTimeout(resolve, 150 * (attempt + 1)));
     }
     throw lastError || new Error('Calibration request failed');
   };
   const flushCalibrationTrace = async (result, error = '') => {
-    while (traceUploadBusy) await new Promise(resolve => setTimeout(resolve, 25));
+    const waitStarted = performance.now();
+    while (traceUploadBusy && performance.now() - waitStarted < 3500) await new Promise(resolve => setTimeout(resolve, 25));
+    if (traceUploadBusy) return { ok: false, error: 'Trace upload remained busy past 3.5 s' };
     if (result && !traceEndRecorded) {
       traceRows.push({ type: 'session_end', session_id: traceSessionId, ended_at: Date.now() / 1000,
         result, error, depth_frames: depthBatch.length, radar_samples: radarBatch.size,
@@ -1674,7 +1702,7 @@ async function calibrateMetricDepth(selectedTargetId) {
         signal: AbortSignal.timeout(3000),
       });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const upload = await response.json();
+      const upload = await withTimeout(response.json(), 1500, 'trace response');
       if (upload.ok) traceCursor += Number(upload.records_written) || 0;
       traceUploaded = traceEndRecorded && traceCursor >= traceRows.length;
       return upload;
@@ -1693,7 +1721,23 @@ async function calibrateMetricDepth(selectedTargetId) {
   const stopAt = startedAt + 60000;
   let lastProgressAt = 0;
   try {
-    while (performance.now() < stopAt) {
+    while (performance.now() < stopAt && !captureController.signal.aborted) {
+      const loopNow = performance.now();
+      if (loopNow - lastProgressAt >= 1000) {
+        lastProgressAt = loopNow;
+        const elapsed = Math.floor((loopNow - startedAt) / 1000);
+        const remaining = Math.max(0, Math.ceil((stopAt - loopNow) / 1000));
+        const selectedReturns = [...radarBatch.values()].filter(item => (item.targets || []).some((target, index) =>
+          radarTargetId(target, index) === selectedTargetId)).length;
+        const bands = new Set(samples.map(sample => Math.min(4, Math.floor((sample.forward_m - 1) / 0.8)))).size;
+        setMessage(`Collecting · ${elapsed}s elapsed · ${remaining}s left · depth ${depthBatch.length} · radar ${selectedReturns} · IMU ${imuBatch.size} · anchors ${samples.length} · ${bands}/4 bands.`);
+      }
+      if (loopNow - lastTraceFlushAt >= 5000) {
+        void flushCalibrationTrace().then(upload => {
+          if (!upload.ok) traceRows.push({ type: 'trace_upload_failed', session_id: traceSessionId,
+            at: Date.now() / 1000, error: upload.error });
+        });
+      }
       for (const item of radarHistory) {
         const key = String(item.sequence ?? item.timestamp ?? '');
         if (key) {
@@ -1730,17 +1774,18 @@ async function calibrateMetricDepth(selectedTargetId) {
       try {
         depthResponse = await fetchForCalibration(depthUrl, { cache: 'no-store' });
       } catch (error) {
+        if (captureController.signal.aborted) break;
         traceRows.push({ type: 'fetch_retry', source: 'depth', at: Date.now() / 1000, error: error.message });
         setMessage(`Temporary MiDaS fetch failure; keeping recorded data (${depthBatch.length} paired frames). Retrying…`);
         await new Promise(resolve => setTimeout(resolve, 300));
         continue;
       }
       if (!depthResponse.ok) {
-        if (depthResponse.status >= 500) continue;
+        if (depthResponse.status >= 500) { await new Promise(resolve => setTimeout(resolve, 100)); continue; }
         throw new Error(`MiDaS endpoint returned HTTP ${depthResponse.status}`);
       }
       let depth;
-      try { depth = await depthResponse.json(); }
+      try { depth = await withTimeout(depthResponse.json(), 1500, 'depth response'); }
       catch { await new Promise(resolve => setTimeout(resolve, 150)); continue; }
       if (!depth.frame_id || depth.state !== 'ready' || depth.unchanged || !depth.depth_raw_png_base64) {
         setMessage(`Waiting for live MiDaS depth · ${samples.length} anchors collected.`);
@@ -1764,15 +1809,16 @@ async function calibrateMetricDepth(selectedTargetId) {
           yoloResponse = await fetchForCalibration(`/body/camera/yolo/status?nearest_to=${encodeURIComponent(depth.captured_at)}&max_delta_s=${maxCalibrationPairDeltaSeconds}`, { cache: 'no-store' });
         }
       } catch (error) {
+        if (captureController.signal.aborted) break;
         traceRows.push({ type: 'fetch_retry', source: 'yolox', at: Date.now() / 1000, error: error.message,
           frame_id: depth.frame_id, depth_at: depthAt });
         setMessage(`Temporary YOLOX fetch failure; keeping ${depthBatch.length} recorded pairs. Retrying…`);
         await new Promise(resolve => setTimeout(resolve, 300));
         continue;
       }
-      if (!yoloResponse.ok && yoloResponse.status >= 500) continue;
+      if (!yoloResponse.ok && yoloResponse.status >= 500) { await new Promise(resolve => setTimeout(resolve, 100)); continue; }
       if (!yoloResponse.ok && yoloResponse.status !== 404) throw new Error(`YOLOX endpoint returned HTTP ${yoloResponse.status}`);
-      const yolo = yoloResponse.ok ? await yoloResponse.json() : null;
+      const yolo = yoloResponse.ok ? await withTimeout(yoloResponse.json(), 1500, 'YOLOX response') : null;
       if (!yolo || yolo.state !== 'ready') {
         await new Promise(resolve => setTimeout(resolve, 100));
         continue;
@@ -1795,9 +1841,10 @@ async function calibrateMetricDepth(selectedTargetId) {
       if (frameAligned && !seen.has(pairKey)) {
         if (cachedFrameId !== depth.frame_id) {
           try {
-            cachedDepthImage = await loadDepthFrame(depth);
+            cachedDepthImage = await withTimeout(loadDepthFrame(depth), 2000, 'depth decode');
           } catch (error) {
             setMessage(`Could not decode one depth frame; preserving ${depthBatch.length} recorded pairs.`);
+            await new Promise(resolve => setTimeout(resolve, 100));
             continue;
           }
           cachedFrameId = depth.frame_id;
@@ -1831,23 +1878,15 @@ async function calibrateMetricDepth(selectedTargetId) {
             bbox: item.detection.bbox.map(Number), relative_depth: item.relativeDepth })) });
         seen.add(pairKey);
       }
-      const latestRadar = [...radarBatch.values()].filter(item => (item.targets || []).some((target, index) =>
-        radarTargetId(target, index) === selectedTargetId)).length;
-      const nowMs = performance.now();
-      if (nowMs - lastProgressAt >= 1000) {
-        lastProgressAt = nowMs;
-        const elapsed = Math.floor((nowMs - startedAt) / 1000);
-        const remaining = Math.max(0, Math.ceil((stopAt - nowMs) / 1000));
-        const bands = new Set(samples.map(sample => Math.min(4, Math.floor((sample.forward_m - 1) / 0.8)))).size;
-        setMessage(`Calibration ${elapsed}s elapsed · ${remaining}s remaining · ${depthBatch.length} frames · ${latestRadar} selected radar returns · ${samples.length}/15 anchors · ${bands}/4 distance bands.`);
-      }
-      if (nowMs - lastTraceFlushAt >= 5000) {
-        void flushCalibrationTrace().then(upload => {
-          if (!upload.ok) traceRows.push({ type: 'trace_upload_failed', session_id: traceSessionId,
-            at: Date.now() / 1000, error: upload.error });
-        });
-      }
       await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    captureActive = false;
+    clearTimeout(captureDeadlineTimer);
+    if (cancelled) {
+      traceRows.push({ type: 'fit_status', session_id: traceSessionId, available: false, fit_reason: 'cancelled_by_user' });
+      const traceResult = await flushCalibrationTrace('cancelled_by_user');
+      if (traceResult.ok) depthCalibrationMessage = `Calibration cancelled; trace saved: data/body/midas_calibration_trace.log`;
+      throw new Error('Cancelled by user');
     }
     const radarFrames = [...radarBatch.values()].filter(item => Number.isFinite(Number(item.timestamp))
       && (item.targets || []).some((target, index) => radarTargetId(target, index) === selectedTargetId));
@@ -1916,16 +1955,17 @@ async function calibrateMetricDepth(selectedTargetId) {
       usedRadar.add(radarKey);
       samples.push(calibrationSample);
     }
+    buttons.forEach(button => { button.disabled = true; button.textContent = 'Analyzing…'; });
     setMessage(`Analyzing ${depthBatch.length} frames · ${samples.length} synchronized anchors · ${new Set(samples.map(sample => Math.min(4, Math.floor((sample.forward_m - 1) / 0.8)))).size}/4 distance bands…`);
     let fit = null;
     if (samples.length) {
       try {
-        const response = await fetchForCalibration('/body/camera/depth-calibration', {
+        const response = await withTimeout(fetchForCalibration('/body/camera/depth-calibration', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ samples }),
-        });
+        }), 7000, 'anchor analysis');
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        fit = await response.json();
+        fit = await withTimeout(response.json(), 1500, 'fit response');
         collectedAnchorCount = Number(fit.sample_count) || 0;
         diagnostics.postFailures = fit.accepted_count === samples.length ? 0 : samples.length - Number(fit.accepted_count || 0);
         metricDepthCalibration = fit.available ? fit : null;
@@ -1958,14 +1998,27 @@ async function calibrateMetricDepth(selectedTargetId) {
     cloudFrameId = '';
     depthCalibrationMessage = '';
     lastSensorDepthAt = 0;
-    await refreshSensorDepth();
+    void refreshSensorDepth().catch(error => console.warn('Depth refresh after calibration failed', error));
   } catch (error) {
+      captureActive = false;
+      clearTimeout(captureDeadlineTimer);
       traceRows.push({ type: 'fit_status', session_id: traceSessionId, available: false,
         fit_reason: error.message });
-      const traceResult = traceUploaded ? { ok: true } : await flushCalibrationTrace('collector_error', error.message);
+      const traceResult = traceUploaded ? { ok: true } : await withTimeout(
+        flushCalibrationTrace(cancelled ? 'cancelled_by_user' : 'collector_error', error.message), 4000, 'final trace upload'
+      ).catch(uploadError => ({ ok: false, error: uploadError.message }));
+      if (cancelled) {
+        depthCalibrationMessage = `Calibration cancelled · recorded ${depthBatch.length} depth/YOLO frames · trace ${traceResult.ok ? 'saved' : `upload failed: ${traceResult.error}`}`;
+        setMessage(depthCalibrationMessage);
+        return;
+      }
       depthCalibrationMessage = `Calibration not saved: ${error.message} · recorded frames ${depthBatch.length}, YOLO/depth pairs ≤250 ms ${diagnostics.framePairs}, radar samples ${radarBatch.size} (${selectedRadarFrameCount} selected), radar pairs ≤4.5 s ${diagnostics.radarPairs}, bearing matches ${diagnostics.bearing}, stable IMU pairs ≤1 s ${diagnostics.stationary}, in-range ${diagnostics.range}, anchor upload failures ${diagnostics.postFailures}`;
       if (traceResult.ok) depthCalibrationMessage += ` · trace: data/body/midas_calibration_trace.log`;
+      setMessage(depthCalibrationMessage);
   } finally {
+    captureActive = false;
+    clearTimeout(captureDeadlineTimer);
+    cancelDepthCalibration = null;
     depthCalibrationBusy = false;
     buttons.forEach(button => {
       button.disabled = false;
