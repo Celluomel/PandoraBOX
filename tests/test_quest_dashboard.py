@@ -97,6 +97,11 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertIn("3 · Camera ↔ radar alignment · manual prerequisite", source)
         self.assertIn("5 · Fit MiDaS to radar · automated here", source)
         self.assertIn("6 · Validate · manual", source)
+        self.assertIn('id="world-map-calibration-radar-target" required', source)
+        self.assertIn("void calibrateMetricDepth(targetId)", source)
+        self.assertIn("function radarTargetId(target, index)", source)
+        self.assertIn("matchedRadarAnchors(yolo.detections, radarMatch.item, cachedDepthImage, selectedTargetId)", source)
+        self.assertIn("Radar target to calibrate", source)
         self.assertIn("Start 60-second collection", source)
         self.assertIn("Verify the ${unchecked.length} unchecked prerequisite", source)
 

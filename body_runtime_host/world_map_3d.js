@@ -495,6 +495,9 @@ if (panel) {
       .world-map-calibration-kicker{margin:0 0 5px;color:#00d6df;font-size:12px;font-weight:650}
       .world-map-calibration-close{width:36px;height:36px;border:1px solid #344a5e;border-radius:6px;background:#101b29;color:#e2edf5;font-size:22px;cursor:pointer}
       .world-map-calibration-intro{margin:0;color:#c3d2dc}
+      .world-map-calibration-target{display:grid;gap:6px;padding:10px 12px;border:1px solid #087d86;border-radius:5px;background:#0b1a22;color:#e2edf5;font-weight:600}
+      .world-map-calibration-target select{width:100%;min-height:38px;padding:7px 9px;border:1px solid #344a5e;border-radius:4px;background:#080e17;color:#e2edf5;font:14px ui-sans-serif,system-ui,sans-serif}
+      .world-map-calibration-target small{color:#a9b9c8;font-size:12px;font-weight:400}
       .world-map-calibration-stages{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 18px;margin:0;padding-left:24px}
       .world-map-calibration-stages li{padding:8px 10px;border-left:2px solid #263b50;background:#080e17}
       .world-map-calibration-stages li:nth-child(6){border-color:#00d6df;background:#0b1a22}
@@ -1458,7 +1461,11 @@ async function loadMetricCalibration() {
   updateMetricCalibrationStatus();
 }
 
-function matchedRadarAnchors(detections, sample, image = null) {
+function radarTargetId(target, index) {
+  return String(target.id || target.target_id || `target-${index}`);
+}
+
+function matchedRadarAnchors(detections, sample, image = null, selectedTargetId = null) {
   const source = String(sample?.source || '').toLowerCase();
   if (!source.startsWith('hlk_ld2450')) return [];
   const targets = Array.isArray(sample.targets) ? sample.targets : [];
@@ -1466,6 +1473,8 @@ function matchedRadarAnchors(detections, sample, image = null) {
     && Number(item.confidence ?? item.score ?? 0) >= 0.5 && Array.isArray(item.bbox) && item.bbox.length === 4);
   const candidates = [];
   for (const [targetIndex, target] of targets.entries()) {
+    const targetId = radarTargetId(target, targetIndex);
+    if (selectedTargetId != null && targetId !== String(selectedTargetId)) continue;
     const position = target.position_m || target.position;
     if (!Array.isArray(position) || position.length < 2) continue;
     const lateralRight = Number(position[0]);
@@ -1487,7 +1496,7 @@ function matchedRadarAnchors(detections, sample, image = null) {
       candidates.push({
         detection,
         targetIndex,
-        targetId: String(target.id || target.target_id || `target-${targetIndex}`),
+        targetId,
         forward,
         radialRange,
         error,
@@ -1526,6 +1535,7 @@ function openDepthCalibrationGuide() {
     dialog.innerHTML = `<form method="dialog" class="world-map-calibration-guide__surface">
       <header><div><p class="world-map-calibration-kicker">BODY · SENSOR CALIBRATION</p><h2 id="world-map-calibration-title">Radar + MiDaS calibration</h2></div><button class="world-map-calibration-close" value="cancel" aria-label="Close guide">×</button></header>
       <p class="world-map-calibration-intro">Follow the stages in order. This action collects radar-matched MiDaS anchors; it does not calibrate camera intrinsics or physically measure sensor alignment for you.</p>
+      <label class="world-map-calibration-target" for="world-map-calibration-radar-target">Radar target to calibrate<select id="world-map-calibration-radar-target" required><option value="">Waiting for live radar targets…</option></select><small>Choose the radar track belonging to the person visible to YOLOX. The collector will ignore all other radar targets.</small></label>
       <ol class="world-map-calibration-stages">
         <li><b>0 · Prepare the rig</b><span>Rigidly fix camera, radar and IMU on a level floor. Measure camera height and camera-to-radar lateral offset. Mark 1–5 m on the camera axis and ±1 m at 2 m and 4 m.</span></li>
         <li><b>1 · IMU zero, about 5 s</b><span>Keep the robot still. The live IMU must report valid attitude, ready gyro bias, stable calibration and roll/pitch within ±5°. For a real mount zero, record level-floor roll/pitch offsets; the current fit only gates on low tilt.</span></li>
@@ -1542,26 +1552,56 @@ function openDepthCalibrationGuide() {
       <footer><button type="button" data-calibration-action="cancel">Cancel</button><button type="button" data-calibration-action="start" class="primary">Start 60-second collection</button></footer>
     </form>`;
     document.body.appendChild(dialog);
+    refreshCalibrationRadarSelector(latestRadarSample);
     dialog.querySelector('[data-calibration-action="cancel"]')?.addEventListener('click', () => dialog.close());
     dialog.querySelector('[data-calibration-action="start"]')?.addEventListener('click', () => {
       const unchecked = [...dialog.querySelectorAll('[data-calibration-check]')].filter(item => !item.checked);
       const status = byId('world-map-calibration-guide-status');
+      const targetId = byId('world-map-calibration-radar-target')?.value;
+      if (!targetId) {
+        status.textContent = 'Select the radar target that matches the visible person before starting calibration.';
+        byId('world-map-calibration-radar-target')?.focus();
+        return;
+      }
       if (unchecked.length) {
         status.textContent = `Verify the ${unchecked.length} unchecked prerequisite${unchecked.length === 1 ? '' : 's'}, or cancel and complete those calibration stages first.`;
         unchecked[0].focus();
         return;
       }
       dialog.close();
-      void calibrateMetricDepth();
+      void calibrateMetricDepth(targetId);
     });
     dialog.addEventListener('click', event => {
       if (event.target === dialog) dialog.close();
     });
   }
+  refreshCalibrationRadarSelector(latestRadarSample);
   dialog.showModal();
 }
 
-async function calibrateMetricDepth() {
+function refreshCalibrationRadarSelector(sample) {
+  const select = byId('world-map-calibration-radar-target');
+  if (!select) return;
+  const selected = select.value || select.dataset.selectedTargetId || '';
+  const targets = Array.isArray(sample?.targets) ? sample.targets : [];
+  const options = [new Option(targets.length ? 'Select the person’s radar target…' : 'Waiting for live radar targets…', '')];
+  targets.forEach((target, index) => {
+    const targetId = radarTargetId(target, index);
+    const position = target.position_m || target.position || [];
+    const lateral = Number(position[0]), forward = Number(position[1]);
+    const label = `${target.id || target.target_id || `Target ${index + 1}`} · ${Number.isFinite(forward) ? `${forward.toFixed(2)} m forward` : 'range —'} · ${Number.isFinite(lateral) ? `${lateral.toFixed(2)} m lateral` : 'bearing —'}`;
+    options.push(new Option(label, targetId));
+  });
+  if (selected && !targets.some((target, index) => radarTargetId(target, index) === selected)) {
+    options.push(new Option(`Selected target ${selected} · waiting for radar return`, selected));
+  }
+  select.replaceChildren(...options);
+  if (selected) select.value = selected;
+  select.dataset.selectedTargetId = select.value;
+  select.onchange = () => { select.dataset.selectedTargetId = select.value; };
+}
+
+async function calibrateMetricDepth(selectedTargetId) {
   if (depthCalibrationBusy) return;
   const buttons = ['world-map-midas-calibrate', 'world-map-midas-calibrate-3d'].map(byId).filter(Boolean);
   const statuses = ['world-map-midas-calibration-status', 'world-map-midas-calibration-status-3d'].map(byId).filter(Boolean);
@@ -1570,14 +1610,13 @@ async function calibrateMetricDepth() {
   depthCalibrationBusy = true;
   depthCalibrationMessage = '';
   buttons.forEach(button => { button.disabled = true; button.textContent = 'Calibrating…'; });
-  setMessage('Collecting for 60 s: pause at several points from 1–5 m. Only synchronized, stationary, low-tilt radar/person matches count.');
+  setMessage(`Collecting target ${selectedTargetId} for 60 s: pause at several points from 1–5 m. Only synchronized, stationary, low-tilt matches to this radar target count.`);
   const samples = [];
   const seen = new Set();
   const radarHistory = [];
   const diagnostics = { depth: 0, yolo: 0, radar: 0, framePairs: 0, radarPairs: 0, bearing: 0, stationary: 0, range: 0 };
   let cachedFrameId = '';
   let cachedDepthImage = null;
-  let calibrationTargetId = null;
   const stopAt = performance.now() + 60000;
   try {
     while (performance.now() < stopAt) {
@@ -1615,7 +1654,8 @@ async function calibrateMetricDepth() {
       const now = Date.now() / 1000;
       const frameDelta = Math.abs(yoloAt - depthAt);
       const anchorAt = (yoloAt + depthAt) / 2;
-      const radarMatch = radarHistory.reduce((best, item) => {
+      const radarMatch = radarHistory.filter(item => (item.targets || []).some((target, index) =>
+        radarTargetId(target, index) === selectedTargetId)).reduce((best, item) => {
         const delta = Math.abs(Number(item.timestamp) - anchorAt);
         return !best || delta < best.delta ? { item, delta } : best;
       }, null);
@@ -1627,7 +1667,7 @@ async function calibrateMetricDepth() {
       const radarAligned = frameAligned && radarMatch && radarDelta <= maxCalibrationPairDeltaSeconds;
       if (radarAligned) diagnostics.radarPairs += 1;
       const bearingCandidates = frameAligned && radarMatch && radarDelta <= 0.75
-        ? matchedRadarAnchors(yolo.detections, radarMatch.item) : [];
+        ? matchedRadarAnchors(yolo.detections, radarMatch.item, null, selectedTargetId) : [];
       if (bearingCandidates.length) diagnostics.bearing += 1;
       if (bearingCandidates.some(item => item.forward >= 1 && item.forward <= 5)) diagnostics.range += 1;
       const imuSample = imuSampleAt(anchorAt, 0.1);
@@ -1644,12 +1684,9 @@ async function calibrateMetricDepth() {
           cachedDepthImage = await loadDepthFrame(depth);
           cachedFrameId = depth.frame_id;
         }
-        const candidates = matchedRadarAnchors(yolo.detections, radarMatch.item, cachedDepthImage)
+        const candidates = matchedRadarAnchors(yolo.detections, radarMatch.item, cachedDepthImage, selectedTargetId)
           .filter(item => item.forward >= 1 && item.forward <= 5);
-        const match = calibrationTargetId
-          ? candidates.find(item => item.targetId === calibrationTargetId) || null
-          : candidates[0] || null;
-        if (match && !calibrationTargetId) calibrationTargetId = match.targetId;
+        const match = candidates.find(item => item.targetId === selectedTargetId) || null;
         const key = `${depth.frame_id}|${yolo.frame_id}`;
         if (match && cachedDepthImage && !seen.has(key)) {
           const box = match.detection.bbox.map(Number);
@@ -1921,6 +1958,7 @@ async function refreshLiveRadar() {
       radarHistory = radarHistory.filter(item => Date.now() / 1000 - Number(item.timestamp) <= 5).slice(-32);
     }
     const targets = Array.isArray(sample.targets) ? sample.targets : [];
+    refreshCalibrationRadarSelector(latestRadarSample);
     const age = Number(sample.timestamp) > 0 ? Math.max(0, Date.now() / 1000 - Number(sample.timestamp)) : NaN;
     const targetLabel = `${targets.length} target${targets.length === 1 ? '' : 's'}`;
     const radarDetail = `${targetLabel}${Number.isFinite(age) ? ` · ${age.toFixed(1)} s` : ''}`;
