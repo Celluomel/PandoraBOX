@@ -7,7 +7,8 @@ const physicalSources = ['camera', 'radar', 'gps', 'imu', 'tof', 'lidar', 'ultra
 const cameraRadarGeometry = { horizontalFovDeg: 70, yawOffsetDeg: 0, lateralOffsetM: 0, calibrated: false };
 const maxCalibrationPairDeltaSeconds = 0.25;
 const maxCalibrationRadarDeltaSeconds = 1.25;
-const maxPersonBearingErrorDeg = 8;
+const maxPersonBearingErrorDeg = 12;
+const maxSceneRadarPairDeltaSeconds = 0.75;
 const maxSceneDetectionPairDeltaSeconds = 0.5;
 const yoloOverlayCoastSeconds = 5;
 function setFeedStatus(id, source, state, detail) {
@@ -1599,7 +1600,7 @@ function matchedRadarAnchors(detections, sample, image = null, selectedTargetId 
   if (!source.startsWith('hlk_ld2450')) return [];
   const minConfidence = Number(options.minConfidence ?? 0.5);
   const maxBearingErrorDeg = Number(options.maxBearingErrorDeg ?? maxPersonBearingErrorDeg);
-  const ambiguityMarginDeg = Number(options.ambiguityMarginDeg ?? 3);
+  const ambiguityMarginDeg = Number(options.ambiguityMarginDeg ?? 1.5);
   const targets = Array.isArray(sample.targets) ? sample.targets : [];
   const people = (detections || []).filter(item => /person|human/i.test(String(item.label || item.class_name || item.class || ''))
     && Number(item.confidence ?? item.score ?? 0) >= minConfidence && Array.isArray(item.bbox) && item.bbox.length === 4);
@@ -2943,23 +2944,29 @@ function setCloudLayerLabels(layer, entries) {
 function updateCloudRadar(sample = latestRadarSample, force = false) {
   if (!cloud) return;
   const enabled = cloudViewport?.querySelector('[data-cloud-layer="radar"]')?.checked === true;
+  const sceneSample = latestDepthCapturedAt > 0
+    ? radarSampleAt(latestDepthCapturedAt, maxSceneRadarPairDeltaSeconds) || sample
+    : sample;
+  sample = sceneSample;
   const targets = sample?.targets || [];
   const targetKey = targets.map(target => {
     const position = target.position_m || target.position || [];
     return `${target.id || target.target_id || ''}:${position[0]}:${position[1]}:${target.radial_speed_mps}`;
   }).join('|');
-  const sampleKey = `${enabled}:${sample?.timestamp || 'none'}:${targetKey}:${cloudViewport?.classList.contains('is-camera-view')}`;
+  const sceneYolo = cloudDepthYolo?.state === 'ready' ? cloudDepthYolo : latestSensorYolo;
+  const sampleKey = `${enabled}:${sample?.timestamp || 'none'}:${targetKey}:${sceneYolo?.frame_id || 'no-yolo'}:${cloudViewport?.classList.contains('is-camera-view')}`;
   if (!force && sampleKey === cloudRadarRenderKey) return;
   cloudRadarRenderKey = sampleKey;
   clearCloudGroup(cloudRadarGroup);
   const labels = [];
   cloudRadarGroup.visible = enabled;
-  const yoloAt = Number(latestSensorYolo?.captured_at) || 0;
+  const yoloAt = Number(sceneYolo?.captured_at) || 0;
   const radarAt = Number(sample?.timestamp) || 0;
-  const yoloFresh = latestSensorYolo?.state === 'ready' && Date.now() / 1000 - yoloAt <= 0.5
-    && Math.abs(yoloAt - radarAt) <= 0.2;
+  const yoloFresh = sceneYolo?.state === 'ready'
+    && Math.abs(yoloAt - radarAt) <= maxSceneRadarPairDeltaSeconds
+    && (sceneYolo === cloudDepthYolo || Date.now() / 1000 - yoloAt <= 1.5);
   const associatedTargets = yoloFresh
-    ? matchedRadarAnchors(visibleYoloDetections(latestSensorYolo), sample, cloudDepthImage).map(match => match.targetIndex)
+    ? matchedRadarAnchors(visibleYoloDetections(sceneYolo), sample, cloudDepthImage).map(match => match.targetIndex)
     : [];
   for (const [index, target] of targets.entries()) {
     const position = target.position_m || target.position || [];
@@ -2989,7 +2996,9 @@ function updateCloudRadar(sample = latestRadarSample, force = false) {
     cloudRadarGroup.add(marker);
     labels.push({ position: point, marker: true, motionClass: egoMotionLikely ? 'is-ego-motion' : moving ? 'is-moving' : '' });
     const associated = associatedTargets.includes(index);
-    labels.push({ position: point.clone().add(new THREE.Vector3(0, 0.16, 0)), text: `${associated ? 'Person · YOLOX matched' : `Radar target ${index + 1} · unassociated`} · ${forward.toFixed(1)} m forward${egoMotionLikely ? ' · radial motion ego-uncompensated' : ''}` });
+    const radarDelta = latestDepthCapturedAt > 0 ? Math.abs(Number(sample.timestamp) - latestDepthCapturedAt) : NaN;
+    const pairAge = Number.isFinite(radarDelta) && radarDelta > 0.15 ? ` · Δ${radarDelta.toFixed(1)} s` : '';
+    labels.push({ position: point.clone().add(new THREE.Vector3(0, 0.16, 0)), text: `${associated ? 'Person · YOLOX matched' : `Radar target ${index + 1} · unassociated`} · ${forward.toFixed(1)} m forward${pairAge}${egoMotionLikely ? ' · radial motion ego-uncompensated' : ''}` });
   }
   setCloudLayerLabels('radar', labels);
   if (activeRender === '3d') cloud.render();
@@ -3138,6 +3147,7 @@ async function rebuildDepthCloud(depth, segmentation = latestSegmentation) {
     const alignedYolo = { ...frameYolo, frame_delta_s: delta };
     cloudDepthYolo = alignedYolo;
     drawDepthDetections(currentImage, alignedYolo, metricDepthCalibration);
+    updateCloudRadar();
   }).catch(error => console.warn('Could not pair YOLOX with MiDaS frame:', error));
   if (cloudViewport?.classList.contains('is-camera-view')) {
     void cameraFrameForDepth(depth).then(frame => {
@@ -3207,8 +3217,10 @@ function drawDepthDetections(image, yolo, calibration = metricDepthCalibration) 
   const htmlLabels = [];
   const colorsByKind = ['#55e7cc', '#f2bc65', '#e280ba', '#77d69c'];
   const metricFrame = Boolean(calibration?.available && Number.isFinite(image.rawMin) && Number.isFinite(image.rawMax));
-  const alignedRadarSample = frameMatches && metricFrame && yoloFrameDelta <= 0.15
-    ? radarSampleAt(latestDepthCapturedAt, 0.1) : null;
+  const alignedRadarSample = frameMatches && metricFrame && yoloFrameDelta <= maxSceneDetectionPairDeltaSeconds
+    ? radarSampleAt(latestDepthCapturedAt, maxSceneRadarPairDeltaSeconds) : null;
+  const radarPairDelta = alignedRadarSample
+    ? Math.abs(Number(alignedRadarSample.timestamp) - latestDepthCapturedAt) : Infinity;
   const radarMatches = alignedRadarSample ? matchedRadarAnchors(detections, alignedRadarSample, image) : [];
   for (const [index, item] of detections.entries()) {
     const bbox = item.bbox;
@@ -3219,7 +3231,12 @@ function drawDepthDetections(image, yolo, calibration = metricDepthCalibration) 
     if (!stats) continue;
     const radarAnchor = radarMatches.find(match => match.detection === item);
     const medianRange = frameMatches && metricFrame ? metricDepthEstimate(stats.median, calibration) : null;
-    const medianDepth = radarAnchor ? radarAnchor.forward : stats.median;
+    const calibrationRange = calibration?.calibrated_range_m || [];
+    const calibratedMin = Math.min(Number(calibrationRange[0]), Number(calibrationRange[1]));
+    const calibratedMax = Math.max(Number(calibrationRange[0]), Number(calibrationRange[1]));
+    const shapeDepth = medianRange?.extrapolated && Number.isFinite(calibratedMin) && Number.isFinite(calibratedMax)
+      ? THREE.MathUtils.clamp(stats.median, calibratedMin, calibratedMax) : stats.median;
+    const medianDepth = radarAnchor ? radarAnchor.forward : shapeDepth;
     const observedSpan = Math.max(0, stats.far - stats.near);
     const maximumSpan = metricFrame
       ? Math.min(0.6, Math.max(0.15, medianDepth * 0.3))
@@ -3245,16 +3262,20 @@ function drawDepthDetections(image, yolo, calibration = metricDepthCalibration) 
     ));
     const labelPosition = cameraPointInBodyFrame(cameraPoint((x1 + x2) * image.width / 2, y1 * image.height, nearZ, intrinsics), latestDepthCapturedAt);
     const confidence = Math.round(Number(item.confidence ?? item.score ?? 0) * 100);
+    const depthAge = image.capturedAt > 0 ? Math.max(0, Date.now() / 1000 - image.capturedAt) : Infinity;
     const rangeLabel = radarAnchor
-      ? `${radarAnchor.forward.toFixed(2)} m · radar measured`
-      : medianRange
-        ? `${medianRange.extrapolated ? '~' : ''}${medianRange.meters.toFixed(1)} m · MiDaS ${medianRange.extrapolated ? 'extrapolated' : 'est.'}`
-        : frameMatches
-          ? `${stats.median.toFixed(1)} pseudo-m · uncalibrated MiDaS`
-          : 'depth unpaired · relative shape only';
+      ? `${radarAnchor.forward.toFixed(2)} m · radar measured${radarPairDelta > 0.15 ? ` · radar Δ${radarPairDelta.toFixed(1)} s` : ''}`
+      : depthAge > 1.25
+        ? 'depth stale · distance withheld'
+        : medianRange?.extrapolated
+          ? 'outside calibrated range · distance withheld'
+          : medianRange
+            ? `${medianRange.meters.toFixed(1)} m · MiDaS est.`
+            : frameMatches
+              ? `${stats.median.toFixed(1)} pseudo-m · uncalibrated MiDaS`
+              : 'depth unpaired · relative shape only';
     const syncLabel = yolo?.frame_id !== image.frameId && yoloFrameDelta > 0.15
       ? ` · YOLOX Δ${yoloFrameDelta.toFixed(1)} s` : '';
-    const depthAge = image.capturedAt > 0 ? Math.max(0, Date.now() / 1000 - image.capturedAt) : Infinity;
     const staleDepthLabel = depthAge > 1.25 ? ` · MiDaS stale ${depthAge.toFixed(1)} s` : '';
     htmlLabels.push({ position: labelPosition, text: `${identity} ${confidence}% · ${rangeLabel}${syncLabel}${staleDepthLabel}` });
   }

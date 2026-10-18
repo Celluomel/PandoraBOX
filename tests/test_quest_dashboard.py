@@ -125,6 +125,14 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertIn("frame_id_match:", bundle)
         self.assertIn("Analyzing ", bundle)
 
+    def test_3d_scene_uses_time_aligned_radar_and_withholds_stale_or_extrapolated_ranges(self):
+        source = (Path(__file__).resolve().parents[1] / "body_runtime_host" / "world_map_3d.js").read_text(encoding="utf-8")
+        self.assertIn("const maxSceneRadarPairDeltaSeconds = 0.75", source)
+        self.assertIn("radarSampleAt(latestDepthCapturedAt, maxSceneRadarPairDeltaSeconds)", source)
+        self.assertIn("depth stale · distance withheld", source)
+        self.assertIn("outside calibrated range · distance withheld", source)
+        self.assertIn("radarPairDelta > 0.15", source)
+
     def test_calibration_starts_fixed_60_second_hardware_capture_on_runtime(self):
         root = Path(__file__).resolve().parents[1]
         runtime = (root / "body_runtime_host" / "runtime.py").read_text(encoding="utf-8")
