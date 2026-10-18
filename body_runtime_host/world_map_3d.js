@@ -885,6 +885,11 @@ byId('world-map-midas-calibrate-3d')?.addEventListener('click', handleDepthCalib
 document.querySelectorAll('[data-calibration-log-download]').forEach(button => {
   button.addEventListener('click', downloadCalibrationTrace);
 });
+document.querySelectorAll('.world-map-depth-calibration a[href="/body/camera/depth-calibration/log"]')
+  .forEach(link => link.addEventListener('click', event => {
+    event.preventDefault();
+    void openCalibrationTrace();
+  }));
 void loadMetricCalibration();
 setSource(window.bodyWorldModelView === 'sensors' ? 'sensors' : 'simulation');
 
@@ -1464,34 +1469,45 @@ function updateMetricCalibrationStatus() {
 }
 
 async function downloadCalibrationTrace(event) {
-  const button = event.currentTarget;
   const statuses = ['world-map-midas-calibration-status', 'world-map-midas-calibration-status-3d']
     .map(byId).filter(Boolean);
   const setMessage = message => {
     calibrationLogStatusMessage = message;
     statuses.forEach(status => { status.textContent = message; });
   };
-  button.disabled = true;
-  setMessage('Preparing calibration log…');
+  setMessage('Opening the server download…');
+  window.location.assign('/body/camera/depth-calibration/log');
+}
+
+async function openCalibrationTrace() {
+  const statuses = ['world-map-midas-calibration-status', 'world-map-midas-calibration-status-3d']
+    .map(byId).filter(Boolean);
+  const setMessage = message => {
+    calibrationLogStatusMessage = message;
+    statuses.forEach(status => { status.textContent = message; });
+  };
+  setMessage('Loading calibration log…');
   try {
     const response = await fetch('/body/camera/depth-calibration/log', { cache: 'no-store' });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const blob = await response.blob();
-    if (!blob.size) throw new Error('The log is empty');
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = 'midas_calibration_trace.log';
-    link.hidden = true;
-    document.body.append(link);
-    link.click();
-    link.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 30000);
-    setMessage(`Download started · midas_calibration_trace.log · ${blob.size.toLocaleString()} bytes. If it did not save, use Open log.`);
+    const content = await response.text();
+    if (!content) throw new Error('The log is empty');
+    let dialog = byId('world-map-calibration-log-dialog');
+    if (!dialog) {
+      dialog = document.createElement('dialog');
+      dialog.id = 'world-map-calibration-log-dialog';
+      dialog.style.cssText = 'width:min(900px,94vw);max-height:88vh;padding:18px;background:#0a0f1a;color:#d7e4ed;border:1px solid #294153;border-radius:4px';
+      dialog.innerHTML = '<header style="display:flex;align-items:center;justify-content:space-between;gap:12px"><strong>MiDaS calibration log</strong><button type="button" data-log-close>Close</button></header><pre style="max-height:68vh;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;background:#05070d;padding:12px;font:12px/1.45 ui-monospace,monospace"></pre><footer style="display:flex;gap:10px;align-items:center"><a href="/body/camera/depth-calibration/log" data-log-download>Download .log</a><small></small></footer>';
+      dialog.querySelector('[data-log-close]').addEventListener('click', () => dialog.close());
+      dialog.addEventListener('click', event => { if (event.target === dialog) dialog.close(); });
+      document.body.append(dialog);
+    }
+    dialog.querySelector('pre').textContent = content;
+    dialog.querySelector('footer small').textContent = `${new Blob([content]).size.toLocaleString()} bytes · ${content.split(/\r?\n/).filter(Boolean).length} records`;
+    dialog.showModal();
+    setMessage(`Log opened · ${content.split(/\r?\n/).filter(Boolean).length} records. Use Download .log or save this page's text.`);
   } catch (error) {
-    setMessage(`Log download failed: ${error.message}. Use Open log to view it.`);
-  } finally {
-    button.disabled = false;
+    setMessage(`Log could not be opened: ${error.message}`);
   }
 }
 
