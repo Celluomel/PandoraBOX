@@ -81,7 +81,7 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertIn("depth.unchanged || !depth.depth_raw_png_base64", source)
         self.assertIn("frame_id_match: frame.exactFrame", source)
         self.assertIn('query.get("nearest_to")', runtime)
-        self.assertIn("performance.now() + 180000", source)
+        self.assertIn("startedAt + 60000", source)
         self.assertIn("frameDelta <= maxCalibrationPairDeltaSeconds", source)
         self.assertIn("const radarBatch = new Map()", source)
         self.assertIn("const radarFrames = [...radarBatch.values()]", source)
@@ -149,7 +149,9 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertIn("bearing is advisory until camera-to-radar alignment is measured", source)
         self.assertIn("options.maxBearingErrorDeg ?? maxPersonBearingErrorDeg", source)
         self.assertIn("Radar target to calibrate", source)
-        self.assertIn("Start 180-second collection", source)
+        self.assertIn("Start 60-second collection", source)
+        self.assertIn("const stopAt = startedAt + 60000", source)
+        self.assertIn("s remaining", source)
         self.assertIn("Verify the ${unchecked.length} unchecked prerequisite", source)
 
     def test_world_model_exposes_experimental_camera_odometry(self):

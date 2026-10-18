@@ -1553,7 +1553,7 @@ function openDepthCalibrationGuide() {
       <div class="world-map-calibration-checks"><label><input type="checkbox" data-calibration-check="rig"> Mounts are rigid; floor is level; tape marks are ready</label><label><input type="checkbox" data-calibration-check="imu"> Robot is stationary; IMU status is stable and low tilt</label><label><input type="checkbox" data-calibration-check="intrinsics"> I have verified the 640×480 camera intrinsics</label><label><input type="checkbox" data-calibration-check="alignment"> I have measured/verified camera-to-radar alignment</label></div>
       <p class="world-map-calibration-caution">Intrinsics and alignment are not currently enforced by the fitter: without those checks, bearing matches and resulting distances remain approximate. Do not interpret a good MiDaS fit as proof of geometric calibration.</p>
       <p id="world-map-calibration-guide-status" class="world-map-calibration-progress" role="status">Ready when the robot and target person are stationary.</p>
-      <footer><button type="button" data-calibration-action="cancel">Cancel</button><button type="button" data-calibration-action="start" class="primary">Start 180-second collection</button></footer>
+      <footer><button type="button" data-calibration-action="cancel">Cancel</button><button type="button" data-calibration-action="start" class="primary">Start 60-second collection</button></footer>
     </form>`;
     document.body.appendChild(dialog);
     refreshCalibrationRadarSelector(latestRadarSample);
@@ -1614,14 +1614,14 @@ async function calibrateMetricDepth(selectedTargetId) {
   depthCalibrationBusy = true;
   depthCalibrationMessage = '';
   buttons.forEach(button => { button.disabled = true; button.textContent = 'Calibrating…'; });
-  setMessage(`Collecting target ${selectedTargetId} for up to 180 s: pause at four or more points from 1–5 m. Progress shows accepted anchors and covered distance bands.`);
+  setMessage(`Collecting target ${selectedTargetId} for up to 60 s. Move through four or more distance bands from 1–5 m; calibration stops when this capture ends.`);
   const samples = [];
   const depthBatch = [];
   const radarBatch = new Map();
   const imuBatch = new Map();
   const traceSessionId = crypto.randomUUID();
   const traceRows = [{ type: 'session_start', session_id: traceSessionId, started_at: Date.now() / 1000,
-    selected_target_id: selectedTargetId, window_seconds: 180 }];
+    selected_target_id: selectedTargetId, window_seconds: 60 }];
   let traceUploaded = false;
   const seen = new Set();
   const countedYolo = new Set();
@@ -1672,7 +1672,9 @@ async function calibrateMetricDepth(selectedTargetId) {
   let lastDepthFrameId = '';
   let collectedAnchorCount = 0;
   let selectedRadarFrameCount = 0;
-  const stopAt = performance.now() + 180000;
+  const startedAt = performance.now();
+  const stopAt = startedAt + 60000;
+  let lastProgressAt = 0;
   try {
     while (performance.now() < stopAt) {
       for (const item of radarHistory) {
@@ -1795,7 +1797,14 @@ async function calibrateMetricDepth(selectedTargetId) {
       }
       const latestRadar = [...radarBatch.values()].filter(item => (item.targets || []).some((target, index) =>
         radarTargetId(target, index) === selectedTargetId)).length;
-      setMessage(`Recording ${depthBatch.length} paired frames · ${radarBatch.size} radar samples · ${imuBatch.size} IMU samples · ${latestRadar} selected-target returns · anchors ${collectedAnchorCount}/15.`);
+      const nowMs = performance.now();
+      if (nowMs - lastProgressAt >= 1000) {
+        lastProgressAt = nowMs;
+        const elapsed = Math.floor((nowMs - startedAt) / 1000);
+        const remaining = Math.max(0, Math.ceil((stopAt - nowMs) / 1000));
+        const bands = new Set(samples.map(sample => Math.min(4, Math.floor((sample.forward_m - 1) / 0.8)))).size;
+        setMessage(`Calibration ${elapsed}s elapsed · ${remaining}s remaining · ${depthBatch.length} frames · ${latestRadar} selected radar returns · ${samples.length}/15 anchors · ${bands}/4 distance bands.`);
+      }
       await new Promise(resolve => setTimeout(resolve, 100));
     }
     const radarFrames = [...radarBatch.values()].filter(item => Number.isFinite(Number(item.timestamp))
