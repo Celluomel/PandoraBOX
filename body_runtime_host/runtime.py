@@ -895,14 +895,24 @@ class BodyHost:
             source = getattr(wm, "source", None) if wm is not None else None
             if source is None:
                 raise RuntimeError("Body hardware sensor source is unavailable")
-            if bool(getattr(source, "simulated", False)):
-                raise RuntimeError("Refusing to label simulated readings as hardware sensor data")
+            source_cursor = source
+            physical_adapters = {}
+            visited_sources = set()
+            while source_cursor is not None and id(source_cursor) not in visited_sources:
+                visited_sources.add(id(source_cursor))
+                for modality in ("radar", "imu", "tof"):
+                    adapter = getattr(source_cursor, modality, None)
+                    if adapter is not None:
+                        physical_adapters[modality] = adapter
+                source_cursor = getattr(source_cursor, "source", None)
+            base_source = source_cursor
+            base_simulated = bool(getattr(base_source, "simulated", getattr(source, "simulated", False)))
             started_at = time.time()
             deadline = time.monotonic() + 60.0
             write({"type": "hardware_capture_start", "session_id": session_id,
                    "started_at": started_at, "duration_seconds": 60,
-                   "source": "runtime_sensor_adapters", "simulated": False,
-                   "sensors": ["robot_source_modalities", "gps_uart", "camera", "yolox", "midas"]})
+                   "source": "runtime_sensor_adapters", "base_source_simulated": base_simulated,
+                   "sensors": ["robot_source_modalities", "radar", "imu", "tof", "gps_uart", "camera", "yolox", "midas"]})
             with self._hardware_capture_lock:
                 self._hardware_capture_status.update({"state": "capturing", "started_at": started_at})
 
@@ -913,15 +923,27 @@ class BodyHost:
                     sampled_at = time.time()
                     try:
                         with wm._lock:
-                            observation = source.observe()
-                        modalities = clean(getattr(observation, "modalities", {}) or {})
+                            observation = source.observe() if not base_simulated else None
+                            hardware_sensors = {}
+                            if base_simulated:
+                                for sensor_name, adapter in physical_adapters.items():
+                                    try:
+                                        sensor_value = adapter.read()
+                                        hardware_sensors[sensor_name] = clean(
+                                            sensor_value.as_dict() if hasattr(sensor_value, "as_dict") else sensor_value
+                                        )
+                                    except Exception as sensor_error:
+                                        hardware_sensors[sensor_name] = {"available": False,
+                                            "timestamp": time.time(), "error": str(sensor_error)[:200]}
+                        modalities = clean(getattr(observation, "modalities", {}) or {}) if observation is not None else {}
                         record = {"type": "hardware_sensor_sample", "session_id": session_id,
                                   "sample": sample_index, "captured_at": sampled_at,
                                   "observation_timestamp": float(getattr(observation, "timestamp", sampled_at) or sampled_at),
                                   "source": str(getattr(observation, "source", "hardware")),
-                                  "modalities": modalities}
+                                  "base_source_simulated": base_simulated,
+                                  "modalities": modalities, "hardware_sensors": hardware_sensors}
                         try:
-                            record["hardware_sensors"] = {"gps": clean(self._get_gps_bridge_source().read())}
+                            record["hardware_sensors"]["gps"] = clean(self._get_gps_bridge_source().read())
                         except Exception as sensor_error:
                             record["hardware_sensors"] = {"gps": {"available": False,
                                 "error": str(sensor_error)[:200], "timestamp": time.time()}}
