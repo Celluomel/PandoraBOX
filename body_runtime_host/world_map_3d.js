@@ -1553,7 +1553,7 @@ function openDepthCalibrationGuide() {
       <div class="world-map-calibration-checks"><label><input type="checkbox" data-calibration-check="rig"> Mounts are rigid; floor is level; tape marks are ready</label><label><input type="checkbox" data-calibration-check="imu"> Robot is stationary; IMU status is stable and low tilt</label><label><input type="checkbox" data-calibration-check="intrinsics"> I have verified the 640×480 camera intrinsics</label><label><input type="checkbox" data-calibration-check="alignment"> I have measured/verified camera-to-radar alignment</label></div>
       <p class="world-map-calibration-caution">Intrinsics and alignment are not currently enforced by the fitter: without those checks, bearing matches and resulting distances remain approximate. Do not interpret a good MiDaS fit as proof of geometric calibration.</p>
       <p id="world-map-calibration-guide-status" class="world-map-calibration-progress" role="status">Ready when the robot and target person are stationary.</p>
-      <footer><button type="button" data-calibration-action="cancel">Cancel</button><button type="button" data-calibration-action="start" class="primary">Start 60-second collection</button></footer>
+      <footer><button type="button" data-calibration-action="cancel">Cancel</button><button type="button" data-calibration-action="start" class="primary">Start 120-second collection</button></footer>
     </form>`;
     document.body.appendChild(dialog);
     refreshCalibrationRadarSelector(latestRadarSample);
@@ -1614,7 +1614,7 @@ async function calibrateMetricDepth(selectedTargetId) {
   depthCalibrationBusy = true;
   depthCalibrationMessage = '';
   buttons.forEach(button => { button.disabled = true; button.textContent = 'Calibrating…'; });
-  setMessage(`Collecting target ${selectedTargetId} for 60 s: pause at several points from 1–5 m. Only synchronized, stationary, low-tilt matches to this radar target count.`);
+  setMessage(`Collecting target ${selectedTargetId} for 120 s: pause at four or more points from 1–5 m. Only synchronized, stationary, low-tilt matches to this radar target count.`);
   const samples = [];
   const seen = new Set();
   const countedYolo = new Set();
@@ -1629,7 +1629,7 @@ async function calibrateMetricDepth(selectedTargetId) {
   let cachedFrameId = '';
   let cachedDepthImage = null;
   let lastDepthFrameId = '';
-  const stopAt = performance.now() + 60000;
+  const stopAt = performance.now() + 120000;
   try {
     while (performance.now() < stopAt) {
       const depthUrl = new URL('/body/camera/depth', window.location.origin);
@@ -1786,7 +1786,9 @@ async function calibrateMetricDepth(selectedTargetId) {
             ? 'No camera-person/radar bearing match; verify target identity, camera FOV, mount yaw and lateral offset.'
             : diagnostics.stationary === 0
               ? 'IMU did not confirm stable stationary posture; keep the body still and wait for gyro bias.'
-              : 'Collect a person at four or more distance bands from 1–5 m; nearer/ farther radar targets are excluded.';
+              : samples.length < 15
+                ? `Only ${samples.length}/15 synchronized anchors were collected. Hold the selected person at four or more distinct 1–5 m distances for the full collection.`
+                : 'The anchors did not span four distinct distance bands from 1–5 m, or the fit failed holdout validation. Revisit the distance marks and collect again.';
       throw new Error(`Fit not validated; collected ${samples.length} anchors. ${hint}`);
     }
     cloudFrameId = '';

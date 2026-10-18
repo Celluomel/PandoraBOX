@@ -109,7 +109,8 @@ class MiDaSMetricCalibrationTests(unittest.TestCase):
             results = [store.calibrate({"sample": sample}) for sample in self.make_samples()]
         self.assertTrue(results[-1]["available"])
         self.assertEqual(results[-1]["sample_count"], 20)
-        with patch("body_runtime_host.midas_metric_calibration.time.time", return_value=start + 21):
+        self.assertEqual(results[-1]["window_seconds"], 120)
+        with patch("body_runtime_host.midas_metric_calibration.time.time", return_value=start + 121):
             expired = store.status()
         self.assertFalse(expired["available"])
         self.assertEqual(expired["sample_count"], 0)
