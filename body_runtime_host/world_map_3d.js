@@ -1465,12 +1465,15 @@ function radarTargetId(target, index) {
   return String(target.id || target.target_id || `target-${index}`);
 }
 
-function matchedRadarAnchors(detections, sample, image = null, selectedTargetId = null) {
+function matchedRadarAnchors(detections, sample, image = null, selectedTargetId = null, options = {}) {
   const source = String(sample?.source || '').toLowerCase();
   if (!source.startsWith('hlk_ld2450')) return [];
+  const minConfidence = Number(options.minConfidence ?? 0.5);
+  const maxBearingErrorDeg = Number(options.maxBearingErrorDeg ?? maxPersonBearingErrorDeg);
+  const ambiguityMarginDeg = Number(options.ambiguityMarginDeg ?? 3);
   const targets = Array.isArray(sample.targets) ? sample.targets : [];
   const people = (detections || []).filter(item => /person|human/i.test(String(item.label || item.class_name || item.class || ''))
-    && Number(item.confidence ?? item.score ?? 0) >= 0.5 && Array.isArray(item.bbox) && item.bbox.length === 4);
+    && Number(item.confidence ?? item.score ?? 0) >= minConfidence && Array.isArray(item.bbox) && item.bbox.length === 4);
   const candidates = [];
   for (const [targetIndex, target] of targets.entries()) {
     const targetId = radarTargetId(target, targetIndex);
@@ -1492,7 +1495,7 @@ function matchedRadarAnchors(detections, sample, image = null, selectedTargetId 
       const horizontalFov = THREE.MathUtils.degToRad(cameraRadarGeometry.horizontalFovDeg);
       if (Math.abs(cameraBearing) > horizontalFov / 2) continue;
       const error = Math.abs((cameraBearing - radarBearing) * 180 / Math.PI);
-      if (error > maxPersonBearingErrorDeg) continue;
+      if (error > maxBearingErrorDeg) continue;
       candidates.push({
         detection,
         targetIndex,
@@ -1510,7 +1513,7 @@ function matchedRadarAnchors(detections, sample, image = null, selectedTargetId 
   const unambiguous = candidates.filter(candidate => {
     const sameDetection = candidates.filter(item => item.detection === candidate.detection).sort((a, b) => a.cost - b.cost);
     const sameTarget = candidates.filter(item => item.targetIndex === candidate.targetIndex).sort((a, b) => a.cost - b.cost);
-    const clear = list => list[0] === candidate && (!list[1] || list[1].cost - candidate.cost >= 3);
+    const clear = list => list[0] === candidate && (!list[1] || list[1].cost - candidate.cost >= ambiguityMarginDeg);
     return clear(sameDetection) && clear(sameTarget);
   }).sort((a, b) => a.cost - b.cost);
   const usedDetections = new Set();
@@ -1616,6 +1619,7 @@ async function calibrateMetricDepth(selectedTargetId) {
   const countedYolo = new Set();
   const countedFrames = new Set();
   const diagnostics = { depth: 0, yolo: 0, radar: 0, framePairs: 0, radarPairs: 0, bearing: 0, stationary: 0, range: 0 };
+  const calibrationAssociation = { minConfidence: 0.35, maxBearingErrorDeg: 15, ambiguityMarginDeg: 1 };
   let cachedFrameId = '';
   let cachedDepthImage = null;
   let lastDepthFrameId = '';
@@ -1682,7 +1686,7 @@ async function calibrateMetricDepth(selectedTargetId) {
         countedFrames.add(`${pairKey}|radar-pair`);
       }
       const bearingCandidates = frameAligned && radarMatch && radarDelta <= 0.75
-        ? matchedRadarAnchors(yolo.detections, radarMatch.item, null, selectedTargetId) : [];
+        ? matchedRadarAnchors(yolo.detections, radarMatch.item, null, selectedTargetId, calibrationAssociation) : [];
       if (bearingCandidates.length && !countedFrames.has(`${pairKey}|bearing`)) {
         diagnostics.bearing += 1;
         countedFrames.add(`${pairKey}|bearing`);
@@ -1718,7 +1722,7 @@ async function calibrateMetricDepth(selectedTargetId) {
           cachedDepthImage = await loadDepthFrame(rawDepth);
           cachedFrameId = depth.frame_id;
         }
-        const candidates = matchedRadarAnchors(yolo.detections, radarMatch.item, cachedDepthImage, selectedTargetId)
+        const candidates = matchedRadarAnchors(yolo.detections, radarMatch.item, cachedDepthImage, selectedTargetId, calibrationAssociation)
           .filter(item => item.forward >= 1 && item.forward <= 5);
         const match = candidates.find(item => item.targetId === selectedTargetId) || null;
         const key = `${depth.frame_id}|${yolo.frame_id}`;
