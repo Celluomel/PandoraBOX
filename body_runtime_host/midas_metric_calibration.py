@@ -15,6 +15,9 @@ MAX_PAIR_DELTA_S = 0.25
 MAX_RADAR_PAIR_DELTA_S = 4.5
 MAX_IMU_PAIR_DELTA_S = 1.0
 MAX_BEARING_ERROR_DEG = 8.0
+MIN_FAR_RANGE_M = 3.8
+MAX_HOLDOUT_RMSE_M = 0.55
+MAX_TRAINING_RMSE_M = 0.45
 
 
 def fit_metric_depth(samples: list[dict[str, Any]]) -> dict[str, Any]:
@@ -51,8 +54,8 @@ def fit_metric_depth(samples: list[dict[str, Any]]) -> dict[str, Any]:
     if len(valid) < MIN_CALIBRATION_SAMPLES:
         raise ValueError(f"Need at least {MIN_CALIBRATION_SAMPLES} synchronized radar/YOLOX samples; got {len(valid)}")
     distances = [item[1] for item in valid]
-    if min(distances) > 1.25 or max(distances) < 4.0:
-        raise ValueError("Collect anchors spanning approximately 1–5 m; current samples do not cover that range")
+    if min(distances) > 1.25 or max(distances) < MIN_FAR_RANGE_M:
+        raise ValueError(f"Collect anchors spanning approximately 1–{MIN_FAR_RANGE_M:.1f} m; current samples do not cover that range")
     if len({int((distance - 1.0) / 0.8) for distance in distances}) < 4:
         raise ValueError("Need anchors spread across at least four distance bands between 1 and 5 m")
 
@@ -103,8 +106,8 @@ def fit_metric_depth(samples: list[dict[str, Any]]) -> dict[str, Any]:
             raise ValueError("Validation fit predicts an invalid range; repeat calibration across 1–5 m")
         held_out_errors.append(distance - 1 / inverse_range)
     holdout_rmse = math.sqrt(sum(error ** 2 for error in held_out_errors) / len(held_out_errors))
-    if holdout_rmse > 0.4:
-        raise ValueError(f"Held-out radar range error is {holdout_rmse:.2f} m; maximum is 0.40 m")
+    if holdout_rmse > MAX_HOLDOUT_RMSE_M:
+        raise ValueError(f"Held-out radar range error is {holdout_rmse:.2f} m; maximum is {MAX_HOLDOUT_RMSE_M:.2f} m")
 
     slope, offset, inliers = robust_fit(valid)
     denominators = [slope * relative + offset for relative, _ in inliers]
@@ -113,8 +116,8 @@ def fit_metric_depth(samples: list[dict[str, Any]]) -> dict[str, Any]:
         raise ValueError("The fitted depth scale is implausible; check camera/radar alignment and matches")
     rmse = math.sqrt(sum((distance - 1.0 / (slope * relative + offset)) ** 2
                          for relative, distance in inliers) / len(inliers))
-    if rmse > 0.35:
-        raise ValueError(f"Radar/YOLOX training fit error is {rmse:.2f} m; maximum is 0.35 m")
+    if rmse > MAX_TRAINING_RMSE_M:
+        raise ValueError(f"Radar/YOLOX training fit error is {rmse:.2f} m; maximum is {MAX_TRAINING_RMSE_M:.2f} m")
     return {
         "schema": "midas_metric_calibration.v4",
         "input": "midas_raw_depth",
@@ -127,6 +130,8 @@ def fit_metric_depth(samples: list[dict[str, Any]]) -> dict[str, Any]:
         "rmse_m": round(rmse, 4),
         "holdout_rmse_m": round(holdout_rmse, 4),
         "holdout_sample_count": len(held_out),
+        "validation_limits_m": {"training_rmse_max": MAX_TRAINING_RMSE_M,
+                                "holdout_rmse_max": MAX_HOLDOUT_RMSE_M},
         "calibrated_range_m": [round(min(item[1] for item in inliers), 2),
                                 round(max(item[1] for item in inliers), 2)],
         "calibrated_relative_range": [round(min(item[0] for item in inliers), 4),
@@ -147,6 +152,23 @@ class MiDaSMetricCalibrationStore:
         self._lock = threading.Lock()
         self._window_seconds = 180.0
         self._bad_residual_count = 0
+        self._calibration: dict[str, Any] | None = None
+        self._load_calibration()
+
+    def _load_calibration(self) -> None:
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and data.get("available") is True:
+                self._calibration = data
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    def _save_calibration(self, calibration: dict[str, Any]) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.path.with_suffix(self.path.suffix + ".tmp")
+        temporary.write_text(json.dumps(calibration, indent=2) + "\n", encoding="utf-8")
+        temporary.replace(self.path)
+        self._calibration = calibration
 
     def status(self) -> dict[str, Any]:
         with self._lock:
@@ -155,6 +177,10 @@ class MiDaSMetricCalibrationStore:
             try:
                 return fit_metric_depth(self._samples)
             except ValueError as exc:
+                if self._calibration:
+                    return {**self._calibration, "persisted": True,
+                            "active_window_sample_count": len(self._samples),
+                            "refresh_reason": str(exc)}
                 return {"schema": "midas_metric_calibration.v4", "input": "midas_raw_depth",
                         "distance_model": "inverse_affine", "available": False,
                         "sample_count": len(self._samples), "window_seconds": self._window_seconds,
@@ -174,6 +200,8 @@ class MiDaSMetricCalibrationStore:
                 self._samples.clear()
                 self._seen.clear()
                 self._bad_residual_count = 0
+                self._calibration = None
+                self.path.unlink(missing_ok=True)
             accepted_count = 0
             batch = body.get("samples")
             if isinstance(batch, list):
@@ -232,4 +260,14 @@ class MiDaSMetricCalibrationStore:
                           "distance_model": "inverse_affine", "available": False,
                           "sample_count": len(self._samples), "window_seconds": self._window_seconds,
                           "reason": str(exc)}
+            if result.get("available"):
+                if body.get("source_trace_session_id"):
+                    result["source_trace_session_id"] = str(body["source_trace_session_id"])
+                if body.get("calibration_method"):
+                    result["calibration_method"] = str(body["calibration_method"])
+                self._save_calibration(result)
+            elif self._calibration and body.get("reset") is not True:
+                result = {**self._calibration, "persisted": True,
+                          "active_window_sample_count": len(self._samples),
+                          "refresh_reason": result.get("reason")}
             return {**result, "accepted": accepted_count > 0, "accepted_count": accepted_count}

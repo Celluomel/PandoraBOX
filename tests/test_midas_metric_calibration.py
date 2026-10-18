@@ -1,4 +1,5 @@
 import unittest
+import uuid
 from pathlib import Path
 from unittest.mock import patch
 
@@ -6,6 +7,19 @@ from body_runtime_host.midas_metric_calibration import MiDaSMetricCalibrationSto
 
 
 class MiDaSMetricCalibrationTests(unittest.TestCase):
+    def setUp(self):
+        self._store_paths = []
+
+    def tearDown(self):
+        for path in self._store_paths:
+            path.unlink(missing_ok=True)
+
+    def make_store(self):
+        path = Path.cwd() / ".test-tmp" / f"calibration-{uuid.uuid4().hex}.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self._store_paths.append(path)
+        return MiDaSMetricCalibrationStore(path)
+
     @staticmethod
     def make_samples():
         samples = []
@@ -48,8 +62,29 @@ class MiDaSMetricCalibrationTests(unittest.TestCase):
         samples = self.make_samples()
         for sample in samples:
             sample["forward_m"] = 2.5
-        with self.assertRaisesRegex(ValueError, "spanning approximately 1–5 m"):
+        with self.assertRaisesRegex(ValueError, "spanning approximately 1–3.8 m"):
             fit_metric_depth(samples)
+
+    def test_accepts_four_bands_with_far_anchor_at_3_9m(self):
+        samples = []
+        for distance in (1.1, 2.0, 2.9, 3.9):
+            relative = (1.0 / distance - 0.08) / 0.22
+            for repeat in range(4):
+                samples.append({
+                    "sample_id": f"range-{distance}-{repeat}",
+                    "relative_depth": relative + (repeat - 1.5) * 0.0003,
+                    "forward_m": distance + (repeat - 1.5) * 0.005,
+                    "bearing_error_deg": 2.0,
+                    "frame_delta_s": 0.02,
+                    "radar_delta_s": 0.03,
+                    "imu_delta_s": 0.02,
+                    "stationary": True,
+                })
+        result = fit_metric_depth(samples)
+        self.assertTrue(result["available"])
+        self.assertEqual(result["sample_count"], 16)
+        self.assertAlmostEqual(result["calibrated_range_m"][1], 3.91, places=2)
+        self.assertEqual(result["validation_limits_m"]["holdout_rmse_max"], 0.55)
 
     def test_rejects_bad_time_bearing_or_imu_alignment(self):
         samples = self.make_samples()
@@ -108,7 +143,7 @@ class MiDaSMetricCalibrationTests(unittest.TestCase):
             fit_metric_depth(samples)
 
     def test_rolling_store_accepts_samples_and_expires_them(self):
-        store = MiDaSMetricCalibrationStore(Path("unused.json"))
+        store = self.make_store()
         start = 1000.0
         with patch("body_runtime_host.midas_metric_calibration.time.time", return_value=start):
             results = [store.calibrate({"sample": sample}) for sample in self.make_samples()]
@@ -117,11 +152,12 @@ class MiDaSMetricCalibrationTests(unittest.TestCase):
         self.assertEqual(results[-1]["window_seconds"], 180)
         with patch("body_runtime_host.midas_metric_calibration.time.time", return_value=start + 181):
             expired = store.status()
-        self.assertFalse(expired["available"])
-        self.assertEqual(expired["sample_count"], 0)
+        self.assertTrue(expired["available"])
+        self.assertTrue(expired["persisted"])
+        self.assertEqual(expired["active_window_sample_count"], 0)
 
     def test_duplicate_sample_ids_do_not_count_twice_and_reset_clears_window(self):
-        store = MiDaSMetricCalibrationStore(Path("unused.json"))
+        store = self.make_store()
         samples = self.make_samples()
         with patch("body_runtime_host.midas_metric_calibration.time.time", return_value=1000.0):
             for sample in samples[:14]:
@@ -133,7 +169,7 @@ class MiDaSMetricCalibrationTests(unittest.TestCase):
         self.assertEqual(cleared["sample_count"], 0)
 
     def test_batch_calibration_adds_and_fits_all_collected_anchors_in_one_call(self):
-        store = MiDaSMetricCalibrationStore(Path("unused.json"))
+        store = self.make_store()
         samples = self.make_samples()
         with patch("body_runtime_host.midas_metric_calibration.time.time", return_value=1000.0):
             result = store.calibrate({"samples": samples})
@@ -143,6 +179,21 @@ class MiDaSMetricCalibrationTests(unittest.TestCase):
         self.assertEqual(result["accepted_count"], 20)
         self.assertEqual(duplicate["accepted_count"], 0)
         self.assertEqual(duplicate["sample_count"], 20)
+
+    def test_validated_fit_survives_store_restart(self):
+        path = Path.cwd() / ".test-tmp" / f"calibration-{uuid.uuid4().hex}.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            store = MiDaSMetricCalibrationStore(path)
+            with patch("body_runtime_host.midas_metric_calibration.time.time", return_value=1000.0):
+                result = store.calibrate({"samples": self.make_samples()})
+            self.assertTrue(result["available"])
+            restored = MiDaSMetricCalibrationStore(path).status()
+            self.assertTrue(restored["available"])
+            self.assertTrue(restored["persisted"])
+            self.assertEqual(restored["inverse_offset_per_m"], result["inverse_offset_per_m"])
+        finally:
+            path.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":
