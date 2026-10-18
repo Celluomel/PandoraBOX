@@ -1623,6 +1623,12 @@ async function calibrateMetricDepth(selectedTargetId) {
   const traceRows = [{ type: 'session_start', session_id: traceSessionId, started_at: Date.now() / 1000,
     selected_target_id: selectedTargetId, window_seconds: 60 }];
   let traceUploaded = false;
+  let traceCursor = 0;
+  let traceUploadBusy = false;
+  let traceEndRecorded = false;
+  let lastTraceFlushAt = performance.now();
+  const tracedRadar = new Set();
+  const tracedImu = new Set();
   const seen = new Set();
   const countedYolo = new Set();
   const countedFrames = new Set();
@@ -1649,22 +1655,33 @@ async function calibrateMetricDepth(selectedTargetId) {
     }
     throw lastError || new Error('Calibration request failed');
   };
-  const saveCalibrationTrace = async (result, error = '') => {
-    traceRows.push({ type: 'session_end', session_id: traceSessionId, ended_at: Date.now() / 1000,
-      result, error, depth_frames: depthBatch.length, radar_samples: radarBatch.size,
-      selected_radar_samples: selectedRadarFrameCount, accepted_anchors: samples.length,
-      diagnostics: { ...diagnostics } });
+  const flushCalibrationTrace = async (result, error = '') => {
+    if (traceUploadBusy) return { ok: false, error: 'Trace upload already in progress' };
+    if (result && !traceEndRecorded) {
+      traceRows.push({ type: 'session_end', session_id: traceSessionId, ended_at: Date.now() / 1000,
+        result, error, depth_frames: depthBatch.length, radar_samples: radarBatch.size,
+        selected_radar_samples: selectedRadarFrameCount, accepted_anchors: samples.length,
+        diagnostics: { ...diagnostics } });
+      traceEndRecorded = true;
+    }
+    if (traceCursor >= traceRows.length) return { ok: true, records_written: 0 };
+    traceUploadBusy = true;
+    lastTraceFlushAt = performance.now();
     try {
-      const response = await fetchForCalibration('/body/camera/depth-calibration/log', {
+      const response = await fetch('/body/camera/depth-calibration/log', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ records: traceRows }),
+        body: JSON.stringify({ records: traceRows.slice(traceCursor, traceCursor + 5000) }),
+        signal: AbortSignal.timeout(3000),
       });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const result = await response.json();
-      traceUploaded = Boolean(result.ok);
-      return result;
+      const upload = await response.json();
+      if (upload.ok) traceCursor += Number(upload.records_written) || 0;
+      traceUploaded = traceEndRecorded && traceCursor >= traceRows.length;
+      return upload;
     } catch (uploadError) {
       return { ok: false, error: uploadError.message };
+    } finally {
+      traceUploadBusy = false;
     }
   };
   let cachedFrameId = '';
@@ -1679,11 +1696,30 @@ async function calibrateMetricDepth(selectedTargetId) {
     while (performance.now() < stopAt) {
       for (const item of radarHistory) {
         const key = String(item.sequence ?? item.timestamp ?? '');
-        if (key) radarBatch.set(key, item);
+        if (key) {
+          radarBatch.set(key, item);
+          if (!tracedRadar.has(key)) {
+            tracedRadar.add(key);
+            traceRows.push({ type: 'radar_sample', session_id: traceSessionId,
+              timestamp: Number(item.timestamp), sequence: item.sequence ?? null, source: item.source || null,
+              targets: (item.targets || []).map((target, index) => ({ id: radarTargetId(target, index),
+                position_m: target.position_m || target.position || null,
+                velocity_mps: target.velocity_mps || target.velocity || null })) });
+          }
+        }
       }
       for (const item of imuHistory) {
         const key = String(item.sequence ?? item.timestamp ?? '');
-        if (key) imuBatch.set(key, item);
+        if (key) {
+          imuBatch.set(key, item);
+          if (!tracedImu.has(key)) {
+            tracedImu.add(key);
+            traceRows.push({ type: 'imu_sample', session_id: traceSessionId,
+              timestamp: Number(item.timestamp), calibration_stable: Boolean(item.calibration_stable),
+              attitude_valid: Boolean(item.attitude_valid), roll_deg: Number(item.roll_deg),
+              pitch_deg: Number(item.pitch_deg) });
+          }
+        }
       }
       const depthUrl = new URL('/body/camera/depth', window.location.origin);
       depthUrl.searchParams.set('include_raw', '1');
@@ -1805,22 +1841,18 @@ async function calibrateMetricDepth(selectedTargetId) {
         const bands = new Set(samples.map(sample => Math.min(4, Math.floor((sample.forward_m - 1) / 0.8)))).size;
         setMessage(`Calibration ${elapsed}s elapsed · ${remaining}s remaining · ${depthBatch.length} frames · ${latestRadar} selected radar returns · ${samples.length}/15 anchors · ${bands}/4 distance bands.`);
       }
+      if (nowMs - lastTraceFlushAt >= 5000) {
+        const upload = await flushCalibrationTrace();
+        if (!upload.ok) traceRows.push({ type: 'trace_upload_failed', session_id: traceSessionId,
+          at: Date.now() / 1000, error: upload.error });
+      }
       await new Promise(resolve => setTimeout(resolve, 100));
     }
     const radarFrames = [...radarBatch.values()].filter(item => Number.isFinite(Number(item.timestamp))
       && (item.targets || []).some((target, index) => radarTargetId(target, index) === selectedTargetId));
     selectedRadarFrameCount = radarFrames.length;
-    for (const item of radarBatch.values()) traceRows.push({ type: 'radar_sample', session_id: traceSessionId,
-      timestamp: Number(item.timestamp), sequence: item.sequence ?? null, source: item.source || null,
-      targets: (item.targets || []).map((target, index) => ({ id: radarTargetId(target, index),
-        position_m: target.position_m || target.position || null,
-        velocity_mps: target.velocity_mps || target.velocity || null })) });
     const imuFrames = [...imuBatch.values()].filter(item => item.calibration_stable && item.attitude_valid
       && Math.abs(Number(item.roll_deg)) <= 5 && Math.abs(Number(item.pitch_deg)) <= 5);
-    for (const item of imuBatch.values()) traceRows.push({ type: 'imu_sample', session_id: traceSessionId,
-      timestamp: Number(item.timestamp), calibration_stable: Boolean(item.calibration_stable),
-      attitude_valid: Boolean(item.attitude_valid), roll_deg: Number(item.roll_deg),
-      pitch_deg: Number(item.pitch_deg) });
     const usedRadar = new Set();
     for (const frame of depthBatch) {
       const radarMatch = radarFrames.reduce((best, item) => {
@@ -1907,7 +1939,7 @@ async function calibrateMetricDepth(selectedTargetId) {
     }
     traceRows.push({ type: 'fit_status', session_id: traceSessionId,
       available: Boolean(metricDepthCalibration?.available), fit: metricDepthCalibration });
-    const traceResult = await saveCalibrationTrace(metricDepthCalibration?.available ? 'fit_validated' : 'fit_not_validated');
+    const traceResult = await flushCalibrationTrace(metricDepthCalibration?.available ? 'fit_validated' : 'fit_not_validated');
     if (traceResult.ok) depthCalibrationMessage = `Trace saved: data/body/midas_calibration_trace.log (${traceResult.records_written} records)`;
     else traceRows.push({ type: 'trace_upload_failed', at: Date.now() / 1000, error: traceResult.error });
     if (!metricDepthCalibration?.available) {
@@ -1931,7 +1963,7 @@ async function calibrateMetricDepth(selectedTargetId) {
   } catch (error) {
       traceRows.push({ type: 'fit_status', session_id: traceSessionId, available: false,
         fit_reason: error.message });
-      const traceResult = traceUploaded ? { ok: true } : await saveCalibrationTrace('collector_error', error.message);
+      const traceResult = traceUploaded ? { ok: true } : await flushCalibrationTrace('collector_error', error.message);
       depthCalibrationMessage = `Calibration not saved: ${error.message} · recorded frames ${depthBatch.length}, YOLO/depth pairs ≤250 ms ${diagnostics.framePairs}, radar samples ${radarBatch.size} (${selectedRadarFrameCount} selected), radar pairs ≤4.5 s ${diagnostics.radarPairs}, bearing matches ${diagnostics.bearing}, stable IMU pairs ≤1 s ${diagnostics.stationary}, in-range ${diagnostics.range}, anchor upload failures ${diagnostics.postFailures}`;
       if (traceResult.ok) depthCalibrationMessage += ` · trace: data/body/midas_calibration_trace.log`;
   } finally {
