@@ -511,6 +511,12 @@ if (panel) {
       .world-map-calibration-checks label{display:flex;align-items:flex-start;gap:8px;padding:8px 10px;border:1px solid #263b50;border-radius:5px;color:#c3d2dc;font-size:12px}
       .world-map-calibration-checks input{margin-top:2px;accent-color:#00d6df}
       .world-map-calibration-caution{margin:0;padding:10px 12px;border-left:3px solid #ffb547;background:#201a0e;color:#f0d7a6;font-size:12px}
+      .world-map-calibration-run-plan{display:grid;gap:6px;padding:10px 12px;border:1px solid #087d86;border-radius:5px;background:#07151d;color:#c3d2dc;font-size:12px}
+      .world-map-calibration-run-plan>b{color:#00d6df;font-size:14px}
+      .world-map-calibration-run-plan>div{display:grid;grid-template-columns:62px 42px minmax(0,1fr);gap:8px;align-items:center;padding:4px 0;border-top:1px solid #1c3242}
+      .world-map-calibration-run-plan>div span:first-child{font-family:ui-monospace,monospace;color:#9aafc0}
+      .world-map-calibration-run-plan>div strong{color:#e2edf5;font:600 14px ui-monospace,monospace}
+      .world-map-calibration-run-plan>small{color:#a9b9c8}
       .world-map-calibration-progress{min-height:20px;margin:0;color:#9aafc0;font:12px ui-monospace,monospace}
       .world-map-calibration-guide footer{display:flex;justify-content:flex-end;gap:8px;padding-top:12px;border-top:1px solid #263b50}
       .world-map-calibration-guide footer button{padding:9px 13px;border:1px solid #344a5e;border-radius:5px;background:#101b29;color:#e2edf5;font:600 14px ui-sans-serif,system-ui,sans-serif;cursor:pointer}
@@ -1475,8 +1481,24 @@ async function downloadCalibrationTrace(event) {
     calibrationLogStatusMessage = message;
     statuses.forEach(status => { status.textContent = message; });
   };
-  setMessage('Opening the server download…');
-  window.location.assign('/body/camera/depth-calibration/log');
+  setMessage('Downloading the calibration log…');
+  try {
+    const response = await fetch('/body/camera/depth-calibration/log', { cache: 'no-store' });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const blob = await response.blob();
+    if (!blob.size) throw new Error('The log is empty');
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'midas_calibration_trace.log';
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+    setMessage(`Log download started · ${blob.size.toLocaleString()} bytes.`);
+  } catch (error) {
+    setMessage(`Log download failed: ${error.message}`);
+  }
 }
 
 async function openCalibrationTrace() {
@@ -1490,22 +1512,29 @@ async function openCalibrationTrace() {
   try {
     const response = await fetch('/body/camera/depth-calibration/log', { cache: 'no-store' });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const content = await response.text();
-    if (!content) throw new Error('The log is empty');
+    const blob = await response.blob();
+    if (!blob.size) throw new Error('The log is empty');
+    const previewLimit = 2 * 1024 * 1024;
+    const content = blob.size <= previewLimit ? await blob.text() : '';
     let dialog = byId('world-map-calibration-log-dialog');
     if (!dialog) {
       dialog = document.createElement('dialog');
       dialog.id = 'world-map-calibration-log-dialog';
       dialog.style.cssText = 'width:min(900px,94vw);max-height:88vh;padding:18px;background:#0a0f1a;color:#d7e4ed;border:1px solid #294153;border-radius:4px';
-      dialog.innerHTML = '<header style="display:flex;align-items:center;justify-content:space-between;gap:12px"><strong>MiDaS calibration log</strong><button type="button" data-log-close>Close</button></header><pre style="max-height:68vh;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;background:#05070d;padding:12px;font:12px/1.45 ui-monospace,monospace"></pre><footer style="display:flex;gap:10px;align-items:center"><a href="/body/camera/depth-calibration/log" data-log-download>Download .log</a><small></small></footer>';
+      dialog.innerHTML = '<header style="display:flex;align-items:center;justify-content:space-between;gap:12px"><strong>MiDaS calibration log</strong><button type="button" data-log-close>Close</button></header><p data-log-preview-note></p><pre style="max-height:68vh;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;background:#05070d;padding:12px;font:12px/1.45 ui-monospace,monospace"></pre><footer style="display:flex;gap:10px;align-items:center"><button type="button" data-log-download>Download .log</button><small></small></footer>';
       dialog.querySelector('[data-log-close]').addEventListener('click', () => dialog.close());
+      dialog.querySelector('[data-log-download]').addEventListener('click', downloadCalibrationTrace);
       dialog.addEventListener('click', event => { if (event.target === dialog) dialog.close(); });
       document.body.append(dialog);
     }
-    dialog.querySelector('pre').textContent = content;
-    dialog.querySelector('footer small').textContent = `${new Blob([content]).size.toLocaleString()} bytes · ${content.split(/\r?\n/).filter(Boolean).length} records`;
+    dialog.querySelector('pre').textContent = content || '';
+    dialog.querySelector('[data-log-preview-note]').textContent = content
+      ? 'Preview of the complete text log.'
+      : 'This raw sensor log is too large to preview safely in the page. Download it to inspect the full JSONL data.';
+    const recordCount = content ? content.split(/\r?\n/).filter(Boolean).length.toLocaleString() : 'not loaded';
+    dialog.querySelector('footer small').textContent = `${blob.size.toLocaleString()} bytes · ${recordCount} records`;
     dialog.showModal();
-    setMessage(`Log opened · ${content.split(/\r?\n/).filter(Boolean).length} records. Use Download .log or save this page's text.`);
+    setMessage(`Log available · ${blob.size.toLocaleString()} bytes. Use Download .log to save the complete file.`);
   } catch (error) {
     setMessage(`Log could not be opened: ${error.message}`);
   }
@@ -1649,9 +1678,18 @@ function openDepthCalibrationGuide() {
         <li><b>6 · Validate · manual</b><span>Use tape marks omitted from fitting. Compare radar and MiDaS; test seated/cropped people too. Record the held-out RMSE. Treat predictions outside the fitted range as extrapolated.</span></li>
         <li><b>7 · Runtime</b><span>Radar remains the metric reference when a person is matched; MiDaS serves other objects. The rolling fit expires old anchors, so scene changes need fresh anchors. Recheck alignment after any impact/remount; redo intrinsics if lens or resolution changes.</span></li>
       </ol>
+      <section class="world-map-calibration-run-plan" aria-label="60-second distance sequence">
+        <b>During collection · follow the on-screen prompts</b>
+        <div><span>0–12 s</span><strong>1 m</strong><span>Stand still, face the camera</span></div>
+        <div><span>12–24 s</span><strong>2 m</strong><span>Move, then stand still</span></div>
+        <div><span>24–36 s</span><strong>3 m</strong><span>Move, then stand still</span></div>
+        <div><span>36–48 s</span><strong>4 m</strong><span>Move, then stand still</span></div>
+        <div><span>48–60 s</span><strong>5 m</strong><span>Move, then stand still</span></div>
+        <small>Use floor tape measured from the camera axis. Keep the robot fixed, keep your full person visible, and stop safely before each 12-second interval ends.</small>
+      </section>
       <div class="world-map-calibration-checks"><label><input type="checkbox" data-calibration-check="rig"> Mounts are rigid; floor is level; tape marks are ready</label><label><input type="checkbox" data-calibration-check="imu"> Robot is stationary; IMU status is stable and low tilt</label><label><input type="checkbox" data-calibration-check="intrinsics"> I have verified the 640×480 camera intrinsics</label><label><input type="checkbox" data-calibration-check="alignment"> I have measured/verified camera-to-radar alignment</label></div>
       <p class="world-map-calibration-caution">Intrinsics and alignment are not currently enforced by the fitter: without those checks, bearing matches and resulting distances remain approximate. Do not interpret a good MiDaS fit as proof of geometric calibration.</p>
-      <p id="world-map-calibration-guide-status" class="world-map-calibration-progress" role="status">Ready when the robot and target person are stationary.</p>
+      <p id="world-map-calibration-guide-status" class="world-map-calibration-progress" role="status">Ready. The robot stays fixed; the person moves through the five marked distances. The 60-second countdown starts only after you press Start.</p>
       <footer><button type="button" data-calibration-action="cancel">Cancel</button><button type="button" data-calibration-action="start" class="primary">Start 60-second collection</button></footer>
     </form>`;
     document.body.appendChild(dialog);
@@ -1709,7 +1747,11 @@ async function calibrateMetricDepth(selectedTargetId) {
   const buttons = ['world-map-midas-calibrate', 'world-map-midas-calibrate-3d'].map(byId).filter(Boolean);
   const statuses = ['world-map-midas-calibration-status', 'world-map-midas-calibration-status-3d'].map(byId).filter(Boolean);
   if (!buttons.length || !statuses.length) return;
-  const setMessage = message => statuses.forEach(status => { status.textContent = message; });
+  const setMessage = message => {
+    statuses.forEach(status => { status.textContent = message; });
+    const guideStatus = byId('world-map-calibration-guide-status');
+    if (guideStatus) guideStatus.textContent = message;
+  };
   depthCalibrationBusy = true;
   depthCalibrationMessage = '';
   buttons.forEach(button => { button.disabled = false; button.textContent = 'Cancel calibration'; });
@@ -1860,7 +1902,10 @@ async function calibrateMetricDepth(selectedTargetId) {
         const remaining = Math.max(0, Math.ceil((stopAt - loopNow) / 1000));
         const selectedReturns = selectedRadarTrackFrames([...radarBatch.values()], selectedTargetId, captureStartedAt).length;
         const bands = new Set(samples.map(sample => Math.min(4, Math.floor((sample.forward_m - 1) / 0.8)))).size;
-        setMessage(`Collecting · ${elapsed}s elapsed · ${remaining}s left · depth ${depthBatch.length} · radar ${selectedReturns} · IMU ${imuBatch.size} · anchors ${samples.length} · ${bands}/4 bands.`);
+        const stage = Math.min(4, Math.floor(elapsed / 12));
+        const distanceM = stage + 1;
+        const stageRemaining = Math.max(0, 12 - (elapsed % 12));
+        setMessage(`COLLECTING · now ${distanceM} m mark · hold still ${stageRemaining}s · ${remaining}s total left · YOLO/depth ${depthBatch.length} · radar ${selectedReturns} · IMU ${imuBatch.size} · anchors ${samples.length} · ${bands}/4 bands.`);
       }
       // Supplemental pairing input only; the hardware log is collected by the Ventuno runtime.
       for (const item of radarHistory) {

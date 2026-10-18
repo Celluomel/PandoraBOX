@@ -70,7 +70,9 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertEqual(source.count('data-calibration-log-download'), 3)
         self.assertEqual(source.count('href="/body/camera/depth-calibration/log" target="_blank"'), 2)
         self.assertIn("async function downloadCalibrationTrace(event)", source)
-        self.assertIn("window.location.assign('/body/camera/depth-calibration/log')", source)
+        self.assertIn("URL.createObjectURL(blob)", source)
+        self.assertIn("link.download = 'midas_calibration_trace.log'", source)
+        self.assertIn("too large to preview safely in the page", source)
         self.assertIn("async function openCalibrationTrace()", source)
         self.assertIn("world-map-calibration-log-dialog", source)
         self.assertIn("Log could not be opened:", source)
@@ -198,8 +200,12 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertIn("options.maxBearingErrorDeg ?? maxPersonBearingErrorDeg", source)
         self.assertIn("Radar target to calibrate", source)
         self.assertIn("Start 60-second collection", source)
+        self.assertIn("During collection · follow the on-screen prompts", source)
+        for distance in ("1 m", "2 m", "3 m", "4 m", "5 m"):
+            self.assertIn(f"<strong>{distance}</strong>", source)
+        self.assertIn("COLLECTING · now ${distanceM} m mark", source)
         self.assertIn("const stopAt = startedAt + 60000", source)
-        self.assertIn("s left", source)
+        self.assertIn("total left", source)
         self.assertIn("Verify the ${unchecked.length} unchecked prerequisite", source)
 
     def test_world_model_exposes_experimental_camera_odometry(self):
