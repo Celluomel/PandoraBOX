@@ -201,7 +201,7 @@ class YoloXService:
                             frame_key = str(frame_id)
                             self._detection_results[frame_key] = dict(result)
                             self._detection_results.move_to_end(frame_key)
-                            while len(self._detection_results) > 12:
+                            while len(self._detection_results) > 128:
                                 self._detection_results.popitem(last=False)
                             self._analyzed_frames[frame_key] = dict(frame)
                             self._analyzed_frames.move_to_end(frame_key)

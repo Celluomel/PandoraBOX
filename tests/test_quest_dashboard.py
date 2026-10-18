@@ -87,6 +87,10 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertIn("radar pairs", source)
         self.assertIn("MiDaS fit · holdout", source)
         self.assertIn("Anchors ${samples.length}/15 · depth ${diagnostics.depth}", source)
+        collector = source.split("async function calibrateMetricDepth(selectedTargetId)", 1)[1].split("async function refreshLiveRadar()", 1)[0]
+        self.assertNotIn("fetch('/plugins/mmwave_radar/status'", collector)
+        self.assertIn("const maxCalibrationPairDeltaSeconds = 0.25", source)
+        self.assertIn("now - depthAt > 6.0", collector)
         self.assertIn("/body/camera/depth-calibration", runtime)
         self.assertIn("midas_metric_calibration.json", runtime)
 
@@ -99,6 +103,7 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertIn("/body/camera/depth?include_raw=0&include_preview=0&include_color=0", bundle)
         self.assertIn("/body/camera/yolo/status?frame_id=${encodeURIComponent(", bundle)
         self.assertIn("frame_id_match:", bundle)
+        self.assertIn(r"frame pairs \u2264250 ms", bundle)
 
     def test_radar_calibration_button_opens_ordered_calibration_guide(self):
         source = (Path(__file__).resolve().parents[1] / "body_runtime_host" / "world_map_3d.js").read_text(encoding="utf-8")

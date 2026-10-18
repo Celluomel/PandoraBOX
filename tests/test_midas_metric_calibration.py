@@ -54,7 +54,18 @@ class MiDaSMetricCalibrationTests(unittest.TestCase):
     def test_rejects_bad_time_bearing_or_imu_alignment(self):
         samples = self.make_samples()
         for sample in samples:
-            sample["imu_delta_s"] = 0.2
+            sample["imu_delta_s"] = 0.26
+        with self.assertRaisesRegex(ValueError, "got 0"):
+            fit_metric_depth(samples)
+
+    def test_stationary_radar_and_imu_pairs_allow_250ms_capture_skew(self):
+        samples = self.make_samples()
+        for sample in samples:
+            sample["radar_delta_s"] = 0.24
+            sample["imu_delta_s"] = 0.24
+        self.assertTrue(fit_metric_depth(samples)["available"])
+        for sample in samples:
+            sample["radar_delta_s"] = 0.26
         with self.assertRaisesRegex(ValueError, "got 0"):
             fit_metric_depth(samples)
 
@@ -66,10 +77,10 @@ class MiDaSMetricCalibrationTests(unittest.TestCase):
         result = fit_metric_depth(samples)
         self.assertTrue(result["available"])
 
-    def test_timestamp_only_camera_pairs_still_obey_100ms_limit(self):
+    def test_timestamp_only_camera_pairs_still_obey_250ms_limit(self):
         samples = self.make_samples()
         for sample in samples:
-            sample["frame_delta_s"] = 0.101
+            sample["frame_delta_s"] = 0.251
         with self.assertRaisesRegex(ValueError, "got 0"):
             fit_metric_depth(samples)
 

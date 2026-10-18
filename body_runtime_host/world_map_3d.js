@@ -5,7 +5,7 @@ const sourceStates = Object.create(null);
 const staleAfterSeconds = { camera: 5, yolo: 5, midas: 5, odometry: 5, segmentation: 5, radar: 2, gps: 5, imu: 2, tof: 2 };
 const physicalSources = ['camera', 'radar', 'gps', 'imu', 'tof', 'lidar', 'ultrasonic'];
 const cameraRadarGeometry = { horizontalFovDeg: 70, yawOffsetDeg: 0, lateralOffsetM: 0, calibrated: false };
-const maxCalibrationPairDeltaSeconds = 0.1;
+const maxCalibrationPairDeltaSeconds = 0.25;
 const maxPersonBearingErrorDeg = 8;
 const maxSceneDetectionPairDeltaSeconds = 0.5;
 const yoloOverlayCoastSeconds = 5;
@@ -1622,19 +1622,9 @@ async function calibrateMetricDepth(selectedTargetId) {
   const stopAt = performance.now() + 60000;
   try {
     while (performance.now() < stopAt) {
-      const [depthResponse, radarResponse] = await Promise.all([
-        fetch('/body/camera/depth?include_raw=0&include_preview=0&include_color=0', { cache: 'no-store' }),
-        fetch('/plugins/mmwave_radar/status', { cache: 'no-store' }),
-      ]);
-      if (!depthResponse.ok || !radarResponse.ok) throw new Error('MiDaS or radar endpoint is unavailable');
-      const [depth, radarStatus] = await Promise.all([depthResponse.json(), radarResponse.json()]);
-      const latestRadar = radarStatus.sample || {};
-      if (radarStatus.available && Number(latestRadar.timestamp) > 0
-          && String(latestRadar.source || '').toLowerCase().startsWith('hlk_ld2450')
-          && !radarHistory.some(item => Number(item.timestamp) === Number(latestRadar.timestamp))) {
-        radarHistory.push(latestRadar);
-        radarHistory = radarHistory.filter(item => Date.now() / 1000 - Number(item.timestamp) <= 5).slice(-64);
-      }
+      const depthResponse = await fetch('/body/camera/depth?include_raw=0&include_preview=0&include_color=0', { cache: 'no-store' });
+      if (!depthResponse.ok) throw new Error('MiDaS endpoint is unavailable');
+      const depth = await depthResponse.json();
       if (!depth.frame_id || depth.state !== 'ready') {
         setMessage(`Waiting for live MiDaS depth · ${samples.length} anchors collected.`);
         await new Promise(resolve => setTimeout(resolve, 100));
@@ -1646,7 +1636,7 @@ async function calibrateMetricDepth(selectedTargetId) {
       }
       const depthAt = Number(depth.captured_at);
       const now = Date.now() / 1000;
-      if (!Number.isFinite(depthAt) || now - depthAt > 1.0) {
+      if (!Number.isFinite(depthAt) || now - depthAt > 6.0) {
         await new Promise(resolve => setTimeout(resolve, 100));
         continue;
       }
@@ -1670,7 +1660,7 @@ async function calibrateMetricDepth(selectedTargetId) {
       const pairKey = `${depth.frame_id}|${yolo.frame_id}`;
       const exactFrame = String(yolo.frame_id || '') === String(depth.frame_id);
       if (!countedFrames.has(pairKey) && (exactFrame || frameDelta <= maxCalibrationPairDeltaSeconds)
-          && now - yoloAt <= 1.0) {
+          && now - yoloAt <= 6.0) {
         diagnostics.framePairs += 1;
         countedFrames.add(pairKey);
       }
@@ -1685,7 +1675,7 @@ async function calibrateMetricDepth(selectedTargetId) {
         countedFrames.add(`${pairKey}|radar`);
       }
       const frameAligned = (exactFrame || frameDelta <= maxCalibrationPairDeltaSeconds)
-        && now - yoloAt <= 1.0 && now - depthAt <= 1.0;
+        && now - yoloAt <= 6.0 && now - depthAt <= 6.0;
       const radarAligned = frameAligned && radarMatch && radarDelta <= maxCalibrationPairDeltaSeconds;
       if (radarAligned && !countedFrames.has(`${pairKey}|radar-pair`)) {
         diagnostics.radarPairs += 1;
@@ -1705,13 +1695,12 @@ async function calibrateMetricDepth(selectedTargetId) {
       const imuSample = imuHistory.filter(sample => sample.calibration_stable && sample.attitude_valid)
         .reduce((best, sample) => {
           const age = Math.abs(Number(sample.timestamp) - anchorAt);
-          return age <= 0.1 && (!best || age < best.age) ? { sample, age } : best;
+          return age <= maxCalibrationPairDeltaSeconds && (!best || age < best.age) ? { sample, age } : best;
         }, null)?.sample || null;
       const imuDelta = imuSample ? Math.abs(Number(imuSample.timestamp) - anchorAt) : Infinity;
-      const imuStationary = Boolean(imuSample && imuDelta <= 0.1
+      const imuStationary = Boolean(imuSample && imuDelta <= maxCalibrationPairDeltaSeconds
         && Math.abs(Number(imuSample.roll_deg)) <= 5
-        && Math.abs(Number(imuSample.pitch_deg)) <= 5
-        && now - Number(imuSample.timestamp) <= 0.5);
+        && Math.abs(Number(imuSample.pitch_deg)) <= 5);
       if (imuStationary && !countedFrames.has(`${pairKey}|imu`)) {
         diagnostics.stationary += 1;
         countedFrames.add(`${pairKey}|imu`);
@@ -1780,9 +1769,9 @@ async function calibrateMetricDepth(selectedTargetId) {
     }
     if (!metricDepthCalibration?.available) {
       const hint = diagnostics.framePairs === 0
-        ? 'No YOLOX/depth pairs met the 100 ms sync limit; check worker cadence and frame timestamps.'
+        ? 'No YOLOX/depth pairs met the 250 ms sync limit; check worker cadence and frame timestamps.'
         : diagnostics.radarPairs === 0
-          ? 'No radar/depth pairs met the 100 ms sync limit; verify radar timestamps and keep the target still.'
+          ? 'No radar/depth pairs met the 250 ms sync limit; verify radar timestamps and keep the target still.'
           : diagnostics.bearing === 0
             ? 'No camera-person/radar bearing match; verify target identity, camera FOV, mount yaw and lateral offset.'
             : diagnostics.stationary === 0
@@ -1795,7 +1784,7 @@ async function calibrateMetricDepth(selectedTargetId) {
     lastSensorDepthAt = 0;
     await refreshSensorDepth();
   } catch (error) {
-    depthCalibrationMessage = `Calibration not saved: ${error.message} · depth ${diagnostics.depth}, YOLO ${diagnostics.yolo}, radar ≤0.75 s ${diagnostics.radar}, frame pairs ≤100 ms ${diagnostics.framePairs}, radar pairs ≤100 ms ${diagnostics.radarPairs}, bearing matches ${diagnostics.bearing}, stable IMU ${diagnostics.stationary}, in-range ${diagnostics.range}`;
+    depthCalibrationMessage = `Calibration not saved: ${error.message} · depth ${diagnostics.depth}, YOLO ${diagnostics.yolo}, radar ≤0.75 s ${diagnostics.radar}, frame pairs ≤250 ms ${diagnostics.framePairs}, radar pairs ≤250 ms ${diagnostics.radarPairs}, bearing matches ${diagnostics.bearing}, stable IMU ${diagnostics.stationary}, in-range ${diagnostics.range}`;
   } finally {
     depthCalibrationBusy = false;
     buttons.forEach(button => {
@@ -2001,7 +1990,7 @@ async function refreshLiveRadar() {
     latestRadarSample = status.available ? sample : null;
     if (latestRadarSample?.timestamp && !radarHistory.some(item => item.timestamp === latestRadarSample.timestamp)) {
       radarHistory.push(latestRadarSample);
-      radarHistory = radarHistory.filter(item => Date.now() / 1000 - Number(item.timestamp) <= 5).slice(-32);
+      radarHistory = radarHistory.filter(item => Date.now() / 1000 - Number(item.timestamp) <= 12).slice(-128);
     }
     const targets = Array.isArray(sample.targets) ? sample.targets : [];
     refreshCalibrationRadarSelector(latestRadarSample);
