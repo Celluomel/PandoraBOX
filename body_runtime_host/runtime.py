@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import gzip
 import hashlib
 import hmac
 import importlib.util
@@ -28,6 +29,7 @@ import os
 import platform
 import signal
 import shlex
+import shutil
 import ssl
 import subprocess
 import threading
@@ -52,6 +54,23 @@ from body_runtime_host.worldmodel.reconstruction_capture import ReconstructionCa
 LOG = logging.getLogger("lumina.body")
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / "data" / "body" / "config.json"
+
+
+def _calibration_midas_record(midas: dict, now: float, last_snapshot_at: float,
+                              snapshot_interval_s: float = 5.0) -> tuple[dict, float]:
+    """Keep calibration metadata every frame and a full depth map every few seconds."""
+    keys = ("frame_id", "captured_at", "completed_at", "inference_ms", "depth_encoding",
+            "depth_width", "depth_height")
+    record = {key: midas[key] for key in keys if midas.get(key) is not None}
+    raw_png = midas.get("depth_raw_png_base64")
+    if raw_png:
+        if now - last_snapshot_at >= snapshot_interval_s:
+            record["depth_raw_png_base64"] = raw_png
+            record["depth_snapshot"] = True
+            last_snapshot_at = now
+        else:
+            record["depth_raw_png_bytes_omitted"] = len(raw_png) * 3 // 4
+    return record, last_snapshot_at
 
 # Hardware modules are discovered from the robot/gateway capability contract.
 # This catalog only defines the vocabulary and UI metadata; it does not claim
@@ -204,6 +223,7 @@ class BodyHost:
         )
         self._midas_calibration_log_path = ROOT / "data" / "body" / "midas_calibration_trace.log"
         self._midas_calibration_log_lock = threading.Lock()
+        self._midas_calibration_active_session_id: str | None = None
         self._hardware_capture_lock = threading.Lock()
         self._hardware_capture_status: dict = {"state": "idle", "samples": 0}
         self._hardware_capture_thread: threading.Thread | None = None
@@ -823,6 +843,30 @@ class BodyHost:
         path = self._midas_calibration_log_path
         path.parent.mkdir(parents=True, exist_ok=True)
         with self._midas_calibration_log_lock:
+            for record in records:
+                if not isinstance(record, dict) or record.get("type") not in {
+                    "session_start", "hardware_capture_start"
+                }:
+                    continue
+                session_id = str(record.get("session_id") or "")
+                if not session_id or session_id == getattr(self, "_midas_calibration_active_session_id", None):
+                    continue
+                if path.is_file() and path.stat().st_size:
+                    archive_dir = path.parent / "midas_calibration_archives"
+                    archive_dir.mkdir(parents=True, exist_ok=True)
+                    suffix = hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:12]
+                    stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime())
+                    archive_path = archive_dir / f"{stamp}-{suffix}.log.gz"
+                    temporary_path = archive_path.with_suffix(archive_path.suffix + ".tmp")
+                    try:
+                        with path.open("rb") as source, gzip.open(temporary_path, "wb", compresslevel=6) as archive:
+                            shutil.copyfileobj(source, archive)
+                        os.replace(temporary_path, archive_path)
+                        path.unlink()
+                    finally:
+                        temporary_path.unlink(missing_ok=True)
+                self._midas_calibration_active_session_id = session_id
+                break
             if path.exists() and path.stat().st_size > 128 * 1024 * 1024:
                 path.replace(path.with_suffix(".log.1"))
             with path.open("a", encoding="utf-8") as stream:
@@ -874,7 +918,8 @@ class BodyHost:
         def clean(value):
             if isinstance(value, dict):
                 return {str(key): clean(item) for key, item in value.items()
-                        if str(key).lower() not in {"image_base64", "jpeg_base64", "png_base64", "depth_jpeg_base64"}}
+                        if str(key).lower() not in {"image_base64", "jpeg_base64", "png_base64",
+                                                    "depth_jpeg_base64", "depth_raw_png_base64"}}
             if isinstance(value, (list, tuple)):
                 return [clean(item) for item in value]
             if hasattr(value, "as_dict") and callable(value.as_dict):
@@ -912,6 +957,7 @@ class BodyHost:
             self._midas_service.request_raw_output(60.0)
             write({"type": "hardware_capture_start", "session_id": session_id,
                    "started_at": started_at, "duration_seconds": 60,
+                   "depth_snapshot_interval_s": 5,
                    "source": "runtime_sensor_adapters", "base_source_simulated": base_simulated,
                    "sensors": ["robot_source_modalities", "radar", "imu", "tof", "gps_uart", "camera", "yolox", "midas"]})
             with self._hardware_capture_lock:
@@ -920,6 +966,7 @@ class BodyHost:
             def sample_hardware():
                 sample_index = 0
                 last_depth_frame = ""
+                last_depth_snapshot_at = 0.0
                 while not sampler_stop.is_set():
                     sampled_at = time.time()
                     try:
@@ -951,10 +998,9 @@ class BodyHost:
                         midas = self._midas_service.status()
                         frame_id = str(midas.get("frame_id") or "")
                         if frame_id and frame_id != last_depth_frame:
-                            record["midas"] = clean({key: midas.get(key) for key in (
-                                "frame_id", "captured_at", "completed_at", "inference_ms",
-                                "depth_raw_png_base64", "depth_encoding", "depth_width", "depth_height")
-                                if midas.get(key) is not None})
+                            record["midas"], last_depth_snapshot_at = _calibration_midas_record(
+                                midas, sampled_at, last_depth_snapshot_at
+                            )
                             last_depth_frame = frame_id
                         yolo = self._yolox_service.status()
                         record["yolox"] = clean({key: yolo.get(key) for key in (

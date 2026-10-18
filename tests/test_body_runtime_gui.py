@@ -1,11 +1,49 @@
 import unittest
 import json
+import gzip
 import tempfile
 import threading
 from pathlib import Path
 
 
 class BodyRuntimeGuiTests(unittest.TestCase):
+    def test_calibration_midas_snapshots_are_sparse_but_keep_per_frame_metadata(self):
+        from body_runtime_host.runtime import _calibration_midas_record
+
+        frame = {"frame_id": "depth-1", "captured_at": 10.0, "depth_width": 640,
+                 "depth_raw_png_base64": "YWJjZA=="}
+        first, last_snapshot = _calibration_midas_record(frame, 10.0, 0.0)
+        later, _ = _calibration_midas_record({**frame, "frame_id": "depth-2"}, 12.0, last_snapshot)
+
+        self.assertEqual(first["depth_raw_png_base64"], "YWJjZA==")
+        self.assertTrue(first["depth_snapshot"])
+        self.assertEqual(later["depth_raw_png_bytes_omitted"], 6)
+        self.assertNotIn("depth_raw_png_base64", later)
+        self.assertEqual(later["frame_id"], "depth-2")
+
+    def test_new_calibration_session_archives_previous_plain_log_and_starts_fresh(self):
+        from body_runtime_host.runtime import BodyHost
+
+        with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[1]) as directory:
+            host = object.__new__(BodyHost)
+            host._midas_calibration_log_path = Path(directory) / "midas_calibration_trace.log"
+            host._midas_calibration_log_lock = threading.Lock()
+            host._midas_calibration_active_session_id = None
+            host.append_midas_calibration_trace({"records": [
+                {"type": "session_start", "session_id": "first"},
+                {"type": "session_end", "session_id": "first"},
+            ]})
+            host.append_midas_calibration_trace({"records": [
+                {"type": "session_start", "session_id": "second"},
+            ]})
+
+            current = [json.loads(line) for line in host._midas_calibration_log_path.read_text().splitlines()]
+            archives = list((Path(directory) / "midas_calibration_archives").glob("*.log.gz"))
+            with gzip.open(archives[0], "rt", encoding="utf-8") as stream:
+                archived = [json.loads(line) for line in stream]
+            self.assertEqual([row["session_id"] for row in current], ["second"])
+            self.assertEqual([row["session_id"] for row in archived], ["first", "first"])
+
     def test_midas_calibration_trace_appends_structured_log_records(self):
         from body_runtime_host.runtime import BodyHost
 
