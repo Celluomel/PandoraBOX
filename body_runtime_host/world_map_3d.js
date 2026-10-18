@@ -6,7 +6,7 @@ const staleAfterSeconds = { camera: 5, yolo: 5, midas: 5, odometry: 5, segmentat
 const physicalSources = ['camera', 'radar', 'gps', 'imu', 'tof', 'lidar', 'ultrasonic'];
 const cameraRadarGeometry = { horizontalFovDeg: 70, yawOffsetDeg: 0, lateralOffsetM: 0, calibrated: false };
 const maxCalibrationPairDeltaSeconds = 0.25;
-const maxCalibrationRadarDeltaSeconds = 0.75;
+const maxCalibrationRadarDeltaSeconds = 1.5;
 const maxPersonBearingErrorDeg = 8;
 const maxSceneDetectionPairDeltaSeconds = 0.5;
 const yoloOverlayCoastSeconds = 5;
@@ -1553,7 +1553,7 @@ function openDepthCalibrationGuide() {
       <div class="world-map-calibration-checks"><label><input type="checkbox" data-calibration-check="rig"> Mounts are rigid; floor is level; tape marks are ready</label><label><input type="checkbox" data-calibration-check="imu"> Robot is stationary; IMU status is stable and low tilt</label><label><input type="checkbox" data-calibration-check="intrinsics"> I have verified the 640×480 camera intrinsics</label><label><input type="checkbox" data-calibration-check="alignment"> I have measured/verified camera-to-radar alignment</label></div>
       <p class="world-map-calibration-caution">Intrinsics and alignment are not currently enforced by the fitter: without those checks, bearing matches and resulting distances remain approximate. Do not interpret a good MiDaS fit as proof of geometric calibration.</p>
       <p id="world-map-calibration-guide-status" class="world-map-calibration-progress" role="status">Ready when the robot and target person are stationary.</p>
-      <footer><button type="button" data-calibration-action="cancel">Cancel</button><button type="button" data-calibration-action="start" class="primary">Start 120-second collection</button></footer>
+      <footer><button type="button" data-calibration-action="cancel">Cancel</button><button type="button" data-calibration-action="start" class="primary">Start 180-second collection</button></footer>
     </form>`;
     document.body.appendChild(dialog);
     refreshCalibrationRadarSelector(latestRadarSample);
@@ -1614,7 +1614,7 @@ async function calibrateMetricDepth(selectedTargetId) {
   depthCalibrationBusy = true;
   depthCalibrationMessage = '';
   buttons.forEach(button => { button.disabled = true; button.textContent = 'Calibrating…'; });
-  setMessage(`Collecting target ${selectedTargetId} for 120 s: pause at four or more points from 1–5 m. Only synchronized, stationary, low-tilt matches to this radar target count.`);
+  setMessage(`Collecting target ${selectedTargetId} for up to 180 s: pause at four or more points from 1–5 m. Progress shows accepted anchors and covered distance bands.`);
   const samples = [];
   const seen = new Set();
   const countedYolo = new Set();
@@ -1629,7 +1629,8 @@ async function calibrateMetricDepth(selectedTargetId) {
   let cachedFrameId = '';
   let cachedDepthImage = null;
   let lastDepthFrameId = '';
-  const stopAt = performance.now() + 120000;
+  let collectedAnchorCount = 0;
+  const stopAt = performance.now() + 180000;
   try {
     while (performance.now() < stopAt) {
       const depthUrl = new URL('/body/camera/depth', window.location.origin);
@@ -1685,7 +1686,7 @@ async function calibrateMetricDepth(selectedTargetId) {
         return !best || delta < best.delta ? { item, delta } : best;
       }, null);
       const radarDelta = radarMatch?.delta ?? Infinity;
-      if (radarMatch && radarDelta <= 0.75 && !countedFrames.has(`${pairKey}|radar`)) {
+      if (radarMatch && radarDelta <= maxCalibrationRadarDeltaSeconds && !countedFrames.has(`${pairKey}|radar`)) {
         diagnostics.radar += 1;
         countedFrames.add(`${pairKey}|radar`);
       }
@@ -1763,6 +1764,7 @@ async function calibrateMetricDepth(selectedTargetId) {
           });
           if (!postResponse.ok) throw new Error('Rolling calibration endpoint rejected an anchor');
           const fit = await postResponse.json();
+          collectedAnchorCount = Number(fit.sample_count) || samples.length + 1;
           if (!fit.accepted) {
             seen.add(key);
             continue;
@@ -1772,31 +1774,33 @@ async function calibrateMetricDepth(selectedTargetId) {
           metricDepthCalibration = fit.available ? fit : null;
           depthCalibrationMessage = fit.available ? '' : (fit.reason || 'Collecting a wider set of stationary anchors.');
           updateMetricCalibrationStatus();
+          if (fit.available) break;
         }
       }
-      setMessage(`Anchors ${samples.length}/15 · depth ${diagnostics.depth} · YOLO/depth ≤250 ms ${diagnostics.framePairs} · radar/depth ≤750 ms ${diagnostics.radarPairs} · bearing ${diagnostics.bearing} · stationary IMU ${diagnostics.stationary} · 1–5 m targets ${diagnostics.range}.`);
+      const bandsCovered = new Set(samples.map(sample => Math.min(4, Math.floor((sample.forward_m - 1) / 0.8)))).size;
+      setMessage(`Anchors ${collectedAnchorCount}/15 · distance bands ${bandsCovered}/4 · depth ${diagnostics.depth} · YOLO/depth ≤250 ms ${diagnostics.framePairs} · radar/depth ≤1.5 s ${diagnostics.radarPairs} · stationary IMU ${diagnostics.stationary}.`);
       await new Promise(resolve => setTimeout(resolve, 100));
     }
     if (!metricDepthCalibration?.available) {
       const hint = diagnostics.framePairs === 0
         ? 'No YOLOX/depth pairs met the 250 ms sync limit; check worker cadence and frame timestamps.'
         : diagnostics.radarPairs === 0
-          ? 'No selected-target radar/depth pairs met the 750 ms sync limit; verify radar timestamps and keep the target still.'
+          ? 'No selected-target radar/depth pairs met the 1.5 s sync limit; verify radar timestamps and keep the target still.'
           : diagnostics.bearing === 0
             ? 'No camera-person/radar bearing match; verify target identity, camera FOV, mount yaw and lateral offset.'
             : diagnostics.stationary === 0
               ? 'IMU did not confirm stable stationary posture; keep the body still and wait for gyro bias.'
-              : samples.length < 15
-                ? `Only ${samples.length}/15 synchronized anchors were collected. Hold the selected person at four or more distinct 1–5 m distances for the full collection.`
-                : 'The anchors did not span four distinct distance bands from 1–5 m, or the fit failed holdout validation. Revisit the distance marks and collect again.';
-      throw new Error(`Fit not validated; collected ${samples.length} anchors. ${hint}`);
+              : collectedAnchorCount < 15
+                ? `Only ${collectedAnchorCount}/15 synchronized anchors were collected across ${new Set(samples.map(sample => Math.min(4, Math.floor((sample.forward_m - 1) / 0.8)))).size}/4 distance bands. Pause at each of four or more distinct 1–5 m distances.`
+                : (depthCalibrationMessage || 'The anchors did not span four distinct distance bands or failed holdout validation. Pause at each distance mark and keep the selected person still.');
+      throw new Error(`Fit not validated; collected ${collectedAnchorCount} anchors. ${hint}`);
     }
     cloudFrameId = '';
     depthCalibrationMessage = '';
     lastSensorDepthAt = 0;
     await refreshSensorDepth();
   } catch (error) {
-    depthCalibrationMessage = `Calibration not saved: ${error.message} · depth ${diagnostics.depth}, YOLO ${diagnostics.yolo}, radar ≤0.75 s ${diagnostics.radar}, frame pairs ≤250 ms ${diagnostics.framePairs}, radar pairs ≤750 ms ${diagnostics.radarPairs}, bearing matches ${diagnostics.bearing}, stable IMU ${diagnostics.stationary}, in-range ${diagnostics.range}`;
+    depthCalibrationMessage = `Calibration not saved: ${error.message} · depth ${diagnostics.depth}, YOLO ${diagnostics.yolo}, radar ≤1.5 s ${diagnostics.radar}, frame pairs ≤250 ms ${diagnostics.framePairs}, radar pairs ≤1.5 s ${diagnostics.radarPairs}, bearing matches ${diagnostics.bearing}, stable IMU ${diagnostics.stationary}, in-range ${diagnostics.range}`;
   } finally {
     depthCalibrationBusy = false;
     buttons.forEach(button => {

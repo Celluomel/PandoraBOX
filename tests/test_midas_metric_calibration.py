@@ -58,14 +58,14 @@ class MiDaSMetricCalibrationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "got 0"):
             fit_metric_depth(samples)
 
-    def test_stationary_radar_pairs_allow_750ms_while_imu_stays_at_250ms(self):
+    def test_stationary_radar_pairs_allow_1500ms_while_imu_stays_at_250ms(self):
         samples = self.make_samples()
         for sample in samples:
-            sample["radar_delta_s"] = 0.74
+            sample["radar_delta_s"] = 1.49
             sample["imu_delta_s"] = 0.24
         self.assertTrue(fit_metric_depth(samples)["available"])
         for sample in samples:
-            sample["radar_delta_s"] = 0.76
+            sample["radar_delta_s"] = 1.51
         with self.assertRaisesRegex(ValueError, "got 0"):
             fit_metric_depth(samples)
 
@@ -109,8 +109,8 @@ class MiDaSMetricCalibrationTests(unittest.TestCase):
             results = [store.calibrate({"sample": sample}) for sample in self.make_samples()]
         self.assertTrue(results[-1]["available"])
         self.assertEqual(results[-1]["sample_count"], 20)
-        self.assertEqual(results[-1]["window_seconds"], 120)
-        with patch("body_runtime_host.midas_metric_calibration.time.time", return_value=start + 121):
+        self.assertEqual(results[-1]["window_seconds"], 180)
+        with patch("body_runtime_host.midas_metric_calibration.time.time", return_value=start + 181):
             expired = store.status()
         self.assertFalse(expired["available"])
         self.assertEqual(expired["sample_count"], 0)

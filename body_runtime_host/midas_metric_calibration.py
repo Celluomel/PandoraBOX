@@ -12,7 +12,7 @@ from typing import Any
 MIN_CALIBRATION_SAMPLES = 15
 MIN_TRAINING_SAMPLES = 12
 MAX_PAIR_DELTA_S = 0.25
-MAX_RADAR_PAIR_DELTA_S = 0.75
+MAX_RADAR_PAIR_DELTA_S = 1.5
 MAX_BEARING_ERROR_DEG = 8.0
 
 
@@ -131,7 +131,7 @@ def fit_metric_depth(samples: list[dict[str, Any]]) -> dict[str, Any]:
         "calibrated_relative_range": [round(min(item[0] for item in inliers), 4),
                                       round(max(item[0] for item in inliers), 4)],
         "range_axis": "camera_forward_y",
-        "window_seconds": 120,
+        "window_seconds": 180,
         "camera_bearing_model": "approximate_70deg_hfov_no_measured_extrinsics",
         "radar_source": "hlk_ld2450",
         "calibrated_at": time.time(),
@@ -144,7 +144,7 @@ class MiDaSMetricCalibrationStore:
         self._samples: list[dict[str, Any]] = []
         self._seen: set[str] = set()
         self._lock = threading.Lock()
-        self._window_seconds = 120.0
+        self._window_seconds = 180.0
         self._bad_residual_count = 0
 
     def status(self) -> dict[str, Any]:
