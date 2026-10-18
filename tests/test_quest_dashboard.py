@@ -76,7 +76,9 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertIn("relativeDepthToMeters", source)
         self.assertIn("nearest_to=", source)
         self.assertIn("frame_id=${encodeURIComponent(depth.frame_id)}", source)
-        self.assertIn("include_preview=0&include_color=0", source)
+        self.assertIn("depthUrl.searchParams.set('include_raw', '1')", source)
+        self.assertIn("depthUrl.searchParams.set('since_frame_id', lastDepthFrameId)", source)
+        self.assertIn("depth.unchanged || !depth.depth_raw_png_base64", source)
         self.assertIn("frame_id_match: exactFrame", source)
         self.assertIn('query.get("nearest_to")', runtime)
         self.assertIn("performance.now() + 60000", source)
@@ -93,6 +95,7 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertIn("const maxCalibrationRadarDeltaSeconds = 0.75", source)
         self.assertIn("radarDelta <= maxCalibrationRadarDeltaSeconds", collector)
         self.assertIn("now - depthAt > 6.0", collector)
+        self.assertNotIn("Raw MiDaS depth endpoint is unavailable", collector)
         self.assertIn("/body/camera/depth-calibration", runtime)
         self.assertIn("midas_metric_calibration.json", runtime)
 
@@ -102,7 +105,8 @@ class QuestDashboardTests(unittest.TestCase):
         bundle = (root / "body_runtime_host" / "world_map_3d.bundle.js").read_text(encoding="utf-8")
 
         self.assertIn('module = ROOT / "body_runtime_host" / "world_map_3d.bundle.js"', runtime)
-        self.assertIn("/body/camera/depth?include_raw=0&include_preview=0&include_color=0", bundle)
+        self.assertIn("since_frame_id", bundle)
+        self.assertIn("include_raw", bundle)
         self.assertIn("/body/camera/yolo/status?frame_id=${encodeURIComponent(", bundle)
         self.assertIn("frame_id_match:", bundle)
         self.assertIn(r"frame pairs \u2264250 ms", bundle)

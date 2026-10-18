@@ -1632,12 +1632,17 @@ async function calibrateMetricDepth(selectedTargetId) {
   const stopAt = performance.now() + 60000;
   try {
     while (performance.now() < stopAt) {
-      const depthResponse = await fetch('/body/camera/depth?include_raw=0&include_preview=0&include_color=0', { cache: 'no-store' });
+      const depthUrl = new URL('/body/camera/depth', window.location.origin);
+      depthUrl.searchParams.set('include_raw', '1');
+      depthUrl.searchParams.set('include_preview', '0');
+      depthUrl.searchParams.set('include_color', '0');
+      if (lastDepthFrameId) depthUrl.searchParams.set('since_frame_id', lastDepthFrameId);
+      const depthResponse = await fetch(depthUrl, { cache: 'no-store' });
       if (!depthResponse.ok) throw new Error('MiDaS endpoint is unavailable');
       const depth = await depthResponse.json();
-      if (!depth.frame_id || depth.state !== 'ready') {
+      if (!depth.frame_id || depth.state !== 'ready' || depth.unchanged || !depth.depth_raw_png_base64) {
         setMessage(`Waiting for live MiDaS depth · ${samples.length} anchors collected.`);
-        await new Promise(resolve => setTimeout(resolve, 100));
+        await new Promise(resolve => setTimeout(resolve, 200));
         continue;
       }
       if (depth.frame_id !== lastDepthFrameId) {
@@ -1718,14 +1723,7 @@ async function calibrateMetricDepth(selectedTargetId) {
       const synchronized = radarAligned && imuStationary && bearingCandidates.length > 0;
       if (synchronized) {
         if (cachedFrameId !== depth.frame_id) {
-          const rawResponse = await fetch('/body/camera/depth?include_raw=1&include_preview=0&include_color=0', { cache: 'no-store' });
-          if (!rawResponse.ok) throw new Error('Raw MiDaS depth endpoint is unavailable');
-          const rawDepth = await rawResponse.json();
-          if (String(rawDepth.frame_id || '') !== String(depth.frame_id) || !rawDepth.depth_raw_png_base64) {
-            await new Promise(resolve => setTimeout(resolve, 100));
-            continue;
-          }
-          cachedDepthImage = await loadDepthFrame(rawDepth);
+          cachedDepthImage = await loadDepthFrame(depth);
           cachedFrameId = depth.frame_id;
         }
         const candidates = matchedRadarAnchors(yolo.detections, radarMatch.item, cachedDepthImage, selectedTargetId, calibrationAssociation)
@@ -1748,8 +1746,8 @@ async function calibrateMetricDepth(selectedTargetId) {
           const rawDepth = roi[Math.floor(roi.length / 2)];
           const calibrationSample = {
             sample_id: `${depth.frame_id}|${yolo.frame_id}|${match.targetId}`,
-        selected_radar_target_id: String(selectedTargetId),
-        selected_target_confirmed: true,
+            selected_radar_target_id: String(selectedTargetId),
+            selected_target_confirmed: true,
             relative_depth: rawDepth,
             forward_m: match.forward,
             bearing_error_deg: match.error,
