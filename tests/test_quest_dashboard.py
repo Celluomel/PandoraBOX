@@ -90,6 +90,16 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertIn("/body/camera/depth-calibration", runtime)
         self.assertIn("midas_metric_calibration.json", runtime)
 
+    def test_served_world_map_bundle_contains_calibration_collector(self):
+        root = Path(__file__).resolve().parents[1]
+        runtime = (root / "body_runtime_host" / "runtime.py").read_text(encoding="utf-8")
+        bundle = (root / "body_runtime_host" / "world_map_3d.bundle.js").read_text(encoding="utf-8")
+
+        self.assertIn('module = ROOT / "body_runtime_host" / "world_map_3d.bundle.js"', runtime)
+        self.assertIn("/body/camera/depth?include_raw=0&include_preview=0&include_color=0", bundle)
+        self.assertIn("/body/camera/yolo/status?frame_id=${encodeURIComponent(", bundle)
+        self.assertIn("frame_id_match:", bundle)
+
     def test_radar_calibration_button_opens_ordered_calibration_guide(self):
         source = (Path(__file__).resolve().parents[1] / "body_runtime_host" / "world_map_3d.js").read_text(encoding="utf-8")
 
