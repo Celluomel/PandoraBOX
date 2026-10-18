@@ -1631,7 +1631,7 @@ async function calibrateMetricDepth(selectedTargetId) {
   let traceCursor = 0;
   let traceUploadBusy = false;
   let traceEndRecorded = false;
-  let lastTraceFlushAt = performance.now();
+  let traceFlushInterval = null;
   const captureController = new AbortController();
   let captureActive = true;
   let cancelled = false;
@@ -1646,6 +1646,12 @@ async function calibrateMetricDepth(selectedTargetId) {
     buttons.forEach(button => { button.disabled = true; button.textContent = 'Stopping…'; });
     setMessage('Stopping capture and saving the diagnostic log…');
   };
+  buttons.forEach(button => {
+    button.onclick = event => {
+      event.preventDefault();
+      cancelDepthCalibration?.();
+    };
+  });
   const withTimeout = (promise, ms, label) => Promise.race([
     promise,
     new Promise((_, reject) => setTimeout(() => reject(new Error(`${label} timed out`)), ms)),
@@ -1700,7 +1706,6 @@ async function calibrateMetricDepth(selectedTargetId) {
     }
     if (traceCursor >= traceRows.length) return { ok: true, records_written: 0 };
     traceUploadBusy = true;
-    lastTraceFlushAt = performance.now();
     try {
       const response = await fetch('/body/camera/depth-calibration/log', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -1726,6 +1731,17 @@ async function calibrateMetricDepth(selectedTargetId) {
   const startedAt = performance.now();
   const stopAt = startedAt + 60000;
   let lastProgressAt = 0;
+  const reportTraceUpload = upload => {
+    if (!upload.ok) {
+      traceRows.push({ type: 'trace_upload_failed', session_id: traceSessionId,
+        at: Date.now() / 1000, error: upload.error });
+      setMessage(`Diagnostic log upload failed: ${upload.error}. Retrying while capture continues…`);
+    }
+  };
+  void flushCalibrationTrace().then(reportTraceUpload);
+  traceFlushInterval = setInterval(() => {
+    if (!traceEndRecorded) void flushCalibrationTrace().then(reportTraceUpload);
+  }, 5000);
   try {
     while (performance.now() < stopAt && !captureController.signal.aborted) {
       const loopNow = performance.now();
@@ -1737,15 +1753,6 @@ async function calibrateMetricDepth(selectedTargetId) {
           radarTargetId(target, index) === selectedTargetId)).length;
         const bands = new Set(samples.map(sample => Math.min(4, Math.floor((sample.forward_m - 1) / 0.8)))).size;
         setMessage(`Collecting · ${elapsed}s elapsed · ${remaining}s left · depth ${depthBatch.length} · radar ${selectedReturns} · IMU ${imuBatch.size} · anchors ${samples.length} · ${bands}/4 bands.`);
-      }
-      if (loopNow - lastTraceFlushAt >= 5000) {
-        void flushCalibrationTrace().then(upload => {
-          if (!upload.ok) {
-            traceRows.push({ type: 'trace_upload_failed', session_id: traceSessionId,
-              at: Date.now() / 1000, error: upload.error });
-            setMessage(`Diagnostic log upload failed: ${upload.error}. Retrying while capture continues…`);
-          }
-        });
       }
       for (const item of radarHistory) {
         const key = String(item.sequence ?? item.timestamp ?? '');
@@ -2027,9 +2034,11 @@ async function calibrateMetricDepth(selectedTargetId) {
   } finally {
     captureActive = false;
     clearTimeout(captureDeadlineTimer);
+    clearInterval(traceFlushInterval);
     cancelDepthCalibration = null;
     depthCalibrationBusy = false;
     buttons.forEach(button => {
+      button.onclick = null;
       button.disabled = false;
       button.textContent = metricDepthCalibration?.available ? 'Recalibrate with radar' : 'Start calibration';
     });
