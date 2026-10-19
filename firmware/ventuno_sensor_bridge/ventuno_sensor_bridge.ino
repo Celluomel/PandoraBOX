@@ -67,7 +67,7 @@ static const uint8_t ultrasonicTriggerPins[ULTRASONIC_COUNT] = {D2, D4, D6};
 static const uint8_t ultrasonicEchoPins[ULTRASONIC_COUNT] = {D3, D5, D9};
 static const char *ultrasonicNames[ULTRASONIC_COUNT] = {
     "front_left", "front_right", "rear"};
-static const uint32_t ULTRASONIC_TRIGGER_INTERVAL_US = 60000;
+static const uint32_t ULTRASONIC_TRIGGER_INTERVAL_US = 100000;
 static const uint32_t ULTRASONIC_ECHO_TIMEOUT_US = 30000;
 static const uint32_t ULTRASONIC_STALE_MS = 600;
 static const uint8_t ULTRASONIC_CHANNEL_MASK = BODY_ULTRASONIC_CHANNEL_MASK & 0x07;

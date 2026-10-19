@@ -91,6 +91,7 @@ class UltrasonicTests(unittest.TestCase):
         self.assertIn('Bridge.provide_safe("body_ultrasonic_read"', sketch)
         self.assertIn("{D2, D4, D6}", sketch)
         self.assertIn("{D3, D5, D9}", sketch)
+        self.assertIn("ULTRASONIC_TRIGGER_INTERVAL_US = 100000", sketch)
         self.assertIn("updateUltrasonic();", sketch)
         self.assertIn("firmwareLoopSequence", sketch)
         self.assertIn("BODY_ULTRASONIC_CHANNEL_MASK", sketch)
