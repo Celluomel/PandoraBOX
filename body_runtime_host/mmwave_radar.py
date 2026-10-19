@@ -14,6 +14,8 @@ import time
 import urllib.request
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
+from .sensor_bridge_rpc import call_sensor_rpc
+
 
 @dataclass
 class MmWaveTarget:
@@ -277,7 +279,7 @@ class VentunoBridgeMmWaveSource(MmWaveRadarSource):
         try:
             bridge = self._client()
             request_started = time.time()
-            payload = bridge.call(self.method, timeout=0.5)
+            payload = call_sensor_rpc(bridge, self.method, timeout=0.5)
             request_finished = time.time()
             if isinstance(payload, bytes):
                 payload = payload.decode("utf-8")

@@ -2138,7 +2138,11 @@ class BodyHost:
             return {**settings, "available": False, "sample": None,
                     "error": f"Unsupported radar protocol: {settings['protocol']}"}
         try:
-            sample = radar.read().as_dict()
+            # The world-model observation loop already polls hardware. Reuse
+            # its latest frame instead of issuing a competing STM32 RPC for
+            # each dashboard status refresh.
+            cached_frame = getattr(radar, "last_frame", None)
+            sample = cached_frame.as_dict() if cached_frame is not None else radar.read().as_dict()
             return {**settings, "available": True, "sample": sample,
                     "source_status": radar.status()}
         except Exception as exc:

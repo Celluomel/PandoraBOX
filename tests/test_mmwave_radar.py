@@ -33,6 +33,35 @@ class MmWaveRadarTest(unittest.TestCase):
         self.assertEqual(result["sample"]["sequence"], 12)
         self.assertEqual(result["sample"]["targets"][0]["position_m"], [0.2, 1.4, 0.0])
 
+    def test_body_radar_status_reuses_worldmodel_cached_frame(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from body_runtime_host.runtime import BodyHost
+        from body_runtime_host.mmwave_radar import MmWaveFrame, MmWaveTarget
+
+        class Radar:
+            last_frame = MmWaveFrame(
+                timestamp=time.time(), sequence=13,
+                targets=[MmWaveTarget("1", [0.1, 1.3, 0.0])],
+            )
+            def read(self):
+                raise AssertionError("dashboard status must not trigger another hardware RPC")
+            def status(self):
+                return {"available": True, "sequence": 13}
+
+        host = BodyHost.__new__(BodyHost)
+        host.config = {
+            "BODY_PLUGIN_MMWAVE_RADAR_ENABLED": True,
+            "MMWAVE_RADAR_PROTOCOL": "ventuno_bridge_ld2450",
+            "MMWAVE_RADAR_BAUDRATE": 256000,
+        }
+        host._worldmodel = SimpleNamespace(source=SimpleNamespace(radar=Radar()))
+        with patch.object(host, "serial_device_inventory", return_value={"devices": []}):
+            result = host.mmwave_radar_status()
+
+        self.assertTrue(result["available"])
+        self.assertEqual(result["sample"]["sequence"], 13)
+
     def test_ld2450_frame_decodes_signed_metric_target(self):
         from body_runtime_host.mmwave_radar import parse_ld2450_frame
 
@@ -124,7 +153,9 @@ class MmWaveRadarTest(unittest.TestCase):
         source = VentunoBridgeMmWaveSource(bridge_factory=lambda: bridge)
         frame = source.read()
 
-        self.assertEqual(bridge.asserted, ("body_ld2450_read", 0.5))
+        self.assertEqual(bridge.asserted[0], "body_ld2450_read")
+        self.assertGreater(bridge.asserted[1], 0.0)
+        self.assertLessEqual(bridge.asserted[1], 0.5)
         self.assertEqual(frame.sequence, 9)
         self.assertEqual(frame.source, "hlk_ld2450_ventuno_bridge")
         self.assertEqual(frame.targets[0].position_m, [0.4, 1.2, 0.0])
