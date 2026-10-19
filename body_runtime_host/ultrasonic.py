@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
+from copy import deepcopy
 from typing import Any, Dict, Optional
 
 from .sensor_bridge_rpc import call_sensor_rpc
@@ -13,6 +15,7 @@ class VentunoBridgeUltrasonicSource:
     name = "hc_sr04_ventuno_bridge"
     method = "body_ultrasonic_read"
     stale_after_s = 0.6
+    rpc_cache_s = 0.2
 
     def __init__(self, bridge_factory=None):
         self._bridge_factory = bridge_factory
@@ -20,6 +23,8 @@ class VentunoBridgeUltrasonicSource:
         self.last_error = ""
         self.last_sample: Optional[Dict[str, Any]] = None
         self.last_ok: Optional[float] = None
+        self.last_read_at: Optional[float] = None
+        self._read_lock = threading.Lock()
 
     def _client(self):
         if self._bridge is None:
@@ -34,61 +39,82 @@ class VentunoBridgeUltrasonicSource:
         return self._bridge
 
     def read(self) -> Dict[str, Any]:
-        try:
-            payload = call_sensor_rpc(self._client(), self.method, timeout=0.5)
-            if isinstance(payload, bytes):
-                payload = payload.decode("utf-8")
-            if isinstance(payload, str):
-                payload = json.loads(payload)
-            if not isinstance(payload, dict) or not isinstance(payload.get("sensors"), list):
-                raise ValueError("Ventuno Bridge returned an invalid HC-SR04 payload")
+        with self._read_lock:
+            now_monotonic = time.monotonic()
+            if self.last_sample is not None and self.last_read_at is not None \
+                    and now_monotonic - self.last_read_at < self.rpc_cache_s:
+                sample = deepcopy(self.last_sample)
+                elapsed_ms = int((now_monotonic - self.last_read_at) * 1000)
+                for sensor in sample["sensors"]:
+                    if sensor["age_ms"] is None:
+                        continue
+                    sensor["age_ms"] += elapsed_ms
+                    if sensor["age_ms"] > self.stale_after_s * 1000:
+                        sensor.update({"available": False, "distance_mm": None, "distance_m": None,
+                                       "error": "stale_or_no_echo"})
+                sample["available"] = any(sensor["available"] for sensor in sample["sensors"])
+                return sample
+            self.last_read_at = now_monotonic
+            try:
+                payload = call_sensor_rpc(self._client(), self.method, timeout=0.5)
+            except Exception as exc:
+                self.last_error = str(exc)[:240]
+                raise
 
-            now = time.time()
-            device_now_ms = int(payload.get("timestamp_ms", 0) or 0) & 0xFFFFFFFF
-            sensors = []
-            for item in payload["sensors"]:
-                if not isinstance(item, dict):
-                    continue
-                distance = item.get("distance_mm")
-                distance = int(distance) if distance is not None else None
-                age_ms = (device_now_ms - (int(item.get("timestamp_ms", 0) or 0) & 0xFFFFFFFF)) & 0xFFFFFFFF
-                available = bool(item.get("available")) and distance is not None \
-                    and 20 <= distance <= 4000 and age_ms <= self.stale_after_s * 1000
-                sensors.append({
-                    "id": str(item.get("id") or "unknown"),
-                    "trigger_pin": str(item.get("trigger_pin") or ""),
-                    "echo_pin": str(item.get("echo_pin") or ""),
-                    "available": available,
-                    "distance_mm": distance if available else None,
-                    "distance_m": distance / 1000.0 if available else None,
-                    "age_ms": age_ms if item.get("timestamp_ms") else None,
-                    "sequence": int(item.get("sequence", 0) or 0),
-                    "error": "" if available else str(item.get("error") or "stale_or_no_echo"),
-                })
-            expected = {"front_left", "front_right", "rear"}
-            if {sensor["id"] for sensor in sensors} != expected:
-                raise ValueError("Ventuno Bridge HC-SR04 payload must contain all three named channels")
+            try:
+                if isinstance(payload, bytes):
+                    payload = payload.decode("utf-8")
+                if isinstance(payload, str):
+                    payload = json.loads(payload)
+                if not isinstance(payload, dict) or not isinstance(payload.get("sensors"), list):
+                    raise ValueError("Ventuno Bridge returned an invalid HC-SR04 payload")
 
-            sample = {
-                "timestamp": now,
-                "source": self.name,
-                "sensor": str(payload.get("sensor") or "hc_sr04_array"),
-                "transport": "stm32_gpio_router_rpc",
-                "sequence": int(payload.get("sequence", 0) or 0),
-                "firmware_setup_stage": int(payload.get("setup_stage", 0) or 0),
-                "firmware_loop_sequence": int(payload.get("loop_sequence", 0) or 0),
-                "available": any(sensor["available"] for sensor in sensors),
-                "simulated": False,
-                "units": "m",
-                "sensors": sensors,
-            }
-            self.last_sample = sample
-            self.last_ok = now
-            self.last_error = ""
-            return sample
-        except Exception as exc:
-            self.last_error = str(exc)[:240]
-            raise
+                now = time.time()
+                device_now_ms = int(payload.get("timestamp_ms", 0) or 0) & 0xFFFFFFFF
+                sensors = []
+                for item in payload["sensors"]:
+                    if not isinstance(item, dict):
+                        continue
+                    distance = item.get("distance_mm")
+                    distance = int(distance) if distance is not None else None
+                    age_ms = (device_now_ms - (int(item.get("timestamp_ms", 0) or 0) & 0xFFFFFFFF)) & 0xFFFFFFFF
+                    available = bool(item.get("available")) and distance is not None \
+                        and 20 <= distance <= 4000 and age_ms <= self.stale_after_s * 1000
+                    sensors.append({
+                        "id": str(item.get("id") or "unknown"),
+                        "trigger_pin": str(item.get("trigger_pin") or ""),
+                        "echo_pin": str(item.get("echo_pin") or ""),
+                        "available": available,
+                        "distance_mm": distance if available else None,
+                        "distance_m": distance / 1000.0 if available else None,
+                        "age_ms": age_ms if item.get("timestamp_ms") else None,
+                        "sequence": int(item.get("sequence", 0) or 0),
+                        "error": "" if available else str(item.get("error") or "stale_or_no_echo"),
+                    })
+                expected = {"front_left", "front_right", "rear"}
+                if {sensor["id"] for sensor in sensors} != expected:
+                    raise ValueError("Ventuno Bridge HC-SR04 payload must contain all three named channels")
+
+                sample = {
+                    "timestamp": now,
+                    "source": self.name,
+                    "sensor": str(payload.get("sensor") or "hc_sr04_array"),
+                    "transport": "stm32_gpio_router_rpc",
+                    "sequence": int(payload.get("sequence", 0) or 0),
+                    "firmware_setup_stage": int(payload.get("setup_stage", 0) or 0),
+                    "firmware_loop_sequence": int(payload.get("loop_sequence", 0) or 0),
+                    "available": any(sensor["available"] for sensor in sensors),
+                    "simulated": False,
+                    "units": "m",
+                    "sensors": sensors,
+                }
+                self.last_sample = sample
+                self.last_ok = now
+                self.last_error = ""
+                return deepcopy(sample)
+            except Exception as exc:
+                self.last_error = str(exc)[:240]
+                raise
 
     def status(self) -> Dict[str, Any]:
         age = time.time() - self.last_ok if self.last_ok else None

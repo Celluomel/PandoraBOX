@@ -39,6 +39,7 @@ export class QuestVRDashboard {
     this.imuStatus = null;
     this.gpsStatus = null;
     this.ultrasonicStatus = null;
+    this.lastUltrasonicSamples = Object.create(null);
     this.sensorStatus = { camera: 'WAITING', yolo: 'WAITING', midas: 'WAITING' };
     this.controller = null;
     this.following = false;
@@ -661,22 +662,34 @@ export class QuestVRDashboard {
     const ultrasonic = modalities.ultrasonic || modalities.hc_sr04 || {};
     const samples = Array.isArray(ultrasonic) ? ultrasonic : Array.isArray(ultrasonic.sensors) ? ultrasonic.sensors : [];
     const positions = ['front_left', 'front_right', 'rear'];
+    const now = Date.now();
     const names = ['US · FRONT-L', 'US · FRONT-R', 'US · REAR'];
     const gap = 10;
     const cardWidth = (width - tofWidth - gap * 3) / 3;
     positions.forEach((key, index) => {
-      const sample = ultrasonic[key] || samples.find(item => String(item?.id || item?.position || '').toLowerCase() === key) || samples[index] || {};
+      const currentSample = ultrasonic[key] || samples.find(item => String(item?.id || item?.position || '').toLowerCase() === key) || samples[index] || {};
+      const currentDistance = Number(currentSample.distance_m ?? (Number(currentSample.distance_mm) / 1000));
+      const currentValid = currentSample.available === true && !currentSample.simulated
+        && Number.isFinite(currentDistance) && currentDistance > 0 && currentDistance <= 4;
+      if (currentValid) {
+        this.lastUltrasonicSamples[key] = { sample: currentSample, measurementAt: now - (Number(currentSample.age_ms) || 0) };
+      }
+      const retained = this.lastUltrasonicSamples[key];
+      const retainedAge = retained ? now - retained.measurementAt : Infinity;
+      const held = !currentValid && retainedAge <= 1200;
+      const sample = currentValid ? currentSample : held ? retained.sample : currentSample;
       const distance = Number(sample.distance_m ?? (Number(sample.distance_mm) / 1000));
       const fresh = sample.available === true && !sample.simulated && Number.isFinite(distance) && distance > 0 && distance <= 4;
+      const showHeld = held || (Number.isFinite(retainedAge) && retainedAge > 600);
       const cardX = x + tofWidth + gap + index * (cardWidth + gap);
       ctx.strokeStyle = 'rgba(135,206,166,.2)'; ctx.strokeRect(cardX, y, cardWidth, height);
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#9fc5ac';
       ctx.font = '600 13px ui-monospace, monospace'; ctx.fillText(names[index], cardX + cardWidth / 2, y + 18);
-      ctx.fillStyle = fresh ? (distance < .35 ? '#f17c70' : distance < .8 ? '#efcb76' : '#bcebd0') : '#91a79b';
-      ctx.font = '600 18px ui-monospace, monospace'; ctx.fillText(fresh ? `${distance.toFixed(2)} m` : 'WAITING', cardX + cardWidth / 2, y + height * .52);
+      ctx.fillStyle = fresh ? (showHeld ? '#efcb76' : distance < .35 ? '#f17c70' : distance < .8 ? '#efcb76' : '#bcebd0') : '#91a79b';
+      ctx.font = '600 18px ui-monospace, monospace'; ctx.fillText(fresh ? `${showHeld ? '~' : ''}${distance.toFixed(2)} m` : 'WAITING', cardX + cardWidth / 2, y + height * .52);
       const trackX = cardX + 10; const trackY = y + height - 23; const trackWidth = Math.max(1, cardWidth - 20);
       ctx.fillStyle = 'rgba(120,190,150,.12)'; ctx.fillRect(trackX, trackY, trackWidth, 7);
-      if (fresh) { ctx.fillStyle = distance < .35 ? '#f17c70' : distance < .8 ? '#efcb76' : '#63d7ae'; ctx.fillRect(trackX, trackY, trackWidth * Math.min(1, distance / 4), 7); }
+      if (fresh) { ctx.fillStyle = showHeld ? '#efcb76' : distance < .35 ? '#f17c70' : distance < .8 ? '#efcb76' : '#63d7ae'; ctx.globalAlpha = showHeld ? .65 : 1; ctx.fillRect(trackX, trackY, trackWidth * Math.min(1, distance / 4), 7); ctx.globalAlpha = 1; }
       ctx.strokeStyle = 'rgba(135,206,166,.35)'; ctx.strokeRect(trackX, trackY, trackWidth, 7);
     });
   }

@@ -12,6 +12,7 @@ let liveRadar = null;
 let liveGps = null;
 let liveUltrasonic = null;
 let ultrasonicStatusReceived = false;
+const lastUltrasonicSamples = Object.create(null);
 let cameraFrameId = null;
 let cameraBusy = false;
 let cameraDisplayKey = null;
@@ -276,19 +277,34 @@ function drawUltrasonicRanges(modalities = world?.perception?.modalities || {}) 
     : (modalities.ultrasonic || modalities.hc_sr04 || {});
   const samples = Array.isArray(group) ? group : Array.isArray(group.sensors) ? group.sensors : [];
   const keys = ['front_left', 'front_right', 'rear'];
+  const now = Date.now();
+  for (const sample of samples) {
+    const key = String(sample?.id || sample?.position || '').toLowerCase();
+    const distance = Number(sample?.distance_m ?? (Number(sample?.distance_mm) / 1000));
+    if (keys.includes(key) && sample.available === true && Number.isFinite(distance) && distance > 0 && distance <= 4 && !sample.simulated) {
+      lastUltrasonicSamples[key] = { sample, measurementAt: now - (Number(sample.age_ms) || 0) };
+    }
+  }
   for (const card of document.querySelectorAll('[data-ultrasonic]')) {
     const key = card.dataset.ultrasonic;
-    const sample = group[key] || samples.find(item => String(item?.id || item?.position || '').toLowerCase() === key)
+    const currentSample = group[key] || samples.find(item => String(item?.id || item?.position || '').toLowerCase() === key)
       || samples[keys.indexOf(key)] || {};
+    const currentDistance = Number(currentSample.distance_m ?? (Number(currentSample.distance_mm) / 1000));
+    const currentValid = currentSample.available === true && Number.isFinite(currentDistance)
+      && currentDistance > 0 && currentDistance <= 4 && !currentSample.simulated;
+    const retained = lastUltrasonicSamples[key];
+    const retainedAge = retained ? now - retained.measurementAt : Infinity;
+    const held = !currentValid && retainedAge <= 1200;
+    const sample = currentValid ? currentSample : held ? retained.sample : currentSample;
     const distance = Number(sample.distance_m ?? (Number(sample.distance_mm) / 1000));
     const available = sample.available === true && Number.isFinite(distance) && distance > 0 && distance <= 4 && !sample.simulated;
     const value = card.querySelector('.ultrasonic-value');
     const fill = card.querySelector('.ultrasonic-fill');
-    value.textContent = available ? `${distance.toFixed(2)}m` : 'WAIT';
+    value.textContent = available ? `${held || (Number.isFinite(retainedAge) && retainedAge > 600) ? '~' : ''}${distance.toFixed(2)}m` : 'WAIT';
     value.classList.toggle('sensor-wait', !available);
-    value.style.color = available ? (distance < .35 ? '#f17c70' : distance < .8 ? '#efcb76' : '#bcebd0') : '';
+    value.style.color = available ? (held || (Number.isFinite(retainedAge) && retainedAge > 600) ? '#efcb76' : distance < .35 ? '#f17c70' : distance < .8 ? '#efcb76' : '#bcebd0') : '';
     fill.style.width = available ? `${Math.max(0, Math.min(100, distance / 4 * 100))}%` : '0%';
-    fill.style.background = available ? (distance < .35 ? '#f17c70' : distance < .8 ? '#efcb76' : '#63d7ae') : '';
+    fill.style.background = available ? (held || (Number.isFinite(retainedAge) && retainedAge > 600) ? '#efcb76' : distance < .35 ? '#f17c70' : distance < .8 ? '#efcb76' : '#63d7ae') : '';
   }
 }
 
@@ -634,7 +650,7 @@ async function pollUltrasonic() {
     if (!response.ok) throw new Error(`Ultrasonic status HTTP ${response.status}`);
     liveUltrasonic = await response.json();
   } catch (error) {
-    liveUltrasonic = { available: false, sample: null, error: error.message };
+    liveUltrasonic = { available: false, sample: { sensors: [] }, error: error.message };
   } finally {
     ultrasonicStatusReceived = true;
     drawUltrasonicRanges();

@@ -52,6 +52,25 @@ class UltrasonicTests(unittest.TestCase):
         self.assertEqual([item["echo_pin"] for item in sample["sensors"]], ["D3", "D5", "D9"])
         self.assertEqual([item["distance_mm"] for item in sample["sensors"]], [480, 920, 1350])
         self.assertEqual([item["distance_m"] for item in sample["sensors"]], [0.48, 0.92, 1.35])
+        cached = source.read()
+        self.assertEqual(bridge.calls, ["body_ultrasonic_read"])
+        self.assertEqual(cached["sensors"][0]["distance_mm"], 480)
+
+    def test_concurrent_hud_reads_share_recent_rpc_sample_without_mutating_cache(self):
+        bridge = FakeBridge(payload([
+            channel("front_left", "D2", "D3", 480),
+            channel("front_right", "D4", "D5", 920),
+            channel("rear", "D6", "D9", 1350),
+        ]))
+        source = VentunoBridgeUltrasonicSource(bridge_factory=lambda: bridge)
+
+        first = source.read()
+        first["sensors"][0]["age_ms"] = 599
+        cached = source.read()
+
+        self.assertEqual(bridge.calls, ["body_ultrasonic_read"])
+        self.assertTrue(cached["sensors"][0]["available"])
+        self.assertGreaterEqual(cached["sensors"][0]["age_ms"], 50)
 
     def test_exposes_firmware_startup_and_loop_diagnostics(self):
         raw = payload([
