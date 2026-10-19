@@ -3332,17 +3332,17 @@ setInterval(() => {
 setInterval(() => {
   if (!sensorPageVisible() || activeSource !== 'sensors') return;
   void refreshLiveRadar();
-}, 250);
+}, 400);
 setInterval(() => { if (sensorPageVisible()) void refreshSystemMetrics(); }, 1500);
 setInterval(() => {
   if (sensorPageVisible() && activeSource === 'sensors') void refreshLiveImu();
-}, 150);
+}, 250);
 setTimeout(() => setInterval(() => {
   if (sensorPageVisible() && activeSource === 'sensors') void refreshLiveUltrasonic();
-}, 300), 75);
+}, 400), 75);
 setTimeout(() => setInterval(() => {
   if (sensorPageVisible() && activeSource === 'sensors') void refreshLiveGps();
-}, 1000), 100);
+}, 1500), 100);
 setTimeout(() => setInterval(() => {
   if (sensorPageVisible() && activeSource === 'sensors') void refreshLiveTof();
 }, 1000), 250);
