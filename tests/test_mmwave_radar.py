@@ -26,7 +26,7 @@ class MmWaveRadarTest(unittest.TestCase):
             "MMWAVE_RADAR_BAUDRATE": 256000,
         }
         host._worldmodel = SimpleNamespace(source=SimpleNamespace(radar=Radar()))
-        with patch.object(host, "serial_device_inventory", return_value={"devices": []}):
+        with patch.object(host, "serial_device_inventory", side_effect=AssertionError("status must not enumerate serial ports")):
             result = host.mmwave_radar_status()
 
         self.assertTrue(result["available"])
@@ -56,7 +56,7 @@ class MmWaveRadarTest(unittest.TestCase):
             "MMWAVE_RADAR_BAUDRATE": 256000,
         }
         host._worldmodel = SimpleNamespace(source=SimpleNamespace(radar=Radar()))
-        with patch.object(host, "serial_device_inventory", return_value={"devices": []}):
+        with patch.object(host, "serial_device_inventory", side_effect=AssertionError("status must not enumerate serial ports")):
             result = host.mmwave_radar_status()
 
         self.assertTrue(result["available"])

@@ -2093,7 +2093,16 @@ class BodyHost:
 
     def mmwave_radar_status(self) -> dict:
         """Read the configured radar independently of the World Model loop."""
-        settings = self.mmwave_radar_settings()
+        # The high-rate dashboard status route must not enumerate every serial
+        # device (which can take several seconds on hosts with many ttyS ports).
+        protocol = str(self.value("MMWAVE_RADAR_PROTOCOL", "serial_ld2450") or "serial_ld2450")
+        settings = {
+            "enabled": bool(self.value("BODY_PLUGIN_MMWAVE_RADAR_ENABLED", False)),
+            "protocol": protocol,
+            "port": str(self.value("MMWAVE_RADAR_PORT", "/dev/ttyUSB0") or "/dev/ttyUSB0"),
+            "baudrate": int(self.value("MMWAVE_RADAR_BAUDRATE", 256000) or 256000),
+            "timeout": float(self.value("MMWAVE_RADAR_TIMEOUT", 0.35) or 0.35),
+        }
         if not settings["enabled"]:
             return {**settings, "available": False, "sample": None,
                     "error": "mmWave radar is disabled in Body settings"}
