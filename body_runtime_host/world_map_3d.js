@@ -69,6 +69,13 @@ let visualOdometryFrameId = '';
 let latestVisualOdometry = null;
 let latestRadarSample = null;
 let radarHistory = [];
+let latestGpsFix = null;
+let gpsFixCurrentlyValid = false;
+let gpsMap = null;
+let gpsMapMarker = null;
+let gpsMapMode = 'streets';
+let gpsMapLayers = null;
+let gpsMapInitialization = null;
 let latestDepthCapturedAt = 0;
 let imuHistory = [];
 let cloudPointCount = 0;
@@ -173,7 +180,11 @@ if (panel) {
     computeCard.id = 'world-map-compute-power';
     computeCard.className = 'sensor-readout-card world-map-compute-card';
     computeCard.innerHTML = `<header><strong>Compute & power</strong><small id="world-map-system-state">Sampling</small></header><div class="system-instrument-grid"><article class="system-instrument"><span class="system-instrument-label">CPU LOAD</span><div class="system-gauge" id="world-map-cpu-gauge" role="img" aria-label="CPU utilization"><div class="system-gauge-center"><strong id="world-map-system-cpu-value">—</strong><small>%</small></div></div><span class="system-instrument-foot" id="world-map-system-cpu-temp">CPU temp · —</span></article><article class="system-instrument"><span class="system-instrument-label">CPU TEMP</span><div class="system-gauge system-gauge-temp" id="world-map-cpu-temp-gauge" role="img" aria-label="Maximum CPU temperature"><div class="system-gauge-center"><strong id="world-map-system-cpu-temp-value">—</strong><small>°C</small></div></div><span class="system-instrument-foot">Hottest reported CPU sensor · 0–100 °C</span></article><article class="system-instrument"><span class="system-instrument-label">GPU TEMP</span><div class="system-gauge system-gauge-temp" id="world-map-gpu-temp-gauge" role="img" aria-label="Maximum GPU temperature"><div class="system-gauge-center"><strong id="world-map-system-gpu-temp-value">—</strong><small>°C</small></div></div><span class="system-instrument-foot" id="world-map-system-gpu-meta">Load unavailable · — MHz</span></article><article class="system-instrument"><span class="system-instrument-label">MEMORY</span><div class="system-gauge" id="world-map-memory-gauge" role="img" aria-label="Memory utilization"><div class="system-gauge-center"><strong id="world-map-system-memory-value">—</strong><small>%</small></div></div><span class="system-instrument-foot" id="world-map-system-memory-meta">— free</span></article><article class="system-instrument"><span class="system-instrument-label">BOARD INPUT</span><div class="system-gauge system-gauge-power" id="world-map-power-gauge" role="img" aria-label="Measured board input power"><div class="system-gauge-center"><strong id="world-map-system-power-value">—</strong><small>W</small></div></div><span class="system-instrument-foot" id="world-map-system-power-meta">INA232 · measured rail</span></article></div><div class="system-telemetry-strip"><div><span>GPU utilization</span><strong id="world-map-system-gpu-load">Unavailable</strong></div><div><span>GPU clock</span><strong id="world-map-system-gpu-clock">—</strong></div><div><span>Qualcomm HTP</span><strong id="world-map-system-htp">Waiting for inference status</strong></div><div><span>Energy since Body start</span><strong id="world-map-system-energy">—</strong></div></div><p id="world-map-system-note" class="sensor-readout-note">GPU/HTP usage percentages require kernel counters. Board input may exclude external motor loads.</p>`;
-    sensorPanel.append(liveReadouts, computeCard);
+    const positionMap = document.createElement('section');
+    positionMap.id = 'world-map-gps-map-card';
+    positionMap.className = 'world-map-position-map panel';
+    positionMap.innerHTML = `<div class="panel-head"><h2>GNSS position</h2><div class="world-map-gps-map-actions"><div class="world-map-segment" role="group" aria-label="Map layer"><button type="button" data-gps-map-mode="streets" aria-pressed="true">Map</button><button type="button" data-gps-map-mode="satellite" aria-pressed="false">Satellite</button></div><button type="button" id="world-map-gps-center" title="Center on GPS; map providers receive tile requests for this area">Center GPS</button></div></div><div id="world-map-gps-map" class="world-map-gps-map" role="application" aria-label="Worldwide map with Ventuno GPS position"></div><div id="world-map-gps-map-status" class="world-map-gps-map-status" role="status">Waiting for a valid GPS fix</div>`;
+    sensorPanel.append(liveReadouts, positionMap, computeCard);
     const visionGrid = sensorPanel.querySelector('.world-map-sensor-2d');
     const trajectory = sensorPanel.querySelector('.world-map-odometry-view');
     const segmentation = sensorPanel.querySelector('.world-map-segmentation-panel');
@@ -336,6 +347,15 @@ if (panel) {
       @media(max-width:1100px){.world-map-sensor-cloud-layout{grid-template-columns:minmax(0,1fr)}.world-map-cloud-side{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}.world-map-cloud-side>strong,.world-map-cloud-axis{grid-column:1/-1}}
       @media(max-width:900px){.world-map-cloud-hud,.world-map-cloud-controls{position:static;max-width:none;padding:6px;background:#05070d}.world-map-cloud-controls{justify-content:flex-start}.world-map-cloud-hud{padding-top:8px}.world-map-cloud-side{grid-template-columns:minmax(0,1fr)}}
       .world-map-live-readouts{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,340px),1fr));gap:12px;margin-top:14px}
+      .world-map-position-map{margin-top:14px}
+      .world-map-gps-map-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+      .world-map-gps-map{position:relative;width:100%;height:clamp(300px,42vw,520px);min-height:300px;overflow:hidden;border:1px solid #30443b;background:#0d1715}
+      .world-map-gps-map-status{min-height:28px;padding-top:8px;color:#8e9e92;font-size:11px}
+      .world-map-gps-map .leaflet-container{width:100%;height:100%;background:#0d1715;font:12px Inter,ui-sans-serif,system-ui,sans-serif}
+      .world-map-gps-map .leaflet-control-zoom a{background:#101b16;color:#dce6df;border-color:#40584a}
+      .world-map-gps-map .leaflet-control-zoom a:hover{background:#1c3827;color:#fff}
+      .world-map-gps-map .leaflet-control-attribution{background:#101b16dd;color:#9db2a4;font-size:10px}
+      .world-map-gps-map .leaflet-control-attribution a{color:#b6f1d3}
       .sensor-readout-card{min-width:0;padding:14px;border:1px solid #d7e1da;background:#f7faf8;color:#1c2b22}
       .sensor-readout-card header{display:flex;align-items:center;justify-content:space-between;gap:10px;padding-bottom:9px;border-bottom:1px solid #d7e1da}
       .sensor-readout-card header strong{font:650 12px ui-monospace,monospace;color:#1b4734}
@@ -835,7 +855,11 @@ function setSource(source) {
     : 'Synthetic room, robot pose and object positions for controlled testing. These are simulation ground truth, not live sensor measurements.'));
   panel?.querySelector('.truth-note')?.toggleAttribute('hidden', source === 'sensors');
   document.querySelectorAll('.simulation-actions').forEach((node) => { node.hidden = source === 'sensors'; });
-  if (source === 'sensors') void refreshSensors();
+  if (source === 'sensors') {
+    void initializeGpsMap();
+    if (gpsMap) requestAnimationFrame(() => gpsMap.invalidateSize());
+    void refreshSensors();
+  }
   else if (latestWorld) buildSimulation(latestWorld);
   updateMode();
 }
@@ -2431,6 +2455,103 @@ async function refreshLiveRadar() {
   } finally { readoutBusy.radar = false; }
 }
 
+function loadGpsMapLibrary() {
+  if (window.L?.map) return Promise.resolve(window.L);
+  if (gpsMapInitialization) return gpsMapInitialization;
+  gpsMapInitialization = new Promise((resolve, reject) => {
+    const stylesheet = document.createElement('link');
+    stylesheet.rel = 'stylesheet';
+    stylesheet.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
+    stylesheet.integrity = 'sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=';
+    stylesheet.crossOrigin = '';
+    document.head.append(stylesheet);
+    const script = document.createElement('script');
+    script.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
+    script.integrity = 'sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=';
+    script.crossOrigin = '';
+    script.onload = () => window.L?.map ? resolve(window.L) : reject(new Error('Leaflet did not initialize'));
+    script.onerror = () => reject(new Error('Could not load the open-source map library'));
+    document.head.append(script);
+  });
+  return gpsMapInitialization;
+}
+
+async function initializeGpsMap() {
+  const status = byId('world-map-gps-map-status');
+  const container = byId('world-map-gps-map');
+  if (!container || gpsMap) return;
+  if (status) status.textContent = 'Loading worldwide map…';
+  try {
+    const L = await loadGpsMapLibrary();
+    if (!container.isConnected || gpsMap) return;
+    gpsMap = L.map(container, { worldCopyJump: true, minZoom: 2, maxZoom: 19 }).setView([20, 0], 2);
+    gpsMapLayers = {
+      streets: L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19,
+        updateWhenIdle: true,
+        keepBuffer: 2,
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a>',
+      }),
+      satellite: L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+        maxZoom: 19,
+        updateWhenIdle: true,
+        keepBuffer: 2,
+        attribution: 'Tiles &copy; Esri — Sources: Esri, DigitalGlobe, GeoEye, i-cubed, USDA FSA, USGS, AEX, Getmapping, Aerogrid, IGN, IGP, swisstopo, and the GIS User Community',
+      }),
+    };
+    gpsMapLayers[gpsMapMode].addTo(gpsMap);
+    for (const button of document.querySelectorAll('[data-gps-map-mode]')) {
+      button.addEventListener('click', () => {
+        const mode = button.dataset.gpsMapMode;
+        if (!gpsMapLayers?.[mode] || mode === gpsMapMode) return;
+        gpsMap.removeLayer(gpsMapLayers[gpsMapMode]);
+        gpsMapMode = mode;
+        gpsMapLayers[gpsMapMode].addTo(gpsMap);
+        document.querySelectorAll('[data-gps-map-mode]').forEach(item => item.setAttribute('aria-pressed', String(item.dataset.gpsMapMode === mode)));
+      });
+    }
+    byId('world-map-gps-center')?.addEventListener('click', () => {
+      if (!latestGpsFix) {
+        if (status) status.textContent = 'No valid GPS fix received yet';
+        return;
+      }
+      gpsMap.setView([latestGpsFix.latitude, latestGpsFix.longitude], Math.max(gpsMap.getZoom(), 16));
+    });
+    for (const layer of Object.values(gpsMapLayers)) {
+      layer.on('tileerror', () => {
+        if (status) status.textContent = 'Map tiles unavailable; check access to the selected map provider';
+      });
+    }
+    gpsMap.on('load', () => updateGpsMap());
+    gpsMap.invalidateSize();
+    updateGpsMap();
+  } catch (error) {
+    gpsMapInitialization = null;
+    if (status) status.textContent = `${error.message}. Map requires internet access.`;
+  }
+}
+
+function updateGpsMap() {
+  const status = byId('world-map-gps-map-status');
+  if (!gpsMap) {
+    if (status && latestGpsFix) status.textContent = `GPS fix ${latestGpsFix.latitude.toFixed(6)}, ${latestGpsFix.longitude.toFixed(6)} · map loading`;
+    return;
+  }
+  if (latestGpsFix) {
+    const point = [latestGpsFix.latitude, latestGpsFix.longitude];
+    if (!gpsMapMarker) {
+      gpsMapMarker = window.L.circleMarker(point, {
+        radius: 8, color: '#062b1c', weight: 3, fillColor: '#43d18a', fillOpacity: 1,
+      }).addTo(gpsMap).bindTooltip('VENTUNO GNSS position');
+    } else gpsMapMarker.setLatLng(point);
+    const currentFix = gpsFixCurrentlyValid && Date.now() / 1000 - latestGpsFix.timestamp <= 5;
+    const age = Math.max(0, Date.now() / 1000 - latestGpsFix.timestamp);
+    if (status) status.textContent = currentFix
+      ? `Fix valid · ${latestGpsFix.latitude.toFixed(6)}, ${latestGpsFix.longitude.toFixed(6)} · ${age.toFixed(1)} s old`
+      : `No current fix · showing last valid position · ${latestGpsFix.latitude.toFixed(6)}, ${latestGpsFix.longitude.toFixed(6)}`;
+  } else if (status) status.textContent = 'Waiting for a valid GPS fix';
+}
+
 async function refreshLiveGps() {
   if (activeSource !== 'sensors' || readoutBusy.gps) return;
   readoutBusy.gps = true;
@@ -2445,6 +2566,11 @@ async function refreshLiveGps() {
     setFeedStatus('world-map-gps-state', 'gps', gpsState, fix ? 'Fix valid' : streaming ? 'UART live · no fix' : status.error || 'Offline');
     const latitude = Number(sample.latitude_deg ?? sample.latitude ?? sample.lat);
     const longitude = Number(sample.longitude_deg ?? sample.longitude ?? sample.lon ?? sample.lng);
+    gpsFixCurrentlyValid = Boolean(status.available && fix && Number.isFinite(latitude) && Number.isFinite(longitude));
+    if (gpsFixCurrentlyValid) {
+      latestGpsFix = { latitude, longitude, timestamp: Number(sample.timestamp) || Date.now() / 1000 };
+    }
+    updateGpsMap();
     byId('world-map-gps-position').textContent = fix && Number.isFinite(latitude) && Number.isFinite(longitude) ? `${latitude.toFixed(6)}, ${longitude.toFixed(6)}` : 'No valid fix';
     byId('world-map-gps-fix').textContent = `${gpsState === 'stale' ? 'Stale fix' : gpsState === 'live' && fix ? 'Valid' : 'No fix'} · quality ${sample.fix_quality ?? '—'}`;
     byId('world-map-gps-satellites').textContent = `${sample.satellites ?? '—'} used · ${sample.satellites_in_view ?? '—'} in view`;
@@ -2469,7 +2595,11 @@ async function refreshLiveGps() {
       more.title = `${signals.length - visibleSignals.length} additional satellites`; bars.push(more);
     }
     plot.replaceChildren(...(signals.length ? bars : [Object.assign(document.createElement('span'), { className: 'sensor-readout-note', textContent: status.available ? 'No GSV satellite signal values in the current GPS sample.' : 'Waiting for GSV data from the GPS receiver.' })]));
-  } catch (error) { setFeedStatus('world-map-gps-state', 'gps', 'offline', `Unavailable · ${error.message}`); }
+  } catch (error) {
+    gpsFixCurrentlyValid = false;
+    setFeedStatus('world-map-gps-state', 'gps', 'offline', `Unavailable · ${error.message}`);
+    updateGpsMap(null);
+  }
   finally { readoutBusy.gps = false; }
 }
 
