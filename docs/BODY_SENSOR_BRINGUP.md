@@ -70,9 +70,9 @@ published board before wiring three units.
 ### Breadboard wiring: one ToF + three HC-SR04s
 
 Use the VENTUNO Q **MCU/shield headers**, not the Linux GPIO or FNK0031. The
-assignments below reserve D2-D7 for the six ultrasonic signals; if another
-shield or sketch already uses any of them, choose six free MCU digital pins and
-change the sketch mapping to match.
+assignments below use D2-D6 and D9 for the six ultrasonic signals. D7/D8 remain
+reserved for the LD2450 UART; change both the sketch and this table together if
+another shield or sketch uses one of the selected pins.
 
 | ToF lead / pin | Connect to |
 | --- | --- |
@@ -92,14 +92,14 @@ the labels before power, even though they match the published CQRobot manual.
 | --- | --- | --- | --- | --- |
 | Left | VENTUNO +5V | common GND | D2 | D3 via divider #1 |
 | Right | VENTUNO +5V | common GND | D4 | D5 via divider #2 |
-| Rear | VENTUNO +5V | common GND | D6 | D7 via divider #3 |
+| Rear | VENTUNO +5V | common GND | D6 | D9 via divider #3 |
 
 Build each ECHO divider as a separate two-resistor branch on the breadboard:
 HC-SR04 ECHO -> **1 kOhm** series resistor -> tap -> MCU input; from that same
 tap, connect a **1.8 kOhm** resistor to GND. This scales a nominal 5 V ECHO
 pulse to about 3.21 V, leaving margin below the 3.3 V rail. The pictured 1 kOhm
 + 2 kOhm pair yields about 3.33 V nominal; use the 1.8 kOhm lower resistor
-instead for margin. Repeat for D3, D5 and D7; do not share divider taps. All
+instead for margin. Repeat for D3, D5 and D9; do not share divider taps. All
 grounds must be common. Connect each TRIG directly to its assigned MCU output; the
 VENTUNO MCU output is 3.3 V logic. Power the three HC-SR04 VCC pins from the
 VENTUNO 5 V rail, not from a USB-UART adapter. Start with only one module and
@@ -107,10 +107,10 @@ one divider connected, confirm the ECHO tap stays at or below 3.3 V, then add
 the other two. Trigger only one ultrasonic sensor at a time and leave at least
 60 ms before triggering the next to reduce acoustic cross-talk.
 
-Keep the sensor wires short and label each channel at both ends. The Body
-Runtime does not yet acquire these physical GPIO/I2C readings; the wiring is
-ready for the planned VENTUNO STM32 sketch and Linux Bridge reader, not a claim
-that live sensor telemetry is already active.
+Keep the sensor wires short and label each channel at both ends. The VENTUNO
+STM32 bridge exposes `body_ultrasonic_read` for these three channels. Body reads
+them at `/plugins/ultrasonic/status` and displays each fresh range in Live
+Sensors. Missing echoes are not converted to zero-distance readings.
 
 ## Recommended ToF placement
 

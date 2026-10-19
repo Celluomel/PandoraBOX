@@ -13,6 +13,9 @@
 #ifndef BODY_ENABLE_IMU
 #define BODY_ENABLE_IMU 1
 #endif
+#ifndef BODY_ENABLE_ULTRASONIC
+#define BODY_ENABLE_ULTRASONIC 1
+#endif
 #ifndef BODY_RADAR_BAUD
 #define BODY_RADAR_BAUD 256000
 #endif
@@ -55,6 +58,121 @@ uint32_t lastTofInitAttempt = 0;
 uint32_t tofSequence = 0;
 uint32_t latestTofAt = 0;
 int16_t latestTofDistanceMm = -1;
+
+static const uint8_t ULTRASONIC_COUNT = 3;
+static const uint8_t ultrasonicTriggerPins[ULTRASONIC_COUNT] = {D2, D4, D6};
+static const uint8_t ultrasonicEchoPins[ULTRASONIC_COUNT] = {D3, D5, D9};
+static const char *ultrasonicNames[ULTRASONIC_COUNT] = {
+    "front_left", "front_right", "rear"};
+static const uint32_t ULTRASONIC_TRIGGER_INTERVAL_US = 60000;
+static const uint32_t ULTRASONIC_ECHO_TIMEOUT_US = 30000;
+static const uint32_t ULTRASONIC_STALE_MS = 600;
+struct UltrasonicChannel {
+  uint32_t sampleAtMs = 0;
+  uint32_t sequence = 0;
+  uint16_t distanceMm = 0;
+  const char *error = "waiting_for_echo";
+};
+UltrasonicChannel ultrasonicChannels[ULTRASONIC_COUNT];
+enum UltrasonicPhase : uint8_t { ULTRASONIC_IDLE, ULTRASONIC_TRIGGER, ULTRASONIC_WAIT_RISE, ULTRASONIC_WAIT_FALL };
+UltrasonicPhase ultrasonicPhase = ULTRASONIC_IDLE;
+uint8_t activeUltrasonic = 0;
+uint8_t nextUltrasonic = 0;
+uint32_t ultrasonicPhaseAtUs = 0;
+uint32_t ultrasonicEchoRiseUs = 0;
+uint32_t ultrasonicNextTriggerUs = 0;
+uint32_t ultrasonicSequence = 0;
+
+void updateUltrasonic() {
+#if BODY_ENABLE_ULTRASONIC
+  const uint32_t nowUs = micros();
+  if (ultrasonicPhase == ULTRASONIC_IDLE) {
+    if (static_cast<int32_t>(nowUs - ultrasonicNextTriggerUs) < 0) return;
+    activeUltrasonic = nextUltrasonic;
+    nextUltrasonic = (nextUltrasonic + 1) % ULTRASONIC_COUNT;
+    digitalWrite(ultrasonicTriggerPins[activeUltrasonic], HIGH);
+    ultrasonicPhaseAtUs = nowUs;
+    ultrasonicNextTriggerUs = nowUs + ULTRASONIC_TRIGGER_INTERVAL_US;
+    ultrasonicPhase = ULTRASONIC_TRIGGER;
+    return;
+  }
+
+  if (ultrasonicPhase == ULTRASONIC_TRIGGER) {
+    if (nowUs - ultrasonicPhaseAtUs < 10) return;
+    digitalWrite(ultrasonicTriggerPins[activeUltrasonic], LOW);
+    ultrasonicPhaseAtUs = nowUs;
+    ultrasonicPhase = ULTRASONIC_WAIT_RISE;
+    return;
+  }
+
+  if (ultrasonicPhase == ULTRASONIC_WAIT_RISE) {
+    if (digitalRead(ultrasonicEchoPins[activeUltrasonic]) == HIGH) {
+      ultrasonicEchoRiseUs = nowUs;
+      ultrasonicPhase = ULTRASONIC_WAIT_FALL;
+      return;
+    }
+    if (nowUs - ultrasonicPhaseAtUs >= ULTRASONIC_ECHO_TIMEOUT_US) {
+      ultrasonicChannels[activeUltrasonic].error = "no_echo";
+      ultrasonicPhase = ULTRASONIC_IDLE;
+    }
+    return;
+  }
+
+  if (digitalRead(ultrasonicEchoPins[activeUltrasonic]) == LOW) {
+    const uint32_t pulseUs = nowUs - ultrasonicEchoRiseUs;
+    const uint32_t distanceMm = (pulseUs * 343UL + 1000UL) / 2000UL;
+    UltrasonicChannel &channel = ultrasonicChannels[activeUltrasonic];
+    if (distanceMm >= 20 && distanceMm <= 4000) {
+      channel.distanceMm = static_cast<uint16_t>(distanceMm);
+      channel.sampleAtMs = millis();
+      channel.sequence = ++ultrasonicSequence;
+      channel.error = "";
+    } else {
+      channel.error = "out_of_range";
+    }
+    ultrasonicPhase = ULTRASONIC_IDLE;
+    return;
+  }
+  if (nowUs - ultrasonicEchoRiseUs >= ULTRASONIC_ECHO_TIMEOUT_US) {
+    ultrasonicChannels[activeUltrasonic].error = "echo_timeout";
+    ultrasonicPhase = ULTRASONIC_IDLE;
+  }
+#endif
+}
+
+String readUltrasonicSample() {
+#if !BODY_ENABLE_ULTRASONIC
+  return String("{\"available\":false,\"sensor\":\"hc_sr04_array\",\"error\":\"ultrasonic_disabled\"}");
+#else
+  const uint32_t now = millis();
+  bool anyFresh = false;
+  char channels[600];
+  size_t used = 0;
+  for (uint8_t i = 0; i < ULTRASONIC_COUNT; ++i) {
+    const UltrasonicChannel &channel = ultrasonicChannels[i];
+    const bool fresh = channel.sampleAtMs && now - channel.sampleAtMs <= ULTRASONIC_STALE_MS;
+    anyFresh = anyFresh || fresh;
+    const int written = snprintf(channels + used, sizeof(channels) - used,
+        "%s{\"id\":\"%s\",\"trigger_pin\":\"D%u\",\"echo_pin\":\"D%u\","
+        "\"available\":%s,\"distance_mm\":%s,\"timestamp_ms\":%lu,\"sequence\":%lu,\"error\":\"%s\"}",
+        i ? "," : "", ultrasonicNames[i],
+        i == 0 ? 2 : i == 1 ? 4 : 6, i == 0 ? 3 : i == 1 ? 5 : 9,
+        fresh ? "true" : "false", fresh ? String(channel.distanceMm).c_str() : "null",
+        static_cast<unsigned long>(channel.sampleAtMs),
+        static_cast<unsigned long>(channel.sequence),
+        fresh ? "" : channel.error);
+    if (written <= 0 || static_cast<size_t>(written) >= sizeof(channels) - used) {
+      return String("{\"available\":false,\"sensor\":\"hc_sr04_array\",\"error\":\"payload_overflow\"}");
+    }
+    used += static_cast<size_t>(written);
+  }
+  String payload = String("{\"available\":") + (anyFresh ? "true" : "false")
+      + ",\"sensor\":\"hc_sr04_array\",\"transport\":\"stm32_gpio\","
+        "\"timestamp_ms\":" + String(now) + ",\"sequence\":"
+      + String(ultrasonicSequence) + ",\"sensors\":[" + channels + "]}";
+  return payload;
+#endif
+}
 
 static const uint32_t GPS_BAUD = BODY_GPS_BAUD;
 static const uint16_t GPS_STALE_MS = 3000;
@@ -459,8 +577,18 @@ void setup() {
   Bridge.begin();
   Bridge.provide_safe("body_imu_read", readMovementSample);
   Bridge.provide_safe("body_tof_read", readTofSample);
+  Bridge.provide_safe("body_ultrasonic_read", readUltrasonicSample);
   Bridge.provide("body_ld2450_read", readLatestLd2450);
   Bridge.provide_safe("body_gps_read", readGpsSample);
+
+#if BODY_ENABLE_ULTRASONIC
+  for (uint8_t i = 0; i < ULTRASONIC_COUNT; ++i) {
+    pinMode(ultrasonicTriggerPins[i], OUTPUT);
+    digitalWrite(ultrasonicTriggerPins[i], LOW);
+    pinMode(ultrasonicEchoPins[i], INPUT);
+  }
+  ultrasonicNextTriggerUs = micros();
+#endif
 
   Serial1.begin(GPS_BAUD);
 
@@ -500,6 +628,7 @@ void setup() {
 
 void loop() {
   while (Serial1.available() > 0) consumeGpsByte(static_cast<uint8_t>(Serial1.read()));
+  updateUltrasonic();
 #if BODY_ENABLE_IMU
   if (!movementReady && millis() - lastImuInitAttempt >= 2000) {
     lastImuInitAttempt = millis();

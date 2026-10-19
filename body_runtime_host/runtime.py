@@ -945,7 +945,7 @@ class BodyHost:
             visited_sources = set()
             while source_cursor is not None and id(source_cursor) not in visited_sources:
                 visited_sources.add(id(source_cursor))
-                for modality in ("radar", "imu", "tof"):
+                for modality in ("radar", "imu", "tof", "ultrasonic"):
                     adapter = getattr(source_cursor, modality, None)
                     if adapter is not None:
                         physical_adapters[modality] = adapter
@@ -959,7 +959,7 @@ class BodyHost:
                    "started_at": started_at, "duration_seconds": 60,
                    "depth_snapshot_interval_s": 5,
                    "source": "runtime_sensor_adapters", "base_source_simulated": base_simulated,
-                   "sensors": ["robot_source_modalities", "radar", "imu", "tof", "gps_uart", "camera", "yolox", "midas"]})
+                   "sensors": ["robot_source_modalities", "radar", "imu", "tof", "ultrasonic", "gps_uart", "camera", "yolox", "midas"]})
             with self._hardware_capture_lock:
                 self._hardware_capture_status.update({"state": "capturing", "started_at": started_at})
 
@@ -2231,6 +2231,38 @@ class BodyHost:
             return {**settings, "available": True, "sample": sample, "source_status": source.status()}
         except Exception as exc:
             return {**settings, "available": False, "error": str(exc)[:240], "source_status": source.status()}
+
+    def ultrasonic_status(self) -> dict:
+        bridge_available = os.path.exists("/run/arduino-router.sock")
+        settings = {
+            "enabled": bool(self.value("BODY_PLUGIN_ULTRASONIC_ENABLED", bridge_available)),
+            "sensor": "3 x HC-SR04",
+            "transport": "STM32 GPIO -> local Arduino Bridge RPC",
+            "method": "body_ultrasonic_read",
+            "channels": [
+                {"id": "front_left", "trigger_pin": "D2", "echo_pin": "D3"},
+                {"id": "front_right", "trigger_pin": "D4", "echo_pin": "D5"},
+                {"id": "rear", "trigger_pin": "D6", "echo_pin": "D9"},
+            ],
+            "bridge_available": bridge_available,
+        }
+        if not settings["enabled"]:
+            return {**settings, "available": False, "error": "HC-SR04 acquisition is disabled in Body settings"}
+        if not bridge_available:
+            return {**settings, "available": False, "error": "Local Arduino Router socket is unavailable; Body must run on VENTUNO Q"}
+        source = getattr(getattr(self._worldmodel, "source", None), "ultrasonic", None)
+        if source is None:
+            if not hasattr(self, "_ultrasonic_bridge_source"):
+                from body_runtime_host.ultrasonic import VentunoBridgeUltrasonicSource
+                self._ultrasonic_bridge_source = VentunoBridgeUltrasonicSource()
+            source = self._ultrasonic_bridge_source
+        try:
+            sample = source.read()
+            return {**settings, "available": bool(sample.get("available")),
+                    "sample": sample, "source_status": source.status()}
+        except Exception as exc:
+            return {**settings, "available": False, "error": str(exc)[:240],
+                    "source_status": source.status()}
 
     def system_metrics(self) -> dict:
         """Expose host load and board-input telemetry without external dependencies."""
@@ -3534,7 +3566,10 @@ class BodyHost:
         silently replace ``mode=sim`` with an unavailable robot endpoint.
         """
         from .worldmodel import SimRobotSource, resolve_source
-        from .worldmodel.sources import augment_with_imu, augment_with_mmwave, augment_with_tof
+        from .worldmodel.sources import (
+            augment_with_imu, augment_with_mmwave, augment_with_tof,
+            augment_with_ultrasonic,
+        )
 
         model_config_path = ROOT / "data" / "body" / "worldmodel" / "config.json"
         model_config: dict = {}
@@ -3566,12 +3601,14 @@ class BodyHost:
                 source = SimRobotSource()
             source = augment_with_mmwave(source, self.config)
             source = augment_with_imu(source, self.config, self._get_imu_bridge_source())
-            return augment_with_tof(source, self.config)
+            source = augment_with_tof(source, self.config)
+            return augment_with_ultrasonic(source, self.config)
         if mode == "bridge":
             return None
         source = augment_with_mmwave(resolve_source(self.config, self.latest), self.config)
         source = augment_with_imu(source, self.config, self._get_imu_bridge_source())
-        return augment_with_tof(source, self.config)
+        source = augment_with_tof(source, self.config)
+        return augment_with_ultrasonic(source, self.config)
 
     def plugins(self) -> list[dict]:
         return [
@@ -3646,6 +3683,14 @@ class BodyHost:
                 "role": "single-beam forward metric distance on shared Qwiic I2C bus",
                 "transport": "Qwiic Wire1 on STM32 -> local Arduino Bridge RPC",
                 "status_url": "/plugins/tof/status",
+            },
+            {
+                "id": "hc_sr04_array",
+                "label": "HC-SR04 ultrasonic array",
+                "enabled": bool(self.value("BODY_PLUGIN_ULTRASONIC_ENABLED", os.path.exists("/run/arduino-router.sock"))),
+                "role": "three sequential STM32 GPIO ranges: D2/D3, D4/D5, D6/D9",
+                "transport": "local Arduino Router Bridge RPC",
+                "status_url": "/plugins/ultrasonic/status",
             },
             {
                 "id": "world_model",
@@ -3952,6 +3997,8 @@ class BodyHost:
                     self._send(owner.gps_status())
                 elif path == "/plugins/tof/status":
                     self._send(owner.tof_status())
+                elif path == "/plugins/ultrasonic/status":
+                    self._send(owner.ultrasonic_status())
                 elif path == "/system/metrics":
                     self._send(owner.system_metrics())
                 elif path == "/plugins/fnk0031_wifi/usb/status":

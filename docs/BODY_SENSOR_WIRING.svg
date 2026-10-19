@@ -86,7 +86,7 @@
   <!-- ultrasonic -->
   <rect x="42" y="736" width="1756" height="400" rx="12" class="panel"/>
   <text x="64" y="768" class="head">3 · Three HC-SR04 · 5V supply, MCU GPIO timing</text>
-  <text x="65" y="796" class="small">Use the VENTUNO shield-header MCU digital pins D2-D7. Do not connect these signals to Linux GPIO or the FNK0031.</text>
+  <text x="65" y="796" class="small">Use MCU digital pins D2-D6 and D9; D7/D8 remain reserved for LD2450 UART. Do not use Linux GPIO or FNK0031.</text>
   <text x="65" y="824" class="small">Power all VCC pins from regulated 5V; tie all grounds together. Fire pings sequentially, at least 60ms apart.</text>
 
   <rect x="64" y="845" width="330" height="238" rx="8" class="module"/>
@@ -108,7 +108,7 @@
   <text x="816" y="908" class="body">VCC → +5V</text>
   <text x="816" y="936" class="body">GND → common GND</text>
   <text x="816" y="964" class="body">TRIG ← MCU D6</text>
-  <text x="816" y="992" class="body">ECHO → divider → MCU D7</text>
+  <text x="816" y="992" class="body">ECHO → divider → MCU D9</text>
   <text x="816" y="1041" class="small">One ping at a time</text>
 
   <rect x="1162" y="845" width="606" height="238" rx="8" class="warning"/>
@@ -116,11 +116,11 @@
   <text x="1182" y="910" class="small">ECHO</text>
   <path d="M1222 905H1275" class="echo"/>
   <rect x="1275" y="895" width="74" height="20" fill="none" stroke="#e49b62" stroke-width="2"/>
-  <text x="1286" y="910" class="tiny">10kΩ</text>
+  <text x="1286" y="910" class="tiny">1kΩ</text>
   <path d="M1349 905H1382" class="echo"/>
   <circle cx="1382" cy="905" r="4" fill="#e49b62"/>
   <path d="M1382 905H1440" class="echo" marker-end="url(#arrow)"/>
-  <text x="1452" y="910" class="small">MCU input D3 / D5 / D7</text>
+  <text x="1452" y="910" class="small">MCU input D3 / D5 / D9</text>
   <path d="M1382 909V928" class="echo"/>
   <rect x="1370" y="928" width="24" height="43" fill="none" stroke="#e49b62" stroke-width="2"/>
   <text x="1403" y="954" class="tiny">1.8kΩ</text>

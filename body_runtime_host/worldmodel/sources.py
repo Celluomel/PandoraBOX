@@ -763,3 +763,18 @@ def augment_with_tof(source: Any, config: Dict[str, Any], tof=None) -> Any:
         return source
     from body_runtime_host.tof import TofAugmentedSource, VentunoBridgeTofSource
     return TofAugmentedSource(source, tof or VentunoBridgeTofSource())
+
+
+def augment_with_ultrasonic(source: Any, config: Dict[str, Any], ultrasonic=None) -> Any:
+    """Attach the three VENTUNO STM32 HC-SR04 GPIO channels when the bridge exists."""
+    enabled = bool((config or {}).get(
+        "BODY_PLUGIN_ULTRASONIC_ENABLED", os.path.exists("/run/arduino-router.sock")
+    ))
+    if source is None or not enabled or not os.path.exists("/run/arduino-router.sock"):
+        return source
+    from body_runtime_host.ultrasonic import (
+        UltrasonicAugmentedSource, VentunoBridgeUltrasonicSource,
+    )
+    return UltrasonicAugmentedSource(
+        source, ultrasonic or VentunoBridgeUltrasonicSource()
+    )

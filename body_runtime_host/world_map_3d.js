@@ -2,7 +2,7 @@ import * as THREE from '../frontend/node_modules/three/build/three.module.js';
 
 const byId = (id) => document.getElementById(id);
 const sourceStates = Object.create(null);
-const staleAfterSeconds = { camera: 5, yolo: 5, midas: 5, odometry: 5, segmentation: 5, radar: 2, gps: 5, imu: 2, tof: 2 };
+const staleAfterSeconds = { camera: 5, yolo: 5, midas: 5, odometry: 5, segmentation: 5, radar: 2, gps: 5, imu: 2, tof: 2, ultrasonic: 0.6 };
 const physicalSources = ['camera', 'radar', 'gps', 'imu', 'tof', 'lidar', 'ultrasonic'];
 const cameraRadarGeometry = { horizontalFovDeg: 70, yawOffsetDeg: 0, lateralOffsetM: 0, calibrated: false };
 const maxCalibrationPairDeltaSeconds = 0.25;
@@ -228,9 +228,7 @@ if (panel) {
       return pill;
     };
     const lidarCard = liveReadouts.querySelector('#world-map-lidar-state')?.closest('.sensor-readout-card');
-    const ultrasonicCard = liveReadouts.querySelector('#world-map-ultrasonic-state')?.closest('.sensor-readout-card');
     offlineState('world-map-lidar-state', 'LiDAR', 'No physical stream connected');
-    offlineState('world-map-ultrasonic-state', 'HC-SR04', 'Waiting for firmware/gateway channel');
     const tofOfflinePill = document.createElement('span');
     tofOfflinePill.className = 'world-map-offline-pill';
     tofOfflinePill.dataset.source = 'tof';
@@ -242,7 +240,6 @@ if (panel) {
       tofCard.dataset.source = 'tof';
     }
     lidarCard?.remove();
-    ultrasonicCard?.remove();
     const tofCardElement = liveReadouts.querySelector('#world-map-tof-state')?.closest('.sensor-readout-card');
     if (tofCardElement) tofCardElement.hidden = true;
     sensorPanel.append(offlineStrip);
@@ -2275,7 +2272,7 @@ async function sensorJson(path) {
   return response.json();
 }
 
-const readoutBusy = { radar: false, gps: false, imu: false, tof: false };
+const readoutBusy = { radar: false, gps: false, imu: false, tof: false, ultrasonic: false };
 let systemMetricsBusy = false;
 const displayNumber = (value, digits = 1, suffix = '') => {
   const number = value === null || value === undefined || value === '' ? NaN : Number(value);
@@ -2530,6 +2527,35 @@ async function refreshLiveTof() {
     byId('world-map-tof-meta').textContent = available ? `${sample.frame || status.frame || 'body_front'} · ${displayNumber(sample.distance_mm, 0, ' mm')}` : status.transport || 'Forward single-beam range';
   } catch (error) { setFeedStatus('world-map-tof-state', 'tof', 'offline', `Unavailable · ${error.message}`); }
   finally { readoutBusy.tof = false; }
+}
+
+async function refreshLiveUltrasonic() {
+  if (activeSource !== 'sensors' || readoutBusy.ultrasonic) return;
+  readoutBusy.ultrasonic = true;
+  try {
+    const status = await sensorJson('/plugins/ultrasonic/status');
+    const sample = status.sample || {};
+    const channels = Array.isArray(sample.sensors) ? sample.sensors : [];
+    const freshCount = channels.filter(channel => channel.available && Number.isFinite(Number(channel.distance_m))).length;
+    const state = freshCount ? 'live' : status.bridge_available && sample.timestamp ? 'stale' : 'offline';
+    setFeedStatus('world-map-ultrasonic-state', 'ultrasonic', state,
+      freshCount ? `${freshCount}/3 ranges · STM32 RPC` : status.error || 'No valid echoes');
+    const ids = {
+      front_left: 'world-map-ultrasonic-left',
+      front_right: 'world-map-ultrasonic-right',
+      rear: 'world-map-ultrasonic-rear',
+    };
+    for (const [id, elementId] of Object.entries(ids)) {
+      const channel = channels.find(item => item.id === id);
+      const element = byId(elementId);
+      if (!element) continue;
+      element.textContent = channel?.available
+        ? `${displayNumber(channel.distance_m, 2, ' m')} · ${channel.echo_pin || 'echo'}`
+        : channel?.error === 'no_echo' ? 'No echo' : channel?.error === 'echo_timeout' ? 'Timeout' : 'No data';
+    }
+  } catch (error) {
+    setFeedStatus('world-map-ultrasonic-state', 'ultrasonic', 'offline', `Unavailable · ${error.message}`);
+  } finally { readoutBusy.ultrasonic = false; }
 }
 
 async function refreshSensorSegmentation() {
@@ -3313,6 +3339,7 @@ setInterval(() => {
   void refreshLiveGps();
   void refreshLiveImu();
   void refreshLiveTof();
+  void refreshLiveUltrasonic();
 }, 500);
 setInterval(() => {
   if (sensorPageVisible() && activeSource === 'sensors') void refreshSensorSegmentation();
@@ -3328,6 +3355,7 @@ document.addEventListener('visibilitychange', () => {
     void refreshLiveGps();
     void refreshLiveImu();
     void refreshLiveTof();
+    void refreshLiveUltrasonic();
   }
 });
 if (latestWorld) buildSimulation(latestWorld);
