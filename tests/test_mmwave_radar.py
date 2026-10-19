@@ -33,13 +33,14 @@ class MmWaveRadarTest(unittest.TestCase):
         self.assertEqual(result["sample"]["sequence"], 12)
         self.assertEqual(result["sample"]["targets"][0]["position_m"], [0.2, 1.4, 0.0])
 
-    def test_body_radar_status_reuses_worldmodel_cached_frame(self):
+    def test_body_radar_status_reuses_only_a_fresh_worldmodel_frame(self):
         from types import SimpleNamespace
         from unittest.mock import patch
         from body_runtime_host.runtime import BodyHost
         from body_runtime_host.mmwave_radar import MmWaveFrame, MmWaveTarget
 
         class Radar:
+            last_ok = time.time()
             last_frame = MmWaveFrame(
                 timestamp=time.time(), sequence=13,
                 targets=[MmWaveTarget("1", [0.1, 1.3, 0.0])],
@@ -61,6 +62,39 @@ class MmWaveRadarTest(unittest.TestCase):
 
         self.assertTrue(result["available"])
         self.assertEqual(result["sample"]["sequence"], 13)
+
+    def test_body_radar_status_refreshes_a_stale_worldmodel_frame(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from body_runtime_host.runtime import BodyHost
+        from body_runtime_host.mmwave_radar import MmWaveFrame, MmWaveTarget
+
+        class Radar:
+            last_ok = time.time() - 9.2
+            last_frame = MmWaveFrame(
+                timestamp=time.time() - 9.2, sequence=13,
+                targets=[MmWaveTarget("1", [0.1, 1.3, 0.0])],
+            )
+            def read(self):
+                return MmWaveFrame(
+                    timestamp=time.time(), sequence=14,
+                    targets=[MmWaveTarget("1", [0.2, 1.4, 0.0])],
+                )
+            def status(self):
+                return {"available": True, "sequence": 14}
+
+        host = BodyHost.__new__(BodyHost)
+        host.config = {
+            "BODY_PLUGIN_MMWAVE_RADAR_ENABLED": True,
+            "MMWAVE_RADAR_PROTOCOL": "ventuno_bridge_ld2450",
+            "MMWAVE_RADAR_BAUDRATE": 256000,
+        }
+        host._worldmodel = SimpleNamespace(source=SimpleNamespace(radar=Radar()))
+        with patch.object(host, "serial_device_inventory", side_effect=AssertionError("status must not enumerate serial ports")):
+            result = host.mmwave_radar_status()
+
+        self.assertTrue(result["available"])
+        self.assertEqual(result["sample"]["sequence"], 14)
 
     def test_ld2450_frame_decodes_signed_metric_target(self):
         from body_runtime_host.mmwave_radar import parse_ld2450_frame

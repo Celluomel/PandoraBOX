@@ -10,6 +10,7 @@ from dataclasses import asdict, dataclass, field
 import json
 import math
 import struct
+import threading
 import time
 import urllib.request
 from typing import Any, Callable, Dict, Iterable, List, Optional
@@ -263,6 +264,7 @@ class VentunoBridgeMmWaveSource(MmWaveRadarSource):
         self.last_error = ""
         self.last_ok: Optional[float] = None
         self.last_frame: Optional[MmWaveFrame] = None
+        self._read_lock = threading.Lock()
 
     def _client(self):
         if self._bridge is None:
@@ -276,6 +278,10 @@ class VentunoBridgeMmWaveSource(MmWaveRadarSource):
         return self._bridge
 
     def read(self) -> MmWaveFrame:
+        with self._read_lock:
+            return self._read_locked()
+
+    def _read_locked(self) -> MmWaveFrame:
         try:
             bridge = self._client()
             request_started = time.time()
