@@ -75,6 +75,8 @@ class VentunoBridgeUltrasonicSource:
                 "sensor": str(payload.get("sensor") or "hc_sr04_array"),
                 "transport": "stm32_gpio_router_rpc",
                 "sequence": int(payload.get("sequence", 0) or 0),
+                "firmware_setup_stage": int(payload.get("setup_stage", 0) or 0),
+                "firmware_loop_sequence": int(payload.get("loop_sequence", 0) or 0),
                 "available": any(sensor["available"] for sensor in sensors),
                 "simulated": False,
                 "units": "m",

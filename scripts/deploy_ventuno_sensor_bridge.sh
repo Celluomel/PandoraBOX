@@ -9,6 +9,7 @@ app_id="user:pandorabox-body-sensors"
 tof_enabled="${BODY_ENABLE_TOF:-0}"
 imu_enabled="${BODY_ENABLE_IMU:-1}"
 ultrasonic_enabled="${BODY_ENABLE_ULTRASONIC:-1}"
+ultrasonic_channel_mask="${BODY_ULTRASONIC_CHANNEL_MASK:-7}"
 radar_baud="${BODY_RADAR_BAUD:-256000}"
 gps_baud="${BODY_GPS_BAUD:-38400}"
 
@@ -22,6 +23,10 @@ if [[ "${imu_enabled}" != "0" && "${imu_enabled}" != "1" ]]; then
 fi
 if [[ "${ultrasonic_enabled}" != "0" && "${ultrasonic_enabled}" != "1" ]]; then
   echo "BODY_ENABLE_ULTRASONIC must be 0 or 1." >&2
+  exit 2
+fi
+if ! [[ "${ultrasonic_channel_mask}" =~ ^[0-7]$ ]]; then
+  echo "BODY_ULTRASONIC_CHANNEL_MASK must be an integer from 0 to 7." >&2
   exit 2
 fi
 if ! [[ "${radar_baud}" =~ ^[0-9]+$ ]] || (( radar_baud < 1200 || radar_baud > 3000000 )); then
@@ -47,11 +52,11 @@ mkdir -p "${build_dir}"
 cp "${sketch_dir}/ventuno_sensor_bridge.ino" "${build_dir}/ventuno_sensor_bridge.ino"
 trap 'rm -rf "${build_root}"' EXIT
 libraries_dir="${HOME}/Arduino/libraries"
-echo "Compiling sensor bridge for ${fqbn} (BODY_ENABLE_IMU=${imu_enabled}, BODY_ENABLE_TOF=${tof_enabled}, BODY_ENABLE_ULTRASONIC=${ultrasonic_enabled}, BODY_RADAR_BAUD=${radar_baud}, BODY_GPS_BAUD=${gps_baud})..."
+echo "Compiling sensor bridge for ${fqbn} (BODY_ENABLE_IMU=${imu_enabled}, BODY_ENABLE_TOF=${tof_enabled}, BODY_ENABLE_ULTRASONIC=${ultrasonic_enabled}, BODY_ULTRASONIC_CHANNEL_MASK=${ultrasonic_channel_mask}, BODY_RADAR_BAUD=${radar_baud}, BODY_GPS_BAUD=${gps_baud})..."
 if ! arduino-cli compile --fqbn "${fqbn}" \
     --libraries "${libraries_dir}" \
     --output-dir "${compiled_dir}" \
-    --build-property "compiler.cpp.extra_flags=-DBODY_ENABLE_IMU=${imu_enabled} -DBODY_ENABLE_TOF=${tof_enabled} -DBODY_ENABLE_ULTRASONIC=${ultrasonic_enabled} -DBODY_RADAR_BAUD=${radar_baud} -DBODY_GPS_BAUD=${gps_baud}" \
+    --build-property "compiler.cpp.extra_flags=-DBODY_ENABLE_IMU=${imu_enabled} -DBODY_ENABLE_TOF=${tof_enabled} -DBODY_ENABLE_ULTRASONIC=${ultrasonic_enabled} -DBODY_ULTRASONIC_CHANNEL_MASK=${ultrasonic_channel_mask} -DBODY_RADAR_BAUD=${radar_baud} -DBODY_GPS_BAUD=${gps_baud}" \
     "${build_dir}"; then
   cat >&2 <<'EOF'
 Compile failed; the current STM32 firmware was not changed.

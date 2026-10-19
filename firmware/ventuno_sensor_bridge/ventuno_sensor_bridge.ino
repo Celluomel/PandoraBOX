@@ -16,6 +16,9 @@
 #ifndef BODY_ENABLE_ULTRASONIC
 #define BODY_ENABLE_ULTRASONIC 1
 #endif
+#ifndef BODY_ULTRASONIC_CHANNEL_MASK
+#define BODY_ULTRASONIC_CHANNEL_MASK 7
+#endif
 #ifndef BODY_RADAR_BAUD
 #define BODY_RADAR_BAUD 256000
 #endif
@@ -67,6 +70,9 @@ static const char *ultrasonicNames[ULTRASONIC_COUNT] = {
 static const uint32_t ULTRASONIC_TRIGGER_INTERVAL_US = 60000;
 static const uint32_t ULTRASONIC_ECHO_TIMEOUT_US = 30000;
 static const uint32_t ULTRASONIC_STALE_MS = 600;
+static const uint8_t ULTRASONIC_CHANNEL_MASK = BODY_ULTRASONIC_CHANNEL_MASK & 0x07;
+static_assert(BODY_ULTRASONIC_CHANNEL_MASK >= 0 && BODY_ULTRASONIC_CHANNEL_MASK <= 7,
+              "BODY_ULTRASONIC_CHANNEL_MASK must be from 0 to 7");
 struct UltrasonicChannel {
   uint32_t sampleAtMs = 0;
   uint32_t sequence = 0;
@@ -82,14 +88,26 @@ uint32_t ultrasonicPhaseAtUs = 0;
 uint32_t ultrasonicEchoRiseUs = 0;
 uint32_t ultrasonicNextTriggerUs = 0;
 uint32_t ultrasonicSequence = 0;
+uint8_t firmwareSetupStage = 0;
+uint32_t firmwareLoopSequence = 0;
+
+int nextEnabledUltrasonic(uint8_t start) {
+  for (uint8_t offset = 0; offset < ULTRASONIC_COUNT; ++offset) {
+    const uint8_t index = (start + offset) % ULTRASONIC_COUNT;
+    if (ULTRASONIC_CHANNEL_MASK & (1U << index)) return index;
+  }
+  return -1;
+}
 
 void updateUltrasonic() {
 #if BODY_ENABLE_ULTRASONIC
   const uint32_t nowUs = micros();
   if (ultrasonicPhase == ULTRASONIC_IDLE) {
     if (static_cast<int32_t>(nowUs - ultrasonicNextTriggerUs) < 0) return;
-    activeUltrasonic = nextUltrasonic;
-    nextUltrasonic = (nextUltrasonic + 1) % ULTRASONIC_COUNT;
+    const int selected = nextEnabledUltrasonic(nextUltrasonic);
+    if (selected < 0) return;
+    activeUltrasonic = static_cast<uint8_t>(selected);
+    nextUltrasonic = (activeUltrasonic + 1) % ULTRASONIC_COUNT;
     digitalWrite(ultrasonicTriggerPins[activeUltrasonic], HIGH);
     ultrasonicPhaseAtUs = nowUs;
     ultrasonicNextTriggerUs = nowUs + ULTRASONIC_TRIGGER_INTERVAL_US;
@@ -142,15 +160,20 @@ void updateUltrasonic() {
 
 String readUltrasonicSample() {
 #if !BODY_ENABLE_ULTRASONIC
-  return String("{\"available\":false,\"sensor\":\"hc_sr04_array\",\"error\":\"ultrasonic_disabled\"}");
+  const char *disabledError = "ultrasonic_disabled";
 #else
+  const char *disabledError = "channel_disabled";
+#endif
   const uint32_t now = millis();
   bool anyFresh = false;
   char channels[600];
   size_t used = 0;
   for (uint8_t i = 0; i < ULTRASONIC_COUNT; ++i) {
     const UltrasonicChannel &channel = ultrasonicChannels[i];
-    const bool fresh = channel.sampleAtMs && now - channel.sampleAtMs <= ULTRASONIC_STALE_MS;
+    const bool channelEnabled = BODY_ENABLE_ULTRASONIC
+        && (ULTRASONIC_CHANNEL_MASK & (1U << i));
+    const bool fresh = channelEnabled && channel.sampleAtMs
+        && now - channel.sampleAtMs <= ULTRASONIC_STALE_MS;
     anyFresh = anyFresh || fresh;
     const int written = snprintf(channels + used, sizeof(channels) - used,
         "%s{\"id\":\"%s\",\"trigger_pin\":\"D%u\",\"echo_pin\":\"D%u\","
@@ -160,7 +183,7 @@ String readUltrasonicSample() {
         fresh ? "true" : "false", fresh ? String(channel.distanceMm).c_str() : "null",
         static_cast<unsigned long>(channel.sampleAtMs),
         static_cast<unsigned long>(channel.sequence),
-        fresh ? "" : channel.error);
+        fresh ? "" : (channelEnabled ? channel.error : disabledError));
     if (written <= 0 || static_cast<size_t>(written) >= sizeof(channels) - used) {
       return String("{\"available\":false,\"sensor\":\"hc_sr04_array\",\"error\":\"payload_overflow\"}");
     }
@@ -169,9 +192,10 @@ String readUltrasonicSample() {
   String payload = String("{\"available\":") + (anyFresh ? "true" : "false")
       + ",\"sensor\":\"hc_sr04_array\",\"transport\":\"stm32_gpio\","
         "\"timestamp_ms\":" + String(now) + ",\"sequence\":"
-      + String(ultrasonicSequence) + ",\"sensors\":[" + channels + "]}";
+      + String(ultrasonicSequence) + ",\"setup_stage\":"
+      + String(firmwareSetupStage) + ",\"loop_sequence\":"
+      + String(firmwareLoopSequence) + ",\"sensors\":[" + channels + "]}";
   return payload;
-#endif
 }
 
 static const uint32_t GPS_BAUD = BODY_GPS_BAUD;
@@ -580,31 +604,44 @@ void setup() {
   Bridge.provide_safe("body_ultrasonic_read", readUltrasonicSample);
   Bridge.provide("body_ld2450_read", readLatestLd2450);
   Bridge.provide_safe("body_gps_read", readGpsSample);
+  firmwareSetupStage = 1;
 
 #if BODY_ENABLE_ULTRASONIC
   for (uint8_t i = 0; i < ULTRASONIC_COUNT; ++i) {
+    if (!(ULTRASONIC_CHANNEL_MASK & (1U << i))) continue;
+    firmwareSetupStage = static_cast<uint8_t>(10 + i * 3);
     pinMode(ultrasonicTriggerPins[i], OUTPUT);
+    ++firmwareSetupStage;
     digitalWrite(ultrasonicTriggerPins[i], LOW);
+    ++firmwareSetupStage;
     pinMode(ultrasonicEchoPins[i], INPUT);
+    ++firmwareSetupStage;
   }
   ultrasonicNextTriggerUs = micros();
 #endif
 
+  firmwareSetupStage = 30;
   Serial1.begin(GPS_BAUD);
+  firmwareSetupStage = 31;
 
   // The VENTUNO Q's Qwiic connector is on the MCU's Wire1 bus.
 #if BODY_ENABLE_IMU
+  firmwareSetupStage = 40;
   Modulino.begin(Wire1);
+  firmwareSetupStage = 41;
   movementReady = movement.begin();
   lastImuInitAttempt = millis();
+  firmwareSetupStage = 42;
 #endif
 #if BODY_ENABLE_TOF
+  firmwareSetupStage = 50;
   tofReady = tof.begin(0x29, &Wire1);
   if (tofReady) {
     tof.setTimingBudget(50);
     tofReady = tof.startRanging();
   }
   lastTofInitAttempt = millis();
+  firmwareSetupStage = 51;
 #endif
 
   const struct uart_config radarConfig = {
@@ -623,10 +660,11 @@ void setup() {
   if (!radarUartReady || radarUartConfigResult != 0) {
     strncpy(latestJson, "{\"available\":false,\"targets\":[],\"error\":\"uart7_unavailable\"}", sizeof(latestJson));
   }
-
+  firmwareSetupStage = 60;
 }
 
 void loop() {
+  ++firmwareLoopSequence;
   while (Serial1.available() > 0) consumeGpsByte(static_cast<uint8_t>(Serial1.read()));
   updateUltrasonic();
 #if BODY_ENABLE_IMU

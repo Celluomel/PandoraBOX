@@ -53,6 +53,20 @@ class UltrasonicTests(unittest.TestCase):
         self.assertEqual([item["distance_mm"] for item in sample["sensors"]], [480, 920, 1350])
         self.assertEqual([item["distance_m"] for item in sample["sensors"]], [0.48, 0.92, 1.35])
 
+    def test_exposes_firmware_startup_and_loop_diagnostics(self):
+        raw = payload([
+            channel("front_left", "D2", "D3", None, False, "no_echo"),
+            channel("front_right", "D4", "D5", None, False, "no_echo"),
+            channel("rear", "D6", "D9", None, False, "no_echo"),
+        ])
+        raw.update({"setup_stage": 60, "loop_sequence": 1234})
+        sample = VentunoBridgeUltrasonicSource(
+            bridge_factory=lambda: FakeBridge(raw)
+        ).read()
+
+        self.assertEqual(sample["firmware_setup_stage"], 60)
+        self.assertEqual(sample["firmware_loop_sequence"], 1234)
+
     def test_no_echo_remains_unavailable_without_fabricating_zero(self):
         bridge = FakeBridge(payload([
             channel("front_left", "D2", "D3", None, False, "no_echo"),
@@ -78,6 +92,8 @@ class UltrasonicTests(unittest.TestCase):
         self.assertIn("{D2, D4, D6}", sketch)
         self.assertIn("{D3, D5, D9}", sketch)
         self.assertIn("updateUltrasonic();", sketch)
+        self.assertIn("firmwareLoopSequence", sketch)
+        self.assertIn("BODY_ULTRASONIC_CHANNEL_MASK", sketch)
         self.assertNotIn("pulseIn(", sketch)
         for existing_rpc in ("body_imu_read", "body_tof_read", "body_ld2450_read", "body_gps_read"):
             self.assertIn(existing_rpc, sketch)
