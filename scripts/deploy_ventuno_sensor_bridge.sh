@@ -42,7 +42,7 @@ bash "${repo_root}/scripts/configure_ventuno_uart7.sh"
 arduino-cli lib install "Arduino_Modulino@0.9.1" "Adafruit VL53L1X" "Adafruit BusIO"
 build_root="$(mktemp -d)"
 build_dir="${build_root}/ventuno_sensor_bridge"
-compiled_dir="${build_dir}/compiled"
+compiled_dir="${build_root}/compiled"
 mkdir -p "${build_dir}"
 cp "${sketch_dir}/ventuno_sensor_bridge.ino" "${build_dir}/ventuno_sensor_bridge.ino"
 trap 'rm -rf "${build_root}"' EXIT
