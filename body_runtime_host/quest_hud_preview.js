@@ -10,6 +10,8 @@ let lastValidImuAt = 0;
 let liveTof = null;
 let liveRadar = null;
 let liveGps = null;
+let liveUltrasonic = null;
+let ultrasonicStatusReceived = false;
 let cameraFrameId = null;
 let cameraBusy = false;
 let cameraDisplayKey = null;
@@ -222,19 +224,21 @@ function drawMap(canvas, mode) {
       ctx.beginPath(); ctx.arc(x, y, 5.5 * scaleFactor, 0, 2 * Math.PI); ctx.fill(); ctx.stroke();
       ctx.fillStyle = color; ctx.font = `600 ${Math.round(8 * scaleFactor)}px ui-monospace,monospace`; ctx.textAlign = 'center';
       ctx.fillText(isMoving ? 'M' : '•', x, y - 8 * scaleFactor);
-      if (Number.isFinite(radialSpeed)) {
-        const speedLabel = `${radialSpeed >= 0 ? '+' : ''}${radialSpeed.toFixed(2)} m/s`;
+      {
+        const rangeLabel = `${local.distance.toFixed(2)} m`;
+        const speedLabel = Number.isFinite(radialSpeed) ? `${radialSpeed >= 0 ? '+' : ''}${radialSpeed.toFixed(2)} m/s` : '';
         const speedFont = Math.max(14 * ratio, Math.round(15 * scaleFactor));
         const labelPadding = 4 * ratio;
-        const labelWidth = speedFont * 6.4 + labelPadding * 2;
-        const labelHeight = speedFont + labelPadding * 2;
+        const labelWidth = speedFont * Math.max(rangeLabel.length, speedLabel.length) * .62 + labelPadding * 2;
+        const labelHeight = speedFont * (speedLabel ? 2 : 1) + labelPadding * 2;
         const labelGap = 10 * ratio;
         ctx.font = `600 ${speedFont}px ui-monospace,monospace`; ctx.textAlign = 'left';
         const preferredX = x > cx ? x - labelGap - labelWidth : x + labelGap;
         const labelX = Math.max(left, Math.min(right - labelWidth, preferredX));
         const labelY = Math.max(top + labelHeight, Math.min(bottom - labelPadding, y + speedFont * .35));
-        ctx.fillStyle = 'rgba(4, 13, 11, .92)'; ctx.fillRect(labelX - labelPadding, labelY - speedFont - labelPadding, labelWidth, labelHeight);
-        ctx.fillStyle = color; ctx.fillText(speedLabel, labelX, labelY);
+        ctx.fillStyle = 'rgba(4, 13, 11, .92)'; ctx.fillRect(labelX - labelPadding, labelY - labelHeight, labelWidth, labelHeight);
+        ctx.fillStyle = color; ctx.fillText(rangeLabel, labelX, labelY - (speedLabel ? speedFont : 0));
+        if (speedLabel) ctx.fillText(speedLabel, labelX, labelY);
       }
     }
   }
@@ -267,7 +271,9 @@ function drawTofRangeBar(sample = liveTof || world?.perception?.modalities?.tof 
 }
 
 function drawUltrasonicRanges(modalities = world?.perception?.modalities || {}) {
-  const group = modalities.ultrasonic || modalities.hc_sr04 || {};
+  const group = ultrasonicStatusReceived
+    ? (liveUltrasonic?.sample || {})
+    : (modalities.ultrasonic || modalities.hc_sr04 || {});
   const samples = Array.isArray(group) ? group : Array.isArray(group.sensors) ? group.sensors : [];
   const keys = ['front_left', 'front_right', 'rear'];
   for (const card of document.querySelectorAll('[data-ultrasonic]')) {
@@ -619,6 +625,23 @@ async function pollTof() {
   }
 }
 
+let ultrasonicBusy = false;
+async function pollUltrasonic() {
+  if (ultrasonicBusy) return;
+  ultrasonicBusy = true;
+  try {
+    const response = await fetch('/plugins/ultrasonic/status', { cache: 'no-store', credentials: 'same-origin' });
+    if (!response.ok) throw new Error(`Ultrasonic status HTTP ${response.status}`);
+    liveUltrasonic = await response.json();
+  } catch (error) {
+    liveUltrasonic = { available: false, sample: null, error: error.message };
+  } finally {
+    ultrasonicStatusReceived = true;
+    drawUltrasonicRanges();
+    ultrasonicBusy = false;
+  }
+}
+
 let radarBusy = false;
 async function pollRadar() {
   if (radarBusy) return;
@@ -650,5 +673,5 @@ async function pollRadar() {
 
 initRobotVisual();
 window.addEventListener('resize', updateStatus);
-void poll(); void pollCamera(); void pollImu(); void pollTof(); void pollRadar(); void pollGps();
-setInterval(poll, 800); setInterval(pollCamera, 150); setInterval(pollImu, 1000); setInterval(pollTof, 1000); setInterval(pollRadar, 500); setInterval(pollGps, 1500);
+void poll(); void pollCamera(); void pollImu(); void pollTof(); void pollRadar(); void pollGps(); void pollUltrasonic();
+setInterval(poll, 800); setInterval(pollCamera, 150); setInterval(pollImu, 1000); setInterval(pollTof, 1000); setInterval(pollRadar, 500); setInterval(pollGps, 1500); setInterval(pollUltrasonic, 500);

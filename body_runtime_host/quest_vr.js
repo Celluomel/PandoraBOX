@@ -156,6 +156,7 @@ let activeSceneMode = 'simulation';
 let sensorDepthPollInFlight = false;
 let sensorYoloPollInFlight = false;
 let sensorRadarPollInFlight = false;
+let ultrasonicPollInFlight = false;
 let sensorFrameId = '';
 let sensorDepthValues = null;
 let latestSensorYolo = {};
@@ -642,6 +643,20 @@ async function pollSensorRadar() {
     console.warn('Could not refresh VR mmWave targets:', error);
   } finally {
     sensorRadarPollInFlight = false;
+  }
+}
+
+async function pollUltrasonicStatus() {
+  if (ultrasonicPollInFlight || activeSceneMode !== 'sensors') return;
+  ultrasonicPollInFlight = true;
+  try {
+    const response = await fetch('/plugins/ultrasonic/status', { cache: 'no-store', credentials: 'same-origin' });
+    if (!response.ok) throw new Error('Ultrasonic endpoint unavailable');
+    vrDashboard.updateUltrasonicStatus(await response.json());
+  } catch (error) {
+    vrDashboard.updateUltrasonicStatus({ available: false, sample: null, error: error.message });
+  } finally {
+    ultrasonicPollInFlight = false;
   }
 }
 
@@ -1409,6 +1424,7 @@ setInterval(pollBody, 1200);
 setInterval(pollSensorScene, 120);
 setInterval(() => { if (activeSceneMode === 'sensors') void pollSensorYolo(); }, 220);
 setInterval(() => { if (activeSceneMode === 'sensors') void pollSensorRadar(); }, 800);
+setInterval(() => { if (activeSceneMode === 'sensors') void pollUltrasonicStatus(); }, 500);
 void pollBody();
 let previousFrameAt = 0;
 renderer.setAnimationLoop(time => {

@@ -38,6 +38,7 @@ export class QuestVRDashboard {
     this.telemetry = null;
     this.imuStatus = null;
     this.gpsStatus = null;
+    this.ultrasonicStatus = null;
     this.sensorStatus = { camera: 'WAITING', yolo: 'WAITING', midas: 'WAITING' };
     this.controller = null;
     this.following = false;
@@ -153,6 +154,11 @@ export class QuestVRDashboard {
     this.sensorStatus.gps = this.gpsStatus?.available
       ? `${sample.fix === true || Number(sample.fix_quality) > 0 ? 'FIX' : 'NO FIX'} · ${Number.isFinite(inView) ? `${inView} SV` : 'GSV —'}`
       : 'OFFLINE';
+    this.drawDashboard();
+  }
+
+  updateUltrasonicStatus(status) {
+    this.ultrasonicStatus = status || null;
     this.drawDashboard();
   }
 
@@ -616,7 +622,11 @@ export class QuestVRDashboard {
     ctx.beginPath(); ctx.roundRect(x + inset, tofY, mapWidth, tofHeight, 18); ctx.stroke();
     this.drawMetricMap(ctx, x + inset, mapY, mapWidth, mapHeight, lidar, radar, perception, 'LiDAR', 'lidar');
     this.drawMetricMap(ctx, x + inset, mapY + mapHeight + gap, mapWidth, mapHeight, lidar, radar, perception, 'mmWave', 'radar');
-    this.drawRangeSensorStrip(ctx, x + inset + 12, tofY + 12, mapWidth - 24, tofHeight - 24, tof, perception.modalities || {});
+    const modalities = { ...(perception.modalities || {}) };
+    if (this.sceneMode === 'sensors' && this.ultrasonicStatus) {
+      modalities.ultrasonic = this.ultrasonicStatus.sample || {};
+    }
+    this.drawRangeSensorStrip(ctx, x + inset + 12, tofY + 12, mapWidth - 24, tofHeight - 24, tof, modalities);
   }
 
   drawSensorStatusStrip(ctx, x, y, width, live) {
@@ -837,19 +847,21 @@ export class QuestVRDashboard {
         ctx.strokeStyle = '#fff3cf'; ctx.lineWidth = 2; ctx.stroke();
         ctx.fillStyle = '#f8e8b8'; ctx.font = '600 15px ui-monospace, monospace'; ctx.textAlign = 'center';
         ctx.fillText(isMoving ? 'M' : '•', mapped.x, mapped.y - 12);
-        if (Number.isFinite(radialSpeed)) {
-          const speedLabel = `${radialSpeed >= 0 ? '+' : ''}${radialSpeed.toFixed(2)} m/s`;
+        {
+          const rangeLabel = `${local.distance.toFixed(2)} m`;
+          const speedLabel = Number.isFinite(radialSpeed) ? `${radialSpeed >= 0 ? '+' : ''}${radialSpeed.toFixed(2)} m/s` : '';
           const speedFont = 14;
           const labelPadding = 4;
-          const labelWidth = speedFont * 6.4 + labelPadding * 2;
-          const labelHeight = speedFont + labelPadding * 2;
+          const labelWidth = speedFont * Math.max(rangeLabel.length, speedLabel.length) * .62 + labelPadding * 2;
+          const labelHeight = speedFont * (speedLabel ? 2 : 1) + labelPadding * 2;
           const labelGap = 10;
           ctx.font = `600 ${speedFont}px ui-monospace, monospace`; ctx.textAlign = 'left';
           const preferredX = mapped.x > cx ? mapped.x - labelGap - labelWidth : mapped.x + labelGap;
           const labelX = Math.max(plotLeft, Math.min(plotRight - labelWidth, preferredX));
           const labelY = Math.max(plotTop + labelHeight, Math.min(plotBottom - labelPadding, mapped.y + speedFont * .35));
-          ctx.fillStyle = 'rgba(4, 13, 11, .92)'; ctx.fillRect(labelX - labelPadding, labelY - speedFont - labelPadding, labelWidth, labelHeight);
-          ctx.fillStyle = color; ctx.fillText(speedLabel, labelX, labelY);
+          ctx.fillStyle = 'rgba(4, 13, 11, .92)'; ctx.fillRect(labelX - labelPadding, labelY - labelHeight, labelWidth, labelHeight);
+          ctx.fillStyle = color; ctx.fillText(rangeLabel, labelX, labelY - (speedLabel ? speedFont : 0));
+          if (speedLabel) ctx.fillText(speedLabel, labelX, labelY);
         }
       }
       ctx.fillStyle = '#83a99a'; ctx.font = '15px ui-monospace, monospace'; ctx.textAlign = 'left';

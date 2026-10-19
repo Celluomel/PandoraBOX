@@ -36,6 +36,9 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertIn("/body/camera/image", source)
         self.assertIn("function pollSensorDepth()", source)
         self.assertIn("function pollSensorRadar()", source)
+        self.assertIn("function pollUltrasonicStatus()", source)
+        self.assertIn("setInterval(() => { if (activeSceneMode === 'sensors') void pollUltrasonicStatus(); }, 500)", source)
+        self.assertIn("updateUltrasonicStatus(await response.json())", source)
         self.assertNotIn("pollSensorSegmentation", source)
         self.assertNotIn("/body/camera/segmentation", source)
         self.assertNotIn("drawCameraYoloOverlay", (root / "body_runtime_host" / "quest_vr_dashboard.js").read_text(encoding="utf-8"))
@@ -316,14 +319,30 @@ class QuestDashboardTests(unittest.TestCase):
         draw_map = preview.split("function drawMap(canvas, mode) {", 1)[1].split("function drawTofRangeBar", 1)[0]
         self.assertLess(draw_map.index("const lateralLimit ="), draw_map.index("if (lidarMode) {"))
         self.assertIn("target.radial_speed_mps", preview)
+        self.assertIn("const rangeLabel = `${local.distance.toFixed(2)} m`", preview)
         self.assertIn("const speedFont = Math.max(14 * ratio", preview)
         self.assertIn("const labelPadding = 4 * ratio", preview)
         self.assertIn("const preferredX = x > cx ? x - labelGap - labelWidth : x + labelGap", preview)
         self.assertIn("/moving|mobile/.test(classification)", preview)
         self.assertIn("const color = isMoving ? '#ed91c5' : '#efcb76'", preview)
         self.assertIn("target.radial_speed_mps", quest)
+        self.assertIn("const rangeLabel = `${local.distance.toFixed(2)} m`", quest)
         self.assertIn("const preferredX = mapped.x > cx ? mapped.x - labelGap - labelWidth : mapped.x + labelGap", quest)
         self.assertIn("const color = isMoving ? '#ef91c5' : '#f2ce73'", quest)
+
+    def test_hc_sr04_huds_read_fresh_stm32_status_not_only_worldmodel_snapshot(self):
+        root = Path(__file__).resolve().parents[1]
+        preview = (root / "body_runtime_host" / "quest_hud_preview.js").read_text(encoding="utf-8")
+        quest = (root / "body_runtime_host" / "quest_vr.js").read_text(encoding="utf-8")
+        dashboard = (root / "body_runtime_host" / "quest_vr_dashboard.js").read_text(encoding="utf-8")
+
+        self.assertIn("fetch('/plugins/ultrasonic/status'", preview)
+        self.assertIn("setInterval(pollUltrasonic, 500)", preview)
+        self.assertIn("ultrasonicStatusReceived", preview)
+        self.assertIn("fetch('/plugins/ultrasonic/status'", quest)
+        self.assertIn("setInterval(() => { if (activeSceneMode === 'sensors') void pollUltrasonicStatus(); }, 500)", quest)
+        self.assertIn("updateUltrasonicStatus(status)", dashboard)
+        self.assertIn("modalities.ultrasonic = this.ultrasonicStatus.sample || {}", dashboard)
 
     def test_vr_horizon_column_clears_robot_and_uses_sharp_canvas_filtering(self):
         root = Path(__file__).resolve().parents[1]
