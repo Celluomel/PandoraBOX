@@ -2477,7 +2477,7 @@ async function refreshLiveImu() {
   if (activeSource !== 'sensors' || readoutBusy.imu) return;
   readoutBusy.imu = true;
   try {
-    const status = await sensorJson('/plugins/imu/status');
+    const status = await sensorJson('/plugins/imu/status?history=0');
     const sample = status.sample || {};
     if (Array.isArray(status.history)) imuHistory = status.history.slice(-256);
     else if (sample.sequence != null && !imuHistory.some(item => item.sequence === sample.sequence)) {
@@ -3335,12 +3335,17 @@ setInterval(() => {
 }, 250);
 setInterval(() => { if (sensorPageVisible()) void refreshSystemMetrics(); }, 1500);
 setInterval(() => {
-  if (!sensorPageVisible() || activeSource !== 'sensors') return;
-  void refreshLiveGps();
-  void refreshLiveImu();
-  void refreshLiveTof();
-  void refreshLiveUltrasonic();
-}, 500);
+  if (sensorPageVisible() && activeSource === 'sensors') void refreshLiveImu();
+}, 150);
+setTimeout(() => setInterval(() => {
+  if (sensorPageVisible() && activeSource === 'sensors') void refreshLiveUltrasonic();
+}, 300), 75);
+setTimeout(() => setInterval(() => {
+  if (sensorPageVisible() && activeSource === 'sensors') void refreshLiveGps();
+}, 1000), 100);
+setTimeout(() => setInterval(() => {
+  if (sensorPageVisible() && activeSource === 'sensors') void refreshLiveTof();
+}, 1000), 250);
 setInterval(() => {
   if (sensorPageVisible() && activeSource === 'sensors') void refreshSensorSegmentation();
 }, 1000);

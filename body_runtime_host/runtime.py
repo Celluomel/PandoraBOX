@@ -2191,7 +2191,7 @@ class BodyHost:
             "host": {"hostname": platform.node(), "os": platform.system()},
         }
 
-    def imu_status(self) -> dict:
+    def imu_status(self, include_history: bool = True) -> dict:
         settings = self.imu_settings()
         if not settings["enabled"]:
             return {**settings, "available": False, "error": "Modulino IMU is disabled in Body settings"}
@@ -2200,11 +2200,16 @@ class BodyHost:
         try:
             sample = self._get_imu_bridge_source().read()
             source_status = self._get_imu_bridge_source().status()
-            return {**settings, "available": True, "sample": sample,
-                    "history": source_status.get("history", [])}
+            result = {**settings, "available": True, "sample": sample}
+            if include_history:
+                result["history"] = source_status.get("history", [])
+            return result
         except Exception as exc:
+            source_status = self._get_imu_bridge_source().status()
+            if not include_history:
+                source_status.pop("history", None)
             return {**settings, "available": False, "error": str(exc)[:240],
-                    "source_status": self._get_imu_bridge_source().status()}
+                    "source_status": source_status}
 
     def tof_status(self) -> dict:
         bridge_available = os.path.exists("/run/arduino-router.sock")
@@ -3992,7 +3997,8 @@ class BodyHost:
                 elif path == "/plugins/imu/settings":
                     self._send(owner.imu_settings())
                 elif path == "/plugins/imu/status":
-                    self._send(owner.imu_status())
+                    include_history = parse_qs(urlparse(self.path).query).get("history", ["1"])[0] != "0"
+                    self._send(owner.imu_status(include_history=include_history))
                 elif path == "/plugins/gps/status":
                     self._send(owner.gps_status())
                 elif path == "/plugins/tof/status":
