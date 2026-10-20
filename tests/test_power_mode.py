@@ -93,6 +93,23 @@ class PowerModeManagerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "between 0 and 100"):
             host.set_power_energy_level(101)
 
+    def test_energy_sampler_integrates_full_elapsed_interval_using_mean_power(self):
+        host = object.__new__(BodyHost)
+        host._system_metrics_lock = threading.Lock()
+        host._system_energy_wh = 0.0
+        host._system_energy_since_full_wh = 0.0
+        host._system_energy_updated_at = None
+        host._system_energy_last_watts = None
+        host._system_energy_last_persisted_at = time.monotonic()
+        host.config = {}
+        host.save_config = lambda: None
+
+        host._record_power_sample(10.0, now=100.0)
+        host._record_power_sample(20.0, now=130.0)
+
+        self.assertAlmostEqual(host._system_energy_wh, 30.0 * 15.0 / 3600.0)
+        self.assertAlmostEqual(host._system_energy_since_full_wh, host._system_energy_wh)
+
 
 if __name__ == "__main__":
     unittest.main()

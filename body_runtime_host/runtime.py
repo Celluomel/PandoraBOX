@@ -173,6 +173,7 @@ class BodyHost:
         self._system_energy_since_full_wh = max(0.0, float(self.value("BODY_POWER_CONSUMED_WH", 0.0) or 0.0))
         self._system_energy_last_persisted_at = time.monotonic()
         self._system_energy_updated_at: float | None = None
+        self._system_energy_last_watts: float | None = None
         self._robot_last_ok: float | None = None
         self._robot_last_error = ""
         self._fnk_usb_last_publish = 0.0
@@ -465,7 +466,7 @@ class BodyHost:
                         "consumed_wh": round(float(energy_wh), 3),
                         "remaining_wh_est": round(remaining_wh, 3),
                         "level_percent_est": round(remaining_wh / usable_wh * 100.0, 1),
-                        "source": "INA232 input-rail integration; estimate only"}
+                        "source": "continuous INA232 input-rail integration; estimate only"}
         return self._power_mode.status(intervals, power.get("watts"), estimate)
 
     def set_power_mode(self, payload: dict) -> dict:
@@ -494,6 +495,53 @@ class BodyHost:
         self.config["BODY_POWER_BATTERY_CAPACITY_WH"] = capacity_wh
         self.save_config()
         return {"ok": True, **self.power_mode_status()}
+
+    @staticmethod
+    def _read_ina232_sample() -> dict | None:
+        for name_path in Path("/sys/class/hwmon").glob("hwmon*/name"):
+            try:
+                if name_path.read_text(encoding="ascii").strip().lower() != "ina232":
+                    continue
+                directory = name_path.parent
+                return {
+                    "watts": int((directory / "power1_input").read_text().strip()) / 1_000_000,
+                    "voltage_v": int((directory / "in1_input").read_text().strip()) / 1_000,
+                    "current_a": int((directory / "curr1_input").read_text().strip()) / 1_000,
+                }
+            except (OSError, ValueError):
+                continue
+        return None
+
+    def _record_power_sample(self, watts: float, now: float | None = None) -> None:
+        now = time.monotonic() if now is None else float(now)
+        with self._system_metrics_lock:
+            previous_at = self._system_energy_updated_at
+            previous_watts = self._system_energy_last_watts
+            if previous_at is not None and previous_watts is not None:
+                elapsed = max(0.0, now - previous_at)
+                delta_wh = ((previous_watts + float(watts)) / 2.0) * elapsed / 3600.0
+                self._system_energy_wh += delta_wh
+                self._system_energy_since_full_wh += delta_wh
+            self._system_energy_updated_at = now
+            self._system_energy_last_watts = float(watts)
+            since_full_wh = self._system_energy_since_full_wh
+            persist_energy = time.monotonic() - self._system_energy_last_persisted_at >= 15.0
+            if persist_energy:
+                self._system_energy_last_persisted_at = time.monotonic()
+        if persist_energy:
+            self.config["BODY_POWER_CONSUMED_WH"] = round(since_full_wh, 4)
+            try:
+                self.save_config()
+            except OSError:
+                LOG.exception("Could not persist Ventuno energy estimate")
+
+    def power_energy_loop(self) -> None:
+        while not self.stop_event.is_set():
+            sample = self._read_ina232_sample()
+            if sample is not None:
+                self._record_power_sample(sample["watts"])
+                self._power_mode.record_watts(sample["watts"], time.time())
+            self.stop_event.wait(1.0)
 
     def brain_bridge_settings(self) -> dict:
         return {
@@ -2522,44 +2570,20 @@ class BodyHost:
         except (OSError, ValueError):
             pass
 
-        power = {"available": False, "watts": None, "voltage_v": None, "current_a": None,
-                 "energy_wh_session": None, "source": "No readable onboard power monitor"}
-        for name_path in Path("/sys/class/hwmon").glob("hwmon*/name"):
-            try:
-                if name_path.read_text(encoding="ascii").strip().lower() != "ina232":
-                    continue
-                directory = name_path.parent
-                watts = int((directory / "power1_input").read_text().strip()) / 1_000_000
-                voltage_v = int((directory / "in1_input").read_text().strip()) / 1_000
-                current_a = int((directory / "curr1_input").read_text().strip()) / 1_000
-                with self._system_metrics_lock:
-                    delta_wh = 0.0
-                    if self._system_energy_updated_at is not None:
-                        elapsed = min(5.0, max(0.0, now - self._system_energy_updated_at))
-                        delta_wh = watts * elapsed / 3600.0
-                        self._system_energy_wh += delta_wh
-                        self._system_energy_since_full_wh += delta_wh
-                    self._system_energy_updated_at = now
-                    energy_wh = self._system_energy_wh
-                    since_full_wh = self._system_energy_since_full_wh
-                    persist_energy = time.monotonic() - self._system_energy_last_persisted_at >= 60.0
-                    if persist_energy:
-                        self._system_energy_last_persisted_at = time.monotonic()
-                if persist_energy:
-                    self.config["BODY_POWER_CONSUMED_WH"] = round(since_full_wh, 4)
-                    try:
-                        self.save_config()
-                    except OSError:
-                        LOG.exception("Could not persist Ventuno energy estimate")
-                power = {"available": True, "watts": round(watts, 2),
-                         "voltage_v": round(voltage_v, 2), "current_a": round(current_a, 3),
-                         "energy_wh_session": round(energy_wh, 4),
-                         "energy_wh_since_full": round(since_full_wh, 4),
-                         "source": "INA232 onboard input rail; excludes loads outside the monitored rail"}
-                self._power_mode.record_watts(watts, time.time())
-                break
-            except (OSError, ValueError):
-                continue
+        sample = self._read_ina232_sample()
+        if sample is None:
+            power = {"available": False, "watts": None, "voltage_v": None, "current_a": None,
+                     "energy_wh_session": None,
+                     "source": "No readable onboard power monitor; energy sampling runs in the Body service"}
+        else:
+            with self._system_metrics_lock:
+                energy_wh = self._system_energy_wh
+                since_full_wh = self._system_energy_since_full_wh
+            power = {"available": True, **{key: round(value, 3 if key == "current_a" else 2)
+                                           for key, value in sample.items()},
+                     "energy_wh_session": round(energy_wh, 4),
+                     "energy_wh_since_full": round(since_full_wh, 4),
+                     "source": "INA232 onboard input rail; excludes loads outside the monitored rail"}
 
         cpu_temperature = gpu_temperature = None
         for name_path in Path("/sys/class/hwmon").glob("hwmon*/name"):
@@ -3938,7 +3962,10 @@ class BodyHost:
                 LOG.info("ROS 2 observation bridge enabled (%s -> %s)", ros_status.get("input_topic"), ros_status.get("publish_topic"))
             else:
                 LOG.warning("ROS 2 bridge enabled but unavailable: %s", ros_status.get("last_error"))
-        threads = [threading.Thread(target=self.poll_loop, name="body-sensors", daemon=True)]
+        threads = [
+            threading.Thread(target=self.poll_loop, name="body-sensors", daemon=True),
+            threading.Thread(target=self.power_energy_loop, name="body-power-energy", daemon=True),
+        ]
         # Keep the bridge loop alive even when disabled so the UI can enable it
         # without requiring a second process restart.
         threads.append(threading.Thread(target=self.bridge_loop, name="body-brain-bridge", daemon=True))
