@@ -143,9 +143,9 @@ class SemanticSegmentationService:
         return result
 
     def _run(self) -> None:
-        cadence = max(0.2, min(30.0, float(self._value("INTERVAL_S", 1.0) or 1.0)))
         try:
             while not self._stop.is_set():
+                cadence = max(0.2, min(30.0, float(self._value("INTERVAL_S", 1.0) or 1.0)))
                 if time.monotonic() < self._retry_at:
                     self._stop.wait(min(cadence, self._retry_at - time.monotonic()))
                     continue
@@ -176,6 +176,7 @@ class SemanticSegmentationService:
                                 error=str(exc)[:240], frame_id=frame_id,
                                 latency_ms=round((time.monotonic() - started) * 1000.0, 1),
                             )
+                cadence = max(0.2, min(30.0, float(self._value("INTERVAL_S", cadence) or cadence)))
                 self._stop.wait(max(0.0, cadence - (time.monotonic() - cycle_started)))
         finally:
             process, self._process = self._process, None

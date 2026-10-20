@@ -170,6 +170,8 @@ class BodyHost:
         self._system_cpu_previous: tuple[int, int] | None = None
         self._system_gpu_previous: tuple[int, int] | None = None
         self._system_energy_wh = 0.0
+        self._system_energy_since_full_wh = max(0.0, float(self.value("BODY_POWER_CONSUMED_WH", 0.0) or 0.0))
+        self._system_energy_last_persisted_at = time.monotonic()
         self._system_energy_updated_at: float | None = None
         self._robot_last_ok: float | None = None
         self._robot_last_error = ""
@@ -200,6 +202,12 @@ class BodyHost:
         self._yolox_service = YoloXService(self.value, self._camera_provider, self._queue_yolo_vlm_fallback)
         self._midas_service = MiDaSDepthService(self.value, self._camera_provider)
         self._segmentation_service = SemanticSegmentationService(self.value, self._camera_provider)
+        from body_runtime_host.power_mode import PowerModeManager
+        self._power_mode_base: dict | None = None
+        self._power_mode_overrides: dict[str, Any] = {}
+        self._power_mode = PowerModeManager(self._apply_power_mode)
+        self._power_motion_since: float | None = None
+        self._power_motion_last_sequence = None
         self._visual_odometry = VisualOdometry()
         self._yolo_fallback_lock = threading.Lock()
         self._body_vlm_test_lock = threading.Lock()
@@ -334,6 +342,8 @@ class BodyHost:
             return {}
 
     def value(self, key: str, fallback=None):
+        if key in getattr(self, "_power_mode_overrides", {}):
+            return self._power_mode_overrides[key]
         value = self.config.get(key, fallback)
         if isinstance(value, str) and value.startswith("@env:"):
             return os.environ.get(value[5:], "")
@@ -358,6 +368,121 @@ class BodyHost:
             if safe.get(key) and not str(safe[key]).startswith("@env:"):
                 safe[key] = f"@env:{key}"
         CONFIG_PATH.write_text(json.dumps(safe, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    def _apply_power_mode(self, old_mode: str, new_mode: str) -> dict:
+        """Apply scheduling policy to Body vision only; never touch hardware safety paths."""
+        if new_mode != "DEV" and self._power_mode_base is None:
+            with self._local_camera_lock:
+                camera_running = bool(self._local_camera and self._local_camera.status().get("status") in {"capturing", "starting"})
+            keys = ("BODY_YOLO_INTERVAL_S", "BODY_MIDAS_INTERVAL_S", "BODY_SEGMENTATION_INTERVAL_S", "BODY_CAMERA_INTERVAL",
+                    "BODY_YOLO_ENABLED", "BODY_MIDAS_ENABLED", "BODY_SEGMENTATION_ENABLED")
+            self._power_mode_base = {"config": {key: self.config.get(key) for key in keys},
+                                     "present": {key: key in self.config for key in keys},
+                                     "effective": {key: self.value(key, self._power_config_default(key)) for key in keys},
+                                     "camera_running": camera_running}
+
+        base = self._power_mode_base
+        if new_mode == "DEV":
+            camera_should_run = base["camera_running"] if base else False
+            self._power_mode_overrides = {}
+            self._power_mode_base = None
+            self._power_motion_since = None
+            if camera_should_run:
+                self._configure_local_camera(start=True)
+            elif self._local_camera is not None:
+                self._configure_local_camera(start=False)
+            for service in (self._yolox_service, self._midas_service, self._segmentation_service):
+                service.start()
+            LOG.info("Power mode transition: %s -> DEV", old_mode)
+            self._append_power_mode_trace(old_mode, "DEV")
+            return {"ok": True}
+
+        assert base is not None
+        original_values = base["effective"]
+        enabled_overrides = {key: original_values[key] for key in
+                             ("BODY_YOLO_ENABLED", "BODY_MIDAS_ENABLED", "BODY_SEGMENTATION_ENABLED")}
+        if new_mode == "ATTENTIVE":
+            intervals = {
+                "BODY_YOLO_INTERVAL_S": float(self.value("BODY_POWER_ATTENTIVE_YOLO_S", 1.0)),
+                "BODY_MIDAS_INTERVAL_S": float(self.value("BODY_POWER_ATTENTIVE_MIDAS_S", 2.0)),
+                "BODY_SEGMENTATION_INTERVAL_S": float(self.value("BODY_POWER_ATTENTIVE_SEGMENTATION_S", 5.0)),
+                "BODY_CAMERA_INTERVAL": max(1.0 / 60.0, float(self.value("BODY_POWER_ATTENTIVE_CAMERA_INTERVAL_S", 0.5))),
+            }
+            self._power_mode_overrides = {**enabled_overrides, **intervals}
+            if base["camera_running"]:
+                self._configure_local_camera(start=True)
+            for service in (self._yolox_service, self._midas_service, self._segmentation_service):
+                service.start()
+        else:
+            intervals = {
+                "BODY_YOLO_INTERVAL_S": max(0.15, float(self.value("BODY_POWER_IDLE_YOLO_S", 5.0))),
+                "BODY_MIDAS_INTERVAL_S": max(0.15, float(self.value("BODY_POWER_IDLE_MIDAS_S", 30.0))),
+                "BODY_SEGMENTATION_INTERVAL_S": max(0.2, float(self.value("BODY_POWER_IDLE_SEGMENTATION_S", 30.0))),
+                "BODY_CAMERA_INTERVAL": max(1.0 / 60.0, float(self.value("BODY_POWER_IDLE_CAMERA_INTERVAL_S", 5.0))),
+            }
+            self._power_mode_overrides = {**enabled_overrides, **intervals}
+            if self._local_camera is not None:
+                self._configure_local_camera(start=False)
+            self._yolox_service.stop()
+            self._midas_service.stop()
+            self._segmentation_service.stop()
+        LOG.info("Power mode transition: %s -> %s", old_mode, new_mode)
+        self._append_power_mode_trace(old_mode, new_mode)
+        return {"ok": True}
+
+    def _append_power_mode_trace(self, old_mode: str, new_mode: str) -> None:
+        try:
+            self.append_midas_calibration_trace({"records": [{
+                "type": "power_mode_transition", "timestamp": time.time(),
+                "from": old_mode, "to": new_mode,
+            }]})
+        except (OSError, ValueError):
+            LOG.exception("Could not append power mode transition to the Body trace log")
+
+    @staticmethod
+    def _power_config_default(key: str):
+        return {"BODY_YOLO_ENABLED": False, "BODY_MIDAS_ENABLED": False,
+                "BODY_SEGMENTATION_ENABLED": False}.get(key, False)
+
+    def power_mode_status(self) -> dict:
+        metrics = self.system_metrics()
+        power = metrics.get("power") or {}
+        intervals = {
+            "camera": self.camera_settings().get("interval"),
+            "yolox": self._yolox_service.settings().get("interval_s"),
+            "midas": self._midas_service.settings().get("interval_s"),
+            "segmentation": self._segmentation_service.settings().get("interval_s"),
+            "imu": "unthrottled", "radar": "unthrottled",
+        }
+        energy_wh = power.get("energy_wh_since_full")
+        capacity_wh = max(1.0, float(self.value("BODY_POWER_BATTERY_CAPACITY_WH", 99.0)))
+        usable_fraction = max(0.5, min(1.0, float(self.value("BODY_POWER_BATTERY_USABLE_FRACTION", 0.85))))
+        estimate = None
+        if energy_wh is not None:
+            usable_wh = capacity_wh * usable_fraction
+            estimate = {"capacity_wh": capacity_wh, "usable_fraction": usable_fraction,
+                        "consumed_wh": round(float(energy_wh), 3),
+                        "remaining_wh_est": round(max(0.0, usable_wh - float(energy_wh)), 3),
+                        "source": "INA232 input-rail integration; estimate only"}
+        return self._power_mode.status(intervals, power.get("watts"), estimate)
+
+    def set_power_mode(self, payload: dict) -> dict:
+        mode = str((payload or {}).get("mode") or "").upper()
+        return {"ok": True, **self._power_mode.set_mode(mode)}
+
+    def notify_power_activity(self, reason: str) -> None:
+        transition = self._power_mode.auto_raise(reason)
+        if transition:
+            LOG.info("Power mode auto-raised to ATTENTIVE: %s", reason)
+
+    def reset_power_energy_baseline(self) -> dict:
+        with self._system_metrics_lock:
+            self._system_energy_since_full_wh = 0.0
+            self._system_energy_last_persisted_at = time.monotonic()
+        self.config["BODY_POWER_CONSUMED_WH"] = 0.0
+        self.config["BODY_POWER_BATTERY_CAPACITY_WH"] = max(1.0, float(self.value("BODY_POWER_BATTERY_CAPACITY_WH", 99.0)))
+        self.save_config()
+        return {"ok": True, **self.power_mode_status()}
 
     def brain_bridge_settings(self) -> dict:
         return {
@@ -724,6 +849,10 @@ class BodyHost:
             return camera.latest() if camera is not None else {}
 
     def camera_frame(self) -> dict:
+        if self._power_mode.status().get("mode") == "IDLE":
+            return {"available": False, "camera": {"state": "camera paused · IDLE"},
+                    "yolo": {"state": "paused", "detections": [], "paired": False},
+                    "status": "camera paused · IDLE"}
         frame = self._camera_provider() or {}
         if frame:
             frame = {**frame, "camera_height_m": self._camera_height_m()}
@@ -784,6 +913,8 @@ class BodyHost:
 
     def camera_depth(self, include_raw: bool = True, include_preview: bool = True,
                      since_frame_id: str | None = None, include_color: bool = True) -> dict:
+        if self._power_mode.status().get("mode") == "IDLE":
+            return {"available": False, "state": "paused", "error": "MiDaS paused in IDLE"}
         if include_raw:
             self._midas_service.request_raw_output()
         result = self._midas_service.status()
@@ -834,6 +965,8 @@ class BodyHost:
         return self._midas_metric_calibration.status()
 
     def calibrate_midas_metric_depth(self, payload: dict) -> dict:
+        if self._power_mode.status().get("mode") != "DEV":
+            raise ValueError("MiDaS calibration requires DEV power mode")
         return self._midas_metric_calibration.calibrate(payload or {})
 
     def append_midas_calibration_trace(self, payload: dict) -> dict:
@@ -876,6 +1009,8 @@ class BodyHost:
         return {"ok": True, "records_written": len(records), "path": str(path)}
 
     def start_hardware_sensor_capture(self, payload: dict | None = None) -> dict:
+        if self._power_mode.status().get("mode") != "DEV":
+            raise ValueError("Sensor calibration capture requires DEV power mode")
         payload = payload or {}
         duration = float(payload.get("duration_seconds", 60))
         if duration != 60:
@@ -1088,6 +1223,8 @@ class BodyHost:
 
     def set_camera_capture(self, enabled: bool) -> dict:
         """Start or stop the live camera without changing its boot preference."""
+        if enabled and self._power_mode.status().get("mode") != "DEV":
+            self._power_mode.set_mode("DEV", "camera capture requested")
         capture = self._configure_local_camera(start=bool(enabled))
         if enabled:
             self._yolox_service.start()
@@ -2157,6 +2294,18 @@ class BodyHost:
             sample = (cached_frame.as_dict()
                       if cached_frame is not None and cache_age <= 0.35
                       else radar.read().as_dict())
+            near_m = max(0.2, float(self.value("BODY_POWER_WAKE_RADAR_RANGE_M", 2.0)))
+            for target in sample.get("targets") or []:
+                position = target.get("position_m") or target.get("position") or []
+                velocity = target.get("velocity_mps") or []
+                try:
+                    distance = math.sqrt(sum(float(v) ** 2 for v in position[:2]))
+                    speed = math.sqrt(sum(float(v) ** 2 for v in velocity[:2])) if len(velocity) >= 2 else 0.0
+                except (TypeError, ValueError):
+                    continue
+                if distance <= near_m and speed >= 0.12:
+                    self.notify_power_activity(f"moving radar target within {near_m:g} m")
+                    break
             return {**settings, "available": True, "sample": sample,
                     "source_status": radar.status()}
         except Exception as exc:
@@ -2218,6 +2367,25 @@ class BodyHost:
         try:
             sample = self._get_imu_bridge_source().read()
             source_status = self._get_imu_bridge_source().status()
+            acceleration = sample.get("acceleration_g") or []
+            angular = sample.get("angular_velocity_dps") or []
+            motion_state = str(sample.get("motion_state") or "").lower()
+            moving = motion_state in {"moving", "motion", "active"}
+            try:
+                moving = moving or (len(acceleration) == 3 and abs(math.sqrt(sum(float(v) ** 2 for v in acceleration)) - 1.0) > 0.12)
+                moving = moving or (len(angular) == 3 and math.sqrt(sum(float(v) ** 2 for v in angular)) > 8.0)
+            except (TypeError, ValueError):
+                pass
+            if moving:
+                sequence = sample.get("sequence", sample.get("timestamp"))
+                if sequence != self._power_motion_last_sequence:
+                    self._power_motion_last_sequence = sequence
+                    self._power_motion_since = self._power_motion_since or time.monotonic()
+                if self._power_motion_since is not None and time.monotonic() - self._power_motion_since >= 2.5:
+                    self.notify_power_activity("sustained IMU motion")
+            else:
+                self._power_motion_since = None
+                self._power_motion_last_sequence = sample.get("sequence", sample.get("timestamp"))
             result = {**settings, "available": True, "sample": sample}
             if include_history:
                 result["history"] = source_status.get("history", [])
@@ -2354,15 +2522,30 @@ class BodyHost:
                 voltage_v = int((directory / "in1_input").read_text().strip()) / 1_000
                 current_a = int((directory / "curr1_input").read_text().strip()) / 1_000
                 with self._system_metrics_lock:
+                    delta_wh = 0.0
                     if self._system_energy_updated_at is not None:
                         elapsed = min(5.0, max(0.0, now - self._system_energy_updated_at))
-                        self._system_energy_wh += watts * elapsed / 3600.0
+                        delta_wh = watts * elapsed / 3600.0
+                        self._system_energy_wh += delta_wh
+                        self._system_energy_since_full_wh += delta_wh
                     self._system_energy_updated_at = now
                     energy_wh = self._system_energy_wh
+                    since_full_wh = self._system_energy_since_full_wh
+                    persist_energy = time.monotonic() - self._system_energy_last_persisted_at >= 60.0
+                    if persist_energy:
+                        self._system_energy_last_persisted_at = time.monotonic()
+                if persist_energy:
+                    self.config["BODY_POWER_CONSUMED_WH"] = round(since_full_wh, 4)
+                    try:
+                        self.save_config()
+                    except OSError:
+                        LOG.exception("Could not persist Ventuno energy estimate")
                 power = {"available": True, "watts": round(watts, 2),
                          "voltage_v": round(voltage_v, 2), "current_a": round(current_a, 3),
                          "energy_wh_session": round(energy_wh, 4),
+                         "energy_wh_since_full": round(since_full_wh, 4),
                          "source": "INA232 onboard input rail; excludes loads outside the monitored rail"}
+                self._power_mode.record_watts(watts, time.time())
                 break
             except (OSError, ValueError):
                 continue
@@ -4025,6 +4208,8 @@ class BodyHost:
                     self._send(owner.ultrasonic_status())
                 elif path == "/system/metrics":
                     self._send(owner.system_metrics())
+                elif path == "/body/power-mode":
+                    self._send(owner.power_mode_status())
                 elif path == "/plugins/fnk0031_wifi/usb/status":
                     self._send(owner.fnk0031_usb_status())
                 elif path == "/plugins/fnk0031_wifi/modules":
@@ -4239,7 +4424,16 @@ class BodyHost:
 
             def do_POST(self):  # noqa: N802
                 path = self.path.split("?", 1)[0].rstrip("/")
-                if path == "/worldmodel/reconstruction/worker/assets":
+                if path == "/body/power-mode":
+                    body = self._read_body()
+                    try:
+                        if body.get("action") == "battery_full":
+                            self._send(owner.reset_power_energy_baseline())
+                        else:
+                            self._send(owner.set_power_mode(body))
+                    except (TypeError, ValueError, OSError) as exc:
+                        self._send({"ok": False, "error": str(exc)[:240]}, 400)
+                elif path == "/worldmodel/reconstruction/worker/assets":
                     if not self._reconstruction_worker_authorized():
                         return
                     length = int(self.headers.get("Content-Length") or 0)
@@ -4283,9 +4477,12 @@ class BodyHost:
                 elif path.startswith("/workflows/") and path.endswith("/execute"):
                     workflow_id = path[len("/workflows/"):-len("/execute")].strip("/")
                     try:
+                        confirm_physical = _payload_bool(self._read_body().get("confirm_physical"))
+                        if confirm_physical:
+                            owner.notify_power_activity("confirmed physical action")
                         self._send(owner.workflow_manager.execute(
                             workflow_id,
-                            confirm_physical=_payload_bool(self._read_body().get("confirm_physical")),
+                            confirm_physical=confirm_physical,
                         ))
                     except KeyError:
                         self._send({"error": "workflow not found"}, 404)

@@ -168,7 +168,9 @@ class LocalCameraCapture:
         )
 
     def _pace_capture(self, frame_started_at: float) -> None:
-        remaining = self.interval - (time.monotonic() - frame_started_at)
+        with self._lock:
+            interval = self.interval
+        remaining = interval - (time.monotonic() - frame_started_at)
         if remaining > 0:
             self._stop.wait(remaining)
 

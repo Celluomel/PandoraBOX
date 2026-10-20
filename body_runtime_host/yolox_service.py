@@ -175,9 +175,9 @@ class YoloXService:
         return response
 
     def _run(self) -> None:
-        cadence = max(0.15, min(5.0, float(self._value("INTERVAL_S", 0.5) or 0.5)))
         try:
             while not self._stop.is_set():
+                cadence = max(0.15, min(5.0, float(self._value("INTERVAL_S", 0.5) or 0.5)))
                 if time.monotonic() < self._retry_at:
                     self._stop.wait(min(cadence, self._retry_at - time.monotonic()))
                     continue
@@ -218,7 +218,7 @@ class YoloXService:
                                                 latency_ms=round((time.monotonic() - started) * 1000, 1))
                         self._failure_count = min(5, self._failure_count + 1)
                         self._retry_at = time.monotonic() + min(30.0, 2.0 ** self._failure_count)
-                self._stop.wait(cadence)
+                self._stop.wait(max(0.0, min(5.0, float(self._value("INTERVAL_S", cadence) or cadence))))
         finally:
             process, self._process = self._process, None
             if process is not None:

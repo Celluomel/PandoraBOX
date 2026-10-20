@@ -204,6 +204,7 @@ if (panel) {
     statusBar.className = 'world-map-status-bar';
     statusBar.setAttribute('aria-label', 'Live Body and sensor status');
     statusBar.innerHTML = '<span>BODY <b id="world-map-body-status" data-state="loading">Connecting</b></span><span>BOARD INPUT <b id="world-map-summary-power">— W</b></span><span>ENERGY <b id="world-map-summary-energy">— Wh</b></span><span>LATEST FRAME <b id="world-map-summary-frame">—</b></span><span>SENSORS LIVE <b id="world-map-summary-live">0 / 7</b></span>';
+    statusBar.insertAdjacentHTML('beforeend', '<div class="world-map-segment" role="group" aria-label="Ventuno power mode"><button type="button" data-power-mode="DEV" aria-pressed="true">DEV</button><button type="button" data-power-mode="ATTENTIVE" aria-pressed="false">Attentive</button><button type="button" data-power-mode="IDLE" aria-pressed="false">IDLE</button></div><small id="world-map-power-mode-status" role="status">Power mode · DEV</small><button type="button" id="world-map-battery-full" title="Reset estimated energy consumption after charging the Ventuno to full">Battery full</button>');
     statusBar.append(sensorPanel.querySelector('#world-map-cloud-fetch'), sensorPanel.querySelector('.world-map-sensor-metrics'));
     sensorPanel.prepend(statusBar);
     const bodyMessage = document.querySelector('#message');
@@ -720,6 +721,13 @@ function animateSensorCloud(now) {
 requestAnimationFrame(animateSensorCloud);
 let activeSource = window.bodyWorldModelView === 'sensors' ? 'sensors' : 'simulation';
 let activeRender = '2d';
+let activePowerMode = 'DEV';
+let lastVisionPollAt = 0;
+let lastUltrasonicPollAt = 0;
+let lastGpsPollAt = 0;
+let lastTofPollAt = 0;
+let lastSegmentationPollAt = 0;
+let lastOdometryPollAt = 0;
 let latestWorld = null;
 let sensorBusy = false;
 let sensorSegmentationBusy = false;
@@ -865,6 +873,10 @@ function setSource(source) {
 }
 
 function setRender(render) {
+  if (activeSource === 'sensors' && render === '3d' && activePowerMode !== 'DEV') {
+    if (!window.confirm('The 3D sensor view needs active camera and MiDaS. Switch the Ventuno to DEV mode?')) return;
+    void setVentunoPowerMode('DEV');
+  }
   activeRender = render;
   const mapWrap = panel?.querySelector('.map-wrap');
   const simCanvas = byId('world-map-sim-3d');
@@ -904,9 +916,13 @@ window.addEventListener('resize', () => {
   if (activeSource === 'sensors' && activeRender === '3d') requestAnimationFrame(resizeCloud);
 });
 document.querySelectorAll('[data-render]').forEach((button) => button.addEventListener('click', () => setRender(button.dataset.render)));
-const handleDepthCalibrationButton = () => {
+const handleDepthCalibrationButton = async () => {
   if (depthCalibrationBusy) cancelDepthCalibration?.();
-  else openDepthCalibrationGuide();
+  else if (activePowerMode !== 'DEV') {
+    if (!window.confirm('Calibration requires full-rate camera and MiDaS. Switch the Ventuno to DEV mode?')) return;
+    await setVentunoPowerMode('DEV');
+    if (activePowerMode === 'DEV') openDepthCalibrationGuide();
+  } else openDepthCalibrationGuide();
 };
 byId('world-map-midas-calibrate')?.addEventListener('click', handleDepthCalibrationButton);
 byId('world-map-midas-calibrate-3d')?.addEventListener('click', handleDepthCalibrationButton);
@@ -2247,6 +2263,7 @@ async function refreshSensors() {
         ? `LIVE · ${currentCamera.width || '—'}×${currentCamera.height || '—'} · ${Number.isFinite(frameAge) ? frameAge.toFixed(1) + 's' : 'age —'}`
         : `${currentCamera.state || frame.status || 'NO FRAME'}`;
     }
+    if (cameraEmpty && currentCamera.state === 'camera paused · IDLE') cameraEmpty.textContent = 'Camera paused · IDLE';
     setFeedStatus('world-map-camera-state', 'camera', classifyAge('camera', frameAge, Boolean(currentCamera.image_base64)), currentCamera.image_base64
       ? `LIVE · ${currentCamera.width || '—'}×${currentCamera.height || '—'} · ${Number.isFinite(frameAge) ? frameAge.toFixed(1) + 's' : 'age —'}`
       : `${currentCamera.state || frame.status || 'NO FRAME'}`);
@@ -3455,8 +3472,12 @@ window.updateBodyWorldMap3D = (world) => {
 const sensorPageVisible = () => document.visibilityState !== 'hidden';
 setInterval(() => {
   if (sensorPageVisible() && activeSource === 'sensors') {
-    void refreshSensors();
-    void refreshSensorDepth();
+    const interval = activePowerMode === 'IDLE' ? 5000 : activePowerMode === 'ATTENTIVE' ? 1000 : 100;
+    if (Date.now() - lastVisionPollAt >= interval) {
+      lastVisionPollAt = Date.now();
+      void refreshSensors();
+      void refreshSensorDepth();
+    }
   }
 }, 100);
 setInterval(() => {
@@ -3468,19 +3489,34 @@ setInterval(() => {
   if (sensorPageVisible() && activeSource === 'sensors') void refreshLiveImu();
 }, 250);
 setTimeout(() => setInterval(() => {
-  if (sensorPageVisible() && activeSource === 'sensors') void refreshLiveUltrasonic();
+  const interval = activePowerMode === 'IDLE' ? 5000 : activePowerMode === 'ATTENTIVE' ? 1000 : 400;
+  if (sensorPageVisible() && activeSource === 'sensors' && Date.now() - lastUltrasonicPollAt >= interval) {
+    lastUltrasonicPollAt = Date.now(); void refreshLiveUltrasonic();
+  }
 }, 400), 75);
 setTimeout(() => setInterval(() => {
-  if (sensorPageVisible() && activeSource === 'sensors') void refreshLiveGps();
+  const interval = activePowerMode === 'IDLE' ? 15000 : activePowerMode === 'ATTENTIVE' ? 5000 : 1500;
+  if (sensorPageVisible() && activeSource === 'sensors' && Date.now() - lastGpsPollAt >= interval) {
+    lastGpsPollAt = Date.now(); void refreshLiveGps();
+  }
 }, 1500), 100);
 setTimeout(() => setInterval(() => {
-  if (sensorPageVisible() && activeSource === 'sensors') void refreshLiveTof();
+  const interval = activePowerMode === 'IDLE' ? 15000 : activePowerMode === 'ATTENTIVE' ? 3000 : 1000;
+  if (sensorPageVisible() && activeSource === 'sensors' && Date.now() - lastTofPollAt >= interval) {
+    lastTofPollAt = Date.now(); void refreshLiveTof();
+  }
 }, 1000), 250);
 setInterval(() => {
-  if (sensorPageVisible() && activeSource === 'sensors') void refreshSensorSegmentation();
+  const interval = activePowerMode === 'DEV' ? 1000 : 5000;
+  if (sensorPageVisible() && activeSource === 'sensors' && Date.now() - lastSegmentationPollAt >= interval) {
+    lastSegmentationPollAt = Date.now(); void refreshSensorSegmentation();
+  }
 }, 1000);
 setInterval(() => {
-  if (sensorPageVisible() && activeSource === 'sensors') void refreshVisualOdometry();
+  const interval = activePowerMode === 'IDLE' ? 5000 : activePowerMode === 'ATTENTIVE' ? 2000 : 500;
+  if (sensorPageVisible() && activeSource === 'sensors' && Date.now() - lastOdometryPollAt >= interval) {
+    lastOdometryPollAt = Date.now(); void refreshVisualOdometry();
+  }
 }, 500);
 document.addEventListener('visibilitychange', () => {
   if (sensorPageVisible() && activeSource === 'sensors') {
@@ -3491,6 +3527,52 @@ document.addEventListener('visibilitychange', () => {
     void refreshLiveImu();
     void refreshLiveTof();
     void refreshLiveUltrasonic();
+    void refreshPowerMode();
   }
 });
+async function refreshPowerMode() {
+  try {
+    const state = await sensorJson('/body/power-mode');
+    activePowerMode = state.mode || 'DEV';
+    document.querySelectorAll('[data-power-mode]').forEach(button => {
+      button.setAttribute('aria-pressed', String(button.dataset.powerMode === activePowerMode));
+    });
+    const mean = state.rolling_60s_mean_w_by_mode?.[activePowerMode]?.mean_w;
+    const remaining = state.battery_estimate?.remaining_wh_est;
+    const status = byId('world-map-power-mode-status');
+    if (status) status.textContent = `Power mode · ${activePowerMode}${mean == null ? '' : ` · 60 s mean ${mean.toFixed(1)} W`}${remaining == null ? '' : ` · ${remaining.toFixed(1)} Wh est. remaining`}`;
+  } catch (error) {
+    const status = byId('world-map-power-mode-status');
+    if (status) status.textContent = `Power mode unavailable · ${error.message}`;
+  }
+}
+async function setVentunoPowerMode(mode) {
+  try {
+    const response = await fetch('/body/power-mode', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode }), cache: 'no-store' });
+    const result = await response.json();
+    if (!response.ok || !result.ok) throw new Error(result.error || `HTTP ${response.status}`);
+    await refreshPowerMode();
+  } catch (error) {
+    const status = byId('world-map-power-mode-status');
+    if (status) status.textContent = `Power mode change failed · ${error.message}`;
+  }
+}
+document.querySelectorAll('[data-power-mode]').forEach(button => button.addEventListener('click', () => {
+  void setVentunoPowerMode(button.dataset.powerMode);
+}));
+byId('world-map-battery-full')?.addEventListener('click', async () => {
+  if (!window.confirm('Reset the Ventuno energy estimate because its battery is fully charged?')) return;
+  try {
+    const response = await fetch('/body/power-mode', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'battery_full' }), cache: 'no-store' });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    await refreshPowerMode();
+  } catch (error) {
+    const status = byId('world-map-power-mode-status');
+    if (status) status.textContent = `Battery estimate reset failed · ${error.message}`;
+  }
+});
+setInterval(() => { if (sensorPageVisible()) void refreshPowerMode(); }, 3000);
+void refreshPowerMode();
 if (latestWorld) buildSimulation(latestWorld);
