@@ -340,13 +340,13 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertIn("setInterval(pollUltrasonic, 500)", preview)
         self.assertIn("ultrasonicStatusReceived", preview)
         self.assertIn("measurementAt: now - (Number(sample.age_ms) || 0)", preview)
-        self.assertIn("retainedAge <= 1200", preview)
+        self.assertIn("retainedAge <= 3000", preview)
         self.assertIn("? '~' : ''", preview)
         self.assertIn("fetch('/plugins/ultrasonic/status'", quest)
         self.assertIn("setInterval(() => { if (activeSceneMode === 'sensors') void pollUltrasonicStatus(); }, 500)", quest)
         self.assertIn("updateUltrasonicStatus(status)", dashboard)
         self.assertIn("modalities.ultrasonic = this.ultrasonicStatus.sample || {}", dashboard)
-        self.assertIn("retainedAge <= 1200", dashboard)
+        self.assertIn("retainedAge <= 3000", dashboard)
 
     def test_vr_horizon_column_clears_robot_and_uses_sharp_canvas_filtering(self):
         root = Path(__file__).resolve().parents[1]

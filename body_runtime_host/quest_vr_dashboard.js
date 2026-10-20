@@ -676,7 +676,7 @@ export class QuestVRDashboard {
       }
       const retained = this.lastUltrasonicSamples[key];
       const retainedAge = retained ? now - retained.measurementAt : Infinity;
-      const held = !currentValid && retainedAge <= 1200;
+      const held = !currentValid && retainedAge <= 3000;
       const sample = currentValid ? currentSample : held ? retained.sample : currentSample;
       const distance = Number(sample.distance_m ?? (Number(sample.distance_mm) / 1000));
       const fresh = sample.available === true && !sample.simulated && Number.isFinite(distance) && distance > 0 && distance <= 4;
@@ -691,6 +691,7 @@ export class QuestVRDashboard {
       ctx.fillStyle = 'rgba(120,190,150,.12)'; ctx.fillRect(trackX, trackY, trackWidth, 7);
       if (fresh) { ctx.fillStyle = showHeld ? '#efcb76' : distance < .35 ? '#f17c70' : distance < .8 ? '#efcb76' : '#63d7ae'; ctx.globalAlpha = showHeld ? .65 : 1; ctx.fillRect(trackX, trackY, trackWidth * Math.min(1, distance / 4), 7); ctx.globalAlpha = 1; }
       ctx.strokeStyle = 'rgba(135,206,166,.35)'; ctx.strokeRect(trackX, trackY, trackWidth, 7);
+      ctx.fillStyle = '#91a79b'; ctx.font = '9px ui-monospace, monospace'; ctx.textAlign = 'left'; ctx.fillText('0m', trackX, y + height - 7); ctx.textAlign = 'right'; ctx.fillText('4m', trackX + trackWidth, y + height - 7);
     });
   }
 

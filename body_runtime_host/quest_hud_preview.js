@@ -294,17 +294,19 @@ function drawUltrasonicRanges(modalities = world?.perception?.modalities || {}) 
       && currentDistance > 0 && currentDistance <= 4 && !currentSample.simulated;
     const retained = lastUltrasonicSamples[key];
     const retainedAge = retained ? now - retained.measurementAt : Infinity;
-    const held = !currentValid && retainedAge <= 1200;
+    const held = !currentValid && retainedAge <= 3000;
     const sample = currentValid ? currentSample : held ? retained.sample : currentSample;
     const distance = Number(sample.distance_m ?? (Number(sample.distance_mm) / 1000));
     const available = sample.available === true && Number.isFinite(distance) && distance > 0 && distance <= 4 && !sample.simulated;
     const value = card.querySelector('.ultrasonic-value');
     const fill = card.querySelector('.ultrasonic-fill');
+    const track = card.querySelector('.ultrasonic-track');
     value.textContent = available ? `${held || (Number.isFinite(retainedAge) && retainedAge > 600) ? '~' : ''}${distance.toFixed(2)}m` : 'WAIT';
     value.classList.toggle('sensor-wait', !available);
     value.style.color = available ? (held || (Number.isFinite(retainedAge) && retainedAge > 600) ? '#efcb76' : distance < .35 ? '#f17c70' : distance < .8 ? '#efcb76' : '#bcebd0') : '';
     fill.style.width = available ? `${Math.max(0, Math.min(100, distance / 4 * 100))}%` : '0%';
     fill.style.background = available ? (held || (Number.isFinite(retainedAge) && retainedAge > 600) ? '#efcb76' : distance < .35 ? '#f17c70' : distance < .8 ? '#efcb76' : '#63d7ae') : '';
+    if (track) track.setAttribute('aria-valuenow', available ? distance.toFixed(2) : '0');
   }
 }
 
