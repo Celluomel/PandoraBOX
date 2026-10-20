@@ -81,13 +81,15 @@ class PowerModeManagerTests(unittest.TestCase):
         host.value = lambda key, fallback=None: host.config.get(key, fallback)
         host.save_config = lambda: None
         host.power_mode_status = lambda: {"battery_estimate": {
-            "remaining_wh_est": round(99.0 * 0.85 - host._system_energy_since_full_wh, 3)
+            "remaining_wh_est": round(99.0 * 0.85 - host._system_energy_since_full_wh, 3),
+            "level_percent_est": round((99.0 * 0.85 - host._system_energy_since_full_wh) / (99.0 * 0.85) * 100.0, 1),
         }}
 
         result = host.set_power_energy_level(50)
 
         self.assertEqual(host.config["BODY_POWER_CONSUMED_WH"], 42.075)
         self.assertEqual(result["battery_estimate"]["remaining_wh_est"], 42.075)
+        self.assertEqual(result["battery_estimate"]["level_percent_est"], 50.0)
         with self.assertRaisesRegex(ValueError, "between 0 and 100"):
             host.set_power_energy_level(101)
 

@@ -204,7 +204,7 @@ if (panel) {
     statusBar.className = 'world-map-status-bar';
     statusBar.setAttribute('aria-label', 'Live Body and sensor status');
     statusBar.innerHTML = '<span>BODY <b id="world-map-body-status" data-state="loading">Connecting</b></span><span>BOARD INPUT <b id="world-map-summary-power">— W</b></span><span>ENERGY <b id="world-map-summary-energy">— Wh</b></span><span>LATEST FRAME <b id="world-map-summary-frame">—</b></span><span>SENSORS LIVE <b id="world-map-summary-live">0 / 7</b></span>';
-    statusBar.insertAdjacentHTML('beforeend', '<div class="world-map-segment" role="group" aria-label="Ventuno power mode"><button type="button" data-power-mode="DEV" aria-pressed="true">DEV</button><button type="button" data-power-mode="ATTENTIVE" aria-pressed="false">Attentive</button><button type="button" data-power-mode="IDLE" aria-pressed="false">IDLE</button></div><small id="world-map-power-mode-status" role="status">Power mode · DEV</small><label for="world-map-battery-level">Battery %</label><input id="world-map-battery-level" type="number" min="0" max="100" step="1" inputmode="numeric" placeholder="0–100" aria-label="Current battery charge percentage"><button type="button" id="world-map-battery-full" title="Set the estimated battery charge to 100 percent">Battery full</button>');
+    statusBar.insertAdjacentHTML('beforeend', '<div class="world-map-segment" role="group" aria-label="Ventuno power mode"><button type="button" data-power-mode="DEV" aria-pressed="true">DEV</button><button type="button" data-power-mode="ATTENTIVE" aria-pressed="false">Attentive</button><button type="button" data-power-mode="IDLE" aria-pressed="false">IDLE</button></div><small id="world-map-power-mode-status" role="status">Power mode · DEV</small><label for="world-map-battery-level">Battery %</label><input id="world-map-battery-level" type="number" min="0" max="100" step="1" inputmode="numeric" placeholder="0–100" aria-label="Current battery charge percentage"><button type="button" id="world-map-battery-full" title="Set the estimated battery charge to 100 percent">Battery full</button><small id="world-map-battery-feedback" role="status" aria-live="polite"></small>');
     statusBar.append(sensorPanel.querySelector('#world-map-cloud-fetch'), sensorPanel.querySelector('.world-map-sensor-metrics'));
     sensorPanel.prepend(statusBar);
     const bodyMessage = document.querySelector('#message');
@@ -3538,9 +3538,14 @@ async function refreshPowerMode() {
       button.setAttribute('aria-pressed', String(button.dataset.powerMode === activePowerMode));
     });
     const mean = state.rolling_60s_mean_w_by_mode?.[activePowerMode]?.mean_w;
+    const watts = mean > 0 ? mean : state.board_input_w;
     const remaining = state.battery_estimate?.remaining_wh_est;
+    const level = state.battery_estimate?.level_percent_est;
     const status = byId('world-map-power-mode-status');
-    if (status) status.textContent = `Power mode · ${activePowerMode}${mean == null ? '' : ` · 60 s mean ${mean.toFixed(1)} W`}${remaining == null ? '' : ` · ${remaining.toFixed(1)} Wh est. remaining`}`;
+    const hours = remaining != null && watts > 0 ? remaining / watts : null;
+    const runtime = hours == null ? '' : ` · ~${Math.floor(hours)} h ${Math.round((hours % 1) * 60)} min remaining`;
+    const power = mean > 0 ? ` · 60 s mean ${mean.toFixed(1)} W` : (watts > 0 ? ` · now ${watts.toFixed(1)} W` : '');
+    if (status) status.textContent = `Power mode · ${activePowerMode}${power}${level == null ? '' : ` · battery ~${level.toFixed(1)}%`}${runtime}`;
   } catch (error) {
     const status = byId('world-map-power-mode-status');
     if (status) status.textContent = `Power mode unavailable · ${error.message}`;
@@ -3584,9 +3589,12 @@ batteryLevelButton?.addEventListener('click', async () => {
     if (batteryLevelInput) batteryLevelInput.value = '';
     if (batteryLevelButton) batteryLevelButton.textContent = 'Battery full';
     await refreshPowerMode();
+    const feedback = byId('world-map-battery-feedback');
+    const estimate = result.battery_estimate || {};
+    if (feedback) feedback.textContent = `Saved · ${rawLevel ? `${level}% entered` : 'battery set to 100%'}${estimate.level_percent_est == null ? '' : ` · estimated ${estimate.level_percent_est.toFixed(1)}% remaining`}`;
   } catch (error) {
-    const status = byId('world-map-power-mode-status');
-    if (status) status.textContent = `Battery estimate reset failed · ${error.message}`;
+    const feedback = byId('world-map-battery-feedback');
+    if (feedback) feedback.textContent = `Battery level not saved · ${error.message}`;
   }
 });
 setInterval(() => { if (sensorPageVisible()) void refreshPowerMode(); }, 3000);

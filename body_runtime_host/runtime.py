@@ -460,9 +460,11 @@ class BodyHost:
         estimate = None
         if energy_wh is not None:
             usable_wh = capacity_wh * usable_fraction
+            remaining_wh = max(0.0, usable_wh - float(energy_wh))
             estimate = {"capacity_wh": capacity_wh, "usable_fraction": usable_fraction,
                         "consumed_wh": round(float(energy_wh), 3),
-                        "remaining_wh_est": round(max(0.0, usable_wh - float(energy_wh)), 3),
+                        "remaining_wh_est": round(remaining_wh, 3),
+                        "level_percent_est": round(remaining_wh / usable_wh * 100.0, 1),
                         "source": "INA232 input-rail integration; estimate only"}
         return self._power_mode.status(intervals, power.get("watts"), estimate)
 
