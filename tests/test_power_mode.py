@@ -72,6 +72,25 @@ class PowerModeManagerTests(unittest.TestCase):
         self.assertEqual(host.value("BODY_YOLO_INTERVAL_S"), 0.25)
         self.assertEqual(host.config, saved_config)
 
+    def test_battery_level_sets_persistent_remaining_energy_estimate(self):
+        host = object.__new__(BodyHost)
+        host.config = {"BODY_POWER_BATTERY_CAPACITY_WH": 99.0, "BODY_POWER_BATTERY_USABLE_FRACTION": 0.85}
+        host._system_metrics_lock = threading.Lock()
+        host._system_energy_last_persisted_at = 0.0
+        host._power_mode = PowerModeManager(lambda old, new: {"ok": True})
+        host.value = lambda key, fallback=None: host.config.get(key, fallback)
+        host.save_config = lambda: None
+        host.power_mode_status = lambda: {"battery_estimate": {
+            "remaining_wh_est": round(99.0 * 0.85 - host._system_energy_since_full_wh, 3)
+        }}
+
+        result = host.set_power_energy_level(50)
+
+        self.assertEqual(host.config["BODY_POWER_CONSUMED_WH"], 42.075)
+        self.assertEqual(result["battery_estimate"]["remaining_wh_est"], 42.075)
+        with self.assertRaisesRegex(ValueError, "between 0 and 100"):
+            host.set_power_energy_level(101)
+
 
 if __name__ == "__main__":
     unittest.main()

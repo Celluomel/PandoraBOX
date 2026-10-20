@@ -3,7 +3,7 @@ import * as THREE from '../frontend/node_modules/three/build/three.module.js';
 const byId = (id) => document.getElementById(id);
 const sourceStates = Object.create(null);
 const staleAfterSeconds = { camera: 5, yolo: 5, midas: 5, odometry: 5, segmentation: 5, radar: 2, gps: 5, imu: 2, tof: 2, ultrasonic: 0.6 };
-const physicalSources = ['camera', 'radar', 'gps', 'imu', 'tof', 'lidar', 'ultrasonic'];
+const physicalSources = ['camera', 'radar', 'gps', 'imu', 'tof', 'ultrasonic'];
 const cameraRadarGeometry = { horizontalFovDeg: 70, yawOffsetDeg: 0, lateralOffsetM: 0, calibrated: false };
 const maxCalibrationPairDeltaSeconds = 0.25;
 const maxCalibrationRadarDeltaSeconds = 1.25;
@@ -204,7 +204,7 @@ if (panel) {
     statusBar.className = 'world-map-status-bar';
     statusBar.setAttribute('aria-label', 'Live Body and sensor status');
     statusBar.innerHTML = '<span>BODY <b id="world-map-body-status" data-state="loading">Connecting</b></span><span>BOARD INPUT <b id="world-map-summary-power">— W</b></span><span>ENERGY <b id="world-map-summary-energy">— Wh</b></span><span>LATEST FRAME <b id="world-map-summary-frame">—</b></span><span>SENSORS LIVE <b id="world-map-summary-live">0 / 7</b></span>';
-    statusBar.insertAdjacentHTML('beforeend', '<div class="world-map-segment" role="group" aria-label="Ventuno power mode"><button type="button" data-power-mode="DEV" aria-pressed="true">DEV</button><button type="button" data-power-mode="ATTENTIVE" aria-pressed="false">Attentive</button><button type="button" data-power-mode="IDLE" aria-pressed="false">IDLE</button></div><small id="world-map-power-mode-status" role="status">Power mode · DEV</small><button type="button" id="world-map-battery-full" title="Reset estimated energy consumption after charging the Ventuno to full">Battery full</button>');
+    statusBar.insertAdjacentHTML('beforeend', '<div class="world-map-segment" role="group" aria-label="Ventuno power mode"><button type="button" data-power-mode="DEV" aria-pressed="true">DEV</button><button type="button" data-power-mode="ATTENTIVE" aria-pressed="false">Attentive</button><button type="button" data-power-mode="IDLE" aria-pressed="false">IDLE</button></div><small id="world-map-power-mode-status" role="status">Power mode · DEV</small><label for="world-map-battery-level">Battery %</label><input id="world-map-battery-level" type="number" min="0" max="100" step="1" inputmode="numeric" placeholder="0–100" aria-label="Current battery charge percentage"><button type="button" id="world-map-battery-full" title="Set the estimated battery charge to 100 percent">Battery full</button>');
     statusBar.append(sensorPanel.querySelector('#world-map-cloud-fetch'), sensorPanel.querySelector('.world-map-sensor-metrics'));
     sensorPanel.prepend(statusBar);
     const bodyMessage = document.querySelector('#message');
@@ -2257,6 +2257,7 @@ async function refreshSensors() {
     updateCloudOrigin();
     latestSensorYolo = yolo;
     const cameraState = byId('world-map-camera-state');
+    const cameraEmpty = byId('world-map-camera-empty');
     const frameAge = Number(currentCamera.captured_at) > 0 ? Math.max(0, Date.now() / 1000 - Number(currentCamera.captured_at)) : Infinity;
     if (cameraState) {
       cameraState.textContent = currentCamera.image_base64
@@ -2268,7 +2269,6 @@ async function refreshSensors() {
       ? `LIVE · ${currentCamera.width || '—'}×${currentCamera.height || '—'} · ${Number.isFinite(frameAge) ? frameAge.toFixed(1) + 's' : 'age —'}`
       : `${currentCamera.state || frame.status || 'NO FRAME'}`);
     const cameraImage = byId('world-map-camera-image');
-    const cameraEmpty = byId('world-map-camera-empty');
     if (currentCamera.frame_id !== displayedCameraFrameId) {
       setImage(cameraImage, cameraEmpty, currentCamera.image_base64, currentCamera.mime_type || 'image/jpeg');
       displayedCameraFrameId = currentCamera.frame_id;
@@ -3561,12 +3561,28 @@ async function setVentunoPowerMode(mode) {
 document.querySelectorAll('[data-power-mode]').forEach(button => button.addEventListener('click', () => {
   void setVentunoPowerMode(button.dataset.powerMode);
 }));
-byId('world-map-battery-full')?.addEventListener('click', async () => {
-  if (!window.confirm('Reset the Ventuno energy estimate because its battery is fully charged?')) return;
+const batteryLevelInput = byId('world-map-battery-level');
+const batteryLevelButton = byId('world-map-battery-full');
+batteryLevelInput?.addEventListener('input', () => {
+  if (batteryLevelButton) batteryLevelButton.textContent = batteryLevelInput.value.trim() ? 'Set battery level' : 'Battery full';
+});
+batteryLevelButton?.addEventListener('click', async () => {
+  const rawLevel = batteryLevelInput?.value.trim() || '';
+  const level = Number(rawLevel);
+  if (rawLevel && (!Number.isFinite(level) || level < 0 || level > 100)) {
+    batteryLevelInput?.setCustomValidity('Enter a battery level from 0 to 100 percent.');
+    batteryLevelInput?.reportValidity();
+    return;
+  }
+  if (!rawLevel && !window.confirm('Reset the Ventuno energy estimate because its battery is fully charged?')) return;
+  batteryLevelInput?.setCustomValidity('');
   try {
     const response = await fetch('/body/power-mode', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'battery_full' }), cache: 'no-store' });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      body: JSON.stringify(rawLevel ? { action: 'battery_level', level_percent: level } : { action: 'battery_full' }), cache: 'no-store' });
+    const result = await response.json();
+    if (!response.ok || !result.ok) throw new Error(result.error || `HTTP ${response.status}`);
+    if (batteryLevelInput) batteryLevelInput.value = '';
+    if (batteryLevelButton) batteryLevelButton.textContent = 'Battery full';
     await refreshPowerMode();
   } catch (error) {
     const status = byId('world-map-power-mode-status');

@@ -7,6 +7,23 @@ from pathlib import Path
 
 
 class BodyRuntimeGuiTests(unittest.TestCase):
+    def test_sensor_camera_refresh_initializes_empty_element_before_access(self):
+        source = (Path(__file__).resolve().parents[1] / "body_runtime_host" / "world_map_3d.js").read_text(encoding="utf-8")
+        refresh = source.split("async function refreshSensors() {", 1)[1].split("\nasync function sensorJson", 1)[0]
+
+        self.assertLess(refresh.index("const cameraEmpty = byId('world-map-camera-empty')"),
+                        refresh.index("if (cameraEmpty &&"))
+
+    def test_sensor_summary_counts_only_connected_physical_sources(self):
+        source = (Path(__file__).resolve().parents[1] / "body_runtime_host" / "world_map_3d.js").read_text(encoding="utf-8")
+
+        self.assertIn("const physicalSources = ['camera', 'radar', 'gps', 'imu', 'tof', 'ultrasonic']", source)
+
+    def test_battery_level_input_changes_action_button_label(self):
+        source = (Path(__file__).resolve().parents[1] / "body_runtime_host" / "world_map_3d.js").read_text(encoding="utf-8")
+
+        self.assertIn("batteryLevelInput.value.trim() ? 'Set battery level' : 'Battery full'", source)
+
     def test_calibration_midas_snapshots_are_sparse_but_keep_per_frame_metadata(self):
         from body_runtime_host.runtime import _calibration_midas_record
 
@@ -95,6 +112,7 @@ class BodyRuntimeGuiTests(unittest.TestCase):
         }
         host = object.__new__(BodyHost)
         host._midas_service = SimpleNamespace(status=lambda: dict(payload), request_raw_output=lambda: None)
+        host._power_mode = SimpleNamespace(status=lambda: {"mode": "DEV"})
         host._camera_height_m = lambda: 0.18
         host.value = lambda _key, default=None: default
 
@@ -142,7 +160,8 @@ class BodyRuntimeGuiTests(unittest.TestCase):
         self.assertIn("/plugins/imu/status", source)
         self.assertIn("/plugins/imu/status?history=0", source)
         self.assertIn("void refreshLiveImu();\n}, 250)", source)
-        self.assertIn("void refreshLiveUltrasonic();\n}, 400)", source)
+        self.assertIn("activePowerMode === 'ATTENTIVE' ? 1000 : 400", source)
+        self.assertIn("void refreshLiveUltrasonic();", source)
         self.assertIn("/plugins/tof/status", source)
         self.assertIn("world-map-gps-signals", source)
         self.assertIn("world-map-gps-map-card", source)

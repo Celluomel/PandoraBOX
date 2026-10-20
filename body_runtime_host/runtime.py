@@ -476,11 +476,20 @@ class BodyHost:
             LOG.info("Power mode auto-raised to ATTENTIVE: %s", reason)
 
     def reset_power_energy_baseline(self) -> dict:
+        return self.set_power_energy_level(100.0)
+
+    def set_power_energy_level(self, level_percent: float) -> dict:
+        level_percent = float(level_percent)
+        if not 0.0 <= level_percent <= 100.0:
+            raise ValueError("battery level must be between 0 and 100 percent")
+        capacity_wh = max(1.0, float(self.value("BODY_POWER_BATTERY_CAPACITY_WH", 99.0)))
+        usable_fraction = max(0.5, min(1.0, float(self.value("BODY_POWER_BATTERY_USABLE_FRACTION", 0.85))))
+        consumed_wh = capacity_wh * usable_fraction * (1.0 - level_percent / 100.0)
         with self._system_metrics_lock:
-            self._system_energy_since_full_wh = 0.0
+            self._system_energy_since_full_wh = consumed_wh
             self._system_energy_last_persisted_at = time.monotonic()
-        self.config["BODY_POWER_CONSUMED_WH"] = 0.0
-        self.config["BODY_POWER_BATTERY_CAPACITY_WH"] = max(1.0, float(self.value("BODY_POWER_BATTERY_CAPACITY_WH", 99.0)))
+        self.config["BODY_POWER_CONSUMED_WH"] = round(consumed_wh, 4)
+        self.config["BODY_POWER_BATTERY_CAPACITY_WH"] = capacity_wh
         self.save_config()
         return {"ok": True, **self.power_mode_status()}
 
@@ -4429,6 +4438,8 @@ class BodyHost:
                     try:
                         if body.get("action") == "battery_full":
                             self._send(owner.reset_power_energy_baseline())
+                        elif body.get("action") == "battery_level":
+                            self._send(owner.set_power_energy_level(body.get("level_percent")))
                         else:
                             self._send(owner.set_power_mode(body))
                     except (TypeError, ValueError, OSError) as exc:
