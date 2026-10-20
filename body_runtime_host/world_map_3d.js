@@ -11,6 +11,7 @@ const maxPersonBearingErrorDeg = 12;
 const maxSceneRadarPairDeltaSeconds = 0.75;
 const maxSceneDetectionPairDeltaSeconds = 0.5;
 const yoloOverlayCoastSeconds = 5;
+const yoloOverlayStaleLabelSeconds = 1.5;
 function setFeedStatus(id, source, state, detail) {
   sourceStates[source] = state;
   const element = byId(id);
@@ -947,7 +948,7 @@ function drawBoxes(detections, width, height) {
     if (!Array.isArray(box) || box.length < 4) continue;
     const [x1, y1, x2, y2] = box.map(Number);
     if (![x1, y1, x2, y2].every(Number.isFinite)) continue;
-    const stale = Number(item.overlayAgeS) > 0.5 || item.overlaySourceStale;
+    const stale = Number(item.overlayAgeS) > yoloOverlayStaleLabelSeconds || item.overlaySourceStale;
     const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
     rect.setAttribute('x', String(x1 * width));
     rect.setAttribute('y', String(y1 * height));
@@ -1027,7 +1028,7 @@ function updateYoloOverlayTracks(yolo) {
       if (bestIndex >= 0) unmatched.delete(bestIndex);
       track.detection = detection;
       track.lastSeenAt = capturedAt;
-      track.sourceStale = yolo.state !== 'ready' || yolo.paired === false;
+    track.sourceStale = observationAge > yoloOverlayStaleLabelSeconds;
       if (bestIndex < 0) yoloOverlayTracks.push(track);
     }
   }
@@ -2286,9 +2287,10 @@ async function refreshSensors() {
     }
     if (activeRender === '3d' && cloudDepthImage) drawDepthDetections(cloudDepthImage, cloudDepthYolo);
     if (activeRender === '3d') updateCloudHud();
-    const yoloDetail = `${yolo.state || 'disabled'} · ${(yolo.detections || []).length} boxes${yolo.latency_ms != null ? ` · ${yolo.latency_ms} ms` : ''}${yolo.paired === false ? ' · waiting for paired frame' : ''}`;
-    const yoloFeedState = yolo.paired === false && yolo.state === 'stale' ? 'stale'
-      : classifyAge('yolo', yoloAge, yolo.state === 'ready' && Boolean(currentCamera.image_base64) && yolo.paired !== false);
+    const recentYoloResult = ['ready', 'stale'].includes(yolo.state) && yoloAge >= 0 && yoloAge <= yoloOverlayStaleLabelSeconds;
+    const yoloDetail = `${(yolo.detections || []).length} boxes${yolo.latency_ms != null ? ` · ${yolo.latency_ms} ms` : ''}${yolo.paired === false ? ` · 2D preview${Number.isFinite(Number(yolo.frame_delta_s)) ? ` · frame Δ${Number(yolo.frame_delta_s).toFixed(2)} s` : ''}` : ''}`;
+    const yoloFeedState = recentYoloResult ? 'live'
+      : Number.isFinite(yoloAge) ? 'stale' : 'offline';
     setFeedStatus('world-map-yolo-state', 'yolo', yoloFeedState, yoloDetail);
     const frameDetail = currentCamera.frame_id ? `${currentCamera.frame_id}${currentCamera.captured_at ? ` · ${frameAge.toFixed(1)}s` : ''}` : 'No frame';
     byId('world-map-frame-state').textContent = frameDetail;

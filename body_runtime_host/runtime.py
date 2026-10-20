@@ -916,7 +916,9 @@ class BodyHost:
         if frame:
             frame = {**frame, "camera_height_m": self._camera_height_m()}
             camera_at = float(frame.get("captured_at") or 0.0)
-            yolo = self._yolox_service.nearest_detection_result(camera_at, max_delta_s=0.2)
+            # The 2D preview can tolerate modest capture cadence jitter; 3D
+            # metric pairing keeps its own stricter synchronization gate.
+            yolo = self._yolox_service.nearest_detection_result(camera_at, max_delta_s=0.35)
             if yolo:
                 yolo = {**yolo, "paired": True}
             else:
