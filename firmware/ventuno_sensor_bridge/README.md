@@ -13,6 +13,11 @@ VENTUNO Q's local Arduino Router Bridge:
 - `body_gps_read()` validates NMEA on `Serial1` / USART3 (D0 RX, D1 TX),
   reports UART byte/checksum counters, retains the latest GGA sentence, and
   publishes recent GSV sentences with per-satellite C/N0, azimuth, and elevation.
+- `body_battery_indicator_set(percent)` updates MCU-owned indicators from the
+  host's estimated remaining charge. It draws the estimated percentage on the
+  blue matrix; a value of -1 clears the matrix when no estimate is available.
+  Linux separately controls only the first/user RGB LED group, using
+  `/sys/class/leds/pca963x:{red,green,blue}`; other RGB groups are untouched.
 
 The Body must run on the VENTUNO Q because Arduino Router Bridge is local to
 that device. Nothing here publishes sensor data to the LAN or changes the

@@ -43,6 +43,17 @@ class SensorBridgeRpcTests(unittest.TestCase):
         self.assertLess(time.monotonic() - started, 0.2)
         self.assertEqual(bridge.max_active, 0)
 
+    def test_battery_indicator_rpc_is_additive_to_sensor_firmware(self):
+        from pathlib import Path
+
+        sketch = (Path(__file__).resolve().parents[1] / "firmware" / "ventuno_sensor_bridge"
+                  / "ventuno_sensor_bridge.ino").read_text(encoding="utf-8")
+        self.assertIn('Bridge.provide_safe("body_battery_indicator_set", setBatteryDisplay)', sketch)
+        for method in ("body_imu_read", "body_tof_read", "body_ultrasonic_read",
+                       "body_ld2450_read", "body_gps_read"):
+            self.assertIn(f'"{method}"', sketch)
+        self.assertIn("Arduino_LED_Matrix batteryMatrix", sketch)
+
 
 if __name__ == "__main__":
     unittest.main()

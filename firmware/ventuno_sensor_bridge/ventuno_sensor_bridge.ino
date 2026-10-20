@@ -1,4 +1,5 @@
 #include <Arduino_RouterBridge.h>
+#include <Arduino_LED_Matrix.h>
 #include <Arduino_Modulino.h>
 #include <Adafruit_VL53L1X.h>
 #include <zephyr/device.h>
@@ -29,6 +30,9 @@
 // Qwiic Modulino Movement and the LD2450 share one STM32 sketch while keeping
 // their existing Linux Router Bridge RPC names stable.
 ModulinoMovement movement;
+Arduino_LED_Matrix batteryMatrix;
+int batteryDisplayPercent = -1;
+int batteryRenderedPercent = -2;
 bool movementReady = false;
 uint32_t lastImuInitAttempt = 0;
 uint32_t lastImuUpdateAt = 0;
@@ -61,6 +65,50 @@ uint32_t lastTofInitAttempt = 0;
 uint32_t tofSequence = 0;
 uint32_t latestTofAt = 0;
 int16_t latestTofDistanceMm = -1;
+
+void setBatteryDisplay(int percent) {
+  batteryDisplayPercent = constrain(percent, -1, 100);
+}
+
+void renderBatteryDisplay() {
+  if (batteryRenderedPercent == batteryDisplayPercent) return;
+  batteryRenderedPercent = batteryDisplayPercent;
+
+  uint8_t frame[104] = {};
+  if (batteryDisplayPercent >= 0) {
+    static const uint8_t digits[10][5] = {
+        {7, 5, 5, 5, 7}, {2, 6, 2, 2, 7}, {7, 1, 7, 4, 7},
+        {7, 1, 7, 1, 7}, {5, 5, 7, 1, 1}, {7, 4, 7, 1, 7},
+        {7, 4, 7, 5, 7}, {7, 1, 1, 1, 1}, {7, 5, 7, 5, 7},
+        {7, 5, 7, 1, 7}};
+    const bool showPercent = batteryDisplayPercent < 100;
+    const int digitCount = batteryDisplayPercent >= 100 ? 3
+        : (batteryDisplayPercent >= 10 ? 2 : 1);
+    const int textWidth = digitCount * 4 - 1 + (showPercent ? 3 : 0);
+    int x = (13 - textWidth) / 2;
+    int value = batteryDisplayPercent;
+    int divisors[3] = {100, 10, 1};
+    for (int d = 0; d < digitCount; ++d) {
+      const int digit = value / divisors[3 - digitCount + d] % 10;
+      for (int row = 0; row < 5; ++row) {
+        for (int col = 0; col < 3; ++col) {
+          if (digits[digit][row] & (1U << (2 - col)))
+            frame[(row + 1) * 13 + x + col] = 1;
+        }
+      }
+      x += 4;
+    }
+    if (showPercent) {
+      const int percentPixels[5][3] = {
+          {1, 0, 0}, {0, 0, 1}, {0, 1, 0}, {1, 0, 0}, {0, 0, 1}};
+      for (int row = 0; row < 5; ++row)
+        for (int col = 0; col < 3; ++col)
+          if (percentPixels[row][col])
+            frame[(row + 1) * 13 + x + col] = 1;
+    }
+  }
+  batteryMatrix.draw(frame);
+}
 
 static const uint8_t ULTRASONIC_COUNT = 3;
 static const uint8_t ultrasonicTriggerPins[ULTRASONIC_COUNT] = {D2, D4, D6};
@@ -604,6 +652,9 @@ void setup() {
   Bridge.provide_safe("body_ultrasonic_read", readUltrasonicSample);
   Bridge.provide("body_ld2450_read", readLatestLd2450);
   Bridge.provide_safe("body_gps_read", readGpsSample);
+  Bridge.provide_safe("body_battery_indicator_set", setBatteryDisplay);
+  batteryMatrix.begin();
+  renderBatteryDisplay();
   firmwareSetupStage = 1;
 
 #if BODY_ENABLE_ULTRASONIC
@@ -665,6 +716,7 @@ void setup() {
 
 void loop() {
   ++firmwareLoopSequence;
+  renderBatteryDisplay();
   while (Serial1.available() > 0) consumeGpsByte(static_cast<uint8_t>(Serial1.read()));
   updateUltrasonic();
 #if BODY_ENABLE_IMU

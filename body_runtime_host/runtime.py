@@ -174,6 +174,8 @@ class BodyHost:
         self._system_energy_last_persisted_at = time.monotonic()
         self._system_energy_updated_at: float | None = None
         self._system_energy_last_watts: float | None = None
+        from .battery_indicator import VentunoBatteryIndicator
+        self._battery_indicator = VentunoBatteryIndicator()
         self._robot_last_ok: float | None = None
         self._robot_last_error = ""
         self._fnk_usb_last_publish = 0.0
@@ -541,6 +543,12 @@ class BodyHost:
             if sample is not None:
                 self._record_power_sample(sample["watts"])
                 self._power_mode.record_watts(sample["watts"], time.time())
+            capacity_wh = max(1.0, float(self.value("BODY_POWER_BATTERY_CAPACITY_WH", 99.0)))
+            usable_fraction = max(0.5, min(1.0, float(self.value("BODY_POWER_BATTERY_USABLE_FRACTION", 0.85))))
+            with self._system_metrics_lock:
+                consumed_wh = self._system_energy_since_full_wh
+            from .battery_indicator import estimated_level_percent
+            self._battery_indicator.update(estimated_level_percent(consumed_wh, capacity_wh, usable_fraction))
             self.stop_event.wait(1.0)
 
     def brain_bridge_settings(self) -> dict:
