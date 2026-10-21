@@ -1,16 +1,19 @@
+#ifndef BODY_ENABLE_TOF
+#define BODY_ENABLE_TOF 0
+#endif
+
 #include <Arduino_RouterBridge.h>
 #include <Arduino_LED_Matrix.h>
 #include <Arduino_Modulino.h>
+#if BODY_ENABLE_TOF
 #include <Adafruit_VL53L1X.h>
+#endif
 #include <zephyr/device.h>
 #include <zephyr/drivers/uart.h>
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
 
-#ifndef BODY_ENABLE_TOF
-#define BODY_ENABLE_TOF 0
-#endif
 #ifndef BODY_ENABLE_IMU
 #define BODY_ENABLE_IMU 1
 #endif
@@ -59,7 +62,9 @@ bool attitudeFilterReady = false;
 bool gyroBiasReady = false;
 bool calibrationStable = false;
 bool gravityReferenceValid = false;
+#if BODY_ENABLE_TOF
 Adafruit_VL53L1X tof;
+#endif
 bool tofReady = false;
 uint32_t lastTofInitAttempt = 0;
 uint32_t tofSequence = 0;
@@ -188,13 +193,15 @@ void updateUltrasonic() {
     const uint32_t pulseUs = nowUs - ultrasonicEchoRiseUs;
     const uint32_t distanceMm = (pulseUs * 343UL + 1000UL) / 2000UL;
     UltrasonicChannel &channel = ultrasonicChannels[activeUltrasonic];
-    if (distanceMm >= 20 && distanceMm <= 4000) {
+    if (distanceMm < 20) {
+      channel.error = "too_close";
+    } else if (distanceMm <= 4000) {
       channel.distanceMm = static_cast<uint16_t>(distanceMm);
       channel.sampleAtMs = millis();
       channel.sequence = ++ultrasonicSequence;
       channel.error = "";
     } else {
-      channel.error = "out_of_range";
+      channel.error = "too_far";
     }
     ultrasonicPhase = ULTRASONIC_IDLE;
     return;
@@ -221,7 +228,8 @@ String readUltrasonicSample() {
     const bool channelEnabled = BODY_ENABLE_ULTRASONIC
         && (ULTRASONIC_CHANNEL_MASK & (1U << i));
     const bool fresh = channelEnabled && channel.sampleAtMs
-        && now - channel.sampleAtMs <= ULTRASONIC_STALE_MS;
+        && now - channel.sampleAtMs <= ULTRASONIC_STALE_MS
+        && channel.error && channel.error[0] == '\0';
     anyFresh = anyFresh || fresh;
     const int written = snprintf(channels + used, sizeof(channels) - used,
         "%s{\"id\":\"%s\",\"trigger_pin\":\"D%u\",\"echo_pin\":\"D%u\","

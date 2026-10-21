@@ -1,5 +1,6 @@
 import * as THREE from '../frontend/node_modules/three/build/three.module.js';
 import { createFnk0031Visual } from './fnk0031_visual.js';
+import { QuestGpsMap } from './quest_gps_map.js';
 
 const $ = id => document.getElementById(id);
 let world = null;
@@ -22,6 +23,7 @@ let robotVisual = null;
 let robotRenderer = null;
 let robotScene = null;
 let robotCamera = null;
+const gpsMap = new QuestGpsMap(() => drawNavigation());
 
 function renderRobotVisual() {
   if (!robotRenderer) return;
@@ -301,10 +303,15 @@ function drawUltrasonicRanges(modalities = world?.perception?.modalities || {}) 
     const value = card.querySelector('.ultrasonic-value');
     const fill = card.querySelector('.ultrasonic-fill');
     const track = card.querySelector('.ultrasonic-track');
-    value.textContent = available ? `${held || (Number.isFinite(retainedAge) && retainedAge > 600) ? '~' : ''}${distance.toFixed(2)}m` : 'WAIT';
+    const error = String(currentSample.error || sample.error || '');
+    const rangeState = error === 'too_close' ? 'TOO CLOSE <2cm'
+      : error === 'no_echo' ? 'NO ECHO'
+        : error === 'echo_timeout' ? 'ECHO TIMEOUT'
+          : error === 'too_far' ? 'BEYOND 4m' : 'WAIT';
+    value.textContent = available ? `${held || (Number.isFinite(retainedAge) && retainedAge > 600) ? '~' : ''}${distance.toFixed(2)}m` : rangeState;
     value.classList.toggle('sensor-wait', !available);
-    value.style.color = available ? (held || (Number.isFinite(retainedAge) && retainedAge > 600) ? '#efcb76' : distance < .35 ? '#f17c70' : distance < .8 ? '#efcb76' : '#bcebd0') : '';
-    fill.style.width = available ? `${Math.max(0, Math.min(100, distance / 4 * 100))}%` : '0%';
+    value.style.color = available ? (held || (Number.isFinite(retainedAge) && retainedAge > 600) ? '#efcb76' : distance < .35 ? '#f17c70' : distance < .8 ? '#efcb76' : '#bcebd0') : error === 'too_close' ? '#f17c70' : '';
+    fill.style.width = available ? `${Math.max(0, Math.min(100, distance / 4 * 100))}%` : error === 'too_close' ? '1%' : '0%';
     fill.style.background = available ? (held || (Number.isFinite(retainedAge) && retainedAge > 600) ? '#efcb76' : distance < .35 ? '#f17c70' : distance < .8 ? '#efcb76' : '#63d7ae') : '';
     if (track) track.setAttribute('aria-valuenow', available ? distance.toFixed(2) : '0');
   }
@@ -407,6 +414,14 @@ function drawNavigation(perception = world?.perception || {}, telemetry = contro
   const streamOnline = Boolean(gps.connected || liveGps?.available || Number(gpsDiagnostic.bytes_received) > 0);
   const state = hasFix ? 'FIX' : streamOnline ? 'UART LIVE · NO FIX' : 'NO GPS DATA';
   $('nav-gps').innerHTML = `<small>GPS · ${state}</small>${hasFix ? `${lat.toFixed(6)}°, ${lon.toFixed(6)}°` : streamOnline ? 'WAITING FOR FIX' : 'CHECK D0/D1'}<small>${Number.isFinite(satellites) ? `${satellites} USED` : 'USED —'}${Number.isFinite(satellitesInView) ? ` · ${satellitesInView} VIEW` : ''}${Number.isFinite(hdop) ? ` · HDOP ${hdop.toFixed(1)}` : ''}</small>`;
+  const gpsMapCanvas = $('nav-gps-map');
+  const gpsMapSize = resizeCanvas(gpsMapCanvas);
+  const gpsMapContext = gpsMapCanvas.getContext('2d');
+  gpsMapContext.setTransform(gpsMapSize.ratio, 0, 0, gpsMapSize.ratio, 0, 0);
+  gpsMap.draw(gpsMapContext, {
+    x: 0, y: 0, width: gpsMapSize.width / gpsMapSize.ratio, height: gpsMapSize.height / gpsMapSize.ratio,
+    latitude: hasFix ? lat : NaN, longitude: hasFix ? lon : NaN, accuracyM: accuracy,
+  });
   const signals = Array.isArray(gps.satellite_signals) ? gps.satellite_signals.slice(0, 6) : [];
   $('nav-gps-satellites').innerHTML = signals.map(satellite => {
     const cn0 = number(satellite.cn0_db_hz);

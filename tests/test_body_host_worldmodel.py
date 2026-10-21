@@ -585,7 +585,7 @@ class BodyHostHttpTest(unittest.TestCase):
                 self.assertIn("setCameraStatus(message, preserveFrame = false)", dashboard_source)
                 self.assertIn("if (this.cameraBitmap && !this.cameraBackgroundActive)", dashboard_source)
                 self.assertIn("CAMERA · SCENE BACKGROUND", dashboard_source)
-                self.assertIn("panel.position.set(0, 0.05, -4.6)", dashboard_source)
+                self.assertIn("panel.position.set(0, 0, -0.9)", dashboard_source)
                 self.assertIn("this.drawCamera(ctx, cameraX, top, cameraWidth, panelHeight)", dashboard_source)
                 self.assertIn("this.drawSensorPanel(ctx, sensorX, top, sensorWidth, panelHeight, perception)", dashboard_source)
                 self.assertIn("updatePointer(controller, raycaster)", dashboard_source)

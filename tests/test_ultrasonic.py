@@ -99,6 +99,19 @@ class UltrasonicTests(unittest.TestCase):
         self.assertEqual([item["error"] for item in sample["sensors"]],
                          ["no_echo", "no_echo", "echo_timeout"])
 
+    def test_too_close_is_preserved_as_distinct_from_missing_echo(self):
+        bridge = FakeBridge(payload([
+            channel("front_left", "D2", "D3", None, False, "too_close"),
+            channel("front_right", "D4", "D5", None, False, "no_echo"),
+            channel("rear", "D6", "D9", None, False, "echo_timeout"),
+        ]))
+
+        sample = VentunoBridgeUltrasonicSource(bridge_factory=lambda: bridge).read()
+
+        self.assertEqual([item["error"] for item in sample["sensors"]],
+                         ["too_close", "no_echo", "echo_timeout"])
+        self.assertTrue(all(item["distance_m"] is None for item in sample["sensors"]))
+
     def test_firmware_and_live_status_keep_the_existing_bridge_methods(self):
         from pathlib import Path
 
@@ -114,12 +127,14 @@ class UltrasonicTests(unittest.TestCase):
         self.assertIn("updateUltrasonic();", sketch)
         self.assertIn("firmwareLoopSequence", sketch)
         self.assertIn("BODY_ULTRASONIC_CHANNEL_MASK", sketch)
+        self.assertIn('channel.error = "too_close"', sketch)
         self.assertNotIn("pulseIn(", sketch)
         for existing_rpc in ("body_imu_read", "body_tof_read", "body_ld2450_read", "body_gps_read"):
             self.assertIn(existing_rpc, sketch)
         self.assertIn('path == "/plugins/ultrasonic/status"', runtime)
         self.assertIn("/plugins/ultrasonic/status", ui)
         self.assertIn("world-map-ultrasonic-rear", ui)
+        self.assertIn("Too close · <2 cm", ui)
 
 
 if __name__ == "__main__":

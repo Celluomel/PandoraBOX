@@ -1,4 +1,5 @@
 import { createFnk0031Visual } from './fnk0031_visual.js';
+import { QuestGpsMap } from './quest_gps_map.js';
 
 export class QuestVRDashboard {
   constructor(THREE, maxAnisotropy = 1) {
@@ -15,7 +16,17 @@ export class QuestVRDashboard {
     this.scene.add(edgeLight);
     this.panels = [];
     this.visible = false;
-    this.headLocked = true;
+    this.headLocked = false;
+    this.worldAnchored = false;
+    this.anchorForward = new THREE.Vector3(0, 0, -1);
+    this.hudTargetPosition = new THREE.Vector3();
+    this.hudTargetQuaternion = new THREE.Quaternion();
+    this.hudTowardVector = new THREE.Vector3();
+    this.lastYoloUpdateAt = 0;
+    this.yoloFrameId = '';
+    this.yoloCapturedAt = 0;
+    this.yoloState = 'waiting';
+    this.yoloDetections = [];
     this.widthScale = 1;
     this.heightScale = 1;
     this.headOffsetPosition = new THREE.Vector3();
@@ -38,6 +49,8 @@ export class QuestVRDashboard {
     this.telemetry = null;
     this.imuStatus = null;
     this.gpsStatus = null;
+    this.gpsMap = new QuestGpsMap(() => this.drawDashboard());
+    this.cameraFov = null;
     this.ultrasonicStatus = null;
     this.lastUltrasonicSamples = Object.create(null);
     this.sensorStatus = { camera: 'WAITING', yolo: 'WAITING', midas: 'WAITING' };
@@ -66,20 +79,20 @@ export class QuestVRDashboard {
     this.texture.minFilter = THREE.LinearMipmapLinearFilter;
     this.texture.magFilter = THREE.LinearFilter;
     this.texture.anisotropy = Math.min(8, Number(maxAnisotropy) || 1);
-    const geometry = this.createArcGeometry(8.4, 0.5, 64);
+    const geometry = this.createArcGeometry(1.55, 0.42, 64);
     const panel = new THREE.Mesh(
       geometry,
       new THREE.MeshBasicMaterial({ map: this.texture, transparent: true, depthTest: false, depthWrite: false, side: THREE.DoubleSide }),
     );
-    panel.position.set(0, 0.05, -4.6);
+    panel.position.set(0, 0, -0.9);
     this.panel = panel;
     panel.renderOrder = 1000;
     this.root.add(panel);
     this.panels.push(panel);
     this.robotVisual = createFnk0031Visual(THREE);
-    this.robotVisual.group.position.set(-0.82, -0.5, -4.08);
+    this.robotVisual.group.position.set(-0.13, -0.08, -0.84);
     this.robotVisual.group.rotation.y = -0.28;
-    this.robotVisual.group.scale.setScalar(.9);
+    this.robotVisual.group.scale.setScalar(.24);
     this.robotVisual.group.renderOrder = 1001;
     this.robotVisual.group.traverse(object => {
       if (!object.isMesh) return;
@@ -115,7 +128,7 @@ export class QuestVRDashboard {
         const u = column / segments;
         const theta = (u - 0.5) * angle;
         const topForwardTilt = row === 0 ? depth / 2 : -depth / 2;
-        positions.push(Math.sin(theta) * radius, row === 0 ? 1.62 : -1.62, radius * (Math.cos(theta) - 1) + topForwardTilt);
+        positions.push(Math.sin(theta) * radius, row === 0 ? 0.46 : -0.46, radius * (Math.cos(theta) - 1) + topForwardTilt);
         uvs.push(u, row === 0 ? 1 : 0);
       }
     }
@@ -158,9 +171,61 @@ export class QuestVRDashboard {
     this.drawDashboard();
   }
 
+  updatePowerStatus(status) {
+    const previous = this.sensorStatus.power;
+    const mode = String(status?.mode || 'UNKNOWN').toUpperCase();
+    const estimate = status?.battery_estimate || {};
+    const level = Number(estimate.level_percent_est);
+    const remainingWh = Number(estimate.remaining_wh_est);
+    const modeMean = Number(status?.rolling_60s_mean_w_by_mode?.[mode]?.mean_w);
+    const watts = modeMean > 0 ? modeMean : Number(status?.board_input_w);
+    this.sensorStatus.power = Number.isFinite(level) ? `${mode} · ~${Math.round(level)}%` : mode;
+    this.sensorStatus.runtime = Number.isFinite(remainingWh) && watts > 0
+      ? `${Math.floor(remainingWh / watts)}H ${Math.floor((remainingWh / watts % 1) * 60)}M EST.` : '—';
+    if (previous !== this.sensorStatus.power) this.drawDashboard();
+  }
+
+  updateDepthIntrinsics(intrinsics, width, height) {
+    const fx = Number(intrinsics?.fx);
+    const fy = Number(intrinsics?.fy);
+    const imageWidth = Number(width);
+    const imageHeight = Number(height);
+    if (!(fx > 0 && fy > 0 && imageWidth > 0 && imageHeight > 0)) return;
+    const cameraFov = {
+      horizontalDeg: 2 * Math.atan(imageWidth / (2 * fx)) * 180 / Math.PI,
+      verticalDeg: 2 * Math.atan(imageHeight / (2 * fy)) * 180 / Math.PI,
+      calibrated: Boolean(intrinsics.calibrated),
+    };
+    if (this.cameraFov
+      && Math.abs(this.cameraFov.horizontalDeg - cameraFov.horizontalDeg) < 0.05
+      && Math.abs(this.cameraFov.verticalDeg - cameraFov.verticalDeg) < 0.05
+      && this.cameraFov.calibrated === cameraFov.calibrated) return;
+    this.cameraFov = cameraFov;
+    this.drawDashboard();
+  }
+
   updateUltrasonicStatus(status) {
     this.ultrasonicStatus = status || null;
     this.drawDashboard();
+  }
+
+  updateYoloResult(result) {
+    const detections = Array.isArray(result?.detections) ? result.detections : [];
+    const updatedAt = Date.now();
+    this.yoloState = String(result?.state || 'unknown').toLowerCase();
+    const frameId = String(result?.frame_id || result?.captured_at || '');
+    let changed = false;
+    if (detections.length && frameId !== this.yoloFrameId) {
+      this.yoloDetections = detections.slice(0, 12);
+      this.yoloFrameId = frameId;
+      this.yoloCapturedAt = Number(result.captured_at) || 0;
+      this.lastYoloUpdateAt = updatedAt;
+      changed = true;
+    } else if (updatedAt - this.lastYoloUpdateAt > 5000) {
+      changed = this.yoloDetections.length > 0;
+      this.yoloDetections = [];
+    }
+    if (changed) this.drawDashboard();
   }
 
   updateSensorStatus(status) {
@@ -238,15 +303,18 @@ export class QuestVRDashboard {
     const panelHeight = bottom - top;
     const margin = 30;
     const gap = 20;
-    const cameraWidth = 930;
-    const bodyWidth = 1040;
-    const sensorWidth = width - 2 * margin - 2 * gap - cameraWidth - bodyWidth;
+    const cameraWidth = 720;
+    const bodyWidth = 900;
+    const sensorWidth = 660;
+    const coverageWidth = width - 2 * margin - 3 * gap - cameraWidth - bodyWidth - sensorWidth;
     const cameraX = margin;
     const bodyX = cameraX + cameraWidth + gap;
     const sensorX = bodyX + bodyWidth + gap;
+    const coverageX = sensorX + sensorWidth + gap;
     this.drawCamera(ctx, cameraX, top, cameraWidth, panelHeight);
     this.drawBodyPanel(ctx, bodyX, top, bodyWidth, panelHeight, perception, fnk, xr);
     this.drawSensorPanel(ctx, sensorX, top, sensorWidth, panelHeight, perception);
+    this.drawCoveragePanel(ctx, coverageX, top, coverageWidth, panelHeight, perception);
     this.drawHudActions(ctx);
     ctx.fillStyle = this.grabbedController ? '#f0cd79' : '#91b6a0';
     ctx.font = '600 21px ui-monospace, monospace';
@@ -329,7 +397,7 @@ export class QuestVRDashboard {
     this.drawPanel(ctx, x, y, width, height, 'Camera · egocentric', this.cameraBackgroundActive ? 'BACKGROUND ON' : this.cameraBitmap ? 'LIVE' : 'BODY CAMERA');
     const imageX = x + 18;
     const imageWidth = width - 36;
-    const imageHeight = Math.min(height - 112, imageWidth * .78);
+    const imageHeight = Math.min(height - 228, imageWidth * .78);
     const imageY = y + 72 + Math.max(0, (height - 92 - imageHeight) / 2);
     this.cameraHitArea = { x: imageX, y: imageY, width: imageWidth, height: imageHeight };
     ctx.fillStyle = '#0b1512';
@@ -342,6 +410,8 @@ export class QuestVRDashboard {
       ctx.beginPath(); ctx.roundRect(imageX, imageY, imageWidth, imageHeight, 20); ctx.clip();
       ctx.drawImage(this.cameraBitmap, imageX + (imageWidth - drawWidth) / 2, imageY + (imageHeight - drawHeight) / 2, drawWidth, drawHeight);
       ctx.restore();
+      this.drawYoloOverlay(ctx, imageX, imageY, imageWidth, imageHeight, scale,
+        imageX + (imageWidth - drawWidth) / 2, imageY + (imageHeight - drawHeight) / 2);
       ctx.fillStyle = 'rgba(4, 13, 11, .78)';
       ctx.beginPath(); ctx.roundRect(imageX + 16, imageY + imageHeight - 48, 390, 34, 12); ctx.fill();
       ctx.fillStyle = '#d9f5e4'; ctx.font = '700 19px ui-monospace, monospace';
@@ -360,6 +430,81 @@ export class QuestVRDashboard {
       ctx.font = '700 27px ui-monospace, monospace';
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       ctx.fillText(this.cameraMessage, imageX + imageWidth / 2, imageY + imageHeight / 2);
+    }
+    this.drawDetectionSummary(ctx, x + 18, imageY + imageHeight + 18, imageWidth, y + height - 18);
+  }
+
+  detectionColor(label) {
+    const key = String(label || '').toLowerCase();
+    if (key === 'person') return '#63e6a8';
+    if (['tv', 'tvmonitor', 'monitor'].includes(key)) return '#f0c26f';
+    if (['chair', 'couch', 'bed'].includes(key)) return '#b99aff';
+    if (['car', 'bicycle', 'motorcycle', 'bus', 'truck'].includes(key)) return '#6bd4ed';
+    return '#70e0cf';
+  }
+
+  drawYoloOverlay(ctx, imageX, imageY, imageWidth, imageHeight, scale, offsetX, offsetY) {
+    const age = this.yoloCapturedAt && this.cameraCapturedAt ? Math.abs(this.yoloCapturedAt - this.cameraCapturedAt) : Infinity;
+    const frameMatches = this.yoloFrameId && this.cameraFrameId && this.yoloFrameId === this.cameraFrameId;
+    const timeMatches = Number.isFinite(age) && age <= 0.2;
+    const paired = this.yoloState === 'ready' && (frameMatches || timeMatches);
+    if (!this.yoloDetections.length || (!paired && Date.now() - this.lastYoloUpdateAt > 5000)) return;
+    const labels = [];
+    this.yoloDetections.forEach((detection, index) => {
+      const box = detection.bbox;
+      if (!Array.isArray(box) || box.length !== 4 || !box.every(value => Number.isFinite(Number(value)))) return;
+      const [x1, y1, x2, y2] = box.map(value => Math.max(0, Math.min(1, Number(value))));
+      if (x2 <= x1 || y2 <= y1) return;
+      const left = offsetX + x1 * this.cameraBitmap.width * scale;
+      const top = offsetY + y1 * this.cameraBitmap.height * scale;
+      const right = offsetX + x2 * this.cameraBitmap.width * scale;
+      const bottom = offsetY + y2 * this.cameraBitmap.height * scale;
+      const color = this.detectionColor(detection.label || detection.class_name);
+      const clippedLeft = Math.max(imageX, left);
+      const clippedTop = Math.max(imageY, top);
+      const clippedRight = Math.min(imageX + imageWidth, right);
+      const clippedBottom = Math.min(imageY + imageHeight, bottom);
+      if (clippedRight <= clippedLeft || clippedBottom <= clippedTop) return;
+      ctx.save();
+      ctx.globalAlpha = paired ? 0.96 : 0.56;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = Math.max(3, imageWidth / 360);
+      ctx.strokeRect(clippedLeft, clippedTop, clippedRight - clippedLeft, clippedBottom - clippedTop);
+      ctx.font = '700 18px ui-monospace, monospace';
+      const label = `${paired ? '' : 'LAST SEEN · '}${detection.label || detection.class_name || 'object'} ${Math.round(Number(detection.confidence || detection.score || 0) * 100)}%`;
+      const labelWidth = ctx.measureText(label).width + 14;
+      const labelY = Math.max(imageY + 20, top - 6 - labels.filter(item => Math.abs(item.x - left) < labelWidth && Math.abs(item.y - top) < 28).length * 26);
+      labels.push({ x: left, y: labelY });
+      ctx.fillStyle = color;
+      ctx.fillRect(Math.max(imageX, left), labelY - 22, Math.min(labelWidth, imageX + imageWidth - Math.max(imageX, left)), 24);
+      ctx.fillStyle = '#07120e';
+      ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+      ctx.fillText(label, Math.max(imageX, left) + 7, labelY - 10, imageWidth - 14);
+      ctx.restore();
+    });
+  }
+
+  drawDetectionSummary(ctx, x, y, width, bottom) {
+    const rows = this.yoloDetections.slice(0, 3);
+    const top = y;
+    const cardGap = 10;
+    const cardWidth = (width - cardGap * 2) / 3;
+    const cardHeight = Math.min(94, Math.max(58, bottom - top));
+    rows.forEach((detection, index) => {
+      const cardX = x + index * (cardWidth + cardGap);
+      const label = String(detection.label || detection.class_name || 'object');
+      ctx.fillStyle = 'rgba(7,18,22,.88)';
+      ctx.strokeStyle = this.detectionColor(label);
+      ctx.beginPath(); ctx.roundRect(cardX, top, cardWidth, cardHeight, 10); ctx.fill(); ctx.stroke();
+      ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.fillStyle = this.detectionColor(label);
+      ctx.font = '700 20px ui-monospace, monospace';
+      ctx.fillText(label.toUpperCase(), cardX + 12, top + 24, cardWidth - 24);
+      ctx.fillStyle = '#d3e2dc'; ctx.font = '600 17px ui-monospace, monospace';
+      ctx.fillText(`${Math.round(Number(detection.confidence || detection.score || 0) * 100)}%${Date.now() - this.lastYoloUpdateAt > 250 ? ' · LAST SEEN' : ' · LIVE'}`, cardX + 12, top + 54, cardWidth - 24);
+    });
+    if (!rows.length) {
+      ctx.fillStyle = '#9db8a7'; ctx.font = '600 18px ui-monospace, monospace'; ctx.textAlign = 'left';
+      ctx.fillText('YOLOX · WAITING FOR DETECTIONS', x + 8, top + 26, width - 16);
     }
   }
 
@@ -496,7 +641,11 @@ export class QuestVRDashboard {
     const gpsStreamOnline = Boolean(this.gpsStatus?.available || gps.connected || Number(this.gpsStatus?.source_status?.diagnostic?.bytes_received) > 0);
     ctx.fillText(hasGps ? `FIX${Number.isFinite(gpsAccuracy) ? ` · ±${gpsAccuracy.toFixed(1)} m` : Number.isFinite(gpsHdop) ? ` · HDOP ${gpsHdop.toFixed(1)}` : ''}` : gpsStreamOnline ? 'UART LIVE · WAITING FOR FIX' : 'NO GPS DATA · CHECK D0/D1', gpsX, gpsY + 51);
     const inView = asNumber(gps.satellites_in_view);
-    ctx.fillText(`${Number.isFinite(satelliteCount) ? `${satelliteCount} USED` : 'USED —'} · ${Number.isFinite(inView) ? `${inView} IN VIEW` : 'VIEW —'} · C/N₀ dB-Hz`, gpsX, gpsY + 74);
+    ctx.fillText(`${Number.isFinite(satelliteCount) ? `${satelliteCount} USED` : 'USED —'} · ${Number.isFinite(inView) ? `${inView} IN VIEW` : 'VIEW —'}`, gpsX, gpsY + 74);
+    this.gpsMap.draw(ctx, {
+      x: x + width * .5, y: y + 720, width: width * .23, height: 150,
+      latitude: hasGps ? gpsLat : NaN, longitude: hasGps ? gpsLon : NaN, accuracyM: gpsAccuracy,
+    });
     const plottedSignals = satelliteSignals.slice(0, 10);
     if (plottedSignals.length) {
       const barWidth = 13;
@@ -613,9 +762,24 @@ export class QuestVRDashboard {
     const gap = 14;
     const mapWidth = width - inset * 2;
     const tofHeight = 124;
+    const modalities = { ...(perception.modalities || {}) };
+    if (this.sceneMode === 'sensors' && this.ultrasonicStatus) modalities.ultrasonic = this.ultrasonicStatus.sample || {};
+    const ultrasonic = modalities.ultrasonic || {};
+    const radarSample = modalities.mmwave_radar || {};
+    const radarAge = Number(radarSample.age_ms);
+    const tofAge = Number(tof.age_ms);
+    const statusFor = sample => sample?.available === true
+      ? `${Number(sample.distance_m ?? Number(sample.distance_mm) / 1000).toFixed(2)} M · ${Number(sample.age_ms || 0) > 750 ? 'STALE' : 'LIVE'}`
+      : sample?.error || 'NO DATA';
+    this.sensorStatus.radar = radarSample.available || (radarSample.targets || []).length
+      ? `${(radarSample.targets || []).length} TARGETS · ${Number.isFinite(radarAge) ? `${(radarAge / 1000).toFixed(1)}S` : 'LIVE'}` : 'NO TARGET';
+    this.sensorStatus.tof = tof.available ? `${Number(tof.distance_m).toFixed(2)} M · ${Number.isFinite(tofAge) ? `${(tofAge / 1000).toFixed(1)}S` : 'LIVE'}` : tof.error || 'NO DATA';
+    this.sensorStatus.ultrasonicFrontLeft = statusFor(ultrasonic.front_left || {});
+    this.sensorStatus.ultrasonicFrontRight = statusFor(ultrasonic.front_right || {});
+    this.sensorStatus.ultrasonicRear = statusFor(ultrasonic.rear || {});
     this.drawSensorStatusStrip(ctx, x + inset, y + 67, mapWidth, live);
-    const mapHeight = (height - 134 - tofHeight - gap * 2) / 2;
-    const mapY = y + 108;
+    const mapHeight = (height - 172 - tofHeight - gap * 2) / 2;
+    const mapY = y + 142;
     const tofY = mapY + mapHeight * 2 + gap * 2;
     ctx.strokeStyle = 'rgba(135, 206, 166, .22)';
     ctx.beginPath(); ctx.roundRect(x + inset, mapY, mapWidth, mapHeight, 20); ctx.stroke();
@@ -623,11 +787,164 @@ export class QuestVRDashboard {
     ctx.beginPath(); ctx.roundRect(x + inset, tofY, mapWidth, tofHeight, 18); ctx.stroke();
     this.drawMetricMap(ctx, x + inset, mapY, mapWidth, mapHeight, lidar, radar, perception, 'LiDAR', 'lidar');
     this.drawMetricMap(ctx, x + inset, mapY + mapHeight + gap, mapWidth, mapHeight, lidar, radar, perception, 'mmWave', 'radar');
-    const modalities = { ...(perception.modalities || {}) };
-    if (this.sceneMode === 'sensors' && this.ultrasonicStatus) {
-      modalities.ultrasonic = this.ultrasonicStatus.sample || {};
-    }
     this.drawRangeSensorStrip(ctx, x + inset + 12, tofY + 12, mapWidth - 24, tofHeight - 24, tof, modalities);
+  }
+
+  drawCoveragePanel(ctx, x, y, width, height, perception) {
+    const live = this.sceneMode === 'sensors';
+    this.drawPanel(ctx, x, y, width, height, 'Coverage · field of view', live ? 'LIVE RETURNS · ANGLES CONFIGURABLE' : 'SENSOR CONFIGURATION');
+    const plotWidth = Math.min(300, width * 0.47);
+    const plotX = x + 18;
+    const plotY = y + 82;
+    const plotHeight = Math.min(height - 210, 620);
+    const cx = plotX + plotWidth / 2;
+    const cy = plotY + plotHeight * 0.48;
+    const radius = Math.min(plotWidth * 0.43, plotHeight * 0.39);
+    const scale = radius / 6;
+    const colors = { radar: '#f0c26f', camera: '#68d8ed', tof: '#65e2c2', left: '#a7df78', right: '#6bd4d0', rear: '#ba9cff' };
+    const anglePoint = (bearing, distance) => {
+      const angle = (bearing - 90) * Math.PI / 180;
+      return { x: cx + Math.cos(angle) * distance, y: cy + Math.sin(angle) * distance };
+    };
+    ctx.save();
+    ctx.beginPath(); ctx.arc(cx, cy, radius, 0, Math.PI * 2); ctx.clip();
+    ctx.fillStyle = 'rgba(40,55,49,.2)'; ctx.fillRect(cx - radius, cy - radius, radius * 2, radius * 2);
+    ctx.strokeStyle = 'rgba(120,151,137,.12)'; ctx.lineWidth = 1;
+    for (let offset = -radius * 2; offset <= radius * 2; offset += 12) {
+      ctx.beginPath(); ctx.moveTo(cx - radius, cy + offset); ctx.lineTo(cx + radius, cy + offset + radius * 2); ctx.stroke();
+    }
+    ctx.restore();
+    const drawSector = (bearing, halfAngle, range, color, dashed = false, alpha = 0.15) => {
+      const start = (bearing - halfAngle - 90) * Math.PI / 180;
+      const end = (bearing + halfAngle - 90) * Math.PI / 180;
+      const reach = Math.min(radius, range * scale);
+      ctx.beginPath(); ctx.moveTo(cx, cy); ctx.arc(cx, cy, reach, start, end); ctx.closePath();
+      ctx.fillStyle = color; ctx.globalAlpha = alpha; ctx.fill(); ctx.globalAlpha = 1;
+      ctx.strokeStyle = color; ctx.lineWidth = dashed ? 2 : 1.5; ctx.setLineDash(dashed ? [6, 5] : []); ctx.stroke(); ctx.setLineDash([]);
+    };
+    drawSector(0, 60, 6, colors.radar, false, 0.12);
+    const cameraHalfFov = (this.cameraFov?.horizontalDeg || 70) / 2;
+    drawSector(0, cameraHalfFov, 5.5, colors.camera, true, 0.08);
+    drawSector(0, 7, 4, colors.tof, false, 0.3);
+    drawSector(-25, 15, 4, colors.left, false, 0.2);
+    drawSector(25, 15, 4, colors.right, false, 0.2);
+    drawSector(180, 15, 4, colors.rear, false, 0.2);
+    for (let meters = 1; meters <= 6; meters += 1) {
+      ctx.beginPath(); ctx.arc(cx, cy, meters * scale, 0, Math.PI * 2);
+      ctx.strokeStyle = meters === 6 ? 'rgba(240,194,111,.48)' : 'rgba(151,177,166,.22)'; ctx.lineWidth = 1; ctx.stroke();
+      if (meters % 2 === 0 || meters === 1) {
+        ctx.fillStyle = '#9cb2aa'; ctx.font = '13px ui-monospace, monospace'; ctx.textAlign = 'center';
+        ctx.fillText(`${meters}`, cx + 12, cy - meters * scale + 16);
+      }
+    }
+    for (let bearing = 0; bearing < 360; bearing += 30) {
+      const point = anglePoint(bearing, radius);
+      ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(point.x, point.y); ctx.strokeStyle = 'rgba(151,177,166,.14)'; ctx.stroke();
+    }
+    const robot = anglePoint(0, 0);
+    ctx.fillStyle = '#e7f1ec'; ctx.beginPath(); ctx.moveTo(robot.x, robot.y - 12); ctx.lineTo(robot.x - 9, robot.y + 10); ctx.lineTo(robot.x + 9, robot.y + 10); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#dce9e4'; ctx.font = '600 14px ui-monospace, monospace'; ctx.textAlign = 'center';
+    ctx.fillText('FRONT', cx, cy - radius - 20); ctx.fillText('REAR', cx, cy + radius + 28);
+    ctx.textAlign = 'left'; ctx.fillText('LEFT', cx - radius - 30, cy + 5); ctx.textAlign = 'right'; ctx.fillText('RIGHT', cx + radius + 30, cy + 5);
+
+    const radar = perception.modalities?.mmwave_radar || {};
+    const frame = perception.sensor_projections?.frame || {};
+    const bodyPosition = frame.body || perception.body?.position || [0, 0, 0];
+    const yaw = Number(frame.yaw_rad ?? perception.body?.orientation ?? 0);
+    const isLd2450 = /^hlk_ld2450/i.test(String(radar.source || ''));
+    for (const target of Array.isArray(radar.targets) ? radar.targets : []) {
+      const p = target.position_m || target.position || [];
+      const radarPosition = isLd2450 ? [Number(p[1]), -Number(p[0]), Number(p[2] || 0)] : p;
+      const local = this.sensorLocal(radarPosition, radar.frame || 'body', bodyPosition, yaw);
+      if (!local || local.forward < 0 || local.distance > 6) continue;
+      const marker = anglePoint(Math.atan2(-local.left, local.forward) * 180 / Math.PI, local.distance * scale);
+      ctx.fillStyle = colors.radar; ctx.beginPath(); ctx.arc(marker.x, marker.y, 7, 0, Math.PI * 2); ctx.fill();
+    }
+    const tof = perception.modalities?.tof || {};
+    const tofDistance = Number(tof.distance_m);
+    if (tof.available === true && Number.isFinite(tofDistance) && tofDistance > 0 && tofDistance <= 4) {
+      const marker = anglePoint(0, tofDistance * scale); ctx.fillStyle = colors.tof; ctx.beginPath(); ctx.arc(marker.x, marker.y, 6, 0, Math.PI * 2); ctx.fill();
+    }
+    const ultrasonic = this.ultrasonicStatus?.sample || perception.modalities?.ultrasonic || {};
+    [['front_left', -25, colors.left], ['front_right', 25, colors.right], ['rear', 180, colors.rear]].forEach(([key, bearing, color]) => {
+      const sample = ultrasonic[key] || {};
+      const distance = Number(sample.distance_m ?? Number(sample.distance_mm) / 1000);
+      if (sample.available !== true || !Number.isFinite(distance) || distance <= 0 || distance > 4) return;
+      const marker = anglePoint(bearing, distance * scale); ctx.fillStyle = color; ctx.beginPath(); ctx.arc(marker.x, marker.y, 6, 0, Math.PI * 2); ctx.fill();
+    });
+
+    const coverageLegend = [
+      ['RADAR', colors.radar], ['CAMERA', colors.camera], ['ToF', colors.tof], ['HC-SR04 ×3', colors.left],
+    ];
+    coverageLegend.forEach(([label, color], index) => {
+      const slotWidth = width / coverageLegend.length;
+      const lx = x + 18 + index * slotWidth;
+      const ly = y + height - 58;
+      ctx.fillStyle = color; ctx.fillRect(lx, ly - 7, 12, 12);
+      ctx.fillStyle = '#c6d6d0'; ctx.font = '600 12px ui-monospace, monospace'; ctx.textAlign = 'left';
+      ctx.fillText(label, lx + 18, ly, slotWidth - 24);
+    });
+
+    const textX = x + plotWidth + 32;
+    const textWidth = x + width - 24 - textX;
+    const titleY = y + 92;
+    ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#92aaa2'; ctx.font = '600 14px ui-monospace, monospace';
+    ctx.fillText('DISPLAY TIER', textX, titleY); ctx.fillText('FIELD', textX + 100, titleY); ctx.fillText('USE', textX + 198, titleY);
+    ctx.strokeStyle = 'rgba(135,206,166,.22)'; ctx.beginPath(); ctx.moveTo(textX, titleY + 18); ctx.lineTo(textX + textWidth, titleY + 18); ctx.stroke();
+    const rows = [
+      ['Primary', '36° × 27°', 'camera, detections'],
+      ['Secondary', '24° × 18°', 'lists, tables'],
+      ['Tertiary', '16° × 12°', 'status, pose'],
+      ['Body text', '≥ 1.2°', '≈ 2.5 cm min.'],
+    ];
+    rows.forEach((row, index) => {
+      const rowY = titleY + 43 + index * 38;
+      ctx.fillStyle = '#d3e2dc'; ctx.font = '15px ui-monospace, monospace'; ctx.fillText(row[0], textX, rowY);
+      ctx.fillStyle = '#c6d6d0'; ctx.fillText(row[1], textX + 100, rowY);
+      ctx.fillStyle = '#aebfba'; ctx.font = '13px ui-monospace, monospace'; ctx.fillText(row[2], textX + 198, rowY, Math.max(40, textWidth - 198));
+      ctx.strokeStyle = 'rgba(135,206,166,.14)'; ctx.beginPath(); ctx.moveTo(textX, rowY + 17); ctx.lineTo(textX + textWidth, rowY + 17); ctx.stroke();
+    });
+    const cameraFovText = this.cameraFov
+      ? `CAMERA ${this.cameraFov.calibrated ? 'INTRINSICS' : 'NOMINAL'} · H ${this.cameraFov.horizontalDeg.toFixed(1)}° · V ${this.cameraFov.verticalDeg.toFixed(1)}°`
+      : 'CAMERA FOV · NOMINAL 70° · AWAITING DEPTH INTRINSICS';
+    ctx.fillStyle = this.cameraFov?.calibrated ? colors.camera : '#f0c26f';
+    ctx.font = '600 12px ui-monospace, monospace';
+    ctx.fillText(cameraFovText, textX, titleY + 194, textWidth);
+    ctx.fillStyle = '#829d8d'; ctx.font = '12px ui-monospace, monospace';
+    ctx.fillText('1.2 M REFERENCE · TUNE MINIMUM TEXT HEIGHT ON DEVICE', textX, titleY + 213, textWidth);
+    const bulletY = titleY + 246;
+    const lines = [
+      ['CAMERA WINDOW', this.cameraFov?.calibrated ? 'Dashed frustum uses depth-frame camera intrinsics; cloud is clipped to that view.' : 'Dashed frustum is nominal until camera intrinsics are supplied; cloud remains camera-framed.'],
+      ['SENSOR-ALIGNED', 'Front sensors point forward; rear ultrasonic is behind the robot. Close-behind cues should be haptic or audio.'],
+      ['BLIND SECTORS', 'Hatching means no coverage. Radar is not a 360° sensor.'],
+      ['INTERACTION', 'Primary within ±30°, secondary within ±60°; keep wrist edges nonessential.'],
+      ['DEPTH HONESTY', 'MiDaS remains relative until its radar calibration is validated.'],
+    ];
+    const wrap = (text, maxWidth, font) => {
+      ctx.font = font; const words = text.split(' '); const result = []; let line = '';
+      for (const word of words) { const candidate = line ? `${line} ${word}` : word; if (line && ctx.measureText(candidate).width > maxWidth) { result.push(line); line = word; } else line = candidate; }
+      if (line) result.push(line); return result;
+    };
+    let lineY = bulletY;
+    for (const [label, detail] of lines) {
+      ctx.fillStyle = '#65e2c2'; ctx.font = '700 13px ui-monospace, monospace'; ctx.fillText(`• ${label}`, textX, lineY);
+      lineY += 21;
+      const detailLines = wrap(detail, textWidth - 12, '14px system-ui');
+      ctx.fillStyle = '#b5c7c0'; ctx.font = '14px system-ui';
+      detailLines.forEach(line => { ctx.fillText(line, textX + 12, lineY, textWidth - 14); lineY += 19; });
+      lineY += 8;
+    }
+    const legendY = Math.min(y + height - 96, lineY + 8);
+    const legend = [['VALID', '#60e0bd'], ['NO ECHO · CLEAR', '#8dbdff'], ['TOO CLOSE', '#ff8278'], ['STALE', '#f0c26f'], ['OFFLINE', '#91a79b']];
+    legend.forEach(([label, color], index) => {
+      const column = index % 2; const row = Math.floor(index / 2);
+      const lx = textX + column * (textWidth / 2); const ly = legendY + row * 27;
+      ctx.fillStyle = color; ctx.beginPath(); ctx.arc(lx + 5, ly, 5, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#bdccc7'; ctx.font = '12px ui-monospace, monospace'; ctx.fillText(label, lx + 17, ly, textWidth / 2 - 20);
+    });
+    ctx.fillStyle = '#829d8d'; ctx.font = '12px ui-monospace, monospace'; ctx.textAlign = 'left';
+    ctx.fillText('ANGLES / MOUNT OFFSETS ARE CONFIGURABLE ASSUMPTIONS', x + 22, y + height - 28, width - 44);
   }
 
   drawSensorStatusStrip(ctx, x, y, width, live) {
@@ -635,24 +952,35 @@ export class QuestVRDashboard {
       ['CAMERA', this.sensorStatus.camera || this.cameraMessage],
       ['YOLOX', this.sensorStatus.yolo || 'WAITING'],
       ['MiDaS', this.sensorStatus.midas || 'WAITING'],
+      ['RADAR', this.sensorStatus.radar || 'WAITING'],
+      ['ToF', this.sensorStatus.tof || 'WAITING'],
+      ['US FRONT-L', this.sensorStatus.ultrasonicFrontLeft || 'WAITING'],
+      ['US FRONT-R', this.sensorStatus.ultrasonicFrontRight || 'WAITING'],
+      ['US REAR', this.sensorStatus.ultrasonicRear || 'WAITING'],
       ['GPS', this.sensorStatus.gps || 'WAITING'],
       ['IMU', this.sensorStatus.imu || 'WAITING'],
+      ['POWER · EST.', this.sensorStatus.power || 'WAITING'],
+      ['RUNTIME · EST.', this.sensorStatus.runtime || '—'],
     ] : [['SOURCE', 'SIMULATION'], ['RANGE', 'VIRTUAL'], ['GPS', 'SIM'], ['IMU', 'SIM'], ['LIVE INPUTS', 'NOT SHOWN']];
-    const gap = 8;
-    const itemWidth = (width - gap * (items.length - 1)) / items.length;
+    const gap = 6;
+    const columns = 6;
+    const itemWidth = (width - gap * (columns - 1)) / columns;
     items.forEach(([label, value], index) => {
-      const bx = x + index * (itemWidth + gap);
+      const row = Math.floor(index / columns);
+      const column = index % columns;
+      const bx = x + column * (itemWidth + gap);
+      const by = y + row * 34;
       const state = String(value);
       const ok = !/WAIT|NO FIX|OFFLINE|ERROR|FAIL|UNAVAILABLE|INVALID/i.test(state)
         && /LIVE|OK|FIX|READY|HTP|CPU|OBJECTS|MS/i.test(state);
       ctx.fillStyle = 'rgba(8,20,17,.78)';
       ctx.strokeStyle = ok ? 'rgba(99,215,174,.36)' : 'rgba(135,154,143,.28)';
-      ctx.beginPath(); ctx.roundRect(bx, y, itemWidth, 30, 7); ctx.fill(); ctx.stroke();
+      ctx.beginPath(); ctx.roundRect(bx, by, itemWidth, 30, 7); ctx.fill(); ctx.stroke();
       ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
       ctx.fillStyle = '#9fc5ac'; ctx.font = '600 11px ui-monospace, monospace';
-      ctx.fillText(label, bx + 8, y + 10);
+      ctx.fillText(label, bx + 8, by + 10);
       ctx.fillStyle = ok ? '#bcebd0' : '#efcb76'; ctx.font = '600 12px ui-monospace, monospace';
-      ctx.fillText(state.slice(0, 22), bx + 8, y + 22, itemWidth - 16);
+      ctx.fillText(state.slice(0, 22), bx + 8, by + 22, itemWidth - 16);
     });
   }
 
@@ -681,15 +1009,20 @@ export class QuestVRDashboard {
       const distance = Number(sample.distance_m ?? (Number(sample.distance_mm) / 1000));
       const fresh = sample.available === true && !sample.simulated && Number.isFinite(distance) && distance > 0 && distance <= 4;
       const showHeld = held || (Number.isFinite(retainedAge) && retainedAge > 600);
+      const error = String(currentSample.error || sample.error || '');
+      const rangeState = error === 'too_close' ? 'TOO CLOSE <2 cm'
+        : error === 'no_echo' ? 'NO ECHO'
+          : error === 'echo_timeout' ? 'ECHO TIMEOUT'
+            : error === 'too_far' ? 'BEYOND 4 m' : 'WAITING';
       const cardX = x + tofWidth + gap + index * (cardWidth + gap);
       ctx.strokeStyle = 'rgba(135,206,166,.2)'; ctx.strokeRect(cardX, y, cardWidth, height);
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#9fc5ac';
       ctx.font = '600 13px ui-monospace, monospace'; ctx.fillText(names[index], cardX + cardWidth / 2, y + 18);
-      ctx.fillStyle = fresh ? (showHeld ? '#efcb76' : distance < .35 ? '#f17c70' : distance < .8 ? '#efcb76' : '#bcebd0') : '#91a79b';
-      ctx.font = '600 18px ui-monospace, monospace'; ctx.fillText(fresh ? `${showHeld ? '~' : ''}${distance.toFixed(2)} m` : 'WAITING', cardX + cardWidth / 2, y + height * .52);
+      ctx.fillStyle = fresh ? (showHeld ? '#efcb76' : distance < .35 ? '#f17c70' : distance < .8 ? '#efcb76' : '#bcebd0') : error === 'too_close' ? '#f17c70' : '#91a79b';
+      ctx.font = '600 18px ui-monospace, monospace'; ctx.fillText(fresh ? `${showHeld ? '~' : ''}${distance.toFixed(2)} m` : rangeState, cardX + cardWidth / 2, y + height * .52, cardWidth - 8);
       const trackX = cardX + 10; const trackY = y + height - 23; const trackWidth = Math.max(1, cardWidth - 20);
       ctx.fillStyle = 'rgba(120,190,150,.12)'; ctx.fillRect(trackX, trackY, trackWidth, 7);
-      if (fresh) { ctx.fillStyle = showHeld ? '#efcb76' : distance < .35 ? '#f17c70' : distance < .8 ? '#efcb76' : '#63d7ae'; ctx.globalAlpha = showHeld ? .65 : 1; ctx.fillRect(trackX, trackY, trackWidth * Math.min(1, distance / 4), 7); ctx.globalAlpha = 1; }
+      if (fresh || error === 'too_close') { ctx.fillStyle = error === 'too_close' ? '#f17c70' : showHeld ? '#efcb76' : distance < .35 ? '#f17c70' : distance < .8 ? '#efcb76' : '#63d7ae'; ctx.globalAlpha = showHeld ? .65 : 1; ctx.fillRect(trackX, trackY, trackWidth * (error === 'too_close' ? .01 : Math.min(1, distance / 4)), 7); ctx.globalAlpha = 1; }
       ctx.strokeStyle = 'rgba(135,206,166,.35)'; ctx.strokeRect(trackX, trackY, trackWidth, 7);
       ctx.fillStyle = '#91a79b'; ctx.font = '9px ui-monospace, monospace'; ctx.textAlign = 'left'; ctx.fillText('0m', trackX, y + height - 7); ctx.textAlign = 'right'; ctx.fillText('4m', trackX + trackWidth, y + height - 7);
     });
@@ -920,6 +1253,8 @@ export class QuestVRDashboard {
       const bitmap = await createImageBitmap(displaySource);
       this.cameraBitmap?.close?.();
       this.cameraBitmap = bitmap;
+      this.cameraFrameId = String(frame.frame_id || '');
+      this.cameraCapturedAt = Number(frame.captured_at) || 0;
       this.cameraMessage = 'LIVE';
       this.sensorStatus.camera = `LIVE · ${frame.width || bitmap.width}×${frame.height || bitmap.height}`;
       this.drawDashboard();
@@ -1017,6 +1352,7 @@ export class QuestVRDashboard {
     this.grabInputSource = inputSource || null;
     this.depthOffset = 0;
     this.headLocked = false;
+    this.worldAnchored = true;
     this.drawDashboard();
     return true;
   }
@@ -1059,20 +1395,22 @@ export class QuestVRDashboard {
   applyHudSize() {
     if (!this.panel || !this.robotVisual) return;
     this.panel.scale.set(this.widthScale, this.heightScale, 1);
-    this.robotVisual.group.position.x = -0.82 * this.widthScale;
-    this.robotVisual.group.position.y = -0.5 * this.heightScale;
-    this.robotVisual.group.scale.setScalar(0.9 * Math.min(this.widthScale, this.heightScale));
+    this.robotVisual.group.position.x = -0.13 * this.widthScale;
+    this.robotVisual.group.position.y = -0.08 * this.heightScale;
+    this.robotVisual.group.scale.setScalar(0.24 * Math.min(this.widthScale, this.heightScale));
   }
 
   resetPose() {
     this.grabbedController = null;
     this.grabInputSource = null;
-    this.headLocked = true;
+    this.headLocked = false;
+    this.worldAnchored = false;
     this.depthOffset = 0;
     this.widthScale = 1;
     this.heightScale = 1;
     this.headOffsetPosition.set(0, 0, 0);
     this.headOffsetQuaternion.identity();
+    this.cachedPose = null;
     this.applyHudSize();
     try { localStorage.removeItem('pandorabox.quest-hud-pose.v1'); } catch {}
     this.drawDashboard();
@@ -1083,19 +1421,37 @@ export class QuestVRDashboard {
     xrCamera.getWorldPosition(this.scratchPosition);
     xrCamera.getWorldQuaternion(this.scratchQuaternion);
     if (this.headLocked) {
-      this.root.position.copy(this.scratchPosition);
-      this.root.quaternion.copy(this.scratchQuaternion);
+      this.headLocked = false;
+      this.worldAnchored = false;
+    }
+    this.headUp.set(0, 1, 0).applyQuaternion(this.scratchQuaternion);
+    this.anchorForward.set(0, 0, -1).applyQuaternion(this.scratchQuaternion);
+    this.anchorForward.y = 0;
+    if (this.anchorForward.lengthSq() > 0.0001) this.anchorForward.normalize();
+    if (!this.worldAnchored) {
+      if (this.cachedPose) {
+        this.root.position.copy(this.headOffsetPosition).applyQuaternion(this.scratchQuaternion).add(this.scratchPosition);
+        this.root.quaternion.copy(this.scratchQuaternion).multiply(this.headOffsetQuaternion);
+      } else {
+        this.root.position.copy(this.scratchPosition).addScaledVector(this.anchorForward, 0.9);
+        this.root.position.y += -0.02;
+        this.facingMatrix.lookAt(this.scratchPosition, this.root.position, this.headUp);
+        this.root.quaternion.setFromRotationMatrix(this.facingMatrix);
+      }
+      this.worldAnchored = true;
       return;
     }
-    this.root.position.copy(this.headOffsetPosition).applyQuaternion(this.scratchQuaternion).add(this.scratchPosition);
-    if (this.root.position.distanceToSquared(this.scratchPosition) < 0.01) {
-      this.root.quaternion.copy(this.scratchQuaternion);
-      return;
+    this.hudTowardVector.copy(this.root.position).sub(this.scratchPosition);
+    this.hudTowardVector.y = 0;
+    const forwardDot = this.hudTowardVector.lengthSq() > 0.0001 ? this.hudTowardVector.normalize().dot(this.anchorForward) : 1;
+    if (forwardDot < Math.cos(Math.PI / 4)) {
+      this.hudTargetPosition.copy(this.scratchPosition).addScaledVector(this.anchorForward, 0.9);
+      this.hudTargetPosition.y -= 0.02;
+      this.root.position.lerp(this.hudTargetPosition, 0.025);
+      this.facingMatrix.lookAt(this.scratchPosition, this.root.position, this.headUp);
+      this.hudTargetQuaternion.copy(this.scratchQuaternion).setFromRotationMatrix(this.facingMatrix);
+      this.root.quaternion.slerp(this.hudTargetQuaternion, 0.025);
     }
-      // Keep the convex dashboard facing the wearer when it is moved away from the headset origin.
-      this.headUp.set(0, 1, 0).applyQuaternion(this.scratchQuaternion);
-    this.facingMatrix.lookAt(this.scratchPosition, this.root.position, this.headUp);
-    this.root.quaternion.setFromRotationMatrix(this.facingMatrix);
   }
 
   loadSavedPose() {
@@ -1109,7 +1465,9 @@ export class QuestVRDashboard {
       const legacyScale = Number(saved.scale) || 1;
       this.widthScale = Math.max(0.45, Math.min(2.5, Number(saved.widthScale ?? legacyScale)));
       this.heightScale = Math.max(0.45, Math.min(2.5, Number(saved.heightScale ?? legacyScale)));
+      this.cachedPose = this.makeSavedPose();
       this.headLocked = false;
+      this.worldAnchored = false;
     } catch {}
   }
 

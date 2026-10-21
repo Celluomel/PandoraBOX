@@ -1,4 +1,5 @@
 import * as THREE from '../frontend/node_modules/three/build/three.module.js';
+import { disparityToPriorMeters, rawDepthToMeters } from './depth_projection.js';
 
 const byId = (id) => document.getElementById(id);
 const sourceStates = Object.create(null);
@@ -1136,11 +1137,7 @@ function segmentationMatchesFrame(segmentation, frame) {
 
 function relativeDepthToMeters(relativeDepth, calibration = metricDepthCalibration) {
   if (!calibration?.available) return relativeDepth;
-  const inverseRange = Number(calibration.inverse_scale_per_relative_unit) * relativeDepth
-    + Number(calibration.inverse_offset_per_m);
-  if (!Number.isFinite(inverseRange) || inverseRange <= 0) return null;
-  const meters = 1 / inverseRange;
-  return Math.max(0.2, Math.min(15, meters));
+  return rawDepthToMeters(relativeDepth, calibration);
 }
 
 function metricDepthEstimate(relativeDepth, calibration = metricDepthCalibration) {
@@ -1176,7 +1173,7 @@ function depthForScene(image, pixelIndex, calibration) {
   // MiDaS worker already percentile-normalizes grayscale depth; do not remap it
   // against a second, temporally smoothed frame histogram.
   const disparity = medianDisparityAt(image, Math.floor(pixelIndex / 4));
-  return 1 / THREE.MathUtils.lerp(1 / 5.5, 1 / 0.7, disparity);
+  return disparityToPriorMeters(disparity);
 }
 
 function medianDisparityAt(image, pixel) {
@@ -2700,7 +2697,10 @@ async function refreshLiveUltrasonic() {
       if (!element) continue;
       element.textContent = channel?.available
         ? `${displayNumber(channel.distance_m, 2, ' m')} · ${channel.echo_pin || 'echo'}`
-        : channel?.error === 'no_echo' ? 'No echo' : channel?.error === 'echo_timeout' ? 'Timeout' : 'No data';
+        : channel?.error === 'too_close' ? 'Too close · <2 cm'
+          : channel?.error === 'no_echo' ? 'No echo'
+            : channel?.error === 'echo_timeout' ? 'Echo stuck · timeout'
+              : channel?.error === 'too_far' ? 'Beyond 4 m' : 'No data';
     }
   } catch (error) {
     setFeedStatus('world-map-ultrasonic-state', 'ultrasonic', 'offline', `Unavailable · ${error.message}`);

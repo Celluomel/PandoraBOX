@@ -2,6 +2,9 @@ import * as THREE from '../frontend/node_modules/three/build/three.module.js';
 import { OrbitControls } from '../frontend/node_modules/three/examples/jsm/controls/OrbitControls.js';
 import * as GaussianSplats3D from '../frontend/node_modules/@mkkellogg/gaussian-splats-3d/build/gaussian-splats-3d.module.js';
 import { QuestVRDashboard } from './quest_vr_dashboard.js';
+import {
+  cloudGrid, decodeGray16Png, fillDepthCloud, intrinsicsFor, mountFor, sampleDepthMeters, yoloMatchesDepth,
+} from './depth_projection.js';
 
 const canvas = document.querySelector('#scene');
 const statusNode = document.querySelector('#status');
@@ -12,6 +15,33 @@ renderer.setSize(window.innerWidth, window.innerHeight, false);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.xr.enabled = true;
 renderer.autoClear = false;
+renderer.info.autoReset = false;
+const xrParams = new URLSearchParams(window.location.search);
+const xrRenderSettings = {
+  foveation: Math.min(1, Math.max(0, Number(xrParams.get('foveation') ?? 1))),
+  scale: Math.min(1.5, Math.max(0.5, Number(xrParams.get('scale') ?? 1))),
+};
+if (!Number.isFinite(xrRenderSettings.foveation)) xrRenderSettings.foveation = 1;
+if (!Number.isFinite(xrRenderSettings.scale)) xrRenderSettings.scale = 1;
+const perfStats = { last: 0, frames: 0, sum: 0, max: 0, previous: 0 };
+function perfTick(time) {
+  if (perfStats.previous) {
+    const delta = time - perfStats.previous;
+    perfStats.frames++; perfStats.sum += delta; perfStats.max = Math.max(perfStats.max, delta);
+  }
+  perfStats.previous = time;
+  if (!perfStats.last) perfStats.last = time;
+  if (time - perfStats.last >= 5000 && perfStats.frames) {
+    const info = renderer.info;
+    console.info('[quest-perf]', {
+      meanFrameMs: Number((perfStats.sum / perfStats.frames).toFixed(2)), maxFrameMs: Number(perfStats.max.toFixed(2)),
+      calls: info.render.calls, triangles: info.render.triangles, points: info.render.points,
+      foveation: xrRenderSettings.foveation, scale: xrRenderSettings.scale,
+    });
+    perfStats.last = time; perfStats.frames = 0; perfStats.sum = 0; perfStats.max = 0;
+  }
+  renderer.info.reset();
+}
 
 const scene = new THREE.Scene();
 const vrDashboard = new QuestVRDashboard(THREE, renderer.capabilities.getMaxAnisotropy());
@@ -62,7 +92,7 @@ scene.add(world);
 world.add(cameraArcRoot);
 const floor = new THREE.Mesh(
   new THREE.PlaneGeometry(14, 14),
-  new THREE.MeshStandardMaterial({ color: '#14241b', roughness: 0.94, metalness: 0.02, side: THREE.DoubleSide, transparent: true, opacity: 0.2 }),
+  new THREE.MeshLambertMaterial({ color: '#14241b', side: THREE.DoubleSide, transparent: true, opacity: 0.2 }),
 );
 floor.rotation.x = -Math.PI / 2;
 floor.position.y = -0.035;
@@ -86,7 +116,7 @@ world.add(sensorSceneGroup);
 const sensorGround = new THREE.Group();
 const sensorGroundPlane = new THREE.Mesh(
   new THREE.PlaneGeometry(4.2, 4.2),
-  new THREE.MeshStandardMaterial({ color: '#14241b', roughness: 0.94, metalness: 0.02, side: THREE.DoubleSide, transparent: true, opacity: 0.14 }),
+  new THREE.MeshLambertMaterial({ color: '#14241b', side: THREE.DoubleSide, transparent: true, opacity: 0.14 }),
 );
 sensorGroundPlane.rotation.x = -Math.PI / 2;
 sensorGroundPlane.position.y = -0.035;
@@ -95,10 +125,51 @@ const sensorGroundGrid = new THREE.GridHelper(4.2, 14, '#4e8d69', '#294c3a');
 sensorGroundGrid.position.y = 0.005;
 sensorGround.add(sensorGroundGrid);
 sensorSceneGroup.add(sensorGround);
-const sensorDepthCloud = new THREE.Points(
-  new THREE.BufferGeometry(),
-  new THREE.PointsMaterial({ size: 0.035, vertexColors: true, sizeAttenuation: true, transparent: true, opacity: 0.94 }),
-);
+function createSensorPointMaterial() {
+  return new THREE.ShaderMaterial({
+    transparent: true,
+    depthWrite: false,
+    vertexColors: true,
+    uniforms: {
+      uSizeM: { value: 0.04 },
+      uViewportHeight: { value: 1 },
+      uOpacity: { value: 0.94 },
+      uFadeNear: { value: 2.0 },
+      uFadeFar: { value: 6.0 },
+      uStale: { value: 0 },
+    },
+    vertexShader: `
+      uniform float uSizeM;
+      uniform float uViewportHeight;
+      uniform float uFadeNear;
+      uniform float uFadeFar;
+      varying vec3 vColor;
+      varying float vFade;
+      void main() {
+        vColor = color;
+        vec4 viewPosition = modelViewMatrix * vec4(position, 1.0);
+        float dist = max(0.1, -viewPosition.z);
+        gl_Position = projectionMatrix * viewPosition;
+        gl_PointSize = clamp(uSizeM * uViewportHeight * 0.5 * projectionMatrix[1][1] / dist, 2.0, 24.0);
+        vFade = 1.0 - 0.55 * smoothstep(uFadeNear, uFadeFar, dist);
+      }
+    `,
+    fragmentShader: `
+      uniform float uOpacity;
+      uniform float uStale;
+      varying vec3 vColor;
+      varying float vFade;
+      void main() {
+        float r = length(gl_PointCoord - vec2(0.5));
+        if (r > 0.5) discard;
+        float alpha = (1.0 - smoothstep(0.3, 0.5, r)) * uOpacity * vFade * (1.0 - 0.6 * uStale);
+        gl_FragColor = vec4(vColor, alpha);
+      }
+    `,
+  });
+}
+const sensorDepthCloud = new THREE.Points(new THREE.BufferGeometry(), createSensorPointMaterial());
+sensorDepthCloud.frustumCulled = false;
 sensorSceneGroup.add(sensorDepthCloud);
 const sensorObjectGroup = new THREE.Group();
 sensorSceneGroup.add(sensorObjectGroup);
@@ -108,13 +179,13 @@ const sensorBodyMarker = new THREE.Group();
 sensorSceneGroup.add(sensorBodyMarker);
 const sensorBodyMesh = new THREE.Mesh(
   new THREE.CylinderGeometry(0.12, 0.14, 0.14, 24),
-  new THREE.MeshStandardMaterial({ color: '#8ee5b1', emissive: '#1a5736', emissiveIntensity: 0.55 }),
+  new THREE.MeshLambertMaterial({ color: '#8ee5b1', emissive: '#1a5736', emissiveIntensity: 0.55 }),
 );
 sensorBodyMesh.position.y = 0.07;
 sensorBodyMarker.add(sensorBodyMesh);
 const sensorBodyNose = new THREE.Mesh(
   new THREE.ConeGeometry(0.06, 0.18, 16),
-  new THREE.MeshStandardMaterial({ color: '#d8ffe5' }),
+  new THREE.MeshLambertMaterial({ color: '#d8ffe5' }),
 );
 sensorBodyNose.rotation.x = -Math.PI / 2;
 sensorBodyNose.position.set(0, 0.08, -0.17);
@@ -159,6 +230,12 @@ let sensorRadarPollInFlight = false;
 let ultrasonicPollInFlight = false;
 let sensorFrameId = '';
 let sensorDepthValues = null;
+let sensorDepthFrame = null;
+let sensorDepthIntrinsics = null;
+let sensorDepthHeightM = 0.12;
+let sensorDepthCapturedAt = 0;
+let sensorCloudBuffers = null;
+const sensorPointViewport = new THREE.Vector2();
 let latestSensorYolo = {};
 let latestSensorDepthStatus = null;
 let sensorMetricCalibration = null;
@@ -386,14 +463,6 @@ async function decodeSensorImage(encoded, mime = 'image/jpeg') {
   return { width: canvas.width, height: canvas.height, pixels: context.getImageData(0, 0, canvas.width, canvas.height).data };
 }
 
-function relativeDepthAt(image, u, v) {
-  if (!image?.pixels) return 3;
-  const x = Math.max(0, Math.min(image.width - 1, Math.round(u * (image.width - 1))));
-  const y = Math.max(0, Math.min(image.height - 1, Math.round(v * (image.height - 1))));
-  const gray = image.pixels[(y * image.width + x) * 4];
-  return 1.1 + (1 - gray / 255) * 5.8;
-}
-
 async function refreshSensorMetricCalibration() {
   const now = Date.now();
   if (now - sensorCalibrationCheckedAt < 10000) return;
@@ -406,68 +475,67 @@ async function refreshSensorMetricCalibration() {
   }
 }
 
-function calibratedSensorDistance(relativeDepth) {
-  const calibration = sensorMetricCalibration;
-  if (!calibration?.available) return null;
-  const distance = Number(calibration.scale_m_per_relative_unit) * relativeDepth + Number(calibration.offset_m);
-  return Number.isFinite(distance) ? Math.max(0.2, Math.min(15, distance)) : null;
+function updateSensorPointUniforms() {
+  const uniforms = sensorDepthCloud.material.uniforms;
+  let height = 0;
+  if (renderer.xr.isPresenting) {
+    const eye = renderer.xr.getCamera().cameras?.[0];
+    height = eye?.viewport?.height || eye?.viewport?.h || 0;
+  }
+  if (!height) height = renderer.getDrawingBufferSize(sensorPointViewport).y;
+  uniforms.uViewportHeight.value = height || 1;
+  const age = sensorDepthCapturedAt > 0 ? Date.now() / 1000 - sensorDepthCapturedAt : 0;
+  uniforms.uStale.value = Math.min(1, Math.max(0, (age - 1.0) / 3.0));
 }
 
-function buildSensorDepthCloud(depth, grayImage, colorImage) {
-  if (!grayImage?.pixels || !colorImage?.pixels) return false;
-  const width = grayImage.width;
-  const height = grayImage.height;
-  const step = Math.max(3, Math.ceil(Math.max(width, height) / 100));
-  const horizontalFov = 70 * Math.PI / 180;
-  const focalX = width / (2 * Math.tan(horizontalFov / 2));
-  const focalY = focalX;
-  const positions = [];
-  const colors = [];
-  for (let v = 0; v < height; v += step) {
-    for (let u = 0; u < width; u += step) {
-      const relative = relativeDepthAt(grayImage, u / (width - 1), v / (height - 1));
-      const z = calibratedSensorDistance(relative) ?? relative;
-      positions.push(((u - (width - 1) / 2) * z) / focalX, 0.72 + (((height - 1) / 2 - v) * z) / focalY, -z);
-      const colorX = Math.min(colorImage.width - 1, Math.round(u * (colorImage.width - 1) / Math.max(1, width - 1)));
-      const colorY = Math.min(colorImage.height - 1, Math.round(v * (colorImage.height - 1) / Math.max(1, height - 1)));
-      const colorIndex = (colorY * colorImage.width + colorX) * 4;
-      colors.push(colorImage.pixels[colorIndex] / 255, colorImage.pixels[colorIndex + 1] / 255, colorImage.pixels[colorIndex + 2] / 255);
-    }
-  }
-  const geometry = sensorDepthCloud.geometry;
-  const previousPositions = geometry.getAttribute('position');
-  const previousColors = geometry.getAttribute('color');
-  if (previousPositions?.array.length === positions.length && previousColors?.array.length === colors.length) {
-    previousPositions.array.set(positions);
-    previousColors.array.set(colors);
-    previousPositions.needsUpdate = true;
-    previousColors.needsUpdate = true;
-    geometry.computeBoundingSphere();
-  } else {
-    const nextGeometry = new THREE.BufferGeometry();
-    nextGeometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-    nextGeometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
-    nextGeometry.computeBoundingSphere();
+function buildSensorDepthCloud(depth, depthImage, colorImage) {
+  if (!depthImage?.width || !colorImage?.pixels) return false;
+  const grid = cloudGrid(depthImage.width, depthImage.height);
+  if (!sensorCloudBuffers || sensorCloudBuffers.count !== grid.count) {
+    sensorCloudBuffers = {
+      count: grid.count,
+      positions: new Float32Array(grid.count * 3),
+      colors: new Float32Array(grid.count * 3),
+    };
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.BufferAttribute(sensorCloudBuffers.positions, 3));
+    geometry.setAttribute('color', new THREE.BufferAttribute(sensorCloudBuffers.colors, 3));
     sensorDepthCloud.geometry.dispose();
-    sensorDepthCloud.geometry = nextGeometry;
+    sensorDepthCloud.geometry = geometry;
   }
-  sensorDepthValues = grayImage;
+  const mount = mountFor(null, depth);
+  const intrinsics = intrinsicsFor(depthImage.width, depthImage.height, depth.intrinsics || depth.camera_intrinsics || {});
+  vrDashboard.updateDepthIntrinsics(intrinsics, depthImage.width, depthImage.height);
+  const count = fillDepthCloud({
+    depth: depthImage, color: colorImage, grid, intrinsics, calibration: sensorMetricCalibration,
+    heightM: mount.heightM, positions: sensorCloudBuffers.positions, colors: sensorCloudBuffers.colors,
+  });
+  const geometry = sensorDepthCloud.geometry;
+  geometry.setDrawRange(0, count);
+  geometry.getAttribute('position').needsUpdate = true;
+  geometry.getAttribute('color').needsUpdate = true;
+  sensorDepthValues = depthImage;
+  sensorDepthFrame = depth;
+  sensorDepthIntrinsics = intrinsics;
+  sensorDepthHeightM = mount.heightM;
+  sensorDepthCapturedAt = Number(depth.captured_at) || 0;
+  sensorYoloFrameId = '';
   updateSensorYolo(latestSensorYolo);
   return true;
 }
 
 function updateSensorYolo(yolo) {
-  const age = Number(yolo?.captured_at) > 0 ? Date.now() / 1000 - Number(yolo.captured_at) : Infinity;
-  const detections = yolo?.state === 'ready' && age >= 0 && age <= 2.5 ? yolo.detections || [] : [];
-  const frameId = detections.length ? String(yolo.frame_id || yolo.captured_at) : '';
+  const pairing = yoloMatchesDepth(yolo, sensorDepthFrame);
+  const detections = pairing.ok ? yolo.detections || [] : [];
+  const frameId = detections.length
+    ? `${yolo.frame_id || yolo.captured_at}|${sensorDepthFrame?.frame_id}|${sensorMetricCalibration?.available ? 'cal' : 'rel'}` : '';
   if (frameId === sensorYoloFrameId) return detections.length;
   sensorYoloFrameId = frameId;
   disposeChildren(sensorObjectGroup);
-  if (!sensorDepthValues) return detections.length;
+  if (!sensorDepthValues || !sensorDepthIntrinsics) return detections.length;
   const width = sensorDepthValues.width;
   const height = sensorDepthValues.height;
-  const focalX = width / (2 * Math.tan(35 * Math.PI / 180));
-  const focalY = focalX;
+  const { fx, fy, cx, cy } = sensorDepthIntrinsics;
   const color = '#55e7cc';
   for (const detection of detections) {
     const box = detection.bbox;
@@ -476,20 +544,24 @@ function updateSensorYolo(yolo) {
     if (x2 <= x1 || y2 <= y1) continue;
     const u = (x1 + x2) / 2;
     const v = (y1 + y2) / 2;
-    const relative = relativeDepthAt(sensorDepthValues, u, v);
-    const z = calibratedSensorDistance(relative) ?? relative;
-    const boxWidth = Math.max(0.08, (x2 - x1) * width * z / focalX);
-    const boxHeight = Math.max(0.08, (y2 - y1) * height * z / focalY);
-    const centerX = (u - 0.5) * z * width / focalX;
-    const centerY = 0.72 + (0.5 - v) * z * height / focalY;
+    const sample = sampleDepthMeters(sensorDepthValues, u, v, sensorMetricCalibration);
+    const z = sample.meters;
+    const boxWidth = Math.max(0.08, (x2 - x1) * width * z / fx);
+    const boxHeight = Math.max(0.08, (y2 - y1) * height * z / fy);
+    const centerX = (u * (width - 1) - cx) * z / fx;
+    const centerY = sensorDepthHeightM + (cy - v * (height - 1)) * z / fy;
     const boxGeometry = new THREE.EdgesGeometry(new THREE.BoxGeometry(boxWidth, boxHeight, Math.max(0.04, z * 0.025)));
-    const outline = new THREE.LineSegments(boxGeometry, new THREE.LineBasicMaterial({ color, depthTest: false, transparent: true, opacity: 0.95 }));
+    const labelName = String(detection.label || detection.class_name || '').toLowerCase();
+    const detectionColor = labelName === 'person' ? '#63e6a8'
+      : ['tv', 'tvmonitor', 'monitor'].includes(labelName) ? '#f0c26f'
+        : ['chair', 'couch', 'bed'].includes(labelName) ? '#b99aff'
+          : ['car', 'bicycle', 'motorcycle', 'bus', 'truck'].includes(labelName) ? '#6bd4ed' : color;
+    const outline = new THREE.LineSegments(boxGeometry, new THREE.LineBasicMaterial({ color: detectionColor, depthTest: false, transparent: true, opacity: 0.95 }));
     outline.position.set(centerX, centerY, -z);
     outline.renderOrder = 3;
     sensorObjectGroup.add(outline);
-    const distance = calibratedSensorDistance(z);
     const confidence = Math.round(Number(detection.confidence || detection.score || 0) * 100);
-    const distanceText = distance == null ? 'rel.' : `${distance.toFixed(1)} m`;
+    const distanceText = sample.calibrated ? `${z.toFixed(1)} m` : 'rel.';
     const label = labelSprite(`${detection.label || detection.class_name || 'object'} ${confidence}% · ${distanceText}`);
     label.scale.set(Math.max(0.9, Math.min(1.8, boxWidth)), 0.24, 1);
     label.position.set(centerX, centerY + boxHeight / 2 + 0.16, -z);
@@ -540,9 +612,7 @@ function updateSensorRadar(perception) {
 
 function matchRadarTargetToYolo(radarPosition) {
   if (!sensorDepthValues || !Array.isArray(radarPosition) || radarPosition.length < 2) return null;
-  const yoloAge = Number(latestSensorYolo?.captured_at) > 0
-    ? Date.now() / 1000 - Number(latestSensorYolo.captured_at) : Infinity;
-  if (yoloAge < 0 || yoloAge > 2.5) return null;
+  if (!sensorDepthIntrinsics || !yoloMatchesDepth(latestSensorYolo, sensorDepthFrame).ok) return null;
   const lateral = Number(radarPosition[0]);
   const forward = Number(radarPosition[1]);
   if (!Number.isFinite(lateral) || !Number.isFinite(forward) || forward <= 0) return null;
@@ -556,12 +626,13 @@ function matchRadarTargetToYolo(radarPosition) {
     if (!Array.isArray(box) || box.length !== 4 || confidence < 0.4) continue;
     const u = (Number(box[0]) + Number(box[2])) / 2;
     if (!Number.isFinite(u)) continue;
-    const cameraBearing = Math.atan((u - 0.5) * 2 * Math.tan(35 * Math.PI / 180));
+    const cameraBearing = Math.atan((u * (sensorDepthValues.width - 1) - sensorDepthIntrinsics.cx) / sensorDepthIntrinsics.fx);
     const bearingError = Math.abs(cameraBearing - radarBearing);
     if (bearingError > 14 * Math.PI / 180) continue;
     const v = (Number(box[1]) + Number(box[3])) / 2;
-    const visualRange = calibratedSensorDistance(relativeDepthAt(sensorDepthValues, u, v));
-    if (visualRange == null) continue;
+    const visual = sampleDepthMeters(sensorDepthValues, u, v, sensorMetricCalibration);
+    if (!visual.calibrated) continue;
+    const visualRange = visual.meters;
     const rangeTolerance = Math.max(0.65, radarRange * 0.3);
     const rangeError = Math.abs(visualRange - radarRange);
     if (rangeError > rangeTolerance) continue;
@@ -594,11 +665,18 @@ async function pollSensorDepth() {
     const depth = await response.json();
     latestSensorDepthStatus = depth;
     if (depth.frame_id && depth.frame_id !== sensorFrameId && depth.depth_gray_jpeg_base64) {
-      const [gray, color] = await Promise.all([
-        decodeSensorImage(depth.depth_gray_jpeg_base64),
-        decodeSensorImage(depth.depth_jpeg_base64 || depth.depth_gray_jpeg_base64),
-      ]);
-      if (gray && color && buildSensorDepthCloud(depth, gray, color)) sensorFrameId = depth.frame_id;
+      const colorPromise = decodeSensorImage(depth.depth_jpeg_base64 || depth.depth_gray_jpeg_base64);
+      let depthImage = null;
+      if (depth.depth_raw_png_base64) {
+        try { depthImage = await decodeGray16Png(depth.depth_raw_png_base64); }
+        catch (error) { console.warn('Could not decode raw 16-bit MiDaS depth; using 8-bit preview:', error); }
+      }
+      if (!depthImage) {
+        const gray = await decodeSensorImage(depth.depth_gray_jpeg_base64);
+        if (gray?.pixels) depthImage = { width: gray.width, height: gray.height, pixels: gray.pixels };
+      }
+      const color = await colorPromise;
+      if (depthImage && color && buildSensorDepthCloud(depth, depthImage, color)) sensorFrameId = depth.frame_id;
     }
     const yoloCount = updateSensorYolo(latestSensorYolo);
     updateSensorReadout(depth, yoloCount, sensorRadarTargetCount);
@@ -616,6 +694,7 @@ async function pollSensorYolo() {
     const response = await fetch('/body/camera/yolo/status', { cache: 'no-store', credentials: 'same-origin' });
     if (!response.ok) throw new Error('YOLOX endpoint unavailable');
     latestSensorYolo = await response.json();
+    vrDashboard.updateYoloResult(latestSensorYolo);
     const yoloCount = updateSensorYolo(latestSensorYolo);
     updateSensorReadout(latestSensorDepthStatus, yoloCount, sensorRadarTargetCount);
   } catch (error) {
@@ -782,10 +861,10 @@ function rebuildScene(frame) {
   const bodyZ = -((Number(position[1]) || 0) - basePosition[1]);
   const bodyMarker = new THREE.Group();
   bodyMarker.position.set(bodyX, 0, bodyZ);
-  const bodyMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.32, 0.32, 24), new THREE.MeshStandardMaterial({ color: '#8ee5b1', emissive: '#1a5736', emissiveIntensity: 0.55 }));
+  const bodyMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.32, 0.32, 24), new THREE.MeshLambertMaterial({ color: '#8ee5b1', emissive: '#1a5736', emissiveIntensity: 0.55 }));
   bodyMesh.position.y = 0.2;
   bodyMarker.add(bodyMesh);
-  const nose = new THREE.Mesh(new THREE.ConeGeometry(0.12, 0.36, 16), new THREE.MeshStandardMaterial({ color: '#d8ffe5' }));
+  const nose = new THREE.Mesh(new THREE.ConeGeometry(0.12, 0.36, 16), new THREE.MeshLambertMaterial({ color: '#d8ffe5' }));
   nose.rotation.z = -Math.PI / 2;
   nose.position.set(0.38, 0.22, 0);
   bodyMarker.add(nose);
@@ -814,7 +893,7 @@ function rebuildScene(frame) {
     const kind = String(item.kind || 'object').toLowerCase();
     const mesh = new THREE.Mesh(
       objectGeometry(item),
-      new THREE.MeshStandardMaterial({ color: colorByKind[kind] || '#a9c4b2', roughness: 0.76, metalness: 0.02, emissive: colorByKind[kind] || '#a9c4b2', emissiveIntensity: kind.includes('mobile') ? 0.12 : 0.035 }),
+      new THREE.MeshLambertMaterial({ color: colorByKind[kind] || '#a9c4b2', emissive: colorByKind[kind] || '#a9c4b2', emissiveIntensity: kind.includes('mobile') ? 0.12 : 0.035 }),
     );
     mesh.position.set(px, kind.includes('obstacle') ? 0.58 : kind === 'table' || kind === 'chair' ? 0.38 : 0.25, pz);
     mesh.userData.entity = item;
@@ -920,6 +999,21 @@ async function pollGpsStatus() {
   } catch (error) {
     vrDashboard.updateGpsStatus({ available: false, error: error.message });
   } finally { gpsPollInFlight = false; }
+}
+
+let powerStatusPollInFlight = false;
+async function pollPowerStatus() {
+  if (powerStatusPollInFlight) return;
+  powerStatusPollInFlight = true;
+  try {
+    const response = await fetch('/body/power-mode', { cache: 'no-store', credentials: 'same-origin' });
+    if (!response.ok) throw new Error(`Power status HTTP ${response.status}`);
+    vrDashboard.updatePowerStatus(await response.json());
+  } catch (error) {
+    vrDashboard.updatePowerStatus({ mode: 'OFFLINE' });
+  } finally {
+    powerStatusPollInFlight = false;
+  }
 }
 
 function syncSimulationControl(frame = latestWorldStatus) {
@@ -1339,6 +1433,8 @@ async function enterXR(mode) {
     const session = await navigator.xr.requestSession(mode, {
       optionalFeatures: ['local-floor', 'bounded-floor', 'hand-tracking'],
     });
+    renderer.xr.setFramebufferScaleFactor(xrRenderSettings.scale);
+    renderer.xr.setFoveation(xrRenderSettings.foveation);
     await renderer.xr.setSession(session);
     orbit.enabled = false;
     vrDashboard.setVisible(mode === 'immersive-vr');
@@ -1400,6 +1496,8 @@ void pollImuStatus();
 setInterval(pollImuStatus, 1000);
 void pollGpsStatus();
 setInterval(pollGpsStatus, 1500);
+void pollPowerStatus();
+setInterval(pollPowerStatus, 5000);
 window.__pbQuestReady = true;
 if (statusNode.textContent === 'Starting 3D scene…') setStatus('3D renderer ready · connecting to Body world model…');
 
@@ -1428,6 +1526,8 @@ setInterval(() => { if (activeSceneMode === 'sensors') void pollUltrasonicStatus
 void pollBody();
 let previousFrameAt = 0;
 renderer.setAnimationLoop(time => {
+  perfTick(time);
+  updateSensorPointUniforms();
   const deltaSeconds = previousFrameAt ? (time - previousFrameAt) / 1000 : 1 / 90;
   previousFrameAt = time;
   if (!renderer.xr.isPresenting) orbit.update();

@@ -53,3 +53,10 @@ __pycache__/
 
 # QNN/AppBuilder runtime companion cache generated beside deployed DLC models
 /models/indoor-segmentation/segformer-ade-coco-247.dlc.bin
+
+# Local QAI Hub runtime/cache and temporary test output
+/.qaihm_runtime/
+/.qaihm_store/
+/.test-tmp/
+/.midas-http.err
+/output/pdf/render-check/
