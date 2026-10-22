@@ -12,6 +12,9 @@ LOG = logging.getLogger("lumina.body.fnk0031_usb")
 _SERIAL_LOCK = threading.RLock()
 _SERIAL_CONNECTIONS: dict[tuple[str, Any], Any] = {}
 
+CONTROLLER_MODEL = "Freenove Crawling Robot Controller V3.2"
+CONTROLLER_FIRMWARE = "stock FNHR framed serial protocol"
+
 FRAME_START = 0x80
 FRAME_END = 0x81
 ORDER_ECHO_REQUEST = 0
@@ -253,6 +256,8 @@ class FNK0031USBSource:
             if connected else f"FNK0031 FNHR USB unavailable: {self.last_error}"
         )
         value = {
+            "controller_model": CONTROLLER_MODEL,
+            "firmware_profile": CONTROLLER_FIRMWARE,
             "protocol": "fnhr_framed_serial",
             "pose_available": False,
             "supply_voltage_v": voltage,
@@ -331,6 +336,8 @@ class FNK0031USBSource:
         connected = self.ping()
         return {
             "source": self.name,
+            "controller_model": CONTROLLER_MODEL,
+            "firmware_profile": CONTROLLER_FIRMWARE,
             "transport": "USB serial / stock FNHR framed protocol",
             "protocol": "fnhr_framed_serial",
             "port": self.port,
@@ -338,6 +345,9 @@ class FNK0031USBSource:
             "connected": connected,
             "actuation_enabled": self.actuation_enabled,
             "pose_available": False,
+            "control_mode": "blocking_gait_actions",
+            "continuous_cmd_vel": False,
+            "stop_behavior": "sleep_mode order; not an emergency stop",
             "supply_voltage_v": self.read_supply_voltage() if connected else None,
             "battery_v": self.supply_voltage,
             "last_ok": self.last_ok,

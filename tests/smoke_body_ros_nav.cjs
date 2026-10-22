@@ -13,6 +13,7 @@ const settings = {
   nav2_stack: {state:'running'}, status: {
     available:true,state:'running',ros_distro:'jazzy',domain_id:'0',nav2_packages_available:true,
     nav2_server_available:true,nav2_preflight:{ready:true,blockers:[]},
+    physical_nav2_preflight:{ready:false,blockers:['Missing measured planar odometry','Missing continuous FNK velocity adapter']},
     nav2_simulation:{enabled:true,cmd_vel_hardware_isolated:true,cmd_vel_subscribers:[{}],pose:{x:1.5,y:0,yaw_rad:0}},
     sensor_subscriptions:{lidar:{state:'active',topic:'/scan',count:20},odometry:{state:'active',topic:'/odom',count:20}},
   },
@@ -43,6 +44,8 @@ const visual = {
       await page.locator('#navops-bridge').getByText('Online').waitFor();
       assert.equal(await page.locator('#nav-navigation').getAttribute('class'), 'active');
       assert.equal(await page.locator('#navops-route').isEnabled(), true);
+      await page.locator('#navops-preflight').getByText('BLOCKED · not physical-test ready').waitFor();
+      await page.locator('#navops-preflight').getByText('Missing measured planar odometry').waitFor();
       const pixels = await page.locator('#navops-map').evaluate(canvas => {
         const data = canvas.getContext('2d').getImageData(0,0,canvas.width,canvas.height).data;
         let nonblank = 0;

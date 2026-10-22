@@ -133,7 +133,7 @@
   }
   function renderStatus(data) {
     settings = data;
-    const status = data.status || {}, sim = status.nav2_simulation || {}, preflight = status.nav2_preflight || {};
+    const status = data.status || {}, sim = status.nav2_simulation || {}, preflight = status.nav2_preflight || {}, physical = status.physical_nav2_preflight || {};
     text('bridge', data.enabled ? (status.available ? 'Online' : 'Unavailable') : 'Disabled');
     text('domain', `Domain ${status.domain_id ?? '0'} · ${status.ros_distro || 'ROS not sourced'}`);
     text('action', status.nav2_server_available ? 'Ready' : status.nav2_packages_available ? 'No server' : 'Not installed');
@@ -167,11 +167,19 @@
       ['/cmd_vel subscribers',sim.cmd_vel_subscribers?.length === undefined ? 'Unknown' : String(sim.cmd_vel_subscribers.length)],
       ['Safety',sim.cmd_vel_hardware_isolated ? 'Isolated from FNK' : 'Route blocked'],
       ['Preflight',preflight.ready ? 'Ready' : (preflight.blockers || []).slice(0,2).join('; ') || 'Not ready'],
+      ['Physical robot gate',physical.ready ? 'Ready for staged review' : 'BLOCKED · not physical-test ready'],
+      ...Object.entries(physical.sensor_streams || {}).map(([key,stream]) => [
+        `Physical ${key}`, `${stream.fresh ? 'Fresh' : 'No fresh sample'} · ${stream.count || 0} published`,
+      ]),
+      ...(physical.blockers || ['No physical readiness report']).map((blocker,index) => [`Physical blocker ${index+1}`,blocker]),
     ]);
     const topics = status.sensor_topics || data.sensor_topics || {};
-    text('graph-count',`${Object.keys(topics).length + 5} CHANNELS`);
+    text('graph-count',`${Object.keys(topics).length + Object.keys(status.body_sensor_publishers || {}).length + 5} CHANNELS`);
     setRows('graph', [
       ['Observation output', data.publish_topic || '—'], ['Observation input', data.input_topic || '—'],
+      ...Object.entries(status.body_sensor_publishers || {}).map(([key,publisher]) => [
+        `Body ${key}`, `${publisher.topic || status.body_sensor_publish_topics?.[key] || '—'} · ${publisher.count || 0} published${publisher.last_published_at ? ` · ${Math.max(0,Date.now()/1000-publisher.last_published_at).toFixed(1)} s ago` : ''}${publisher.error ? ' · ' + publisher.error : ''}`,
+      ]),
       ['Map',sim.enabled ? '/map · synthetic' : 'No publisher'], ['Laser scan',sim.enabled ? '/scan · synthetic' : topics.lidar || '—'],
       ['Odometry',sim.enabled ? '/odom · synthetic' : topics.odometry || '—'],
       ['Transform',sim.enabled ? '/tf · synthetic' : 'No publisher'], ['Velocity command','/cmd_vel · isolation gated'],

@@ -185,6 +185,7 @@ class EmbodiedWorldModel:
                 camera_interval=float(self._cfg.get("BODY_CAMERA_INTERVAL", 1.0 / 15.0) or (1.0 / 15.0)),
                 simulation_dt_s=float(self._cfg.get("simulation_dt_s", 1.0) or 1.0),
             )
+        self.observation_callback = None
         # dynamics input dim is fixed by the cortex output dim
         probe = self.cortex.encode(Observation(), BodyState())
         self.dynamics = LatentWorldDynamics(
@@ -376,6 +377,12 @@ class EmbodiedWorldModel:
                 obs = self.source.observe()
             else:
                 obs = self._bridge_observation()
+            callback = self.observation_callback
+            if callable(callback):
+                try:
+                    callback(obs)
+                except Exception:
+                    logger.exception("[worldmodel] observation callback failed")
             # 2) body state
             body_state = self.source.body_state() if self.source is not None else self._bridge_body_state()
             lidar_input = (getattr(obs, "modalities", {}) or {}).get("lidar") or {}

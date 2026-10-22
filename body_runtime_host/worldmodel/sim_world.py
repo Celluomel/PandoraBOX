@@ -222,7 +222,8 @@ class SimulatedRoom:
             radar = SimulatedMmWaveRadarSource(lambda: scene, lambda: body).read().as_dict()
             self._mmwave_sequence += 1
             radar.update({"frame_id": frame_id, "timestamp": body.timestamp,
-                          "coordinate_frame": "local_map", "sequence": self._mmwave_sequence})
+                          "coordinate_frame": "local_map", "sequence": self._mmwave_sequence,
+                          "simulated": True})
             modalities["mmwave_radar"] = radar
         return Observation(
             subject="scene", value=None, source="simulated_room",

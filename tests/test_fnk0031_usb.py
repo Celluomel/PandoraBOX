@@ -110,6 +110,11 @@ class FNK0031USBSourceTests(unittest.TestCase):
         self.assertEqual(observation.value["protocol"], "fnhr_framed_serial")
         self.assertEqual(observation.value["supply_voltage_v"], 7.68)
         self.assertFalse(observation.value["pose_available"])
+        self.assertEqual(observation.value["controller_model"], "Freenove Crawling Robot Controller V3.2")
+        status = source.status()
+        self.assertFalse(status["continuous_cmd_vel"])
+        self.assertEqual(status["control_mode"], "blocking_gait_actions")
+        self.assertIn("not an emergency stop", status["stop_behavior"])
         self.assertIn("RF remote", observation.text)
 
     def test_actuation_gate_prevents_any_motion_frame_by_default(self):

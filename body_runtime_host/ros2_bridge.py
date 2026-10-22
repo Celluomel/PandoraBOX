@@ -17,6 +17,16 @@ DEFAULT_SENSOR_TOPICS = {
     "range": "/range/front",
 }
 
+BODY_SENSOR_PUBLISH_TOPICS = {
+    "imu": "/body/sensors/imu",
+    "gps": "/body/sensors/gps/fix",
+    "tof": "/body/sensors/tof/front",
+    "ultrasonic_front_left": "/body/sensors/ultrasonic/front_left",
+    "ultrasonic_front_right": "/body/sensors/ultrasonic/front_right",
+    "ultrasonic_rear": "/body/sensors/ultrasonic/rear",
+    "mmwave_targets": "/body/sensors/mmwave/targets",
+}
+
 
 class Ros2ObservationBridge:
     def __init__(self, on_observation, *, publish_topic="/body/observations",
@@ -29,6 +39,8 @@ class Ros2ObservationBridge:
         self._lock = threading.RLock()
         self._node = None
         self._publisher = None
+        self._body_sensor_publishers = {}
+        self._body_sensor_status = {}
         self._sensor_subscriptions = []
         self._sensor_status = {}
         self._executor = None
@@ -49,6 +61,7 @@ class Ros2ObservationBridge:
             result = dict(self._status)
             node = self._node
             sensor_status = {key: dict(value) for key, value in self._sensor_status.items()}
+            body_sensor_status = {key: dict(value) for key, value in self._body_sensor_status.items()}
         result.update({
             "ros_distro": os.environ.get("ROS_DISTRO", ""),
             "domain_id": os.environ.get("ROS_DOMAIN_ID", "0"),
@@ -57,6 +70,8 @@ class Ros2ObservationBridge:
             "sensor_topics": dict(self.sensor_topics),
             "sensor_subscriptions": sensor_status,
             "physical_actuation": "not exposed by this bridge",
+            "body_sensor_publish_topics": dict(BODY_SENSOR_PUBLISH_TOPICS),
+            "body_sensor_publishers": body_sensor_status,
         })
         try:
             result["rclpy_version"] = version("rclpy")
@@ -111,8 +126,46 @@ class Ros2ObservationBridge:
         result["nav2_preflight"] = self._nav2_preflight(
             nav2_packages_available, action_server_available, graph["topics"], graph["services"]
         )
+        result["physical_nav2_preflight"] = self._physical_nav2_preflight(body_sensor_status)
         result["nav2_simulation"] = simulation_status
         return result
+
+    @staticmethod
+    def _physical_nav2_preflight(sensor_publishers=None):
+        """Describe repository-level hardware blockers without implying ROS graph readiness is physical readiness."""
+        sensor_publishers = sensor_publishers or {}
+        blockers = [
+            "Typed outputs follow the world-model sampling cadence (default 2 s), not a validated control-rate stream",
+            "Available HC-SR04 and LD2450 coverage is not a 360-degree navigation costmap source",
+            "FNK0031 stock FNHR interface has no continuous cmd_vel adapter",
+            "FNK0031 stock firmware reports no planar pose or odometry",
+            "No physical map/localization/robot-TF bringup is configured in this repository",
+            "No physical-motion safety controller or independent emergency stop is integrated here",
+        ]
+        required_sensor_streams = ("imu", "ultrasonic_front_left", "ultrasonic_front_right", "ultrasonic_rear")
+        sensor_streams = {}
+        for key in required_sensor_streams:
+            state = dict(sensor_publishers.get(key, {}))
+            age = time.time() - float(state.get("last_published_at") or 0.0)
+            state["fresh"] = bool(state.get("last_published_at") and age <= 3.0)
+            sensor_streams[key] = state
+            if not state["fresh"]:
+                blockers.append(f"physical sensor stream has not published a fresh {key} sample")
+        return {
+            "ready": False,
+            "simulation_only": True,
+            "hardware_actuation_enabled": False,
+            "robot_profile": "Freenove FNK0031 hexapod / Crawling Robot Controller V3.2",
+            "sensor_platform": "Body and robot are one co-mounted physical platform; Body sensors are robot sensors",
+            "blockers": blockers,
+            "sensor_streams": sensor_streams,
+            "required_before_physical_test": [
+                "calibrated, timestamped planar odometry with a validated map->odom->base_link TF chain",
+                "typed, timestamped physical obstacle data with verified frame IDs and sensor QoS",
+                "a continuous velocity/gait adapter with watchdog, bounds, stop behavior, and measured feedback",
+                "independent emergency stop and a bounded, low-speed test procedure",
+            ],
+        }
 
     def visualization(self):
         with self._lock:
@@ -154,6 +207,7 @@ class Ros2ObservationBridge:
     def _nav2_preflight(packages_available, action_server_available, topics, services):
         """Report graph prerequisites without treating package presence as robot readiness."""
         requirements = {
+            "/map": {"nav_msgs/msg/OccupancyGrid"},
             "/odom": {"nav_msgs/msg/Odometry"},
             "/tf": {"tf2_msgs/msg/TFMessage"},
             "/scan": {"sensor_msgs/msg/LaserScan", "sensor_msgs/msg/PointCloud2"},
@@ -168,7 +222,7 @@ class Ros2ObservationBridge:
             blockers.append("ROS 2 navigation message packages are unavailable")
         if not action_server_available:
             blockers.append("Nav2 NavigateToPose action server is not running")
-        for topic in ("/odom", "/tf", "/scan", "/cmd_vel"):
+        for topic in ("/map", "/odom", "/tf", "/scan", "/cmd_vel"):
             if not present[topic]:
                 blockers.append(f"required ROS graph topic/type missing: {topic}")
         if action_server_available and not present["/cmd_vel"]:
@@ -200,6 +254,7 @@ class Ros2ObservationBridge:
                 rclpy.init(args=None, context=context)
                 node = rclpy.create_node("pandorabox_body_bridge", context=context)
                 self._publisher = node.create_publisher(String, self.publish_topic, 10)
+                self._start_body_sensor_publishers(node)
                 node.create_subscription(String, self.input_topic, self._receive, 10)
                 self._start_sensor_subscriptions(node)
                 try:
@@ -225,6 +280,155 @@ class Ros2ObservationBridge:
             except Exception as exc:
                 self._status = {"state": "error", "available": False, "last_error": str(exc)}
             return self.status()
+
+    def _start_body_sensor_publishers(self, node):
+        """Create typed outputs for the physical samples already acquired by Body."""
+        try:
+            from sensor_msgs.msg import Imu, NavSatFix, PointCloud2, Range
+            from rclpy.qos import qos_profile_sensor_data
+        except Exception as exc:
+            self._body_sensor_publishers = {}
+            self._body_sensor_status = {key: {"state": "unavailable", "error": str(exc)[:180]}
+                                        for key in BODY_SENSOR_PUBLISH_TOPICS}
+            return
+        message_types = {
+            "imu": Imu, "gps": NavSatFix, "tof": Range,
+            "ultrasonic_front_left": Range, "ultrasonic_front_right": Range,
+            "ultrasonic_rear": Range, "mmwave_targets": PointCloud2,
+        }
+        publishers, statuses = {}, {}
+        for key, topic in BODY_SENSOR_PUBLISH_TOPICS.items():
+            try:
+                publishers[key] = node.create_publisher(message_types[key], topic, qos_profile_sensor_data)
+                statuses[key] = {"state": "ready", "topic": topic, "count": 0}
+            except Exception as exc:
+                statuses[key] = {"state": "error", "topic": topic, "error": str(exc)[:180]}
+        self._body_sensor_publishers = publishers
+        self._body_sensor_status = statuses
+
+    @staticmethod
+    def _set_ros_stamp(header, timestamp):
+        from builtin_interfaces.msg import Time
+        stamp = float(timestamp)
+        seconds = math.floor(stamp)
+        header.stamp = Time(sec=int(seconds), nanosec=int((stamp - seconds) * 1_000_000_000))
+
+    @classmethod
+    def _range_message(cls, sample, *, frame_id, ultrasonic):
+        from sensor_msgs.msg import Range
+        message = Range()
+        message.header.frame_id = frame_id
+        cls._set_ros_stamp(message.header, sample.get("timestamp") or time.time())
+        message.radiation_type = Range.ULTRASOUND if ultrasonic else Range.INFRARED
+        message.field_of_view = 0.0  # Sensor FOV is not calibrated/configured here.
+        message.min_range = 0.02 if ultrasonic else float(sample.get("min_range_m", 0.04) or 0.04)
+        message.max_range = 4.0 if ultrasonic else float(sample.get("max_range_m", 4.0) or 4.0)
+        distance = sample.get("distance_m")
+        message.range = float(distance) if sample.get("available") and distance is not None else math.inf
+        return message
+
+    def publish_body_sensor_observation(self, observation):
+        """Publish typed messages without polling hardware or fabricating missing measurements."""
+        with self._lock:
+            publishers = dict(self._body_sensor_publishers)
+            node = self._node
+        if not publishers or node is None:
+            return False
+        modalities = observation.get("modalities", {}) if isinstance(observation, dict) else {}
+        if not isinstance(modalities, dict):
+            return False
+        sent = []
+        try:
+            imu = modalities.get("imu") or {}
+            if imu.get("simulated") is False and imu.get("available", True) and publishers.get("imu"):
+                from sensor_msgs.msg import Imu
+                message = Imu()
+                message.header.frame_id = str(imu.get("frame") or "imu_sensor")
+                self._set_ros_stamp(message.header, imu.get("timestamp") or time.time())
+                attitude_valid = bool(imu.get("attitude_valid"))
+                if attitude_valid:
+                    roll, pitch, yaw = (math.radians(float(imu[k])) for k in
+                                        ("roll_deg", "pitch_deg", "yaw_relative_deg"))
+                    cr, sr = math.cos(roll / 2), math.sin(roll / 2)
+                    cp, sp = math.cos(pitch / 2), math.sin(pitch / 2)
+                    cy, sy = math.cos(yaw / 2), math.sin(yaw / 2)
+                    q = message.orientation
+                    q.x, q.y = sr * cp * cy - cr * sp * sy, cr * sp * cy + sr * cp * sy
+                    q.z, q.w = cr * cp * sy - sr * sp * cy, cr * cp * cy + sr * sp * sy
+                    message.orientation_covariance = [0.1, 0, 0, 0, 0.1, 0, 0, 0, 0.5]
+                else:
+                    message.orientation_covariance[0] = -1.0
+                gyro = imu.get("angular_velocity_dps") or [0, 0, 0]
+                accel = imu.get("acceleration_g") or [0, 0, 0]
+                message.angular_velocity.x, message.angular_velocity.y, message.angular_velocity.z = [math.radians(float(v)) for v in gyro]
+                message.linear_acceleration.x, message.linear_acceleration.y, message.linear_acceleration.z = [float(v) * 9.80665 for v in accel]
+                message.angular_velocity_covariance = [0.02, 0, 0, 0, 0.02, 0, 0, 0, 0.04]
+                message.linear_acceleration_covariance = [0.1, 0, 0, 0, 0.1, 0, 0, 0, 0.1]
+                publishers["imu"].publish(message)
+                sent.append("imu")
+
+            gps = modalities.get("gps") or {}
+            if gps.get("simulated") is False and publishers.get("gps") and gps.get("latitude") is not None and gps.get("longitude") is not None:
+                from sensor_msgs.msg import NavSatFix
+                message = NavSatFix()
+                message.header.frame_id = "gps"
+                self._set_ros_stamp(message.header, gps.get("timestamp") or time.time())
+                message.status.status = 0 if gps.get("fix") else -1
+                message.status.service = 1
+                message.latitude, message.longitude = float(gps["latitude"]), float(gps["longitude"])
+                message.altitude = float(gps.get("altitude_m") or 0.0)
+                message.position_covariance_type = NavSatFix.COVARIANCE_TYPE_UNKNOWN
+                publishers["gps"].publish(message)
+                sent.append("gps")
+
+            tof = modalities.get("tof") or {}
+            if tof.get("simulated") is False and publishers.get("tof") and tof.get("available") and tof.get("distance_m") is not None:
+                publishers["tof"].publish(self._range_message(tof, frame_id=str(tof.get("frame") or "tof_front"), ultrasonic=False))
+                sent.append("tof")
+
+            ultrasonic = modalities.get("ultrasonic") or {}
+            by_id = {str(item.get("id")): item for item in ultrasonic.get("sensors", []) if isinstance(item, dict)}
+            for sensor_id, key, frame in (
+                ("front_left", "ultrasonic_front_left", "hc_sr04_front_left"),
+                ("front_right", "ultrasonic_front_right", "hc_sr04_front_right"),
+                ("rear", "ultrasonic_rear", "hc_sr04_rear"),
+            ):
+                sample = by_id.get(sensor_id)
+                if sample and ultrasonic.get("simulated") is False and publishers.get(key):
+                    sample = {**sample, "timestamp": ultrasonic.get("timestamp")}
+                    publishers[key].publish(self._range_message(sample, frame_id=frame, ultrasonic=True))
+                    sent.append(key)
+
+            radar = modalities.get("mmwave_radar") or {}
+            if radar.get("simulated") is False and publishers.get("mmwave_targets") and radar.get("available", True):
+                from sensor_msgs.msg import PointCloud2
+                from sensor_msgs_py import point_cloud2
+                points = []
+                for target in radar.get("targets", []):
+                    position = target.get("position_m") or []
+                    if len(position) >= 3 and all(math.isfinite(float(v)) for v in position[:3]):
+                        points.append(tuple(float(v) for v in position[:3]))
+                stamp = float(radar.get("timestamp") or time.time())
+                header = node.get_clock().now().to_msg()
+                seconds, nanoseconds = int(stamp), int((stamp % 1) * 1_000_000_000)
+                header.sec, header.nanosec = seconds, nanoseconds
+                header.frame_id = str(radar.get("frame") or "ld2450")
+                publishers["mmwave_targets"].publish(point_cloud2.create_cloud_xyz32(header, points))
+                sent.append("mmwave_targets")
+        except Exception as exc:
+            with self._lock:
+                self._status["body_sensor_publish_error"] = str(exc)[:200]
+            return False
+        with self._lock:
+            for key in sent:
+                status = self._body_sensor_status.get(key, {})
+                status["count"] = int(status.get("count", 0)) + 1
+                status["last_published_at"] = time.time()
+                self._body_sensor_status[key] = status
+            self._status["body_sensor_observation_count"] = int(self._status.get("body_sensor_observation_count", 0)) + 1
+            self._status["body_sensor_last_published_at"] = time.time()
+            self._status.pop("body_sensor_publish_error", None)
+        return bool(sent)
 
     def _start_nav2_simulation(self, node=None):
         node = node or self._node
@@ -292,6 +496,11 @@ class Ros2ObservationBridge:
             self._sensor_status = {key: {"state": "unavailable", "error": str(exc)[:180]}
                                    for key in self.sensor_topics}
             return
+        try:
+            from rclpy.qos import qos_profile_sensor_data
+        except Exception:
+            # Keeps non-ROS unit tests usable; a sourced ROS runtime provides this profile.
+            qos_profile_sensor_data = 10
         self._sensor_subscriptions = []
         self._sensor_status = {}
         for modality, message_type in message_types.items():
@@ -303,7 +512,7 @@ class Ros2ObservationBridge:
                 subscription = node.create_subscription(
                     message_type, topic,
                     lambda message, key=modality, name=topic: self._receive_sensor_message(key, name, message),
-                    10,
+                    qos_profile_sensor_data,
                 )
                 self._sensor_subscriptions.append(subscription)
                 self._sensor_status[modality] = {"state": "listening", "topic": topic, "count": 0}
@@ -579,6 +788,8 @@ class Ros2ObservationBridge:
             simulation = self._nav2_simulation
             executor, node, context, rclpy = self._executor, self._node, self._context, self._rclpy
             self._executor = self._node = self._publisher = self._context = None
+            self._body_sensor_publishers = {}
+            self._body_sensor_status = {}
             self._thread = None
             self._nav2_client = None
             self._mock_nav2_client = None

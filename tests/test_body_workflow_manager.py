@@ -106,6 +106,7 @@ class WorkflowManagerTests(unittest.TestCase):
             True,
             True,
             {
+                "/map": ["nav_msgs/msg/OccupancyGrid"],
                 "/odom": ["nav_msgs/msg/Odometry"],
                 "/tf": ["tf2_msgs/msg/TFMessage"],
                 "/scan": ["sensor_msgs/msg/LaserScan"],
@@ -180,9 +181,15 @@ class WorkflowManagerTests(unittest.TestCase):
         nav_msg_types = ModuleType("nav_msgs.msg")
         nav_msg_types.Odometry = type("Odometry", (), {})
         nav_msgs.msg = nav_msg_types
+        rclpy = ModuleType("rclpy")
+        rclpy.__path__ = []
+        rclpy_qos = ModuleType("rclpy.qos")
+        sensor_qos = object()
+        rclpy_qos.qos_profile_sensor_data = sensor_qos
         with patch.dict(sys.modules, {
             "sensor_msgs": sensor_msgs, "sensor_msgs.msg": sensor_msg_types,
             "nav_msgs": nav_msgs, "nav_msgs.msg": nav_msg_types,
+            "rclpy": rclpy, "rclpy.qos": rclpy_qos,
         }):
             observations = []
             bridge = Ros2ObservationBridge(observations.append, nav2_simulation_enabled=True)
@@ -192,7 +199,7 @@ class WorkflowManagerTests(unittest.TestCase):
                     self.subscriptions = {}
 
                 def create_subscription(self, message_type, topic, callback, _depth):
-                    self.subscriptions[topic] = (message_type, callback)
+                    self.subscriptions[topic] = (message_type, callback, _depth)
                     return (message_type, topic)
 
             node = Node()
@@ -200,6 +207,7 @@ class WorkflowManagerTests(unittest.TestCase):
             self.assertEqual(set(node.subscriptions), {
                 "/imu/data", "/gps/fix", "/scan", "/odom", "/range/front",
             })
+            self.assertTrue(all(item[2] is sensor_qos for item in node.subscriptions.values()))
             scan = NS(header=NS(frame_id="laser", stamp=NS(sec=12, nanosec=500_000_000)),
                       ranges=[1.2], angle_min=0.0, angle_increment=0.1,
                       range_min=0.1, range_max=8.0)

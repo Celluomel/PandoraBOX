@@ -344,7 +344,9 @@ class MmWaveAugmentedSource:
     def observe(self):
         observation = self.source.observe()
         try:
-            observation.modalities["mmwave_radar"] = self.radar.read().as_dict()
+            observation.modalities["mmwave_radar"] = {
+                **self.radar.read().as_dict(), "simulated": False,
+            }
         except Exception as exc:
             observation.modalities["mmwave_radar"] = {
                 "timestamp": time.time(), "frame": "body", "targets": [],

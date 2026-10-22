@@ -7,6 +7,43 @@ from body_runtime_host.nav2_simulation import Nav2Simulation
 
 
 class Nav2SimulationTests(unittest.TestCase):
+    def test_physical_nav2_preflight_never_confuses_simulation_with_robot_readiness(self):
+        from body_runtime_host.ros2_bridge import Ros2ObservationBridge
+
+        readiness = Ros2ObservationBridge._physical_nav2_preflight()
+        self.assertFalse(readiness["ready"])
+        self.assertTrue(readiness["simulation_only"])
+        self.assertFalse(readiness["hardware_actuation_enabled"])
+        self.assertTrue(any("odometry" in blocker.lower() for blocker in readiness["blockers"]))
+        self.assertTrue(any("cmd_vel" in blocker for blocker in readiness["blockers"]))
+        self.assertTrue(any("sampling cadence" in blocker for blocker in readiness["blockers"]))
+        self.assertGreaterEqual(len(readiness["required_before_physical_test"]), 4)
+
+    def test_physical_sensor_topic_contract_is_explicit(self):
+        from body_runtime_host.ros2_bridge import BODY_SENSOR_PUBLISH_TOPICS
+
+        self.assertEqual(BODY_SENSOR_PUBLISH_TOPICS["ultrasonic_front_left"], "/body/sensors/ultrasonic/front_left")
+        self.assertEqual(BODY_SENSOR_PUBLISH_TOPICS["ultrasonic_front_right"], "/body/sensors/ultrasonic/front_right")
+        self.assertEqual(BODY_SENSOR_PUBLISH_TOPICS["ultrasonic_rear"], "/body/sensors/ultrasonic/rear")
+        self.assertEqual(BODY_SENSOR_PUBLISH_TOPICS["mmwave_targets"], "/body/sensors/mmwave/targets")
+
+    def test_ros_typed_sensor_publisher_never_republishes_simulated_samples_as_hardware(self):
+        from body_runtime_host.ros2_bridge import BODY_SENSOR_PUBLISH_TOPICS, Ros2ObservationBridge
+
+        class Publisher:
+            def __init__(self): self.messages = []
+            def publish(self, message): self.messages.append(message)
+
+        bridge = Ros2ObservationBridge(lambda _: None)
+        bridge._node = object()
+        bridge._body_sensor_publishers = {key: Publisher() for key in BODY_SENSOR_PUBLISH_TOPICS}
+        result = bridge.publish_body_sensor_observation({"modalities": {
+            "mmwave_radar": {"simulated": True, "targets": [{"position_m": [1, 2, 0]}]},
+            "ultrasonic": {"simulated": True, "sensors": [{"id": "front_left", "available": True, "distance_m": 1.0}]},
+        }})
+        self.assertFalse(result)
+        self.assertTrue(all(not publisher.messages for publisher in bridge._body_sensor_publishers.values()))
+
     def test_synthetic_world_has_free_start_and_goal_with_obstacles(self):
         self.assertFalse(Nav2Simulation._occupied(-5.0, 0.0))
         self.assertFalse(Nav2Simulation._occupied(5.0, 0.0))

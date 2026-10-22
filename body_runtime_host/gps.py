@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from typing import Any
 
@@ -83,6 +84,7 @@ def _satellites_in_view(sentences: Any) -> int:
 class VentunoBridgeGpsSource:
     name = "ventuno_usart3_gps"
     method = "body_gps_read"
+    cache_s = 0.8
 
     def __init__(self, bridge_factory=None):
         self._bridge_factory = bridge_factory
@@ -91,6 +93,7 @@ class VentunoBridgeGpsSource:
         self.last_sample: dict[str, Any] | None = None
         self.last_diagnostic: dict[str, Any] = {}
         self.last_ok: float | None = None
+        self._last_read_monotonic = 0.0
 
     def _client(self):
         if self._bridge is None:
@@ -105,6 +108,8 @@ class VentunoBridgeGpsSource:
         return self._bridge
 
     def read(self) -> dict[str, Any]:
+        if self.last_sample and time.monotonic() - self._last_read_monotonic < self.cache_s:
+            return dict(self.last_sample)
         try:
             payload = call_sensor_rpc(self._client(), self.method, timeout=0.5)
             if isinstance(payload, bytes):
@@ -146,6 +151,7 @@ class VentunoBridgeGpsSource:
             }
             self.last_sample = sample
             self.last_ok = sample["timestamp"]
+            self._last_read_monotonic = time.monotonic()
             self.last_error = "" if sample["fix"] else "NMEA stream is valid but GPS has no position fix"
             return sample
         except Exception as exc:
@@ -164,3 +170,42 @@ class VentunoBridgeGpsSource:
             "sample": self.last_sample,
             "diagnostic": self.last_diagnostic,
         }
+
+
+class GpsAugmentedSource:
+    """Attach timestamped GNSS data to the existing Body observation cycle."""
+
+    def __init__(self, source, gps: VentunoBridgeGpsSource):
+        self.source = source
+        self.gps = gps
+        self.name = getattr(source, "name", "body")
+        self.simulated = bool(getattr(source, "simulated", False))
+
+    def __getattr__(self, name):
+        return getattr(self.source, name)
+
+    def observe(self):
+        observation = self.source.observe()
+        try:
+            observation.modalities["gps"] = self.gps.read()
+        except Exception as exc:
+            observation.modalities["gps"] = {
+                "timestamp": time.time(), "source": self.gps.name,
+                "available": False, "fix": False, "simulated": False,
+                "error": str(exc)[:240],
+            }
+        return observation
+
+    def status(self):
+        base = self.source.status() if callable(getattr(self.source, "status", None)) else {}
+        return {**(base if isinstance(base, dict) else {}), "gps": self.gps.status()}
+
+
+def augment_with_gps(source, config, gps=None):
+    """Attach the local Ventuno GPS RPC when the hardware bridge is present."""
+    enabled = bool((config or {}).get(
+        "BODY_PLUGIN_GPS_ENABLED", os.path.exists("/run/arduino-router.sock")
+    ))
+    if source is None or not enabled or not os.path.exists("/run/arduino-router.sock"):
+        return source
+    return GpsAugmentedSource(source, gps or VentunoBridgeGpsSource())

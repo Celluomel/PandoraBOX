@@ -2231,9 +2231,15 @@ class BodyHost:
         port = settings["serial_port"]
         probe = FNK0031USBSource(port, timeout=min(2.0, settings["timeout"])) if port else None
         status = probe.status() if probe else {
-            "source": "fnk0031_usb", "transport": "USB serial / stock FNHR framed protocol", "protocol": "fnhr_framed_serial", "port": "",
+            "source": "fnk0031_usb",
+            "controller_model": "Freenove Crawling Robot Controller V3.2",
+            "firmware_profile": "stock FNHR framed serial protocol",
+            "transport": "USB serial / stock FNHR framed protocol", "protocol": "fnhr_framed_serial", "port": "",
             "connected": False, "actuation_enabled": settings["actuation_enabled"],
-            "pose_available": False, "supply_voltage_v": None, "remote_preserved": True,
+            "pose_available": False, "continuous_cmd_vel": False,
+            "control_mode": "blocking_gait_actions",
+            "stop_behavior": "sleep_mode order; not an emergency stop",
+            "supply_voltage_v": None, "remote_preserved": True,
             "last_error": "USB serial port is not configured",
             "supported_actions": ["forward", "backward", "turn_left", "turn_right", "stop", "wait"],
         }
@@ -3791,10 +3797,19 @@ class BodyHost:
                             config=body_llm_config,
                             source=src,
                         )
+                        self._worldmodel.observation_callback = self._publish_ros2_sensor_observation
                         LOG.info("World model ready (source=%s)", getattr(src, "name", "?"))
                     except Exception as exc:
                         LOG.warning("World model unavailable: %s", exc)
         return self._worldmodel
+
+    def _publish_ros2_sensor_observation(self, observation) -> None:
+        bridge = self._ros2_bridge
+        if bridge is None:
+            return
+        publish = getattr(bridge, "publish_body_sensor_observation", None)
+        if callable(publish):
+            publish(observation.as_dict() if callable(getattr(observation, "as_dict", None)) else observation)
 
     def reload_worldmodel_source(self) -> dict:
         """Re-resolve the sensor source (after a config change) and restart."""
@@ -3821,6 +3836,7 @@ class BodyHost:
             augment_with_imu, augment_with_mmwave, augment_with_tof,
             augment_with_ultrasonic,
         )
+        from .gps import augment_with_gps
 
         model_config_path = ROOT / "data" / "body" / "worldmodel" / "config.json"
         model_config: dict = {}
@@ -3853,12 +3869,14 @@ class BodyHost:
             source = augment_with_mmwave(source, self.config)
             source = augment_with_imu(source, self.config, self._get_imu_bridge_source())
             source = augment_with_tof(source, self.config)
+            source = augment_with_gps(source, self.config, self._get_gps_bridge_source())
             return augment_with_ultrasonic(source, self.config)
         if mode == "bridge":
             return None
         source = augment_with_mmwave(resolve_source(self.config, self.latest), self.config)
         source = augment_with_imu(source, self.config, self._get_imu_bridge_source())
         source = augment_with_tof(source, self.config)
+        source = augment_with_gps(source, self.config, self._get_gps_bridge_source())
         return augment_with_ultrasonic(source, self.config)
 
     def plugins(self) -> list[dict]:
