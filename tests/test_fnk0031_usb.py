@@ -1,7 +1,7 @@
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from body_runtime_host.fnk0031_usb import (
     FNK0031CustomUSBSource,
@@ -69,6 +69,46 @@ class FakeHardwareSerial(FakeSerial):
 
     def close(self):
         self.is_open = False
+
+
+class FakeCustomSerial:
+    def __init__(self, port, baudrate, timeout, write_timeout):
+        self.buffer = bytearray()
+        self.writes = []
+        self.z = [0.0] * 6
+
+    def reset_input_buffer(self):
+        self.buffer.clear()
+
+    def write(self, data):
+        line = bytes(data).decode("ascii").strip()
+        self.writes.append(line)
+        if line == "PING":
+            self.buffer.extend(b"PONG FNK0031_NAV_V2\n")
+        elif line.startswith("CMD leg "):
+            _, _, leg_text, delta_text = line.split()
+            leg = int(leg_text)
+            self.buffer.extend(f"STARTED leg {leg}\n".encode())
+            self.z[leg - 1] += float(delta_text)
+            self.buffer.extend(f"DONE leg {leg}\n".encode())
+        elif line == "CMD state":
+            values = " ".join(
+                str(value)
+                for index, z in enumerate(self.z)
+                for value in (index, index + 1, z, 10 + index, 20 + index, 30 + index)
+            )
+            self.buffer.extend(f"STATE 123 {values}\n".encode())
+        return len(data)
+
+    def flush(self):
+        pass
+
+    def read(self, size=1):
+        if not self.buffer:
+            return b""
+        value = bytes(self.buffer[:size])
+        del self.buffer[:size]
+        return value
 
 
 class FNK0031USBSourceTests(unittest.TestCase):
@@ -169,6 +209,58 @@ class FNK0031USBSourceTests(unittest.TestCase):
         self.assertEqual(len(state["legs"]), 6)
         self.assertEqual(state["legs"][0]["foot_position_mm"], [0.0, 1.0, 2.0])
         self.assertEqual(state["legs"][5]["joint_angles_deg"], [15.0, 25.0, 35.0])
+
+    def test_custom_board_leg_test_is_acknowledged_and_reads_updated_estimate(self):
+        connection = FakeCustomSerial("COM-LEG", 115200, 0.1, 5)
+        source = FNK0031CustomUSBSource(
+            "COM-LEG", actuation_enabled=False,
+            serial_factory=lambda *args, **kwargs: connection,
+        )
+        state = source.execute_leg_test(2, 5)
+        self.assertEqual(connection.writes, ["CMD leg 2 5", "CMD state"])
+        self.assertEqual(state["legs"][1]["foot_position_mm"][2], 5.0)
+        self.assertFalse(state["measured_feedback"])
+
+    def test_custom_board_leg_test_rejects_large_or_invalid_moves_before_serial(self):
+        connection = FakeCustomSerial("COM-LEG-INVALID", 115200, 0.1, 5)
+        source = FNK0031CustomUSBSource(
+            "COM-LEG-INVALID", serial_factory=lambda *args, **kwargs: connection,
+        )
+        for leg, delta in ((0, 5), (7, 5), (True, 5), (1, 6), (1, -6)):
+            with self.subTest(leg=leg, delta=delta), self.assertRaises(ValueError):
+                source.execute_leg_test(leg, delta)
+        self.assertEqual(connection.writes, [])
+
+    def test_body_leg_test_requires_board_only_confirmation_and_reports_readback(self):
+        from body_runtime_host.runtime import BodyHost
+
+        host = BodyHost()
+        host.fnk0031_settings = lambda: {
+            "platform": "usb_serial_custom", "serial_port": "COM-TEST", "timeout": 2.0,
+        }
+        before = FNK0031CustomUSBSource._parse_estimated_state(
+            "STATE 1 " + " ".join(str(value) for leg in range(6)
+                                   for value in (0, 0, 0, 0, 0, 0))
+        )
+        after_values = [0.0] * 36
+        after_values[2] = 5.0
+        after = FNK0031CustomUSBSource._parse_estimated_state(
+            "STATE 2 " + " ".join(str(value) for value in after_values)
+        )
+        with patch("body_runtime_host.fnk0031_usb.FNK0031CustomUSBSource") as source_type:
+            source = source_type.return_value
+            source.ping.return_value = True
+            source.read_estimated_leg_state.side_effect = [before]
+            source.execute_leg_test.return_value = after
+            with self.assertRaises(ValueError):
+                host.fnk0031_leg_test({"leg": 1, "direction": "lift"})
+            result = host.fnk0031_leg_test({
+                "leg": 1, "direction": "lift", "board_only_confirmed": True,
+            })
+        source.execute_leg_test.assert_called_once_with(1, 5)
+        self.assertTrue(result["acknowledged"])
+        self.assertEqual(result["ack"], "DONE leg 1")
+        self.assertEqual(result["reported_delta_z_mm"], 5.0)
 
     def test_custom_controller_rejects_unbounded_crawl_before_motion(self):
         source = FNK0031CustomUSBSource("COM9", actuation_enabled=True, serial_factory=self.factory)

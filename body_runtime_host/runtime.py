@@ -2261,6 +2261,45 @@ class BodyHost:
             "plugin_enabled": bool(self.value("BODY_PLUGIN_ROBOT_ENABLED", False)),
         }
 
+    def fnk0031_leg_test(self, payload: dict) -> dict:
+        if payload.get("board_only_confirmed") is not True:
+            raise ValueError("confirm that the FNK0031 board has no servos attached")
+        raw_leg = payload.get("leg")
+        if isinstance(raw_leg, bool) or not isinstance(raw_leg, int) or raw_leg not in range(1, 7):
+            raise ValueError("leg must be an integer from 1 to 6")
+        direction = str(payload.get("direction") or "").strip().lower()
+        if direction not in {"lift", "return"}:
+            raise ValueError("direction must be 'lift' or 'return'")
+        settings = self.fnk0031_settings()
+        if settings["platform"] != "usb_serial_custom" or not settings["serial_port"]:
+            raise ValueError("FNK0031 custom USB firmware is not configured")
+
+        from body_runtime_host.fnk0031_usb import FNK0031CustomUSBSource
+
+        source = FNK0031CustomUSBSource(settings["serial_port"], timeout=settings["timeout"])
+        if not source.ping():
+            raise RuntimeError(f"FNK0031 is not responding: {source.last_error}")
+        before = source.read_estimated_leg_state()
+        if not before:
+            raise RuntimeError(f"FNK0031 leg state is unavailable: {source.last_error}")
+        delta_z = 5 if direction == "lift" else -5
+        after = source.execute_leg_test(raw_leg, delta_z)
+        before_leg = before["legs"][raw_leg - 1]
+        after_leg = after["legs"][raw_leg - 1]
+        return {
+            "ok": True,
+            "acknowledged": True,
+            "ack": f"DONE leg {raw_leg}",
+            "leg": raw_leg,
+            "direction": direction,
+            "requested_delta_z_mm": delta_z,
+            "reported_delta_z_mm": round(
+                after_leg["foot_position_mm"][2] - before_leg["foot_position_mm"][2], 2
+            ),
+            "estimated_leg_state": after,
+            "state_semantics": "FNHR internal command estimate; not measured servo feedback",
+        }
+
     def serial_device_inventory(self) -> dict:
         """List serial devices visible to the machine that runs Body."""
         from body_runtime_host.fnk0031_usb import available_serial_ports
@@ -4592,6 +4631,11 @@ class BodyHost:
                         self._send(owner.update_fnk0050_settings(body))
                     elif path == "/plugins/fnk0031_wifi/settings":
                         self._send(owner.update_fnk0031_settings(body))
+                    elif path == "/plugins/fnk0031_wifi/leg-test":
+                        try:
+                            self._send(owner.fnk0031_leg_test(body))
+                        except (ValueError, RuntimeError, TimeoutError) as exc:
+                            self._send({"ok": False, "error": str(exc)}, 409)
                     elif path == "/plugins/mmwave_radar/settings":
                         try:
                             self._send(owner.update_mmwave_radar_settings(body))

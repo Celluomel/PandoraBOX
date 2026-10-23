@@ -26,6 +26,10 @@ on the real robot.
   `(foot x, y, z in mm, joint A, B, C in degrees)`. These are FNHR's
   command-derived internal estimates; the controller has no servo feedback,
   and these values are not measured leg positions or body odometry.
+- `CMD leg <1..6> <+5|-5>` -> moves only the selected leg by a 5 mm relative
+  Z offset and returns `STARTED leg <n>` then `DONE leg <n>`. The Body HUD
+  exposes this only as a board-only diagnostic after explicit confirmation;
+  it does not enable general robot actuation.
 - `CMD forward|backward|left|right|turn_left|turn_right` -> `STARTED <action>`
   then `DONE <action>` after the FNHR call returns.
 - `CMD crawl <x> <y> <angle>` -> one FNHR `robot.Crawl(x, y, angle)` action.
@@ -47,9 +51,11 @@ velocity (m/s) to gait displacement or speed.
    the locally installed AVR core and library versions.
 3. Before upload, save the currently installed stock firmware and confirm the
    loss of the stock remote/Processing control path is acceptable.
-4. First upload and test with the chassis securely supported and servo power
-   isolated. Verify `PING`, then verify one bounded gait at a time with an
-   operator and an independent way to cut servo power.
+4. First upload and test with no servos attached or with the chassis securely
+   supported and servo power isolated. Verify `PING` and `CMD state`; the Body
+   HUD's board-only leg check is limited to one 5 mm vertical step. Only after
+   that bench check should an operator test a gait with an independent way to
+   cut servo power.
 5. Measure gait completion and stop latency before connecting any autonomous
    planner. Do not use this sketch for physical Nav2 until a velocity adapter,
    odometry, sensor transforms, map/localization, and independent E-stop have

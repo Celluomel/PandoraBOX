@@ -19,6 +19,9 @@ let cameraBusy = false;
 let cameraDisplayKey = null;
 let imuBusy = false;
 let tofBusy = false;
+let fnkHardwareStatus = null;
+let fnkLegTestBusy = false;
+let highlightedFnkLeg = 0;
 let robotVisual = null;
 let robotRenderer = null;
 let robotScene = null;
@@ -320,7 +323,9 @@ function drawUltrasonicRanges(modalities = world?.perception?.modalities || {}) 
 function drawRobot() {
   if (robotVisual) {
     robotVisual.setTelemetry(controller || {});
+    robotVisual.setEstimatedLegState(controller?.estimated_leg_state, highlightedFnkLeg);
     renderRobotVisual();
+    renderFnkLegReadout(controller?.estimated_leg_state);
     return;
   }
   const group = $('robot-drawing');
@@ -340,12 +345,16 @@ function drawRobot() {
     const physicalLeg = visualToPhysicalLeg[index];
     const [coxa = 0, femur = 0, tibia = 0] = jointsByPhysicalLeg[physicalLeg] || [];
     const lift = Number(controller?.foot_lift?.[physicalLeg] || 0);
-    const coxaX = hx + side * (24 + Number(coxa) * 4);
-    const coxaY = hy + Number(coxa) * 4;
-    const femurX = coxaX + side * (31 + Number(femur) * 3);
-    const femurY = coxaY + longitudinal * (9 + Number(femur) * 3);
-    const footX = femurX + side * (34 + Number(tibia) * 3);
-    const footY = femurY + longitudinal * (11 + Number(tibia) * 4) - Math.max(0, lift) * 10;
+    const estimated = controller?.estimated_leg_state?.legs?.[physicalLeg]?.foot_position_mm;
+    const estimatedValid = Array.isArray(estimated) && estimated.length === 3 && estimated.every(Number.isFinite);
+    const targetFootX = estimatedValid ? 180 + estimated[0] * .72 : null;
+    const targetFootY = estimatedValid ? 155 - estimated[1] * .72 : null;
+    const coxaX = estimatedValid ? hx + (targetFootX - hx) * .28 : hx + side * (24 + Number(coxa) * 4);
+    const coxaY = estimatedValid ? hy + (targetFootY - hy) * .28 : hy + Number(coxa) * 4;
+    const femurX = estimatedValid ? hx + (targetFootX - hx) * .68 : coxaX + side * (31 + Number(femur) * 3);
+    const femurY = estimatedValid ? hy + (targetFootY - hy) * .68 : coxaY + longitudinal * (9 + Number(femur) * 3);
+    const footX = estimatedValid ? targetFootX : femurX + side * (34 + Number(tibia) * 3);
+    const footY = estimatedValid ? targetFootY : femurY + longitudinal * (11 + Number(tibia) * 4) - Math.max(0, lift) * 10;
     const legColor = spikes.slice(physicalLeg * 3, physicalLeg * 3 + 3).some(Boolean) ? '#efcb76' : side < 0 ? '#76d5a0' : '#69bac2';
     const points = [[coxaX, coxaY], [femurX, femurY], [footX, footY]];
     const links = [[hx, hy, coxaX, coxaY], [coxaX, coxaY, femurX, femurY], [femurX, femurY, footX, footY]];
@@ -358,6 +367,7 @@ function drawRobot() {
     const linkMarkup = links.map(([x1, y1, x2, y2], segment) => `<path d="M${x1} ${y1} L${x2} ${y2}" stroke="${segment === 2 ? legColor : '#92b8a1'}" stroke-width="${segment === 2 ? 6 : 7}" stroke-linecap="round"/>`).join('');
     return `<g>${linkMarkup}${servoMarkup}<circle cx="${footX}" cy="${footY}" r="5.5" fill="${legColor}" stroke="#07110d" stroke-width="1.5"/><text x="${footX + side * 8}" y="${footY + 3}" text-anchor="${side < 0 ? 'end' : 'start'}" fill="#dcebe2" font-size="7" font-family="monospace">L${index + 1}</text></g>`;
   }).join('');
+  renderFnkLegReadout(controller?.estimated_leg_state);
   const neurons = $('robot-neurons');
   neurons.innerHTML = Array.from({ length: 18 }, (_, index) => {
     const x = 27 + index * 18;
@@ -365,6 +375,89 @@ function drawRobot() {
     const groupColor = index < 6 ? '#80dfaa' : index < 12 ? '#86cbd2' : '#c6a2e8';
     return `<circle cx="${x}" cy="278" r="${firing ? 4.3 : 2.6}" fill="${firing ? '#efcb76' : groupColor}" opacity="${firing ? 1 : .58}"/>`;
   }).join('');
+}
+
+function renderFnkLegReadout(state) {
+  const grid = $('fnk-leg-state');
+  if (!grid) return;
+  if (!Array.isArray(state?.legs) || state.measured_feedback !== false) {
+    grid.innerHTML = '<span class="unavailable">FNHR estimate unavailable</span>';
+    return;
+  }
+  grid.innerHTML = state.legs.map(item => {
+    const p = item.foot_position_mm || [];
+    const valid = p.length === 3 && p.every(Number.isFinite);
+    return `<span class="${Number(item.leg) === highlightedFnkLeg ? 'selected' : ''}">${valid ? `L${item.leg} · X ${p[0].toFixed(0)} Y ${p[1].toFixed(0)} Z ${p[2].toFixed(0)} mm` : `L${item.leg} · —`}</span>`;
+  }).join('');
+}
+
+function updateFnkLegControls() {
+  const connected = fnkHardwareStatus?.connected === true
+    && fnkHardwareStatus?.firmware_profile === 'custom_fnhr_ascii_v2';
+  const confirmed = $('fnk-board-only-confirm')?.checked === true;
+  for (const id of ['fnk-leg-lift', 'fnk-leg-return']) {
+    const button = $(id);
+    if (button) button.disabled = !connected || !confirmed || fnkLegTestBusy;
+  }
+  const status = $('fnk-leg-test-status');
+  if (status && !fnkLegTestBusy && !status.dataset.result) {
+    status.textContent = connected
+      ? 'FNK0031 connected · command estimates only, not servo feedback'
+      : fnkHardwareStatus?.connected
+        ? 'FNK0031 connected with incompatible firmware profile · leg test disabled'
+        : `FNK0031 unavailable · ${fnkHardwareStatus?.last_error || 'waiting for USB response'}`;
+  }
+}
+
+async function pollFnkHardware() {
+  try {
+    const response = await fetch('/plugins/fnk0031_wifi/usb/status', { cache: 'no-store' });
+    if (!response.ok) throw new Error(`FNK USB status HTTP ${response.status}`);
+    fnkHardwareStatus = await response.json();
+  } catch (error) {
+    fnkHardwareStatus = { connected: false, last_error: error.message };
+  }
+  if (controller) {
+    controller.hardware_status = fnkHardwareStatus;
+    if (fnkHardwareStatus.connected && fnkHardwareStatus.estimated_leg_state) {
+      controller.estimated_leg_state = fnkHardwareStatus.estimated_leg_state;
+    }
+  }
+  updateFnkLegControls();
+  drawRobot();
+}
+
+async function triggerFnkLegTest(direction) {
+  if (fnkLegTestBusy) return;
+  const status = $('fnk-leg-test-status');
+  const selectedLeg = Number($('fnk-leg-select').value);
+  fnkLegTestBusy = true;
+  status.dataset.result = '';
+  status.textContent = `Sending ${direction} request to FNK0031 leg ${selectedLeg}…`;
+  updateFnkLegControls();
+  try {
+    const response = await fetch('/plugins/fnk0031_wifi/leg-test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ leg: selectedLeg, direction, board_only_confirmed: $('fnk-board-only-confirm').checked }),
+    });
+    const result = await response.json();
+    if (!response.ok || !result.ok) throw new Error(result.error || `HTTP ${response.status}`);
+    highlightedFnkLeg = selectedLeg;
+    controller = controller || {};
+    controller.estimated_leg_state = result.estimated_leg_state;
+    fnkHardwareStatus = { ...fnkHardwareStatus, connected: true, estimated_leg_state: result.estimated_leg_state };
+    status.dataset.result = '1';
+    const signedDelta = Number(result.reported_delta_z_mm);
+    status.textContent = `${result.ack} received · L${selectedLeg} Z ${Number.isFinite(signedDelta) ? `${signedDelta > 0 ? '+' : ''}${signedDelta.toFixed(1)} mm` : 'updated'} · FNHR estimate, not measured`;
+    drawRobot();
+  } catch (error) {
+    status.dataset.result = '1';
+    status.textContent = `Leg test failed · ${error.message}`;
+  } finally {
+    fnkLegTestBusy = false;
+    updateFnkLegControls();
+  }
 }
 
 function drawNavigation(perception = world?.perception || {}, telemetry = controller || {}) {
@@ -513,7 +606,16 @@ async function poll() {
     ]);
     if (!worldResponse.ok) throw new Error(`World model HTTP ${worldResponse.status}`);
     world = await worldResponse.json();
-    if (controllerResponse.ok) controller = await controllerResponse.json();
+    if (controllerResponse.ok) {
+      const nextController = await controllerResponse.json();
+      controller = {
+        ...nextController,
+        hardware_status: fnkHardwareStatus,
+        estimated_leg_state: fnkHardwareStatus?.connected
+          ? fnkHardwareStatus.estimated_leg_state
+          : nextController.estimated_leg_state,
+      };
+    }
     updateStatus();
   } catch (error) {
     setText('connection', 'Body unavailable'); setText('status', error.message);
@@ -705,6 +807,10 @@ async function pollRadar() {
 }
 
 initRobotVisual();
+document.getElementById('fnk-board-only-confirm')?.addEventListener('change', updateFnkLegControls);
+document.getElementById('fnk-leg-lift')?.addEventListener('click', () => void triggerFnkLegTest('lift'));
+document.getElementById('fnk-leg-return')?.addEventListener('click', () => void triggerFnkLegTest('return'));
 window.addEventListener('resize', updateStatus);
-void poll(); void pollCamera(); void pollImu(); void pollTof(); void pollRadar(); void pollGps(); void pollUltrasonic();
+void poll(); void pollFnkHardware(); void pollCamera(); void pollImu(); void pollTof(); void pollRadar(); void pollGps(); void pollUltrasonic();
 setInterval(poll, 800); setInterval(pollCamera, 150); setInterval(pollImu, 1000); setInterval(pollTof, 1000); setInterval(pollRadar, 500); setInterval(pollGps, 1500); setInterval(pollUltrasonic, 500);
+setInterval(pollFnkHardware, 2000);

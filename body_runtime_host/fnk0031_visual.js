@@ -121,6 +121,52 @@ export function createFnk0031Visual(THREE) {
     }
   }
 
+  function setEstimatedLegState(state, highlightedLeg = 0) {
+    if (!Array.isArray(state?.legs)) return;
+    const origins = [
+      [-32, 50], [-46, 0], [-32, -50],
+      [32, 50], [46, 0], [32, -50],
+    ];
+    for (const leg of legs) {
+      const sample = state.legs[leg.physicalLeg];
+      const foot = sample?.foot_position_mm?.map(Number);
+      const angles = sample?.joint_angles_deg?.map(Number);
+      if (foot?.length !== 3 || angles?.length !== 3 || ![...foot, ...angles].every(Number.isFinite)) continue;
+      const [originX, originZ] = origins[leg.physicalLeg];
+      const [alphaDeg, betaDeg] = angles;
+      const alpha = alphaDeg * Math.PI / 180;
+      const beta = betaDeg * Math.PI / 180;
+      const d = 22.75;
+      const e = 55;
+      const c = 15.75;
+      const coxa = new THREE.Vector3(
+        (originX + d * Math.cos(alpha)) / 100,
+        .56 + c / 100,
+        (originZ + d * Math.sin(alpha)) / 100,
+      );
+      const kneeRadius = d + e * Math.sin(beta);
+      const knee = new THREE.Vector3(
+        (originX + kneeRadius * Math.cos(alpha)) / 100,
+        .56 + (c + e * Math.cos(beta)) / 100,
+        (originZ + kneeRadius * Math.sin(alpha)) / 100,
+      );
+      const end = new THREE.Vector3(foot[0] / 100, .56 + foot[2] / 100, foot[1] / 100);
+      const points = [leg.hip.position.clone(), coxa, knee, end];
+      for (let index = 0; index < leg.links.length; index += 1) {
+        placeRod(leg.links[index], points[index], points[index + 1]);
+        leg.joints[index].housing.position.copy(points[index + 1]);
+        leg.joints[index].indicator.position.copy(points[index + 1]).add(new THREE.Vector3(0, .075, 0));
+      }
+      leg.foot.position.copy(end);
+      leg.footEdge.position.copy(end);
+      leg.footEdge.position.y += .04;
+      const active = Number(highlightedLeg) === leg.physicalLeg + 1;
+      const color = active ? activeJoint : idleJoint;
+      leg.foot.material.color.set(active ? '#f5d07e' : '#263338');
+      leg.footEdge.material.color.set(color);
+    }
+  }
+
   setTelemetry();
-  return { group, setTelemetry };
+  return { group, setTelemetry, setEstimatedLegState };
 }

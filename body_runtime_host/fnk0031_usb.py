@@ -458,6 +458,31 @@ class FNK0031CustomUSBSource(FNK0031USBSource):
             self.last_error = str(exc)
             return None
 
+    def execute_leg_test(self, leg: int, delta_z_mm: int) -> dict[str, Any]:
+        if type(leg) is not int or leg not in range(1, 7) or type(delta_z_mm) is not int or delta_z_mm not in (-5, 5):
+            raise ValueError("leg test is limited to one leg and a +/-5 mm Z step")
+        with self._open() as connection:
+            if hasattr(connection, "reset_input_buffer"):
+                connection.reset_input_buffer()
+            connection.write(f"CMD leg {leg} {delta_z_mm}\n".encode("ascii"))
+            connection.flush()
+            deadline = time.monotonic() + min(8.0, self.motion_timeout)
+            started = self._read_line(connection, deadline)
+            if started != f"STARTED leg {leg}":
+                raise RuntimeError(f"FNK0031 did not acknowledge the leg test: {started!r}")
+            completed = self._read_line(connection, deadline)
+            if completed != f"DONE leg {leg}":
+                raise RuntimeError(f"FNK0031 did not complete the leg test: {completed!r}")
+            if hasattr(connection, "reset_input_buffer"):
+                connection.reset_input_buffer()
+            connection.write(b"CMD state\n")
+            connection.flush()
+            state_line = self._read_line(connection, time.monotonic() + min(3.0, self.timeout))
+        state = self._parse_estimated_state(state_line)
+        self.last_error = ""
+        self.last_ok = time.time()
+        return state
+
     def observe(self):
         from .worldmodel.types import Observation
 
@@ -561,5 +586,6 @@ class FNK0031CustomUSBSource(FNK0031USBSource):
             "last_ok": self.last_ok,
             "last_error": self.last_error,
             "supported_actions": ["forward", "backward", "left", "right", "turn_left", "turn_right", "crawl", "stop", "wait"],
+            "board_only_test": {"action": "single_leg_z_step", "max_delta_mm": 5},
             "remote_preserved": False,
         }

@@ -324,6 +324,21 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertIn("const ring = radius + 15", source)
         self.assertIn("pointerY - 6", source)
 
+    def test_2d_hud_shows_fnk_estimated_legs_and_bounded_board_only_test(self):
+        root = Path(__file__).resolve().parents[1]
+        html = (root / "body_runtime_host" / "quest_hud_preview.html").read_text(encoding="utf-8")
+        source = (root / "body_runtime_host" / "quest_hud_preview.js").read_text(encoding="utf-8")
+        visual = (root / "body_runtime_host" / "fnk0031_visual.js").read_text(encoding="utf-8")
+
+        self.assertIn('id="fnk-board-only-confirm"', html)
+        self.assertIn('id="fnk-leg-lift"', html)
+        self.assertIn('id="fnk-leg-return"', html)
+        self.assertIn("fetch('/plugins/fnk0031_wifi/usb/status'", source)
+        self.assertIn("fetch('/plugins/fnk0031_wifi/leg-test'", source)
+        self.assertIn("setEstimatedLegState(controller?.estimated_leg_state", source)
+        self.assertIn("function setEstimatedLegState(state", visual)
+        self.assertIn("not measured", source)
+
     def test_live_ld2450_targets_use_forward_lateral_axes_in_hud(self):
         root = Path(__file__).resolve().parents[1]
         preview = (root / "body_runtime_host" / "quest_hud_preview.js").read_text(encoding="utf-8")

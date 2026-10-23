@@ -102,6 +102,32 @@ static void handleCommand(char *line) {
     return;
   }
 
+  if (strcmp(action, "leg") == 0) {
+    char *legText = strtok_r(nullptr, " ", &context);
+    char *zText = strtok_r(nullptr, " ", &context);
+    char *extra = strtok_r(nullptr, " ", &context);
+    char *legEnd = nullptr;
+    long leg = legText ? strtol(legText, &legEnd, 10) : 0;
+    float deltaZ = 0;
+    if (!legText || !zText || extra || legEnd == legText || *legEnd != '\0' ||
+        leg < 1 || leg > 6 || !parseFinite(zText, deltaZ) ||
+        fabs(fabs(deltaZ) - 5.0f) > 0.01f) {
+      Serial.println("ERROR leg_test_out_of_range");
+      return;
+    }
+    if (actionActive) {
+      Serial.println("ERROR action_busy");
+      return;
+    }
+    Serial.print("STARTED leg ");
+    Serial.println(leg);
+    Serial.flush();
+    robot.LegMoveToRelatively(static_cast<int>(leg), 0, 0, deltaZ);
+    Serial.print("DONE leg ");
+    Serial.println(leg);
+    return;
+  }
+
   if (strcmp(action, "forward") == 0 || strcmp(action, "backward") == 0 ||
       strcmp(action, "left") == 0 || strcmp(action, "right") == 0 ||
       strcmp(action, "turn_left") == 0 || strcmp(action, "turn_right") == 0) {
