@@ -329,6 +329,7 @@ class QuestDashboardTests(unittest.TestCase):
         html = (root / "body_runtime_host" / "quest_hud_preview.html").read_text(encoding="utf-8")
         source = (root / "body_runtime_host" / "quest_hud_preview.js").read_text(encoding="utf-8")
         visual = (root / "body_runtime_host" / "fnk0031_visual.js").read_text(encoding="utf-8")
+        bundle = (root / "body_runtime_host" / "quest-hud-preview.bundle.js").read_text(encoding="utf-8")
 
         self.assertIn('id="fnk-board-only-confirm"', html)
         self.assertIn('id="fnk-leg-lift"', html)
@@ -338,6 +339,7 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertIn("setEstimatedLegState(controller?.estimated_leg_state", source)
         self.assertIn("function setEstimatedLegState(state", visual)
         self.assertIn("not measured", source)
+        self.assertIn("/plugins/fnk0031_wifi/leg-test", bundle)
 
     def test_live_ld2450_targets_use_forward_lateral_axes_in_hud(self):
         root = Path(__file__).resolve().parents[1]
