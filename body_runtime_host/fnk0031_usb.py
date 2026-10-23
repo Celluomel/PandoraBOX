@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import threading
 import time
 from contextlib import contextmanager
@@ -358,4 +359,207 @@ class FNK0031USBSource:
             ],
             "unsupported_actions": sorted(UNSUPPORTED_ACTIONS),
             "remote_preserved": True,
+        }
+
+
+class FNK0031CustomUSBSource(FNK0031USBSource):
+    """USB adapter for the opt-in FNK0031NavController custom firmware."""
+
+    name = "fnk0031_custom_usb"
+    firmware_profile = "custom_fnhr_ascii_v2"
+
+    def _read_line(self, connection, deadline: float) -> str:
+        line = bytearray()
+        while time.monotonic() < deadline:
+            raw = connection.read(1)
+            if not raw:
+                continue
+            if raw in (b"\n", b"\r"):
+                if line:
+                    return line.decode("ascii", errors="replace").strip()
+                continue
+            line.extend(raw)
+            if len(line) > 512:
+                raise RuntimeError("custom FNHR response line too long")
+        raise TimeoutError("timed out waiting for custom FNHR response")
+
+    def _line_request(self, connection, command: str, expected: str, timeout=None) -> str:
+        if hasattr(connection, "reset_input_buffer"):
+            connection.reset_input_buffer()
+        connection.write((command + "\n").encode("ascii"))
+        connection.flush()
+        response = self._read_line(connection, time.monotonic() + (timeout or self.timeout))
+        if response != expected:
+            raise RuntimeError(f"unexpected custom FNHR response {response!r}; expected {expected!r}")
+        return response
+
+    def ping(self) -> bool:
+        if not self.port:
+            self.last_error = "USB serial port is not configured"
+            return False
+        try:
+            with self._open() as connection:
+                self._line_request(connection, "PING", "PONG FNK0031_NAV_V2")
+            self.last_error = ""
+            self.last_ok = time.time()
+            return True
+        except Exception as exc:
+            self.last_error = str(exc)
+            return False
+
+    def read_supply_voltage(self) -> float | None:
+        self.supply_voltage = None
+        return None
+
+    @staticmethod
+    def _parse_estimated_state(line: str) -> dict[str, Any]:
+        fields = line.split()
+        if len(fields) != 2 + 6 * 6 or fields[0] != "STATE":
+            raise RuntimeError("invalid FNK0031 estimated-state response shape")
+        try:
+            uptime_ms = int(fields[1])
+            values = [float(value) for value in fields[2:]]
+        except ValueError as exc:
+            raise RuntimeError("FNK0031 estimated-state response contains invalid numbers") from exc
+        if uptime_ms < 0 or not all(math.isfinite(value) for value in values):
+            raise RuntimeError("FNK0031 estimated-state response contains non-finite values")
+        legs = []
+        for index in range(6):
+            offset = index * 6
+            legs.append({
+                "leg": index + 1,
+                "foot_position_mm": values[offset:offset + 3],
+                "joint_angles_deg": values[offset + 3:offset + 6],
+            })
+        return {
+            "source": "fnhr_internal_command_estimate",
+            "measured_feedback": False,
+            "board_uptime_ms": uptime_ms,
+            "received_at": time.time(),
+            "legs": legs,
+        }
+
+    def read_estimated_leg_state(self) -> dict[str, Any] | None:
+        if not self.port:
+            self.last_error = "USB serial port is not configured"
+            return None
+        try:
+            with self._open() as connection:
+                if hasattr(connection, "reset_input_buffer"):
+                    connection.reset_input_buffer()
+                connection.write(b"CMD state\n")
+                connection.flush()
+                line = self._read_line(connection, time.monotonic() + self.timeout)
+            state = self._parse_estimated_state(line)
+            self.last_error = ""
+            self.last_ok = time.time()
+            return state
+        except Exception as exc:
+            self.last_error = str(exc)
+            return None
+
+    def observe(self):
+        from .worldmodel.types import Observation
+
+        connected = self.ping()
+        estimated_state = self.read_estimated_leg_state() if connected else None
+        return Observation(
+            subject="fnk0031",
+            value={
+                "controller_model": CONTROLLER_MODEL,
+                "firmware_profile": self.firmware_profile,
+                "protocol": self.firmware_profile,
+                "pose_available": False,
+                "estimated_leg_state": estimated_state,
+                "supply_voltage_v": None,
+            },
+            source=self.name,
+            kind="hardware_status",
+            confidence=1.0 if connected else 0.0,
+            timestamp=time.time(),
+            text=("Custom FNHR controller connected; per-leg command estimates are available, but are not measured feedback or planar odometry."
+                  if connected else f"Custom FNHR USB controller unavailable: {self.last_error}"),
+            scene=[],
+        )
+
+    def execute_authorized(self, action):
+        from .worldmodel.types import Outcome
+
+        requested_type = str(action.type).strip().lower()
+        action_type = ACTION_ALIASES.get(requested_type, requested_type) if requested_type != "stop" else "stop"
+        params = dict(action.params or {})
+        if action_type == "wait":
+            return self.observe(), Outcome(kind="neutral", description="wait is a no-op; no FNHR command sent")
+        if not self.actuation_enabled:
+            return self.observe(), Outcome(kind="neutral", description="physical actuation disabled in Body configuration")
+        if action_type in {"stop", "sleep_mode"}:
+            command, expected = "CMD stop", "DONE stop"
+        elif action_type in {"forward", "backward", "left", "right", "turn_left", "turn_right"}:
+            command, expected = f"CMD {action_type}", f"DONE {action_type}"
+        elif action_type == "crawl":
+            try:
+                x, y, angle = (float(params[key]) for key in ("x", "y", "angle"))
+            except (KeyError, TypeError, ValueError) as exc:
+                return self.observe(), Outcome(kind="failure", reward=-0.1,
+                                               description=f"crawl requires numeric x, y, angle: {exc}")
+            if not all(math.isfinite(value) for value in (x, y, angle)) or math.hypot(x, y) > 42 or abs(angle) > 18:
+                return self.observe(), Outcome(kind="failure", reward=-0.1,
+                                               description="crawl is bounded to a 42 mm translation vector and +/-18 degree turn")
+            command = f"CMD crawl {x:.3f} {y:.3f} {angle:.3f}"
+            expected = "DONE crawl"
+        else:
+            return self.observe(), Outcome(kind="failure", reward=-0.1,
+                                           description=f"custom FNHR firmware does not expose '{action_type}'")
+
+        try:
+            with self._open() as connection:
+                if hasattr(connection, "reset_input_buffer"):
+                    connection.reset_input_buffer()
+                connection.write((command + "\n").encode("ascii"))
+                connection.flush()
+                started = self._read_line(connection, time.monotonic() + self.motion_timeout)
+                if action_type not in {"stop", "sleep_mode"} and started != f"STARTED {action_type}":
+                    raise RuntimeError(f"custom FNHR did not acknowledge action start: {started!r}")
+                if action_type in {"stop", "sleep_mode"} and started != expected:
+                    raise RuntimeError(f"custom FNHR stop did not complete: {started!r}")
+                if action_type not in {"stop", "sleep_mode"}:
+                    completed = self._read_line(connection, time.monotonic() + self.motion_timeout)
+                    if completed != expected:
+                        raise RuntimeError(f"custom FNHR did not confirm action completion: {completed!r}")
+            self.last_error = ""
+            self.last_ok = time.time()
+            return self.observe(), Outcome(
+                kind="success", reward=0.0,
+                description=(f"FNHR gait '{action_type}' completed; stop cannot preempt an in-progress gait, "
+                             "and physical displacement is unverified."),
+            )
+        except Exception as exc:
+            self.last_error = str(exc)
+            LOG.error("FNK0031 custom FNHR action %s failed on %s: %s", action_type, self.port, exc)
+            return self.observe(), Outcome(kind="failure", reward=-0.1,
+                                           description=f"custom USB command failed: {exc}")
+
+    def status(self) -> dict[str, Any]:
+        connected = self.ping()
+        return {
+            "source": self.name,
+            "controller_model": CONTROLLER_MODEL,
+            "firmware_profile": self.firmware_profile,
+            "transport": "USB serial / custom FNHR ASCII controller",
+            "protocol": self.firmware_profile,
+            "port": self.port,
+            "baudrate": 115200,
+            "connected": connected,
+            "actuation_enabled": self.actuation_enabled,
+            "pose_available": False,
+            "estimated_leg_state": self.read_estimated_leg_state() if connected else None,
+            "estimated_state_is_measured": False,
+            "control_mode": "blocking_gait_actions",
+            "continuous_cmd_vel": False,
+            "stop_behavior": "post-action timeout; cannot preempt an in-progress gait",
+            "supply_voltage_v": None,
+            "last_ok": self.last_ok,
+            "last_error": self.last_error,
+            "supported_actions": ["forward", "backward", "left", "right", "turn_left", "turn_right", "crawl", "stop", "wait"],
+            "remote_preserved": False,
         }

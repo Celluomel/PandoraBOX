@@ -1,8 +1,10 @@
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from body_runtime_host.fnk0031_usb import (
+    FNK0031CustomUSBSource,
     FNK0031USBSource,
     FRAME_END,
     FRAME_START,
@@ -116,6 +118,147 @@ class FNK0031USBSourceTests(unittest.TestCase):
         self.assertEqual(status["control_mode"], "blocking_gait_actions")
         self.assertIn("not an emergency stop", status["stop_behavior"])
         self.assertIn("RF remote", observation.text)
+
+    def test_custom_controller_profile_uses_ascii_handshake_and_crawl(self):
+        connections = []
+
+        def custom_factory(*args, **kwargs):
+            connection = FakeSerial(*args, **kwargs)
+            original_write = connection.write
+
+            def write(data):
+                data = bytes(data)
+                connection.writes.append(data)
+                command = data.decode("ascii").strip()
+                if command == "PING":
+                    connection.buffer.extend(b"PONG FNK0031_NAV_V2\n")
+                elif command == "CMD state":
+                    values = " ".join(str(value) for leg in range(6)
+                                      for value in (leg, leg + 1, leg + 2, 10 + leg, 20 + leg, 30 + leg))
+                    connection.buffer.extend(f"STATE 1234 {values}\n".encode())
+                elif command.startswith("CMD crawl "):
+                    connection.buffer.extend(b"STARTED crawl\nDONE crawl\n")
+                elif command == "CMD stop":
+                    connection.buffer.extend(b"DONE stop\n")
+                else:
+                    action = command.removeprefix("CMD ")
+                    connection.buffer.extend(f"STARTED {action}\nDONE {action}\n".encode())
+                return len(data)
+
+            connection.write = write
+            connections.append(connection)
+            return connection
+
+        source = FNK0031CustomUSBSource(
+            "COM8", actuation_enabled=True, serial_factory=custom_factory,
+        )
+        self.assertTrue(source.ping())
+        _, outcome = source.execute_authorized(Action(type="crawl", params={"x": 12, "y": -3, "angle": 4}))
+        self.assertEqual(outcome.kind, "success")
+        self.assertIn(b"CMD crawl 12.000 -3.000 4.000\n", connections[0].writes)
+        self.assertFalse(source.status()["continuous_cmd_vel"])
+        self.assertFalse(source.status()["remote_preserved"])
+
+    def test_custom_state_parser_labels_six_leg_values_as_estimates(self):
+        values = " ".join(str(value) for leg in range(6)
+                          for value in (leg, leg + 1, leg + 2, 10 + leg, 20 + leg, 30 + leg))
+        state = FNK0031CustomUSBSource._parse_estimated_state(f"STATE 1234 {values}")
+        self.assertEqual(state["source"], "fnhr_internal_command_estimate")
+        self.assertFalse(state["measured_feedback"])
+        self.assertEqual(state["board_uptime_ms"], 1234)
+        self.assertEqual(len(state["legs"]), 6)
+        self.assertEqual(state["legs"][0]["foot_position_mm"], [0.0, 1.0, 2.0])
+        self.assertEqual(state["legs"][5]["joint_angles_deg"], [15.0, 25.0, 35.0])
+
+    def test_custom_controller_rejects_unbounded_crawl_before_motion(self):
+        source = FNK0031CustomUSBSource("COM9", actuation_enabled=True, serial_factory=self.factory)
+        _, outcome = source.execute_authorized(Action(type="crawl", params={"x": 43, "y": 0, "angle": 0}))
+        self.assertEqual(outcome.kind, "failure")
+        self.assertTrue(all(write == b"PING\n" for write in self.connections[0].writes))
+
+    def test_source_resolver_selects_opt_in_custom_firmware_by_platform(self):
+        from body_runtime_host.worldmodel.sources import resolve_source
+
+        source = resolve_source({
+            "BODY_PLUGIN_ROBOT_ENABLED": True,
+            "FNK0031_PLATFORM": "usb_serial_custom",
+            "FNK0031_SERIAL_PORT": "COM10",
+            "FNK0031_ACTUATION_ENABLED": False,
+        })
+        self.assertIsInstance(source, FNK0031CustomUSBSource)
+        self.assertFalse(source.actuation_enabled)
+
+    def test_body_runtime_keeps_custom_usb_robot_selected_in_sim_default_mode(self):
+        from body_runtime_host.runtime import BodyHost
+
+        host = BodyHost()
+        host.config = {
+            "BODY_PLUGIN_ROBOT_ENABLED": True,
+            "FNK0031_PLATFORM": "usb_serial_custom",
+            "FNK0031_SERIAL_PORT": "COM10",
+            "FNK0031_ACTUATION_ENABLED": False,
+        }
+        with patch("body_runtime_host.runtime.ROOT", Path("Z:/missing-body-test-root")):
+            source = host._resolve_worldmodel_source()
+        self.assertIsInstance(source, FNK0031CustomUSBSource)
+        self.assertEqual(source.port, "COM10")
+
+    def test_custom_usb_health_and_estimated_state_are_forwarded_to_brain(self):
+        from body_runtime_host.runtime import BodyHost
+
+        host = BodyHost()
+        host.config = {
+            "BODY_PLUGIN_ROBOT_ENABLED": True,
+            "FNK0031_PLATFORM": "usb_serial_custom",
+            "FNK0031_SERIAL_PORT": "COM10",
+            "FNK0031_ACTUATION_ENABLED": False,
+            "FNK0031_POLL_INTERVAL": 1,
+        }
+        estimate = {"source": "fnhr_internal_command_estimate", "measured_feedback": False, "legs": []}
+        host.fnk0031_usb_status = lambda: {
+            "connected": True,
+            "configured_port": "COM10",
+            "protocol": "custom_fnhr_ascii_v2",
+            "firmware_profile": "custom_fnhr_ascii_v2",
+            "transport": "USB serial / custom FNHR ASCII controller",
+            "actuation_enabled": False,
+            "pose_available": False,
+            "estimated_leg_state": estimate,
+            "estimated_state_is_measured": False,
+            "supported_actions": ["crawl", "stop"],
+            "remote_preserved": False,
+        }
+
+        self.assertTrue(host.publish_fnk0031_usb_status())
+        value = host._bridge_latest["robot.fnk0031.usb_status"]["observation"]["value"]
+        self.assertEqual(value["protocol"], "custom_fnhr_ascii_v2")
+        self.assertEqual(value["estimated_leg_state"], estimate)
+        self.assertFalse(value["estimated_state_is_measured"])
+        self.assertFalse(value["actuation_enabled"])
+        self.assertIn("not servo feedback or odometry",
+                      host._bridge_latest["robot.fnk0031.usb_status"]["observation"]["provenance"]["state_semantics"])
+
+    def test_body_runtime_routes_approved_command_into_worldmodel(self):
+        from body_runtime_host.runtime import BodyHost
+
+        host = BodyHost()
+        received = []
+
+        def execute_external(action):
+            received.append(action)
+            return {"outcome": {"kind": "success", "description": "test acknowledgement"}}
+
+        host._worldmodel = SimpleNamespace(execute_external=execute_external)
+        result = host.execute_command({
+            "command_id": "fnk-approved-test",
+            "status": "approved",
+            "action": "crawl",
+            "target": "fnk0031",
+            "payload": {"params": {"x": 12, "y": -3, "angle": 4}},
+        })
+        self.assertEqual(result["status"], "executed")
+        self.assertEqual(received[0].type, "crawl")
+        self.assertEqual(received[0].params, {"x": 12, "y": -3, "angle": 4})
 
     def test_actuation_gate_prevents_any_motion_frame_by_default(self):
         source = FNK0031USBSource("COM5", actuation_enabled=False, serial_factory=self.factory)

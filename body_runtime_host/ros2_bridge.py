@@ -137,7 +137,7 @@ class Ros2ObservationBridge:
         blockers = [
             "Typed outputs follow the world-model sampling cadence (default 2 s), not a validated control-rate stream",
             "Available HC-SR04 and LD2450 coverage is not a 360-degree navigation costmap source",
-            "FNK0031 stock FNHR interface has no continuous cmd_vel adapter",
+            "Stock and opt-in custom FNHR profiles expose blocking gait actions, not continuous cmd_vel control",
             "FNK0031 stock firmware reports no planar pose or odometry",
             "No physical map/localization/robot-TF bringup is configured in this repository",
             "No physical-motion safety controller or independent emergency stop is integrated here",

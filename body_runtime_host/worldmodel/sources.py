@@ -691,8 +691,12 @@ def resolve_source(config: Dict[str, Any], latest: Optional[Dict[str, Dict[str, 
     # 2) FNK0031 six-leg development channel.
     if bool(config.get("BODY_PLUGIN_ROBOT_ENABLED", False)):
         platform = str(config.get("FNK0031_PLATFORM", "") or "").strip().lower()
-        if platform == "usb_serial":
-            return FNK0031USBSource(
+        if platform in {"usb_serial", "usb_serial_custom"}:
+            usb_source_type = FNK0031USBSource
+            if platform == "usb_serial_custom":
+                from ..fnk0031_usb import FNK0031CustomUSBSource
+                usb_source_type = FNK0031CustomUSBSource
+            return usb_source_type(
                 port=str(config.get("FNK0031_SERIAL_PORT", "") or ""),
                 timeout=float(config.get("FNK0031_TIMEOUT", 5.0) or 5.0),
                 actuation_enabled=bool(config.get("FNK0031_ACTUATION_ENABLED", config.get("BODY_ACTUATION_ENABLED", False))),

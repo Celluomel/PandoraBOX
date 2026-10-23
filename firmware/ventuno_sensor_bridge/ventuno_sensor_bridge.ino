@@ -36,6 +36,7 @@ ModulinoMovement movement;
 Arduino_LED_Matrix batteryMatrix;
 int batteryDisplayPercent = -1;
 int batteryRenderedPercent = -2;
+static const uint8_t BATTERY_PIXEL_BRIGHTNESS = 7;
 bool movementReady = false;
 uint32_t lastImuInitAttempt = 0;
 uint32_t lastImuUpdateAt = 0;
@@ -98,7 +99,7 @@ void renderBatteryDisplay() {
       for (int row = 0; row < 5; ++row) {
         for (int col = 0; col < 3; ++col) {
           if (digits[digit][row] & (1U << (2 - col)))
-            frame[(row + 1) * 13 + x + col] = 1;
+            frame[(row + 1) * 13 + x + col] = BATTERY_PIXEL_BRIGHTNESS;
         }
       }
       x += 4;
@@ -109,7 +110,7 @@ void renderBatteryDisplay() {
       for (int row = 0; row < 5; ++row)
         for (int col = 0; col < 3; ++col)
           if (percentPixels[row][col])
-            frame[(row + 1) * 13 + x + col] = 1;
+            frame[(row + 1) * 13 + x + col] = BATTERY_PIXEL_BRIGHTNESS;
     }
   }
   batteryMatrix.draw(frame);
@@ -662,6 +663,7 @@ void setup() {
   Bridge.provide_safe("body_gps_read", readGpsSample);
   Bridge.provide_safe("body_battery_indicator_set", setBatteryDisplay);
   batteryMatrix.begin();
+  batteryMatrix.setGrayscaleBits(3);
   renderBatteryDisplay();
   firmwareSetupStage = 1;
 

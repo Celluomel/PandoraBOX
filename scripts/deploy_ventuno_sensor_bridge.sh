@@ -6,6 +6,8 @@ sketch_dir="${repo_root}/firmware/ventuno_sensor_bridge"
 fqbn="arduino:zephyr:ventunoq"
 upload_address="${VENTUNO_Q_UPLOAD_ADDRESS:-192.168.0.14}"
 app_id="user:pandorabox-body-sensors"
+app_sketch_dir="${HOME}/ArduinoApps/pandorabox-body-sensors/sketch"
+app_backup_root="${HOME}/ArduinoApps/.backups/pandorabox-body-sensors"
 tof_enabled="${BODY_ENABLE_TOF:-0}"
 imu_enabled="${BODY_ENABLE_IMU:-1}"
 ultrasonic_enabled="${BODY_ENABLE_ULTRASONIC:-1}"
@@ -75,24 +77,89 @@ fi
 
 echo "Uploading combined sensor firmware to persistent STM32 flash on ${upload_address}."
 echo "Use this direct Arduino CLI uploader, not App Lab app start: App Lab loads its MCU sketch into volatile RAM."
-if command -v arduino-app-cli >/dev/null 2>&1; then
-  app_state="$(arduino-app-cli app list --format json | python3 -c '
+if ! command -v arduino-app-cli >/dev/null 2>&1; then
+  echo "arduino-app-cli is required to keep App Lab aligned with the flashed firmware." >&2
+  exit 1
+fi
+if [[ ! -d "${app_sketch_dir}" || ! -f "${sketch_dir}/sketch.yaml" ]]; then
+  echo "App Lab sketch directory or canonical sketch.yaml is missing; refusing to flash out of sync." >&2
+  exit 1
+fi
+
+app_state="$(arduino-app-cli app list --format json | python3 -c '
 import json, sys
 apps = json.load(sys.stdin).get("apps", [])
 app = next((item for item in apps if item.get("name") == "pandorabox-body-sensors"), {})
 print(app.get("status", "missing"), str(app.get("default", False)).lower())
 ')"
-  read -r app_status app_is_default <<<"${app_state}"
-  if [[ "${app_is_default}" == "true" ]]; then
-    echo "Clearing the App Lab default: its MCU sketch is RAM-loaded and not power-cycle persistent."
-    arduino-app-cli properties set default none
-  fi
-  if [[ "${app_status}" == "running" ]]; then
-    echo "Stopping ${app_id} before persistent MCU upload."
-    arduino-app-cli app stop "${app_id}"
-  fi
+read -r app_status app_is_default <<<"${app_state}"
+if [[ "${app_status}" == "missing" ]]; then
+  echo "${app_id} is not registered in App Lab; refusing to flash without alignment." >&2
+  exit 1
 fi
+if [[ "${app_is_default}" == "true" ]]; then
+  echo "Clearing the App Lab default: its MCU sketch is RAM-loaded and not power-cycle persistent."
+  arduino-app-cli properties set default none
+fi
+if [[ "${app_status}" == "running" ]]; then
+  echo "Stopping ${app_id} before persistent MCU upload."
+  arduino-app-cli app stop "${app_id}"
+fi
+
+mkdir -p "${app_backup_root}"
+app_backup_dir="$(mktemp -d "${app_backup_root}/$(date +%Y%m%d_%H%M%S)-XXXXXX")"
+for app_file in sketch.ino sketch.yaml; do
+  if [[ "${app_file}" == "sketch.ino" ]]; then
+    source_file="${sketch_dir}/ventuno_sensor_bridge.ino"
+  else
+    source_file="${sketch_dir}/sketch.yaml"
+  fi
+  target_file="${app_sketch_dir}/${app_file}"
+  if [[ -e "${target_file}" ]]; then
+    if ! cmp -s "${source_file}" "${target_file}"; then
+      cp -p "${target_file}" "${app_backup_dir}/${app_file}"
+    fi
+  else
+    touch "${app_backup_dir}/${app_file}.was_missing"
+  fi
+done
+restore_applab_files() {
+  for app_file in sketch.ino sketch.yaml; do
+    target_file="${app_sketch_dir}/${app_file}"
+    if [[ -f "${app_backup_dir}/${app_file}" ]]; then
+      cp -p "${app_backup_dir}/${app_file}" "${target_file}"
+    elif [[ -f "${app_backup_dir}/${app_file}.was_missing" ]]; then
+      rm -f -- "${target_file}"
+    fi
+  done
+}
+app_sync_in_progress=0
+upload_succeeded=0
+cleanup_deploy() {
+  if [[ "${app_sync_in_progress}" == "1" && "${upload_succeeded}" != "1" ]]; then
+    restore_applab_files
+  fi
+  rm -rf -- "${build_root}"
+}
+trap cleanup_deploy EXIT
+
+echo "Aligning App Lab sketch and manifest; differing originals are backed up in ${app_backup_dir}."
+app_sync_in_progress=1
+install -m 0664 "${sketch_dir}/ventuno_sensor_bridge.ino" "${app_sketch_dir}/sketch.ino"
+install -m 0664 "${sketch_dir}/sketch.yaml" "${app_sketch_dir}/sketch.yaml"
+if ! cmp -s "${sketch_dir}/ventuno_sensor_bridge.ino" "${app_sketch_dir}/sketch.ino" \
+    || ! cmp -s "${sketch_dir}/sketch.yaml" "${app_sketch_dir}/sketch.yaml"; then
+  restore_applab_files
+  echo "App Lab source verification failed; restored its previous files and did not flash." >&2
+  exit 1
+fi
+
 echo "Arduino CLI may prompt for upload credentials, depending on the detected transport."
-arduino-cli upload --fqbn "${fqbn}" --port "${upload_address}" \
-    --input-dir "${compiled_dir}" "${build_dir}"
+if ! arduino-cli upload --fqbn "${fqbn}" --port "${upload_address}" \
+    --input-dir "${compiled_dir}" "${build_dir}"; then
+  echo "STM32 upload failed; restoring App Lab's previous sketch and manifest." >&2
+  exit 1
+fi
+upload_succeeded=1
+app_sync_in_progress=0
 echo "Upload complete. Verify body_ultrasonic_read, body_imu_read, body_tof_read, body_ld2450_read, and body_gps_read over the local Router Bridge."

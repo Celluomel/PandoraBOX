@@ -29,7 +29,7 @@ The physical target is the **Freenove FNK0031 Crawling Robot Controller V3.2** o
 
 ## Physical FNK0031 blockers
 
-The bridge publishes the robot-mounted Body sensor samples as typed ROS messages, but only when the world model is running, and only at its current observation cadence. This is not a validated navigation-rate obstacle stream. The FNK0031 V3.2 stock FNHR USB interface reports `pose_available: false` and supports discrete, blocking gait/action orders, not a bounded continuous `cmd_vel` stream. The six-axis IMU provides attitude/rates but cannot provide planar position by itself. The repository has no physical map/localization bringup, robot description, calibrated sensor-to-base transforms, or integrated physical emergency-stop controller.
+The bridge publishes the robot-mounted Body sensor samples as typed ROS messages, but only when the world model is running, and only at its current observation cadence. This is not a validated navigation-rate obstacle stream. A separate, opt-in V3.2 custom FNHR sketch and matching Body USB profile now provide bounded `Crawl(x,y,angle)` gait actions with a post-action timeout. The FNHR gait calls block until the finite servo sequence completes; a stop cannot preempt a gait in progress. Neither the stock nor custom profile reports planar pose, and the custom sketch has not been compiled or bench-tested on the controller. The six-axis IMU provides attitude/rates but cannot provide planar position by itself. The repository has no physical map/localization bringup, robot description, calibrated sensor-to-base transforms, or integrated physical emergency-stop controller.
 
 Consequently, there is no honest physical Nav2 test to run yet. Before one, the robot needs:
 

@@ -61,9 +61,13 @@ The direct upload targets the Ventuno STM32's nonvolatile flash. Do not use
 `arduino-app-cli app start` / App Lab Run as the persistence mechanism: App Lab
 loads its MCU sketch into volatile RAM, so that sketch disappears on a power
 cycle. The Body Linux service starts independently; it does not need a default
-App Lab app. The deployment script automatically stops the sensor App Lab app
-and clears it as the default before uploading, so its RAM sketch cannot mask the
-persistent firmware at boot. To clear that setting manually:
+App Lab app. On every `--upload`, the deployment script stops the sensor App Lab
+app, clears it as the default, backs up and syncs App Lab's `sketch.ino` and
+`sketch.yaml` to the exact source being flashed, and verifies both files before
+upload. Backups are kept under `~/ArduinoApps/.backups/pandorabox-body-sensors/`.
+If upload fails, the previous App Lab files are restored. This keeps App Lab
+from running a stale RAM sketch that masks the persistent firmware at boot. To
+clear the default setting manually:
 
 ```sh
 arduino-app-cli properties set default none

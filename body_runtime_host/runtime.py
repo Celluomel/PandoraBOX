@@ -2225,23 +2225,34 @@ class BodyHost:
         }
 
     def fnk0031_usb_status(self) -> dict:
-        from body_runtime_host.fnk0031_usb import FNK0031USBSource, available_serial_ports
+        from body_runtime_host.fnk0031_usb import FNK0031CustomUSBSource, FNK0031USBSource, available_serial_ports
 
         settings = self.fnk0031_settings()
         port = settings["serial_port"]
-        probe = FNK0031USBSource(port, timeout=min(2.0, settings["timeout"])) if port else None
+        source_type = FNK0031CustomUSBSource if settings["platform"] == "usb_serial_custom" else FNK0031USBSource
+        probe = source_type(port, timeout=min(2.0, settings["timeout"])) if port else None
+        custom_profile = settings["platform"] == "usb_serial_custom"
         status = probe.status() if probe else {
             "source": "fnk0031_usb",
             "controller_model": "Freenove Crawling Robot Controller V3.2",
-            "firmware_profile": "stock FNHR framed serial protocol",
-            "transport": "USB serial / stock FNHR framed protocol", "protocol": "fnhr_framed_serial", "port": "",
+            "firmware_profile": ("custom_fnhr_ascii_v2" if custom_profile
+                                 else "stock FNHR framed serial protocol"),
+            "transport": ("USB serial / custom FNHR ASCII controller" if custom_profile
+                           else "USB serial / stock FNHR framed protocol"),
+            "protocol": ("custom_fnhr_ascii_v2" if custom_profile else "fnhr_framed_serial"), "port": "",
             "connected": False, "actuation_enabled": settings["actuation_enabled"],
             "pose_available": False, "continuous_cmd_vel": False,
             "control_mode": "blocking_gait_actions",
-            "stop_behavior": "sleep_mode order; not an emergency stop",
-            "supply_voltage_v": None, "remote_preserved": True,
+            "estimated_leg_state": None,
+            "estimated_state_is_measured": False,
+            "stop_behavior": ("post-action timeout; cannot preempt an in-progress gait"
+                              if custom_profile
+                              else "sleep_mode order; not an emergency stop"),
+            "supply_voltage_v": None, "remote_preserved": not custom_profile,
             "last_error": "USB serial port is not configured",
-            "supported_actions": ["forward", "backward", "turn_left", "turn_right", "stop", "wait"],
+            "supported_actions": (["forward", "backward", "left", "right", "turn_left", "turn_right",
+                                   "crawl", "stop", "wait"] if custom_profile else
+                                  ["forward", "backward", "turn_left", "turn_right", "stop", "wait"]),
         }
         return {
             **status,
@@ -2675,7 +2686,7 @@ class BodyHost:
         """Forward a read-only FNK USB health snapshot to the Brain bridge."""
         if (
             not bool(self.value("BODY_PLUGIN_ROBOT_ENABLED", False))
-            or str(self.value("FNK0031_PLATFORM", "")).lower() != "usb_serial"
+            or str(self.value("FNK0031_PLATFORM", "")).lower() not in {"usb_serial", "usb_serial_custom"}
         ):
             return False
         interval = max(10.0, float(self.value("FNK0031_POLL_INTERVAL", 5) or 5))
@@ -2689,8 +2700,11 @@ class BodyHost:
             "connected": bool(status.get("connected")),
             "port": status.get("configured_port") or status.get("port") or "",
             "protocol": status.get("protocol") or "fnhr_framed_serial",
+            "firmware_profile": status.get("firmware_profile") or "",
             "actuation_enabled": bool(status.get("actuation_enabled")),
             "pose_available": bool(status.get("pose_available")),
+            "estimated_leg_state": status.get("estimated_leg_state"),
+            "estimated_state_is_measured": bool(status.get("estimated_state_is_measured", False)),
             "supply_voltage_v": status.get("supply_voltage_v"),
             "last_error": str(status.get("last_error") or "")[:240],
         }
@@ -2705,6 +2719,8 @@ class BodyHost:
             "observed_at": observed_at,
             "provenance": {
                 "transport": status.get("transport"),
+                "state_semantics": ("FNHR command-derived estimate; not servo feedback or odometry"
+                                    if status.get("estimated_leg_state") else None),
                 "supported_actions": status.get("supported_actions") or [],
                 "unsupported_actions": status.get("unsupported_actions") or [],
                 "remote_preserved": bool(status.get("remote_preserved", True)),
@@ -2944,7 +2960,7 @@ class BodyHost:
 
     def update_fnk0031_settings(self, payload: dict) -> dict:
         platform = str(payload.get("platform", "ventuno_q_gateway") or "ventuno_q_gateway").strip().lower()
-        if platform not in {"ventuno_q_gateway", "usb_serial", "esp32", "mega_wifi", "fnk0031_simulator"}:
+        if platform not in {"ventuno_q_gateway", "usb_serial", "usb_serial_custom", "esp32", "mega_wifi", "fnk0031_simulator"}:
             raise ValueError("unsupported FNK0031 hardware topology")
         self.config.update({
             "FNK0031_URL": str(payload.get("url", "") or "").strip().rstrip("/"),
@@ -3850,7 +3866,8 @@ class BodyHost:
         real_mmwave_selected = bool(self.value("BODY_PLUGIN_MMWAVE_RADAR_ENABLED", False))
         usb_robot_selected = (
             bool(self.value("BODY_PLUGIN_ROBOT_ENABLED", False))
-            and str(self.value("FNK0031_PLATFORM", "") or "").strip().lower() == "usb_serial"
+            and str(self.value("FNK0031_PLATFORM", "") or "").strip().lower()
+            in {"usb_serial", "usb_serial_custom"}
         )
         if mode == "sim" and not usb_robot_selected:
             try:
