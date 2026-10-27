@@ -36,7 +36,10 @@ class CommandReplayLedger:
                     records = {str(k): float(v) for k, v in loaded.items() if float(v) > now}
                 if command_id in records:
                     return False, "duplicate approved command_id"
-                records[command_id] = expires_at
+                # Keep the ID reserved for the full retention period, not
+                # merely until command expiry. A replay with a forged later
+                # expiry must not be accepted after the original expires.
+                records[command_id] = now + self.retention_seconds
                 temporary = self.path.with_suffix(self.path.suffix + ".tmp")
                 try:
                     temporary.write_text(json.dumps(records, sort_keys=True), encoding="utf-8")
