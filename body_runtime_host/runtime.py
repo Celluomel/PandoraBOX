@@ -158,6 +158,8 @@ class BodyHost:
         self.queue: Queue[dict] = Queue(maxsize=256)
         self._bridge_lock = threading.Lock()
         self._bridge_connected = threading.Event()
+        self._command_ids_lock = threading.Lock()
+        self._seen_command_ids: dict[str, float] = {}
         self._bridge_latest: dict[str, dict] = {}
         self.bridge_thread: threading.Thread | None = None
         self.http_server: ThreadingHTTPServer | None = None
@@ -3639,6 +3641,20 @@ class BodyHost:
                       "status": "rejected", "error": "Body accepts approved commands only"}
             self._bridge_put_message(result)
             return result
+        # Reject duplicate approved command IDs before any actuator call.
+        # The lock also prevents concurrent bridge deliveries from racing.
+        with self._command_ids_lock:
+            now = time.time()
+            self._seen_command_ids = {
+                key: seen_at for key, seen_at in self._seen_command_ids.items()
+                if now - seen_at < 3600.0
+            }
+            if command_id in self._seen_command_ids:
+                result = {"type": "command_result", "command_id": command_id,
+                          "status": "rejected", "error": "duplicate approved command_id"}
+                self._bridge_put_message(result)
+                return result
+            self._seen_command_ids[command_id] = now
         try:
             from body_runtime_host.worldmodel.types import Action
             action = Action(
