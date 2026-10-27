@@ -60,7 +60,12 @@ class BodyPlanRuntime:
         with self._lock:
             snapshot = self._latest_snapshot
             if not errors and snapshot is not None:
-                errors.extend(self._validate_against_snapshot(plan, snapshot))
+                # Do not authorize plans against cached or future-dated geometry.
+                age_s = time.time() - float(snapshot.timestamp)
+                if not (0.0 <= age_s <= 5.0):
+                    errors.append("Body snapshot is stale or has an invalid timestamp")
+                else:
+                    errors.extend(self._validate_against_snapshot(plan, snapshot))
             elif not errors:
                 errors.append("no Body snapshot is available yet")
             result = {
