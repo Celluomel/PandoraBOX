@@ -34,11 +34,18 @@ jobs:
           python-version: "3.11"
       - name: Install minimal simulation dependencies
         run: python -m pip install "numpy>=1.24,<2"
-      - name: Run Body plan reliability tests
-        run: python -m unittest discover -s tests -p "test_body_reliability_v1.py" -v
-      - name: Run command replay regression tests
-        run: python -m unittest discover -s tests -p "test_body_command_replay.py" -v
-      - name: Run offline HTTP sensor fault injection
-        run: python -m unittest discover -s tests -p "test_body_http_fault_injection.py" -v
-      - name: Run Brain-to-Body delivery fault injection
-        run: python -m unittest discover -s tests -p "test_body_command_delivery.py" -v
+      - name: Run complete offline reliability suite
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m unittest discover -s tests -p "test_body_reliability_v1.py" -v 2>&1 | tee body-reliability-plan.log
+          python -m unittest discover -s tests -p "test_body_command_replay.py" -v 2>&1 | tee body-reliability-replay.log
+          python -m unittest discover -s tests -p "test_body_http_fault_injection.py" -v 2>&1 | tee body-reliability-http.log
+          python -m unittest discover -s tests -p "test_body_command_delivery.py" -v 2>&1 | tee body-reliability-delivery.log
+      - name: Upload offline test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: body-reliability-logs
+          path: body-reliability-*.log
+          if-no-files-found: warn
