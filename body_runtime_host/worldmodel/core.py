@@ -486,9 +486,10 @@ class EmbodiedWorldModel:
             ))
             forbidden = set(navigation.get("forbidden", []))
             if forbidden:
-                safe = [candidate for candidate in candidates if str(candidate.get("type")) not in forbidden]
-                if safe:
-                    candidates = safe
+                candidates = [candidate for candidate in candidates if str(candidate.get("type")) not in forbidden]
+            if not candidates:
+                # No explicitly forbidden candidate may re-enter policy selection.
+                candidates = [{"type": "wait"}]
             # Exploration anneals down as the policy gains experience
             # (more plastic early, more stable later — mirrors the
             # stability/plasticity principle applied to behaviour).
@@ -613,6 +614,12 @@ class EmbodiedWorldModel:
                 decision["reason"] = navigation["recovery_reason"]
               # 9) execute (robot actuators, sandbox physics, or legacy bridge)
             chosen = self._adapt_motion_speed(chosen, body_state, navigation)
+            # TaskGraph and recovery can override the filtered policy choice.
+            final_type = self._action_label(chosen)
+            if final_type in forbidden:
+                chosen = {"type": "wait"}
+                decision["reason"] = "final geometry guard: forbidden action"
+                decision["safety_rejected_action"] = final_type
             if self.source is not None:
                 obs_after, outcome = self.source.execute(self._as_action(chosen))
             else:
