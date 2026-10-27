@@ -518,6 +518,16 @@ class RobotHttpSource:
                 kind="neutral", reward=0.0,
                 description="physical actuation disabled in Body configuration",
             )
+        # Check the live sensor link at the final hardware adapter boundary.
+        # A cached observation (or fresh NullSource fallback) is not authority
+        # to issue a new physical movement command.
+        current = self.observe()
+        age = time.time() - float(current.timestamp)
+        if self.last_error or self.last_ok is None or not (0.0 <= age <= 5.0):
+            return current, Outcome(
+                kind="failure", reward=-0.1,
+                description="physical command refused: sensor link unavailable or stale",
+            )
         try:
             result = _http_json(
                 "POST", f"{self.url}/command",
