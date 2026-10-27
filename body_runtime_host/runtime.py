@@ -158,8 +158,8 @@ class BodyHost:
         self.queue: Queue[dict] = Queue(maxsize=256)
         self._bridge_lock = threading.Lock()
         self._bridge_connected = threading.Event()
-        self._command_ids_lock = threading.Lock()
-        self._seen_command_ids: dict[str, float] = {}
+        from .command_replay import CommandReplayLedger
+        self._command_replay = CommandReplayLedger(ROOT / "data" / "body" / "command_replay.json")
         self._bridge_latest: dict[str, dict] = {}
         self.bridge_thread: threading.Thread | None = None
         self.http_server: ThreadingHTTPServer | None = None
@@ -3628,7 +3628,10 @@ class BodyHost:
     def execute_command(self, command: dict) -> dict:
         """Execute one Brain-approved command through the Body world model."""
         command_id = str(command.get("command_id") or "")
-        expires_at = float(command.get("expires_at") or 0.0)
+        try:
+            expires_at = float(command.get("expires_at") or 0.0)
+        except (TypeError, ValueError, OverflowError):
+            expires_at = 0.0
         if not command_id:
             return {"type": "command_result", "status": "failed", "error": "missing command_id"}
         if expires_at and expires_at <= time.time():
@@ -3641,20 +3644,14 @@ class BodyHost:
                       "status": "rejected", "error": "Body accepts approved commands only"}
             self._bridge_put_message(result)
             return result
-        # Reject duplicate approved command IDs before any actuator call.
-        # The lock also prevents concurrent bridge deliveries from racing.
-        with self._command_ids_lock:
-            now = time.time()
-            self._seen_command_ids = {
-                key: seen_at for key, seen_at in self._seen_command_ids.items()
-                if now - seen_at < 3600.0
-            }
-            if command_id in self._seen_command_ids:
-                result = {"type": "command_result", "command_id": command_id,
-                          "status": "rejected", "error": "duplicate approved command_id"}
-                self._bridge_put_message(result)
-                return result
-            self._seen_command_ids[command_id] = now
+        # Reserve the approved command before actuation. A missing expiry,
+        # duplicate ID, or unavailable ledger must never authorize movement.
+        reserved, refusal = self._command_replay.reserve(command_id, expires_at)
+        if not reserved:
+            result = {"type": "command_result", "command_id": command_id,
+                      "status": "rejected", "error": refusal}
+            self._bridge_put_message(result)
+            return result
         try:
             from body_runtime_host.worldmodel.types import Action
             action = Action(
