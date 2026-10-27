@@ -358,6 +358,7 @@ class RobotHttpSource:
         self.last_ok: Optional[float] = None
         self.last_latency_ms: Optional[float] = None
         self._last_obs: Optional[Observation] = None
+        self._last_sensor_timestamp_explicit = False
         self._last_body: Optional[BodyState] = None
         self._spatial = LocalMapReference()
 
@@ -455,6 +456,7 @@ class RobotHttpSource:
             battery = payload.get("battery")
             if battery is not None:
                 text_parts.append(f"Battery {float(battery):.0%}.")
+            self._last_sensor_timestamp_explicit = payload.get("timestamp") is not None
             obs = Observation(
                 subject="scene",
                 value=None,
@@ -521,7 +523,15 @@ class RobotHttpSource:
         # Check the live sensor link at the final hardware adapter boundary.
         # A cached observation (or fresh NullSource fallback) is not authority
         # to issue a new physical movement command.
+        # Require an explicit sensor-produced timestamp for actuation.
+        # observe() tolerates absent timestamps for display, but its local
+        # fallback time must not be mistaken for fresh robot telemetry.
         current = self.observe()
+        if not getattr(self, "_last_sensor_timestamp_explicit", False):
+            return current, Outcome(
+                kind="failure", reward=-0.1,
+                description="physical command refused: sensor timestamp missing",
+            )
         age = time.time() - float(current.timestamp)
         pose_age = time.time() - float(self._last_body.timestamp) if self._last_body is not None else float("inf")
         if self.last_error or self.last_ok is None or not (0.0 <= age <= 5.0 and 0.0 <= pose_age <= 5.0):
