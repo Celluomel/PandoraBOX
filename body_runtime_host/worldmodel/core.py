@@ -669,8 +669,10 @@ class EmbodiedWorldModel:
                         self.plan_runtime.advance(task_decision.step_id, after_snapshot.snapshot_id)
                     elif outcome.kind in {"failure", "danger"} and not self._is_transient_mobile_hazard(outcome):
                         self.plan_runtime.record_step_failure(task_decision.step_id, after_snapshot.snapshot_id, outcome.description)
-                    elif active_plan.state == "recovery":
-                        self.plan_runtime.resume_after_recovery(task_decision.step_id, after_snapshot.snapshot_id, outcome.description)
+                    # A successful actuator acknowledgement does not prove
+                    # that recovery restored the step postcondition. Remain in
+                    # recovery until observed progress or the attempt budget
+                    # forces an operator-visible pause.
             # 10) learn: prediction error + online update
             pred_s_next = self.dynamics.step(s, self._action_vec(chosen))
             next_body = self.source.body_state() if self.source is not None else body_state
