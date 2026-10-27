@@ -34,6 +34,11 @@ class ReplayLedgerTests(unittest.TestCase):
     def test_expired_command_is_rejected(self):
         self.assertFalse(self.ledger.reserve("expired", time.time() - 1)[0])
 
+    def test_nonfinite_expiry_is_rejected(self):
+        self.assertFalse(self.ledger.reserve("nan", float("nan"))[0])
+        self.assertFalse(self.ledger.reserve("infinity", float("inf"))[0])
+        self.assertFalse(self.path.exists())
+
     def test_far_future_expiry_is_rejected(self):
         self.assertFalse(self.ledger.reserve("unbounded", time.time() + 90000)[0])
 
