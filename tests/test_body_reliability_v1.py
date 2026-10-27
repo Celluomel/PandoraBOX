@@ -45,6 +45,22 @@ class BodyReliabilityV1Tests(unittest.TestCase):
         self.runtime.record_snapshot(snapshot(age=-30.0))
         self.assertFalse(self.runtime.validate(proposal())["feasible"])
 
+    def test_recovery_actions_are_bounded_even_when_no_failures_recorded(self):
+        snap = snapshot()
+        self.runtime.record_snapshot(snap)
+        self.assertTrue(self.runtime.submit(proposal())["accepted"])
+        # First failure crosses max_retries only after two failures.
+        self.runtime.record_step_failure("s1", snap.snapshot_id, "blocked")
+        self.runtime.record_step_failure("s1", snap.snapshot_id, "blocked")
+        self.assertEqual(self.runtime.active_plan().state, "recovery")
+        for attempt in range(3):
+            self.assertTrue(self.runtime.record_recovery_attempt("s1", snap.snapshot_id)["ok"])
+        denied = self.runtime.record_recovery_attempt("s1", snap.snapshot_id)
+        self.assertFalse(denied["ok"])
+        self.assertEqual(self.runtime.active_plan().state, "paused")
+        restarted = BodyPlanRuntime(Path(self.temp.name))
+        self.assertEqual(restarted.active_plan().state, "paused")
+
     def test_recovery_is_bounded_and_persisted(self):
         snap = snapshot()
         self.runtime.record_snapshot(snap)
