@@ -456,6 +456,8 @@ class RobotHttpSource:
             battery = payload.get("battery")
             if battery is not None:
                 text_parts.append(f"Battery {float(battery):.0%}.")
+            # Missing/zero timestamps are display-only observations; they
+            # must never be upgraded to actuator evidence by a local fallback.
             self._last_sensor_timestamp_explicit = payload.get("timestamp") is not None
             obs = Observation(
                 subject="scene",
@@ -463,7 +465,7 @@ class RobotHttpSource:
                 source=self.name,
                 kind="scene",
                 confidence=float(payload.get("confidence", 1.0)),
-                timestamp=float(payload.get("timestamp") or time.time()),
+                timestamp=float(payload["timestamp"]) if payload.get("timestamp") is not None else time.time(),
                 scene=scene,
                 text=" ".join(text_parts),
                 modalities=dict(
