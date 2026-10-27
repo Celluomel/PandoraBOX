@@ -58,6 +58,10 @@ class BodyReliabilityV1Tests(unittest.TestCase):
         denied = self.runtime.record_recovery_attempt("s1", snap.snapshot_id)
         self.assertFalse(denied["ok"])
         self.assertEqual(self.runtime.active_plan().state, "paused")
+        # Late failure callbacks must never reactivate a paused lease.
+        late = self.runtime.record_step_failure("s1", snap.snapshot_id, "late callback")
+        self.assertFalse(late["ok"])
+        self.assertEqual(self.runtime.active_plan().state, "paused")
         restarted = BodyPlanRuntime(Path(self.temp.name))
         self.assertEqual(restarted.active_plan().state, "paused")
 
@@ -70,6 +74,10 @@ class BodyReliabilityV1Tests(unittest.TestCase):
             self.runtime.record_step_failure("s1", snap.snapshot_id, "failed")
         self.assertEqual(self.runtime.active_plan().state, "recovery")
         self.runtime.record_step_failure("s1", snap.snapshot_id, "failed")
+        self.assertEqual(self.runtime.active_plan().state, "paused")
+        # Late failure callbacks must never reactivate a paused lease.
+        late = self.runtime.record_step_failure("s1", snap.snapshot_id, "late callback")
+        self.assertFalse(late["ok"])
         self.assertEqual(self.runtime.active_plan().state, "paused")
         restarted = BodyPlanRuntime(Path(self.temp.name))
         self.assertEqual(restarted.active_plan().state, "paused")
