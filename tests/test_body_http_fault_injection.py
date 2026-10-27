@@ -68,6 +68,14 @@ class RobotHttpFaultInjectionTests(unittest.TestCase):
         self.assertEqual(outcome.kind, "failure")
         self.assertNotIn("POST", calls)
 
+    def test_missing_robot_timestamp_blocks_actuation(self):
+        payload = sensors()
+        payload.pop("timestamp")
+        with patch("body_runtime_host.worldmodel.sources._http_json", return_value=payload) as transport:
+            _, outcome = self.robot.execute_authorized(self.action)
+        self.assertEqual(outcome.kind, "failure")
+        self.assertFalse(any(call.args[0] == "POST" for call in transport.call_args_list))
+
     def test_disabled_actuation_never_posts(self):
         self.robot.actuation_enabled = False
         with patch("body_runtime_host.worldmodel.sources._http_json", return_value=sensors()) as transport:
