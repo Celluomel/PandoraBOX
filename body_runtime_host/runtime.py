@@ -3664,7 +3664,9 @@ class BodyHost:
                 raise RuntimeError("world model unavailable")
             execution = wm.execute_external(action)
             outcome = dict(execution.get("outcome") or {})
-            status = "executed" if str(outcome.get("kind")) in {"success", "neutral"} else "failed"
+            # Neutral means no confirmed execution (for example actuation
+            # disabled), never report it as an executed physical command.
+            status = "executed" if str(outcome.get("kind")) == "success" else "failed"
             result = {"type": "command_result", "command_id": command_id,
                       "status": status, "outcome": outcome, "execution": execution}
         except Exception as exc:
