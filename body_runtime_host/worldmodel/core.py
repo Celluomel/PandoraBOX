@@ -609,6 +609,12 @@ class EmbodiedWorldModel:
                 task_decision = self.task_graph.recovery_action(active_plan, plan_snapshot, body_state)
                 chosen = task_decision.action.as_dict() if task_decision.action else {"type": "wait"}
                 decision["reason"] = task_decision.reason
+                if task_decision.action is not None:
+                    recovery = self.plan_runtime.record_recovery_attempt(task_decision.step_id, plan_snapshot.snapshot_id)
+                    if not recovery.get("ok"):
+                        chosen = {"type": "wait"}
+                        decision["reason"] = recovery.get("error", "recovery budget exhausted")
+                        task_decision = None
             if navigation.get("recovery_reason") == "continuous_boundary_escape":
                 chosen = {"type": navigation["recommended"]}
                 decision["reason"] = navigation["recovery_reason"]
