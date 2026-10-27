@@ -523,7 +523,8 @@ class RobotHttpSource:
         # to issue a new physical movement command.
         current = self.observe()
         age = time.time() - float(current.timestamp)
-        if self.last_error or self.last_ok is None or not (0.0 <= age <= 5.0):
+        pose_age = time.time() - float(self._last_body.timestamp) if self._last_body is not None else float("inf")
+        if self.last_error or self.last_ok is None or not (0.0 <= age <= 5.0 and 0.0 <= pose_age <= 5.0):
             return current, Outcome(
                 kind="failure", reward=-0.1,
                 description="physical command refused: sensor link unavailable or stale",
