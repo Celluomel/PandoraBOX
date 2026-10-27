@@ -19,6 +19,14 @@ class ReplayLedgerTests(unittest.TestCase):
         self.assertTrue(self.ledger.reserve("approved-1", deadline)[0])
         self.assertFalse(CommandReplayLedger(self.path).reserve("approved-1", deadline)[0])
 
+    def test_replay_with_renewed_expiry_is_rejected(self):
+        now = time.time()
+        self.assertTrue(self.ledger.reserve("renewed", now + 2, now=now)[0])
+        # Even after the original expiry, an ID cannot be recycled within
+        # the ledger retention period by supplying a fresh expiry.
+        restarted = CommandReplayLedger(self.path)
+        self.assertFalse(restarted.reserve("renewed", now + 120, now=now + 5)[0])
+
     def test_missing_expiry_is_rejected(self):
         self.assertFalse(self.ledger.reserve("no-expiry", 0)[0])
         self.assertFalse(self.path.exists())
