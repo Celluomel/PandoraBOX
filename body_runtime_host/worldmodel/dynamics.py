@@ -219,8 +219,9 @@ class LatentWorldDynamics:
         R = self._torch.tensor(rews, dtype=self._torch.float32)
         S = self._torch.tensor(succ, dtype=self._torch.float32)
 
-        self._opt.zero_grad()
         for _ in range(max(1, epochs)):
+            # Reset gradients for each optimizer update, not just the first.
+            self._opt.zero_grad()
             s = self._enc(Xt)
             s_next = self._dyn(self._torch.cat([s, At], dim=1))
             s_next_target = self._enc(Xn)
