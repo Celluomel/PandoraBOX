@@ -10,6 +10,7 @@ on:
       - "tests/test_body_reliability_v1.py"
       - "tests/test_body_command_replay.py"
       - "tests/test_body_http_fault_injection.py"
+      - "tests/test_body_command_delivery.py"
       - ".github/workflows/body-reliability.yml"
   pull_request:
     paths:
@@ -18,6 +19,7 @@ on:
       - "tests/test_body_reliability_v1.py"
       - "tests/test_body_command_replay.py"
       - "tests/test_body_http_fault_injection.py"
+      - "tests/test_body_command_delivery.py"
       - ".github/workflows/body-reliability.yml"
   workflow_dispatch:
 
@@ -38,3 +40,5 @@ jobs:
         run: python -m unittest discover -s tests -p "test_body_command_replay.py" -v
       - name: Run offline HTTP sensor fault injection
         run: python -m unittest discover -s tests -p "test_body_http_fault_injection.py" -v
+      - name: Run Brain-to-Body delivery fault injection
+        run: python -m unittest discover -s tests -p "test_body_command_delivery.py" -v
