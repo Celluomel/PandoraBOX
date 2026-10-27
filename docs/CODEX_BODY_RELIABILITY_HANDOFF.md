@@ -79,3 +79,71 @@ GitHub Actions workflow: [Body reliability regression](https://github.com/Celluo
 ## Prompt to paste into Codex
 
 > Continue the PandoraBOX / Lumina Body reliability engineering gate using `docs/CODEX_BODY_RELIABILITY_HANDOFF.md`. Work on the current `main` checkout without discarding local changes. Run all four offline suites in the actual repository, capture results, fix failures at their source, rerun all suites, and verify a green GitHub Actions run on the same commit. Then propose or implement non-actuating Brain-to-Body transport fault-injection tests. Preserve all existing features and fail-closed safety behavior. Do not enable physical VENTUNO actuation or claim hardware validation. Report commits, exact commands, pass/fail counts, CI URL, and remaining risks.
+
+---
+
+## Continued embodied development roadmap (after the immediate gate)
+
+This is the **single canonical Codex handoff** for the current Body/Brain integration program. The earlier checklist is the first blocking milestone, not the whole project. Work sequentially unless a dependency or failing test requires a corrective detour. Every milestone must preserve existing behavior, remain local-first, and be independently reviewable and reversible. No milestone authorizes physical movement by itself.
+
+### M0 — Reproducible offline reliability baseline (blocking)
+
+**Work:** Complete the four-suite execution and CI verification described above. Resolve missing dependencies, mismatched mocks, failures and source defects. Add regression tests for each fix.
+
+**Exit criteria:** All four suites pass in the real checkout and on the same SHA in GitHub Actions; exact test counts, commands, logs, and workflow URL recorded. **Stop** if this cannot be demonstrated; do not mark the gate complete based on code review alone.
+
+### M1 — Brain-to-Body transport and command lifecycle (no actuation)
+
+**Work:** Trace the actual command producer, serializer, transport, Body gateway, acknowledgements, and persisted replay ledger. Exercise real local transport against a fake Body adapter. Cover authorization provenance (not merely a string `status=approved`), expiry, clock skew, duplicate IDs, retries, network partitions, delayed/dropped acknowledgements, crash/restart and fail-closed behavior. Specify command states `proposed → approved → accepted/rejected → attempted → observed/failed/unknown`; never equate an HTTP 200 or an actuator ACK with observed physical success. Preserve backward compatibility deliberately and document any migration.
+
+**Exit criteria:** Deterministic integration tests for happy path and each failure class; a failed or ambiguous delivery never results in an unguarded retry; no physical actuator adapter is called; documented protocol and transition table.
+
+### M2 — Grounded perception and state validity
+
+**Work:** Audit timestamps, coordinate frames, sensor origin, confidence, sensor/pose consistency and freshness from VENTUNO adapters through the world model. Explicitly distinguish unavailable, degraded, stale and valid data. Test out-of-order frames, impossible coordinates, NaN/Inf, missing fields, inconsistent units and sensor recovery. Keep safety guards at the final actuation boundary rather than relying only on planning-layer checks.
+
+**Exit criteria:** Sensor contracts and replayable fixtures; freshness and provenance checks reject invalid data before any physical command; graceful degradation has documented permitted actions and test coverage.
+
+### M3 — Closed-loop action verification and bounded recovery
+
+**Work:** Define observable postconditions for movement/manipulation, separate command acceptance from execution and observed effect, and make plan transitions conditional on fresh post-action evidence. Audit `BodyPlanRuntime`, TaskGraph and `resume_after_recovery` for success, failure, pause, cancellation, expiry, restart and bounded retries. Verify no recovery action can silently bypass a paused plan or safety policy.
+
+**Exit criteria:** Deterministic simulation tests demonstrate successful observed recovery, exhaustion to paused state, no infinite loops, and safe restart semantics; every transition is logged with the evidence that justified it.
+
+### M4 — World-model learning and prediction benchmarks
+
+**Work:** Establish reproducible simulation datasets and fixed-seed benchmarks for latent dynamics, short-horizon predictions, uncertainty calibration, affordance prediction, stability/plasticity and out-of-distribution behavior. Compare against simple nonlearning baselines. Check for data leakage and false improvements caused by simulator assumptions. Keep training separate from safety authorization.
+
+**Exit criteria:** Versioned benchmark harness, baseline metrics and regression thresholds; learning improvements supported by held-out results, with failure cases recorded. No claim of physical generalization from simulation alone.
+
+### M5 — Hierarchical planning and safe autonomy in simulation
+
+**Work:** Integrate verified capabilities/skills with TaskGraph, world-model prediction, resource limits, operator constraints and navigation. Test interruptions, competing goals, stale plans, emergency-stop state, contradictory evidence and restart. Preserve the Body's authority to refuse Brain proposals. Avoid expanding action privileges as an incidental effect of improved planning.
+
+**Exit criteria:** Repeatable scenarios show completion, refusal, cancellation, bounded recovery and auditability; no safety invariant regressions; measurable improvement over M4 baseline.
+
+### M6 — VENTUNO hardware validation (operator-gated)
+
+**Prerequisites:** M0–M3 verified; operator physically present; known firmware/adapter versions; e-stop and power isolation checked; constrained safe test space; explicit authorization for each test stage.
+
+**Work:** Begin with read-only sensor/clock/frame validation, then stationary command-path dry runs, then individually authorized low-energy actions. Measure actual latency, stopping behavior, feedback consistency, drift and failure recovery. Disable actuation by default and stop on unexpected movement, stale telemetry or missing e-stop capability.
+
+**Exit criteria:** Operator-signed hardware test report with measurements and failure notes. A passing offline CI run is **not** hardware certification.
+
+### M7 — Iterative embodied capability expansion (only after hardware evidence)
+
+**Work:** Improve perception, navigation, manipulation, learning and multimodal interaction in small, reversible increments. Each new physical capability needs a bounded operating envelope, simulator test, safety review, hardware-specific verification plan and explicit operator approval.
+
+**Exit criteria:** Per-capability acceptance tests, versioned evidence and rollback procedure; do not describe the system as independently safe or generally autonomous based solely on limited trials.
+
+## Codex operating rules and stop conditions
+
+- **May proceed independently:** repository inspection, offline simulations, tests, docs, static audits, non-actuating adapters, minimal safety-preserving bug fixes, and CI diagnostics. Commit coherent, reviewed-in-context changes with regression coverage. Preserve local uncommitted work and existing features.
+- **Must ask the operator first:** physical actuation or deployment to VENTUNO, disabling or weakening any safety interlock, changing authorization boundaries, destructive data migrations, force pushes, deleting user data, replacing models/configurations in a way that disrupts running systems, or major architectural rewrites.
+- **Stop and report:** failing safety tests that cannot be resolved, unclear authorization semantics, non-reproducible results, missing hardware prerequisites, unverified CI, or a change that requires relaxing a safety invariant. Report blockers rather than inventing evidence.
+- **Evidence ledger per milestone:** record commit SHA, exact commands, environment/dependencies, number of tests passing/failing/skipped, CI run URL and status, benchmark inputs/metrics where relevant, known limitations, and recommended next action. Keep simulated, mocked, integration and hardware evidence clearly separated.
+- **Priority:** M0 first; then M1–M3 for trustworthy closed-loop behavior; M4–M5 for capability gains; M6 only with operator; M7 incrementally. Hardware absence is not a blocker to M0–M5.
+
+## Updated Codex continuation instruction
+
+> Read this entire file as the canonical PandoraBOX Body/Brain handoff. First close M0 with four-suite execution and a verified green CI run. Then advance through M1–M5 in dependency order, implementing and testing one bounded increment at a time while maintaining a milestone evidence ledger. You may autonomously perform non-actuating development, but you must stop and request explicit operator approval for hardware movement, safety-policy relaxation, destructive changes or deployment. Do not confuse mocked results, HTTP acknowledgements, simulator predictions or narrative claims with physical evidence. Preserve existing capabilities and report exact commits, tests, CI evidence, risks and next steps.
