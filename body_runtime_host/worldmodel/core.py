@@ -614,6 +614,16 @@ class EmbodiedWorldModel:
                 decision["reason"] = navigation["recovery_reason"]
               # 9) execute (robot actuators, sandbox physics, or legacy bridge)
             chosen = self._adapt_motion_speed(chosen, body_state, navigation)
+            # A paused plan holds the Body lease; autonomous exploration must
+            # not resume until the operator explicitly clears that lease.
+            if active_plan and active_plan.state == "paused":
+                chosen = {"type": "wait"}
+                decision["reason"] = "Body plan paused after bounded recovery"
+            # Cached observations cannot authorize new movement.
+            observation_age = time.time() - float(obs.timestamp)
+            if not (0.0 <= observation_age <= 5.0):
+                chosen = {"type": "wait"}
+                decision["reason"] = "stale or invalid Body observation"
             # TaskGraph and recovery can override the filtered policy choice.
             final_type = self._action_label(chosen)
             if final_type in forbidden:
@@ -821,7 +831,10 @@ class EmbodiedWorldModel:
                 body_state = self.source.body_state()
                 executor = getattr(self.source, "execute_authorized", None)
                 obs_after = obs
-                if not callable(executor):
+                observation_age = time.time() - float(obs.timestamp)
+                if not (0.0 <= observation_age <= 5.0):
+                    outcome = Outcome(kind="failure", reward=-0.1, description="stale or invalid Body observation; physical command refused")
+                elif not callable(executor):
                     outcome = Outcome(kind="failure", reward=-0.1, description="source has no authorized actuator adapter")
                 else:
                     obs_after, outcome = executor(action)
