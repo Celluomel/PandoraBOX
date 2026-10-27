@@ -213,6 +213,8 @@ class BodyPlanRuntime:
             plan = self._active
             if plan is None or plan.current_step_index >= len(plan.steps):
                 return {"ok": False, "error": "no active step"}
+            if plan.state not in {"ready", "executing", "recovery"}:
+                return {"ok": False, "error": "plan is not executable"}
             step = plan.steps[plan.current_step_index]
             if step.step_id != step_id:
                 return {"ok": False, "error": "step is no longer current"}
