@@ -219,7 +219,15 @@ class BodyPlanRuntime:
             attempts = int(plan.step_attempts.get(step_id, 0)) + 1
             plan.step_attempts[step_id] = attempts
             plan.last_error = description
-            plan.state = "recovery" if attempts > step.max_retries else "executing"
+            # Permit a bounded recovery window, then pause for operator review.
+            # The existing plan lease remains persisted and auditable.
+            recovery_limit = step.max_retries + 3
+            if attempts > recovery_limit:
+                plan.state = "paused"
+            elif attempts > step.max_retries:
+                plan.state = "recovery"
+            else:
+                plan.state = "executing"
             result = {"ok": True, "attempts": attempts, "snapshot_id": snapshot_id, "plan": plan.as_dict()}
             self._append(self._plans_path, {"event": "step_failed", "at": time.time(), "step_id": step_id, "description": description, **result})
             self._persist_active()
