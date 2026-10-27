@@ -66,7 +66,7 @@ class BodyReliabilityV1Tests(unittest.TestCase):
         self.runtime.record_snapshot(snap)
         result = self.runtime.submit(proposal())
         self.assertTrue(result["accepted"])
-        for attempt in range(1, 4):
+        for attempt in range(1, 5):
             self.runtime.record_step_failure("s1", snap.snapshot_id, "failed")
         self.assertEqual(self.runtime.active_plan().state, "recovery")
         self.runtime.record_step_failure("s1", snap.snapshot_id, "failed")
