@@ -233,6 +233,35 @@ class BodyPlanRuntime:
             self._persist_active()
             return result
 
+    def record_recovery_attempt(self, step_id: str, snapshot_id: str) -> Dict[str, Any]:
+        """Count recovery actions, including ones that report success without progress.
+
+        A recovery attempt is charged before issuing the action. Once the
+        budget is exhausted, the plan pauses instead of looping forever.
+        """
+        with self._lock:
+            plan = self._active
+            if plan is None or plan.state != "recovery":
+                return {"ok": False, "error": "plan is not recovering"}
+            if plan.current_step_index >= len(plan.steps):
+                return {"ok": False, "error": "no active step"}
+            step = plan.steps[plan.current_step_index]
+            if step.step_id != step_id:
+                return {"ok": False, "error": "step is no longer current"}
+            key = f"recovery:{step_id}"
+            attempts = int(plan.step_attempts.get(key, 0))
+            if attempts >= 3:
+                plan.state = "paused"
+                plan.last_error = "recovery action budget exhausted"
+                self._append(self._plans_path, {"event": "recovery_exhausted", "at": time.time(), "step_id": step_id, "snapshot_id": snapshot_id, "attempts": attempts})
+                self._persist_active()
+                return {"ok": False, "error": plan.last_error, "plan": plan.as_dict()}
+            attempts += 1
+            plan.step_attempts[key] = attempts
+            self._append(self._plans_path, {"event": "recovery_attempt", "at": time.time(), "step_id": step_id, "snapshot_id": snapshot_id, "attempts": attempts})
+            self._persist_active()
+            return {"ok": True, "attempts": attempts, "plan": plan.as_dict()}
+
     def resume_after_recovery(self, step_id: str, snapshot_id: str, description: str) -> Dict[str, Any]:
         with self._lock:
             plan = self._active
