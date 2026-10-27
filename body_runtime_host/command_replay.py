@@ -6,6 +6,7 @@ substitute for authenticated delivery, authorization, or a physical e-stop.
 from __future__ import annotations
 
 import json
+import math
 import threading
 import time
 from pathlib import Path
@@ -23,7 +24,7 @@ class CommandReplayLedger:
         command_id = str(command_id or "")
         if not command_id or len(command_id) > 256:
             return False, "invalid command_id"
-        if not (now < expires_at <= now + self.retention_seconds):
+        if not (math.isfinite(now) and math.isfinite(expires_at) and now < expires_at <= now + self.retention_seconds):
             return False, "missing, expired, or invalid command expiry"
         with self._lock:
             try:
@@ -33,7 +34,7 @@ class CommandReplayLedger:
                     loaded = json.loads(self.path.read_text(encoding="utf-8"))
                     if not isinstance(loaded, dict):
                         return False, "invalid command replay ledger"
-                    records = {str(k): float(v) for k, v in loaded.items() if float(v) > now}
+                    records = {str(k): float(v) for k, v in loaded.items() if math.isfinite(float(v)) and float(v) > now}
                 if command_id in records:
                     return False, "duplicate approved command_id"
                 # Keep the ID reserved for the full retention period, not
