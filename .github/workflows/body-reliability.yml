@@ -1,0 +1,31 @@
+name: Body reliability regression
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "body_runtime_host/worldmodel/**"
+      - "body_runtime_host/runtime.py"
+      - "tests/test_body_reliability_v1.py"
+      - ".github/workflows/body-reliability.yml"
+  pull_request:
+    paths:
+      - "body_runtime_host/worldmodel/**"
+      - "body_runtime_host/runtime.py"
+      - "tests/test_body_reliability_v1.py"
+      - ".github/workflows/body-reliability.yml"
+  workflow_dispatch:
+
+jobs:
+  body-reliability:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install minimal simulation dependencies
+        run: python -m pip install "numpy>=1.24,<2"
+      - name: Run Body plan reliability tests
+        run: python -m unittest discover -s tests -p "test_body_reliability_v1.py" -v
