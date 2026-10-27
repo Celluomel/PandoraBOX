@@ -842,7 +842,8 @@ class EmbodiedWorldModel:
                 executor = getattr(self.source, "execute_authorized", None)
                 obs_after = obs
                 observation_age = time.time() - float(obs.timestamp)
-                if not (0.0 <= observation_age <= 5.0):
+                pose_age = time.time() - float(body_state.timestamp)
+                if not (0.0 <= observation_age <= 5.0 and 0.0 <= pose_age <= 5.0):
                     outcome = Outcome(kind="failure", reward=-0.1, description="stale or invalid Body observation; physical command refused")
                 elif not callable(executor):
                     outcome = Outcome(kind="failure", reward=-0.1, description="source has no authorized actuator adapter")
