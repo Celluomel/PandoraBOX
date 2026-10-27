@@ -835,6 +835,7 @@ class EmbodiedWorldModel:
         with self._lock:
             if self.source is None:
                 obs = self._bridge_observation()
+                obs_after = obs
                 outcome = Outcome(kind="failure", reward=-0.1, description="no actuator source attached")
             else:
                 obs = self.source.observe()
