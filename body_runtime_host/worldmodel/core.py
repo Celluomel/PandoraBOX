@@ -631,7 +631,7 @@ class EmbodiedWorldModel:
                 chosen = {"type": "wait"}
                 decision["reason"] = "stale or invalid Body observation"
             # TaskGraph and recovery can override the filtered policy choice.
-            final_type = self._action_label(chosen)
+            final_type = self._as_action(chosen).type
             if final_type in forbidden:
                 chosen = {"type": "wait"}
                 decision["reason"] = "final geometry guard: forbidden action"
