@@ -40,11 +40,14 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          python -m unittest discover -s tests -p "test_body_reliability_v1.py" -v 2>&1 | tee body-reliability-plan.log
-          python -m unittest discover -s tests -p "test_body_command_replay.py" -v 2>&1 | tee body-reliability-replay.log
-          python -m unittest discover -s tests -p "test_body_http_fault_injection.py" -v 2>&1 | tee body-reliability-http.log
-          python -m unittest discover -s tests -p "test_body_command_delivery.py" -v 2>&1 | tee body-reliability-delivery.log
-          python -m unittest discover -s tests -p "test_body_action_evidence.py" -v 2>&1 | tee body-reliability-evidence.log
+          failures=0
+          python -m unittest discover -s tests -p "test_body_reliability_v1.py" -v 2>&1 | tee body-reliability-plan.log || failures=$((failures + 1))
+          python -m unittest discover -s tests -p "test_body_command_replay.py" -v 2>&1 | tee body-reliability-replay.log || failures=$((failures + 1))
+          python -m unittest discover -s tests -p "test_body_http_fault_injection.py" -v 2>&1 | tee body-reliability-http.log || failures=$((failures + 1))
+          python -m unittest discover -s tests -p "test_body_command_delivery.py" -v 2>&1 | tee body-reliability-delivery.log || failures=$((failures + 1))
+          python -m unittest discover -s tests -p "test_body_action_evidence.py" -v 2>&1 | tee body-reliability-evidence.log || failures=$((failures + 1))
+          echo "Failed suites: $failures"
+          test "$failures" -eq 0
       - name: Upload offline test logs
         if: always()
         uses: actions/upload-artifact@v4
