@@ -35,6 +35,7 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
+from .action_evidence import classify_action_evidence
 from .anchors import PhysicalMemory, atomic_write_json
 from .consolidation import ConsolidationEngine
 from .contracts import ActionResult, BodySnapshot
@@ -877,8 +878,20 @@ class EmbodiedWorldModel:
             self._log_episode(episode)
             self._episodes.append(episode)
             self._steps += 1
-            self._last_success_step = self._steps if outcome.kind == "success" else self._last_success_step
+            evidence = classify_action_evidence(
+                outcome.as_dict(),
+                before_timestamp=obs.timestamp,
+                after_timestamp=obs_after.timestamp if obs_after is not None else None,
+                source_simulated=bool(getattr(self.source, "simulated", False)),
+                # execute_external has no task postcondition to check. A
+                # successful HTTP response must not be upgraded to proof
+                # of physical motion or to a verified training label.
+                postcondition_observed=False,
+            )
+            if evidence["eligible_for_verified_learning"]:
+                self._last_success_step = self._steps
             return {
+                "evidence": evidence,
                 "step": episode.step_id,
                 "action": self._action_label(action),
                 "target": action.target,
