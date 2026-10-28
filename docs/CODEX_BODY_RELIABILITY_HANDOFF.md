@@ -147,3 +147,11 @@ This is the **single canonical Codex handoff** for the current Body/Brain integr
 ## Updated Codex continuation instruction
 
 > Read this entire file as the canonical PandoraBOX Body/Brain handoff. First close M0 with four-suite execution and a verified green CI run. Then advance through M1–M5 in dependency order, implementing and testing one bounded increment at a time while maintaining a milestone evidence ledger. You may autonomously perform non-actuating development, but you must stop and request explicit operator approval for hardware movement, safety-policy relaxation, destructive changes or deployment. Do not confuse mocked results, HTTP acknowledgements, simulator predictions or narrative claims with physical evidence. Preserve existing capabilities and report exact commits, tests, CI evidence, risks and next steps.
+
+
+### Body recovery development update — 2026-10-28 (offline, hardware unavailable)
+
+- `e1eb4dd`: In `EmbodiedWorldModel.step()`, a recovering plan now calls `resume_after_recovery` **only after** the original step postcondition is observed in a fresh post-action snapshot and pose; successful resume then permits `advance`. An actuator acknowledgement alone does not resume recovery. This fixes the prior control-flow dead end where `advance` rejected plans still in `recovery`.
+- `962dec6`: Added plan-runtime tests for successful recovery → executing → completed and for refusal to resume an exhausted/paused plan.
+- **Verification limitation:** these commits were checked into GitHub, but a passing four-suite CI run and hardware behavior are not verified. Do not mark M0 or M3 complete until real repository tests pass. In particular, add a world-model-level deterministic test proving that `step()` invokes the verified recovery path with fresh post-action evidence, and rejects stale/missing evidence.
+- **Next recommended non-actuating work:** define explicit action-evidence lifecycle and verification states, ensure `execute_external` does not equate adapter acknowledgement with observed physical movement, and make learned-dynamics training distinguish verified versus uncertain transitions. Keep physical VENTUNO tests pending operator presence.
