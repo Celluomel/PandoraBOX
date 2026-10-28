@@ -65,6 +65,41 @@ class BodyReliabilityV1Tests(unittest.TestCase):
         restarted = BodyPlanRuntime(Path(self.temp.name))
         self.assertEqual(restarted.active_plan().state, "paused")
 
+    def test_verified_recovery_resumes_and_advances(self):
+        snap = snapshot()
+        self.runtime.record_snapshot(snap)
+        self.assertTrue(self.runtime.submit(proposal())["accepted"])
+        self.runtime.record_step_failure("s1", snap.snapshot_id, "blocked")
+        self.runtime.record_step_failure("s1", snap.snapshot_id, "blocked")
+        self.assertEqual(self.runtime.active_plan().state, "recovery")
+        # Recovery cannot advance directly; it requires an explicit
+        # verified transition to executing.
+        self.assertFalse(self.runtime.advance("s1", snap.snapshot_id)["ok"])
+        resumed = self.runtime.resume_after_recovery(
+            "s1", snap.snapshot_id, "observed postcondition",
+        )
+        self.assertTrue(resumed["ok"])
+        self.assertEqual(self.runtime.active_plan().state, "executing")
+        self.assertTrue(self.runtime.advance("s1", snap.snapshot_id)["ok"])
+        self.assertEqual(self.runtime.active_plan().state, "completed")
+        restarted = BodyPlanRuntime(Path(self.temp.name))
+        self.assertIsNone(restarted.active_plan())
+
+    def test_paused_recovery_cannot_be_resumed(self):
+        snap = snapshot()
+        self.runtime.record_snapshot(snap)
+        self.assertTrue(self.runtime.submit(proposal())["accepted"])
+        self.runtime.record_step_failure("s1", snap.snapshot_id, "blocked")
+        self.runtime.record_step_failure("s1", snap.snapshot_id, "blocked")
+        for _ in range(3):
+            self.assertTrue(self.runtime.record_recovery_attempt("s1", snap.snapshot_id)["ok"])
+        self.assertFalse(self.runtime.record_recovery_attempt("s1", snap.snapshot_id)["ok"])
+        self.assertEqual(self.runtime.active_plan().state, "paused")
+        self.assertFalse(self.runtime.resume_after_recovery(
+            "s1", snap.snapshot_id, "late observation",
+        )["ok"])
+        self.assertEqual(self.runtime.active_plan().state, "paused")
+
     def test_recovery_is_bounded_and_persisted(self):
         snap = snapshot()
         self.runtime.record_snapshot(snap)
