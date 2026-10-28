@@ -670,7 +670,8 @@ class EmbodiedWorldModel:
                     check = self.task_graph.decide(current, after_snapshot, self._last_body_state)
                     after_age = time.time() - float(after_snapshot.timestamp)
                     pose_age = time.time() - float(self._last_body_state.timestamp)
-                    evidence_fresh = 0.0 <= after_age <= 5.0 and 0.0 <= pose_age <= 5.0
+                    evidence_fresh = (0.0 <= after_age <= 5.0 and 0.0 <= pose_age <= 5.0
+                                      and float(after_snapshot.timestamp) > float(plan_snapshot.timestamp))
                     if check.satisfied and check.step_id == task_decision.step_id and evidence_fresh:
                         # A recovery action is not itself proof of recovery.
                         # Resume only after a fresh post-action observation
