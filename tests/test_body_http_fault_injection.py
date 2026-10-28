@@ -82,6 +82,23 @@ class RobotHttpFaultInjectionTests(unittest.TestCase):
         self.assertEqual(outcome.kind, "failure")
         self.assertFalse(any(call.args[0] == "POST" for call in transport.call_args_list))
 
+    def test_post_action_sensor_outage_is_not_reported_success(self):
+        calls = []
+
+        def fake_http(method, url, **kwargs):
+            calls.append(method)
+            if calls == ["GET"]:
+                return sensors()
+            if method == "POST":
+                return {"outcome": "success", "description": "controller accepted"}
+            raise OSError("post-action sensor outage")
+
+        with patch("body_runtime_host.worldmodel.sources._http_json", side_effect=fake_http):
+            _, outcome = self.robot.execute_authorized(self.action)
+        self.assertEqual(calls, ["GET", "POST", "GET"])
+        self.assertEqual(outcome.kind, "neutral")
+        self.assertIn("post-action", outcome.description)
+
     def test_disabled_actuation_never_posts(self):
         self.robot.actuation_enabled = False
         with patch("body_runtime_host.worldmodel.sources._http_json", return_value=sensors()) as transport:
