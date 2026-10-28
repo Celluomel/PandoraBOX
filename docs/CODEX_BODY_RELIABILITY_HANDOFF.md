@@ -188,3 +188,59 @@ python -m unittest discover -s tests -p "test_body_action_evidence.py" -v
 7. Reserve hardware-specific latency, motor control, e-stop and calibration validation for when VENTUNO is available. Do not claim physical readiness from offline tests.
 
 **Milestone status:** M0 remains OPEN pending real CI; M1–M4 are PARTIALLY IMPLEMENTED, not complete; M5+ not validated. The roadmap above remains the intended direction, not a record of completed milestones.
+
+
+## Offline-to-hardware readiness package — 2026-10-28
+
+The VENTUNO is currently unavailable. **Do not wait for hardware to run offline suites; do not enable physical actuation until the operator returns.**
+
+### New committed tools and tests
+
+- `tools/body_readonly_preflight.py` (`3ebe8b2`): standalone, read-only `GET /sensors` preflight with frame validity, timestamp, position, orientation, latency and JSON report. It never sends `POST /command`. Run on the Brain PC or a machine that can reach the VENTUNO gateway when home:
+
+  ```bash
+  python tools/body_readonly_preflight.py --url http://ROBOT_IP:PORT --samples 10 --output body-preflight.json
+  ```
+
+  Configure `ROBOT_TOKEN` via environment if needed. Do not paste the token into the report. A passing sensor preflight **does not** certify e-stop, motor safety, gait, physical motion or latency under load.
+- `tests/test_body_readonly_preflight.py` (`9afac29`): offline mocked preflight validation and GET-only contract.
+- `tests/test_body_http_loopback.py` (`39cc2e2`): actual Python loopback HTTP server and `RobotHttpSource` transport integration; no physical hardware, external network or real motor control.
+- CI (`e6704ab`): now runs **seven** suites and uploads individual logs, aggregating failures.
+
+### Seven-suite offline readiness command
+
+```bash
+python -m unittest discover -s tests -p "test_body_reliability_v1.py" -v
+python -m unittest discover -s tests -p "test_body_command_replay.py" -v
+python -m unittest discover -s tests -p "test_body_http_fault_injection.py" -v
+python -m unittest discover -s tests -p "test_body_command_delivery.py" -v
+python -m unittest discover -s tests -p "test_body_action_evidence.py" -v
+python -m unittest discover -s tests -p "test_body_readonly_preflight.py" -v
+python -m unittest discover -s tests -p "test_body_http_loopback.py" -v
+```
+
+**Execution evidence:** source commits verified on GitHub; no passing full-checkout test run or CI run was available to this session. Treat all seven suites as **unverified** until executed. Repair any import, dependency or contract failures before claiming readiness.
+
+### At-home hardware validation order — operator supervised
+
+1. Pull a known, tested SHA; record OS, Python, firmware, VENTUNO gateway version, Body config and network path. Back up configuration and logs. Keep actuation disabled.
+2. Verify physical e-stop/power isolation independently of software, motor controller local stop path, mechanical clearance, support/fixture, battery and safe test area. If any prerequisite fails, **stop**.
+3. Run seven offline suites on the Brain PC; verify CI at the same SHA. If not green, **stop**.
+4. Run `body_readonly_preflight.py` against the real gateway, with actuation disabled. Inspect timestamps, frames, units, packet stability and latency. Repeat after reconnect and deliberate network interruption. If stale/invalid, **stop**.
+5. Validate command approval/replay/expiry behavior with a **fake actuator** and real local transport; prove stale frames, missing timestamps and lost ACKs fail closed. No motor motion.
+6. With the operator explicitly approving each step, test stationary controller connection and then a single bounded low-energy physical action in a fixture. Verify emergency stop before allowing any free movement. Log command ID, expected displacement, independent sensor measurements, timestamps, stop latency and unexpected effects.
+7. Increase motion envelope only after reviewing measured errors, drift, contact risk and recovery behavior. Never infer physical correctness from controller `success` alone. Any unexplained movement, lost telemetry, unbounded retry or stop failure terminates testing.
+
+### Readiness decision
+
+- **Offline-ready** only when all seven suites, loopback integration and CI are green on the same SHA, with Brain protocol consumers audited for `acknowledged` versus `executed`.
+- **Sensor-ready** only after the read-only gateway preflight passes on VENTUNO.
+- **Motion-ready** only after physical e-stop and supervised low-energy action verification. No software-only result confers this status.
+
+### Remaining engineering gaps
+
+- Full world-model `step()` integration regression for recovery and postcondition freshness.
+- End-to-end Brain approval provenance and response-consumer compatibility (the string `status=approved` is not cryptographic authorization).
+- Stronger replay ledger crash/multiprocess durability and physical command idempotency.
+- Real physical postcondition correlator for pose/displacement, rather than just fresh sensor frames.
+- Quantitative learned dynamics benchmark and calibrated uncertainty.
