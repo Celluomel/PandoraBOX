@@ -4,16 +4,33 @@
 
 **Repository:** `Celluomel/PandoraBOX` · branch `main`
 
-## Immediate goal
+## Current execution priority — authoritative (2026-10-28)
 
-Run and fix all four Body reliability suites in the **actual repository environment**, obtain a reproducible green GitHub Actions run, then proceed to simulated Brain-to-Body network integration. Do not require or enable physical VENTUNO actuation for these tests.
+**The Body is NOT yet offline-validated or hardware-ready.** Source code, test files and CI configuration have been committed, but no passing full-checkout eight-suite run or green GitHub Actions run has been verified. Physical VENTUNO is unavailable. **Codex should continue all non-actuating development now**, not wait for the robot; reserve physical testing for the operator's return home.
+
+**First actions for Codex:** (1) verify the checkout and protect uncommitted changes; (2) execute **all eight** suites listed below and diagnose failures; (3) obtain and record green CI for the same SHA; (4) audit Brain/UI consumers of the new `acknowledged` versus `executed` command status; (5) complete deterministic world-model recovery and action-evidence integration tests, including cached-frame refusal; (6) harden command approval provenance and replay persistence; (7) benchmark simulated prediction and learning; (8) prepare the read-only hardware preflight and supervised physical validation procedure. Do not mark a milestone complete based on source inspection alone.
+
+### Current eight-suite test command (repository root)
+
+```bash
+python -m unittest discover -s tests -p "test_body_reliability_v1.py" -v
+python -m unittest discover -s tests -p "test_body_command_replay.py" -v
+python -m unittest discover -s tests -p "test_body_http_fault_injection.py" -v
+python -m unittest discover -s tests -p "test_body_command_delivery.py" -v
+python -m unittest discover -s tests -p "test_body_action_evidence.py" -v
+python -m unittest discover -s tests -p "test_body_readonly_preflight.py" -v
+python -m unittest discover -s tests -p "test_body_http_loopback.py" -v
+python -m unittest discover -s tests -p "test_body_external_action_evidence.py" -v
+```
+
+**Source-of-truth rule:** This section supersedes historical four-, five-, and seven-suite instructions later in this append-only engineering history. The workflow `.github/workflows/body-reliability.yml` is the definitive suite list if new suites are added. Do not run the smaller historical lists as if they were complete.
 
 ## Resume checklist (Codex)
 
 1. Open a fresh checkout of `main` on the Brain PC; check `git status`, `git log -8 --oneline`, and `python --version`. Preserve local uncommitted work. Do not blindly reset or overwrite it.
 2. Create/use a Python 3.11 virtual environment. Install the dependencies required by the repository, starting with `numpy>=1.24,<2` (the current CI minimum). Inspect project requirements and imports if further dependencies are needed.
-3. Run **all four** suites from the repository root, capture stdout/stderr and exit codes. Do not mark a suite passing based on a successful import or a mocked assertion alone.
-4. Diagnose failures against the real implementation; fix root causes without deleting tests or weakening safety assertions. Commit each coherent fix, add regression coverage, and rerun all four suites.
+3. Run **all eight** suites listed in the authoritative section from the repository root, capture stdout/stderr and exit codes. Do not mark a suite passing based on a successful import or a mocked assertion alone.
+4. Diagnose failures against the real implementation; fix root causes without deleting tests or weakening safety assertions. Commit each coherent fix, add regression coverage, and rerun all eight suites.
 5. Confirm GitHub Actions `Body reliability regression` passes on the resulting commit. Save the workflow URL, run ID, SHA, test counts, and logs in the final report. The workflow uploads `body-reliability-logs` even when tests fail.
 6. Only after the offline gate is green: build a **non-actuating** Brain-to-Body transport integration test (real local HTTP/socket transport if available, with a fake Body/robot adapter), covering authentication, approval provenance, expiry, duplicates, dropped acknowledgements, reconnects, stale telemetry, and fail-closed behavior.
 7. Defer VENTUNO hardware tests until physically present. Keep physical actuation disabled by default; require an explicit operator-controlled test plan, e-stop verification, and a safe test area before moving hardware.
