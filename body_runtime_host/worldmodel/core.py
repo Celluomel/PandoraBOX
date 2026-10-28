@@ -667,8 +667,22 @@ class EmbodiedWorldModel:
                 current = self.plan_runtime.active_plan()
                 if current and task_decision.step_id and current.current_step_index < len(current.steps):
                     check = self.task_graph.decide(current, after_snapshot, self._last_body_state)
-                    if check.satisfied and check.step_id == task_decision.step_id:
-                        self.plan_runtime.advance(task_decision.step_id, after_snapshot.snapshot_id)
+                    after_age = time.time() - float(after_snapshot.timestamp)
+                    pose_age = time.time() - float(self._last_body_state.timestamp)
+                    evidence_fresh = 0.0 <= after_age <= 5.0 and 0.0 <= pose_age <= 5.0
+                    if check.satisfied and check.step_id == task_decision.step_id and evidence_fresh:
+                        # A recovery action is not itself proof of recovery.
+                        # Resume only after a fresh post-action observation
+                        # satisfies the original step, then advance normally.
+                        if current.state == "recovery":
+                            resumed = self.plan_runtime.resume_after_recovery(
+                                task_decision.step_id, after_snapshot.snapshot_id,
+                                "step postcondition verified after recovery",
+                            )
+                            if resumed.get("ok"):
+                                self.plan_runtime.advance(task_decision.step_id, after_snapshot.snapshot_id)
+                        else:
+                            self.plan_runtime.advance(task_decision.step_id, after_snapshot.snapshot_id)
                     elif outcome.kind in {"failure", "danger"} and not self._is_transient_mobile_hazard(outcome):
                         self.plan_runtime.record_step_failure(task_decision.step_id, after_snapshot.snapshot_id, outcome.description)
                     # A successful actuator acknowledgement does not prove
