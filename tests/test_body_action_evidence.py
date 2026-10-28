@@ -31,6 +31,12 @@ class ActionEvidenceTests(unittest.TestCase):
                 self.assertEqual(evidence["state"], "acknowledged_unverified")
                 self.assertFalse(evidence["eligible_for_verified_learning"])
 
+    def test_reused_sensor_frame_cannot_verify(self):
+        evidence = classify({"kind": "success"}, before_timestamp=99, after_timestamp=99,
+                            now=100, postcondition_observed=True)
+        self.assertEqual(evidence["state"], "acknowledged_unverified")
+        self.assertFalse(evidence["eligible_for_verified_learning"])
+
     def test_nonfinite_data_never_verify(self):
         for value in (float("nan"), float("inf"), float("-inf")):
             with self.subTest(value=value):
