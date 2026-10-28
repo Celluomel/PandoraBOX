@@ -3664,11 +3664,16 @@ class BodyHost:
                 raise RuntimeError("world model unavailable")
             execution = wm.execute_external(action)
             outcome = dict(execution.get("outcome") or {})
-            # Neutral means no confirmed execution (for example actuation
-            # disabled), never report it as an executed physical command.
-            status = "executed" if str(outcome.get("kind")) == "success" else "failed"
+            # Adapter acknowledgement is not independent physical evidence.
+            # Preserve legacy "executed" only for an explicitly verified
+            # observation, never for a bare success response.
+            evidence = dict(execution.get("evidence") or {})
+            verified = evidence.get("state") in {"verified_observation", "verified_simulation"}
+            kind = str(outcome.get("kind") or "")
+            status = "executed" if verified else ("acknowledged" if kind == "success" else "failed")
             result = {"type": "command_result", "command_id": command_id,
-                      "status": status, "outcome": outcome, "execution": execution}
+                      "status": status, "verification_status": evidence.get("state", "unknown"),
+                      "outcome": outcome, "execution": execution}
         except Exception as exc:
             LOG.exception("Approved Body command failed: %s", command_id)
             result = {"type": "command_result", "command_id": command_id,
