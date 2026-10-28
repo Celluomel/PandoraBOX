@@ -31,7 +31,7 @@ def classify_action_evidence(
                 all(math.isfinite(v) for v in (before, after, now))
                 and 0 <= now - after <= 5.0
                 and 0 <= now - before <= 5.0
-                and after >= before
+                and after > before
             )
     except (TypeError, ValueError, OverflowError):
         pass
