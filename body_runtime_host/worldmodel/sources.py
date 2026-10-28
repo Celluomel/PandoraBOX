@@ -553,7 +553,22 @@ class RobotHttpSource:
                 description=str(result.get("description") or ""),
             )
             self.last_error = ""
-            return self.observe(), outcome
+            after = self.observe()
+            if self.last_error or not self._last_sensor_timestamp_explicit:
+                # The command may have reached the motor controller, but
+                # fresh post-action evidence is missing. Do not advertise
+                # the controller's success as a confirmed Body outcome.
+                return after, Outcome(
+                    kind="neutral", reward=0.0,
+                    description="command acknowledgement received; post-action sensor evidence unavailable",
+                )
+            after_age = time.time() - float(after.timestamp)
+            if not (0.0 <= after_age <= 5.0):
+                return after, Outcome(
+                    kind="neutral", reward=0.0,
+                    description="command acknowledgement received; post-action sensor evidence stale",
+                )
+            return after, outcome
         except Exception as exc:
             self.last_error = f"command failed: {exc}"
             logger.warning("[robot] command %s failed: %s", action.type, exc)
