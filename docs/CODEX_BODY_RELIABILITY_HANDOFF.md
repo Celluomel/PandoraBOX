@@ -244,3 +244,15 @@ python -m unittest discover -s tests -p "test_body_http_loopback.py" -v
 - Stronger replay ledger crash/multiprocess durability and physical command idempotency.
 - Real physical postcondition correlator for pose/displacement, rather than just fresh sensor frames.
 - Quantitative learned dynamics benchmark and calibrated uncertainty.
+
+
+### Additional offline execution-boundary coverage
+
+- `179da9a`: `tests/test_body_external_action_evidence.py` exercises the real `EmbodiedWorldModel.execute_external` method with fake sensor and actuator sources, checking that controller acknowledgement remains unverified, stale pose prevents calling the adapter, and missing source fails closed.
+- `4059682`: CI runs this as the **eighth** Body suite. Add to local validation:
+
+  ```bash
+  python -m unittest discover -s tests -p "test_body_external_action_evidence.py" -v
+  ```
+
+- The earlier references to five or seven suites are historical. **Current required total: eight**. Tests are committed but have not been observed passing in the real checkout. The physical VENTUNO remains unavailable and must not be actuated remotely.
