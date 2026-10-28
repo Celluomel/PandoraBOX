@@ -155,3 +155,36 @@ This is the **single canonical Codex handoff** for the current Body/Brain integr
 - `962dec6`: Added plan-runtime tests for successful recovery → executing → completed and for refusal to resume an exhausted/paused plan.
 - **Verification limitation:** these commits were checked into GitHub, but a passing four-suite CI run and hardware behavior are not verified. Do not mark M0 or M3 complete until real repository tests pass. In particular, add a world-model-level deterministic test proving that `step()` invokes the verified recovery path with fresh post-action evidence, and rejects stale/missing evidence.
 - **Next recommended non-actuating work:** define explicit action-evidence lifecycle and verification states, ensure `execute_external` does not equate adapter acknowledgement with observed physical movement, and make learned-dynamics training distinguish verified versus uncertain transitions. Keep physical VENTUNO tests pending operator presence.
+
+
+### Action evidence / learning gate update — 2026-10-28
+
+**Implemented on `main` (source verified; execution/CI still unverified):**
+
+- `1f74611`: `worldmodel/action_evidence.py` defines conservative `classify_action_evidence` states: `failed`, `not_executed`, `unknown`, `acknowledged_unverified`, `verified_simulation`, `verified_observation`. Verification requires a strictly newer fresh post-action timestamp and an explicit caller-provided observed postcondition; an actuator success response is never sufficient.
+- `3345df8`: `EmbodiedWorldModel.execute_external` includes evidence in its response; without a task postcondition it reports an acknowledgement as unverified and does not update verified-success bookkeeping.
+- `c205ede`: `BodyHost.execute_command` reports `acknowledged` rather than `executed` for a success outcome lacking verified evidence; also exposes `verification_status`. **Compatibility change:** audit every Brain/UI consumer of `command_result.status` and adapt to the new state before deployment.
+- `308b51d`: command-delivery tests cover acknowledged versus explicitly verified execution.
+- `7a88abf`, `f2f2b96`: deterministic evidence tests, including nonfinite, future, stale and reused frames.
+- `008c8db`: the autonomous world-model step avoids feeding unverified physical transitions into learned dynamics; simulated transitions remain trainable. This does not yet provide a general-purpose verified physical training path.
+- `63d316f`, `40aa587`: HTTP adapter reports an ambiguous/neutral outcome when a command ACK is followed by failed/stale post-action sensor polling; regression test verifies no false success.
+- `33d518a`: CI includes the fifth evidence suite.
+- `f88ecc3`, `cd7f186`: require strictly newer post-action sensor evidence for verification and plan completion.
+
+**Updated offline test command:**
+
+```bash
+python -m unittest discover -s tests -p "test_body_action_evidence.py" -v
+```
+
+**Important unresolved tasks before declaring M1–M4 complete:**
+
+1. Run **all five** suites from the actual checkout and obtain a green CI run for the same SHA. Fix any regressions from the status change.
+2. Trace all Brain-side consumers of `executed` and `acknowledged`; document protocol compatibility and migration.
+3. Add full `EmbodiedWorldModel.step()` integration tests for recovery, cached-frame refusal, and simulation learning; existing tests exercise mostly isolated components.
+4. Build an explicit verified physical postcondition pipeline (motion/pose/target effect, confidence, source, timestamp, command correlation). Do not set `postcondition_observed=True` based only on controller acknowledgement or on elapsed time.
+5. Add a genuine local transport integration test with a fake robot server; unit mocks are not network tests.
+6. Benchmark learned dynamics on held-out simulated trajectories and compare with a nonlearning baseline.
+7. Reserve hardware-specific latency, motor control, e-stop and calibration validation for when VENTUNO is available. Do not claim physical readiness from offline tests.
+
+**Milestone status:** M0 remains OPEN pending real CI; M1–M4 are PARTIALLY IMPLEMENTED, not complete; M5+ not validated. The roadmap above remains the intended direction, not a record of completed milestones.
