@@ -13,6 +13,7 @@ on:
       - "tests/test_body_command_delivery.py"
       - "tests/test_body_action_evidence.py"
       - "tests/test_body_readonly_preflight.py"
+      - "tests/test_body_http_loopback.py"
       - "tools/body_readonly_preflight.py"
       - ".github/workflows/body-reliability.yml"
   pull_request:
@@ -25,6 +26,7 @@ on:
       - "tests/test_body_command_delivery.py"
       - "tests/test_body_action_evidence.py"
       - "tests/test_body_readonly_preflight.py"
+      - "tests/test_body_http_loopback.py"
       - "tools/body_readonly_preflight.py"
       - ".github/workflows/body-reliability.yml"
   workflow_dispatch:
@@ -51,6 +53,7 @@ jobs:
           python -m unittest discover -s tests -p "test_body_command_delivery.py" -v 2>&1 | tee body-reliability-delivery.log || failures=$((failures + 1))
           python -m unittest discover -s tests -p "test_body_action_evidence.py" -v 2>&1 | tee body-reliability-evidence.log || failures=$((failures + 1))
           python -m unittest discover -s tests -p "test_body_readonly_preflight.py" -v 2>&1 | tee body-reliability-preflight.log || failures=$((failures + 1))
+          python -m unittest discover -s tests -p "test_body_http_loopback.py" -v 2>&1 | tee body-reliability-loopback.log || failures=$((failures + 1))
           echo "Failed suites: $failures"
           test "$failures" -eq 0
       - name: Upload offline test logs
