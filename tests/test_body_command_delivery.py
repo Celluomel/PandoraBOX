@@ -37,13 +37,13 @@ class BrainBodyCommandTests(unittest.TestCase):
 
     def test_approved_command_delivered_once(self):
         result = self.host.execute_command(self.command())
-        self.assertEqual(result["status"], "executed")
+        self.assertEqual(result["status"], "acknowledged")
         self.host.worldmodel.execute_external.assert_called_once()
         self.host._bridge_put_message.assert_called_once()
 
     def test_duplicate_delivery_after_restart_rejected(self):
         command = self.command()
-        self.assertEqual(self.host.execute_command(command)["status"], "executed")
+        self.assertEqual(self.host.execute_command(command)["status"], "acknowledged")
         self.host._command_replay = CommandReplayLedger(Path(self.temp.name) / "ledger.json")
         duplicate = self.host.execute_command(command)
         self.assertEqual(duplicate["status"], "rejected")
@@ -63,6 +63,15 @@ class BrainBodyCommandTests(unittest.TestCase):
         result = self.host.execute_command(self.command(expires_at=time.time() - 10))
         self.assertEqual(result["status"], "expired")
         self.host.worldmodel.execute_external.assert_not_called()
+
+    def test_explicit_verified_evidence_reports_executed(self):
+        self.host.worldmodel.execute_external.return_value = {
+            "outcome": {"kind": "success"},
+            "evidence": {"state": "verified_simulation"},
+        }
+        result = self.host.execute_command(self.command())
+        self.assertEqual(result["status"], "executed")
+        self.assertEqual(result["verification_status"], "verified_simulation")
 
     def test_neutral_outcome_not_reported_executed(self):
         self.host.worldmodel.execute_external.return_value = {
