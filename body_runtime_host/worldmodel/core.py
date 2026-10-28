@@ -701,8 +701,25 @@ class EmbodiedWorldModel:
             diff = np.asarray(pred_s_next, dtype="float32") - np.asarray(s_next_actual, dtype="float32")
             pred_error = float(np.sqrt(np.mean(np.square(diff))))
             self._pred_error_ema = (0.9 * self._pred_error_ema + 0.1 * pred_error) if self._steps else pred_error
-            if self.dynamics.available:
-                success = outcome.kind == "success"
+            # Simulation supplies its own world-state transitions. For
+            # physical sources, do not train a success head on an actuator
+            # acknowledgement or a cached post-action observation.
+            simulated_source = self.source is None or bool(getattr(self.source, "simulated", False))
+            transition_evidence = classify_action_evidence(
+                outcome.as_dict(),
+                before_timestamp=obs.timestamp,
+                after_timestamp=obs_after.timestamp if obs_after is not None else None,
+                source_simulated=simulated_source,
+                postcondition_observed=bool(
+                    simulated_source and outcome.kind == "success"
+                    and obs_after is not None
+                ),
+            )
+            learning_allowed = simulated_source or transition_evidence["eligible_for_verified_learning"]
+            if self.dynamics.available and learning_allowed:
+                success = outcome.kind == "success" and (
+                    simulated_source or transition_evidence["eligible_for_verified_learning"]
+                )
                 self.dynamics.remember(features, chosen, actual_features, reward, success)
                 train_every = max(1, int(self._cfg.get("train_every", 8)))
                 if (self._steps + 1) % train_every == 0:
