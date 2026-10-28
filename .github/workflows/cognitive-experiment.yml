@@ -1,0 +1,24 @@
+name: Cognitive experiment safety gates
+
+on:
+  push:
+    branches:
+      - experiment/sentience-causal-tests
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  non-invasive-gates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile experiment test
+        run: python -m py_compile experiments/sentience/test_safety_gates.py
+      - name: Run non-invasive safety gates
+        run: python -m unittest discover -s experiments/sentience -p 'test_*.py' -v
