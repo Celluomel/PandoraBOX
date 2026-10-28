@@ -25,6 +25,10 @@ python -m unittest discover -s tests -p "test_body_external_action_evidence.py" 
 
 **Source-of-truth rule:** This section supersedes historical four-, five-, and seven-suite instructions later in this append-only engineering history. The workflow `.github/workflows/body-reliability.yml` is the definitive suite list if new suites are added. Do not run the smaller historical lists as if they were complete.
 
+### Paste directly into Codex
+
+> Work in `Celluomel/PandoraBOX` on the existing checkout. Read `docs/CODEX_BODY_RELIABILITY_HANDOFF.md` completely, treating its **Current execution priority** as authoritative over historical counts. VENTUNO is not accessible; **do not connect to hardware, enable actuation, or claim physical validation**. Protect local modifications. Execute the eight offline suites and inspect actual failures, repair root causes with regressions, and verify a green GitHub Actions run for the same SHA. Then audit Brain/UI protocol consumers for `acknowledged` versus `executed`, implement deterministic world-model recovery/action-evidence integration tests, and continue M1–M5 simulation work in bounded commits. Produce an evidence ledger with SHA, commands, environment, pass/fail counts, CI URL, known risks, and next task. Stop only for an approval-gated change or a genuine blocker, and report it precisely. Prepare but do not run the operator-supervised VENTUNO physical test protocol.
+
 ## Resume checklist (Codex)
 
 1. Open a fresh checkout of `main` on the Brain PC; check `git status`, `git log -8 --oneline`, and `python --version`. Preserve local uncommitted work. Do not blindly reset or overwrite it.
