@@ -2,9 +2,15 @@
 import tempfile
 import time
 import unittest
+import multiprocessing
 from pathlib import Path
 
 from body_runtime_host.command_replay import CommandReplayLedger
+
+
+def _reserve_from_process(path, deadline, barrier, results):
+    barrier.wait(timeout=10)
+    results.put(CommandReplayLedger(path).reserve("concurrent-id", deadline))
 
 
 class ReplayLedgerTests(unittest.TestCase):
@@ -46,6 +52,32 @@ class ReplayLedgerTests(unittest.TestCase):
         self.path.write_text("{not-json", encoding="utf-8")
         self.assertFalse(self.ledger.reserve("approved-2", time.time() + 30)[0])
         self.assertEqual(self.path.read_text(encoding="utf-8"), "{not-json")
+
+    def test_invalid_record_fails_closed(self):
+        self.path.write_text('{"old-id":"NaN"}', encoding="utf-8")
+        self.assertFalse(self.ledger.reserve("new-id", time.time() + 30)[0])
+
+    def test_two_processes_cannot_reserve_the_same_id(self):
+        context = multiprocessing.get_context("spawn")
+        barrier = context.Barrier(2)
+        results = context.Queue()
+        deadline = time.time() + 120
+        workers = [
+            context.Process(target=_reserve_from_process, args=(str(self.path), deadline, barrier, results))
+            for _ in range(2)
+        ]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join(15)
+        for worker in workers:
+            if worker.is_alive():
+                worker.terminate()
+                worker.join()
+        self.assertEqual([worker.exitcode for worker in workers], [0, 0])
+        outcomes = [results.get(timeout=2) for _ in workers]
+        self.assertEqual(sum(1 for accepted, _ in outcomes if accepted), 1)
+        self.assertEqual(sum(1 for accepted, _ in outcomes if not accepted), 1)
 
     def test_disk_failure_fails_closed(self):
         self.path.mkdir()

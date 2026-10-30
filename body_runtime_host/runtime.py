@@ -46,6 +46,7 @@ from body_runtime_host.coordinate_frames import (
     compass_heading_degrees,
     north_up_svg_rotation_degrees,
 )
+from body_command_auth import verify_approval
 from body_runtime_host.deployment import build_bundle
 from body_runtime_host.local_camera import LocalCameraCapture
 from body_runtime_host.repository_update import RepositoryUpdater
@@ -363,13 +364,14 @@ class BodyHost:
         safe = dict(self.config)
         safe["HOME_ASSISTANT_TOKEN"] = "@env:HOME_ASSISTANT_TOKEN"
         safe["BODY_BRIDGE_TOKEN"] = "@env:BODY_BRIDGE_TOKEN"
+        safe["BODY_COMMAND_APPROVAL_SECRET"] = "@env:BODY_COMMAND_APPROVAL_SECRET"
         CONFIG_PATH.write_text(json.dumps(safe, indent=2, ensure_ascii=False), encoding="utf-8")
 
     def save_config(self) -> None:
         """Persist Body settings while keeping secret values environment-backed."""
         CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
         safe = dict(self.config)
-        for key in ("HOME_ASSISTANT_TOKEN", "BODY_BRIDGE_TOKEN", "ROBOT_TOKEN", "FNK0031_TOKEN", "FNK0050_TOKEN", "BODY_LLM_TOKEN", "BODY_RECONSTRUCTION_WORKER_TOKEN"):
+        for key in ("HOME_ASSISTANT_TOKEN", "BODY_BRIDGE_TOKEN", "BODY_COMMAND_APPROVAL_SECRET", "ROBOT_TOKEN", "FNK0031_TOKEN", "FNK0050_TOKEN", "BODY_LLM_TOKEN", "BODY_RECONSTRUCTION_WORKER_TOKEN"):
             if safe.get(key) and not str(safe[key]).startswith("@env:"):
                 safe[key] = f"@env:{key}"
         CONFIG_PATH.write_text(json.dumps(safe, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -558,6 +560,7 @@ class BodyHost:
             "enabled": bool(self.value("BODY_BRIDGE_ENABLED", False)),
             "url": str(self.value("BODY_BRIDGE_URL", "") or ""),
             "token_configured": bool(self.value("BODY_BRIDGE_TOKEN", "")),
+            "approval_secret_configured": bool(self.value("BODY_COMMAND_APPROVAL_SECRET", "")),
             "device_id": str(self.value("BODY_BRIDGE_DEVICE_ID", "body-ventuno") or "body-ventuno"),
             "verify_tls": bool(self.value("BODY_BRIDGE_VERIFY_TLS", True)),
             "connected": self._bridge_connected.is_set(),
@@ -566,9 +569,12 @@ class BodyHost:
     def update_brain_bridge_settings(self, payload: dict) -> dict:
         url = str(payload.get("url", "") or "").strip()
         token = str(payload.get("token", "") or "").strip()
+        approval_secret = str(payload.get("approval_secret", "") or "").strip()
         enabled = bool(payload.get("enabled", False))
         if len(token) > 512 or any(ord(char) < 32 for char in token):
             raise ValueError("Bridge token must be at most 512 characters and contain no control characters")
+        if approval_secret and (len(approval_secret.encode("utf-8")) < 32 or len(approval_secret) > 512 or any(ord(char) < 32 for char in approval_secret)):
+            raise ValueError("Approval signing secret must be 32-512 UTF-8 bytes and contain no control characters")
         if url:
             parsed = urlparse(url)
             if parsed.scheme not in {"ws", "wss"} or not parsed.netloc or parsed.username or parsed.password:
@@ -586,6 +592,7 @@ class BodyHost:
         if token:
             os.environ["BODY_BRIDGE_TOKEN"] = token
             self.config["BODY_BRIDGE_TOKEN"] = "@env:BODY_BRIDGE_TOKEN"
+        if token or approval_secret:
             secret_path = ROOT / "body_venv" / ".env"
             secret_path.parent.mkdir(parents=True, exist_ok=True)
             existing = {}
@@ -594,8 +601,17 @@ class BodyHost:
                     if "=" in line and not line.lstrip().startswith("#"):
                         key, value = line.split("=", 1)
                         existing[key.strip()] = value.strip()
-            existing["BODY_BRIDGE_TOKEN"] = token
+            if token:
+                existing["BODY_BRIDGE_TOKEN"] = token
+            if approval_secret:
+                os.environ["BODY_COMMAND_APPROVAL_SECRET"] = approval_secret
+                self.config["BODY_COMMAND_APPROVAL_SECRET"] = "@env:BODY_COMMAND_APPROVAL_SECRET"
+                existing["BODY_COMMAND_APPROVAL_SECRET"] = approval_secret
             secret_path.write_text("".join(f"{key}={value}\n" for key, value in existing.items()), encoding="utf-8")
+            try:
+                secret_path.chmod(0o600)
+            except OSError:
+                pass
         self.save_config()
         return self.brain_bridge_settings()
 
@@ -3642,6 +3658,12 @@ class BodyHost:
         if str(command.get("status") or "") != "approved":
             result = {"type": "command_result", "command_id": command_id,
                       "status": "rejected", "error": "Body accepts approved commands only"}
+            self._bridge_put_message(result)
+            return result
+        approval_secret = str(self.value("BODY_COMMAND_APPROVAL_SECRET", "") or "")
+        if not verify_approval(command, approval_secret, now=time.time()):
+            result = {"type": "command_result", "command_id": command_id,
+                      "status": "rejected", "error": "missing or invalid Brain approval proof"}
             self._bridge_put_message(result)
             return result
         # Reserve the approved command before actuation. A missing expiry,

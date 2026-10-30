@@ -9,7 +9,10 @@ class BodyCommandQueueTest(unittest.TestCase):
         from cognition.body_runtime import BodyRuntime
         self.body = BodyRuntime()
         # Keep this unit test isolated from the user's persisted Body config.
-        self.body._config = {"BODY_COMMAND_TTL_SECONDS": 120.0}
+        self.body._config = {
+            "BODY_COMMAND_TTL_SECONDS": 120.0,
+            "BODY_COMMAND_APPROVAL_SECRET": "test-only-approval-secret-32-bytes-min",
+        }
 
     def test_brain_adapter_is_passive_and_never_builds_local_world_model(self):
         self.assertFalse(self.body.status()["running"])

@@ -17,6 +17,7 @@ from threading import RLock
 import time
 from typing import Any, Dict, Optional
 from secret_store import SECRET_FIELDS, config_reference, resolve, store
+from body_command_auth import sign_approval
 
 
 @dataclass
@@ -48,6 +49,8 @@ class BodyCommand:
     requires_confirmation: bool = True
     origin: str = "brain"
     approved_at: Optional[float] = None
+    approved_by: str = ""
+    approval_proof: str = ""
     rejected_at: Optional[float] = None
     executed_at: Optional[float] = None
     acknowledged_at: Optional[float] = None
@@ -132,7 +135,7 @@ class BodyRuntime:
         "HOME_ASSISTANT_VERIFY_SSL", "HOME_ASSISTANT_POLL_INTERVAL",
         "HOME_ASSISTANT_ALLOWED_DOMAINS", "HOME_ASSISTANT_SELECTED_ENTITIES",
         "HOME_ASSISTANT_DISCOVERED_ENTITIES", "HOME_ASSISTANT_ENTITY_TAGS",
-        "BODY_BRIDGE_ENABLED", "BODY_BRIDGE_URL", "BODY_BRIDGE_TOKEN",
+        "BODY_BRIDGE_ENABLED", "BODY_BRIDGE_URL", "BODY_BRIDGE_TOKEN", "BODY_COMMAND_APPROVAL_SECRET",
         "BODY_BRIDGE_DEVICE_ID", "BODY_BRIDGE_VERIFY_TLS", "BODY_BRIDGE_RECONNECT_SECONDS",
         "BODY_COMMAND_TTL_SECONDS", "BODY_ACTUATION_ENABLED",
     }
@@ -457,8 +460,18 @@ class BodyRuntime:
                 return {"ok": False, "error": "command not found"}
             if command.status != "queued":
                 return {"ok": False, "error": f"command is {command.status}", "command": command.as_dict()}
+            approval_secret = str(self.config_value("BODY_COMMAND_APPROVAL_SECRET", "") or "")
+            if len(approval_secret.encode("utf-8")) < 32:
+                return {"ok": False, "error": "Body command approval signing key is not configured"}
             command.status = "approved"
             command.approved_at = time.time()
+            command.approved_by = "local_interface_confirmation"
+            command.approval_proof = sign_approval(command.as_dict(), approval_secret)
+            if not command.approval_proof:
+                command.status = "queued"
+                command.approved_at = None
+                command.approved_by = ""
+                return {"ok": False, "error": "Body command approval proof could not be created"}
             message = {"type": "command", "command": command.as_dict()}
         try:
             self._bridge_commands.put_nowait(message)
@@ -466,6 +479,8 @@ class BodyRuntime:
             with self._lock:
                 command.status = "queued"
                 command.approved_at = None
+                command.approved_by = ""
+                command.approval_proof = ""
             return {"ok": False, "error": "Body bridge command queue is full", "command": command.as_dict()}
         return {"ok": True, "command": command.as_dict(), "delivery": "queued"}
 

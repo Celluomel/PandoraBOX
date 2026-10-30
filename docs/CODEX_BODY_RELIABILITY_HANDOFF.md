@@ -6,35 +6,36 @@
 
 ## Current execution priority — authoritative (2026-10-28)
 
-**The Body is NOT yet offline-validated or hardware-ready.** Source code, test files and CI configuration have been committed, but no passing full-checkout eight-suite run or green GitHub Actions run has been verified. Physical VENTUNO is unavailable. **Codex should continue all non-actuating development now**, not wait for the robot; reserve physical testing for the operator's return home.
+**The Body is NOT yet offline-validated or hardware-ready.** The eight-suite offline baseline is recorded below. The current checkout has uncommitted M1 approval-provenance and WebSocket integration changes; no CI result for those changes is verified yet. Physical VENTUNO is unavailable. **Continue non-actuating development now**, not wait for the robot; reserve physical testing for the operator's return home.
 
-**First actions for Codex:** (1) verify the checkout and protect uncommitted changes; (2) execute **all eight** suites listed below and diagnose failures; (3) obtain and record green CI for the same SHA; (4) audit Brain/UI consumers of the new `acknowledged` versus `executed` command status; (5) complete deterministic world-model recovery and action-evidence integration tests, including cached-frame refusal; (6) harden command approval provenance and replay persistence; (7) benchmark simulated prediction and learning; (8) prepare the read-only hardware preflight and supervised physical validation procedure. Do not mark a milestone complete based on source inspection alone.
+**First actions for Codex:** (1) verify the checkout and protect uncommitted changes; (2) execute **all nine** suites listed below and diagnose failures; (3) obtain and record green CI for the same SHA; (4) audit Brain/UI consumers of the new `acknowledged` versus `executed` command status; (5) complete deterministic world-model recovery and action-evidence integration tests, including cached-frame refusal; (6) harden command approval provenance and replay persistence; (7) benchmark simulated prediction and learning; (8) prepare the read-only hardware preflight and supervised physical validation procedure. Do not mark a milestone complete based on source inspection alone.
 
-### Current eight-suite test command (repository root)
+### Current nine-suite test command (repository root)
 
 ```bash
 python -m unittest discover -s tests -p "test_body_reliability_v1.py" -v
 python -m unittest discover -s tests -p "test_body_command_replay.py" -v
 python -m unittest discover -s tests -p "test_body_http_fault_injection.py" -v
 python -m unittest discover -s tests -p "test_body_command_delivery.py" -v
+python -m unittest discover -s tests -p "test_body_bridge_websocket.py" -v
 python -m unittest discover -s tests -p "test_body_action_evidence.py" -v
 python -m unittest discover -s tests -p "test_body_readonly_preflight.py" -v
 python -m unittest discover -s tests -p "test_body_http_loopback.py" -v
 python -m unittest discover -s tests -p "test_body_external_action_evidence.py" -v
 ```
 
-**Source-of-truth rule:** This section supersedes historical four-, five-, and seven-suite instructions later in this append-only engineering history. The workflow `.github/workflows/body-reliability.yml` is the definitive suite list if new suites are added. Do not run the smaller historical lists as if they were complete.
+**Source-of-truth rule:** This section supersedes historical four-, five-, seven-, and eight-suite instructions later in this append-only engineering history. The workflow `.github/workflows/body-reliability.yml` is the definitive suite list if new suites are added. Do not run the smaller historical lists as if they were complete.
 
 ### Paste directly into Codex
 
-> Work in `Celluomel/PandoraBOX` on the existing checkout. Read `docs/CODEX_BODY_RELIABILITY_HANDOFF.md` completely, treating its **Current execution priority** as authoritative over historical counts. VENTUNO is not accessible; **do not connect to hardware, enable actuation, or claim physical validation**. Protect local modifications. Execute the eight offline suites and inspect actual failures, repair root causes with regressions, and verify a green GitHub Actions run for the same SHA. Then audit Brain/UI protocol consumers for `acknowledged` versus `executed`, implement deterministic world-model recovery/action-evidence integration tests, and continue M1–M5 simulation work in bounded commits. Produce an evidence ledger with SHA, commands, environment, pass/fail counts, CI URL, known risks, and next task. Stop only for an approval-gated change or a genuine blocker, and report it precisely. Prepare but do not run the operator-supervised VENTUNO physical test protocol.
+> Work in `Celluomel/PandoraBOX` on the existing checkout. Read `docs/CODEX_BODY_RELIABILITY_HANDOFF.md` completely, treating its **Current execution priority** as authoritative over historical counts. VENTUNO is not accessible; **do not connect to hardware, enable actuation, or claim physical validation**. Protect local modifications. Execute all nine offline suites and inspect actual failures, repair root causes with regressions, and verify a green GitHub Actions run for the same SHA. Then audit Brain/UI protocol consumers for `acknowledged` versus `executed`, implement deterministic world-model recovery/action-evidence integration tests, and continue M1–M5 simulation work in bounded commits. Produce an evidence ledger with SHA, commands, environment, pass/fail counts, CI URL, known risks, and next task. Stop only for an approval-gated change or a genuine blocker, and report it precisely. Prepare but do not run the operator-supervised VENTUNO physical test protocol.
 
 ## Resume checklist (Codex)
 
 1. Open a fresh checkout of `main` on the Brain PC; check `git status`, `git log -8 --oneline`, and `python --version`. Preserve local uncommitted work. Do not blindly reset or overwrite it.
 2. Create/use a Python 3.11 virtual environment. Install the dependencies required by the repository, starting with `numpy>=1.24,<2` (the current CI minimum). Inspect project requirements and imports if further dependencies are needed.
-3. Run **all eight** suites listed in the authoritative section from the repository root, capture stdout/stderr and exit codes. Do not mark a suite passing based on a successful import or a mocked assertion alone.
-4. Diagnose failures against the real implementation; fix root causes without deleting tests or weakening safety assertions. Commit each coherent fix, add regression coverage, and rerun all eight suites.
+3. Run **all nine** suites listed in the authoritative section from the repository root, capture stdout/stderr and exit codes. Do not mark a suite passing based on a successful import or a mocked assertion alone.
+4. Diagnose failures against the real implementation; fix root causes without deleting tests or weakening safety assertions. Commit each coherent fix, add regression coverage, and rerun all nine suites.
 5. Confirm GitHub Actions `Body reliability regression` passes on the resulting commit. Save the workflow URL, run ID, SHA, test counts, and logs in the final report. The workflow uploads `body-reliability-logs` even when tests fail.
 6. Only after the offline gate is green: build a **non-actuating** Brain-to-Body transport integration test (real local HTTP/socket transport if available, with a fake Body/robot adapter), covering authentication, approval provenance, expiry, duplicates, dropped acknowledgements, reconnects, stale telemetry, and fail-closed behavior.
 7. Defer VENTUNO hardware tests until physically present. Keep physical actuation disabled by default; require an explicit operator-controlled test plan, e-stop verification, and a safe test area before moving hardware.
@@ -61,6 +62,7 @@ GitHub Actions workflow: [Body reliability regression](https://github.com/Celluo
 | `tests/test_body_command_replay.py` | Durable command ID reservations, expiry validation, corruption and disk failure | Restart, renewed expiry and malformed ledger cannot replay commands |
 | `tests/test_body_http_fault_injection.py` | Mocked HTTP robot sensor faults | Outages, missing/zero/stale/future telemetry and disabled actuation never issue `POST /command` |
 | `tests/test_body_command_delivery.py` | Minimal mocked `BodyHost` command gateway | Unapproved/expired/duplicate commands and failures cannot be reported as executed |
+| `tests/test_body_bridge_websocket.py` | Real loopback Brain↔Body WebSocket with fake Brain and non-actuating adapter | Bearer-authenticated connection, expired refusal, reconnect, signed command delivery; adapter success remains unverified |
 
 **Important:** The HTTP and command-delivery tests are isolated unit/fault-injection tests, **not** proof of full Brain-to-Body transport integration or real VENTUNO behavior.
 
@@ -288,3 +290,20 @@ python -m unittest discover -s tests -p "test_body_http_loopback.py" -v
 - **Ventuno sync:** checkout fast-forwarded to `38a07c693fa156d9bd9cdaa49ce26d693b879ab4`; `pandorabox-body.service` restarted and returned active. `GET http://127.0.0.1:8766/health` returned `status=ready`. Health still reports Nav2 action server absent, no fresh physical IMU/ultrasonic samples, FNK0031 plugin disabled, and physical actuation disabled. This is a software deployment check, not sensor or motion validation.
 - **Preserved local artifacts:** `.arduino-build/`, `deeplab_test_artifacts/`, `export_assets/`, the four existing `output/*.png` mockups, and `sensor_device_selection_patch.tar` remain untracked and untouched.
 - **Next:** audit Brain/UI command-state consumers and approval provenance; then exercise the real local transport with a fake Body adapter. Continue replay crash/multiprocess durability, postcondition correlation, and simulation prediction benchmarks. Do not enable or test physical actuation as part of offline work.
+
+### M1 approval provenance and bridge integration — 2026-10-30 (work in progress)
+
+- Brain approvals now receive an HMAC-SHA256 proof over command identity, target, action, payload, timestamps, approver label, confirmation requirement and origin. Body rejects status-only, modified, expired, stale, clock-invalid or unsigned commands before the replay reservation / world-model boundary. A shared key of at least 32 bytes is provisioned separately in Brain and Body secret stores; it is not configured on production hardware by this work.
+- Approval is restricted to a loopback peer at the Brain API. This is a local-interface boundary, not proof of a person’s identity; HMAC proves the approval envelope was produced by a holder of the shared key and protects its contents from tampering. The shared-secret compromise boundary includes both Brain and Body.
+- Body setting tests cover separate `.env` storage, config references, redacted status, invalid key rejection and preservation of the existing bearer-token behavior. Replay tests include cross-process duplicate reservation, malformed records, disk failure and restart persistence.
+- Added a real loopback WebSocket integration suite with fake Brain and non-actuating fake world model. It checks bearer token delivery, expired-command refusal, reconnect after disconnect, signed command round-trip and acknowledgement remaining unverified. CI installs the already-declared `websockets>=12,<16` package and runs this as suite nine.
+- **Local verification so far:** 9 recovery/reliability tests passed; 10 replay tests passed; 19 command-delivery tests passed after the latest auth regressions; 3 HTTP loopback tests passed with elevated local-loopback permission. The WebSocket integration test is currently skipped locally because `websockets` is absent and package download is blocked by this environment; it is configured to run on CI. Remaining suite results and CI are pending.
+- **M1 status:** not complete pending actual WebSocket CI execution, broader dropped-ACK/reconnect semantics, Brain/UI audit completion, and tests against the full Brain runtime wiring. No physical actuation or deployment.
+
+### M4 simulation benchmark evidence — 2026-10-30
+
+- **Command:** `python -c "from body_runtime_host.worldmodel.evaluation import run_shuffled_trials; ... run_shuffled_trials(trials=20, max_steps=180, seeds=list(range(20261030, 20261050))) ..."` (full result was also written to local ignored `.test-tmp/m4-evaluation-180.jsonl`).
+- **Environment:** Windows checkout, Python 3.14.2; Torch unavailable, so the latent learner did not train (`available=false`, 0 transitions/updates). This measures the planner/simulator, **not** learned dynamics.
+- **Result:** 20/20 randomized disturbed simulation tasks completed (100%); 0 collisions; adaptive planner 46.45 average steps vs 45.75 no-recovery baseline; 1.80 vs 2.10 average near misses. Restart/resume probe passed for the persisted plan ledger and single active lease.
+- **Gate:** simulator reports `PROVISIONAL`; restart/resume and hardware transfer remain explicit pending gates. This is not physical readiness, and the efficiency margin is small. A separate max-60-step diagnostic completed 15/20, confirming the benchmark is sensitive to step budget; the intended 180-step run completed all trials.
+- **M4 status:** prediction/learning exit criteria remain unmet until a versioned held-out dynamics benchmark runs with the learning backend available and demonstrates repeatable improvement over a simple non-learning baseline. Do not claim learning gains from this run.

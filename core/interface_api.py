@@ -269,7 +269,7 @@ async def body_plugins():
 async def body_settings():
     body, _ = _body_runtime_for_state()
     values = body.config_snapshot()
-    for secret_name in ('HOME_ASSISTANT_TOKEN', 'BODY_BRIDGE_TOKEN', 'BODY_HTTP_PASSWORD'):
+    for secret_name in ('HOME_ASSISTANT_TOKEN', 'BODY_BRIDGE_TOKEN', 'BODY_COMMAND_APPROVAL_SECRET', 'BODY_HTTP_PASSWORD'):
         if values.get(secret_name):
             values[secret_name] = '••••••••'
     return _json_safe({'values': values, 'config_path': 'data/body/config.json'})
@@ -279,14 +279,14 @@ async def body_settings():
 async def update_body_settings(payload: BodySettingsUpdate):
     body, organism = _body_runtime_for_state()
     values = dict(payload.values)
-    for secret_name in ('HOME_ASSISTANT_TOKEN', 'BODY_BRIDGE_TOKEN', 'BODY_HTTP_PASSWORD'):
+    for secret_name in ('HOME_ASSISTANT_TOKEN', 'BODY_BRIDGE_TOKEN', 'BODY_COMMAND_APPROVAL_SECRET', 'BODY_HTTP_PASSWORD'):
         if values.get(secret_name) == '••••••••':
             values.pop(secret_name, None)
     saved = body.update_config(values)
     if organism is not None:
         from cognition.universal_connector import get_universal_connector
         await get_universal_connector(organism).reconcile_home_assistant_monitor()
-    for secret_name in ('HOME_ASSISTANT_TOKEN', 'BODY_BRIDGE_TOKEN', 'BODY_HTTP_PASSWORD'):
+    for secret_name in ('HOME_ASSISTANT_TOKEN', 'BODY_BRIDGE_TOKEN', 'BODY_COMMAND_APPROVAL_SECRET', 'BODY_HTTP_PASSWORD'):
         if saved.get(secret_name):
             saved[secret_name] = '••••••••'
     return _json_safe({'values': saved, 'config_path': 'data/body/config.json'})
@@ -372,8 +372,14 @@ async def enqueue_body_command(payload: BodyCommandRequest):
 
 
 @router.post('/body/commands/{command_id}/approve')
-async def approve_body_command(command_id: str):
+async def approve_body_command(command_id: str, request: Request):
     """Approve one command for delivery to the connected Body."""
+    try:
+        peer_is_local = ipaddress.ip_address(request.client.host).is_loopback if request.client else False
+    except ValueError:
+        peer_is_local = False
+    if not peer_is_local:
+        raise HTTPException(403, 'Body command approval is restricted to the local interface host.')
     body, _ = _body_runtime_for_state()
     result = body.approve_command(command_id)
     if not result.get('ok'):
@@ -873,12 +879,12 @@ _SETTING_FIELDS = {
     'FNK0031_URL', 'FNK0031_TOKEN', 'FNK0031_TIMEOUT', 'FNK0031_POLL_INTERVAL', 'FNK0031_SNN_ENABLED', 'FNK0031_ACTUATION_ENABLED', 'FNK0031_LEG_COUNT',
     'FNK0050_URL', 'FNK0050_TOKEN', 'FNK0050_TIMEOUT', 'FNK0050_POLL_INTERVAL', 'FNK0050_SNN_ENABLED', 'FNK0050_ACTUATION_ENABLED',
     'HOME_ASSISTANT_POLL_INTERVAL', 'HOME_ASSISTANT_ALLOWED_DOMAINS', 'HOME_ASSISTANT_SELECTED_ENTITIES', 'HOME_ASSISTANT_DISCOVERED_ENTITIES', 'HOME_ASSISTANT_ENTITY_TAGS',
-    'BODY_BRIDGE_ENABLED', 'BODY_BRIDGE_URL', 'BODY_BRIDGE_TOKEN', 'BODY_BRIDGE_DEVICE_ID', 'BODY_BRIDGE_VERIFY_TLS', 'BODY_BRIDGE_RECONNECT_SECONDS',
+    'BODY_BRIDGE_ENABLED', 'BODY_BRIDGE_URL', 'BODY_BRIDGE_TOKEN', 'BODY_COMMAND_APPROVAL_SECRET', 'BODY_BRIDGE_DEVICE_ID', 'BODY_BRIDGE_VERIFY_TLS', 'BODY_BRIDGE_RECONNECT_SECONDS',
     'BODY_BRIDGE_LISTEN_ENABLED', 'BODY_BRIDGE_LISTEN_HOST', 'BODY_BRIDGE_LISTEN_PORT',
 }
 _SECRET_FIELDS = {
     'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'BRAVE_SEARCH_KEY', 'SERPAPI_KEY',
-    'ELEVENLABS_API_KEY', 'HOME_ASSISTANT_TOKEN', 'WHATSAPP_WEBHOOK_SECRET', 'BODY_BRIDGE_TOKEN', 'BODY_HTTP_PASSWORD', 'ROBOT_TOKEN', 'FNK0031_TOKEN', 'FNK0050_TOKEN',
+    'ELEVENLABS_API_KEY', 'HOME_ASSISTANT_TOKEN', 'WHATSAPP_WEBHOOK_SECRET', 'BODY_BRIDGE_TOKEN', 'BODY_COMMAND_APPROVAL_SECRET', 'BODY_HTTP_PASSWORD', 'ROBOT_TOKEN', 'FNK0031_TOKEN', 'FNK0050_TOKEN',
 }
 
 
@@ -1356,6 +1362,7 @@ async def update_settings(payload: SettingsUpdate):
     save_settings(config, silent=True)
     body_fields = {
         'BODY_RUNTIME_ENABLED', 'BODY_PLUGIN_HOME_ASSISTANT_ENABLED', 'BODY_PLUGIN_FNK0050_ENABLED',
+        'BODY_COMMAND_APPROVAL_SECRET',
         'BODY_HOST', 'BODY_PORT', 'BODY_URL', 'BODY_HTTP_USERNAME', 'BODY_HTTP_PASSWORD', 'BODY_HTTP_CA_CERT',
         'HOME_ASSISTANT_ENABLED', 'HOME_ASSISTANT_PRESENCE_ENABLED',
         'HOME_ASSISTANT_URL', 'HOME_ASSISTANT_TOKEN', 'HOME_ASSISTANT_VERIFY_SSL',

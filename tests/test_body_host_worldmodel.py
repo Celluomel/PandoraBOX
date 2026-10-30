@@ -11,6 +11,7 @@ Run:  venv/Scripts/python.exe -m pytest tests/test_body_host_worldmodel.py -v
 """
 import json
 import hashlib
+import os
 import importlib.util
 import types
 import sys
@@ -740,6 +741,8 @@ class BodyHostHttpTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             real_root, real_config_path, real_dotenv = brt.ROOT, brt.CONFIG_PATH, brt._load_dotenv
+            real_bridge_token = os.environ.get("BODY_BRIDGE_TOKEN")
+            real_approval_secret = os.environ.get("BODY_COMMAND_APPROVAL_SECRET")
             brt.ROOT = root
             brt.CONFIG_PATH = root / "data" / "body" / "config.json"
             brt.CONFIG_PATH.parent.mkdir(parents=True)
@@ -765,15 +768,28 @@ class BodyHostHttpTest(unittest.TestCase):
                     "enabled": True,
                     "url": "wss://brain.example/api/interface/body/bridge",
                     "token": "test-bridge-token",
+                    "approval_secret": "test-approval-secret-32-bytes-minimum",
                 })
                 self.assertTrue(result["enabled"])
                 self.assertTrue(result["token_configured"])
+                self.assertTrue(result["approval_secret_configured"])
                 stored = json.loads(brt.CONFIG_PATH.read_text(encoding="utf-8"))
                 self.assertEqual(stored["BODY_BRIDGE_TOKEN"], "@env:BODY_BRIDGE_TOKEN")
+                self.assertEqual(stored["BODY_COMMAND_APPROVAL_SECRET"], "@env:BODY_COMMAND_APPROVAL_SECRET")
                 self.assertNotIn("test-bridge-token", brt.CONFIG_PATH.read_text(encoding="utf-8"))
-                self.assertIn("BODY_BRIDGE_TOKEN=test-bridge-token", (root / "body_venv" / ".env").read_text(encoding="utf-8"))
+                secrets = (root / "body_venv" / ".env").read_text(encoding="utf-8")
+                self.assertIn("BODY_BRIDGE_TOKEN=test-bridge-token", secrets)
+                self.assertIn("BODY_COMMAND_APPROVAL_SECRET=test-approval-secret-32-bytes-minimum", secrets)
+                with self.assertRaisesRegex(ValueError, "32-512 UTF-8 bytes"):
+                    host.update_brain_bridge_settings({"approval_secret": "too-short"})
             finally:
                 brt.ROOT, brt.CONFIG_PATH, brt._load_dotenv = real_root, real_config_path, real_dotenv
+                for key, value in (("BODY_BRIDGE_TOKEN", real_bridge_token),
+                                   ("BODY_COMMAND_APPROVAL_SECRET", real_approval_secret)):
+                    if value is None:
+                        os.environ.pop(key, None)
+                    else:
+                        os.environ[key] = value
 
 
 if __name__ == "__main__":

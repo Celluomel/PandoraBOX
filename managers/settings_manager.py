@@ -174,6 +174,7 @@ class AppSettings(BaseModel):
     BODY_BRIDGE_ENABLED: bool = False
     BODY_BRIDGE_URL: str = ""
     BODY_BRIDGE_TOKEN: str = ""
+    BODY_COMMAND_APPROVAL_SECRET: str = ""
     BODY_BRIDGE_DEVICE_ID: str = "body-local"
     BODY_BRIDGE_VERIFY_TLS: bool = True
     BODY_BRIDGE_RECONNECT_SECONDS: int = 3
