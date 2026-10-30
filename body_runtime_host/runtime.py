@@ -3511,7 +3511,7 @@ class BodyHost:
             self._bridge_put(entry)
 
     def publish_worldmodel_perception(self) -> None:
-        """Forward the Body-owned perception boundary to the Brain bridge."""
+        """Forward live sensor channels without presenting simulator state as real."""
         wm = self._worldmodel
         if wm is None:
             return
@@ -3520,6 +3520,41 @@ class BodyHost:
             if not perception.get("available"):
                 return
             body = perception.get("body") or {}
+            modalities = perception.get("modalities") or {}
+            sensor_names = {"imu", "gps", "tof", "ultrasonic", "mmwave_radar", "lidar", "odometry", "range"}
+            live_modalities = {
+                name: value for name, value in modalities.items()
+                if name in sensor_names and isinstance(value, dict)
+                and value.get("simulated") is not True
+                and value.get("source") != "ros2_simulation"
+                and not (isinstance(value.get("provenance"), dict)
+                         and value["provenance"].get("simulated") is True)
+            }
+            for name, sample in live_modalities.items():
+                observed_at = sample.get("timestamp")
+                try:
+                    observed_at = float(observed_at) if observed_at is not None else float(perception.get("timestamp") or time.time())
+                except (TypeError, ValueError):
+                    observed_at = float(perception.get("timestamp") or time.time())
+                sensor_entry = {
+                    "entity_id": f"body.sensor.{name}",
+                    "source": str(sample.get("source") or "body_sensor"),
+                    "kind": "sensor_observation",
+                    "subject": f"sensor.{name}",
+                    "value": sample,
+                    "unit": "",
+                    "confidence": 1.0 if sample.get("available") else 0.0,
+                    "observed_at": observed_at,
+                    "provenance": {
+                        "source": sample.get("source") or "body_sensor",
+                        "simulated": False,
+                        "frame": sample.get("frame"),
+                    },
+                }
+                self.latest[sensor_entry["entity_id"]] = sensor_entry
+                self._bridge_put(sensor_entry)
+
+            simulated = bool(perception.get("ground_truth_available"))
             entry = {
                 "entity_id": "world_model.body_state",
                 "source": "world_model",
@@ -3527,28 +3562,30 @@ class BodyHost:
                 "subject": "body.world_model",
                 "value": {
                     "contract": "body_perception_frame.v2",
+                    "simulated_only": simulated,
                     "frame_id": (perception.get("sensor_projections") or {}).get("frame", {}).get("frame_id"),
                     "timestamp": float(perception.get("timestamp") or time.time()),
-                    "capabilities": body.get("capabilities") or {},
-                    "affordances": perception.get("affordances") or {},
-                    "objects": perception.get("objects") or [],
-                    "modalities": perception.get("modalities") or {},
-                    "sensor_projections": perception.get("sensor_projections") or {},
-                    "perception_frame": perception.get("perception_frame") or {},
-                    "scene_interpreter": perception.get("scene_interpreter") or {},
-                    "position": body.get("position"),
-                    "orientation": body.get("orientation"),
-                    "text": perception.get("text") or "",
+                    "capabilities": {} if simulated else body.get("capabilities") or {},
+                    "affordances": {} if simulated else perception.get("affordances") or {},
+                    "objects": [] if simulated else perception.get("objects") or [],
+                    "modalities": live_modalities,
+                    "sensor_projections": {} if simulated else perception.get("sensor_projections") or {},
+                    "perception_frame": {} if simulated else perception.get("perception_frame") or {},
+                    "scene_interpreter": {} if simulated else perception.get("scene_interpreter") or {},
+                    "position": None if simulated else body.get("position"),
+                    "orientation": None if simulated else body.get("orientation"),
+                    "text": "Simulation-only scene; no real robot pose or objects reported." if simulated else perception.get("text") or "",
                 },
                 "unit": "",
                 "confidence": 1.0,
                 "observed_at": float(perception.get("timestamp") or time.time()),
                 "provenance": {
                     "source": perception.get("source") or "world_model",
-                    "ground_truth_available": bool(perception.get("ground_truth_available")),
-                    "capabilities": body.get("capabilities") or {},
-                    "affordances": perception.get("affordances") or {},
-                    "quality": (perception.get("sensor_projections") or {}).get("quality") or {},
+                    "ground_truth_available": simulated,
+                    "simulated_only": simulated,
+                    "capabilities": {} if simulated else body.get("capabilities") or {},
+                    "affordances": {} if simulated else perception.get("affordances") or {},
+                    "quality": {} if simulated else (perception.get("sensor_projections") or {}).get("quality") or {},
                 },
             }
             self.latest[entry["entity_id"]] = entry
@@ -3628,6 +3665,60 @@ class BodyHost:
         }
         self.latest[entry["entity_id"]] = entry
         self._bridge_put(entry)
+
+    def publish_live_sensor_observations(self) -> None:
+        """Publish actual adapter samples even when the scene model is disabled."""
+        readers = (
+            ("mmwave_radar", self.mmwave_radar_status,
+             bool(self.value("BODY_PLUGIN_MMWAVE_RADAR_ENABLED", False))),
+            ("gps", self.gps_status,
+             bool(self.value("BODY_PLUGIN_GPS_ENABLED", os.path.exists("/run/arduino-router.sock")))),
+            ("imu", lambda: self.imu_status(include_history=False),
+             bool(self.value("BODY_PLUGIN_IMU_ENABLED", os.path.exists("/run/arduino-router.sock")))),
+            ("tof", self.tof_status,
+             bool(self.value("BODY_PLUGIN_TOF_ENABLED", os.path.exists("/run/arduino-router.sock")))),
+            ("ultrasonic", self.ultrasonic_status,
+             bool(self.value("BODY_PLUGIN_ULTRASONIC_ENABLED", os.path.exists("/run/arduino-router.sock")))),
+        )
+        for name, read_status, enabled in readers:
+            if not enabled:
+                continue
+            try:
+                status = read_status()
+                sample = status.get("sample") if isinstance(status, dict) else None
+                if not isinstance(sample, dict):
+                    sample = {
+                        "timestamp": time.time(),
+                        "source": status.get("protocol") or f"body_{name}",
+                        "available": False,
+                        "simulated": False,
+                        "error": str(status.get("error") or "no live sample"),
+                    }
+                value = {**sample, "available": bool(status.get("available") and sample.get("available", True)),
+                         "simulated": False}
+                if status.get("error") and not value.get("error"):
+                    value["error"] = str(status["error"])[:180]
+                observed_at = value.get("timestamp")
+                try:
+                    observed_at = float(observed_at) if observed_at is not None else time.time()
+                except (TypeError, ValueError):
+                    observed_at = time.time()
+                entry = {
+                    "entity_id": f"body.sensor.{name}",
+                    "source": str(value.get("source") or f"body_{name}"),
+                    "kind": "sensor_observation",
+                    "subject": f"sensor.{name}",
+                    "value": value,
+                    "unit": "",
+                    "confidence": 1.0 if value["available"] else 0.0,
+                    "observed_at": observed_at,
+                    "provenance": {"source": value.get("source"), "simulated": False,
+                                   "transport": status.get("transport")},
+                }
+                self.latest[entry["entity_id"]] = entry
+                self._bridge_put(entry)
+            except Exception as exc:
+                LOG.debug("Live %s telemetry publication failed: %s", name, exc)
 
     def _bridge_put(self, entry: dict) -> None:
         if self._ros2_bridge is not None:
@@ -3804,6 +3895,7 @@ class BodyHost:
                     LOG.exception("Home Assistant poll failed")
             if bool(self.value("BODY_WORLDMODEL_ENABLED", False)):
                 self.publish_worldmodel_perception()
+            self.publish_live_sensor_observations()
             self.publish_fnk0031_usb_status()
             self.publish_runtime_status()
             self.stop_event.wait(interval)

@@ -2846,7 +2846,17 @@ Memory honesty — two distinct cases:
                         "body_status": {"bridge_connected": connected, "observation_count": len(observations)},
                     }
                 telemetry_lines = []
-                for item in observations[:4]:
+                ordered = sorted(
+                    observations,
+                    key=lambda item: (
+                        0 if str(item.get("subject") or "").startswith("sensor.") else 1,
+                        -float(item.get("observed_at") or 0),
+                    ),
+                )
+                for item in ordered[:8]:
+                    age = max(0.0, time.time() - float(item.get("observed_at") or time.time()))
+                    if str(item.get("subject") or "").startswith("sensor.") and age > 15.0:
+                        continue
                     value = item.get("value")
                     if isinstance(value, dict) and item.get("subject") == "body.runtime":
                         camera = value.get("camera") or {}
@@ -2859,9 +2869,12 @@ Memory honesty — two distinct cases:
                             + f"; robot={'connected' if robot.get('connected') else 'not connected'}"
                             + f"; world model={'running' if model.get('running') else 'not running'}"
                         )
+                    elif str(item.get("subject") or "").startswith("sensor."):
+                        detail = self._format_body_sensor(item.get("subject", ""), value)
+                    elif item.get("subject") == "body.world_model" and isinstance(value, dict) and value.get("simulated_only"):
+                        detail = "simulation-only scene; pose and object detections are not live robot data"
                     else:
                         detail = json.dumps(value, ensure_ascii=False, default=str, separators=(",", ":"))[:360]
-                    age = max(0.0, time.time() - float(item.get("observed_at") or time.time()))
                     telemetry_lines.append(
                         f"{item.get('subject', 'observation')} [{item.get('source', 'unknown')}, "
                         f"{age:.0f} s]: {detail}"
@@ -2869,7 +2882,7 @@ Memory honesty — two distinct cases:
                 response = "Aucun plan Body actif n'est enregistré. "
                 response += "Pont télémétrique connecté." if connected else "Pont télémétrique non connecté."
                 if telemetry_lines:
-                    response += " Dernières observations Body (âgées de moins de 5 minutes) : " + " | ".join(telemetry_lines)
+                    response += " Télémétrie Body récente : " + " | ".join(telemetry_lines)
                 else:
                     response += " Aucune observation Body récente n'est remontée."
                 if worldmodel is None:
@@ -2943,6 +2956,21 @@ Memory honesty — two distinct cases:
         perception = self.current_body_perception()
         if not perception.get("available"):
             reason = str(perception.get("error") or "aucun snapshot récent n'est disponible")
+            body = getattr(self._organism, "_body_runtime", None) if self._organism else None
+            observations = body.snapshot(max_age=15.0) if body is not None else []
+            sensor_lines = [
+                self._format_body_sensor(item.get("subject", ""), item.get("value"))
+                for item in observations
+                if str(item.get("subject") or "").startswith("sensor.")
+            ]
+            if sensor_lines:
+                return {
+                    "handled": True,
+                    "status": "reported",
+                    "response": "Je n'ai pas de snapshot de scène/odométrie récent. Capteurs réels : " + " ; ".join(sensor_lines[:8]),
+                    "perception": {"available": True, "scene_available": False,
+                                   "sensor_observations": len(sensor_lines), "error": reason},
+                }
             return {
                 "handled": True,
                 "status": "unavailable",
@@ -2950,6 +2978,19 @@ Memory honesty — two distinct cases:
                 "perception": {"error": reason},
             }
         snapshot = perception.get("snapshot") or {}
+        if snapshot.get("simulated_only") or snapshot.get("ground_truth_available"):
+            body = getattr(self._organism, "_body_runtime", None) if self._organism else None
+            observations = body.snapshot(max_age=30.0) if body is not None else []
+            sensor_lines = [
+                self._format_body_sensor(item.get("subject", ""), item.get("value"))
+                for item in observations
+                if str(item.get("subject") or "").startswith("sensor.")
+            ]
+            response = "Le snapshot de scène disponible est une simulation, pas une observation du robot réel. "
+            response += "Capteurs réels récents : " + (" ; ".join(sensor_lines[:8]) if sensor_lines else "aucune télémétrie capteur récente reçue.")
+            return {"handled": True, "status": "reported", "response": response,
+                    "perception": {"available": bool(sensor_lines), "simulated_only": True,
+                                   "sensor_observations": len(sensor_lines)}}
         summary = str(snapshot.get("text") or snapshot.get("summary") or "").strip()
         if not summary:
             objects = snapshot.get("objects") or []
@@ -2961,6 +3002,55 @@ Memory honesty — two distinct cases:
             "response": "D'après le dernier snapshot du Body : " + summary,
             "perception": perception,
         }
+
+    @staticmethod
+    def _format_body_sensor(subject: str, value) -> str:
+        """Render compact, unit-aware live sensor telemetry; never infer missing ranges."""
+        if not isinstance(value, dict):
+            return f"{subject.removeprefix('sensor.')}: invalid sample"
+        name = subject.removeprefix("sensor.")
+        age = value.get("age_s", value.get("age_seconds"))
+        age_text = f", {float(age):.1f}s old" if isinstance(age, (int, float)) else ""
+        available = value.get("available")
+        if name == "gps":
+            if value.get("fix") and value.get("latitude") is not None and value.get("longitude") is not None:
+                detail = f"fix {float(value['latitude']):.6f}, {float(value['longitude']):.6f}; {value.get('satellites', '?')} satellites"
+            else:
+                detail = f"no position fix; {value.get('satellites_in_view', '?')} satellites in view"
+        elif name == "imu":
+            attitude = value.get("attitude_valid")
+            if attitude:
+                detail = f"roll {value.get('roll_deg')}°, pitch {value.get('pitch_deg')}°, yaw-relative {value.get('yaw_relative_deg')}°"
+            else:
+                detail = f"attitude unavailable; acceleration {value.get('acceleration_g')}, gyro {value.get('angular_velocity_dps')}°/s"
+        elif name == "ultrasonic":
+            channels = value.get("sensors") or []
+            parts = []
+            for channel in channels:
+                label = str(channel.get("id") or "channel")
+                distance = channel.get("distance_m") if channel.get("available") else None
+                parts.append(f"{label} {float(distance):.2f}m" if isinstance(distance, (int, float)) else f"{label} no echo/data")
+            detail = ", ".join(parts) if parts else "no channel samples"
+        elif name == "tof":
+            distance = value.get("distance_m")
+            detail = f"{float(distance):.2f}m" if isinstance(distance, (int, float)) else str(value.get("error") or "no valid range")
+        elif name == "mmwave_radar":
+            targets = value.get("targets") or []
+            ranges = []
+            for target in targets:
+                distance = target.get("range_m", target.get("distance_m"))
+                if isinstance(distance, (int, float)):
+                    ranges.append(f"{float(distance):.2f}m")
+            detail = f"{len(targets)} target(s)" + (f" at {', '.join(ranges[:4])}" if ranges else "")
+        elif name == "odometry":
+            detail = f"position {value.get('position_m')}; yaw {value.get('yaw_rad')}rad"
+        elif name == "lidar":
+            ranges = [float(item) for item in (value.get("ranges_m") or []) if isinstance(item, (int, float))]
+            detail = f"{len(ranges)} valid range(s)" + (f", nearest {min(ranges):.2f}m" if ranges else "")
+        else:
+            detail = str(value.get("error") or ("sample available" if available else "no sample"))
+        state = "live" if available is not False else "unavailable"
+        return f"{name} {state}: {detail}{age_text}"
 
     def handle_body_chat_turn(self, user_input: str, user_id: str = "default") -> dict | None:
         """Handle only Body-specific turns; return None for normal dialogue."""

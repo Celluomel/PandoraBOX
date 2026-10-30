@@ -15,7 +15,7 @@ class BrainBodyStatusResponseTest(unittest.TestCase):
         observation = {
             "subject": "body.runtime",
             "source": "remote:body-ventuno:body_runtime",
-            "observed_at": 1791069000.0,
+            "observed_at": __import__("time").time(),
             "value": {
                 "camera": {"status": "capturing", "available": True, "observed_fps": 15.0},
                 "robot": {"enabled": False, "connected": False},
@@ -47,7 +47,7 @@ class BrainBodyStatusResponseTest(unittest.TestCase):
         observation = {
             "subject": "body.runtime",
             "source": "remote:body-ventuno:body_runtime",
-            "observed_at": 1791069000.0,
+            "observed_at": __import__("time").time(),
             "value": {
                 "power": {
                     "battery_estimate": {
@@ -73,6 +73,81 @@ class BrainBodyStatusResponseTest(unittest.TestCase):
         self.assertIn("8.56 Wh", result["response"])
         self.assertIn("pas une mesure directe", result["response"])
         self.assertNotIn("ranges_m", result["response"])
+
+    def test_body_status_formats_live_sensor_channels_without_raw_json_dump(self):
+        from cognition.persona_bridge import PersonaBridge
+
+        observations = [{
+            "subject": "sensor.ultrasonic",
+            "source": "remote:body:hc_sr04_ventuno_bridge",
+            "observed_at": __import__("time").time(),
+            "value": {"available": True, "simulated": False, "sensors": [
+                {"id": "front_left", "available": True, "distance_m": 0.73},
+                {"id": "front_right", "available": False, "distance_m": None},
+                {"id": "rear", "available": True, "distance_m": 1.2},
+            ]},
+        }, {
+            "subject": "body.world_model",
+            "source": "remote:body:world_model",
+            "observed_at": __import__("time").time(),
+            "value": {"simulated_only": True, "objects": [{"label": "table"}]},
+        }]
+        body = SimpleNamespace(
+            worldmodel_plan=lambda: {"active_plan": None},
+            worldmodel=None,
+            status=lambda: {"brain_bridge": {"connected": True}},
+            snapshot=lambda max_age=None: observations,
+        )
+        bridge = PersonaBridge.__new__(PersonaBridge)
+        bridge._organism = SimpleNamespace(_body_runtime=body)
+
+        result = bridge._body_status_response("explain body feedback")
+
+        self.assertIn("front_left 0.73m", result["response"])
+        self.assertIn("front_right no echo/data", result["response"])
+        self.assertIn("simulation-only", result["response"])
+        self.assertNotIn('"distance_m"', result["response"])
+
+    def test_perception_response_uses_real_sensor_telemetry_when_scene_is_simulated(self):
+        from cognition.persona_bridge import PersonaBridge
+
+        body = SimpleNamespace(
+            snapshot=lambda max_age=None: [{
+                "subject": "sensor.gps",
+                "value": {"available": True, "fix": True, "latitude": 48.8625,
+                          "longitude": 2.1187, "satellites": 7},
+            }],
+        )
+        bridge = PersonaBridge.__new__(PersonaBridge)
+        bridge._organism = SimpleNamespace(_body_runtime=body)
+        bridge.current_body_perception = lambda: {
+            "available": True,
+            "snapshot": {"ground_truth_available": True, "objects": [{"label": "simulated chair"}]},
+        }
+
+        result = bridge._body_perception_response()
+
+        self.assertIn("simulation, pas une observation du robot réel", result["response"])
+        self.assertIn("48.862500, 2.118700", result["response"])
+        self.assertNotIn("simulated chair", result["response"])
+
+    def test_perception_response_still_reports_sensors_without_scene_snapshot(self):
+        from cognition.persona_bridge import PersonaBridge
+
+        body = SimpleNamespace(snapshot=lambda max_age=None: [{
+            "subject": "sensor.tof",
+            "value": {"available": True, "distance_m": 0.62, "simulated": False},
+        }])
+        bridge = PersonaBridge.__new__(PersonaBridge)
+        bridge._organism = SimpleNamespace(_body_runtime=body)
+        bridge.current_body_perception = lambda: {"available": False, "error": "stale world model"}
+
+        result = bridge._body_perception_response()
+
+        self.assertEqual(result["status"], "reported")
+        self.assertIn("Capteurs réels", result["response"])
+        self.assertIn("0.62m", result["response"])
+        self.assertFalse(result["perception"]["scene_available"])
 
 
 if __name__ == "__main__":
