@@ -21,7 +21,7 @@ class BrainBodyCommandTests(unittest.TestCase):
         self.host._command_replay = CommandReplayLedger(Path(self.temp.name) / "ledger.json")
         self.host._bridge_put_message = Mock()
         self.host.latest = {}
-        self.host.worldmodel = Mock()
+        self.host._worldmodel = Mock()
         self.host.worldmodel.execute_external.return_value = {
             "outcome": {"kind": "success", "description": "simulated"}
         }
