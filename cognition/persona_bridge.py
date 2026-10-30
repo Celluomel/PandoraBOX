@@ -3020,7 +3020,8 @@ Memory honesty — two distinct cases:
     def _is_simulated_source(source: object) -> bool:
         source_text = str(source or "").lower()
         return any(marker in source_text for marker in (
-            "ros2_simulation", "sim_robot", "simulator", "virtual_lidar",
+            "ros2_simulation", "sim_robot", "simulated_room", "simulator",
+            "simulation", "virtual_lidar",
         ))
 
     @classmethod

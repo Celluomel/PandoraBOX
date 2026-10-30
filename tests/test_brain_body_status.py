@@ -242,6 +242,21 @@ class BrainBodyStatusResponseTest(unittest.TestCase):
         self.assertIn("simulation, pas une observation", result["response"])
         self.assertNotIn("simulated chair", result["response"])
 
+    def test_perception_response_rejects_simulated_room_source(self):
+        from cognition.persona_bridge import PersonaBridge
+
+        bridge = PersonaBridge.__new__(PersonaBridge)
+        bridge._organism = SimpleNamespace(_body_runtime=SimpleNamespace(snapshot=lambda max_age=None: []))
+        bridge.current_body_perception = lambda: {
+            "available": True,
+            "snapshot": {"source": "simulated_room", "objects": [{"label": "moving obstacle"}]},
+        }
+
+        result = bridge._body_perception_response()
+
+        self.assertIn("simulation, pas une observation", result["response"])
+        self.assertNotIn("moving obstacle", result["response"])
+
 
 if __name__ == "__main__":
     unittest.main()
