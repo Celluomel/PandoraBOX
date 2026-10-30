@@ -10,6 +10,30 @@ validate_bind = _CONFIG.validate_bind
 
 
 class BodyBridgeListenerTests(unittest.TestCase):
+    def test_shared_server_helper_respects_disabled_setting(self):
+        if importlib.util.find_spec("uvicorn") is None:
+            self.skipTest("Uvicorn is not installed in the Body-only test environment")
+        from core.body_bridge_server import start_body_bridge_server
+        from types import SimpleNamespace
+
+        self.assertIsNone(start_body_bridge_server(
+            SimpleNamespace(BODY_BRIDGE_LISTEN_ENABLED=False), "127.0.0.1", 8765
+        ))
+
+    def test_shared_server_helper_validates_bind_before_starting(self):
+        if importlib.util.find_spec("uvicorn") is None:
+            self.skipTest("Uvicorn is not installed in the Body-only test environment")
+        from core.body_bridge_server import start_body_bridge_server
+        from types import SimpleNamespace
+
+        settings = SimpleNamespace(
+            BODY_BRIDGE_LISTEN_ENABLED=True,
+            BODY_BRIDGE_LISTEN_HOST="0.0.0.0",
+            BODY_BRIDGE_LISTEN_PORT=8765,
+        )
+        with self.assertRaisesRegex(ValueError, "different from the Brain REST API"):
+            start_body_bridge_server(settings, "127.0.0.1", 8765)
+
     def test_listener_exposes_only_the_authenticated_websocket_route(self):
         if importlib.util.find_spec("fastapi") is None:
             self.skipTest("FastAPI is not installed in the Body-only test environment")

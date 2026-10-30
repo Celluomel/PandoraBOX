@@ -19,6 +19,14 @@ class BodyRuntimeStatusPublicationTest(unittest.TestCase):
         with patch.object(host, "camera_settings", return_value={
             "capture": {"status": "capturing", "available": True, "observed_fps": 12.5,
                         "width": 640, "height": 480, "frame_age_s": 0.04, "last_error": ""}
+        }), patch.object(host, "power_mode_status", return_value={
+            "mode": "DEV",
+            "board_input_w": 12.0,
+            "battery_estimate": {
+                "level_percent_est": 10.2,
+                "remaining_wh_est": 8.562,
+                "source": "continuous INA232 input-rail integration; estimate only",
+            },
         }):
             host.publish_runtime_status()
 
@@ -28,6 +36,7 @@ class BodyRuntimeStatusPublicationTest(unittest.TestCase):
         self.assertTrue(entry["value"]["camera"]["available"])
         self.assertFalse(entry["value"]["robot"]["enabled"])
         self.assertEqual(entry["value"]["world_model"]["enabled"], True)
+        self.assertEqual(entry["value"]["power"]["battery_estimate"]["level_percent_est"], 10.2)
         self.assertEqual(host._bridge_latest["body.runtime.status"]["observation"]["subject"], "body.runtime")
 
 

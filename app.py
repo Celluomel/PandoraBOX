@@ -254,6 +254,8 @@ from nicegui import ui, app
 
 if __name__ in {'__main__', '__mp_main__'}:
 
+    _body_bridge_listener = None
+
     # ── Pre-warm brain on server startup — before any browser connects ──
     async def _on_startup():
         """
@@ -261,6 +263,17 @@ if __name__ in {'__main__', '__mp_main__'}:
         By the time a browser opens, state.ready is True and the
         page renders immediately — no splash screen wait.
         """
+        global _body_bridge_listener
+        try:
+            from core.body_bridge_server import start_body_bridge_server
+            _body_bridge_listener = start_body_bridge_server(
+                config,
+                getattr(config, 'NICEGUI_HOST', '127.0.0.1'),
+                int(config.NICEGUI_PORT),
+            )
+        except Exception as exc:
+            logger.exception('Body bridge listener failed to start: %s', exc)
+
         if not state.ready and not state.initializing:
             logger.info('🧠 Pre-warming PandoraBOX brain on startup…')
             await state.initialize()
@@ -292,6 +305,11 @@ if __name__ in {'__main__', '__mp_main__'}:
     # ── Graceful shutdown ─────────────────────────────────────────────
     def _on_shutdown():
         logger.info('App shutting down — saving session...')
+        try:
+            from core.body_bridge_server import stop_body_bridge_server
+            stop_body_bridge_server(_body_bridge_listener)
+        except Exception as exc:
+            logger.warning('Body bridge listener shutdown failed: %s', exc)
         try:
             organism = getattr(getattr(state, 'persona', None), '_organism', None)
             if organism is not None and hasattr(organism, 'shutdown'):

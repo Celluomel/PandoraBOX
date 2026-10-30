@@ -3579,6 +3579,11 @@ class BodyHost:
                 worldmodel_status["error"] = str(exc)[:180]
         camera = self.camera_settings().get("capture") or {}
         robot = self.robot_status()
+        try:
+            power_status = self.power_mode_status()
+        except Exception as exc:
+            LOG.debug("Could not attach power estimate to Brain telemetry", exc_info=True)
+            power_status = {}
         plugins = [
             {"id": item.get("id"), "enabled": bool(item.get("enabled"))}
             for item in self.plugins()
@@ -3601,6 +3606,11 @@ class BodyHost:
                 "connected": robot["last_ok_age_s"] is not None and robot["last_ok_age_s"] < 15,
                 "last_ok_age_s": robot["last_ok_age_s"],
                 "last_error": str(robot["last_error"] or "")[:180],
+            },
+            "power": {
+                "mode": power_status.get("mode"),
+                "board_input_w": power_status.get("board_input_w"),
+                "battery_estimate": power_status.get("battery_estimate"),
             },
             "world_model": worldmodel_status,
             "plugins": plugins,

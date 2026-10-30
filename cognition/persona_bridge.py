@@ -2802,7 +2802,7 @@ Memory honesty — two distinct cases:
         except Exception:
             return "normal"
 
-    def _body_status_response(self) -> dict:
+    def _body_status_response(self, user_input: str = "") -> dict:
         """Report the latest Body plan and any independently bridged telemetry."""
         body = getattr(self._organism, "_body_runtime", None) if self._organism else None
         if body is None:
@@ -2820,6 +2820,31 @@ Memory honesty — two distinct cases:
                 bridge = bridge_status.get("brain_bridge") if isinstance(bridge_status, dict) else {}
                 connected = bool(bridge.get("connected")) if isinstance(bridge, dict) else False
                 observations = body.snapshot(max_age=300.0)
+                battery_question = bool(re.search(r"\b(battery|batteries|batterie|batteries|charge|autonomie|remaining)\b", user_input.lower()))
+                if battery_question:
+                    runtime_observation = next((
+                        item for item in observations
+                        if item.get("subject") == "body.runtime" and isinstance(item.get("value"), dict)
+                    ), None)
+                    power = (runtime_observation or {}).get("value", {}).get("power", {})
+                    estimate = power.get("battery_estimate") if isinstance(power, dict) else None
+                    if isinstance(estimate, dict) and estimate.get("level_percent_est") is not None:
+                        percent = float(estimate["level_percent_est"])
+                        remaining_wh = estimate.get("remaining_wh_est")
+                        source = str(estimate.get("source") or "estimate")
+                        detail = f" ({float(remaining_wh):.2f} Wh estimés restants)" if remaining_wh is not None else ""
+                        return {
+                            "handled": True,
+                            "status": "reported",
+                            "response": f"Batterie du Body : environ {percent:.1f}%{detail}. Estimation basée sur {source}, pas une mesure directe de la charge.",
+                            "body_status": {"bridge_connected": connected, "battery_estimate": estimate},
+                        }
+                    return {
+                        "handled": True,
+                        "status": "reported",
+                        "response": "Le pont Body est connecté, mais aucune estimation de batterie récente n’a été transmise.",
+                        "body_status": {"bridge_connected": connected, "observation_count": len(observations)},
+                    }
                 telemetry_lines = []
                 for item in observations[:4]:
                     value = item.get("value")
@@ -2957,9 +2982,9 @@ Memory honesty — two distinct cases:
                 elif reroute == "cancel":
                     route = reroute
                 else:
-                    return self._body_status_response()
+                    return self._body_status_response(user_input)
             else:
-                return self._body_status_response()
+                return self._body_status_response(user_input)
         if not pending and route == "body_camera":
             return self._body_camera_response()
         if not pending and route == "body_perception":
