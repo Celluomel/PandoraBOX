@@ -4669,6 +4669,7 @@ class BodyHost:
                     if wm is None:
                         self._send({"error": "world model unavailable"}, 503)
                         return
+                    wm.ensure_snapshot(refresh=True)
                     self._send(wm.plan_runtime.validate(self._read_body()))
                 elif path == "/worldmodel/plans":
                     wm = owner.worldmodel
@@ -4681,7 +4682,7 @@ class BodyHost:
                     if wm is None:
                         self._send({"error": "world model unavailable"}, 503)
                     else:
-                        wm.ensure_snapshot()
+                        wm.ensure_snapshot(refresh=True)
                         self._send(wm.plan_payload().get("latest_snapshot") or {"available": False})
                 elif path == "/worldmodel/config":
                     wm = owner.worldmodel
@@ -4950,6 +4951,7 @@ class BodyHost:
                     if wm is None:
                         self._send({"error": "world model unavailable"}, 503)
                         return
+                    wm.ensure_snapshot(refresh=True)
                     self._send(wm.plan_runtime.validate(self._read_body()))
                 elif path == "/worldmodel/plans":
                     wm = owner.worldmodel

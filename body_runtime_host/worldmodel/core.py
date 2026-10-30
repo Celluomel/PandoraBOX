@@ -220,10 +220,10 @@ class EmbodiedWorldModel:
         # launching the sensorimotor loop or executing a simulation action.
         self.ensure_snapshot()
 
-    def ensure_snapshot(self) -> Optional[BodySnapshot]:
-        """Refresh the static perception boundary without executing an action."""
+    def ensure_snapshot(self, refresh: bool = False) -> Optional[BodySnapshot]:
+        """Ensure a perception snapshot exists; optionally poll its source now."""
         with self._lock:
-            if self._last_observation is None or self._last_body_state is None:
+            if refresh or self._last_observation is None or self._last_body_state is None:
                 if self.source is not None:
                     self._last_observation = self.source.observe()
                     self._last_body_state = self.source.body_state()
@@ -1031,16 +1031,9 @@ class EmbodiedWorldModel:
             # are never modified here.
             if self.sim is not None and self.sim.status().get("done"):
                 self.sim.done = False
-            if self._last_observation is None or self._last_body_state is None:
-                if self.source is not None:
-                    self._last_observation = self.source.observe()
-                    self._last_body_state = self.source.body_state()
-                else:
-                    self._last_observation = self._bridge_observation()
-                    self._last_body_state = self._bridge_body_state()
-            self.plan_runtime.record_snapshot(
-                self._current_plan_snapshot(self._last_observation, self._last_body_state)
-            )
+            snapshot = self.ensure_snapshot(refresh=True)
+            if snapshot is None:
+                return {"accepted": False, "errors": ["no current Body snapshot is available"]}
             plan_result = self.plan_runtime.submit(payload)
             if plan_result.get("accepted"):
                 plan = self.plan_runtime.active_plan()

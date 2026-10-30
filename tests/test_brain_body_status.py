@@ -9,6 +9,62 @@ sys.path.insert(0, str(ROOT))
 
 
 class BrainBodyStatusResponseTest(unittest.TestCase):
+    def test_movement_status_prioritizes_ack_without_claiming_physical_motion(self):
+        from cognition.persona_bridge import PersonaBridge
+
+        now = __import__("time").time()
+        observations = [{
+            "subject": "fnk0031.usb_status",
+            "source": "remote:body:fnk0031_usb",
+            "kind": "hardware_status",
+            "observed_at": now,
+            "value": {"connected": True, "estimated_leg_state": None,
+                      "estimated_state_is_measured": False},
+        }, {
+            "subject": "robot.turn_left",
+            "source": "remote:body_action",
+            "kind": "actuation_feedback",
+            "observed_at": now,
+            "value": "acknowledged",
+            "provenance": {"command_status": "acknowledged", "verification_status": "unknown"},
+        }, {
+            "subject": "sensor.odometry",
+            "source": "remote:body:ros2_simulation",
+            "kind": "sensor",
+            "observed_at": now,
+            "value": {"position_m": [2.0, 0.0, 0.0]},
+        }]
+        body = SimpleNamespace(snapshot=lambda max_age=None: observations)
+        bridge = PersonaBridge.__new__(PersonaBridge)
+        bridge._organism = SimpleNamespace(_body_runtime=body)
+
+        result = bridge._body_status_response("what is the robot movement status")
+
+        self.assertIn("contrôleur FNK0031 connecté", result["response"])
+        self.assertIn("robot.turn_left: acknowledged", result["response"])
+        self.assertIn("déplacement physique non vérifié", result["response"])
+        self.assertIn("Aucune odométrie physique indépendante", result["response"])
+        self.assertNotIn("2.0", result["response"])
+        self.assertFalse(result["body_status"]["physical_odometry_confirmed"])
+
+    def test_movement_status_reports_no_recent_command_and_disconnected_controller(self):
+        from cognition.persona_bridge import PersonaBridge
+
+        body = SimpleNamespace(snapshot=lambda max_age=None: [{
+            "subject": "fnk0031.usb_status",
+            "source": "remote:body:fnk0031_usb",
+            "kind": "hardware_status",
+            "observed_at": __import__("time").time(),
+            "value": {"connected": False},
+        }])
+        bridge = PersonaBridge.__new__(PersonaBridge)
+        bridge._organism = SimpleNamespace(_body_runtime=body)
+
+        result = bridge._body_status_response("status of robot movements")
+
+        self.assertIn("contrôleur FNK0031 non connecté", result["response"])
+        self.assertIn("aucun résultat récent de commande", result["response"])
+
     def test_no_plan_still_reports_bridged_runtime_observation(self):
         from cognition.persona_bridge import PersonaBridge
 

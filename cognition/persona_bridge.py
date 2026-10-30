@@ -2744,7 +2744,7 @@ Memory honesty — two distinct cases:
                     "message semantically. Return exactly JSON with route equal to one of: "
                     + ("confirm, cancel, normal" if confirmation_probe else "confirm, cancel, new_action, body_status, normal")
                     + ". confirm means approval to execute the waiting plan; cancel means rejection; "
-                    + ("normal means unrelated conversation." if confirmation_probe else "new_action means a different physical objective; body_status means asking whether the task is complete or what step is active; normal means unrelated conversation.")
+                    + ("normal means unrelated conversation." if confirmation_probe else "new_action means a different physical objective; body_status means asking whether the task is complete, what step is active, or for the latest robot/controller movement status; normal means unrelated conversation.")
                     + " Do not use a fixed phrase list."
                 )
             else:
@@ -2755,7 +2755,7 @@ Memory honesty — two distinct cases:
                     "movement; body_camera means asking to see or describe the robot-mounted Body camera's "
                     "current view; body_perception means asking what the robot senses through non-camera "
                     "sensors; body_status "
-                    "means asking whether a task is complete, what step is active, or whether the Body is stuck. "
+                    "means asking whether a task is complete, what step is active, whether the Body is stuck, or for the latest robot/controller movement status and command outcome. "
                     "Do not confuse the fixed PC camera with the robot's Body camera. Use semantic meaning, not a fixed phrase list."
                 )
             raw = fast(text, system, model=model, timeout=6.0, max_tokens=120)
@@ -2808,6 +2808,66 @@ Memory honesty — two distinct cases:
         if body is None:
             return {"handled": True, "status": "unavailable", "response": "Le Body Runtime n'est pas disponible."}
         try:
+            movement_question = bool(re.search(
+                r"\b(move(?:ment|ments)?|moving|moved|motion|robot|movement status|"
+                r"déplacement(?:s)?|mouvement(?:s)?|boug(?:e|é|ement|ements)|"
+                r"marche|avance|avancé|tourne|tourner|robot status)\b",
+                user_input.lower(),
+            ))
+            if movement_question:
+                observations = body.snapshot(max_age=300.0)
+                actions = [
+                    item for item in observations
+                    if item.get("kind") == "actuation_feedback"
+                    and not self._is_simulated_body_observation(item)
+                ]
+                actions.sort(key=lambda item: float(item.get("observed_at") or 0), reverse=True)
+                robot = next((
+                    item for item in observations
+                    if item.get("subject") == "fnk0031.usb_status"
+                    and not self._is_simulated_body_observation(item)
+                ), None)
+                parts = []
+                if robot:
+                    age = max(0.0, time.time() - float(robot.get("observed_at") or time.time()))
+                    value = robot.get("value") if isinstance(robot.get("value"), dict) else {}
+                    freshness = f" (mise à jour il y a {age:.0f} s)" if age > 15 else ""
+                    parts.append(
+                        f"contrôleur FNK0031 {'connecté' if value.get('connected') else 'non connecté'}{freshness}"
+                    )
+                    leg_state = value.get("estimated_leg_state")
+                    if isinstance(leg_state, dict):
+                        semantics = "mesuré" if value.get("estimated_state_is_measured") else "estimé depuis les commandes FNHR"
+                        parts.append(f"état des jambes {semantics}, pas un retour d'encodeur")
+                if actions:
+                    item = actions[0]
+                    age = max(0.0, time.time() - float(item.get("observed_at") or time.time()))
+                    provenance = item.get("provenance") if isinstance(item.get("provenance"), dict) else {}
+                    status = str(provenance.get("command_status") or item.get("value") or "inconnu")
+                    verification = str(provenance.get("verification_status") or "unknown")
+                    age_text = f", reçu il y a {age:.0f} s" if age > 0 else ""
+                    parts.append(f"dernière commande {item.get('subject', 'mouvement')}: {status}{age_text}")
+                    outcome = provenance.get("outcome")
+                    if verification in {"verified_observation", "verified_simulation"}:
+                        parts.append(f"vérification: {verification}")
+                    elif status == "acknowledged":
+                        parts.append("commande acquittée, mais déplacement physique non vérifié")
+                    elif isinstance(outcome, dict) and outcome.get("reason"):
+                        parts.append(f"motif: {str(outcome['reason'])[:160]}")
+                else:
+                    parts.append("aucun résultat récent de commande de mouvement reçu")
+                response = "État des mouvements du Body : " + "; ".join(parts) + "."
+                response += " Aucune odométrie physique indépendante ne confirme actuellement le déplacement."
+                return {
+                    "handled": True,
+                    "status": "reported",
+                    "response": response,
+                    "body_status": {
+                        "movement_feedback": actions[0] if actions else None,
+                        "robot_controller": robot,
+                        "physical_odometry_confirmed": False,
+                    },
+                }
             payload = body.worldmodel_plan()
             active = payload.get("active_plan") if isinstance(payload, dict) else None
             worldmodel = getattr(body, "worldmodel", None)

@@ -124,6 +124,25 @@ class BodyReliabilityV1Tests(unittest.TestCase):
 
 
 class BodyModelRecoveryIntegrationTests(unittest.TestCase):
+    def test_plan_submission_refreshes_an_existing_stale_snapshot(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        worldmodel = EmbodiedWorldModel(data_dir=temp.name, config={"mode": "sim"})
+        stale_at = time.time() - 10.0
+        worldmodel._last_observation.timestamp = stale_at
+        worldmodel._last_body_state.timestamp = stale_at
+        worldmodel.plan_runtime.record_snapshot(worldmodel._make_plan_snapshot(
+            worldmodel._last_observation, worldmodel._last_body_state,
+        ))
+
+        result = worldmodel.submit_plan({
+            "objective": "Inspect the current scene",
+            "steps": [{"step_id": "inspect", "verb": "inspect", "target": "scene"}],
+        })
+
+        self.assertTrue(result["accepted"], result)
+        self.assertGreater(worldmodel.plan_runtime._latest_snapshot.timestamp, stale_at)
+
     def _worldmodel_in_recovery(self):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
