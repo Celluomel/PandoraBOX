@@ -284,6 +284,26 @@ class BrainBodyStatusResponseTest(unittest.TestCase):
         self.assertIn("simulateur", result["response"])
         self.assertNotIn("simulated chair", result["response"])
 
+    def test_perception_response_reports_stale_yolox_as_stale_not_live(self):
+        from cognition.persona_bridge import PersonaBridge
+
+        now = __import__("time").time()
+        body = SimpleNamespace(
+            camera_yolo_status=lambda: {
+                "state": "ready", "frame_id": "camera-old", "captured_at": now - 28,
+                "detections": [{"label": "person", "confidence": 0.77}],
+            },
+            body_snapshot=lambda: {"source": "simulated_room", "objects": []},
+        )
+        bridge = PersonaBridge.__new__(PersonaBridge)
+        bridge._organism = SimpleNamespace(_body_runtime=body)
+
+        result = bridge._body_perception_response()
+
+        self.assertIn("dernière analyse il y a 28s · STALE", result["response"])
+        self.assertIn("person (77%)", result["response"])
+        self.assertTrue(result["perception"]["camera"]["stale"])
+
 
 if __name__ == "__main__":
     unittest.main()

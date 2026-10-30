@@ -2979,7 +2979,7 @@ Memory honesty — two distinct cases:
                 camera_age = max(0.0, time.time() - float(captured_at)) if captured_at is not None else None
             except (TypeError, ValueError):
                 camera_age = None
-            if yolo.get("state") == "ready" and camera_age is not None and camera_age <= 3.0:
+            if yolo.get("state") == "ready" and camera_age is not None and camera_age <= 60.0:
                 labels = []
                 for item in detections[:12]:
                     if not isinstance(item, dict):
@@ -2991,14 +2991,17 @@ Memory honesty — two distinct cases:
                     else:
                         labels.append(label)
                 visual = ", ".join(labels) if labels else "aucun objet détecté"
+                stale = camera_age > 3.0
+                frame_age = f"dernière analyse il y a {camera_age:.0f}s · STALE" if stale else "image récente"
                 response = (
-                    f"Caméra Body en direct, YOLOX · frame {yolo.get('frame_id') or 'courante'} "
-                    f"({camera_age:.1f}s) : {len(detections)} détection(s) 2D — {visual}. "
+                    f"Caméra Body · YOLOX · {frame_age} · frame {yolo.get('frame_id') or 'courante'} : "
+                    f"{len(detections)} détection(s) 2D — {visual}. "
                     "Ce sont des labels de détection, pas une description complète de la scène ni des distances."
                 )
                 perception = {"available": True, "camera": {
                     "source": "yolox", "frame_id": yolo.get("frame_id"),
                     "captured_at": captured_at, "age_seconds": round(camera_age, 3),
+                    "stale": stale,
                     "detections": detections[:12],
                 }}
                 snapshot = body.body_snapshot() if callable(getattr(body, "body_snapshot", None)) else None
