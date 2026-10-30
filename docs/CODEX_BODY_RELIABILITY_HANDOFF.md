@@ -278,7 +278,7 @@ python -m unittest discover -s tests -p "test_body_http_loopback.py" -v
   python -m unittest discover -s tests -p "test_body_external_action_evidence.py" -v
   ```
 
-- The earlier references to five or seven suites are historical. **Current required total: eight**. Tests are committed but have not been observed passing in the real checkout. The physical VENTUNO remains unavailable and must not be actuated remotely.
+- The earlier references to five, seven, or eight suites are historical. **Current required total: nine** after the WebSocket bridge suite was added below. The physical VENTUNO must not be actuated remotely as part of offline validation.
 
 ### Execution ledger — 2026-10-30
 
@@ -297,8 +297,8 @@ python -m unittest discover -s tests -p "test_body_http_loopback.py" -v
 - Approval is restricted to a loopback peer at the Brain API. This is a local-interface boundary, not proof of a person’s identity; HMAC proves the approval envelope was produced by a holder of the shared key and protects its contents from tampering. The shared-secret compromise boundary includes both Brain and Body.
 - Body setting tests cover separate `.env` storage, config references, redacted status, invalid key rejection and preservation of the existing bearer-token behavior. Replay tests include cross-process duplicate reservation, malformed records, disk failure and restart persistence.
 - Added a real loopback WebSocket integration suite with fake Brain and non-actuating fake world model. It checks bearer token delivery, expired-command refusal, reconnect after disconnect, signed command round-trip and acknowledgement remaining unverified. CI installs the already-declared `websockets>=12,<16` package and runs this as suite nine.
-- **Local verification so far:** 9 recovery/reliability tests passed; 10 replay tests passed; 19 command-delivery tests passed after the latest auth regressions; 3 HTTP loopback tests passed with elevated local-loopback permission. The WebSocket integration test is currently skipped locally because `websockets` is absent and package download is blocked by this environment; it is configured to run on CI. Remaining suite results and CI are pending.
-- **M1 status:** not complete pending actual WebSocket CI execution, broader dropped-ACK/reconnect semantics, Brain/UI audit completion, and tests against the full Brain runtime wiring. No physical actuation or deployment.
+- **Local verification:** all nine required suites passed in the Python 3.11 venv, including the real loopback WebSocket integration (no skips): 64 tests total. The plan-contract and evaluation regressions also passed after the route-cache change. CI on the final pushed SHA remains pending.
+- **M1 status:** authorization provenance and fake-peer transport integration are implemented, but end-to-end production Brain wiring and shared-secret provisioning remain unverified. No physical actuation or deployment.
 
 ### M4 simulation benchmark evidence — 2026-10-30
 
@@ -307,3 +307,11 @@ python -m unittest discover -s tests -p "test_body_http_loopback.py" -v
 - **Result:** 20/20 randomized disturbed simulation tasks completed (100%); 0 collisions; adaptive planner 46.45 average steps vs 45.75 no-recovery baseline; 1.80 vs 2.10 average near misses. Restart/resume probe passed for the persisted plan ledger and single active lease.
 - **Gate:** simulator reports `PROVISIONAL`; restart/resume and hardware transfer remain explicit pending gates. This is not physical readiness, and the efficiency margin is small. A separate max-60-step diagnostic completed 15/20, confirming the benchmark is sensitive to step budget; the intended 180-step run completed all trials.
 - **M4 status:** prediction/learning exit criteria remain unmet until a versioned held-out dynamics benchmark runs with the learning backend available and demonstrates repeatable improvement over a simple non-learning baseline. Do not claim learning gains from this run.
+
+### M4 disturbance replanning regression — 2026-10-30
+
+- **Cause:** the route cache held only the next grid segment and required the robot to remain at the original start cell. Normal forward movement invalidated the cache. Any scene-signature change, including an unrelated mobile object moving outside the route, also forced A* again on the next tick. This produced repeated `replan_after_scene_change` decisions after disturbances.
+- **Fix:** cache the complete route by target and reachable goal-cell set. Reuse its next segment after the body advances only when the remaining cells and each metric segment are still clear in the current snapshot. A changed goal, missing route continuation, or actual obstruction invalidates the cache and triggers a real replan. Terminal and blocked paths clear stale route entries.
+- **Controlled comparison:** 20 identical seeds (`20261030`–`20261049`), 180-step budget, and Python 3.11 venv with Torch available, using a committed pre-fix archive for the baseline. Before: 20/20 complete, 0 collisions, 529 replans (26.45 average; max 46). After: 20/20 complete, 0 collisions, 153 replans (7.65 average; max 24), a 71.1% reduction. Both runs trained the online learner; this is evidence for reduced planner churn, **not** evidence of learning gains or hardware transfer.
+- **Regression tests:** the route remains cached while the body advances; unrelated scene changes preserve a safe route; a disturbance intersecting the remaining route forces replanning. All pass, along with the existing dynamic-obstacle replan case.
+- **Interpretation:** repeated unnecessary replanning is substantially reduced and route safety still invalidates on a real disturbance. It is not eliminated: the post-fix maximum is 24 replans in a trial, so remaining replans should be analyzed by reason before claiming the issue is fully resolved. Simulation-only; no physical actuation.

@@ -307,6 +307,46 @@ class BodyPlanContractTests(unittest.TestCase):
         self.assertEqual(decision.reason, "align_for_grasp")
         self.assertIn(decision.action.type, {"forward", "turn_left", "turn_right"})
 
+    def test_local_planner_keeps_safe_route_after_body_advances(self):
+        current = snapshot()
+        current.objects = [{"id": "parcel", "kind": "object", "position": [8.0, 1.0, 0.0], "size": 0.4}]
+        body = BodyState(position=[1.0, 1.0, 0.0], capabilities={"reach": 1.0, "world_width": 12, "world_height": 12})
+        planner = LocalRoutePlanner()
+        first = planner.route("parcel", current, body)
+        self.assertFalse(first.replanned)
+        body.position = [float(first.cells[1][0]), float(first.cells[1][1]), 0.0]
+        second = planner.route("parcel", current, body)
+        self.assertFalse(second.replanned)
+        self.assertEqual(second.reason, "cached_safe_segment")
+        self.assertEqual(second.cells[0], first.cells[1])
+        self.assertEqual(second.cells[1], first.cells[2])
+
+    def test_unrelated_scene_change_does_not_invalidate_safe_route(self):
+        current = snapshot()
+        current.objects = [{"id": "parcel", "kind": "object", "position": [8.0, 1.0, 0.0], "size": 0.4}]
+        body = BodyState(position=[1.0, 1.0, 0.0], capabilities={"reach": 1.0, "world_width": 12, "world_height": 12})
+        planner = LocalRoutePlanner()
+        first = planner.route("parcel", current, body)
+        body.position = [float(first.cells[1][0]), float(first.cells[1][1]), 0.0]
+        current.objects.append({"id": "mobile", "kind": "mobile_obstacle", "position": [5.0, 7.0, 0.0], "size": 0.4})
+        next_route = planner.route("parcel", current, body)
+        self.assertFalse(next_route.replanned)
+        self.assertEqual(next_route.reason, "cached_safe_segment")
+        self.assertEqual(next_route.cells[0], first.cells[1])
+
+    def test_disturbance_on_remaining_route_forces_replan(self):
+        current = snapshot()
+        current.objects = [{"id": "parcel", "kind": "object", "position": [8.0, 1.0, 0.0], "size": 0.4}]
+        body = BodyState(position=[1.0, 1.0, 0.0], capabilities={"reach": 1.0, "world_width": 12, "world_height": 12})
+        planner = LocalRoutePlanner()
+        first = planner.route("parcel", current, body)
+        body.position = [float(first.cells[1][0]), float(first.cells[1][1]), 0.0]
+        obstruction = first.cells[3]
+        current.objects.append({"id": "moved", "kind": "mobile_obstacle", "position": [float(obstruction[0]), float(obstruction[1]), 0.0], "size": 1.0})
+        next_route = planner.route("parcel", current, body)
+        self.assertTrue(next_route.replanned)
+        self.assertNotIn(obstruction, next_route.cells[1:])
+
     def test_local_planner_can_replan_around_transient_mobile_obstacle(self):
         current = snapshot()
         current.objects = [

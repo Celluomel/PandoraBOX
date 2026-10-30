@@ -42,8 +42,7 @@ class LocalRoutePlanner:
         # ``legacy_grid`` is retained only for paired benchmark comparisons.
         # Runtime planning defaults to the same metric envelope as the simulator.
         self.geometry_mode = "legacy_grid" if geometry_mode == "legacy_grid" else "continuous"
-        self._scene_signatures: Dict[str, tuple] = {}
-        self._next_segments: Dict[str, tuple[tuple[float, float], Cell, Cell]] = {}
+        self._routes: Dict[str, tuple[frozenset[Cell], tuple[Cell, ...]]] = {}
 
     def route(self, target_id: str, snapshot: BodySnapshot, body: BodyState, reach: Optional[float] = None) -> Route:
         target = next((item for item in snapshot.objects if str(item.get("id")) == target_id), None)
@@ -62,24 +61,33 @@ class LocalRoutePlanner:
             predicted_cell = self._cell(predicted_mobile, width, height)
             if predicted_cell != start:
                 blocked.add(predicted_cell)
-        signature = tuple(sorted((str(item.get("id")), tuple(round(float(v), 1) for v in (item.get("position") or [])[:2])) for item in snapshot.objects))
-        scene_changed = target_id in self._scene_signatures and self._scene_signatures[target_id] != signature
-        replanned = scene_changed
-        self._scene_signatures[target_id] = signature
-        target_position = tuple(float(value) for value in (target.get("position") or [0.0, 0.0])[:2])
-        cached = self._next_segments.get(target_id)
-        if cached is not None:
-            cached_target, cached_start, cached_next = cached
-            if (
-                not replanned
-                and cached_target == target_position
-                and cached_start == start
-                and cached_next not in blocked
-                and self._segment_clear(snapshot, body, cached_start, cached_next, target_id)
-            ):
-                return Route(target_id, [start, cached_next], "cached_safe_segment", replanned=False)
         goals = self._goal_cells(target, body, width, height, blocked, reach=reach)
+        goal_signature = frozenset(goals)
+        replanned = False
+        cached = self._routes.get(target_id)
+        if cached is not None:
+            cached_goals, cached_path = cached
+            try:
+                current_index = cached_path.index(start)
+            except ValueError:
+                current_index = -1
+            remaining = cached_path[current_index:] if current_index >= 0 else ()
+            route_still_valid = (
+                cached_goals == goal_signature
+                and len(remaining) > 1
+                and remaining[-1] in goals
+                and all(cell not in blocked for cell in remaining[1:])
+                and all(
+                    self._segment_clear(snapshot, body, left, right, target_id)
+                    for left, right in zip(remaining, remaining[1:])
+                )
+            )
+            if route_still_valid:
+                self._routes[target_id] = (goal_signature, tuple(remaining))
+                return Route(target_id, [start, remaining[1]], "cached_safe_segment", replanned=False)
+            replanned = True
         if start in goals:
+            self._routes.pop(target_id, None)
             return Route(target_id, [start], "already_near_target", replanned=replanned)
         path = self._astar(start, goals, blocked, width, height)
         route_reason = ""
@@ -106,11 +114,12 @@ class LocalRoutePlanner:
             ):
                 return Route(target_id, reason="metric_clearance_blocked", blocked=True, replanned=replanned)
         if not path:
+            self._routes.pop(target_id, None)
             return Route(target_id, reason="recover_from_blockage", blocked=True, replanned=replanned)
         direct = abs(start[0] - path[-1][0]) + abs(start[1] - path[-1][1])
         reason = route_reason or ("replan_after_scene_change" if replanned else "avoid_obstacle" if len(path) - 1 > direct else "toward_target")
         if len(path) > 1:
-            self._next_segments[target_id] = (target_position, start, path[1])
+            self._routes[target_id] = (goal_signature, tuple(path))
         return Route(target_id, path, reason, replanned=replanned)
 
     @staticmethod
