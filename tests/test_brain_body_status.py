@@ -257,6 +257,33 @@ class BrainBodyStatusResponseTest(unittest.TestCase):
         self.assertIn("simulation, pas une observation", result["response"])
         self.assertNotIn("moving obstacle", result["response"])
 
+    def test_perception_response_prefers_fresh_live_yolox_over_simulated_map(self):
+        from cognition.persona_bridge import PersonaBridge
+
+        now = __import__("time").time()
+        body = SimpleNamespace(
+            camera_yolo_status=lambda: {
+                "state": "ready", "frame_id": "camera-42", "captured_at": now,
+                "detections": [
+                    {"label": "person", "confidence": 0.7931},
+                    {"label": "person", "confidence": 0.4156},
+                ],
+            },
+            body_snapshot=lambda: {
+                "source": "simulated_room", "objects": [{"label": "simulated chair"}],
+            },
+        )
+        bridge = PersonaBridge.__new__(PersonaBridge)
+        bridge._organism = SimpleNamespace(_body_runtime=body)
+
+        result = bridge._body_perception_response()
+
+        self.assertIn("YOLOX", result["response"])
+        self.assertIn("2 détection(s) 2D", result["response"])
+        self.assertIn("person (79%)", result["response"])
+        self.assertIn("simulateur", result["response"])
+        self.assertNotIn("simulated chair", result["response"])
+
 
 if __name__ == "__main__":
     unittest.main()

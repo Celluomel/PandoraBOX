@@ -113,6 +113,15 @@ class RemoteWorldModel:
             self._last_error = str(exc)
             return {"available": False, "error": str(exc)}
 
+    def camera_yolo_status(self) -> Dict[str, Any]:
+        """Read the latest lightweight YOLOX detections, without camera pixels."""
+        try:
+            data = self._request("GET", f"{self.base_url}/body/camera/yolo/status", timeout=3.0)
+            return data if isinstance(data, dict) else {"state": "unavailable", "detections": []}
+        except Exception as exc:
+            self._last_error = str(exc)
+            return {"state": "unavailable", "detections": [], "error": str(exc)}
+
     def interpret_camera(self) -> Dict[str, Any]:
         """Ask the Body-owned VLM to interpret its latest camera scene."""
         try:

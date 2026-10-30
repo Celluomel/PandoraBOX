@@ -2964,6 +2964,49 @@ Memory honesty — two distinct cases:
         }
 
     def _body_perception_response(self) -> dict:
+        body = getattr(self._organism, "_body_runtime", None) if self._organism else None
+        yolo_reader = getattr(body, "camera_yolo_status", None) if body is not None else None
+        if callable(yolo_reader):
+            try:
+                yolo = yolo_reader()
+            except Exception as exc:
+                logger.debug("[BodyPerception] live camera detections unavailable: %s", exc)
+                yolo = {}
+            yolo = yolo if isinstance(yolo, dict) else {}
+            detections = yolo.get("detections") or []
+            captured_at = yolo.get("captured_at")
+            try:
+                camera_age = max(0.0, time.time() - float(captured_at)) if captured_at is not None else None
+            except (TypeError, ValueError):
+                camera_age = None
+            if yolo.get("state") == "ready" and camera_age is not None and camera_age <= 3.0:
+                labels = []
+                for item in detections[:12]:
+                    if not isinstance(item, dict):
+                        continue
+                    label = str(item.get("label") or "object").strip()
+                    confidence = item.get("confidence")
+                    if isinstance(confidence, (int, float)):
+                        labels.append(f"{label} ({float(confidence) * 100:.0f}%)")
+                    else:
+                        labels.append(label)
+                visual = ", ".join(labels) if labels else "aucun objet détecté"
+                response = (
+                    f"Caméra Body en direct, YOLOX · frame {yolo.get('frame_id') or 'courante'} "
+                    f"({camera_age:.1f}s) : {len(detections)} détection(s) 2D — {visual}. "
+                    "Ce sont des labels de détection, pas une description complète de la scène ni des distances."
+                )
+                perception = {"available": True, "camera": {
+                    "source": "yolox", "frame_id": yolo.get("frame_id"),
+                    "captured_at": captured_at, "age_seconds": round(camera_age, 3),
+                    "detections": detections[:12],
+                }}
+                snapshot = body.body_snapshot() if callable(getattr(body, "body_snapshot", None)) else None
+                if isinstance(snapshot, dict) and self._is_simulated_body_snapshot(snapshot):
+                    response += " La carte 3D disponible provient du simulateur et n'est pas utilisée comme observation réelle."
+                    perception["simulated_world_model_excluded"] = True
+                return {"handled": True, "status": "reported", "response": response, "perception": perception}
+
         perception = self.current_body_perception()
         if not perception.get("available"):
             reason = str(perception.get("error") or "aucun snapshot récent n'est disponible")

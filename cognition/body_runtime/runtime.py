@@ -269,6 +269,13 @@ class BodyRuntime:
             return {"available": False, "error": "Body world model snapshot is unavailable"}
         return snapshot()
 
+    def camera_yolo_status(self) -> Dict[str, Any]:
+        wm = self.worldmodel
+        read = getattr(wm, "camera_yolo_status", None) if wm is not None else None
+        if not callable(read):
+            return {"state": "unavailable", "detections": [], "error": "Body camera status is unavailable"}
+        return read()
+
     def interpret_camera(self) -> Dict[str, Any]:
         """Request one interpretation from the camera/VLM owned by the Body."""
         wm = self.worldmodel
