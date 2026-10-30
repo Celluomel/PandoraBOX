@@ -3668,6 +3668,10 @@ class BodyHost:
 
     def publish_live_sensor_observations(self) -> None:
         """Publish actual adapter samples even when the scene model is disabled."""
+        now_monotonic = time.monotonic()
+        if now_monotonic - getattr(self, "_live_sensor_poll_monotonic", 0.0) < 4.0:
+            return
+        self._live_sensor_poll_monotonic = now_monotonic
         readers = (
             ("mmwave_radar", self.mmwave_radar_status,
              bool(self.value("BODY_PLUGIN_MMWAVE_RADAR_ENABLED", False))),
@@ -3895,9 +3899,9 @@ class BodyHost:
                     LOG.exception("Home Assistant poll failed")
             if bool(self.value("BODY_WORLDMODEL_ENABLED", False)):
                 self.publish_worldmodel_perception()
+            self.publish_runtime_status()
             self.publish_live_sensor_observations()
             self.publish_fnk0031_usb_status()
-            self.publish_runtime_status()
             self.stop_event.wait(interval)
 
     # ── Brain bridge (websocket) ────────────────────────────────────────────
