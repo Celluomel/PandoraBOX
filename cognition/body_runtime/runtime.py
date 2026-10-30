@@ -50,6 +50,9 @@ class BodyCommand:
     approved_at: Optional[float] = None
     rejected_at: Optional[float] = None
     executed_at: Optional[float] = None
+    acknowledged_at: Optional[float] = None
+    result_at: Optional[float] = None
+    verification_status: str = "unknown"
     outcome: Dict[str, Any] = field(default_factory=dict)
     error: str = ""
 
@@ -499,11 +502,35 @@ class BodyRuntime:
             command = next((item for item in self._commands if item.command_id == command_id), None)
             if command is None:
                 return {"ok": False, "error": "command not found"}
-            command.executed_at = time.time()
             command.outcome = dict(payload.get("outcome") or {})
             command.error = str(payload.get("error") or "")[:240]
-            kind = str(command.outcome.get("kind") or payload.get("status") or "failure").lower()
-            command.status = "executed" if kind in {"success", "neutral"} else "failed"
+            evidence = payload.get("evidence")
+            evidence_state = evidence.get("state") if isinstance(evidence, dict) else None
+            reported_status = str(payload.get("status") or "").strip().lower()
+            command.verification_status = str(
+                payload.get("verification_status")
+                or evidence_state
+                or "unknown"
+            ).strip().lower()
+            verified = command.verification_status in {
+                "verified_observation", "verified_simulation",
+            }
+            kind = str(command.outcome.get("kind") or "").strip().lower()
+            if reported_status in {"rejected", "expired", "failed", "not_executed", "unknown"}:
+                command.status = reported_status
+            elif kind in {"failure", "failed", "blocked", "danger"}:
+                command.status = "failed"
+            elif kind == "neutral":
+                command.status = "not_executed"
+            elif reported_status == "executed" and verified:
+                command.status = "executed"
+            elif reported_status in {"acknowledged", "success", "succeeded", "executed"} or kind in {"success", "succeeded"}:
+                command.status = "acknowledged"
+            else:
+                command.status = "failed"
+            command.result_at = time.time()
+            command.executed_at = command.result_at if command.status == "executed" else None
+            command.acknowledged_at = command.result_at if command.status == "acknowledged" else None
             result = command.as_dict()
         # Feed the physical outcome back through the normal perception path.
         self.publish_observation(
@@ -512,7 +539,12 @@ class BodyRuntime:
             subject=f"{command.target}.{command.action}",
             value=result["status"],
             confidence=1.0 if result["status"] == "executed" else 0.8,
-            provenance={"command_id": command_id, "outcome": result["outcome"]},
+            provenance={
+                "command_id": command_id,
+                "command_status": result["status"],
+                "verification_status": result["verification_status"],
+                "outcome": result["outcome"],
+            },
         )
         # Action outcomes are perceptions too: route them through the same
         # connector used by sensors so learning and workspace competition see
@@ -528,6 +560,7 @@ class BodyRuntime:
                         "target": command.target,
                         "action": command.action,
                         "status": result["status"],
+                        "verification_status": result["verification_status"],
                         "outcome": result["outcome"],
                     },
                     confidence=1.0 if result["status"] == "executed" else 0.8,

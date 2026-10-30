@@ -6,11 +6,23 @@ The world model is a deterministic fake; only the command gateway is tested.
 import tempfile
 import time
 import unittest
+import importlib.util
+import sys
+from collections import deque
 from pathlib import Path
+from threading import RLock
 from unittest.mock import Mock
 
 from body_runtime_host.command_replay import CommandReplayLedger
 from body_runtime_host.runtime import BodyHost
+
+_body_runtime_path = Path(__file__).resolve().parents[1] / "cognition" / "body_runtime" / "runtime.py"
+_body_runtime_spec = importlib.util.spec_from_file_location("_body_runtime_command_tests", _body_runtime_path)
+_body_runtime_module = importlib.util.module_from_spec(_body_runtime_spec)
+sys.modules[_body_runtime_spec.name] = _body_runtime_module
+_body_runtime_spec.loader.exec_module(_body_runtime_module)
+BodyCommand = _body_runtime_module.BodyCommand
+BodyRuntime = _body_runtime_module.BodyRuntime
 
 
 class BrainBodyCommandTests(unittest.TestCase):
@@ -34,6 +46,15 @@ class BrainBodyCommandTests(unittest.TestCase):
         }
         value.update(overrides)
         return value
+
+    def approved_brain_command(self):
+        command = BodyCommand(target="robot", action="forward", status="approved")
+        brain = BodyRuntime.__new__(BodyRuntime)
+        brain._lock = RLock()
+        brain._commands = deque([command])
+        brain.organism = None
+        brain.publish_observation = Mock()
+        return brain, command.as_dict()
 
     def test_approved_command_delivered_once(self):
         result = self.host.execute_command(self.command())
@@ -86,6 +107,45 @@ class BrainBodyCommandTests(unittest.TestCase):
         self.assertEqual(self.host.execute_command(command)["status"], "failed")
         self.assertEqual(self.host.execute_command(command)["status"], "rejected")
         self.host.worldmodel.execute_external.assert_called_once()
+
+    def test_brain_preserves_body_ack_as_unverified(self):
+        brain, command = self.approved_brain_command()
+        body_result = self.host.execute_command(command)
+        self.assertEqual(body_result["status"], "acknowledged")
+        result = brain.record_command_outcome(body_result)
+        self.assertEqual(result["command"]["status"], "acknowledged")
+        self.assertEqual(result["command"]["verification_status"], "unknown")
+        self.assertIsNone(result["command"]["executed_at"])
+
+    def test_brain_downgrades_legacy_executed_without_evidence(self):
+        brain, command = self.approved_brain_command()
+        legacy_result = {
+            "type": "command_result", "command_id": command["command_id"],
+            "status": "executed", "outcome": {"kind": "success"},
+        }
+        result = brain.record_command_outcome(legacy_result)
+        self.assertEqual(result["command"]["status"], "acknowledged")
+        self.assertIsNone(result["command"]["executed_at"])
+
+    def test_brain_marks_execution_only_with_verified_evidence(self):
+        brain, command = self.approved_brain_command()
+        verified_result = {
+            "type": "command_result", "command_id": command["command_id"],
+            "status": "executed", "verification_status": "verified_observation",
+            "outcome": {"kind": "success"},
+        }
+        result = brain.record_command_outcome(verified_result)
+        self.assertEqual(result["command"]["status"], "executed")
+        self.assertEqual(result["command"]["verification_status"], "verified_observation")
+
+    def test_failure_status_cannot_be_overridden_by_success_outcome(self):
+        brain, command = self.approved_brain_command()
+        inconsistent_result = {
+            "type": "command_result", "command_id": command["command_id"],
+            "status": "failed", "outcome": {"kind": "success"},
+        }
+        result = brain.record_command_outcome(inconsistent_result)
+        self.assertEqual(result["command"]["status"], "failed")
 
 
 if __name__ == "__main__":

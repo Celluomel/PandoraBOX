@@ -55,13 +55,14 @@ class BodyCommandQueueTest(unittest.TestCase):
             "type": "command_result",
             "command_id": command.command_id,
             "status": "executed",
+            "verification_status": "verified_observation",
             "outcome": {"kind": "success", "reward": 1.0},
         })
         self.assertTrue(result["ok"])
         self.assertEqual(result["command"]["status"], "executed")
+        self.assertIsNotNone(result["command"]["executed_at"])
         events = self.body.recent_events()
         self.assertTrue(any(item["kind"] == "actuation_feedback" for item in events))
-
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
