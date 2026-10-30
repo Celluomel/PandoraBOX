@@ -1,5 +1,6 @@
 import unittest
 import importlib.util
+import ast
 from pathlib import Path
 
 _CONFIG_PATH = Path(__file__).resolve().parents[1] / "core" / "body_bridge_config.py"
@@ -10,6 +11,28 @@ validate_bind = _CONFIG.validate_bind
 
 
 class BodyBridgeListenerTests(unittest.TestCase):
+    def test_full_app_initializes_brain_before_accepting_body_bridge(self):
+        app_path = Path(__file__).resolve().parents[1] / "app.py"
+        tree = ast.parse(app_path.read_text(encoding="utf-8"))
+        startup = next(
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.AsyncFunctionDef) and node.name == "_on_startup"
+        )
+        init_line = next(
+            node.lineno for node in ast.walk(startup)
+            if isinstance(node, ast.Await)
+            and isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Attribute)
+            and node.value.func.attr == "initialize"
+        )
+        listener_line = next(
+            node.lineno for node in ast.walk(startup)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "start_body_bridge_server"
+        )
+        self.assertGreater(listener_line, init_line)
+
     def test_shared_server_helper_respects_disabled_setting(self):
         if importlib.util.find_spec("uvicorn") is None:
             self.skipTest("Uvicorn is not installed in the Body-only test environment")

@@ -264,16 +264,6 @@ if __name__ in {'__main__', '__mp_main__'}:
         page renders immediately — no splash screen wait.
         """
         global _body_bridge_listener
-        try:
-            from core.body_bridge_server import start_body_bridge_server
-            _body_bridge_listener = start_body_bridge_server(
-                config,
-                getattr(config, 'NICEGUI_HOST', '127.0.0.1'),
-                int(config.NICEGUI_PORT),
-            )
-        except Exception as exc:
-            logger.exception('Body bridge listener failed to start: %s', exc)
-
         if not state.ready and not state.initializing:
             logger.info('🧠 Pre-warming PandoraBOX brain on startup…')
             await state.initialize()
@@ -298,6 +288,19 @@ if __name__ in {'__main__', '__mp_main__'}:
                 await _asyncio.to_thread(state.vision.start_camera)
 
             logger.info('✅ Brain pre-warm complete — ready for connections')
+
+        # Do not accept Body bridge sessions until the full Brain has created
+        # its organism and shared BodyRuntime. Otherwise an early WebSocket can
+        # bind to a temporary standalone adapter and strand live telemetry.
+        try:
+            from core.body_bridge_server import start_body_bridge_server
+            _body_bridge_listener = start_body_bridge_server(
+                config,
+                getattr(config, 'NICEGUI_HOST', '127.0.0.1'),
+                int(config.NICEGUI_PORT),
+            )
+        except Exception as exc:
+            logger.exception('Body bridge listener failed to start: %s', exc)
 
     from managers.security_manager import security
     app.on_startup(_on_startup)
