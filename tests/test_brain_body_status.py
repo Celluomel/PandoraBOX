@@ -139,6 +139,53 @@ class BrainBodyStatusResponseTest(unittest.TestCase):
         self.assertNotIn("0.5", result["response"])
         self.assertNotIn("sensor.odometry [remote", result["response"])
 
+    def test_body_status_shows_older_hardware_samples_as_stale_not_missing(self):
+        from cognition.persona_bridge import PersonaBridge
+
+        observation = {
+            "subject": "sensor.gps",
+            "source": "remote:body:ventuno_usart3_gps",
+            "observed_at": __import__("time").time() - 24,
+            "value": {"available": True, "fix": True, "latitude": 48.86,
+                      "longitude": 2.11, "satellites": 6},
+        }
+        body = SimpleNamespace(
+            worldmodel_plan=lambda: {"active_plan": None},
+            worldmodel=None,
+            status=lambda: {"brain_bridge": {"connected": True}},
+            snapshot=lambda max_age=None: [observation],
+        )
+        bridge = PersonaBridge.__new__(PersonaBridge)
+        bridge._organism = SimpleNamespace(_body_runtime=body)
+
+        result = bridge._body_status_response("body status")
+
+        self.assertIn("STALE sample (24s)", result["response"])
+        self.assertIn("gps live: fix", result["response"])
+
+    def test_body_status_never_expands_simulation_snapshot_without_flag(self):
+        from cognition.persona_bridge import PersonaBridge
+
+        observation = {
+            "subject": "body.world_model",
+            "source": "remote:body:world_model",
+            "observed_at": __import__("time").time(),
+            "value": {"source": "ros2_simulation", "objects": [{"label": "simulated chair"}]},
+        }
+        body = SimpleNamespace(
+            worldmodel_plan=lambda: {"active_plan": None},
+            worldmodel=None,
+            status=lambda: {"brain_bridge": {"connected": True}},
+            snapshot=lambda max_age=None: [observation],
+        )
+        bridge = PersonaBridge.__new__(PersonaBridge)
+        bridge._organism = SimpleNamespace(_body_runtime=body)
+
+        result = bridge._body_status_response("body status")
+
+        self.assertIn("simulation-only scene", result["response"])
+        self.assertNotIn("simulated chair", result["response"])
+
     def test_perception_response_uses_real_sensor_telemetry_when_scene_is_simulated(self):
         from cognition.persona_bridge import PersonaBridge
 
@@ -179,6 +226,21 @@ class BrainBodyStatusResponseTest(unittest.TestCase):
         self.assertIn("Capteurs réels", result["response"])
         self.assertIn("0.62m", result["response"])
         self.assertFalse(result["perception"]["scene_available"])
+
+    def test_perception_response_rejects_simulation_source_without_flag(self):
+        from cognition.persona_bridge import PersonaBridge
+
+        bridge = PersonaBridge.__new__(PersonaBridge)
+        bridge._organism = SimpleNamespace(_body_runtime=SimpleNamespace(snapshot=lambda max_age=None: []))
+        bridge.current_body_perception = lambda: {
+            "available": True,
+            "snapshot": {"source": "ros2_simulation", "objects": [{"label": "simulated chair"}]},
+        }
+
+        result = bridge._body_perception_response()
+
+        self.assertIn("simulation, pas une observation", result["response"])
+        self.assertNotIn("simulated chair", result["response"])
 
 
 if __name__ == "__main__":

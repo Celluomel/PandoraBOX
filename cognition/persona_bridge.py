@@ -2856,7 +2856,7 @@ Memory honesty — two distinct cases:
                 )
                 for item in ordered[:8]:
                     age = max(0.0, time.time() - float(item.get("observed_at") or time.time()))
-                    if str(item.get("subject") or "").startswith("sensor.") and age > 15.0:
+                    if str(item.get("subject") or "").startswith("sensor.") and age > 60.0:
                         continue
                     value = item.get("value")
                     if str(item.get("subject") or "").startswith("sensor.") and self._is_simulated_body_observation(item):
@@ -2875,7 +2875,12 @@ Memory honesty — two distinct cases:
                         )
                     elif str(item.get("subject") or "").startswith("sensor."):
                         detail = self._format_body_sensor(item.get("subject", ""), value)
-                    elif item.get("subject") == "body.world_model" and isinstance(value, dict) and value.get("simulated_only"):
+                        if age > 15.0:
+                            detail = f"STALE sample ({age:.0f}s): {detail}"
+                    elif item.get("subject") == "body.world_model" and isinstance(value, dict) and (
+                        self._is_simulated_body_observation(item)
+                        or self._is_simulated_body_snapshot(value)
+                    ):
                         detail = "simulation-only scene; pose and object detections are not live robot data"
                     else:
                         detail = json.dumps(value, ensure_ascii=False, default=str, separators=(",", ":"))[:360]
@@ -2963,9 +2968,9 @@ Memory honesty — two distinct cases:
         if not perception.get("available"):
             reason = str(perception.get("error") or "aucun snapshot récent n'est disponible")
             body = getattr(self._organism, "_body_runtime", None) if self._organism else None
-            observations = body.snapshot(max_age=15.0) if body is not None else []
+            observations = body.snapshot(max_age=60.0) if body is not None else []
             sensor_lines = [
-                self._format_body_sensor(item.get("subject", ""), item.get("value"))
+                self._format_body_sensor_observation(item)
                 for item in observations
                 if str(item.get("subject") or "").startswith("sensor.")
                 and not self._is_simulated_body_observation(item)
@@ -2985,11 +2990,11 @@ Memory honesty — two distinct cases:
                 "perception": {"error": reason},
             }
         snapshot = perception.get("snapshot") or {}
-        if snapshot.get("simulated_only") or snapshot.get("ground_truth_available"):
+        if self._is_simulated_body_snapshot(snapshot):
             body = getattr(self._organism, "_body_runtime", None) if self._organism else None
-            observations = body.snapshot(max_age=30.0) if body is not None else []
+            observations = body.snapshot(max_age=60.0) if body is not None else []
             sensor_lines = [
-                self._format_body_sensor(item.get("subject", ""), item.get("value"))
+                self._format_body_sensor_observation(item)
                 for item in observations
                 if str(item.get("subject") or "").startswith("sensor.")
                 and not self._is_simulated_body_observation(item)
@@ -3012,15 +3017,40 @@ Memory honesty — two distinct cases:
         }
 
     @staticmethod
-    def _is_simulated_body_observation(item: dict) -> bool:
+    def _is_simulated_source(source: object) -> bool:
+        source_text = str(source or "").lower()
+        return any(marker in source_text for marker in (
+            "ros2_simulation", "sim_robot", "simulator", "virtual_lidar",
+        ))
+
+    @classmethod
+    def _is_simulated_body_observation(cls, item: dict) -> bool:
         value = item.get("value") if isinstance(item, dict) else None
         provenance = item.get("provenance") if isinstance(item, dict) else None
-        source = str(item.get("source") or "").lower() if isinstance(item, dict) else ""
+        source = item.get("source") if isinstance(item, dict) else ""
         return (
-            "ros2_simulation" in source
+            cls._is_simulated_source(source)
+            or (isinstance(value, dict) and cls._is_simulated_source(value.get("source")))
             or (isinstance(value, dict) and value.get("simulated") is True)
             or (isinstance(provenance, dict) and provenance.get("simulated") is True)
+            or (isinstance(provenance, dict) and cls._is_simulated_source(provenance.get("source")))
         )
+
+    @classmethod
+    def _is_simulated_body_snapshot(cls, snapshot: dict) -> bool:
+        semantic_scene = snapshot.get("semantic_scene")
+        return (
+            snapshot.get("simulated_only") is True
+            or snapshot.get("ground_truth_available") is True
+            or cls._is_simulated_source(snapshot.get("source"))
+            or (isinstance(semantic_scene, dict) and semantic_scene.get("simulated") is True)
+        )
+
+    def _format_body_sensor_observation(self, item: dict) -> str:
+        subject = str(item.get("subject") or "sensor")
+        detail = self._format_body_sensor(subject, item.get("value"))
+        age = max(0.0, time.time() - float(item.get("observed_at") or time.time()))
+        return f"{detail} (STALE {age:.0f}s)" if age > 15.0 else detail
 
     @staticmethod
     def _format_body_sensor(subject: str, value) -> str:
