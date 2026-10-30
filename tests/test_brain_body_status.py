@@ -108,6 +108,37 @@ class BrainBodyStatusResponseTest(unittest.TestCase):
         self.assertIn("simulation-only", result["response"])
         self.assertNotIn('"distance_m"', result["response"])
 
+    def test_body_status_excludes_ros2_simulation_sensors(self):
+        from cognition.persona_bridge import PersonaBridge
+
+        observations = [{
+            "subject": "sensor.odometry",
+            "source": "remote:body:ros2_simulation",
+            "observed_at": __import__("time").time(),
+            "value": {"position_m": [0.5, 0.0, 0.0]},
+        }, {
+            "subject": "sensor.gps",
+            "source": "remote:body:ventuno_usart3_gps",
+            "observed_at": __import__("time").time(),
+            "value": {"available": True, "fix": True, "latitude": 48.86,
+                      "longitude": 2.11, "satellites": 6},
+        }]
+        body = SimpleNamespace(
+            worldmodel_plan=lambda: {"active_plan": None},
+            worldmodel=None,
+            status=lambda: {"brain_bridge": {"connected": True}},
+            snapshot=lambda max_age=None: observations,
+        )
+        bridge = PersonaBridge.__new__(PersonaBridge)
+        bridge._organism = SimpleNamespace(_body_runtime=body)
+
+        result = bridge._body_status_response("explain body feedback")
+
+        self.assertIn("gps live: fix 48.860000, 2.110000", result["response"])
+        self.assertIn("Nav2 simulés", result["response"])
+        self.assertNotIn("0.5", result["response"])
+        self.assertNotIn("sensor.odometry [remote", result["response"])
+
     def test_perception_response_uses_real_sensor_telemetry_when_scene_is_simulated(self):
         from cognition.persona_bridge import PersonaBridge
 

@@ -2846,6 +2846,7 @@ Memory honesty — two distinct cases:
                         "body_status": {"bridge_connected": connected, "observation_count": len(observations)},
                     }
                 telemetry_lines = []
+                simulation_sensor_seen = False
                 ordered = sorted(
                     observations,
                     key=lambda item: (
@@ -2858,6 +2859,9 @@ Memory honesty — two distinct cases:
                     if str(item.get("subject") or "").startswith("sensor.") and age > 15.0:
                         continue
                     value = item.get("value")
+                    if str(item.get("subject") or "").startswith("sensor.") and self._is_simulated_body_observation(item):
+                        simulation_sensor_seen = True
+                        continue
                     if isinstance(value, dict) and item.get("subject") == "body.runtime":
                         camera = value.get("camera") or {}
                         robot = value.get("robot") or {}
@@ -2885,6 +2889,8 @@ Memory honesty — two distinct cases:
                     response += " Télémétrie Body récente : " + " | ".join(telemetry_lines)
                 else:
                     response += " Aucune observation Body récente n'est remontée."
+                if simulation_sensor_seen:
+                    response += " Les messages Nav2 simulés (odométrie/LiDAR) sont exclus : aucune odométrie physique correspondante n'est actuellement confirmée."
                 if worldmodel is None:
                     response += " L'API HTTP du Body distant est indisponible pour la planification."
                 return {
@@ -2962,6 +2968,7 @@ Memory honesty — two distinct cases:
                 self._format_body_sensor(item.get("subject", ""), item.get("value"))
                 for item in observations
                 if str(item.get("subject") or "").startswith("sensor.")
+                and not self._is_simulated_body_observation(item)
             ]
             if sensor_lines:
                 return {
@@ -2985,6 +2992,7 @@ Memory honesty — two distinct cases:
                 self._format_body_sensor(item.get("subject", ""), item.get("value"))
                 for item in observations
                 if str(item.get("subject") or "").startswith("sensor.")
+                and not self._is_simulated_body_observation(item)
             ]
             response = "Le snapshot de scène disponible est une simulation, pas une observation du robot réel. "
             response += "Capteurs réels récents : " + (" ; ".join(sensor_lines[:8]) if sensor_lines else "aucune télémétrie capteur récente reçue.")
@@ -3002,6 +3010,17 @@ Memory honesty — two distinct cases:
             "response": "D'après le dernier snapshot du Body : " + summary,
             "perception": perception,
         }
+
+    @staticmethod
+    def _is_simulated_body_observation(item: dict) -> bool:
+        value = item.get("value") if isinstance(item, dict) else None
+        provenance = item.get("provenance") if isinstance(item, dict) else None
+        source = str(item.get("source") or "").lower() if isinstance(item, dict) else ""
+        return (
+            "ros2_simulation" in source
+            or (isinstance(value, dict) and value.get("simulated") is True)
+            or (isinstance(provenance, dict) and provenance.get("simulated") is True)
+        )
 
     @staticmethod
     def _format_body_sensor(subject: str, value) -> str:
