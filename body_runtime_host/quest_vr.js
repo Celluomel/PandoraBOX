@@ -516,19 +516,16 @@ function updateSensorPointUniforms() {
 
 function buildSensorDepthCloud(depth, depthImage, colorImage) {
   if (!depthImage?.width || !colorImage?.pixels) return false;
-  const grid = cloudGrid(depthImage.width, depthImage.height, 160);
+  const grid = cloudGrid(depthImage.width, depthImage.height);
   if (!sensorCloudBuffers || sensorCloudBuffers.count !== grid.count) {
     sensorCloudBuffers = {
       count: grid.count,
       positions: new Float32Array(grid.count * 3),
       colors: new Float32Array(grid.count * 3),
-      filteredPositions: new Float32Array(grid.count * 3),
-      filteredColors: new Float32Array(grid.count * 3),
-      hasPreviousFrame: false,
     };
     const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute('position', new THREE.BufferAttribute(sensorCloudBuffers.filteredPositions, 3));
-    geometry.setAttribute('color', new THREE.BufferAttribute(sensorCloudBuffers.filteredColors, 3));
+    geometry.setAttribute('position', new THREE.BufferAttribute(sensorCloudBuffers.positions, 3));
+    geometry.setAttribute('color', new THREE.BufferAttribute(sensorCloudBuffers.colors, 3));
     sensorDepthCloud.geometry.dispose();
     sensorDepthCloud.geometry = geometry;
   }
@@ -540,23 +537,6 @@ function buildSensorDepthCloud(depth, depthImage, colorImage) {
     heightM: mount.heightM, positions: sensorCloudBuffers.positions, colors: sensorCloudBuffers.colors,
   });
   const geometry = sensorDepthCloud.geometry;
-  const { positions, colors, filteredPositions, filteredColors } = sensorCloudBuffers;
-  const positionJumpLimitSq = 0.07 * 0.07;
-  const currentWeight = sensorCloudBuffers.hasPreviousFrame ? 0.65 : 1;
-  for (let i = 0; i < count * 3; i += 3) {
-    const dx = positions[i] - filteredPositions[i];
-    const dy = positions[i + 1] - filteredPositions[i + 1];
-    const dz = positions[i + 2] - filteredPositions[i + 2];
-    const stable = sensorCloudBuffers.hasPreviousFrame && dx * dx + dy * dy + dz * dz < positionJumpLimitSq;
-    const weight = stable ? currentWeight : 1;
-    filteredPositions[i] += dx * weight;
-    filteredPositions[i + 1] += dy * weight;
-    filteredPositions[i + 2] += dz * weight;
-    filteredColors[i] += (colors[i] - filteredColors[i]) * weight;
-    filteredColors[i + 1] += (colors[i + 1] - filteredColors[i + 1]) * weight;
-    filteredColors[i + 2] += (colors[i + 2] - filteredColors[i + 2]) * weight;
-  }
-  sensorCloudBuffers.hasPreviousFrame = true;
   geometry.setDrawRange(0, count);
   geometry.getAttribute('position').needsUpdate = true;
   geometry.getAttribute('color').needsUpdate = true;

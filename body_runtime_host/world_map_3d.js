@@ -3292,7 +3292,7 @@ async function rebuildDepthCloud(depth, segmentation = latestSegmentation) {
   const frameCalibration = metricDepthCalibration;
   updateCloudHud();
   const intrinsics = cameraIntrinsicsForImage(image);
-  const stride = Math.max(3, Math.ceil(Math.max(image.width, image.height) / 240));
+  const stride = Math.max(3, Math.ceil(Math.max(image.width, image.height) / 120));
   const positions = [];
   const depthValues = [];
   const pointColors = [];
