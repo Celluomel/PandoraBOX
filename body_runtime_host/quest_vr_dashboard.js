@@ -498,8 +498,8 @@ export class QuestVRDashboard {
     ctx.font = '600 21px ui-monospace, monospace';
     ctx.textAlign = 'left';
     ctx.fillText(this.grabbedController
-      ? 'HUD GRABBED · GRAB STICK ↑↓ DEPTH / ←→ WIDTH · OTHER STICK ↑↓ HEIGHT · MOVE HAND TO REPOSITION'
-      : 'HOLD GRIP TO EDIT · MOVE HAND TO POSITION · GRAB STICK: DEPTH + WIDTH · OTHER STICK: HEIGHT', margin + 8, height - 28);
+      ? `${this.grabbedWindow === 'gps-map' ? 'GPS MAP' : 'HUD'} GRABBED · MOVE HAND TO POSITION · STICKS RESIZE / ADJUST DEPTH`
+      : 'SQUEEZE GRIP OR HOLD TRIGGER ON A WINDOW TO MOVE · SIZE BUTTONS ENLARGE WINDOWS', margin + 8, height - 28);
     ctx.textAlign = 'right';
     ctx.fillText(this.following ? 'CAMERA FOLLOW · BODY' : 'SCENE VIEW · FIXED', width - margin - 8, height - 28);
     ctx.restore();

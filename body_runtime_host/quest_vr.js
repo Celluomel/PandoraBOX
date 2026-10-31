@@ -1472,16 +1472,37 @@ function escapeText(value) {
 for (let index = 0; index < 2; index += 1) {
   const controller = renderer.xr.getController(index);
   const grip = renderer.xr.getControllerGrip(index);
-  controller.addEventListener('select', () => selectAt(controller));
+  const interaction = { selectHeld: false, dragStarted: false, holdTimer: 0 };
+  controller.addEventListener('selectstart', event => {
+    interaction.selectHeld = true;
+    if (!vrDashboard.visible || vrDashboard.grabbedController || !vrDashboard.isControllerOverDashboard(controller, raycaster)) return;
+    const inputSource = event.data;
+    interaction.holdTimer = window.setTimeout(() => {
+      if (!interaction.selectHeld || vrDashboard.grabbedController) return;
+      interaction.dragStarted = vrDashboard.beginAdjust(controller, inputSource, controller, raycaster);
+    }, 240);
+  });
+  controller.addEventListener('selectend', () => {
+    interaction.selectHeld = false;
+    window.clearTimeout(interaction.holdTimer);
+  });
+  controller.addEventListener('select', () => {
+    if (interaction.dragStarted) {
+      vrDashboard.endAdjust(controller, renderer.xr.isPresenting ? renderer.xr.getCamera(camera) : null);
+      interaction.dragStarted = false;
+      return;
+    }
+    selectAt(controller);
+  });
   controller.addEventListener('squeezestart', event => {
     try {
-      vrDashboard.beginAdjust(grip, event.data, controller, raycaster);
+      vrDashboard.beginAdjust(controller, event.data, controller, raycaster);
     } catch (error) {
       setStatus(`HUD adjustment failed: ${error.message}`, true);
     }
   });
   controller.addEventListener('squeezeend', () => {
-    vrDashboard.endAdjust(grip, renderer.xr.isPresenting ? renderer.xr.getCamera(camera) : null);
+    vrDashboard.endAdjust(controller, renderer.xr.isPresenting ? renderer.xr.getCamera(camera) : null);
   });
   const beam = new THREE.Line(
     new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, -4)]),
@@ -1526,7 +1547,7 @@ async function enterXR(mode) {
     document.querySelector('#enter-ar').textContent = mode === 'immersive-ar' ? 'Exit passthrough' : 'Passthrough AR';
     setStatus(mode === 'immersive-ar'
       ? 'Passthrough is active. The Body map is an unaligned overlay; controller input is telemetry only.'
-      : 'VR is active. Left stick moves through the scene; right stick turns. Hold either controller grip to reposition the HUD.');
+      : 'VR is active. Left stick moves through the scene; right stick turns. Squeeze a controller grip or hold its trigger on a window to move it.');
     session.addEventListener('end', () => {
       orbit.enabled = true;
       cameraBackgroundActive = false;
