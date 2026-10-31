@@ -1377,7 +1377,7 @@ class BodyHost:
             raise ValueError("MiDaS runtime must be htp_auto, htp, or cpu")
         self.config["BODY_MIDAS_RUNTIME"] = midas_runtime
         self.config["BODY_MIDAS_INTERVAL_S"] = max(
-            0.15, min(30.0, float(payload.get("midas_interval_s", self.value("BODY_MIDAS_INTERVAL_S", 0.25)) or 0.25)),
+            1.0 / 30.0, min(30.0, float(payload.get("midas_interval_s", self.value("BODY_MIDAS_INTERVAL_S", 0.25)) or 0.25)),
         )
         self.config["BODY_MIDAS_PYTHON"] = str(
             payload.get("midas_python", self.value("BODY_MIDAS_PYTHON", self._midas_service.DEFAULT_PYTHON))

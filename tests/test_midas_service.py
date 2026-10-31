@@ -20,7 +20,7 @@ class MiDaSDepthServiceTests(unittest.TestCase):
         values = {"BODY_MIDAS_ENABLED": False, "BODY_MIDAS_INTERVAL_S": 0.1}
         service = MiDaSDepthService(lambda key, default: values.get(key, default), lambda: {})
 
-        self.assertEqual(service.settings()["interval_s"], 0.15)
+        self.assertAlmostEqual(service.settings()["interval_s"], 1.0 / 30.0)
 
     def test_raw_depth_encoding_is_opt_in_and_can_be_requested_for_calibration(self):
         service = MiDaSDepthService(lambda key, default: default, lambda: {})

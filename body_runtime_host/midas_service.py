@@ -48,7 +48,7 @@ class MiDaSDepthService:
             runtime = "htp_auto"
         return {
             "enabled": bool(self._value("ENABLED", False)),
-            "interval_s": max(0.15, min(30.0, float(self._value("INTERVAL_S", 0.5) or 0.5))),
+            "interval_s": max(1.0 / 30.0, min(30.0, float(self._value("INTERVAL_S", 0.5) or 0.5))),
             "python": str(self._value("PYTHON", self.DEFAULT_PYTHON)),
             "model_path": str(self._value("MODEL_PATH", self.DEFAULT_MODEL)),
             **self.status(),
@@ -167,7 +167,7 @@ class MiDaSDepthService:
     def _run(self) -> None:
         try:
             while not self._stop.is_set():
-                cadence = max(0.15, min(30.0, float(self._value("INTERVAL_S", 0.5) or 0.5)))
+                cadence = max(1.0 / 30.0, min(30.0, float(self._value("INTERVAL_S", 0.5) or 0.5)))
                 if time.monotonic() < self._retry_at:
                     self._stop.wait(min(cadence, self._retry_at - time.monotonic()))
                     continue
@@ -208,7 +208,7 @@ class MiDaSDepthService:
                                 error=str(exc)[:240], frame_id=frame_id,
                                 latency_ms=round((time.monotonic() - started) * 1000.0, 1),
                             )
-                cadence = max(0.15, min(30.0, float(self._value("INTERVAL_S", cadence) or cadence)))
+                cadence = max(1.0 / 30.0, min(30.0, float(self._value("INTERVAL_S", cadence) or cadence)))
                 remaining = self._remaining_cadence_wait(cadence, cycle_started, time.monotonic())
                 self._stop.wait(remaining)
         finally:

@@ -432,7 +432,7 @@ async function pollCameraFrame() {
 function startCameraPolling() {
   stopCameraPolling();
   void pollCameraFrame();
-  cameraPollTimer = window.setInterval(pollCameraFrame, 200);
+  cameraPollTimer = window.setInterval(pollCameraFrame, 1000 / 30);
 }
 
 function stopCameraPolling() {
@@ -787,9 +787,12 @@ async function pollUltrasonicStatus() {
 
 function pollSensorScene() {
   if (activeSceneMode !== 'sensors') return;
-  void pollSensorDepth();
   void pollSensorYolo();
   void pollSensorRadar();
+}
+
+function pollSensorDepthScene() {
+  if (activeSceneMode === 'sensors') void pollSensorDepth();
 }
 
 function objectGeometry(item) {
@@ -1175,6 +1178,7 @@ async function selectSceneMode(mode) {
     gaussian?.setAttribute('aria-pressed', 'false');
     setStatus('Connecting live MiDaS, YOLOX and mmWave sensors…');
     void pollSensorScene();
+    void pollSensorDepth();
     return;
   }
   if (mode === 'gaussian') {
@@ -1604,8 +1608,8 @@ window.addEventListener('resize', () => {
 });
 
 setInterval(pollBody, 1200);
-setInterval(pollSensorScene, 120);
-setInterval(() => { if (activeSceneMode === 'sensors') void pollSensorYolo(); }, 220);
+setInterval(pollSensorDepthScene, 1000 / 30);
+setInterval(() => { if (activeSceneMode === 'sensors') void pollSensorYolo(); }, 1000 / 30);
 setInterval(() => { if (activeSceneMode === 'sensors') void pollSensorRadar(); }, 800);
 setInterval(() => { if (activeSceneMode === 'sensors') void pollUltrasonicStatus(); }, 500);
 void pollBody();
