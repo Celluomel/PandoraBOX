@@ -37,7 +37,7 @@ export class QuestVRDashboard {
     this.grabStartControllerPosition = new THREE.Vector3();
     this.grabStartWindowPosition = new THREE.Vector3();
     this.grabTranslationDelta = new THREE.Vector3();
-    this.grabTranslationGain = 2.5;
+    this.grabTranslationGain = 7;
     this.scratchPosition = new THREE.Vector3();
     this.scratchQuaternion = new THREE.Quaternion();
     this.facingMatrix = new THREE.Matrix4();
@@ -501,7 +501,7 @@ export class QuestVRDashboard {
     ctx.font = '600 21px ui-monospace, monospace';
     ctx.textAlign = 'left';
     ctx.fillText(this.grabbedController
-      ? `${this.grabbedWindow === 'gps-map' ? 'GPS MAP' : 'HUD'} GRABBED · MOVE HAND 2.5× · STICKS RESIZE / ADJUST DEPTH`
+      ? `${this.grabbedWindow === 'gps-map' ? 'GPS MAP' : 'HUD'} GRABBED · MOVE HAND 7× · STICKS RESIZE / ADJUST DEPTH`
       : 'SQUEEZE GRIP OR HOLD TRIGGER ON A WINDOW TO MOVE · SIZE BUTTONS ENLARGE WINDOWS', margin + 8, height - 28);
     ctx.textAlign = 'right';
     ctx.fillText(this.following ? 'CAMERA FOLLOW · BODY' : 'SCENE VIEW · FIXED', width - margin - 8, height - 28);

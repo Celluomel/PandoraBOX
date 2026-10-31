@@ -268,7 +268,7 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertIn("panel.position.set(0, 0, -0.9)", source)
         self.assertIn("this.worldAnchored = true", source)
         self.assertIn("targetRoot.position.copy(this.grabStartWindowPosition).addScaledVector(this.grabTranslationDelta, this.grabTranslationGain)", source)
-        self.assertIn("this.grabTranslationGain = 2.5", source)
+        self.assertIn("this.grabTranslationGain = 7", source)
         self.assertIn("Windows keep world positions", source)
         self.assertNotIn("createArcGeometry", source)
         self.assertNotIn("forwardDot <", source)
