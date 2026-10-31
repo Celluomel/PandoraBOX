@@ -3122,6 +3122,85 @@ Memory honesty — two distinct cases:
             "perception": perception,
         }
 
+    def _body_sensor_response(self) -> dict:
+        body = getattr(self._organism, "_body_runtime", None) if self._organism else None
+        if body is None:
+            return {"handled": True, "status": "unavailable", "response": "Le pont télémétrique du Body est indisponible."}
+        observations = body.snapshot(max_age=300.0)
+        sensors = [
+            item for item in observations
+            if str(item.get("subject") or "").startswith("sensor.")
+            and not self._is_simulated_body_observation(item)
+        ]
+        if not sensors:
+            return {
+                "handled": True,
+                "status": "unavailable",
+                "response": "Aucune télémétrie de capteur matériel reçue dans les cinq dernières minutes. Je ne remplace pas ces mesures par la caméra ou la simulation.",
+                "sensor_observations": [],
+            }
+        sensors.sort(key=lambda item: float(item.get("observed_at") or 0), reverse=True)
+        lines = [self._format_body_sensor_observation(item) for item in sensors[:10]]
+        return {
+            "handled": True,
+            "status": "reported",
+            "response": "Mesures des capteurs matériels du Body : " + " ; ".join(lines),
+            "sensor_observations": sensors[:10],
+        }
+
+    def _body_gps_location_response(self) -> dict:
+        body = getattr(self._organism, "_body_runtime", None) if self._organism else None
+        if body is None:
+            return {"handled": True, "status": "unavailable", "response": "Le pont télémétrique du Body est indisponible."}
+        observations = body.snapshot(max_age=300.0)
+        gps = next((
+            item for item in observations
+            if item.get("subject") == "sensor.gps"
+            and not self._is_simulated_body_observation(item)
+            and isinstance(item.get("value"), dict)
+        ), None)
+        value = gps.get("value", {}) if gps else {}
+        lat = value.get("latitude", value.get("lat"))
+        lon = value.get("longitude", value.get("lon", value.get("lng")))
+        if not gps or not value.get("fix") or lat is None or lon is None:
+            return {
+                "handled": True,
+                "status": "unavailable",
+                "response": "Le Body n'a pas transmis de position GNSS valide récente; je ne peux pas établir sa localisation actuelle.",
+                "location": {"available": False},
+            }
+        try:
+            lat, lon = float(lat), float(lon)
+        except (TypeError, ValueError):
+            return {"handled": True, "status": "unavailable", "response": "La position GNSS reçue est invalide."}
+        age = max(0.0, time.time() - float(gps.get("observed_at") or time.time()))
+        stale = age > 15.0
+        map_url = f"https://www.openstreetmap.org/?mlat={lat:.6f}&mlon={lon:.6f}#map=17/{lat:.6f}/{lon:.6f}"
+        satellites = value.get("satellites")
+        freshness = f"fix reçu il y a {age:.0f} s" + (" (position périmée)" if stale else "")
+        accuracy = value.get("horizontal_accuracy_m", value.get("accuracy_m"))
+        detail = f", précision annoncée ±{float(accuracy):.1f} m" if isinstance(accuracy, (int, float)) else " ; précision métrique non fournie par ce flux"
+        sat_detail = f", {satellites} satellites" if satellites is not None else ""
+        return {
+            "handled": True,
+            "status": "reported",
+            "response": f"Position GNSS du Body : {lat:.6f}, {lon:.6f} ({freshness}{sat_detail}{detail}). Ouvrir dans OpenStreetMap : {map_url}. Cela localise le Body à l'échelle géographique, pas sa pose précise ni les obstacles dans la pièce.",
+            "location": {"available": True, "latitude": lat, "longitude": lon, "age_seconds": round(age, 1), "stale": stale, "map_url": map_url},
+        }
+
+    @staticmethod
+    def _body_data_request_route(text: str) -> str | None:
+        normalized = str(text or "").lower()
+        gps_query = re.search(r"\b(gps|gnss|latitude|longitude|coordonn[ée]es?)\b", normalized)
+        location_query = re.search(r"\b(locali[sz](?:ation|e|er)|position|where|où|locate|map|carte)\b", normalized)
+        if gps_query and location_query:
+            return "body_location"
+        sensor_query = re.search(r"\b(sensors?|capteurs?|télémétrie|telemetry)\b", normalized)
+        sensor_ask = re.search(r"\b(what|which|provide|providing|data|status|show|quels?|quelles?|que|quoi|donn[ée]es?|fournissent|montrent|affiche)\b", normalized)
+        if sensor_query and sensor_ask:
+            return "body_sensors"
+        return None
+
     @staticmethod
     def _is_simulated_source(source: object) -> bool:
         source_text = str(source or "").lower()
@@ -3211,6 +3290,11 @@ Memory honesty — two distinct cases:
     def handle_body_chat_turn(self, user_input: str, user_id: str = "default") -> dict | None:
         """Handle only Body-specific turns; return None for normal dialogue."""
         pending = self._pending_body_plans.get(str(user_id))
+        data_route = self._body_data_request_route(user_input)
+        if data_route == "body_location":
+            return self._body_gps_location_response()
+        if data_route == "body_sensors":
+            return self._body_sensor_response()
         route = self._classify_body_chat_turn(user_input, pending=pending)
         if route == "body_status":
             # A local classifier can confuse an approval such as "execute the
@@ -3298,7 +3382,23 @@ Memory honesty — two distinct cases:
             return {"handled": True, "status": "blocked", "response": "Je ne peux pas construire un plan Body fiable : " + str(assessment.get("error", "demande ambiguë")), "assessment": assessment}
         feasibility = assessment.get("feasibility") or {}
         if not feasibility.get("feasible"):
-            errors = "; ".join(feasibility.get("errors") or [feasibility.get("error", "faisabilité non confirmée")])
+            feasibility_errors = feasibility.get("errors") or [feasibility.get("error", "faisabilité non confirmée")]
+            unknown_person = any(
+                re.search(r"unknown target:\s*person\b", str(error), re.IGNORECASE)
+                for error in feasibility_errors
+            )
+            if unknown_person:
+                return {
+                    "handled": True,
+                    "status": "blocked",
+                    "response": (
+                        "Je détecte la personne dans l'image YOLOX, mais seulement dans une boîte 2D : "
+                        "le Body ne dispose pas d'une position métrique associée à cette personne pour calculer une trajectoire sûre. "
+                        "Aucun mouvement n'a été envoyé. Il faut d'abord localiser la personne dans le repère du Body avec une association capteurs validée."
+                    ),
+                    "assessment": assessment,
+                }
+            errors = "; ".join(feasibility_errors)
             return {"handled": True, "status": "blocked", "response": "Le Body ne confirme pas cette action : " + errors, "assessment": assessment}
         replacement_id = ""
         body = getattr(self._organism, "_body_runtime", None) if self._organism else None

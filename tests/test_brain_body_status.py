@@ -9,6 +9,82 @@ sys.path.insert(0, str(ROOT))
 
 
 class BrainBodyStatusResponseTest(unittest.TestCase):
+    def test_sensor_data_question_returns_hardware_telemetry_not_camera_detections(self):
+        from cognition.persona_bridge import PersonaBridge
+
+        now = __import__("time").time()
+        body = SimpleNamespace(snapshot=lambda max_age=None: [{
+            "subject": "sensor.ultrasonic",
+            "source": "remote:body:hc_sr04_ventuno_bridge",
+            "observed_at": now,
+            "value": {"available": True, "simulated": False, "sensors": [
+                {"id": "front_left", "available": True, "distance_m": 0.75},
+                {"id": "front_right", "available": True, "distance_m": 2.28},
+                {"id": "rear", "available": True, "distance_m": 1.78},
+            ]},
+        }, {
+            "subject": "sensor.odometry",
+            "source": "remote:body:ros2_simulation",
+            "observed_at": now,
+            "value": {"position_m": [0.5, 0.0, 0.0]},
+        }], camera_yolo_status=lambda: {
+            "state": "ready", "captured_at": now,
+            "detections": [{"label": "person", "confidence": 0.74}],
+        })
+        bridge = PersonaBridge.__new__(PersonaBridge)
+        bridge._pending_body_plans = {}
+        bridge._organism = SimpleNamespace(_body_runtime=body)
+        bridge._classify_body_chat_turn = lambda *args, **kwargs: self.fail("sensor query must not be routed through the language classifier")
+
+        result = bridge.handle_body_chat_turn("what are the body sensors providing")
+
+        self.assertIn("front_left 0.75m", result["response"])
+        self.assertIn("front_right 2.28m", result["response"])
+        self.assertNotIn("person", result["response"])
+        self.assertNotIn("0.5", result["response"])
+
+    def test_gps_localization_question_returns_coordinates_and_map_link(self):
+        from cognition.persona_bridge import PersonaBridge
+
+        now = __import__("time").time()
+        body = SimpleNamespace(snapshot=lambda max_age=None: [{
+            "subject": "sensor.gps",
+            "source": "remote:body:ventuno_usart3_gps",
+            "observed_at": now,
+            "value": {"available": True, "simulated": False, "fix": True,
+                      "latitude": 48.862452, "longitude": 2.118805, "satellites": 9},
+        }])
+        bridge = PersonaBridge.__new__(PersonaBridge)
+        bridge._pending_body_plans = {}
+        bridge._organism = SimpleNamespace(_body_runtime=body)
+        bridge._classify_body_chat_turn = lambda *args, **kwargs: self.fail("GPS localization must be deterministic")
+
+        result = bridge.handle_body_chat_turn("from GPS coordinates can you establish the localisation")
+
+        self.assertIn("48.862452, 2.118805", result["response"])
+        self.assertIn("openstreetmap.org", result["location"]["map_url"])
+        self.assertFalse(result["location"]["stale"])
+        self.assertIn("pas sa pose précise", result["response"])
+
+    def test_move_toward_person_explains_missing_metric_localization_and_sends_nothing(self):
+        from cognition.persona_bridge import PersonaBridge
+
+        bridge = PersonaBridge.__new__(PersonaBridge)
+        bridge._pending_body_plans = {}
+        bridge._organism = SimpleNamespace(_body_runtime=SimpleNamespace())
+        bridge._classify_body_chat_turn = lambda *args, **kwargs: "body_action"
+        bridge.assess_body_action_request = lambda _text: {
+            "accepted": True,
+            "feasibility": {"feasible": False, "errors": ["step 1 references unknown target: person"]},
+        }
+
+        result = bridge.handle_body_chat_turn("can you move toward the person")
+
+        self.assertEqual(result["status"], "blocked")
+        self.assertIn("boîte 2D", result["response"])
+        self.assertIn("position métrique", result["response"])
+        self.assertIn("Aucun mouvement n'a été envoyé", result["response"])
+
     def test_movement_status_prioritizes_ack_without_claiming_physical_motion(self):
         from cognition.persona_bridge import PersonaBridge
 
