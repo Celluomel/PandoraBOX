@@ -273,7 +273,8 @@ class QuestDashboardTests(unittest.TestCase):
     def test_hud_faces_the_headset_when_moved_and_sensor_labels_are_legible(self):
         source = (Path(__file__).resolve().parents[1] / "body_runtime_host" / "quest_vr_dashboard.js").read_text(encoding="utf-8")
 
-        self.assertIn("this.facingMatrix.lookAt(this.scratchPosition, this.root.position, this.headUp)", source)
+        self.assertIn("this.facingMatrix.lookAt(this.scratchPosition, this.root.position, this.worldUp)", source)
+        self.assertIn("const hudPitch = this.THREE.MathUtils.clamp(gazePitch", source)
         self.assertIn("this.root.position.copy(this.headOffsetPosition).applyQuaternion(this.scratchQuaternion).add(this.scratchPosition)", source)
         self.assertIn("ctx.font = '16px ui-monospace, monospace'", source)
         self.assertIn("ctx.font = '15px ui-monospace, monospace'", source)
@@ -425,6 +426,10 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertIn("this.gpsMapRoot = new THREE.Group()", dashboard)
         self.assertIn("new THREE.PlaneGeometry(1.9, 1.35375)", dashboard)
         self.assertIn("pandorabox.quest-gps-map-pose.v2", dashboard)
+        self.assertIn("drawButton('hud-size-up'", dashboard)
+        self.assertIn("drawButton('hud-size-down'", dashboard)
+        self.assertIn("drawButton('gps-map-size-up'", dashboard)
+        self.assertIn("drawButton('gps-map-size-down'", dashboard)
         self.assertIn("drawButton('gps-map-streets'", dashboard)
         self.assertIn("drawButton('gps-map-satellite'", dashboard)
         self.assertIn("drawButton('gps-map-center',", dashboard)
@@ -433,6 +438,10 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertIn("© OpenStreetMap contributors", dashboard)
         self.assertIn("gpsMapWidthScale", dashboard)
         self.assertIn("this.grabbedWindow === 'gps-map'", dashboard)
+        self.assertIn("Math.min(5, this.widthScale * multiplier)", dashboard)
+        self.assertIn("Math.min(5, this.gpsMapWidthScale * multiplier)", dashboard)
+        self.assertIn("const gazePitch = Math.asin", dashboard)
+        self.assertIn("const mapPitch = this.THREE.MathUtils.clamp", dashboard)
         self.assertIn("vrDashboard.setGpsMapVisible(!vrDashboard.gpsMapVisible)", quest)
         self.assertIn("vrDashboard.beginAdjust(grip, event.data, controller, raycaster)", quest)
 

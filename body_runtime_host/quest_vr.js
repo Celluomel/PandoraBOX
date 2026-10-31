@@ -1221,6 +1221,14 @@ function selectAt(controller) {
     vrDashboard.setGpsMapVisible(!vrDashboard.gpsMapVisible);
     return;
   }
+  if (hudAction === 'hud-size-up' || hudAction === 'hud-size-down') {
+    vrDashboard.resizeHud(hudAction === 'hud-size-up' ? 1.15 : 1 / 1.15);
+    return;
+  }
+  if (hudAction === 'gps-map-size-up' || hudAction === 'gps-map-size-down') {
+    vrDashboard.resizeGpsMap(hudAction === 'gps-map-size-up' ? 1.15 : 1 / 1.15);
+    return;
+  }
   if (hudAction === 'gps-map-streets' || hudAction === 'gps-map-satellite') {
     vrDashboard.gpsMap.layer = hudAction === 'gps-map-satellite' ? 'satellite' : 'streets';
     vrDashboard.drawGpsMapWindow();
