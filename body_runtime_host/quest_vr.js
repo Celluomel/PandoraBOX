@@ -241,6 +241,9 @@ let latestSensorDepthStatus = null;
 let sensorMetricCalibration = null;
 let sensorCalibrationCheckedAt = 0;
 let sensorYoloFrameId = '';
+let sensorYoloLastPairedAt = 0;
+let sensorYoloNoDetectionSince = 0;
+let sensorYoloDisplayedCount = 0;
 let sensorRadarSignature = '';
 let sensorViewInitialized = false;
 let mapCenter = { x: 5, z: -6 };
@@ -526,13 +529,32 @@ function buildSensorDepthCloud(depth, depthImage, colorImage) {
 
 function updateSensorYolo(yolo) {
   const pairing = yoloMatchesDepth(yolo, sensorDepthFrame);
+  const now = Date.now();
   const detections = pairing.ok ? yolo.detections || [] : [];
-  const frameId = detections.length
-    ? `${yolo.frame_id || yolo.captured_at}|${sensorDepthFrame?.frame_id}|${sensorMetricCalibration?.available ? 'cal' : 'rel'}` : '';
-  if (frameId === sensorYoloFrameId) return detections.length;
+  if (!pairing.ok || !sensorDepthValues || !sensorDepthIntrinsics) {
+    if (sensorYoloDisplayedCount && now - sensorYoloLastPairedAt <= 1400) return sensorYoloDisplayedCount;
+    if (sensorYoloDisplayedCount) {
+      disposeChildren(sensorObjectGroup);
+      sensorYoloDisplayedCount = 0;
+      sensorYoloFrameId = '';
+    }
+    return 0;
+  }
+  if (!detections.length) {
+    if (!sensorYoloNoDetectionSince) sensorYoloNoDetectionSince = now;
+    if (sensorYoloDisplayedCount && now - sensorYoloNoDetectionSince < 700) return sensorYoloDisplayedCount;
+    if (sensorYoloDisplayedCount) disposeChildren(sensorObjectGroup);
+    sensorYoloDisplayedCount = 0;
+    sensorYoloFrameId = '';
+    return 0;
+  }
+  sensorYoloNoDetectionSince = 0;
+  const frameId = `${yolo.frame_id || yolo.captured_at}|${sensorDepthFrame?.frame_id}|${sensorMetricCalibration?.available ? 'cal' : 'rel'}`;
+  sensorYoloLastPairedAt = now;
+  if (frameId === sensorYoloFrameId) return sensorYoloDisplayedCount;
   sensorYoloFrameId = frameId;
   disposeChildren(sensorObjectGroup);
-  if (!sensorDepthValues || !sensorDepthIntrinsics) return detections.length;
+  sensorYoloDisplayedCount = 0;
   const width = sensorDepthValues.width;
   const height = sensorDepthValues.height;
   const { fx, fy, cx, cy } = sensorDepthIntrinsics;
@@ -567,8 +589,9 @@ function updateSensorYolo(yolo) {
     label.position.set(centerX, centerY + boxHeight / 2 + 0.16, -z);
     label.renderOrder = 4;
     sensorObjectGroup.add(label);
+    sensorYoloDisplayedCount += 1;
   }
-  return detections.length;
+  return sensorYoloDisplayedCount;
 }
 
 function updateSensorRadar(perception) {

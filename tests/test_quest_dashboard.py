@@ -72,6 +72,17 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertIn("this.sceneMode === 'sensors'", dashboard)
         self.assertIn("hudAction === 'sensor-mode'", source)
 
+    def test_vr_3d_yolox_boxes_hold_last_paired_result_across_poll_jitter(self):
+        source = (Path(__file__).resolve().parents[1] / "body_runtime_host" / "quest_vr.js").read_text(encoding="utf-8")
+        yolo_update = source.split("function updateSensorYolo(yolo) {", 1)[1].split("function updateSensorRadar", 1)[0]
+
+        self.assertIn("sensorYoloLastPairedAt", source)
+        self.assertIn("sensorYoloDisplayedCount", source)
+        self.assertIn("now - sensorYoloLastPairedAt <= 1400", yolo_update)
+        self.assertIn("now - sensorYoloNoDetectionSince < 700", yolo_update)
+        self.assertIn("if (!pairing.ok || !sensorDepthValues || !sensorDepthIntrinsics)", yolo_update)
+        self.assertNotIn("disposeChildren(sensorObjectGroup);\n  if (!sensorDepthValues", yolo_update)
+
     def test_world_model_has_persistent_radar_anchored_midas_calibration(self):
         root = Path(__file__).resolve().parents[1]
         source = (root / "body_runtime_host" / "world_map_3d.js").read_text(encoding="utf-8")
