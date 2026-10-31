@@ -9,6 +9,32 @@ sys.path.insert(0, str(ROOT))
 
 
 class BrainBodyStatusResponseTest(unittest.TestCase):
+    def test_unrelated_question_never_invokes_body_classifier(self):
+        from cognition.persona_bridge import PersonaBridge
+
+        bridge = PersonaBridge.__new__(PersonaBridge)
+        bridge._pending_body_plans = {}
+        bridge._organism = None
+        bridge._classify_body_chat_turn = lambda *args, **kwargs: self.fail("unrelated chat must bypass Body routing")
+
+        result = bridge.handle_body_chat_turn("What is the battery capacity of a V-mount pack?")
+
+        self.assertIsNone(result)
+
+    def test_explicit_movement_request_still_reaches_body_safety_classifier(self):
+        from cognition.persona_bridge import PersonaBridge
+
+        bridge = PersonaBridge.__new__(PersonaBridge)
+        bridge._pending_body_plans = {}
+        bridge._organism = None
+        classified = []
+        bridge._classify_body_chat_turn = lambda text, **kwargs: classified.append(text) or "normal"
+
+        result = bridge.handle_body_chat_turn("Can you move toward the person?")
+
+        self.assertEqual(classified, ["Can you move toward the person?"])
+        self.assertIsNone(result)
+
     def test_developmental_autonomy_question_returns_audit_not_unrelated_battery_answer(self):
         from cognition.persona_bridge import PersonaBridge
 

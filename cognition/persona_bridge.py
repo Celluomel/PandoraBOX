@@ -3212,6 +3212,24 @@ Memory honesty — two distinct cases:
         return None
 
     @staticmethod
+    def _may_route_to_body(text: str) -> bool:
+        """Gate the Body LLM classifier behind explicit Body/action intent."""
+        normalized = str(text or "").lower().strip()
+        body_reference = re.search(
+            r"\b(body|robot|ventuno|fnk0031|gps|gnss|sensor|sensors|capteur|capteurs|"
+            r"yolox|midas|tof|mmwave|radar|odometry|odom|ultrasonic|ultrasonique)\b",
+            normalized,
+        )
+        direct_action = re.match(
+            r"^(?:(?:please|can you|could you|would you|peux-tu|peux tu|pourrais-tu|"
+            r"pourrais tu|s'il te plaît)\s+)?"
+            r"(?:move|drive|navigate|go|turn|stop|walk|advance|crawl|déplace|deplace|"
+            r"avance|recule|tourne|arrête|arrete|va|marche)\b",
+            normalized,
+        ) or re.match(r"^(?:en avant|à gauche|a gauche|à droite|a droite|recule)\b", normalized)
+        return bool(body_reference or direct_action)
+
+    @staticmethod
     def _developmental_autonomy_response() -> dict:
         response = (
             "Audit de capacité, pas une exécution : l'architecture possède un GoalEngine qui persiste des objectifs et un moteur d'expérimentation qui conserve des expériences, "
@@ -3333,6 +3351,8 @@ Memory honesty — two distinct cases:
             return self._body_gps_location_response()
         if data_route == "body_sensors":
             return self._body_sensor_response()
+        if not pending and not self._may_route_to_body(user_input):
+            return None
         route = self._classify_body_chat_turn(user_input, pending=pending)
         if route == "body_status":
             # A local classifier can confuse an approval such as "execute the
