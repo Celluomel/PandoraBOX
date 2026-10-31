@@ -35,11 +35,8 @@ export class QuestVRDashboard {
     this.grabbedController = null;
     this.grabInputSource = null;
     this.grabOffsetPosition = new THREE.Vector3();
-    this.grabOffsetQuaternion = new THREE.Quaternion();
     this.scratchPosition = new THREE.Vector3();
     this.scratchQuaternion = new THREE.Quaternion();
-    this.scratchOffset = new THREE.Vector3();
-    this.headUp = new THREE.Vector3(0, 1, 0);
     this.facingMatrix = new THREE.Matrix4();
     this.grabForward = new THREE.Vector3(0, 0, -1);
     this.depthOffset = 0;
@@ -59,13 +56,12 @@ export class QuestVRDashboard {
     this.gpsMapHeightScale = 1;
     this.gpsMapActionHitAreas = {};
     this.grabbedWindow = 'hud';
-    this.hudBaseQuaternion = new THREE.Quaternion();
-    this.gpsMapBaseQuaternion = new THREE.Quaternion();
-    this.viewForward = new THREE.Vector3(0, 0, -1);
-    this.panelRight = new THREE.Vector3(1, 0, 0);
-    this.viewPitchQuaternion = new THREE.Quaternion();
     this.worldUp = new THREE.Vector3(0, 1, 0);
     this.verticalOffset = new THREE.Vector3();
+    this.sphereCenter = new THREE.Vector3();
+    this.sphereCenterSet = false;
+    this.surfaceDirection = new THREE.Vector3();
+    this.orientationTarget = new THREE.Vector3();
     this.cameraFov = null;
     this.ultrasonicStatus = null;
     this.lastUltrasonicSamples = Object.create(null);
@@ -141,7 +137,7 @@ export class QuestVRDashboard {
     this.gpsMapRoot = new THREE.Group();
     this.gpsMapRoot.visible = false;
     this.gpsMapPanel = new THREE.Mesh(
-      new THREE.PlaneGeometry(1.9, 1.35375),
+      new THREE.PlaneGeometry(3.8, 2.7075),
       new THREE.MeshBasicMaterial({ map: this.gpsMapTexture, depthTest: false, depthWrite: false, side: THREE.DoubleSide }),
     );
     this.gpsMapPanel.renderOrder = 1100;
@@ -200,6 +196,7 @@ export class QuestVRDashboard {
     this.applyGpsMapSize();
     try {
       localStorage.removeItem('pandorabox.quest-gps-map-pose.v2');
+      localStorage.removeItem('pandorabox.quest-gps-map-pose.v3');
       localStorage.removeItem('pandorabox.quest-gps-map-pose.v1');
     } catch {}
   }
@@ -302,7 +299,7 @@ export class QuestVRDashboard {
 
   loadSavedGpsMapPose() {
     try {
-      const saved = JSON.parse(localStorage.getItem('pandorabox.quest-gps-map-pose.v2') || 'null');
+      const saved = JSON.parse(localStorage.getItem('pandorabox.quest-gps-map-pose.v3') || 'null');
       if (!Array.isArray(saved?.position) || saved.position.length !== 3
         || !Array.isArray(saved?.quaternion) || saved.quaternion.length !== 4) return;
       const values = [...saved.position, ...saved.quaternion, saved.widthScale, saved.heightScale].map(Number);
@@ -320,6 +317,19 @@ export class QuestVRDashboard {
     this.gpsMapPanel?.scale.set(this.gpsMapWidthScale, this.gpsMapHeightScale, 1);
   }
 
+  orientWindowToSphere(windowRoot) {
+    this.verticalOffset.copy(windowRoot.position).sub(this.sphereCenter);
+    const radius = Math.max(0.01, this.verticalOffset.length());
+    const horizontal = Math.hypot(this.verticalOffset.x, this.verticalOffset.z);
+    const azimuthX = horizontal > 1e-4 ? this.verticalOffset.x / horizontal : 0;
+    const azimuthZ = horizontal > 1e-4 ? this.verticalOffset.z / horizontal : 1;
+    const elevation = this.THREE.MathUtils.clamp(Math.atan2(this.verticalOffset.y, horizontal), -Math.PI * 0.39, Math.PI * 0.39);
+    this.surfaceDirection.set(azimuthX * Math.cos(elevation), Math.sin(elevation), azimuthZ * Math.cos(elevation));
+    this.orientationTarget.copy(this.sphereCenter).addScaledVector(this.surfaceDirection, radius);
+    this.facingMatrix.lookAt(this.sphereCenter, this.orientationTarget, this.worldUp);
+    windowRoot.quaternion.setFromRotationMatrix(this.facingMatrix);
+  }
+
   persistGpsMapPose(xrCamera, force = false) {
     if (!xrCamera || !this.gpsMapWorldAnchored || (!force && performance.now() - this.lastGpsMapPosePersistAt < 750)) return;
     xrCamera.getWorldPosition(this.scratchPosition);
@@ -334,7 +344,7 @@ export class QuestVRDashboard {
       heightScale: this.gpsMapHeightScale,
     };
     try {
-      localStorage.setItem('pandorabox.quest-gps-map-pose.v2', JSON.stringify(this.gpsMapPose));
+      localStorage.setItem('pandorabox.quest-gps-map-pose.v3', JSON.stringify(this.gpsMapPose));
       this.lastGpsMapPosePersistAt = performance.now();
     } catch {}
   }
@@ -1534,9 +1544,7 @@ export class QuestVRDashboard {
     const root = target === 'gps-map' ? this.gpsMapRoot : this.root;
     controller.updateMatrixWorld(true);
     controller.getWorldPosition(this.scratchPosition);
-    controller.getWorldQuaternion(this.scratchQuaternion);
-    this.grabOffsetPosition.copy(root.position).sub(this.scratchPosition).applyQuaternion(this.scratchQuaternion.clone().invert());
-    this.grabOffsetQuaternion.copy(this.scratchQuaternion).invert().multiply(root.quaternion);
+    this.grabOffsetPosition.copy(root.position).sub(this.scratchPosition);
     this.grabbedController = controller;
     this.grabbedWindow = target;
     this.grabInputSource = inputSource || null;
@@ -1554,10 +1562,8 @@ export class QuestVRDashboard {
     this.depthOffset = 0;
     if (xrCamera) {
       if (this.grabbedWindow === 'gps-map') {
-        this.gpsMapBaseQuaternion.copy(this.gpsMapRoot.quaternion);
         this.persistGpsMapPose(xrCamera, true);
       } else {
-        this.hudBaseQuaternion.copy(this.root.quaternion);
         this.persistPose(xrCamera, true);
       }
     }
@@ -1570,10 +1576,8 @@ export class QuestVRDashboard {
     if (!this.grabbedController) return;
     this.grabbedController.getWorldPosition(this.scratchPosition);
     this.grabbedController.getWorldQuaternion(this.scratchQuaternion);
-    this.scratchOffset.copy(this.grabOffsetPosition).applyQuaternion(this.scratchQuaternion);
     const targetRoot = this.grabbedWindow === 'gps-map' ? this.gpsMapRoot : this.root;
-    targetRoot.position.copy(this.scratchPosition).add(this.scratchOffset);
-    targetRoot.quaternion.copy(this.scratchQuaternion).multiply(this.grabOffsetQuaternion);
+    targetRoot.position.copy(this.scratchPosition).add(this.grabOffsetPosition);
     const elapsed = Math.max(0, Math.min(0.05, Number(deltaSeconds) || 0));
     const stick = source => {
       const axes = source?.gamepad?.axes || [];
@@ -1596,6 +1600,7 @@ export class QuestVRDashboard {
       if (Math.abs(heightInput) > 0.12) this.heightScale = Math.max(0.45, Math.min(5, this.heightScale * Math.exp(-heightInput * elapsed * 2.8)));
       this.applyHudSize();
     }
+    this.orientWindowToSphere(targetRoot);
   }
 
   applyHudSize() {
@@ -1626,6 +1631,10 @@ export class QuestVRDashboard {
     if (this.grabbedController) return;
     xrCamera.getWorldPosition(this.scratchPosition);
     xrCamera.getWorldQuaternion(this.scratchQuaternion);
+    if (!this.sphereCenterSet) {
+      this.sphereCenter.copy(this.scratchPosition);
+      this.sphereCenterSet = true;
+    }
     if (this.headLocked) {
       this.headLocked = false;
       this.worldAnchored = false;
@@ -1640,38 +1649,21 @@ export class QuestVRDashboard {
       } else {
         this.root.position.copy(this.scratchPosition).addScaledVector(this.anchorForward, 0.9);
         this.root.position.y += -0.02;
-        this.facingMatrix.lookAt(this.scratchPosition, this.root.position, this.worldUp);
-        this.root.quaternion.setFromRotationMatrix(this.facingMatrix);
       }
-      this.hudBaseQuaternion.copy(this.root.quaternion);
       this.worldAnchored = true;
     }
+    this.orientWindowToSphere(this.root);
     if (this.gpsMapVisible && !this.gpsMapWorldAnchored) {
       if (this.gpsMapPose) {
         this.gpsMapRoot.position.copy(this.gpsMapHeadOffsetPosition).applyQuaternion(this.scratchQuaternion).add(this.scratchPosition);
         this.gpsMapRoot.quaternion.copy(this.scratchQuaternion).multiply(this.gpsMapHeadOffsetQuaternion);
       } else {
-        this.gpsMapRoot.position.copy(this.root.position).add(new this.THREE.Vector3(2.65, -0.08, -0.9).applyQuaternion(this.hudBaseQuaternion));
-        this.gpsMapRoot.quaternion.copy(this.hudBaseQuaternion);
+        this.gpsMapRoot.position.copy(this.root.position).add(new this.THREE.Vector3(3.6, -0.08, -0.9).applyQuaternion(this.root.quaternion));
       }
-      this.gpsMapBaseQuaternion.copy(this.gpsMapRoot.quaternion);
       this.gpsMapWorldAnchored = true;
     }
-    // Keep each window fixed in world position and yaw, while pitching its flat plane
-    // with the viewer's vertical look angle so it faces the horizon or upper/lower sphere.
-    this.viewForward.set(0, 0, -1).applyQuaternion(this.scratchQuaternion);
-    const gazePitch = Math.asin(this.THREE.MathUtils.clamp(this.viewForward.y, -0.8660254, 0.8660254));
-    this.verticalOffset.copy(this.scratchPosition).sub(this.root.position);
-    const hudPitch = this.THREE.MathUtils.clamp(gazePitch + Math.atan2(this.verticalOffset.y, Math.max(0.25, Math.hypot(this.verticalOffset.x, this.verticalOffset.z))), -Math.PI / 3, Math.PI / 3);
-    this.viewPitchQuaternion.setFromAxisAngle(this.panelRight, hudPitch);
-    this.root.quaternion.copy(this.hudBaseQuaternion).multiply(this.viewPitchQuaternion);
-    if (this.gpsMapWorldAnchored) {
-      this.verticalOffset.copy(this.scratchPosition).sub(this.gpsMapRoot.position);
-      const mapPitch = this.THREE.MathUtils.clamp(gazePitch + Math.atan2(this.verticalOffset.y, Math.max(0.25, Math.hypot(this.verticalOffset.x, this.verticalOffset.z))), -Math.PI / 3, Math.PI / 3);
-      this.viewPitchQuaternion.setFromAxisAngle(this.panelRight, mapPitch);
-      this.gpsMapRoot.quaternion.copy(this.gpsMapBaseQuaternion).multiply(this.viewPitchQuaternion);
-    }
-    // Keep the HUD world-anchored; the wearer can reposition it explicitly by grabbing it.
+    if (this.gpsMapWorldAnchored) this.orientWindowToSphere(this.gpsMapRoot);
+    // Windows keep world positions; their flat planes follow the sphere's local horizon, never headset pitch.
   }
 
   loadSavedPose() {
