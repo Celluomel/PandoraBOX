@@ -20,6 +20,9 @@
     .controls{position:absolute;z-index:2;left:50%;bottom:22px;transform:translateX(-50%);display:flex;align-items:center;gap:9px;max-width:calc(100vw - 24px);pointer-events:auto}
     button,a{border:1px solid #75c99a88;background:#0c2117e8;color:#d9f5e4;padding:11px 15px;font:12px inherit;text-decoration:none;cursor:pointer;backdrop-filter:blur(14px)}
     button:hover,a:hover{background:#17402a}button:disabled{opacity:.5;cursor:default}
+    .quality-control{display:flex;align-items:center;gap:7px;padding:6px 8px;border:1px solid #ffffff24;background:#09130edb;color:#9cb2a3;font-size:11px}
+    .quality-control select{max-width:145px;padding:7px 8px;border:1px solid #75c99a88;background:#0c2117;color:#d9f5e4;font:12px inherit}
+    .quality-hint{position:absolute;z-index:2;left:50%;bottom:70px;transform:translateX(-50%);padding:6px 9px;background:#09130edb;color:#9cb2a3;font-size:10px;text-align:center;white-space:nowrap}
     #scene-mode-simulation[aria-pressed="true"],#scene-mode-sensors[aria-pressed="true"],#scene-mode-gaussian[aria-pressed="true"]{border-color:#75edbd;background:#17402a;color:#effff5}
     #status{position:absolute;z-index:2;left:50%;top:86px;transform:translateX(-50%);max-width:min(700px,calc(100vw - 32px));padding:8px 12px;background:#09130edb;color:#a9c3b2;border:1px solid #ffffff1b;text-align:center;font-size:11px}
     #selection{position:absolute;z-index:2;right:18px;bottom:22px;max-width:min(280px,40vw);padding:12px 14px;background:#09130edb;border-left:2px solid #81d9ab;color:#d6e9dc;pointer-events:none}
@@ -47,12 +50,20 @@
     <button id="scene-mode-sensors" type="button" aria-pressed="false">Live sensors · MiDaS + YOLOX + mmWave</button>
     <button id="scene-mode-gaussian" type="button" aria-pressed="false" disabled title="No renderable 3DGS scene is published yet">Real 3DGS view · unavailable</button>
     <button id="quest-simulation" type="button" disabled>Loading simulation…</button>
+    <label class="quality-control" for="xr-quality">VR quality
+      <select id="xr-quality" aria-label="VR rendering quality">
+        <option value="balanced">Balanced</option>
+        <option value="sharp" selected>Sharp</option>
+        <option value="maximum">Maximum</option>
+      </select>
+    </label>
     <button id="enter-xr" type="button">Enter VR</button>
     <button id="enter-ar" type="button">Passthrough AR</button>
     <button id="recenter" type="button">Recenter view / HUD</button>
     <a href="/quest-hud-preview">2D HUD preview</a>
     <a href="/worldmodel">Body dashboard</a>
   </nav>
+  <div class="quality-hint">Higher quality uses more GPU. If motion feels uneven, choose Balanced.</div>
   <script>
     (() => {
       const status = document.querySelector('#status');

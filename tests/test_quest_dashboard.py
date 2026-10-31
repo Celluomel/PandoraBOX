@@ -451,6 +451,19 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertIn("vrDashboard.setGpsMapVisible(!vrDashboard.gpsMapVisible)", quest)
         self.assertIn("vrDashboard.beginAdjust(grip, event.data, controller, raycaster)", quest)
 
+    def test_vr_quality_presets_expose_whole_scene_resolution_control(self):
+        root = Path(__file__).resolve().parents[1]
+        quest = (root / "body_runtime_host" / "quest_vr.js").read_text(encoding="utf-8")
+        html = (root / "body_runtime_host" / "quest_vr.html").read_text(encoding="utf-8")
+
+        self.assertIn("id=\"xr-quality\"", html)
+        self.assertIn("option value=\"balanced\"", html)
+        self.assertIn("option value=\"sharp\"", html)
+        self.assertIn("option value=\"maximum\"", html)
+        self.assertIn("maximum: { foveation: 0, scale: 1.5 }", quest)
+        self.assertIn("renderer.xr.setFramebufferScaleFactor(xrRenderSettings.scale)", quest)
+        self.assertIn("localStorage.setItem('pandorabox.quest-vr-quality'", quest)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -23,6 +23,29 @@ const xrRenderSettings = {
 };
 if (!Number.isFinite(xrRenderSettings.foveation)) xrRenderSettings.foveation = 0.2;
 if (!Number.isFinite(xrRenderSettings.scale)) xrRenderSettings.scale = 1.2;
+const xrQualityPresets = {
+  balanced: { foveation: 0.65, scale: 1 },
+  sharp: { foveation: 0.2, scale: 1.2 },
+  maximum: { foveation: 0, scale: 1.5 },
+};
+const qualitySelect = document.querySelector('#xr-quality');
+let savedQuality = null;
+try { savedQuality = localStorage.getItem('pandorabox.quest-vr-quality'); } catch {}
+const hasQualityQuery = xrParams.has('scale') || xrParams.has('foveation');
+if (!hasQualityQuery && xrQualityPresets[savedQuality]) Object.assign(xrRenderSettings, xrQualityPresets[savedQuality]);
+if (qualitySelect) {
+  const initialQuality = Object.entries(xrQualityPresets).reduce((nearest, [name, preset]) => {
+    const score = Math.abs(preset.scale - xrRenderSettings.scale) + Math.abs(preset.foveation - xrRenderSettings.foveation);
+    return score < nearest.score ? { name, score } : nearest;
+  }, { name: 'sharp', score: Infinity }).name;
+  qualitySelect.value = initialQuality;
+  qualitySelect.addEventListener('change', () => {
+    const preset = xrQualityPresets[qualitySelect.value];
+    if (!preset) return;
+    Object.assign(xrRenderSettings, preset);
+    try { localStorage.setItem('pandorabox.quest-vr-quality', qualitySelect.value); } catch {}
+  });
+}
 const perfStats = { last: 0, frames: 0, sum: 0, max: 0, previous: 0 };
 function perfTick(time) {
   if (perfStats.previous) {
