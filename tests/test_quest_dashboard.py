@@ -267,8 +267,12 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertIn("new THREE.PlaneGeometry(3.1, 1.1625, 1, 1)", source)
         self.assertIn("panel.position.set(0, 0, -0.9)", source)
         self.assertIn("this.worldAnchored = true", source)
-        self.assertIn("targetRoot.position.copy(this.grabStartWindowPosition).addScaledVector(this.grabTranslationDelta, this.grabTranslationGain)", source)
-        self.assertIn("this.grabTranslationGain = 7", source)
+        self.assertIn("this.grabAnchorLocal.copy(hit.object.worldToLocal(hit.point.clone()))", source)
+        self.assertIn("this.grabAnchorTarget.copy(this.scratchPosition).addScaledVector(this.grabRayDirection, this.grabAnchorDistance)", source)
+        self.assertIn("targetRoot.position.copy(this.grabAnchorTarget).sub(this.grabPanelOffset)", source)
+        self.assertIn("this.grabAnchorLocal).multiply(this.grabbedPanel.scale)", source)
+        self.assertIn("PICKED POINT STAYS UNDER POINTER", source)
+        self.assertNotIn("grabTranslationGain", source)
         self.assertIn("Windows keep world positions", source)
         self.assertNotIn("createArcGeometry", source)
         self.assertNotIn("forwardDot <", source)
@@ -455,6 +459,7 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertIn("isControllerOverDashboard(controller, raycaster)", quest)
         self.assertIn("}, 120)", quest)
         self.assertIn("SQUEEZE GRIP OR HOLD TRIGGER ON A WINDOW TO MOVE", dashboard)
+        self.assertIn("PICKED POINT STAYS UNDER POINTER", dashboard)
 
     def test_vr_quality_presets_expose_whole_scene_resolution_control(self):
         root = Path(__file__).resolve().parents[1]

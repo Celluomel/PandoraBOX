@@ -34,15 +34,15 @@ export class QuestVRDashboard {
     this.lastPosePersistAt = 0;
     this.grabbedController = null;
     this.grabInputSource = null;
-    this.grabStartControllerPosition = new THREE.Vector3();
-    this.grabStartWindowPosition = new THREE.Vector3();
-    this.grabTranslationDelta = new THREE.Vector3();
-    this.grabTranslationGain = 7;
+    this.grabbedPanel = null;
+    this.grabAnchorLocal = new THREE.Vector3();
+    this.grabAnchorTarget = new THREE.Vector3();
+    this.grabRayDirection = new THREE.Vector3(0, 0, -1);
+    this.grabAnchorDistance = 0;
+    this.grabPanelOffset = new THREE.Vector3();
     this.scratchPosition = new THREE.Vector3();
     this.scratchQuaternion = new THREE.Quaternion();
     this.facingMatrix = new THREE.Matrix4();
-    this.grabForward = new THREE.Vector3(0, 0, -1);
-    this.depthOffset = 0;
     this.cachedPose = null;
     this.frame = null;
     this.sceneMode = 'simulation';
@@ -501,8 +501,8 @@ export class QuestVRDashboard {
     ctx.font = '600 21px ui-monospace, monospace';
     ctx.textAlign = 'left';
     ctx.fillText(this.grabbedController
-      ? `${this.grabbedWindow === 'gps-map' ? 'GPS MAP' : 'HUD'} GRABBED · MOVE HAND 7× · STICKS RESIZE / ADJUST DEPTH`
-      : 'SQUEEZE GRIP OR HOLD TRIGGER ON A WINDOW TO MOVE · SIZE BUTTONS ENLARGE WINDOWS', margin + 8, height - 28);
+      ? `${this.grabbedWindow === 'gps-map' ? 'GPS MAP' : 'HUD'} GRABBED · PICKED POINT STAYS UNDER POINTER · STICKS RESIZE / ADJUST DISTANCE`
+      : 'SQUEEZE GRIP OR HOLD TRIGGER ON A WINDOW TO MOVE · PICKED POINT STAYS UNDER POINTER', margin + 8, height - 28);
     ctx.textAlign = 'right';
     ctx.fillText(this.following ? 'CAMERA FOLLOW · BODY' : 'SCENE VIEW · FIXED', width - margin - 8, height - 28);
     ctx.restore();
@@ -1534,25 +1534,23 @@ export class QuestVRDashboard {
   }
 
   beginAdjust(controller, inputSource, aimController = controller, raycaster = null) {
-    if (!this.visible || this.grabbedController) return false;
-    let target = 'hud';
-    if (raycaster && aimController) {
-      aimController.updateMatrixWorld(true);
-      const rotation = new this.THREE.Matrix4().extractRotation(aimController.matrixWorld);
-      raycaster.ray.origin.setFromMatrixPosition(aimController.matrixWorld);
-      raycaster.ray.direction.set(0, 0, -1).applyMatrix4(rotation);
-      this.scene.updateMatrixWorld(true);
-      if (this.gpsMapVisible && this.gpsMapRoot.visible && raycaster.intersectObject(this.gpsMapPanel, false).length) target = 'gps-map';
-    }
+    if (!this.visible || this.grabbedController || !raycaster || !aimController) return false;
+    aimController.updateMatrixWorld(true);
+    const rotation = new this.THREE.Matrix4().extractRotation(aimController.matrixWorld);
+    raycaster.ray.origin.setFromMatrixPosition(aimController.matrixWorld);
+    raycaster.ray.direction.set(0, 0, -1).applyMatrix4(rotation).normalize();
+    this.scene.updateMatrixWorld(true);
+    const hit = raycaster.intersectObjects(this.panels.filter(panel => panel !== this.gpsMapPanel || this.gpsMapVisible), false)[0];
+    if (!hit?.point || !hit.object) return false;
+    const target = hit.object === this.gpsMapPanel ? 'gps-map' : 'hud';
     const root = target === 'gps-map' ? this.gpsMapRoot : this.root;
-    controller.updateMatrixWorld(true);
-    controller.getWorldPosition(this.scratchPosition);
-    this.grabStartControllerPosition.copy(this.scratchPosition);
-    this.grabStartWindowPosition.copy(root.position);
+    root.updateMatrixWorld(true);
+    this.grabbedPanel = hit.object;
+    this.grabAnchorLocal.copy(hit.object.worldToLocal(hit.point.clone()));
+    this.grabAnchorDistance = Math.max(0.2, hit.distance);
     this.grabbedController = controller;
     this.grabbedWindow = target;
     this.grabInputSource = inputSource || null;
-    this.depthOffset = 0;
     this.headLocked = false;
     this.worldAnchored = true;
     this.drawDashboard();
@@ -1563,7 +1561,7 @@ export class QuestVRDashboard {
     if (this.grabbedController !== controller) return false;
     this.grabbedController = null;
     this.grabInputSource = null;
-    this.depthOffset = 0;
+    this.grabbedPanel = null;
     if (xrCamera) {
       if (this.grabbedWindow === 'gps-map') {
         this.persistGpsMapPose(xrCamera, true);
@@ -1582,8 +1580,7 @@ export class QuestVRDashboard {
     this.grabbedController.getWorldPosition(this.scratchPosition);
     this.grabbedController.getWorldQuaternion(this.scratchQuaternion);
     const targetRoot = this.grabbedWindow === 'gps-map' ? this.gpsMapRoot : this.root;
-    this.grabTranslationDelta.subVectors(this.scratchPosition, this.grabStartControllerPosition);
-    targetRoot.position.copy(this.grabStartWindowPosition).addScaledVector(this.grabTranslationDelta, this.grabTranslationGain);
+    if (!this.grabbedPanel) return;
     const elapsed = Math.max(0, Math.min(0.05, Number(deltaSeconds) || 0));
     const stick = source => {
       const axes = source?.gamepad?.axes || [];
@@ -1594,9 +1591,8 @@ export class QuestVRDashboard {
     const [widthInput, depthInput] = stick(this.grabInputSource);
     const otherSource = inputSources.find(source => source !== this.grabInputSource && source.handedness !== this.grabInputSource?.handedness);
     const [, heightInput] = stick(otherSource);
-    this.grabForward.set(0, 0, -1).applyQuaternion(this.scratchQuaternion);
-    if (Math.abs(depthInput) > 0.12) this.depthOffset = Math.max(-1, Math.min(4, this.depthOffset - depthInput * elapsed * 1.8));
-    targetRoot.position.addScaledVector(this.grabForward, this.depthOffset);
+    this.grabRayDirection.set(0, 0, -1).applyQuaternion(this.scratchQuaternion).normalize();
+    if (Math.abs(depthInput) > 0.12) this.grabAnchorDistance = Math.max(0.2, Math.min(8, this.grabAnchorDistance - depthInput * elapsed * 1.8));
     if (this.grabbedWindow === 'gps-map') {
       if (Math.abs(widthInput) > 0.12) this.gpsMapWidthScale = Math.max(0.45, Math.min(5, this.gpsMapWidthScale * Math.exp(widthInput * elapsed * 2.8)));
       if (Math.abs(heightInput) > 0.12) this.gpsMapHeightScale = Math.max(0.45, Math.min(5, this.gpsMapHeightScale * Math.exp(-heightInput * elapsed * 2.8)));
@@ -1606,7 +1602,20 @@ export class QuestVRDashboard {
       if (Math.abs(heightInput) > 0.12) this.heightScale = Math.max(0.45, Math.min(5, this.heightScale * Math.exp(-heightInput * elapsed * 2.8)));
       this.applyHudSize();
     }
-    this.orientWindowToSphere(targetRoot);
+    this.grabAnchorTarget.copy(this.scratchPosition).addScaledVector(this.grabRayDirection, this.grabAnchorDistance);
+    // Reposition around the exact panel-local point picked at grab start. Recompute
+    // orientation as its position changes so the panel remains tangent to the sphere.
+    for (let pass = 0; pass < 3; pass += 1) {
+      this.grabPanelOffset.copy(this.grabAnchorLocal).multiply(this.grabbedPanel.scale)
+        .applyQuaternion(this.grabbedPanel.quaternion).add(this.grabbedPanel.position)
+        .applyQuaternion(targetRoot.quaternion);
+      targetRoot.position.copy(this.grabAnchorTarget).sub(this.grabPanelOffset);
+      this.orientWindowToSphere(targetRoot);
+    }
+    this.grabPanelOffset.copy(this.grabAnchorLocal).multiply(this.grabbedPanel.scale)
+      .applyQuaternion(this.grabbedPanel.quaternion).add(this.grabbedPanel.position)
+      .applyQuaternion(targetRoot.quaternion);
+    targetRoot.position.copy(this.grabAnchorTarget).sub(this.grabPanelOffset);
   }
 
   applyHudSize() {
@@ -1622,7 +1631,6 @@ export class QuestVRDashboard {
     this.grabInputSource = null;
     this.headLocked = false;
     this.worldAnchored = false;
-    this.depthOffset = 0;
     this.widthScale = 1;
     this.heightScale = 1;
     this.headOffsetPosition.set(0, 0, 0);
