@@ -26,6 +26,14 @@ export function disparityToPriorMeters(disparity01, nearM = DEPTH_PRIOR_NEAR_M, 
 /** Calibrated depth from raw 16-bit MiDaS samples (midas_metric_calibration.v4, inverse_affine). */
 export function rawDepthToMeters(raw, calibration) {
   if (!calibration?.available) return null;
+  const relativeRange = calibration.calibrated_relative_range;
+  if (Array.isArray(relativeRange) && relativeRange.length >= 2) {
+    const low = Math.min(Number(relativeRange[0]), Number(relativeRange[1]));
+    const high = Math.max(Number(relativeRange[0]), Number(relativeRange[1]));
+    const sample = Number(raw);
+    if (Number.isFinite(low) && Number.isFinite(high) && Number.isFinite(sample)
+        && (sample < low || sample > high)) return null;
+  }
   const inverse = Number(calibration.inverse_scale_per_relative_unit) * Number(raw)
     + Number(calibration.inverse_offset_per_m);
   if (!Number.isFinite(inverse) || inverse <= 0) return null;

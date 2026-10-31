@@ -526,6 +526,9 @@ function buildSensorDepthCloud(depth, depthImage, colorImage) {
       count: grid.count,
       positions: new Float32Array(grid.count * 3),
       colors: new Float32Array(grid.count * 3),
+      nextPositions: new Float32Array(grid.count * 3),
+      nextColors: new Float32Array(grid.count * 3),
+      initialized: false,
     };
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.BufferAttribute(sensorCloudBuffers.positions, 3));
@@ -538,8 +541,22 @@ function buildSensorDepthCloud(depth, depthImage, colorImage) {
   vrDashboard.updateDepthIntrinsics(intrinsics, depthImage.width, depthImage.height);
   const count = fillDepthCloud({
     depth: depthImage, color: colorImage, grid, intrinsics, calibration: sensorMetricCalibration,
-    heightM: mount.heightM, positions: sensorCloudBuffers.positions, colors: sensorCloudBuffers.colors,
+    heightM: mount.heightM, positions: sensorCloudBuffers.nextPositions, colors: sensorCloudBuffers.nextColors,
   });
+  const blend = sensorCloudBuffers.initialized ? 0.45 : 1;
+  const valueCount = count * 3;
+  for (let i = 0; i < valueCount; i++) {
+    const nextPosition = sensorCloudBuffers.nextPositions[i];
+    const nextColor = sensorCloudBuffers.nextColors[i];
+    if (blend === 1) {
+      sensorCloudBuffers.positions[i] = nextPosition;
+      sensorCloudBuffers.colors[i] = nextColor;
+    } else {
+      sensorCloudBuffers.positions[i] += (nextPosition - sensorCloudBuffers.positions[i]) * blend;
+      sensorCloudBuffers.colors[i] += (nextColor - sensorCloudBuffers.colors[i]) * blend;
+    }
+  }
+  sensorCloudBuffers.initialized = true;
   const geometry = sensorDepthCloud.geometry;
   geometry.setDrawRange(0, count);
   geometry.getAttribute('position').needsUpdate = true;
@@ -549,7 +566,6 @@ function buildSensorDepthCloud(depth, depthImage, colorImage) {
   sensorDepthIntrinsics = intrinsics;
   sensorDepthHeightM = mount.heightM;
   sensorDepthCapturedAt = Number(depth.captured_at) || 0;
-  sensorYoloFrameId = '';
   updateSensorYolo(latestSensorYolo);
   return true;
 }
@@ -576,7 +592,7 @@ function updateSensorYolo(yolo) {
     return 0;
   }
   sensorYoloNoDetectionSince = 0;
-  const frameId = `${yolo.frame_id || yolo.captured_at}|${sensorDepthFrame?.frame_id}|${sensorMetricCalibration?.available ? 'cal' : 'rel'}`;
+  const frameId = `${yolo.frame_id || yolo.captured_at}|${sensorMetricCalibration?.calibrated_at || (sensorMetricCalibration?.available ? 'cal' : 'rel')}`;
   sensorYoloLastPairedAt = now;
   if (frameId === sensorYoloFrameId) return sensorYoloDisplayedCount;
   sensorYoloFrameId = frameId;
@@ -697,8 +713,11 @@ function updateSensorReadout(depth, yoloCount, radarCount) {
   document.querySelector('#source').textContent = 'LIVE SENSORS';
   document.querySelector('#pose').textContent = 'Sensor origin · heading uncalibrated';
   document.querySelector('#age').textContent = Number.isFinite(age) ? `${age.toFixed(1)} s` : '—';
-  const rangeStatus = sensorMetricCalibration?.available ? 'calibrated YOLOX ranges' : 'relative depth; calibrate for metres';
-  setStatus(`Live sensor scene · display XY ×${sensorSceneDisplayScale} · forward depth and range labels unchanged · MiDaS ${depth?.runtime || depth?.state || 'waiting'}${depth?.inference_ms != null ? ` ${Number(depth.inference_ms).toFixed(1)} ms` : ''} · ${yoloCount} YOLOX labels · ${radarCount} mmWave targets · ${rangeStatus}`);
+  const calibratedRange = sensorMetricCalibration?.calibrated_range_m || [];
+  const rangeStatus = sensorMetricCalibration?.available
+    ? `calibrated ${calibratedRange[0] ?? '?'}–${calibratedRange[1] ?? '?'} m; outside range stays relative`
+    : 'relative depth; calibrate for metres';
+  setStatus(`Live sensor scene · display XY ×${sensorSceneDisplayScale} · MiDaS colors · ${rangeStatus} · ${yoloCount} YOLOX labels · ${radarCount} mmWave targets`);
   vrDashboard.updateSensorStatus({
     yolo: `${latestSensorYolo?.state || 'READY'} · ${yoloCount} OBJECTS${latestSensorYolo?.latency_ms != null ? ` · ${Number(latestSensorYolo.latency_ms).toFixed(0)} MS` : ''}`,
     midas: `${depth?.state || depth?.runtime || 'WAITING'} · ${depth?.runtime || '—'}${depth?.inference_ms != null ? ` · ${Number(depth.inference_ms).toFixed(0)} MS` : ''}${Number.isFinite(age) ? ` · ${age.toFixed(0)}S` : ''}`,
