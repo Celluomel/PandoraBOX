@@ -1480,7 +1480,7 @@ for (let index = 0; index < 2; index += 1) {
     interaction.holdTimer = window.setTimeout(() => {
       if (!interaction.selectHeld || vrDashboard.grabbedController) return;
       interaction.dragStarted = vrDashboard.beginAdjust(controller, inputSource, controller, raycaster);
-    }, 240);
+    }, 120);
   });
   controller.addEventListener('selectend', () => {
     interaction.selectHeld = false;

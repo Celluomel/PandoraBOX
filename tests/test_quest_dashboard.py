@@ -267,7 +267,8 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertIn("new THREE.PlaneGeometry(3.1, 1.1625, 1, 1)", source)
         self.assertIn("panel.position.set(0, 0, -0.9)", source)
         self.assertIn("this.worldAnchored = true", source)
-        self.assertIn("targetRoot.position.copy(this.scratchPosition).add(this.grabOffsetPosition)", source)
+        self.assertIn("targetRoot.position.copy(this.grabStartWindowPosition).addScaledVector(this.grabTranslationDelta, this.grabTranslationGain)", source)
+        self.assertIn("this.grabTranslationGain = 2.5", source)
         self.assertIn("Windows keep world positions", source)
         self.assertNotIn("createArcGeometry", source)
         self.assertNotIn("forwardDot <", source)
@@ -452,6 +453,7 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertIn("vrDashboard.beginAdjust(controller, event.data, controller, raycaster)", quest)
         self.assertIn("controller.addEventListener('selectstart'", quest)
         self.assertIn("isControllerOverDashboard(controller, raycaster)", quest)
+        self.assertIn("}, 120)", quest)
         self.assertIn("SQUEEZE GRIP OR HOLD TRIGGER ON A WINDOW TO MOVE", dashboard)
 
     def test_vr_quality_presets_expose_whole_scene_resolution_control(self):

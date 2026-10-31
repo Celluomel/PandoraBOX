@@ -34,7 +34,10 @@ export class QuestVRDashboard {
     this.lastPosePersistAt = 0;
     this.grabbedController = null;
     this.grabInputSource = null;
-    this.grabOffsetPosition = new THREE.Vector3();
+    this.grabStartControllerPosition = new THREE.Vector3();
+    this.grabStartWindowPosition = new THREE.Vector3();
+    this.grabTranslationDelta = new THREE.Vector3();
+    this.grabTranslationGain = 2.5;
     this.scratchPosition = new THREE.Vector3();
     this.scratchQuaternion = new THREE.Quaternion();
     this.facingMatrix = new THREE.Matrix4();
@@ -498,7 +501,7 @@ export class QuestVRDashboard {
     ctx.font = '600 21px ui-monospace, monospace';
     ctx.textAlign = 'left';
     ctx.fillText(this.grabbedController
-      ? `${this.grabbedWindow === 'gps-map' ? 'GPS MAP' : 'HUD'} GRABBED · MOVE HAND TO POSITION · STICKS RESIZE / ADJUST DEPTH`
+      ? `${this.grabbedWindow === 'gps-map' ? 'GPS MAP' : 'HUD'} GRABBED · MOVE HAND 2.5× · STICKS RESIZE / ADJUST DEPTH`
       : 'SQUEEZE GRIP OR HOLD TRIGGER ON A WINDOW TO MOVE · SIZE BUTTONS ENLARGE WINDOWS', margin + 8, height - 28);
     ctx.textAlign = 'right';
     ctx.fillText(this.following ? 'CAMERA FOLLOW · BODY' : 'SCENE VIEW · FIXED', width - margin - 8, height - 28);
@@ -1544,7 +1547,8 @@ export class QuestVRDashboard {
     const root = target === 'gps-map' ? this.gpsMapRoot : this.root;
     controller.updateMatrixWorld(true);
     controller.getWorldPosition(this.scratchPosition);
-    this.grabOffsetPosition.copy(root.position).sub(this.scratchPosition);
+    this.grabStartControllerPosition.copy(this.scratchPosition);
+    this.grabStartWindowPosition.copy(root.position);
     this.grabbedController = controller;
     this.grabbedWindow = target;
     this.grabInputSource = inputSource || null;
@@ -1574,10 +1578,12 @@ export class QuestVRDashboard {
 
   updateAdjustment(deltaSeconds = 1 / 90, inputSources = []) {
     if (!this.grabbedController) return;
+    this.grabbedController.updateMatrixWorld(true);
     this.grabbedController.getWorldPosition(this.scratchPosition);
     this.grabbedController.getWorldQuaternion(this.scratchQuaternion);
     const targetRoot = this.grabbedWindow === 'gps-map' ? this.gpsMapRoot : this.root;
-    targetRoot.position.copy(this.scratchPosition).add(this.grabOffsetPosition);
+    this.grabTranslationDelta.subVectors(this.scratchPosition, this.grabStartControllerPosition);
+    targetRoot.position.copy(this.grabStartWindowPosition).addScaledVector(this.grabTranslationDelta, this.grabTranslationGain);
     const elapsed = Math.max(0, Math.min(0.05, Number(deltaSeconds) || 0));
     const stick = source => {
       const axes = source?.gamepad?.axes || [];
