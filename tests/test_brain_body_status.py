@@ -258,6 +258,38 @@ class BrainBodyStatusResponseTest(unittest.TestCase):
         self.assertIn("pas une mesure directe", result["response"])
         self.assertNotIn("ranges_m", result["response"])
 
+    def test_body_battery_questions_bypass_classifier_and_never_return_camera_detections(self):
+        from cognition.persona_bridge import PersonaBridge
+
+        observation = {
+            "subject": "body.runtime",
+            "source": "remote:body-ventuno:body_runtime",
+            "observed_at": __import__("time").time(),
+            "value": {"power": {"battery_estimate": {
+                "level_percent_est": 61.0,
+                "remaining_wh_est": 60.39,
+                "source": "configured capacity estimate",
+            }}},
+        }
+        body = SimpleNamespace(
+            worldmodel_plan=lambda: {"active_plan": None},
+            worldmodel=None,
+            status=lambda: {"brain_bridge": {"connected": True}},
+            snapshot=lambda max_age=None: [observation],
+            camera_yolo_status=lambda: self.fail("battery query must not read camera detections"),
+        )
+        bridge = PersonaBridge.__new__(PersonaBridge)
+        bridge._pending_body_plans = {}
+        bridge._organism = SimpleNamespace(_body_runtime=body)
+        bridge._classify_body_chat_turn = lambda *args, **kwargs: self.fail("battery query must bypass the LLM classifier")
+
+        for prompt in ("what is the levele of the body battery", "what is the level of the body battery"):
+            with self.subTest(prompt=prompt):
+                result = bridge.handle_body_chat_turn(prompt)
+                self.assertIn("61.0%", result["response"])
+                self.assertNotIn("YOLOX", result["response"])
+                self.assertNotIn("camera", result["response"].lower())
+
     def test_body_status_formats_live_sensor_channels_without_raw_json_dump(self):
         from cognition.persona_bridge import PersonaBridge
 

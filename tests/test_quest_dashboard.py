@@ -248,17 +248,16 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertNotIn("Move the Body to trace its estimated path", source)
         self.assertIn("LAST FIX RETAINED", source)
 
-    def test_hud_arc_tilts_its_top_toward_the_viewer(self):
+    def test_hud_is_flat_and_remains_world_anchored_until_grabbed(self):
         source = (Path(__file__).resolve().parents[1] / "body_runtime_host" / "quest_vr_dashboard.js").read_text(encoding="utf-8")
 
-        self.assertIn("createArcGeometry(1.55, 0.42, 64)", source)
+        self.assertIn("new THREE.PlaneGeometry(3.1, 1.1625, 1, 1)", source)
         self.assertIn("panel.position.set(0, 0, -0.9)", source)
-        self.assertIn("this.headLocked = false", source)
-        self.assertIn("forwardDot < Math.cos(Math.PI / 4)", source)
-        self.assertIn("const topForwardTilt = row === 0 ? depth / 2 : -depth / 2", source)
-        self.assertIn("+ topForwardTilt", source)
-        self.assertIn("radius * (Math.cos(theta) - 1)", source)
-        self.assertNotIn("radius * (1 - Math.cos(theta))", source)
+        self.assertIn("this.worldAnchored = true", source)
+        self.assertIn("this.root.position.copy(this.scratchPosition).add(this.scratchOffset)", source)
+        self.assertIn("Keep the HUD world-anchored", source)
+        self.assertNotIn("createArcGeometry", source)
+        self.assertNotIn("forwardDot <", source)
 
     def test_hud_faces_the_headset_when_moved_and_sensor_labels_are_legible(self):
         source = (Path(__file__).resolve().parents[1] / "body_runtime_host" / "quest_vr_dashboard.js").read_text(encoding="utf-8")

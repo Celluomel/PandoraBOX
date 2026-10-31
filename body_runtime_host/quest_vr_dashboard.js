@@ -79,7 +79,7 @@ export class QuestVRDashboard {
     this.texture.minFilter = THREE.LinearMipmapLinearFilter;
     this.texture.magFilter = THREE.LinearFilter;
     this.texture.anisotropy = Math.min(8, Number(maxAnisotropy) || 1);
-    const geometry = this.createArcGeometry(1.55, 0.42, 64);
+    const geometry = new THREE.PlaneGeometry(3.1, 1.1625, 1, 1);
     const panel = new THREE.Mesh(
       geometry,
       new THREE.MeshBasicMaterial({ map: this.texture, transparent: true, depthTest: false, depthWrite: false, side: THREE.DoubleSide }),
@@ -113,35 +113,6 @@ export class QuestVRDashboard {
     this.pointerRing.renderOrder = 2001;
     panel.add(this.pointerRing);
     this.drawDashboard();
-  }
-
-  createArcGeometry(width, depth, segments) {
-    const { BufferGeometry, Float32BufferAttribute } = this.THREE;
-    const geometry = new BufferGeometry();
-    const positions = [];
-    const uvs = [];
-    const indices = [];
-    const angle = 1.9;
-    const radius = width / (2 * Math.sin(angle / 2));
-    for (let row = 0; row < 2; row += 1) {
-      for (let column = 0; column <= segments; column += 1) {
-        const u = column / segments;
-        const theta = (u - 0.5) * angle;
-        const topForwardTilt = row === 0 ? depth / 2 : -depth / 2;
-        positions.push(Math.sin(theta) * radius, row === 0 ? 0.46 : -0.46, radius * (Math.cos(theta) - 1) + topForwardTilt);
-        uvs.push(u, row === 0 ? 1 : 0);
-      }
-    }
-    for (let column = 0; column < segments; column += 1) {
-      const a = column;
-      const b = column + segments + 1;
-      indices.push(a, a + 1, b, a + 1, b + 1, b);
-    }
-    geometry.setAttribute('position', new Float32BufferAttribute(positions, 3));
-    geometry.setAttribute('uv', new Float32BufferAttribute(uvs, 2));
-    geometry.setIndex(indices);
-    geometry.computeVertexNormals();
-    return geometry;
   }
 
   update(frame) {
@@ -1441,17 +1412,7 @@ export class QuestVRDashboard {
       this.worldAnchored = true;
       return;
     }
-    this.hudTowardVector.copy(this.root.position).sub(this.scratchPosition);
-    this.hudTowardVector.y = 0;
-    const forwardDot = this.hudTowardVector.lengthSq() > 0.0001 ? this.hudTowardVector.normalize().dot(this.anchorForward) : 1;
-    if (forwardDot < Math.cos(Math.PI / 4)) {
-      this.hudTargetPosition.copy(this.scratchPosition).addScaledVector(this.anchorForward, 0.9);
-      this.hudTargetPosition.y -= 0.02;
-      this.root.position.lerp(this.hudTargetPosition, 0.025);
-      this.facingMatrix.lookAt(this.scratchPosition, this.root.position, this.headUp);
-      this.hudTargetQuaternion.copy(this.scratchQuaternion).setFromRotationMatrix(this.facingMatrix);
-      this.root.quaternion.slerp(this.hudTargetQuaternion, 0.025);
-    }
+    // Keep the HUD world-anchored; the wearer can reposition it explicitly by grabbing it.
   }
 
   loadSavedPose() {

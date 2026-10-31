@@ -3201,6 +3201,10 @@ Memory honesty — two distinct cases:
         )
         if development_topic and development_workflow:
             return "developmental_autonomy_audit"
+        battery_query = re.search(r"\b(battery|batteries|batterie|charge|autonomie|remaining)\b", normalized)
+        body_reference = re.search(r"\b(body|robot|ventuno|fnk0031)\b", normalized)
+        if battery_query and body_reference:
+            return "body_battery"
         gps_query = re.search(r"\b(gps|gnss|latitude|longitude|coordonn[ée]es?)\b", normalized)
         location_query = re.search(r"\b(locali[sz](?:ation|e|er)|position|where|où|locate|map|carte)\b", normalized)
         if gps_query and location_query:
@@ -3347,6 +3351,8 @@ Memory honesty — two distinct cases:
         data_route = self._body_data_request_route(user_input)
         if data_route == "developmental_autonomy_audit":
             return self._developmental_autonomy_response()
+        if data_route == "body_battery":
+            return self._body_status_response(user_input)
         if data_route == "body_location":
             return self._body_gps_location_response()
         if data_route == "body_sensors":
