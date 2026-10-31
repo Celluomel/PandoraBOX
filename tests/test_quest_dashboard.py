@@ -393,7 +393,9 @@ class QuestDashboardTests(unittest.TestCase):
 
         self.assertIn("this.texture.generateMipmaps = true", source)
         self.assertIn("this.texture.minFilter = THREE.LinearMipmapLinearFilter", source)
-        self.assertIn("this.robotVisual.group.position.set(-0.13, -0.08, -0.84)", source)
+        self.assertIn("this.robotVisual.group.position.set(0, 0, -0.84)", source)
+        self.assertIn("this.robotVisual.group.position.x = 0", source)
+        self.assertIn("this.robotVisual.group.position.y = 0", source)
         self.assertIn("const centerX = x + width * .84", source)
         self.assertIn("ctx.ellipse(x + 267, y + 620", source)
         self.assertIn("700 30px system-ui", source)

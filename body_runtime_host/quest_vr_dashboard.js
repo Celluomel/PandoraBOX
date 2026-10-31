@@ -90,8 +90,7 @@ export class QuestVRDashboard {
     this.root.add(panel);
     this.panels.push(panel);
     this.robotVisual = createFnk0031Visual(THREE);
-    this.robotVisual.group.position.set(-0.13, -0.08, -0.84);
-    this.robotVisual.group.rotation.y = -0.28;
+    this.robotVisual.group.position.set(0, 0, -0.84);
     this.robotVisual.group.scale.setScalar(.24);
     this.robotVisual.group.renderOrder = 1001;
     this.robotVisual.group.traverse(object => {
@@ -1366,8 +1365,8 @@ export class QuestVRDashboard {
   applyHudSize() {
     if (!this.panel || !this.robotVisual) return;
     this.panel.scale.set(this.widthScale, this.heightScale, 1);
-    this.robotVisual.group.position.x = -0.13 * this.widthScale;
-    this.robotVisual.group.position.y = -0.08 * this.heightScale;
+    this.robotVisual.group.position.x = 0;
+    this.robotVisual.group.position.y = 0;
     this.robotVisual.group.scale.setScalar(0.24 * Math.min(this.widthScale, this.heightScale));
   }
 
