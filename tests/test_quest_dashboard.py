@@ -454,11 +454,12 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertIn("orientWindowToSphere(windowRoot)", dashboard)
         self.assertIn("Math.atan2(this.verticalOffset.y, horizontal)", dashboard)
         self.assertIn("vrDashboard.setGpsMapVisible(!vrDashboard.gpsMapVisible)", quest)
+        self.assertIn("controller.addEventListener('squeezestart'", quest)
+        self.assertIn("controller.addEventListener('squeezeend'", quest)
         self.assertIn("vrDashboard.beginAdjust(controller, event.data, controller, raycaster)", quest)
-        self.assertIn("controller.addEventListener('selectstart'", quest)
-        self.assertIn("isControllerOverDashboard(controller, raycaster)", quest)
-        self.assertIn("}, 120)", quest)
-        self.assertIn("SQUEEZE GRIP OR HOLD TRIGGER ON A WINDOW TO MOVE", dashboard)
+        self.assertIn("controller.addEventListener('select', () => selectAt(controller))", quest)
+        self.assertNotIn("selectstart", quest)
+        self.assertIn("HOLD LATERAL GRIP ON A WINDOW TO MOVE", dashboard)
         self.assertIn("PICKED POINT STAYS UNDER POINTER", dashboard)
 
     def test_vr_quality_presets_expose_whole_scene_resolution_control(self):

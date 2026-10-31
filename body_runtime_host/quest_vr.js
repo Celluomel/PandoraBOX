@@ -1472,28 +1472,9 @@ function escapeText(value) {
 for (let index = 0; index < 2; index += 1) {
   const controller = renderer.xr.getController(index);
   const grip = renderer.xr.getControllerGrip(index);
-  const interaction = { selectHeld: false, dragStarted: false, holdTimer: 0 };
-  controller.addEventListener('selectstart', event => {
-    interaction.selectHeld = true;
-    if (!vrDashboard.visible || vrDashboard.grabbedController || !vrDashboard.isControllerOverDashboard(controller, raycaster)) return;
-    const inputSource = event.data;
-    interaction.holdTimer = window.setTimeout(() => {
-      if (!interaction.selectHeld || vrDashboard.grabbedController) return;
-      interaction.dragStarted = vrDashboard.beginAdjust(controller, inputSource, controller, raycaster);
-    }, 120);
-  });
-  controller.addEventListener('selectend', () => {
-    interaction.selectHeld = false;
-    window.clearTimeout(interaction.holdTimer);
-  });
-  controller.addEventListener('select', () => {
-    if (interaction.dragStarted) {
-      vrDashboard.endAdjust(controller, renderer.xr.isPresenting ? renderer.xr.getCamera(camera) : null);
-      interaction.dragStarted = false;
-      return;
-    }
-    selectAt(controller);
-  });
+  // The front trigger (select) is reserved for activating VR UI controls.
+  // Window manipulation uses the lateral grip/squeeze button only.
+  controller.addEventListener('select', () => selectAt(controller));
   controller.addEventListener('squeezestart', event => {
     try {
       vrDashboard.beginAdjust(controller, event.data, controller, raycaster);

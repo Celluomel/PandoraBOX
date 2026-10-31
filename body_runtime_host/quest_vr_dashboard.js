@@ -502,7 +502,7 @@ export class QuestVRDashboard {
     ctx.textAlign = 'left';
     ctx.fillText(this.grabbedController
       ? `${this.grabbedWindow === 'gps-map' ? 'GPS MAP' : 'HUD'} GRABBED · PICKED POINT STAYS UNDER POINTER · STICKS RESIZE / ADJUST DISTANCE`
-      : 'SQUEEZE GRIP OR HOLD TRIGGER ON A WINDOW TO MOVE · PICKED POINT STAYS UNDER POINTER', margin + 8, height - 28);
+      : 'HOLD LATERAL GRIP ON A WINDOW TO MOVE · FRONT TRIGGER ACTIVATES BUTTONS', margin + 8, height - 28);
     ctx.textAlign = 'right';
     ctx.fillText(this.following ? 'CAMERA FOLLOW · BODY' : 'SCENE VIEW · FIXED', width - margin - 8, height - 28);
     ctx.restore();
