@@ -49,7 +49,16 @@ export class QuestVRDashboard {
     this.telemetry = null;
     this.imuStatus = null;
     this.gpsStatus = null;
-    this.gpsMap = new QuestGpsMap(() => this.drawDashboard());
+    this.gpsMap = new QuestGpsMap(() => { this.drawDashboard(); this.drawGpsMapWindow(); });
+    this.gpsMapVisible = false;
+    this.gpsMapWorldAnchored = false;
+    this.gpsMapPose = null;
+    this.gpsMapHeadOffsetPosition = new THREE.Vector3();
+    this.gpsMapHeadOffsetQuaternion = new THREE.Quaternion();
+    this.gpsMapWidthScale = 1;
+    this.gpsMapHeightScale = 1;
+    this.gpsMapActionHitAreas = {};
+    this.grabbedWindow = 'hud';
     this.cameraFov = null;
     this.ultrasonicStatus = null;
     this.lastUltrasonicSamples = Object.create(null);
@@ -111,6 +120,29 @@ export class QuestVRDashboard {
     this.pointerRing.visible = false;
     this.pointerRing.renderOrder = 2001;
     panel.add(this.pointerRing);
+
+    this.gpsMapCanvas = document.createElement('canvas');
+    this.gpsMapCanvas.width = 2048;
+    this.gpsMapCanvas.height = 1460;
+    this.gpsMapContext = this.gpsMapCanvas.getContext('2d');
+    this.gpsMapTexture = new THREE.CanvasTexture(this.gpsMapCanvas);
+    this.gpsMapTexture.colorSpace = THREE.SRGBColorSpace;
+    this.gpsMapTexture.generateMipmaps = true;
+    this.gpsMapTexture.minFilter = THREE.LinearMipmapLinearFilter;
+    this.gpsMapTexture.magFilter = THREE.LinearFilter;
+    this.gpsMapTexture.anisotropy = Math.min(8, Number(maxAnisotropy) || 1);
+    this.gpsMapRoot = new THREE.Group();
+    this.gpsMapRoot.visible = false;
+    this.gpsMapPanel = new THREE.Mesh(
+      new THREE.PlaneGeometry(1.1, 0.78375),
+      new THREE.MeshBasicMaterial({ map: this.gpsMapTexture, depthTest: false, depthWrite: false, side: THREE.DoubleSide }),
+    );
+    this.gpsMapPanel.renderOrder = 1100;
+    this.gpsMapRoot.add(this.gpsMapPanel);
+    this.scene.add(this.gpsMapRoot);
+    this.panels.push(this.gpsMapPanel);
+    this.loadSavedGpsMapPose();
+    this.drawGpsMapWindow();
     this.drawDashboard();
   }
 
@@ -139,6 +171,126 @@ export class QuestVRDashboard {
       ? `${sample.fix === true || Number(sample.fix_quality) > 0 ? 'FIX' : 'NO FIX'} · ${Number.isFinite(inView) ? `${inView} SV` : 'GSV —'}`
       : 'OFFLINE';
     this.drawDashboard();
+    this.drawGpsMapWindow();
+  }
+
+  setGpsMapVisible(visible) {
+    this.gpsMapVisible = Boolean(visible);
+    this.gpsMapRoot.visible = this.visible && this.gpsMapVisible;
+    this.drawDashboard();
+    this.drawGpsMapWindow();
+  }
+
+  resetGpsMapPose() {
+    this.gpsMapRoot.position.set(0, 0, 0);
+    this.gpsMapRoot.quaternion.identity();
+    this.gpsMapWorldAnchored = false;
+    this.gpsMapWidthScale = 1;
+    this.gpsMapHeightScale = 1;
+    this.gpsMapHeadOffsetPosition.set(0, 0, 0);
+    this.gpsMapHeadOffsetQuaternion.identity();
+    this.gpsMapPose = null;
+    this.applyGpsMapSize();
+    try { localStorage.removeItem('pandorabox.quest-gps-map-pose.v1'); } catch {}
+  }
+
+  drawGpsMapWindow() {
+    if (!this.gpsMapContext) return;
+    const ctx = this.gpsMapContext;
+    const width = this.gpsMapCanvas.width;
+    const height = this.gpsMapCanvas.height;
+    const sample = this.gpsStatus?.sample || this.gpsStatus?.source_status?.sample || {};
+    const latitude = Number(sample.latitude_deg ?? sample.latitude ?? sample.lat);
+    const longitude = Number(sample.longitude_deg ?? sample.longitude ?? sample.lon ?? sample.lng);
+    const validFix = (sample.fix === true || Number(sample.fix_quality) > 0)
+      && Number.isFinite(latitude) && Math.abs(latitude) <= 90
+      && Number.isFinite(longitude) && Math.abs(longitude) <= 180;
+    const accuracy = Number(sample.horizontal_accuracy_m ?? sample.accuracy_m);
+    ctx.clearRect(0, 0, width, height);
+    ctx.fillStyle = '#071216'; ctx.fillRect(0, 0, width, height);
+    ctx.fillStyle = '#0e1a20'; ctx.fillRect(0, 0, width, 118);
+    ctx.strokeStyle = 'rgba(126,209,193,.55)'; ctx.lineWidth = 3; ctx.strokeRect(2, 2, width - 4, height - 4);
+    ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#d0eee4'; ctx.font = '700 31px system-ui'; ctx.fillText('GNSS POSITION', 34, 43);
+    ctx.fillStyle = validFix ? '#64e4be' : '#f0c26f'; ctx.font = '600 20px ui-monospace, monospace';
+    const meta = validFix
+      ? `${latitude.toFixed(6)}, ${longitude.toFixed(6)} · ${sample.satellites ?? '—'} SV · ${Number.isFinite(accuracy) ? `±${accuracy.toFixed(1)} m` : 'accuracy —'}`
+      : this.gpsStatus?.available ? 'UART LIVE · WAITING FOR VALID FIX' : 'NO VALID GNSS FIX';
+    ctx.fillText(meta, 34, 83, 570);
+
+    this.gpsMapActionHitAreas = {};
+    const drawButton = (key, x, buttonWidth, label, selected = false) => {
+      const y = 28, buttonHeight = 54;
+      ctx.fillStyle = selected ? '#12382f' : '#101d22';
+      ctx.strokeStyle = selected ? '#65dfbd' : '#40575d';
+      ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.roundRect(x, y, buttonWidth, buttonHeight, 10); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = selected ? '#b5f4dc' : '#c5d8d5';
+      ctx.font = '650 19px ui-monospace, monospace'; ctx.textAlign = 'center';
+      ctx.fillText(label, x + buttonWidth / 2, y + buttonHeight / 2, buttonWidth - 12);
+      this.gpsMapActionHitAreas[key] = { x, y, width: buttonWidth, height: buttonHeight };
+    };
+    drawButton('gps-map-streets', 650, 168, 'MAP', this.gpsMap.layer === 'streets');
+    drawButton('gps-map-satellite', 828, 190, 'SATELLITE', this.gpsMap.layer === 'satellite');
+    drawButton('gps-map-center', 1026, 210, 'CENTER GPS');
+    drawButton('gps-map-zoom-out', 1244, 70, '−');
+    drawButton('gps-map-zoom-level', 1322, 112, `Z ${this.gpsMap.zoom}`);
+    drawButton('gps-map-zoom-in', 1442, 70, '+');
+    drawButton('gps-map-reset', 1520, 174, 'RESET WINDOW');
+    drawButton('gps-map-close', 1702, 112, 'CLOSE');
+
+    if (this.gpsMapVisible) {
+      this.gpsMap.draw(ctx, {
+        x: 28, y: 132, width: width - 56, height: height - 164,
+        latitude: validFix ? latitude : NaN,
+        longitude: validFix ? longitude : NaN,
+        accuracyM: accuracy,
+      });
+    } else {
+      ctx.fillStyle = '#0b151a'; ctx.fillRect(28, 132, width - 56, height - 164);
+      ctx.fillStyle = '#9db6b4'; ctx.font = '600 22px ui-monospace, monospace'; ctx.textAlign = 'center';
+      ctx.fillText('GPS MAP WINDOW CLOSED', width / 2, height / 2);
+    }
+    this.gpsMapTexture.needsUpdate = true;
+  }
+
+  loadSavedGpsMapPose() {
+    try {
+      const saved = JSON.parse(localStorage.getItem('pandorabox.quest-gps-map-pose.v1') || 'null');
+      if (!Array.isArray(saved?.position) || saved.position.length !== 3
+        || !Array.isArray(saved?.quaternion) || saved.quaternion.length !== 4) return;
+      const values = [...saved.position, ...saved.quaternion, saved.widthScale, saved.heightScale].map(Number);
+      if (!values.every(Number.isFinite) || values.slice(0, 3).some(value => Math.abs(value) > 20)) return;
+      this.gpsMapHeadOffsetPosition.fromArray(saved.position);
+      this.gpsMapHeadOffsetQuaternion.fromArray(saved.quaternion).normalize();
+      this.gpsMapWidthScale = Math.max(.45, Math.min(2.5, Number(saved.widthScale) || 1));
+      this.gpsMapHeightScale = Math.max(.45, Math.min(2.5, Number(saved.heightScale) || 1));
+      this.gpsMapPose = saved;
+      this.applyGpsMapSize();
+    } catch {}
+  }
+
+  applyGpsMapSize() {
+    this.gpsMapPanel?.scale.set(this.gpsMapWidthScale, this.gpsMapHeightScale, 1);
+  }
+
+  persistGpsMapPose(xrCamera, force = false) {
+    if (!xrCamera || !this.gpsMapWorldAnchored || (!force && performance.now() - this.lastGpsMapPosePersistAt < 750)) return;
+    xrCamera.getWorldPosition(this.scratchPosition);
+    xrCamera.getWorldQuaternion(this.scratchQuaternion);
+    const inverseHead = this.scratchQuaternion.clone().invert();
+    this.gpsMapHeadOffsetPosition.copy(this.gpsMapRoot.position).sub(this.scratchPosition).applyQuaternion(inverseHead);
+    this.gpsMapHeadOffsetQuaternion.copy(inverseHead).multiply(this.gpsMapRoot.quaternion).normalize();
+    this.gpsMapPose = {
+      position: this.gpsMapHeadOffsetPosition.toArray(),
+      quaternion: this.gpsMapHeadOffsetQuaternion.toArray(),
+      widthScale: this.gpsMapWidthScale,
+      heightScale: this.gpsMapHeightScale,
+    };
+    try {
+      localStorage.setItem('pandorabox.quest-gps-map-pose.v1', JSON.stringify(this.gpsMapPose));
+      this.lastGpsMapPosePersistAt = performance.now();
+    } catch {}
   }
 
   updatePowerStatus(status) {
@@ -303,9 +455,10 @@ export class QuestVRDashboard {
     const simulationReady = this.frame?.mode === 'sim';
     const simulationRunning = Boolean(this.frame?.running);
     const simulationLabel = simulationRunning ? 'PAUSE SIMULATION' : 'START SIMULATION';
-    const simulationX = this.logicalWidth / 2 - 520;
-    const sensorX = this.logicalWidth / 2 - 160;
-    const exitX = this.logicalWidth / 2 + 200;
+    const mapX = this.logicalWidth / 2 - 568;
+    const simulationX = this.logicalWidth / 2 - 300;
+    const sensorX = this.logicalWidth / 2 + 24;
+    const exitX = this.logicalWidth / 2 + 340;
     const drawButton = (key, x, width, label, fill, stroke, textColor, enabled = true) => {
       const height = 48;
       this.actionHitAreas[key] = { x: x - 16, y: buttonY - 12, width: width + 32, height: height + 24, enabled: enabled && !this.actionBusy };
@@ -320,6 +473,7 @@ export class QuestVRDashboard {
       ctx.fillText(label, x + width / 2, buttonY + height / 2);
       ctx.globalAlpha = 1;
     };
+    drawButton('gps-map', mapX, 204, this.gpsMapVisible ? 'CLOSE GPS MAP' : 'GPS MAP', 'rgba(31, 73, 77, .96)', '#78d8d0', '#e5fffa');
     drawButton('simulation', simulationX, 300, this.actionBusy ? 'PLEASE WAIT' : simulationReady ? simulationLabel : 'SIMULATION OFFLINE', 'rgba(31, 105, 78, .96)', '#75edbd', '#e5fff3', simulationReady);
     drawButton('sensor-mode', sensorX, 300, this.sceneMode === 'sensors' ? 'SHOW SIMULATION' : 'SHOW LIVE SENSORS', 'rgba(31, 73, 77, .96)', '#78d8d0', '#e5fffa');
     drawButton('exit', exitX, 220, this.actionBusy ? 'PLEASE WAIT' : 'EXIT VR', 'rgba(91, 53, 42, .96)', '#f0a888', '#fff0e8');
@@ -612,10 +766,6 @@ export class QuestVRDashboard {
     ctx.fillText(hasGps ? `FIX${Number.isFinite(gpsAccuracy) ? ` · ±${gpsAccuracy.toFixed(1)} m` : Number.isFinite(gpsHdop) ? ` · HDOP ${gpsHdop.toFixed(1)}` : ''}` : gpsStreamOnline ? 'UART LIVE · WAITING FOR FIX' : 'NO GPS DATA · CHECK D0/D1', gpsX, gpsY + 51);
     const inView = asNumber(gps.satellites_in_view);
     ctx.fillText(`${Number.isFinite(satelliteCount) ? `${satelliteCount} USED` : 'USED —'} · ${Number.isFinite(inView) ? `${inView} IN VIEW` : 'VIEW —'}`, gpsX, gpsY + 74);
-    this.gpsMap.draw(ctx, {
-      x: x + width * .5, y: y + 720, width: width * .23, height: 150,
-      latitude: hasGps ? gpsLat : NaN, longitude: hasGps ? gpsLon : NaN, accuracyM: gpsAccuracy,
-    });
     const plottedSignals = satelliteSignals.slice(0, 10);
     if (plottedSignals.length) {
       const barWidth = 13;
@@ -1243,7 +1393,10 @@ export class QuestVRDashboard {
     this.drawDashboard();
   }
 
-  setVisible(visible) { this.visible = Boolean(visible); }
+  setVisible(visible) {
+    this.visible = Boolean(visible);
+    if (this.gpsMapRoot) this.gpsMapRoot.visible = this.visible && this.gpsMapVisible;
+  }
 
   setSceneMode(mode) {
     this.sceneMode = mode === 'sensors' ? 'sensors' : 'simulation';
@@ -1271,12 +1424,12 @@ export class QuestVRDashboard {
     raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
     raycaster.ray.direction.set(0, 0, -1).applyMatrix4(rotation);
     this.scene.updateMatrixWorld(true);
-    const hit = raycaster.intersectObjects(this.panels, false)[0];
-    if (!hit) return null;
+    const hit = raycaster.intersectObjects(this.panels.filter(panel => panel !== this.gpsMapPanel || this.gpsMapVisible), false)[0];
+    if (!hit) { this.pointerRing.visible = false; return null; }
     const panel = hit.object;
+    if (this.pointerRing.parent !== panel) panel.add(this.pointerRing);
     const localPoint = panel.worldToLocal(hit.point.clone());
-    const theta = Math.asin(this.THREE.MathUtils.clamp(localPoint.x / 5.09, -0.99, 0.99));
-    const normal = this.pointerNormal.set(-Math.sin(theta), 0, Math.cos(theta));
+    const normal = this.pointerNormal.set(0, 0, 1);
     this.pointerRing.position.copy(localPoint).addScaledVector(normal, 0.012);
     this.pointerRing.quaternion.setFromUnitVectors(this.pointerForward, normal);
     this.pointerRing.visible = true;
@@ -1289,7 +1442,7 @@ export class QuestVRDashboard {
     raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
     raycaster.ray.direction.set(0, 0, -1).applyMatrix4(rotation);
     this.scene.updateMatrixWorld(true);
-    return raycaster.intersectObjects(this.panels, false).length > 0;
+    return raycaster.intersectObjects(this.panels.filter(panel => panel !== this.gpsMapPanel || this.gpsMapVisible), false).length > 0;
   }
 
   activateAt(controller, raycaster) {
@@ -1299,8 +1452,16 @@ export class QuestVRDashboard {
     raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
     raycaster.ray.direction.set(0, 0, -1).applyMatrix4(rotation);
     this.scene.updateMatrixWorld(true);
-    const hit = raycaster.intersectObjects(this.panels, false)[0];
+    const hit = raycaster.intersectObjects(this.panels.filter(panel => panel !== this.gpsMapPanel || this.gpsMapVisible), false)[0];
     if (!hit?.uv) return null;
+    if (hit.object === this.gpsMapPanel) {
+      const x = hit.uv.x * this.gpsMapCanvas.width;
+      const y = (1 - hit.uv.y) * this.gpsMapCanvas.height;
+      for (const [key, area] of Object.entries(this.gpsMapActionHitAreas)) {
+        if (x >= area.x && x <= area.x + area.width && y >= area.y && y <= area.y + area.height) return key;
+      }
+      return 'gps-map-window';
+    }
     const x = hit.uv.x * this.logicalWidth;
     const y = (1 - hit.uv.y) * this.logicalHeight;
     const cameraArea = this.cameraHitArea;
@@ -1311,14 +1472,25 @@ export class QuestVRDashboard {
     return 'dashboard';
   }
 
-  beginAdjust(controller, inputSource) {
+  beginAdjust(controller, inputSource, aimController = controller, raycaster = null) {
     if (!this.visible || this.grabbedController) return false;
+    let target = 'hud';
+    if (raycaster && aimController) {
+      aimController.updateMatrixWorld(true);
+      const rotation = new this.THREE.Matrix4().extractRotation(aimController.matrixWorld);
+      raycaster.ray.origin.setFromMatrixPosition(aimController.matrixWorld);
+      raycaster.ray.direction.set(0, 0, -1).applyMatrix4(rotation);
+      this.scene.updateMatrixWorld(true);
+      if (raycaster.intersectObject(this.gpsMapPanel, false).length) target = 'gps-map';
+    }
+    const root = target === 'gps-map' ? this.gpsMapRoot : this.root;
     controller.updateMatrixWorld(true);
     controller.getWorldPosition(this.scratchPosition);
     controller.getWorldQuaternion(this.scratchQuaternion);
-    this.grabOffsetPosition.copy(this.root.position).sub(this.scratchPosition).applyQuaternion(this.scratchQuaternion.clone().invert());
-    this.grabOffsetQuaternion.copy(this.scratchQuaternion).invert().multiply(this.root.quaternion);
+    this.grabOffsetPosition.copy(root.position).sub(this.scratchPosition).applyQuaternion(this.scratchQuaternion.clone().invert());
+    this.grabOffsetQuaternion.copy(this.scratchQuaternion).invert().multiply(root.quaternion);
     this.grabbedController = controller;
+    this.grabbedWindow = target;
     this.grabInputSource = inputSource || null;
     this.depthOffset = 0;
     this.headLocked = false;
@@ -1332,7 +1504,11 @@ export class QuestVRDashboard {
     this.grabbedController = null;
     this.grabInputSource = null;
     this.depthOffset = 0;
-    if (xrCamera) this.persistPose(xrCamera, true);
+    if (xrCamera) {
+      if (this.grabbedWindow === 'gps-map') this.persistGpsMapPose(xrCamera, true);
+      else this.persistPose(xrCamera, true);
+    }
+    this.grabbedWindow = 'hud';
     this.drawDashboard();
     return true;
   }
@@ -1342,8 +1518,9 @@ export class QuestVRDashboard {
     this.grabbedController.getWorldPosition(this.scratchPosition);
     this.grabbedController.getWorldQuaternion(this.scratchQuaternion);
     this.scratchOffset.copy(this.grabOffsetPosition).applyQuaternion(this.scratchQuaternion);
-    this.root.position.copy(this.scratchPosition).add(this.scratchOffset);
-    this.root.quaternion.copy(this.scratchQuaternion).multiply(this.grabOffsetQuaternion);
+    const targetRoot = this.grabbedWindow === 'gps-map' ? this.gpsMapRoot : this.root;
+    targetRoot.position.copy(this.scratchPosition).add(this.scratchOffset);
+    targetRoot.quaternion.copy(this.scratchQuaternion).multiply(this.grabOffsetQuaternion);
     const elapsed = Math.max(0, Math.min(0.05, Number(deltaSeconds) || 0));
     const stick = source => {
       const axes = source?.gamepad?.axes || [];
@@ -1356,10 +1533,16 @@ export class QuestVRDashboard {
     const [, heightInput] = stick(otherSource);
     this.grabForward.set(0, 0, -1).applyQuaternion(this.scratchQuaternion);
     if (Math.abs(depthInput) > 0.12) this.depthOffset = Math.max(-1, Math.min(4, this.depthOffset - depthInput * elapsed * 1.8));
-    this.root.position.addScaledVector(this.grabForward, this.depthOffset);
-    if (Math.abs(widthInput) > 0.12) this.widthScale = Math.max(0.45, Math.min(2.5, this.widthScale * Math.exp(widthInput * elapsed * 1.1)));
-    if (Math.abs(heightInput) > 0.12) this.heightScale = Math.max(0.45, Math.min(2.5, this.heightScale * Math.exp(-heightInput * elapsed * 1.1)));
-    this.applyHudSize();
+    targetRoot.position.addScaledVector(this.grabForward, this.depthOffset);
+    if (this.grabbedWindow === 'gps-map') {
+      if (Math.abs(widthInput) > 0.12) this.gpsMapWidthScale = Math.max(0.45, Math.min(2.5, this.gpsMapWidthScale * Math.exp(widthInput * elapsed * 1.1)));
+      if (Math.abs(heightInput) > 0.12) this.gpsMapHeightScale = Math.max(0.45, Math.min(2.5, this.gpsMapHeightScale * Math.exp(-heightInput * elapsed * 1.1)));
+      this.applyGpsMapSize();
+    } else {
+      if (Math.abs(widthInput) > 0.12) this.widthScale = Math.max(0.45, Math.min(2.5, this.widthScale * Math.exp(widthInput * elapsed * 1.1)));
+      if (Math.abs(heightInput) > 0.12) this.heightScale = Math.max(0.45, Math.min(2.5, this.heightScale * Math.exp(-heightInput * elapsed * 1.1)));
+      this.applyHudSize();
+    }
   }
 
   applyHudSize() {
@@ -1409,7 +1592,16 @@ export class QuestVRDashboard {
         this.root.quaternion.setFromRotationMatrix(this.facingMatrix);
       }
       this.worldAnchored = true;
-      return;
+    }
+    if (this.gpsMapVisible && !this.gpsMapWorldAnchored) {
+      if (this.gpsMapPose) {
+        this.gpsMapRoot.position.copy(this.gpsMapHeadOffsetPosition).applyQuaternion(this.scratchQuaternion).add(this.scratchPosition);
+        this.gpsMapRoot.quaternion.copy(this.scratchQuaternion).multiply(this.gpsMapHeadOffsetQuaternion);
+      } else {
+        this.gpsMapRoot.position.copy(this.root.position).add(new this.THREE.Vector3(2.15, -0.08, -0.9).applyQuaternion(this.root.quaternion));
+        this.gpsMapRoot.quaternion.copy(this.root.quaternion);
+      }
+      this.gpsMapWorldAnchored = true;
     }
     // Keep the HUD world-anchored; the wearer can reposition it explicitly by grabbing it.
   }
@@ -1432,7 +1624,9 @@ export class QuestVRDashboard {
   }
 
   persistPose(xrCamera, force = false) {
-    if (!xrCamera || this.headLocked || (!force && performance.now() - this.lastPosePersistAt < 750)) return;
+    if (!xrCamera) return;
+    this.persistGpsMapPose(xrCamera);
+    if (this.headLocked || (!force && performance.now() - this.lastPosePersistAt < 750)) return;
     xrCamera.getWorldPosition(this.scratchPosition);
     xrCamera.getWorldQuaternion(this.scratchQuaternion);
     const inverseHead = this.scratchQuaternion.clone().invert();

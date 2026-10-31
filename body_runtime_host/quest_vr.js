@@ -1217,6 +1217,35 @@ async function selectSceneMode(mode) {
 
 function selectAt(controller) {
   const hudAction = vrDashboard.visible ? vrDashboard.activateAt(controller, raycaster) : null;
+  if (hudAction === 'gps-map') {
+    vrDashboard.setGpsMapVisible(!vrDashboard.gpsMapVisible);
+    return;
+  }
+  if (hudAction === 'gps-map-streets' || hudAction === 'gps-map-satellite') {
+    vrDashboard.gpsMap.layer = hudAction === 'gps-map-satellite' ? 'satellite' : 'streets';
+    vrDashboard.drawGpsMapWindow();
+    return;
+  }
+  if (hudAction === 'gps-map-center') {
+    vrDashboard.gpsMap.zoom = 16;
+    vrDashboard.drawGpsMapWindow();
+    return;
+  }
+  if (hudAction === 'gps-map-zoom-in' || hudAction === 'gps-map-zoom-out') {
+    vrDashboard.gpsMap.zoom = Math.max(2, Math.min(19, vrDashboard.gpsMap.zoom + (hudAction === 'gps-map-zoom-in' ? 1 : -1)));
+    vrDashboard.drawGpsMapWindow();
+    return;
+  }
+  if (hudAction === 'gps-map-reset') {
+    vrDashboard.resetGpsMapPose();
+    vrDashboard.drawGpsMapWindow();
+    return;
+  }
+  if (hudAction === 'gps-map-close') {
+    vrDashboard.setGpsMapVisible(false);
+    return;
+  }
+  if (hudAction === 'gps-map-window' || hudAction === 'gps-map-zoom-level') return;
   if (hudAction === 'simulation') {
     void toggleSimulationFromHud();
     return;
@@ -1415,7 +1444,7 @@ for (let index = 0; index < 2; index += 1) {
   controller.addEventListener('select', () => selectAt(controller));
   controller.addEventListener('squeezestart', event => {
     try {
-      vrDashboard.beginAdjust(grip, event.data);
+      vrDashboard.beginAdjust(grip, event.data, controller, raycaster);
     } catch (error) {
       setStatus(`HUD adjustment failed: ${error.message}`, true);
     }

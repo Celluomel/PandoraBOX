@@ -265,7 +265,7 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertIn("new THREE.PlaneGeometry(3.1, 1.1625, 1, 1)", source)
         self.assertIn("panel.position.set(0, 0, -0.9)", source)
         self.assertIn("this.worldAnchored = true", source)
-        self.assertIn("this.root.position.copy(this.scratchPosition).add(this.scratchOffset)", source)
+        self.assertIn("targetRoot.position.copy(this.scratchPosition).add(this.scratchOffset)", source)
         self.assertIn("Keep the HUD world-anchored", source)
         self.assertNotIn("createArcGeometry", source)
         self.assertNotIn("forwardDot <", source)
@@ -413,6 +413,22 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertIn("HDG ${Number.isFinite(heading)", source)
         self.assertIn("updateImuStatus(status)", source)
         self.assertIn("fetch('/plugins/imu/status'", quest_source)
+
+    def test_vr_gps_map_is_a_separate_grabbable_window(self):
+        root = Path(__file__).resolve().parents[1]
+        dashboard = (root / "body_runtime_host" / "quest_vr_dashboard.js").read_text(encoding="utf-8")
+        quest = (root / "body_runtime_host" / "quest_vr.js").read_text(encoding="utf-8")
+
+        navigation = dashboard.split("  drawNavigationInstruments(ctx,", 1)[1].split("  drawAzimuthRing(ctx,", 1)[0]
+        self.assertNotIn("this.gpsMap.draw(ctx", navigation)
+        self.assertIn("this.gpsMapCanvas = document.createElement('canvas')", dashboard)
+        self.assertIn("this.gpsMapRoot = new THREE.Group()", dashboard)
+        self.assertIn("drawButton('gps-map-streets'", dashboard)
+        self.assertIn("drawButton('gps-map-satellite'", dashboard)
+        self.assertIn("gpsMapWidthScale", dashboard)
+        self.assertIn("this.grabbedWindow === 'gps-map'", dashboard)
+        self.assertIn("vrDashboard.setGpsMapVisible(!vrDashboard.gpsMapVisible)", quest)
+        self.assertIn("vrDashboard.beginAdjust(grip, event.data, controller, raycaster)", quest)
 
 
 if __name__ == "__main__":

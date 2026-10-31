@@ -5,19 +5,23 @@ export class QuestGpsMap {
   constructor(onTileLoad = () => {}) {
     this.tiles = new Map();
     this.onTileLoad = onTileLoad;
+    this.zoom = 16;
+    this.layer = 'streets';
   }
 
-  loadTile(zoom, x, y) {
+  loadTile(zoom, x, y, layer = this.layer) {
     const count = 2 ** zoom;
     const wrappedX = (x % count + count) % count;
-    const key = `${zoom}/${wrappedX}/${y}`;
+    const key = `${layer}/${zoom}/${wrappedX}/${y}`;
     if (this.tiles.has(key)) return this.tiles.get(key);
     const tile = { image: null, failed: false };
     const image = new Image();
     image.crossOrigin = 'anonymous';
     image.onload = () => { tile.image = image; this.onTileLoad(); };
     image.onerror = () => { tile.failed = true; this.onTileLoad(); };
-    image.src = `https://tile.openstreetmap.org/${zoom}/${wrappedX}/${y}.png`;
+    image.src = layer === 'satellite'
+      ? `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${zoom}/${y}/${wrappedX}`
+      : `https://tile.openstreetmap.org/${zoom}/${wrappedX}/${y}.png`;
     tile.imageElement = image;
     this.tiles.set(key, tile);
     if (this.tiles.size > 96) this.tiles.delete(this.tiles.keys().next().value);
@@ -43,7 +47,7 @@ export class QuestGpsMap {
       return;
     }
 
-    const zoom = 16;
+    const zoom = Math.max(2, Math.min(19, Math.round(Number(this.zoom) || 16)));
     const worldSize = TILE_SIZE * 2 ** zoom;
     const clampedLatitude = Math.max(-MAX_MERCATOR_LAT, Math.min(MAX_MERCATOR_LAT, latitude));
     const sinLatitude = Math.sin(clampedLatitude * Math.PI / 180);
@@ -59,7 +63,7 @@ export class QuestGpsMap {
 
     for (let tileY = firstTileY; tileY <= lastTileY; tileY += 1) {
       for (let tileX = firstTileX; tileX <= lastTileX; tileX += 1) {
-        const tile = this.loadTile(zoom, tileX, tileY);
+        const tile = this.loadTile(zoom, tileX, tileY, this.layer);
         if (!tile.image) continue;
         loaded = true;
         ctx.drawImage(tile.image, x + tileX * TILE_SIZE - left, y + tileY * TILE_SIZE - top, TILE_SIZE, TILE_SIZE);
@@ -99,7 +103,7 @@ export class QuestGpsMap {
     ctx.fillStyle = 'rgba(5, 12, 12, .78)';
     ctx.fillRect(x + 4, y + height - 18, Math.min(width - 8, 156), 14);
     ctx.fillStyle = '#d8e6df';
-    ctx.fillText('© OpenStreetMap contributors', x + 8, y + height - 6, width - 16);
+    ctx.fillText(this.layer === 'satellite' ? 'Tiles © Esri' : '© OpenStreetMap contributors', x + 8, y + height - 6, width - 16);
     ctx.restore();
   }
 }
