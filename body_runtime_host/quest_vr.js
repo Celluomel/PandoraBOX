@@ -281,9 +281,8 @@ let latestSensorDepthStatus = null;
 let sensorMetricCalibration = null;
 let sensorCalibrationCheckedAt = 0;
 let sensorYoloFrameId = '';
-let sensorYoloLastPairedAt = 0;
-let sensorYoloNoDetectionSince = 0;
 let sensorYoloDisplayedCount = 0;
+let sensorYoloTracks = [];
 let sensorRadarSignature = '';
 let sensorViewInitialized = false;
 let mapCenter = { x: 5, z: -6 };
@@ -583,42 +582,74 @@ function buildSensorDepthCloud(depth, depthImage, colorImage) {
   return true;
 }
 
+function sensorYoloBoxIou(a, b) {
+  const width = Math.max(0, Math.min(a[2], b[2]) - Math.max(a[0], b[0]));
+  const height = Math.max(0, Math.min(a[3], b[3]) - Math.max(a[1], b[1]));
+  const intersection = width * height;
+  const areaA = Math.max(0, a[2] - a[0]) * Math.max(0, a[3] - a[1]);
+  const areaB = Math.max(0, b[2] - b[0]) * Math.max(0, b[3] - b[1]);
+  return intersection / Math.max(1e-6, areaA + areaB - intersection);
+}
+
+function updateSensorYoloLabel(track, text) {
+  if (track.labelText === text) return;
+  const canvas = track.label.material.map?.image;
+  const context = canvas?.getContext?.('2d');
+  if (!context) return;
+  context.clearRect(0, 0, canvas.width, canvas.height);
+  context.fillStyle = '#07110ddd'; context.fillRect(0, 12, 640, 72);
+  context.strokeStyle = '#73bd91'; context.lineWidth = 3; context.strokeRect(2, 13, 636, 70);
+  context.fillStyle = '#e0f4e7'; context.font = 'bold 38px system-ui';
+  context.textAlign = 'center'; context.textBaseline = 'middle'; context.fillText(text.slice(0, 32), 320, 48);
+  track.label.material.map.needsUpdate = true;
+  track.labelText = text;
+}
+
+function removeSensorYoloTrack(index) {
+  const [track] = sensorYoloTracks.splice(index, 1);
+  if (!track) return;
+  sensorObjectGroup.remove(track.outline, track.label);
+  track.outline.geometry.dispose(); track.outline.material.dispose();
+  track.label.material.map?.dispose(); track.label.material.dispose();
+}
+
+function updateSensorYoloTracks(deltaSeconds) {
+  const now = Date.now();
+  const alpha = 1 - Math.exp(-Math.max(0, Math.min(0.1, Number(deltaSeconds) || 0)) / 0.15);
+  sensorYoloDisplayedCount = 0;
+  for (let index = sensorYoloTracks.length - 1; index >= 0; index -= 1) {
+    const track = sensorYoloTracks[index];
+    const age = Math.max(0, (now - track.lastSeenAt) / 1000);
+    if (age >= 1.5) { removeSensorYoloTrack(index); continue; }
+    track.outline.position.lerp(track.targetPosition, alpha);
+    track.outline.scale.lerp(track.targetScale, alpha);
+    track.label.position.lerp(track.targetLabelPosition, alpha);
+    track.label.scale.lerp(track.targetLabelScale, alpha);
+    const opacity = age <= 0.25 ? 1 : Math.max(0, 1 - (age - 0.25) / 1.25);
+    track.outline.material.opacity = opacity * 0.95;
+    track.label.material.opacity = opacity;
+    if (age < 1.5) sensorYoloDisplayedCount += 1;
+  }
+}
+
 function updateSensorYolo(yolo) {
   const pairing = yoloMatchesDepth(yolo, sensorDepthFrame);
-  const now = Date.now();
-  const detections = pairing.ok ? yolo.detections || [] : [];
-  if (!pairing.ok || !sensorDepthValues || !sensorDepthIntrinsics) {
-    if (sensorYoloDisplayedCount && now - sensorYoloLastPairedAt <= 1400) return sensorYoloDisplayedCount;
-    if (sensorYoloDisplayedCount) {
-      disposeChildren(sensorObjectGroup);
-      sensorYoloDisplayedCount = 0;
-      sensorYoloFrameId = '';
-    }
-    return 0;
-  }
-  if (!detections.length) {
-    if (!sensorYoloNoDetectionSince) sensorYoloNoDetectionSince = now;
-    if (sensorYoloDisplayedCount && now - sensorYoloNoDetectionSince < 700) return sensorYoloDisplayedCount;
-    if (sensorYoloDisplayedCount) disposeChildren(sensorObjectGroup);
-    sensorYoloDisplayedCount = 0;
-    sensorYoloFrameId = '';
-    return 0;
-  }
-  sensorYoloNoDetectionSince = 0;
+  if (!pairing.ok || !sensorDepthValues || !sensorDepthIntrinsics) return sensorYoloDisplayedCount;
+  const detections = Array.isArray(yolo.detections) ? yolo.detections : [];
+  if (!detections.length) return sensorYoloDisplayedCount;
   const frameId = `${yolo.frame_id || yolo.captured_at}|${sensorMetricCalibration?.calibrated_at || (sensorMetricCalibration?.available ? 'cal' : 'rel')}`;
-  sensorYoloLastPairedAt = now;
   if (frameId === sensorYoloFrameId) return sensorYoloDisplayedCount;
   sensorYoloFrameId = frameId;
-  disposeChildren(sensorObjectGroup);
-  sensorYoloDisplayedCount = 0;
+  const now = Date.now();
   const width = sensorDepthValues.width;
   const height = sensorDepthValues.height;
   const { fx, fy, cx, cy } = sensorDepthIntrinsics;
-  const color = '#55e7cc';
+  const usedTracks = new Set();
   for (const detection of detections) {
     const box = detection.bbox;
     if (!Array.isArray(box) || box.length !== 4 || !box.every(Number.isFinite)) continue;
-    const [x1, y1, x2, y2] = box.map(value => Math.max(0, Math.min(1, Number(value))));
+    const bbox = box.map(value => Math.max(0, Math.min(1, Number(value))));
+    const [x1, y1, x2, y2] = bbox;
     if (x2 <= x1 || y2 <= y1) continue;
     const u = (x1 + x2) / 2;
     const v = (y1 + y2) / 2;
@@ -628,25 +659,56 @@ function updateSensorYolo(yolo) {
     const boxHeight = Math.max(0.08, (y2 - y1) * height * z / fy);
     const centerX = (u * (width - 1) - cx) * z / fx;
     const centerY = sensorDepthHeightM + (cy - v * (height - 1)) * z / fy;
-    const boxGeometry = new THREE.EdgesGeometry(new THREE.BoxGeometry(boxWidth, boxHeight, Math.max(0.04, z * 0.025)));
-    const labelName = String(detection.label || detection.class_name || '').toLowerCase();
-    const detectionColor = labelName === 'person' ? '#63e6a8'
-      : ['tv', 'tvmonitor', 'monitor'].includes(labelName) ? '#f0c26f'
-        : ['chair', 'couch', 'bed'].includes(labelName) ? '#b99aff'
-          : ['car', 'bicycle', 'motorcycle', 'bus', 'truck'].includes(labelName) ? '#6bd4ed' : color;
-    const outline = new THREE.LineSegments(boxGeometry, new THREE.LineBasicMaterial({ color: detectionColor, depthTest: false, transparent: true, opacity: 0.95 }));
-    outline.position.set(centerX, centerY, -z);
-    outline.renderOrder = 3;
-    sensorObjectGroup.add(outline);
-    const confidence = Math.round(Number(detection.confidence || detection.score || 0) * 100);
-    const distanceText = sample.calibrated ? `${z.toFixed(1)} m` : 'rel.';
-    const label = labelSprite(`${detection.label || detection.class_name || 'object'} ${confidence}% · ${distanceText}`);
-    label.scale.set(Math.max(0.9, Math.min(1.8, boxWidth)), 0.24, 1);
-    label.position.set(centerX, centerY + boxHeight / 2 + 0.16, -z);
-    label.renderOrder = 4;
-    sensorObjectGroup.add(label);
-    sensorYoloDisplayedCount += 1;
+    const labelName = String(detection.label || detection.class_name || 'object');
+    const labelKey = labelName.toLowerCase();
+    const detectionColor = labelKey === 'person' ? '#63e6a8'
+      : ['tv', 'tvmonitor', 'monitor'].includes(labelKey) ? '#f0c26f'
+        : ['chair', 'couch', 'bed'].includes(labelKey) ? '#b99aff'
+          : ['car', 'bicycle', 'motorcycle', 'bus', 'truck'].includes(labelKey) ? '#6bd4ed' : '#55e7cc';
+    const boxDepth = Math.max(0.04, z * 0.025);
+    const targetPosition = new THREE.Vector3(centerX, centerY, -z);
+    const targetScale = new THREE.Vector3(boxWidth, boxHeight, boxDepth);
+    const targetLabelPosition = new THREE.Vector3(centerX, centerY + boxHeight / 2 + 0.16, -z);
+    const targetLabelScale = new THREE.Vector3(Math.max(0.9, Math.min(1.8, boxWidth)), 0.24, 1);
+    let match = null;
+    let bestScore = -Infinity;
+    for (const track of sensorYoloTracks) {
+      if (usedTracks.has(track) || track.labelKey !== labelKey) continue;
+      const iou = sensorYoloBoxIou(track.bbox, bbox);
+      const centerDistance = Math.hypot((track.bbox[0] + track.bbox[2] - x1 - x2) / 2,
+        (track.bbox[1] + track.bbox[3] - y1 - y2) / 2);
+      if (iou < 0.04 && centerDistance > 0.14) continue;
+      const score = iou - centerDistance * 0.2;
+      if (score > bestScore) { match = track; bestScore = score; }
+    }
+    if (!match) {
+      const geometry = new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1));
+      const outline = new THREE.LineSegments(geometry, new THREE.LineBasicMaterial({
+        color: detectionColor, depthTest: false, transparent: true, opacity: 0.95,
+      }));
+      outline.position.copy(targetPosition); outline.scale.copy(targetScale); outline.renderOrder = 3;
+      const distanceText = sample.calibrated ? `${(Math.round(z * 2) / 2).toFixed(1)} m` : 'rel.';
+      const label = labelSprite(`${labelName} · ${distanceText}`);
+      label.position.copy(targetLabelPosition); label.scale.copy(targetLabelScale); label.renderOrder = 4;
+      sensorObjectGroup.add(outline, label);
+      match = {
+        outline, label, labelKey, labelText: `${labelName} · ${distanceText}`, bbox,
+        targetPosition, targetScale, targetLabelPosition, targetLabelScale, lastSeenAt: now,
+      };
+      sensorYoloTracks.push(match);
+    } else {
+      match.bbox = bbox;
+      match.targetPosition.copy(targetPosition);
+      match.targetScale.copy(targetScale);
+      match.targetLabelPosition.copy(targetLabelPosition);
+      match.targetLabelScale.copy(targetLabelScale);
+      const distanceText = sample.calibrated ? `${(Math.round(z * 2) / 2).toFixed(1)} m` : 'rel.';
+      updateSensorYoloLabel(match, `${labelName} · ${distanceText}`);
+    }
+    match.lastSeenAt = now;
+    usedTracks.add(match);
   }
+  sensorYoloDisplayedCount = sensorYoloTracks.length;
   return sensorYoloDisplayedCount;
 }
 
@@ -1656,8 +1718,9 @@ void pollBody();
 let previousFrameAt = 0;
 renderer.setAnimationLoop(time => {
   perfTick(time);
-  updateSensorPointUniforms();
   const deltaSeconds = previousFrameAt ? (time - previousFrameAt) / 1000 : 1 / 90;
+  updateSensorYoloTracks(deltaSeconds);
+  updateSensorPointUniforms();
   previousFrameAt = time;
   if (!renderer.xr.isPresenting) orbit.update();
   const session = renderer.xr.getSession();
