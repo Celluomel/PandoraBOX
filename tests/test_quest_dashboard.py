@@ -423,6 +423,8 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertNotIn("this.gpsMap.draw(ctx", navigation)
         self.assertIn("this.gpsMapCanvas = document.createElement('canvas')", dashboard)
         self.assertIn("this.gpsMapRoot = new THREE.Group()", dashboard)
+        self.assertIn("new THREE.PlaneGeometry(1.9, 1.35375)", dashboard)
+        self.assertIn("pandorabox.quest-gps-map-pose.v2", dashboard)
         self.assertIn("drawButton('gps-map-streets'", dashboard)
         self.assertIn("drawButton('gps-map-satellite'", dashboard)
         self.assertIn("drawButton('gps-map-center',", dashboard)

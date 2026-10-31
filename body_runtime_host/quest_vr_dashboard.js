@@ -134,7 +134,7 @@ export class QuestVRDashboard {
     this.gpsMapRoot = new THREE.Group();
     this.gpsMapRoot.visible = false;
     this.gpsMapPanel = new THREE.Mesh(
-      new THREE.PlaneGeometry(1.1, 0.78375),
+      new THREE.PlaneGeometry(1.9, 1.35375),
       new THREE.MeshBasicMaterial({ map: this.gpsMapTexture, depthTest: false, depthWrite: false, side: THREE.DoubleSide }),
     );
     this.gpsMapPanel.renderOrder = 1100;
@@ -191,7 +191,10 @@ export class QuestVRDashboard {
     this.gpsMapHeadOffsetQuaternion.identity();
     this.gpsMapPose = null;
     this.applyGpsMapSize();
-    try { localStorage.removeItem('pandorabox.quest-gps-map-pose.v1'); } catch {}
+    try {
+      localStorage.removeItem('pandorabox.quest-gps-map-pose.v2');
+      localStorage.removeItem('pandorabox.quest-gps-map-pose.v1');
+    } catch {}
   }
 
   drawGpsMapWindow() {
@@ -272,7 +275,7 @@ export class QuestVRDashboard {
 
   loadSavedGpsMapPose() {
     try {
-      const saved = JSON.parse(localStorage.getItem('pandorabox.quest-gps-map-pose.v1') || 'null');
+      const saved = JSON.parse(localStorage.getItem('pandorabox.quest-gps-map-pose.v2') || 'null');
       if (!Array.isArray(saved?.position) || saved.position.length !== 3
         || !Array.isArray(saved?.quaternion) || saved.quaternion.length !== 4) return;
       const values = [...saved.position, ...saved.quaternion, saved.widthScale, saved.heightScale].map(Number);
@@ -304,7 +307,7 @@ export class QuestVRDashboard {
       heightScale: this.gpsMapHeightScale,
     };
     try {
-      localStorage.setItem('pandorabox.quest-gps-map-pose.v1', JSON.stringify(this.gpsMapPose));
+      localStorage.setItem('pandorabox.quest-gps-map-pose.v2', JSON.stringify(this.gpsMapPose));
       this.lastGpsMapPosePersistAt = performance.now();
     } catch {}
   }
@@ -1614,7 +1617,7 @@ export class QuestVRDashboard {
         this.gpsMapRoot.position.copy(this.gpsMapHeadOffsetPosition).applyQuaternion(this.scratchQuaternion).add(this.scratchPosition);
         this.gpsMapRoot.quaternion.copy(this.scratchQuaternion).multiply(this.gpsMapHeadOffsetQuaternion);
       } else {
-        this.gpsMapRoot.position.copy(this.root.position).add(new this.THREE.Vector3(2.15, -0.08, -0.9).applyQuaternion(this.root.quaternion));
+        this.gpsMapRoot.position.copy(this.root.position).add(new this.THREE.Vector3(2.65, -0.08, -0.9).applyQuaternion(this.root.quaternion));
         this.gpsMapRoot.quaternion.copy(this.root.quaternion);
       }
       this.gpsMapWorldAnchored = true;
