@@ -3191,6 +3191,16 @@ Memory honesty — two distinct cases:
     @staticmethod
     def _body_data_request_route(text: str) -> str | None:
         normalized = str(text or "").lower()
+        development_topic = re.search(
+            r"\b(aspiration|aspirations|hypoth[eè]se|hypothesis|developmental|d[eé]veloppemental)\b",
+            normalized,
+        )
+        development_workflow = re.search(
+            r"\b(persistant|persistent|baseline|mesure initiale|v[eé]rification|verify|ex[eé]cuter|execute|r[eé]sultats|revise|r[eé]viser|architecture|capacit[eé]s actuelles)\b",
+            normalized,
+        )
+        if development_topic and development_workflow:
+            return "developmental_autonomy_audit"
         gps_query = re.search(r"\b(gps|gnss|latitude|longitude|coordonn[ée]es?)\b", normalized)
         location_query = re.search(r"\b(locali[sz](?:ation|e|er)|position|where|où|locate|map|carte)\b", normalized)
         if gps_query and location_query:
@@ -3200,6 +3210,32 @@ Memory honesty — two distinct cases:
         if sensor_query and sensor_ask:
             return "body_sensors"
         return None
+
+    @staticmethod
+    def _developmental_autonomy_response() -> dict:
+        response = (
+            "Audit de capacité, pas une exécution : l'architecture possède un GoalEngine qui persiste des objectifs et un moteur d'expérimentation qui conserve des expériences, "
+            "mais aucun flux ne relie actuellement une hypothèse développementale à un objectif, à une baseline d'observations réelles, à une vérification planifiée, puis à une révision fondée sur les résultats. "
+            "Le moteur expérimental mesure surtout des comportements conversationnels et peut utiliser des valeurs heuristiques; il ne constitue pas une mesure initiale réelle de cette hypothèse. "
+            "Les deux registres sont indépendants. Certaines actions internes sont possibles, mais toute action externe ou physique reste soumise à ses propres capacités et autorisations. "
+            "Effectivement exécuté : rien. Aucun objectif ni test n'a été créé; aucun identifiant n'existe. "
+            "Conclusion : je ne peux pas prendre en charge cette démarche de bout en bout sans modification du logiciel et définition d'une mesure observable adaptée."
+        )
+        return {
+            "handled": True,
+            "status": "capability_audit",
+            "response": response,
+            "audit": {
+                "goal_persistence": "partial; GoalEngine exists but is not linked to a user hypothesis workflow",
+                "real_observation_baseline": False,
+                "scheduled_hypothesis_verification": False,
+                "bounded_internal_experiments": True,
+                "goal_experiment_linkage": False,
+                "goal_created": False,
+                "experiment_created": False,
+                "id": None,
+            },
+        }
 
     @staticmethod
     def _is_simulated_source(source: object) -> bool:
@@ -3291,6 +3327,8 @@ Memory honesty — two distinct cases:
         """Handle only Body-specific turns; return None for normal dialogue."""
         pending = self._pending_body_plans.get(str(user_id))
         data_route = self._body_data_request_route(user_input)
+        if data_route == "developmental_autonomy_audit":
+            return self._developmental_autonomy_response()
         if data_route == "body_location":
             return self._body_gps_location_response()
         if data_route == "body_sensors":

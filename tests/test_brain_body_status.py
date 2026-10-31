@@ -9,6 +9,32 @@ sys.path.insert(0, str(ROOT))
 
 
 class BrainBodyStatusResponseTest(unittest.TestCase):
+    def test_developmental_autonomy_question_returns_audit_not_unrelated_battery_answer(self):
+        from cognition.persona_bridge import PersonaBridge
+
+        bridge = PersonaBridge.__new__(PersonaBridge)
+        bridge._pending_body_plans = {}
+        bridge._classify_body_chat_turn = lambda *args, **kwargs: self.fail("developmental audit must not fall through to chat classification")
+        prompt = (
+            "Lumina, tu viens de proposer de transformer ton aspiration en hypothèse vérifiable. "
+            "Je ne veux pas que tu m'expliques comment tu pourrais le faire. "
+            "Je veux savoir si ton architecture actuelle te permet de prendre réellement en charge cette démarche. "
+            "Détermine si tu peux, sans modification de ton code et sans mon intervention ultérieure : "
+            "créer un objectif développemental persistant associé à cette hypothèse; définir une mesure initiale fondée sur des observations réelles; "
+            "planifier une première vérification; exécuter les actions nécessaires avec tes capacités actuelles; conserver les résultats et réviser ton objectif selon les observations. "
+            "Distingue ce que tu as effectivement exécuté, ce que tu peux exécuter mais n'as pas encore fait, et ce qui nécessite une intervention extérieure. "
+            "Ne prétends pas avoir programmé, enregistré ou exécuté une action sans preuve vérifiable. "
+            "Si tu disposes de cette autonomie, réalise uniquement la première étape sûre et fournis son identifiant vérifiable. Sinon, indique précisément ce qui t'en empêche."
+        )
+
+        result = bridge.handle_body_chat_turn(prompt)
+
+        self.assertEqual(result["status"], "capability_audit")
+        self.assertIn("Aucun objectif ni test n'a été créé", result["response"])
+        self.assertNotIn("Batterie du Body", result["response"])
+        self.assertFalse(result["audit"]["real_observation_baseline"])
+        self.assertIsNone(result["audit"]["id"])
+
     def test_sensor_data_question_returns_hardware_telemetry_not_camera_detections(self):
         from cognition.persona_bridge import PersonaBridge
 
