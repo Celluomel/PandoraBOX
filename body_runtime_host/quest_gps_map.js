@@ -5,7 +5,7 @@ export class QuestGpsMap {
   constructor(onTileLoad = () => {}) {
     this.tiles = new Map();
     this.onTileLoad = onTileLoad;
-    this.zoom = 16;
+    this.zoom = 18;
     this.layer = 'streets';
   }
 

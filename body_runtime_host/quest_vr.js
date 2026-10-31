@@ -18,11 +18,11 @@ renderer.autoClear = false;
 renderer.info.autoReset = false;
 const xrParams = new URLSearchParams(window.location.search);
 const xrRenderSettings = {
-  foveation: Math.min(1, Math.max(0, Number(xrParams.get('foveation') ?? 1))),
-  scale: Math.min(1.5, Math.max(0.5, Number(xrParams.get('scale') ?? 1))),
+  foveation: Math.min(1, Math.max(0, Number(xrParams.get('foveation') ?? 0.2))),
+  scale: Math.min(1.5, Math.max(0.5, Number(xrParams.get('scale') ?? 1.2))),
 };
-if (!Number.isFinite(xrRenderSettings.foveation)) xrRenderSettings.foveation = 1;
-if (!Number.isFinite(xrRenderSettings.scale)) xrRenderSettings.scale = 1;
+if (!Number.isFinite(xrRenderSettings.foveation)) xrRenderSettings.foveation = 0.2;
+if (!Number.isFinite(xrRenderSettings.scale)) xrRenderSettings.scale = 1.2;
 const perfStats = { last: 0, frames: 0, sum: 0, max: 0, previous: 0 };
 function perfTick(time) {
   if (perfStats.previous) {
@@ -1235,7 +1235,7 @@ function selectAt(controller) {
     return;
   }
   if (hudAction === 'gps-map-center') {
-    vrDashboard.gpsMap.zoom = Math.max(vrDashboard.gpsMap.zoom, 16);
+    vrDashboard.gpsMap.zoom = Math.max(vrDashboard.gpsMap.zoom, 18);
     vrDashboard.drawGpsMapWindow();
     return;
   }

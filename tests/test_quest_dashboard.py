@@ -57,6 +57,8 @@ class QuestDashboardTests(unittest.TestCase):
         self.assertIn("const rangeTolerance = Math.max(0.65, radarRange * 0.3)", source)
         self.assertIn("yoloMatchesDepth(latestSensorYolo, sensorDepthFrame)", source)
         self.assertIn("renderer.xr.setFoveation(", source)
+        self.assertIn("xrParams.get('foveation') ?? 0.2", source)
+        self.assertIn("xrParams.get('scale') ?? 1.2", source)
         self.assertIn("new THREE.CylinderGeometry(0.12, 0.14, 0.14, 24)", source)
         self.assertIn("new THREE.PlaneGeometry(4.2, 4.2)", source)
         self.assertIn("new THREE.GridHelper(4.2, 14", source)
@@ -421,12 +423,14 @@ class QuestDashboardTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         dashboard = (root / "body_runtime_host" / "quest_vr_dashboard.js").read_text(encoding="utf-8")
         quest = (root / "body_runtime_host" / "quest_vr.js").read_text(encoding="utf-8")
+        gps_map = (root / "body_runtime_host" / "quest_gps_map.js").read_text(encoding="utf-8")
 
         navigation = dashboard.split("  drawNavigationInstruments(ctx,", 1)[1].split("  drawAzimuthRing(ctx,", 1)[0]
         self.assertNotIn("this.gpsMap.draw(ctx", navigation)
         self.assertIn("this.gpsMapCanvas = document.createElement('canvas')", dashboard)
         self.assertIn("this.gpsMapRoot = new THREE.Group()", dashboard)
         self.assertIn("new THREE.PlaneGeometry(3.8, 2.7075)", dashboard)
+        self.assertIn("this.zoom = 18", gps_map)
         self.assertIn("pandorabox.quest-gps-map-pose.v3", dashboard)
         self.assertIn("drawButton('hud-size-up'", dashboard)
         self.assertIn("drawButton('hud-size-down'", dashboard)
