@@ -83,40 +83,6 @@ let imuHistory = [];
 let cloudPointCount = 0;
 let cloudLabelItems = [];
 
-function imuAttitudeAt(timestamp, maxDelta = 0.2) {
-  const target = Number(timestamp);
-  if (!Number.isFinite(target)) return null;
-  const samples = imuHistory.filter(sample => sample.attitude_valid
-    && Number.isFinite(Number(sample.timestamp))
-    && Number.isFinite(Number(sample.roll_deg))
-    && Number.isFinite(Number(sample.pitch_deg)));
-  if (!samples.length) return null;
-  let before = null, after = null;
-  for (const sample of samples) {
-    const at = Number(sample.timestamp);
-    if (at <= target && (!before || at > Number(before.timestamp))) before = sample;
-    if (at >= target && (!after || at < Number(after.timestamp))) after = sample;
-  }
-  const angleDelta = (a, b) => ((b - a + 540) % 360) - 180;
-  if (before && after && Number(after.timestamp) - Number(before.timestamp) <= 0.25) {
-    const span = Number(after.timestamp) - Number(before.timestamp);
-    const t = span > 0 ? (target - Number(before.timestamp)) / span : 0;
-    const lerpAngle = (key) => Number(before[key]) + angleDelta(Number(before[key]), Number(after[key])) * t;
-    return { roll_deg: lerpAngle('roll_deg'), pitch_deg: lerpAngle('pitch_deg'), timestamp: target };
-  }
-  const nearest = samples.reduce((best, sample) => !best
-    || Math.abs(Number(sample.timestamp) - target) < Math.abs(Number(best.timestamp) - target) ? sample : best, null);
-  return Math.abs(Number(nearest.timestamp) - target) <= maxDelta ? nearest : null;
-}
-
-function attitudeQuaternion(timestamp) {
-  const attitude = imuAttitudeAt(timestamp);
-  if (!attitude) return null;
-  return new THREE.Quaternion().setFromEuler(new THREE.Euler(
-    THREE.MathUtils.degToRad(Number(attitude.roll_deg)),
-    THREE.MathUtils.degToRad(Number(attitude.pitch_deg)), 0, 'XYZ'));
-}
-
 function imuSampleAt(timestamp, maxDelta = 0.15) {
   const target = Number(timestamp);
   return imuHistory.reduce((best, sample) => {
@@ -1234,11 +1200,12 @@ function cameraMountPose() {
   return { profile, heightM, rotation, position: new THREE.Vector3(0, heightM, 0) };
 }
 
-function updateCloudOrigin(timestamp = latestDepthCapturedAt) {
+function updateCloudOrigin() {
   if (!cloud) return;
   const mount = cameraMountPose();
-  const attitude = attitudeQuaternion(timestamp);
-  cloudOriginGroup.quaternion.copy(attitude || new THREE.Quaternion());
+  // Keep the sensor scene in its fixed body/camera frame. IMU attitude is
+  // telemetry, not a per-frame warp for the MiDaS point cloud.
+  cloudOriginGroup.quaternion.identity();
   const reportedHeight = Number(latestCameraFrame?.camera_height_m
     ?? latestCameraFrame?.calibration?.height_m
     ?? latestSensorDepth?.camera_height_m);
@@ -1261,17 +1228,14 @@ function updateCloudOrigin(timestamp = latestDepthCapturedAt) {
 
 updateCloudOrigin();
 
-function bodyPointToScene(point, timestamp = latestDepthCapturedAt) {
+function bodyPointToScene(point) {
   const origin = new THREE.Vector3(0, cameraMountPose().heightM, 0);
-  const attitude = attitudeQuaternion(timestamp);
-  const relativePoint = point.clone();
-  if (attitude) relativePoint.applyQuaternion(attitude);
-  return relativePoint.add(origin);
+  return point.clone().add(origin);
 }
 
-function cameraPointInBodyFrame(point, timestamp = latestDepthCapturedAt) {
+function cameraPointInBodyFrame(point) {
   const mount = cameraMountPose();
-  return bodyPointToScene(point.clone().applyQuaternion(mount.rotation), timestamp);
+  return bodyPointToScene(point.clone().applyQuaternion(mount.rotation));
 }
 
 function applyCameraProjection() {
@@ -2943,8 +2907,7 @@ function setCloudPreset(preset) {
     cloud.camera.fov = THREE.MathUtils.radToDeg(2 * Math.atan((cloudDepthImage?.height || 480) / (2 * intrinsics.fy)));
     cloud.camera.userData.userAdjusted = true;
     const mount = cameraMountPose();
-    const attitude = attitudeQuaternion(latestDepthCapturedAt) || new THREE.Quaternion();
-    const cameraRotation = attitude.multiply(mount.rotation);
+    const cameraRotation = mount.rotation;
     const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(cameraRotation);
     cloud.camera.userData.target = mount.position.clone().add(forward);
     cloud.camera.position.copy(mount.position);
