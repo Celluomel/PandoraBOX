@@ -516,7 +516,7 @@ function updateSensorPointUniforms() {
 
 function buildSensorDepthCloud(depth, depthImage, colorImage) {
   if (!depthImage?.width || !colorImage?.pixels) return false;
-  const grid = cloudGrid(depthImage.width, depthImage.height);
+  const grid = cloudGrid(depthImage.width, depthImage.height, 160);
   if (!sensorCloudBuffers || sensorCloudBuffers.count !== grid.count) {
     sensorCloudBuffers = {
       count: grid.count,

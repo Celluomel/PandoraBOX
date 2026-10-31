@@ -1454,14 +1454,18 @@ function createMidasPointMaterial(pointSize) {
       uPointSize: { value: pointSize },
       uViewportHeight: { value: cloud?.renderer.domElement.height || 1 },
       uOpacity: { value: 0.92 },
+      uUsePreviewColor: { value: 0 },
     },
     vertexShader: `
       attribute float depthValue;
+      attribute vec3 pointColor;
       uniform float uPointSize;
       uniform float uViewportHeight;
       varying float vDepth;
+      varying vec3 vColor;
       void main() {
         vDepth = depthValue;
+        vColor = pointColor;
         vec4 viewPosition = modelViewMatrix * vec4(position, 1.0);
         gl_Position = projectionMatrix * viewPosition;
         gl_PointSize = max(1.0, uPointSize * uViewportHeight * 0.5 * projectionMatrix[1][1] / max(0.1, -viewPosition.z));
@@ -1469,7 +1473,9 @@ function createMidasPointMaterial(pointSize) {
     `,
     fragmentShader: `
       uniform float uOpacity;
+      uniform float uUsePreviewColor;
       varying float vDepth;
+      varying vec3 vColor;
       vec3 turbo(float x) {
         float x2 = x * x;
         float x3 = x2 * x;
@@ -1486,6 +1492,7 @@ function createMidasPointMaterial(pointSize) {
         float edge = 1.0 - smoothstep(0.42, 0.5, length(point));
         if (edge <= 0.01) discard;
         vec3 color = turbo(clamp(vDepth, 0.0, 1.0));
+        color = mix(color, vColor, uUsePreviewColor);
         gl_FragColor = vec4(color, uOpacity * edge);
       }
     `,
@@ -3267,6 +3274,12 @@ async function rebuildDepthCloud(depth, segmentation = latestSegmentation) {
   if (!cloud || !depth.depth_gray_jpeg_base64) return;
   const token = ++cloudBuildToken;
   const image = await loadDepthFrame(depth);
+  const previewColor = depth.depth_jpeg_base64
+    ? await loadDepthImage(depth.depth_jpeg_base64, 'image/jpeg').catch(error => {
+      console.warn('Could not decode MiDaS colour preview; using the depth palette fallback:', error);
+      return null;
+    })
+    : null;
   if (token !== cloudBuildToken || activeSource !== 'sensors' || activeRender !== '3d') return false;
   cloudDepthImage = image;
   cloudPairedCameraFrameId = '';
@@ -3279,9 +3292,10 @@ async function rebuildDepthCloud(depth, segmentation = latestSegmentation) {
   const frameCalibration = metricDepthCalibration;
   updateCloudHud();
   const intrinsics = cameraIntrinsicsForImage(image);
-  const stride = Math.max(3, Math.ceil(Math.max(image.width, image.height) / 120));
+  const stride = Math.max(3, Math.ceil(Math.max(image.width, image.height) / 240));
   const positions = [];
   const depthValues = [];
+  const pointColors = [];
   for (let y = 0; y < image.height; y += stride) {
     for (let x = 0; x < image.width; x += stride) {
       const index = (y * image.width + x) * 4;
@@ -3291,11 +3305,20 @@ async function rebuildDepthCloud(depth, segmentation = latestSegmentation) {
       const point = cameraPointInBodyFrame(cameraPoint(x, y, distance, intrinsics), Number(depth.captured_at) || latestDepthCapturedAt);
       positions.push(point.x, point.y, point.z);
       depthValues.push((image.normalizedValues?.[index] ?? image.values[index]) / 255);
+      if (previewColor?.values) {
+        const colorX = Math.min(previewColor.width - 1, Math.round(x * (previewColor.width - 1) / Math.max(1, image.width - 1)));
+        const colorY = Math.min(previewColor.height - 1, Math.round(y * (previewColor.height - 1) / Math.max(1, image.height - 1)));
+        const colorIndex = (colorY * previewColor.width + colorX) * 4;
+        pointColors.push(previewColor.values[colorIndex] / 255, previewColor.values[colorIndex + 1] / 255, previewColor.values[colorIndex + 2] / 255);
+      } else {
+        pointColors.push(0, 0, 0);
+      }
     }
   }
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
   geometry.setAttribute('depthValue', new THREE.Float32BufferAttribute(depthValues, 1));
+  geometry.setAttribute('pointColor', new THREE.Float32BufferAttribute(pointColors, 3));
   geometry.computeBoundingBox();
   cloudPointCount = positions.length / 3;
   const layerEnabled = cloudViewport?.querySelector('[data-cloud-layer="cloud"]')?.checked !== false;
@@ -3309,6 +3332,7 @@ async function rebuildDepthCloud(depth, segmentation = latestSegmentation) {
     cloudPoints.visible = layerEnabled;
     cloud.scene.add(cloudPoints);
   }
+  cloudPoints.material.uniforms.uUsePreviewColor.value = previewColor ? 1 : 0;
   updateCloudRadar();
   updateCloudOdometry();
   resizeCloud();
