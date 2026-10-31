@@ -135,6 +135,10 @@ const bodyGroup = new THREE.Group();
 world.add(bodyGroup);
 const sensorSceneGroup = new THREE.Group();
 sensorSceneGroup.visible = false;
+// Widen and lift the live point cloud in VR so it remains legible beside the
+// large movable HUD/map. Keep forward depth unscaled so range still maps to Z.
+const sensorSceneDisplayScale = 1.8;
+sensorSceneGroup.scale.set(sensorSceneDisplayScale, sensorSceneDisplayScale, 1);
 world.add(sensorSceneGroup);
 const sensorGround = new THREE.Group();
 const sensorGroundPlane = new THREE.Mesh(
@@ -694,7 +698,7 @@ function updateSensorReadout(depth, yoloCount, radarCount) {
   document.querySelector('#pose').textContent = 'Sensor origin · heading uncalibrated';
   document.querySelector('#age').textContent = Number.isFinite(age) ? `${age.toFixed(1)} s` : '—';
   const rangeStatus = sensorMetricCalibration?.available ? 'calibrated YOLOX ranges' : 'relative depth; calibrate for metres';
-  setStatus(`Live sensor scene · MiDaS ${depth?.runtime || depth?.state || 'waiting'}${depth?.inference_ms != null ? ` ${Number(depth.inference_ms).toFixed(1)} ms` : ''} · ${yoloCount} YOLOX labels · ${radarCount} mmWave targets · ${rangeStatus}`);
+  setStatus(`Live sensor scene · display XY ×${sensorSceneDisplayScale} · forward depth and range labels unchanged · MiDaS ${depth?.runtime || depth?.state || 'waiting'}${depth?.inference_ms != null ? ` ${Number(depth.inference_ms).toFixed(1)} ms` : ''} · ${yoloCount} YOLOX labels · ${radarCount} mmWave targets · ${rangeStatus}`);
   vrDashboard.updateSensorStatus({
     yolo: `${latestSensorYolo?.state || 'READY'} · ${yoloCount} OBJECTS${latestSensorYolo?.latency_ms != null ? ` · ${Number(latestSensorYolo.latency_ms).toFixed(0)} MS` : ''}`,
     midas: `${depth?.state || depth?.runtime || 'WAITING'} · ${depth?.runtime || '—'}${depth?.inference_ms != null ? ` · ${Number(depth.inference_ms).toFixed(0)} MS` : ''}${Number.isFinite(age) ? ` · ${age.toFixed(0)}S` : ''}`,
