@@ -1227,7 +1227,7 @@ function selectAt(controller) {
     return;
   }
   if (hudAction === 'gps-map-center') {
-    vrDashboard.gpsMap.zoom = 16;
+    vrDashboard.gpsMap.zoom = Math.max(vrDashboard.gpsMap.zoom, 16);
     vrDashboard.drawGpsMapWindow();
     return;
   }

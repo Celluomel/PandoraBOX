@@ -202,16 +202,20 @@ export class QuestVRDashboard {
     const sample = this.gpsStatus?.sample || this.gpsStatus?.source_status?.sample || {};
     const latitude = Number(sample.latitude_deg ?? sample.latitude ?? sample.lat);
     const longitude = Number(sample.longitude_deg ?? sample.longitude ?? sample.lon ?? sample.lng);
-    const validFix = (sample.fix === true || Number(sample.fix_quality) > 0)
+    const validFix = (sample.fix === true || sample.valid === true || sample.status === 'fix' || Number(sample.fix_quality) > 0)
       && Number.isFinite(latitude) && Math.abs(latitude) <= 90
       && Number.isFinite(longitude) && Math.abs(longitude) <= 180;
+    let fixTimestamp = Number(sample.timestamp ?? this.gpsStatus?.timestamp);
+    if (fixTimestamp > 1e12) fixTimestamp /= 1000;
+    const fixAge = Number.isFinite(fixTimestamp) ? Math.max(0, Date.now() / 1000 - fixTimestamp) : NaN;
+    const currentFix = validFix && (!Number.isFinite(fixAge) || fixAge <= 5);
     const accuracy = Number(sample.horizontal_accuracy_m ?? sample.accuracy_m);
     ctx.clearRect(0, 0, width, height);
     ctx.fillStyle = '#071216'; ctx.fillRect(0, 0, width, height);
     ctx.fillStyle = '#0e1a20'; ctx.fillRect(0, 0, width, 118);
     ctx.strokeStyle = 'rgba(126,209,193,.55)'; ctx.lineWidth = 3; ctx.strokeRect(2, 2, width - 4, height - 4);
     ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
-    ctx.fillStyle = '#d0eee4'; ctx.font = '700 31px system-ui'; ctx.fillText('GNSS POSITION', 34, 43);
+    ctx.fillStyle = '#d0eee4'; ctx.font = '700 31px system-ui'; ctx.fillText('GNSS position', 34, 43);
     ctx.fillStyle = validFix ? '#64e4be' : '#f0c26f'; ctx.font = '600 20px ui-monospace, monospace';
     const meta = validFix
       ? `${latitude.toFixed(6)}, ${longitude.toFixed(6)} · ${sample.satellites ?? '—'} SV · ${Number.isFinite(accuracy) ? `±${accuracy.toFixed(1)} m` : 'accuracy —'}`
@@ -230,14 +234,14 @@ export class QuestVRDashboard {
       ctx.fillText(label, x + buttonWidth / 2, y + buttonHeight / 2, buttonWidth - 12);
       this.gpsMapActionHitAreas[key] = { x, y, width: buttonWidth, height: buttonHeight };
     };
-    drawButton('gps-map-streets', 650, 168, 'MAP', this.gpsMap.layer === 'streets');
-    drawButton('gps-map-satellite', 828, 190, 'SATELLITE', this.gpsMap.layer === 'satellite');
-    drawButton('gps-map-center', 1026, 210, 'CENTER GPS');
-    drawButton('gps-map-zoom-out', 1244, 70, '−');
-    drawButton('gps-map-zoom-level', 1322, 112, `Z ${this.gpsMap.zoom}`);
-    drawButton('gps-map-zoom-in', 1442, 70, '+');
-    drawButton('gps-map-reset', 1520, 174, 'RESET WINDOW');
-    drawButton('gps-map-close', 1702, 112, 'CLOSE');
+    drawButton('gps-map-streets', 650, 132, 'Map', this.gpsMap.layer === 'streets');
+    drawButton('gps-map-satellite', 790, 162, 'Satellite', this.gpsMap.layer === 'satellite');
+    drawButton('gps-map-center', 960, 190, 'Center GPS');
+    drawButton('gps-map-zoom-out', 1160, 70, '−');
+    drawButton('gps-map-zoom-level', 1238, 112, `Z ${this.gpsMap.zoom}`);
+    drawButton('gps-map-zoom-in', 1358, 70, '+');
+    drawButton('gps-map-reset', 1436, 174, 'RESET WINDOW');
+    drawButton('gps-map-close', 1618, 112, 'CLOSE');
 
     if (this.gpsMapVisible) {
       this.gpsMap.draw(ctx, {
@@ -246,6 +250,18 @@ export class QuestVRDashboard {
         longitude: validFix ? longitude : NaN,
         accuracyM: accuracy,
       });
+      const fixText = currentFix
+        ? `Fix valid · ${latitude.toFixed(6)}, ${longitude.toFixed(6)} · ${Number.isFinite(fixAge) ? `${fixAge.toFixed(1)} s old` : 'age unavailable'}`
+        : validFix
+          ? `No current fix · showing last valid position · ${latitude.toFixed(6)}, ${longitude.toFixed(6)}`
+          : 'Waiting for a valid GPS fix';
+      ctx.fillStyle = 'rgba(5,12,12,.9)'; ctx.fillRect(28, height - 27, width - 56, 25);
+      ctx.fillStyle = currentFix ? '#75e2b4' : '#edc875'; ctx.font = '600 16px ui-monospace, monospace'; ctx.textAlign = 'left';
+      ctx.fillText(fixText, 38, height - 10, 1110);
+      ctx.fillStyle = '#d8e6df'; ctx.textAlign = 'right'; ctx.font = '14px system-ui';
+      ctx.fillText(this.gpsMap.layer === 'satellite'
+        ? 'Tiles © Esri · Sources: Esri, Maxar, Earthstar Geographics, and the GIS User Community'
+        : '© OpenStreetMap contributors', width - 38, height - 10, 850);
     } else {
       ctx.fillStyle = '#0b151a'; ctx.fillRect(28, 132, width - 56, height - 164);
       ctx.fillStyle = '#9db6b4'; ctx.font = '600 22px ui-monospace, monospace'; ctx.textAlign = 'center';
