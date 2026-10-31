@@ -69,6 +69,10 @@ export class QuestVRDashboard {
     this.ultrasonicStatus = null;
     this.lastUltrasonicSamples = Object.create(null);
     this.sensorStatus = { camera: 'WAITING', yolo: 'WAITING', midas: 'WAITING' };
+    this.sensorPointDensity = 100;
+    this.sensorPointDensityHitArea = null;
+    this.sensorDensityDragController = null;
+    this.onSensorPointDensityChange = null;
     this.controller = null;
     this.following = false;
     this.actionHitAreas = {};
@@ -502,9 +506,9 @@ export class QuestVRDashboard {
     ctx.textAlign = 'left';
     ctx.fillText(this.grabbedController
       ? `${this.grabbedWindow === 'gps-map' ? 'GPS MAP' : 'HUD'} GRABBED · PICKED POINT STAYS UNDER POINTER · STICKS RESIZE / ADJUST DISTANCE`
-      : 'HOLD LATERAL GRIP ON A WINDOW TO MOVE · FRONT TRIGGER ACTIVATES BUTTONS', margin + 8, height - 28);
+      : 'HOLD LATERAL GRIP TO MOVE WINDOWS · FRONT TRIGGER SELECTS BUTTONS / DRAGS DENSITY', margin + 8, height - 14);
     ctx.textAlign = 'right';
-    ctx.fillText(this.following ? 'CAMERA FOLLOW · BODY' : 'SCENE VIEW · FIXED', width - margin - 8, height - 28);
+    ctx.fillText(this.following ? 'CAMERA FOLLOW · BODY' : 'SCENE VIEW · FIXED', width - margin - 8, height - 14);
     ctx.restore();
     this.texture.needsUpdate = true;
   }
@@ -538,6 +542,71 @@ export class QuestVRDashboard {
     drawButton('simulation', simulationX, 300, this.actionBusy ? 'PLEASE WAIT' : simulationReady ? simulationLabel : 'SIMULATION OFFLINE', 'rgba(31, 105, 78, .96)', '#75edbd', '#e5fff3', simulationReady);
     drawButton('sensor-mode', sensorX, 300, this.sceneMode === 'sensors' ? 'SHOW SIMULATION' : 'SHOW LIVE SENSORS', 'rgba(31, 73, 77, .96)', '#78d8d0', '#e5fffa');
     drawButton('exit', exitX, 220, this.actionBusy ? 'PLEASE WAIT' : 'EXIT VR', 'rgba(91, 53, 42, .96)', '#f0a888', '#fff0e8');
+    this.sensorPointDensityHitArea = null;
+    if (this.sceneMode === 'sensors') {
+      const sliderX = this.logicalWidth / 2 + 590;
+      const sliderWidth = this.logicalWidth / 2 - 640;
+      const trackY = buttonY - 18;
+      const ratio = (this.sensorPointDensity - 60) / 100;
+      const targetStep = Math.max(3, Math.ceil(640 / this.sensorPointDensity));
+      const estimatedPoints = Math.ceil(640 / targetStep) * Math.ceil(480 / targetStep);
+      this.sensorPointDensityHitArea = {
+        x: sliderX - 18, y: trackY - 28, width: sliderWidth + 36, height: 58,
+      };
+      ctx.fillStyle = '#b7d2c5'; ctx.font = '600 17px ui-monospace, monospace';
+      ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+      ctx.fillText('3D DOT DENSITY', sliderX, trackY - 17);
+      ctx.textAlign = 'right'; ctx.fillStyle = '#e6fff4';
+      ctx.fillText(`${estimatedPoints.toLocaleString()} PTS`, sliderX + sliderWidth, trackY - 17);
+      ctx.fillStyle = '#24443a'; ctx.fillRect(sliderX, trackY, sliderWidth, 8);
+      ctx.fillStyle = '#5be2bd'; ctx.fillRect(sliderX, trackY, sliderWidth * ratio, 8);
+      for (let tick = 0; tick <= 10; tick += 1) {
+        const tickX = sliderX + sliderWidth * tick / 10;
+        ctx.fillStyle = '#9dc9b3'; ctx.fillRect(tickX - 1, trackY - 4, 2, 16);
+      }
+      const thumbX = sliderX + sliderWidth * ratio;
+      ctx.beginPath(); ctx.arc(thumbX, trackY + 4, 12, 0, Math.PI * 2);
+      ctx.fillStyle = '#e8fff4'; ctx.fill(); ctx.strokeStyle = '#36c99f'; ctx.lineWidth = 3; ctx.stroke();
+      ctx.textAlign = 'left'; ctx.fillStyle = '#829d8d'; ctx.font = '500 12px ui-monospace, monospace';
+      ctx.fillText('SPARSE', sliderX, trackY + 18);
+      ctx.textAlign = 'right'; ctx.fillText('DENSE', sliderX + sliderWidth, trackY + 18);
+    }
+  }
+
+  setSensorPointDensityAt(canvasX) {
+    const area = this.sensorPointDensityHitArea;
+    if (!area) return false;
+    const ratio = Math.max(0, Math.min(1, (canvasX - area.x - 18) / (area.width - 36)));
+    const next = 60 + Math.round(ratio * 10) * 10;
+    if (next === this.sensorPointDensity) return true;
+    this.sensorPointDensity = next;
+    this.drawDashboard();
+    this.onSensorPointDensityChange?.(next);
+    return true;
+  }
+
+  beginSensorPointDensityDrag(controller, raycaster) {
+    if (!this.visible || this.sceneMode !== 'sensors') return false;
+    controller.updateMatrixWorld(true);
+    const rotation = new this.THREE.Matrix4().extractRotation(controller.matrixWorld);
+    raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
+    raycaster.ray.direction.set(0, 0, -1).applyMatrix4(rotation);
+    this.scene.updateMatrixWorld(true);
+    const hit = raycaster.intersectObject(this.panel, false)[0];
+    if (!hit?.uv || !this.sensorPointDensityHitArea) return false;
+    const x = hit.uv.x * this.logicalWidth;
+    const y = (1 - hit.uv.y) * this.logicalHeight;
+    const area = this.sensorPointDensityHitArea;
+    if (x < area.x || x > area.x + area.width || y < area.y || y > area.y + area.height) return false;
+    this.sensorDensityDragController = controller;
+    this.setSensorPointDensityAt(x);
+    return true;
+  }
+
+  endSensorPointDensityDrag(controller) {
+    if (this.sensorDensityDragController !== controller) return false;
+    this.sensorDensityDragController = null;
+    return true;
   }
 
   drawTopTelemetry(ctx, perception, fnk, xr) {
@@ -1486,6 +1555,13 @@ export class QuestVRDashboard {
     raycaster.ray.direction.set(0, 0, -1).applyMatrix4(rotation);
     this.scene.updateMatrixWorld(true);
     const hit = raycaster.intersectObjects(this.panels.filter(panel => panel !== this.gpsMapPanel || this.gpsMapVisible), false)[0];
+    if (this.sensorDensityDragController === controller && hit?.object === this.panel && hit.uv) {
+      const x = hit.uv.x * this.logicalWidth;
+      const y = (1 - hit.uv.y) * this.logicalHeight;
+      const area = this.sensorPointDensityHitArea;
+      if (area && y >= area.y && y <= area.y + area.height
+          && x >= area.x && x <= area.x + area.width) this.setSensorPointDensityAt(x);
+    }
     if (!hit) { this.pointerRing.visible = false; return null; }
     const panel = hit.object;
     if (this.pointerRing.parent !== panel) panel.add(this.pointerRing);
@@ -1525,6 +1601,12 @@ export class QuestVRDashboard {
     }
     const x = hit.uv.x * this.logicalWidth;
     const y = (1 - hit.uv.y) * this.logicalHeight;
+    const densityArea = this.sensorPointDensityHitArea;
+    if (densityArea && x >= densityArea.x && x <= densityArea.x + densityArea.width
+        && y >= densityArea.y && y <= densityArea.y + densityArea.height) {
+      this.setSensorPointDensityAt(x);
+      return 'sensor-point-density';
+    }
     const cameraArea = this.cameraHitArea;
     if (cameraArea && x >= cameraArea.x && x <= cameraArea.x + cameraArea.width && y >= cameraArea.y && y <= cameraArea.y + cameraArea.height) return 'camera-background';
     for (const [key, area] of Object.entries(this.actionHitAreas)) {

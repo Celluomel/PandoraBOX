@@ -262,6 +262,19 @@ let sensorDepthIntrinsics = null;
 let sensorDepthHeightM = 0.12;
 let sensorDepthCapturedAt = 0;
 let sensorCloudBuffers = null;
+let sensorCloudTargetMax = 100;
+try {
+  const storedDensity = Number(localStorage.getItem('pandorabox.quest-vr-dot-density'));
+  if (Number.isFinite(storedDensity)) sensorCloudTargetMax = Math.max(60, Math.min(160, Math.round(storedDensity / 10) * 10));
+} catch {}
+vrDashboard.sensorPointDensity = sensorCloudTargetMax;
+vrDashboard.onSensorPointDensityChange = value => {
+  sensorCloudTargetMax = Math.max(60, Math.min(160, Math.round(Number(value) / 10) * 10));
+  sensorFrameId = '';
+  try { localStorage.setItem('pandorabox.quest-vr-dot-density', String(sensorCloudTargetMax)); } catch {}
+  setStatus(`3D dot density · ${sensorCloudTargetMax} samples across image width · forward range unchanged`);
+};
+vrDashboard.drawDashboard();
 const sensorPointViewport = new THREE.Vector2();
 let latestSensorYolo = {};
 let latestSensorDepthStatus = null;
@@ -520,7 +533,7 @@ function updateSensorPointUniforms() {
 
 function buildSensorDepthCloud(depth, depthImage, colorImage) {
   if (!depthImage?.width || !colorImage?.pixels) return false;
-  const grid = cloudGrid(depthImage.width, depthImage.height);
+  const grid = cloudGrid(depthImage.width, depthImage.height, sensorCloudTargetMax);
   if (!sensorCloudBuffers || sensorCloudBuffers.count !== grid.count) {
     sensorCloudBuffers = {
       count: grid.count,
@@ -1266,7 +1279,9 @@ async function selectSceneMode(mode) {
 }
 
 function selectAt(controller) {
+  if (vrDashboard.endSensorPointDensityDrag(controller)) return;
   const hudAction = vrDashboard.visible ? vrDashboard.activateAt(controller, raycaster) : null;
+  if (hudAction === 'sensor-point-density') return;
   if (hudAction === 'gps-map') {
     vrDashboard.setGpsMapVisible(!vrDashboard.gpsMapVisible);
     return;
@@ -1501,7 +1516,9 @@ for (let index = 0; index < 2; index += 1) {
   const grip = renderer.xr.getControllerGrip(index);
   // The front trigger (select) is reserved for activating VR UI controls.
   // Window manipulation uses the lateral grip/squeeze button only.
+  controller.addEventListener('selectstart', () => vrDashboard.beginSensorPointDensityDrag(controller, raycaster));
   controller.addEventListener('select', () => selectAt(controller));
+  controller.addEventListener('selectend', () => vrDashboard.endSensorPointDensityDrag(controller));
   controller.addEventListener('squeezestart', event => {
     try {
       vrDashboard.beginAdjust(controller, event.data, controller, raycaster);
