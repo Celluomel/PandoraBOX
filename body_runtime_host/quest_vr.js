@@ -90,6 +90,7 @@ let lastCameraFrameId = null;
 let lastDashboardTelemetryAt = 0;
 let lastFnkTelemetryAt = 0;
 let lastFnkHardwareAt = 0;
+  let lastFnkVisualFrameAt = 0;
 let xrFollowYaw = null;
 let xrSceneFollowing = false;
 const xrSceneOffset = new THREE.Vector3();
@@ -1407,6 +1408,26 @@ function selectAt(controller) {
     vrDashboard.disarmFnkTeleop('STOP REQUESTED · CURRENT FNHR GAIT CANNOT BE INTERRUPTED');
     return;
   }
+  if (hudAction === 'demo-preview') {
+    vrDashboard.fnkPreviewDemo = !vrDashboard.fnkPreviewDemo;
+    vrDashboard.fnkMessage = vrDashboard.fnkPreviewDemo ? 'DEMO PREVIEW ON · NO ROBOT COMMANDS' : 'DEMO PREVIEW OFF';
+    vrDashboard.drawFnkControlWindow();
+    return;
+  }
+  if (hudAction === 'pause-preview') {
+    vrDashboard.fnkPreviewPaused = !vrDashboard.fnkPreviewPaused;
+    vrDashboard.fnkMessage = vrDashboard.fnkPreviewPaused ? 'GAIT PREVIEW PAUSED · ROBOT COMMANDS UNAFFECTED' : 'GAIT PREVIEW RESUMED';
+    vrDashboard.drawFnkControlWindow();
+    return;
+  }
+  if (hudAction === 'center-preview' || hudAction === 'sweep-preview') {
+    vrDashboard.fnkPreviewDemo = hudAction === 'sweep-preview' ? !vrDashboard.fnkPreviewDemo : false;
+    if (hudAction === 'center-preview') vrDashboard.fnkPoseValues = { x: 0, y: 0, z: 24, roll: 0, pitch: 0, yaw: 0 };
+    vrDashboard.fnkGyroBaseline = vrDashboard.fnkGyroCurrent.clone();
+    vrDashboard.fnkMessage = hudAction === 'center-preview' ? 'POSE REFERENCE CENTERED' : 'SWEEP IS A VISUAL PREVIEW ONLY';
+    vrDashboard.drawFnkControlWindow();
+    return;
+  }
   if (hudAction.startsWith('drive-')) {
     vrDashboard.sendFnkPadAction(hudAction.slice(6));
     return;
@@ -1795,6 +1816,10 @@ renderer.setAnimationLoop((time, xrFrame) => {
         const q = pose.transform.orientation;
         vrDashboard.updateFnkControllerOrientation([q.x, q.y, q.z, q.w]);
       }
+    }
+    if (vrDashboard.fnkVisible && time - lastFnkVisualFrameAt >= 1000 / 30) {
+      lastFnkVisualFrameAt = time;
+      vrDashboard.drawFnkControlWindow();
     }
     const fnkDriving = vrDashboard.updateFnkStickControl(active);
     if (!vrDashboard.grabbedController && !fnkDriving) updateXRLocomotion(active, xrCamera, deltaSeconds);

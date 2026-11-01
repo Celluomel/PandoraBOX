@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Hexapod Gait Lab</title>
+<style>
+:root{--bg:#f3f5f8;--panel:#fff;--stage:#e9edf2;--line:#c4cedb;--text:#101826;--muted:#46576b;--swing:#a85600;--stance:#0b7a3b;--accent:#0b7a3b;--onacc:#fff;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0a1018;--panel:#0d141d;--stage:#0b121b;--line:#2b405c;--text:#d6e4f0;--muted:#8fa3b8;--swing:#ffb020;--stance:#4dff88;--accent:#4dff88;--onacc:#0a1018}}
+:root[data-theme="dark"]{--bg:#0a1018;--panel:#0d141d;--stage:#0b121b;--line:#2b405c;--text:#d6e4f0;--muted:#8fa3b8;--swing:#ffb020;--stance:#4dff88;--accent:#4dff88;--onacc:#0a1018}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+body{margin:0;background:var(--bg);color:var(--text);font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+.wrap{max-width:1200px;margin:0 auto;padding:20px 16px 32px}
+h1{font-size:22px;margin:0 0 4px}
+.sub{color:var(--muted);font-size:14px;margin:0 0 16px;line-height:1.5}
+.grid{display:grid;gap:16px;grid-template-columns:minmax(0,1.35fr) minmax(0,1fr)}
+@media (max-width:860px){.grid{grid-template-columns:minmax(0,1fr)}}
+.col{display:flex;flex-direction:column;gap:16px;min-width:0}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px}
+.lab{font-size:12px;letter-spacing:2px;color:var(--muted);margin:0 0 10px;text-transform:uppercase}
+.mono{font-family:ui-monospace,Menlo,Consolas,monospace}
+svg{display:block;width:100%;height:auto;max-width:100%}
+#stage{background:var(--stage);border-radius:8px}
+.gl{stroke:var(--line);stroke-width:1;fill:none}
+.body{fill:var(--panel);stroke:var(--line);stroke-width:1.5}
+.front{fill:var(--text)}
+.lt{fill:var(--muted);font-size:10px;text-anchor:middle;font-family:ui-monospace,Menlo,Consolas,monospace}
+.pth{stroke:var(--line);stroke-width:1;stroke-dasharray:2 3}
+.leg{fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.leg.sw{stroke:var(--swing);stroke-dasharray:4 3}.leg.st{stroke:var(--stance)}
+.foot{stroke-width:2}
+.foot.sw{fill:var(--panel);stroke:var(--swing)}.foot.st{fill:var(--stance);stroke:var(--stance)}
+.tst{fill:var(--stance)}
+.tsw{fill:var(--panel);stroke:var(--swing);stroke-width:1.5;stroke-dasharray:5 3}
+.tx{fill:var(--text);font-size:12px;font-family:ui-monospace,Menlo,Consolas,monospace}
+.tm{fill:var(--muted);font-size:11px;font-family:ui-monospace,Menlo,Consolas,monospace}
+.ph{stroke:var(--text);stroke-width:2}
+.head{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:10px}
+.mv{font-size:18px;font-weight:700}
+.b{min-height:44px;border:1px solid var(--line);background:var(--panel);color:var(--text);border-radius:8px;font:inherit;font-size:14px;cursor:pointer;padding:0 14px}
+.b[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:var(--onacc)}
+.b:focus-visible,input:focus-visible{outline:3px solid var(--text);outline-offset:2px}
+.pad{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.pad .b{min-height:60px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px}
+.pad .b span:first-child{font-size:20px;font-weight:700}.pad .b span:last-child{font-size:11px;letter-spacing:1px}
+.rowb{display:flex;gap:8px;flex-wrap:wrap}.rowb .b{flex:1}
+.sp{display:flex;align-items:center;gap:12px;margin-top:14px}
+.sp input{flex:1;min-height:44px}
+.legrow{display:grid;grid-template-columns:36px 92px 1fr;gap:10px;align-items:center;min-height:44px;border-top:1px solid var(--line)}
+.legrow:first-of-type{border-top:0}
+.badge{border-radius:14px;padding:4px 0;font-size:12px;font-weight:700;text-align:center;font-family:ui-monospace,Menlo,Consolas,monospace}
+.badge.sw{border:1.5px dashed var(--swing);color:var(--swing)}
+.badge.st{background:var(--stance);border:1.5px solid var(--stance);color:var(--onacc)}
+.bar{height:8px;border-radius:4px;background:var(--line);overflow:hidden}.bar div{height:8px;background:var(--muted)}
+.leg-key{display:flex;gap:16px;flex-wrap:wrap;font-size:13px;color:var(--muted);margin-top:12px;line-height:1.5}
+[hidden]{display:none!important}
+.gb{stroke:var(--text);stroke-width:6;stroke-linecap:round}
+.gk{stroke:var(--stance);stroke-width:2}
+.gg{stroke:var(--line);stroke-width:2}
+.gd{fill:var(--stance)}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>Hexapod Gait Lab</h1>
+<p class="sub">Top view, front is up. Each leg is simulated on its own: dashed amber is swing (foot lifted, moving ahead), solid green is stance (foot planted, pushing the body). Hold Q W E A S D, or click the keys to latch a movement. Switch to Twist body to shift, tilt and rotate the body while all six feet stay planted.</p>
+<div class="grid">
+<div class="col">
+<div class="card">
+<div class="head"><span class="mv mono" id="mv" role="status">FORWARD</span><span class="mono" style="font-size:13px;color:var(--muted)" id="info"></span></div>
+<svg id="stage" viewBox="0 0 640 560" role="img" aria-label="Animated top view of a hexapod walking, one foot trajectory per leg">
+<defs><pattern id="grid" width="48" height="48" patternUnits="userSpaceOnUse"><path d="M48 0H0V48" class="gl"/></pattern></defs>
+<g id="ground"><rect x="-1400" y="-1400" width="2800" height="2800" fill="url(#grid)"/></g>
+<g transform="translate(320 285) scale(2.2)">
+<g id="gp"></g><g id="gl"></g>
+<g id="bodyg"><rect class="body" x="-28" y="-48" width="56" height="96" rx="14"/>
+<polygon class="front" points="-8,-50 8,-50 0,-62"/>
+<text class="lt" x="-14" y="-30">L1</text><text class="lt" x="14" y="-30">R1</text><text class="lt" x="-14" y="4">L2</text><text class="lt" x="14" y="4">R2</text><text class="lt" x="-14" y="38">L3</text><text class="lt" x="14" y="38">R3</text></g>
+<g id="gf"></g>
+</g>
+</svg>
+</div>
+<div class="card" id="tlc">
+<p class="lab">Gait cycle, one row per leg</p>
+<svg id="tl" viewBox="0 0 640 204" role="img" aria-label="Gait timeline: filled green is stance, dashed amber outline is swing"></svg>
+<div class="leg-key"><span>Filled green: stance</span><span>Dashed amber: swing</span><span id="cyc" class="mono"></span></div>
+</div>
+<div class="card" id="posec" hidden>
+<p class="lab">Body tilt, feet planted</p>
+<svg id="gs" viewBox="0 0 640 204" role="img" aria-label="Front and side view of the body tilt over planted feet"></svg>
+</div>
+</div>
+<div class="col">
+<div class="card">
+<p class="lab">Mode</p>
+<div class="rowb" id="modes"><button class="b" data-m="walk" aria-pressed="true">Walk</button><button class="b" data-m="twist" aria-pressed="false">Twist body</button></div>
+<div id="walkc">
+<p class="lab" style="margin-top:18px">Movement</p>
+<div class="pad" id="pad">
+<button class="b" data-k="q" aria-pressed="false"><span>Q</span><span>TURN LEFT</span></button>
+<button class="b" data-k="w" aria-pressed="true"><span>W</span><span>FORWARD</span></button>
+<button class="b" data-k="e" aria-pressed="false"><span>E</span><span>TURN RIGHT</span></button>
+<button class="b" data-k="a" aria-pressed="false"><span>A</span><span>LEFT</span></button>
+<button class="b" data-k="s" aria-pressed="false"><span>S</span><span>BACKWARD</span></button>
+<button class="b" data-k="d" aria-pressed="false"><span>D</span><span>RIGHT</span></button>
+</div>
+<div class="rowb" style="margin-top:8px">
+<button class="b" id="stop" aria-pressed="false">Stop</button>
+<button class="b" id="demo" aria-pressed="false">Demo all movements</button>
+<button class="b" id="pause" aria-pressed="false">Pause</button>
+</div>
+<p class="lab" style="margin-top:18px">Gait</p>
+<div class="rowb" id="gaits">
+<button class="b" data-g="tripod" aria-pressed="true">Tripod</button>
+<button class="b" data-g="ripple" aria-pressed="false">Ripple</button>
+<button class="b" data-g="wave" aria-pressed="false">Wave</button>
+</div>
+<div class="sp"><label for="spd" style="font-size:14px">Speed</label><input id="spd" type="range" min="0.25" max="2" step="0.05" value="1"><span class="mono" id="spv" style="width:48px;text-align:right">1.0x</span></div>
+</div>
+<div id="twistc" hidden>
+<p class="lab" style="margin-top:18px">Body pose</p>
+<div id="sl"></div>
+<div class="rowb" style="margin-top:12px"><button class="b" id="center" aria-pressed="false">Center</button><button class="b" id="sweep" aria-pressed="false">Sweep demo</button></div>
+</div>
+</div>
+<div class="card">
+<p class="lab">Leg status</p>
+<div id="legs"></div>
+<p id="legnote" class="leg-key">Bar: position of the leg in its own gait cycle.</p>
+</div>
+</div>
+</div>
+</div>
+<script>
+(function(){
+var NS='http://www.w3.org/2000/svg',K=2.2,AMP=34;
+var LEGS=[['L1',-1,-34],['R1',1,-34],['L2',-1,0],['R2',1,0],['L3',-1,34],['R3',1,34]];
+var GAITS={
+tripod:{duty:0.5,off:{L1:0,R2:0,L3:0,R1:0.5,L2:0.5,R3:0.5}},
+ripple:{duty:2/3,off:{L3:0,L2:1/3,L1:2/3,R3:0.5,R2:5/6,R1:1/6}},
+wave:{duty:5/6,off:{L3:0,L2:1/6,L1:2/6,R3:3/6,R2:4/6,R1:5/6}}};
+var COMBOS=[['w'],['s'],['a'],['d'],['q'],['e'],['w','a'],['w','d']];
+var mode='walk',P={x:0,y:0,z:24,roll:0,pitch:0,yaw:0},sweep=false,sweepT=0,held={},latched={w:true},gait='tripod',speed=1,paused=false,demo=false,demoI=0,demoT=0;
+var m=0,tau=0,tvx=0,tvy=-1,kr=0,yaw=0,px=0,py=0,last=0,lastSig='',lastSw='';
+function $(i){return document.getElementById(i)}
+function mk(t,c){var e=document.createElementNS(NS,t);if(c)e.setAttribute('class',c);return e}
+var gp=$('gp'),gl=$('gl'),gf=$('gf'),legsEl=$('legs'),R=[];
+LEGS.forEach(function(L,i){
+var s=L[1],hy=L[2],fx=s*(hy===0?104:92),fy=hy<0?-58:(hy>0?58:0);
+var p=mk('line','pth'),lg=mk('polyline','leg st'),ft=mk('circle','foot st');
+ft.setAttribute('r','6');gp.appendChild(p);gl.appendChild(lg);gf.appendChild(ft);
+var row=document.createElement('div');row.className='legrow';
+row.innerHTML='<span class="mono" style="font-weight:700">'+L[0]+'</span><span class="badge st">STANCE</span><div class="bar"><div style="width:0%"></div></div>';
+legsEl.appendChild(row);
+R.push({n:L[0],s:s,hy:hy,fx:fx,fy:fy,r:Math.hypot(fx,fy),p:p,lg:lg,ft:ft,bd:row.children[1],bf:row.children[2].firstChild,st:'st'});
+});
+var tl=$('tl'),phEl;
+function buildTL(){
+var g=GAITS[gait],sf=1-g.duty,h='';
+LEGS.forEach(function(L,i){
+var y=30+i*26,off=g.off[L[0]];
+h+='<text x="12" y="'+(y+13)+'" class="tx">'+L[0]+'</text><rect x="48" y="'+y+'" width="580" height="18" rx="4" class="tst"/>';
+var segs=off+sf>1.0001?[[off,1],[0,off+sf-1]]:[[off,off+sf]];
+segs.forEach(function(s){h+='<rect x="'+(48+s[0]*580).toFixed(1)+'" y="'+y+'" width="'+((s[1]-s[0])*580).toFixed(1)+'" height="18" rx="4" class="tsw"/>'});
+});
+h+='<text x="48" y="198" class="tm">0 %</text><text x="338" y="198" class="tm" text-anchor="middle">50 %</text><text x="628" y="198" class="tm" text-anchor="end">100 %</text><line id="ph" class="ph" x1="48" y1="22" x2="48" y2="184"/>';
+tl.innerHTML=h;phEl=$('ph');
+}
+function inputs(){
+var k={};for(var a in latched)if(latched[a])k[a]=1;for(var b in held)if(held[b])k[b]=1;
+var tx=(k.d?1:0)-(k.a?1:0),ty=(k.s?1:0)-(k.w?1:0),n=Math.hypot(tx,ty);
+return{tx:n?tx/n:0,ty:n?ty/n:0,n:n,kr:(k.q?1:0)-(k.e?1:0),k:k};
+}
+function label(i){
+var p=[];
+if(i.ty<0)p.push('FORWARD');if(i.ty>0)p.push('BACKWARD');
+if(i.tx<0)p.push(i.ty?'LEFT':'STRAFE LEFT');if(i.tx>0)p.push(i.ty?'RIGHT':'STRAFE RIGHT');
+if(i.kr>0)p.push('TURN LEFT');if(i.kr<0)p.push('TURN RIGHT');
+return p.length?p.join(' + '):'IDLE';
+}
+function renderUI(){
+var i=inputs();
+Array.prototype.forEach.call($('pad').children,function(b){b.setAttribute('aria-pressed',i.k[b.getAttribute('data-k')]?'true':'false')});
+Array.prototype.forEach.call($('gaits').children,function(b){b.setAttribute('aria-pressed',b.getAttribute('data-g')===gait?'true':'false')});
+$('demo').setAttribute('aria-pressed',demo?'true':'false');
+$('pause').setAttribute('aria-pressed',paused?'true':'false');
+$('pause').textContent=paused?'Resume':'Pause';
+Array.prototype.forEach.call($('modes').children,function(b){b.setAttribute('aria-pressed',b.getAttribute('data-m')===mode?'true':'false')});
+$('mv').textContent=mode==='twist'?'TWIST BODY':label(i);
+$('info').textContent=mode==='twist'?'ALL SIX FEET PLANTED':gait.toUpperCase()+' - '+Math.round(GAITS[gait].duty*100)+' % stance';
+}
+function setLatched(list){latched={};list.forEach(function(k){latched[k]=true});renderUI()}
+$('pad').addEventListener('click',function(e){var b=e.target.closest('button');if(!b)return;demo=false;var k=b.getAttribute('data-k');latched[k]=!latched[k];renderUI()});
+$('stop').addEventListener('click',function(){demo=false;latched={};held={};renderUI()});
+$('demo').addEventListener('click',function(){demo=!demo;if(demo){demoI=0;demoT=0;setLatched(COMBOS[0])}renderUI()});
+$('pause').addEventListener('click',function(){paused=!paused;renderUI()});
+$('gaits').addEventListener('click',function(e){var b=e.target.closest('button');if(!b)return;gait=b.getAttribute('data-g');buildTL();renderUI()});
+$('spd').addEventListener('input',function(){speed=parseFloat(this.value);$('spv').textContent=speed.toFixed(1)+'x'});
+document.addEventListener('keydown',function(e){
+var k=e.key.toLowerCase();
+if('qweasd'.indexOf(k)>-1&&k.length===1){held[k]=true;demo=false;renderUI();}
+else if(e.key===' '&&e.target===document.body){e.preventDefault();paused=!paused;renderUI()}
+});
+document.addEventListener('keyup',function(e){var k=e.key.toLowerCase();if(held[k]){held[k]=false;renderUI()}});
+window.addEventListener('blur',function(){held={};renderUI()});
+function frame(ts){
+requestAnimationFrame(frame);
+var dt=Math.min(0.05,(ts-last)/1000||0);last=ts;
+if(paused)return;
+if(mode==='twist'){twist(dt);return}
+if(demo){demoT+=dt;if(demoT>3.5){demoT=0;demoI=(demoI+1)%COMBOS.length;setLatched(COMBOS[demoI])}}
+var inp=inputs(),act=inp.n>0||inp.kr!==0;
+if(act){tvx=inp.tx;tvy=inp.ty;kr=inp.kr}
+m+=((act?1:0)-m)*Math.min(1,dt*8);
+var g=GAITS[gait],sf=1-g.duty,both=(Math.hypot(tvx,tvy)>0&&kr!==0)?0.75:1;
+if(m>0.01)tau=(tau+dt*speed/2)%1;
+var v0=AMP*speed/g.duty,sp=v0*m*both;
+yaw+=kr*sp/107*dt;
+var c=Math.cos(yaw),s=Math.sin(yaw),vx=tvx*sp,vy=tvy*sp;
+px=(px+(vx*c+vy*s)*K*dt)%48;py=(py+(-vx*s+vy*c)*K*dt)%48;
+$('ground').setAttribute('transform','translate(320 285) rotate('+(yaw*180/Math.PI).toFixed(2)+') translate('+(-px).toFixed(2)+' '+(-py).toFixed(2)+')');
+var amp=AMP*m,sw=[];
+R.forEach(function(L){
+var lx=tvx*both+kr*both*(L.fy/L.r),ly=tvy*both+kr*both*(-L.fx/L.r);
+var ph=(((tau-g.off[L.n])%1)+1)%1,isSw=ph<sf,k,lift=0,u;
+if(isSw){u=ph/sf;k=2*u-1;lift=Math.sin(Math.PI*u)}else{u=(ph-sf)/g.duty;k=1-2*u}
+if(m<0.02){isSw=false;lift=0;k=0}
+var X=L.fx+lx*k*amp,Y=L.fy+ly*k*amp,hx=L.s*28;
+L.lg.setAttribute('points',hx+','+L.hy+' '+((hx+X)/2+L.s*12).toFixed(1)+','+((L.hy+Y)/2).toFixed(1)+' '+X.toFixed(1)+','+Y.toFixed(1));
+L.ft.setAttribute('cx',X.toFixed(1));L.ft.setAttribute('cy',Y.toFixed(1));L.ft.setAttribute('r',(6+5*lift).toFixed(1));
+L.p.setAttribute('x1',(L.fx+lx*AMP*m).toFixed(1));L.p.setAttribute('y1',(L.fy+ly*AMP*m).toFixed(1));L.p.setAttribute('x2',(L.fx-lx*AMP*m).toFixed(1));L.p.setAttribute('y2',(L.fy-ly*AMP*m).toFixed(1));
+var cl=isSw?'sw':'st';
+if(cl!==L.st){L.st=cl;L.lg.setAttribute('class','leg '+cl);L.ft.setAttribute('class','foot '+cl);L.bd.className='badge '+cl;L.bd.textContent=isSw?'SWING':'STANCE'}
+if(isSw)sw.push(L.n);
+L.bf.style.width=(ph*100).toFixed(0)+'%';
+});
+var sig=sw.join(' ');
+if(sig!==lastSw){lastSw=sig;$('cyc').textContent=sig?'Swinging: '+sig:'All six feet planted'}
+var x=48+tau*580;phEl.setAttribute('x1',x.toFixed(1));phEl.setAttribute('x2',x.toFixed(1));
+}
+var SL=[['x','Shift X',-30,30,1,0,''],['y','Shift forward',-30,30,1,0,''],['z','Body height (ZBODY)',10,44,1,24,''],['roll','Roll',-15,15,0.5,0,'°'],['pitch','Pitch',-15,15,0.5,0,'°'],['yaw','Twist (yaw)',-25,25,0.5,0,'°']];
+var LMAX=105,LMIN=45,slEl=$('sl');
+function showP(){SL.forEach(function(d){var v=P[d[0]];$('v_'+d[0]).textContent=(Math.round(v*10)/10)+d[6];$('p_'+d[0]).value=v})}
+SL.forEach(function(d){
+var w=document.createElement('div');w.className='sp';w.style.marginTop='8px';
+w.innerHTML='<label for="p_'+d[0]+'" style="font-size:13px;width:150px">'+d[1]+'</label><input id="p_'+d[0]+'" type="range" min="'+d[2]+'" max="'+d[3]+'" step="'+d[4]+'" value="'+d[5]+'"><span class="mono" id="v_'+d[0]+'" style="width:56px;text-align:right">'+d[5]+d[6]+'</span>';
+slEl.appendChild(w);
+w.children[1].addEventListener('input',function(){sweep=false;$('sweep').setAttribute('aria-pressed','false');P[d[0]]=parseFloat(this.value);showP()});
+});
+var gs=$('gs');
+gs.innerHTML='<line class="gg" x1="30" y1="170" x2="290" y2="170"/><line class="gg" x1="350" y1="170" x2="610" y2="170"/><line id="fl1" class="gk"/><line id="fl2" class="gk"/><line id="fb" class="gb"/><line id="sl1" class="gk"/><line id="sl2" class="gk"/><line id="sb" class="gb"/><circle class="gd" cx="35" cy="170" r="5"/><circle class="gd" cx="285" cy="170" r="5"/><circle class="gd" cx="355" cy="170" r="5"/><circle class="gd" cx="605" cy="170" r="5"/><text id="g1" x="160" y="198" class="tm" text-anchor="middle"></text><text id="g2" x="480" y="198" class="tm" text-anchor="middle"></text>';
+function ln(id,a,b,c,d){var e=$(id);e.setAttribute('x1',a.toFixed(1));e.setAttribute('y1',b.toFixed(1));e.setAttribute('x2',c.toFixed(1));e.setAttribute('y2',d.toFixed(1))}
+function gauge(){
+var yb=170-P.z*2.4,rr=P.roll*Math.PI/180,pp=P.pitch*Math.PI/180;
+var dr=70*Math.sin(rr),dc=70*Math.cos(rr),ds=70*Math.sin(pp),dd=70*Math.cos(pp);
+ln('fb',160-dc,yb-dr,160+dc,yb+dr);ln('fl1',160-dc,yb-dr,35,170);ln('fl2',160+dc,yb+dr,285,170);
+ln('sb',480-dd,yb+ds,480+dd,yb-ds);ln('sl1',480-dd,yb+ds,355,170);ln('sl2',480+dd,yb-ds,605,170);
+$('g1').textContent='FRONT VIEW - ROLL '+P.roll.toFixed(1)+'°';
+$('g2').textContent='SIDE VIEW (FRONT RIGHT) - PITCH '+P.pitch.toFixed(1)+'°';
+}
+function twist(dt){
+if(sweep){sweepT+=dt;var t=sweepT;P.x=20*Math.sin(t*0.9);P.y=20*Math.sin(t*0.7+1);P.z=24+8*Math.sin(t*0.5);P.roll=10*Math.sin(t*1.1);P.pitch=10*Math.sin(t*0.8+2);P.yaw=20*Math.sin(t*0.6);showP()}
+var rr=P.roll*Math.PI/180,pp=P.pitch*Math.PI/180,yy=P.yaw*Math.PI/180;
+var cr=Math.cos(rr),sr=Math.sin(rr),cp=Math.cos(pp),spp=Math.sin(pp),cy=Math.cos(yy),sy=Math.sin(yy),ox=P.x,oy=-P.y;
+$('bodyg').setAttribute('transform','translate('+ox.toFixed(1)+' '+oy.toFixed(1)+') rotate('+(-P.yaw).toFixed(2)+') scale('+cr.toFixed(3)+' '+cp.toFixed(3)+')');
+R.forEach(function(L){
+var hx=L.s*28,x1=hx*cr,y1=L.hy*cp,z=-hx*sr-L.hy*spp;
+var X=ox+x1*cy+y1*sy,Y=oy-x1*sy+y1*cy,dz=P.z+z,dx=L.fx-X,dy=L.fy-Y,reach=Math.sqrt(dx*dx+dy*dy+dz*dz);
+var lim=reach>LMAX||reach<LMIN,cl=lim?'sw':'st';
+L.lg.setAttribute('points',X.toFixed(1)+','+Y.toFixed(1)+' '+((X+L.fx)/2+L.s*12).toFixed(1)+','+((Y+L.fy)/2).toFixed(1)+' '+L.fx+','+L.fy);
+L.ft.setAttribute('cx',L.fx);L.ft.setAttribute('cy',L.fy);L.ft.setAttribute('r','6');
+L.p.setAttribute('x1',L.fx);L.p.setAttribute('y1',L.fy);L.p.setAttribute('x2',L.fx);L.p.setAttribute('y2',L.fy);
+L.lg.setAttribute('class','leg '+cl);L.ft.setAttribute('class','foot '+cl);
+L.bd.className='badge '+cl;L.bd.textContent=(lim?'LIMIT ':'REACH ')+Math.round(reach);L.st='tw';
+L.bf.style.width=Math.min(100,reach/LMAX*100).toFixed(0)+'%';
+});
+gauge();
+}
+function setMode(mm){
+mode=mm;var tw=mm==='twist';
+$('walkc').hidden=tw;$('twistc').hidden=!tw;$('tlc').hidden=tw;$('posec').hidden=!tw;
+$('legnote').textContent=tw?'Bar: leg reach against its limit. Feet stay planted while the body moves.':'Bar: position of the leg in its own gait cycle.';
+R.forEach(function(L){L.st=''});
+if(tw){gauge();showP()}else{$('bodyg').removeAttribute('transform');lastSw=''}
+renderUI();
+}
+$('modes').addEventListener('click',function(e){var b=e.target.closest('button');if(b)setMode(b.getAttribute('data-m'))});
+$('center').addEventListener('click',function(){sweep=false;$('sweep').setAttribute('aria-pressed','false');P={x:0,y:0,z:24,roll:0,pitch:0,yaw:0};showP()});
+$('sweep').addEventListener('click',function(){sweep=!sweep;this.setAttribute('aria-pressed',sweep?'true':'false')});
+buildTL();renderUI();requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

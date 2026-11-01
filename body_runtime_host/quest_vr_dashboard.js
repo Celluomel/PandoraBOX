@@ -72,6 +72,8 @@ export class QuestVRDashboard {
     this.fnkLeg = 1;
     this.fnkGait = 'tripod';
     this.fnkSpeed = 1;
+    this.fnkPreviewPaused = false;
+    this.fnkPreviewDemo = false;
     this.fnkBusy = false;
     this.fnkHardwareStatus = null;
     this.fnkLegState = null;
@@ -81,8 +83,8 @@ export class QuestVRDashboard {
     this.fnkRoot.visible = false;
     this.scene.add(this.fnkRoot);
     this.fnkCanvas = document.createElement('canvas');
-    this.fnkCanvas.width = 1800;
-    this.fnkCanvas.height = 1680;
+    this.fnkCanvas.width = 1200;
+    this.fnkCanvas.height = 1120;
     this.fnkContext = this.fnkCanvas.getContext('2d');
     this.fnkTexture = new THREE.CanvasTexture(this.fnkCanvas);
     this.fnkTexture.colorSpace = THREE.SRGBColorSpace;
@@ -1793,41 +1795,111 @@ export class QuestVRDashboard {
     c.fillStyle='#d6e4f0';c.font='700 38px system-ui';c.textAlign='left';c.fillText('Hexapod Gait Lab',30,54);
     c.fillStyle=ready?'#4dff88':'#ffb020';c.font='600 21px ui-monospace,monospace';c.fillText(`${ready?'FNK0031 · CONNECTED':'FNK0031 · BOARD OFFLINE'} · ACTUATION ${hw.actuation_enabled?'ON':'OFF'}`,32,100);
     // Left column: original Gait Lab stage, six-row gait cycle, then planted-foot pose view.
-    card(24,135,845,520,'Top view · front is up');
-    const cx=446,cy=405;c.fillStyle='#0b121b';c.fillRect(40,170,813,465);c.strokeStyle='#26384e';c.lineWidth=1;
+    card(24,135,990,520,'Top view · front is up');
+    const cx=519,cy=405;c.fillStyle='#0b121b';c.fillRect(40,170,958,465);c.strokeStyle='#26384e';c.lineWidth=1;
     for(let n=1;n<=5;n++){c.beginPath();c.arc(cx,cy,n*67,0,Math.PI*2);c.stroke();}
     c.fillStyle='#d6e4f0';c.beginPath();c.roundRect(cx-48,cy-90,96,180,18);c.fill();c.fillStyle='#0a1018';c.beginPath();c.moveTo(cx-18,cy-90);c.lineTo(cx+18,cy-90);c.lineTo(cx,cy-116);c.fill();
-    const phase=((performance.now()/500)%1), gaitOffset=this.fnkGait==='tripod'?[0,.5,0,.5,0,.5]:this.fnkGait==='ripple'?[0,.83,.67,.17,.33,.5]:[0,.67,.33,.83,.17,.5];
+    const phase=this.fnkPreviewPaused&&Number.isFinite(this.fnkPreviewPhase)?this.fnkPreviewPhase:((this.fnkPreviewPhase=((performance.now()/500)%1))), gaitOffset=this.fnkGait==='tripod'?[0,.5,0,.5,0,.5]:this.fnkGait==='ripple'?[.667,.167,.333,.833,0,.5]:[.333,.833,.167,.667,0,.5];
     for(let i=0;i<6;i++){const side=i%2?1:-1,row=Math.floor(i/2)-1,hipX=cx+side*44,hipY=cy+row*50,footX=cx+side*155,footY=hipY+row*35,legPhase=(phase+gaitOffset[i])%1,swing=legPhase<.33;
       c.strokeStyle=swing?'#ffb020':'#4dff88';c.lineWidth=8;c.setLineDash(swing?[12,8]:[]);c.beginPath();c.moveTo(hipX,hipY);c.lineTo((hipX+footX)/2,footY-10);c.lineTo(footX,footY);c.stroke();c.setLineDash([]);c.fillStyle=swing?'#0d141d':'#4dff88';c.beginPath();c.arc(footX,footY,10,0,Math.PI*2);c.fill();c.strokeStyle=swing?'#ffb020':'#4dff88';c.stroke();c.fillStyle='#8fa3b8';c.font='16px ui-monospace,monospace';c.textAlign='center';c.fillText(['L1','R1','L2','R2','L3','R3'][i],footX,footY+26);}
-    card(24,670,845,340,'Gait cycle · one row per leg');
+    card(24,670,990,340,'Gait cycle · one row per leg');
     const duty=this.fnkGait==='wave'?.833:this.fnkGait==='ripple'?.667:.5;
-    for(let i=0;i<6;i++){const yy=720+i*38,off=gaitOffset[i];c.fillStyle='#8fa3b8';c.font='17px ui-monospace,monospace';c.textAlign='left';c.fillText(['L1','R1','L2','R2','L3','R3'][i],48,yy+16);c.fillStyle='#4dff88';c.fillRect(100,yy,710,24);c.strokeStyle='#ffb020';c.lineWidth=3;c.setLineDash([8,6]);const sx=100+off*710,sw=(1-duty)*710;c.strokeRect(sx,yy,sw,24);if(sx+sw>810)c.strokeRect(100,yy,sx+sw-810,24);c.setLineDash([]);const marker=100+((phase+off)%1)*710;c.strokeStyle='#d6e4f0';c.lineWidth=3;c.beginPath();c.moveTo(marker,yy-4);c.lineTo(marker,yy+29);c.stroke();}
+    for(let i=0;i<6;i++){const yy=720+i*38,off=gaitOffset[i];c.fillStyle='#8fa3b8';c.font='17px ui-monospace,monospace';c.textAlign='left';c.fillText(['L1','R1','L2','R2','L3','R3'][i],48,yy+16);c.fillStyle='#4dff88';c.fillRect(100,yy,850,24);c.strokeStyle='#ffb020';c.lineWidth=3;c.setLineDash([8,6]);const sx=100+off*850,sw=(1-duty)*850;c.strokeRect(sx,yy,sw,24);if(sx+sw>950)c.strokeRect(100,yy,sx+sw-950,24);c.setLineDash([]);const marker=100+((phase+off)%1)*850;c.strokeStyle='#d6e4f0';c.lineWidth=3;c.beginPath();c.moveTo(marker,yy-4);c.lineTo(marker,yy+29);c.stroke();}
     c.fillStyle='#8fa3b8';c.font='16px ui-monospace,monospace';c.fillText(`STANCE ${(duty*100).toFixed(0)}% · ${this.fnkGait.toUpperCase()} · filled green=stance · dashed amber=swing`,48,968);
-    card(24,1025,845,390,'Body tilt · feet planted');
+    card(24,1025,990,390,'Body tilt · feet planted');
     const bodyY=1270,roll=(this.fnkGyroDelta?.x||0)*20,pitch=(this.fnkGyroDelta?.y||0)*20;
     for(const [gx,label,tilt] of [[240,'FRONT · ROLL',roll],[650,'SIDE · PITCH',pitch]]){c.strokeStyle='#40536a';c.lineWidth=3;c.beginPath();c.moveTo(gx-150,bodyY+65);c.lineTo(gx+150,bodyY+65);c.stroke();c.fillStyle='#4dff88';c.beginPath();c.arc(gx-140,bodyY+65,7,0,Math.PI*2);c.arc(gx+140,bodyY+65,7,0,Math.PI*2);c.fill();c.strokeStyle='#d6e4f0';c.lineWidth=12;c.beginPath();c.moveTo(gx-72,bodyY-tilt);c.lineTo(gx+72,bodyY+tilt);c.stroke();c.fillStyle='#8fa3b8';c.font='17px ui-monospace,monospace';c.textAlign='center';c.fillText(label,gx,bodyY+115);}
     // Right column: original Mode, movement pad, gait, speed and six leg status rows.
-    card(895,135,880,950,'Controls');c.fillStyle='#8fa3b8';c.font='700 20px ui-monospace,monospace';c.textAlign='left';c.fillText('MODE',920,190);
-    btn('tab-control',920,210,390,74,'WALK',true,this.fnkTab==='control');btn('tab-twist',1325,210,420,74,'TWIST BODY',true,this.fnkTab==='twist');
+    card(1038,135,738,950,'Controls');c.fillStyle='#8fa3b8';c.font='700 20px ui-monospace,monospace';c.textAlign='left';c.fillText('MODE',1060,190);
+    btn('tab-control',1060,210,332,74,'WALK',true,this.fnkTab==='control');btn('tab-twist',1404,210,350,74,'TWIST BODY',true,this.fnkTab==='twist');
     if(this.fnkTab==='control'){
-      c.fillText('MOVEMENT · RIGHT STICK drives in Robot mode',920,333);
-      const p=[['turn-left','↶ TURN LEFT'],['forward','↑ FORWARD'],['turn-right','TURN RIGHT ↷'],['left','← LEFT'],['stop','STOP'],['right','RIGHT →'],['backward','↓ BACKWARD']];p.forEach(([k,l],i)=>{const col=i%3,row=Math.floor(i/3);btn(`drive-${k}`,920+col*270,360+row*120,245,94,l,true);});
-      c.fillText('GAIT',920,630);['tripod','ripple','wave'].forEach((g,i)=>btn(`gait-${g}`,920+i*270,650,245,72,g.toUpperCase(),true,this.fnkGait===g));
-      c.fillText('Preview schedule only · physical FNHR gait is firmware-defined.',920,755);
-      c.fillText(`SPEED ${this.fnkSpeed.toFixed(2)}×`,920,815);btn('speed-down',1210,780,190,72,'−');btn('speed-up',1410,780,190,72,'+');
-      btn('teleop-arm',920,875,390,76,this.fnkTeleopArmed?'ROBOT CONTROL · ON':'ROBOT CONTROL · OFF',true,this.fnkTeleopArmed);btn('teleop-stop',1325,875,420,76,'SCENE CONTROL',true);
+      c.fillText('MOVEMENT · RIGHT STICK drives in Robot mode',1060,333);
+      const p=[['turn-left','Q · TURN LEFT'],['forward','W · FORWARD'],['turn-right','E · TURN RIGHT'],['left','A · LEFT'],['backward','S · BACKWARD'],['right','D · RIGHT']];p.forEach(([k,l],i)=>{const col=i%3,row=Math.floor(i/3);btn(`drive-${k}`,1060+col*230,360+row*104,220,92,l,true);});
+      btn('drive-stop',1060,574,220,56,'STOP',true);btn('demo-preview',1290,574,220,56,'DEMO',true,this.fnkPreviewDemo);btn('pause-preview',1520,574,234,56,this.fnkPreviewPaused?'RESUME':'PAUSE',true,this.fnkPreviewPaused);
+      c.fillText('GAIT · PREVIEW ONLY',1060,680);['tripod','ripple','wave'].forEach((g,i)=>btn(`gait-${g}`,1060+i*230,700,220,62,g.toUpperCase(),true,this.fnkGait===g));
+      c.fillText(`SPEED ${this.fnkSpeed.toFixed(2)}×`,1060,805);btn('speed-down',1060,825,220,60,'−');btn('speed-up',1290,825,220,60,'+');
+      c.fillText('Demo and gait diagram are preview only; FNHR gait is firmware-defined.',1060,920,720);
+      btn('teleop-arm',1060,975,332,76,this.fnkTeleopArmed?'ROBOT CONTROL · ON':'ROBOT CONTROL · OFF',true,this.fnkTeleopArmed);btn('teleop-stop',1404,975,350,76,'SCENE CONTROL',true);
     }else if(this.fnkTab==='twist'){
-      c.fillText('BODY POSE · LEFT CONTROLLER ORIENTATION twists the body',920,350);
-      c.fillText('RIGHT STICK shifts X/Y · RIGHT TRIGGER changes body height',920,405);
-      c.fillText('Relative WebXR controller rotation is sent as bounded FNHR TwistBody steps.',920,460,820);
-      btn('teleop-arm',920,530,390,76,this.fnkTeleopArmed?'ROBOT CONTROL · ON':'ROBOT CONTROL · OFF',true,this.fnkTeleopArmed);btn('teleop-stop',1325,530,420,76,'SCENE CONTROL',true);
+      c.fillText('BODY POSE · LEFT CONTROLLER ORIENTATION twists the body',1060,350);
+      c.fillText('RIGHT STICK shifts X/Y · RIGHT TRIGGER changes body height',1060,405);
+      c.fillText('Relative WebXR controller rotation is sent as bounded FNHR TwistBody steps.',1060,460,680);
+      c.fillText('Front and side views show the requested body tilt over planted feet.',1060,510,680);
+      btn('center-preview',1060,590,332,64,'CENTER PREVIEW',true);btn('sweep-preview',1404,590,350,64,'SWEEP DEMO · PREVIEW',true,this.fnkPreviewDemo);
+      btn('teleop-arm',1060,975,332,76,this.fnkTeleopArmed?'ROBOT CONTROL · ON':'ROBOT CONTROL · OFF',true,this.fnkTeleopArmed);btn('teleop-stop',1404,975,350,76,'SCENE CONTROL',true);
     }else{
       c.fillText(this.fnkTab==='calibration'?'LEG STATUS · FNHR COMMAND ESTIMATES, NOT MEASURED FEEDBACK':'FNHR CUSTOM USB · 115200 BAUD',920,350);
     }
-    card(895,1100,880,315,'Leg status');
-    (this.fnkLegState?.legs||[]).forEach((l,i)=>{const col=i%2,row=Math.floor(i/2),x=920+col*425,y=1155+row*78;c.fillStyle='#d6e4f0';c.font='18px ui-monospace,monospace';c.textAlign='left';c.fillText(`${['L1','R1','L2','R2','L3','R3'][i]} · FOOT ${l.foot_position_mm?.map(n=>Number(n).toFixed(0)).join('/')||'—'} mm · JOINT ${l.joint_angles_deg?.map(n=>Number(n).toFixed(0)).join('/')||'—'}°`,x,y);c.fillStyle='#2b405c';c.fillRect(x,y+13,380,8);c.fillStyle='#4dff88';c.fillRect(x,y+13,Math.min(380,Math.max(0,Number(l.foot_position_mm?.[2])||0)*3),8);});
+    card(1038,1100,738,315,'Leg status');
+    labels.forEach((name,i)=>{const l=this.fnkLegState?.legs?.[i],col=i%2,row=Math.floor(i/2),x=1060+col*350,y=1155+row*78;c.fillStyle='#d6e4f0';c.font='15px ui-monospace,monospace';c.textAlign='left';c.fillText(l?`${name} · FOOT ${l.foot_position_mm?.map(n=>Number(n).toFixed(0)).join('/')||'—'} mm · JOINT ${l.joint_angles_deg?.map(n=>Number(n).toFixed(0)).join('/')||'—'}°`:`${name} · WAITING FOR FNHR ESTIMATE`,x,y,330);c.fillStyle='#2b405c';c.fillRect(x,y+13,320,8);if(l){c.fillStyle='#4dff88';c.fillRect(x,y+13,Math.min(320,Math.max(0,Number(l.foot_position_mm?.[2])||0)*3),8);}});
     c.fillStyle='#8fa3b8';c.font='17px ui-monospace,monospace';c.textAlign='left';c.fillText(`${this.fnkMessage} · estimated commanded state`,30,h-24,w-60);this.fnkTexture.needsUpdate=true;
+  }
+
+  drawFnkGaitLabExact() {
+    const c=this.fnkContext,w=this.fnkCanvas.width,h=this.fnkCanvas.height;if(!c)return;
+    const C={bg:'#0a1018',panel:'#0d141d',stage:'#0b121b',line:'#2b405c',text:'#d6e4f0',muted:'#8fa3b8',swing:'#ffb020',stance:'#4dff88'};
+    const labels=['L1','R1','L2','R2','L3','R3'],twist=this.fnkTab==='twist',gait=this.fnkGait||'tripod';
+    const duty=gait==='wave'?5/6:gait==='ripple'?2/3:.5;
+    const offsets=gait==='wave'?[1/3,5/6,1/6,2/3,0,.5]:gait==='ripple'?[2/3,1/6,1/3,5/6,0,.5]:[0,.5,0,.5,0,.5];
+    const phase=this.fnkPreviewPaused?(this.fnkPreviewPhase||0):((this.fnkPreviewPhase=(performance.now()*(Number(this.fnkSpeed)||1)/5000)%1));
+    const hw=this.fnkHardwareStatus||{},compatible=hw.connected===true&&hw.firmware_profile==='custom_fnhr_ascii_v2';
+    if(!this.fnkPoseValues)this.fnkPoseValues={x:0,y:0,z:24,roll:0,pitch:0,yaw:0};
+    if(twist&&this.fnkPreviewDemo){const t=performance.now()/1000;this.fnkPoseValues={x:20*Math.sin(t*.9),y:20*Math.sin(t*.7+1),z:24+8*Math.sin(t*.5),roll:10*Math.sin(t*1.1),pitch:10*Math.sin(t*.8+2),yaw:20*Math.sin(t*.6)};}
+    this.fnkActionHitAreas={};c.clearRect(0,0,w,h);c.fillStyle=C.bg;c.fillRect(0,0,w,h);
+    const txt=(s,x,y,size=14,color=C.text,weight=500,align='left')=>{c.fillStyle=color;c.font=weight+' '+size+'px ui-sans-serif,system-ui';c.textAlign=align;c.textBaseline='middle';c.fillText(String(s),x,y);};
+    const card=(x,y,cw,ch)=>{c.fillStyle=C.panel;c.strokeStyle=C.line;c.lineWidth=1;c.beginPath();c.roundRect(x,y,cw,ch,12);c.fill();c.stroke();};
+    const button=(key,x,y,bw,bh,label,selected=false,enabled=true)=>{c.globalAlpha=enabled?1:.48;c.fillStyle=selected?C.stance:C.panel;c.strokeStyle=selected?C.stance:C.line;c.lineWidth=1;c.beginPath();c.roundRect(x,y,bw,bh,8);c.fill();c.stroke();txt(label,x+bw/2,y+bh/2,14,selected?C.bg:C.text,500,'center');c.globalAlpha=1;this.fnkActionHitAreas[key]={x,y,width:bw,height:bh,enabled};};
+    const lab=(s,x,y)=>txt(s.toUpperCase(),x,y,12,C.muted,500);
+    const lx=16,lw=666,rx=698,rw=486,top=112,innerX=rx+16,innerW=rw-32;
+    txt('Hexapod Gait Lab',16,29,22,C.text,700);
+    txt('Top view, front is up. Each leg is simulated on its own: dashed amber is swing (foot lifted, moving ahead), solid green is stance (foot planted, pushing the body).',16,57,13,C.muted);
+    txt('Hold Q W E A S D, or click the keys to latch a movement. Twist body shifts, tilts and rotates the body while all six feet stay planted.',16,78,13,C.muted);
+    txt((compatible?'FNK0031 · CONNECTED':'FNK0031 · BOARD OFFLINE')+' · ACTUATION '+(hw.actuation_enabled?'ON':'OFF'),w-16,29,12,compatible?C.stance:C.swing,600,'right');
+
+    // Top-down SVG stage reproduced from the supplied file's 640×560 viewBox.
+    const previewMoves=['FORWARD','BACKWARD','LEFT','RIGHT','TURN LEFT','TURN RIGHT','FORWARD + LEFT','FORWARD + RIGHT'];
+    const previewMove=this.fnkPreviewDemo?previewMoves[Math.floor(performance.now()/3500)%previewMoves.length]:'FORWARD';
+    card(lx,top,lw,625);txt(twist?'TWIST BODY':previewMove,lx+16,top+22,18,C.text,700);
+    txt(twist?'ALL SIX FEET PLANTED':gait.toUpperCase()+' · '+Math.round(duty*100)+'% stance',lx+lw-16,top+22,12,C.muted,500,'right');
+    const stage={x:32,y:top+48,w:634,h:554},scale=Math.min(stage.w/640,stage.h/560);
+    c.fillStyle=C.stage;c.beginPath();c.roundRect(stage.x,stage.y,stage.w,stage.h,8);c.fill();c.save();c.beginPath();c.rect(stage.x,stage.y,stage.w,stage.h);c.clip();
+    c.translate(stage.x+(stage.w-640*scale)/2,stage.y+(stage.h-560*scale)/2);c.scale(scale,scale);
+    c.strokeStyle=C.line;c.lineWidth=1;c.beginPath();for(let q=-1400;q<=1400;q+=48){c.moveTo(q,-1400);c.lineTo(q,1400);c.moveTo(-1400,q);c.lineTo(1400,q);}c.stroke();
+    c.save();c.translate(320,285);c.scale(2.2,2.2);c.fillStyle=C.panel;c.strokeStyle=C.line;c.lineWidth=1.5;c.beginPath();c.roundRect(-28,-48,56,96,14);c.fill();c.stroke();
+    c.fillStyle=C.text;c.beginPath();c.moveTo(-8,-50);c.lineTo(8,-50);c.lineTo(0,-62);c.closePath();c.fill();c.fillStyle=C.muted;c.font='10px ui-monospace,Menlo,Consolas,monospace';c.textAlign='center';[['L1',-14,-30],['R1',14,-30],['L2',-14,4],['R2',14,4],['L3',-14,38],['R3',14,38]].forEach(a=>c.fillText(a[0],a[1],a[2]));
+    [[-1,-34],[1,-34],[-1,0],[1,0],[-1,34],[1,34]].forEach((leg,i)=>{const side=leg[0],hy=leg[1],fx=side*(hy===0?104:92),fy=hy<0?-58:hy>0?58:0,p=((phase-offsets[i])%1+1)%1,sw=p<(1-duty),u=sw?p/(1-duty):(p-(1-duty))/duty,k=sw?2*u-1:1-2*u,lift=sw?Math.sin(Math.PI*u):0,x=fx+k*17,y=fy+k*10,hx=side*28;
+      c.strokeStyle=sw?C.swing:C.stance;c.lineWidth=2;c.setLineDash(sw?[4,3]:[]);c.beginPath();c.moveTo(hx,hy);c.lineTo((hx+x)/2+side*12,(hy+y)/2);c.lineTo(x,y);c.stroke();c.setLineDash([]);
+      c.strokeStyle=C.line;c.lineWidth=1;c.setLineDash([2,3]);c.beginPath();c.moveTo(fx,fy);c.lineTo(fx-side*34,fy);c.stroke();c.setLineDash([]);
+      c.fillStyle=sw?C.panel:C.stance;c.strokeStyle=sw?C.swing:C.stance;c.lineWidth=2;c.beginPath();c.arc(x,y,6+5*lift,0,Math.PI*2);c.fill();c.stroke();});
+    c.restore();c.restore();
+
+    // Source HTML's gait-cycle card is hidden in Twist mode and visible in Walk mode.
+    if(!twist){const y=top+641;card(lx,y,lw,298);lab('Gait cycle, one row per leg',lx+16,y+24);const s=(lw-34)/640,tx=lx+16+48*s,tw=580*s,ry=y+47;
+      labels.forEach((name,i)=>{const yy=ry+i*26*s,hh=18*s,off=offsets[i],sw=1-duty;txt(name,lx+16+12*s,yy+hh/2,12,C.text);c.fillStyle=C.stance;c.beginPath();c.roundRect(tx,yy,tw,hh,4);c.fill();c.strokeStyle=C.swing;c.lineWidth=1.5;c.setLineDash([5,3]);if(off+sw<=1){c.beginPath();c.roundRect(tx+off*tw,yy,sw*tw,hh,4);c.stroke();}else{c.beginPath();c.roundRect(tx+off*tw,yy,(1-off)*tw,hh,4);c.stroke();c.beginPath();c.roundRect(tx,yy,(off+sw-1)*tw,hh,4);c.stroke();}c.setLineDash([]);const px=tx+((phase+off)%1)*tw;c.strokeStyle=C.text;c.lineWidth=1.5;c.beginPath();c.moveTo(px,yy-3);c.lineTo(px,yy+hh+3);c.stroke();});
+      txt('Filled green: stance',lx+16,y+270,13,C.muted);txt('Dashed amber: swing',lx+182,y+270,13,C.muted);txt('Swinging: '+labels.filter((_,i)=>((phase-offsets[i]+1)%1)<1-duty).join(', '),lx+lw-16,y+270,11,C.muted,500,'right');
+    }else{
+      const y=top+641;card(lx,y,lw,270);lab('Body tilt, feet planted',lx+16,y+24);const gy=y+218,vals=this.fnkPoseValues;
+      [[lx+174,'FRONT VIEW · ROLL',vals.roll],[lx+492,'SIDE VIEW (FRONT RIGHT) · PITCH',vals.pitch]].forEach(a=>{const gx=a[0],ang=Math.max(-.35,Math.min(.35,(Number(a[2])||0)*Math.PI/180));c.strokeStyle=C.line;c.lineWidth=2;c.beginPath();c.moveTo(gx-140,gy);c.lineTo(gx+140,gy);c.stroke();c.fillStyle=C.stance;c.beginPath();c.arc(gx-125,gy,5,0,Math.PI*2);c.arc(gx+125,gy,5,0,Math.PI*2);c.fill();c.strokeStyle=C.text;c.lineWidth=6;c.beginPath();c.moveTo(gx-63,gy-Math.sin(ang)*58);c.lineTo(gx+63,gy+Math.sin(ang)*58);c.stroke();txt(a[1],gx,y+244,11,C.muted,500,'center');});
+    }
+
+    // The right column preserves the HTML's exact component order and 3-column movement pad.
+    const ctrlH=twist?500:505;card(rx,top,rw,ctrlH);lab('Mode',innerX,top+24);const gap=8,bw=(innerW-gap)/2;
+    button('tab-control',innerX,top+38,bw,44,'Walk',!twist);button('tab-twist',innerX+bw+gap,top+38,bw,44,'Twist body',twist);
+    if(!twist){lab('Movement',innerX,top+103);const pg=8,pw=(innerW-pg*2)/3,py=top+116,ph=60;
+      [['turn-left','Q','TURN LEFT'],['forward','W','FORWARD'],['turn-right','E','TURN RIGHT'],['left','A','LEFT'],['backward','S','BACKWARD'],['right','D','RIGHT']].forEach((a,i)=>{const x=innerX+(i%3)*(pw+pg),y=py+Math.floor(i/3)*(ph+8);c.fillStyle=C.panel;c.strokeStyle=C.line;c.lineWidth=1;c.beginPath();c.roundRect(x,y,pw,ph,8);c.fill();c.stroke();txt(a[1],x+pw/2,y+20,20,C.text,700,'center');txt(a[2],x+pw/2,y+43,11,C.text,500,'center');this.fnkActionHitAreas['drive-'+a[0]]={x,y,width:pw,height:ph,enabled:true};});
+      const by=py+2*(ph+8),rw3=(innerW-16)/3;button('drive-stop',innerX,by,rw3,44,'Stop');button('demo-preview',innerX+rw3+8,by,rw3,44,'Demo all movements',this.fnkPreviewDemo);button('pause-preview',innerX+2*(rw3+8),by,rw3,44,this.fnkPreviewPaused?'Resume':'Pause',this.fnkPreviewPaused);
+      lab('Gait',innerX,by+62);['tripod','ripple','wave'].forEach((g,i)=>button('gait-'+g,innerX+i*(innerW+16)/3,by+74,(innerW-32)/3,44,g[0].toUpperCase()+g.slice(1),g===gait));
+      const sy=by+143;txt('Speed',innerX,sy+14,14,C.text);const sx=innerX+64,sw=innerW-132,cy=sy+14,speed=Math.max(.25,Math.min(2,Number(this.fnkSpeed)||1)),knob=sx+(speed-.25)/1.75*sw;c.strokeStyle=C.line;c.lineWidth=3;c.beginPath();c.moveTo(sx,cy);c.lineTo(sx+sw,cy);c.stroke();c.strokeStyle=C.stance;c.beginPath();c.moveTo(sx,cy);c.lineTo(knob,cy);c.stroke();c.fillStyle=C.stance;c.beginPath();c.arc(knob,cy,7,0,Math.PI*2);c.fill();txt(speed.toFixed(1)+'×',innerX+innerW,sy+14,14,C.text,500,'right');this.fnkActionHitAreas['speed-slider']={x:sx-10,y:sy-10,width:sw+20,height:44,enabled:true};
+    }else{
+      lab('Body pose',innerX,top+103);const fields=[['x','Shift X',-30,30,''],['y','Shift forward',-30,30,''],['z','Body height (ZBODY)',10,44,''],['roll','Roll',-15,15,'°'],['pitch','Pitch',-15,15,'°'],['yaw','Twist (yaw)',-25,25,'°']];
+      fields.forEach((d,i)=>{const y=top+126+i*38,labelW=132,bx=innerX+labelW+5,bw2=innerW-labelW-68,v=Number(this.fnkPoseValues[d[0]])||0,f=Math.max(0,Math.min(1,(v-d[2])/(d[3]-d[2]))),kn=bx+f*bw2;txt(d[1],innerX,y+7,12,C.text);c.strokeStyle=C.line;c.lineWidth=3;c.beginPath();c.moveTo(bx,y+7);c.lineTo(bx+bw2,y+7);c.stroke();c.strokeStyle=C.stance;c.beginPath();c.moveTo(bx,y+7);c.lineTo(kn,y+7);c.stroke();c.fillStyle=C.stance;c.beginPath();c.arc(kn,y+7,6,0,Math.PI*2);c.fill();txt(v.toFixed(1)+d[4],innerX+innerW,y+7,11,C.text,500,'right');this.fnkActionHitAreas['pose-slider-'+d[0]]={x:bx-8,y:y-9,width:bw2+16,height:32,enabled:true,min:d[2],max:d[3],barX:bx,barW:bw2};});
+      button('center-preview',innerX,top+376,bw,44,'Center');button('sweep-preview',innerX+bw+gap,top+376,bw,44,'Sweep demo',this.fnkPreviewDemo);
+    }
+    const armY=top+ctrlH-58;button('teleop-arm',innerX,armY,bw,44,this.fnkTeleopArmed?'Robot input on':'Robot input',this.fnkTeleopArmed);button('teleop-stop',innerX+bw+gap,armY,bw,44,'Scene input');
+    const legY=top+ctrlH+16,legH=354;card(rx,legY,rw,legH);lab('Leg status',innerX,legY+24);txt('Bar: position of the leg in its own gait cycle.',innerX,legY+45,11,C.muted);const estimates=this.fnkLegState?.legs||[];
+    labels.forEach((name,i)=>{const y=legY+61+i*43,l=estimates[i],x=innerX; c.strokeStyle=C.line;c.lineWidth=1;c.beginPath();c.moveTo(x,y+36);c.lineTo(rx+rw-16,y+36);c.stroke();txt(name,x,y+15,12,C.text,700);txt(l?'Command estimate':'Waiting for estimate',x+36,y+15,11,C.muted);const bx=x+144,bww=innerW-144;c.fillStyle=C.line;c.fillRect(bx,y+11,bww,8);if(l){const z=Math.max(0,Number(l.foot_position_mm?.[2])||0);c.fillStyle=C.stance;c.fillRect(bx,y+11,Math.min(bww,z/105*bww),8);}});
+    txt('Commanded FNHR estimates · servos do not report measured leg positions',16,h-24,11,C.muted);
+    this.fnkTexture.needsUpdate=true;
   }
 
   drawFnkGaitLabLegacy() {
@@ -1851,7 +1923,7 @@ export class QuestVRDashboard {
   }
 
   drawFnkControlWindow() {
-    this.drawFnkGaitLab();
+    this.drawFnkGaitLabExact();
     return;
     // Legacy panel kept below for reference while the Gait Lab renderer is active.
     if (!this.fnkContext) return;
@@ -2021,7 +2093,18 @@ export class QuestVRDashboard {
       const y = (1 - hit.uv.y) * this.fnkCanvas.height;
       for (const [key, area] of Object.entries(this.fnkActionHitAreas)) {
         if (x >= area.x && x <= area.x + area.width && y >= area.y && y <= area.y + area.height) {
-          return area.enabled ? key : 'fnk-disabled';
+          if (!area.enabled) return 'fnk-disabled';
+          if (key === 'speed-slider') {
+            this.fnkSpeed = .25 + Math.max(0,Math.min(1,(x-area.x-10)/(area.width-20)))*1.75;
+            this.drawFnkControlWindow();
+          } else if (key.startsWith('pose-slider-')) {
+            const axis=key.slice('pose-slider-'.length),value=area.min+Math.max(0,Math.min(1,(x-area.barX)/area.barW))*(area.max-area.min);
+            this.fnkPoseValues[axis]=value;
+            if (this.fnkTeleopArmed) void this.sendFnkManualControl({mode:'twist',x:this.fnkPoseValues.x,y:this.fnkPoseValues.y,z:this.fnkPoseValues.z-24,rx:this.fnkPoseValues.roll,ry:this.fnkPoseValues.pitch,rz:this.fnkPoseValues.yaw});
+            else this.fnkMessage='POSE PREVIEW · SELECT ROBOT INPUT TO SEND';
+            this.drawFnkControlWindow();
+          }
+          return key;
         }
       }
       return 'fnk-window';
