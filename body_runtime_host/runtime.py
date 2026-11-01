@@ -1042,6 +1042,24 @@ class BodyHost:
             valid_range = calibration.get("calibrated_range_m") or []
             if len(valid_range) < 2:
                 raise ValueError("calibration has no validated distance interval")
+            segmentation = self._segmentation_service.status()
+            segmentation_mask = None
+            segmentation_paired = False
+            encoded_mask = segmentation.get("mask_png_base64")
+            if encoded_mask:
+                seg_at = float(segmentation.get("captured_at") or 0.0)
+                seg_id = str(segmentation.get("frame_id") or "")
+                segmentation_paired = (
+                    bool(seg_id and seg_id == str(yolo.get("frame_id") or ""))
+                    or (seg_at > 0 and abs(seg_at - yolo_at) <= 0.25)
+                )
+                if segmentation_paired:
+                    seg_encoded = np.frombuffer(base64.b64decode(encoded_mask), dtype=np.uint8)
+                    seg_image = cv2.imdecode(seg_encoded, cv2.IMREAD_UNCHANGED)
+                    if seg_image is not None and seg_image.ndim == 3 and seg_image.shape[2] >= 3:
+                        if seg_image.shape[:2] != raw.shape:
+                            seg_image = cv2.resize(seg_image, (width, height), interpolation=cv2.INTER_NEAREST)
+                        segmentation_mask = seg_image
             hfov = 70.0
             focal = width / (2.0 * math.tan(math.radians(hfov / 2.0)))
             output = []
@@ -1064,6 +1082,22 @@ class BodyHost:
                 bottom = max(top + 1, min(height, round(0.35 * y1 + 0.65 * y2)))
                 step = max(1, int(min(right - left, bottom - top) / 8))
                 roi = raw[top:bottom:step, left:right:step]
+                if str(detection.get("label") or "").casefold() in {"tv", "television"}:
+                    if segmentation_mask is None:
+                        reason = "TV distance withheld: no frame-synchronized SegFormer mask" if not segmentation_paired else "TV distance withheld: SegFormer mask unavailable"
+                        item["metric_depth"] = {"available": False, "reason": reason}
+                        output.append(item)
+                        continue
+                    roi_labels = segmentation_mask[top:bottom:step, left:right:step, 2]
+                    television_pixels = (roi_labels == 89) | (roi_labels == 130)  # television receiver or screen
+                    if segmentation_mask.shape[2] >= 4:
+                        roi_confidence = segmentation_mask[top:bottom:step, left:right:step, 3] > 0
+                        television_pixels &= roi_confidence
+                    roi = roi[television_pixels]
+                    if roi.size < 9:
+                        item["metric_depth"] = {"available": False, "reason": "TV label has too few synchronized SegFormer foreground pixels"}
+                        output.append(item)
+                        continue
                 if roi.size < 9:
                     item["metric_depth"] = {"available": False, "reason": "YOLOX box too small for stable depth sampling"}
                     output.append(item)
@@ -1087,7 +1121,7 @@ class BodyHost:
                     "forward_m": round(distance, 3),
                     "bearing_deg_approx": round(bearing, 2),
                     "coordinate_frame": "camera_optical_approximate",
-                    "source": "paired_yolox_box_midas_raw_depth",
+                    "source": "paired_yolox_segformer_midas_raw_depth" if str(detection.get("label") or "").casefold() in {"tv", "television"} else "paired_yolox_box_midas_raw_depth",
                     "frame_id": yolo.get("frame_id"),
                     "captured_at": yolo_at,
                     "frame_delta_s": round(delta, 4),
