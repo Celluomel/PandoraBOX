@@ -1196,11 +1196,13 @@ class BodyHost:
                     output.append(item)
                     continue
 
-                x1, _, x2, _ = box
+                x1, y1, x2, y2 = box
                 center_x = (x1 + x2) / 2.0
+                center_y = (y1 + y2) / 2.0
                 bearing = math.atan2(center_x - width / 2.0, focal)
                 lateral = corrected_forward * math.tan(bearing)
-                body_range = math.hypot(corrected_forward, lateral)
+                vertical = ((height / 2.0 - center_y) / focal) * corrected_forward
+                body_range = math.sqrt(corrected_forward ** 2 + lateral ** 2 + vertical ** 2)
                 p10_inverse = inverse_scale * roi["p10"] + inverse_offset
                 p90_inverse = inverse_scale * roi["p90"] + inverse_offset
                 q10 = scale / p10_inverse if p10_inverse > 1e-6 else corrected_forward
@@ -1213,6 +1215,7 @@ class BodyHost:
                     "forward_m": round(corrected_forward, 3),
                     "range_m": round(body_range, 3),
                     "lateral_m": round(lateral, 3),
+                    "vertical_m": round(vertical, 3),
                     "bearing_deg_approx": round(math.degrees(bearing), 2),
                     "coordinate_frame": "camera_optical_approximate",
                     "source": "paired_yolox_midas_depth_radar_person_anchored" if anchor_scale is not None else "paired_yolox_box_midas_raw_depth",
