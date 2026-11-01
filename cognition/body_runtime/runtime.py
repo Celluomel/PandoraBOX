@@ -30,10 +30,12 @@ class BodyObservation:
     confidence: float = 1.0
     observed_at: float = field(default_factory=time.time)
     provenance: Dict[str, Any] = field(default_factory=dict)
+    received_at: float = field(default_factory=time.time)
 
     def as_dict(self) -> Dict[str, Any]:
         result = asdict(self)
         result["age_seconds"] = round(max(0.0, time.time() - self.observed_at), 3)
+        result["received_age_seconds"] = round(max(0.0, time.time() - self.received_at), 3)
         return result
 
 
@@ -118,6 +120,7 @@ class BodyRuntime:
         self._capability_learner = BodyCapabilityLearner()
         self._workspace_observation_fingerprints: Dict[str, str] = {}
         self._workspace_observation_times: Dict[str, float] = {}
+        self._workspace_body_perceptions: Dict[str, Dict[str, Any]] = {}
 
     _CONFIG_FIELDS = {
         "BODY_RUNTIME_ENABLED", "BODY_PLUGIN_HOME_ASSISTANT_ENABLED",
@@ -395,32 +398,61 @@ class BodyRuntime:
             last = self._workspace_observation_times.get(key, 0.0)
             outcome = item.kind == "actuation_feedback"
             changed = previous != fingerprint
-            if not changed and not outcome and now - last < 30.0:
-                return
-            self._workspace_observation_fingerprints[key] = fingerprint
-            self._workspace_observation_times[key] = now
-            stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(item.observed_at))
+            observed_at = float(item.observed_at)
+            received_at = float(item.received_at or now)
+            age_seconds = max(0.0, now - observed_at)
+            stale_after_s = 15.0 if item.kind == "sensor_observation" else 60.0
+            iso = lambda stamp: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(stamp))
             content = {
                 "subject": item.subject,
                 "value": item.value,
                 "unit": item.unit,
                 "source": item.source,
                 "confidence": item.confidence,
-                "observed_at": stamp,
+                "observed_at": iso(observed_at),
+                "observed_at_unix": observed_at,
+                "received_at": iso(received_at),
+                "received_at_unix": received_at,
+                "age_seconds": round(age_seconds, 3),
+                "stale_after_seconds": stale_after_s,
+                "freshness_at_publish": "stale" if age_seconds > stale_after_s else "live",
                 "changed": changed,
+                "provenance": dict(item.provenance or {}),
             }
-            workspace.broadcast(
-                "body_perception",
-                content,
-                priority=0.78 if outcome else 0.46,
+            self._workspace_observation_fingerprints[key] = fingerprint
+            # Keep a bounded latest-value map by source + subject. Updating it
+            # on every received sample keeps stamps current without broadcasting
+            # unchanged high-rate polls as competing workspace events.
+            self._workspace_body_perceptions[key] = content
+            if len(self._workspace_body_perceptions) > 64:
+                oldest = sorted(
+                    self._workspace_body_perceptions,
+                    key=lambda entry: float(self._workspace_body_perceptions[entry].get("received_at_unix") or 0.0),
+                )[:len(self._workspace_body_perceptions) - 64]
+                for entry in oldest:
+                    self._workspace_body_perceptions.pop(entry, None)
+            snapshot = sorted(
+                self._workspace_body_perceptions.values(),
+                key=lambda entry: float(entry.get("received_at_unix") or 0.0),
+                reverse=True,
             )
-            workspace.update_state(
-                "body_perception",
-                context={
-                    **(workspace.get_state().context or {}),
-                    "latest_body_perception": content,
+            workspace_context = dict(workspace.get_state().context or {})
+            workspace_context.update({
+                "latest_body_perception": content,
+                "latest_body_perceptions": {
+                    "updated_at": iso(now),
+                    "updated_at_unix": now,
+                    "observations": snapshot,
                 },
-            )
+            })
+            workspace.update_state("body_perception", context=workspace_context)
+            if changed or outcome or now - last >= 30.0:
+                workspace.broadcast(
+                    "body_perception",
+                    content,
+                    priority=0.78 if outcome else 0.46,
+                )
+                self._workspace_observation_times[key] = now
         except Exception:
             import logging
             logging.getLogger(__name__).debug("Body perception workspace route failed", exc_info=True)
@@ -683,7 +715,14 @@ class BodyRuntime:
                 value = item["value"]
                 unit = f" {item['unit']}" if item.get("unit") else ""
                 stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(item["observed_at"]))
-                lines.append(f"- {item['subject']}: {value}{unit} (source {item['source']}, observed {stamp})")
+                age = max(0.0, time.time() - float(item.get("observed_at") or time.time()))
+                freshness = "STALE" if age > 15.0 else "LIVE"
+                received = item.get("received_at")
+                received_stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(received)) if isinstance(received, (int, float)) else "unknown"
+                lines.append(
+                    f"- {item['subject']}: {value}{unit} (source {item['source']}, "
+                    f"observed {stamp}, received {received_stamp}, age {age:.1f}s, {freshness})"
+                )
         else:
             lines.append("- No current Body sensor observation is available to this Brain turn.")
         try:

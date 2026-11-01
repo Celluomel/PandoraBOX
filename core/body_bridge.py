@@ -94,7 +94,12 @@ async def body_bridge(websocket: WebSocket):
                 unit=str(item.get("unit") or "")[:40],
                 confidence=float(item.get("confidence", 1.0)),
                 observed_at=float(item.get("observed_at") or time.time()),
-                provenance=dict(item.get("provenance") or {}),
+                provenance={
+                    **dict(item.get("provenance") or {}),
+                    "transport": "authenticated_body_websocket",
+                    "remote_entity_id": item.get("entity_id"),
+                },
+                received_at=time.time(),
             )
             body.publish_observation(observation, forward=False)
             await send({"type": "observation_ack", "subject": observation.subject})
