@@ -462,11 +462,16 @@ export class QuestVRDashboard {
     ['DEV', 'ATTENTIVE', 'IDLE'].forEach((value, index) => button(`power-mode-${value}`, 190 + index * 290, 68, 270, 54, value === 'ATTENTIVE' ? 'Attentive' : value, mode === value));
 
     card(30, 146, width - 60, 226, 'Battery estimate');
-    text(Number.isFinite(level) ? `${level.toFixed(0)}%` : '—%', 58, 218, 66, '#e7f5f1', 750);
-    const barX = 58, barY = 275, barW = 760, barH = 18;
-    ctx.fillStyle = '#273b43'; ctx.beginPath(); ctx.roundRect(barX, barY, barW, barH, 9); ctx.fill();
-    if (Number.isFinite(level)) { ctx.fillStyle = level <= 15 ? '#e45550' : level <= 35 ? '#e5a844' : '#18a969'; ctx.beginPath(); ctx.roundRect(barX, barY, barW * Math.max(0, Math.min(1, level / 100)), barH, 9); ctx.fill(); }
-    text(Number.isFinite(remainingWh) ? `${remainingWh.toFixed(1)} Wh estimated` : 'Energy estimate unavailable', 58, 322, 18, '#a8bcbd');
+    const gaugeX = 152, gaugeY = 270, gaugeRadius = 74, gaugeStart = -Math.PI / 2;
+    ctx.beginPath(); ctx.arc(gaugeX, gaugeY, gaugeRadius, 0, Math.PI * 2); ctx.strokeStyle = '#253544'; ctx.lineWidth = 18; ctx.stroke();
+    if (Number.isFinite(level) && level > 0) {
+      ctx.beginPath(); ctx.arc(gaugeX, gaugeY, gaugeRadius, gaugeStart, gaugeStart + Math.PI * 2 * Math.max(0, Math.min(100, level)) / 100);
+      ctx.strokeStyle = '#16855d'; ctx.lineWidth = 18; ctx.lineCap = 'butt'; ctx.stroke();
+    }
+    ctx.beginPath(); ctx.arc(gaugeX, gaugeY, gaugeRadius - 13, 0, Math.PI * 2); ctx.fillStyle = '#0a0f1a'; ctx.fill();
+    text(Number.isFinite(level) ? `${level.toFixed(0)}%` : '—%', gaugeX, gaugeY - 2, 38, '#e2edf5', 750, 'center');
+    text('BATTERY', gaugeX, gaugeY + 30, 13, '#9aafc0', 650, 'center');
+    text(Number.isFinite(remainingWh) ? `${remainingWh.toFixed(1)} Wh estimated` : 'Energy estimate unavailable', 270, 238, 19, '#a8bcbd');
     text(Number.isFinite(remainingMinutes) ? `~${Math.floor(remainingMinutes / 60)} h ${Math.round(remainingMinutes % 60)} min remaining` : 'Runtime estimate unavailable', 850, 210, 24, '#e2efef', 650);
     text(`Battery input · ${this.pendingBatteryLevel === null ? '—' : `${this.pendingBatteryLevel}%`}`, 850, 254, 19, '#a8bcbd', 550);
     button('power-battery-down', 850, 285, 100, 54, '−5');
