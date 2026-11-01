@@ -2042,18 +2042,29 @@ export class QuestVRDashboard {
     if (!twist) {
       const y = top + 641; card(lx, y, lw, 298); lab('Gait cycle, one row per leg', lx + 16, y + 24);
       const s = (lw - 34) / 640, tx0 = lx + 16 + 48 * s, tw = 580 * s, rowY = y + 47;
+      const cycleSegments = (start, width) => {
+        const a = ((start % 1) + 1) % 1, end = a + width;
+        return end <= 1 ? [[a, end]] : [[a, 1], [0, end - 1]];
+      };
       legs.forEach((leg, i) => {
         const yy0 = rowY + i * 26 * s, hh = 18 * s, off = offsets[i], swingWidth = dutySwing;
         txt(leg[0], lx + 16 + 12 * s, yy0 + hh / 2, 12, C.text);
-        c.fillStyle = C.stance; c.beginPath(); c.roundRect(tx0, yy0, tw, hh, 4); c.fill();
+        c.fillStyle = '#ffffff'; c.beginPath(); c.roundRect(tx0, yy0, tw, hh, 4); c.fill();
+        c.strokeStyle = C.statusTrack; c.lineWidth = 1; c.beginPath(); c.roundRect(tx0, yy0, tw, hh, 4); c.stroke();
+        cycleSegments(off + swingWidth, duty).forEach(seg => {
+          const sx = tx0 + seg[0] * tw, sw = (seg[1] - seg[0]) * tw;
+          c.fillStyle = C.stance; c.fillRect(sx, yy0 + 1, sw, hh - 2);
+        });
         c.strokeStyle = C.swing; c.lineWidth = 1.5; c.setLineDash([5, 3]);
-        const segments = off + swingWidth > 1 ? [[off, 1], [0, off + swingWidth - 1]] : [[off, off + swingWidth]];
+        const segments = cycleSegments(off, swingWidth);
         segments.forEach(seg => { c.beginPath(); c.roundRect(tx0 + seg[0] * tw, yy0, (seg[1] - seg[0]) * tw, hh, 4); c.stroke(); });
         c.setLineDash([]); const px = tx0 + (((phase - off) % 1) + 1) % 1 * tw;
         c.strokeStyle = C.text; c.lineWidth = 1.5; c.beginPath(); c.moveTo(px, yy0 - 3); c.lineTo(px, yy0 + hh + 3); c.stroke();
       });
-      txt('Filled green: stance', lx + 16, y + 270, 13, C.muted); txt('Dashed amber: swing', lx + 182, y + 270, 13, C.muted, 500);
-      txt('Swinging: ' + legs.filter((_, i) => ((((phase - offsets[i]) % 1) + 1) % 1) < dutySwing).map(l => l[0]).join(', '), lx + lw - 16, y + 270, 11, C.muted, 500, 'right');
+      txt('Filled green: stance', lx + 16, y + 270, 13, C.stance);
+      txt('Dashed amber: swing', lx + 182, y + 270, 13, C.swing, 500);
+      const swingingNow = legs.filter((_, i) => ((((phase - offsets[i]) % 1) + 1) % 1) < dutySwing).map(l => l[0]).join(', ') || 'none';
+      txt('Swinging: ' + swingingNow, lx + lw - 16, y + 270, 11, C.text, 500, 'right');
     } else {
       const y = top + 641; card(lx, y, lw, 270); lab('Body tilt, feet planted', lx + 16, y + 24);
       const ground = y + 218, scaleGauge = Math.min((lw - 26) / 640, 1.12), baseX = lx + (lw - 640 * scaleGauge) / 2;
