@@ -1397,6 +1397,7 @@ async function selectSceneMode(mode) {
 
 function selectAt(controller) {
   if (vrDashboard.endSensorPointDensityDrag(controller)) return;
+  if (vrDashboard.isGpsMapPanning(controller)) return;
   const hudAction = vrDashboard.visible ? vrDashboard.activateAt(controller, raycaster) : null;
   if (hudAction === 'sensor-point-density') return;
   if (hudAction === 'gps-map') {
@@ -1456,12 +1457,13 @@ function selectAt(controller) {
     return;
   }
   if (hudAction === 'gps-map-center') {
-    vrDashboard.gpsMap.zoom = Math.max(vrDashboard.gpsMap.zoom, 18);
+    vrDashboard.gpsMap.setZoom(Math.max(vrDashboard.gpsMap.zoom, 18));
+    vrDashboard.gpsMap.centerOnGps();
     vrDashboard.drawGpsMapWindow();
     return;
   }
   if (hudAction === 'gps-map-zoom-in' || hudAction === 'gps-map-zoom-out') {
-    vrDashboard.gpsMap.zoom = Math.max(2, Math.min(19, vrDashboard.gpsMap.zoom + (hudAction === 'gps-map-zoom-in' ? 1 : -1)));
+    vrDashboard.gpsMap.setZoom(vrDashboard.gpsMap.zoom + (hudAction === 'gps-map-zoom-in' ? 1 : -1));
     vrDashboard.drawGpsMapWindow();
     return;
   }
@@ -1748,9 +1750,15 @@ for (let index = 0; index < 2; index += 1) {
   const grip = renderer.xr.getControllerGrip(index);
   // The front trigger (select) is reserved for activating VR UI controls.
   // Window manipulation uses the lateral grip/squeeze button only.
-  controller.addEventListener('selectstart', () => vrDashboard.beginSensorPointDensityDrag(controller, raycaster));
+  controller.addEventListener('selectstart', () => {
+    vrDashboard.beginSensorPointDensityDrag(controller, raycaster);
+    vrDashboard.beginGpsMapPan(controller, raycaster);
+  });
   controller.addEventListener('select', () => selectAt(controller));
-  controller.addEventListener('selectend', () => vrDashboard.endSensorPointDensityDrag(controller));
+  controller.addEventListener('selectend', () => {
+    vrDashboard.endSensorPointDensityDrag(controller);
+    vrDashboard.endGpsMapPan(controller);
+  });
   controller.addEventListener('squeezestart', event => {
     try {
       vrDashboard.beginAdjust(controller, event.data, controller, raycaster);
@@ -1863,7 +1871,7 @@ void pollGpsStatus();
 setInterval(pollGpsStatus, 1500);
 void pollPowerStatus();
 setInterval(pollPowerStatus, 5000);
-setInterval(pollSystemMetrics, 2000);
+setInterval(pollSystemMetrics, 1000);
 window.__pbQuestReady = true;
 if (statusNode.textContent === 'Starting 3D scene…') setStatus('3D renderer ready · connecting to Body world model…');
 
@@ -1927,6 +1935,7 @@ renderer.setAnimationLoop((time, xrFrame) => {
     if (!vrDashboard.grabbedController && !fnkDriving) updateXRLocomotion(active, xrCamera, deltaSeconds);
     vrDashboard.clearPointer();
     for (const ray of controllerRays) updateControllerPointer(ray.controller, ray.beam, ray.reticle);
+    vrDashboard.updateGpsMapHoverZoom(active, deltaSeconds);
     const controllers = active.map(source => {
       const axes = source.gamepad.axes || [];
       const primaryMagnitude = Math.hypot(Number(axes[0]) || 0, Number(axes[1]) || 0);

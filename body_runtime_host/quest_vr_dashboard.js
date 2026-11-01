@@ -57,6 +57,11 @@ export class QuestVRDashboard {
     this.gpsMapHeadOffsetQuaternion = new THREE.Quaternion();
     this.gpsMapWidthScale = 1;
     this.gpsMapHeightScale = 1;
+    this.gpsMapStickZoomAccumulator = 0;
+    this.gpsMapPanController = null;
+    this.gpsMapPanLastPoint = null;
+    this.gpsMapPanLastAt = 0;
+    this.gpsMapHoveredController = null;
     this.gpsMapActionHitAreas = {};
     this.grabbedWindow = 'hud';
     this.systemMetrics = null;
@@ -281,8 +286,59 @@ export class QuestVRDashboard {
   setGpsMapVisible(visible) {
     this.gpsMapVisible = Boolean(visible);
     this.gpsMapRoot.visible = this.visible && this.gpsMapVisible;
+    if (!this.gpsMapVisible) {
+      this.gpsMapPanController = null; this.gpsMapPanLastPoint = null; this.gpsMapHoveredController = null;
+      this.gpsMapStickZoomAccumulator = 0;
+    }
     this.drawDashboard();
     this.drawGpsMapWindow();
+  }
+
+  beginGpsMapPan(controller, raycaster) {
+    if (!this.visible || !this.gpsMapVisible) return false;
+    controller.updateMatrixWorld(true);
+    const rotation = new this.THREE.Matrix4().extractRotation(controller.matrixWorld);
+    raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
+    raycaster.ray.direction.set(0, 0, -1).applyMatrix4(rotation);
+    this.scene.updateMatrixWorld(true);
+    const hit = raycaster.intersectObject(this.gpsMapPanel, false)[0];
+    if (!hit?.uv) return false;
+    const point = { x: hit.uv.x * this.gpsMapCanvas.width, y: (1 - hit.uv.y) * this.gpsMapCanvas.height };
+    if (point.x < 28 || point.x > this.gpsMapCanvas.width - 28
+      || point.y < 132 || point.y > this.gpsMapCanvas.height - 32) return false;
+    this.gpsMapPanController = controller;
+    this.gpsMapPanLastPoint = point;
+    this.gpsMapPanLastAt = performance.now();
+    return true;
+  }
+
+  isGpsMapPanning(controller) { return this.gpsMapPanController === controller; }
+
+  endGpsMapPan(controller) {
+    if (this.gpsMapPanController !== controller) return false;
+    this.gpsMapPanController = null; this.gpsMapPanLastPoint = null; this.gpsMapPanLastAt = 0;
+    return true;
+  }
+
+  updateGpsMapHoverZoom(inputSources, deltaSeconds = 1 / 90) {
+    if (!this.gpsMapVisible || !this.gpsMapHoveredController || this.grabbedController) {
+      this.gpsMapStickZoomAccumulator = 0;
+      return;
+    }
+    const right = inputSources.find(source => source.handedness === 'right' && source.gamepad);
+    const axes = right?.gamepad?.axes || [];
+    const first = [Number(axes[0]) || 0, Number(axes[1]) || 0];
+    const second = [Number(axes[2]) || 0, Number(axes[3]) || 0];
+    const stick = Math.hypot(...second) > Math.hypot(...first) ? second : first;
+    const vertical = Math.abs(stick[1]) > 0.2 ? stick[1] : 0;
+    const elapsed = Math.max(0, Math.min(0.05, Number(deltaSeconds) || 0));
+    this.gpsMapStickZoomAccumulator += -vertical * elapsed * 1.5;
+    const steps = Math.trunc(this.gpsMapStickZoomAccumulator);
+    if (!steps) return;
+    const previousZoom = this.gpsMap.zoom;
+    this.gpsMap.setZoom(previousZoom + steps);
+    this.gpsMapStickZoomAccumulator -= steps;
+    if (this.gpsMap.zoom !== previousZoom) this.drawGpsMapWindow();
   }
 
   setPowerWindowVisible(visible) {
@@ -369,6 +425,8 @@ export class QuestVRDashboard {
       ? `${latitude.toFixed(6)}, ${longitude.toFixed(6)} · ${sample.satellites ?? '—'} SV · ${Number.isFinite(accuracy) ? `±${accuracy.toFixed(1)} m` : 'accuracy —'}`
       : this.gpsStatus?.available ? 'UART LIVE · WAITING FOR VALID FIX' : 'NO VALID GNSS FIX';
     ctx.fillText(meta, 34, 83, 570);
+    ctx.fillStyle = '#9db6b4'; ctx.font = '500 14px ui-monospace, monospace'; ctx.textAlign = 'left';
+    ctx.fillText('TRIGGER DRAG · PAN MAP    RIGHT STICK ↑/↓ · ZOOM    LATERAL GRIP · MOVE WINDOW', 34, 108, 1040);
 
     this.gpsMapActionHitAreas = {};
     const drawButton = (key, x, buttonWidth, label, selected = false) => {
@@ -457,7 +515,7 @@ export class QuestVRDashboard {
       text(title.toUpperCase(), x + 24, y + 30, 19, '#8fa9ac', 650);
     };
     text('COMPUTE + POWER', 36, 44, 30, '#e2efef', 750);
-    text(this.powerWindowMessage || (metrics.available ? 'LIVE · SYSTEM METRICS' : 'WAITING FOR SYSTEM METRICS'), width - 36, 44, 16, this.powerWindowMessage ? '#f0ad77' : '#77d7b0', 600, 'right');
+    text(this.powerWindowMessage || (metrics.available ? 'LIVE · 1 S' : 'PARTIAL TELEMETRY'), width - 36, 44, 16, this.powerWindowMessage ? '#f0ad77' : '#77d7b0', 600, 'right');
     text('POWER MODE', 36, 93, 17, '#8fa9ac', 650);
     ['DEV', 'ATTENTIVE', 'IDLE'].forEach((value, index) => button(`power-mode-${value}`, 190 + index * 290, 68, 270, 54, value === 'ATTENTIVE' ? 'Attentive' : value, mode === value));
 
@@ -479,17 +537,48 @@ export class QuestVRDashboard {
     button('power-battery-save', 1070, 285, 205, 54, 'Set level', false, true);
     button('power-battery-full', 1285, 285, 205, 54, 'Battery full');
 
-    const tile = (x, y, w, h, title, main, sub, extra = '') => {
-      card(x, y, w, h, title); text(main, x + 24, y + 94, 40, '#e2efef', 700);
-      text(sub, x + 24, y + 142, 19, '#9eb7b8', 500);
-      if (extra) text(extra, x + w - 22, y + 142, 17, '#9eb7b8', 500, 'right');
+    const metricGaugeY = 388, gaugeH = 310, gap = 12, gaugeW = (width - 60 - gap * 4) / 5;
+    const drawGauge = (index, title, value, max, unit, color, foot) => {
+      const x = 30 + index * (gaugeW + gap), cx = x + gaugeW / 2, cy = metricGaugeY + 144, radius = 62;
+      card(x, metricGaugeY, gaugeW, gaugeH, title);
+      ctx.beginPath(); ctx.arc(cx, cy, radius, 0, Math.PI * 2); ctx.strokeStyle = '#253544'; ctx.lineWidth = 16; ctx.stroke();
+      const valid = value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value));
+      if (valid) {
+        const fraction = Math.max(0, Math.min(1, Number(value) / Number(max)));
+        if (fraction > 0) { ctx.beginPath(); ctx.arc(cx, cy, radius, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * fraction); ctx.strokeStyle = color; ctx.lineWidth = 16; ctx.lineCap = 'butt'; ctx.stroke(); }
+      }
+      ctx.beginPath(); ctx.arc(cx, cy, radius - 12, 0, Math.PI * 2); ctx.fillStyle = '#0a0f1a'; ctx.fill();
+      text(valid ? format(value, title === 'CPU LOAD' || title === 'MEMORY' ? 0 : 1) : '—', cx, cy, 32, '#e2edf5', 700, 'center');
+      text(unit, cx + radius + 10, cy, 13, '#9aafc0', 600, 'left');
+      text(foot, cx, metricGaugeY + 254, 14, '#9aafc0', 500, 'center');
     };
-    const tileW = (width - 84) / 2, tileH = 210, left = 30, right = left + tileW + 24;
-    tile(left, 388, tileW, tileH, 'CPU', `${format(cpu.utilization_percent, 0, '%')}`, `Temperature · ${format(cpu.temperature_c, 1, ' °C')}`, metrics.available ? 'UTILIZATION' : 'UNAVAILABLE');
-    tile(right, 388, tileW, tileH, 'GPU', `${format(gpu.temperature_c, 1, ' °C')}`, `Load · ${gpu.utilization_percent == null ? 'unavailable' : format(gpu.utilization_percent, 1, '%')}`, `Clock · ${format(gpu.frequency_mhz, 0, ' MHz')}`);
-    tile(left, 616, tileW, tileH, 'MEMORY', `${format(memory.used_percent, 0, '%')}`, `Available · ${memory.available_mb == null ? '—' : `${(memory.available_mb / 1024).toFixed(1)} GB`}`, memory.total_mb == null ? '' : `Total · ${(memory.total_mb / 1024).toFixed(1)} GB`);
-    tile(right, 616, tileW, tileH, 'BOARD INPUT · INA232', `${power.available ? format(power.watts, 1, ' W') : '— W'}`, `${format(power.voltage_v, 1, ' V')} · ${format(power.current_a, 2, ' A')}`, power.available ? `${format(power.energy_wh_session, 3, ' Wh')} since start` : 'Rail telemetry unavailable');
-    text('GPU / HTP utilization is shown only when the system exports a reliable counter.', 34, 858, 16, '#839c9f');
+    const powerScale = Math.max(20, Math.ceil((Number(power.watts) || 0) / 10) * 10);
+    drawGauge(0, 'CPU LOAD', cpu.utilization_percent, 100, '%', '#16855d', `Hottest CPU · ${format(cpu.temperature_c, 1, '°C')}`);
+    drawGauge(1, 'CPU TEMP', cpu.temperature_c, 100, '°C', '#d58b32', 'Hottest reported CPU sensor · 0–100 °C');
+    drawGauge(2, 'GPU TEMP', gpu.temperature_c, 100, '°C', '#d58b32', `${gpu.utilization_percent == null ? 'Load unavailable' : `${format(gpu.utilization_percent, 1, '%')} load`} · ${format(gpu.frequency_mhz, 0, 'MHz')}`);
+    drawGauge(3, 'MEMORY', memory.used_percent, 100, '%', '#16855d', memory.available_mb == null || memory.total_mb == null
+      ? 'Free memory unavailable' : `${(memory.available_mb / 1024).toFixed(1)} / ${(memory.total_mb / 1024).toFixed(1)} GB free`);
+    drawGauge(4, 'BOARD INPUT', power.available ? power.watts : null, powerScale, 'W', '#1787a0', power.available
+      ? `${format(power.voltage_v, 1, ' V')} · ${format(power.current_a, 2, ' A')}` : 'Onboard power monitor unavailable');
+
+    const sensorText = `${this.sensorStatus.yolo || ''} ${this.sensorStatus.midas || ''} ${this.yoloRuntime || ''}`.toLowerCase();
+    const htpActive = sensorText.includes('htp');
+    const yoloMs = this.yoloInferenceMs == null ? '—' : `${Number(this.yoloInferenceMs).toFixed(0)} ms`;
+    const midasMatch = String(this.sensorStatus.midas || '').match(/([\d.]+)\s*ms/i);
+    const midasMs = midasMatch ? `${Number(midasMatch[1]).toFixed(0)} ms` : '—';
+    const htpText = htpActive ? `ACTIVE · YOLOX ${yoloMs} HTP · MiDaS ${midasMs} HTP` : 'Utilization counter unavailable';
+    const telemetry = [
+      ['GPU UTILIZATION', gpu.utilization_percent == null ? 'Not exposed by kernel' : format(gpu.utilization_percent, 1, '%')],
+      ['GPU CLOCK', format(gpu.frequency_mhz, 0, ' MHz')],
+      ['QUALCOMM HTP', htpText],
+      ['ENERGY SINCE BODY START', power.available ? format(power.energy_wh_session, 3, ' Wh') : 'Unavailable'],
+    ];
+    const stripY = 716, stripH = 260, stripGap = 12, stripW = (width - 60 - stripGap * 3) / 4;
+    telemetry.forEach(([label, value], index) => {
+      const x = 30 + index * (stripW + stripGap); card(x, stripY, stripW, stripH, label);
+      text(value, x + 22, stripY + 106, 22, '#e2edf5', 650);
+    });
+    text('GPU / HTP load depends on counters exposed by the system kernel.', 34, 1004, 14, '#839c9f');
     button('power-window-size-down', 30, 1030, 130, 54, 'SIZE −');
     button('power-window-reset', 174, 1030, 190, 54, 'RESET WINDOW');
     button('power-window-close', width - 500, 1030, 160, 54, 'CLOSE');
@@ -628,6 +717,9 @@ export class QuestVRDashboard {
     const detections = Array.isArray(result?.detections) ? result.detections : [];
     const updatedAt = Date.now();
     this.yoloState = String(result?.state || 'unknown').toLowerCase();
+    this.yoloRuntime = String(result?.runtime || result?.device || '').toLowerCase();
+    const inferenceMs = Number(result?.inference_ms ?? result?.latency_ms);
+    this.yoloInferenceMs = Number.isFinite(inferenceMs) ? inferenceMs : null;
     const frameId = String(result?.frame_id || result?.captured_at || '');
     let changed = false;
     if (detections.length && frameId !== this.yoloFrameId) {
@@ -2452,6 +2544,25 @@ export class QuestVRDashboard {
     const hit = fnkHit || raycaster.intersectObjects(this.panels.filter(panel => (panel !== this.gpsMapPanel || this.gpsMapVisible)
       && (panel !== this.powerWindowPanel || this.powerWindowVisible)
       && (panel !== this.fnkPanel || this.fnkVisible)), false)[0];
+    const mapPoint = hit?.object === this.gpsMapPanel && hit.uv
+      ? { x: hit.uv.x * this.gpsMapCanvas.width, y: (1 - hit.uv.y) * this.gpsMapCanvas.height } : null;
+    const inMapBody = mapPoint && mapPoint.x >= 28 && mapPoint.x <= this.gpsMapCanvas.width - 28
+      && mapPoint.y >= 132 && mapPoint.y <= this.gpsMapCanvas.height - 32;
+    if (inMapBody) this.gpsMapHoveredController = controller;
+    else if (this.gpsMapHoveredController === controller) this.gpsMapHoveredController = null;
+    if (this.gpsMapPanController === controller) {
+      if (inMapBody) {
+        const dx = mapPoint.x - (this.gpsMapPanLastPoint?.x ?? mapPoint.x);
+        const dy = mapPoint.y - (this.gpsMapPanLastPoint?.y ?? mapPoint.y);
+        const now = performance.now();
+        if ((Math.abs(dx) + Math.abs(dy) > 1) && now - this.gpsMapPanLastAt >= 24) {
+          this.gpsMap.panBy(dx, dy);
+          this.drawGpsMapWindow();
+          this.gpsMapPanLastAt = now;
+        }
+        this.gpsMapPanLastPoint = mapPoint;
+      } else this.gpsMapPanLastPoint = null;
+    }
     if (this.sensorDensityDragController === controller && hit?.object === this.panel && hit.uv) {
       const x = hit.uv.x * this.logicalWidth;
       const y = (1 - hit.uv.y) * this.logicalHeight;

@@ -7,6 +7,27 @@ export class QuestGpsMap {
     this.onTileLoad = onTileLoad;
     this.zoom = 18;
     this.layer = 'streets';
+    this.panOffsetX = 0;
+    this.panOffsetY = 0;
+  }
+
+  setZoom(zoom) {
+    const next = Math.max(2, Math.min(19, Math.round(Number(zoom) || this.zoom)));
+    const scale = 2 ** (next - this.zoom);
+    this.panOffsetX *= scale;
+    this.panOffsetY *= scale;
+    this.zoom = next;
+  }
+
+  panBy(dx, dy) {
+    const limit = TILE_SIZE * (2 ** this.zoom) * 2;
+    this.panOffsetX = Math.max(-limit, Math.min(limit, this.panOffsetX - (Number(dx) || 0)));
+    this.panOffsetY = Math.max(-limit, Math.min(limit, this.panOffsetY - (Number(dy) || 0)));
+  }
+
+  centerOnGps() {
+    this.panOffsetX = 0;
+    this.panOffsetY = 0;
   }
 
   loadTile(zoom, x, y, layer = this.layer) {
@@ -53,8 +74,8 @@ export class QuestGpsMap {
     const sinLatitude = Math.sin(clampedLatitude * Math.PI / 180);
     const centerX = (longitude + 180) / 360 * worldSize;
     const centerY = (.5 - Math.log((1 + sinLatitude) / (1 - sinLatitude)) / (4 * Math.PI)) * worldSize;
-    const left = centerX - width / 2;
-    const top = centerY - height / 2;
+    const left = centerX - width / 2 + this.panOffsetX;
+    const top = centerY - height / 2 + this.panOffsetY;
     const firstTileX = Math.floor(left / TILE_SIZE);
     const lastTileX = Math.floor((left + width) / TILE_SIZE);
     const firstTileY = Math.max(0, Math.floor(top / TILE_SIZE));
@@ -86,16 +107,19 @@ export class QuestGpsMap {
     const metersPerPixel = 156543.03392 * Math.cos(clampedLatitude * Math.PI / 180) / 2 ** zoom;
     const accuracyRadius = Number.isFinite(accuracyM) && accuracyM > 0
       ? Math.max(4, Math.min(Math.min(width, height) * .42, accuracyM / metersPerPixel)) : 5;
-    const markerX = x + width / 2;
-    const markerY = y + height / 2;
-    ctx.fillStyle = 'rgba(14, 79, 69, .2)';
-    ctx.beginPath(); ctx.arc(markerX, markerY, accuracyRadius, 0, Math.PI * 2); ctx.fill();
-    ctx.strokeStyle = '#57e0bd'; ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.arc(markerX, markerY, accuracyRadius, 0, Math.PI * 2); ctx.stroke();
-    ctx.fillStyle = '#57e0bd';
-    ctx.beginPath(); ctx.arc(markerX, markerY, 4, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = '#f4fff9';
-    ctx.beginPath(); ctx.arc(markerX, markerY, 1.4, 0, Math.PI * 2); ctx.fill();
+    const markerX = x + centerX - left;
+    const markerY = y + centerY - top;
+    if (markerX >= x - accuracyRadius && markerX <= x + width + accuracyRadius
+        && markerY >= y - accuracyRadius && markerY <= y + height + accuracyRadius) {
+      ctx.fillStyle = 'rgba(14, 79, 69, .2)';
+      ctx.beginPath(); ctx.arc(markerX, markerY, accuracyRadius, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = '#57e0bd'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(markerX, markerY, accuracyRadius, 0, Math.PI * 2); ctx.stroke();
+      ctx.fillStyle = '#57e0bd';
+      ctx.beginPath(); ctx.arc(markerX, markerY, 4, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#f4fff9';
+      ctx.beginPath(); ctx.arc(markerX, markerY, 1.4, 0, Math.PI * 2); ctx.fill();
+    }
 
     ctx.textAlign = 'left';
     ctx.textBaseline = 'bottom';
