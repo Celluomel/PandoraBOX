@@ -2703,7 +2703,7 @@ Memory honesty — two distinct cases:
             else:
                 labels = "BODY_ACTION, BODY_CAMERA, BODY_PERCEPTION, BODY_STATUS, or NORMAL"
                 meaning = "requests a physical action, explicitly asks for a description of the robot Body camera's current view, asks what the Body perceives through non-camera sensors, asks for current task status, or is ordinary conversation"
-            system = f"Classify whether the user's latest message {meaning}. Return exactly one label and nothing else: {labels}. Understand the user's language semantically across languages; do not use a phrase list or translate by matching words. BODY_CAMERA is only for requests to see/describe the robot-mounted Body camera, not the fixed PC camera. A short imperative or affirmative can confirm the already prepared plan when its conversational function is approval, while a new physical objective is NEW_ACTION. A refusal or withdrawal is CANCEL. This is a safety classification: infer the speech act from the pending plan and dialogue state, not from the vocabulary."
+            system = f"Classify whether the user's latest message {meaning}. Return exactly one label and nothing else: {labels}. Understand the user's language semantically across languages; do not use a phrase list or translate by matching words. Distinguish the modality by intent: asking what the Body sees, camera image, visual scene or YOLOX detections is BODY_CAMERA; asking what other metrics, measurements, readings or sensor data the Body reports is BODY_PERCEPTION. BODY_CAMERA is only for the robot-mounted Body camera, not the fixed PC camera. A short imperative or affirmative can confirm the already prepared plan when its conversational function is approval, while a new physical objective is NEW_ACTION. A refusal or withdrawal is CANCEL. This is a safety classification: infer the speech act from the pending plan and dialogue state, not from the vocabulary."
             if retry and pending:
                 system += " Re-evaluate the speech act carefully. The user is responding immediately after the Body asked whether to execute the already validated plan."
             if confirmation_probe:
@@ -2752,11 +2752,12 @@ Memory honesty — two distinct cases:
                     "Classify the user's latest message for a cognitive Body interface. "
                     "Return exactly JSON with route equal to one of: body_action, body_camera, body_perception, "
                     "body_status, normal. body_action means the user requests a physical manipulation or "
-                    "movement; body_camera means asking to see or describe the robot-mounted Body camera's "
-                    "current view; body_perception means asking what the robot senses through non-camera "
-                    "sensors; body_status "
+                    "movement; body_camera means asking what the Body sees, for its camera image, visual scene "
+                    "or YOLOX detections; body_perception means asking what other metrics, measurements, readings "
+                    "or sensor data the robot reports through non-camera sensors; body_status "
                     "means asking whether a task is complete, what step is active, whether the Body is stuck, or for the latest robot/controller movement status and command outcome. "
-                    "Do not confuse the fixed PC camera with the robot's Body camera. Use semantic meaning, not a fixed phrase list."
+                    "Do not confuse the fixed PC camera with the robot's Body camera. Use semantic meaning, not a fixed phrase list. "
+                    "For example, 'what does the Body see?' is body_camera; 'what other metrics does the Body provide?' is body_perception."
                 )
             raw = fast(text, system, model=model, timeout=6.0, max_tokens=120)
             raw_text = str(raw or "")
@@ -3231,17 +3232,6 @@ Memory honesty — two distinct cases:
         location_query = re.search(r"\b(locali[sz](?:ation|e|er)|position|where|où|locate|map|carte)\b", normalized)
         if gps_query and location_query:
             return "body_location"
-        body_reference = re.search(r"\b(body|robot|ventuno|fnk0031)\b", normalized)
-        metrics_query = re.search(
-            r"\b(metrics?|measurements?|readings?|t[eé]l[eé]m[eé]trie|sensor data|sensor values|feeds?)\b",
-            normalized,
-        )
-        metrics_ask = re.search(
-            r"\b(what|which|other|receive|provide|providing|available|show|quels?|quelles?|mesures?|donn[ée]es?|reçoit|recoit|fournit|disponible)\b",
-            normalized,
-        )
-        if body_reference and metrics_query and metrics_ask:
-            return "body_sensors"
         sensor_query = re.search(r"\b(sensors?|capteurs?|télémétrie|telemetry)\b", normalized)
         sensor_ask = re.search(r"\b(what|which|provide|providing|data|status|show|quels?|quelles?|que|quoi|donn[ée]es?|fournissent|montrent|affiche)\b", normalized)
         if sensor_query and sensor_ask:
@@ -3415,7 +3405,7 @@ Memory honesty — two distinct cases:
         if not pending and route == "body_camera":
             return self._body_camera_response()
         if not pending and route == "body_perception":
-            return self._body_perception_response()
+            return self._body_sensor_response()
         if pending and route == "confirm":
             body = getattr(self._organism, "_body_runtime", None) if self._organism else None
             direct_command = pending.get("direct_command") if isinstance(pending, dict) else None
