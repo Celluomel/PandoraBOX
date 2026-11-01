@@ -697,6 +697,47 @@ class BodyRuntime:
             "Body-to-Brain telemetry bridge: "
             + ("connected" if bridge_connected else "not connected; no live bridge telemetry is confirmed.")
         )
+        # The Body publisher also maintains a bounded last-value cache in the
+        # organism's global workspace. Surface that exact state to the Brain
+        # with its observation and receipt stamps so it can answer questions
+        # about what the workspace contains without implying continuous sight.
+        try:
+            workspace = getattr(self.organism, "workspace", None) if self.organism is not None else None
+            workspace_context = (workspace.get_state().context or {}) if workspace is not None else {}
+            cache = workspace_context.get("latest_body_perceptions")
+            cached_items = cache.get("observations", []) if isinstance(cache, dict) else []
+            if isinstance(cached_items, list) and cached_items:
+                lines.extend([
+                    "GLOBAL WORKSPACE BODY CACHE (bounded latest-value records; not continuous perception):",
+                    "These records are available to this Brain turn. Use their observed/received stamps and freshness; do not claim they necessarily influenced prior answers or describe the current scene unless fresh.",
+                ])
+                now = time.time()
+                for cached in cached_items[:24]:
+                    if not isinstance(cached, dict):
+                        continue
+                    observed_unix = cached.get("observed_at_unix")
+                    received_unix = cached.get("received_at_unix")
+                    try:
+                        age = max(0.0, now - float(observed_unix)) if observed_unix is not None else None
+                    except (TypeError, ValueError):
+                        age = None
+                    stale_after = cached.get("stale_after_seconds")
+                    try:
+                        stale = age is None or (stale_after is not None and age > float(stale_after))
+                    except (TypeError, ValueError):
+                        stale = age is None
+                    freshness = "STALE" if stale else "LIVE"
+                    age_text = f"age {age:.1f}s" if age is not None else "age unknown"
+                    lines.append(
+                        f"- {cached.get('subject', 'unknown subject')}: {cached.get('value')}"
+                        f"{(' ' + str(cached.get('unit'))) if cached.get('unit') else ''}; "
+                        f"source={cached.get('source', 'unknown')}; observed={cached.get('observed_at') or 'unknown'}; "
+                        f"received={cached.get('received_at') or 'unknown'}; {age_text}; {freshness}"
+                    )
+            elif workspace is not None:
+                lines.append("GLOBAL WORKSPACE BODY CACHE: no timestamped Body records are currently stored.")
+        except Exception:
+            lines.append("GLOBAL WORKSPACE BODY CACHE: unavailable to this turn; do not claim its contents.")
         try:
             wm = self.worldmodel
             lines.append(

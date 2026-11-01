@@ -2696,14 +2696,17 @@ Memory honesty — two distinct cases:
             if pending:
                 if confirmation_probe:
                     labels = "CONFIRM, CANCEL, or NORMAL"
+                    classifier_labels = "CONFIRM|CANCEL|NORMAL"
                     meaning = "approves, rejects, or does not approve the already validated physical Body plan"
                 else:
                     labels = "CONFIRM, CANCEL, NEW_ACTION, BODY_STATUS, or NORMAL"
+                    classifier_labels = "CONFIRM|CANCEL|NEW_ACTION|BODY_STATUS|NORMAL"
                     meaning = "approves, rejects, replaces, asks for the current status of, or does not address the pending physical Body plan"
             else:
-                labels = "BODY_ACTION, BODY_CAMERA, BODY_PERCEPTION, BODY_STATUS, or NORMAL"
-                meaning = "requests a physical action, explicitly asks for a description of the robot Body camera's current view, asks what the Body perceives through non-camera sensors, asks for current task status, or is ordinary conversation"
-            system = f"Classify whether the user's latest message {meaning}. Return exactly one label and nothing else: {labels}. Understand the user's language semantically across languages; do not use a phrase list or translate by matching words. Distinguish the modality by intent: asking what the Body sees, camera image, visual scene or YOLOX detections is BODY_CAMERA; asking what other metrics, measurements, readings or sensor data the Body reports is BODY_PERCEPTION. BODY_CAMERA is only for the robot-mounted Body camera, not the fixed PC camera. A short imperative or affirmative can confirm the already prepared plan when its conversational function is approval, while a new physical objective is NEW_ACTION. A refusal or withdrawal is CANCEL. This is a safety classification: infer the speech act from the pending plan and dialogue state, not from the vocabulary."
+                labels = "BODY_ACTION, BODY_CAMERA, BODY_CAMERA_ANALYSIS, BODY_ARCHITECTURE, BODY_WORKSPACE, BODY_PERCEPTION, BODY_STATUS, or NORMAL"
+                classifier_labels = "BODY_ACTION|BODY_CAMERA_ANALYSIS|BODY_ARCHITECTURE|BODY_WORKSPACE|BODY_CAMERA|BODY_PERCEPTION|BODY_STATUS|NORMAL"
+                meaning = "requests a physical action, asks what objects the Body camera/YOLOX detects, explicitly requests a detailed interpretation of the Body camera image, asks how camera inputs are configured or whether they are separate, asks what Body data is stored in the Global Workspace, asks what the Body reports through non-camera sensors, asks for current task status, or is ordinary conversation"
+            system = f"Classify whether the user's latest message {meaning}. Return exactly one label and nothing else: {labels}. Understand the user's language semantically across languages; do not use a phrase list or translate by matching words. Distinguish intent: object detections or what the Body sees is BODY_CAMERA; detailed scene interpretation of the image is BODY_CAMERA_ANALYSIS; questions about camera sources, count, or architecture are BODY_ARCHITECTURE; non-camera measurements are BODY_PERCEPTION. Do not invoke image interpretation to answer an architecture question. BODY camera refers to the robot-side feed; do not assume it is physically separate from a PC camera unless telemetry proves that. A short imperative or affirmative can confirm the already prepared plan when its conversational function is approval, while a new physical objective is NEW_ACTION. A refusal or withdrawal is CANCEL. This is a safety classification: infer the speech act from the pending plan and dialogue state, not from the vocabulary."
             if retry and pending:
                 system += " Re-evaluate the speech act carefully. The user is responding immediately after the Body asked whether to execute the already validated plan."
             if confirmation_probe:
@@ -2720,8 +2723,7 @@ Memory honesty — two distinct cases:
                     temperature=0.0,
                     reasoning_format="none",
                 )
-                labels = "CONFIRM|CANCEL|NORMAL" if confirmation_probe else "CONFIRM|CANCEL|NEW_ACTION|BODY_ACTION|BODY_CAMERA|BODY_PERCEPTION|BODY_STATUS|NORMAL"
-                match = re.search(rf"\b({labels})\b", str(raw or "").upper())
+                match = re.search(rf"\b({classifier_labels})\b", str(raw or "").upper())
                 return match.group(1).lower() if match else "normal"
             except Exception:
                 return "normal"
@@ -2750,19 +2752,22 @@ Memory honesty — two distinct cases:
             else:
                 system = (
                     "Classify the user's latest message for a cognitive Body interface. "
-                    "Return exactly JSON with route equal to one of: body_action, body_camera, body_perception, "
-                    "body_status, normal. body_action means the user requests a physical manipulation or "
-                    "movement; body_camera means asking what the Body sees, for its camera image, visual scene "
-                    "or YOLOX detections; body_perception means asking what other metrics, measurements, readings "
+                    "Return exactly JSON with route equal to one of: body_action, body_camera, body_camera_analysis, "
+                    "body_architecture, body_workspace, body_perception, body_status, normal. body_action means the user requests a physical manipulation or "
+                    "movement; body_camera means asking what objects the Body sees or for YOLOX detections; "
+                    "body_camera_analysis means explicitly requesting a detailed interpretation of the Body camera image; "
+                    "body_architecture means asking how camera inputs are configured or whether the Body camera and direct visual input are separate; "
+                    "body_workspace means asking whether Body data is in the Global Workspace or what Body records it contains; "
+                    "body_perception means asking what other metrics, measurements, readings "
                     "or sensor data the robot reports through non-camera sensors; body_status "
                     "means asking whether a task is complete, what step is active, whether the Body is stuck, or for the latest robot/controller movement status and command outcome. "
-                    "Do not confuse the fixed PC camera with the robot's Body camera. Use semantic meaning, not a fixed phrase list. "
-                    "For example, 'what does the Body see?' is body_camera; 'what other metrics does the Body provide?' is body_perception."
+                    "Do not infer that two logical camera paths are physically separate devices without evidence. Do not invoke VLM for camera architecture questions. Use semantic meaning, not a fixed phrase list. "
+                    "For example, 'what does the Body see?' is body_camera; 'describe the image in detail' is body_camera_analysis; 'does Lumina have two cameras?' is body_architecture; 'what Body data is in the Global Workspace?' is body_workspace; 'what other metrics does the Body provide?' is body_perception."
                 )
             raw = fast(text, system, model=model, timeout=6.0, max_tokens=120)
             raw_text = str(raw or "")
             match = re.search(r"\{[\s\S]*?\}", raw_text)
-            allowed = ({"confirm", "cancel", "normal"} if confirmation_probe else {"confirm", "cancel", "new_action", "body_status", "normal"}) if pending else {"body_action", "body_camera", "body_perception", "body_status", "normal"}
+            allowed = ({"confirm", "cancel", "normal"} if confirmation_probe else {"confirm", "cancel", "new_action", "body_status", "normal"}) if pending else {"body_action", "body_camera", "body_camera_analysis", "body_architecture", "body_workspace", "body_perception", "body_status", "normal"}
             if match:
                 value = json.loads(match.group(0))
                 route = str(value.get("route") or "normal").strip().lower()
@@ -2779,7 +2784,7 @@ Memory honesty — two distinct cases:
                 labels = "confirm|cancel|normal" if confirmation_probe else "confirm|cancel|new_action|body_status|normal"
                 label_match = re.search(rf"\b({labels})\b", raw_text.lower())
             else:
-                label_match = re.search(r"\b(body_action|body_camera|body_perception|body_status|normal)\b", raw_text.lower())
+                label_match = re.search(r"\b(body_action|body_camera_analysis|body_architecture|body_workspace|body_camera|body_perception|body_status|normal)\b", raw_text.lower())
             if label_match and label_match.group(1) != "normal":
                 return label_match.group(1)
             # Confirmation is safety-sensitive but only applies to an already
@@ -3010,10 +3015,27 @@ Memory honesty — two distinct cases:
                 "response": "Je ne peux pas décrire la caméra du Body pour le moment; le service distant ou son authentification n'a pas répondu correctement.",
                 "camera": {"error": error},
             }
-        description = str(result.get("interpretation") or "").strip()
         scene = result.get("semantic_scene")
+        raw_description = result.get("interpretation")
+        if isinstance(raw_description, dict):
+            description = str(
+                raw_description.get("scene_summary")
+                or raw_description.get("summary")
+                or raw_description.get("description")
+                or ""
+            ).strip()
+            if not description:
+                objects = raw_description.get("primary_objects") or raw_description.get("objects") or []
+                if isinstance(objects, list):
+                    names = [
+                        str(item.get("label") or item.get("name") or "objet") if isinstance(item, dict) else str(item)
+                        for item in objects[:8]
+                    ]
+                    description = "Objets décrits : " + (", ".join(names) if names else "aucun objet listé")
+        else:
+            description = str(raw_description or "").strip()
         if not description and isinstance(scene, dict):
-            description = str(scene.get("description") or scene.get("summary") or "").strip()
+            description = str(scene.get("scene_summary") or scene.get("description") or scene.get("summary") or "").strip()
         if not description:
             description = "Le VLM a répondu, mais n'a fourni aucune description exploitable."
         model = str(result.get("model") or "VLM Body")
@@ -3024,7 +3046,118 @@ Memory honesty — two distinct cases:
             "camera": result,
         }
 
-    def _body_perception_response(self) -> dict:
+    def _body_camera_architecture_response(self) -> dict:
+        """Explain the logical camera feeds without inventing physical devices."""
+        body = getattr(self._organism, "_body_runtime", None) if self._organism else None
+        yolo_reader = getattr(body, "camera_yolo_status", None) if body is not None else None
+        yolo = {}
+        if callable(yolo_reader):
+            try:
+                value = yolo_reader()
+                yolo = value if isinstance(value, dict) else {}
+            except Exception as exc:
+                logger.debug("[BodyCamera] camera architecture status unavailable: %s", exc)
+        captured_at = yolo.get("captured_at")
+        try:
+            age = max(0.0, time.time() - float(captured_at)) if captured_at is not None else None
+        except (TypeError, ValueError):
+            age = None
+        if yolo.get("state") == "ready" and age is not None:
+            source = str(yolo.get("source") or yolo.get("camera_source") or "source non précisée")
+            feed = f"Le flux Body YOLOX est disponible ({source}, frame {yolo.get('frame_id') or 'inconnue'}, âge {age:.1f} s). "
+        else:
+            feed = "Je n'ai pas de statut récent du flux Body YOLOX. "
+        response = (
+            feed
+            + "L'application distingue logiquement le flux caméra associé au Body et l'entrée visuelle directe utilisée par Lumina. "
+            "Les données disponibles ici ne prouvent pas qu'il s'agit de deux caméras physiques distinctes; il faut comparer leurs sources matérielles pour l'affirmer."
+        )
+        return {
+            "handled": True,
+            "status": "reported",
+            "response": response,
+            "camera_architecture": {
+                "body_yolox_available": bool(yolo.get("state") == "ready"),
+                "body_frame_id": yolo.get("frame_id"),
+                "body_camera_source": yolo.get("source") or yolo.get("camera_source"),
+                "body_camera_age_seconds": round(age, 3) if age is not None else None,
+                "physical_camera_count_confirmed": False,
+            },
+        }
+
+    def _body_workspace_response(self) -> dict:
+        """Report the actual timestamped Body records stored in Global Workspace."""
+        workspace = getattr(self._organism, "workspace", None) if self._organism else None
+        if workspace is None:
+            return {
+                "handled": True,
+                "status": "unavailable",
+                "response": "Je ne peux pas lire le Global Workspace dans ce tour; je ne peux donc pas confirmer quels éléments Body y sont enregistrés.",
+            }
+        try:
+            context = workspace.get_state().context or {}
+            cache = context.get("latest_body_perceptions")
+            items = cache.get("observations", []) if isinstance(cache, dict) else []
+        except Exception as exc:
+            logger.debug("[BodyWorkspace] workspace read failed: %s", exc)
+            items = []
+            cache = None
+        if not isinstance(items, list) or not items:
+            return {
+                "handled": True,
+                "status": "reported",
+                "response": "J'ai vérifié le Global Workspace : aucun enregistrement Body horodaté n'y est actuellement stocké.",
+                "workspace": {"body_record_count": 0},
+            }
+        now = time.time()
+        rows = []
+        details = []
+        for item in items[:8]:
+            if not isinstance(item, dict):
+                continue
+            try:
+                age = max(0.0, now - float(item.get("observed_at_unix")))
+            except (TypeError, ValueError):
+                age = None
+            try:
+                stale_after = float(item.get("stale_after_seconds"))
+                stale = age is None or age > stale_after
+            except (TypeError, ValueError):
+                stale = age is None
+            value = item.get("value")
+            if not isinstance(value, str):
+                value = json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
+            if len(value) > 180:
+                value = value[:177] + "..."
+            age_label = f"{age:.0f} s" if age is not None else "âge inconnu"
+            freshness = "STALE" if stale else "LIVE"
+            rows.append(
+                f"{item.get('subject', 'mesure Body')}={value} "
+                f"[{freshness}, {age_label}, observé {item.get('observed_at') or 'date inconnue'}]"
+            )
+            details.append({
+                "subject": item.get("subject"), "source": item.get("source"),
+                "value": item.get("value"), "observed_at": item.get("observed_at"),
+                "received_at": item.get("received_at"), "age_seconds": round(age, 3) if age is not None else None,
+                "stale": stale,
+            })
+        response = (
+            f"J'ai consulté le cache horodaté du Global Workspace : {len(items)} enregistrement(s) Body y sont stockés. "
+            + (" ; ".join(rows) if rows else "Aucun enregistrement exploitable.")
+            + " Ce cache conserve les dernières valeurs par flux; sa présence ne signifie pas que je perçois le Body en continu ni que ces données ont servi à chaque réponse précédente."
+        )
+        return {
+            "handled": True,
+            "status": "reported",
+            "response": response,
+            "workspace": {
+                "body_record_count": len(items),
+                "updated_at": cache.get("updated_at") if isinstance(cache, dict) else None,
+                "observations": details,
+            },
+        }
+
+    def _body_perception_response(self, camera_only: bool = False) -> dict:
         body = getattr(self._organism, "_body_runtime", None) if self._organism else None
         yolo_reader = getattr(body, "camera_yolo_status", None) if body is not None else None
         if callable(yolo_reader):
@@ -3070,6 +3203,14 @@ Memory honesty — two distinct cases:
                     response += " La carte 3D disponible provient du simulateur et n'est pas utilisée comme observation réelle."
                     perception["simulated_world_model_excluded"] = True
                 return {"handled": True, "status": "reported", "response": response, "perception": perception}
+
+        if camera_only:
+            return {
+                "handled": True,
+                "status": "unavailable",
+                "response": "Aucune détection YOLOX récente de la caméra Body n'est disponible. Je ne la remplace pas par une description VLM ou par la scène simulée.",
+                "perception": {"available": False, "camera": {"source": "yolox"}},
+            }
 
         perception = self.current_body_perception()
         if not perception.get("available"):
@@ -3403,7 +3544,13 @@ Memory honesty — two distinct cases:
             else:
                 return self._body_status_response(user_input)
         if not pending and route == "body_camera":
+            return self._body_perception_response(camera_only=True)
+        if not pending and route == "body_camera_analysis":
             return self._body_camera_response()
+        if not pending and route == "body_architecture":
+            return self._body_camera_architecture_response()
+        if not pending and route == "body_workspace":
+            return self._body_workspace_response()
         if not pending and route == "body_perception":
             return self._body_sensor_response()
         if pending and route == "confirm":
