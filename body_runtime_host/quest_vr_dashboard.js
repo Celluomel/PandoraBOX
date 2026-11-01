@@ -82,7 +82,7 @@ export class QuestVRDashboard {
     this.scene.add(this.fnkRoot);
     this.fnkCanvas = document.createElement('canvas');
     this.fnkCanvas.width = 1800;
-    this.fnkCanvas.height = 1125;
+    this.fnkCanvas.height = 1680;
     this.fnkContext = this.fnkCanvas.getContext('2d');
     this.fnkTexture = new THREE.CanvasTexture(this.fnkCanvas);
     this.fnkTexture.colorSpace = THREE.SRGBColorSpace;
@@ -91,7 +91,7 @@ export class QuestVRDashboard {
     this.fnkTexture.magFilter = THREE.LinearFilter;
     this.fnkTexture.anisotropy = Math.min(8, Number(maxAnisotropy) || 1);
     this.fnkPanel = new THREE.Mesh(
-      new THREE.PlaneGeometry(2.8, 1.75),
+      new THREE.PlaneGeometry(2.8, 2.613),
       new THREE.MeshBasicMaterial({ map: this.fnkTexture, depthTest: false, depthWrite: false, side: THREE.DoubleSide }),
     );
     this.fnkPanel.renderOrder = 1200;
@@ -1652,16 +1652,12 @@ export class QuestVRDashboard {
   }
 
   setFnkTeleop(enabled) {
-    const hardware = this.fnkHardwareStatus || {};
-    const ready = hardware.connected === true && hardware.firmware_profile === 'custom_fnhr_ascii_v2'
-      && hardware.actuation_enabled === true;
-    this.fnkTeleopArmed = Boolean(enabled) && ready;
+    this.fnkTeleopArmed = Boolean(enabled);
     this.fnkGyroBaseline = null;
-    this.fnkMessage = enabled && !ready
-      ? 'ROBOT MODE BLOCKED · BOARD / CUSTOM FIRMWARE / ACTUATION NOT READY'
-      : this.fnkTeleopArmed
-        ? 'ROBOT CONTROL SELECTED · LEFT MENU TO RETURN TO SCENE MODE'
-        : 'SCENE CONTROL SELECTED · JOYSTICKS MOVE THROUGH THE VR SCENE';
+    const hw=this.fnkHardwareStatus||{};
+    this.fnkMessage = this.fnkTeleopArmed
+      ? (hw.connected&&hw.actuation_enabled?'ROBOT INPUT SELECTED · LEFT MENU RETURNS TO SCENE':'ROBOT INPUT SELECTED · HARDWARE ACTUATION BLOCKED')
+      : 'SCENE CONTROL SELECTED · JOYSTICKS MOVE THROUGH THE VR SCENE';
     this.drawFnkControlWindow();
   }
 
@@ -1684,6 +1680,8 @@ export class QuestVRDashboard {
 
   async sendFnkManualControl(payload, gyroTarget = null) {
     if (!this.fnkTeleopArmed || this.fnkDriveInFlight) return;
+    const hw=this.fnkHardwareStatus||{};
+    if(hw.connected!==true||hw.firmware_profile!=='custom_fnhr_ascii_v2'||hw.actuation_enabled!==true){this.fnkMessage='COMMAND BLOCKED · CHECK FNK USB / ACTUATION SETTING';this.drawFnkControlWindow();return;}
     this.fnkDriveInFlight = true;
     this.fnkLastDriveAt = performance.now();
     this.fnkMessage = `SENDING ${payload.mode.toUpperCase()} STEP · KEEP DEADMAN HELD`;
@@ -1715,6 +1713,7 @@ export class QuestVRDashboard {
       'turn-right': { x: 0, y: 0, angle: 12 * this.fnkSpeed },
     };
     if (!this.fnkTeleopArmed) { this.fnkMessage = 'SELECT ROBOT MODE BEFORE SENDING A GAIT'; this.drawFnkControlWindow(); return; }
+    const hw=this.fnkHardwareStatus||{};if(hw.connected!==true||hw.firmware_profile!=='custom_fnhr_ascii_v2'||hw.actuation_enabled!==true){this.fnkMessage='COMMAND BLOCKED · CHECK FNK USB / ACTUATION SETTING';this.drawFnkControlWindow();return;}
     const params = commands[action]; if (params) void this.sendFnkManualControl({ mode: 'crawl', ...params });
   }
 
@@ -1722,6 +1721,7 @@ export class QuestVRDashboard {
     const right = inputSources.find(source => source.handedness === 'right');
     const left = inputSources.find(source => source.handedness === 'left');
     if (!this.fnkVisible || !this.fnkTeleopArmed) return false;
+    const hw=this.fnkHardwareStatus||{};if(hw.connected!==true||hw.firmware_profile!=='custom_fnhr_ascii_v2'||hw.actuation_enabled!==true)return true;
     const read = source => {
       const axes = source?.gamepad?.axes || [];
       const a = [Number(axes[0]) || 0, Number(axes[1]) || 0];
@@ -1785,6 +1785,52 @@ export class QuestVRDashboard {
   }
 
   drawFnkGaitLab() {
+    const c=this.fnkContext,w=this.fnkCanvas.width,h=this.fnkCanvas.height;if(!c)return;
+    c.clearRect(0,0,w,h);c.fillStyle='#0a1018';c.fillRect(0,0,w,h);c.strokeStyle='#2b405c';c.lineWidth=3;c.strokeRect(3,3,w-6,h-6);
+    const hw=this.fnkHardwareStatus||{},ready=hw.connected===true&&hw.firmware_profile==='custom_fnhr_ascii_v2';this.fnkActionHitAreas={};
+    const btn=(key,x,y,bw,bh,label,on=true,sel=false)=>{c.globalAlpha=on?1:.48;c.fillStyle=sel?'#174e36':'#0d141d';c.strokeStyle=sel?'#4dff88':'#40536a';c.lineWidth=3;c.beginPath();c.roundRect(x,y,bw,bh,12);c.fill();c.stroke();c.fillStyle='#d6e4f0';c.font='650 24px ui-monospace,monospace';c.textAlign='center';c.textBaseline='middle';c.fillText(label,x+bw/2,y+bh/2,bw-16);c.globalAlpha=1;this.fnkActionHitAreas[key]={x,y,width:bw,height:bh,enabled:on};};
+    const card=(x,y,bw,bh,label)=>{c.fillStyle='#0d141d';c.fillRect(x,y,bw,bh);c.strokeStyle='#2b405c';c.strokeRect(x,y,bw,bh);c.fillStyle='#8fa3b8';c.font='700 21px ui-monospace,monospace';c.textAlign='left';c.fillText(label.toUpperCase(),x+22,y+33);};
+    c.fillStyle='#d6e4f0';c.font='700 38px system-ui';c.textAlign='left';c.fillText('Hexapod Gait Lab',30,54);
+    c.fillStyle=ready?'#4dff88':'#ffb020';c.font='600 21px ui-monospace,monospace';c.fillText(`${ready?'FNK0031 · CONNECTED':'FNK0031 · BOARD OFFLINE'} · ACTUATION ${hw.actuation_enabled?'ON':'OFF'}`,32,100);
+    // Left column: original Gait Lab stage, six-row gait cycle, then planted-foot pose view.
+    card(24,135,845,520,'Top view · front is up');
+    const cx=446,cy=405;c.fillStyle='#0b121b';c.fillRect(40,170,813,465);c.strokeStyle='#26384e';c.lineWidth=1;
+    for(let n=1;n<=5;n++){c.beginPath();c.arc(cx,cy,n*67,0,Math.PI*2);c.stroke();}
+    c.fillStyle='#d6e4f0';c.beginPath();c.roundRect(cx-48,cy-90,96,180,18);c.fill();c.fillStyle='#0a1018';c.beginPath();c.moveTo(cx-18,cy-90);c.lineTo(cx+18,cy-90);c.lineTo(cx,cy-116);c.fill();
+    const phase=((performance.now()/500)%1), gaitOffset=this.fnkGait==='tripod'?[0,.5,0,.5,0,.5]:this.fnkGait==='ripple'?[0,.83,.67,.17,.33,.5]:[0,.67,.33,.83,.17,.5];
+    for(let i=0;i<6;i++){const side=i%2?1:-1,row=Math.floor(i/2)-1,hipX=cx+side*44,hipY=cy+row*50,footX=cx+side*155,footY=hipY+row*35,legPhase=(phase+gaitOffset[i])%1,swing=legPhase<.33;
+      c.strokeStyle=swing?'#ffb020':'#4dff88';c.lineWidth=8;c.setLineDash(swing?[12,8]:[]);c.beginPath();c.moveTo(hipX,hipY);c.lineTo((hipX+footX)/2,footY-10);c.lineTo(footX,footY);c.stroke();c.setLineDash([]);c.fillStyle=swing?'#0d141d':'#4dff88';c.beginPath();c.arc(footX,footY,10,0,Math.PI*2);c.fill();c.strokeStyle=swing?'#ffb020':'#4dff88';c.stroke();c.fillStyle='#8fa3b8';c.font='16px ui-monospace,monospace';c.textAlign='center';c.fillText(['L1','R1','L2','R2','L3','R3'][i],footX,footY+26);}
+    card(24,670,845,340,'Gait cycle · one row per leg');
+    const duty=this.fnkGait==='wave'?.833:this.fnkGait==='ripple'?.667:.5;
+    for(let i=0;i<6;i++){const yy=720+i*38,off=gaitOffset[i];c.fillStyle='#8fa3b8';c.font='17px ui-monospace,monospace';c.textAlign='left';c.fillText(['L1','R1','L2','R2','L3','R3'][i],48,yy+16);c.fillStyle='#4dff88';c.fillRect(100,yy,710,24);c.strokeStyle='#ffb020';c.lineWidth=3;c.setLineDash([8,6]);const sx=100+off*710,sw=(1-duty)*710;c.strokeRect(sx,yy,sw,24);if(sx+sw>810)c.strokeRect(100,yy,sx+sw-810,24);c.setLineDash([]);const marker=100+((phase+off)%1)*710;c.strokeStyle='#d6e4f0';c.lineWidth=3;c.beginPath();c.moveTo(marker,yy-4);c.lineTo(marker,yy+29);c.stroke();}
+    c.fillStyle='#8fa3b8';c.font='16px ui-monospace,monospace';c.fillText(`STANCE ${(duty*100).toFixed(0)}% · ${this.fnkGait.toUpperCase()} · filled green=stance · dashed amber=swing`,48,968);
+    card(24,1025,845,390,'Body tilt · feet planted');
+    const bodyY=1270,roll=(this.fnkGyroDelta?.x||0)*20,pitch=(this.fnkGyroDelta?.y||0)*20;
+    for(const [gx,label,tilt] of [[240,'FRONT · ROLL',roll],[650,'SIDE · PITCH',pitch]]){c.strokeStyle='#40536a';c.lineWidth=3;c.beginPath();c.moveTo(gx-150,bodyY+65);c.lineTo(gx+150,bodyY+65);c.stroke();c.fillStyle='#4dff88';c.beginPath();c.arc(gx-140,bodyY+65,7,0,Math.PI*2);c.arc(gx+140,bodyY+65,7,0,Math.PI*2);c.fill();c.strokeStyle='#d6e4f0';c.lineWidth=12;c.beginPath();c.moveTo(gx-72,bodyY-tilt);c.lineTo(gx+72,bodyY+tilt);c.stroke();c.fillStyle='#8fa3b8';c.font='17px ui-monospace,monospace';c.textAlign='center';c.fillText(label,gx,bodyY+115);}
+    // Right column: original Mode, movement pad, gait, speed and six leg status rows.
+    card(895,135,880,950,'Controls');c.fillStyle='#8fa3b8';c.font='700 20px ui-monospace,monospace';c.textAlign='left';c.fillText('MODE',920,190);
+    btn('tab-control',920,210,390,74,'WALK',true,this.fnkTab==='control');btn('tab-twist',1325,210,420,74,'TWIST BODY',true,this.fnkTab==='twist');
+    if(this.fnkTab==='control'){
+      c.fillText('MOVEMENT · RIGHT STICK drives in Robot mode',920,333);
+      const p=[['turn-left','↶ TURN LEFT'],['forward','↑ FORWARD'],['turn-right','TURN RIGHT ↷'],['left','← LEFT'],['stop','STOP'],['right','RIGHT →'],['backward','↓ BACKWARD']];p.forEach(([k,l],i)=>{const col=i%3,row=Math.floor(i/3);btn(`drive-${k}`,920+col*270,360+row*120,245,94,l,true);});
+      c.fillText('GAIT',920,630);['tripod','ripple','wave'].forEach((g,i)=>btn(`gait-${g}`,920+i*270,650,245,72,g.toUpperCase(),true,this.fnkGait===g));
+      c.fillText('Preview schedule only · physical FNHR gait is firmware-defined.',920,755);
+      c.fillText(`SPEED ${this.fnkSpeed.toFixed(2)}×`,920,815);btn('speed-down',1210,780,190,72,'−');btn('speed-up',1410,780,190,72,'+');
+      btn('teleop-arm',920,875,390,76,this.fnkTeleopArmed?'ROBOT CONTROL · ON':'ROBOT CONTROL · OFF',true,this.fnkTeleopArmed);btn('teleop-stop',1325,875,420,76,'SCENE CONTROL',true);
+    }else if(this.fnkTab==='twist'){
+      c.fillText('BODY POSE · LEFT CONTROLLER ORIENTATION twists the body',920,350);
+      c.fillText('RIGHT STICK shifts X/Y · RIGHT TRIGGER changes body height',920,405);
+      c.fillText('Relative WebXR controller rotation is sent as bounded FNHR TwistBody steps.',920,460,820);
+      btn('teleop-arm',920,530,390,76,this.fnkTeleopArmed?'ROBOT CONTROL · ON':'ROBOT CONTROL · OFF',true,this.fnkTeleopArmed);btn('teleop-stop',1325,530,420,76,'SCENE CONTROL',true);
+    }else{
+      c.fillText(this.fnkTab==='calibration'?'LEG STATUS · FNHR COMMAND ESTIMATES, NOT MEASURED FEEDBACK':'FNHR CUSTOM USB · 115200 BAUD',920,350);
+    }
+    card(895,1100,880,315,'Leg status');
+    (this.fnkLegState?.legs||[]).forEach((l,i)=>{const col=i%2,row=Math.floor(i/2),x=920+col*425,y=1155+row*78;c.fillStyle='#d6e4f0';c.font='18px ui-monospace,monospace';c.textAlign='left';c.fillText(`${['L1','R1','L2','R2','L3','R3'][i]} · FOOT ${l.foot_position_mm?.map(n=>Number(n).toFixed(0)).join('/')||'—'} mm · JOINT ${l.joint_angles_deg?.map(n=>Number(n).toFixed(0)).join('/')||'—'}°`,x,y);c.fillStyle='#2b405c';c.fillRect(x,y+13,380,8);c.fillStyle='#4dff88';c.fillRect(x,y+13,Math.min(380,Math.max(0,Number(l.foot_position_mm?.[2])||0)*3),8);});
+    c.fillStyle='#8fa3b8';c.font='17px ui-monospace,monospace';c.textAlign='left';c.fillText(`${this.fnkMessage} · estimated commanded state`,30,h-24,w-60);this.fnkTexture.needsUpdate=true;
+  }
+
+  drawFnkGaitLabLegacy() {
     const c=this.fnkContext,w=this.fnkCanvas.width,h=this.fnkCanvas.height;if(!c)return;
     c.clearRect(0,0,w,h);c.fillStyle='#0a1018';c.fillRect(0,0,w,h);c.strokeStyle='#2b405c';c.lineWidth=3;c.strokeRect(3,3,w-6,h-6);
     c.fillStyle='#0d141d';c.fillRect(12,12,w-24,120);c.fillStyle='#d6e4f0';c.font='700 42px system-ui';c.textAlign='left';c.textBaseline='middle';c.fillText('HEXAPOD GAIT LAB',38,50);
