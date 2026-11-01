@@ -1896,7 +1896,7 @@ export class QuestVRDashboard {
   drawFnkGaitLabExact() {
     const c = this.fnkContext, w = this.fnkCanvas.width, h = this.fnkCanvas.height;
     if (!c) return;
-    const C = { bg: '#0a1018', panel: '#0d141d', stage: '#0b121b', line: '#2b405c', text: '#d6e4f0', muted: '#8fa3b8', swing: '#ffb020', stance: '#4dff88' };
+    const C = { bg: '#0a1018', panel: '#0d141d', stage: '#0b121b', line: '#2b405c', text: '#d6e4f0', muted: '#8fa3b8', swing: '#b85b00', stance: '#087d43', statusTrack: '#c4cedc', statusFill: '#43566e', modeIdle: '#f8fafc', modeInk: '#10243a' };
     const legs = [['L1', -1, -34], ['R1', 1, -34], ['L2', -1, 0], ['R2', 1, 0], ['L3', -1, 34], ['R3', 1, 34]];
     const twist = this.fnkTab === 'twist', gait = this.fnkGait || 'tripod';
     const gaitSpec = {
@@ -1960,6 +1960,12 @@ export class QuestVRDashboard {
     const txt = (s, x, y, size = 14, color = C.text, weight = 500, align = 'left') => { c.fillStyle = color; c.font = `${weight} ${size}px ui-sans-serif,system-ui`; c.textAlign = align; c.textBaseline = 'middle'; c.fillText(String(s), x, y); };
     const card = (x, y, cw, ch) => { c.fillStyle = C.panel; c.strokeStyle = C.line; c.lineWidth = 1; c.beginPath(); c.roundRect(x, y, cw, ch, 12); c.fill(); c.stroke(); };
     const button = (key, x, y, bw, bh, label, selected = false, enabled = true) => { c.globalAlpha = enabled ? 1 : .48; c.fillStyle = selected ? C.stance : C.panel; c.strokeStyle = selected ? C.stance : C.line; c.lineWidth = 1; c.beginPath(); c.roundRect(x, y, bw, bh, 8); c.fill(); c.stroke(); txt(label, x + bw / 2, y + bh / 2, 14, selected ? C.bg : C.text, 500, 'center'); c.globalAlpha = 1; this.fnkActionHitAreas[key] = { x, y, width: bw, height: bh, enabled }; };
+    const modeButton = (key, x, y, bw, bh, label, selected) => {
+      c.fillStyle = selected ? C.stance : C.modeIdle; c.strokeStyle = selected ? C.stance : C.line; c.lineWidth = 1;
+      c.beginPath(); c.roundRect(x, y, bw, bh, 8); c.fill(); c.stroke();
+      txt(label, x + bw / 2, y + bh / 2, 14, selected ? '#ffffff' : C.modeInk, 600, 'center');
+      this.fnkActionHitAreas[key] = { x, y, width: bw, height: bh, enabled: true };
+    };
     const lab = (s, x, y) => txt(s.toUpperCase(), x, y, 12, C.muted, 500);
     const lx = 16, lw = 666, rx = 698, rw = 486, top = 112, innerX = rx + 16, innerW = rw - 32;
     txt('Hexapod Gait Lab', 16, 29, 22, C.text, 700);
@@ -2065,7 +2071,7 @@ export class QuestVRDashboard {
     }
 
     const ctrlH = twist ? 500 : 505; card(rx, top, rw, ctrlH); lab('Mode', innerX, top + 24); const gap = 8, bw = (innerW - gap) / 2;
-    button('tab-control', innerX, top + 38, bw, 44, 'Walk', !twist); button('tab-twist', innerX + bw + gap, top + 38, bw, 44, 'Twist body', twist);
+    modeButton('tab-control', innerX, top + 38, bw, 44, 'Walk', !twist); modeButton('tab-twist', innerX + bw + gap, top + 38, bw, 44, 'Twist body', twist);
     if (!twist) {
       lab('Movement', innerX, top + 103); const pg = 8, pw = (innerW - pg * 2) / 3, py = top + 116, ph = 60;
       [['turn-left', 'q', 'TURN LEFT'], ['forward', 'w', 'FORWARD'], ['turn-right', 'e', 'TURN RIGHT'], ['left', 'a', 'LEFT'], ['backward', 's', 'BACKWARD'], ['right', 'd', 'RIGHT']].forEach((a, i) => {
@@ -2086,19 +2092,32 @@ export class QuestVRDashboard {
     }
     const armY = top + ctrlH - 58; button('teleop-arm', innerX, armY, bw, 44, this.fnkTeleopArmed ? 'Robot input on' : 'Robot input', this.fnkTeleopArmed); button('teleop-stop', innerX + bw + gap, armY, bw, 44, 'Scene input', this.fnkSceneInputSelected);
     const legY = top + ctrlH + 16, legH = 354; card(rx, legY, rw, legH); lab('Leg status', innerX, legY + 24);
-    txt(twist ? 'Kinematic reach · amber means beyond the modeled leg limit.' : 'Bar: position of each leg in its gait cycle.', innerX, legY + 45, 11, C.muted);
+    txt(twist ? 'Feet planted · green is within modeled reach; amber is outside the limit.' : 'Filled green: stance · dashed amber: swing · bar shows gait-cycle position.', innerX, legY + 45, 10, C.muted);
     legs.forEach((leg, i) => {
-      const y = legY + 61 + i * 43, x = innerX, bx = x + 144, barW = innerW - 144, current = legs[i];
+      const y = legY + 61 + i * 43, x = innerX, chipX = x + 36, chipW = 106, bx = x + 152, barW = innerW - 152, current = legs[i];
       c.strokeStyle = C.line; c.lineWidth = 1; c.beginPath(); c.moveTo(x, y + 36); c.lineTo(rx + rw - 16, y + 36); c.stroke();
       txt(leg[0], x, y + 15, 12, C.text, 700);
+      const statusChip = (label, state) => {
+        const isSwing = state === 'swing', isLimit = state === 'limit';
+        c.fillStyle = isSwing || isLimit ? C.panel : C.stance;
+        c.strokeStyle = isSwing || isLimit ? C.swing : C.stance; c.lineWidth = 1;
+        c.setLineDash(isSwing || isLimit ? [3, 2] : []);
+        c.beginPath(); c.roundRect(chipX, y + 4, chipW, 23, 12); c.fill(); c.stroke(); c.setLineDash([]);
+        txt(label, chipX + chipW / 2, y + 15.5, 10, isSwing || isLimit ? C.swing : '#ffffff', 700, 'center');
+      };
+      const drawStatusBar = (progress, color) => {
+        c.fillStyle = C.statusTrack; c.beginPath(); c.roundRect(bx, y + 11, barW, 8, 4); c.fill();
+        const fillW = Math.max(0, Math.min(barW, barW * progress));
+        if (fillW > 0) { c.fillStyle = color; c.beginPath(); c.roundRect(bx, y + 11, fillW, 8, 4); c.fill(); }
+      };
       if (twist) {
         const limited = current.reach > 105 || current.reach < 45;
-        txt(`${limited ? 'LIMIT' : 'REACH'} · ${current.reach.toFixed(0)} mm`, x + 36, y + 15, 10, limited ? C.swing : C.stance, 700);
-        c.fillStyle = C.line; c.fillRect(bx, y + 11, barW, 8); c.fillStyle = limited ? C.swing : C.stance; c.fillRect(bx, y + 11, barW * current.progress, 8);
+        statusChip(`${limited ? 'LIMIT' : 'REACH'} ${current.reach.toFixed(0)}`, limited ? 'limit' : 'reach');
+        drawStatusBar(current.progress, C.statusFill);
       } else {
         const p = (((phase - offsets[i]) % 1) + 1) % 1, isSwing = p < dutySwing;
-        txt(isSwing ? 'SWING' : 'STANCE', x + 36, y + 15, 10, isSwing ? C.swing : C.stance, 700);
-        c.fillStyle = C.line; c.fillRect(bx, y + 11, barW, 8); c.fillStyle = isSwing ? C.swing : C.stance; c.fillRect(bx, y + 11, barW * p, 8);
+        statusChip(isSwing ? 'SWING' : 'STANCE', isSwing ? 'swing' : 'stance');
+        drawStatusBar(p, C.statusFill);
       }
     });
     txt(this.fnkMessage || 'Kinematic preview · commanded estimates only; servos do not report measured leg positions.', 16, h - 24, 11, C.muted);
