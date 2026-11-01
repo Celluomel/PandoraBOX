@@ -436,16 +436,21 @@ class BodyRuntime:
                 key=lambda entry: float(entry.get("received_at_unix") or 0.0),
                 reverse=True,
             )
-            workspace_context = dict(workspace.get_state().context or {})
-            workspace_context.update({
+            body_context_updates = {
                 "latest_body_perception": content,
                 "latest_body_perceptions": {
                     "updated_at": iso(now),
                     "updated_at_unix": now,
                     "observations": snapshot,
                 },
-            })
-            workspace.update_state("body_perception", context=workspace_context)
+            }
+            merge_context = getattr(workspace, "merge_context", None)
+            if callable(merge_context):
+                merge_context("body_perception", body_context_updates)
+            else:
+                workspace_context = dict(workspace.get_state().context or {})
+                workspace_context.update(body_context_updates)
+                workspace.update_state("body_perception", context=workspace_context)
             if changed or outcome or now - last >= 30.0:
                 workspace.broadcast(
                     "body_perception",
@@ -697,6 +702,7 @@ class BodyRuntime:
             "Body-to-Brain telemetry bridge: "
             + ("connected" if bridge_connected else "not connected; no live bridge telemetry is confirmed.")
         )
+        workspace_context: dict[str, Any] = {}
         # The Body publisher also maintains a bounded last-value cache in the
         # organism's global workspace. Surface that exact state to the Brain
         # with its observation and receipt stamps so it can answer questions
@@ -738,6 +744,41 @@ class BodyRuntime:
                 lines.append("GLOBAL WORKSPACE BODY CACHE: no timestamped Body records are currently stored.")
         except Exception:
             lines.append("GLOBAL WORKSPACE BODY CACHE: unavailable to this turn; do not claim its contents.")
+        try:
+            local_camera = workspace_context.get("latest_local_camera_observation") if isinstance(workspace_context, dict) else None
+            local_faces = workspace_context.get("latest_local_face_observation") if isinstance(workspace_context, dict) else None
+            if isinstance(local_camera, dict) or isinstance(local_faces, dict):
+                lines.append("GLOBAL WORKSPACE LOCAL BRAIN-PC CAMERA (separate from the robot Body camera):")
+                if isinstance(local_camera, dict):
+                    scene_at = local_camera.get("scene_observed_at_unix")
+                    try:
+                        scene_age = max(0.0, time.time() - float(scene_at)) if scene_at is not None else None
+                    except (TypeError, ValueError):
+                        scene_age = None
+                    lines.append(
+                        f"- source={local_camera.get('source', 'brain_pc_camera')}; active={local_camera.get('active')}; "
+                        f"scene_age={scene_age:.1f}s" if scene_age is not None else
+                        f"- source={local_camera.get('source', 'brain_pc_camera')}; active={local_camera.get('active')}; scene_age=unknown"
+                    )
+                    if local_camera.get("scene_description"):
+                        lines.append(f"  scene={str(local_camera['scene_description'])[:500]}")
+                if isinstance(local_faces, dict):
+                    face_at = local_faces.get("observed_at_unix")
+                    try:
+                        face_age = max(0.0, time.time() - float(face_at)) if face_at is not None else None
+                    except (TypeError, ValueError):
+                        face_age = None
+                    freshness = "LIVE" if face_age is not None and face_age <= 6.0 else "STALE/UNKNOWN"
+                    names = [str(face.get("name")) for face in local_faces.get("faces", [])
+                             if isinstance(face, dict) and face.get("recognized")]
+                    lines.append(
+                        f"- face recognition enabled={local_faces.get('enabled')}; {freshness}; "
+                        f"age={face_age:.1f}s; recognized={', '.join(names) if names else 'none'}"
+                        if face_age is not None else
+                        f"- face recognition enabled={local_faces.get('enabled')}; {freshness}; no current identity/presence result"
+                    )
+        except Exception:
+            lines.append("GLOBAL WORKSPACE LOCAL BRAIN-PC CAMERA: unavailable to this turn.")
         try:
             wm = self.worldmodel
             lines.append(

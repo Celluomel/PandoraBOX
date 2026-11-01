@@ -2168,11 +2168,16 @@ Memory honesty — two distinct cases:
             # Vision context belongs here — as PandoraBOX's OWN perception — not
             # in the user message. This prevents the LLM from treating the VLM
             # description as something the human wrote.
+            system_prompt += (
+                "\n\n━━ LOCAL CAMERA TRUTH ━━\n"
+                "For current questions such as whether you can see the user, use only the Brain-PC camera and face-recognition evidence supplied for this turn. If that evidence is absent, inactive, or stale, say you cannot confirm current visibility. Do not infer current presence from conversation history, Body camera frames, or remembered visual descriptions."
+            )
             _vc = getattr(self, '_pending_vision_context', None)
             if _vc:
                 system_prompt += (
                     f"\n\n━━ WHAT YOU CURRENTLY SEE ━━\n"
                     f"A camera observation supplied for this turn says:\n{_vc}\n"
+                    "For questions such as 'can you see me?' or 'who is in front of you?', use the Brain-PC camera and face-recognition status above. A recent recognized face supports that identity; an empty face result only means the recognizer found no face, not that the whole image contains no person. Use the scene description with its own age, and treat stale/disabled evidence as unknown. Do not substitute Body-camera YOLOX detections for the Brain-PC view. "
                     f"It is evidence only for this camera observation. Do not infer from it that "
                     f"you are connected to the robot, that this is the Body camera, or that the "
                     f"observation is live unless its source and timestamp explicitly say so."
@@ -2703,10 +2708,10 @@ Memory honesty — two distinct cases:
                     classifier_labels = "CONFIRM|CANCEL|NEW_ACTION|BODY_STATUS|NORMAL"
                     meaning = "approves, rejects, replaces, asks for the current status of, or does not address the pending physical Body plan"
             else:
-                labels = "BODY_ACTION, BODY_CAMERA, BODY_CAMERA_ANALYSIS, BODY_ARCHITECTURE, BODY_WORKSPACE, BODY_PERCEPTION, BODY_STATUS, or NORMAL"
-                classifier_labels = "BODY_ACTION|BODY_CAMERA_ANALYSIS|BODY_ARCHITECTURE|BODY_WORKSPACE|BODY_CAMERA|BODY_PERCEPTION|BODY_STATUS|NORMAL"
-                meaning = "requests a physical action, asks what objects the Body camera/YOLOX detects, explicitly requests a detailed interpretation of the Body camera image, asks how camera inputs are configured or whether they are separate, asks what Body data is stored in the Global Workspace, asks what the Body reports through non-camera sensors, asks for current task status, or is ordinary conversation"
-            system = f"Classify whether the user's latest message {meaning}. Return exactly one label and nothing else: {labels}. Understand the user's language semantically across languages; do not use a phrase list or translate by matching words. Distinguish intent: object detections or what the Body sees is BODY_CAMERA; detailed scene interpretation of the image is BODY_CAMERA_ANALYSIS; questions about camera sources, count, or architecture are BODY_ARCHITECTURE; non-camera measurements are BODY_PERCEPTION. Do not invoke image interpretation to answer an architecture question. BODY camera refers to the robot-side feed; do not assume it is physically separate from a PC camera unless telemetry proves that. A short imperative or affirmative can confirm the already prepared plan when its conversational function is approval, while a new physical objective is NEW_ACTION. A refusal or withdrawal is CANCEL. This is a safety classification: infer the speech act from the pending plan and dialogue state, not from the vocabulary."
+                labels = "BODY_ACTION, BODY_CAMERA, BODY_CAMERA_ANALYSIS, BODY_ARCHITECTURE, BODY_WORKSPACE, BODY_PERCEPTION, LOCAL_CAMERA, BODY_STATUS, or NORMAL"
+                classifier_labels = "BODY_ACTION|BODY_CAMERA_ANALYSIS|BODY_ARCHITECTURE|BODY_WORKSPACE|BODY_CAMERA|BODY_PERCEPTION|LOCAL_CAMERA|BODY_STATUS|NORMAL"
+                meaning = "requests a physical action, asks what objects the Body camera/YOLOX detects, asks whether the local Brain-PC camera sees or recognizes the user, explicitly requests a detailed interpretation of the Body camera image, asks how camera inputs are configured or whether they are separate, asks what Body data is stored in the Global Workspace, asks what the Body reports through non-camera sensors, asks for current task status, or is ordinary conversation"
+            system = f"Classify whether the user's latest message {meaning}. Return exactly one label and nothing else: {labels}. Understand the user's language semantically across languages; do not use a phrase list or translate by matching words. Distinguish intent: object detections or what the robot Body sees is BODY_CAMERA; asking whether Lumina/the Brain PC camera sees or recognizes the user is LOCAL_CAMERA; detailed scene interpretation specifically of the Body image is BODY_CAMERA_ANALYSIS; questions about camera sources, count, or architecture are BODY_ARCHITECTURE; non-camera measurements are BODY_PERCEPTION. Do not invoke image interpretation to answer an architecture question. The Body camera is the robot-side feed; LOCAL_CAMERA is the fixed Brain-PC feed. Do not assume whether their physical devices are shared unless telemetry proves it. A short imperative or affirmative can confirm the already prepared plan when its conversational function is approval, while a new physical objective is NEW_ACTION. A refusal or withdrawal is CANCEL. This is a safety classification: infer the speech act from the pending plan and dialogue state, not from the vocabulary."
             if retry and pending:
                 system += " Re-evaluate the speech act carefully. The user is responding immediately after the Body asked whether to execute the already validated plan."
             if confirmation_probe:
@@ -2752,9 +2757,10 @@ Memory honesty — two distinct cases:
             else:
                 system = (
                     "Classify the user's latest message for a cognitive Body interface. "
-                    "Return exactly JSON with route equal to one of: body_action, body_camera, body_camera_analysis, "
+                    "Return exactly JSON with route equal to one of: body_action, body_camera, local_camera, body_camera_analysis, "
                     "body_architecture, body_workspace, body_perception, body_status, normal. body_action means the user requests a physical manipulation or "
                     "movement; body_camera means asking what objects the Body sees or for YOLOX detections; "
+                    "local_camera means asking whether Lumina or the Brain-PC camera sees/recognizes the user, or what the local camera sees; "
                     "body_camera_analysis means explicitly requesting a detailed interpretation of the Body camera image; "
                     "body_architecture means asking how camera inputs are configured or whether the Body camera and direct visual input are separate; "
                     "body_workspace means asking whether Body data is in the Global Workspace or what Body records it contains; "
@@ -2762,12 +2768,12 @@ Memory honesty — two distinct cases:
                     "or sensor data the robot reports through non-camera sensors; body_status "
                     "means asking whether a task is complete, what step is active, whether the Body is stuck, or for the latest robot/controller movement status and command outcome. "
                     "Do not infer that two logical camera paths are physically separate devices without evidence. Do not invoke VLM for camera architecture questions. Use semantic meaning, not a fixed phrase list. "
-                    "For example, 'what does the Body see?' is body_camera; 'describe the image in detail' is body_camera_analysis; 'does Lumina have two cameras?' is body_architecture; 'what Body data is in the Global Workspace?' is body_workspace; 'what other metrics does the Body provide?' is body_perception."
+                    "For example, 'what does the Body see?' is body_camera; 'can you see me?' is local_camera; 'describe the Body image in detail' is body_camera_analysis; 'does Lumina have two cameras?' is body_architecture; 'what Body data is in the Global Workspace?' is body_workspace; 'what other metrics does the Body provide?' is body_perception."
                 )
             raw = fast(text, system, model=model, timeout=6.0, max_tokens=120)
             raw_text = str(raw or "")
             match = re.search(r"\{[\s\S]*?\}", raw_text)
-            allowed = ({"confirm", "cancel", "normal"} if confirmation_probe else {"confirm", "cancel", "new_action", "body_status", "normal"}) if pending else {"body_action", "body_camera", "body_camera_analysis", "body_architecture", "body_workspace", "body_perception", "body_status", "normal"}
+            allowed = ({"confirm", "cancel", "normal"} if confirmation_probe else {"confirm", "cancel", "new_action", "body_status", "normal"}) if pending else {"body_action", "body_camera", "local_camera", "body_camera_analysis", "body_architecture", "body_workspace", "body_perception", "body_status", "normal"}
             if match:
                 value = json.loads(match.group(0))
                 route = str(value.get("route") or "normal").strip().lower()
@@ -2784,7 +2790,7 @@ Memory honesty — two distinct cases:
                 labels = "confirm|cancel|normal" if confirmation_probe else "confirm|cancel|new_action|body_status|normal"
                 label_match = re.search(rf"\b({labels})\b", raw_text.lower())
             else:
-                label_match = re.search(r"\b(body_action|body_camera_analysis|body_architecture|body_workspace|body_camera|body_perception|body_status|normal)\b", raw_text.lower())
+                label_match = re.search(r"\b(body_action|body_camera_analysis|body_architecture|body_workspace|body_camera|local_camera|body_perception|body_status|normal)\b", raw_text.lower())
             if label_match and label_match.group(1) != "normal":
                 return label_match.group(1)
             # Confirmation is safety-sensitive but only applies to an already
@@ -3048,6 +3054,12 @@ Memory honesty — two distinct cases:
 
     def _body_camera_architecture_response(self) -> dict:
         """Explain the logical camera feeds without inventing physical devices."""
+        local_vision = None
+        try:
+            from core.state import state as app_state
+            local_vision = getattr(app_state, "vision", None)
+        except Exception:
+            pass
         body = getattr(self._organism, "_body_runtime", None) if self._organism else None
         yolo_reader = getattr(body, "camera_yolo_status", None) if body is not None else None
         yolo = {}
@@ -3067,10 +3079,35 @@ Memory honesty — two distinct cases:
             feed = f"Le flux Body YOLOX est disponible ({source}, frame {yolo.get('frame_id') or 'inconnue'}, âge {age:.1f} s). "
         else:
             feed = "Je n'ai pas de statut récent du flux Body YOLOX. "
+        local_age = None
+        if local_vision is not None and getattr(local_vision, "frame_updated_at", 0.0):
+            local_age = max(0.0, time.time() - float(local_vision.frame_updated_at))
+        if local_vision is None:
+            local_feed = "Le flux caméra local du PC n'est pas exposé dans cet état d'application. "
+        elif not bool(getattr(local_vision, "camera_active", False)):
+            local_feed = "La caméra locale du PC est actuellement inactive. "
+        elif local_age is None:
+            local_feed = "La caméra locale du PC est active, mais sans frame horodatée. "
+        else:
+            local_feed = f"La caméra locale du PC est active; frame âgée de {local_age:.1f} s. "
+        face_age = max(0.0, time.time() - float(getattr(local_vision, "last_face_detection_at", 0.0) or 0.0)) if local_vision is not None and getattr(local_vision, "last_face_detection_at", 0.0) else None
+        if local_vision is not None and bool(getattr(local_vision, "face_detection_enabled", False)):
+            local_faces = [
+                face for face in (getattr(local_vision, "last_detected_faces", []) or [])
+                if isinstance(face, dict) and str(face.get("name") or "").strip().lower() not in {"", "unknown", "unknown person"}
+            ]
+            if face_age is not None and face_age <= 6.0:
+                recognized = ", ".join(str(face.get("name")) for face in local_faces[:4]) if local_faces else "aucune identité reconnue"
+                local_feed += f"Reconnaissance faciale LIVE ({face_age:.1f} s) : {recognized}. "
+            else:
+                local_feed += "La reconnaissance faciale est activée, mais son dernier résultat est absent ou trop ancien. "
+        elif local_vision is not None:
+            local_feed += "La reconnaissance faciale locale est désactivée ou indisponible. "
         response = (
             feed
-            + "L'application distingue logiquement le flux caméra associé au Body et l'entrée visuelle directe utilisée par Lumina. "
-            "Les données disponibles ici ne prouvent pas qu'il s'agit de deux caméras physiques distinctes; il faut comparer leurs sources matérielles pour l'affirmer."
+            + local_feed
+            + "Le logiciel expose bien deux chemins logiques : la caméra YOLOX du Body et la caméra locale du PC utilisée pour la perception directe de Lumina. "
+            "Ces statuts prouvent deux flux logiciels, mais pas à eux seuls que les périphériques physiques sont distincts."
         )
         return {
             "handled": True,
@@ -3081,6 +3118,10 @@ Memory honesty — two distinct cases:
                 "body_frame_id": yolo.get("frame_id"),
                 "body_camera_source": yolo.get("source") or yolo.get("camera_source"),
                 "body_camera_age_seconds": round(age, 3) if age is not None else None,
+                "local_pc_camera_active": bool(getattr(local_vision, "camera_active", False)) if local_vision is not None else None,
+                "local_pc_frame_age_seconds": round(local_age, 3) if local_age is not None else None,
+                "local_face_recognition_enabled": bool(getattr(local_vision, "face_detection_enabled", False)) if local_vision is not None else None,
+                "local_face_detection_age_seconds": round(face_age, 3) if face_age is not None else None,
                 "physical_camera_count_confirmed": False,
             },
         }
@@ -3098,15 +3139,48 @@ Memory honesty — two distinct cases:
             context = workspace.get_state().context or {}
             cache = context.get("latest_body_perceptions")
             items = cache.get("observations", []) if isinstance(cache, dict) else []
+            local_camera = context.get("latest_local_camera_observation")
+            local_faces = context.get("latest_local_face_observation")
         except Exception as exc:
             logger.debug("[BodyWorkspace] workspace read failed: %s", exc)
             items = []
             cache = None
+            local_camera = None
+            local_faces = None
+        local_summary = ""
+        if isinstance(local_camera, dict) or isinstance(local_faces, dict):
+            parts = []
+            if isinstance(local_camera, dict):
+                try:
+                    scene_age = max(0.0, time.time() - float(local_camera.get("scene_observed_at_unix")))
+                    scene_fresh = "LIVE" if scene_age <= 30.0 else "STALE"
+                except (TypeError, ValueError):
+                    scene_age, scene_fresh = None, "UNKNOWN"
+                parts.append(
+                    f"caméra locale du PC active={bool(local_camera.get('active'))}, analyse {scene_fresh}"
+                    + (f" ({scene_age:.0f} s)" if scene_age is not None else "")
+                )
+                if local_camera.get("scene_description"):
+                    parts.append(str(local_camera["scene_description"])[:240])
+            if isinstance(local_faces, dict):
+                try:
+                    face_age = max(0.0, time.time() - float(local_faces.get("observed_at_unix")))
+                    face_fresh = "LIVE" if face_age <= 6.0 else "STALE"
+                except (TypeError, ValueError):
+                    face_age, face_fresh = None, "UNKNOWN"
+                names = [str(face.get("name")) for face in local_faces.get("faces", [])
+                         if isinstance(face, dict) and face.get("recognized")]
+                parts.append(
+                    f"reconnaissance faciale {face_fresh}"
+                    + (f" ({face_age:.0f} s)" if face_age is not None else "")
+                    + (f" : {', '.join(names)}" if names else " : aucune identité reconnue")
+                )
+            local_summary = " Entrée visuelle distincte : " + "; ".join(parts) + "."
         if not isinstance(items, list) or not items:
             return {
                 "handled": True,
                 "status": "reported",
-                "response": "J'ai vérifié le Global Workspace : aucun enregistrement Body horodaté n'y est actuellement stocké.",
+                "response": "J'ai vérifié le Global Workspace : aucun enregistrement Body horodaté n'y est actuellement stocké." + local_summary,
                 "workspace": {"body_record_count": 0},
             }
         now = time.time()
@@ -3145,6 +3219,7 @@ Memory honesty — two distinct cases:
             f"J'ai consulté le cache horodaté du Global Workspace : {len(items)} enregistrement(s) Body y sont stockés. "
             + (" ; ".join(rows) if rows else "Aucun enregistrement exploitable.")
             + " Ce cache conserve les dernières valeurs par flux; sa présence ne signifie pas que je perçois le Body en continu ni que ces données ont servi à chaque réponse précédente."
+            + local_summary
         )
         return {
             "handled": True,
@@ -3154,6 +3229,8 @@ Memory honesty — two distinct cases:
                 "body_record_count": len(items),
                 "updated_at": cache.get("updated_at") if isinstance(cache, dict) else None,
                 "observations": details,
+                "local_camera_observation": local_camera,
+                "local_face_observation": local_faces,
             },
         }
 
@@ -3398,6 +3475,80 @@ Memory honesty — two distinct cases:
         return bool(body_reference or direct_action)
 
     @staticmethod
+    def _may_route_to_local_camera(text: str) -> bool:
+        """Cheap candidate gate; the semantic classifier decides the actual intent."""
+        return bool(re.search(
+            r"\b(camera|caméra|vision|visual|image|picture|photo|face|visage|see|seeing|look|looking|vois|voir|vois-tu|regarde|reconnais|reconnaissance)\b",
+            str(text or "").lower(),
+        ))
+
+    @staticmethod
+    def _local_camera_response() -> dict:
+        """Answer current PC-camera questions only from fresh local telemetry."""
+        try:
+            from core.state import state as app_state
+            vision = getattr(app_state, "vision", None)
+        except Exception:
+            vision = None
+        if vision is None:
+            return {"handled": True, "status": "unavailable", "response": "Je n'ai pas accès à l'état de la caméra locale du PC dans ce tour."}
+        if not bool(getattr(vision, "camera_active", False)):
+            return {"handled": True, "status": "unavailable", "response": "Non, pas à cet instant : la caméra locale du PC est inactive."}
+        now = time.time()
+        frame_stamp = float(getattr(vision, "frame_updated_at", 0.0) or 0.0)
+        frame_age = max(0.0, now - frame_stamp) if frame_stamp else None
+        if frame_age is None or frame_age > 3.0:
+            return {
+                "handled": True, "status": "stale",
+                "response": "La caméra locale du PC est activée, mais son image est absente ou trop ancienne; je ne peux pas confirmer que je te vois maintenant.",
+                "camera": {"source": "brain_pc_camera", "frame_age_seconds": frame_age, "stale": True},
+            }
+        enabled = bool(getattr(vision, "face_detection_enabled", False))
+        face_stamp = float(getattr(vision, "last_face_detection_at", 0.0) or 0.0)
+        face_age = max(0.0, now - face_stamp) if face_stamp else None
+        faces = getattr(vision, "last_detected_faces", []) or []
+        recent_faces = enabled and face_age is not None and face_age <= 6.0
+        known = [
+            face for face in faces
+            if isinstance(face, dict)
+            and str(face.get("name") or "").strip().lower() not in {"", "unknown", "unknown person"}
+        ]
+        if recent_faces and known:
+            people = ", ".join(str(face.get("name")) for face in known[:4])
+            answer = f"Oui, la caméra locale du PC reçoit une image récente et la reconnaissance faciale identifie : {people}."
+        elif recent_faces and faces:
+            answer = "Oui, la caméra locale du PC reçoit une image récente et le détecteur voit au moins un visage, mais son identité n'est pas reconnue."
+        elif recent_faces:
+            answer = "La caméra locale du PC reçoit une image récente, mais le dernier contrôle n'a détecté aucun visage; je ne peux donc pas confirmer que tu es dans son champ."
+        else:
+            answer = "La caméra locale du PC reçoit une image récente, mais la reconnaissance faciale n'a pas de résultat récent; je ne peux pas confirmer si tu es visible."
+        current = vision.get_working_memory().get("current") if callable(getattr(vision, "get_working_memory", None)) else None
+        scene_age = None
+        scene = ""
+        if isinstance(current, dict):
+            try:
+                scene_age = max(0.0, now - float(current.get("updated_at_unix")))
+            except (TypeError, ValueError):
+                scene_age = None
+            if scene_age is not None and scene_age <= 30.0:
+                scene = str(current.get("description") or "").strip()
+        if scene:
+            answer += f" Analyse de scène locale (âgée de {scene_age:.0f} s) : {scene[:260]}"
+        return {
+            "handled": True,
+            "status": "reported",
+            "response": answer,
+            "camera": {
+                "source": "brain_pc_camera",
+                "frame_age_seconds": round(frame_age, 3),
+                "face_recognition_enabled": enabled,
+                "face_detection_age_seconds": round(face_age, 3) if face_age is not None else None,
+                "recognized_faces": [face.get("name") for face in known],
+                "scene_age_seconds": round(scene_age, 3) if scene_age is not None else None,
+            },
+        }
+
+    @staticmethod
     def _developmental_autonomy_response() -> dict:
         response = (
             "Audit de capacité, pas une exécution : l'architecture possède un GoalEngine qui persiste des objectifs et un moteur d'expérimentation qui conserve des expériences, "
@@ -3521,7 +3672,7 @@ Memory honesty — two distinct cases:
             return self._body_gps_location_response()
         if data_route == "body_sensors":
             return self._body_sensor_response()
-        if not pending and not self._may_route_to_body(user_input):
+        if not pending and not (self._may_route_to_body(user_input) or self._may_route_to_local_camera(user_input)):
             return None
         route = self._classify_body_chat_turn(user_input, pending=pending)
         if route == "body_status":
@@ -3545,6 +3696,8 @@ Memory honesty — two distinct cases:
                 return self._body_status_response(user_input)
         if not pending and route == "body_camera":
             return self._body_perception_response(camera_only=True)
+        if not pending and route == "local_camera":
+            return self._local_camera_response()
         if not pending and route == "body_camera_analysis":
             return self._body_camera_response()
         if not pending and route == "body_architecture":

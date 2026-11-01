@@ -162,6 +162,7 @@ class VisualWorkingMemory:
             self._state["previous"]       = old_current
             self._state["current"]        = {
                 "time":        now,
+                "updated_at_unix": time.time(),
                 "description": description,
                 "faces":       faces,
             }
@@ -181,10 +182,12 @@ class VisualWorkingMemory:
             if self._state["current"]:
                 self._state["current"]["description"] = description
                 self._state["current"]["time"]        = now
+                self._state["current"]["updated_at_unix"] = time.time()
                 self._state["current"]["faces"]       = faces
             else:
                 self._state["current"] = {
                     "time":        now,
+                    "updated_at_unix": time.time(),
                     "description": description,
                     "faces":       faces,
                 }
@@ -690,6 +693,7 @@ class PerceptionLoop:
             logger.debug(
                 f"[PerceptionLoop] idle (Δ={distance:.3f}) — working memory refreshed"
             )
+        self._vm._publish_workspace_vision(description)
 
     def _get_narrative(self, frame: np.ndarray) -> Optional[str]:
         """Call the VLM synchronously (runs in daemon thread, blocking is fine)."""
@@ -837,7 +841,9 @@ class StreamingVisionManager:
         self.face_first_seen:    Dict[str, str]        = {}   # ISO timestamp
         self.face_seen_count:    Dict[str, int]        = {}
         self.last_detected_faces: List[Dict]           = []
+        self.last_face_detection_at = 0.0
         self.face_detection_enabled = FACE_RECOGNITION_AVAILABLE
+        self.organism = None
 
         # Set True by the audio layer during TTS playback or STT transcription.
         # The face-tracking thread backs off to avoid starving audio threads.
@@ -885,6 +891,7 @@ class StreamingVisionManager:
         Wire the PresenceEngine to this vision manager.
         Call from state.initialize() once persona + LLM are ready.
         """
+        self.organism = organism
         try:
             from cognition.presence_engine import PresenceEngine
             self.presence_engine = PresenceEngine(
@@ -912,7 +919,107 @@ class StreamingVisionManager:
           Change: User stopped typing and picked up coffee.
           Present: Alice
         """
-        return self.working_memory.get_context_block()
+        now = time.time()
+        frame_age = max(0.0, now - self.frame_updated_at) if self.frame_updated_at else None
+        face_age = max(0.0, now - self.last_face_detection_at) if self.last_face_detection_at else None
+        if not self.camera_active:
+            camera_line = "[Brain PC camera status] inactive; no current PC-camera view is available."
+        elif frame_age is None:
+            camera_line = "[Brain PC camera status] active, but no timestamped frame is available."
+        else:
+            camera_state = "LIVE" if frame_age <= 3.0 else "STALE"
+            camera_line = f"[Brain PC camera status] active; frame age {frame_age:.1f}s ({camera_state})."
+        if not self.face_detection_enabled:
+            face_line = "[Brain PC face recognition] disabled; identity and current face presence are unknown."
+        elif face_age is None or face_age > 6.0:
+            face_line = "[Brain PC face recognition] no recent result; current face presence and identity are unknown."
+        else:
+            known = [
+                face for face in (self.last_detected_faces or [])
+                if str(face.get("name") or "").strip().lower() not in {"", "unknown", "unknown person"}
+            ]
+            if known:
+                people = ", ".join(
+                    f"{face['name']} ({float(face.get('confidence') or 0.0):.0%})"
+                    for face in known[:4]
+                )
+                face_line = f"[Brain PC face recognition] LIVE; recognized: {people}; checked {face_age:.1f}s ago."
+            elif self.last_detected_faces:
+                face_line = f"[Brain PC face recognition] LIVE; {len(self.last_detected_faces)} face(s), identity not recognized; checked {face_age:.1f}s ago."
+            else:
+                face_line = f"[Brain PC face recognition] LIVE; no face detected {face_age:.1f}s ago."
+        scene = self.working_memory.get_context_block()
+        current = self.working_memory.get_raw().get("current") or {}
+        try:
+            scene_age = max(0.0, now - float(current.get("updated_at_unix")))
+        except (TypeError, ValueError):
+            scene_age = None
+        if scene:
+            age_text = f"scene analysis age {scene_age:.1f}s" if scene_age is not None else "scene analysis age unknown"
+            scene = f"[Brain PC camera scene analysis; {age_text}]\n{scene}"
+        return "\n".join(part for part in (camera_line, face_line, scene) if part)
+
+    def _publish_workspace_vision(self, scene_description: str | None = None) -> None:
+        """Publish stamped local camera and face status without storing image data."""
+        workspace = getattr(self.organism, "workspace", None) if self.organism is not None else None
+        if workspace is None:
+            return
+        now = time.time()
+        context = dict(workspace.get_state().context or {})
+        previous = context.get("latest_local_camera_observation")
+        previous = previous if isinstance(previous, dict) else {}
+        if scene_description is None:
+            scene_description = previous.get("scene_description")
+            scene_observed_at = previous.get("scene_observed_at_unix")
+        else:
+            scene_observed_at = now
+        faces = []
+        for face in self.last_detected_faces or []:
+            if not isinstance(face, dict):
+                continue
+            name = str(face.get("name") or "Unknown")
+            # Publish identity/presence only; face images, embeddings, and
+            # pixel coordinates remain in the local vision subsystem.
+            faces.append({
+                "name": name,
+                "recognized": name.strip().lower() not in {"", "unknown", "unknown person"},
+                "confidence": face.get("confidence"),
+            })
+        frame_stamp = self.frame_updated_at or None
+        scene_stamp = scene_observed_at
+        face_stamp = self.last_face_detection_at or None
+        def _stamp(value):
+            return datetime.fromtimestamp(value).astimezone().isoformat(timespec="seconds") if value else None
+        updates = {
+            "latest_local_camera_observation": {
+                "source": "brain_pc_camera",
+                "active": bool(self.camera_active),
+                "frame_sequence": int(self.frame_sequence or 0),
+                "frame_observed_at_unix": frame_stamp,
+                "frame_observed_at": _stamp(frame_stamp),
+                "scene_description": scene_description,
+                "scene_observed_at_unix": scene_stamp,
+                "scene_observed_at": _stamp(scene_stamp),
+                "received_at_unix": now,
+                "received_at": _stamp(now),
+            },
+            "latest_local_face_observation": {
+                "source": "brain_pc_face_recognition",
+                "enabled": bool(self.face_detection_enabled),
+                "faces": faces,
+                "face_count": len(faces),
+                "observed_at_unix": self.last_face_detection_at or None,
+                "observed_at": _stamp(face_stamp),
+                "received_at_unix": now,
+                "received_at": _stamp(now),
+            },
+        }
+        merge = getattr(workspace, "merge_context", None)
+        if callable(merge):
+            merge("local_camera_perception", updates)
+        else:
+            context.update(updates)
+            workspace.update_state("local_camera_perception", context=context)
 
     def query_visual_memory(self, query_text: str, top_k: int = 5) -> List[Dict]:
         """
@@ -999,6 +1106,9 @@ class StreamingVisionManager:
 
             self.camera_active = True
             self.stop_event.clear()
+            self.last_detected_faces = []
+            self.last_face_detection_at = 0.0
+            self._publish_workspace_vision()
 
             self.capture_thread = threading.Thread(
                 target=self._capture_loop,
@@ -1083,6 +1193,9 @@ class StreamingVisionManager:
         self._perception_loop.stop()
         self.camera_active = False
         self.stop_event.set()
+        self.last_detected_faces = []
+        self.last_face_detection_at = 0.0
+        self._publish_workspace_vision()
 
         if self.capture_thread:
             self.capture_thread.join(timeout=2.0)
@@ -1401,6 +1514,9 @@ class StreamingVisionManager:
 
     def detect_faces(self, frame: Optional[np.ndarray] = None) -> List[Dict]:
         if not self.face_detection_enabled:
+            self.last_detected_faces = []
+            self.last_face_detection_at = 0.0
+            self._publish_workspace_vision()
             return []
         if frame is None:
             frame = self.get_current_frame()
@@ -1413,6 +1529,9 @@ class StreamingVisionManager:
 
             face_locations_small = face_recognition.face_locations(rgb_frame, model="hog")
             if not face_locations_small:
+                self.last_detected_faces = []
+                self.last_face_detection_at = time.time()
+                self._publish_workspace_vision()
                 return []
 
             face_locations = [
@@ -1505,6 +1624,8 @@ class StreamingVisionManager:
                 })
 
             self.last_detected_faces = faces
+            self.last_face_detection_at = time.time()
+            self._publish_workspace_vision()
 
             # Identity is established by the camera, so synchronize it here
             # before PresenceEngine can generate an utterance.  API polling is

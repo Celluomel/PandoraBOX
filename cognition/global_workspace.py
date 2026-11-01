@@ -223,6 +223,21 @@ class GlobalWorkspace:
             self._state.last_updated = time.time()
             return self._state
 
+    def merge_context(self, source: str, updates: Dict[str, Any]) -> WorkspaceState:
+        """Atomically merge context keys so concurrent sensor publishers do not overwrite each other."""
+        with self._state_lock:
+            context = dict(self._state.context or {})
+            context.update(updates or {})
+            self._state.context = context
+            self._state.updated_by.append({
+                "source": source,
+                "fields": ["context." + str(key) for key in (updates or {})],
+                "timestamp": round(time.time(), 3),
+            })
+            self._state.updated_by = self._state.updated_by[-50:]
+            self._state.last_updated = time.time()
+            return self._state
+
     def set_hypotheses(self, source: str, hypotheses: List[Dict]) -> None:
         """
         Replace active_hypotheses with a fresh ranked set (e.g. from

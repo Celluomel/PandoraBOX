@@ -1796,9 +1796,7 @@ async def chat(payload: Turn, request: Request):
                 llm_turn_reserved = True
             _event('Turn started', turn_id)
             await emit('start')
-            vision = None
-            if state.vision and state.vision.camera_active:
-                vision = state.vision.get_visual_context_for_prompt()
+            vision = state.vision.get_visual_context_for_prompt() if state.vision else None
             stream = state.persona.get_response_stream(
                 text,
                 user_id=user_id,
