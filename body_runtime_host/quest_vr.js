@@ -89,6 +89,7 @@ let imuPollInFlight = false;
 let lastCameraFrameId = null;
 let lastDashboardTelemetryAt = 0;
 let lastFnkTelemetryAt = 0;
+let lastFnkHardwareAt = 0;
 let xrFollowYaw = null;
 let xrSceneFollowing = false;
 const xrSceneOffset = new THREE.Vector3();
@@ -1381,6 +1382,27 @@ function selectAt(controller) {
     return;
   }
   if (hudAction === 'gps-map-window' || hudAction === 'gps-map-zoom-level') return;
+  if (hudAction === 'fnk-control') {
+    vrDashboard.setFnkVisible(!vrDashboard.fnkVisible);
+    return;
+  }
+  if (hudAction === 'fnk-window') return;
+  if (hudAction === 'fnk-disabled') {
+    setStatus('FNK diagnostic is disabled until the board is connected on custom FNHR firmware and board-only is confirmed.', true);
+    return;
+  }
+  if (hudAction === 'board-only') {
+    vrDashboard.toggleFnkBoardOnly();
+    return;
+  }
+  if (hudAction.startsWith('leg-')) {
+    vrDashboard.selectFnkLeg(Number(hudAction.slice(4)));
+    return;
+  }
+  if (hudAction === 'lift' || hudAction === 'return') {
+    void vrDashboard.sendFnkLegTest(hudAction);
+    return;
+  }
   if (hudAction === 'simulation') {
     void toggleSimulationFromHud();
     return;
@@ -1759,6 +1781,13 @@ renderer.setAnimationLoop(time => {
         .then(response => response.ok ? response.json() : null)
         .then(controllerStatus => { if (controllerStatus) vrDashboard.updateController(controllerStatus); })
         .catch(() => {});
+    }
+    if (vrDashboard.visible && vrDashboard.fnkVisible && performance.now() - lastFnkHardwareAt >= 3000) {
+      lastFnkHardwareAt = performance.now();
+      fetch('/plugins/fnk0031_wifi/usb/status', { cache: 'no-store', credentials: 'same-origin' })
+        .then(response => response.ok ? response.json() : null)
+        .then(status => { if (status) vrDashboard.updateFnkHardwareStatus(status); })
+        .catch(error => vrDashboard.updateFnkHardwareStatus({ connected: false, last_error: error.message }));
     }
   }
   if (activeSceneMode === 'gaussian' && gaussianViewer?.splatRenderReady) {

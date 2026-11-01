@@ -59,6 +59,43 @@ export class QuestVRDashboard {
     this.gpsMapHeightScale = 1;
     this.gpsMapActionHitAreas = {};
     this.grabbedWindow = 'hud';
+    this.fnkVisible = false;
+    this.fnkBoardOnlyConfirmed = false;
+    this.fnkLeg = 1;
+    this.fnkBusy = false;
+    this.fnkHardwareStatus = null;
+    this.fnkLegState = null;
+    this.fnkMessage = 'FNK0031 · WAITING FOR BOARD STATUS';
+    this.fnkActionHitAreas = {};
+    this.fnkRoot = new THREE.Group();
+    this.fnkRoot.visible = false;
+    this.scene.add(this.fnkRoot);
+    this.fnkCanvas = document.createElement('canvas');
+    this.fnkCanvas.width = 1800;
+    this.fnkCanvas.height = 1125;
+    this.fnkContext = this.fnkCanvas.getContext('2d');
+    this.fnkTexture = new THREE.CanvasTexture(this.fnkCanvas);
+    this.fnkTexture.colorSpace = THREE.SRGBColorSpace;
+    this.fnkTexture.generateMipmaps = true;
+    this.fnkTexture.minFilter = THREE.LinearMipmapLinearFilter;
+    this.fnkTexture.magFilter = THREE.LinearFilter;
+    this.fnkTexture.anisotropy = Math.min(8, Number(maxAnisotropy) || 1);
+    this.fnkPanel = new THREE.Mesh(
+      new THREE.PlaneGeometry(2.8, 1.75),
+      new THREE.MeshBasicMaterial({ map: this.fnkTexture, depthTest: false, depthWrite: false, side: THREE.DoubleSide }),
+    );
+    this.fnkPanel.renderOrder = 1200;
+    this.fnkRoot.add(this.fnkPanel);
+    this.panels.push(this.fnkPanel);
+    this.fnkWorldAnchored = false;
+    this.fnkPose = null;
+    this.fnkHeadOffsetPosition = new THREE.Vector3();
+    this.fnkHeadOffsetQuaternion = new THREE.Quaternion();
+    this.fnkWidthScale = 1;
+    this.fnkHeightScale = 1;
+    this.lastFnkPosePersistAt = 0;
+    this.loadSavedFnkPose();
+    this.drawFnkControlWindow();
     this.worldUp = new THREE.Vector3(0, 1, 0);
     this.verticalOffset = new THREE.Vector3();
     this.sphereCenter = new THREE.Vector3();
@@ -505,7 +542,7 @@ export class QuestVRDashboard {
     ctx.font = '600 21px ui-monospace, monospace';
     ctx.textAlign = 'left';
     ctx.fillText(this.grabbedController
-      ? `${this.grabbedWindow === 'gps-map' ? 'GPS MAP' : 'HUD'} GRABBED · PICKED POINT STAYS UNDER POINTER · STICKS RESIZE / ADJUST DISTANCE`
+      ? `${this.grabbedWindow === 'gps-map' ? 'GPS MAP' : this.grabbedWindow === 'fnk' ? 'FNK CONTROL' : 'HUD'} GRABBED · PICKED POINT STAYS UNDER POINTER · STICKS RESIZE / ADJUST DISTANCE`
       : 'HOLD LATERAL GRIP TO MOVE WINDOWS · FRONT TRIGGER SELECTS BUTTONS / DRAGS DENSITY', margin + 8, height - 14);
     ctx.textAlign = 'right';
     ctx.fillText(this.following ? 'CAMERA FOLLOW · BODY' : 'SCENE VIEW · FIXED', width - margin - 8, height - 14);
@@ -514,6 +551,7 @@ export class QuestVRDashboard {
   }
 
   drawHudActions(ctx) {
+    this.actionHitAreas = {};
     const buttonY = this.logicalHeight - 62;
     const simulationReady = this.frame?.mode === 'sim';
     const simulationRunning = Boolean(this.frame?.running);
@@ -521,7 +559,8 @@ export class QuestVRDashboard {
     const mapX = this.logicalWidth / 2 - 568;
     const simulationX = this.logicalWidth / 2 - 300;
     const sensorX = this.logicalWidth / 2 + 24;
-    const exitX = this.logicalWidth / 2 + 340;
+    const fnkX = this.logicalWidth / 2 + 340;
+    const exitX = this.logicalWidth / 2 + 578;
     const drawButton = (key, x, width, label, fill, stroke, textColor, enabled = true) => {
       const height = 48;
       this.actionHitAreas[key] = { x: x - 16, y: buttonY - 12, width: width + 32, height: height + 24, enabled: enabled && !this.actionBusy };
@@ -541,11 +580,12 @@ export class QuestVRDashboard {
     drawButton('gps-map', mapX, 204, this.gpsMapVisible ? 'CLOSE GPS MAP' : 'GPS MAP', 'rgba(31, 73, 77, .96)', '#78d8d0', '#e5fffa');
     drawButton('simulation', simulationX, 300, this.actionBusy ? 'PLEASE WAIT' : simulationReady ? simulationLabel : 'SIMULATION OFFLINE', 'rgba(31, 105, 78, .96)', '#75edbd', '#e5fff3', simulationReady);
     drawButton('sensor-mode', sensorX, 300, this.sceneMode === 'sensors' ? 'SHOW SIMULATION' : 'SHOW LIVE SENSORS', 'rgba(31, 73, 77, .96)', '#78d8d0', '#e5fffa');
+    drawButton('fnk-control', fnkX, 220, this.fnkVisible ? 'CLOSE FNK' : 'FNK CONTROL', 'rgba(31, 105, 78, .96)', '#75edbd', '#e5fff3');
     drawButton('exit', exitX, 220, this.actionBusy ? 'PLEASE WAIT' : 'EXIT VR', 'rgba(91, 53, 42, .96)', '#f0a888', '#fff0e8');
     this.sensorPointDensityHitArea = null;
     if (this.sceneMode === 'sensors') {
-      const sliderX = this.logicalWidth / 2 + 590;
-      const sliderWidth = this.logicalWidth / 2 - 640;
+      const sliderX = this.logicalWidth / 2 + 850;
+      const sliderWidth = this.logicalWidth - sliderX - margin;
       const trackY = buttonY - 18;
       const ratio = (this.sensorPointDensity - 60) / 100;
       const targetStep = Math.max(3, Math.ceil(640 / this.sensorPointDensity));
@@ -571,6 +611,39 @@ export class QuestVRDashboard {
       ctx.fillText('SPARSE', sliderX, trackY + 18);
       ctx.textAlign = 'right'; ctx.fillText('DENSE', sliderX + sliderWidth, trackY + 18);
     }
+  }
+
+  loadSavedFnkPose() {
+    try {
+      const saved = JSON.parse(localStorage.getItem('pandorabox.quest-fnk-pose.v1') || 'null');
+      if (!Array.isArray(saved?.position) || saved.position.length !== 3
+        || !Array.isArray(saved?.quaternion) || saved.quaternion.length !== 4) return;
+      const values = [...saved.position, ...saved.quaternion, saved.widthScale, saved.heightScale].map(Number);
+      if (!values.every(Number.isFinite) || values.slice(0, 3).some(value => Math.abs(value) > 20)) return;
+      this.fnkHeadOffsetPosition.fromArray(saved.position);
+      this.fnkHeadOffsetQuaternion.fromArray(saved.quaternion).normalize();
+      this.fnkWidthScale = Math.max(.55, Math.min(3.5, Number(saved.widthScale) || 1));
+      this.fnkHeightScale = Math.max(.55, Math.min(3.5, Number(saved.heightScale) || 1));
+      this.fnkPose = saved;
+      this.fnkPanel.scale.set(this.fnkWidthScale, this.fnkHeightScale, 1);
+    } catch {}
+  }
+
+  persistFnkPose(xrCamera, force = false) {
+    if (!xrCamera || !this.fnkWorldAnchored || (!force && performance.now() - this.lastFnkPosePersistAt < 750)) return;
+    xrCamera.getWorldPosition(this.scratchPosition);
+    xrCamera.getWorldQuaternion(this.scratchQuaternion);
+    const inverseHead = this.scratchQuaternion.clone().invert();
+    this.fnkHeadOffsetPosition.copy(this.fnkRoot.position).sub(this.scratchPosition).applyQuaternion(inverseHead);
+    this.fnkHeadOffsetQuaternion.copy(inverseHead).multiply(this.fnkRoot.quaternion).normalize();
+    this.fnkPose = {
+      position: this.fnkHeadOffsetPosition.toArray(),
+      quaternion: this.fnkHeadOffsetQuaternion.toArray(),
+      widthScale: this.fnkWidthScale,
+      heightScale: this.fnkHeightScale,
+    };
+    try { localStorage.setItem('pandorabox.quest-fnk-pose.v1', JSON.stringify(this.fnkPose)); } catch {}
+    this.lastFnkPosePersistAt = performance.now();
   }
 
   setSensorPointDensityAt(canvasX) {
@@ -1526,6 +1599,113 @@ export class QuestVRDashboard {
   setVisible(visible) {
     this.visible = Boolean(visible);
     if (this.gpsMapRoot) this.gpsMapRoot.visible = this.visible && this.gpsMapVisible;
+    if (this.fnkRoot) this.fnkRoot.visible = this.visible && this.fnkVisible;
+  }
+
+  setFnkVisible(visible) {
+    this.fnkVisible = Boolean(visible);
+    this.fnkRoot.visible = this.visible && this.fnkVisible;
+    this.drawDashboard();
+    this.drawFnkControlWindow();
+  }
+
+  updateFnkHardwareStatus(status) {
+    this.fnkHardwareStatus = status || null;
+    if (status?.estimated_leg_state) this.fnkLegState = status.estimated_leg_state;
+    if (!this.fnkBusy && !this.fnkMessage.includes('ACK')) {
+      this.fnkMessage = status?.connected
+        ? status.firmware_profile === 'custom_fnhr_ascii_v2'
+          ? 'BOARD ONLINE · FNHR STATE IS AN ESTIMATE'
+          : `CONNECTED · ${status.firmware_profile || 'INCOMPATIBLE FIRMWARE'}`
+        : `BOARD OFFLINE · ${status?.last_error || 'waiting for USB'}`;
+    }
+    this.drawFnkControlWindow();
+  }
+
+  selectFnkLeg(leg) {
+    this.fnkLeg = Math.max(1, Math.min(6, Number(leg) || 1));
+    this.drawFnkControlWindow();
+  }
+
+  toggleFnkBoardOnly() {
+    this.fnkBoardOnlyConfirmed = !this.fnkBoardOnlyConfirmed;
+    this.drawFnkControlWindow();
+  }
+
+  async sendFnkLegTest(direction) {
+    if (this.fnkBusy || !this.fnkBoardOnlyConfirmed) return;
+    this.fnkBusy = true;
+    this.fnkMessage = `SENDING ${direction === 'lift' ? '+5' : '−5'} mm · LEG ${this.fnkLeg}`;
+    this.drawFnkControlWindow();
+    try {
+      const response = await fetch('/plugins/fnk0031_wifi/leg-test', {
+        method: 'POST',
+        cache: 'no-store',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ leg: this.fnkLeg, direction, board_only_confirmed: true }),
+      });
+      const result = await response.json();
+      if (!response.ok || !result?.ok) throw new Error(result?.error || `HTTP ${response.status}`);
+      this.fnkLegState = result.estimated_leg_state || this.fnkLegState;
+      const delta = Number(result.reported_delta_z_mm);
+      this.fnkMessage = `${result.ack || 'ACK'} · L${this.fnkLeg} · Z ${Number.isFinite(delta) ? `${delta > 0 ? '+' : ''}${delta.toFixed(1)} mm` : 'updated'} · ESTIMATE ONLY`;
+    } catch (error) {
+      this.fnkMessage = `COMMAND REJECTED · ${error.message}`;
+    } finally {
+      this.fnkBusy = false;
+      this.drawFnkControlWindow();
+    }
+  }
+
+  drawFnkControlWindow() {
+    if (!this.fnkContext) return;
+    const ctx = this.fnkContext;
+    const width = this.fnkCanvas.width;
+    const height = this.fnkCanvas.height;
+    ctx.clearRect(0, 0, width, height);
+    ctx.fillStyle = '#071216'; ctx.fillRect(0, 0, width, height);
+    ctx.strokeStyle = '#6bd9bd'; ctx.lineWidth = 5; ctx.strokeRect(3, 3, width - 6, height - 6);
+    ctx.fillStyle = '#11232a'; ctx.fillRect(8, 8, width - 16, 116);
+    ctx.fillStyle = '#e7fff4'; ctx.font = '700 48px system-ui'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    ctx.fillText('FNK0031 · BOARD CONTROL', 42, 48);
+    const hardware = this.fnkHardwareStatus || {};
+    const compatible = hardware.connected === true && hardware.firmware_profile === 'custom_fnhr_ascii_v2';
+    ctx.fillStyle = compatible ? '#65e6b1' : hardware.connected ? '#f2c477' : '#f18c83';
+    ctx.font = '600 25px ui-monospace, monospace';
+    ctx.fillText(compatible ? 'CONNECTED · CUSTOM FNHR' : hardware.connected ? 'FIRMWARE PROFILE NOT SUPPORTED' : 'BOARD STATUS UNAVAILABLE', 44, 91);
+    this.fnkActionHitAreas = {};
+    const button = (key, x, y, w, h, label, enabled = true, selected = false) => {
+      ctx.globalAlpha = enabled ? 1 : 0.42;
+      ctx.fillStyle = selected ? '#18513f' : '#112a32'; ctx.strokeStyle = selected ? '#75edbd' : '#55717a'; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.roundRect(x, y, w, h, 18); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = '#e5fff4'; ctx.font = '650 27px ui-monospace, monospace'; ctx.textAlign = 'center';
+      ctx.fillText(label, x + w / 2, y + h / 2, w - 20); ctx.globalAlpha = 1;
+      this.fnkActionHitAreas[key] = { x, y, width: w, height: h, enabled };
+    };
+    ctx.fillStyle = '#a8c8be'; ctx.font = '600 24px ui-monospace, monospace'; ctx.textAlign = 'left';
+    ctx.fillText('SELECT LEG', 48, 180);
+    for (let leg = 1; leg <= 6; leg += 1) button(`leg-${leg}`, 48 + (leg - 1) * 142, 205, 126, 76, `L${leg}`, true, this.fnkLeg === leg);
+    const checked = this.fnkBoardOnlyConfirmed;
+    button('board-only', 48, 315, 760, 80, `${checked ? '☑' : '☐'} BOARD ONLY · NO SERVOS ATTACHED`, true, checked);
+    ctx.fillStyle = '#f2c477'; ctx.font = '500 22px system-ui'; ctx.textAlign = 'left';
+    ctx.fillText('Required confirmation for the bounded 5 mm leg diagnostic.', 54, 430);
+    button('lift', 48, 493, 360, 100, 'MOVE +5 mm Z', compatible && checked && !this.fnkBusy);
+    button('return', 426, 493, 360, 100, 'RETURN −5 mm Z', compatible && checked && !this.fnkBusy);
+    ctx.fillStyle = '#d3e9df'; ctx.font = '600 25px ui-monospace, monospace'; ctx.textAlign = 'left';
+    ctx.fillText(this.fnkMessage.slice(0, 92), 50, 688, width - 100);
+    const legs = this.fnkLegState?.legs || [];
+    for (let leg = 1; leg <= 6; leg += 1) {
+      const item = legs.find(value => Number(value.leg) === leg) || legs[leg - 1];
+      const z = Number(item?.foot_position_mm?.[2]);
+      const x = 48 + ((leg - 1) % 3) * 550;
+      const y = 790 + Math.floor((leg - 1) / 3) * 90;
+      ctx.fillStyle = this.fnkLeg === leg ? '#76e1b2' : '#96b9ad'; ctx.font = '600 23px ui-monospace, monospace';
+      ctx.fillText(`L${leg} · Z ${Number.isFinite(z) ? `${z.toFixed(1)} mm` : '—'}`, x, y);
+    }
+    ctx.fillStyle = '#8ba9a0'; ctx.font = '500 20px system-ui';
+    ctx.fillText('FNHR internal position estimate · not measured servo feedback · no gait commands from this panel', 48, height - 48);
+    this.fnkTexture.needsUpdate = true;
   }
 
   setSceneMode(mode) {
@@ -1554,7 +1734,8 @@ export class QuestVRDashboard {
     raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
     raycaster.ray.direction.set(0, 0, -1).applyMatrix4(rotation);
     this.scene.updateMatrixWorld(true);
-    const hit = raycaster.intersectObjects(this.panels.filter(panel => panel !== this.gpsMapPanel || this.gpsMapVisible), false)[0];
+    const hit = raycaster.intersectObjects(this.panels.filter(panel => (panel !== this.gpsMapPanel || this.gpsMapVisible)
+      && (panel !== this.fnkPanel || this.fnkVisible)), false)[0];
     if (this.sensorDensityDragController === controller && hit?.object === this.panel && hit.uv) {
       const x = hit.uv.x * this.logicalWidth;
       const y = (1 - hit.uv.y) * this.logicalHeight;
@@ -1579,7 +1760,8 @@ export class QuestVRDashboard {
     raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
     raycaster.ray.direction.set(0, 0, -1).applyMatrix4(rotation);
     this.scene.updateMatrixWorld(true);
-    return raycaster.intersectObjects(this.panels.filter(panel => panel !== this.gpsMapPanel || this.gpsMapVisible), false).length > 0;
+    return raycaster.intersectObjects(this.panels.filter(panel => (panel !== this.gpsMapPanel || this.gpsMapVisible)
+      && (panel !== this.fnkPanel || this.fnkVisible)), false).length > 0;
   }
 
   activateAt(controller, raycaster) {
@@ -1589,7 +1771,8 @@ export class QuestVRDashboard {
     raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
     raycaster.ray.direction.set(0, 0, -1).applyMatrix4(rotation);
     this.scene.updateMatrixWorld(true);
-    const hit = raycaster.intersectObjects(this.panels.filter(panel => panel !== this.gpsMapPanel || this.gpsMapVisible), false)[0];
+    const hit = raycaster.intersectObjects(this.panels.filter(panel => (panel !== this.gpsMapPanel || this.gpsMapVisible)
+      && (panel !== this.fnkPanel || this.fnkVisible)), false)[0];
     if (!hit?.uv) return null;
     if (hit.object === this.gpsMapPanel) {
       const x = hit.uv.x * this.gpsMapCanvas.width;
@@ -1598,6 +1781,16 @@ export class QuestVRDashboard {
         if (x >= area.x && x <= area.x + area.width && y >= area.y && y <= area.y + area.height) return key;
       }
       return 'gps-map-window';
+    }
+    if (hit.object === this.fnkPanel) {
+      const x = hit.uv.x * this.fnkCanvas.width;
+      const y = (1 - hit.uv.y) * this.fnkCanvas.height;
+      for (const [key, area] of Object.entries(this.fnkActionHitAreas)) {
+        if (x >= area.x && x <= area.x + area.width && y >= area.y && y <= area.y + area.height) {
+          return area.enabled ? key : 'fnk-disabled';
+        }
+      }
+      return 'fnk-window';
     }
     const x = hit.uv.x * this.logicalWidth;
     const y = (1 - hit.uv.y) * this.logicalHeight;
@@ -1622,10 +1815,12 @@ export class QuestVRDashboard {
     raycaster.ray.origin.setFromMatrixPosition(aimController.matrixWorld);
     raycaster.ray.direction.set(0, 0, -1).applyMatrix4(rotation).normalize();
     this.scene.updateMatrixWorld(true);
-    const hit = raycaster.intersectObjects(this.panels.filter(panel => panel !== this.gpsMapPanel || this.gpsMapVisible), false)[0];
+    const hit = raycaster.intersectObjects(this.panels.filter(panel => (panel !== this.gpsMapPanel || this.gpsMapVisible)
+      && (panel !== this.fnkPanel || this.fnkVisible)), false)[0];
     if (!hit?.point || !hit.object) return false;
-    const target = hit.object === this.gpsMapPanel ? 'gps-map' : 'hud';
-    const root = target === 'gps-map' ? this.gpsMapRoot : this.root;
+    const target = hit.object === this.gpsMapPanel ? 'gps-map'
+      : hit.object === this.fnkPanel ? 'fnk' : 'hud';
+    const root = target === 'gps-map' ? this.gpsMapRoot : target === 'fnk' ? this.fnkRoot : this.root;
     root.updateMatrixWorld(true);
     this.grabbedPanel = hit.object;
     this.grabAnchorLocal.copy(hit.object.worldToLocal(hit.point.clone()));
@@ -1647,6 +1842,8 @@ export class QuestVRDashboard {
     if (xrCamera) {
       if (this.grabbedWindow === 'gps-map') {
         this.persistGpsMapPose(xrCamera, true);
+      } else if (this.grabbedWindow === 'fnk') {
+        this.persistFnkPose(xrCamera, true);
       } else {
         this.persistPose(xrCamera, true);
       }
@@ -1661,7 +1858,8 @@ export class QuestVRDashboard {
     this.grabbedController.updateMatrixWorld(true);
     this.grabbedController.getWorldPosition(this.scratchPosition);
     this.grabbedController.getWorldQuaternion(this.scratchQuaternion);
-    const targetRoot = this.grabbedWindow === 'gps-map' ? this.gpsMapRoot : this.root;
+    const targetRoot = this.grabbedWindow === 'gps-map' ? this.gpsMapRoot
+      : this.grabbedWindow === 'fnk' ? this.fnkRoot : this.root;
     if (!this.grabbedPanel) return;
     const elapsed = Math.max(0, Math.min(0.05, Number(deltaSeconds) || 0));
     const stick = source => {
@@ -1679,6 +1877,10 @@ export class QuestVRDashboard {
       if (Math.abs(widthInput) > 0.12) this.gpsMapWidthScale = Math.max(0.45, Math.min(5, this.gpsMapWidthScale * Math.exp(widthInput * elapsed * 2.8)));
       if (Math.abs(heightInput) > 0.12) this.gpsMapHeightScale = Math.max(0.45, Math.min(5, this.gpsMapHeightScale * Math.exp(-heightInput * elapsed * 2.8)));
       this.applyGpsMapSize();
+    } else if (this.grabbedWindow === 'fnk') {
+      if (Math.abs(widthInput) > 0.12) this.fnkWidthScale = Math.max(0.55, Math.min(3.5, this.fnkWidthScale * Math.exp(widthInput * elapsed * 2.8)));
+      if (Math.abs(heightInput) > 0.12) this.fnkHeightScale = Math.max(0.55, Math.min(3.5, this.fnkHeightScale * Math.exp(-heightInput * elapsed * 2.8)));
+      this.fnkPanel.scale.set(this.fnkWidthScale, this.fnkHeightScale, 1);
     } else {
       if (Math.abs(widthInput) > 0.12) this.widthScale = Math.max(0.45, Math.min(5, this.widthScale * Math.exp(widthInput * elapsed * 2.8)));
       if (Math.abs(heightInput) > 0.12) this.heightScale = Math.max(0.45, Math.min(5, this.heightScale * Math.exp(-heightInput * elapsed * 2.8)));
@@ -1759,6 +1961,16 @@ export class QuestVRDashboard {
       this.gpsMapWorldAnchored = true;
     }
     if (this.gpsMapWorldAnchored) this.orientWindowToSphere(this.gpsMapRoot);
+    if (this.fnkVisible && !this.fnkWorldAnchored) {
+      if (this.fnkPose) {
+        this.fnkRoot.position.copy(this.fnkHeadOffsetPosition).applyQuaternion(this.scratchQuaternion).add(this.scratchPosition);
+        this.fnkRoot.quaternion.copy(this.scratchQuaternion).multiply(this.fnkHeadOffsetQuaternion);
+      } else {
+        this.fnkRoot.position.copy(this.root.position).add(new this.THREE.Vector3(-3.3, -0.12, -0.9).applyQuaternion(this.root.quaternion));
+      }
+      this.fnkWorldAnchored = true;
+    }
+    if (this.fnkVisible && this.fnkWorldAnchored) this.orientWindowToSphere(this.fnkRoot);
     // Windows keep world positions; their flat planes follow the sphere's local horizon, never headset pitch.
   }
 
@@ -1782,6 +1994,7 @@ export class QuestVRDashboard {
   persistPose(xrCamera, force = false) {
     if (!xrCamera) return;
     this.persistGpsMapPose(xrCamera);
+    this.persistFnkPose(xrCamera);
     if (this.headLocked || (!force && performance.now() - this.lastPosePersistAt < 750)) return;
     xrCamera.getWorldPosition(this.scratchPosition);
     xrCamera.getWorldQuaternion(this.scratchQuaternion);
