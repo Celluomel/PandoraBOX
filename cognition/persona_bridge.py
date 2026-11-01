@@ -3286,6 +3286,8 @@ Memory honesty — two distinct cases:
                         text += f" · ~{float(metric['forward_m']):.2f}m caméra"
                         if isinstance(metric.get("bearing_deg_approx"), (int, float)):
                             text += f" / {float(metric['bearing_deg_approx']):+.0f}° approx."
+                    elif isinstance(metric.get("candidate_forward_m"), (int, float)):
+                        text += f" · candidate MiDaS {float(metric['candidate_forward_m']):.2f}m hors intervalle de calibration; distance réelle inconnue"
                     labels.append(text)
                 visual = ", ".join(labels) if labels else "aucun objet détecté"
                 stale = camera_age > 3.0
