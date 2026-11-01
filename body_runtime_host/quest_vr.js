@@ -1165,6 +1165,59 @@ async function pollPowerStatus() {
   }
 }
 
+let systemMetricsPollInFlight = false;
+async function pollSystemMetrics() {
+  if (systemMetricsPollInFlight || !vrDashboard.visible || !vrDashboard.powerWindowVisible) return;
+  systemMetricsPollInFlight = true;
+  try {
+    const response = await fetch('/system/metrics', { cache: 'no-store', credentials: 'same-origin' });
+    if (!response.ok) throw new Error(`System metrics HTTP ${response.status}`);
+    vrDashboard.updateSystemMetrics(await response.json());
+  } catch (error) {
+    vrDashboard.updateSystemMetrics({ available: false });
+    vrDashboard.setPowerWindowMessage(`System metrics unavailable · ${error.message}`);
+  } finally { systemMetricsPollInFlight = false; }
+}
+
+async function setVrPowerMode(mode) {
+  vrDashboard.setPowerWindowMessage(`Setting power mode · ${mode}…`);
+  try {
+    const response = await fetch('/body/power-mode', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode }), cache: 'no-store', credentials: 'same-origin' });
+    const result = await response.json();
+    if (!response.ok || !result.ok) throw new Error(result.error || `HTTP ${response.status}`);
+    vrDashboard.setPowerWindowMessage('');
+    vrDashboard.updatePowerStatus(result);
+  } catch (error) { vrDashboard.setPowerWindowMessage(`Power mode change failed · ${error.message}`); }
+}
+
+async function saveVrBatteryLevel(level) {
+  const numeric = Math.max(0, Math.min(100, Math.round(Number(level))));
+  vrDashboard.setPowerWindowMessage('Saving battery estimate…');
+  try {
+    const response = await fetch('/body/power-mode', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'battery_level', level_percent: numeric }), cache: 'no-store', credentials: 'same-origin' });
+    const result = await response.json();
+    if (!response.ok || !result.ok) throw new Error(result.error || `HTTP ${response.status}`);
+    vrDashboard.pendingBatteryLevel = null;
+    vrDashboard.setPowerWindowMessage(`Saved · ${numeric}% entered`);
+    vrDashboard.updatePowerStatus(result);
+  } catch (error) { vrDashboard.setPowerWindowMessage(`Battery level not saved · ${error.message}`); }
+}
+
+async function setVrBatteryFull() {
+  vrDashboard.setPowerWindowMessage('Setting battery estimate to 100%…');
+  try {
+    const response = await fetch('/body/power-mode', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'battery_full' }), cache: 'no-store', credentials: 'same-origin' });
+    const result = await response.json();
+    if (!response.ok || !result.ok) throw new Error(result.error || `HTTP ${response.status}`);
+    vrDashboard.pendingBatteryLevel = null;
+    vrDashboard.setPowerWindowMessage('Battery estimate reset to full');
+    vrDashboard.updatePowerStatus(result);
+  } catch (error) { vrDashboard.setPowerWindowMessage(`Battery reset failed · ${error.message}`); }
+}
+
 function syncSimulationControl(frame = latestWorldStatus) {
   const button = document.querySelector('#quest-simulation');
   if (!button) return;
@@ -1350,6 +1403,45 @@ function selectAt(controller) {
     vrDashboard.setGpsMapVisible(!vrDashboard.gpsMapVisible);
     return;
   }
+  if (hudAction === 'power-window') {
+    vrDashboard.setPowerWindowVisible(!vrDashboard.powerWindowVisible);
+    if (vrDashboard.powerWindowVisible) { void pollPowerStatus(); void pollSystemMetrics(); }
+    return;
+  }
+  if (hudAction === 'power-window-close') {
+    vrDashboard.setPowerWindowVisible(false);
+    return;
+  }
+  if (hudAction === 'power-window-size-up' || hudAction === 'power-window-size-down') {
+    vrDashboard.resizePowerWindow(hudAction === 'power-window-size-up' ? 1.15 : 1 / 1.15);
+    return;
+  }
+  if (hudAction === 'power-window-reset') {
+    vrDashboard.resetPowerWindowPose();
+    return;
+  }
+  if (hudAction.startsWith('power-mode-')) {
+    void setVrPowerMode(hudAction.slice('power-mode-'.length));
+    return;
+  }
+  if (hudAction === 'power-battery-down' || hudAction === 'power-battery-up') {
+    let current = Number(vrDashboard.pendingBatteryLevel);
+    if (!Number.isFinite(current)) current = Number(vrDashboard.powerStatus?.battery_estimate?.level_percent_est);
+    if (!Number.isFinite(current)) current = 0;
+    vrDashboard.pendingBatteryLevel = Math.max(0, Math.min(100, Math.round(current + (hudAction === 'power-battery-up' ? 5 : -5))));
+    vrDashboard.drawPowerWindow();
+    return;
+  }
+  if (hudAction === 'power-battery-save') {
+    if (vrDashboard.pendingBatteryLevel !== null) void saveVrBatteryLevel(vrDashboard.pendingBatteryLevel);
+    else vrDashboard.setPowerWindowMessage('Battery estimate unavailable · adjust with −5 / +5 first');
+    return;
+  }
+  if (hudAction === 'power-battery-full') {
+    void setVrBatteryFull();
+    return;
+  }
+  if (hudAction === 'power-window-surface') return;
   if (hudAction === 'hud-size-up' || hudAction === 'hud-size-down') {
     vrDashboard.resizeHud(hudAction === 'hud-size-up' ? 1.15 : 1 / 1.15);
     return;
@@ -1771,6 +1863,7 @@ void pollGpsStatus();
 setInterval(pollGpsStatus, 1500);
 void pollPowerStatus();
 setInterval(pollPowerStatus, 5000);
+setInterval(pollSystemMetrics, 2000);
 window.__pbQuestReady = true;
 if (statusNode.textContent === 'Starting 3D scene…') setStatus('3D renderer ready · connecting to Body world model…');
 

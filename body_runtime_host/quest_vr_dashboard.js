@@ -59,6 +59,19 @@ export class QuestVRDashboard {
     this.gpsMapHeightScale = 1;
     this.gpsMapActionHitAreas = {};
     this.grabbedWindow = 'hud';
+    this.systemMetrics = null;
+    this.powerWindowVisible = false;
+    this.powerWindowWorldAnchored = false;
+    this.powerWindowPose = null;
+    this.powerWindowHeadOffsetPosition = new THREE.Vector3();
+    this.powerWindowHeadOffsetQuaternion = new THREE.Quaternion();
+    this.powerWindowWidthScale = 1;
+    this.powerWindowHeightScale = 1;
+    this.powerWindowActionHitAreas = {};
+    this.powerWindowMessage = '';
+    this.pendingBatteryLevel = null;
+    this.powerStatus = null;
+    this.lastPowerWindowPosePersistAt = 0;
     this.fnkVisible = false;
     this.fnkBoardOnlyConfirmed = false;
     this.fnkTab = 'control';
@@ -211,6 +224,28 @@ export class QuestVRDashboard {
     this.panels.push(this.gpsMapPanel);
     this.loadSavedGpsMapPose();
     this.drawGpsMapWindow();
+    this.powerWindowRoot = new THREE.Group();
+    this.powerWindowRoot.visible = false;
+    this.powerWindowCanvas = document.createElement('canvas');
+    this.powerWindowCanvas.width = 1800;
+    this.powerWindowCanvas.height = 1120;
+    this.powerWindowContext = this.powerWindowCanvas.getContext('2d');
+    this.powerWindowTexture = new THREE.CanvasTexture(this.powerWindowCanvas);
+    this.powerWindowTexture.colorSpace = THREE.SRGBColorSpace;
+    this.powerWindowTexture.generateMipmaps = true;
+    this.powerWindowTexture.minFilter = THREE.LinearMipmapLinearFilter;
+    this.powerWindowTexture.magFilter = THREE.LinearFilter;
+    this.powerWindowTexture.anisotropy = Math.min(8, Number(maxAnisotropy) || 1);
+    this.powerWindowPanel = new THREE.Mesh(
+      new THREE.PlaneGeometry(3.8, 2.364),
+      new THREE.MeshBasicMaterial({ map: this.powerWindowTexture, depthTest: false, depthWrite: false, side: THREE.DoubleSide }),
+    );
+    this.powerWindowPanel.renderOrder = 1150;
+    this.powerWindowRoot.add(this.powerWindowPanel);
+    this.scene.add(this.powerWindowRoot);
+    this.panels.push(this.powerWindowPanel);
+    this.loadSavedPowerWindowPose();
+    this.drawPowerWindow();
     this.drawDashboard();
   }
 
@@ -248,6 +283,28 @@ export class QuestVRDashboard {
     this.gpsMapRoot.visible = this.visible && this.gpsMapVisible;
     this.drawDashboard();
     this.drawGpsMapWindow();
+  }
+
+  setPowerWindowVisible(visible) {
+    this.powerWindowVisible = Boolean(visible);
+    this.powerWindowRoot.visible = this.visible && this.powerWindowVisible;
+    this.drawDashboard(); this.drawPowerWindow();
+  }
+
+  resizePowerWindow(factor) {
+    const multiplier = Number(factor);
+    if (!Number.isFinite(multiplier) || multiplier <= 0) return;
+    this.powerWindowWidthScale = Math.max(.45, Math.min(5, this.powerWindowWidthScale * multiplier));
+    this.powerWindowHeightScale = Math.max(.45, Math.min(5, this.powerWindowHeightScale * multiplier));
+    this.applyPowerWindowSize(); this.drawPowerWindow();
+  }
+
+  resetPowerWindowPose() {
+    this.powerWindowRoot.position.set(0, 0, 0); this.powerWindowRoot.quaternion.identity();
+    this.powerWindowWorldAnchored = false; this.powerWindowWidthScale = 1; this.powerWindowHeightScale = 1;
+    this.powerWindowHeadOffsetPosition.set(0, 0, 0); this.powerWindowHeadOffsetQuaternion.identity();
+    this.powerWindowPose = null; this.applyPowerWindowSize();
+    try { localStorage.removeItem('pandorabox.quest-power-window-pose.v1'); } catch {}
   }
 
   resetGpsMapPose() {
@@ -363,6 +420,104 @@ export class QuestVRDashboard {
     this.gpsMapTexture.needsUpdate = true;
   }
 
+  drawPowerWindow() {
+    const ctx = this.powerWindowContext;
+    if (!ctx) return;
+    const width = this.powerWindowCanvas.width, height = this.powerWindowCanvas.height;
+    const status = this.powerStatus || {}, metrics = this.systemMetrics || {};
+    const cpu = metrics.cpu || {}, gpu = metrics.gpu || {}, memory = metrics.memory || {}, power = metrics.power || {};
+    const battery = status.battery_estimate || {};
+    const mode = String(status.mode || 'UNKNOWN').toUpperCase();
+    const level = Number(battery.level_percent_est);
+    const remainingWh = Number(battery.remaining_wh_est);
+    const meanWatts = Number(status.rolling_60s_mean_w_by_mode?.[mode]?.mean_w);
+    const watts = meanWatts > 0 ? meanWatts : Number(power.watts ?? status.board_input_w);
+    const remainingMinutes = Number.isFinite(remainingWh) && watts > 0 ? remainingWh / watts * 60 : NaN;
+    const format = (value, digits = 1, suffix = '') => value === null || value === undefined || value === '' || !Number.isFinite(Number(value))
+      ? '—' : `${Number(value).toFixed(digits)}${suffix}`;
+    const clampLevel = value => Math.max(0, Math.min(100, Math.round(Number(value) || 0)));
+    if (this.pendingBatteryLevel === null && Number.isFinite(level)) this.pendingBatteryLevel = clampLevel(level);
+    this.powerWindowActionHitAreas = {};
+    ctx.clearRect(0, 0, width, height);
+    ctx.fillStyle = '#071116'; ctx.fillRect(0, 0, width, height);
+    ctx.strokeStyle = '#33505a'; ctx.lineWidth = 2; ctx.strokeRect(2, 2, width - 4, height - 4);
+    const text = (value, x, y, size, color = '#e2efef', weight = 500, align = 'left') => {
+      ctx.fillStyle = color; ctx.font = `${weight} ${size}px ui-sans-serif,system-ui`; ctx.textAlign = align; ctx.textBaseline = 'middle'; ctx.fillText(String(value), x, y);
+    };
+    const button = (key, x, y, w, h, label, selected = false, accent = false) => {
+      ctx.fillStyle = selected ? '#087d43' : accent ? '#12382f' : '#101d22';
+      ctx.strokeStyle = selected ? '#45d38a' : accent ? '#65dfbd' : '#40575d'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.roundRect(x, y, w, h, 10); ctx.fill(); ctx.stroke();
+      text(label, x + w / 2, y + h / 2, 20, selected ? '#ffffff' : '#d5e5e5', 650, 'center');
+      this.powerWindowActionHitAreas[key] = { x, y, width: w, height: h };
+    };
+    const card = (x, y, w, h, title) => {
+      ctx.fillStyle = '#0d1a20'; ctx.strokeStyle = '#29444d'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.roundRect(x, y, w, h, 14); ctx.fill(); ctx.stroke();
+      text(title.toUpperCase(), x + 24, y + 30, 19, '#8fa9ac', 650);
+    };
+    text('COMPUTE + POWER', 36, 44, 30, '#e2efef', 750);
+    text(this.powerWindowMessage || (metrics.available ? 'LIVE · SYSTEM METRICS' : 'WAITING FOR SYSTEM METRICS'), width - 36, 44, 16, this.powerWindowMessage ? '#f0ad77' : '#77d7b0', 600, 'right');
+    text('POWER MODE', 36, 93, 17, '#8fa9ac', 650);
+    ['DEV', 'ATTENTIVE', 'IDLE'].forEach((value, index) => button(`power-mode-${value}`, 190 + index * 290, 68, 270, 54, value === 'ATTENTIVE' ? 'Attentive' : value, mode === value));
+
+    card(30, 146, width - 60, 226, 'Battery estimate');
+    text(Number.isFinite(level) ? `${level.toFixed(0)}%` : '—%', 58, 218, 66, '#e7f5f1', 750);
+    const barX = 58, barY = 275, barW = 760, barH = 18;
+    ctx.fillStyle = '#273b43'; ctx.beginPath(); ctx.roundRect(barX, barY, barW, barH, 9); ctx.fill();
+    if (Number.isFinite(level)) { ctx.fillStyle = level <= 15 ? '#e45550' : level <= 35 ? '#e5a844' : '#18a969'; ctx.beginPath(); ctx.roundRect(barX, barY, barW * Math.max(0, Math.min(1, level / 100)), barH, 9); ctx.fill(); }
+    text(Number.isFinite(remainingWh) ? `${remainingWh.toFixed(1)} Wh estimated` : 'Energy estimate unavailable', 58, 322, 18, '#a8bcbd');
+    text(Number.isFinite(remainingMinutes) ? `~${Math.floor(remainingMinutes / 60)} h ${Math.round(remainingMinutes % 60)} min remaining` : 'Runtime estimate unavailable', 850, 210, 24, '#e2efef', 650);
+    text(`Battery input · ${this.pendingBatteryLevel === null ? '—' : `${this.pendingBatteryLevel}%`}`, 850, 254, 19, '#a8bcbd', 550);
+    button('power-battery-down', 850, 285, 100, 54, '−5');
+    button('power-battery-up', 960, 285, 100, 54, '+5');
+    button('power-battery-save', 1070, 285, 205, 54, 'Set level', false, true);
+    button('power-battery-full', 1285, 285, 205, 54, 'Battery full');
+
+    const tile = (x, y, w, h, title, main, sub, extra = '') => {
+      card(x, y, w, h, title); text(main, x + 24, y + 94, 40, '#e2efef', 700);
+      text(sub, x + 24, y + 142, 19, '#9eb7b8', 500);
+      if (extra) text(extra, x + w - 22, y + 142, 17, '#9eb7b8', 500, 'right');
+    };
+    const tileW = (width - 84) / 2, tileH = 210, left = 30, right = left + tileW + 24;
+    tile(left, 388, tileW, tileH, 'CPU', `${format(cpu.utilization_percent, 0, '%')}`, `Temperature · ${format(cpu.temperature_c, 1, ' °C')}`, metrics.available ? 'UTILIZATION' : 'UNAVAILABLE');
+    tile(right, 388, tileW, tileH, 'GPU', `${format(gpu.temperature_c, 1, ' °C')}`, `Load · ${gpu.utilization_percent == null ? 'unavailable' : format(gpu.utilization_percent, 1, '%')}`, `Clock · ${format(gpu.frequency_mhz, 0, ' MHz')}`);
+    tile(left, 616, tileW, tileH, 'MEMORY', `${format(memory.used_percent, 0, '%')}`, `Available · ${memory.available_mb == null ? '—' : `${(memory.available_mb / 1024).toFixed(1)} GB`}`, memory.total_mb == null ? '' : `Total · ${(memory.total_mb / 1024).toFixed(1)} GB`);
+    tile(right, 616, tileW, tileH, 'BOARD INPUT · INA232', `${power.available ? format(power.watts, 1, ' W') : '— W'}`, `${format(power.voltage_v, 1, ' V')} · ${format(power.current_a, 2, ' A')}`, power.available ? `${format(power.energy_wh_session, 3, ' Wh')} since start` : 'Rail telemetry unavailable');
+    text('GPU / HTP utilization is shown only when the system exports a reliable counter.', 34, 858, 16, '#839c9f');
+    button('power-window-size-down', 30, 1030, 130, 54, 'SIZE −');
+    button('power-window-reset', 174, 1030, 190, 54, 'RESET WINDOW');
+    button('power-window-close', width - 500, 1030, 160, 54, 'CLOSE');
+    button('power-window-size-up', width - 320, 1030, 290, 54, 'SIZE +');
+    this.powerWindowTexture.needsUpdate = true;
+  }
+
+  loadSavedPowerWindowPose() {
+    try {
+      const saved = JSON.parse(localStorage.getItem('pandorabox.quest-power-window-pose.v1') || 'null');
+      if (!Array.isArray(saved?.position) || saved.position.length !== 3 || !Array.isArray(saved?.quaternion) || saved.quaternion.length !== 4) return;
+      const values = [...saved.position, ...saved.quaternion, saved.widthScale, saved.heightScale].map(Number);
+      if (!values.every(Number.isFinite) || values.slice(0, 3).some(value => Math.abs(value) > 20)) return;
+      this.powerWindowHeadOffsetPosition.fromArray(saved.position);
+      this.powerWindowHeadOffsetQuaternion.fromArray(saved.quaternion).normalize();
+      this.powerWindowWidthScale = Math.max(.45, Math.min(5, Number(saved.widthScale) || 1));
+      this.powerWindowHeightScale = Math.max(.45, Math.min(5, Number(saved.heightScale) || 1));
+      this.powerWindowPose = saved; this.applyPowerWindowSize();
+    } catch {}
+  }
+
+  applyPowerWindowSize() { this.powerWindowPanel?.scale.set(this.powerWindowWidthScale, this.powerWindowHeightScale, 1); }
+
+  persistPowerWindowPose(xrCamera, force = false) {
+    if (!xrCamera || !this.powerWindowWorldAnchored || (!force && performance.now() - this.lastPowerWindowPosePersistAt < 750)) return;
+    xrCamera.getWorldPosition(this.scratchPosition); xrCamera.getWorldQuaternion(this.scratchQuaternion);
+    const inverseHead = this.scratchQuaternion.clone().invert();
+    this.powerWindowHeadOffsetPosition.copy(this.powerWindowRoot.position).sub(this.scratchPosition).applyQuaternion(inverseHead);
+    this.powerWindowHeadOffsetQuaternion.copy(inverseHead).multiply(this.powerWindowRoot.quaternion).normalize();
+    this.powerWindowPose = { position: this.powerWindowHeadOffsetPosition.toArray(), quaternion: this.powerWindowHeadOffsetQuaternion.toArray(), widthScale: this.powerWindowWidthScale, heightScale: this.powerWindowHeightScale };
+    try { localStorage.setItem('pandorabox.quest-power-window-pose.v1', JSON.stringify(this.powerWindowPose)); this.lastPowerWindowPosePersistAt = performance.now(); } catch {}
+  }
+
   loadSavedGpsMapPose() {
     try {
       const saved = JSON.parse(localStorage.getItem('pandorabox.quest-gps-map-pose.v3') || 'null');
@@ -416,7 +571,7 @@ export class QuestVRDashboard {
   }
 
   updatePowerStatus(status) {
-    const previous = this.sensorStatus.power;
+    this.powerStatus = status || {};
     const mode = String(status?.mode || 'UNKNOWN').toUpperCase();
     const estimate = status?.battery_estimate || {};
     const level = Number(estimate.level_percent_est);
@@ -426,7 +581,18 @@ export class QuestVRDashboard {
     this.sensorStatus.power = Number.isFinite(level) ? `${mode} · ~${Math.round(level)}%` : mode;
     this.sensorStatus.runtime = Number.isFinite(remainingWh) && watts > 0
       ? `${Math.floor(remainingWh / watts)}H ${Math.floor((remainingWh / watts % 1) * 60)}M EST.` : '—';
-    if (previous !== this.sensorStatus.power) this.drawDashboard();
+    this.drawDashboard();
+    this.drawPowerWindow();
+  }
+
+  updateSystemMetrics(metrics) {
+    this.systemMetrics = metrics || {};
+    this.drawPowerWindow();
+  }
+
+  setPowerWindowMessage(message = '') {
+    this.powerWindowMessage = String(message || '');
+    this.drawPowerWindow();
   }
 
   updateDepthIntrinsics(intrinsics, width, height) {
@@ -564,7 +730,7 @@ export class QuestVRDashboard {
     ctx.font = '600 21px ui-monospace, monospace';
     ctx.textAlign = 'left';
     ctx.fillText(this.grabbedController
-      ? `${this.grabbedWindow === 'gps-map' ? 'GPS MAP' : this.grabbedWindow === 'fnk' ? 'FNK CONTROL' : 'HUD'} GRABBED · PICKED POINT STAYS UNDER POINTER · STICKS RESIZE / ADJUST DISTANCE`
+      ? `${this.grabbedWindow === 'gps-map' ? 'GPS MAP' : this.grabbedWindow === 'power' ? 'COMPUTE + POWER' : this.grabbedWindow === 'fnk' ? 'FNK CONTROL' : 'HUD'} GRABBED · PICKED POINT STAYS UNDER POINTER · STICKS RESIZE / ADJUST DISTANCE`
       : 'HOLD LATERAL GRIP TO MOVE WINDOWS · FRONT TRIGGER SELECTS BUTTONS / DRAGS DENSITY', margin + 8, height - 14);
     ctx.textAlign = 'right';
     ctx.fillText(this.following ? 'CAMERA FOLLOW · BODY' : 'SCENE VIEW · FIXED', width - margin - 8, height - 14);
@@ -578,11 +744,12 @@ export class QuestVRDashboard {
     const simulationReady = this.frame?.mode === 'sim';
     const simulationRunning = Boolean(this.frame?.running);
     const simulationLabel = simulationRunning ? 'PAUSE SIMULATION' : 'START SIMULATION';
-    const mapX = this.logicalWidth / 2 - 568;
-    const simulationX = this.logicalWidth / 2 - 300;
-    const sensorX = this.logicalWidth / 2 + 24;
-    const fnkX = this.logicalWidth / 2 + 340;
-    const exitX = this.logicalWidth / 2 + 578;
+    const mapX = this.logicalWidth / 2 - 664;
+    const powerX = this.logicalWidth / 2 - 472;
+    const simulationX = this.logicalWidth / 2 - 280;
+    const sensorX = this.logicalWidth / 2 - 20;
+    const fnkX = this.logicalWidth / 2 + 240;
+    const exitX = this.logicalWidth / 2 + 462;
     const drawButton = (key, x, width, label, fill, stroke, textColor, enabled = true) => {
       const height = 48;
       this.actionHitAreas[key] = { x: x - 16, y: buttonY - 12, width: width + 32, height: height + 24, enabled: enabled && !this.actionBusy };
@@ -599,11 +766,12 @@ export class QuestVRDashboard {
     };
     drawButton('hud-size-down', this.logicalWidth / 2 - 856, 132, 'HUD SIZE −', 'rgba(28, 48, 47, .96)', '#78d8d0', '#e5fffa');
     drawButton('hud-size-up', this.logicalWidth / 2 - 716, 132, 'HUD SIZE +', 'rgba(28, 48, 47, .96)', '#78d8d0', '#e5fffa');
-    drawButton('gps-map', mapX, 204, this.gpsMapVisible ? 'CLOSE GPS MAP' : 'GPS MAP', 'rgba(31, 73, 77, .96)', '#78d8d0', '#e5fffa');
-    drawButton('simulation', simulationX, 300, this.actionBusy ? 'PLEASE WAIT' : simulationReady ? simulationLabel : 'SIMULATION OFFLINE', 'rgba(31, 105, 78, .96)', '#75edbd', '#e5fff3', simulationReady);
-    drawButton('sensor-mode', sensorX, 300, this.sceneMode === 'sensors' ? 'SHOW SIMULATION' : 'SHOW LIVE SENSORS', 'rgba(31, 73, 77, .96)', '#78d8d0', '#e5fffa');
-    drawButton('fnk-control', fnkX, 220, this.fnkVisible ? 'CLOSE GAIT LAB' : 'HEXAPOD GAIT LAB', 'rgba(31, 105, 78, .96)', '#75edbd', '#e5fff3');
-    drawButton('exit', exitX, 220, this.actionBusy ? 'PLEASE WAIT' : 'EXIT VR', 'rgba(91, 53, 42, .96)', '#f0a888', '#fff0e8');
+    drawButton('gps-map', mapX, 180, this.gpsMapVisible ? 'CLOSE GPS MAP' : 'GPS MAP', 'rgba(31, 73, 77, .96)', '#78d8d0', '#e5fffa');
+    drawButton('power-window', powerX, 180, this.powerWindowVisible ? 'CLOSE POWER' : 'COMPUTE + POWER', 'rgba(31, 73, 77, .96)', '#78d8d0', '#e5fffa');
+    drawButton('simulation', simulationX, 248, this.actionBusy ? 'PLEASE WAIT' : simulationReady ? simulationLabel : 'SIMULATION OFFLINE', 'rgba(31, 105, 78, .96)', '#75edbd', '#e5fff3', simulationReady);
+    drawButton('sensor-mode', sensorX, 248, this.sceneMode === 'sensors' ? 'SHOW SIMULATION' : 'SHOW LIVE SENSORS', 'rgba(31, 73, 77, .96)', '#78d8d0', '#e5fffa');
+    drawButton('fnk-control', fnkX, 206, this.fnkVisible ? 'CLOSE GAIT LAB' : 'HEXAPOD GAIT LAB', 'rgba(31, 105, 78, .96)', '#75edbd', '#e5fff3');
+    drawButton('exit', exitX, 206, this.actionBusy ? 'PLEASE WAIT' : 'EXIT VR', 'rgba(91, 53, 42, .96)', '#f0a888', '#fff0e8');
     this.sensorPointDensityHitArea = null;
     if (this.sceneMode === 'sensors') {
       const sliderX = this.logicalWidth / 2 + 850;
@@ -1621,6 +1789,7 @@ export class QuestVRDashboard {
   setVisible(visible) {
     this.visible = Boolean(visible);
     if (this.gpsMapRoot) this.gpsMapRoot.visible = this.visible && this.gpsMapVisible;
+    if (this.powerWindowRoot) this.powerWindowRoot.visible = this.visible && this.powerWindowVisible;
     if (this.fnkRoot) this.fnkRoot.visible = this.visible && this.fnkVisible;
   }
 
@@ -2276,6 +2445,7 @@ export class QuestVRDashboard {
     // clicks even when another dashboard surface happens to overlap in depth.
     const fnkHit = this.fnkVisible ? raycaster.intersectObject(this.fnkPanel, false)[0] : null;
     const hit = fnkHit || raycaster.intersectObjects(this.panels.filter(panel => (panel !== this.gpsMapPanel || this.gpsMapVisible)
+      && (panel !== this.powerWindowPanel || this.powerWindowVisible)
       && (panel !== this.fnkPanel || this.fnkVisible)), false)[0];
     if (this.sensorDensityDragController === controller && hit?.object === this.panel && hit.uv) {
       const x = hit.uv.x * this.logicalWidth;
@@ -2302,6 +2472,7 @@ export class QuestVRDashboard {
     raycaster.ray.direction.set(0, 0, -1).applyMatrix4(rotation);
     this.scene.updateMatrixWorld(true);
     return raycaster.intersectObjects(this.panels.filter(panel => (panel !== this.gpsMapPanel || this.gpsMapVisible)
+      && (panel !== this.powerWindowPanel || this.powerWindowVisible)
       && (panel !== this.fnkPanel || this.fnkVisible)), false).length > 0;
   }
 
@@ -2314,6 +2485,7 @@ export class QuestVRDashboard {
     this.scene.updateMatrixWorld(true);
     const fnkHit = this.fnkVisible ? raycaster.intersectObject(this.fnkPanel, false)[0] : null;
     const hit = fnkHit || raycaster.intersectObjects(this.panels.filter(panel => (panel !== this.gpsMapPanel || this.gpsMapVisible)
+      && (panel !== this.powerWindowPanel || this.powerWindowVisible)
       && (panel !== this.fnkPanel || this.fnkVisible)), false)[0];
     if (!hit?.uv) return null;
     if (hit.object === this.gpsMapPanel) {
@@ -2323,6 +2495,14 @@ export class QuestVRDashboard {
         if (x >= area.x && x <= area.x + area.width && y >= area.y && y <= area.y + area.height) return key;
       }
       return 'gps-map-window';
+    }
+    if (hit.object === this.powerWindowPanel) {
+      const x = hit.uv.x * this.powerWindowCanvas.width;
+      const y = (1 - hit.uv.y) * this.powerWindowCanvas.height;
+      for (const [key, area] of Object.entries(this.powerWindowActionHitAreas)) {
+        if (x >= area.x && x <= area.x + area.width && y >= area.y && y <= area.y + area.height) return key;
+      }
+      return 'power-window-surface';
     }
     if (hit.object === this.fnkPanel) {
       const x = hit.uv.x * this.fnkCanvas.width;
@@ -2369,11 +2549,13 @@ export class QuestVRDashboard {
     raycaster.ray.direction.set(0, 0, -1).applyMatrix4(rotation).normalize();
     this.scene.updateMatrixWorld(true);
     const hit = raycaster.intersectObjects(this.panels.filter(panel => (panel !== this.gpsMapPanel || this.gpsMapVisible)
+      && (panel !== this.powerWindowPanel || this.powerWindowVisible)
       && (panel !== this.fnkPanel || this.fnkVisible)), false)[0];
     if (!hit?.point || !hit.object) return false;
     const target = hit.object === this.gpsMapPanel ? 'gps-map'
-      : hit.object === this.fnkPanel ? 'fnk' : 'hud';
-    const root = target === 'gps-map' ? this.gpsMapRoot : target === 'fnk' ? this.fnkRoot : this.root;
+      : hit.object === this.powerWindowPanel ? 'power'
+        : hit.object === this.fnkPanel ? 'fnk' : 'hud';
+    const root = target === 'gps-map' ? this.gpsMapRoot : target === 'power' ? this.powerWindowRoot : target === 'fnk' ? this.fnkRoot : this.root;
     root.updateMatrixWorld(true);
     this.grabbedPanel = hit.object;
     this.grabAnchorLocal.copy(hit.object.worldToLocal(hit.point.clone()));
@@ -2395,6 +2577,8 @@ export class QuestVRDashboard {
     if (xrCamera) {
       if (this.grabbedWindow === 'gps-map') {
         this.persistGpsMapPose(xrCamera, true);
+      } else if (this.grabbedWindow === 'power') {
+        this.persistPowerWindowPose(xrCamera, true);
       } else if (this.grabbedWindow === 'fnk') {
         this.persistFnkPose(xrCamera, true);
       } else {
@@ -2412,7 +2596,8 @@ export class QuestVRDashboard {
     this.grabbedController.getWorldPosition(this.scratchPosition);
     this.grabbedController.getWorldQuaternion(this.scratchQuaternion);
     const targetRoot = this.grabbedWindow === 'gps-map' ? this.gpsMapRoot
-      : this.grabbedWindow === 'fnk' ? this.fnkRoot : this.root;
+      : this.grabbedWindow === 'power' ? this.powerWindowRoot
+        : this.grabbedWindow === 'fnk' ? this.fnkRoot : this.root;
     if (!this.grabbedPanel) return;
     const elapsed = Math.max(0, Math.min(0.05, Number(deltaSeconds) || 0));
     const stick = source => {
@@ -2430,6 +2615,10 @@ export class QuestVRDashboard {
       if (Math.abs(widthInput) > 0.12) this.gpsMapWidthScale = Math.max(0.45, Math.min(5, this.gpsMapWidthScale * Math.exp(widthInput * elapsed * 2.8)));
       if (Math.abs(heightInput) > 0.12) this.gpsMapHeightScale = Math.max(0.45, Math.min(5, this.gpsMapHeightScale * Math.exp(-heightInput * elapsed * 2.8)));
       this.applyGpsMapSize();
+    } else if (this.grabbedWindow === 'power') {
+      if (Math.abs(widthInput) > 0.12) this.powerWindowWidthScale = Math.max(.45, Math.min(5, this.powerWindowWidthScale * Math.exp(widthInput * elapsed * 2.8)));
+      if (Math.abs(heightInput) > 0.12) this.powerWindowHeightScale = Math.max(.45, Math.min(5, this.powerWindowHeightScale * Math.exp(-heightInput * elapsed * 2.8)));
+      this.applyPowerWindowSize();
     } else if (this.grabbedWindow === 'fnk') {
       if (Math.abs(widthInput) > 0.12) this.fnkWidthScale = Math.max(0.55, Math.min(3.5, this.fnkWidthScale * Math.exp(widthInput * elapsed * 2.8)));
       if (Math.abs(heightInput) > 0.12) this.fnkHeightScale = Math.max(0.55, Math.min(3.5, this.fnkHeightScale * Math.exp(-heightInput * elapsed * 2.8)));
@@ -2514,6 +2703,16 @@ export class QuestVRDashboard {
       this.gpsMapWorldAnchored = true;
     }
     if (this.gpsMapWorldAnchored) this.orientWindowToSphere(this.gpsMapRoot);
+    if (this.powerWindowVisible && !this.powerWindowWorldAnchored) {
+      if (this.powerWindowPose) {
+        this.powerWindowRoot.position.copy(this.powerWindowHeadOffsetPosition).applyQuaternion(this.scratchQuaternion).add(this.scratchPosition);
+        this.powerWindowRoot.quaternion.copy(this.scratchQuaternion).multiply(this.powerWindowHeadOffsetQuaternion);
+      } else {
+        this.powerWindowRoot.position.copy(this.root.position).add(new this.THREE.Vector3(0, 2.7, -0.9).applyQuaternion(this.root.quaternion));
+      }
+      this.powerWindowWorldAnchored = true;
+    }
+    if (this.powerWindowVisible && this.powerWindowWorldAnchored) this.orientWindowToSphere(this.powerWindowRoot);
     if (this.fnkVisible && !this.fnkWorldAnchored) {
       if (this.fnkPose) {
         this.fnkRoot.position.copy(this.fnkHeadOffsetPosition).applyQuaternion(this.scratchQuaternion).add(this.scratchPosition);
@@ -2547,6 +2746,7 @@ export class QuestVRDashboard {
   persistPose(xrCamera, force = false) {
     if (!xrCamera) return;
     this.persistGpsMapPose(xrCamera);
+    this.persistPowerWindowPose(xrCamera);
     this.persistFnkPose(xrCamera);
     if (this.headLocked || (!force && performance.now() - this.lastPosePersistAt < 750)) return;
     xrCamera.getWorldPosition(this.scratchPosition);
