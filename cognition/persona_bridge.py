@@ -3189,6 +3189,28 @@ Memory honesty — two distinct cases:
         }
 
     @staticmethod
+    def _direct_body_motion(text: str) -> dict | None:
+        """Map an unambiguous short locomotion request to one FNHR primitive.
+
+        Destination-based requests intentionally remain with the grounded
+        planner; this helper only handles relative directional commands.
+        """
+        value = str(text or "").casefold()
+        if re.search(r"\b(turn|rotate|tourne|virage)\b.{0,24}\b(left|gauche)\b|\b(gauche|left)\b.{0,24}\b(turn|tourne)\b", value):
+            return {"action": "turn_left", "label": "tourner à gauche"}
+        if re.search(r"\b(turn|rotate|tourne|virage)\b.{0,24}\b(right|droite)\b|\b(droite|right)\b.{0,24}\b(turn|tourne)\b", value):
+            return {"action": "turn_right", "label": "tourner à droite"}
+        if re.search(r"\b(backward|backwards|reverse|recule|reculer|en arrière|en arriere)\b", value):
+            return {"action": "backward", "label": "reculer"}
+        if re.search(r"\b(forward|forwards|advance|avancer|avance|en avant)\b", value):
+            return {"action": "forward", "label": "avancer"}
+        if re.search(r"\b(strafe|crawl|move|déplace|deplace|va)\b.{0,24}\b(left|gauche)\b|\b(à gauche|a gauche)\b", value):
+            return {"action": "left", "label": "se déplacer à gauche"}
+        if re.search(r"\b(strafe|crawl|move|déplace|deplace|va)\b.{0,24}\b(right|droite)\b|\b(à droite|a droite)\b", value):
+            return {"action": "right", "label": "se déplacer à droite"}
+        return None
+
+    @staticmethod
     def _body_data_request_route(text: str) -> str | None:
         normalized = str(text or "").lower()
         development_topic = re.search(
@@ -3209,6 +3231,17 @@ Memory honesty — two distinct cases:
         location_query = re.search(r"\b(locali[sz](?:ation|e|er)|position|where|où|locate|map|carte)\b", normalized)
         if gps_query and location_query:
             return "body_location"
+        body_reference = re.search(r"\b(body|robot|ventuno|fnk0031)\b", normalized)
+        metrics_query = re.search(
+            r"\b(metrics?|measurements?|readings?|t[eé]l[eé]m[eé]trie|sensor data|sensor values|feeds?)\b",
+            normalized,
+        )
+        metrics_ask = re.search(
+            r"\b(what|which|other|receive|provide|providing|available|show|quels?|quelles?|mesures?|donn[ée]es?|reçoit|recoit|fournit|disponible)\b",
+            normalized,
+        )
+        if body_reference and metrics_query and metrics_ask:
+            return "body_sensors"
         sensor_query = re.search(r"\b(sensors?|capteurs?|télémétrie|telemetry)\b", normalized)
         sensor_ask = re.search(r"\b(what|which|provide|providing|data|status|show|quels?|quelles?|que|quoi|donn[ée]es?|fournissent|montrent|affiche)\b", normalized)
         if sensor_query and sensor_ask:
@@ -3385,6 +3418,47 @@ Memory honesty — two distinct cases:
             return self._body_perception_response()
         if pending and route == "confirm":
             body = getattr(self._organism, "_body_runtime", None) if self._organism else None
+            direct_command = pending.get("direct_command") if isinstance(pending, dict) else None
+            if isinstance(direct_command, dict):
+                if body is None:
+                    self._pending_body_plans.pop(str(user_id), None)
+                    return {"handled": True, "status": "unavailable", "response": "Le pont de commande Body est indisponible; aucun mouvement n'a été envoyé."}
+                if time.time() - float(pending.get("created_at") or 0.0) > 20.0:
+                    self._pending_body_plans.pop(str(user_id), None)
+                    return {"handled": True, "status": "expired", "response": "La confirmation est arrivée après expiration de la commande de mouvement. Rien n'a été envoyé; redemande le déplacement pour obtenir une nouvelle vérification."}
+                observations = body.snapshot(max_age=8.0)
+                robot = next((
+                    item for item in observations
+                    if item.get("subject") == "fnk0031.usb_status"
+                    and not self._is_simulated_body_observation(item)
+                ), None)
+                robot_value = robot.get("value") if isinstance(robot, dict) and isinstance(robot.get("value"), dict) else {}
+                if not robot_value.get("connected") or not robot_value.get("actuation_enabled"):
+                    self._pending_body_plans.pop(str(user_id), None)
+                    return {"handled": True, "status": "blocked", "response": "À la confirmation, la télémétrie USB récente ne confirme plus à la fois le FNK0031 connecté et l'actionnement activé. Aucun mouvement n'a été envoyé."}
+                command = body.enqueue_command(
+                    target="fnk0031",
+                    action=str(direct_command.get("action") or ""),
+                    payload={"params": {}},
+                    requires_confirmation=True,
+                    origin="lumina_chat_confirmation",
+                    ttl_seconds=20.0,
+                )
+                approval = body.approve_command(command.command_id)
+                self._pending_body_plans.pop(str(user_id), None)
+                if not approval.get("ok"):
+                    return {
+                        "handled": True,
+                        "status": "blocked",
+                        "response": "Le Body n'a pas accepté la commande confirmée : " + str(approval.get("error") or "échec de signature ou de livraison") + ". Aucun mouvement n'est confirmé.",
+                        "command": approval.get("command"),
+                    }
+                return {
+                    "handled": True,
+                    "status": "submitted",
+                    "response": f"Commande {direct_command.get('label') or direct_command['action']} signée et transmise au Body (réf. {command.command_id}). J'attends son acquittement FNHR; cela ne prouvera pas un déplacement mesuré.",
+                    "command": approval.get("command"),
+                }
             replacement_id = str(pending.get("replace_plan_id") or "").strip()
             if replacement_id and body:
                 cancelled = body.cancel_worldmodel_plan(
@@ -3428,6 +3502,28 @@ Memory honesty — two distinct cases:
             return None
         if route != "body_action" and not (pending and route == "new_action"):
             return None
+        if route == "body_action" and not pending:
+            direct_motion = self._direct_body_motion(user_input)
+            if direct_motion:
+                body = getattr(self._organism, "_body_runtime", None) if self._organism else None
+                observations = body.snapshot(max_age=8.0) if body is not None else []
+                robot = next((
+                    item for item in observations
+                    if item.get("subject") == "fnk0031.usb_status"
+                    and not self._is_simulated_body_observation(item)
+                ), None)
+                robot_value = robot.get("value") if isinstance(robot, dict) and isinstance(robot.get("value"), dict) else {}
+                if not robot_value.get("connected"):
+                    return {"handled": True, "status": "blocked", "response": "Le FNK0031 n'est pas confirmé connecté par une télémétrie USB récente. Aucun mouvement n'a été préparé ni envoyé."}
+                if not robot_value.get("actuation_enabled"):
+                    return {"handled": True, "status": "blocked", "response": "Le FNK0031 est détecté, mais l'actionnement physique est désactivé dans la configuration du Body. Active-le dans Robots & Hardware avant de demander un déplacement. Aucun mouvement n'a été envoyé."}
+                self._pending_body_plans[str(user_id)] = {"direct_command": direct_motion, "created_at": time.time()}
+                return {
+                    "handled": True,
+                    "status": "awaiting_confirmation",
+                    "response": f"Le FNK0031 est connecté et l'actionnement est activé. Je propose une seule commande FNHR « {direct_motion['label']} » (un cycle de marche), sans cible de scène. Confirmes-tu son envoi ?",
+                    "command": {"target": "fnk0031", "action": direct_motion["action"], "requires_confirmation": True},
+                }
         assessment = self.assess_body_action_request(user_input)
         if not assessment.get("accepted"):
             # A semantically classified Body request must fail closed. Falling
@@ -3462,6 +3558,26 @@ Memory honesty — two distinct cases:
                     ),
                     "assessment": assessment,
                 }
+            unknown_match = next((
+                match for error in feasibility_errors
+                if (match := re.search(r"unknown target:\s*(.+)$", str(error), re.IGNORECASE))
+            ), None)
+            if unknown_match:
+                unknown_label = unknown_match.group(1).strip().strip("'\".,")
+                body = getattr(self._organism, "_body_runtime", None) if self._organism else None
+                camera = body.camera_yolo_status() if body is not None else {}
+                detections = camera.get("detections") or [] if isinstance(camera, dict) else []
+                seen_labels = {
+                    str(item.get("label") or item.get("class_name") or "").strip().casefold()
+                    for item in detections if isinstance(item, dict)
+                }
+                if unknown_label.casefold() in seen_labels:
+                    return {
+                        "handled": True,
+                        "status": "blocked",
+                        "response": f"YOLOX voit « {unknown_label} » dans une boîte 2D, mais le Body n'a pas de position métrique réelle associée à cette détection. Je ne peux donc pas calculer une route sûre vers elle; aucun mouvement n'a été envoyé.",
+                        "assessment": assessment,
+                    }
             errors = "; ".join(feasibility_errors)
             return {"handled": True, "status": "blocked", "response": "Le Body ne confirme pas cette action : " + errors, "assessment": assessment}
         replacement_id = ""
