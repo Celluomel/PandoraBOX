@@ -1772,7 +1772,11 @@ export class QuestVRDashboard {
       this.fnkControllerInput={x:rx,y:-ry,angle:-lx};
       if (Math.max(Math.abs(rx), Math.abs(ry), Math.abs(lx)) < 0.12) { this.fnkControllerInput=null; return true; }
     }
-    if(hw.connected!==true||hw.firmware_profile!=='custom_fnhr_ascii_v2'||hw.actuation_enabled!==true){if(gyroTarget&&this.fnkGyroBaseline)this.fnkGyroBaseline.copy(gyroTarget);return true;}
+    if(hw.connected!==true||hw.firmware_profile!=='custom_fnhr_ascii_v2'||hw.actuation_enabled!==true){
+      const pose=this.fnkTab==='twist'?`ROLL ${move.rx.toFixed(1)}° · PITCH ${move.ry.toFixed(1)}° · YAW ${move.rz.toFixed(1)}°`:`X ${move.x.toFixed(2)} · Y ${move.y.toFixed(2)} · TURN ${move.angle.toFixed(2)}`;
+      this.fnkMessage=`CONTROLLER PREVIEW · ${pose} · HARDWARE COMMANDS BLOCKED`;
+      return true;
+    }
     if (this.fnkDriveInFlight || performance.now() - this.fnkLastDriveAt < 1600) return true;
     void this.sendFnkManualControl(move, gyroTarget);
     return true;
@@ -1902,8 +1906,23 @@ export class QuestVRDashboard {
       labels.forEach((name,i)=>{const yy=ry+i*26*s,hh=18*s,off=offsets[i],sw=1-duty;txt(name,lx+16+12*s,yy+hh/2,12,C.text);c.fillStyle=C.stance;c.beginPath();c.roundRect(tx,yy,tw,hh,4);c.fill();c.strokeStyle=C.swing;c.lineWidth=1.5;c.setLineDash([5,3]);if(off+sw<=1){c.beginPath();c.roundRect(tx+off*tw,yy,sw*tw,hh,4);c.stroke();}else{c.beginPath();c.roundRect(tx+off*tw,yy,(1-off)*tw,hh,4);c.stroke();c.beginPath();c.roundRect(tx,yy,(off+sw-1)*tw,hh,4);c.stroke();}c.setLineDash([]);const px=tx+((phase+off)%1)*tw;c.strokeStyle=C.text;c.lineWidth=1.5;c.beginPath();c.moveTo(px,yy-3);c.lineTo(px,yy+hh+3);c.stroke();});
       txt('Filled green: stance',lx+16,y+270,13,C.muted);txt('Dashed amber: swing',lx+182,y+270,13,C.muted);txt('Swinging: '+labels.filter((_,i)=>((phase-offsets[i]+1)%1)<1-duty).join(', '),lx+lw-16,y+270,11,C.muted,500,'right');
     }else{
-      const y=top+641;card(lx,y,lw,270);lab('Body tilt, feet planted',lx+16,y+24);const gy=y+218,vals=this.fnkPoseValues;
-      [[lx+174,'FRONT VIEW · ROLL',vals.roll],[lx+492,'SIDE VIEW (FRONT RIGHT) · PITCH',vals.pitch]].forEach(a=>{const gx=a[0],ang=Math.max(-.35,Math.min(.35,(Number(a[2])||0)*Math.PI/180));c.strokeStyle=C.line;c.lineWidth=2;c.beginPath();c.moveTo(gx-140,gy);c.lineTo(gx+140,gy);c.stroke();c.fillStyle=C.stance;c.beginPath();c.arc(gx-125,gy,5,0,Math.PI*2);c.arc(gx+125,gy,5,0,Math.PI*2);c.fill();c.strokeStyle=C.text;c.lineWidth=6;c.beginPath();c.moveTo(gx-63,gy-Math.sin(ang)*58);c.lineTo(gx+63,gy+Math.sin(ang)*58);c.stroke();txt(a[1],gx,y+244,11,C.muted,500,'center');});
+      const y=top+641;card(lx,y,lw,270);lab('Body tilt, six articulated legs planted',lx+16,y+24);const gy=y+218,vals=this.fnkPoseValues;
+      [[lx+174,'FRONT VIEW · ROLL',vals.roll,'roll'],[lx+492,'SIDE VIEW · PITCH',vals.pitch,'pitch']].forEach(a=>{
+        const gx=a[0],ang=Math.max(-.35,Math.min(.35,(Number(a[2])||0)*Math.PI/180)),half=63,bodyCY=gy-55;
+        c.strokeStyle=C.line;c.lineWidth=2;c.beginPath();c.moveTo(gx-140,gy);c.lineTo(gx+140,gy);c.stroke();
+        // Plant three legs on each side of the body. Their upper joints follow
+        // the tilted chassis while the feet stay on the ground plane.
+        const tilt=Math.sin(ang);
+        for(let side of [-1,1])for(let leg=0;leg<3;leg++){
+          const along=(leg-1)*35,hipX=gx+along+(a[3]==='roll'?side*half:side*10),hipY=bodyCY+tilt*(along/(half||1))*24;
+          const kneeX=hipX+side*(a[3]==='roll'?20:13),kneeY=hipY+31+(leg===1?5:0);
+          const footX=hipX+side*(a[3]==='roll'?52:34)+(a[3]==='pitch'?tilt*along*.45:0),footY=gy-3;
+          c.strokeStyle=C.stance;c.lineWidth=2.5;c.beginPath();c.moveTo(hipX,hipY);c.lineTo(kneeX,kneeY);c.lineTo(footX,footY);c.stroke();
+          c.fillStyle=C.text;c.beginPath();c.arc(hipX,hipY,3,0,Math.PI*2);c.fill();c.fillStyle=C.stance;c.beginPath();c.arc(kneeX,kneeY,3.5,0,Math.PI*2);c.arc(footX,footY,4,0,Math.PI*2);c.fill();
+        }
+        c.save();c.translate(gx,bodyCY);c.rotate(ang);c.fillStyle=C.panel;c.strokeStyle=C.text;c.lineWidth=4;c.beginPath();c.roundRect(-half,-8,half*2,16,5);c.fill();c.stroke();c.restore();
+        txt(`${a[1]} · ${Number(a[2]||0).toFixed(1)}°`,gx,y+244,11,C.muted,500,'center');
+      });
     }
 
     // The right column preserves the HTML's exact component order and 3-column movement pad.
@@ -2064,7 +2083,10 @@ export class QuestVRDashboard {
     raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
     raycaster.ray.direction.set(0, 0, -1).applyMatrix4(rotation);
     this.scene.updateMatrixWorld(true);
-    const hit = raycaster.intersectObjects(this.panels.filter(panel => (panel !== this.gpsMapPanel || this.gpsMapVisible)
+    // The separate Gait Lab is an interactive window. Let its controls receive
+    // clicks even when another dashboard surface happens to overlap in depth.
+    const fnkHit = this.fnkVisible ? raycaster.intersectObject(this.fnkPanel, false)[0] : null;
+    const hit = fnkHit || raycaster.intersectObjects(this.panels.filter(panel => (panel !== this.gpsMapPanel || this.gpsMapVisible)
       && (panel !== this.fnkPanel || this.fnkVisible)), false)[0];
     if (this.sensorDensityDragController === controller && hit?.object === this.panel && hit.uv) {
       const x = hit.uv.x * this.logicalWidth;
@@ -2101,7 +2123,8 @@ export class QuestVRDashboard {
     raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
     raycaster.ray.direction.set(0, 0, -1).applyMatrix4(rotation);
     this.scene.updateMatrixWorld(true);
-    const hit = raycaster.intersectObjects(this.panels.filter(panel => (panel !== this.gpsMapPanel || this.gpsMapVisible)
+    const fnkHit = this.fnkVisible ? raycaster.intersectObject(this.fnkPanel, false)[0] : null;
+    const hit = fnkHit || raycaster.intersectObjects(this.panels.filter(panel => (panel !== this.gpsMapPanel || this.gpsMapVisible)
       && (panel !== this.fnkPanel || this.fnkVisible)), false)[0];
     if (!hit?.uv) return null;
     if (hit.object === this.gpsMapPanel) {

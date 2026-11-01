@@ -1387,7 +1387,11 @@ function selectAt(controller) {
     vrDashboard.setFnkVisible(!vrDashboard.fnkVisible);
     return;
   }
-  if (hudAction === 'fnk-window') return;
+  if (hudAction === 'fnk-window') {
+    vrDashboard.fnkMessage = 'CLICK REGISTERED · AIM AT A VISIBLE GAIT LAB CONTROL';
+    vrDashboard.drawFnkControlWindow();
+    return;
+  }
   if (hudAction === 'fnk-disabled') {
     setStatus('FNK action unavailable: connect custom FNHR firmware; stick drive also requires FNK0031_ACTUATION_ENABLED in Body settings.', true);
     return;
