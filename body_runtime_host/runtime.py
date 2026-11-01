@@ -27,6 +27,7 @@ import logging
 import math
 import os
 import platform
+import re
 import signal
 import shlex
 import shutil
@@ -1001,11 +1002,11 @@ class BodyHost:
         return result or {"state": "unavailable", "detections": [], "frame_id": frame_id}
 
     def camera_metric_yolo_status(self) -> dict:
-        """Attach calibrated MiDaS range samples to synchronized YOLOX boxes.
+        """Attach radar-anchored MiDaS 3D estimates to synchronized YOLOX boxes.
 
-        This estimates forward range in the camera frame. Bearing uses the
-        calibration's explicitly approximate HFOV model; it is not a surveyed
-        body-frame pose and does not associate a radar track with the box.
+        A unique, time-aligned person/radar bearing match supplies a live metric
+        anchor. The anchor corrects the MiDaS range scale for this frame; the
+        camera/radar extrinsics remain approximate until measured.
         """
         yolo = self.camera_yolo_status()
         detections = yolo.get("detections") or []
@@ -1042,19 +1043,22 @@ class BodyHost:
             valid_range = calibration.get("calibrated_range_m") or []
             if len(valid_range) < 2:
                 raise ValueError("calibration has no validated distance interval")
+            relative_range = calibration.get("calibrated_relative_range") or []
             hfov = 70.0
             focal = width / (2.0 * math.tan(math.radians(hfov / 2.0)))
-            output = []
-            for detection in detections:
-                item = dict(detection)
+            def pixel_box(detection):
                 box = detection.get("bbox")
                 if not isinstance(box, (list, tuple)) or len(box) < 4:
-                    item["metric_depth"] = {"available": False, "reason": "YOLOX box coordinates missing"}
-                    output.append(item)
-                    continue
+                    return None
                 x1, y1, x2, y2 = [float(part) for part in box[:4]]
                 if max(abs(x1), abs(y1), abs(x2), abs(y2)) <= 1.5:
                     x1, x2, y1, y2 = x1 * width, x2 * width, y1 * height, y2 * height
+                return x1, y1, x2, y2
+
+            def depth_roi(box):
+                if box is None:
+                    return None
+                x1, y1, x2, y2 = box
                 # Match the calibration collector's exact inner torso/object ROI
                 # and stride (x=30–70%, y=35–65%). A different box region changes
                 # the median depth, especially for a TV against a wall or floor.
@@ -1064,49 +1068,195 @@ class BodyHost:
                 bottom = max(top + 1, min(height, round(0.35 * y1 + 0.65 * y2)))
                 step = max(1, int(min(right - left, bottom - top) / 8))
                 roi = raw[top:bottom:step, left:right:step]
-                if roi.size < 9:
+                values = roi.astype(np.float64).ravel()
+                values = values[np.isfinite(values) & (values > 0)]
+                if values.size < 9:
+                    return None
+                # The v4 fit consumes the normalized 16-bit PNG code directly.
+                return {"median": float(np.median(values)),
+                        "near": float(np.percentile(values, 75)),
+                        "far": float(np.percentile(values, 25)),
+                        "p10": float(np.percentile(values, 10)),
+                        "p90": float(np.percentile(values, 90)),
+                        "count": int(values.size)}
+
+            boxes = [pixel_box(detection) for detection in detections]
+            rois = [depth_roi(box) for box in boxes]
+
+            # Pair the person box with a fresh radar target using the same
+            # approximate bearing convention as the calibration collector.
+            radar_sample = None
+            radar_age = float("inf")
+            radar_match = None
+            try:
+                # Reuse the radar frame already polled by the Body sensor loop;
+                # this perception endpoint must not start a second blocking RPC.
+                source_cursor = getattr(self.worldmodel, "source", None)
+                visited_sources = set()
+                while source_cursor is not None and id(source_cursor) not in visited_sources:
+                    visited_sources.add(id(source_cursor))
+                    radar_adapter = getattr(source_cursor, "radar", None)
+                    if radar_adapter is not None:
+                        cached_frame = getattr(radar_adapter, "last_frame", None)
+                        last_ok = getattr(radar_adapter, "last_ok", None)
+                        if cached_frame is not None and last_ok is not None:
+                            cache_age = time.time() - float(last_ok)
+                            if 0 <= cache_age <= 0.75:
+                                radar_sample = cached_frame.as_dict()
+                        break
+                    source_cursor = getattr(source_cursor, "source", None)
+                radar_at = float((radar_sample or {}).get("timestamp") or 0.0)
+                radar_age = abs(radar_at - (yolo_at + depth_at) / 2.0) if radar_at > 0 else float("inf")
+                radar_source = str((radar_sample or {}).get("source") or "").lower()
+                candidates = []
+                if radar_sample and radar_source.startswith("hlk_ld2450") and radar_age <= 0.35:
+                    for detection_index, (detection, box) in enumerate(zip(detections, boxes)):
+                        label = str(detection.get("label") or detection.get("class_name") or detection.get("class") or "")
+                        confidence = float(detection.get("confidence", detection.get("score", 0.0)) or 0.0)
+                        if not re.search(r"person|human", label, re.IGNORECASE) or confidence < 0.5 or box is None or not rois[detection_index]:
+                            continue
+                        x1, _, x2, _ = box
+                        center_x = (x1 + x2) / 2.0
+                        camera_bearing = math.atan2(center_x - width / 2.0, focal)
+                        for target_index, target in enumerate(radar_sample.get("targets") or []):
+                            position = target.get("position_m") or target.get("position") or []
+                            if len(position) < 2:
+                                continue
+                            lateral_right, forward = float(position[0]), float(position[1])
+                            if not (0.25 <= forward <= 6.0):
+                                continue
+                            radar_bearing = math.atan2(lateral_right, forward)
+                            error_deg = abs(math.degrees(math.atan2(
+                                math.sin(camera_bearing - radar_bearing),
+                                math.cos(camera_bearing - radar_bearing))))
+                            if error_deg <= 8.0:
+                                candidates.append({"detection_index": detection_index,
+                                    "target_index": target_index, "target": target,
+                                    "forward_m": forward, "lateral_m": lateral_right,
+                                    "range_m": math.hypot(lateral_right, forward),
+                                    "bearing_error_deg": error_deg})
+                candidates.sort(key=lambda item: item["bearing_error_deg"])
+                if candidates:
+                    best = candidates[0]
+                    detection_alternates = [c for c in candidates if c["detection_index"] != best["detection_index"]]
+                    target_alternates = [c for c in candidates if c["target_index"] != best["target_index"]]
+                    unique_detection = not detection_alternates or detection_alternates[0]["bearing_error_deg"] - best["bearing_error_deg"] >= 1.5
+                    unique_target = not target_alternates or target_alternates[0]["bearing_error_deg"] - best["bearing_error_deg"] >= 1.5
+                    if unique_detection and unique_target:
+                        radar_match = best
+            except Exception:
+                radar_sample = None
+
+            anchor_scale = None
+            if radar_match:
+                person_relative = rois[radar_match["detection_index"]]["median"]
+                person_inverse = inverse_scale * person_relative + inverse_offset
+                person_fit_distance = 1.0 / person_inverse if person_inverse > 1e-6 else float("nan")
+                if (math.isfinite(person_fit_distance) and float(valid_range[0]) <= person_fit_distance <= float(valid_range[1])):
+                    candidate_scale = radar_match["forward_m"] / person_fit_distance
+                    if 0.65 <= candidate_scale <= 1.35:
+                        anchor_scale = candidate_scale
+
+            output = []
+            triangle_person = None
+            if radar_match:
+                triangle_person = (radar_match["lateral_m"], radar_match["forward_m"])
+            for index, detection in enumerate(detections):
+                item = dict(detection)
+                box = boxes[index]
+                roi = rois[index]
+                if box is None:
+                    item["metric_depth"] = {"available": False, "reason": "YOLOX box coordinates missing"}
+                    output.append(item)
+                    continue
+                if roi is None:
                     item["metric_depth"] = {"available": False, "reason": "YOLOX box too small for stable depth sampling"}
                     output.append(item)
                     continue
-                # The v4 calibration anchors use the normalized 16-bit PNG
-                # sample itself (the exact value returned by decodeGray16Png
-                # in the viewers). depth_raw_min/max describe the upstream
-                # model tensor and must not be applied to this normalized code.
-                relative = float(np.median(roi))
+                is_person = bool(re.search(r"person|human", str(detection.get("label") or detection.get("class_name") or detection.get("class") or ""), re.IGNORECASE))
+                is_tv = bool(re.search(r"\b(tv|television)\b", str(detection.get("label") or detection.get("class_name") or detection.get("class") or ""), re.IGNORECASE))
+                relative = (roi["near"] if inverse_scale >= 0 else roi["far"]) if is_tv else roi["median"]
                 inverse_range = inverse_scale * relative + inverse_offset
-                distance = 1.0 / inverse_range if inverse_range > 1e-6 else float("nan")
-                if not math.isfinite(distance) or not float(valid_range[0]) <= distance <= float(valid_range[1]):
-                    metric = {"available": False, "reason": "MiDaS-derived distance candidate falls outside the validated calibration interval; object distance is unknown"}
-                    if math.isfinite(distance) and distance > 0:
-                        metric.update({
-                            "candidate_forward_m": round(distance, 3),
-                            "candidate_is_unvalidated": True,
-                            "calibrated_range_m": [float(valid_range[0]), float(valid_range[1])],
-                        })
+                nominal_forward = 1.0 / inverse_range if inverse_range > 1e-6 else float("nan")
+                scale = anchor_scale if anchor_scale is not None else 1.0
+                corrected_forward = nominal_forward * scale
+                in_relative_fit = not (len(relative_range) >= 2) or float(relative_range[0]) <= relative <= float(relative_range[1])
+                in_calibrated_range = math.isfinite(corrected_forward) and float(valid_range[0]) <= corrected_forward <= float(valid_range[1])
+                direct_radar_person = bool(is_person and radar_match and radar_match["detection_index"] == index)
+                if direct_radar_person:
+                    corrected_forward = radar_match["forward_m"]
+                    in_calibrated_range = True
+                if not in_calibrated_range or (not in_relative_fit and not direct_radar_person) or (not is_person and anchor_scale is None):
+                    metric = {"available": False,
+                        "reason": "Waiting for a unique synchronized person/radar anchor to estimate scene geometry" if anchor_scale is None else "MiDaS-derived candidate outside validated metric support; object distance remains unknown",
+                        "calibrated_range_m": [float(valid_range[0]), float(valid_range[1])]}
+                    if math.isfinite(corrected_forward) and corrected_forward > 0:
+                        metric.update({"candidate_forward_m": round(corrected_forward, 3), "candidate_is_unvalidated": True})
                     item["metric_depth"] = metric
                     output.append(item)
                     continue
-                center_x = (left + right) / 2.0
-                # Positive bearing is to Body-left; this is camera-relative and approximate.
-                bearing = math.degrees(math.atan2(width / 2.0 - center_x, focal))
-                item["metric_depth"] = {
+
+                x1, _, x2, _ = box
+                center_x = (x1 + x2) / 2.0
+                bearing = math.atan2(center_x - width / 2.0, focal)
+                lateral = corrected_forward * math.tan(bearing)
+                body_range = math.hypot(corrected_forward, lateral)
+                p10_inverse = inverse_scale * roi["p10"] + inverse_offset
+                p90_inverse = inverse_scale * roi["p90"] + inverse_offset
+                q10 = scale / p10_inverse if p10_inverse > 1e-6 else corrected_forward
+                q90 = scale / p90_inverse if p90_inverse > 1e-6 else corrected_forward
+                spread = abs(q90 - q10) / 2.0
+                fit_error = calibration.get("holdout_rmse_m", calibration.get("rmse_m"))
+                uncertainty = math.sqrt((float(fit_error or 0.0) * scale) ** 2 + spread ** 2)
+                metric = {
                     "available": True,
-                    "forward_m": round(distance, 3),
-                    "bearing_deg_approx": round(bearing, 2),
+                    "forward_m": round(corrected_forward, 3),
+                    "range_m": round(body_range, 3),
+                    "lateral_m": round(lateral, 3),
+                    "bearing_deg_approx": round(math.degrees(bearing), 2),
                     "coordinate_frame": "camera_optical_approximate",
-                    "source": "paired_yolox_box_midas_raw_depth",
+                    "source": "paired_yolox_midas_depth_radar_person_anchored" if anchor_scale is not None else "paired_yolox_box_midas_raw_depth",
                     "frame_id": yolo.get("frame_id"),
                     "captured_at": yolo_at,
                     "frame_delta_s": round(delta, 4),
-                    "calibration_rmse_m": calibration.get("holdout_rmse_m", calibration.get("rmse_m")),
+                    "uncertainty_m_approx": round(uncertainty, 3),
+                    "midas_depth_spread_m": round(spread, 3),
+                    "calibration_rmse_m": fit_error,
                     "hfov_assumed_deg": hfov,
-                    "radar_track_associated": False,
+                    "radar_track_associated": bool(anchor_scale is not None),
+                    "radar_anchor_scale": round(anchor_scale, 4) if anchor_scale is not None else None,
+                    "radar_frame_delta_s": round(radar_age, 4) if radar_match else None,
+                    "radar_bearing_error_deg": round(radar_match["bearing_error_deg"], 2) if radar_match else None,
                 }
+                if direct_radar_person:
+                    metric.update({"range_m": round(radar_match["range_m"], 3),
+                        "lateral_m": round(radar_match["lateral_m"], 3),
+                        "source": "synchronized_mmwave_person_anchor",
+                        "radar_target_id": radar_match["target"].get("target_id")})
+                elif triangle_person is not None and anchor_scale is not None:
+                    px, py = triangle_person
+                    tx, ty = lateral, corrected_forward
+                    side = math.hypot(tx - px, ty - py)
+                    if side > 1e-6:
+                        body_angle = math.degrees(math.acos(max(-1.0, min(1.0,
+                            (px * tx + py * ty) / (math.hypot(px, py) * math.hypot(tx, ty))))))
+                        person_angle = math.degrees(math.acos(max(-1.0, min(1.0,
+                            ((-px) * (tx - px) + (-py) * (ty - py)) / (math.hypot(px, py) * side)))))
+                        metric["body_person_target_geometry"] = {
+                            "person_to_target_m_approx": round(side, 3),
+                            "angle_at_body_deg_approx": round(body_angle, 2),
+                            "angle_at_person_deg_approx": round(person_angle, 2),
+                            "basis": "radar person point plus radar-anchored MiDaS box point; camera/radar extrinsics assumed aligned",
+                        }
+                item["metric_depth"] = metric
                 output.append(item)
             return {**yolo, "detections": output, "metric_depth": {
                 "available": any((item.get("metric_depth") or {}).get("available") for item in output),
                 "frame_delta_s": round(delta, 4), "calibration": calibration,
-                "distance_basis": "inverse_affine MiDaS raw-depth calibration; camera-frame approximate bearing",
+                "distance_basis": "synchronized YOLOX/MiDaS 3D box estimates anchored to a unique fresh mmWave/person bearing match; approximate camera/radar alignment",
+                "radar_anchor_available": anchor_scale is not None,
+                "radar_anchor_age_s": round(radar_age, 4) if radar_match else None,
+                "radar_anchor_target_id": radar_match["target"].get("target_id") if radar_match else None,
             }}
         except Exception as exc:
             return {**yolo, "metric_depth": {"available": False, "reason": str(exc)[:240], "calibration": calibration}}

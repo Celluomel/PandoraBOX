@@ -3283,9 +3283,15 @@ Memory honesty — two distinct cases:
                     else:
                         text = label
                     if metric.get("available"):
-                        text += f" · ~{float(metric['forward_m']):.2f}m caméra"
+                        reported_range = metric.get("range_m", metric.get("forward_m"))
+                        text += f" · ~{float(reported_range):.2f}m Body"
+                        if isinstance(metric.get("uncertainty_m_approx"), (int, float)):
+                            text += f" ±{float(metric['uncertainty_m_approx']):.2f}m approx."
                         if isinstance(metric.get("bearing_deg_approx"), (int, float)):
                             text += f" / {float(metric['bearing_deg_approx']):+.0f}° approx."
+                        geometry = metric.get("body_person_target_geometry")
+                        if isinstance(geometry, dict):
+                            text += f" · personne↔objet ~{float(geometry['person_to_target_m_approx']):.2f}m"
                     elif isinstance(metric.get("candidate_forward_m"), (int, float)):
                         text += f" · candidate MiDaS {float(metric['candidate_forward_m']):.2f}m hors intervalle de calibration; distance réelle inconnue"
                     labels.append(text)
@@ -3295,7 +3301,7 @@ Memory honesty — two distinct cases:
                 response = (
                     f"Caméra Body · YOLOX · {frame_age} · frame {yolo.get('frame_id') or 'courante'} : "
                     f"{len(detections)} détection(s) 2D — {visual}. "
-                    "Ce sont des labels de détection, pas une description complète de la scène ni des distances."
+                    "Les distances sont des estimations MiDaS ancrées radar quand une association synchronisée et non ambiguë existe; sinon elles sont omises ou signalées comme candidates non validées."
                 )
                 perception = {"available": True, "camera": {
                     "source": "yolox", "frame_id": yolo.get("frame_id"),
