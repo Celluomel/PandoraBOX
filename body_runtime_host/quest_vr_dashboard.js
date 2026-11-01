@@ -70,6 +70,8 @@ export class QuestVRDashboard {
     this.fnkGyroDelta = new THREE.Quaternion();
     this.fnkGyroAxis = new THREE.Vector3();
     this.fnkLeg = 1;
+    this.fnkGait = 'tripod';
+    this.fnkSpeed = 1;
     this.fnkBusy = false;
     this.fnkHardwareStatus = null;
     this.fnkLegState = null;
@@ -589,7 +591,7 @@ export class QuestVRDashboard {
     drawButton('gps-map', mapX, 204, this.gpsMapVisible ? 'CLOSE GPS MAP' : 'GPS MAP', 'rgba(31, 73, 77, .96)', '#78d8d0', '#e5fffa');
     drawButton('simulation', simulationX, 300, this.actionBusy ? 'PLEASE WAIT' : simulationReady ? simulationLabel : 'SIMULATION OFFLINE', 'rgba(31, 105, 78, .96)', '#75edbd', '#e5fff3', simulationReady);
     drawButton('sensor-mode', sensorX, 300, this.sceneMode === 'sensors' ? 'SHOW SIMULATION' : 'SHOW LIVE SENSORS', 'rgba(31, 73, 77, .96)', '#78d8d0', '#e5fffa');
-    drawButton('fnk-control', fnkX, 220, this.fnkVisible ? 'CLOSE FNK' : 'FNK CONTROL', 'rgba(31, 105, 78, .96)', '#75edbd', '#e5fff3');
+    drawButton('fnk-control', fnkX, 220, this.fnkVisible ? 'CLOSE GAIT LAB' : 'HEXAPOD GAIT LAB', 'rgba(31, 105, 78, .96)', '#75edbd', '#e5fff3');
     drawButton('exit', exitX, 220, this.actionBusy ? 'PLEASE WAIT' : 'EXIT VR', 'rgba(91, 53, 42, .96)', '#f0a888', '#fff0e8');
     this.sensorPointDensityHitArea = null;
     if (this.sceneMode === 'sensors') {
@@ -1703,6 +1705,19 @@ export class QuestVRDashboard {
     }
   }
 
+  sendFnkPadAction(action) {
+    if (action === 'stop') { this.disarmFnkTeleop('SCENE MODE · CURRENT FNHR GAIT CANNOT BE INTERRUPTED'); return; }
+    const v = 24 * this.fnkSpeed;
+    const commands = {
+      forward: { x: 0, y: v, angle: 0 }, backward: { x: 0, y: -v, angle: 0 },
+      left: { x: -v, y: 0, angle: 0 }, right: { x: v, y: 0, angle: 0 },
+      'turn-left': { x: 0, y: 0, angle: -12 * this.fnkSpeed },
+      'turn-right': { x: 0, y: 0, angle: 12 * this.fnkSpeed },
+    };
+    if (!this.fnkTeleopArmed) { this.fnkMessage = 'SELECT ROBOT MODE BEFORE SENDING A GAIT'; this.drawFnkControlWindow(); return; }
+    const params = commands[action]; if (params) void this.sendFnkManualControl({ mode: 'crawl', ...params });
+  }
+
   updateFnkStickControl(inputSources = []) {
     const right = inputSources.find(source => source.handedness === 'right');
     const left = inputSources.find(source => source.handedness === 'left');
@@ -1769,7 +1784,30 @@ export class QuestVRDashboard {
     }
   }
 
+  drawFnkGaitLab() {
+    const c=this.fnkContext,w=this.fnkCanvas.width,h=this.fnkCanvas.height;if(!c)return;
+    c.clearRect(0,0,w,h);c.fillStyle='#0a1018';c.fillRect(0,0,w,h);c.strokeStyle='#2b405c';c.lineWidth=3;c.strokeRect(3,3,w-6,h-6);
+    c.fillStyle='#0d141d';c.fillRect(12,12,w-24,120);c.fillStyle='#d6e4f0';c.font='700 42px system-ui';c.textAlign='left';c.textBaseline='middle';c.fillText('HEXAPOD GAIT LAB',38,50);
+    const hw=this.fnkHardwareStatus||{},ready=hw.connected===true&&hw.firmware_profile==='custom_fnhr_ascii_v2';c.font='600 22px ui-monospace,monospace';c.fillStyle=ready?'#4dff88':'#ffb020';c.fillText(`${ready?'FNK0031 CONNECTED':'BOARD NOT CONNECTED'} · ACTUATION ${hw.actuation_enabled?'ENABLED':'DISABLED'}`,40,94);
+    this.fnkActionHitAreas={};const btn=(key,x,y,bw,bh,label,on=true,selected=false)=>{c.globalAlpha=on?1:.4;c.fillStyle=selected?'#174e36':'#101c2a';c.strokeStyle=selected?'#4dff88':'#40536a';c.lineWidth=3;c.beginPath();c.roundRect(x,y,bw,bh,10);c.fill();c.stroke();c.fillStyle='#d6e4f0';c.font='650 24px ui-monospace,monospace';c.textAlign='center';c.fillText(label,x+bw/2,y+bh/2,bw-14);c.globalAlpha=1;this.fnkActionHitAreas[key]={x,y,width:bw,height:bh,enabled:on};};
+    btn('tab-control',30,148,210,66,'WALK',true,this.fnkTab==='control');btn('tab-twist',250,148,260,66,'TWIST BODY',true,this.fnkTab==='twist');btn('tab-calibration',520,148,230,66,'LEG STATUS',true,this.fnkTab==='calibration');btn('tab-installation',760,148,260,66,'CONNECTION',true,this.fnkTab==='installation');
+    c.fillStyle='#0b121b';c.fillRect(30,235,980,840);c.fillRect(1030,235,740,840);
+    if(this.fnkTab==='control'||this.fnkTab==='twist'){
+      const twist=this.fnkTab==='twist';c.fillStyle='#8fa3b8';c.font='600 22px ui-monospace,monospace';c.textAlign='left';c.fillText(twist?'TWIST BODY · FEET PLANTED':'WALK · FNHR GAIT STEPS',55,275);
+      const cx=515,cy=635;c.strokeStyle='#2b405c';c.lineWidth=2;for(let r=90;r<=270;r+=90){c.beginPath();c.arc(cx,cy,r,0,Math.PI*2);c.stroke();}c.fillStyle='#d6e4f0';c.beginPath();c.roundRect(cx-68,cy-118,136,236,22);c.fill();c.fillStyle='#0a1018';c.beginPath();c.moveTo(cx-24,cy-119);c.lineTo(cx+24,cy-119);c.lineTo(cx,cy-150);c.fill();
+      for(let i=0;i<6;i++){const s=i%2?1:-1,row=Math.floor(i/2)-1,bx=cx+s*63,by=cy+row*65,fx=cx+s*205,fy=by+row*36;c.strokeStyle=(i+Math.floor(performance.now()/500))%2?'#4dff88':'#ffb020';c.lineWidth=9;c.setLineDash(c.strokeStyle==='#ffb020'?[14,9]:[]);c.beginPath();c.moveTo(bx,by);c.lineTo((bx+fx)/2,(by+fy)/2);c.lineTo(fx,fy);c.stroke();c.setLineDash([]);c.fillStyle=c.strokeStyle;c.beginPath();c.arc(fx,fy,11,0,Math.PI*2);c.fill();}
+      if(!twist){[['turn-left','↶ TURN'],['forward','↑ FORWARD'],['turn-right','↷ TURN'],['left','← LEFT'],['stop','■ STOP'],['right','→ RIGHT'],['backward','↓ BACK']].forEach(([k,l],i)=>btn(`drive-${k}`,1080+(i%3)*220,320+Math.floor(i/3)*145,200,116,l,ready&&hw.actuation_enabled&&!this.fnkDriveInFlight));c.fillStyle='#8fa3b8';c.textAlign='left';c.font='20px ui-monospace,monospace';c.fillText(`GAIT PREVIEW · SPEED ${this.fnkSpeed.toFixed(1)}×`,1085,825);['tripod','ripple','wave'].forEach((g,i)=>btn(`gait-${g}`,1080+i*220,850,200,65,g.toUpperCase(),true,this.fnkGait===g));btn('speed-down',1080,940,200,60,'SPEED −',true);btn('speed-up',1300,940,200,60,'SPEED +',true);}
+      else {c.fillStyle='#8fa3b8';c.textAlign='left';c.font='22px ui-monospace,monospace';c.fillText('LEFT CONTROLLER ORIENTATION → BODY TWIST',1085,355);c.fillText('RIGHT STICK → X/Y shift · RIGHT TRIGGER → height',1085,420);c.fillText('WebXR tracked pose · bounded FNHR twist steps',1085,485);}
+      btn('teleop-arm',1080,690,310,80,this.fnkTeleopArmed?'ROBOT MODE ON':'SELECT ROBOT MODE',ready&&hw.actuation_enabled,this.fnkTeleopArmed);btn('teleop-stop',1405,690,310,80,'SCENE MODE',true);
+      c.fillStyle='#8fa3b8';c.font='19px ui-monospace,monospace';c.textAlign='left';c.fillText('Left menu toggles robot/scene mode when exposed; this panel is the fallback.',1085,815,650);c.fillText('Orientation drives Twist Body; no synthetic gait telemetry is shown.',1085,1010,650);
+    }else{c.fillStyle='#d6e4f0';c.font='25px ui-monospace,monospace';c.textAlign='left';c.fillText(this.fnkTab==='calibration'?'LEG STATUS · COMMAND ESTIMATES, NOT SERVO FEEDBACK':'FNHR CUSTOM USB · 115200 BAUD',60,310);(this.fnkLegState?.legs||[]).forEach((l,i)=>c.fillText(`LEG ${i+1} · FOOT ${l.foot_position_mm?.map(n=>Number(n).toFixed(1)).join(' / ')||'—'} mm · JOINT ${l.joint_angles_deg?.map(n=>Number(n).toFixed(1)).join(' / ')||'—'}°`,60,385+i*90));}
+    c.fillStyle='#8fa3b8';c.font='18px ui-monospace,monospace';c.textAlign='left';c.fillText(this.fnkMessage.slice(0,120),35,h-25,w-70);this.fnkTexture.needsUpdate=true;
+  }
+
   drawFnkControlWindow() {
+    this.drawFnkGaitLab();
+    return;
+    // Legacy panel kept below for reference while the Gait Lab renderer is active.
     if (!this.fnkContext) return;
     const ctx = this.fnkContext;
     const width = this.fnkCanvas.width;

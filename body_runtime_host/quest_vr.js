@@ -1407,6 +1407,20 @@ function selectAt(controller) {
     vrDashboard.disarmFnkTeleop('STOP REQUESTED · CURRENT FNHR GAIT CANNOT BE INTERRUPTED');
     return;
   }
+  if (hudAction.startsWith('drive-')) {
+    vrDashboard.sendFnkPadAction(hudAction.slice(6));
+    return;
+  }
+  if (hudAction.startsWith('gait-')) {
+    vrDashboard.fnkGait = hudAction.slice(5);
+    vrDashboard.drawFnkControlWindow();
+    return;
+  }
+  if (hudAction === 'speed-down' || hudAction === 'speed-up') {
+    vrDashboard.fnkSpeed = Math.max(0.25, Math.min(2, vrDashboard.fnkSpeed + (hudAction === 'speed-up' ? 0.25 : -0.25)));
+    vrDashboard.drawFnkControlWindow();
+    return;
+  }
   if (hudAction.startsWith('leg-')) {
     vrDashboard.selectFnkLeg(Number(hudAction.slice(4)));
     return;
