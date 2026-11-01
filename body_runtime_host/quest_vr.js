@@ -1661,6 +1661,8 @@ async function enterXR(mode) {
     renderer.xr.setFramebufferScaleFactor(xrRenderSettings.scale);
     renderer.xr.setFoveation(xrRenderSettings.foveation);
     await renderer.xr.setSession(session);
+    vrDashboard.setFnkTeleop(false);
+    leftMenuWasPressed = false;
     orbit.enabled = false;
     vrDashboard.setVisible(mode === 'immersive-vr');
     if (mode === 'immersive-vr') startCameraPolling();
@@ -1670,6 +1672,8 @@ async function enterXR(mode) {
       ? 'Passthrough is active. The Body map is an unaligned overlay; controller input is telemetry only.'
       : 'VR is active. Left stick moves through the scene; right stick turns. Squeeze a controller grip or hold its trigger on a window to move it.');
     session.addEventListener('end', () => {
+      vrDashboard.setFnkTeleop(false);
+      leftMenuWasPressed = false;
       orbit.enabled = true;
       cameraBackgroundActive = false;
       cameraArc.visible = false;
@@ -1750,7 +1754,8 @@ setInterval(() => { if (activeSceneMode === 'sensors') void pollSensorRadar(); }
 setInterval(() => { if (activeSceneMode === 'sensors') void pollUltrasonicStatus(); }, 500);
 void pollBody();
 let previousFrameAt = 0;
-renderer.setAnimationLoop(time => {
+let leftMenuWasPressed = false;
+renderer.setAnimationLoop((time, xrFrame) => {
   perfTick(time);
   const deltaSeconds = previousFrameAt ? (time - previousFrameAt) / 1000 : 1 / 90;
   updateSensorYoloTracks(deltaSeconds);
@@ -1764,6 +1769,19 @@ renderer.setAnimationLoop(time => {
     updateXRSceneFollow(xrCamera);
     const headYaw = new THREE.Euler().setFromQuaternion(xrCamera.quaternion, 'YXZ').y;
     const active = [...session.inputSources].filter(source => source.gamepad);
+    const leftInput = active.find(source => source.handedness === 'left');
+    const menuPressed = Boolean(leftInput?.gamepad?.buttons?.slice(6).some(button => button?.pressed));
+    if (menuPressed && !leftMenuWasPressed && vrDashboard.fnkVisible) vrDashboard.toggleFnkTeleop();
+    leftMenuWasPressed = menuPressed;
+    if (vrDashboard.fnkVisible && xrFrame && leftInput) {
+      const referenceSpace = renderer.xr.getReferenceSpace();
+      const controllerSpace = leftInput.gripSpace || leftInput.targetRaySpace;
+      const pose = referenceSpace && controllerSpace ? xrFrame.getPose(controllerSpace, referenceSpace) : null;
+      if (pose?.transform?.orientation) {
+        const q = pose.transform.orientation;
+        vrDashboard.updateFnkControllerOrientation([q.x, q.y, q.z, q.w]);
+      }
+    }
     const fnkDriving = vrDashboard.updateFnkStickControl(active);
     if (!vrDashboard.grabbedController && !fnkDriving) updateXRLocomotion(active, xrCamera, deltaSeconds);
     vrDashboard.clearPointer();
@@ -1779,6 +1797,10 @@ renderer.setAnimationLoop(time => {
         x: Number(axes[axisOffset] ?? 0),
         y: Number(axes[axisOffset + 1] ?? 0),
         pressed,
+        profile: source.profiles?.[0] || 'unknown',
+        gamepadMapping: source.gamepad.mapping || 'custom',
+        buttonCount: source.gamepad.buttons?.length || 0,
+        menuButtonExposed: (source.gamepad.buttons?.length || 0) > 6,
       };
     });
     const headingDegrees = Math.round(headYaw * 180 / Math.PI);

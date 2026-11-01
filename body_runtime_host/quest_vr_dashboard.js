@@ -65,6 +65,10 @@ export class QuestVRDashboard {
     this.fnkTeleopArmed = false;
     this.fnkDriveInFlight = false;
     this.fnkLastDriveAt = 0;
+    this.fnkGyroCurrent = new THREE.Quaternion();
+    this.fnkGyroBaseline = null;
+    this.fnkGyroDelta = new THREE.Quaternion();
+    this.fnkGyroAxis = new THREE.Vector3();
     this.fnkLeg = 1;
     this.fnkBusy = false;
     this.fnkHardwareStatus = null;
@@ -1609,6 +1613,7 @@ export class QuestVRDashboard {
 
   setFnkVisible(visible) {
     this.fnkVisible = Boolean(visible);
+    if (!this.fnkVisible) this.setFnkTeleop(false);
     this.fnkRoot.visible = this.visible && this.fnkVisible;
     this.drawDashboard();
     this.drawFnkControlWindow();
@@ -1638,25 +1643,44 @@ export class QuestVRDashboard {
   }
 
   setFnkTab(tab) {
-    this.fnkTab = ['control', 'twist', 'calibration', 'installation'].includes(tab) ? tab : 'control';
+    const next = ['control', 'twist', 'calibration', 'installation'].includes(tab) ? tab : 'control';
+    if (next !== this.fnkTab) this.fnkGyroBaseline = null;
+    this.fnkTab = next;
     this.drawFnkControlWindow();
   }
 
-  toggleFnkTeleop() {
-    this.fnkTeleopArmed = !this.fnkTeleopArmed;
-    this.fnkMessage = this.fnkTeleopArmed
-      ? 'ARMED · HOLD RIGHT THUMBSTICK CLICK TO SEND GAIT COMMANDS'
-      : 'DISARMED · NO DRIVE COMMANDS';
+  setFnkTeleop(enabled) {
+    const hardware = this.fnkHardwareStatus || {};
+    const ready = hardware.connected === true && hardware.firmware_profile === 'custom_fnhr_ascii_v2'
+      && hardware.actuation_enabled === true;
+    this.fnkTeleopArmed = Boolean(enabled) && ready;
+    this.fnkGyroBaseline = null;
+    this.fnkMessage = enabled && !ready
+      ? 'ROBOT MODE BLOCKED · BOARD / CUSTOM FIRMWARE / ACTUATION NOT READY'
+      : this.fnkTeleopArmed
+        ? 'ROBOT CONTROL SELECTED · LEFT MENU TO RETURN TO SCENE MODE'
+        : 'SCENE CONTROL SELECTED · JOYSTICKS MOVE THROUGH THE VR SCENE';
     this.drawFnkControlWindow();
+  }
+
+  toggleFnkTeleop() { this.setFnkTeleop(!this.fnkTeleopArmed); }
+
+  updateFnkControllerOrientation(orientation) {
+    if (!orientation || orientation.length !== 4) return;
+    this.fnkGyroCurrent.set(orientation[0], orientation[1], orientation[2], orientation[3]).normalize();
+    if (this.fnkTeleopArmed && this.fnkTab === 'twist' && !this.fnkGyroBaseline) {
+      this.fnkGyroBaseline = this.fnkGyroCurrent.clone();
+    }
   }
 
   disarmFnkTeleop(message = 'DISARMED · NO DRIVE COMMANDS') {
     this.fnkTeleopArmed = false;
+    this.fnkGyroBaseline = null;
     this.fnkMessage = message;
     this.drawFnkControlWindow();
   }
 
-  async sendFnkManualControl(payload) {
+  async sendFnkManualControl(payload, gyroTarget = null) {
     if (!this.fnkTeleopArmed || this.fnkDriveInFlight) return;
     this.fnkDriveInFlight = true;
     this.fnkLastDriveAt = performance.now();
@@ -1669,6 +1693,7 @@ export class QuestVRDashboard {
       });
       const result = await response.json();
       if (!response.ok || !result?.ok) throw new Error(result?.error || `HTTP ${response.status}`);
+      if (gyroTarget && this.fnkGyroBaseline) this.fnkGyroBaseline.copy(gyroTarget);
       this.fnkMessage = `${result.ack} · OPERATOR COMMAND ACKNOWLEDGED`;
     } catch (error) {
       this.disarmFnkTeleop(`DRIVE DISARMED · ${error.message}`);
@@ -1681,9 +1706,7 @@ export class QuestVRDashboard {
   updateFnkStickControl(inputSources = []) {
     const right = inputSources.find(source => source.handedness === 'right');
     const left = inputSources.find(source => source.handedness === 'left');
-    const pressed = Boolean(right?.gamepad?.buttons?.[3]?.pressed);
     if (!this.fnkVisible || !this.fnkTeleopArmed) return false;
-    if (!pressed) return true;
     const read = source => {
       const axes = source?.gamepad?.axes || [];
       const a = [Number(axes[0]) || 0, Number(axes[1]) || 0];
@@ -1692,17 +1715,31 @@ export class QuestVRDashboard {
     };
     const dz = value => Math.abs(value) < 0.18 ? 0 : Math.sign(value) * (Math.abs(value) - 0.18) / 0.82;
     const [rx, ry] = read(right).map(dz);
-    const [lx, ly] = read(left).map(dz);
+    const [lx] = read(left).map(dz);
     const crawlX = rx * 42;
     const crawlY = -ry * 42;
     const crawlScale = Math.max(1, Math.hypot(crawlX, crawlY) / 42);
-    const move = this.fnkTab === 'twist'
-      ? { mode: 'twist', x: rx * 30, y: -ry * 30, z: (Number(right.gamepad.buttons?.[0]?.value) || 0) * 45,
-          rx: -ly * 8, ry: lx * 8, rz: (Number(left?.gamepad?.buttons?.[0]?.value) || 0) * 8 }
-      : { mode: 'crawl', x: crawlX / crawlScale, y: crawlY / crawlScale, angle: -lx * 18 };
-    if (Math.max(Math.abs(rx), Math.abs(ry), Math.abs(lx), Math.abs(ly)) < 0.12) return false;
+    let move;
+    let gyroTarget = null;
+    if (this.fnkTab === 'twist') {
+      if (!this.fnkGyroBaseline) return true;
+      this.fnkGyroDelta.copy(this.fnkGyroBaseline).invert().multiply(this.fnkGyroCurrent).normalize();
+      const radians = this.fnkGyroDelta.getAxisAngle(this.fnkGyroAxis);
+      const degrees = radians * 180 / Math.PI;
+      const rotationScale = Math.min(1, 15 / Math.max(degrees, 0.001));
+      const trigger = Number(right?.gamepad?.buttons?.[0]?.value) || 0;
+      move = { mode: 'twist', x: rx * 30, y: -ry * 30, z: trigger * 45,
+        rx: this.fnkGyroAxis.x * degrees * rotationScale,
+        ry: this.fnkGyroAxis.y * degrees * rotationScale,
+        rz: this.fnkGyroAxis.z * degrees * rotationScale };
+      if (degrees >= 1.5) gyroTarget = this.fnkGyroCurrent.clone();
+      if (!gyroTarget && Math.max(Math.abs(rx), Math.abs(ry), trigger) < 0.12) return true;
+    } else {
+      move = { mode: 'crawl', x: crawlX / crawlScale, y: crawlY / crawlScale, angle: -lx * 18 };
+      if (Math.max(Math.abs(rx), Math.abs(ry), Math.abs(lx)) < 0.12) return true;
+    }
     if (this.fnkDriveInFlight || performance.now() - this.fnkLastDriveAt < 1600) return true;
-    void this.sendFnkManualControl(move);
+    void this.sendFnkManualControl(move, gyroTarget);
     return true;
   }
 
@@ -1761,21 +1798,21 @@ export class QuestVRDashboard {
     button('tab-twist', 354, 150, 340, 72, 'TWIST BODY', true, this.fnkTab === 'twist');
     button('tab-calibration', 706, 150, 360, 72, 'CALIBRATION', true, this.fnkTab === 'calibration');
     button('tab-installation', 1078, 150, 360, 72, 'INSTALLATION', true, this.fnkTab === 'installation');
-    if (this.fnkTab === 'control') {
-    }
     if (this.fnkTab === 'control' || this.fnkTab === 'twist') {
       const twist = this.fnkTab === 'twist';
       ctx.fillStyle = '#a8c8be'; ctx.font = '600 26px ui-monospace, monospace'; ctx.textAlign = 'left';
-      ctx.fillText(twist ? 'LEFT STICK · BODY ROTATION X/Y   |   RIGHT STICK · BODY TRANSLATION X/Y' : 'RIGHT STICK · MOVE FORWARD / BACK / STRAFE   |   LEFT STICK · TURN', 48, 270, width - 100);
+      ctx.fillText(twist ? 'LEFT CONTROLLER ORIENTATION · BODY TWIST   |   RIGHT STICK · BODY XY' : 'RIGHT STICK · MOVE FORWARD / BACK / STRAFE   |   LEFT STICK · TURN', 48, 270, width - 100);
       ctx.fillStyle = '#f2c477'; ctx.font = '500 22px system-ui';
-      ctx.fillText(twist ? 'Stick axes twist X/Y; right trigger lifts; left trigger rolls/yaws.' : 'Hold RIGHT STICK CLICK to drive. Release prevents another step after the current gait.', 50, 316, width - 100);
+      ctx.fillText(twist ? 'Rotate the left controller to twist; right trigger sets body height.' : 'Select robot mode, then move the sticks. Release stops future gait steps.', 50, 316, width - 100);
       const armed = this.fnkTeleopArmed;
-      button('teleop-arm', 48, 360, 440, 98, armed ? 'DISARM DRIVE' : 'ARM STICK DRIVE', compatible && hardware.actuation_enabled === true && !this.fnkDriveInFlight, armed);
-      button('teleop-stop', 512, 360, 360, 98, 'STOP / DISARM', compatible && armed, false);
+      button('teleop-arm', 48, 360, 440, 98, armed ? 'ROBOT CONTROL · ON' : 'ROBOT CONTROL · OFF', compatible && hardware.actuation_enabled === true && !this.fnkDriveInFlight, armed);
+      button('teleop-stop', 512, 360, 360, 98, 'SCENE MODE / DISARM', compatible && armed, false);
       ctx.fillStyle = '#d3e9df'; ctx.font = '600 24px ui-monospace, monospace';
-      ctx.fillText('SELECT A TAB, ARM, THEN HOLD RIGHT THUMBSTICK CLICK + MOVE STICKS', 50, 510, width - 100);
+      ctx.fillText(armed ? 'LEFT CONTROLLER MENU TOGGLE · STICKS NOW CONTROL THE HEXAPOD' : 'LEFT MENU TOGGLE · OR SELECT ROBOT CONTROL ABOVE', 50, 510, width - 100);
       ctx.fillStyle = '#91aaa2'; ctx.font = '500 21px system-ui';
-      ctx.fillText('Firmware gait calls block: stick release cannot interrupt a gait already in progress.', 50, 552, width - 100);
+      ctx.fillText(twist ? 'Controller orientation is tracked by WebXR; each bounded change twists the body.' : 'Firmware gait calls block: stick release cannot interrupt a gait already in progress.', 50, 552, width - 100);
+      const leftTelemetry = this.telemetry?.controllers?.find(item => item.handedness === 'left');
+      ctx.fillText(`LEFT MENU INPUT: ${leftTelemetry?.menuButtonExposed ? 'EXPOSED TO WEBXR' : 'QUEST MAY RESERVE IT · PANEL TOGGLE AVAILABLE'} · ${leftTelemetry?.profile || 'CONTROLLER WAITING'}`, 50, 586, width - 100);
       const sticks = this.telemetry?.controllers || [];
       for (const [hand, cx] of [['left', 530], ['right', 1270]]) {
         const sample = sticks.find(item => item.handedness === hand);
