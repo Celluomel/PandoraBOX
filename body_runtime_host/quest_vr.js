@@ -1409,11 +1409,12 @@ function selectAt(controller) {
     return;
   }
   if (hudAction === 'teleop-stop') {
-    vrDashboard.disarmFnkTeleop('STOP REQUESTED · CURRENT FNHR GAIT CANNOT BE INTERRUPTED');
+    vrDashboard.disarmFnkTeleop('SCENE INPUT SELECTED · QUEST STICKS MOVE THROUGH VR');
     return;
   }
   if (hudAction === 'demo-preview') {
     vrDashboard.fnkPreviewDemo = !vrDashboard.fnkPreviewDemo;
+    vrDashboard.fnkPreviewDemoStartedAt = performance.now();
     vrDashboard.fnkMessage = vrDashboard.fnkPreviewDemo ? 'DEMO PREVIEW ON · NO ROBOT COMMANDS' : 'DEMO PREVIEW OFF';
     vrDashboard.drawFnkControlWindow();
     return;
@@ -1426,7 +1427,11 @@ function selectAt(controller) {
   }
   if (hudAction === 'center-preview' || hudAction === 'sweep-preview') {
     vrDashboard.fnkPreviewDemo = hudAction === 'sweep-preview' ? !vrDashboard.fnkPreviewDemo : false;
-    if (hudAction === 'center-preview') vrDashboard.fnkPoseValues = { x: 0, y: 0, z: 24, roll: 0, pitch: 0, yaw: 0 };
+    vrDashboard.fnkPreviewDemoStartedAt = performance.now();
+    if (hudAction === 'center-preview') {
+      vrDashboard.fnkPoseValues = { x: 0, y: 0, z: 24, roll: 0, pitch: 0, yaw: 0 };
+      vrDashboard.fnkGyroPoseBase = { ...vrDashboard.fnkPoseValues };
+    }
     vrDashboard.fnkGyroBaseline = vrDashboard.fnkGyroCurrent.clone();
     vrDashboard.fnkMessage = hudAction === 'center-preview' ? 'POSE REFERENCE CENTERED' : 'SWEEP IS A VISUAL PREVIEW ONLY';
     vrDashboard.drawFnkControlWindow();

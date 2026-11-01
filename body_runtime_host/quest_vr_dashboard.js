@@ -63,10 +63,12 @@ export class QuestVRDashboard {
     this.fnkBoardOnlyConfirmed = false;
     this.fnkTab = 'control';
     this.fnkTeleopArmed = false;
+    this.fnkSceneInputSelected = false;
     this.fnkDriveInFlight = false;
     this.fnkLastDriveAt = 0;
     this.fnkGyroCurrent = new THREE.Quaternion();
     this.fnkGyroBaseline = null;
+    this.fnkGyroPoseBase = null;
     this.fnkGyroDelta = new THREE.Quaternion();
     this.fnkGyroAxis = new THREE.Vector3();
     this.fnkLeg = 1;
@@ -74,7 +76,9 @@ export class QuestVRDashboard {
     this.fnkSpeed = 1;
     this.fnkPreviewPaused = false;
     this.fnkPreviewDemo = false;
-    this.fnkPreviewMove = { x: 0, y: 0, angle: 0 };
+    this.fnkPreviewKeys = { w: true };
+    this.fnkPreviewVelocity = { x: 0, y: -1, turn: 0 };
+    this.fnkPreviewDemoStartedAt = 0;
     this.fnkControllerInput = null;
     this.fnkPreviewIntensity = 0;
     this.fnkPreviewLastAt = 0;
@@ -1623,6 +1627,7 @@ export class QuestVRDashboard {
   setFnkVisible(visible) {
     this.fnkVisible = Boolean(visible);
     if (!this.fnkVisible) this.setFnkTeleop(false);
+    else { this.fnkSceneInputSelected = false; this.fnkControllerInput = null; }
     this.fnkRoot.visible = this.visible && this.fnkVisible;
     this.drawDashboard();
     this.drawFnkControlWindow();
@@ -1660,11 +1665,12 @@ export class QuestVRDashboard {
 
   setFnkTeleop(enabled) {
     this.fnkTeleopArmed = Boolean(enabled);
+    this.fnkSceneInputSelected = false;
     this.fnkGyroBaseline = null;
     const hw=this.fnkHardwareStatus||{};
     this.fnkMessage = this.fnkTeleopArmed
       ? (hw.connected&&hw.actuation_enabled?'ROBOT INPUT SELECTED · LEFT MENU RETURNS TO SCENE':'ROBOT INPUT SELECTED · HARDWARE ACTUATION BLOCKED')
-      : 'SCENE CONTROL SELECTED · JOYSTICKS MOVE THROUGH THE VR SCENE';
+      : 'PREVIEW INPUT SELECTED · QUEST STICKS CONTROL THE GAIT PREVIEW';
     this.drawFnkControlWindow();
   }
 
@@ -1673,14 +1679,16 @@ export class QuestVRDashboard {
   updateFnkControllerOrientation(orientation) {
     if (!orientation || orientation.length !== 4) return;
     this.fnkGyroCurrent.set(orientation[0], orientation[1], orientation[2], orientation[3]).normalize();
-    if (this.fnkTeleopArmed && this.fnkTab === 'twist' && !this.fnkGyroBaseline) {
+    if (this.fnkVisible && this.fnkTab === 'twist' && !this.fnkGyroBaseline) {
       this.fnkGyroBaseline = this.fnkGyroCurrent.clone();
+      this.fnkGyroPoseBase = { ...(this.fnkPoseValues || { x: 0, y: 0, z: 24, roll: 0, pitch: 0, yaw: 0 }) };
     }
   }
 
   disarmFnkTeleop(message = 'DISARMED · NO DRIVE COMMANDS') {
     this.fnkTeleopArmed = false;
     this.fnkGyroBaseline = null;
+    this.fnkSceneInputSelected = true;
     this.fnkMessage = message;
     this.drawFnkControlWindow();
   }
@@ -1712,11 +1720,22 @@ export class QuestVRDashboard {
 
   sendFnkPadAction(action) {
     if (action === 'stop') {
-      this.fnkPreviewMove = { x: 0, y: 0, angle: 0 }; this.fnkControllerInput = null;
-      if (this.fnkTeleopArmed) this.disarmFnkTeleop('PREVIEW STOPPED · FNHR CANNOT INTERRUPT A GAIT ALREADY RUNNING');
-      else { this.fnkMessage = 'PREVIEW STOPPED · NO HARDWARE COMMAND SENT'; this.drawFnkControlWindow(); }
+      this.fnkPreviewKeys = {};
+      this.fnkPreviewDemo = false;
+      this.fnkControllerInput = null;
+      this.fnkMessage = this.fnkTeleopArmed
+        ? 'PREVIEW STOPPED · THE CURRENT FNHR GAIT STEP MAY FINISH'
+        : 'STOP · WALK PREVIEW INPUT CLEARED';
+      this.drawFnkControlWindow();
       return;
     }
+    const keyForAction = { forward: 'w', backward: 's', left: 'a', right: 'd', 'turn-left': 'q', 'turn-right': 'e' };
+    const key = keyForAction[action];
+    if (!key) return;
+    this.fnkPreviewKeys ||= {};
+    this.fnkPreviewDemo = false;
+    this.fnkPreviewKeys[key] = !this.fnkPreviewKeys[key];
+    const enabled = this.fnkPreviewKeys[key];
     const v = 24 * this.fnkSpeed;
     const commands = {
       forward: { x: 0, y: v, angle: 0 }, backward: { x: 0, y: -v, angle: 0 },
@@ -1724,20 +1743,25 @@ export class QuestVRDashboard {
       'turn-left': { x: 0, y: 0, angle: -12 * this.fnkSpeed },
       'turn-right': { x: 0, y: 0, angle: 12 * this.fnkSpeed },
     };
-    const params = commands[action]; if (!params) return;
-    const preview = { x: params.x / Math.max(v, 1), y: params.y / Math.max(v, 1), angle: params.angle / Math.max(12 * this.fnkSpeed, 1) };
-    const same = this.fnkPreviewMove?.x === preview.x && this.fnkPreviewMove?.y === preview.y && this.fnkPreviewMove?.angle === preview.angle;
-    this.fnkPreviewMove = same ? { x: 0, y: 0, angle: 0 } : preview; this.fnkControllerInput = null;
+    const params = commands[action];
+    this.fnkControllerInput = null;
     const hw=this.fnkHardwareStatus||{};
-    if (!this.fnkTeleopArmed) { this.fnkMessage = 'PREVIEW MOVING · SELECT ROBOT INPUT TO SEND TO HARDWARE'; this.drawFnkControlWindow(); return; }
-    if(hw.connected!==true||hw.firmware_profile!=='custom_fnhr_ascii_v2'||hw.actuation_enabled!==true){this.fnkMessage='PREVIEW MOVING · PHYSICAL COMMAND BLOCKED: USB / ACTUATION DISABLED';this.drawFnkControlWindow();return;}
-    void this.sendFnkManualControl({ mode: 'crawl', ...params });
+    if (!enabled) {
+      this.fnkMessage = `WALK INPUT CLEARED · ${key.toUpperCase()}`;
+    } else if (!this.fnkTeleopArmed) {
+      this.fnkMessage = `WALK PREVIEW · ${key.toUpperCase()} LATCHED · COMBINE DIRECTIONS`;
+    } else if(hw.connected!==true||hw.firmware_profile!=='custom_fnhr_ascii_v2'||hw.actuation_enabled!==true){
+      this.fnkMessage='WALK PREVIEW · PHYSICAL COMMAND BLOCKED: FNK USB / ACTUATION DISABLED';
+    } else {
+      void this.sendFnkManualControl({ mode: 'crawl', ...params });
+    }
+    this.drawFnkControlWindow();
   }
 
   updateFnkStickControl(inputSources = []) {
     const right = inputSources.find(source => source.handedness === 'right');
     const left = inputSources.find(source => source.handedness === 'left');
-    if (!this.fnkVisible || !this.fnkTeleopArmed) return false;
+    if (!this.fnkVisible || this.fnkSceneInputSelected) return false;
     const read = source => {
       const axes = source?.gamepad?.axes || [];
       const a = [Number(axes[0]) || 0, Number(axes[1]) || 0];
@@ -1753,15 +1777,23 @@ export class QuestVRDashboard {
     const crawlScale = Math.max(1, Math.hypot(crawlX, crawlY) / 42);
     let move;
     let gyroTarget = null;
+    let trigger = 0;
     if (this.fnkTab === 'twist') {
       if (!this.fnkGyroBaseline) { this.fnkControllerInput=null; return true; }
       this.fnkGyroDelta.copy(this.fnkGyroBaseline).invert().multiply(this.fnkGyroCurrent).normalize();
-      const radians = this.fnkGyroDelta.getAxisAngle(this.fnkGyroAxis);
+      // Three.js Quaternion has no getAxisAngle() method. Extract the shortest
+      // rotation explicitly so controller motion cannot throw inside XR's frame loop.
+      const q = this.fnkGyroDelta, hemisphere = q.w < 0 ? -1 : 1;
+      const qw = Math.max(-1, Math.min(1, q.w * hemisphere));
+      const radians = 2 * Math.acos(qw), sinHalf = Math.sqrt(Math.max(0, 1 - qw * qw));
+      if (sinHalf < 1e-6) this.fnkGyroAxis.set(0, 0, 0);
+      else this.fnkGyroAxis.set(q.x * hemisphere / sinHalf, q.y * hemisphere / sinHalf, q.z * hemisphere / sinHalf);
       const degrees = radians * 180 / Math.PI;
       const rotationScale = Math.min(1, 15 / Math.max(degrees, 0.001));
-      const trigger = Number(right?.gamepad?.buttons?.[0]?.value) || 0;
-      const rxDeg=this.fnkGyroAxis.x*degrees*rotationScale,ryDeg=this.fnkGyroAxis.y*degrees*rotationScale,rzDeg=this.fnkGyroAxis.z*degrees*rotationScale;
-      this.fnkPoseValues={...(this.fnkPoseValues||{x:0,y:0,z:24,roll:0,pitch:0,yaw:0}),x:rx*30,y:-ry*30,z:24+trigger*21,roll:rxDeg,pitch:ryDeg,yaw:rzDeg};
+      trigger = Number(right?.gamepad?.buttons?.[0]?.value) || 0;
+      const rxDeg=degrees < 1.5 ? 0 : this.fnkGyroAxis.x*degrees*rotationScale,ryDeg=degrees < 1.5 ? 0 : this.fnkGyroAxis.y*degrees*rotationScale,rzDeg=degrees < 1.5 ? 0 : this.fnkGyroAxis.z*degrees*rotationScale;
+      const base=this.fnkGyroPoseBase||{x:0,y:0,z:24,roll:0,pitch:0,yaw:0};
+      this.fnkPoseValues={x:base.x+rx*30,y:base.y-ry*30,z:base.z+trigger*21,roll:base.roll+rxDeg,pitch:base.pitch+ryDeg,yaw:base.yaw+rzDeg};
       this.fnkControllerInput={x:rx,y:-ry,angle:rzDeg/15};
       move = { mode: 'twist', x: rx * 30, y: -ry * 30, z: 24+trigger*21,
         rx: rxDeg, ry: ryDeg, rz: rzDeg };
@@ -1769,12 +1801,16 @@ export class QuestVRDashboard {
       if (!gyroTarget && Math.max(Math.abs(rx), Math.abs(ry), trigger) < 0.12) { this.fnkControllerInput=null; return true; }
     } else {
       move = { mode: 'crawl', x: crawlX / crawlScale, y: crawlY / crawlScale, angle: -lx * 18 };
-      this.fnkControllerInput={x:rx,y:-ry,angle:-lx};
-      if (Math.max(Math.abs(rx), Math.abs(ry), Math.abs(lx)) < 0.12) { this.fnkControllerInput=null; return true; }
+      this.fnkControllerInput={x:rx,y:ry,angle:-lx};
+      if (Math.max(Math.abs(rx), Math.abs(ry), Math.abs(lx)) < 0.12) this.fnkControllerInput=null;
     }
+    const hasInput = this.fnkTab === 'twist'
+      ? Math.max(Math.abs(rx), Math.abs(ry), trigger || 0, gyroTarget ? 1 : 0) >= 0.12
+      : Math.max(Math.abs(rx), Math.abs(ry), Math.abs(lx)) >= 0.12;
+    if (!hasInput) return true;
     if(hw.connected!==true||hw.firmware_profile!=='custom_fnhr_ascii_v2'||hw.actuation_enabled!==true){
       const pose=this.fnkTab==='twist'?`ROLL ${move.rx.toFixed(1)}° · PITCH ${move.ry.toFixed(1)}° · YAW ${move.rz.toFixed(1)}°`:`X ${move.x.toFixed(2)} · Y ${move.y.toFixed(2)} · TURN ${move.angle.toFixed(2)}`;
-      this.fnkMessage=`CONTROLLER PREVIEW · ${pose} · HARDWARE COMMANDS BLOCKED`;
+      this.fnkMessage=`CONTROLLER PREVIEW · ${pose}${this.fnkTeleopArmed?' · HARDWARE COMMANDS BLOCKED':''}`;
       return true;
     }
     if (this.fnkDriveInFlight || performance.now() - this.fnkLastDriveAt < 1600) return true;
@@ -1858,93 +1894,216 @@ export class QuestVRDashboard {
   }
 
   drawFnkGaitLabExact() {
-    const c=this.fnkContext,w=this.fnkCanvas.width,h=this.fnkCanvas.height;if(!c)return;
-    const C={bg:'#0a1018',panel:'#0d141d',stage:'#0b121b',line:'#2b405c',text:'#d6e4f0',muted:'#8fa3b8',swing:'#ffb020',stance:'#4dff88'};
-    const labels=['L1','R1','L2','R2','L3','R3'],twist=this.fnkTab==='twist',gait=this.fnkGait||'tripod';
-    const duty=gait==='wave'?5/6:gait==='ripple'?2/3:.5;
-    const offsets=gait==='wave'?[1/3,5/6,1/6,2/3,0,.5]:gait==='ripple'?[2/3,1/6,1/3,5/6,0,.5]:[0,.5,0,.5,0,.5];
-    const now=performance.now(),dt=this.fnkPreviewLastAt?Math.min(.1,Math.max(0,(now-this.fnkPreviewLastAt)/1000)):0;this.fnkPreviewLastAt=now;
-    let motion=this.fnkControllerInput||this.fnkPreviewMove||{x:0,y:0,angle:0};
-    if(this.fnkPreviewDemo&&!twist){const i=Math.floor(now/3500)%8;motion=[{x:0,y:1},{x:0,y:-1},{x:-1,y:0},{x:1,y:0},{angle:-1},{angle:1},{x:-.7,y:1},{x:.7,y:1}][i];}
-    const moving=!twist&&(this.fnkPreviewDemo||Math.hypot(Number(motion.x)||0,Number(motion.y)||0)>0.02||Math.abs(Number(motion.angle)||0)>0.02);
-    if(!this.fnkPreviewPaused){const target=moving?1:0;this.fnkPreviewIntensity+=(target-this.fnkPreviewIntensity)*Math.min(1,dt*8);if(moving)this.fnkPreviewPhase=(((this.fnkPreviewPhase||0)+dt*(Number(this.fnkSpeed)||1)/2)%1);}
-    const phase=this.fnkPreviewPhase||0;
-    if(!this.fnkPreviewPaused&&moving){const speed=Number(this.fnkSpeed)||1;this.fnkGridOffset.x=(this.fnkGridOffset.x+(Number(motion.y)||0)*dt*34*speed)%48;this.fnkGridOffset.y=(this.fnkGridOffset.y-(Number(motion.x)||0)*dt*34*speed)%48;this.fnkGridOffset.yaw=(this.fnkGridOffset.yaw+(Number(motion.angle)||0)*dt*.8*speed)%(Math.PI*2);}
-    const hw=this.fnkHardwareStatus||{},compatible=hw.connected===true&&hw.firmware_profile==='custom_fnhr_ascii_v2';
-    if(!this.fnkPoseValues)this.fnkPoseValues={x:0,y:0,z:24,roll:0,pitch:0,yaw:0};
-    if(twist&&this.fnkPreviewDemo){const t=performance.now()/1000;this.fnkPoseValues={x:20*Math.sin(t*.9),y:20*Math.sin(t*.7+1),z:24+8*Math.sin(t*.5),roll:10*Math.sin(t*1.1),pitch:10*Math.sin(t*.8+2),yaw:20*Math.sin(t*.6)};}
-    this.fnkActionHitAreas={};c.clearRect(0,0,w,h);c.fillStyle=C.bg;c.fillRect(0,0,w,h);
-    const txt=(s,x,y,size=14,color=C.text,weight=500,align='left')=>{c.fillStyle=color;c.font=weight+' '+size+'px ui-sans-serif,system-ui';c.textAlign=align;c.textBaseline='middle';c.fillText(String(s),x,y);};
-    const card=(x,y,cw,ch)=>{c.fillStyle=C.panel;c.strokeStyle=C.line;c.lineWidth=1;c.beginPath();c.roundRect(x,y,cw,ch,12);c.fill();c.stroke();};
-    const button=(key,x,y,bw,bh,label,selected=false,enabled=true)=>{c.globalAlpha=enabled?1:.48;c.fillStyle=selected?C.stance:C.panel;c.strokeStyle=selected?C.stance:C.line;c.lineWidth=1;c.beginPath();c.roundRect(x,y,bw,bh,8);c.fill();c.stroke();txt(label,x+bw/2,y+bh/2,14,selected?C.bg:C.text,500,'center');c.globalAlpha=1;this.fnkActionHitAreas[key]={x,y,width:bw,height:bh,enabled};};
-    const lab=(s,x,y)=>txt(s.toUpperCase(),x,y,12,C.muted,500);
-    const lx=16,lw=666,rx=698,rw=486,top=112,innerX=rx+16,innerW=rw-32;
-    txt('Hexapod Gait Lab',16,29,22,C.text,700);
-    txt('Top view, front is up. Each leg is simulated on its own: dashed amber is swing (foot lifted, moving ahead), solid green is stance (foot planted, pushing the body).',16,57,13,C.muted);
-    txt('Hold Q W E A S D, or click the keys to latch a movement. Twist body shifts, tilts and rotates the body while all six feet stay planted.',16,78,13,C.muted);
-    txt((compatible?'FNK0031 · CONNECTED':'FNK0031 · BOARD OFFLINE')+' · ACTUATION '+(hw.actuation_enabled?'ON':'OFF'),w-16,29,12,compatible?C.stance:C.swing,600,'right');
+    const c = this.fnkContext, w = this.fnkCanvas.width, h = this.fnkCanvas.height;
+    if (!c) return;
+    const C = { bg: '#0a1018', panel: '#0d141d', stage: '#0b121b', line: '#2b405c', text: '#d6e4f0', muted: '#8fa3b8', swing: '#ffb020', stance: '#4dff88' };
+    const legs = [['L1', -1, -34], ['R1', 1, -34], ['L2', -1, 0], ['R2', 1, 0], ['L3', -1, 34], ['R3', 1, 34]];
+    const twist = this.fnkTab === 'twist', gait = this.fnkGait || 'tripod';
+    const gaitSpec = {
+      tripod: { duty: .5, offsets: [0, .5, .5, 0, 0, .5] },
+      ripple: { duty: 2 / 3, offsets: [2 / 3, 1 / 6, 1 / 3, 5 / 6, 0, .5] },
+      wave: { duty: 5 / 6, offsets: [1 / 3, 5 / 6, 1 / 6, 2 / 3, 0, .5] },
+    }[gait] || { duty: .5, offsets: [0, .5, .5, 0, 0, .5] };
+    const duty = gaitSpec.duty, offsets = gaitSpec.offsets;
+    const now = performance.now();
+    const dt = this.fnkPreviewLastAt ? Math.min(.05, Math.max(0, (now - this.fnkPreviewLastAt) / 1000)) : 0;
+    this.fnkPreviewLastAt = now;
+    const latched = this.fnkPreviewDemo && !twist ? {} : { ...(this.fnkPreviewKeys || {}) };
+    const combos = [['w'], ['s'], ['a'], ['d'], ['q'], ['e'], ['w', 'a'], ['w', 'd']];
+    if (this.fnkPreviewDemo && !twist) {
+      if (!this.fnkPreviewDemoStartedAt) this.fnkPreviewDemoStartedAt = now;
+      for (const key of combos[Math.floor((now - this.fnkPreviewDemoStartedAt) / 3500) % combos.length]) latched[key] = true;
+    }
+    let tx = (latched.d ? 1 : 0) - (latched.a ? 1 : 0);
+    let ty = (latched.s ? 1 : 0) - (latched.w ? 1 : 0);
+    let norm = Math.hypot(tx, ty);
+    if (norm > 1) { tx /= norm; ty /= norm; }
+    let turn = (latched.q ? 1 : 0) - (latched.e ? 1 : 0);
+    const stick = this.fnkControllerInput;
+    if (stick && Math.max(Math.abs(stick.x || 0), Math.abs(stick.y || 0), Math.abs(stick.angle || 0)) > .02) {
+      tx = Number(stick.x) || 0;
+      ty = Number(stick.y) || 0;
+      norm = Math.hypot(tx, ty);
+      if (norm > 1) { tx /= norm; ty /= norm; }
+      turn = Number(stick.angle) || 0;
+    }
+    turn = Math.max(-1, Math.min(1, turn));
+    const moving = !twist && (Math.hypot(tx, ty) > 0 || turn !== 0);
+    if (!this.fnkPreviewPaused) {
+      const target = moving ? 1 : 0;
+      this.fnkPreviewIntensity += (target - this.fnkPreviewIntensity) * Math.min(1, dt * 8);
+      if (moving) {
+        this.fnkPreviewVelocity = { x: tx, y: ty, turn };
+        this.fnkPreviewPhase = (((this.fnkPreviewPhase || 0) + dt * (Number(this.fnkSpeed) || 1) / 2) % 1);
+      }
+      const m = this.fnkPreviewIntensity, v = this.fnkPreviewVelocity || { x: 0, y: 0, turn: 0 };
+      if (!twist && m > .01) {
+        const speed = Number(this.fnkSpeed) || 1, both = Math.hypot(v.x, v.y) > 0 && v.turn !== 0 ? .75 : 1;
+        const stride = 34 * speed * m / duty * both;
+        const yaw = this.fnkGridOffset.yaw || 0;
+        this.fnkGridOffset.yaw = (yaw + v.turn * stride / 107 * dt) % (Math.PI * 2);
+        this.fnkGridOffset.x = (this.fnkGridOffset.x + (v.x * stride * Math.cos(yaw) + v.y * stride * Math.sin(yaw)) * 2.2 * dt) % 48;
+        this.fnkGridOffset.y = (this.fnkGridOffset.y + (-v.x * stride * Math.sin(yaw) + v.y * stride * Math.cos(yaw)) * 2.2 * dt) % 48;
+      }
+    }
+    const phase = this.fnkPreviewPhase || 0;
+    const hw = this.fnkHardwareStatus || {};
+    const compatible = hw.connected === true && hw.firmware_profile === 'custom_fnhr_ascii_v2';
+    this.fnkPoseValues ||= { x: 0, y: 0, z: 24, roll: 0, pitch: 0, yaw: 0 };
+    if (twist && this.fnkPreviewDemo && !this.fnkPreviewPaused) {
+      if (!this.fnkPreviewDemoStartedAt) this.fnkPreviewDemoStartedAt = now;
+      const t = (now - this.fnkPreviewDemoStartedAt) / 1000;
+      this.fnkPoseValues = { x: 20 * Math.sin(t * .9), y: 20 * Math.sin(t * .7 + 1), z: 24 + 8 * Math.sin(t * .5), roll: 10 * Math.sin(t * 1.1), pitch: 10 * Math.sin(t * .8 + 2), yaw: 20 * Math.sin(t * .6) };
+    }
+    this.fnkActionHitAreas = {};
+    c.clearRect(0, 0, w, h); c.fillStyle = C.bg; c.fillRect(0, 0, w, h);
+    const txt = (s, x, y, size = 14, color = C.text, weight = 500, align = 'left') => { c.fillStyle = color; c.font = `${weight} ${size}px ui-sans-serif,system-ui`; c.textAlign = align; c.textBaseline = 'middle'; c.fillText(String(s), x, y); };
+    const card = (x, y, cw, ch) => { c.fillStyle = C.panel; c.strokeStyle = C.line; c.lineWidth = 1; c.beginPath(); c.roundRect(x, y, cw, ch, 12); c.fill(); c.stroke(); };
+    const button = (key, x, y, bw, bh, label, selected = false, enabled = true) => { c.globalAlpha = enabled ? 1 : .48; c.fillStyle = selected ? C.stance : C.panel; c.strokeStyle = selected ? C.stance : C.line; c.lineWidth = 1; c.beginPath(); c.roundRect(x, y, bw, bh, 8); c.fill(); c.stroke(); txt(label, x + bw / 2, y + bh / 2, 14, selected ? C.bg : C.text, 500, 'center'); c.globalAlpha = 1; this.fnkActionHitAreas[key] = { x, y, width: bw, height: bh, enabled }; };
+    const lab = (s, x, y) => txt(s.toUpperCase(), x, y, 12, C.muted, 500);
+    const lx = 16, lw = 666, rx = 698, rw = 486, top = 112, innerX = rx + 16, innerW = rw - 32;
+    txt('Hexapod Gait Lab', 16, 29, 22, C.text, 700);
+    txt('Top view. Amber is swing (foot lifted); green is stance (foot planted). Click movement keys to latch, combine directions, or use the Quest sticks.', 16, 57, 13, C.muted);
+    txt('Twist body shifts and tilts the chassis while the six feet stay planted.', 16, 78, 13, C.muted);
+    txt(`${compatible ? 'FNK0031 · CONNECTED' : 'FNK0031 · BOARD OFFLINE'} · ACTUATION ${hw.actuation_enabled ? 'ON' : 'OFF'}`, w - 16, 29, 12, compatible ? C.stance : C.swing, 600, 'right');
 
-    // Top-down SVG stage reproduced from the supplied file's 640×560 viewBox.
-    const previewMoves=['FORWARD','BACKWARD','LEFT','RIGHT','TURN LEFT','TURN RIGHT','FORWARD + LEFT','FORWARD + RIGHT'];
-    const previewMove=this.fnkPreviewDemo?previewMoves[Math.floor(now/3500)%previewMoves.length]:Math.abs(Number(motion.angle)||0)>.05?(motion.angle<0?'TURN LEFT':'TURN RIGHT'):Math.abs(Number(motion.x)||0)>.1?(motion.x<0?'LEFT':'RIGHT'):(Number(motion.y)||0)<-.1?'BACKWARD':'FORWARD';
-    card(lx,top,lw,625);txt(twist?'TWIST BODY':previewMove,lx+16,top+22,18,C.text,700);
-    txt(twist?'ALL SIX FEET PLANTED':gait.toUpperCase()+' · '+Math.round(duty*100)+'% stance',lx+lw-16,top+22,12,C.muted,500,'right');
-    const stage={x:32,y:top+48,w:634,h:554},scale=Math.min(stage.w/640,stage.h/560);
-    c.fillStyle=C.stage;c.beginPath();c.roundRect(stage.x,stage.y,stage.w,stage.h,8);c.fill();c.save();c.beginPath();c.rect(stage.x,stage.y,stage.w,stage.h);c.clip();
-    c.translate(stage.x+(stage.w-640*scale)/2,stage.y+(stage.h-560*scale)/2);c.scale(scale,scale);
-    c.save();c.translate(320,285);c.rotate(this.fnkGridOffset.yaw);c.translate(-320-this.fnkGridOffset.x,-285-this.fnkGridOffset.y);c.strokeStyle=C.line;c.lineWidth=1;c.beginPath();for(let q=-1400;q<=1400;q+=48){c.moveTo(q,-1400);c.lineTo(q,1400);c.moveTo(-1400,q);c.lineTo(1400,q);}c.stroke();c.restore();
-    c.save();c.translate(320,285);c.scale(2.2,2.2);c.fillStyle=C.panel;c.strokeStyle=C.line;c.lineWidth=1.5;c.beginPath();c.roundRect(-28,-48,56,96,14);c.fill();c.stroke();
-    c.fillStyle=C.text;c.beginPath();c.moveTo(-8,-50);c.lineTo(8,-50);c.lineTo(0,-62);c.closePath();c.fill();c.fillStyle=C.muted;c.font='10px ui-monospace,Menlo,Consolas,monospace';c.textAlign='center';[['L1',-14,-30],['R1',14,-30],['L2',-14,4],['R2',14,4],['L3',-14,38],['R3',14,38]].forEach(a=>c.fillText(a[0],a[1],a[2]));
-    [[-1,-34],[1,-34],[-1,0],[1,0],[-1,34],[1,34]].forEach((leg,i)=>{const side=leg[0],hy=leg[1],fx=side*(hy===0?104:92),fy=hy<0?-58:hy>0?58:0,p=((phase-offsets[i])%1+1)%1,sw=p<(1-duty),u=sw?p/(1-duty):(p-(1-duty))/duty,k=sw?2*u-1:1-2*u,intensity=this.fnkPreviewIntensity,turn=Number(motion.angle)||0,moveX=(Number(motion.y)||0)+turn*fy/120,moveY=-(Number(motion.x)||0)-turn*fx/120,stride=34*(Number(this.fnkSpeed)||1)*intensity,lift=(sw?Math.sin(Math.PI*u):0)*intensity,x=fx+k*moveX*stride,y=fy+k*moveY*stride,hx=side*28;
-      c.strokeStyle=sw?C.swing:C.stance;c.lineWidth=2;c.setLineDash(sw?[4,3]:[]);c.beginPath();c.moveTo(hx,hy);c.lineTo((hx+x)/2+side*12,(hy+y)/2);c.lineTo(x,y);c.stroke();c.setLineDash([]);
-      c.strokeStyle=C.line;c.lineWidth=1;c.setLineDash([2,3]);c.beginPath();c.moveTo(fx,fy);c.lineTo(fx-side*34,fy);c.stroke();c.setLineDash([]);
-      c.fillStyle=sw?C.panel:C.stance;c.strokeStyle=sw?C.swing:C.stance;c.lineWidth=2;c.beginPath();c.arc(x,y,6+5*lift,0,Math.PI*2);c.fill();c.stroke();});
-    c.restore();c.restore();
+    const previewMoves = ['FORWARD', 'BACKWARD', 'LEFT', 'RIGHT', 'TURN LEFT', 'TURN RIGHT', 'FORWARD + LEFT', 'FORWARD + RIGHT'];
+    const activeMove = this.fnkPreviewDemo && !twist ? previewMoves[Math.floor((now - (this.fnkPreviewDemoStartedAt || now)) / 3500) % previewMoves.length]
+      : moving ? (Math.abs(turn) > .05 ? (turn > 0 ? 'TURN LEFT' : 'TURN RIGHT') : ty < -.1 ? (tx < -.1 ? 'FORWARD + LEFT' : tx > .1 ? 'FORWARD + RIGHT' : 'FORWARD') : ty > .1 ? 'BACKWARD' : tx < 0 ? 'LEFT' : 'RIGHT') : 'IDLE';
+    card(lx, top, lw, 625); txt(twist ? 'TWIST BODY' : activeMove, lx + 16, top + 22, 18, C.text, 700);
+    txt(twist ? 'ALL SIX FEET PLANTED' : `${gait.toUpperCase()} · ${Math.round(duty * 100)}% stance`, lx + lw - 16, top + 22, 12, C.muted, 500, 'right');
+    const stage = { x: 32, y: top + 48, w: 634, h: 554 }, scale = Math.min(stage.w / 640, stage.h / 560);
+    c.fillStyle = C.stage; c.beginPath(); c.roundRect(stage.x, stage.y, stage.w, stage.h, 8); c.fill(); c.save(); c.beginPath(); c.rect(stage.x, stage.y, stage.w, stage.h); c.clip();
+    c.translate(stage.x + (stage.w - 640 * scale) / 2, stage.y + (stage.h - 560 * scale) / 2); c.scale(scale, scale);
+    if (!twist) {
+      c.save(); c.translate(320, 285); c.rotate(this.fnkGridOffset.yaw || 0); c.translate(-320 - (this.fnkGridOffset.x || 0), -285 - (this.fnkGridOffset.y || 0));
+      c.strokeStyle = C.line; c.lineWidth = 1; c.beginPath();
+      for (let q = -1400; q <= 1400; q += 48) { c.moveTo(q, -1400); c.lineTo(q, 1400); c.moveTo(-1400, q); c.lineTo(1400, q); }
+      c.stroke(); c.restore();
+    } else {
+      c.strokeStyle = C.line; c.lineWidth = 1; c.beginPath();
+      for (let q = -1400; q <= 1400; q += 48) { c.moveTo(q, -1400); c.lineTo(q, 1400); c.moveTo(-1400, q); c.lineTo(1400, q); }
+      c.stroke();
+    }
+    const P = this.fnkPoseValues, rr = Number(P.roll) * Math.PI / 180, pp = Number(P.pitch) * Math.PI / 180, yy = Number(P.yaw) * Math.PI / 180;
+    const cr = Math.cos(rr), cp = Math.cos(pp), cy = Math.cos(yy), sy = Math.sin(yy), ox = twist ? Number(P.x) || 0 : 0, oy = twist ? -(Number(P.y) || 0) : 0;
+    const dutySwing = 1 - duty, velocity = this.fnkPreviewVelocity || { x: 0, y: 0, turn: 0 };
+    c.save(); c.translate(320, 285); c.scale(2.2, 2.2);
+    const drawBody = (x, y, yaw, sx, syScale) => {
+      c.save(); c.translate(x, y); c.rotate(-yaw); c.scale(sx, syScale); c.fillStyle = C.panel; c.strokeStyle = C.line; c.lineWidth = 1.5; c.beginPath(); c.roundRect(-28, -48, 56, 96, 14); c.fill(); c.stroke();
+      c.fillStyle = C.text; c.beginPath(); c.moveTo(-8, -50); c.lineTo(8, -50); c.lineTo(0, -62); c.closePath(); c.fill();
+      c.fillStyle = C.muted; c.font = '10px ui-monospace,Menlo,Consolas,monospace'; c.textAlign = 'center';
+      [['L1', -14, -30], ['R1', 14, -30], ['L2', -14, 4], ['R2', 14, 4], ['L3', -14, 38], ['R3', 14, 38]].forEach(a => c.fillText(a[0], a[1], a[2])); c.restore();
+    };
+    const m = this.fnkPreviewIntensity || 0, both = Math.hypot(velocity.x, velocity.y) > 0 && velocity.turn !== 0 ? .75 : 1;
+    legs.forEach((leg, i) => {
+      const [, side, hy] = leg, fx = side * (hy === 0 ? 104 : 92), fy = hy < 0 ? -58 : hy > 0 ? 58 : 0, hx = side * 28;
+      let hipX = hx, hipY = hy, footX = fx, footY = fy, swing = false, lift = 0, reach = 0;
+      if (twist) {
+        const x1 = hx * cr, y1 = hy * cp, z = -hx * Math.sin(rr) - hy * Math.sin(pp);
+        hipX = ox + x1 * cy + y1 * sy; hipY = oy - x1 * sy + y1 * cy;
+        const dx = fx - hipX, dy = fy - hipY, dz = (Number(P.z) || 24) + z;
+        reach = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        const limited = reach > 105 || reach < 45;
+        c.strokeStyle = limited ? C.swing : C.stance; c.fillStyle = c.strokeStyle;
+        c.setLineDash(limited ? [4, 3] : []);
+        c.beginPath(); c.moveTo(hipX, hipY); c.lineTo((hipX + fx) / 2 + side * 12, (hipY + fy) / 2); c.lineTo(fx, fy); c.stroke(); c.setLineDash([]);
+        c.beginPath(); c.arc(fx, fy, 6, 0, Math.PI * 2); c.fill();
+      } else {
+        const lxLeg = velocity.x * both + velocity.turn * both * (fy / Math.hypot(fx, fy));
+        const lyLeg = velocity.y * both + velocity.turn * both * (-fx / Math.hypot(fx, fy));
+        const ph = (((phase - offsets[i]) % 1) + 1) % 1; swing = ph < dutySwing;
+        let k = 0, u = 0;
+        if (swing) { u = ph / dutySwing; k = 2 * u - 1; lift = Math.sin(Math.PI * u); }
+        else { u = (ph - dutySwing) / duty; k = 1 - 2 * u; }
+        if (m < .02) { swing = false; lift = 0; k = 0; }
+        const amp = 34 * m, X = fx + lxLeg * k * amp, Y = fy + lyLeg * k * amp;
+        footX = X; footY = Y;
+        const color = swing ? C.swing : C.stance;
+        c.strokeStyle = color; c.fillStyle = swing ? C.panel : C.stance; c.lineWidth = 2; c.setLineDash(swing ? [4, 3] : []);
+        c.beginPath(); c.moveTo(hx, hy); c.lineTo((hx + X) / 2 + side * 12, (hy + Y) / 2); c.lineTo(X, Y); c.stroke(); c.setLineDash([]);
+        c.strokeStyle = C.line; c.lineWidth = 1; c.setLineDash([2, 3]); c.beginPath(); c.moveTo(fx, fy); c.lineTo(fx - side * 34, fy); c.stroke(); c.setLineDash([]);
+        c.beginPath(); c.arc(X, Y, 6 + 5 * lift, 0, Math.PI * 2); c.fill(); c.strokeStyle = color; c.stroke();
+      }
+      const barY = top + 0; // Keeps the per-leg values local to this draw pass.
+      void barY;
+      legs[i].reach = reach;
+      legs[i].swing = swing;
+      legs[i].progress = twist ? Math.min(1, reach / 105) : (((phase - offsets[i]) % 1) + 1) % 1;
+    });
+    drawBody(ox, oy, yy, cr, cp); c.restore(); c.restore();
 
-    // Source HTML's gait-cycle card is hidden in Twist mode and visible in Walk mode.
-    if(!twist){const y=top+641;card(lx,y,lw,298);lab('Gait cycle, one row per leg',lx+16,y+24);const s=(lw-34)/640,tx=lx+16+48*s,tw=580*s,ry=y+47;
-      labels.forEach((name,i)=>{const yy=ry+i*26*s,hh=18*s,off=offsets[i],sw=1-duty;txt(name,lx+16+12*s,yy+hh/2,12,C.text);c.fillStyle=C.stance;c.beginPath();c.roundRect(tx,yy,tw,hh,4);c.fill();c.strokeStyle=C.swing;c.lineWidth=1.5;c.setLineDash([5,3]);if(off+sw<=1){c.beginPath();c.roundRect(tx+off*tw,yy,sw*tw,hh,4);c.stroke();}else{c.beginPath();c.roundRect(tx+off*tw,yy,(1-off)*tw,hh,4);c.stroke();c.beginPath();c.roundRect(tx,yy,(off+sw-1)*tw,hh,4);c.stroke();}c.setLineDash([]);const px=tx+((phase+off)%1)*tw;c.strokeStyle=C.text;c.lineWidth=1.5;c.beginPath();c.moveTo(px,yy-3);c.lineTo(px,yy+hh+3);c.stroke();});
-      txt('Filled green: stance',lx+16,y+270,13,C.muted);txt('Dashed amber: swing',lx+182,y+270,13,C.muted);txt('Swinging: '+labels.filter((_,i)=>((phase-offsets[i]+1)%1)<1-duty).join(', '),lx+lw-16,y+270,11,C.muted,500,'right');
-    }else{
-      const y=top+641;card(lx,y,lw,270);lab('Body tilt, six articulated legs planted',lx+16,y+24);const gy=y+218,vals=this.fnkPoseValues;
-      [[lx+174,'FRONT VIEW · ROLL',vals.roll,'roll'],[lx+492,'SIDE VIEW · PITCH',vals.pitch,'pitch']].forEach(a=>{
-        const gx=a[0],ang=Math.max(-.35,Math.min(.35,(Number(a[2])||0)*Math.PI/180)),half=63,bodyCY=gy-55;
-        c.strokeStyle=C.line;c.lineWidth=2;c.beginPath();c.moveTo(gx-140,gy);c.lineTo(gx+140,gy);c.stroke();
-        // Plant three legs on each side of the body. Their upper joints follow
-        // the tilted chassis while the feet stay on the ground plane.
-        const tilt=Math.sin(ang);
-        for(let side of [-1,1])for(let leg=0;leg<3;leg++){
-          const along=(leg-1)*35,hipX=gx+along+(a[3]==='roll'?side*half:side*10),hipY=bodyCY+tilt*(along/(half||1))*24;
-          const kneeX=hipX+side*(a[3]==='roll'?20:13),kneeY=hipY+31+(leg===1?5:0);
-          const footX=hipX+side*(a[3]==='roll'?52:34)+(a[3]==='pitch'?tilt*along*.45:0),footY=gy-3;
-          c.strokeStyle=C.stance;c.lineWidth=2.5;c.beginPath();c.moveTo(hipX,hipY);c.lineTo(kneeX,kneeY);c.lineTo(footX,footY);c.stroke();
-          c.fillStyle=C.text;c.beginPath();c.arc(hipX,hipY,3,0,Math.PI*2);c.fill();c.fillStyle=C.stance;c.beginPath();c.arc(kneeX,kneeY,3.5,0,Math.PI*2);c.arc(footX,footY,4,0,Math.PI*2);c.fill();
-        }
-        c.save();c.translate(gx,bodyCY);c.rotate(ang);c.fillStyle=C.panel;c.strokeStyle=C.text;c.lineWidth=4;c.beginPath();c.roundRect(-half,-8,half*2,16,5);c.fill();c.stroke();c.restore();
-        txt(`${a[1]} · ${Number(a[2]||0).toFixed(1)}°`,gx,y+244,11,C.muted,500,'center');
+    if (!twist) {
+      const y = top + 641; card(lx, y, lw, 298); lab('Gait cycle, one row per leg', lx + 16, y + 24);
+      const s = (lw - 34) / 640, tx0 = lx + 16 + 48 * s, tw = 580 * s, rowY = y + 47;
+      legs.forEach((leg, i) => {
+        const yy0 = rowY + i * 26 * s, hh = 18 * s, off = offsets[i], swingWidth = dutySwing;
+        txt(leg[0], lx + 16 + 12 * s, yy0 + hh / 2, 12, C.text);
+        c.fillStyle = C.stance; c.beginPath(); c.roundRect(tx0, yy0, tw, hh, 4); c.fill();
+        c.strokeStyle = C.swing; c.lineWidth = 1.5; c.setLineDash([5, 3]);
+        const segments = off + swingWidth > 1 ? [[off, 1], [0, off + swingWidth - 1]] : [[off, off + swingWidth]];
+        segments.forEach(seg => { c.beginPath(); c.roundRect(tx0 + seg[0] * tw, yy0, (seg[1] - seg[0]) * tw, hh, 4); c.stroke(); });
+        c.setLineDash([]); const px = tx0 + (((phase - off) % 1) + 1) % 1 * tw;
+        c.strokeStyle = C.text; c.lineWidth = 1.5; c.beginPath(); c.moveTo(px, yy0 - 3); c.lineTo(px, yy0 + hh + 3); c.stroke();
       });
+      txt('Filled green: stance', lx + 16, y + 270, 13, C.muted); txt('Dashed amber: swing', lx + 182, y + 270, 13, C.muted, 500);
+      txt('Swinging: ' + legs.filter((_, i) => ((((phase - offsets[i]) % 1) + 1) % 1) < dutySwing).map(l => l[0]).join(', '), lx + lw - 16, y + 270, 11, C.muted, 500, 'right');
+    } else {
+      const y = top + 641; card(lx, y, lw, 270); lab('Body tilt, feet planted', lx + 16, y + 24);
+      const ground = y + 218, scaleGauge = Math.min((lw - 26) / 640, 1.12), baseX = lx + (lw - 640 * scaleGauge) / 2;
+      const gauge = (center, label, angle) => {
+        const rr0 = Number(angle || 0) * Math.PI / 180, bodyY = ground - (Number(P.z) || 24) * 2.4 * scaleGauge;
+        const half = 70 * scaleGauge, dx = half * Math.cos(rr0), dy = half * Math.sin(rr0), left = center - 160 * scaleGauge, right = center + 160 * scaleGauge;
+        c.strokeStyle = C.line; c.lineWidth = 2; c.beginPath(); c.moveTo(left, ground); c.lineTo(right, ground); c.stroke();
+        c.fillStyle = C.stance; c.beginPath(); c.arc(left + 5, ground, 5, 0, Math.PI * 2); c.arc(right - 5, ground, 5, 0, Math.PI * 2); c.fill();
+        c.strokeStyle = C.stance; c.lineWidth = 2; c.beginPath(); c.moveTo(center - dx, bodyY - dy); c.lineTo(left + 5, ground); c.moveTo(center + dx, bodyY + dy); c.lineTo(right - 5, ground); c.stroke();
+        c.strokeStyle = C.text; c.lineWidth = 7; c.beginPath(); c.moveTo(center - dx, bodyY - dy); c.lineTo(center + dx, bodyY + dy); c.stroke();
+        txt(`${label} · ${Number(angle || 0).toFixed(1)}°`, center, y + 244, 11, C.muted, 500, 'center');
+      };
+      gauge(baseX + 160 * scaleGauge, 'FRONT VIEW · ROLL', P.roll);
+      gauge(baseX + 480 * scaleGauge, 'SIDE VIEW (FRONT RIGHT) · PITCH', P.pitch);
     }
 
-    // The right column preserves the HTML's exact component order and 3-column movement pad.
-    const ctrlH=twist?500:505;card(rx,top,rw,ctrlH);lab('Mode',innerX,top+24);const gap=8,bw=(innerW-gap)/2;
-    button('tab-control',innerX,top+38,bw,44,'Walk',!twist);button('tab-twist',innerX+bw+gap,top+38,bw,44,'Twist body',twist);
-    if(!twist){lab('Movement',innerX,top+103);const pg=8,pw=(innerW-pg*2)/3,py=top+116,ph=60;
-      [['turn-left','Q','TURN LEFT'],['forward','W','FORWARD'],['turn-right','E','TURN RIGHT'],['left','A','LEFT'],['backward','S','BACKWARD'],['right','D','RIGHT']].forEach((a,i)=>{const x=innerX+(i%3)*(pw+pg),y=py+Math.floor(i/3)*(ph+8),selected=a[0]==='turn-left'?motion.angle<-.1:a[0]==='turn-right'?motion.angle>.1:a[0]==='forward'?motion.y>.1:a[0]==='backward'?motion.y<-.1:a[0]==='left'?motion.x<-.1:motion.x>.1;c.fillStyle=selected?C.stance:C.panel;c.strokeStyle=selected?C.stance:C.line;c.lineWidth=1;c.beginPath();c.roundRect(x,y,pw,ph,8);c.fill();c.stroke();txt(a[1],x+pw/2,y+20,20,selected?C.bg:C.text,700,'center');txt(a[2],x+pw/2,y+43,11,selected?C.bg:C.text,500,'center');this.fnkActionHitAreas['drive-'+a[0]]={x,y,width:pw,height:ph,enabled:true};});
-      const by=py+2*(ph+8),rw3=(innerW-16)/3;button('drive-stop',innerX,by,rw3,44,'Stop');button('demo-preview',innerX+rw3+8,by,rw3,44,'Demo all movements',this.fnkPreviewDemo);button('pause-preview',innerX+2*(rw3+8),by,rw3,44,this.fnkPreviewPaused?'Resume':'Pause',this.fnkPreviewPaused);
-      lab('Gait',innerX,by+62);['tripod','ripple','wave'].forEach((g,i)=>button('gait-'+g,innerX+i*(innerW+16)/3,by+74,(innerW-32)/3,44,g[0].toUpperCase()+g.slice(1),g===gait));
-      const sy=by+143;txt('Speed',innerX,sy+14,14,C.text);const sx=innerX+64,sw=innerW-132,cy=sy+14,speed=Math.max(.25,Math.min(2,Number(this.fnkSpeed)||1)),knob=sx+(speed-.25)/1.75*sw;c.strokeStyle=C.line;c.lineWidth=3;c.beginPath();c.moveTo(sx,cy);c.lineTo(sx+sw,cy);c.stroke();c.strokeStyle=C.stance;c.beginPath();c.moveTo(sx,cy);c.lineTo(knob,cy);c.stroke();c.fillStyle=C.stance;c.beginPath();c.arc(knob,cy,7,0,Math.PI*2);c.fill();txt(speed.toFixed(1)+'×',innerX+innerW,sy+14,14,C.text,500,'right');this.fnkActionHitAreas['speed-slider']={x:sx-10,y:sy-10,width:sw+20,height:44,enabled:true};
-    }else{
-      lab('Body pose',innerX,top+103);const fields=[['x','Shift X',-30,30,''],['y','Shift forward',-30,30,''],['z','Body height (ZBODY)',10,44,''],['roll','Roll',-15,15,'°'],['pitch','Pitch',-15,15,'°'],['yaw','Twist (yaw)',-25,25,'°']];
-      fields.forEach((d,i)=>{const y=top+126+i*38,labelW=132,bx=innerX+labelW+5,bw2=innerW-labelW-68,v=Number(this.fnkPoseValues[d[0]])||0,f=Math.max(0,Math.min(1,(v-d[2])/(d[3]-d[2]))),kn=bx+f*bw2;txt(d[1],innerX,y+7,12,C.text);c.strokeStyle=C.line;c.lineWidth=3;c.beginPath();c.moveTo(bx,y+7);c.lineTo(bx+bw2,y+7);c.stroke();c.strokeStyle=C.stance;c.beginPath();c.moveTo(bx,y+7);c.lineTo(kn,y+7);c.stroke();c.fillStyle=C.stance;c.beginPath();c.arc(kn,y+7,6,0,Math.PI*2);c.fill();txt(v.toFixed(1)+d[4],innerX+innerW,y+7,11,C.text,500,'right');this.fnkActionHitAreas['pose-slider-'+d[0]]={x:bx-8,y:y-9,width:bw2+16,height:32,enabled:true,min:d[2],max:d[3],barX:bx,barW:bw2};});
-      button('center-preview',innerX,top+376,bw,44,'Center');button('sweep-preview',innerX+bw+gap,top+376,bw,44,'Sweep demo',this.fnkPreviewDemo);
+    const ctrlH = twist ? 500 : 505; card(rx, top, rw, ctrlH); lab('Mode', innerX, top + 24); const gap = 8, bw = (innerW - gap) / 2;
+    button('tab-control', innerX, top + 38, bw, 44, 'Walk', !twist); button('tab-twist', innerX + bw + gap, top + 38, bw, 44, 'Twist body', twist);
+    if (!twist) {
+      lab('Movement', innerX, top + 103); const pg = 8, pw = (innerW - pg * 2) / 3, py = top + 116, ph = 60;
+      [['turn-left', 'q', 'TURN LEFT'], ['forward', 'w', 'FORWARD'], ['turn-right', 'e', 'TURN RIGHT'], ['left', 'a', 'LEFT'], ['backward', 's', 'BACKWARD'], ['right', 'd', 'RIGHT']].forEach((a, i) => {
+        const x = innerX + (i % 3) * (pw + pg), y = py + Math.floor(i / 3) * (ph + 8), selected = Boolean(latched[a[1]]);
+        c.fillStyle = selected ? C.stance : C.panel; c.strokeStyle = selected ? C.stance : C.line; c.lineWidth = 1; c.beginPath(); c.roundRect(x, y, pw, ph, 8); c.fill(); c.stroke();
+        txt(a[1].toUpperCase(), x + pw / 2, y + 20, 20, selected ? C.bg : C.text, 700, 'center'); txt(a[2], x + pw / 2, y + 43, 11, selected ? C.bg : C.text, 500, 'center'); this.fnkActionHitAreas[`drive-${a[0]}`] = { x, y, width: pw, height: ph, enabled: true };
+      });
+      const by = py + 2 * (ph + 8), rw3 = (innerW - 16) / 3;
+      button('drive-stop', innerX, by, rw3, 44, 'Stop'); button('demo-preview', innerX + rw3 + 8, by, rw3, 44, 'Demo all movements', this.fnkPreviewDemo); button('pause-preview', innerX + 2 * (rw3 + 8), by, rw3, 44, this.fnkPreviewPaused ? 'Resume' : 'Pause', this.fnkPreviewPaused);
+      lab('Gait', innerX, by + 62); ['tripod', 'ripple', 'wave'].forEach((g, i) => button(`gait-${g}`, innerX + i * (innerW + 16) / 3, by + 74, (innerW - 32) / 3, 44, g[0].toUpperCase() + g.slice(1), g === gait));
+      const sy0 = by + 143, sx = innerX + 64, sw = innerW - 132, cy0 = sy0 + 14, speed = Math.max(.25, Math.min(2, Number(this.fnkSpeed) || 1)), knob = sx + (speed - .25) / 1.75 * sw;
+      txt('Speed', innerX, cy0, 14, C.text); c.strokeStyle = C.line; c.lineWidth = 3; c.beginPath(); c.moveTo(sx, cy0); c.lineTo(sx + sw, cy0); c.stroke(); c.strokeStyle = C.stance; c.beginPath(); c.moveTo(sx, cy0); c.lineTo(knob, cy0); c.stroke(); c.fillStyle = C.stance; c.beginPath(); c.arc(knob, cy0, 7, 0, Math.PI * 2); c.fill(); txt(speed.toFixed(1) + '×', innerX + innerW, cy0, 14, C.text, 500, 'right'); this.fnkActionHitAreas['speed-slider'] = { x: sx - 10, y: sy0 - 10, width: sw + 20, height: 44, enabled: true };
+    } else {
+      lab('Body pose', innerX, top + 103); const fields = [['x', 'Shift X', -30, 30, ''], ['y', 'Shift forward', -30, 30, ''], ['z', 'Body height (ZBODY)', 10, 44, ''], ['roll', 'Roll', -15, 15, '°'], ['pitch', 'Pitch', -15, 15, '°'], ['yaw', 'Twist (yaw)', -25, 25, '°']];
+      fields.forEach((d, i) => { const y = top + 126 + i * 38, labelW = 132, bx = innerX + labelW + 5, barW = innerW - labelW - 68, value = Number(P[d[0]]) || 0, f = Math.max(0, Math.min(1, (value - d[2]) / (d[3] - d[2]))), kn = bx + f * barW; txt(d[1], innerX, y + 7, 12, C.text); c.strokeStyle = C.line; c.lineWidth = 3; c.beginPath(); c.moveTo(bx, y + 7); c.lineTo(bx + barW, y + 7); c.stroke(); c.strokeStyle = C.stance; c.beginPath(); c.moveTo(bx, y + 7); c.lineTo(kn, y + 7); c.stroke(); c.fillStyle = C.stance; c.beginPath(); c.arc(kn, y + 7, 6, 0, Math.PI * 2); c.fill(); txt(value.toFixed(1) + d[4], innerX + innerW, y + 7, 11, C.text, 500, 'right'); this.fnkActionHitAreas[`pose-slider-${d[0]}`] = { x: bx - 8, y: y - 9, width: barW + 16, height: 32, enabled: true, min: d[2], max: d[3], barX: bx, barW };
+      });
+      button('center-preview', innerX, top + 376, bw, 44, 'Center'); button('sweep-preview', innerX + bw + gap, top + 376, bw, 44, 'Sweep demo', this.fnkPreviewDemo);
     }
-    const armY=top+ctrlH-58;button('teleop-arm',innerX,armY,bw,44,this.fnkTeleopArmed?'Robot input on':'Robot input',this.fnkTeleopArmed);button('teleop-stop',innerX+bw+gap,armY,bw,44,'Scene input');
-    const legY=top+ctrlH+16,legH=354;card(rx,legY,rw,legH);lab('Leg status',innerX,legY+24);txt('Bar: position of the leg in its own gait cycle.',innerX,legY+45,11,C.muted);const estimates=this.fnkLegState?.legs||[];
-    labels.forEach((name,i)=>{const y=legY+61+i*43,x=innerX,p=((phase+offsets[i])%1+1)%1,sw=p<1-duty;c.strokeStyle=C.line;c.lineWidth=1;c.beginPath();c.moveTo(x,y+36);c.lineTo(rx+rw-16,y+36);c.stroke();txt(name,x,y+15,12,C.text,700);txt((estimates[i]?'FNHR EST. · ':'PREVIEW · ')+(sw?'SWING':'STANCE'),x+36,y+15,10,sw?C.swing:C.stance,700);const bx=x+144,bww=innerW-144;c.fillStyle=C.line;c.fillRect(bx,y+11,bww,8);c.fillStyle=sw?C.swing:C.stance;c.fillRect(bx,y+11,bww*p,8);});
-    txt('Commanded FNHR estimates · servos do not report measured leg positions',16,h-24,11,C.muted);
-    this.fnkTexture.needsUpdate=true;
+    const armY = top + ctrlH - 58; button('teleop-arm', innerX, armY, bw, 44, this.fnkTeleopArmed ? 'Robot input on' : 'Robot input', this.fnkTeleopArmed); button('teleop-stop', innerX + bw + gap, armY, bw, 44, 'Scene input', this.fnkSceneInputSelected);
+    const legY = top + ctrlH + 16, legH = 354; card(rx, legY, rw, legH); lab('Leg status', innerX, legY + 24);
+    txt(twist ? 'Kinematic reach · amber means beyond the modeled leg limit.' : 'Bar: position of each leg in its gait cycle.', innerX, legY + 45, 11, C.muted);
+    legs.forEach((leg, i) => {
+      const y = legY + 61 + i * 43, x = innerX, bx = x + 144, barW = innerW - 144, current = legs[i];
+      c.strokeStyle = C.line; c.lineWidth = 1; c.beginPath(); c.moveTo(x, y + 36); c.lineTo(rx + rw - 16, y + 36); c.stroke();
+      txt(leg[0], x, y + 15, 12, C.text, 700);
+      if (twist) {
+        const limited = current.reach > 105 || current.reach < 45;
+        txt(`${limited ? 'LIMIT' : 'REACH'} · ${current.reach.toFixed(0)} mm`, x + 36, y + 15, 10, limited ? C.swing : C.stance, 700);
+        c.fillStyle = C.line; c.fillRect(bx, y + 11, barW, 8); c.fillStyle = limited ? C.swing : C.stance; c.fillRect(bx, y + 11, barW * current.progress, 8);
+      } else {
+        const p = (((phase - offsets[i]) % 1) + 1) % 1, isSwing = p < dutySwing;
+        txt(isSwing ? 'SWING' : 'STANCE', x + 36, y + 15, 10, isSwing ? C.swing : C.stance, 700);
+        c.fillStyle = C.line; c.fillRect(bx, y + 11, barW, 8); c.fillStyle = isSwing ? C.swing : C.stance; c.fillRect(bx, y + 11, barW * p, 8);
+      }
+    });
+    txt(this.fnkMessage || 'Kinematic preview · commanded estimates only; servos do not report measured leg positions.', 16, h - 24, 11, C.muted);
+    this.fnkTexture.needsUpdate = true;
   }
-
   drawFnkGaitLabLegacy() {
     const c=this.fnkContext,w=this.fnkCanvas.width,h=this.fnkCanvas.height;if(!c)return;
     c.clearRect(0,0,w,h);c.fillStyle='#0a1018';c.fillRect(0,0,w,h);c.strokeStyle='#2b405c';c.lineWidth=3;c.strokeRect(3,3,w-6,h-6);
