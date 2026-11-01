@@ -74,6 +74,11 @@ export class QuestVRDashboard {
     this.fnkSpeed = 1;
     this.fnkPreviewPaused = false;
     this.fnkPreviewDemo = false;
+    this.fnkPreviewMove = { x: 0, y: 0, angle: 0 };
+    this.fnkControllerInput = null;
+    this.fnkPreviewIntensity = 0;
+    this.fnkPreviewLastAt = 0;
+    this.fnkGridOffset = { x: 0, y: 0, yaw: 0 };
     this.fnkBusy = false;
     this.fnkHardwareStatus = null;
     this.fnkLegState = null;
@@ -1706,7 +1711,12 @@ export class QuestVRDashboard {
   }
 
   sendFnkPadAction(action) {
-    if (action === 'stop') { this.disarmFnkTeleop('SCENE MODE · CURRENT FNHR GAIT CANNOT BE INTERRUPTED'); return; }
+    if (action === 'stop') {
+      this.fnkPreviewMove = { x: 0, y: 0, angle: 0 }; this.fnkControllerInput = null;
+      if (this.fnkTeleopArmed) this.disarmFnkTeleop('PREVIEW STOPPED · FNHR CANNOT INTERRUPT A GAIT ALREADY RUNNING');
+      else { this.fnkMessage = 'PREVIEW STOPPED · NO HARDWARE COMMAND SENT'; this.drawFnkControlWindow(); }
+      return;
+    }
     const v = 24 * this.fnkSpeed;
     const commands = {
       forward: { x: 0, y: v, angle: 0 }, backward: { x: 0, y: -v, angle: 0 },
@@ -1714,16 +1724,20 @@ export class QuestVRDashboard {
       'turn-left': { x: 0, y: 0, angle: -12 * this.fnkSpeed },
       'turn-right': { x: 0, y: 0, angle: 12 * this.fnkSpeed },
     };
-    if (!this.fnkTeleopArmed) { this.fnkMessage = 'SELECT ROBOT MODE BEFORE SENDING A GAIT'; this.drawFnkControlWindow(); return; }
-    const hw=this.fnkHardwareStatus||{};if(hw.connected!==true||hw.firmware_profile!=='custom_fnhr_ascii_v2'||hw.actuation_enabled!==true){this.fnkMessage='COMMAND BLOCKED · CHECK FNK USB / ACTUATION SETTING';this.drawFnkControlWindow();return;}
-    const params = commands[action]; if (params) void this.sendFnkManualControl({ mode: 'crawl', ...params });
+    const params = commands[action]; if (!params) return;
+    const preview = { x: params.x / Math.max(v, 1), y: params.y / Math.max(v, 1), angle: params.angle / Math.max(12 * this.fnkSpeed, 1) };
+    const same = this.fnkPreviewMove?.x === preview.x && this.fnkPreviewMove?.y === preview.y && this.fnkPreviewMove?.angle === preview.angle;
+    this.fnkPreviewMove = same ? { x: 0, y: 0, angle: 0 } : preview; this.fnkControllerInput = null;
+    const hw=this.fnkHardwareStatus||{};
+    if (!this.fnkTeleopArmed) { this.fnkMessage = 'PREVIEW MOVING · SELECT ROBOT INPUT TO SEND TO HARDWARE'; this.drawFnkControlWindow(); return; }
+    if(hw.connected!==true||hw.firmware_profile!=='custom_fnhr_ascii_v2'||hw.actuation_enabled!==true){this.fnkMessage='PREVIEW MOVING · PHYSICAL COMMAND BLOCKED: USB / ACTUATION DISABLED';this.drawFnkControlWindow();return;}
+    void this.sendFnkManualControl({ mode: 'crawl', ...params });
   }
 
   updateFnkStickControl(inputSources = []) {
     const right = inputSources.find(source => source.handedness === 'right');
     const left = inputSources.find(source => source.handedness === 'left');
     if (!this.fnkVisible || !this.fnkTeleopArmed) return false;
-    const hw=this.fnkHardwareStatus||{};if(hw.connected!==true||hw.firmware_profile!=='custom_fnhr_ascii_v2'||hw.actuation_enabled!==true)return true;
     const read = source => {
       const axes = source?.gamepad?.axes || [];
       const a = [Number(axes[0]) || 0, Number(axes[1]) || 0];
@@ -1733,28 +1747,32 @@ export class QuestVRDashboard {
     const dz = value => Math.abs(value) < 0.18 ? 0 : Math.sign(value) * (Math.abs(value) - 0.18) / 0.82;
     const [rx, ry] = read(right).map(dz);
     const [lx] = read(left).map(dz);
+    const hw=this.fnkHardwareStatus||{};
     const crawlX = rx * 42;
     const crawlY = -ry * 42;
     const crawlScale = Math.max(1, Math.hypot(crawlX, crawlY) / 42);
     let move;
     let gyroTarget = null;
     if (this.fnkTab === 'twist') {
-      if (!this.fnkGyroBaseline) return true;
+      if (!this.fnkGyroBaseline) { this.fnkControllerInput=null; return true; }
       this.fnkGyroDelta.copy(this.fnkGyroBaseline).invert().multiply(this.fnkGyroCurrent).normalize();
       const radians = this.fnkGyroDelta.getAxisAngle(this.fnkGyroAxis);
       const degrees = radians * 180 / Math.PI;
       const rotationScale = Math.min(1, 15 / Math.max(degrees, 0.001));
       const trigger = Number(right?.gamepad?.buttons?.[0]?.value) || 0;
-      move = { mode: 'twist', x: rx * 30, y: -ry * 30, z: trigger * 45,
-        rx: this.fnkGyroAxis.x * degrees * rotationScale,
-        ry: this.fnkGyroAxis.y * degrees * rotationScale,
-        rz: this.fnkGyroAxis.z * degrees * rotationScale };
+      const rxDeg=this.fnkGyroAxis.x*degrees*rotationScale,ryDeg=this.fnkGyroAxis.y*degrees*rotationScale,rzDeg=this.fnkGyroAxis.z*degrees*rotationScale;
+      this.fnkPoseValues={...(this.fnkPoseValues||{x:0,y:0,z:24,roll:0,pitch:0,yaw:0}),x:rx*30,y:-ry*30,z:24+trigger*21,roll:rxDeg,pitch:ryDeg,yaw:rzDeg};
+      this.fnkControllerInput={x:rx,y:-ry,angle:rzDeg/15};
+      move = { mode: 'twist', x: rx * 30, y: -ry * 30, z: 24+trigger*21,
+        rx: rxDeg, ry: ryDeg, rz: rzDeg };
       if (degrees >= 1.5) gyroTarget = this.fnkGyroCurrent.clone();
-      if (!gyroTarget && Math.max(Math.abs(rx), Math.abs(ry), trigger) < 0.12) return true;
+      if (!gyroTarget && Math.max(Math.abs(rx), Math.abs(ry), trigger) < 0.12) { this.fnkControllerInput=null; return true; }
     } else {
       move = { mode: 'crawl', x: crawlX / crawlScale, y: crawlY / crawlScale, angle: -lx * 18 };
-      if (Math.max(Math.abs(rx), Math.abs(ry), Math.abs(lx)) < 0.12) return true;
+      this.fnkControllerInput={x:rx,y:-ry,angle:-lx};
+      if (Math.max(Math.abs(rx), Math.abs(ry), Math.abs(lx)) < 0.12) { this.fnkControllerInput=null; return true; }
     }
+    if(hw.connected!==true||hw.firmware_profile!=='custom_fnhr_ascii_v2'||hw.actuation_enabled!==true){if(gyroTarget&&this.fnkGyroBaseline)this.fnkGyroBaseline.copy(gyroTarget);return true;}
     if (this.fnkDriveInFlight || performance.now() - this.fnkLastDriveAt < 1600) return true;
     void this.sendFnkManualControl(move, gyroTarget);
     return true;
@@ -1841,7 +1859,13 @@ export class QuestVRDashboard {
     const labels=['L1','R1','L2','R2','L3','R3'],twist=this.fnkTab==='twist',gait=this.fnkGait||'tripod';
     const duty=gait==='wave'?5/6:gait==='ripple'?2/3:.5;
     const offsets=gait==='wave'?[1/3,5/6,1/6,2/3,0,.5]:gait==='ripple'?[2/3,1/6,1/3,5/6,0,.5]:[0,.5,0,.5,0,.5];
-    const phase=this.fnkPreviewPaused?(this.fnkPreviewPhase||0):((this.fnkPreviewPhase=(performance.now()*(Number(this.fnkSpeed)||1)/5000)%1));
+    const now=performance.now(),dt=this.fnkPreviewLastAt?Math.min(.1,Math.max(0,(now-this.fnkPreviewLastAt)/1000)):0;this.fnkPreviewLastAt=now;
+    let motion=this.fnkControllerInput||this.fnkPreviewMove||{x:0,y:0,angle:0};
+    if(this.fnkPreviewDemo&&!twist){const i=Math.floor(now/3500)%8;motion=[{x:0,y:1},{x:0,y:-1},{x:-1,y:0},{x:1,y:0},{angle:-1},{angle:1},{x:-.7,y:1},{x:.7,y:1}][i];}
+    const moving=!twist&&(this.fnkPreviewDemo||Math.hypot(Number(motion.x)||0,Number(motion.y)||0)>0.02||Math.abs(Number(motion.angle)||0)>0.02);
+    if(!this.fnkPreviewPaused){const target=moving?1:0;this.fnkPreviewIntensity+=(target-this.fnkPreviewIntensity)*Math.min(1,dt*8);if(moving)this.fnkPreviewPhase=(((this.fnkPreviewPhase||0)+dt*(Number(this.fnkSpeed)||1)/2)%1);}
+    const phase=this.fnkPreviewPhase||0;
+    if(!this.fnkPreviewPaused&&moving){const speed=Number(this.fnkSpeed)||1;this.fnkGridOffset.x=(this.fnkGridOffset.x+(Number(motion.y)||0)*dt*34*speed)%48;this.fnkGridOffset.y=(this.fnkGridOffset.y-(Number(motion.x)||0)*dt*34*speed)%48;this.fnkGridOffset.yaw=(this.fnkGridOffset.yaw+(Number(motion.angle)||0)*dt*.8*speed)%(Math.PI*2);}
     const hw=this.fnkHardwareStatus||{},compatible=hw.connected===true&&hw.firmware_profile==='custom_fnhr_ascii_v2';
     if(!this.fnkPoseValues)this.fnkPoseValues={x:0,y:0,z:24,roll:0,pitch:0,yaw:0};
     if(twist&&this.fnkPreviewDemo){const t=performance.now()/1000;this.fnkPoseValues={x:20*Math.sin(t*.9),y:20*Math.sin(t*.7+1),z:24+8*Math.sin(t*.5),roll:10*Math.sin(t*1.1),pitch:10*Math.sin(t*.8+2),yaw:20*Math.sin(t*.6)};}
@@ -1858,16 +1882,16 @@ export class QuestVRDashboard {
 
     // Top-down SVG stage reproduced from the supplied file's 640×560 viewBox.
     const previewMoves=['FORWARD','BACKWARD','LEFT','RIGHT','TURN LEFT','TURN RIGHT','FORWARD + LEFT','FORWARD + RIGHT'];
-    const previewMove=this.fnkPreviewDemo?previewMoves[Math.floor(performance.now()/3500)%previewMoves.length]:'FORWARD';
+    const previewMove=this.fnkPreviewDemo?previewMoves[Math.floor(now/3500)%previewMoves.length]:Math.abs(Number(motion.angle)||0)>.05?(motion.angle<0?'TURN LEFT':'TURN RIGHT'):Math.abs(Number(motion.x)||0)>.1?(motion.x<0?'LEFT':'RIGHT'):(Number(motion.y)||0)<-.1?'BACKWARD':'FORWARD';
     card(lx,top,lw,625);txt(twist?'TWIST BODY':previewMove,lx+16,top+22,18,C.text,700);
     txt(twist?'ALL SIX FEET PLANTED':gait.toUpperCase()+' · '+Math.round(duty*100)+'% stance',lx+lw-16,top+22,12,C.muted,500,'right');
     const stage={x:32,y:top+48,w:634,h:554},scale=Math.min(stage.w/640,stage.h/560);
     c.fillStyle=C.stage;c.beginPath();c.roundRect(stage.x,stage.y,stage.w,stage.h,8);c.fill();c.save();c.beginPath();c.rect(stage.x,stage.y,stage.w,stage.h);c.clip();
     c.translate(stage.x+(stage.w-640*scale)/2,stage.y+(stage.h-560*scale)/2);c.scale(scale,scale);
-    c.strokeStyle=C.line;c.lineWidth=1;c.beginPath();for(let q=-1400;q<=1400;q+=48){c.moveTo(q,-1400);c.lineTo(q,1400);c.moveTo(-1400,q);c.lineTo(1400,q);}c.stroke();
+    c.save();c.translate(320,285);c.rotate(this.fnkGridOffset.yaw);c.translate(-320-this.fnkGridOffset.x,-285-this.fnkGridOffset.y);c.strokeStyle=C.line;c.lineWidth=1;c.beginPath();for(let q=-1400;q<=1400;q+=48){c.moveTo(q,-1400);c.lineTo(q,1400);c.moveTo(-1400,q);c.lineTo(1400,q);}c.stroke();c.restore();
     c.save();c.translate(320,285);c.scale(2.2,2.2);c.fillStyle=C.panel;c.strokeStyle=C.line;c.lineWidth=1.5;c.beginPath();c.roundRect(-28,-48,56,96,14);c.fill();c.stroke();
     c.fillStyle=C.text;c.beginPath();c.moveTo(-8,-50);c.lineTo(8,-50);c.lineTo(0,-62);c.closePath();c.fill();c.fillStyle=C.muted;c.font='10px ui-monospace,Menlo,Consolas,monospace';c.textAlign='center';[['L1',-14,-30],['R1',14,-30],['L2',-14,4],['R2',14,4],['L3',-14,38],['R3',14,38]].forEach(a=>c.fillText(a[0],a[1],a[2]));
-    [[-1,-34],[1,-34],[-1,0],[1,0],[-1,34],[1,34]].forEach((leg,i)=>{const side=leg[0],hy=leg[1],fx=side*(hy===0?104:92),fy=hy<0?-58:hy>0?58:0,p=((phase-offsets[i])%1+1)%1,sw=p<(1-duty),u=sw?p/(1-duty):(p-(1-duty))/duty,k=sw?2*u-1:1-2*u,lift=sw?Math.sin(Math.PI*u):0,x=fx+k*17,y=fy+k*10,hx=side*28;
+    [[-1,-34],[1,-34],[-1,0],[1,0],[-1,34],[1,34]].forEach((leg,i)=>{const side=leg[0],hy=leg[1],fx=side*(hy===0?104:92),fy=hy<0?-58:hy>0?58:0,p=((phase-offsets[i])%1+1)%1,sw=p<(1-duty),u=sw?p/(1-duty):(p-(1-duty))/duty,k=sw?2*u-1:1-2*u,intensity=this.fnkPreviewIntensity,turn=Number(motion.angle)||0,moveX=(Number(motion.y)||0)+turn*fy/120,moveY=-(Number(motion.x)||0)-turn*fx/120,stride=34*(Number(this.fnkSpeed)||1)*intensity,lift=(sw?Math.sin(Math.PI*u):0)*intensity,x=fx+k*moveX*stride,y=fy+k*moveY*stride,hx=side*28;
       c.strokeStyle=sw?C.swing:C.stance;c.lineWidth=2;c.setLineDash(sw?[4,3]:[]);c.beginPath();c.moveTo(hx,hy);c.lineTo((hx+x)/2+side*12,(hy+y)/2);c.lineTo(x,y);c.stroke();c.setLineDash([]);
       c.strokeStyle=C.line;c.lineWidth=1;c.setLineDash([2,3]);c.beginPath();c.moveTo(fx,fy);c.lineTo(fx-side*34,fy);c.stroke();c.setLineDash([]);
       c.fillStyle=sw?C.panel:C.stance;c.strokeStyle=sw?C.swing:C.stance;c.lineWidth=2;c.beginPath();c.arc(x,y,6+5*lift,0,Math.PI*2);c.fill();c.stroke();});
@@ -1886,7 +1910,7 @@ export class QuestVRDashboard {
     const ctrlH=twist?500:505;card(rx,top,rw,ctrlH);lab('Mode',innerX,top+24);const gap=8,bw=(innerW-gap)/2;
     button('tab-control',innerX,top+38,bw,44,'Walk',!twist);button('tab-twist',innerX+bw+gap,top+38,bw,44,'Twist body',twist);
     if(!twist){lab('Movement',innerX,top+103);const pg=8,pw=(innerW-pg*2)/3,py=top+116,ph=60;
-      [['turn-left','Q','TURN LEFT'],['forward','W','FORWARD'],['turn-right','E','TURN RIGHT'],['left','A','LEFT'],['backward','S','BACKWARD'],['right','D','RIGHT']].forEach((a,i)=>{const x=innerX+(i%3)*(pw+pg),y=py+Math.floor(i/3)*(ph+8);c.fillStyle=C.panel;c.strokeStyle=C.line;c.lineWidth=1;c.beginPath();c.roundRect(x,y,pw,ph,8);c.fill();c.stroke();txt(a[1],x+pw/2,y+20,20,C.text,700,'center');txt(a[2],x+pw/2,y+43,11,C.text,500,'center');this.fnkActionHitAreas['drive-'+a[0]]={x,y,width:pw,height:ph,enabled:true};});
+      [['turn-left','Q','TURN LEFT'],['forward','W','FORWARD'],['turn-right','E','TURN RIGHT'],['left','A','LEFT'],['backward','S','BACKWARD'],['right','D','RIGHT']].forEach((a,i)=>{const x=innerX+(i%3)*(pw+pg),y=py+Math.floor(i/3)*(ph+8),selected=a[0]==='turn-left'?motion.angle<-.1:a[0]==='turn-right'?motion.angle>.1:a[0]==='forward'?motion.y>.1:a[0]==='backward'?motion.y<-.1:a[0]==='left'?motion.x<-.1:motion.x>.1;c.fillStyle=selected?C.stance:C.panel;c.strokeStyle=selected?C.stance:C.line;c.lineWidth=1;c.beginPath();c.roundRect(x,y,pw,ph,8);c.fill();c.stroke();txt(a[1],x+pw/2,y+20,20,selected?C.bg:C.text,700,'center');txt(a[2],x+pw/2,y+43,11,selected?C.bg:C.text,500,'center');this.fnkActionHitAreas['drive-'+a[0]]={x,y,width:pw,height:ph,enabled:true};});
       const by=py+2*(ph+8),rw3=(innerW-16)/3;button('drive-stop',innerX,by,rw3,44,'Stop');button('demo-preview',innerX+rw3+8,by,rw3,44,'Demo all movements',this.fnkPreviewDemo);button('pause-preview',innerX+2*(rw3+8),by,rw3,44,this.fnkPreviewPaused?'Resume':'Pause',this.fnkPreviewPaused);
       lab('Gait',innerX,by+62);['tripod','ripple','wave'].forEach((g,i)=>button('gait-'+g,innerX+i*(innerW+16)/3,by+74,(innerW-32)/3,44,g[0].toUpperCase()+g.slice(1),g===gait));
       const sy=by+143;txt('Speed',innerX,sy+14,14,C.text);const sx=innerX+64,sw=innerW-132,cy=sy+14,speed=Math.max(.25,Math.min(2,Number(this.fnkSpeed)||1)),knob=sx+(speed-.25)/1.75*sw;c.strokeStyle=C.line;c.lineWidth=3;c.beginPath();c.moveTo(sx,cy);c.lineTo(sx+sw,cy);c.stroke();c.strokeStyle=C.stance;c.beginPath();c.moveTo(sx,cy);c.lineTo(knob,cy);c.stroke();c.fillStyle=C.stance;c.beginPath();c.arc(knob,cy,7,0,Math.PI*2);c.fill();txt(speed.toFixed(1)+'×',innerX+innerW,sy+14,14,C.text,500,'right');this.fnkActionHitAreas['speed-slider']={x:sx-10,y:sy-10,width:sw+20,height:44,enabled:true};
@@ -1897,7 +1921,7 @@ export class QuestVRDashboard {
     }
     const armY=top+ctrlH-58;button('teleop-arm',innerX,armY,bw,44,this.fnkTeleopArmed?'Robot input on':'Robot input',this.fnkTeleopArmed);button('teleop-stop',innerX+bw+gap,armY,bw,44,'Scene input');
     const legY=top+ctrlH+16,legH=354;card(rx,legY,rw,legH);lab('Leg status',innerX,legY+24);txt('Bar: position of the leg in its own gait cycle.',innerX,legY+45,11,C.muted);const estimates=this.fnkLegState?.legs||[];
-    labels.forEach((name,i)=>{const y=legY+61+i*43,l=estimates[i],x=innerX,p=((phase+offsets[i])%1+1)%1,sw=p<1-duty;c.strokeStyle=C.line;c.lineWidth=1;c.beginPath();c.moveTo(x,y+36);c.lineTo(rx+rw-16,y+36);c.stroke();txt(name,x,y+15,12,C.text,700);txt(l?'CMD ESTIMATE':(sw?'SWING':'STANCE'),x+36,y+15,11,l?C.muted:(sw?C.swing:C.stance),700);const bx=x+144,bww=innerW-144;c.fillStyle=C.line;c.fillRect(bx,y+11,bww,8);c.fillStyle=l?C.stance:(sw?C.swing:C.stance);c.fillRect(bx,y+11,bww*p,8);});
+    labels.forEach((name,i)=>{const y=legY+61+i*43,x=innerX,p=((phase+offsets[i])%1+1)%1,sw=p<1-duty;c.strokeStyle=C.line;c.lineWidth=1;c.beginPath();c.moveTo(x,y+36);c.lineTo(rx+rw-16,y+36);c.stroke();txt(name,x,y+15,12,C.text,700);txt((estimates[i]?'FNHR EST. · ':'PREVIEW · ')+(sw?'SWING':'STANCE'),x+36,y+15,10,sw?C.swing:C.stance,700);const bx=x+144,bww=innerW-144;c.fillStyle=C.line;c.fillRect(bx,y+11,bww,8);c.fillStyle=sw?C.swing:C.stance;c.fillRect(bx,y+11,bww*p,8);});
     txt('Commanded FNHR estimates · servos do not report measured leg positions',16,h-24,11,C.muted);
     this.fnkTexture.needsUpdate=true;
   }
