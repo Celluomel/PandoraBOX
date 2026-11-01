@@ -33,11 +33,14 @@ on the real robot.
 - `CMD forward|backward|left|right|turn_left|turn_right` -> `STARTED <action>`
   then `DONE <action>` after the FNHR call returns.
 - `CMD crawl <x> <y> <angle>` -> one FNHR `robot.Crawl(x, y, angle)` action.
+- `CMD twist <x> <y> <z> <rx> <ry> <rz>` -> one bounded
+  `robot.TwistBody(...)` action; returns `STARTED twist` and `DONE twist`.
 - `CMD stop` -> `robot.SleepMode()` when the firmware is able to process the
   command.
 
-Translation is clamped by FNHR to a 42 mm vector and turn angle to 18 degrees;
-this sketch rejects values outside those bounds. The function names and bounds
+`crawl` is bounded to a 42 mm translation vector and an 18 degree turn. `twist`
+is bounded to ±30 mm X/Y, 0–45 mm Z, and a 15-degree rotation magnitude.
+This sketch rejects values outside those bounds. The function names and bounds
 are from the upstream FNHR source. They are not a calibrated map from ROS
 velocity (m/s) to gait displacement or speed.
 

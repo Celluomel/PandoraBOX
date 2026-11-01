@@ -61,6 +61,10 @@ export class QuestVRDashboard {
     this.grabbedWindow = 'hud';
     this.fnkVisible = false;
     this.fnkBoardOnlyConfirmed = false;
+    this.fnkTab = 'control';
+    this.fnkTeleopArmed = false;
+    this.fnkDriveInFlight = false;
+    this.fnkLastDriveAt = 0;
     this.fnkLeg = 1;
     this.fnkBusy = false;
     this.fnkHardwareStatus = null;
@@ -201,6 +205,7 @@ export class QuestVRDashboard {
   updateTelemetry(telemetry) {
     this.telemetry = telemetry;
     this.drawDashboard();
+    if (this.fnkVisible) this.drawFnkControlWindow();
   }
 
   updateImuStatus(status) {
@@ -1632,6 +1637,75 @@ export class QuestVRDashboard {
     this.drawFnkControlWindow();
   }
 
+  setFnkTab(tab) {
+    this.fnkTab = ['control', 'twist', 'calibration', 'installation'].includes(tab) ? tab : 'control';
+    this.drawFnkControlWindow();
+  }
+
+  toggleFnkTeleop() {
+    this.fnkTeleopArmed = !this.fnkTeleopArmed;
+    this.fnkMessage = this.fnkTeleopArmed
+      ? 'ARMED · HOLD RIGHT THUMBSTICK CLICK TO SEND GAIT COMMANDS'
+      : 'DISARMED · NO DRIVE COMMANDS';
+    this.drawFnkControlWindow();
+  }
+
+  disarmFnkTeleop(message = 'DISARMED · NO DRIVE COMMANDS') {
+    this.fnkTeleopArmed = false;
+    this.fnkMessage = message;
+    this.drawFnkControlWindow();
+  }
+
+  async sendFnkManualControl(payload) {
+    if (!this.fnkTeleopArmed || this.fnkDriveInFlight) return;
+    this.fnkDriveInFlight = true;
+    this.fnkLastDriveAt = performance.now();
+    this.fnkMessage = `SENDING ${payload.mode.toUpperCase()} STEP · KEEP DEADMAN HELD`;
+    this.drawFnkControlWindow();
+    try {
+      const response = await fetch('/plugins/fnk0031_wifi/manual-control', {
+        method: 'POST', cache: 'no-store', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...payload, deadman: true }),
+      });
+      const result = await response.json();
+      if (!response.ok || !result?.ok) throw new Error(result?.error || `HTTP ${response.status}`);
+      this.fnkMessage = `${result.ack} · OPERATOR COMMAND ACKNOWLEDGED`;
+    } catch (error) {
+      this.disarmFnkTeleop(`DRIVE DISARMED · ${error.message}`);
+    } finally {
+      this.fnkDriveInFlight = false;
+      this.drawFnkControlWindow();
+    }
+  }
+
+  updateFnkStickControl(inputSources = []) {
+    const right = inputSources.find(source => source.handedness === 'right');
+    const left = inputSources.find(source => source.handedness === 'left');
+    const pressed = Boolean(right?.gamepad?.buttons?.[3]?.pressed);
+    if (!this.fnkVisible || !this.fnkTeleopArmed) return false;
+    if (!pressed) return true;
+    const read = source => {
+      const axes = source?.gamepad?.axes || [];
+      const a = [Number(axes[0]) || 0, Number(axes[1]) || 0];
+      const b = [Number(axes[2]) || 0, Number(axes[3]) || 0];
+      return Math.hypot(...b) > Math.hypot(...a) ? b : a;
+    };
+    const dz = value => Math.abs(value) < 0.18 ? 0 : Math.sign(value) * (Math.abs(value) - 0.18) / 0.82;
+    const [rx, ry] = read(right).map(dz);
+    const [lx, ly] = read(left).map(dz);
+    const crawlX = rx * 42;
+    const crawlY = -ry * 42;
+    const crawlScale = Math.max(1, Math.hypot(crawlX, crawlY) / 42);
+    const move = this.fnkTab === 'twist'
+      ? { mode: 'twist', x: rx * 30, y: -ry * 30, z: (Number(right.gamepad.buttons?.[0]?.value) || 0) * 45,
+          rx: -ly * 8, ry: lx * 8, rz: (Number(left?.gamepad?.buttons?.[0]?.value) || 0) * 8 }
+      : { mode: 'crawl', x: crawlX / crawlScale, y: crawlY / crawlScale, angle: -lx * 18 };
+    if (Math.max(Math.abs(rx), Math.abs(ry), Math.abs(lx), Math.abs(ly)) < 0.12) return false;
+    if (this.fnkDriveInFlight || performance.now() - this.fnkLastDriveAt < 1600) return true;
+    void this.sendFnkManualControl(move);
+    return true;
+  }
+
   async sendFnkLegTest(direction) {
     if (this.fnkBusy || !this.fnkBoardOnlyConfirmed) return;
     this.fnkBusy = true;
@@ -1666,14 +1740,14 @@ export class QuestVRDashboard {
     ctx.clearRect(0, 0, width, height);
     ctx.fillStyle = '#071216'; ctx.fillRect(0, 0, width, height);
     ctx.strokeStyle = '#6bd9bd'; ctx.lineWidth = 5; ctx.strokeRect(3, 3, width - 6, height - 6);
-    ctx.fillStyle = '#11232a'; ctx.fillRect(8, 8, width - 16, 116);
-    ctx.fillStyle = '#e7fff4'; ctx.font = '700 48px system-ui'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
-    ctx.fillText('FNK0031 · BOARD CONTROL', 42, 48);
+    ctx.fillStyle = '#11232a'; ctx.fillRect(8, 8, width - 16, 128);
+    ctx.fillStyle = '#e7fff4'; ctx.font = '700 43px system-ui'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    ctx.fillText('FREENOVE FNK0031', 42, 48);
     const hardware = this.fnkHardwareStatus || {};
     const compatible = hardware.connected === true && hardware.firmware_profile === 'custom_fnhr_ascii_v2';
     ctx.fillStyle = compatible ? '#65e6b1' : hardware.connected ? '#f2c477' : '#f18c83';
     ctx.font = '600 25px ui-monospace, monospace';
-    ctx.fillText(compatible ? 'CONNECTED · CUSTOM FNHR' : hardware.connected ? 'FIRMWARE PROFILE NOT SUPPORTED' : 'BOARD STATUS UNAVAILABLE', 44, 91);
+    ctx.fillText(compatible ? `CONNECTED · CUSTOM FNHR · ACTUATION ${hardware.actuation_enabled ? 'ENABLED' : 'DISABLED'}` : hardware.connected ? 'FIRMWARE PROFILE NOT SUPPORTED' : 'BOARD STATUS UNAVAILABLE', 44, 96);
     this.fnkActionHitAreas = {};
     const button = (key, x, y, w, h, label, enabled = true, selected = false) => {
       ctx.globalAlpha = enabled ? 1 : 0.42;
@@ -1683,17 +1757,56 @@ export class QuestVRDashboard {
       ctx.fillText(label, x + w / 2, y + h / 2, w - 20); ctx.globalAlpha = 1;
       this.fnkActionHitAreas[key] = { x, y, width: w, height: h, enabled };
     };
-    ctx.fillStyle = '#a8c8be'; ctx.font = '600 24px ui-monospace, monospace'; ctx.textAlign = 'left';
-    ctx.fillText('SELECT LEG', 48, 180);
-    for (let leg = 1; leg <= 6; leg += 1) button(`leg-${leg}`, 48 + (leg - 1) * 142, 205, 126, 76, `L${leg}`, true, this.fnkLeg === leg);
-    const checked = this.fnkBoardOnlyConfirmed;
-    button('board-only', 48, 315, 760, 80, `${checked ? '☑' : '☐'} BOARD ONLY · NO SERVOS ATTACHED`, true, checked);
-    ctx.fillStyle = '#f2c477'; ctx.font = '500 22px system-ui'; ctx.textAlign = 'left';
-    ctx.fillText('Required confirmation for the bounded 5 mm leg diagnostic.', 54, 430);
-    button('lift', 48, 493, 360, 100, 'MOVE +5 mm Z', compatible && checked && !this.fnkBusy);
-    button('return', 426, 493, 360, 100, 'RETURN −5 mm Z', compatible && checked && !this.fnkBusy);
-    ctx.fillStyle = '#d3e9df'; ctx.font = '600 25px ui-monospace, monospace'; ctx.textAlign = 'left';
-    ctx.fillText(this.fnkMessage.slice(0, 92), 50, 688, width - 100);
+    button('tab-control', 42, 150, 300, 72, 'CONTROL', true, this.fnkTab === 'control');
+    button('tab-twist', 354, 150, 340, 72, 'TWIST BODY', true, this.fnkTab === 'twist');
+    button('tab-calibration', 706, 150, 360, 72, 'CALIBRATION', true, this.fnkTab === 'calibration');
+    button('tab-installation', 1078, 150, 360, 72, 'INSTALLATION', true, this.fnkTab === 'installation');
+    if (this.fnkTab === 'control') {
+    }
+    if (this.fnkTab === 'control' || this.fnkTab === 'twist') {
+      const twist = this.fnkTab === 'twist';
+      ctx.fillStyle = '#a8c8be'; ctx.font = '600 26px ui-monospace, monospace'; ctx.textAlign = 'left';
+      ctx.fillText(twist ? 'LEFT STICK · BODY ROTATION X/Y   |   RIGHT STICK · BODY TRANSLATION X/Y' : 'RIGHT STICK · MOVE FORWARD / BACK / STRAFE   |   LEFT STICK · TURN', 48, 270, width - 100);
+      ctx.fillStyle = '#f2c477'; ctx.font = '500 22px system-ui';
+      ctx.fillText(twist ? 'Stick axes twist X/Y; right trigger lifts; left trigger rolls/yaws.' : 'Hold RIGHT STICK CLICK to drive. Release prevents another step after the current gait.', 50, 316, width - 100);
+      const armed = this.fnkTeleopArmed;
+      button('teleop-arm', 48, 360, 440, 98, armed ? 'DISARM DRIVE' : 'ARM STICK DRIVE', compatible && hardware.actuation_enabled === true && !this.fnkDriveInFlight, armed);
+      button('teleop-stop', 512, 360, 360, 98, 'STOP / DISARM', compatible && armed, false);
+      ctx.fillStyle = '#d3e9df'; ctx.font = '600 24px ui-monospace, monospace';
+      ctx.fillText('SELECT A TAB, ARM, THEN HOLD RIGHT THUMBSTICK CLICK + MOVE STICKS', 50, 510, width - 100);
+      ctx.fillStyle = '#91aaa2'; ctx.font = '500 21px system-ui';
+      ctx.fillText('Firmware gait calls block: stick release cannot interrupt a gait already in progress.', 50, 552, width - 100);
+      const sticks = this.telemetry?.controllers || [];
+      for (const [hand, cx] of [['left', 530], ['right', 1270]]) {
+        const sample = sticks.find(item => item.handedness === hand);
+        const cy = 720;
+        ctx.beginPath(); ctx.arc(cx, cy, 94, 0, Math.PI * 2);
+        ctx.fillStyle = '#0d2027'; ctx.fill(); ctx.strokeStyle = '#52766e'; ctx.lineWidth = 5; ctx.stroke();
+        ctx.strokeStyle = '#28463f'; ctx.beginPath(); ctx.moveTo(cx - 72, cy); ctx.lineTo(cx + 72, cy); ctx.moveTo(cx, cy - 72); ctx.lineTo(cx, cy + 72); ctx.stroke();
+        const sx = Math.max(-1, Math.min(1, Number(sample?.x) || 0));
+        const sy = Math.max(-1, Math.min(1, Number(sample?.y) || 0));
+        ctx.beginPath(); ctx.arc(cx + sx * 60, cy + sy * 60, 22, 0, Math.PI * 2);
+        ctx.fillStyle = '#69e8c4'; ctx.fill();
+        ctx.fillStyle = '#c4d9d1'; ctx.font = '600 23px ui-monospace, monospace'; ctx.textAlign = 'center';
+        ctx.fillText(`${hand.toUpperCase()} STICK`, cx, cy + 135);
+      }
+    } else {
+      ctx.fillStyle = '#a8c8be'; ctx.font = '600 27px ui-monospace, monospace'; ctx.textAlign = 'left';
+      ctx.fillText(this.fnkTab === 'calibration' ? 'CALIBRATION' : 'INSTALLATION', 50, 290);
+      ctx.fillStyle = '#d3e9df'; ctx.font = '500 24px system-ui';
+      if (this.fnkTab === 'calibration') {
+        ctx.fillText('Board-only leg diagnostic · command estimates only, not servo feedback.', 50, 344, width - 100);
+        button('board-only', 48, 395, 760, 76, `${this.fnkBoardOnlyConfirmed ? '☑' : '☐'} BOARD ONLY · NO SERVOS ATTACHED`, true, this.fnkBoardOnlyConfirmed);
+        for (let leg = 1; leg <= 6; leg += 1) button(`leg-${leg}`, 48 + (leg - 1) * 142, 490, 126, 70, `L${leg}`, true, this.fnkLeg === leg);
+        button('lift', 48, 585, 360, 84, 'MOVE +5 mm Z', compatible && this.fnkBoardOnlyConfirmed && !this.fnkBusy);
+        button('return', 426, 585, 360, 84, 'RETURN −5 mm Z', compatible && this.fnkBoardOnlyConfirmed && !this.fnkBusy);
+      } else {
+        ctx.fillText('Custom FNHR firmware replaces the stock Processing / radio control path. Uploading is not performed from VR.', 50, 344, width - 100);
+        ctx.fillText('Connection: USB serial · 115200 baud · custom_fnhr_ascii_v2', 50, 420, width - 100);
+      }
+    }
+    ctx.fillStyle = '#d3e9df'; ctx.font = '600 23px ui-monospace, monospace'; ctx.textAlign = 'left';
+    ctx.fillText(this.fnkMessage.slice(0, 105), 50, 680, width - 100);
     const legs = this.fnkLegState?.legs || [];
     for (let leg = 1; leg <= 6; leg += 1) {
       const item = legs.find(value => Number(value.leg) === leg) || legs[leg - 1];

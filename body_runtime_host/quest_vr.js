@@ -1388,11 +1388,23 @@ function selectAt(controller) {
   }
   if (hudAction === 'fnk-window') return;
   if (hudAction === 'fnk-disabled') {
-    setStatus('FNK diagnostic is disabled until the board is connected on custom FNHR firmware and board-only is confirmed.', true);
+    setStatus('FNK action unavailable: connect custom FNHR firmware; stick drive also requires FNK0031_ACTUATION_ENABLED in Body settings.', true);
     return;
   }
   if (hudAction === 'board-only') {
     vrDashboard.toggleFnkBoardOnly();
+    return;
+  }
+  if (hudAction.startsWith('tab-')) {
+    vrDashboard.setFnkTab(hudAction.slice(4));
+    return;
+  }
+  if (hudAction === 'teleop-arm') {
+    vrDashboard.toggleFnkTeleop();
+    return;
+  }
+  if (hudAction === 'teleop-stop') {
+    vrDashboard.disarmFnkTeleop('STOP REQUESTED · CURRENT FNHR GAIT CANNOT BE INTERRUPTED');
     return;
   }
   if (hudAction.startsWith('leg-')) {
@@ -1752,7 +1764,8 @@ renderer.setAnimationLoop(time => {
     updateXRSceneFollow(xrCamera);
     const headYaw = new THREE.Euler().setFromQuaternion(xrCamera.quaternion, 'YXZ').y;
     const active = [...session.inputSources].filter(source => source.gamepad);
-    if (!vrDashboard.grabbedController) updateXRLocomotion(active, xrCamera, deltaSeconds);
+    const fnkDriving = vrDashboard.updateFnkStickControl(active);
+    if (!vrDashboard.grabbedController && !fnkDriving) updateXRLocomotion(active, xrCamera, deltaSeconds);
     vrDashboard.clearPointer();
     for (const ray of controllerRays) updateControllerPointer(ray.controller, ray.beam, ray.reticle);
     const controllers = active.map(source => {

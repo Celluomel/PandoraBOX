@@ -93,12 +93,43 @@ static void handleCommand(char *line) {
       Serial.println("ERROR crawl_out_of_range");
       return;
     }
+    if (actionActive) {
+      Serial.println("ERROR action_busy");
+      return;
+    }
     Serial.println("STARTED crawl");
     Serial.flush();
     robot.Crawl(x, y, angle);
     lastActionCompletedAt = millis();
     actionActive = true;
     Serial.println("DONE crawl");
+    return;
+  }
+
+  if (strcmp(action, "twist") == 0) {
+    float values[6];
+    bool valid = true;
+    for (int index = 0; index < 6; ++index) {
+      char *text = strtok_r(nullptr, " ", &context);
+      if (!text || !parseFinite(text, values[index])) valid = false;
+    }
+    if (strtok_r(nullptr, " ", &context)) valid = false;
+    if (!valid || fabs(values[0]) > 30.0f || fabs(values[1]) > 30.0f ||
+        values[2] < 0.0f || values[2] > 45.0f || fabs(values[3]) > 15.0f ||
+        sqrt(values[3] * values[3] + values[4] * values[4] + values[5] * values[5]) > 15.0f) {
+      Serial.println("ERROR twist_out_of_range");
+      return;
+    }
+    if (actionActive) {
+      Serial.println("ERROR action_busy");
+      return;
+    }
+    Serial.println("STARTED twist");
+    Serial.flush();
+    robot.TwistBody(values[0], values[1], values[2], values[3], values[4], values[5]);
+    lastActionCompletedAt = millis();
+    actionActive = true;
+    Serial.println("DONE twist");
     return;
   }
 

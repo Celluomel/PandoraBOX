@@ -183,6 +183,8 @@ class BodyHost:
         self._robot_last_error = ""
         self._fnk_usb_last_publish = 0.0
         self._fnk_controller = None
+        self._fnk_manual_control_lock = threading.Lock()
+        self._fnk_manual_control_last_at = 0.0
         self._fnk_controller_lock = threading.Lock()
         self._fnk_controller_last: dict | None = None
         self._fnk_controller_world_step: int | None = None
@@ -2248,7 +2250,8 @@ class BodyHost:
         settings = self.fnk0031_settings()
         port = settings["serial_port"]
         source_type = FNK0031CustomUSBSource if settings["platform"] == "usb_serial_custom" else FNK0031USBSource
-        probe = source_type(port, timeout=min(2.0, settings["timeout"])) if port else None
+        probe = source_type(port, timeout=min(2.0, settings["timeout"]),
+                            actuation_enabled=settings["actuation_enabled"]) if port else None
         custom_profile = settings["platform"] == "usb_serial_custom"
         status = probe.status() if probe else {
             "source": "fnk0031_usb",
@@ -2317,6 +2320,32 @@ class BodyHost:
             "estimated_leg_state": after,
             "state_semantics": "FNHR internal command estimate; not measured servo feedback",
         }
+
+    def fnk0031_manual_control(self, payload: dict) -> dict:
+        settings = self.fnk0031_settings()
+        if not settings["actuation_enabled"]:
+            raise RuntimeError("physical actuation is disabled in Body configuration")
+        if settings["platform"] != "usb_serial_custom" or not settings["serial_port"]:
+            raise RuntimeError("manual VR control requires the custom FNHR USB firmware and configured serial port")
+        if payload.get("deadman") is not True:
+            raise ValueError("hold the VR right-stick click deadman while sending a command")
+        from body_runtime_host.fnk0031_usb import FNK0031CustomUSBSource
+
+        if not self._fnk_manual_control_lock.acquire(blocking=False):
+            raise RuntimeError("an FNHR gait is already running; command not queued")
+        try:
+            now = time.monotonic()
+            if now - self._fnk_manual_control_last_at < 1.2:
+                raise RuntimeError("manual gait rate limit; wait for the next control interval")
+            self._fnk_manual_control_last_at = now
+            source = FNK0031CustomUSBSource(
+                settings["serial_port"], timeout=settings["timeout"], actuation_enabled=True
+            )
+            if not source.ping():
+                raise RuntimeError(f"FNK0031 is not responding: {source.last_error}")
+            return source.execute_manual_control(str(payload.get("mode", "crawl")), payload)
+        finally:
+            self._fnk_manual_control_lock.release()
 
     def serial_device_inventory(self) -> dict:
         """List serial devices visible to the machine that runs Body."""
@@ -4783,6 +4812,12 @@ class BodyHost:
                     elif path == "/plugins/fnk0031_wifi/leg-test":
                         try:
                             self._send(owner.fnk0031_leg_test(body))
+                        except (ValueError, RuntimeError, TimeoutError) as exc:
+                            self._send({"ok": False, "error": str(exc)}, 409)
+                    elif path == "/plugins/fnk0031_wifi/manual-control":
+                        try:
+                            owner.notify_power_activity("operator FNK0031 VR control")
+                            self._send(owner.fnk0031_manual_control(body))
                         except (ValueError, RuntimeError, TimeoutError) as exc:
                             self._send({"ok": False, "error": str(exc)}, 409)
                     elif path == "/plugins/mmwave_radar/settings":

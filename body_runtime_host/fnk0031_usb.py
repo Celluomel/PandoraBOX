@@ -483,6 +483,40 @@ class FNK0031CustomUSBSource(FNK0031USBSource):
         self.last_ok = time.time()
         return state
 
+    def execute_manual_control(self, mode: str, values: dict[str, Any]) -> dict[str, Any]:
+        """Send one bounded operator command; never queues or enables actuation."""
+        if not self.actuation_enabled:
+            raise RuntimeError("physical actuation is disabled in Body configuration")
+        if mode == "crawl":
+            x, y, angle = (float(values.get(key, 0)) for key in ("x", "y", "angle"))
+            if not all(math.isfinite(value) for value in (x, y, angle)) or math.hypot(x, y) > 42 or abs(angle) > 18:
+                raise ValueError("crawl command exceeds 42 mm translation or +/-18 degree turn bounds")
+            command, started, done = f"CMD crawl {x:.3f} {y:.3f} {angle:.3f}", "STARTED crawl", "DONE crawl"
+        elif mode == "twist":
+            names = ("x", "y", "z", "rx", "ry", "rz")
+            x, y, z, rx, ry, rz = (float(values.get(key, 0)) for key in names)
+            if not all(math.isfinite(value) for value in (x, y, z, rx, ry, rz)) or max(abs(x), abs(y)) > 30 or not 0 <= z <= 45 or math.sqrt(rx * rx + ry * ry + rz * rz) > 15:
+                raise ValueError("twist command exceeds FNHR limits")
+            command = "CMD twist " + " ".join(f"{value:.3f}" for value in (x, y, z, rx, ry, rz))
+            started, done = "STARTED twist", "DONE twist"
+        else:
+            raise ValueError("mode must be crawl or twist")
+        with self._open() as connection:
+            if hasattr(connection, "reset_input_buffer"):
+                connection.reset_input_buffer()
+            connection.write((command + "\n").encode("ascii"))
+            connection.flush()
+            deadline = time.monotonic() + self.motion_timeout
+            first = self._read_line(connection, deadline)
+            if first != started:
+                raise RuntimeError(f"FNK0031 rejected operator control: {first!r}")
+            result = self._read_line(connection, deadline)
+            if result != done:
+                raise RuntimeError(f"FNK0031 did not complete operator control: {result!r}")
+        self.last_error = ""
+        self.last_ok = time.time()
+        return {"ok": True, "acknowledged": True, "mode": mode, "ack": result}
+
     def observe(self):
         from .worldmodel.types import Observation
 
