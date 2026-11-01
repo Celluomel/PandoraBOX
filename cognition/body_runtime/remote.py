@@ -122,6 +122,24 @@ class RemoteWorldModel:
             self._last_error = str(exc)
             return {"state": "unavailable", "detections": [], "error": str(exc)}
 
+    def depth_calibration(self) -> Dict[str, Any]:
+        """Read the Body's current MiDaS metric fit and validation status."""
+        try:
+            data = self._request("GET", f"{self.base_url}/body/camera/depth-calibration", timeout=3.0)
+            return data if isinstance(data, dict) else {"available": False, "reason": "invalid response"}
+        except Exception as exc:
+            self._last_error = str(exc)
+            return {"available": False, "reason": str(exc)}
+
+    def metric_yolo_status(self) -> Dict[str, Any]:
+        """Return YOLOX boxes with synchronized, calibrated MiDaS range samples when available."""
+        try:
+            data = self._request("GET", f"{self.base_url}/body/camera/yolo/metric", timeout=5.0)
+            return data if isinstance(data, dict) else {"state": "unavailable", "detections": []}
+        except Exception as exc:
+            self._last_error = str(exc)
+            return {"state": "unavailable", "detections": [], "error": str(exc)}
+
     def interpret_camera(self) -> Dict[str, Any]:
         """Ask the Body-owned VLM to interpret its latest camera scene."""
         try:

@@ -1000,6 +1000,104 @@ class BodyHost:
             result = self._yolox_service.detection_result(frame_id)
         return result or {"state": "unavailable", "detections": [], "frame_id": frame_id}
 
+    def camera_metric_yolo_status(self) -> dict:
+        """Attach calibrated MiDaS range samples to synchronized YOLOX boxes.
+
+        This estimates forward range in the camera frame. Bearing uses the
+        calibration's explicitly approximate HFOV model; it is not a surveyed
+        body-frame pose and does not associate a radar track with the box.
+        """
+        yolo = self.camera_yolo_status()
+        detections = yolo.get("detections") or []
+        yolo_at = yolo.get("captured_at")
+        depth = self._midas_service.status()
+        calibration = self.midas_metric_calibration()
+        if not detections or not calibration.get("available"):
+            return {**yolo, "metric_depth": {"available": False,
+                    "reason": "no YOLOX detections" if not detections else "MiDaS metric calibration unavailable",
+                    "calibration": calibration}}
+        try:
+            depth_at = float(depth.get("captured_at"))
+            yolo_at = float(yolo_at)
+            delta = abs(depth_at - yolo_at)
+            if delta > 0.25:
+                return {**yolo, "metric_depth": {"available": False,
+                        "reason": "YOLOX and MiDaS frames differ by more than 250 ms",
+                        "frame_delta_s": round(delta, 4), "calibration": calibration}}
+            raw_png = depth.get("depth_raw_png_base64")
+            raw_min, raw_max = depth.get("depth_raw_min"), depth.get("depth_raw_max")
+            if not raw_png or not isinstance(raw_min, (int, float)) or not isinstance(raw_max, (int, float)) or raw_max <= raw_min:
+                self._midas_service.request_raw_output(seconds=5.0)
+                return {**yolo, "metric_depth": {"available": False,
+                        "reason": "waiting for the next MiDaS raw-depth frame", "calibration": calibration}}
+            import base64
+            import cv2
+            import numpy as np
+            encoded = np.frombuffer(base64.b64decode(raw_png), dtype=np.uint8)
+            raw = cv2.imdecode(encoded, cv2.IMREAD_UNCHANGED)
+            if raw is None or raw.ndim != 2:
+                raise ValueError("MiDaS raw-depth PNG could not be decoded")
+            height, width = raw.shape
+            scale = float(raw_max) - float(raw_min)
+            inverse_scale = float(calibration["inverse_scale_per_relative_unit"])
+            inverse_offset = float(calibration["inverse_offset_per_m"])
+            valid_range = calibration.get("calibrated_range_m") or []
+            if len(valid_range) < 2:
+                raise ValueError("calibration has no validated distance interval")
+            hfov = 70.0
+            focal = width / (2.0 * math.tan(math.radians(hfov / 2.0)))
+            output = []
+            for detection in detections:
+                item = dict(detection)
+                box = detection.get("bbox")
+                if not isinstance(box, (list, tuple)) or len(box) < 4:
+                    item["metric_depth"] = {"available": False, "reason": "YOLOX box coordinates missing"}
+                    output.append(item)
+                    continue
+                x1, y1, x2, y2 = [float(part) for part in box[:4]]
+                if max(abs(x1), abs(y1), abs(x2), abs(y2)) <= 1.5:
+                    x1, x2, y1, y2 = x1 * width, x2 * width, y1 * height, y2 * height
+                left, right = sorted((max(0, min(width, int(x1))), max(0, min(width, int(x2)))))
+                top, bottom = sorted((max(0, min(height, int(y1))), max(0, min(height, int(y2)))))
+                # Sample the central 50% of the box to reduce background-edge contamination.
+                dx, dy = max(1, (right - left) // 4), max(1, (bottom - top) // 4)
+                roi = raw[top + dy:bottom - dy or bottom, left + dx:right - dx or right]
+                if roi.size < 9:
+                    item["metric_depth"] = {"available": False, "reason": "YOLOX box too small for stable depth sampling"}
+                    output.append(item)
+                    continue
+                relative = float(raw_min) + float(np.median(roi)) / 65535.0 * scale
+                inverse_range = inverse_scale * relative + inverse_offset
+                distance = 1.0 / inverse_range if inverse_range > 1e-6 else float("nan")
+                if not math.isfinite(distance) or not float(valid_range[0]) <= distance <= float(valid_range[1]):
+                    item["metric_depth"] = {"available": False, "reason": "box depth falls outside the validated calibration range"}
+                    output.append(item)
+                    continue
+                center_x = (left + right) / 2.0
+                # Positive bearing is to Body-left; this is camera-relative and approximate.
+                bearing = math.degrees(math.atan2(width / 2.0 - center_x, focal))
+                item["metric_depth"] = {
+                    "available": True,
+                    "forward_m": round(distance, 3),
+                    "bearing_deg_approx": round(bearing, 2),
+                    "coordinate_frame": "camera_optical_approximate",
+                    "source": "paired_yolox_box_midas_raw_depth",
+                    "frame_id": yolo.get("frame_id"),
+                    "captured_at": yolo_at,
+                    "frame_delta_s": round(delta, 4),
+                    "calibration_rmse_m": calibration.get("holdout_rmse_m", calibration.get("rmse_m")),
+                    "hfov_assumed_deg": hfov,
+                    "radar_track_associated": False,
+                }
+                output.append(item)
+            return {**yolo, "detections": output, "metric_depth": {
+                "available": any((item.get("metric_depth") or {}).get("available") for item in output),
+                "frame_delta_s": round(delta, 4), "calibration": calibration,
+                "distance_basis": "inverse_affine MiDaS raw-depth calibration; camera-frame approximate bearing",
+            }}
+        except Exception as exc:
+            return {**yolo, "metric_depth": {"available": False, "reason": str(exc)[:240], "calibration": calibration}}
+
     def camera_depth(self, include_raw: bool = True, include_preview: bool = True,
                      since_frame_id: str | None = None, include_color: bool = True) -> dict:
         if self._power_mode.status().get("mode") == "IDLE":
@@ -3559,6 +3657,27 @@ class BodyHost:
                 and not (isinstance(value.get("provenance"), dict)
                          and value["provenance"].get("simulated") is True)
             }
+            # Keep the validated MiDaS fit in the timestamped Body workspace.
+            # A global fit is calibration metadata, not per-object association.
+            calibration = self.midas_metric_calibration()
+            calibration_entry = {
+                "entity_id": "body.camera.depth_calibration",
+                "source": "body_midas_metric_calibration",
+                "kind": "calibration_status",
+                "subject": "camera.depth_calibration",
+                "value": calibration,
+                "unit": "",
+                "confidence": 1.0 if calibration.get("available") else 0.0,
+                "observed_at": time.time(),
+                "provenance": {
+                    "source": "body_midas_metric_calibration",
+                    "simulated": False,
+                    "model": calibration.get("distance_model"),
+                    "camera_bearing_model": calibration.get("camera_bearing_model"),
+                },
+            }
+            self.latest[calibration_entry["entity_id"]] = calibration_entry
+            self._bridge_put(calibration_entry)
             for name, sample in live_modalities.items():
                 observed_at = sample.get("timestamp")
                 try:
@@ -3598,6 +3717,7 @@ class BodyHost:
                     "affordances": {} if simulated else perception.get("affordances") or {},
                     "objects": [] if simulated else perception.get("objects") or [],
                     "modalities": live_modalities,
+                    "depth_calibration": calibration,
                     "sensor_projections": {} if simulated else perception.get("sensor_projections") or {},
                     "perception_frame": {} if simulated else perception.get("perception_frame") or {},
                     "scene_interpreter": {} if simulated else perception.get("scene_interpreter") or {},
@@ -4574,6 +4694,8 @@ class BodyHost:
                         frame_id, float(nearest_to) if nearest_to is not None else None, max_delta_s
                     )
                     self._send(result, 200 if result.get("state") != "unavailable" else 404)
+                elif path == "/body/camera/yolo/metric":
+                    self._send(owner.camera_metric_yolo_status())
                 elif path == "/body/camera/yolo-frame":
                     query = parse_qs(urlparse(self.path).query)
                     frame_id = (query.get("frame_id") or [None])[0]

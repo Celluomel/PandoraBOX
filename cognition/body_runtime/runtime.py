@@ -279,6 +279,28 @@ class BodyRuntime:
             return {"state": "unavailable", "detections": [], "error": "Body camera status is unavailable"}
         return read()
 
+    def depth_calibration(self) -> Dict[str, Any]:
+        wm = self.worldmodel
+        read = getattr(wm, "depth_calibration", None) if wm is not None else None
+        if not callable(read):
+            return {"available": False, "reason": "Body depth calibration endpoint is unavailable"}
+        try:
+            result = read()
+            return result if isinstance(result, dict) else {"available": False, "reason": "invalid response"}
+        except Exception as exc:
+            return {"available": False, "reason": str(exc)}
+
+    def metric_yolo_status(self) -> Dict[str, Any]:
+        wm = self.worldmodel
+        read = getattr(wm, "metric_yolo_status", None) if wm is not None else None
+        if not callable(read):
+            return {"state": "unavailable", "detections": [], "error": "Body metric YOLOX endpoint is unavailable"}
+        try:
+            result = read()
+            return result if isinstance(result, dict) else {"state": "unavailable", "detections": []}
+        except Exception as exc:
+            return {"state": "unavailable", "detections": [], "error": str(exc)}
+
     def interpret_camera(self) -> Dict[str, Any]:
         """Request one interpretation from the camera/VLM owned by the Body."""
         wm = self.worldmodel

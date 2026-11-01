@@ -23,6 +23,7 @@ import asyncio
 import datetime as _dt
 import json
 import logging
+import math
 import re
 import sys
 import threading
@@ -2196,6 +2197,14 @@ Memory honesty — two distinct cases:
                 "PC camera from the robot's Body camera. If Body data is missing, stale, or "
                 "unavailable, say so plainly and do not invent a scene, pose, movement, or connection."
             )
+            system_prompt += (
+                "\n\n━━ BODY DEVELOPMENT EVIDENCE ━━\n"
+                "When discussing Body development, separate verified current capabilities from proposed work. "
+                "Do not say a plan was executed, a feature exists, a sensor fusion result is validated, or an object has a metric position unless current telemetry or a recorded result proves it. "
+                "A MiDaS metric calibration establishes a depth scale only over its validated range; it does not by itself attach a distance to every YOLOX box. "
+                "Never average radar and ultrasonic ranges merely because their numbers are close: they may refer to different targets, directions, timestamps, or coordinate frames. "
+                "For distance-based navigation, require a timestamped object-to-range association in the Body frame and report its source and uncertainty. Frame suggestions as recommendations, not completed changes."
+            )
             try:
                 _body = getattr(self._organism, "_body_runtime", None) if self._organism else None
                 _body_context = _body.context_for_brain() if _body else ""
@@ -2708,9 +2717,9 @@ Memory honesty — two distinct cases:
                     classifier_labels = "CONFIRM|CANCEL|NEW_ACTION|BODY_STATUS|NORMAL"
                     meaning = "approves, rejects, replaces, asks for the current status of, or does not address the pending physical Body plan"
             else:
-                labels = "BODY_ACTION, BODY_CAMERA, BODY_CAMERA_ANALYSIS, BODY_ARCHITECTURE, BODY_WORKSPACE, BODY_PERCEPTION, LOCAL_CAMERA, BODY_STATUS, or NORMAL"
-                classifier_labels = "BODY_ACTION|BODY_CAMERA_ANALYSIS|BODY_ARCHITECTURE|BODY_WORKSPACE|BODY_CAMERA|BODY_PERCEPTION|LOCAL_CAMERA|BODY_STATUS|NORMAL"
-                meaning = "requests a physical action, asks what objects the Body camera/YOLOX detects, asks whether the local Brain-PC camera sees or recognizes the user, explicitly requests a detailed interpretation of the Body camera image, asks how camera inputs are configured or whether they are separate, asks what Body data is stored in the Global Workspace, asks what the Body reports through non-camera sensors, asks for current task status, or is ordinary conversation"
+                labels = "BODY_ACTION, BODY_CAMERA, BODY_CAMERA_ANALYSIS, BODY_ARCHITECTURE, BODY_WORKSPACE, BODY_PERCEPTION, BODY_PROFILE, LOCAL_CAMERA, BODY_STATUS, or NORMAL"
+                classifier_labels = "BODY_ACTION|BODY_CAMERA_ANALYSIS|BODY_ARCHITECTURE|BODY_WORKSPACE|BODY_CAMERA|BODY_PERCEPTION|BODY_PROFILE|LOCAL_CAMERA|BODY_STATUS|NORMAL"
+                meaning = "requests a physical action, asks what objects the Body camera/YOLOX detects, asks whether the local Brain-PC camera sees or recognizes the user, explicitly requests a detailed interpretation of the Body camera image, asks how camera inputs are configured or whether they are separate, asks what Body data is stored in the Global Workspace, asks what the Body reports through non-camera sensors, asks for a factual inventory of the physical Body's parameters, hardware, and measured versus estimated state, asks for current task status, or is ordinary conversation"
             system = f"Classify whether the user's latest message {meaning}. Return exactly one label and nothing else: {labels}. Understand the user's language semantically across languages; do not use a phrase list or translate by matching words. Distinguish intent: object detections or what the robot Body sees is BODY_CAMERA; asking whether Lumina/the Brain PC camera sees or recognizes the user is LOCAL_CAMERA; detailed scene interpretation specifically of the Body image is BODY_CAMERA_ANALYSIS; questions about camera sources, count, or architecture are BODY_ARCHITECTURE; non-camera measurements are BODY_PERCEPTION. Do not invoke image interpretation to answer an architecture question. The Body camera is the robot-side feed; LOCAL_CAMERA is the fixed Brain-PC feed. Do not assume whether their physical devices are shared unless telemetry proves it. A short imperative or affirmative can confirm the already prepared plan when its conversational function is approval, while a new physical objective is NEW_ACTION. A refusal or withdrawal is CANCEL. This is a safety classification: infer the speech act from the pending plan and dialogue state, not from the vocabulary."
             if retry and pending:
                 system += " Re-evaluate the speech act carefully. The user is responding immediately after the Body asked whether to execute the already validated plan."
@@ -2758,22 +2767,22 @@ Memory honesty — two distinct cases:
                 system = (
                     "Classify the user's latest message for a cognitive Body interface. "
                     "Return exactly JSON with route equal to one of: body_action, body_camera, local_camera, body_camera_analysis, "
-                    "body_architecture, body_workspace, body_perception, body_status, normal. body_action means the user requests a physical manipulation or "
+                    "body_architecture, body_workspace, body_perception, body_profile, body_status, normal. body_action means the user requests a physical manipulation or "
                     "movement; body_camera means asking what objects the Body sees or for YOLOX detections; "
                     "local_camera means asking whether Lumina or the Brain-PC camera sees/recognizes the user, or what the local camera sees; "
                     "body_camera_analysis means explicitly requesting a detailed interpretation of the Body camera image; "
                     "body_architecture means asking how camera inputs are configured or whether the Body camera and direct visual input are separate; "
                     "body_workspace means asking whether Body data is in the Global Workspace or what Body records it contains; "
                     "body_perception means asking what other metrics, measurements, readings "
-                    "or sensor data the robot reports through non-camera sensors; body_status "
-                    "means asking whether a task is complete, what step is active, whether the Body is stuck, or for the latest robot/controller movement status and command outcome. "
+                    "or sensor data the robot reports through non-camera sensors; body_profile means asking for a factual list of installed Body hardware, capabilities, pose, or movement feedback, with source and uncertainty; "
+                    "body_status means asking whether a task is complete, what step is active, whether the Body is stuck, or for the latest robot/controller movement status and command outcome. "
                     "Do not infer that two logical camera paths are physically separate devices without evidence. Do not invoke VLM for camera architecture questions. Use semantic meaning, not a fixed phrase list. "
-                    "For example, 'what does the Body see?' is body_camera; 'can you see me?' is local_camera; 'describe the Body image in detail' is body_camera_analysis; 'does Lumina have two cameras?' is body_architecture; 'what Body data is in the Global Workspace?' is body_workspace; 'what other metrics does the Body provide?' is body_perception."
+                    "For example, 'what does the Body see?' is body_camera; 'can you see me?' is local_camera; 'describe the Body image in detail' is body_camera_analysis; 'does Lumina have two cameras?' is body_architecture; 'what Body data is in the Global Workspace?' is body_workspace; 'what other metrics does the Body provide?' is body_perception; 'what are the Body's physical parameters?' is body_profile."
                 )
             raw = fast(text, system, model=model, timeout=6.0, max_tokens=120)
             raw_text = str(raw or "")
             match = re.search(r"\{[\s\S]*?\}", raw_text)
-            allowed = ({"confirm", "cancel", "normal"} if confirmation_probe else {"confirm", "cancel", "new_action", "body_status", "normal"}) if pending else {"body_action", "body_camera", "local_camera", "body_camera_analysis", "body_architecture", "body_workspace", "body_perception", "body_status", "normal"}
+            allowed = ({"confirm", "cancel", "normal"} if confirmation_probe else {"confirm", "cancel", "new_action", "body_status", "normal"}) if pending else {"body_action", "body_camera", "local_camera", "body_camera_analysis", "body_architecture", "body_workspace", "body_perception", "body_profile", "body_status", "normal"}
             if match:
                 value = json.loads(match.group(0))
                 route = str(value.get("route") or "normal").strip().lower()
@@ -2790,7 +2799,7 @@ Memory honesty — two distinct cases:
                 labels = "confirm|cancel|normal" if confirmation_probe else "confirm|cancel|new_action|body_status|normal"
                 label_match = re.search(rf"\b({labels})\b", raw_text.lower())
             else:
-                label_match = re.search(r"\b(body_action|body_camera_analysis|body_architecture|body_workspace|body_camera|local_camera|body_perception|body_status|normal)\b", raw_text.lower())
+                label_match = re.search(r"\b(body_action|body_camera_analysis|body_architecture|body_workspace|body_camera|local_camera|body_perception|body_profile|body_status|normal)\b", raw_text.lower())
             if label_match and label_match.group(1) != "normal":
                 return label_match.group(1)
             # Confirmation is safety-sensitive but only applies to an already
@@ -3061,7 +3070,9 @@ Memory honesty — two distinct cases:
         except Exception:
             pass
         body = getattr(self._organism, "_body_runtime", None) if self._organism else None
-        yolo_reader = getattr(body, "camera_yolo_status", None) if body is not None else None
+        yolo_reader = getattr(body, "metric_yolo_status", None) if body is not None else None
+        if not callable(yolo_reader) and body is not None:
+            yolo_reader = getattr(body, "camera_yolo_status", None)
         yolo = {}
         if callable(yolo_reader):
             try:
@@ -3244,6 +3255,15 @@ Memory honesty — two distinct cases:
                 logger.debug("[BodyPerception] live camera detections unavailable: %s", exc)
                 yolo = {}
             yolo = yolo if isinstance(yolo, dict) else {}
+            if yolo.get("state") != "ready":
+                fallback_reader = getattr(body, "camera_yolo_status", None)
+                if callable(fallback_reader):
+                    try:
+                        fallback = fallback_reader()
+                        if isinstance(fallback, dict) and fallback.get("state") == "ready":
+                            yolo = fallback
+                    except Exception:
+                        pass
             detections = yolo.get("detections") or []
             captured_at = yolo.get("captured_at")
             try:
@@ -3257,10 +3277,16 @@ Memory honesty — two distinct cases:
                         continue
                     label = str(item.get("label") or "object").strip()
                     confidence = item.get("confidence")
+                    metric = item.get("metric_depth") if isinstance(item.get("metric_depth"), dict) else {}
                     if isinstance(confidence, (int, float)):
-                        labels.append(f"{label} ({float(confidence) * 100:.0f}%)")
+                        text = f"{label} ({float(confidence) * 100:.0f}%)"
                     else:
-                        labels.append(label)
+                        text = label
+                    if metric.get("available"):
+                        text += f" · ~{float(metric['forward_m']):.2f}m caméra"
+                        if isinstance(metric.get("bearing_deg_approx"), (int, float)):
+                            text += f" / {float(metric['bearing_deg_approx']):+.0f}° approx."
+                    labels.append(text)
                 visual = ", ".join(labels) if labels else "aucun objet détecté"
                 stale = camera_age > 3.0
                 frame_age = f"dernière analyse il y a {camera_age:.0f}s · STALE" if stale else "image récente"
@@ -3275,6 +3301,26 @@ Memory honesty — two distinct cases:
                     "stale": stale,
                     "detections": detections[:12],
                 }}
+                metric_packet = yolo.get("metric_depth") if isinstance(yolo.get("metric_depth"), dict) else {}
+                calibration = metric_packet.get("calibration") if isinstance(metric_packet.get("calibration"), dict) else {}
+                if not calibration:
+                    calibration_reader = getattr(body, "depth_calibration", None)
+                    calibration = calibration_reader() if callable(calibration_reader) else {}
+                if isinstance(calibration, dict):
+                    perception["depth_calibration"] = calibration
+                    if calibration.get("available"):
+                        limits = calibration.get("calibrated_range_m") or []
+                        range_text = (
+                            f"{float(limits[0]):.2f}–{float(limits[1]):.2f} m"
+                            if isinstance(limits, (list, tuple)) and len(limits) >= 2
+                            else "intervalle non indiqué"
+                        )
+                        error = calibration.get("holdout_rmse_m", calibration.get("rmse_m"))
+                        response += (
+                            f" Calibration MiDaS active sur {range_text}"
+                            + (f" (erreur holdout {float(error):.2f} m)." if isinstance(error, (int, float)) else ".")
+                            + (" Les distances affichées sont des estimations par boîte, synchronisées à moins de 250 ms; l'angle reste approximatif et aucun track radar n'est associé." if metric_packet.get("available") else " Aucune distance par boîte n'a pu être calculée sur cette paire de frames.")
+                        )
                 snapshot = body.body_snapshot() if callable(getattr(body, "body_snapshot", None)) else None
                 if isinstance(snapshot, dict) and self._is_simulated_body_snapshot(snapshot):
                     response += " La carte 3D disponible provient du simulateur et n'est pas utilisée comme observation réelle."
@@ -3351,6 +3397,13 @@ Memory honesty — two distinct cases:
             if str(item.get("subject") or "").startswith("sensor.")
             and not self._is_simulated_body_observation(item)
         ]
+        calibration = next((
+            item for item in observations
+            if item.get("subject") == "camera.depth_calibration"
+            and not self._is_simulated_body_observation(item)
+        ), None)
+        if calibration:
+            sensors.append(calibration)
         if not sensors:
             return {
                 "handled": True,
@@ -3365,6 +3418,72 @@ Memory honesty — two distinct cases:
             "status": "reported",
             "response": "Mesures des capteurs matériels du Body : " + " ; ".join(lines),
             "sensor_observations": sensors[:10],
+        }
+
+    def _body_profile_response(self) -> dict:
+        """Report physical hardware evidence separately from simulator defaults."""
+        body = getattr(self._organism, "_body_runtime", None) if self._organism else None
+        if body is None:
+            return {"handled": True, "status": "unavailable", "response": "Le pont télémétrique du Body est indisponible."}
+        observations = body.snapshot(max_age=60.0)
+        by_subject = {item.get("subject"): item for item in observations if isinstance(item, dict)}
+        lines = []
+
+        runtime = by_subject.get("body.runtime")
+        if runtime:
+            lines.append("runtime Body : " + str(runtime.get("value") or "état reçu"))
+
+        controller = by_subject.get("fnk0031.usb_status")
+        controller_value = controller.get("value") if isinstance(controller, dict) and isinstance(controller.get("value"), dict) else None
+        if controller_value:
+            lines.append(
+                "contrôleur FNK0031 : "
+                + ("USB connecté" if controller_value.get("connected") else "USB non connecté")
+                + f"; profil {controller_value.get('firmware_profile') or 'inconnu'}; "
+                + ("actionnement activé" if controller_value.get("actuation_enabled") else "actionnement désactivé/non confirmé")
+            )
+            leg_state = controller_value.get("estimated_leg_state")
+            if leg_state is not None:
+                lines.append("état des jambes estimé depuis les commandes, sans retour d'encodeur: disponible")
+            else:
+                lines.append("état des jambes: aucune estimation récente")
+        else:
+            lines.append("état USB du contrôleur FNK0031: non reçu récemment")
+
+        physical_sensors = [
+            item for item in observations
+            if str(item.get("subject") or "").startswith("sensor.")
+            and not self._is_simulated_body_observation(item)
+        ]
+        if physical_sensors:
+            lines.append("capteurs matériels horodatés: " + "; ".join(
+                self._format_body_sensor_observation(item) for item in physical_sensors[:8]
+            ))
+        else:
+            lines.append("aucune mesure de capteur matériel récente")
+
+        odometry = by_subject.get("sensor.odometry")
+        if odometry and not self._is_simulated_body_observation(odometry):
+            lines.append("odométrie physique: " + self._format_body_sensor_observation(odometry))
+        else:
+            lines.append("pose/déplacement métrique physique: non confirmé par une odométrie récente")
+
+        world = by_subject.get("body.world_model")
+        world_value = world.get("value") if isinstance(world, dict) else None
+        simulated = isinstance(world_value, dict) and world_value.get("simulated_only") is True
+        if simulated:
+            lines.append("la pose, les objets et les capacités reach/speed/strength/gripper du snapshot sont issus de la simulation; ce ne sont pas des mesures du robot réel")
+        elif world_value:
+            lines.append("capacités du modèle Body: " + str((world_value.get("capabilities") or "non rapportées")) + "; elles ne constituent pas des mesures d'effort ou de position articulaire")
+
+        lines.append("gripper/préhenseur: aucune preuve de matériel installé ni de télémétrie de préhension; le champ gripper du catalogue est une option générique, pas une détection du kit")
+        lines.append("FNK0031: les six jambes appartiennent à la configuration déclarée du kit; leur état physique mesuré n'est pas disponible sans capteurs de position/contact")
+        return {
+            "handled": True,
+            "status": "reported" if physical_sensors or controller_value else "partial",
+            "response": "Paramètres vérifiables du Body : " + " ; ".join(lines),
+            "sources": [item.get("subject") for item in observations],
+            "simulated_world_model": simulated,
         }
 
     def _body_gps_location_response(self) -> dict:
@@ -3453,6 +3572,9 @@ Memory honesty — two distinct cases:
         sensor_query = re.search(r"\b(sensors?|capteurs?|télémétrie|telemetry)\b", normalized)
         sensor_ask = re.search(r"\b(what|which|provide|providing|data|status|show|quels?|quelles?|que|quoi|donn[ée]es?|fournissent|montrent|affiche)\b", normalized)
         if sensor_query and sensor_ask:
+            camera_query = re.search(r"\b(camera|caméra|vision|yolox|see|sees|seeing|vois|voir|détection|detection|objects?|objets?)\b", normalized)
+            if camera_query:
+                return "body_combined"
             return "body_sensors"
         return None
 
@@ -3644,12 +3766,48 @@ Memory honesty — two distinct cases:
             detail = f"{float(distance):.2f}m" if isinstance(distance, (int, float)) else str(value.get("error") or "no valid range")
         elif name == "mmwave_radar":
             targets = value.get("targets") or []
-            ranges = []
+            descriptions = []
             for target in targets:
+                if not isinstance(target, dict):
+                    continue
                 distance = target.get("range_m", target.get("distance_m"))
+                position = target.get("position_m", target.get("position"))
+                if isinstance(position, dict):
+                    forward, lateral = position.get("forward", position.get("x")), position.get("lateral", position.get("y"))
+                elif isinstance(position, (list, tuple)) and len(position) >= 2:
+                    # Ventuno contract: [forward, lateral, vertical] in body frame.
+                    forward, lateral = position[0], position[1]
+                else:
+                    forward = lateral = None
+                bearing = None
+                if isinstance(forward, (int, float)) and isinstance(lateral, (int, float)):
+                    distance = distance if isinstance(distance, (int, float)) else math.hypot(float(forward), float(lateral))
+                    bearing = math.degrees(math.atan2(float(lateral), float(forward)))
+                classification = str(target.get("classification") or "unknown")
+                parts = [f"target {target.get('target_id', target.get('id', '?'))} ({classification}, unassociated)"]
                 if isinstance(distance, (int, float)):
-                    ranges.append(f"{float(distance):.2f}m")
-            detail = f"{len(targets)} target(s)" + (f" at {', '.join(ranges[:4])}" if ranges else "")
+                    parts.append(f"{float(distance):.2f}m")
+                if bearing is not None:
+                    parts.append(f"bearing {bearing:+.0f}°")
+                confidence = target.get("confidence")
+                if isinstance(confidence, (int, float)):
+                    parts.append(f"confidence {float(confidence):.2f}")
+                radial = target.get("radial_speed_mps", target.get("radial_velocity_mps"))
+                if isinstance(radial, (int, float)):
+                    parts.append(f"radial {float(radial):+.2f}m/s")
+                descriptions.append(" ".join(parts))
+            detail = f"{len(targets)} target(s)" + (": " + "; ".join(descriptions[:4]) if descriptions else "")
+        elif name == "depth_calibration":
+            if value.get("available"):
+                limits = value.get("calibrated_range_m") or []
+                range_text = f"{float(limits[0]):.2f}–{float(limits[1]):.2f}m" if isinstance(limits, (list, tuple)) and len(limits) >= 2 else "range not reported"
+                error = value.get("holdout_rmse_m", value.get("rmse_m"))
+                detail = f"MiDaS metric fit valid over {range_text}"
+                if isinstance(error, (int, float)):
+                    detail += f", holdout RMSE {float(error):.2f}m"
+                detail += "; no object-to-box association supplied"
+            else:
+                detail = "MiDaS metric fit unavailable: " + str(value.get("reason") or "not calibrated")
         elif name == "odometry":
             detail = f"position {value.get('position_m')}; yaw {value.get('yaw_rad')}rad"
         elif name == "lidar":
@@ -3670,6 +3828,16 @@ Memory honesty — two distinct cases:
             return self._body_status_response(user_input)
         if data_route == "body_location":
             return self._body_gps_location_response()
+        if data_route == "body_combined":
+            sensors = self._body_sensor_response()
+            camera = self._body_perception_response(camera_only=True)
+            return {
+                "handled": True,
+                "status": "reported" if sensors.get("status") == "reported" or camera.get("status") == "reported" else "unavailable",
+                "response": camera.get("response", "") + " " + sensors.get("response", ""),
+                "camera": camera.get("perception"),
+                "sensors": sensors.get("sensor_observations", []),
+            }
         if data_route == "body_sensors":
             return self._body_sensor_response()
         if not pending and not (self._may_route_to_body(user_input) or self._may_route_to_local_camera(user_input)):
@@ -3706,6 +3874,8 @@ Memory honesty — two distinct cases:
             return self._body_workspace_response()
         if not pending and route == "body_perception":
             return self._body_sensor_response()
+        if not pending and route == "body_profile":
+            return self._body_profile_response()
         if pending and route == "confirm":
             body = getattr(self._organism, "_body_runtime", None) if self._organism else None
             direct_command = pending.get("direct_command") if isinstance(pending, dict) else None
