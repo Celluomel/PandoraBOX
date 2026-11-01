@@ -585,7 +585,7 @@ export class QuestVRDashboard {
     this.sensorPointDensityHitArea = null;
     if (this.sceneMode === 'sensors') {
       const sliderX = this.logicalWidth / 2 + 850;
-      const sliderWidth = this.logicalWidth - sliderX - margin;
+      const sliderWidth = this.logicalWidth - sliderX - 30;
       const trackY = buttonY - 18;
       const ratio = (this.sensorPointDensity - 60) / 100;
       const targetStep = Math.max(3, Math.ceil(640 / this.sensorPointDensity));
