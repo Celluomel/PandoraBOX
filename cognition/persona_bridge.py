@@ -2201,9 +2201,9 @@ Memory honesty — two distinct cases:
                 "\n\n━━ BODY DEVELOPMENT EVIDENCE ━━\n"
                 "When discussing Body development, separate verified current capabilities from proposed work. "
                 "Do not say a plan was executed, a feature exists, a sensor fusion result is validated, or an object has a metric position unless current telemetry or a recorded result proves it. "
-                "A MiDaS metric calibration establishes a depth scale only over its validated range; it does not by itself attach a distance to every YOLOX box. "
-                "Never average radar and ultrasonic ranges merely because their numbers are close: they may refer to different targets, directions, timestamps, or coordinate frames. "
-                "For distance-based navigation, require a timestamped object-to-range association in the Body frame and report its source and uncertainty. Frame suggestions as recommendations, not completed changes."
+                "Treat each measurement as evidence only for the source, target, place, and time it explicitly describes. "
+                "Do not assign a sensor reading to a named object, person, or event unless the observations provide an explicit association; numerical similarity or proximity alone is not an association. "
+                "For estimates, retain their timestamp, frame, provenance, confidence, validation range, and uncertainty when supplied. Frame suggestions as recommendations, not completed changes."
             )
             try:
                 _body = getattr(self._organism, "_body_runtime", None) if self._organism else None
@@ -2392,7 +2392,7 @@ Memory honesty — two distinct cases:
                     "For physical self-report, use only the timestamped Body evidence below. "
                     "Do not replace it with feelings, metaphor, personality, or generic abilities. "
                     "If a fact is absent, say it is unavailable.\n"
-                    f"{_body_context[-1800:]}"
+                    f"{_body_context[-12500:]}"
                 )
 
             return system_prompt, emo_dict, cond_dict, arb_temperature
@@ -2717,10 +2717,10 @@ Memory honesty — two distinct cases:
                     classifier_labels = "CONFIRM|CANCEL|NEW_ACTION|BODY_STATUS|NORMAL"
                     meaning = "approves, rejects, replaces, asks for the current status of, or does not address the pending physical Body plan"
             else:
-                labels = "BODY_ACTION, BODY_CAMERA, BODY_CAMERA_ANALYSIS, BODY_ARCHITECTURE, BODY_WORKSPACE, BODY_PERCEPTION, BODY_PROFILE, LOCAL_CAMERA, BODY_STATUS, or NORMAL"
-                classifier_labels = "BODY_ACTION|BODY_CAMERA_ANALYSIS|BODY_ARCHITECTURE|BODY_WORKSPACE|BODY_CAMERA|BODY_PERCEPTION|BODY_PROFILE|LOCAL_CAMERA|BODY_STATUS|NORMAL"
-                meaning = "requests a physical action, asks what objects the Body camera/YOLOX detects, asks whether the local Brain-PC camera sees or recognizes the user, explicitly requests a detailed interpretation of the Body camera image, asks how camera inputs are configured or whether they are separate, asks what Body data is stored in the Global Workspace, asks what the Body reports through non-camera sensors, asks for a factual inventory of the physical Body's parameters, hardware, and measured versus estimated state, asks for current task status, or is ordinary conversation"
-            system = f"Classify whether the user's latest message {meaning}. Return exactly one label and nothing else: {labels}. Understand the user's language semantically across languages; do not use a phrase list or translate by matching words. Distinguish intent: object detections or what the robot Body sees is BODY_CAMERA; asking whether Lumina/the Brain PC camera sees or recognizes the user is LOCAL_CAMERA; detailed scene interpretation specifically of the Body image is BODY_CAMERA_ANALYSIS; questions about camera sources, count, or architecture are BODY_ARCHITECTURE; non-camera measurements are BODY_PERCEPTION. Do not invoke image interpretation to answer an architecture question. The Body camera is the robot-side feed; LOCAL_CAMERA is the fixed Brain-PC feed. Do not assume whether their physical devices are shared unless telemetry proves it. A short imperative or affirmative can confirm the already prepared plan when its conversational function is approval, while a new physical objective is NEW_ACTION. A refusal or withdrawal is CANCEL. This is a safety classification: infer the speech act from the pending plan and dialogue state, not from the vocabulary."
+                labels = "BODY_ACTION or NORMAL"
+                classifier_labels = "BODY_ACTION|NORMAL"
+                meaning = "requests a physical action by the Body rather than asking a read-only question or making an ordinary conversational statement"
+            system = f"Classify whether the user's latest message {meaning}. Return exactly one label and nothing else: {labels}. Understand the user's language semantically across languages; do not use a phrase list or translate by matching words. A question about whether the Body can act is read-only NORMAL; BODY_ACTION means the user is asking it to perform an action now. A short imperative or affirmative can confirm the already prepared plan when its conversational function is approval, while a new physical objective is NEW_ACTION. A refusal or withdrawal is CANCEL. This classification is only a gate for physical actuation; read-only questions must be answered by the main conversational model from the timestamped observations in its context, not redirected to a fixed Body response. Infer the speech act from pending plan and dialogue state, not vocabulary alone."
             if retry and pending:
                 system += " Re-evaluate the speech act carefully. The user is responding immediately after the Body asked whether to execute the already validated plan."
             if confirmation_probe:
@@ -2765,24 +2765,15 @@ Memory honesty — two distinct cases:
                 )
             else:
                 system = (
-                    "Classify the user's latest message for a cognitive Body interface. "
-                    "Return exactly JSON with route equal to one of: body_action, body_camera, local_camera, body_camera_analysis, "
-                    "body_architecture, body_workspace, body_perception, body_profile, body_status, normal. body_action means the user requests a physical manipulation or "
-                    "movement; body_camera means asking what objects the Body sees or for YOLOX detections; "
-                    "local_camera means asking whether Lumina or the Brain-PC camera sees/recognizes the user, or what the local camera sees; "
-                    "body_camera_analysis means explicitly requesting a detailed interpretation of the Body camera image; "
-                    "body_architecture means asking how camera inputs are configured or whether the Body camera and direct visual input are separate; "
-                    "body_workspace means asking whether Body data is in the Global Workspace or what Body records it contains; "
-                    "body_perception means asking what other metrics, measurements, readings "
-                    "or sensor data the robot reports through non-camera sensors; body_profile means asking for a factual list of installed Body hardware, capabilities, pose, or movement feedback, with source and uncertainty; "
-                    "body_status means asking whether a task is complete, what step is active, whether the Body is stuck, or for the latest robot/controller movement status and command outcome. "
-                    "Do not infer that two logical camera paths are physically separate devices without evidence. Do not invoke VLM for camera architecture questions. Use semantic meaning, not a fixed phrase list. "
-                    "For example, 'what does the Body see?' is body_camera; 'can you see me?' is local_camera; 'describe the Body image in detail' is body_camera_analysis; 'does Lumina have two cameras?' is body_architecture; 'what Body data is in the Global Workspace?' is body_workspace; 'what other metrics does the Body provide?' is body_perception; 'what are the Body's physical parameters?' is body_profile."
+                    "Classify the user's latest message for the Body interface. "
+                    "Return exactly JSON with route equal to one of: body_action, normal. body_action means the user requests a physical manipulation or movement. "
+                    "Every read-only question about Body sensors, camera, detections, distances, battery, GPS, status, capabilities, or workspace is normal: let the main conversational model answer from the timestamped Body evidence already included in its context. "
+                    "Do not make a separate Body request or replace the LLM answer for a read-only question. Use semantic meaning across languages, not a fixed phrase list."
                 )
             raw = fast(text, system, model=model, timeout=6.0, max_tokens=120)
             raw_text = str(raw or "")
             match = re.search(r"\{[\s\S]*?\}", raw_text)
-            allowed = ({"confirm", "cancel", "normal"} if confirmation_probe else {"confirm", "cancel", "new_action", "body_status", "normal"}) if pending else {"body_action", "body_camera", "local_camera", "body_camera_analysis", "body_architecture", "body_workspace", "body_perception", "body_profile", "body_status", "normal"}
+            allowed = ({"confirm", "cancel", "normal"} if confirmation_probe else {"confirm", "cancel", "new_action", "body_status", "normal"}) if pending else {"body_action", "normal"}
             if match:
                 value = json.loads(match.group(0))
                 route = str(value.get("route") or "normal").strip().lower()
@@ -2799,7 +2790,7 @@ Memory honesty — two distinct cases:
                 labels = "confirm|cancel|normal" if confirmation_probe else "confirm|cancel|new_action|body_status|normal"
                 label_match = re.search(rf"\b({labels})\b", raw_text.lower())
             else:
-                label_match = re.search(r"\b(body_action|body_camera_analysis|body_architecture|body_workspace|body_camera|local_camera|body_perception|body_profile|body_status|normal)\b", raw_text.lower())
+                label_match = re.search(r"\b(body_action|normal)\b", raw_text.lower())
             if label_match and label_match.group(1) != "normal":
                 return label_match.group(1)
             # Confirmation is safety-sensitive but only applies to an already
@@ -3559,111 +3550,6 @@ Memory honesty — two distinct cases:
         return None
 
     @staticmethod
-    def _body_data_request_route(text: str) -> str | None:
-        normalized = str(text or "").lower()
-        development_topic = re.search(
-            r"\b(aspiration|aspirations|hypoth[eè]se|hypothesis|developmental|d[eé]veloppemental)\b",
-            normalized,
-        )
-        development_workflow = re.search(
-            r"\b(persistant|persistent|baseline|mesure initiale|v[eé]rification|verify|ex[eé]cuter|execute|r[eé]sultats|revise|r[eé]viser|architecture|capacit[eé]s actuelles)\b",
-            normalized,
-        )
-        if development_topic and development_workflow:
-            return "developmental_autonomy_audit"
-        battery_query = re.search(r"\b(battery|batteries|batterie|charge|autonomie|remaining)\b", normalized)
-        body_reference = re.search(r"\b(body|robot|ventuno|fnk0031)\b", normalized)
-        if battery_query and body_reference:
-            return "body_battery"
-        gps_query = re.search(r"\b(gps|gnss|latitude|longitude|coordonn[ée]es?)\b", normalized)
-        location_query = re.search(r"\b(locali[sz](?:ation|e|er)|position|where|où|locate|map|carte)\b", normalized)
-        if gps_query and location_query:
-            return "body_location"
-        object_distance_query = re.search(
-            r"\b(distance|distances|far|how far|away|loin|proche|éloign[ée]|eloign[ée])\b",
-            normalized,
-        )
-        television_reference = re.search(r"\b(tv|t[ée]l[ée]vision|écran|ecran)\b", normalized)
-        if object_distance_query and television_reference:
-            return "body_object_distance"
-        sensor_query = re.search(r"\b(sensors?|capteurs?|télémétrie|telemetry)\b", normalized)
-        sensor_ask = re.search(r"\b(what|which|provide|providing|data|status|show|quels?|quelles?|que|quoi|donn[ée]es?|fournissent|montrent|affiche)\b", normalized)
-        if sensor_query and sensor_ask:
-            camera_query = re.search(r"\b(camera|caméra|vision|yolox|see|sees|seeing|vois|voir|détection|detection|objects?|objets?)\b", normalized)
-            if camera_query:
-                return "body_combined"
-            return "body_sensors"
-        return None
-
-    def _body_object_distance_response(self, user_input: str) -> dict:
-        """Answer TV range only from the Body's current YOLOX/MiDaS object estimate."""
-        body = getattr(self._organism, "_body_runtime", None) if self._organism else None
-        reader = getattr(body, "metric_yolo_status", None) if body is not None else None
-        if not callable(reader):
-            return {
-                "handled": True, "status": "unavailable",
-                "response": "Je ne peux pas estimer la distance de la TV : le flux métrique YOLOX/MiDaS du Body n'est pas disponible. Les mesures ultrasoniques ne permettent pas d'identifier cet objet.",
-            }
-        try:
-            packet = reader()
-        except Exception as exc:
-            logger.warning("[BodyObjectDistance] metric camera read failed: %s", exc)
-            packet = {}
-        packet = packet if isinstance(packet, dict) else {}
-        try:
-            age = max(0.0, time.time() - float(packet.get("captured_at")))
-        except (TypeError, ValueError):
-            age = None
-        if packet.get("state") != "ready" or age is None or age > 5.0:
-            age_text = f" (image âgée de {age:.1f}s)" if age is not None else ""
-            return {
-                "handled": True, "status": "stale" if age is not None and age > 5.0 else "unavailable",
-                "response": f"Je ne peux pas donner une distance actuelle pour la TV : la détection Body est absente ou trop ancienne{age_text}. Je ne substitue pas une mesure ultrasonique ou une cible radar non associée.",
-                "perception": {"frame_id": packet.get("frame_id"), "age_seconds": age},
-            }
-        television_detections = [
-            item for item in packet.get("detections", [])
-            if isinstance(item, dict)
-            and re.search(r"\b(tv|television)\b", str(item.get("label") or item.get("class_name") or ""), re.IGNORECASE)
-        ]
-        if not television_detections:
-            return {
-                "handled": True, "status": "not_detected",
-                "response": f"YOLOX ne détecte pas de TV dans l'image actuelle du Body (frame {packet.get('frame_id') or 'inconnue'}). Je n'ai donc pas de distance de TV à rapporter.",
-                "perception": {"frame_id": packet.get("frame_id"), "age_seconds": round(age, 3)},
-            }
-        television = max(television_detections,
-                        key=lambda item: float(item.get("confidence", item.get("score", 0.0)) or 0.0))
-        metric = television.get("metric_depth") if isinstance(television.get("metric_depth"), dict) else {}
-        confidence = float(television.get("confidence", television.get("score", 0.0)) or 0.0)
-        if metric.get("available"):
-            distance = metric.get("range_m", metric.get("forward_m"))
-            uncertainty = metric.get("uncertainty_m_approx")
-            estimate = f"environ {float(distance):.2f} m"
-            if isinstance(uncertainty, (int, float)):
-                estimate += f" ± {float(uncertainty):.2f} m (incertitude approximative)"
-            anchor = "avec ancre radar-personne synchronisée" if metric.get("radar_track_associated") else "avec la calibration MiDaS seule"
-            response = (
-                f"La TV est estimée à {estimate} du Body, d'après la boîte YOLOX ({confidence:.0%}) et la profondeur MiDaS {anchor}. "
-                f"Frame {packet.get('frame_id')}, âgée de {age:.1f}s; l'estimation reste approximative."
-            )
-            return {"handled": True, "status": "reported", "response": response,
-                    "object_distance": {"label": television.get("label"), "range_m": distance,
-                        "uncertainty_m_approx": uncertainty, "source": metric.get("source"),
-                        "frame_id": packet.get("frame_id"), "age_seconds": round(age, 3),
-                        "radar_track_associated": bool(metric.get("radar_track_associated"))}}
-        candidate = metric.get("candidate_forward_m")
-        reason = str(metric.get("reason") or packet.get("metric_depth", {}).get("reason") or "profondeur métrique indisponible")
-        candidate_note = f" MiDaS propose {float(candidate):.2f} m, mais cette valeur n'est pas validée." if isinstance(candidate, (int, float)) else ""
-        return {
-            "handled": True, "status": "unavailable",
-            "response": f"YOLOX détecte la TV ({confidence:.0%}) dans l'image actuelle, mais je ne peux pas valider sa distance : {reason}.{candidate_note} Une mesure HC-SR04 frontale ou une cible radar non associée ne permet pas de conclure que cet écho vient de la TV.",
-            "object_distance": {"label": television.get("label"), "available": False,
-                "candidate_forward_m": candidate, "reason": reason,
-                "frame_id": packet.get("frame_id"), "age_seconds": round(age, 3)},
-        }
-
-    @staticmethod
     def _may_route_to_body(text: str) -> bool:
         """Gate the Body LLM classifier behind explicit Body/action intent."""
         normalized = str(text or "").lower().strip()
@@ -3906,27 +3792,6 @@ Memory honesty — two distinct cases:
     def handle_body_chat_turn(self, user_input: str, user_id: str = "default") -> dict | None:
         """Handle only Body-specific turns; return None for normal dialogue."""
         pending = self._pending_body_plans.get(str(user_id))
-        data_route = self._body_data_request_route(user_input)
-        if data_route == "developmental_autonomy_audit":
-            return self._developmental_autonomy_response()
-        if data_route == "body_battery":
-            return self._body_status_response(user_input)
-        if data_route == "body_location":
-            return self._body_gps_location_response()
-        if data_route == "body_object_distance":
-            return self._body_object_distance_response(user_input)
-        if data_route == "body_combined":
-            sensors = self._body_sensor_response()
-            camera = self._body_perception_response(camera_only=True)
-            return {
-                "handled": True,
-                "status": "reported" if sensors.get("status") == "reported" or camera.get("status") == "reported" else "unavailable",
-                "response": camera.get("response", "") + " " + sensors.get("response", ""),
-                "camera": camera.get("perception"),
-                "sensors": sensors.get("sensor_observations", []),
-            }
-        if data_route == "body_sensors":
-            return self._body_sensor_response()
         if not pending and not (self._may_route_to_body(user_input) or self._may_route_to_local_camera(user_input)):
             return None
         route = self._classify_body_chat_turn(user_input, pending=pending)
@@ -3948,21 +3813,12 @@ Memory honesty — two distinct cases:
                 else:
                     return self._body_status_response(user_input)
             else:
-                return self._body_status_response(user_input)
-        if not pending and route == "body_camera":
-            return self._body_perception_response(camera_only=True)
-        if not pending and route == "local_camera":
-            return self._local_camera_response()
-        if not pending and route == "body_camera_analysis":
-            return self._body_camera_response()
-        if not pending and route == "body_architecture":
-            return self._body_camera_architecture_response()
-        if not pending and route == "body_workspace":
-            return self._body_workspace_response()
-        if not pending and route == "body_perception":
-            return self._body_sensor_response()
-        if not pending and route == "body_profile":
-            return self._body_profile_response()
+                # Read-only Body questions go to the conversational LLM with
+                # timestamped Body evidence in its system context. Do not
+                # replace its answer with a fixed route-specific response.
+                return None
+        if not pending and route != "body_action":
+            return None
         if pending and route == "confirm":
             body = getattr(self._organism, "_body_runtime", None) if self._organism else None
             direct_command = pending.get("direct_command") if isinstance(pending, dict) else None

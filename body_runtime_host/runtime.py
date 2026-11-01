@@ -1174,8 +1174,10 @@ class BodyHost:
                     output.append(item)
                     continue
                 is_person = bool(re.search(r"person|human", str(detection.get("label") or detection.get("class_name") or detection.get("class") or ""), re.IGNORECASE))
-                is_tv = bool(re.search(r"\b(tv|television)\b", str(detection.get("label") or detection.get("class_name") or detection.get("class") or ""), re.IGNORECASE))
-                relative = (roi["near"] if inverse_scale >= 0 else roi["far"]) if is_tv else roi["median"]
+                # Apply one consistent depth statistic to every detected class.
+                # Object-specific ROI heuristics would make the metric contract
+                # biased toward a hand-picked category.
+                relative = roi["median"]
                 inverse_range = inverse_scale * relative + inverse_offset
                 nominal_forward = 1.0 / inverse_range if inverse_range > 1e-6 else float("nan")
                 scale = anchor_scale if anchor_scale is not None else 1.0
@@ -4039,6 +4041,65 @@ class BodyHost:
             except Exception as exc:
                 LOG.debug("Live %s telemetry publication failed: %s", name, exc)
 
+    def publish_camera_perception(self) -> None:
+        """Bridge compact, timestamped YOLOX/MiDaS evidence without image data."""
+        try:
+            packet = self.camera_metric_yolo_status()
+            if not isinstance(packet, dict):
+                return
+            captured_at = packet.get("captured_at")
+            try:
+                observed_at = float(captured_at) if captured_at is not None else time.time()
+            except (TypeError, ValueError):
+                observed_at = time.time()
+            detections = []
+            for detection in packet.get("detections") or []:
+                if not isinstance(detection, dict):
+                    continue
+                # Whitelist inference output. Never send frame pixels, encoded
+                # images, or backend-only tensors through the Brain bridge.
+                detections.append({key: detection.get(key) for key in (
+                    "label", "class_name", "class_id", "confidence", "score",
+                    "bbox", "metric_depth",
+                ) if key in detection})
+            value = {
+                "state": packet.get("state", "unavailable"),
+                "frame_id": packet.get("frame_id"),
+                "captured_at": observed_at,
+                "detections": detections,
+                "metric_depth": packet.get("metric_depth"),
+                "simulated": False,
+                "image_transmitted": False,
+            }
+            if packet.get("error"):
+                value["error"] = str(packet["error"])[:240]
+            entry = {
+                "entity_id": "body.camera.yolox",
+                "source": str(packet.get("source") or "body_camera_yolox_midas"),
+                "kind": "perception_observation",
+                "subject": "camera.yolox",
+                "value": value,
+                "unit": "",
+                "confidence": 1.0 if packet.get("state") == "ready" else 0.0,
+                "observed_at": observed_at,
+                "provenance": {
+                    "source": "Body YOLOX/MiDaS latest inference",
+                    "frame_id": packet.get("frame_id"),
+                    "simulated": False,
+                    "image_transmitted": False,
+                },
+            }
+            self.latest[entry["entity_id"]] = entry
+            self._bridge_put(entry)
+        except Exception as exc:
+            LOG.debug("Body camera perception publication failed: %s", exc)
+
+    def camera_perception_loop(self) -> None:
+        """Refresh the latest camera evidence independently of sensor RPC cadence."""
+        while not self.stop_event.is_set():
+            self.publish_camera_perception()
+            self.stop_event.wait(2.0)
+
     def _bridge_put(self, entry: dict) -> None:
         if self._ros2_bridge is not None:
             self._ros2_bridge.publish(entry)
@@ -4511,6 +4572,7 @@ class BodyHost:
                 LOG.warning("ROS 2 bridge enabled but unavailable: %s", ros_status.get("last_error"))
         threads = [
             threading.Thread(target=self.poll_loop, name="body-sensors", daemon=True),
+            threading.Thread(target=self.camera_perception_loop, name="body-camera-perception", daemon=True),
             threading.Thread(target=self.power_energy_loop, name="body-power-energy", daemon=True),
         ]
         # Keep the bridge loop alive even when disabled so the UI can enable it

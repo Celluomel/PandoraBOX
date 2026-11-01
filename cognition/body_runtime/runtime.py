@@ -867,6 +867,28 @@ class BodyRuntime:
                     lines.extend(wm_ctx.split("\n"))
         except Exception:
             pass
+        if observations:
+            # Keep a compact, newest-first evidence digest at the end of the
+            # prompt context. The persona prompt may be clipped; placing this
+            # digest last prevents older workspace/history detail from hiding
+            # the current bridged sensor and perception samples.
+            lines.extend([
+                "LATEST BODY EVIDENCE DIGEST (timestamped records available to the LLM):",
+                "Read-only questions should be answered by reasoning over these records; preserve their source and freshness.",
+            ])
+            for item in observations[:10]:
+                try:
+                    value = json.dumps(item.get("value"), ensure_ascii=False, separators=(",", ":"), default=str)
+                except Exception:
+                    value = str(item.get("value"))
+                if len(value) > 1600:
+                    value = value[:1597] + "..."
+                age = max(0.0, time.time() - float(item.get("observed_at") or time.time()))
+                lines.append(
+                    f"- {item.get('subject')} | source={item.get('source')} | "
+                    f"observed_at={item.get('observed_at')} | received_at={item.get('received_at')} | "
+                    f"age={age:.1f}s | value={value}"
+                )
         return "\n".join(lines)
 
 def get_body_runtime(organism: Any = None) -> BodyRuntime:
