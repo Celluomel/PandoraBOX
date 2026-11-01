@@ -1058,10 +1058,10 @@ class BodyHost:
                 # Match the calibration collector's exact inner torso/object ROI
                 # and stride (x=30–70%, y=35–65%). A different box region changes
                 # the median depth, especially for a TV against a wall or floor.
-                left = max(0, min(width - 1, round((0.7 * x1 + 0.3 * x2) * width)))
-                right = max(left + 1, min(width, round((0.3 * x1 + 0.7 * x2) * width)))
-                top = max(0, min(height - 1, round((0.65 * y1 + 0.35 * y2) * height)))
-                bottom = max(top + 1, min(height, round((0.35 * y1 + 0.65 * y2) * height)))
+                left = max(0, min(width - 1, round(0.7 * x1 + 0.3 * x2)))
+                right = max(left + 1, min(width, round(0.3 * x1 + 0.7 * x2)))
+                top = max(0, min(height - 1, round(0.65 * y1 + 0.35 * y2)))
+                bottom = max(top + 1, min(height, round(0.35 * y1 + 0.65 * y2)))
                 step = max(1, int(min(right - left, bottom - top) / 8))
                 roi = raw[top:bottom:step, left:right:step]
                 if roi.size < 9:
