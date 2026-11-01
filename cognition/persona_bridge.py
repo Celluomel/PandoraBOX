@@ -3247,7 +3247,9 @@ Memory honesty — two distinct cases:
 
     def _body_perception_response(self, camera_only: bool = False) -> dict:
         body = getattr(self._organism, "_body_runtime", None) if self._organism else None
-        yolo_reader = getattr(body, "camera_yolo_status", None) if body is not None else None
+        metric_reader = getattr(body, "metric_yolo_status", None) if body is not None else None
+        raw_yolo_reader = getattr(body, "camera_yolo_status", None) if body is not None else None
+        yolo_reader = metric_reader if callable(metric_reader) else raw_yolo_reader
         if callable(yolo_reader):
             try:
                 yolo = yolo_reader()
@@ -3256,7 +3258,7 @@ Memory honesty — two distinct cases:
                 yolo = {}
             yolo = yolo if isinstance(yolo, dict) else {}
             if yolo.get("state") != "ready":
-                fallback_reader = getattr(body, "camera_yolo_status", None)
+                fallback_reader = raw_yolo_reader
                 if callable(fallback_reader):
                     try:
                         fallback = fallback_reader()
@@ -3327,7 +3329,7 @@ Memory honesty — two distinct cases:
                         response += (
                             f" Calibration MiDaS active sur {range_text}"
                             + (f" (erreur holdout {float(error):.2f} m)." if isinstance(error, (int, float)) else ".")
-                            + (" Les distances affichées sont des estimations par boîte, synchronisées à moins de 250 ms; l'angle reste approximatif et aucun track radar n'est associé." if metric_packet.get("available") else " Aucune distance par boîte n'a pu être calculée sur cette paire de frames.")
+                            + (" Les distances affichées sont des estimations par boîte, synchronisées à moins de 250 ms; l'ancre radar-personne est présente." if metric_packet.get("radar_anchor_available") else " Aucune ancre radar-personne synchronisée n'est disponible pour estimer la scène.")
                         )
                 snapshot = body.body_snapshot() if callable(getattr(body, "body_snapshot", None)) else None
                 if isinstance(snapshot, dict) and self._is_simulated_body_snapshot(snapshot):
@@ -3577,6 +3579,13 @@ Memory honesty — two distinct cases:
         location_query = re.search(r"\b(locali[sz](?:ation|e|er)|position|where|où|locate|map|carte)\b", normalized)
         if gps_query and location_query:
             return "body_location"
+        object_distance_query = re.search(
+            r"\b(distance|distances|far|how far|away|loin|proche|éloign[ée]|eloign[ée])\b",
+            normalized,
+        )
+        television_reference = re.search(r"\b(tv|t[ée]l[ée]vision|écran|ecran)\b", normalized)
+        if object_distance_query and television_reference:
+            return "body_object_distance"
         sensor_query = re.search(r"\b(sensors?|capteurs?|télémétrie|telemetry)\b", normalized)
         sensor_ask = re.search(r"\b(what|which|provide|providing|data|status|show|quels?|quelles?|que|quoi|donn[ée]es?|fournissent|montrent|affiche)\b", normalized)
         if sensor_query and sensor_ask:
@@ -3585,6 +3594,74 @@ Memory honesty — two distinct cases:
                 return "body_combined"
             return "body_sensors"
         return None
+
+    def _body_object_distance_response(self, user_input: str) -> dict:
+        """Answer TV range only from the Body's current YOLOX/MiDaS object estimate."""
+        body = getattr(self._organism, "_body_runtime", None) if self._organism else None
+        reader = getattr(body, "metric_yolo_status", None) if body is not None else None
+        if not callable(reader):
+            return {
+                "handled": True, "status": "unavailable",
+                "response": "Je ne peux pas estimer la distance de la TV : le flux métrique YOLOX/MiDaS du Body n'est pas disponible. Les mesures ultrasoniques ne permettent pas d'identifier cet objet.",
+            }
+        try:
+            packet = reader()
+        except Exception as exc:
+            logger.warning("[BodyObjectDistance] metric camera read failed: %s", exc)
+            packet = {}
+        packet = packet if isinstance(packet, dict) else {}
+        try:
+            age = max(0.0, time.time() - float(packet.get("captured_at")))
+        except (TypeError, ValueError):
+            age = None
+        if packet.get("state") != "ready" or age is None or age > 5.0:
+            age_text = f" (image âgée de {age:.1f}s)" if age is not None else ""
+            return {
+                "handled": True, "status": "stale" if age is not None and age > 5.0 else "unavailable",
+                "response": f"Je ne peux pas donner une distance actuelle pour la TV : la détection Body est absente ou trop ancienne{age_text}. Je ne substitue pas une mesure ultrasonique ou une cible radar non associée.",
+                "perception": {"frame_id": packet.get("frame_id"), "age_seconds": age},
+            }
+        television_detections = [
+            item for item in packet.get("detections", [])
+            if isinstance(item, dict)
+            and re.search(r"\b(tv|television)\b", str(item.get("label") or item.get("class_name") or ""), re.IGNORECASE)
+        ]
+        if not television_detections:
+            return {
+                "handled": True, "status": "not_detected",
+                "response": f"YOLOX ne détecte pas de TV dans l'image actuelle du Body (frame {packet.get('frame_id') or 'inconnue'}). Je n'ai donc pas de distance de TV à rapporter.",
+                "perception": {"frame_id": packet.get("frame_id"), "age_seconds": round(age, 3)},
+            }
+        television = max(television_detections,
+                        key=lambda item: float(item.get("confidence", item.get("score", 0.0)) or 0.0))
+        metric = television.get("metric_depth") if isinstance(television.get("metric_depth"), dict) else {}
+        confidence = float(television.get("confidence", television.get("score", 0.0)) or 0.0)
+        if metric.get("available"):
+            distance = metric.get("range_m", metric.get("forward_m"))
+            uncertainty = metric.get("uncertainty_m_approx")
+            estimate = f"environ {float(distance):.2f} m"
+            if isinstance(uncertainty, (int, float)):
+                estimate += f" ± {float(uncertainty):.2f} m (incertitude approximative)"
+            anchor = "avec ancre radar-personne synchronisée" if metric.get("radar_track_associated") else "avec la calibration MiDaS seule"
+            response = (
+                f"La TV est estimée à {estimate} du Body, d'après la boîte YOLOX ({confidence:.0%}) et la profondeur MiDaS {anchor}. "
+                f"Frame {packet.get('frame_id')}, âgée de {age:.1f}s; l'estimation reste approximative."
+            )
+            return {"handled": True, "status": "reported", "response": response,
+                    "object_distance": {"label": television.get("label"), "range_m": distance,
+                        "uncertainty_m_approx": uncertainty, "source": metric.get("source"),
+                        "frame_id": packet.get("frame_id"), "age_seconds": round(age, 3),
+                        "radar_track_associated": bool(metric.get("radar_track_associated"))}}
+        candidate = metric.get("candidate_forward_m")
+        reason = str(metric.get("reason") or packet.get("metric_depth", {}).get("reason") or "profondeur métrique indisponible")
+        candidate_note = f" MiDaS propose {float(candidate):.2f} m, mais cette valeur n'est pas validée." if isinstance(candidate, (int, float)) else ""
+        return {
+            "handled": True, "status": "unavailable",
+            "response": f"YOLOX détecte la TV ({confidence:.0%}) dans l'image actuelle, mais je ne peux pas valider sa distance : {reason}.{candidate_note} Une mesure HC-SR04 frontale ou une cible radar non associée ne permet pas de conclure que cet écho vient de la TV.",
+            "object_distance": {"label": television.get("label"), "available": False,
+                "candidate_forward_m": candidate, "reason": reason,
+                "frame_id": packet.get("frame_id"), "age_seconds": round(age, 3)},
+        }
 
     @staticmethod
     def _may_route_to_body(text: str) -> bool:
@@ -3836,6 +3913,8 @@ Memory honesty — two distinct cases:
             return self._body_status_response(user_input)
         if data_route == "body_location":
             return self._body_gps_location_response()
+        if data_route == "body_object_distance":
+            return self._body_object_distance_response(user_input)
         if data_route == "body_combined":
             sensors = self._body_sensor_response()
             camera = self._body_perception_response(camera_only=True)
