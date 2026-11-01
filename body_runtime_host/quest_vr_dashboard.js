@@ -1897,7 +1897,7 @@ export class QuestVRDashboard {
     }
     const armY=top+ctrlH-58;button('teleop-arm',innerX,armY,bw,44,this.fnkTeleopArmed?'Robot input on':'Robot input',this.fnkTeleopArmed);button('teleop-stop',innerX+bw+gap,armY,bw,44,'Scene input');
     const legY=top+ctrlH+16,legH=354;card(rx,legY,rw,legH);lab('Leg status',innerX,legY+24);txt('Bar: position of the leg in its own gait cycle.',innerX,legY+45,11,C.muted);const estimates=this.fnkLegState?.legs||[];
-    labels.forEach((name,i)=>{const y=legY+61+i*43,l=estimates[i],x=innerX; c.strokeStyle=C.line;c.lineWidth=1;c.beginPath();c.moveTo(x,y+36);c.lineTo(rx+rw-16,y+36);c.stroke();txt(name,x,y+15,12,C.text,700);txt(l?'Command estimate':'Waiting for estimate',x+36,y+15,11,C.muted);const bx=x+144,bww=innerW-144;c.fillStyle=C.line;c.fillRect(bx,y+11,bww,8);if(l){const z=Math.max(0,Number(l.foot_position_mm?.[2])||0);c.fillStyle=C.stance;c.fillRect(bx,y+11,Math.min(bww,z/105*bww),8);}});
+    labels.forEach((name,i)=>{const y=legY+61+i*43,l=estimates[i],x=innerX,p=((phase+offsets[i])%1+1)%1,sw=p<1-duty;c.strokeStyle=C.line;c.lineWidth=1;c.beginPath();c.moveTo(x,y+36);c.lineTo(rx+rw-16,y+36);c.stroke();txt(name,x,y+15,12,C.text,700);txt(l?'CMD ESTIMATE':(sw?'SWING':'STANCE'),x+36,y+15,11,l?C.muted:(sw?C.swing:C.stance),700);const bx=x+144,bww=innerW-144;c.fillStyle=C.line;c.fillRect(bx,y+11,bww,8);c.fillStyle=l?C.stance:(sw?C.swing:C.stance);c.fillRect(bx,y+11,bww*p,8);});
     txt('Commanded FNHR estimates · servos do not report measured leg positions',16,h-24,11,C.muted);
     this.fnkTexture.needsUpdate=true;
   }
