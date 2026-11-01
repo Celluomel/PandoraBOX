@@ -1055,11 +1055,15 @@ class BodyHost:
                 x1, y1, x2, y2 = [float(part) for part in box[:4]]
                 if max(abs(x1), abs(y1), abs(x2), abs(y2)) <= 1.5:
                     x1, x2, y1, y2 = x1 * width, x2 * width, y1 * height, y2 * height
-                left, right = sorted((max(0, min(width, int(x1))), max(0, min(width, int(x2)))))
-                top, bottom = sorted((max(0, min(height, int(y1))), max(0, min(height, int(y2)))))
-                # Sample the central 50% of the box to reduce background-edge contamination.
-                dx, dy = max(1, (right - left) // 4), max(1, (bottom - top) // 4)
-                roi = raw[top + dy:bottom - dy or bottom, left + dx:right - dx or right]
+                # Match the calibration collector's exact inner torso/object ROI
+                # and stride (x=30–70%, y=35–65%). A different box region changes
+                # the median depth, especially for a TV against a wall or floor.
+                left = max(0, min(width - 1, round((0.7 * x1 + 0.3 * x2) * width)))
+                right = max(left + 1, min(width, round((0.3 * x1 + 0.7 * x2) * width)))
+                top = max(0, min(height - 1, round((0.65 * y1 + 0.35 * y2) * height)))
+                bottom = max(top + 1, min(height, round((0.35 * y1 + 0.65 * y2) * height)))
+                step = max(1, int(min(right - left, bottom - top) / 8))
+                roi = raw[top:bottom:step, left:right:step]
                 if roi.size < 9:
                     item["metric_depth"] = {"available": False, "reason": "YOLOX box too small for stable depth sampling"}
                     output.append(item)
