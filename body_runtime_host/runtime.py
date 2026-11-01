@@ -1025,8 +1025,7 @@ class BodyHost:
                         "reason": "YOLOX and MiDaS frames differ by more than 250 ms",
                         "frame_delta_s": round(delta, 4), "calibration": calibration}}
             raw_png = depth.get("depth_raw_png_base64")
-            raw_min, raw_max = depth.get("depth_raw_min"), depth.get("depth_raw_max")
-            if not raw_png or not isinstance(raw_min, (int, float)) or not isinstance(raw_max, (int, float)) or raw_max <= raw_min:
+            if not raw_png:
                 self._midas_service.request_raw_output(seconds=5.0)
                 return {**yolo, "metric_depth": {"available": False,
                         "reason": "waiting for the next MiDaS raw-depth frame", "calibration": calibration}}
@@ -1038,7 +1037,6 @@ class BodyHost:
             if raw is None or raw.ndim != 2:
                 raise ValueError("MiDaS raw-depth PNG could not be decoded")
             height, width = raw.shape
-            scale = float(raw_max) - float(raw_min)
             inverse_scale = float(calibration["inverse_scale_per_relative_unit"])
             inverse_offset = float(calibration["inverse_offset_per_m"])
             valid_range = calibration.get("calibrated_range_m") or []
@@ -1066,7 +1064,11 @@ class BodyHost:
                     item["metric_depth"] = {"available": False, "reason": "YOLOX box too small for stable depth sampling"}
                     output.append(item)
                     continue
-                relative = float(raw_min) + float(np.median(roi)) / 65535.0 * scale
+                # The v4 calibration anchors use the normalized 16-bit PNG
+                # sample itself (the exact value returned by decodeGray16Png
+                # in the viewers). depth_raw_min/max describe the upstream
+                # model tensor and must not be applied to this normalized code.
+                relative = float(np.median(roi))
                 inverse_range = inverse_scale * relative + inverse_offset
                 distance = 1.0 / inverse_range if inverse_range > 1e-6 else float("nan")
                 if not math.isfinite(distance) or not float(valid_range[0]) <= distance <= float(valid_range[1]):
