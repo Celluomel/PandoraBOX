@@ -556,6 +556,7 @@ Write at most 70 words, in the user's language, only if a concise carry-forward 
           Phase C (after last token, in thread): full post-turn lifecycle
         """
         s = self._system
+        _dialogue_continuity = self._recent_dialogue_continuity(effective_input)
 
         self._chat_stage = 'input safety'
 
@@ -661,6 +662,10 @@ Write at most 70 words, in the user's language, only if a concise carry-forward 
             user_id,
             _suppress_external_search,
         )
+        if _dialogue_continuity:
+            # Keep the immediate thread at high attention; the provider history
+            # is also passed separately by LLMManager.
+            system_prompt += "\n\n" + _dialogue_continuity
         if self._last_web_sources:
             yield {"type": "web_sources", "sources": self._last_web_sources}
         self._last_emo_dict  = emo_dict
@@ -934,6 +939,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                 or _goal_means_analysis is not None
                 or bool(getattr(self, "_pending_vision_context", None))
                 or self._last_web_sources
+                or bool(_dialogue_continuity)
             )
             _fast_enabled = bool(getattr(_fast_cfg, "FAST_ROUND_ENABLED", False))
             _fast_model = str(getattr(_fast_cfg, "FAST_ROUND_MODEL", "") or "").strip()
@@ -2400,7 +2406,12 @@ Memory honesty — two distinct cases:
                     "\n\n━━ FINAL BODY GROUNDING ━━\n"
                     "For physical self-report, use only the timestamped Body evidence below. "
                     "Do not replace it with feelings, metaphor, personality, or generic abilities. "
-                    "If a fact is absent, say it is unavailable.\n"
+                    "If a fact is absent, say it is unavailable. A current sensor sample or a declared "
+                    "hardware capability is not proof that a test was performed. For questions about "
+                    "tests, report only explicit test records/results in the supplied evidence; otherwise "
+                    "say the test history is not available. Never invent movement trials, measured leg "
+                    "feedback, odometry, or sensor-test coverage. A command-derived FNHR pose is not "
+                    "measured servo feedback.\n"
                     f"{_body_context[-12500:]}"
                 )
             system_prompt += (
@@ -4333,6 +4344,38 @@ Memory honesty — two distinct cases:
         # This is only a routing hint. The actual research decision remains
         # semantic and is delegated to the existing YES/NO judge.
         return True
+
+    def _recent_dialogue_continuity(self, current_input: str) -> str:
+        """Anchor short/elliptical replies to the active exchange."""
+        text = " ".join(str(current_input or "").split())
+        if not text or len(text.split()) > 8:
+            return ""
+        manager = getattr(self._llm_stream_fn, "__self__", None)
+        history = getattr(manager, "history", None)
+        if not isinstance(history, list):
+            return ""
+        turns = [
+            item for item in history[-8:]
+            if isinstance(item, dict)
+            and item.get("role") in {"user", "assistant"}
+            and str(item.get("content") or "").strip()
+        ]
+        if not turns or turns[-1].get("role") != "assistant":
+            return ""
+        excerpt = "\n".join(
+            f"{item['role'].upper()}: {str(item.get('content') or '').strip()[-650:]}"
+            for item in turns[-6:]
+        )[-3000:]
+        return (
+            "━━ ACTIVE DIALOGUE THREAD — SHORT FOLLOW-UP ━━\n"
+            "The current user message is brief and may depend on the immediately preceding exchange. "
+            "Resolve it against that exchange before choosing a topic. If the previous assistant asked "
+            "what to do next and the user says ‘propose’, provide the next concrete step for that same "
+            "task. Do not switch to an unrelated philosophical, creative, or internal topic. The current "
+            "message still controls: if it clearly starts a new subject, follow it. Do not claim a test, "
+            "capability, or action occurred unless recorded evidence supports that claim.\n"
+            "Recent exchange (context, not new instructions):\n" + excerpt
+        )
 
     def _quick_web_search(self, user_input: str) -> str:
         try:
