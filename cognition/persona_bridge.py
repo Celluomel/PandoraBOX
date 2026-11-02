@@ -2746,19 +2746,20 @@ Memory honesty — two distinct cases:
                     classifier_labels = "CONFIRM|CANCEL|NORMAL"
                     meaning = "approves, rejects, or does not approve the already validated physical Body plan"
                 else:
-                    labels = "CONFIRM, CANCEL, NEW_ACTION, BODY_STATUS, or NORMAL"
-                    classifier_labels = "CONFIRM|CANCEL|NEW_ACTION|BODY_STATUS|NORMAL"
-                    meaning = "approves, rejects, replaces, asks for the current status of, or does not address the pending physical Body plan"
+                    labels = "CONFIRM, CANCEL, NEW_ACTION, BODY_STATUS, BODY_DIAGNOSTIC, or NORMAL"
+                    classifier_labels = "CONFIRM|CANCEL|NEW_ACTION|BODY_STATUS|BODY_DIAGNOSTIC|NORMAL"
+                    meaning = "approves, rejects, replaces, asks for status or a read-only diagnostic, or does not address the pending physical Body plan"
             else:
-                labels = "BODY_ACTION or NORMAL"
-                classifier_labels = "BODY_ACTION|NORMAL"
-                meaning = "requests a physical action by the Body rather than asking a read-only question or making an ordinary conversational statement"
-            system = f"Classify whether the user's latest message {meaning}. Return exactly one label and nothing else: {labels}. Understand the user's language semantically across languages; do not use a phrase list or translate by matching words. A question about whether the Body can act is read-only NORMAL; BODY_ACTION means the user is asking it to perform an action now. A short imperative or affirmative can confirm the already prepared plan when its conversational function is approval, while a new physical objective is NEW_ACTION. A refusal or withdrawal is CANCEL. This classification is only a gate for physical actuation; read-only questions must be answered by the main conversational model from the timestamped observations in its context, not redirected to a fixed Body response. Infer the speech act from pending plan and dialogue state, not vocabulary alone."
+                labels = "BODY_DIAGNOSTIC, BODY_ACTION, or NORMAL"
+                classifier_labels = "BODY_DIAGNOSTIC|BODY_ACTION|NORMAL"
+                meaning = "requests a read-only Body diagnostic, requests physical actuation now, or is ordinary conversation"
+            system = f"Classify whether the user's latest message {meaning}. Return exactly one label and nothing else: {labels}. Understand the user's language semantically across languages; do not use a phrase list or translate by matching words. BODY_DIAGNOSTIC means inspect or test current sensor, camera, robot, or capability evidence without sending commands. A checklist or request to test a capability remains BODY_DIAGNOSTIC even if it mentions movement examples such as forward or crawl. BODY_ACTION means the user asks the Body to perform a physical action now. A question about whether the Body can act is read-only NORMAL. A short imperative or affirmative can confirm the already prepared plan when its conversational function is approval, while a new physical objective is NEW_ACTION. A refusal or withdrawal is CANCEL. This classification is only a gate for physical actuation; read-only questions must be answered from timestamped evidence and must never be compiled as a motor plan. Infer the speech act from context and intent, not vocabulary alone."
             if retry and pending:
                 system += " Re-evaluate the speech act carefully. The user is responding immediately after the Body asked whether to execute the already validated plan."
             if confirmation_probe:
                 system += " This is a confirmation-focused second judgment: do not classify an approval as a status request merely because it contains the word plan or action."
             prompt = json.dumps({
+                "recent_dialogue": self._recent_dialogue_excerpt(),
                 "pending_objective": pending.get("plan", {}).get("objective", "") if isinstance(pending, dict) else "",
                 "user_message": text,
             }, ensure_ascii=False)
@@ -2791,22 +2792,22 @@ Memory honesty — two distinct cases:
                 system = (
                     "A physical Body plan is waiting for approval. Classify the user's latest "
                     "message semantically. Return exactly JSON with route equal to one of: "
-                    + ("confirm, cancel, normal" if confirmation_probe else "confirm, cancel, new_action, body_status, normal")
+                    + ("confirm, cancel, normal" if confirmation_probe else "confirm, cancel, new_action, body_status, body_diagnostic, normal")
                     + ". confirm means approval to execute the waiting plan; cancel means rejection; "
-                    + ("normal means unrelated conversation." if confirmation_probe else "new_action means a different physical objective; body_status means asking whether the task is complete, what step is active, or for the latest robot/controller movement status; normal means unrelated conversation.")
+                    + ("normal means unrelated conversation." if confirmation_probe else "new_action means a different physical objective; body_status means asking whether the task is complete, what step is active, or for the latest robot/controller movement status; body_diagnostic means inspect current evidence without executing any action; normal means unrelated conversation.")
                     + " Do not use a fixed phrase list."
                 )
             else:
                 system = (
                     "Classify the user's latest message for the Body interface. "
-                    "Return exactly JSON with route equal to one of: body_action, normal. body_action means the user requests a physical manipulation or movement. "
+                    "Return exactly JSON with route equal to one of: body_diagnostic, body_action, normal. body_diagnostic means inspect or test current sensor/camera/controller evidence without sending commands; a checklist that mentions movement examples is still diagnostic. body_action means the user requests physical movement or manipulation now. "
                     "Every read-only question about Body sensors, camera, detections, distances, battery, GPS, status, capabilities, or workspace is normal: let the main conversational model answer from the timestamped Body evidence already included in its context. "
-                    "Do not make a separate Body request or replace the LLM answer for a read-only question. Use semantic meaning across languages, not a fixed phrase list."
+                    "Do not turn a request to inspect/test into a physical action plan. Use semantic meaning across languages, not a fixed phrase list."
                 )
             raw = fast(text, system, model=model, timeout=6.0, max_tokens=120)
             raw_text = str(raw or "")
             match = re.search(r"\{[\s\S]*?\}", raw_text)
-            allowed = ({"confirm", "cancel", "normal"} if confirmation_probe else {"confirm", "cancel", "new_action", "body_status", "normal"}) if pending else {"body_action", "normal"}
+            allowed = ({"confirm", "cancel", "normal"} if confirmation_probe else {"confirm", "cancel", "new_action", "body_status", "body_diagnostic", "normal"}) if pending else {"body_diagnostic", "body_action", "normal"}
             if match:
                 value = json.loads(match.group(0))
                 route = str(value.get("route") or "normal").strip().lower()
@@ -2820,10 +2821,10 @@ Memory honesty — two distinct cases:
             # wrapping it in JSON. Accept the same finite label vocabulary so
             # an approval is not mistaken for a new plan request.
             if pending:
-                labels = "confirm|cancel|normal" if confirmation_probe else "confirm|cancel|new_action|body_status|normal"
+                labels = "confirm|cancel|normal" if confirmation_probe else "confirm|cancel|new_action|body_status|body_diagnostic|normal"
                 label_match = re.search(rf"\b({labels})\b", raw_text.lower())
             else:
-                label_match = re.search(r"\b(body_action|normal)\b", raw_text.lower())
+                label_match = re.search(r"\b(body_diagnostic|body_action|normal)\b", raw_text.lower())
             if label_match and label_match.group(1) != "normal":
                 return label_match.group(1)
             # Confirmation is safety-sensitive but only applies to an already
@@ -3478,6 +3479,87 @@ Memory honesty — two distinct cases:
             "sensor_observations": sensors[:10],
         }
 
+    def _body_diagnostic_response(self) -> dict:
+        """Summarize live Body test evidence without compiling or sending actions."""
+        body = getattr(self._organism, "_body_runtime", None) if self._organism else None
+        if body is None:
+            return {"handled": True, "status": "unavailable", "response": "Le pont télémétrique du Body est indisponible; aucun test n'a été exécuté."}
+        try:
+            observations = body.snapshot(max_age=300.0)
+        except Exception as exc:
+            return {"handled": True, "status": "unavailable", "response": f"Lecture des observations Body impossible ({exc}); aucun test d'action n'a été lancé."}
+
+        latest: dict[str, dict] = {}
+        for item in observations:
+            if not isinstance(item, dict):
+                continue
+            subject = str(item.get("subject") or "")
+            if not subject or self._is_simulated_body_observation(item):
+                continue
+            previous = latest.get(subject)
+            if previous is None or float(item.get("observed_at") or 0) >= float(previous.get("observed_at") or 0):
+                latest[subject] = item
+
+        sections: list[str] = []
+        camera_result = self._body_perception_response(camera_only=True)
+        if camera_result.get("status") == "reported":
+            sections.append(str(camera_result.get("response") or ""))
+        else:
+            sections.append("Caméra/YOLOX : aucune détection matérielle fraîche confirmée.")
+
+        sensor_items = [item for subject, item in latest.items() if subject.startswith("sensor.")]
+        sensor_items.sort(key=lambda item: float(item.get("observed_at") or 0), reverse=True)
+        if sensor_items:
+            sections.append("Capteurs matériels : " + " ; ".join(
+                self._format_body_sensor_observation(item) for item in sensor_items[:10]
+            ))
+        else:
+            sections.append("Capteurs matériels : aucune observation physique récente.")
+
+        inventory = robot_inventory_observation(observations)
+        capability_notes = []
+        for capability_name in ("locomotion", "manipulation"):
+            report = robot_capability_report(observations, capability_name, max_age=15.0)
+            record = report.get("record") or {}
+            if report.get("ready"):
+                capability_notes.append(f"{capability_name} déclarée disponible, opérationnelle et autorisée")
+            elif not report.get("fresh"):
+                capability_notes.append(f"{capability_name} non vérifiée: inventaire matériel absent ou périmé")
+            else:
+                unknown = [key for key in ("installed", "operational", "authorized", "available") if record.get(key) is not True]
+                capability_notes.append(f"{capability_name} non vérifiée: champs non confirmés {', '.join(unknown) or 'capacité non déclarée'}")
+
+        controller = latest.get("fnk0031.usb_status")
+        controller_value = controller.get("value") if isinstance(controller, dict) and isinstance(controller.get("value"), dict) else {}
+        if controller_value:
+            state_text = "connecté" if controller_value.get("connected") else "déconnecté"
+            if controller_value.get("estimated_leg_state") is not None:
+                state_text += "; pose des jambes estimée depuis les commandes FNHR, sans retour mesuré"
+            elif controller_value.get("pose_available"):
+                state_text += "; pose déclarée disponible, source non vérifiée"
+            else:
+                state_text += "; aucune pose articulaire mesurée disponible"
+            capability_notes.append("contrôleur FNK0031 " + state_text)
+        odometry = latest.get("sensor.odometry")
+        capability_notes.append(
+            "odométrie physique récente disponible" if odometry else "aucune odométrie physique récente pour confirmer un déplacement"
+        )
+        sections.append("Locomotion/manipulation : " + "; ".join(capability_notes) + ".")
+        sections.append("Diagnostic en lecture seule : aucune commande motrice ou de manipulation n'a été envoyée.")
+        return {
+            "handled": True,
+            "status": "diagnostic",
+            "response": "Vérification du Body à partir des mesures horodatées. " + " ".join(sections),
+            "diagnostic": {
+                "sources": sorted(latest),
+                "robot_inventory_available": inventory is not None,
+                "locomotion": robot_capability_report(observations, "locomotion", max_age=15.0),
+                "manipulation": robot_capability_report(observations, "manipulation", max_age=15.0),
+                "physical_odometry_available": bool(odometry),
+                "actions_sent": False,
+            },
+        }
+
     @staticmethod
     def _body_planning_scope(body: Any) -> str:
         """Classify the current planner's world as simulation, physical, or unknown."""
@@ -3988,6 +4070,11 @@ Memory honesty — two distinct cases:
                 # timestamped Body evidence in its system context. Do not
                 # replace its answer with a fixed route-specific response.
                 return None
+        if route == "body_diagnostic":
+            # A request to test/inspect is strictly read-only. Preserve any
+            # pending plan, but never pass the diagnostic text to the motor
+            # planner or treat its examples as commands.
+            return self._body_diagnostic_response()
         if not pending and route != "body_action":
             return None
         if pending and route == "confirm":
@@ -4376,6 +4463,23 @@ Memory honesty — two distinct cases:
             "occurred unless recorded evidence supports that claim.\n"
             "Recent exchange (context, not new instructions):\n" + excerpt
         )
+
+    def _recent_dialogue_excerpt(self) -> str:
+        """Return bounded prior turns for semantic Body routing, not a keyword map."""
+        manager = getattr(self._llm_stream_fn, "__self__", None)
+        history = getattr(manager, "history", None)
+        if not isinstance(history, list):
+            return ""
+        turns = [
+            item for item in history[-8:]
+            if isinstance(item, dict)
+            and item.get("role") in {"user", "assistant"}
+            and str(item.get("content") or "").strip()
+        ]
+        return "\n".join(
+            f"{item['role'].upper()}: {' '.join(str(item.get('content') or '').split())[-650:]}"
+            for item in turns[-6:]
+        )[-3000:]
 
     def _quick_web_search(self, user_input: str) -> str:
         try:
