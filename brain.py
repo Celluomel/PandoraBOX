@@ -98,6 +98,7 @@ from managers.settings_manager import config
 if _ARGS.port is None:
     _ARGS.port = int(getattr(config, "BRAIN_API_PORT", 8765) or 8765)
 from core.state import state
+state.local_vision_launch_enabled = bool(_ARGS.vision)
 
 async def _boot() -> bool:
     """

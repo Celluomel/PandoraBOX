@@ -2173,6 +2173,8 @@ Memory honesty — two distinct cases:
                 "\n\n━━ LOCAL CAMERA TRUTH ━━\n"
                 "For current questions such as whether you can see the user, use only the Brain-PC camera and face-recognition evidence supplied for this turn. If that evidence is absent, inactive, or stale, say you cannot confirm current visibility. Do not infer current presence from conversation history, Body camera frames, or remembered visual descriptions."
             )
+            _local_camera_grounding = self._local_camera_prompt_context()
+            system_prompt += "\n" + _local_camera_grounding
             _vc = getattr(self, '_pending_vision_context', None)
             if _vc:
                 system_prompt += (
@@ -2394,6 +2396,12 @@ Memory honesty — two distinct cases:
                     "If a fact is absent, say it is unavailable.\n"
                     f"{_body_context[-12500:]}"
                 )
+            system_prompt += (
+                "\n\n━━ FINAL CAMERA SOURCE GROUNDING ━━\n"
+                f"{_local_camera_grounding}\n"
+                "A Body camera source such as `remote:body:body_camera_yolox_midas` is exclusively Body evidence. "
+                "It cannot establish what the Brain-PC camera sees. If the Brain-PC status above is disabled, inactive, or stale, answer that its current view is unavailable; do not substitute the Body feed."
+            )
 
             return system_prompt, emo_dict, cond_dict, arb_temperature
 
@@ -3574,6 +3582,71 @@ Memory honesty — two distinct cases:
             r"\b(camera|caméra|vision|visual|image|picture|photo|face|visage|see|seeing|look|looking|vois|voir|vois-tu|regarde|reconnais|reconnaissance)\b",
             str(text or "").lower(),
         ))
+
+    @staticmethod
+    def _local_camera_prompt_context() -> str:
+        """Describe the Brain-PC camera's live state, separate from Body feeds."""
+        try:
+            from core.state import state as app_state
+            vision = getattr(app_state, "vision", None)
+            launch_enabled = getattr(app_state, "local_vision_launch_enabled", None)
+        except Exception:
+            vision = None
+            launch_enabled = None
+
+        if vision is None:
+            if launch_enabled is False:
+                return (
+                    "BRAIN-PC CAMERA STATUS: DISABLED at headless startup (`--vision` was not passed); "
+                    "no Brain-PC frame or face-recognition result is available. "
+                    "Body-camera detections are a separate source and cannot answer what the Brain-PC camera sees."
+                )
+            return (
+                "BRAIN-PC CAMERA STATUS: unavailable; no local camera manager or current local image is available. "
+                "Body-camera detections are a separate source and cannot answer what the Brain-PC camera sees."
+            )
+
+        if not bool(getattr(vision, "camera_active", False)):
+            reason = (
+                "disabled at headless startup because `--vision` was not passed"
+                if launch_enabled is False else "inactive"
+            )
+            return (
+                f"BRAIN-PC CAMERA STATUS: {reason}; there is no current Brain-PC camera frame. "
+                "Do not claim to see the user or infer PC-camera content from Body-camera YOLOX or any other Body sensor."
+            )
+
+        now = time.time()
+        frame_stamp = float(getattr(vision, "frame_updated_at", 0.0) or 0.0)
+        frame_age = max(0.0, now - frame_stamp) if frame_stamp else None
+        if frame_age is None:
+            frame_status = "active, but no timestamped frame is available"
+        elif frame_age > 3.0:
+            frame_status = f"active, but its last frame is stale ({frame_age:.1f}s old)"
+        else:
+            frame_status = f"active; latest frame is {frame_age:.1f}s old"
+
+        face_stamp = float(getattr(vision, "last_face_detection_at", 0.0) or 0.0)
+        face_age = max(0.0, now - face_stamp) if face_stamp else None
+        face_detail = "face-recognition result unavailable or stale"
+        if bool(getattr(vision, "face_detection_enabled", False)) and face_age is not None and face_age <= 6.0:
+            faces = getattr(vision, "last_detected_faces", []) or []
+            names = [
+                str(face.get("name")) for face in faces
+                if isinstance(face, dict)
+                and str(face.get("name") or "").strip().lower() not in {"", "unknown", "unknown person"}
+            ]
+            face_detail = (
+                f"recent face-recognition result ({face_age:.1f}s old), recognized={', '.join(names)}"
+                if names else f"recent face-recognition result ({face_age:.1f}s old), no known identity"
+            )
+        elif not bool(getattr(vision, "face_detection_enabled", False)):
+            face_detail = "face recognition disabled"
+        return (
+            f"BRAIN-PC CAMERA STATUS: {frame_status}; {face_detail}. "
+            "Camera activity alone does not prove a person is visible. Use only a current Brain-PC frame/observation for PC-camera questions. "
+            "Never relabel Body-camera detections as Brain-PC observations."
+        )
 
     @staticmethod
     def _local_camera_response() -> dict:
