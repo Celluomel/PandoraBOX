@@ -1354,7 +1354,9 @@ class BodySceneInterpreter:
         yolo_guidance = (
             "YOLO hints are candidate image detections only: use each box to focus inspection, verify the label "
             "against the attached pixels, and preserve uncertainty when the object is unclear. A box is not "
-            "metric range, world position, or proof that an object exists. "
+            "metric range, world position, or proof that an object exists. Do not invent a person or other object "
+            "from the room context; require a distinct visible silhouette or mark it uncertain. If detector hints "
+            "and your visual reading disagree, report the disagreement instead of asserting either as certain. "
             if prompt_packet.get("camera_detection_hints") else ""
         )
         association_prompt = (

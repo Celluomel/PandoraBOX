@@ -62,7 +62,7 @@ class MiDaSMetricCalibrationTests(unittest.TestCase):
         samples = self.make_samples()
         for sample in samples:
             sample["forward_m"] = 2.5
-        with self.assertRaisesRegex(ValueError, "spanning approximately 1–3.8 m"):
+        with self.assertRaisesRegex(ValueError, "spanning approximately 1.3–3.4 m"):
             fit_metric_depth(samples)
 
     def test_accepts_four_bands_with_far_anchor_at_3_9m(self):
@@ -109,7 +109,7 @@ class MiDaSMetricCalibrationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "got 0"):
             fit_metric_depth(samples)
 
-    def test_manually_selected_radar_track_allows_unaligned_bearing(self):
+    def test_manually_selected_radar_track_still_requires_aligned_bearing(self):
         samples = self.make_samples()
         for sample in samples:
             sample["bearing_error_deg"] = 68.0
@@ -118,7 +118,8 @@ class MiDaSMetricCalibrationTests(unittest.TestCase):
         for sample in samples:
             sample["selected_target_confirmed"] = True
             sample["selected_radar_target_id"] = "1"
-        self.assertTrue(fit_metric_depth(samples)["available"])
+        with self.assertRaisesRegex(ValueError, "got 0"):
+            fit_metric_depth(samples)
 
     def test_exact_camera_frame_identity_allows_timestamp_bookkeeping_skew(self):
         samples = self.make_samples()

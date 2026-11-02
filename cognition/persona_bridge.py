@@ -3034,6 +3034,20 @@ Memory honesty — two distinct cases:
                 "camera": {"error": error},
             }
         scene = result.get("semantic_scene")
+        grounding = scene.get("grounding") if isinstance(scene, dict) else None
+        if isinstance(grounding, dict) and grounding.get("accepted_for_context") is not True:
+            detector = self._body_perception_response(camera_only=True)
+            detector_text = str(detector.get("response") or "Aucune détection caméra corroborée n’est disponible.")
+            return {
+                "handled": True,
+                "status": "grounding_rejected",
+                "response": (
+                    "La description libre du VLM n’est pas corroborée par le modèle de scène ; "
+                    "je ne la présente pas comme un fait. " + detector_text
+                ),
+                "camera": result,
+                "perception": detector.get("perception"),
+            }
         raw_description = result.get("interpretation")
         if isinstance(raw_description, dict):
             description = str(

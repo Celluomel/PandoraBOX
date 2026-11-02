@@ -1326,6 +1326,9 @@ class BodyHost:
                 metric = {
                     "available": True,
                     "forward_m": round(corrected_forward, 3),
+                    "relative_depth_median": round(relative, 3),
+                    "relative_depth_p10": round(roi["p10"], 3),
+                    "relative_depth_p90": round(roi["p90"], 3),
                     "range_m": round(body_range, 3),
                     "lateral_m": round(lateral, 3),
                     "vertical_m": round(vertical, 3),

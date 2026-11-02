@@ -15,7 +15,8 @@ MAX_PAIR_DELTA_S = 0.25
 MAX_RADAR_PAIR_DELTA_S = 4.5
 MAX_IMU_PAIR_DELTA_S = 1.0
 MAX_BEARING_ERROR_DEG = 8.0
-MIN_FAR_RANGE_M = 3.8
+MIN_NEAR_RANGE_M = 1.4
+MIN_FAR_RANGE_M = 3.4
 MAX_HOLDOUT_RMSE_M = 0.55
 MAX_TRAINING_RMSE_M = 0.45
 
@@ -39,9 +40,10 @@ def fit_metric_depth(samples: list[dict[str, Any]]) -> dict[str, Any]:
         frame_aligned = math.isfinite(frame_delta) and (
             frame_delta <= MAX_PAIR_DELTA_S or frame_id_match
         )
-        selected_target_confirmed = (sample.get("selected_target_confirmed") is True
-                                     and bool(sample.get("selected_radar_target_id")))
-        bearing_valid = selected_target_confirmed or bearing_error <= MAX_BEARING_ERROR_DEG
+        # A track confirmation proves continuity of a radar slot/track only;
+        # it cannot override camera-to-radar geometry. Reused IDs and ghosts
+        # otherwise admit a different target as a calibration anchor.
+        bearing_valid = bearing_error <= MAX_BEARING_ERROR_DEG
         if (math.isfinite(relative) and math.isfinite(distance) and math.isfinite(bearing_error)
                 and frame_aligned
                 and math.isfinite(radar_delta) and radar_delta <= MAX_RADAR_PAIR_DELTA_S
@@ -54,8 +56,11 @@ def fit_metric_depth(samples: list[dict[str, Any]]) -> dict[str, Any]:
     if len(valid) < MIN_CALIBRATION_SAMPLES:
         raise ValueError(f"Need at least {MIN_CALIBRATION_SAMPLES} synchronized radar/YOLOX samples; got {len(valid)}")
     distances = [item[1] for item in valid]
-    if min(distances) > 1.25 or max(distances) < MIN_FAR_RANGE_M:
-        raise ValueError(f"Collect anchors spanning approximately 1–{MIN_FAR_RANGE_M:.1f} m; current samples do not cover that range")
+    if min(distances) > MIN_NEAR_RANGE_M or max(distances) < MIN_FAR_RANGE_M:
+        raise ValueError(
+            f"Collect anchors spanning approximately 1.3–{MIN_FAR_RANGE_M:.1f} m; "
+            "current samples do not cover that range"
+        )
     if len({int((distance - 1.0) / 0.8) for distance in distances}) < 4:
         raise ValueError("Need anchors spread across at least four distance bands between 1 and 5 m")
 
@@ -139,6 +144,8 @@ def fit_metric_depth(samples: list[dict[str, Any]]) -> dict[str, Any]:
         "range_axis": "camera_forward_y",
         "window_seconds": 180,
         "camera_bearing_model": "approximate_70deg_hfov_no_measured_extrinsics",
+        "bearing_gate_max_deg": MAX_BEARING_ERROR_DEG,
+        "validation_policy": "camera_radar_bearing_gated_v2",
         "radar_source": "hlk_ld2450",
         "calibrated_at": time.time(),
     }
