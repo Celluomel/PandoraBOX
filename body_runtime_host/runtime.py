@@ -1010,26 +1010,59 @@ class BodyHost:
         """
         yolo = self.camera_yolo_status()
         detections = yolo.get("detections") or []
-        yolo_at = yolo.get("captured_at")
-        depth = self._midas_service.status()
         calibration = self.midas_metric_calibration()
         if not detections or not calibration.get("available"):
             return {**yolo, "metric_depth": {"available": False,
                     "reason": "no YOLOX detections" if not detections else "MiDaS metric calibration unavailable",
                     "calibration": calibration}}
         try:
+            # Raw MiDaS maps are intentionally demand-driven to keep the
+            # normal depth API and browser payloads small. Request one briefly
+            # and wait for an actual synchronized pair here; returning on the
+            # first missing raw map made every first distance question fail.
+            self._midas_service.request_raw_output(seconds=1.5)
+            deadline = time.monotonic() + 2.5
+            depth = self._midas_service.status()
+            paired_yolo = None
+            delta = float("inf")
+            while True:
+                raw_png = depth.get("depth_raw_png_base64")
+                if raw_png:
+                    depth_at = float(depth.get("captured_at"))
+                    depth_age = max(0.0, time.time() - depth_at)
+                    if depth_age <= 2.0:
+                        nearest = self._yolox_service.nearest_detection_result(depth_at, 0.25)
+                        if nearest and nearest.get("state") == "ready":
+                            paired_yolo = nearest
+                            delta = abs(float(nearest.get("captured_at")) - depth_at)
+                            break
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                time.sleep(min(0.05, remaining))
+                depth = self._midas_service.status()
+
+            if not depth.get("depth_raw_png_base64"):
+                return {**yolo, "metric_depth": {"available": False,
+                        "reason": "MiDaS did not produce a raw-depth frame before the bounded pairing wait expired",
+                        "calibration": calibration}}
+            if paired_yolo is None:
+                return {**yolo, "metric_depth": {"available": False,
+                        "reason": "No fresh YOLOX detection frame synchronized with MiDaS within 250 ms",
+                        "frame_delta_s": None, "calibration": calibration}}
+
+            # Use the retained YOLOX result nearest to this raw MiDaS frame,
+            # not whichever detection happened to be latest when the request
+            # arrived. YoloXService keeps a bounded timestamped result history.
+            yolo = paired_yolo
+            detections = yolo.get("detections") or []
+            yolo_at = float(yolo.get("captured_at"))
             depth_at = float(depth.get("captured_at"))
-            yolo_at = float(yolo_at)
-            delta = abs(depth_at - yolo_at)
-            if delta > 0.25:
-                return {**yolo, "metric_depth": {"available": False,
-                        "reason": "YOLOX and MiDaS frames differ by more than 250 ms",
-                        "frame_delta_s": round(delta, 4), "calibration": calibration}}
             raw_png = depth.get("depth_raw_png_base64")
-            if not raw_png:
-                self._midas_service.request_raw_output(seconds=5.0)
+            if not detections:
                 return {**yolo, "metric_depth": {"available": False,
-                        "reason": "waiting for the next MiDaS raw-depth frame", "calibration": calibration}}
+                        "reason": "Synchronized YOLOX frame contains no detections",
+                        "frame_delta_s": round(delta, 4), "calibration": calibration}}
             import base64
             import cv2
             import numpy as np
@@ -1188,9 +1221,9 @@ class BodyHost:
                 if direct_radar_person:
                     corrected_forward = radar_match["forward_m"]
                     in_calibrated_range = True
-                if not in_calibrated_range or (not in_relative_fit and not direct_radar_person) or (not is_person and anchor_scale is None):
+                if not in_calibrated_range or (not in_relative_fit and not direct_radar_person):
                     metric = {"available": False,
-                        "reason": "Waiting for a unique synchronized person/radar anchor to estimate scene geometry" if anchor_scale is None else "MiDaS-derived candidate outside validated metric support; object distance remains unknown",
+                        "reason": "MiDaS-derived candidate outside validated metric support; object distance remains unknown",
                         "calibrated_range_m": [float(valid_range[0]), float(valid_range[1])]}
                     if math.isfinite(corrected_forward) and corrected_forward > 0:
                         metric.update({"candidate_forward_m": round(corrected_forward, 3), "candidate_is_unvalidated": True})
@@ -1220,7 +1253,7 @@ class BodyHost:
                     "vertical_m": round(vertical, 3),
                     "bearing_deg_approx": round(math.degrees(bearing), 2),
                     "coordinate_frame": "camera_optical_approximate",
-                    "source": "paired_yolox_midas_depth_radar_person_anchored" if anchor_scale is not None else "paired_yolox_box_midas_raw_depth",
+                    "source": "paired_yolox_midas_depth_radar_person_anchored" if anchor_scale is not None else "paired_yolox_box_midas_calibrated",
                     "frame_id": yolo.get("frame_id"),
                     "captured_at": yolo_at,
                     "frame_delta_s": round(delta, 4),
@@ -1258,7 +1291,11 @@ class BodyHost:
             return {**yolo, "detections": output, "metric_depth": {
                 "available": any((item.get("metric_depth") or {}).get("available") for item in output),
                 "frame_delta_s": round(delta, 4), "calibration": calibration,
-                "distance_basis": "synchronized YOLOX/MiDaS 3D box estimates anchored to a unique fresh mmWave/person bearing match; approximate camera/radar alignment",
+                "distance_basis": (
+                    "synchronized YOLOX/MiDaS 3D box estimates scaled by a unique fresh mmWave/person bearing match; approximate camera/radar alignment"
+                    if anchor_scale is not None else
+                    "synchronized YOLOX/MiDaS 3D box estimates using the validated monocular metric fit; no live radar-person scale correction"
+                ),
                 "radar_anchor_available": anchor_scale is not None,
                 "radar_anchor_age_s": round(radar_age, 4) if radar_match else None,
                 "radar_anchor_target_id": radar_match["target"].get("target_id") if radar_match else None,

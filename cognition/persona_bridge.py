@@ -2205,6 +2205,10 @@ Memory honesty — two distinct cases:
                 "Do not say a plan was executed, a feature exists, a sensor fusion result is validated, or an object has a metric position unless current telemetry or a recorded result proves it. "
                 "Treat each measurement as evidence only for the source, target, place, and time it explicitly describes. "
                 "Do not assign a sensor reading to a named object, person, or event unless the observations provide an explicit association; numerical similarity or proximity alone is not an association. "
+                "A single camera can support approximate metric distance through calibrated monocular MiDaS depth; stereo vision is not required. "
+                "For detected objects, use the timestamp-matched YOLOX box and its calibrated MiDaS 3D estimate; use a synchronized radar-associated person as a scale anchor when present, and use a validated MiDaS metric fit when that live anchor is absent. "
+                "When person-to-object geometry is supplied, report it as approximate scene geometry. A raw MiDaS map being unavailable on one request is a data-acquisition gap, not proof that monocular distance estimation is impossible. "
+                "Radar tracks are targets, not semantic human classifications; describe a target as a person only when a synchronized camera association supports that label. Never use an unrelated ultrasonic echo as the distance of a named camera object. "
                 "For estimates, retain their timestamp, frame, provenance, confidence, validation range, and uncertainty when supplied. Frame suggestions as recommendations, not completed changes."
             )
             try:
