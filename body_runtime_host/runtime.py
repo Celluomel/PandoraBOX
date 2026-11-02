@@ -1229,29 +1229,6 @@ class BodyHost:
             triangle_person = None
             if radar_match:
                 triangle_person = (radar_match["lateral_m"], radar_match["forward_m"])
-            else:
-                # A fresh radar association is the preferred scene-scale
-                # anchor. When it is absent, the validated monocular fit still
-                # gives approximate camera-frame points. Use a person point
-                # only when exactly one confident in-range person detection is
-                # available; never guess between multiple people.
-                camera_people = []
-                for detection, box, roi in zip(detections, boxes, rois):
-                    label = str(detection.get("label") or detection.get("class_name") or detection.get("class") or "")
-                    confidence = float(detection.get("confidence", detection.get("score", 0.0)) or 0.0)
-                    if not re.search(r"person|human", label, re.IGNORECASE) or confidence < 0.5 or box is None or roi is None:
-                        continue
-                    person_inverse = inverse_scale * roi["median"] + inverse_offset
-                    person_forward = 1.0 / person_inverse if person_inverse > 1e-6 else float("nan")
-                    person_relative_ok = not (len(relative_range) >= 2) or float(relative_range[0]) <= roi["median"] <= float(relative_range[1])
-                    if not person_relative_ok or not math.isfinite(person_forward) or not float(valid_range[0]) <= person_forward <= float(valid_range[1]):
-                        continue
-                    px1, _, px2, _ = box
-                    person_bearing = math.atan2((px1 + px2) / 2.0 - width / 2.0, focal)
-                    camera_people.append((confidence,
-                        (person_forward * math.tan(person_bearing), person_forward)))
-                if len(camera_people) == 1:
-                    triangle_person = camera_people[0][1]
 
             def add_person_geometry(metric, target_lateral, target_forward, is_person, depth_valid):
                 if triangle_person is None or is_person or not math.isfinite(target_forward) or target_forward <= 0:
