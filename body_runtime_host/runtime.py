@@ -2757,6 +2757,7 @@ class BodyHost:
             "poll_interval": int(self.value("FNK0031_POLL_INTERVAL", self.value("ROBOT_POLL_INTERVAL", 5)) or 5),
             "snn_enabled": bool(self.value("FNK0031_SNN_ENABLED", False)),
             "actuation_enabled": bool(self.value("FNK0031_ACTUATION_ENABLED", False)),
+            "servo_motors_installed": bool(self.value("FNK0031_SERVO_MOTORS_INSTALLED", False)),
             "leg_count": int(self.value("FNK0031_LEG_COUNT", 6) or 6),
             "platform": str(self.value("FNK0031_PLATFORM", "ventuno_q_gateway") or "ventuno_q_gateway"),
             "serial_port": str(self.value("FNK0031_SERIAL_PORT", "") or ""),
@@ -2795,6 +2796,8 @@ class BodyHost:
         }
         return {
             **status,
+            "servo_motors_installed": settings["servo_motors_installed"],
+            "servo_inventory_source": "operator_declared_configuration",
             "ports": available_serial_ports(),
             "configured_port": port,
             "plugin_enabled": bool(self.value("BODY_PLUGIN_ROBOT_ENABLED", False)),
@@ -2841,6 +2844,8 @@ class BodyHost:
 
     def fnk0031_manual_control(self, payload: dict) -> dict:
         settings = self.fnk0031_settings()
+        if not settings["servo_motors_installed"]:
+            raise RuntimeError("FNK0031 physical leg movement is blocked: servo motors are not declared installed")
         if not settings["actuation_enabled"]:
             raise RuntimeError("physical actuation is disabled in Body configuration")
         if settings["platform"] != "usb_serial_custom" or not settings["serial_port"]:
@@ -3306,6 +3311,8 @@ class BodyHost:
             "protocol": status.get("protocol") or "fnhr_framed_serial",
             "firmware_profile": status.get("firmware_profile") or "",
             "actuation_enabled": bool(status.get("actuation_enabled")),
+            "servo_motors_installed": bool(self.value("FNK0031_SERVO_MOTORS_INSTALLED", False)),
+            "servo_inventory_source": "operator_declared_configuration",
             "pose_available": bool(status.get("pose_available")),
             "estimated_leg_state": status.get("estimated_leg_state"),
             "estimated_state_is_measured": bool(status.get("estimated_state_is_measured", False)),
@@ -3332,6 +3339,51 @@ class BodyHost:
         }
         self.latest[entry["entity_id"]] = entry
         self._bridge_put(entry)
+        # Publish the same inventory through a robot-agnostic Body contract.
+        # Other robot adapters can publish this subject without adopting FNK IDs.
+        supported_actions = status.get("supported_actions") or []
+        locomotion = {
+            "installed": value["servo_motors_installed"],
+            "operational": value["connected"],
+            "authorized": value["actuation_enabled"],
+            "available": bool(value["servo_motors_installed"] and value["connected"] and value["actuation_enabled"]),
+            "hardware_ids": ["fnk0031_servos"] if value["servo_motors_installed"] else [],
+            "supported_actions": supported_actions,
+            "state_feedback": "command_estimate" if value["estimated_leg_state"] else "unavailable",
+        }
+        inventory_value = {
+            "contract": "body_robot_capability_inventory.v1",
+            "robot_id": "fnk0031",
+            "robot_model": "FNK0031",
+            "simulated": False,
+            "inventory_source": "operator_declared_configuration",
+            "capabilities": {"locomotion": locomotion},
+            "hardware": [{
+                "id": "fnk0031_servos",
+                "kind": "locomotion_actuator",
+                "type": "servo_motors",
+                "installed": value["servo_motors_installed"],
+                "operational": value["connected"],
+                "authorized": value["actuation_enabled"],
+            }],
+        }
+        inventory_entry = {
+            "entity_id": "robot.capability_inventory",
+            "source": "fnk0031_usb",
+            "kind": "robot_capability_inventory",
+            "subject": "robot.capability_inventory",
+            "value": inventory_value,
+            "unit": "",
+            "confidence": 1.0,
+            "observed_at": observed_at,
+            "provenance": {
+                "adapter": "fnk0031_usb",
+                "inventory_source": inventory_value["inventory_source"],
+                "supported_actions": supported_actions,
+            },
+        }
+        self.latest[inventory_entry["entity_id"]] = inventory_entry
+        self._bridge_put(inventory_entry)
         LOG.info(
             "Forwarded FNK0031 USB health to Brain: connected=%s port=%s actuation=%s",
             value["connected"], value["port"], value["actuation_enabled"],
@@ -3573,6 +3625,7 @@ class BodyHost:
             "FNK0031_POLL_INTERVAL": max(1, int(payload.get("poll_interval", 5) or 5)),
             "FNK0031_SNN_ENABLED": bool(payload.get("snn_enabled", False)),
             "FNK0031_ACTUATION_ENABLED": bool(payload.get("actuation_enabled", False)),
+            "FNK0031_SERVO_MOTORS_INSTALLED": bool(payload.get("servo_motors_installed", False)),
             "FNK0031_LEG_COUNT": 6,
             "FNK0031_PLATFORM": platform,
         })
@@ -3604,6 +3657,7 @@ class BodyHost:
         settings["persisted"] = {
             "snn_enabled": settings["snn_enabled"],
             "actuation_enabled": settings["actuation_enabled"],
+            "servo_motors_installed": settings["servo_motors_installed"],
         }
         return {"ok": True, "settings": settings}
 
@@ -4026,6 +4080,37 @@ class BodyHost:
     def publish_robot(self, sensors: dict) -> None:
         """Store robot telemetry and forward it to the Brain bridge queue."""
         now = time.time()
+        inventory = sensors.get("robot_capability_inventory", sensors.get("capability_inventory"))
+        if (isinstance(inventory, dict)
+                and inventory.get("contract") == "body_robot_capability_inventory.v1"
+                and sensors.get("simulated") is not True):
+            capabilities = inventory.get("capabilities")
+            if isinstance(capabilities, dict) and inventory.get("simulated") is False:
+                # Only accept an explicit adapter inventory. Numeric world-model
+                # defaults and generic affordances are not hardware discovery.
+                normalized = dict(inventory)
+                normalized["capabilities"] = {
+                    str(name): dict(record)
+                    for name, record in capabilities.items()
+                    if isinstance(record, dict)
+                }
+                entry = {
+                    "entity_id": "robot.capability_inventory",
+                    "source": str(sensors.get("robot_source") or "robot"),
+                    "kind": "robot_capability_inventory",
+                    "subject": "robot.capability_inventory",
+                    "value": normalized,
+                    "unit": "",
+                    "confidence": 1.0,
+                    "observed_at": now,
+                    "provenance": {
+                        "adapter": str(sensors.get("robot_source") or "robot"),
+                        "simulated": False,
+                        "inventory_source": normalized.get("inventory_source") or "unknown",
+                    },
+                }
+                self.latest[entry["entity_id"]] = entry
+                self._bridge_put(entry)
         position = sensors.get("position") or [0.0, 0.0, 0.0]
         body_entry = {
             "entity_id": "robot.body.pose",
@@ -4399,6 +4484,41 @@ class BodyHost:
         if not verify_approval(command, approval_secret, now=time.time()):
             result = {"type": "command_result", "command_id": command_id,
                       "status": "rejected", "error": "missing or invalid Brain approval proof"}
+            self._bridge_put_message(result)
+            return result
+        action_name = str(command.get("action") or "").strip().lower().split("→", 1)[0].split("->", 1)[0].strip()
+        required_capability = (
+            "locomotion" if action_name in {"navigate", "navigate_to", "forward", "backward", "turn_left", "turn_right", "left", "right", "crawl", "sprint", "retreat", "walk", "move", "move_to", "explore"}
+            else "manipulation" if action_name in {"grab", "release", "push"}
+            else None
+        )
+        wm = self.worldmodel
+        source = getattr(wm, "source", None) if wm is not None else None
+        source_is_simulated = bool(getattr(source, "simulated", False))
+        inventory = self.latest.get("robot.capability_inventory")
+        inventory_value = inventory.get("value") if isinstance(inventory, dict) else None
+        inventory_caps = inventory_value.get("capabilities") if isinstance(inventory_value, dict) else None
+        capability_record = inventory_caps.get(required_capability) if isinstance(inventory_caps, dict) and required_capability else None
+        try:
+            inventory_age = time.time() - float(inventory.get("observed_at") or 0.0) if isinstance(inventory, dict) else float("inf")
+        except (TypeError, ValueError, OverflowError):
+            inventory_age = float("inf")
+        inventory_ready = (
+            isinstance(capability_record, dict)
+            and inventory_age <= 15.0
+            and inventory_value.get("simulated") is False
+            and capability_record.get("installed") is True
+            and capability_record.get("operational") is True
+            and capability_record.get("authorized") is True
+            and capability_record.get("available") is True
+        )
+        if required_capability and not source_is_simulated and not inventory_ready:
+            result = {
+                "type": "command_result", "command_id": command_id,
+                "status": "not_executed",
+                "verification_status": "unknown",
+                "error": f"physical {required_capability} blocked: no fresh, non-simulated Body capability inventory confirms installed, operational, authorized hardware",
+            }
             self._bridge_put_message(result)
             return result
         # Reserve the approved command before actuation. A missing expiry,

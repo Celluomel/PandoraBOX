@@ -923,6 +923,7 @@ refreshFnkPanel=async function(){
       document.getElementById('fnk0031-timeout').value=saved.timeout||5;
       document.getElementById('fnk0031-snn').checked=!!saved.snn_enabled;
       document.getElementById('fnk0031-actuation').checked=!!saved.actuation_enabled;
+      const servoInventory=document.getElementById('fnk0031-servo-installed');if(servoInventory)servoInventory.checked=saved.servo_motors_installed===true;
       document.getElementById('fnk0031-token').placeholder=saved.token_configured?'Token configured; leave blank to keep it':'Optional access token';
       fnkSettingsLoaded=true;
     }catch(error){
@@ -1084,6 +1085,7 @@ const ensureSensorimotorPairedBase=ensureSensorimotorPanel;
 ensureSensorimotorPanel=function(){ensureSensorimotorPairedBase();const note=$('sensorimotor-panel')?.querySelector('.truth-note');if(note)note.textContent='Simulation only. Every scene is tested with the same camera frame first alone, then with synchronized pose, LiDAR and mmWave. Ground-truth IDs are withheld from the VLM. The Body moves only in simulation and validates each route segment with fresh LiDAR. No FNK0031 or servo commands are sent.'};
 function mountFnkUsbSettings(){
   const settings=document.querySelector('#fnk0031-panel .plugin-settings');
+  if(settings&&!document.getElementById('fnk0031-servo-installed')){const label=document.createElement('label');label.className='field check';label.id='fnk0031-servo-installed-field';label.innerHTML='<input id="fnk0031-servo-installed" type="checkbox"> Servo motors physically installed';settings.insertBefore(label,settings.querySelector('.plugin-actions'))}
   if(settings&&!document.getElementById('fnk0031-serial-port')){
     const label=document.createElement('label');label.className='field';label.id='fnk0031-usb-port-field';label.innerHTML='USB serial device<input id="fnk0031-serial-port" list="fnk0031-usb-ports" placeholder="/dev/ttyUSB0 or COM5" autocomplete="off"><datalist id="fnk0031-usb-ports"></datalist>';
     const platform=document.getElementById('fnk0031-platform');if(platform&&!platform.querySelector('option[value="usb_serial"]'))platform.add(new Option('Direct USB serial · stock FNHR firmware','usb_serial'));if(platform&&!platform.querySelector('option[value="usb_serial_custom"]'))platform.add(new Option('Direct USB serial · custom FNHR controller','usb_serial_custom'));settings.insertBefore(label,settings.querySelector('.plugin-actions'));
@@ -1102,8 +1104,8 @@ async function runFnkUsbDiagnostic(){
   catch(error){if(output)output.textContent='USB diagnostic failed: '+error.message}
 }
 saveFnk0031Settings=async function(){
-  const payload={platform:document.getElementById('fnk0031-platform').value,url:document.getElementById('fnk0031-url').value,serial_port:document.getElementById('fnk0031-serial-port')?.value||'',token:document.getElementById('fnk0031-token').value,poll_interval:Number(document.getElementById('fnk0031-poll').value||5),timeout:Number(document.getElementById('fnk0031-timeout').value||5),snn_enabled:document.getElementById('fnk0031-snn').checked,actuation_enabled:document.getElementById('fnk0031-actuation').checked};
-  try{const result=await post('/plugins/fnk0031_wifi/settings',payload),saved=result.settings||{};if(!result.ok||saved.platform!==payload.platform||saved.serial_port!==payload.serial_port)throw Error('Body did not confirm the saved FNK0031 transport settings');document.getElementById('fnk0031-token').value='';fnkSettingsLoaded=false;document.getElementById('message').textContent=`FNK0031 saved · ${saved.platform} · ${saved.serial_port||saved.url||'transport not configured'}`;await refreshFnkPanel();if(saved.platform.startsWith('usb_serial'))await runFnkUsbDiagnostic();}
+  const payload={platform:document.getElementById('fnk0031-platform').value,url:document.getElementById('fnk0031-url').value,serial_port:document.getElementById('fnk0031-serial-port')?.value||'',token:document.getElementById('fnk0031-token').value,poll_interval:Number(document.getElementById('fnk0031-poll').value||5),timeout:Number(document.getElementById('fnk0031-timeout').value||5),snn_enabled:document.getElementById('fnk0031-snn').checked,actuation_enabled:document.getElementById('fnk0031-actuation').checked,servo_motors_installed:document.getElementById('fnk0031-servo-installed')?.checked===true};
+  try{const result=await post('/plugins/fnk0031_wifi/settings',payload),saved=result.settings||{};if(!result.ok||saved.platform!==payload.platform||saved.serial_port!==payload.serial_port||saved.servo_motors_installed!==payload.servo_motors_installed)throw Error('Body did not confirm the saved FNK0031 transport and hardware inventory');document.getElementById('fnk0031-token').value='';fnkSettingsLoaded=false;document.getElementById('message').textContent=`FNK0031 saved · ${saved.platform} · servos ${saved.servo_motors_installed?'declared installed':'declared absent'} · ${saved.serial_port||saved.url||'transport not configured'}`;await refreshFnkPanel();if(saved.platform.startsWith('usb_serial'))await runFnkUsbDiagnostic();}
   catch(error){document.getElementById('message').textContent='FNK0031 settings failed: '+error.message}
 };
 const refreshFnkUsbAware=refreshFnkPanel;

@@ -28,8 +28,10 @@ import re
 import sys
 import threading
 import time
+from typing import Any
 from managers.settings_manager import get_persona_name as _gpn
 from cognition.identity_boundary import prompt_block as _identity_boundary_block
+from cognition.body_runtime.robot_capabilities import robot_capability_report, robot_inventory_observation
 
 from pathlib import Path
 
@@ -2209,7 +2211,8 @@ Memory honesty — two distinct cases:
                 "For detected objects, use the timestamp-matched YOLOX box and its calibrated MiDaS 3D estimate; use a synchronized radar-associated person as a scale anchor when present, and use a validated MiDaS metric fit when that live anchor is absent. "
                 "When person-to-object geometry is supplied, report it as approximate scene geometry. A raw MiDaS map being unavailable on one request is a data-acquisition gap, not proof that monocular distance estimation is impossible. "
                 "Radar tracks are targets, not semantic human classifications; describe a target as a person only when a synchronized camera association supports that label. Never use an unrelated ultrasonic echo as the distance of a named camera object. "
-                "For estimates, retain their timestamp, frame, provenance, confidence, validation range, and uncertainty when supplied. Frame suggestions as recommendations, not completed changes."
+                "For estimates, retain their timestamp, frame, provenance, confidence, validation range, and uncertainty when supplied. Frame suggestions as recommendations, not completed changes. "
+                "The Brain's existing goal/action planning chain can identify a destination, preserve the user's objective, derive ordered steps and required capabilities, and validate a draft against a timestamped Body snapshot. Report that analysis as a plan and its validation scope; never treat planner feasibility, a proposed method, approval, command delivery, or controller acknowledgement as physical execution. A physical action is complete only when a correlated command result and fresh, non-simulated post-action evidence confirm its effect. If the Body's hardware inventory says an actuator is absent, treat the corresponding physical action as unavailable even if the simulator or planner supports it."
             )
             try:
                 _body = getattr(self._organism, "_body_runtime", None) if self._organism else None
@@ -2690,6 +2693,13 @@ Memory honesty — two distinct cases:
             snapshot = body.body_snapshot()
             if not snapshot or snapshot.get("available") is False:
                 return {"accepted": False, "status": "unavailable", "error": "No current Body snapshot"}
+            capability_observations = body.snapshot(max_age=120.0)
+            inventory = robot_inventory_observation(capability_observations)
+            if inventory:
+                snapshot = dict(snapshot)
+                snapshot["robot_capability_inventory"] = inventory.get("value")
+                snapshot["robot_capability_inventory_observed_at"] = inventory.get("observed_at")
+                snapshot["robot_capability_inventory_source"] = inventory.get("source")
             llm = self._external_llm_fn
             # During an interactive chat turn the normal bare/background path
             # intentionally defers. Planning is part of this foreground turn,
@@ -3457,6 +3467,27 @@ Memory honesty — two distinct cases:
             "sensor_observations": sensors[:10],
         }
 
+    @staticmethod
+    def _body_planning_scope(body: Any) -> str:
+        """Classify the current planner's world as simulation, physical, or unknown."""
+        try:
+            world = getattr(body, "worldmodel", None)
+            status = world.status_summary() if world is not None else {}
+            source = status.get("source") if isinstance(status, dict) else None
+            source_name = str(source.get("source") or source.get("name") or "").lower() if isinstance(source, dict) else str(source or "").lower()
+            mode = str(status.get("mode") or "").lower() if isinstance(status, dict) else ""
+            if mode in {"sim", "simulation", "local_simulation"} or "simulat" in source_name or source_name == "sim_robot":
+                return "simulation"
+            if mode in {"bridge", "robot", "hardware", "physical"} or source_name in {"fnk0031_wifi", "fnk0050_wifi", "robot_http"}:
+                return "physical"
+            if body is not None:
+                capability = robot_capability_report(body.snapshot(max_age=15.0), "locomotion")
+                if capability.get("fresh") and not capability.get("simulated"):
+                    return "physical"
+        except Exception:
+            logger.debug("Could not resolve Body planning source", exc_info=True)
+        return "unknown"
+
     def _body_profile_response(self) -> dict:
         """Report physical hardware evidence separately from simulator defaults."""
         body = getattr(self._organism, "_body_runtime", None) if self._organism else None
@@ -3472,7 +3503,31 @@ Memory honesty — two distinct cases:
 
         controller = by_subject.get("fnk0031.usb_status")
         controller_value = controller.get("value") if isinstance(controller, dict) and isinstance(controller.get("value"), dict) else None
+        inventory_item = by_subject.get("robot.capability_inventory")
+        inventory_value = inventory_item.get("value") if isinstance(inventory_item, dict) and isinstance(inventory_item.get("value"), dict) else None
+        if inventory_value:
+            robot_label = inventory_value.get("robot_model") or inventory_value.get("robot_id") or "profil non nommé"
+            lines.append(f"profil robot déclaré par le Body: {robot_label}; inventaire={inventory_value.get('inventory_source') or 'source inconnue'}")
+            reported_capabilities = inventory_value.get("capabilities")
+            if isinstance(reported_capabilities, dict) and reported_capabilities:
+                for name, record in sorted(reported_capabilities.items()):
+                    if not isinstance(record, dict):
+                        continue
+                    lines.append(
+                        f"capacité {name}: disponible={record.get('available', 'inconnu')}; "
+                        f"matériel installé={record.get('installed', 'inconnu')}; "
+                        f"opérationnel={record.get('operational', 'inconnu')}; autorisé={record.get('authorized', 'inconnu')}"
+                    )
+            else:
+                lines.append("le Body n'a déclaré aucune capacité matérielle dans cet inventaire")
+        else:
+            lines.append("inventaire générique des capacités du robot: non reçu; les capacités du simulateur ne prouvent pas la présence de matériel")
         if controller_value:
+            motor_inventory = controller_value.get("servo_motors_installed")
+            lines.append(
+                "servomoteurs FNK0031: "
+                + ("déclarés installés" if motor_inventory is True else "déclarés absents" if motor_inventory is False else "présence inconnue")
+            )
             lines.append(
                 "contrôleur FNK0031 : "
                 + ("USB connecté" if controller_value.get("connected") else "USB non connecté")
@@ -3513,8 +3568,8 @@ Memory honesty — two distinct cases:
         elif world_value:
             lines.append("capacités du modèle Body: " + str((world_value.get("capabilities") or "non rapportées")) + "; elles ne constituent pas des mesures d'effort ou de position articulaire")
 
-        lines.append("gripper/préhenseur: aucune preuve de matériel installé ni de télémétrie de préhension; le champ gripper du catalogue est une option générique, pas une détection du kit")
-        lines.append("FNK0031: les six jambes appartiennent à la configuration déclarée du kit; leur état physique mesuré n'est pas disponible sans capteurs de position/contact")
+        if controller_value:
+            lines.append("FNK0031: six jambes décrivent le modèle du kit, pas une mesure d'articulations; l'état publié peut être estimé depuis les commandes, sans retour encodeur/contact")
         return {
             "handled": True,
             "status": "reported" if physical_sensors or controller_value else "partial",
@@ -3594,13 +3649,17 @@ Memory honesty — two distinct cases:
             r"yolox|midas|tof|mmwave|radar|odometry|odom|ultrasonic|ultrasonique)\b",
             normalized,
         )
-        direct_action = re.match(
-            r"^(?:(?:please|can you|could you|would you|peux-tu|peux tu|pourrais-tu|"
-            r"pourrais tu|s'il te plaît)\s+)?"
-            r"(?:move|drive|navigate|go|turn|stop|walk|advance|crawl|déplace|deplace|"
-            r"avance|recule|tourne|arrête|arrete|va|marche)\b",
+        # This is only a high-recall gateway to the semantic action classifier,
+        # not an action/command parser. Match verbs anywhere in the utterance so
+        # polite/intervening phrases ("peux-tu te déplacer vers la TV") cannot
+        # bypass the Brain's goal and capability assessment.
+        direct_action = re.search(
+            r"\b(?:move|moving|moved|drive|driving|navigate|go|turn|stop|walk|advance|crawl|"
+            r"approach|come closer|déplac\w*|deplac\w*|avance\w*|recule\w*|tourne\w*|"
+            r"arrête\w*|arrete\w*|marche\w*|rapproche\w*)\b|"
+            r"\b(?:en avant|à gauche|a gauche|à droite|a droite)\b",
             normalized,
-        ) or re.match(r"^(?:en avant|à gauche|a gauche|à droite|a droite|recule)\b", normalized)
+        )
         return bool(body_reference or direct_action)
 
     @staticmethod
@@ -3931,15 +3990,10 @@ Memory honesty — two distinct cases:
                     self._pending_body_plans.pop(str(user_id), None)
                     return {"handled": True, "status": "expired", "response": "La confirmation est arrivée après expiration de la commande de mouvement. Rien n'a été envoyé; redemande le déplacement pour obtenir une nouvelle vérification."}
                 observations = body.snapshot(max_age=8.0)
-                robot = next((
-                    item for item in observations
-                    if item.get("subject") == "fnk0031.usb_status"
-                    and not self._is_simulated_body_observation(item)
-                ), None)
-                robot_value = robot.get("value") if isinstance(robot, dict) and isinstance(robot.get("value"), dict) else {}
-                if not robot_value.get("connected") or not robot_value.get("actuation_enabled"):
+                capability = robot_capability_report(observations, "locomotion", max_age=8.0)
+                if not capability.get("ready"):
                     self._pending_body_plans.pop(str(user_id), None)
-                    return {"handled": True, "status": "blocked", "response": "À la confirmation, la télémétrie USB récente ne confirme plus à la fois le FNK0031 connecté et l'actionnement activé. Aucun mouvement n'a été envoyé."}
+                    return {"handled": True, "status": "blocked", "response": "À la confirmation, le Body ne confirme plus une capacité locomotrice installée, opérationnelle et autorisée. Aucun mouvement n'a été envoyé."}
                 command = body.enqueue_command(
                     target="fnk0031",
                     action=str(direct_command.get("action") or ""),
@@ -3963,6 +4017,22 @@ Memory honesty — two distinct cases:
                     "response": f"Commande {direct_command.get('label') or direct_command['action']} signée et transmise au Body (réf. {command.command_id}). J'attends son acquittement FNHR; cela ne prouvera pas un déplacement mesuré.",
                     "command": approval.get("command"),
                 }
+            if str(pending.get("execution_scope") or "unknown") != "simulation":
+                required_capabilities = pending.get("required_capabilities") or []
+                fresh_observations = body.snapshot(max_age=15.0) if body is not None else []
+                unavailable = [
+                    name for name in required_capabilities
+                    if not robot_capability_report(fresh_observations, str(name)).get("ready")
+                ]
+                if unavailable:
+                    self._pending_body_plans.pop(str(user_id), None)
+                    return {
+                        "handled": True,
+                        "status": "blocked",
+                        "response": "Depuis la préparation du plan, le Body ne confirme plus les capacités matérielles requises ("
+                        + ", ".join(str(name) for name in unavailable)
+                        + "). Aucun plan n'a été soumis et aucune commande n'a été envoyée.",
+                    }
             replacement_id = str(pending.get("replace_plan_id") or "").strip()
             if replacement_id and body:
                 cancelled = body.cancel_worldmodel_plan(
@@ -4011,23 +4081,20 @@ Memory honesty — two distinct cases:
             if direct_motion:
                 body = getattr(self._organism, "_body_runtime", None) if self._organism else None
                 observations = body.snapshot(max_age=8.0) if body is not None else []
-                robot = next((
-                    item for item in observations
-                    if item.get("subject") == "fnk0031.usb_status"
-                    and not self._is_simulated_body_observation(item)
-                ), None)
-                robot_value = robot.get("value") if isinstance(robot, dict) and isinstance(robot.get("value"), dict) else {}
-                if not robot_value.get("connected"):
-                    return {"handled": True, "status": "blocked", "response": "Le FNK0031 n'est pas confirmé connecté par une télémétrie USB récente. Aucun mouvement n'a été préparé ni envoyé."}
-                if not robot_value.get("actuation_enabled"):
-                    return {"handled": True, "status": "blocked", "response": "Le FNK0031 est détecté, mais l'actionnement physique est désactivé dans la configuration du Body. Active-le dans Robots & Hardware avant de demander un déplacement. Aucun mouvement n'a été envoyé."}
-                self._pending_body_plans[str(user_id)] = {"direct_command": direct_motion, "created_at": time.time()}
-                return {
-                    "handled": True,
-                    "status": "awaiting_confirmation",
-                    "response": f"Le FNK0031 est connecté et l'actionnement est activé. Je propose une seule commande FNHR « {direct_motion['label']} » (un cycle de marche), sans cible de scène. Confirmes-tu son envoi ?",
-                    "command": {"target": "fnk0031", "action": direct_motion["action"], "requires_confirmation": True},
-                }
+                capability = robot_capability_report(observations, "locomotion", max_age=8.0)
+                # This shortcut emits FNHR commands and therefore belongs only
+                # to the FNK adapter. Other robots continue through the general
+                # objective planner, using their own Body capability report.
+                if capability.get("robot_id") == "fnk0031":
+                    if not capability.get("ready"):
+                        return {"handled": True, "status": "blocked", "response": "Le Body ne confirme pas que la locomotion du robot FNK est installée, opérationnelle, autorisée et récente. Aucun mouvement n'a été préparé ni envoyé."}
+                    self._pending_body_plans[str(user_id)] = {"direct_command": direct_motion, "created_at": time.time()}
+                    return {
+                        "handled": True,
+                        "status": "awaiting_confirmation",
+                        "response": f"Le Body confirme la capacité locomotrice du profil {capability.get('robot_model') or capability.get('robot_id')}. Je propose une seule commande FNHR « {direct_motion['label']} » (un cycle de marche), sans cible de scène. Confirmes-tu son envoi ?",
+                        "command": {"target": "fnk0031", "action": direct_motion["action"], "requires_confirmation": True},
+                    }
         assessment = self.assess_body_action_request(user_input)
         if not assessment.get("accepted"):
             # A semantically classified Body request must fail closed. Falling
@@ -4084,16 +4151,83 @@ Memory honesty — two distinct cases:
                     }
             errors = "; ".join(feasibility_errors)
             return {"handled": True, "status": "blocked", "response": "Le Body ne confirme pas cette action : " + errors, "assessment": assessment}
-        replacement_id = ""
         body = getattr(self._organism, "_body_runtime", None) if self._organism else None
+        plan_steps = assessment.get("steps") if isinstance(assessment.get("steps"), list) else []
+        locomotion_requested = any(
+            str(step.get("verb") or "").strip().lower() in {
+                "navigate", "navigate_to", "move", "move_to", "approach", "advance", "retreat",
+                "forward", "backward", "turn_left", "turn_right", "crawl", "walk", "go_to", "traverse",
+            }
+            for step in plan_steps if isinstance(step, dict)
+        )
+        execution_scope = self._body_planning_scope(body) if body is not None else "unknown"
+        required = assessment.get("required_capabilities")
+        required_capabilities = [str(item).strip().lower() for item in required] if isinstance(required, list) else []
+        if locomotion_requested and not any(name in {"locomotion", "mobility", "navigation"} for name in required_capabilities):
+            required_capabilities.append("locomotion")
+        if execution_scope != "simulation" and required_capabilities:
+            capability_observations = body.snapshot(max_age=15.0) if body is not None else []
+            capability_failures = [
+                (name, robot_capability_report(capability_observations, name))
+                for name in required_capabilities
+            ]
+            capability_failures = [(name, report) for name, report in capability_failures if not report.get("ready")]
+            if capability_failures:
+                name, capability = capability_failures[0]
+                objective = str(assessment.get("objective") or user_input).strip()
+                steps_text = "; ".join(
+                    f"{step.get('verb')} → {step.get('target')}"
+                    for step in plan_steps[:6] if isinstance(step, dict)
+                ) or "étapes non disponibles"
+                capability_record = capability.get("record") or {}
+                if not capability.get("fresh"):
+                    blocker = f"le rapport Body de la capacité « {name} » est absent, non horodaté ou périmé"
+                elif capability.get("simulated"):
+                    blocker = f"la capacité « {name} » n'est rapportée que par une simulation"
+                elif capability_record.get("installed") is not True:
+                    blocker = f"le matériel requis pour « {name} » n'est pas déclaré installé"
+                elif capability_record.get("operational") is not True:
+                    blocker = f"le Body ne confirme pas que « {name} » est opérationnelle"
+                elif capability_record.get("authorized") is not True:
+                    blocker = f"l'autorisation d'utiliser « {name} » n'est pas confirmée"
+                else:
+                    blocker = f"le Body ne confirme pas que « {name} » est disponible"
+                return {
+                    "handled": True, "status": "blocked",
+                    "response": (
+                        f"Mon planificateur a analysé l'objectif « {objective} » et proposé : {steps_text}. "
+                        f"La validation du plan ne démontre pas la capacité physique : {blocker}. "
+                        "Aucune commande n'a été envoyée et aucun déplacement n'a été effectué."
+                    ),
+                    "assessment": assessment,
+                    "execution_scope": execution_scope,
+                    "action_sent": False,
+                }
+        replacement_id = ""
         if body:
             current_plan = body.worldmodel_plan()
             active = current_plan.get("active_plan") if isinstance(current_plan, dict) else None
             if isinstance(active, dict) and active.get("state") in {"ready", "executing", "recovery"}:
                 replacement_id = str(active.get("plan_id") or "")
-        self._pending_body_plans[str(user_id)] = {"plan": assessment, "replace_plan_id": replacement_id, "created_at": time.time()}
-        response = "Le Body confirme cette nouvelle action. Elle remplacera le plan en cours après votre confirmation. Voulez-vous l'exécuter ?" if replacement_id else "Le Body confirme que cette action est faisable. Voulez-vous que j'exécute ce plan ?"
-        return {"handled": True, "status": "awaiting_confirmation", "response": response, "assessment": assessment}
+        self._pending_body_plans[str(user_id)] = {"plan": assessment, "replace_plan_id": replacement_id, "created_at": time.time(), "execution_scope": execution_scope, "required_capabilities": required_capabilities}
+        objective = str(assessment.get("objective") or user_input).strip()
+        steps_text = "; ".join(
+            f"{step.get('verb')} → {step.get('target')}"
+            for step in plan_steps[:6] if isinstance(step, dict)
+        ) or "étapes non disponibles"
+        if execution_scope == "simulation":
+            scope_text = "validé dans le simulateur uniquement; cela ne confirme aucun mouvement physique"
+        elif execution_scope == "physical":
+            scope_text = "validé contre l'instantané Body physique; aucune action n'a encore été exécutée"
+        else:
+            scope_text = "validation obtenue, mais la source simulation/réel n'est pas confirmée; aucune exécution ne peut être affirmée"
+        response = (
+            f"Objectif analysé : « {objective} ». Étapes proposées : {steps_text}. "
+            f"Résultat : {scope_text}. "
+            + ("Ce plan remplacera le plan en cours après confirmation. " if replacement_id else "")
+            + "Veux-tu soumettre ce plan au Body ?"
+        )
+        return {"handled": True, "status": "awaiting_confirmation", "response": response, "assessment": assessment, "execution_scope": execution_scope, "action_sent": False}
 
     def assess_body_action_request(self, user_input: str) -> dict:
         """Compile a request and run Body feasibility validation, without execution."""

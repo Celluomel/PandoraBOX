@@ -128,7 +128,7 @@ class BodyRuntime:
         "BODY_PLUGIN_ROBOT_ENABLED", "ROBOT_URL", "ROBOT_TOKEN",
         "ROBOT_TIMEOUT", "ROBOT_POLL_INTERVAL", "FNK0031_URL", "FNK0031_TOKEN",
         "FNK0031_TIMEOUT", "FNK0031_POLL_INTERVAL", "FNK0031_SNN_ENABLED",
-        "FNK0031_ACTUATION_ENABLED", "FNK0031_LEG_COUNT",
+        "FNK0031_ACTUATION_ENABLED", "FNK0031_SERVO_MOTORS_INSTALLED", "FNK0031_LEG_COUNT",
         "BODY_PLUGIN_FNK0050_ENABLED", "FNK0050_URL", "FNK0050_TOKEN",
         "FNK0050_TIMEOUT", "FNK0050_POLL_INTERVAL", "FNK0050_SNN_ENABLED",
         "FNK0050_ACTUATION_ENABLED",
@@ -724,6 +724,13 @@ class BodyRuntime:
             "Body-to-Brain telemetry bridge: "
             + ("connected" if bridge_connected else "not connected; no live bridge telemetry is confirmed.")
         )
+        try:
+            from cognition.body_runtime.self_model import body_functional_self_model
+            lines.extend(body_functional_self_model(observations))
+        except Exception:
+            # Keep physical self-report fail-closed if the capability summary
+            # cannot be built; raw timestamped evidence remains available below.
+            lines.append("FUNCTIONAL SELF-MODEL: unavailable; do not infer installed hardware or action capability.")
         workspace_context: dict[str, Any] = {}
         # The Body publisher also maintains a bounded last-value cache in the
         # organism's global workspace. Surface that exact state to the Brain

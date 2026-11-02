@@ -241,6 +241,9 @@ def compile_body_plan(
         "Use explore for a request to tour, survey or inspect the room/scene before later actions; "
         "explore is a physical Body step and must remain in the requested order. "
         "Only list hardware or actuator capabilities in required_capabilities; "
+        "use the canonical capability IDs supplied in body_snapshot.robot_capability_inventory.capabilities. "
+        "For the generic verbs navigate/explore require locomotion; for grab/release/push require manipulation. "
+        "Never assume a capability based on a robot model name; if its inventory entry is missing, say it is unknown in constraints. "
         "explore, wait, inspect, observe, replan and avoid are intrinsic Body operations "
         "and must be omitted from that list. When the user asks to avoid or "
         "circumvent an obstacle, keep the requested destination as the navigate "
@@ -335,6 +338,13 @@ def compile_body_plan(
         str(value) for value in plan.get("required_capabilities") or []
         if str(value).strip().lower() not in intrinsic
     ]
+    # Derive minimum hardware needs from the generic action vocabulary so the
+    # language model cannot silently omit required actuator capabilities.
+    for step in normalized:
+        verb = step["verb"]
+        inferred = "locomotion" if verb in {"navigate", "explore"} else "manipulation" if verb in {"grab", "release", "push"} else None
+        if inferred and inferred not in {name.strip().lower() for name in required_capabilities}:
+            required_capabilities.append(inferred)
     return {
         "accepted": True,
         "status": "draft",
