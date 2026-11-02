@@ -29,10 +29,11 @@ class CameraMetricDistanceDiagnosticTests(unittest.TestCase):
         ]
         yolo = {"state": "ready", "frame_id": "yolo-frame-1", "captured_at": now,
                 "detections": detections}
-        radar_frame = SimpleNamespace(as_dict=lambda: {
+        radar_payload = {
             "timestamp": now, "source": "hlk_ld2450_ventuno_bridge",
             "targets": [{"target_id": 1, "position_m": [0.0, 1.8], "confidence": 0.9}],
-        })
+        }
+        radar_frame = SimpleNamespace(as_dict=lambda: radar_payload)
 
         host = BodyHost.__new__(BodyHost)
         host.camera_yolo_status = Mock(return_value=yolo)
@@ -58,6 +59,7 @@ class CameraMetricDistanceDiagnosticTests(unittest.TestCase):
         host.value = lambda _key, default=None: default
         host._camera_metric_cache_lock = threading.Lock()
         host._camera_metric_diagnostic_last_frame_id = None
+        host._camera_metric_diagnostic_last_recorded_monotonic = 0.0
         records = []
         host.append_midas_calibration_trace = lambda payload: records.extend(payload["records"])
 
@@ -69,9 +71,8 @@ class CameraMetricDistanceDiagnosticTests(unittest.TestCase):
         self.assertEqual(diagnostic["depth_frame_id"], "depth-frame-1")
         self.assertAlmostEqual(diagnostic["person_anchor"]["radar_forward_m"], 1.8)
         self.assertAlmostEqual(diagnostic["person_anchor"]["calibrated_forward_before_anchor_m"], 2.4994, places=3)
-        self.assertAlmostEqual(diagnostic["person_anchor"]["scale_factor"], 0.7202, places=3)
-        self.assertAlmostEqual(diagnostic["target"]["calibrated_forward_before_anchor_m"], 1.6664, places=3)
-        self.assertAlmostEqual(diagnostic["target"]["calibrated_forward_after_anchor_policy_m"], 1.6664, places=3)
+        self.assertAlmostEqual(diagnostic["person_anchor"]["scale_factor_diagnostic_only"], 0.7202, places=3)
+        self.assertAlmostEqual(diagnostic["target"]["calibrated_forward_m"], 1.6664, places=3)
         self.assertFalse(diagnostic["target"]["radar_scale_applied_to_target"])
         tv_metric = result["detections"][1]["metric_depth"]
         self.assertAlmostEqual(tv_metric["forward_m"], 1.6664, places=3)
@@ -85,6 +86,19 @@ class CameraMetricDistanceDiagnosticTests(unittest.TestCase):
         self.assertGreater(regions["surrounding_ring_raw_excluding_person"]["count"], 0)
         self.assertEqual(len(records), 1)
         self.assertEqual(records[0]["type"], "metric_distance_diagnostic")
+
+        # TV diagnostics must also be produced and persisted when no fresh
+        # radar/person association exists; those are the frames used by Lumina.
+        radar_payload["timestamp"] = now - 0.5
+        yolo["frame_id"] = "yolo-frame-2"
+        host._camera_metric_diagnostic_last_frame_id = None
+        host._camera_metric_diagnostic_last_recorded_monotonic = time.monotonic() - 2.0
+        unanchored = host.camera_metric_yolo_status()
+        unanchored_diag = unanchored["metric_depth"]["distance_diagnostic"]
+        self.assertFalse(unanchored_diag["radar_person_match_available"])
+        self.assertIsNone(unanchored_diag["person_anchor"])
+        self.assertGreater(unanchored_diag["target"]["midas_regions"]["surrounding_ring_raw_excluding_person"]["count"], 0)
+        self.assertEqual(len(records), 2)
 
 
 if __name__ == "__main__":

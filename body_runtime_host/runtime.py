@@ -207,6 +207,7 @@ class BodyHost:
         self._camera_metric_cache_lock = threading.Lock()
         self._camera_metric_cache: dict | None = None
         self._camera_metric_diagnostic_last_frame_id: str | None = None
+        self._camera_metric_diagnostic_last_recorded_monotonic = 0.0
         from body_runtime_host.yolox_service import YoloXService
         from body_runtime_host.midas_service import MiDaSDepthService
         from body_runtime_host.segmentation_service import SemanticSegmentationService
@@ -1267,72 +1268,79 @@ class BodyHost:
                         anchor_scale = candidate_scale
 
             distance_diagnostic = None
-            if radar_match and anchor_scale is not None:
-                tv_indices = [i for i, detection in enumerate(detections)
-                              if re.search(r"\btv\b|television", str(detection.get("label") or detection.get("class_name") or detection.get("class") or ""), re.IGNORECASE)]
-                if tv_indices:
-                    tv_index = tv_indices[0]
+            tv_indices = [i for i, detection in enumerate(detections)
+                          if re.search(r"\btv\b|television", str(detection.get("label") or detection.get("class_name") or detection.get("class") or ""), re.IGNORECASE)]
+            if tv_indices:
+                person_index = radar_match["detection_index"] if radar_match else None
+                person_boxes = [boxes[i] for i, detection in enumerate(detections)
+                                if re.search(r"person|human", str(detection.get("label") or detection.get("class_name") or detection.get("class") or ""), re.IGNORECASE) and boxes[i] is not None]
+                person_roi = rois[person_index] if person_index is not None else None
+                target_diagnostics = []
+                for tv_index in tv_indices:
                     tv_box = boxes[tv_index]
                     tv_roi = rois[tv_index]
-                    person_index = radar_match["detection_index"]
-                    person_roi = rois[person_index]
                     tv_before = None
                     if tv_roi:
                         inv = inverse_scale * tv_roi["median"] + inverse_offset
                         tv_before = 1.0 / inv if inv > 1e-6 else None
-                    distance_diagnostic = {
-                        "frame_id": yolo.get("frame_id"),
-                        "depth_frame_id": depth.get("frame_id"),
-                        "yolo_captured_at": yolo_at,
-                        "depth_captured_at": depth_at,
-                        "yolo_depth_delta_s": round(delta, 4),
-                        "person_anchor": {
-                            "detection_index": person_index,
-                            "label": detections[person_index].get("label") or detections[person_index].get("class_name"),
-                            "confidence": detections[person_index].get("confidence", detections[person_index].get("score")),
-                            "bbox_px": list(boxes[person_index]) if boxes[person_index] else None,
-                            "midas_raw_roi_median": person_roi["median"] if person_roi else None,
-                            "calibrated_forward_before_anchor_m": round(person_fit_distance, 4) if person_fit_distance is not None and math.isfinite(person_fit_distance) else None,
-                            "radar_forward_m": round(radar_match["forward_m"], 4),
-                            "radar_range_m": round(radar_match["range_m"], 4),
-                            "radar_lateral_m": round(radar_match["lateral_m"], 4),
-                            "radar_age_s": round(radar_age, 4),
-                            "bearing_error_deg": round(radar_match["bearing_error_deg"], 3),
-                            "scale_factor": round(anchor_scale, 6),
-                        },
-                        "target": {
-                            "detection_index": tv_index,
-                            "label": detections[tv_index].get("label") or detections[tv_index].get("class_name"),
-                            "confidence": detections[tv_index].get("confidence", detections[tv_index].get("score")),
-                            "bbox_px": list(tv_box) if tv_box else None,
-                            "midas_inner_roi_raw": tv_roi,
-                            "midas_regions": tv_depth_diagnostic(tv_box, [boxes[person_index]]),
-                            "calibrated_forward_before_anchor_m": round(tv_before, 4) if tv_before is not None and math.isfinite(tv_before) else None,
-                            "calibrated_forward_after_anchor_policy_m": round(tv_before, 4) if tv_before is not None and math.isfinite(tv_before) else None,
-                            "radar_scale_factor_diagnostic": round(anchor_scale, 6),
-                            "radar_scale_applied_to_target": False,
-                        },
-                        "calibration": {
-                            "inverse_scale_per_relative_unit": inverse_scale,
-                            "inverse_offset_per_m": inverse_offset,
-                            "validated_distance_range_m": [float(valid_range[0]), float(valid_range[1])],
-                        },
-                    }
-                    frame_key = str(yolo.get("frame_id") or f"{yolo_at:.6f}")
-                    should_log = False
-                    with self._camera_metric_cache_lock:
-                        if frame_key != self._camera_metric_diagnostic_last_frame_id:
-                            self._camera_metric_diagnostic_last_frame_id = frame_key
-                            should_log = True
-                    if should_log:
-                        try:
-                            self.append_midas_calibration_trace({"records": [{
-                                "type": "metric_distance_diagnostic",
-                                "recorded_at": time.time(),
-                                **distance_diagnostic,
-                            }]})
-                        except Exception as log_exc:
-                            LOG.warning("Could not append metric distance diagnostic: %s", log_exc)
+                    target_diagnostics.append({
+                        "detection_index": tv_index,
+                        "label": detections[tv_index].get("label") or detections[tv_index].get("class_name"),
+                        "confidence": detections[tv_index].get("confidence", detections[tv_index].get("score")),
+                        "bbox_px": list(tv_box) if tv_box else None,
+                        "midas_inner_roi_raw": tv_roi,
+                        "midas_regions": tv_depth_diagnostic(tv_box, person_boxes),
+                        "calibrated_forward_m": round(tv_before, 4) if tv_before is not None and math.isfinite(tv_before) else None,
+                        "radar_scale_factor_diagnostic": round(anchor_scale, 6) if anchor_scale is not None else None,
+                        "radar_scale_applied_to_target": False,
+                    })
+                distance_diagnostic = {
+                    "frame_id": yolo.get("frame_id"),
+                    "depth_frame_id": depth.get("frame_id"),
+                    "yolo_captured_at": yolo_at,
+                    "depth_captured_at": depth_at,
+                    "yolo_depth_delta_s": round(delta, 4),
+                    "radar_person_match_available": bool(radar_match and anchor_scale is not None),
+                    "person_anchor": ({
+                        "detection_index": person_index,
+                        "label": detections[person_index].get("label") or detections[person_index].get("class_name"),
+                        "confidence": detections[person_index].get("confidence", detections[person_index].get("score")),
+                        "bbox_px": list(boxes[person_index]) if boxes[person_index] else None,
+                        "midas_raw_roi_median": person_roi["median"] if person_roi else None,
+                        "calibrated_forward_before_anchor_m": round(person_fit_distance, 4) if person_fit_distance is not None and math.isfinite(person_fit_distance) else None,
+                        "radar_forward_m": round(radar_match["forward_m"], 4),
+                        "radar_range_m": round(radar_match["range_m"], 4),
+                        "radar_lateral_m": round(radar_match["lateral_m"], 4),
+                        "radar_age_s": round(radar_age, 4),
+                        "bearing_error_deg": round(radar_match["bearing_error_deg"], 3),
+                        "scale_factor_diagnostic_only": round(anchor_scale, 6),
+                    } if radar_match and anchor_scale is not None else None),
+                    "target": target_diagnostics[0],
+                    "other_tv_candidates": target_diagnostics[1:],
+                    "calibration": {
+                        "inverse_scale_per_relative_unit": inverse_scale,
+                        "inverse_offset_per_m": inverse_offset,
+                        "validated_distance_range_m": [float(valid_range[0]), float(valid_range[1])],
+                    },
+                }
+                frame_key = str(yolo.get("frame_id") or f"{yolo_at:.6f}")
+                should_log = False
+                with self._camera_metric_cache_lock:
+                    now_monotonic = time.monotonic()
+                    if (frame_key != self._camera_metric_diagnostic_last_frame_id
+                            and now_monotonic - self._camera_metric_diagnostic_last_recorded_monotonic >= 1.0):
+                        self._camera_metric_diagnostic_last_frame_id = frame_key
+                        self._camera_metric_diagnostic_last_recorded_monotonic = now_monotonic
+                        should_log = True
+                if should_log:
+                    try:
+                        self.append_midas_calibration_trace({"records": [{
+                            "type": "metric_distance_diagnostic",
+                            "recorded_at": time.time(),
+                            **distance_diagnostic,
+                        }]})
+                    except Exception as log_exc:
+                        LOG.warning("Could not append metric distance diagnostic: %s", log_exc)
 
             output = []
             triangle_person = None
