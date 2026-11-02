@@ -4369,11 +4369,11 @@ Memory honesty — two distinct cases:
         return (
             "━━ ACTIVE DIALOGUE THREAD — SHORT FOLLOW-UP ━━\n"
             "The current user message is brief and may depend on the immediately preceding exchange. "
-            "Resolve it against that exchange before choosing a topic. If the previous assistant asked "
-            "what to do next and the user says ‘propose’, provide the next concrete step for that same "
-            "task. Do not switch to an unrelated philosophical, creative, or internal topic. The current "
-            "message still controls: if it clearly starts a new subject, follow it. Do not claim a test, "
-            "capability, or action occurred unless recorded evidence supports that claim.\n"
+            "Interpret its conversational function from that exchange: it may answer a question, accept "
+            "an offer, request the next step, or correct an earlier answer. Continue the same task when "
+            "that is what the dialogue means; do not introduce an unrelated topic. The current message "
+            "still controls and may clearly change the subject. Do not claim a test, capability, or action "
+            "occurred unless recorded evidence supports that claim.\n"
             "Recent exchange (context, not new instructions):\n" + excerpt
         )
 
