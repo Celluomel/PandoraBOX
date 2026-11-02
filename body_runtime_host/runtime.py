@@ -204,6 +204,8 @@ class BodyHost:
         self._robot_sim_lock = threading.RLock()
         self._local_camera: LocalCameraCapture | None = None
         self._local_camera_lock = threading.RLock()
+        self._camera_metric_cache_lock = threading.Lock()
+        self._camera_metric_cache: dict | None = None
         from body_runtime_host.yolox_service import YoloXService
         from body_runtime_host.midas_service import MiDaSDepthService
         from body_runtime_host.segmentation_service import SemanticSegmentationService
@@ -936,6 +938,33 @@ class BodyHost:
             camera = self._local_camera
             return camera.latest() if camera is not None else {}
 
+    def _worldmodel_camera_provider(self) -> dict:
+        """Provide actual camera pixels plus only time-matched perception evidence."""
+        frame = self._camera_provider() or {}
+        if not frame:
+            return {}
+        captured_at = float(frame.get("captured_at") or 0.0)
+        if captured_at <= 0:
+            return frame
+        try:
+            yolo = self._yolox_service.nearest_detection_result(captured_at, 0.25)
+            if yolo and yolo.get("state") == "ready":
+                frame = dict(frame)
+                frame["yolo_detections"] = yolo.get("detections") or []
+                frame["yolo_frame_id"] = yolo.get("frame_id")
+                frame["yolo_frame_delta_s"] = abs(float(yolo.get("captured_at") or 0.0) - captured_at)
+                with self._camera_metric_cache_lock:
+                    metric_packet = dict(self._camera_metric_cache or {})
+                metric_yolo = metric_packet.get("detections") or []
+                metric_at = float(metric_packet.get("captured_at") or 0.0)
+                if (metric_packet.get("frame_id") == yolo.get("frame_id")
+                        and metric_at > 0 and abs(metric_at - float(yolo.get("captured_at") or 0.0)) <= 0.25):
+                    frame["metric_yolo_detections"] = metric_yolo
+                    frame["metric_depth"] = metric_packet.get("metric_depth")
+        except Exception as exc:
+            LOG.debug("Could not attach timestamp-matched YOLOX hints to Body camera frame: %s", str(exc)[:180])
+        return frame
+
     def camera_frame(self) -> dict:
         if self._power_mode.status().get("mode") == "IDLE":
             return {"available": False, "camera": {"state": "camera paused · IDLE"},
@@ -1143,6 +1172,12 @@ class BodyHost:
                 radar_source = str((radar_sample or {}).get("source") or "").lower()
                 candidates = []
                 if radar_sample and radar_source.startswith("hlk_ld2450") and radar_age <= 0.35:
+                    from body_runtime_host.worldmodel.radar_selection import selected_radar_targets
+                    selected_targets = selected_radar_targets(
+                        radar_sample.get("targets") or [],
+                        target_range_m=float(self.value("BODY_MMWAVE_PRIMARY_TARGET_RANGE_M", 1.8) or 1.8),
+                        tolerance_m=float(self.value("BODY_MMWAVE_PRIMARY_TARGET_TOLERANCE_M", 0.55) or 0.55),
+                    )
                     for detection_index, (detection, box) in enumerate(zip(detections, boxes)):
                         label = str(detection.get("label") or detection.get("class_name") or detection.get("class") or "")
                         confidence = float(detection.get("confidence", detection.get("score", 0.0)) or 0.0)
@@ -1151,7 +1186,7 @@ class BodyHost:
                         x1, _, x2, _ = box
                         center_x = (x1 + x2) / 2.0
                         camera_bearing = math.atan2(center_x - width / 2.0, focal)
-                        for target_index, target in enumerate(radar_sample.get("targets") or []):
+                        for target_index, target in enumerate(selected_targets):
                             position = target.get("position_m") or target.get("position") or []
                             if len(position) < 2:
                                 continue
@@ -1353,6 +1388,8 @@ class BodyHost:
                 "radar_anchor_available": anchor_scale is not None,
                 "radar_anchor_age_s": round(radar_age, 4) if radar_match else None,
                 "radar_anchor_target_id": radar_match["target"].get("target_id") if radar_match else None,
+                "radar_selected_range_m": float(self.value("BODY_MMWAVE_PRIMARY_TARGET_RANGE_M", 1.8) or 1.8),
+                "radar_selection_tolerance_m": float(self.value("BODY_MMWAVE_PRIMARY_TARGET_TOLERANCE_M", 0.55) or 0.55),
             }}
         except Exception as exc:
             return {**yolo, "metric_depth": {"available": False, "reason": str(exc)[:240], "calibration": calibration}}
@@ -4138,6 +4175,8 @@ class BodyHost:
             packet = self.camera_metric_yolo_status()
             if not isinstance(packet, dict):
                 return
+            with self._camera_metric_cache_lock:
+                self._camera_metric_cache = dict(packet)
             captured_at = packet.get("captured_at")
             try:
                 observed_at = float(captured_at) if captured_at is not None else time.time()
@@ -4503,7 +4542,7 @@ class BodyHost:
         """
         from .worldmodel import SimRobotSource, resolve_source
         from .worldmodel.sources import (
-            augment_with_imu, augment_with_mmwave, augment_with_tof,
+            augment_with_camera, augment_with_imu, augment_with_mmwave, augment_with_tof,
             augment_with_ultrasonic,
         )
         from .gps import augment_with_gps
@@ -4548,7 +4587,8 @@ class BodyHost:
         source = augment_with_imu(source, self.config, self._get_imu_bridge_source())
         source = augment_with_tof(source, self.config)
         source = augment_with_gps(source, self.config, self._get_gps_bridge_source())
-        return augment_with_ultrasonic(source, self.config)
+        source = augment_with_ultrasonic(source, self.config)
+        return augment_with_camera(source, self._worldmodel_camera_provider)
 
     def plugins(self) -> list[dict]:
         return [

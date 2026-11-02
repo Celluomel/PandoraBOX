@@ -820,3 +820,56 @@ def augment_with_ultrasonic(source: Any, config: Dict[str, Any], ultrasonic=None
     return UltrasonicAugmentedSource(
         source, ultrasonic or VentunoBridgeUltrasonicSource()
     )
+
+
+class CameraAugmentedSource:
+    """Attach the live Body camera to any physical sensor source."""
+
+    def __init__(self, source: Any, camera_provider):
+        self.source = source
+        self.camera_provider = camera_provider
+        self.name = getattr(source, "name", "body")
+        self.simulated = bool(getattr(source, "simulated", False))
+
+    def __getattr__(self, name):
+        return getattr(self.source, name)
+
+    def observe(self):
+        observation = self.source.observe()
+        try:
+            camera = self.camera_provider() if callable(self.camera_provider) else {}
+            if isinstance(camera, dict) and camera.get("image_base64"):
+                captured_at = float(camera.get("captured_at") or 0.0)
+                age = time.time() - captured_at if captured_at > 0 else float("inf")
+                if 0.0 <= age <= 2.0:
+                    modalities = dict(getattr(observation, "modalities", {}) or {})
+                    existing = modalities.get("camera")
+                    existing_at = float(existing.get("captured_at") or 0.0) if isinstance(existing, dict) else 0.0
+                    if not isinstance(existing, dict) or captured_at >= existing_at:
+                        modalities["camera"] = camera
+                        observation.modalities = modalities
+        except Exception as exc:
+            logger.debug("[body] live camera attachment failed: %s", str(exc)[:180])
+        return observation
+
+    def status(self):
+        base = self.source.status() if callable(getattr(self.source, "status", None)) else {}
+        camera = self.camera_provider() if callable(self.camera_provider) else {}
+        captured_at = float(camera.get("captured_at") or 0.0) if isinstance(camera, dict) else 0.0
+        age = max(0.0, time.time() - captured_at) if captured_at else None
+        return {
+            **(base if isinstance(base, dict) else {}),
+            "camera": {
+                "available": bool(isinstance(camera, dict) and camera.get("image_base64") and age is not None and age <= 2.0),
+                "frame_id": camera.get("frame_id") if isinstance(camera, dict) else None,
+                "age_s": round(age, 3) if age is not None else None,
+                "source": camera.get("source") if isinstance(camera, dict) else None,
+            },
+        }
+
+
+def augment_with_camera(source: Any, camera_provider) -> Any:
+    """Make the current camera frame available to Body perception and VLM."""
+    if source is None or not callable(camera_provider):
+        return source
+    return CameraAugmentedSource(source, camera_provider)

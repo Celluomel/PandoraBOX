@@ -655,6 +655,7 @@ class BodySceneInterpreter:
     @staticmethod
     def _mmwave_roi_crops(
         image: str, camera: Dict[str, Any], packet: Dict[str, Any], *, max_rois: int = 2,
+        target_range_m: float = 1.8, tolerance_m: float = 0.55,
     ) -> tuple[list[tuple[str, Dict[str, Any]]], list[Dict[str, Any]]]:
         """Make conservative, lower-field crops around radar-projected bearings.
 
@@ -665,6 +666,12 @@ class BodySceneInterpreter:
         if not image or image.startswith("http"):
             return [], []
         raw_radar = ((packet.get("modalities") or {}).get("mmwave_radar") or {})
+        from .radar_selection import selected_radar_targets
+        radar_targets = selected_radar_targets(
+            raw_radar.get("targets") or [],
+            target_range_m=target_range_m,
+            tolerance_m=tolerance_m,
+        )
         coordinate_frame = str(raw_radar.get("coordinate_frame") or raw_radar.get("frame") or "").lower()
         body = packet.get("body") if isinstance(packet.get("body"), dict) else {}
         body_frame = str(body.get("coordinate_frame") or "").lower()
@@ -693,7 +700,7 @@ class BodySceneInterpreter:
             yaw = float(body.get("orientation") or 0.0)
             camera_yaw = math.radians(float(calibration.get("yaw_offset_deg") or 0.0))
             candidates = []
-            for target in raw_radar.get("targets") or []:
+            for target in radar_targets:
                 if not isinstance(target, dict):
                     continue
                 try:
@@ -1195,6 +1202,12 @@ class BodySceneInterpreter:
                 {key: item[key] for key in ("label", "confidence", "bbox") if key in item}
                 for item in camera_yolo[:12] if isinstance(item, dict)
             ]
+        camera_metric = ((packet.get("modalities") or {}).get("camera") or {}).get("metric_yolo_detections")
+        if isinstance(camera_metric, list) and camera_metric:
+            prompt_packet["camera_metric_depth"] = [
+                {key: item.get(key) for key in ("label", "confidence", "bbox", "metric_depth") if key in item}
+                for item in camera_metric[:12] if isinstance(item, dict)
+            ]
         # The image is attached as a vision part below. Never duplicate its
         # Base64 bytes inside the JSON prompt; that doubles latency and token
         # transport for every Body interpretation.
@@ -1220,6 +1233,8 @@ class BodySceneInterpreter:
             roi_crops, roi_descriptors = self._mmwave_roi_crops(
                 str(camera_image), camera_meta, packet,
                 max_rois=1 if focused_crop else int(visual_options.get("max_rois", 2) or 2),
+                target_range_m=self._number(self._config.get("BODY_MMWAVE_PRIMARY_TARGET_RANGE_M"), 1.8),
+                tolerance_m=self._number(self._config.get("BODY_MMWAVE_PRIMARY_TARGET_TOLERANCE_M"), 0.55),
             )
             visual_input["mmwave_roi_count"] = len(roi_crops)
             visual_input["mmwave_rois"] = roi_descriptors
@@ -1273,13 +1288,32 @@ class BodySceneInterpreter:
             "points_truncated": max(0, len(points) - len(compact_points)),
         }
         raw_radar = (packet.get("modalities") or {}).get("mmwave_radar") or {}
-        radar_targets = [item for item in raw_radar.get("targets") or [] if isinstance(item, dict)]
+        from .radar_selection import selected_radar_targets
+        selected_range_m = self._number(self._config.get("BODY_MMWAVE_PRIMARY_TARGET_RANGE_M"), 1.8)
+        selection_tolerance_m = self._number(self._config.get("BODY_MMWAVE_PRIMARY_TARGET_TOLERANCE_M"), 0.55)
+        radar_targets = selected_radar_targets(
+            raw_radar.get("targets") or [],
+            target_range_m=selected_range_m,
+            tolerance_m=selection_tolerance_m,
+        )
         modalities["mmwave_radar"] = {
             **compact_fields(raw_radar, ("frame_id", "timestamp", "source", "quality", "frame", "coordinate_frame")),
             "targets": [{key: item[key] for key in (
                 "position_m", "velocity_mps", "radial_speed_mps", "confidence"
             ) if key in item} for item in radar_targets[:12]],
             "targets_truncated": max(0, len(radar_targets) - 12),
+            "selection": {
+                "policy": "single radar return nearest configured range",
+                "reference_range_m": selected_range_m,
+                "tolerance_m": selection_tolerance_m,
+                "selected_range_m": (
+                    math.hypot(
+                        float((radar_targets[0].get("position_m") or radar_targets[0].get("position"))[0]),
+                        float((radar_targets[0].get("position_m") or radar_targets[0].get("position"))[1]),
+                    ) if radar_targets else None
+                ),
+                "semantic_identity_confirmed": False,
+            },
         }
         raw_motion = packet.get("motion")
         if isinstance(raw_motion, dict):
@@ -1312,9 +1346,10 @@ class BodySceneInterpreter:
         camera_view_note = self._camera_view_note(modalities.get("camera") or {})
         camera_only_prompt = bool(visual_options.get("camera_only") or packet.get("camera_only"))
         metric_evidence_prompt = (
-            "No LiDAR or mmWave data is available; describe appearance from pixels only and do not infer metric range or position. "
+            "No LiDAR or mmWave data is available. Use supplied timestamp-matched calibrated MiDaS box ranges when present. "
+            "A monocular image may also support a broad visual distance interval only when perspective, occlusion, or a clear size cue supports it; label that as a visual estimate, never as a calibrated measurement, and include uncertainty. "
             if camera_only_prompt else
-            "Use mmWave targets only as metric motion evidence (position/velocity), never as proof of visual identity. "
+            "Use mmWave targets only as metric motion evidence (position/velocity), never as proof of visual identity. Use supplied synchronized calibrated MiDaS box ranges for camera objects and keep their validation status and uncertainty. "
         )
         yolo_guidance = (
             "YOLO hints are candidate image detections only: use each box to focus inspection, verify the label "
@@ -1323,7 +1358,7 @@ class BodySceneInterpreter:
             if prompt_packet.get("camera_detection_hints") else ""
         )
         association_prompt = (
-            "Do not infer metric coordinates or object dimensions from image regions. "
+            "Do not infer precise metric coordinates or object dimensions from image regions. A broad, explicitly visual distance interval is allowed only when clear monocular cues support it; keep it separate from sensor-measured range. "
             if camera_only_prompt else
             "For camera/LiDAR matches, describe only image-visible appearance and use the LiDAR packet solely to "
             "support proximity or obstacle relevance; do not invent an association when evidence is ambiguous. "
@@ -1347,6 +1382,7 @@ class BodySceneInterpreter:
             "Every concrete object named in scene_summary must also appear in object_descriptions with a short "
             "open-vocabulary label and a visual description; do not leave object_descriptions empty when the "
             "summary names a visible object. Use free-form labels grounded in the image, not a fixed category list. "
+            "For an object with strong visual scale cues, object_descriptions may include visual_distance_interval_m [near, far], visual_distance_confidence 0..1, and visual_distance_basis; this is a rough monocular visual estimate, not a calibrated measurement. When calibrated MiDaS evidence is attached, report its measured estimate separately and never replace an out-of-range/invalid estimate with the visual guess. "
             "If navigation.task is present, identify its requested object in the image and set its role to goal; "
             "the task object remains relevant even when it is farther than the focus range. "
             + association_prompt +
@@ -1389,8 +1425,8 @@ class BodySceneInterpreter:
                 "Identify up to " + str(visual_max_objects) + " salient objects clearly visible in this robot camera image. "
                 "Return compact JSON only with scene_summary (one short sentence) and "
                 "object_descriptions (up to " + str(visual_max_objects) + " objects, each with label, "
-                "a brief visual description, and confidence 0..1). Do not add coordinates, "
-                "distance, motion, free space, or path advice. Do not use simulator or sensor "
+                "a brief visual description, and confidence 0..1; optional broad monocular visual_distance_interval_m, confidence and basis only when clear scale/perspective cues support it). Do not add exact coordinates, "
+                "motion, free space, or path advice. Do not use simulator or sensor "
                 "object lists. Use an empty array when uncertain; never invent an object. "
                 "This is semantic perception only, not navigation or actuator control. "
                 + self._camera_view_note(camera_context)
