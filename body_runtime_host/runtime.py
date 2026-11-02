@@ -1276,12 +1276,27 @@ class BodyHost:
                 scale = anchor_scale if anchor_scale is not None else 1.0
                 corrected_forward = nominal_forward * scale
                 in_relative_fit = not (len(relative_range) >= 2) or float(relative_range[0]) <= relative <= float(relative_range[1])
-                in_calibrated_range = math.isfinite(corrected_forward) and float(valid_range[0]) <= corrected_forward <= float(valid_range[1])
+                range_extrapolation_m = math.inf
+                if math.isfinite(corrected_forward):
+                    range_extrapolation_m = max(
+                        float(valid_range[0]) - corrected_forward,
+                        corrected_forward - float(valid_range[1]),
+                        0.0,
+                    )
+                # A tiny input-code excursion can map to a distance only a few
+                # centimetres beyond the fitted anchors because the inverse
+                # affine model has a nonzero offset. Keep that estimate, mark
+                # it extrapolated, and grow uncertainty instead of dropping it.
+                max_distance_extrapolation_m = 0.15
+                in_calibrated_range = (
+                    math.isfinite(corrected_forward)
+                    and range_extrapolation_m <= max_distance_extrapolation_m
+                )
                 direct_radar_person = bool(is_person and radar_match and radar_match["detection_index"] == index)
                 if direct_radar_person:
                     corrected_forward = radar_match["forward_m"]
                     in_calibrated_range = True
-                if not in_calibrated_range or (not in_relative_fit and not direct_radar_person):
+                if not in_calibrated_range:
                     metric = {"available": False,
                         "reason": "MiDaS-derived candidate outside validated metric support; object distance remains unknown",
                         "calibrated_range_m": [float(valid_range[0]), float(valid_range[1])],
@@ -1322,7 +1337,10 @@ class BodyHost:
                 q90 = scale / p90_inverse if p90_inverse > 1e-6 else corrected_forward
                 spread = abs(q90 - q10) / 2.0
                 fit_error = calibration.get("holdout_rmse_m", calibration.get("rmse_m"))
-                uncertainty = math.sqrt((float(fit_error or 0.0) * scale) ** 2 + spread ** 2)
+                uncertainty = math.sqrt(
+                    (float(fit_error or 0.0) * scale) ** 2 + spread ** 2
+                    + range_extrapolation_m ** 2
+                )
                 metric = {
                     "available": True,
                     "forward_m": round(corrected_forward, 3),
@@ -1339,6 +1357,8 @@ class BodyHost:
                     "captured_at": yolo_at,
                     "frame_delta_s": round(delta, 4),
                     "uncertainty_m_approx": round(uncertainty, 3),
+                    "calibration_extrapolated": (not in_relative_fit) or range_extrapolation_m > 0,
+                    "calibration_extrapolation_m": round(range_extrapolation_m, 3),
                     "midas_depth_spread_m": round(spread, 3),
                     "depth_sampling": roi.get("sampling", "inner_detection_box_roi"),
                     "calibration_rmse_m": fit_error,
