@@ -71,7 +71,15 @@ class CameraMetricDistanceDiagnosticTests(unittest.TestCase):
         self.assertAlmostEqual(diagnostic["person_anchor"]["calibrated_forward_before_anchor_m"], 2.4994, places=3)
         self.assertAlmostEqual(diagnostic["person_anchor"]["scale_factor"], 0.7202, places=3)
         self.assertAlmostEqual(diagnostic["target"]["calibrated_forward_before_anchor_m"], 1.6664, places=3)
-        self.assertAlmostEqual(diagnostic["target"]["calibrated_forward_after_anchor_m"], 1.1998, places=3)
+        self.assertAlmostEqual(diagnostic["target"]["calibrated_forward_after_anchor_policy_m"], 1.6664, places=3)
+        self.assertFalse(diagnostic["target"]["radar_scale_applied_to_target"])
+        tv_metric = result["detections"][1]["metric_depth"]
+        self.assertAlmostEqual(tv_metric["forward_m"], 1.6664, places=3)
+        self.assertEqual(tv_metric["source"], "paired_yolox_box_midas_calibrated")
+        self.assertFalse(tv_metric["radar_track_associated"])
+        person_metric = result["detections"][0]["metric_depth"]
+        self.assertAlmostEqual(person_metric["forward_m"], 1.8, places=3)
+        self.assertTrue(person_metric["radar_track_associated"])
         regions = diagnostic["target"]["midas_regions"]
         self.assertGreater(regions["bbox_raw_excluding_person"]["count"], 0)
         self.assertGreater(regions["surrounding_ring_raw_excluding_person"]["count"], 0)

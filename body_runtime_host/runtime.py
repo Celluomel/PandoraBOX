@@ -1308,7 +1308,9 @@ class BodyHost:
                             "midas_inner_roi_raw": tv_roi,
                             "midas_regions": tv_depth_diagnostic(tv_box, [boxes[person_index]]),
                             "calibrated_forward_before_anchor_m": round(tv_before, 4) if tv_before is not None and math.isfinite(tv_before) else None,
-                            "calibrated_forward_after_anchor_m": round(tv_before * anchor_scale, 4) if tv_before is not None and math.isfinite(tv_before) else None,
+                            "calibrated_forward_after_anchor_policy_m": round(tv_before, 4) if tv_before is not None and math.isfinite(tv_before) else None,
+                            "radar_scale_factor_diagnostic": round(anchor_scale, 6),
+                            "radar_scale_applied_to_target": False,
                         },
                         "calibration": {
                             "inverse_scale_per_relative_unit": inverse_scale,
@@ -1376,11 +1378,16 @@ class BodyHost:
                     output.append(item)
                     continue
                 is_person = bool(re.search(r"person|human", str(detection.get("label") or detection.get("class_name") or detection.get("class") or ""), re.IGNORECASE))
+                direct_radar_person = bool(is_person and radar_match and radar_match["detection_index"] == index)
                 # Use the same central-box depth evidence for every class.
                 relative = roi["median"]
                 inverse_range = inverse_scale * relative + inverse_offset
                 nominal_forward = 1.0 / inverse_range if inverse_range > 1e-6 else float("nan")
-                scale = anchor_scale if anchor_scale is not None else 1.0
+                # A single radar/person match is authoritative for that person
+                # only. It must not rescale unrelated scene objects: the live
+                # TV check showed that doing so moved a 1.93 m estimate to
+                # 1.79 m when the measured TV distance was 2.20 m.
+                scale = 1.0
                 corrected_forward = nominal_forward * scale
                 in_relative_fit = not (len(relative_range) >= 2) or float(relative_range[0]) <= relative <= float(relative_range[1])
                 range_extrapolation_m = math.inf
@@ -1399,7 +1406,6 @@ class BodyHost:
                     math.isfinite(corrected_forward)
                     and range_extrapolation_m <= max_distance_extrapolation_m
                 )
-                direct_radar_person = bool(is_person and radar_match and radar_match["detection_index"] == index)
                 if direct_radar_person:
                     corrected_forward = radar_match["forward_m"]
                     in_calibrated_range = True
@@ -1459,7 +1465,7 @@ class BodyHost:
                     "vertical_m": round(vertical, 3),
                     "bearing_deg_approx": round(math.degrees(bearing), 2),
                     "coordinate_frame": "camera_optical_approximate",
-                    "source": "paired_yolox_midas_depth_radar_person_anchored" if anchor_scale is not None else "paired_yolox_box_midas_calibrated",
+                    "source": "paired_yolox_box_midas_calibrated",
                     "frame_id": yolo.get("frame_id"),
                     "captured_at": yolo_at,
                     "frame_delta_s": round(delta, 4),
@@ -1470,8 +1476,10 @@ class BodyHost:
                     "depth_sampling": roi.get("sampling", "inner_detection_box_roi"),
                     "calibration_rmse_m": fit_error,
                     "hfov_assumed_deg": hfov,
-                    "radar_track_associated": bool(anchor_scale is not None),
-                    "radar_anchor_scale": round(anchor_scale, 4) if anchor_scale is not None else None,
+                    "radar_track_associated": direct_radar_person,
+                    "radar_person_anchor_available": bool(anchor_scale is not None),
+                    "radar_person_scale_factor_diagnostic": round(anchor_scale, 6) if anchor_scale is not None else None,
+                    "radar_scale_applied_to_detection": 1.0,
                     "radar_frame_delta_s": round(radar_age, 4) if radar_match else None,
                     "radar_bearing_error_deg": round(radar_match["bearing_error_deg"], 2) if radar_match else None,
                 }
@@ -1488,7 +1496,7 @@ class BodyHost:
                 "available": any((item.get("metric_depth") or {}).get("available") for item in output),
                 "frame_delta_s": round(delta, 4), "calibration": calibration,
                 "distance_basis": (
-                    "synchronized YOLOX/MiDaS 3D box estimates scaled by a unique fresh mmWave/person bearing match; approximate camera/radar alignment"
+                    "synchronized YOLOX/MiDaS calibrated object estimates; a unique fresh mmWave/person match measures that person only and is not propagated to other detections"
                     if anchor_scale is not None else
                     "synchronized YOLOX/MiDaS 3D box estimates using the validated monocular metric fit; no live radar-person scale correction"
                 ),
