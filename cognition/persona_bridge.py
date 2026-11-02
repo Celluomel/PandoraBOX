@@ -3298,7 +3298,17 @@ Memory honesty — two distinct cases:
                         if isinstance(geometry, dict):
                             text += f" · personne↔objet ~{float(geometry['person_to_target_m_approx']):.2f}m"
                     elif isinstance(metric.get("candidate_forward_m"), (int, float)):
-                        text += f" · candidate MiDaS {float(metric['candidate_forward_m']):.2f}m hors intervalle de calibration; distance réelle inconnue"
+                        text += f" · candidat MiDaS {float(metric['candidate_forward_m']):.2f}m vers l'avant"
+                        if isinstance(metric.get("candidate_range_m"), (int, float)):
+                            text += f" / {float(metric['candidate_range_m']):.2f}m radial"
+                        text += " hors intervalle validé; ce n'est pas une mesure fiable"
+                        geometry = metric.get("body_person_target_geometry")
+                        if isinstance(geometry, dict):
+                            text += (
+                                f" · personne↔objet ~{float(geometry['person_to_target_m_approx']):.2f}m"
+                                f" (angle Body {float(geometry['angle_at_body_deg_approx']):.1f}°; géométrie approximative,"
+                                f" profondeur cible {'validée' if geometry.get('target_depth_validated') else 'non validée'})"
+                            )
                     labels.append(text)
                 visual = ", ".join(labels) if labels else "aucun objet détecté"
                 stale = camera_age > 3.0

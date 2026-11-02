@@ -3324,33 +3324,16 @@ async function rebuildDepthCloud(depth, segmentation = latestSegmentation) {
   return true;
 }
 
-function detectionDepthStats(image, bbox, calibration, identity) {
+function detectionDepthStats(image, bbox, calibration) {
   const [x1, y1, x2, y2] = bbox.map(Number);
-  const person = /person|human/i.test(identity);
-  if (/tv|monitor|screen|television/i.test(identity)) {
-    const padX = Math.max(0.015, (x2 - x1) * 0.12), padY = Math.max(0.02, (y2 - y1) * 0.12);
-    const left = Math.max(0, Math.floor((x1 - padX) * image.width));
-    const right = Math.min(image.width, Math.ceil((x2 + padX) * image.width));
-    const top = Math.max(0, Math.floor((y1 - padY) * image.height));
-    const bottom = Math.min(image.height, Math.ceil((y2 + padY) * image.height));
-    const step = Math.max(1, Math.floor(Math.min(right - left, bottom - top) / 16));
-    const ring = [];
-    for (let y = top; y < bottom; y += step) for (let x = left; x < right; x += step) {
-      const u = x / image.width, v = y / image.height;
-      if (u >= x1 && u <= x2 && v >= y1 && v <= y2) continue;
-      ring.push(depthForScene(image, (y * image.width + x) * 4, calibration));
-    }
-    ring.sort((a, b) => a - b);
-    if (!ring.length) return null;
-    const quantile = q => ring[Math.floor((ring.length - 1) * q)];
-    return { near: quantile(0.1), median: quantile(0.5), far: quantile(0.9), screen: true };
-  }
-  const insetX = person ? 0.25 : 0.15;
-  const left = Math.max(0, Math.floor((x1 + (x2 - x1) * insetX) * image.width));
-  const right = Math.min(image.width, Math.ceil((x2 - (x2 - x1) * insetX) * image.width));
-  const top = Math.max(0, Math.floor((y1 + (y2 - y1) * (person ? 0.2 : 0.15)) * image.height));
-  const bottom = Math.min(image.height, Math.ceil((y1 + (y2 - y1) * (person ? 0.72 : 0.85)) * image.height));
-  const step = Math.max(1, Math.floor(Math.min(right - left, bottom - top) / 12));
+  // Use one class-independent center ROI for every detection. Sampling only
+  // inside the box avoids pulling background wall/floor pixels into a target's
+  // depth estimate and keeps the VR point location aligned with Body telemetry.
+  const left = Math.max(0, Math.floor((x1 + (x2 - x1) * 0.3) * image.width));
+  const right = Math.min(image.width, Math.ceil((x2 - (x2 - x1) * 0.3) * image.width));
+  const top = Math.max(0, Math.floor((y1 + (y2 - y1) * 0.35) * image.height));
+  const bottom = Math.min(image.height, Math.ceil((y2 - (y2 - y1) * 0.35) * image.height));
+  const step = Math.max(1, Math.floor(Math.min(right - left, bottom - top) / 8));
   const values = [];
   for (let y = top; y < bottom; y += step) for (let x = left; x < right; x += step) {
     values.push(depthForScene(image, (y * image.width + x) * 4, calibration));
@@ -3388,8 +3371,7 @@ function drawDepthDetections(image, yolo, calibration = metricDepthCalibration) 
     const bbox = item.bbox;
     if (!Array.isArray(bbox) || bbox.length < 4 || !bbox.every(value => Number.isFinite(Number(value)))) continue;
     const [x1, y1, x2, y2] = bbox.map(Number);
-    const identity = String(item.label || item.class_name || item.class || 'object');
-    const stats = detectionDepthStats(image, bbox, calibration, identity);
+    const stats = detectionDepthStats(image, bbox, calibration);
     if (!stats) continue;
     const radarAnchor = radarMatches.find(match => match.detection === item);
     const medianRange = frameMatches && metricFrame ? metricDepthEstimate(stats.median, calibration) : null;
@@ -3403,7 +3385,7 @@ function drawDepthDetections(image, yolo, calibration = metricDepthCalibration) 
     const maximumSpan = metricFrame
       ? Math.min(0.6, Math.max(0.15, medianDepth * 0.3))
       : Math.min(0.35, Math.max(0.02, medianDepth * 0.05));
-    const depthSpan = stats.screen ? Math.min(observedSpan, metricFrame ? 0.04 : 0.02) : Math.min(observedSpan, maximumSpan);
+    const depthSpan = Math.min(observedSpan, maximumSpan);
     const nearZ = Math.max(0.15, medianDepth - depthSpan / 2);
     const farZ = Math.max(nearZ + (metricFrame ? 0.03 : 0.01), medianDepth + depthSpan / 2);
     const intrinsics = cameraIntrinsicsForImage(image);
