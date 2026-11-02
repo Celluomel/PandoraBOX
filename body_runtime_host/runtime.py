@@ -1088,10 +1088,40 @@ class BodyHost:
                     x1, x2, y1, y2 = x1 * width, x2 * width, y1 * height, y2 * height
                 return x1, y1, x2, y2
 
-            def depth_roi(box):
+            def depth_roi(box, identity=""):
                 if box is None:
                     return None
                 x1, y1, x2, y2 = box
+                # Match the Body's existing 3D screen estimator: a thin ring
+                # immediately outside a planar screen box is less affected by
+                # the detector including dark screen content or a partial
+                # wall. Keep this pixel sampling identical to the VR view so
+                # its displayed 3D placement and the spoken metric estimate
+                # use the same monocular evidence.
+                if re.search(r"\b(?:tv|monitor|screen|television)\b", str(identity), re.IGNORECASE):
+                    pad_x = max(0.015 * width, (x2 - x1) * 0.12)
+                    pad_y = max(0.02 * height, (y2 - y1) * 0.12)
+                    left = max(0, math.floor(x1 - pad_x))
+                    right = min(width, math.ceil(x2 + pad_x))
+                    top = max(0, math.floor(y1 - pad_y))
+                    bottom = min(height, math.ceil(y2 + pad_y))
+                    step = max(1, int(min(right - left, bottom - top) / 16))
+                    xs = np.arange(left, right, step)
+                    ys = np.arange(top, bottom, step)
+                    if not xs.size or not ys.size:
+                        return None
+                    xx, yy = np.meshgrid(xs, ys)
+                    outside_box = (xx < x1) | (xx > x2) | (yy < y1) | (yy > y2)
+                    values = raw[np.ix_(ys, xs)][outside_box].astype(np.float64)
+                    values = values[np.isfinite(values) & (values > 0)]
+                    if values.size < 9:
+                        return None
+                    return {"median": float(np.median(values)),
+                            "near": float(np.percentile(values, 75)),
+                            "far": float(np.percentile(values, 25)),
+                            "p10": float(np.percentile(values, 10)),
+                            "p90": float(np.percentile(values, 90)),
+                            "count": int(values.size), "sampling": "screen_adjacent_depth_ring"}
                 # Match the calibration collector's exact inner torso/object ROI
                 # and stride (x=30–70%, y=35–65%). A different box region changes
                 # the median depth, especially for a TV against a wall or floor.
@@ -1111,10 +1141,11 @@ class BodyHost:
                         "far": float(np.percentile(values, 25)),
                         "p10": float(np.percentile(values, 10)),
                         "p90": float(np.percentile(values, 90)),
-                        "count": int(values.size)}
+                        "count": int(values.size), "sampling": "inner_detection_box_roi"}
 
             boxes = [pixel_box(detection) for detection in detections]
-            rois = [depth_roi(box) for box in boxes]
+            rois = [depth_roi(box, detection.get("label") or detection.get("class_name") or detection.get("class") or "")
+                    for detection, box in zip(detections, boxes)]
 
             # Pair the person box with a fresh radar target using the same
             # approximate bearing convention as the calibration collector.
@@ -1194,6 +1225,29 @@ class BodyHost:
             triangle_person = None
             if radar_match:
                 triangle_person = (radar_match["lateral_m"], radar_match["forward_m"])
+            else:
+                # A fresh radar association is the preferred scene-scale
+                # anchor. When it is absent, the validated monocular fit still
+                # gives approximate camera-frame points. Use a person point
+                # only when exactly one confident in-range person detection is
+                # available; never guess between multiple people.
+                camera_people = []
+                for detection, box, roi in zip(detections, boxes, rois):
+                    label = str(detection.get("label") or detection.get("class_name") or detection.get("class") or "")
+                    confidence = float(detection.get("confidence", detection.get("score", 0.0)) or 0.0)
+                    if not re.search(r"person|human", label, re.IGNORECASE) or confidence < 0.5 or box is None or roi is None:
+                        continue
+                    person_inverse = inverse_scale * roi["median"] + inverse_offset
+                    person_forward = 1.0 / person_inverse if person_inverse > 1e-6 else float("nan")
+                    person_relative_ok = not (len(relative_range) >= 2) or float(relative_range[0]) <= roi["median"] <= float(relative_range[1])
+                    if not person_relative_ok or not math.isfinite(person_forward) or not float(valid_range[0]) <= person_forward <= float(valid_range[1]):
+                        continue
+                    px1, _, px2, _ = box
+                    person_bearing = math.atan2((px1 + px2) / 2.0 - width / 2.0, focal)
+                    camera_people.append((confidence,
+                        (person_forward * math.tan(person_bearing), person_forward)))
+                if len(camera_people) == 1:
+                    triangle_person = camera_people[0][1]
             for index, detection in enumerate(detections):
                 item = dict(detection)
                 box = boxes[index]
@@ -1207,9 +1261,9 @@ class BodyHost:
                     output.append(item)
                     continue
                 is_person = bool(re.search(r"person|human", str(detection.get("label") or detection.get("class_name") or detection.get("class") or ""), re.IGNORECASE))
-                # Apply one consistent depth statistic to every detected class.
-                # Object-specific ROI heuristics would make the metric contract
-                # biased toward a hand-picked category.
+                # Use the matched frame's calibrated median for each object's
+                # geometry. Planar screens use the same adjacent-ring ROI as
+                # the 3D viewer; all other boxes use their inner object ROI.
                 relative = roi["median"]
                 inverse_range = inverse_scale * relative + inverse_offset
                 nominal_forward = 1.0 / inverse_range if inverse_range > 1e-6 else float("nan")
@@ -1259,6 +1313,7 @@ class BodyHost:
                     "frame_delta_s": round(delta, 4),
                     "uncertainty_m_approx": round(uncertainty, 3),
                     "midas_depth_spread_m": round(spread, 3),
+                    "depth_sampling": roi.get("sampling", "inner_detection_box_roi"),
                     "calibration_rmse_m": fit_error,
                     "hfov_assumed_deg": hfov,
                     "radar_track_associated": bool(anchor_scale is not None),
@@ -1271,7 +1326,7 @@ class BodyHost:
                         "lateral_m": round(radar_match["lateral_m"], 3),
                         "source": "synchronized_mmwave_person_anchor",
                         "radar_target_id": radar_match["target"].get("target_id")})
-                elif triangle_person is not None and anchor_scale is not None:
+                elif triangle_person is not None and not is_person:
                     px, py = triangle_person
                     tx, ty = lateral, corrected_forward
                     side = math.hypot(tx - px, ty - py)
@@ -1284,7 +1339,11 @@ class BodyHost:
                             "person_to_target_m_approx": round(side, 3),
                             "angle_at_body_deg_approx": round(body_angle, 2),
                             "angle_at_person_deg_approx": round(person_angle, 2),
-                            "basis": "radar person point plus radar-anchored MiDaS box point; camera/radar extrinsics assumed aligned",
+                            "basis": (
+                                "radar person point plus radar-anchored MiDaS box point; camera/radar extrinsics assumed aligned"
+                                if radar_match else
+                                "two synchronized camera-frame YOLOX/MiDaS points from the validated monocular fit; approximate"
+                            ),
                         }
                 item["metric_depth"] = metric
                 output.append(item)
