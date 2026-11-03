@@ -39,6 +39,15 @@ def _expected_bridge_token(body, config) -> str:
 
 async def body_bridge(websocket: WebSocket):
     """Exchange Body observations and queued commands using bearer auth."""
+    from core.state import state
+
+    # The listener binds before the potentially slow full-Brain warmup. Reject
+    # retries before constructing the fallback runtime; the Body reconnect loop
+    # will attach to the shared organism runtime once initialization completes.
+    if not bool(getattr(state, "ready", False)):
+        await websocket.close(code=1013, reason="Brain is initializing; retry shortly")
+        return
+
     body = _body_runtime_for_state()
     from managers.settings_manager import config
 

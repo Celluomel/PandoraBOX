@@ -11,7 +11,7 @@ validate_bind = _CONFIG.validate_bind
 
 
 class BodyBridgeListenerTests(unittest.TestCase):
-    def test_full_app_initializes_brain_before_accepting_body_bridge(self):
+    def test_full_app_binds_listener_before_slow_brain_initialization(self):
         app_path = Path(__file__).resolve().parents[1] / "app.py"
         tree = ast.parse(app_path.read_text(encoding="utf-8"))
         startup = next(
@@ -31,7 +31,35 @@ class BodyBridgeListenerTests(unittest.TestCase):
             and isinstance(node.func, ast.Name)
             and node.func.id == "start_body_bridge_server"
         )
-        self.assertGreater(listener_line, init_line)
+        self.assertLess(listener_line, init_line)
+
+    def test_bridge_rejects_startup_retry_before_creating_fallback_runtime(self):
+        bridge_path = Path(__file__).resolve().parents[1] / "core" / "body_bridge.py"
+        tree = ast.parse(bridge_path.read_text(encoding="utf-8"))
+        handler = next(
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.AsyncFunctionDef) and node.name == "body_bridge"
+        )
+        runtime_line = next(
+            node.lineno for node in ast.walk(handler)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "_body_runtime_for_state"
+        )
+        readiness_guard_line = next(
+            node.lineno for node in ast.walk(handler)
+            if isinstance(node, ast.If)
+            and any(isinstance(child, ast.Constant) and child.value == "ready"
+                    for child in ast.walk(node.test))
+        )
+        close_line = next(
+            node.lineno for node in ast.walk(handler)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "close"
+        )
+        self.assertLess(readiness_guard_line, runtime_line)
+        self.assertLess(close_line, runtime_line)
 
     def test_shared_server_helper_respects_disabled_setting(self):
         if importlib.util.find_spec("uvicorn") is None:
