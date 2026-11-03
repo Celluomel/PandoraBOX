@@ -3775,6 +3775,19 @@ Memory honesty — two distinct cases:
         ))
 
     @staticmethod
+    def _is_factual_question_form(text: str) -> bool:
+        """Recognize interrogative grammar so a read-only question cannot fall into the diagnostic dump."""
+        normalized = str(text or "").strip().casefold()
+        if "?" in normalized:
+            return True
+        return bool(re.match(
+            r"^(?:quel(?:le|s|les)?|qu['’]est|qu['’]elle|que|qui|où|ou|pourquoi|comment|"
+            r"what|which|who|where|when|why|how|is|are|do|does|did|can|could|"
+            r"combien|est-ce\s+que|y\s+a[- ]t[- ]il)\b",
+            normalized,
+        ))
+
+    @staticmethod
     def _local_camera_prompt_context() -> str:
         """Describe the Brain-PC camera's live state, separate from Body feeds."""
         try:
@@ -4066,6 +4079,11 @@ Memory honesty — two distinct cases:
         if not pending and not (self._may_route_to_body(user_input) or self._may_route_to_local_camera(user_input)):
             return None
         route = self._classify_body_chat_turn(user_input, pending=pending)
+        if not pending and route == "body_diagnostic" and self._is_factual_question_form(user_input):
+            # The classifier occasionally mistakes a factual question (for
+            # example, "quel est l'état des moteurs") for a diagnostic request.
+            # Let the main LLM answer from the Body's timestamped evidence.
+            route = "normal"
         if route == "body_status":
             # A local classifier can confuse an approval such as "execute the
             # plan" with a status question. Resolve that ambiguity with a
