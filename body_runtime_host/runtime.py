@@ -275,8 +275,14 @@ def interpret_body_observation(subject: str, value: dict) -> dict:
              "meaning": "Servo hardware inventory as declared to the Body; not auto-detected."},
             {"field": "controller_connected", "value": connected,
              "meaning": "FNK0031 control board serial link status."},
-            {"field": "actuation_enabled", "value": enabled,
-             "meaning": "Whether Body policy permits issuing commands; not proof of physical motion."},
+            {"field": "software_actuation_authorized", "value": enabled,
+             "meaning": "Software policy flag only; it does not mean motors are present, operational, or commandable."},
+            {"field": "physical_actuator_availability",
+             "value": actuator.get("available", installed and connected),
+             "state": actuator.get("state", "available" if installed and connected else "unavailable_no_servo_hardware"),
+             "commandable": actuator.get("commandable", installed and connected and enabled),
+             "blockers": actuator.get("blockers", [] if installed else ["servo_motors_not_installed"]),
+             "meaning": "Whether installed physical actuators can receive movement commands; independent of the controller link and software authorization."},
             {"field": "physical_servo_angles", "state": physical_angles,
              "angles_deg": actuator.get("physical_joint_angles_deg"), "meaning": servo_meaning},
             {"field": "controller_command_model",
@@ -291,19 +297,22 @@ def interpret_body_observation(subject: str, value: dict) -> dict:
              "meaning": ("FNHR internal estimated joint command angles, three per leg; not physical servo readings."
                          if installed else "No physical servos are installed; do not interpret controller estimates as physical joint angles.")},
         ])
-        summary = (f"FNK0031 controller {'connected' if connected else 'disconnected'}; "
-                   f"servo motors {'declared installed' if installed else 'declared absent'}; "
-                   f"physical servo angles {physical_angles}; "
-                   f"controller command model {'available' if command_model.get('available') else 'unavailable'}"
-                   f" ({command_model.get('leg_count', 0)} legs); "
-                   f"{len(joint_estimates)} controller command-angle estimate group(s) reported.")
+        actuator_state = actuator.get("state", "available" if installed and connected and enabled
+                                      else "unavailable_no_servo_hardware" if not installed
+                                      else "unavailable_controller_disconnected" if not connected
+                                      else "not_authorized")
+        summary = (f"FNK0031 controller={ 'connected' if connected else 'disconnected' }; "
+                   f"servo_motors_installed={installed}; actuator_state={actuator_state}; "
+                   f"physical_joint_angles={physical_angles}; "
+                   f"controller_command_model={'available' if command_model.get('available') else 'unavailable'} "
+                   f"(leg_count={command_model.get('leg_count', 0)}, measured_feedback=false).")
         limits = [
             "Servo installation is an operator-declared inventory value, not detected electrically.",
             "FNHR GetEstimatedLegState reports command-derived estimates, never measured servo angles.",
             "With servos absent, physical angles are not applicable; do not convert missing feedback into measured zero degrees.",
-            "A connected controller or enabled actuation does not prove that a movement occurred.",
+            "A connected controller or enabled software authorization does not mean physical actuators are present or prove that movement occurred.",
         ]
-        state = "available" if connected else "disconnected"
+        state = actuator_state
     else:
         # Preserve unfamiliar modalities as a usable typed observation rather
         # than dropping them or pretending to know their physical meaning.
@@ -721,36 +730,46 @@ class BodyHost:
         battery_interpretation = None
         if energy_wh is not None:
             usable_wh = capacity_wh * usable_fraction
-            remaining_wh = max(0.0, usable_wh - float(energy_wh))
+            accumulated_input_wh = max(0.0, float(energy_wh))
+            remaining_wh = max(0.0, usable_wh - accumulated_input_wh)
+            counter_over_capacity = accumulated_input_wh > usable_wh
+            level_state = "empty_lower_bound" if counter_over_capacity else (
+                "estimated_empty" if remaining_wh <= 0.0 else "estimated_remaining")
+            estimate_quality = ("counter_exceeds_usable_capacity" if counter_over_capacity
+                                else "integrated_input_energy_estimate")
             estimate = {"capacity_wh": capacity_wh, "usable_fraction": usable_fraction,
                         "usable_capacity_wh": round(usable_wh, 3),
-                        "consumed_wh": round(float(energy_wh), 3),
+                        "consumed_wh": round(accumulated_input_wh, 3),
+                        "accumulated_input_energy_wh": round(accumulated_input_wh, 3),
+                        "counter_exceeds_usable_capacity": counter_over_capacity,
+                        "estimate_quality": estimate_quality,
                         "remaining_wh_est": round(remaining_wh, 3),
                         "level_percent_est": round(remaining_wh / usable_wh * 100.0, 1),
-                        "level_state": "estimated_empty" if remaining_wh <= 0.0 else "estimated_remaining",
+                        "level_state": level_state,
                         "measurement_type": "integrated_input_energy_estimate",
                         "direct_battery_measurement": False,
                         "source": "continuous INA232 input-rail integration; estimate only"}
             battery_interpretation = {
                 "contract": "body_battery_interpretation.v1",
-                "state": estimate["level_state"],
-                "summary": (
-                    f"Battery level estimated {estimate['level_percent_est']:.1f}%; "
-                    f"{estimate['remaining_wh_est']:.2f} Wh estimated remaining of "
-                    f"{estimate['usable_capacity_wh']:.2f} Wh usable capacity "
-                    f"({estimate['capacity_wh']:.1f} Wh nominal rating)."
-                ),
+                "state": level_state,
+                "estimate_quality": estimate_quality,
+                "summary": (f"Estimated charge={estimate['level_percent_est']:.1f}%; "
+                            f"estimated_remaining={estimate['remaining_wh_est']:.2f} Wh / "
+                            f"{estimate['usable_capacity_wh']:.2f} Wh usable; "
+                            f"state={level_state}; direct_SOC_measurement=false."),
                 "facts": {
                     "level_percent_est": estimate["level_percent_est"],
                     "remaining_wh_est": estimate["remaining_wh_est"],
                     "usable_capacity_wh": estimate["usable_capacity_wh"],
                     "nominal_capacity_wh": estimate["capacity_wh"],
-                    "consumed_since_baseline_wh": estimate["consumed_wh"],
+                    "counter_exceeds_usable_capacity": counter_over_capacity,
+                    "accumulated_input_energy_wh": estimate["accumulated_input_energy_wh"],
                     "measurement_type": estimate["measurement_type"],
                     "direct_battery_measurement": False,
                 },
                 "source": estimate["source"],
-                "limits": ["This is integrated energy on the INA232 input rail, not a direct battery state-of-charge sensor."],
+                "limits": ["INA232 measures input-rail energy, not battery state of charge.",
+                           "If the accumulated input-energy counter exceeds usable capacity, 0% is a clamped lower-bound estimate; the counter cannot establish the actual charge or whether the battery is charging."],
             }
         result = self._power_mode.status(intervals, power.get("watts"), estimate)
         result["battery_interpretation"] = battery_interpretation
@@ -3078,6 +3097,17 @@ class BodyHost:
             "inventory_source": "operator_declared_configuration",
             "controller_connected": bool(status.get("connected")),
             "software_actuation_authorized": bool(status.get("actuation_enabled")),
+            "available": bool(motors_installed and status.get("connected")),
+            "operational": bool(motors_installed and status.get("connected")),
+            "commandable": bool(motors_installed and status.get("connected") and status.get("actuation_enabled")),
+            "state": ("ready_for_command" if motors_installed and status.get("connected") and status.get("actuation_enabled")
+                      else "unavailable_no_servo_hardware" if not motors_installed
+                      else "unavailable_controller_disconnected" if not status.get("connected")
+                      else "not_authorized"),
+            "blockers": ([] if motors_installed and status.get("connected") and status.get("actuation_enabled")
+                         else ["servo_motors_not_installed"] if not motors_installed
+                         else ["controller_disconnected"] if not status.get("connected")
+                         else ["software_actuation_not_authorized"]),
             "physical_state": "not_installed" if not motors_installed else "installed_state_unmeasured",
             "physical_joint_angles_deg": None,
             "physical_joint_angles_state": "not_applicable_no_servo_hardware" if not motors_installed else "no_measured_feedback",
@@ -3641,7 +3671,7 @@ class BodyHost:
         supported_actions = status.get("supported_actions") or []
         locomotion = {
             "installed": value["servo_motors_installed"],
-            "operational": value["connected"],
+            "operational": bool(value["servo_motors_installed"] and value["connected"]),
             "authorized": value["actuation_enabled"],
             "available": bool(value["servo_motors_installed"] and value["connected"] and value["actuation_enabled"]),
             "hardware_ids": ["fnk0031_servos"] if value["servo_motors_installed"] else [],
@@ -3662,7 +3692,7 @@ class BodyHost:
                 "kind": "locomotion_actuator",
                 "type": "servo_motors",
                 "installed": value["servo_motors_installed"],
-                "operational": value["connected"],
+                "operational": bool(value["servo_motors_installed"] and value["connected"]),
                 "authorized": value["actuation_enabled"],
             }],
         }
