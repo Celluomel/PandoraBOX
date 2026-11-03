@@ -239,7 +239,10 @@ def interpret_body_observation(subject: str, value: dict) -> dict:
         hardware_status = value if modality == "fnk0031.usb_status" else {}
         capabilities = value.get("capabilities") if modality == "robot.capability_inventory" else {}
         locomotion = (capabilities.get("locomotion") if isinstance(capabilities, dict) else {}) or {}
-        installed = (hardware_status.get("servo_motors_installed") if hardware_status
+        actuator = hardware_status.get("actuator_state") if hardware_status else {}
+        actuator = actuator if isinstance(actuator, dict) else {}
+        installed = (actuator.get("installed") if actuator else
+                     hardware_status.get("servo_motors_installed") if hardware_status
                      else locomotion.get("installed")) is True
         connected = (hardware_status.get("connected") if hardware_status
                      else locomotion.get("operational")) is True
@@ -248,7 +251,9 @@ def interpret_body_observation(subject: str, value: dict) -> dict:
         estimated = hardware_status.get("estimated_leg_state") if hardware_status else value.get("estimated_leg_state")
         estimated = estimated if isinstance(estimated, dict) else None
         measured = bool(hardware_status.get("estimated_state_is_measured", False)) if hardware_status else False
-        legs = estimated.get("legs", []) if estimated else []
+        command_model = actuator.get("controller_command_model") if actuator else {}
+        command_model = command_model if isinstance(command_model, dict) else {}
+        legs = estimated.get("legs", []) if estimated and installed else []
         joint_estimates = []
         for leg in legs:
             if not isinstance(leg, dict):
@@ -257,8 +262,8 @@ def interpret_body_observation(subject: str, value: dict) -> dict:
             if isinstance(angles, (list, tuple)) and len(angles) == 3:
                 joint_estimates.append({"leg": leg.get("leg"), "command_estimate_deg": list(angles)})
         if not installed:
-            physical_angles = "not_applicable_servos_not_installed"
-            servo_meaning = "No servo motors are declared installed; physical joint angles cannot be measured."
+            physical_angles = actuator.get("physical_joint_angles_state") or "not_applicable_no_servo_hardware"
+            servo_meaning = "No servo motors are declared installed; physical joint angles are not applicable, not measured as zero."
         elif measured:
             physical_angles = "measured_feedback_available"
             servo_meaning = "Measured joint feedback is available from the declared hardware source."
@@ -273,16 +278,25 @@ def interpret_body_observation(subject: str, value: dict) -> dict:
             {"field": "actuation_enabled", "value": enabled,
              "meaning": "Whether Body policy permits issuing commands; not proof of physical motion."},
             {"field": "physical_servo_angles", "state": physical_angles,
-             "angles_deg": None, "meaning": servo_meaning},
+             "angles_deg": actuator.get("physical_joint_angles_deg"), "meaning": servo_meaning},
+            {"field": "controller_command_model",
+             "state": "available" if command_model.get("available") else "unavailable",
+             "source": command_model.get("source"),
+             "leg_count": command_model.get("leg_count", 0),
+             "measured_feedback": False,
+             "meaning": command_model.get("meaning") or "Controller-side command estimate only; it does not establish installed servos, physical angles, or movement."},
             {"field": "joint_angle_command_estimates", "state": "available" if joint_estimates else "unavailable",
              "source": estimated.get("source") if estimated else None,
              "measured": measured, "legs": joint_estimates,
-             "meaning": "FNHR internal estimated joint command angles, three per leg; these are not encoder/servo measurements."},
+             "meaning": ("FNHR internal estimated joint command angles, three per leg; not physical servo readings."
+                         if installed else "No physical servos are installed; do not interpret controller estimates as physical joint angles.")},
         ])
         summary = (f"FNK0031 controller {'connected' if connected else 'disconnected'}; "
                    f"servo motors {'declared installed' if installed else 'declared absent'}; "
                    f"physical servo angles {physical_angles}; "
-                   f"{len(joint_estimates)} leg command-angle estimate(s) received.")
+                   f"controller command model {'available' if command_model.get('available') else 'unavailable'}"
+                   f" ({command_model.get('leg_count', 0)} legs); "
+                   f"{len(joint_estimates)} controller command-angle estimate group(s) reported.")
         limits = [
             "Servo installation is an operator-declared inventory value, not detected electrically.",
             "FNHR GetEstimatedLegState reports command-derived estimates, never measured servo angles.",
@@ -704,15 +718,43 @@ class BodyHost:
         capacity_wh = max(1.0, float(self.value("BODY_POWER_BATTERY_CAPACITY_WH", 99.0)))
         usable_fraction = max(0.5, min(1.0, float(self.value("BODY_POWER_BATTERY_USABLE_FRACTION", 0.85))))
         estimate = None
+        battery_interpretation = None
         if energy_wh is not None:
             usable_wh = capacity_wh * usable_fraction
             remaining_wh = max(0.0, usable_wh - float(energy_wh))
             estimate = {"capacity_wh": capacity_wh, "usable_fraction": usable_fraction,
+                        "usable_capacity_wh": round(usable_wh, 3),
                         "consumed_wh": round(float(energy_wh), 3),
                         "remaining_wh_est": round(remaining_wh, 3),
                         "level_percent_est": round(remaining_wh / usable_wh * 100.0, 1),
+                        "level_state": "estimated_empty" if remaining_wh <= 0.0 else "estimated_remaining",
+                        "measurement_type": "integrated_input_energy_estimate",
+                        "direct_battery_measurement": False,
                         "source": "continuous INA232 input-rail integration; estimate only"}
-        return self._power_mode.status(intervals, power.get("watts"), estimate)
+            battery_interpretation = {
+                "contract": "body_battery_interpretation.v1",
+                "state": estimate["level_state"],
+                "summary": (
+                    f"Battery level estimated {estimate['level_percent_est']:.1f}%; "
+                    f"{estimate['remaining_wh_est']:.2f} Wh estimated remaining of "
+                    f"{estimate['usable_capacity_wh']:.2f} Wh usable capacity "
+                    f"({estimate['capacity_wh']:.1f} Wh nominal rating)."
+                ),
+                "facts": {
+                    "level_percent_est": estimate["level_percent_est"],
+                    "remaining_wh_est": estimate["remaining_wh_est"],
+                    "usable_capacity_wh": estimate["usable_capacity_wh"],
+                    "nominal_capacity_wh": estimate["capacity_wh"],
+                    "consumed_since_baseline_wh": estimate["consumed_wh"],
+                    "measurement_type": estimate["measurement_type"],
+                    "direct_battery_measurement": False,
+                },
+                "source": estimate["source"],
+                "limits": ["This is integrated energy on the INA232 input rail, not a direct battery state-of-charge sensor."],
+            }
+        result = self._power_mode.status(intervals, power.get("watts"), estimate)
+        result["battery_interpretation"] = battery_interpretation
+        return result
 
     def set_power_mode(self, payload: dict) -> dict:
         mode = str((payload or {}).get("mode") or "").upper()
@@ -3026,10 +3068,32 @@ class BodyHost:
                                    "crawl", "stop", "wait"] if custom_profile else
                                   ["forward", "backward", "turn_left", "turn_right", "stop", "wait"]),
         }
+        motors_installed = settings["servo_motors_installed"] is True
+        estimated_state = status.get("estimated_leg_state") if isinstance(status, dict) else None
+        estimated_state = estimated_state if isinstance(estimated_state, dict) else None
+        actuator_state = {
+            "contract": "body_actuator_state.v1",
+            "actuator": "servo_motors",
+            "installed": motors_installed,
+            "inventory_source": "operator_declared_configuration",
+            "controller_connected": bool(status.get("connected")),
+            "software_actuation_authorized": bool(status.get("actuation_enabled")),
+            "physical_state": "not_installed" if not motors_installed else "installed_state_unmeasured",
+            "physical_joint_angles_deg": None,
+            "physical_joint_angles_state": "not_applicable_no_servo_hardware" if not motors_installed else "no_measured_feedback",
+            "controller_command_model": {
+                "available": estimated_state is not None,
+                "source": estimated_state.get("source") if estimated_state else None,
+                "leg_count": len(estimated_state.get("legs", [])) if estimated_state else 0,
+                "measured_feedback": False,
+                "meaning": "FNHR internal command model only; not physical actuator or joint feedback.",
+            },
+        }
         return {
             **status,
             "servo_motors_installed": settings["servo_motors_installed"],
             "servo_inventory_source": "operator_declared_configuration",
+            "actuator_state": actuator_state,
             "ports": available_serial_ports(),
             "configured_port": port,
             "plugin_enabled": bool(self.value("BODY_PLUGIN_ROBOT_ENABLED", False)),
@@ -3545,6 +3609,7 @@ class BodyHost:
             "actuation_enabled": bool(status.get("actuation_enabled")),
             "servo_motors_installed": bool(self.value("FNK0031_SERVO_MOTORS_INSTALLED", False)),
             "servo_inventory_source": "operator_declared_configuration",
+            "actuator_state": status.get("actuator_state"),
             "pose_available": bool(status.get("pose_available")),
             "estimated_leg_state": status.get("estimated_leg_state"),
             "estimated_state_is_measured": bool(status.get("estimated_state_is_measured", False)),
@@ -3581,7 +3646,9 @@ class BodyHost:
             "available": bool(value["servo_motors_installed"] and value["connected"] and value["actuation_enabled"]),
             "hardware_ids": ["fnk0031_servos"] if value["servo_motors_installed"] else [],
             "supported_actions": supported_actions,
-            "state_feedback": "command_estimate" if value["estimated_leg_state"] else "unavailable",
+            "state_feedback": ("not_applicable_no_servo_actuators" if not value["servo_motors_installed"]
+                               else "command_estimate" if value["estimated_leg_state"]
+                               else "unavailable"),
         }
         inventory_value = {
             "contract": "body_robot_capability_inventory.v1",
@@ -4534,6 +4601,7 @@ class BodyHost:
                 "mode": power_status.get("mode"),
                 "board_input_w": power_status.get("board_input_w"),
                 "battery_estimate": power_status.get("battery_estimate"),
+                "battery_interpretation": power_status.get("battery_interpretation"),
             },
             "world_model": worldmodel_status,
             "plugins": plugins,
