@@ -66,6 +66,10 @@ class Ros2BodySensorPublishTests(unittest.TestCase):
         builtin_msg.Time = lambda sec, nanosec: types.SimpleNamespace(sec=sec, nanosec=nanosec)
         builtin_package = types.ModuleType("builtin_interfaces")
         builtin_package.msg = builtin_msg
+        std_msg = types.ModuleType("std_msgs.msg")
+        std_msg.Header = _Header
+        std_package = types.ModuleType("std_msgs")
+        std_package.msg = std_msg
         cloud_module = types.ModuleType("sensor_msgs_py.point_cloud2")
         cloud_module.create_cloud_xyz32 = lambda header, points: types.SimpleNamespace(header=header, points=list(points))
         sensor_msgs_py = types.ModuleType("sensor_msgs_py")
@@ -75,6 +79,8 @@ class Ros2BodySensorPublishTests(unittest.TestCase):
             "sensor_msgs.msg": sensor_msg,
             "builtin_interfaces": builtin_package,
             "builtin_interfaces.msg": builtin_msg,
+            "std_msgs": std_package,
+            "std_msgs.msg": std_msg,
             "sensor_msgs_py": sensor_msgs_py,
             "sensor_msgs_py.point_cloud2": cloud_module,
         }
