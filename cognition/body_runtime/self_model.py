@@ -95,16 +95,23 @@ def body_functional_self_model(
         leg_state = controller_value.get("estimated_leg_state")
         if isinstance(leg_state, dict):
             measured = controller_value.get("estimated_state_is_measured") is True or leg_state.get("measured_feedback") is True
-            angle_rows = []
-            for leg in leg_state.get("legs", []):
-                if isinstance(leg, dict) and isinstance(leg.get("joint_angles_deg"), (list, tuple)):
-                    angle_rows.append(f"L{leg.get('leg', '?')}={list(leg['joint_angles_deg'])}")
-            lines.append(
-                "- FNHR joint angles: "
-                + ("measured feedback" if measured else "command-derived estimates only")
-                + ("; " + "; ".join(angle_rows) if angle_rows else "")
-                + (". Physical servo angles are not applicable because servos are declared absent." if motors is False else ".")
-            )
+            if motors is False:
+                lines.append(
+                    "- FNHR may report an internal six-leg command model, but no servo motors are declared installed. "
+                    "That software model is not motor/joint state; do not describe it as the motors' current pose. "
+                    "Physical servo angles are unavailable/not applicable."
+                )
+            else:
+                angle_rows = []
+                for leg in leg_state.get("legs", []):
+                    if isinstance(leg, dict) and isinstance(leg.get("joint_angles_deg"), (list, tuple)):
+                        angle_rows.append(f"L{leg.get('leg', '?')}={list(leg['joint_angles_deg'])}")
+                lines.append(
+                    "- FNHR joint angles: "
+                    + ("measured feedback" if measured else "command-derived estimates only")
+                    + ("; " + "; ".join(angle_rows) if angle_rows else "")
+                    + "."
+                )
         elif motors is False:
             lines.append("- Physical servo angles: not applicable; servos are absent. Do not substitute IMU roll/pitch/yaw or synthetic zero-degree measurements.")
     elif not isinstance(inventory_value, dict):
