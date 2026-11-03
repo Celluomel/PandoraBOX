@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
     paths:
+      - "app.py"
+      - "core/body_bridge.py"
       - "body_runtime_host/worldmodel/**"
       - "body_runtime_host/runtime.py"
       - "body_runtime_host/visual_odometry.py"
@@ -14,6 +16,7 @@ on:
       - "tests/test_body_http_fault_injection.py"
       - "tests/test_body_command_delivery.py"
       - "tests/test_body_bridge_websocket.py"
+      - "tests/test_body_bridge_listener.py"
       - "tests/test_body_action_evidence.py"
       - "tests/test_body_readonly_preflight.py"
       - "tests/test_body_http_loopback.py"
@@ -26,6 +29,8 @@ on:
       - ".github/workflows/body-reliability.yml"
   pull_request:
     paths:
+      - "app.py"
+      - "core/body_bridge.py"
       - "body_runtime_host/worldmodel/**"
       - "body_runtime_host/runtime.py"
       - "body_runtime_host/visual_odometry.py"
@@ -35,6 +40,7 @@ on:
       - "tests/test_body_http_fault_injection.py"
       - "tests/test_body_command_delivery.py"
       - "tests/test_body_bridge_websocket.py"
+      - "tests/test_body_bridge_listener.py"
       - "tests/test_body_action_evidence.py"
       - "tests/test_body_readonly_preflight.py"
       - "tests/test_body_http_loopback.py"
@@ -68,6 +74,7 @@ jobs:
           python -m unittest discover -s tests -p "test_body_http_fault_injection.py" -v 2>&1 | tee body-reliability-http.log || failures=$((failures + 1))
           python -m unittest discover -s tests -p "test_body_command_delivery.py" -v 2>&1 | tee body-reliability-delivery.log || failures=$((failures + 1))
           python -m unittest discover -s tests -p "test_body_bridge_websocket.py" -v 2>&1 | tee body-reliability-bridge.log || failures=$((failures + 1))
+          python -m unittest discover -s tests -p "test_body_bridge_listener.py" -v 2>&1 | tee body-reliability-listener.log || failures=$((failures + 1))
           python -m unittest discover -s tests -p "test_body_action_evidence.py" -v 2>&1 | tee body-reliability-evidence.log || failures=$((failures + 1))
           python -m unittest discover -s tests -p "test_body_readonly_preflight.py" -v 2>&1 | tee body-reliability-preflight.log || failures=$((failures + 1))
           python -m unittest discover -s tests -p "test_body_http_loopback.py" -v 2>&1 | tee body-reliability-loopback.log || failures=$((failures + 1))
