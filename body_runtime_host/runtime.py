@@ -4833,12 +4833,19 @@ class BodyHost:
         self.latest[entry["entity_id"]] = entry
         self._bridge_put(entry)
 
+    @staticmethod
+    def live_sensor_poll_interval(mode: str) -> float:
+        """Power-aware sensor snapshot cadence when ROS 2 has no running world model."""
+        return {"DEV": 1.0, "ATTENTIVE": 2.0, "IDLE": 5.0}.get(str(mode or "").upper(), 2.0)
+
     def publish_live_sensor_observations(self) -> None:
-        """Publish actual adapter samples even when the scene model is disabled."""
+        """Publish live adapter samples to Brain and ROS 2 without requiring a scene-model step."""
         now_monotonic = time.monotonic()
-        if now_monotonic - getattr(self, "_live_sensor_poll_monotonic", 0.0) < 4.0:
+        mode = str(self._power_mode.status().get("mode") or "DEV").upper()
+        if now_monotonic - getattr(self, "_live_sensor_poll_monotonic", 0.0) < self.live_sensor_poll_interval(mode):
             return
         self._live_sensor_poll_monotonic = now_monotonic
+        ros_modalities = {}
         readers = (
             ("mmwave_radar", self.mmwave_radar_status,
              bool(self.value("BODY_PLUGIN_MMWAVE_RADAR_ENABLED", False))),
@@ -4888,8 +4895,26 @@ class BodyHost:
                 }
                 self.latest[entry["entity_id"]] = entry
                 self._bridge_put(entry)
+                ros_modalities[name] = value
             except Exception as exc:
                 LOG.debug("Live %s telemetry publication failed: %s", name, exc)
+
+        # The World Model callback gives higher-rate ROS output while it is
+        # actively stepping. When paused or disabled, forward the live RPC
+        # snapshots already read above; never poll a sensor a second time.
+        worldmodel_running = False
+        if self._worldmodel is not None:
+            try:
+                worldmodel_running = bool(self._worldmodel.status_summary().get("running"))
+            except Exception:
+                pass
+        bridge = self._ros2_bridge
+        publish = getattr(bridge, "publish_body_sensor_observation", None) if bridge else None
+        if ros_modalities and not worldmodel_running and callable(publish):
+            try:
+                publish({"modalities": ros_modalities})
+            except Exception as exc:
+                LOG.debug("Live typed ROS 2 sensor publication failed: %s", exc)
 
     def publish_camera_perception(self) -> None:
         """Bridge compact, timestamped YOLOX/MiDaS evidence without image data."""
@@ -5191,6 +5216,16 @@ class BodyHost:
             self.publish_runtime_status()
             self.publish_live_sensor_observations()
             self.publish_fnk0031_usb_status()
+            if bool(self.value("BODY_ROS2_ENABLED", False)):
+                worldmodel_running = False
+                if self._worldmodel is not None:
+                    try:
+                        worldmodel_running = bool(self._worldmodel.status_summary().get("running"))
+                    except Exception:
+                        pass
+                if not worldmodel_running:
+                    mode = str(self._power_mode.status().get("mode") or "DEV").upper()
+                    interval = min(interval, self.live_sensor_poll_interval(mode))
             self.stop_event.wait(interval)
 
     # ── Brain bridge (websocket) ────────────────────────────────────────────

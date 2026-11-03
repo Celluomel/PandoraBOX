@@ -62,6 +62,11 @@ class Ros2ObservationBridge:
             node = self._node
             sensor_status = {key: dict(value) for key, value in self._sensor_status.items()}
             body_sensor_status = {key: dict(value) for key, value in self._body_sensor_status.items()}
+        now = time.time()
+        for state in body_sensor_status.values():
+            sample_at = state.get("last_sample_at", state.get("last_published_at"))
+            age = now - float(sample_at) if sample_at is not None else None
+            state["sample_age_s"] = round(max(0.0, age), 3) if age is not None else None
         result.update({
             "ros_distro": os.environ.get("ROS_DISTRO", ""),
             "domain_id": os.environ.get("ROS_DOMAIN_ID", "0"),
@@ -159,8 +164,10 @@ class Ros2ObservationBridge:
         sensor_streams = {}
         for key in required_sensor_streams:
             state = dict(sensor_publishers.get(key, {}))
-            age = time.time() - float(state.get("last_published_at") or 0.0)
-            state["fresh"] = bool(state.get("last_published_at") and age <= 3.0)
+            sample_at = state.get("last_sample_at", state.get("last_published_at"))
+            age = time.time() - float(sample_at or 0.0)
+            state["sample_age_s"] = round(max(0.0, age), 3) if sample_at else None
+            state["fresh"] = bool(sample_at and 0.0 <= age <= 3.0)
             sensor_streams[key] = state
             if not state["fresh"]:
                 blockers.append(f"physical sensor stream has not published a fresh {key} sample")
@@ -364,7 +371,7 @@ class Ros2ObservationBridge:
         sent = []
         errors = []
 
-        def publish_typed(key, message):
+        def publish_typed(key, message, sample_timestamp=None):
             publisher = publishers.get(key)
             if publisher is None:
                 return False
@@ -382,6 +389,10 @@ class Ros2ObservationBridge:
                 status = self._body_sensor_status.get(key, {})
                 status["count"] = int(status.get("count", 0)) + 1
                 status["last_published_at"] = time.time()
+                try:
+                    status["last_sample_at"] = float(sample_timestamp) if sample_timestamp is not None else time.time()
+                except (TypeError, ValueError, OverflowError):
+                    status["last_sample_at"] = time.time()
                 status.pop("last_error", None)
                 self._body_sensor_status[key] = status
             sent.append(key)
@@ -413,7 +424,7 @@ class Ros2ObservationBridge:
                 message.linear_acceleration.x, message.linear_acceleration.y, message.linear_acceleration.z = [float(v) * 9.80665 for v in accel]
                 message.angular_velocity_covariance = [0.02, 0, 0, 0, 0.02, 0, 0, 0, 0.04]
                 message.linear_acceleration_covariance = [0.1, 0, 0, 0, 0.1, 0, 0, 0, 0.1]
-                publish_typed("imu", message)
+                publish_typed("imu", message, imu.get("timestamp"))
 
             gps = modalities.get("gps") or {}
             if gps.get("simulated") is False and publishers.get("gps"):
@@ -429,12 +440,13 @@ class Ros2ObservationBridge:
                 altitude = gps.get("altitude_m")
                 message.altitude = float(altitude) if fix_valid and altitude is not None else math.nan
                 message.position_covariance_type = NavSatFix.COVARIANCE_TYPE_UNKNOWN
-                publish_typed("gps", message)
+                publish_typed("gps", message, gps.get("timestamp"))
 
             tof = modalities.get("tof") or {}
             if tof.get("simulated") is False and publishers.get("tof") and tof.get("available") and tof.get("distance_m") is not None:
                 publish_typed("tof", self._range_message(
-                    tof, frame_id=str(tof.get("frame") or "tof_front"), ultrasonic=False))
+                    tof, frame_id=str(tof.get("frame") or "tof_front"), ultrasonic=False),
+                    tof.get("timestamp"))
 
             ultrasonic = modalities.get("ultrasonic") or {}
             by_id = {str(item.get("id")): item for item in ultrasonic.get("sensors", []) if isinstance(item, dict)}
@@ -445,8 +457,11 @@ class Ros2ObservationBridge:
             ):
                 sample = by_id.get(sensor_id)
                 if sample and ultrasonic.get("simulated") is False and publishers.get(key):
-                    sample = {**sample, "timestamp": ultrasonic.get("timestamp")}
-                    publish_typed(key, self._range_message(sample, frame_id=frame, ultrasonic=True))
+                    timestamp = ultrasonic.get("timestamp")
+                    if timestamp is not None and sample.get("age_ms") is not None:
+                        timestamp = float(timestamp) - max(0.0, float(sample["age_ms"])) / 1000.0
+                    sample = {**sample, "timestamp": timestamp}
+                    publish_typed(key, self._range_message(sample, frame_id=frame, ultrasonic=True), timestamp)
 
             radar = modalities.get("mmwave_radar") or {}
             if radar.get("simulated") is False and publishers.get("mmwave_targets") and radar.get("available", True):
@@ -462,7 +477,7 @@ class Ros2ObservationBridge:
                 header = Header()
                 self._set_ros_stamp(header, stamp)
                 header.frame_id = str(radar.get("frame") or "ld2450")
-                publish_typed("mmwave_targets", point_cloud2.create_cloud_xyz32(header, points))
+                publish_typed("mmwave_targets", point_cloud2.create_cloud_xyz32(header, points), stamp)
         except Exception as exc:
             with self._lock:
                 self._status["body_sensor_publish_error"] = str(exc)[:200]

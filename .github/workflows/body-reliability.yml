@@ -20,6 +20,7 @@ on:
       - "tests/test_body_external_action_evidence.py"
       - "tests/test_ros2_body_sensor_publish.py"
       - "tests/test_body_visual_odometry_worker.py"
+      - "tests/test_body_live_ros2_sensor_feed.py"
       - "tests/test_visual_odometry.py"
       - "tools/body_readonly_preflight.py"
       - ".github/workflows/body-reliability.yml"
@@ -40,6 +41,7 @@ on:
       - "tests/test_body_external_action_evidence.py"
       - "tests/test_ros2_body_sensor_publish.py"
       - "tests/test_body_visual_odometry_worker.py"
+      - "tests/test_body_live_ros2_sensor_feed.py"
       - "tests/test_visual_odometry.py"
       - "tools/body_readonly_preflight.py"
       - ".github/workflows/body-reliability.yml"
@@ -72,6 +74,7 @@ jobs:
           python -m unittest discover -s tests -p "test_body_external_action_evidence.py" -v 2>&1 | tee body-reliability-external.log || failures=$((failures + 1))
           python -m unittest discover -s tests -p "test_ros2_body_sensor_publish.py" -v 2>&1 | tee body-reliability-ros2-sensors.log || failures=$((failures + 1))
           python -m unittest discover -s tests -p "test_body_visual_odometry_worker.py" -v 2>&1 | tee body-reliability-visual-worker.log || failures=$((failures + 1))
+          python -m unittest discover -s tests -p "test_body_live_ros2_sensor_feed.py" -v 2>&1 | tee body-reliability-live-ros2-feed.log || failures=$((failures + 1))
           python -m unittest discover -s tests -p "test_visual_odometry.py" -v 2>&1 | tee body-reliability-visual-odometry.log || failures=$((failures + 1))
           echo "Failed suites: $failures"
           test "$failures" -eq 0
