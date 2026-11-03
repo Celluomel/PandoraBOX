@@ -739,8 +739,6 @@ class BodyHost:
                                 else "integrated_input_energy_estimate")
             estimate = {"capacity_wh": capacity_wh, "usable_fraction": usable_fraction,
                         "usable_capacity_wh": round(usable_wh, 3),
-                        "consumed_wh": round(accumulated_input_wh, 3),
-                        "accumulated_input_energy_wh": round(accumulated_input_wh, 3),
                         "counter_exceeds_usable_capacity": counter_over_capacity,
                         "estimate_quality": estimate_quality,
                         "remaining_wh_est": round(remaining_wh, 3),
@@ -763,7 +761,6 @@ class BodyHost:
                     "usable_capacity_wh": estimate["usable_capacity_wh"],
                     "nominal_capacity_wh": estimate["capacity_wh"],
                     "counter_exceeds_usable_capacity": counter_over_capacity,
-                    "accumulated_input_energy_wh": estimate["accumulated_input_energy_wh"],
                     "measurement_type": estimate["measurement_type"],
                     "direct_battery_measurement": False,
                 },
