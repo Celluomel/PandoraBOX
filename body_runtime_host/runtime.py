@@ -74,6 +74,238 @@ def _calibration_midas_record(midas: dict, now: float, last_snapshot_at: float,
             record["depth_raw_png_bytes_omitted"] = len(raw_png) * 3 // 4
     return record, last_snapshot_at
 
+
+def interpret_body_observation(subject: str, value: dict) -> dict:
+    """Attach a Body-owned interpretation while preserving the raw sample.
+
+    This is a typed interpretation contract, not object classification. It
+    describes what the instrument measured, the useful implication, and the
+    inference boundary for that modality.
+    """
+    modality = str(subject or "").removeprefix("sensor.").removeprefix("camera.")
+    facts: list[dict] = []
+    limits: list[str] = []
+    summary = "Sensor sample received; interpret only its reported fields and units."
+    state = "available" if value.get("available") is not False else "unavailable"
+
+    def number(item, key):
+        try:
+            parsed = float(item.get(key))
+            return parsed if math.isfinite(parsed) else None
+        except (TypeError, ValueError, OverflowError, AttributeError):
+            return None
+
+    if modality == "ultrasonic":
+        for channel in value.get("sensors") or []:
+            if not isinstance(channel, dict):
+                continue
+            channel_id = str(channel.get("id") or "unknown_channel")
+            distance = number(channel, "distance_m")
+            error = str(channel.get("error") or "")
+            channel_state = "valid_return" if channel.get("available") and distance is not None else error or "unavailable"
+            zone = {"front_left": "front-left", "front_right": "front-right", "rear": "rear"}.get(channel_id, channel_id)
+            if channel_state == "valid_return":
+                meaning = f"Nearest acoustic reflector returned at {distance:.2f} m in the {zone} beam."
+            elif error == "too_close":
+                meaning = f"A return is below the usable minimum range in the {zone} beam (<0.02 m)."
+            elif error in {"no_echo", "echo_timeout", "stale_or_no_echo"}:
+                meaning = f"No valid acoustic range is available in the {zone} beam; the zone is unknown, not confirmed clear."
+            else:
+                meaning = f"The {zone} channel has no current valid range."
+            facts.append({
+                "channel": channel_id,
+                "zone": zone,
+                "state": channel_state,
+                "distance_m": distance if channel_state == "valid_return" else None,
+                "sequence": channel.get("sequence"),
+                "age_ms": channel.get("age_ms"),
+                "meaning": meaning,
+            })
+        valid = [fact for fact in facts if fact.get("state") == "valid_return"]
+        summary = ("; ".join(f"{fact['zone']} return {fact['distance_m']:.2f} m" for fact in valid)
+                   if valid else "No valid ultrasonic range return in the current sample.")
+        limits = [
+            "A range is the nearest acoustic return in the sensor beam; it does not identify the reflecting object.",
+            "No echo or stale data means unknown coverage, not free space.",
+        ]
+        state = "partial" if valid and len(valid) < len(facts) else "available" if valid else "unavailable"
+    elif modality == "tof":
+        distance = number(value, "distance_m")
+        if distance is None:
+            distance_mm = number(value, "distance_mm")
+            distance = distance_mm / 1000.0 if distance_mm is not None else None
+        facts.append({"state": "valid_return" if distance is not None else str(value.get("error") or "unavailable"),
+                      "distance_m": distance, "meaning": f"Forward ToF range return {distance:.2f} m." if distance is not None else "No valid ToF range return."})
+        summary = facts[0]["meaning"]
+        limits = ["Range return only; no semantic object identity is supplied."]
+        state = facts[0]["state"]
+    elif modality == "gps":
+        fix = bool(value.get("fix") and value.get("latitude") is not None and value.get("longitude") is not None)
+        facts.append({"state": "fix" if fix else "no_fix",
+                      "latitude": value.get("latitude") if fix else None,
+                      "longitude": value.get("longitude") if fix else None,
+                      "fix_quality": value.get("fix_quality"), "satellites": value.get("satellites"),
+                      "satellites_in_view": value.get("satellites_in_view"), "hdop": value.get("hdop"),
+                      "meaning": "Geographic position fix." if fix else "No geographic position fix; position is unknown."})
+        summary = facts[0]["meaning"] + (f" Coordinates {float(value['latitude']):.6f}, {float(value['longitude']):.6f}." if fix else "")
+        limits = ["GPS position is geographic and does not provide local distance to a camera-detected object."]
+        state = facts[0]["state"]
+    elif modality == "imu":
+        motion = str(value.get("motion_state") or "unknown")
+        stable = value.get("calibration_stable") is True
+        if motion in {"moving", "motion", "active"} and not stable:
+            motion = "unstable_unconfirmed"
+        facts.append({"state": motion, "calibration_stable": stable,
+                      "acceleration_g": value.get("acceleration_g"),
+                      "angular_velocity_dps": value.get("angular_velocity_dps"),
+                      "roll_deg": value.get("roll_deg"), "pitch_deg": value.get("pitch_deg"),
+                      "yaw_relative_deg": value.get("yaw_relative_deg"),
+                      "meaning": "Acceleration and rotation observation; translation is not established."})
+        summary = f"IMU state {motion}; calibration_stable={stable}."
+        limits = ["IMU acceleration/rotation alone cannot establish translation, travel distance, or motion toward a target.",
+                  "A moving label without stable calibration is treated as unsettled IMU evidence, not confirmed locomotion."]
+        state = "available" if value.get("available") is not False else "unavailable"
+    elif modality in {"mmwave_radar", "radar"}:
+        for target in (value.get("targets") or []):
+            if not isinstance(target, dict):
+                continue
+            position = target.get("position_m")
+            distance = number(target, "distance_m")
+            if distance is None and isinstance(position, (list, tuple)) and len(position) >= 2:
+                try:
+                    distance = math.hypot(float(position[0]), float(position[1]))
+                except (TypeError, ValueError, OverflowError):
+                    distance = None
+            facts.append({"target_id": target.get("target_id", target.get("id")),
+                          "position_m": position, "distance_m": distance,
+                          "radial_speed_mps": target.get("radial_speed_mps", target.get("radial_velocity_mps")),
+                          "classification": target.get("classification") or "unknown",
+                          "meaning": "Radar target return/track; semantic identity is not established."})
+        summary = f"{len(facts)} radar target return(s) in the latest frame."
+        limits = ["Radar tracks do not identify people or objects without synchronized semantic association."]
+        state = "available" if value.get("available") is not False else "unavailable"
+    elif modality == "lidar":
+        ranges = value.get("ranges_m") or value.get("ranges") or []
+        valid = []
+        for index, raw in enumerate(ranges):
+            try:
+                distance = float(raw)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if math.isfinite(distance) and distance > 0:
+                fact = {"beam_index": index, "distance_m": distance}
+                angle_min = number(value, "angle_min_rad")
+                angle_increment = number(value, "angle_increment_rad")
+                if angle_min is not None and angle_increment is not None:
+                    fact["angle_rad"] = angle_min + index * angle_increment
+                valid.append(fact)
+        facts = valid[:256]
+        summary = f"{len(valid)} valid LiDAR return(s) in the latest scan."
+        if valid:
+            nearest = min(valid, key=lambda item: item["distance_m"])
+            summary += f" Nearest return {nearest['distance_m']:.2f} m at beam {nearest['beam_index']}."
+        limits = ["Returns describe surfaces by scan beam; null/missing beams are unknown, not clear space."]
+        state = "available" if valid else "unavailable"
+    elif modality == "odometry":
+        facts.append({"position_m": value.get("position_m"), "yaw_rad": value.get("yaw_rad"),
+                      "linear_velocity_m_s": value.get("linear_velocity_m_s"),
+                      "angular_velocity_rad_s": value.get("angular_velocity_rad_s"),
+                      "frame": value.get("child_frame_id", value.get("frame_id")),
+                      "meaning": "Frame-relative motion estimate from the declared odometry source."})
+        summary = f"Odometry reports position {value.get('position_m')} in frame {facts[0]['frame'] or 'unknown'}."
+        limits = ["Odometry is an estimate; confirm source and freshness, and distinguish simulated from physical data."]
+    elif modality == "yolox":
+        detections = [item for item in (value.get("detections") or []) if isinstance(item, dict)]
+        labels = []
+        for item in detections[:12]:
+            confidence = number(item, "confidence")
+            if confidence is None:
+                confidence = number(item, "score")
+            label = str(item.get("label") or item.get("class_name") or "object")
+            metric = item.get("metric_depth") if isinstance(item.get("metric_depth"), dict) else {}
+            distance = number(metric, "distance_m")
+            suffix = f" ({confidence:.0%})" if confidence is not None else ""
+            suffix += f", estimated range {distance:.2f} m" if distance is not None else ""
+            labels.append(label + suffix)
+        facts = []
+        for item in detections[:12]:
+            facts.append({"label": item.get("label") or item.get("class_name"),
+                          "confidence": item.get("confidence", item.get("score")),
+                          "bbox": item.get("bbox"), "metric_depth": item.get("metric_depth")})
+        summary = (f"YOLOX detects {len(detections)} object box(es): " + ", ".join(labels) + ".") if detections else "YOLOX has no detections in the latest frame."
+        limits = ["A detection box is 2D; use only timestamp-matched metric-depth fields for distance. A label alone is not a complete scene or position."]
+        state = str(value.get("state") or "unavailable")
+    elif modality in {"fnk0031.usb_status", "robot.capability_inventory"}:
+        hardware_status = value if modality == "fnk0031.usb_status" else {}
+        capabilities = value.get("capabilities") if modality == "robot.capability_inventory" else {}
+        locomotion = (capabilities.get("locomotion") if isinstance(capabilities, dict) else {}) or {}
+        installed = (hardware_status.get("servo_motors_installed") if hardware_status
+                     else locomotion.get("installed")) is True
+        connected = (hardware_status.get("connected") if hardware_status
+                     else locomotion.get("operational")) is True
+        enabled = (hardware_status.get("actuation_enabled") if hardware_status
+                   else locomotion.get("authorized")) is True
+        estimated = hardware_status.get("estimated_leg_state") if hardware_status else value.get("estimated_leg_state")
+        estimated = estimated if isinstance(estimated, dict) else None
+        measured = bool(hardware_status.get("estimated_state_is_measured", False)) if hardware_status else False
+        legs = estimated.get("legs", []) if estimated else []
+        joint_estimates = []
+        for leg in legs:
+            if not isinstance(leg, dict):
+                continue
+            angles = leg.get("joint_angles_deg")
+            if isinstance(angles, (list, tuple)) and len(angles) == 3:
+                joint_estimates.append({"leg": leg.get("leg"), "command_estimate_deg": list(angles)})
+        if not installed:
+            physical_angles = "not_applicable_servos_not_installed"
+            servo_meaning = "No servo motors are declared installed; physical joint angles cannot be measured."
+        elif measured:
+            physical_angles = "measured_feedback_available"
+            servo_meaning = "Measured joint feedback is available from the declared hardware source."
+        else:
+            physical_angles = "unmeasured"
+            servo_meaning = "Servo angles are not measured; any reported angles are controller command estimates only."
+        facts.extend([
+            {"field": "servo_motors_installed", "value": installed,
+             "meaning": "Servo hardware inventory as declared to the Body; not auto-detected."},
+            {"field": "controller_connected", "value": connected,
+             "meaning": "FNK0031 control board serial link status."},
+            {"field": "actuation_enabled", "value": enabled,
+             "meaning": "Whether Body policy permits issuing commands; not proof of physical motion."},
+            {"field": "physical_servo_angles", "state": physical_angles,
+             "angles_deg": None, "meaning": servo_meaning},
+            {"field": "joint_angle_command_estimates", "state": "available" if joint_estimates else "unavailable",
+             "source": estimated.get("source") if estimated else None,
+             "measured": measured, "legs": joint_estimates,
+             "meaning": "FNHR internal estimated joint command angles, three per leg; these are not encoder/servo measurements."},
+        ])
+        summary = (f"FNK0031 controller {'connected' if connected else 'disconnected'}; "
+                   f"servo motors {'declared installed' if installed else 'declared absent'}; "
+                   f"physical servo angles {physical_angles}; "
+                   f"{len(joint_estimates)} leg command-angle estimate(s) received.")
+        limits = [
+            "Servo installation is an operator-declared inventory value, not detected electrically.",
+            "FNHR GetEstimatedLegState reports command-derived estimates, never measured servo angles.",
+            "With servos absent, physical angles are not applicable; do not convert missing feedback into measured zero degrees.",
+            "A connected controller or enabled actuation does not prove that a movement occurred.",
+        ]
+        state = "available" if connected else "disconnected"
+    else:
+        # Preserve unfamiliar modalities as a usable typed observation rather
+        # than dropping them or pretending to know their physical meaning.
+        facts.append({"reported_fields": value})
+        limits = ["No modality-specific interpretation is registered; raw fields and provenance remain available for analysis."]
+
+    return {
+        "contract": "body_sensor_interpretation.v1",
+        "modality": modality,
+        "state": state,
+        "summary": summary,
+        "facts": facts,
+        "limits": limits,
+        "interpretation_source": "body_runtime",
+    }
+
 # Hardware modules are discovered from the robot/gateway capability contract.
 # This catalog only defines the vocabulary and UI metadata; it does not claim
 # that optional hardware is present.
@@ -4440,6 +4672,32 @@ class BodyHost:
             self.stop_event.wait(2.0)
 
     def _bridge_put(self, entry: dict) -> None:
+        subject = str(entry.get("subject") or "")
+        interpret_subject = (subject.startswith("sensor.") or subject.startswith("camera.")
+                             or subject in {"fnk0031.usb_status", "robot.capability_inventory"})
+        if (entry.get("kind") in {"sensor_observation", "perception_observation", "sensor",
+                                   "hardware_status", "robot_capability_inventory"}
+                and interpret_subject):
+            raw_value = entry.get("value")
+            if isinstance(raw_value, dict):
+                interpretation = interpret_body_observation(subject, raw_value)
+                try:
+                    observed_at = float(entry.get("observed_at") or raw_value.get("timestamp") or time.time())
+                except (TypeError, ValueError, OverflowError):
+                    observed_at = time.time()
+                age_seconds = max(0.0, time.time() - observed_at)
+                interpretation.update({
+                    "observed_at": observed_at,
+                    "age_seconds": round(age_seconds, 3),
+                    "freshness": "live" if age_seconds <= 15.0 else "stale",
+                })
+                entry = {
+                    **entry,
+                    "value": {**raw_value, "body_interpretation": interpretation},
+                }
+                entity_id = str(entry.get("entity_id") or "")
+                if entity_id and entity_id in self.latest:
+                    self.latest[entity_id] = entry
         if self._ros2_bridge is not None:
             self._ros2_bridge.publish(entry)
         message = {"type": "observation", "observation": entry}

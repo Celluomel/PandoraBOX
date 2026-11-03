@@ -718,6 +718,7 @@ class BodyRuntime:
             "BODY GROUNDING STATUS (authoritative for physical self-report):",
             "Answer questions about the physical body from this section first. "
             "If it says unavailable, explicitly say that the Body has not supplied that fact.",
+            "Body sensor/camera and robot-status records preserve raw fields and attach body_interpretation.v1 before transmission. Use both: report the Body's measured fact, functional meaning, timestamp/freshness, and stated limits. A no-return state is unknown coverage, not proof of an empty area; a sensor return is not a semantic object identity. FNHR joint angles are command-derived estimates, not measured servo positions; if servos are absent, physical angles are not applicable, never claim measured zero degrees.",
         ]
         bridge_connected = bool(self._bridge_devices)
         lines.append(
