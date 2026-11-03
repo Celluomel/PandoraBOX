@@ -2214,7 +2214,7 @@ Memory honesty — two distinct cases:
                 "Treat each measurement as evidence only for the source, target, place, and time it explicitly describes. "
                 "Do not assign a sensor reading to a named object, person, or event unless the observations provide an explicit association; numerical similarity or proximity alone is not an association. "
                 "A single camera can support approximate metric distance through calibrated monocular MiDaS depth; stereo vision is not required. "
-                "For detected objects, use the timestamp-matched YOLOX box and its calibrated MiDaS 3D estimate; use a synchronized radar-associated person as a scale anchor when present, and use a validated MiDaS metric fit when that live anchor is absent. "
+                "For detected objects, use the timestamp-matched YOLOX box and its calibrated MiDaS estimate, preserving its camera-relative coordinate frame. A synchronized radar association supplies a metric range only for the explicitly matched person detection; never transfer the radar person's range or scale correction to the TV or another box. Other objects use the MiDaS metric fit and its own validation state. "
                 "When person-to-object geometry is supplied, report it as approximate scene geometry. A raw MiDaS map being unavailable on one request is a data-acquisition gap, not proof that monocular distance estimation is impossible. "
                 "Radar tracks are targets, not semantic human classifications; describe a target as a person only when a synchronized camera association supports that label. Never use an unrelated ultrasonic echo as the distance of a named camera object. "
                 "For estimates, retain their timestamp, frame, provenance, confidence, validation range, and uncertainty when supplied. Frame suggestions as recommendations, not completed changes. "
@@ -2226,8 +2226,9 @@ Memory honesty — two distinct cases:
                 if _body_context:
                     system_prompt += (
                         "\n\n━━ CURRENT BODY OBSERVATIONS ━━\n"
-                        "This is the freshest snapshot read by the Body for this turn. "
-                        "It overrides older connector, memory, and conversation claims. "
+                        "This section combines separately sampled Body bridge observations and a Body world-model context; it is not one synchronized snapshot. "
+                        "Use each record's own observed/received time, age, source, frame, and freshness. Do not combine measurements as simultaneous unless their frame IDs/timestamps establish synchronization. A cached scene or pose is historical when marked stale and cannot establish the present state. "
+                        "Recent Body evidence overrides older connector, memory, and conversation claims only for the same subject and measurement. "
                         "Never describe an action as currently running when this snapshot "
                         "reports a completed plan, terminal state, or no active plan.\n"
                         "When the user asks what you perceive, sense, can physically do, or what your body is doing, "
@@ -3337,8 +3338,13 @@ Memory honesty — two distinct cases:
                     else:
                         text = label
                     if metric.get("available"):
-                        reported_range = metric.get("range_m", metric.get("forward_m"))
-                        text += f" · ~{float(reported_range):.2f}m Body"
+                        radial_range = metric.get("range_m", metric.get("distance_m"))
+                        forward = metric.get("forward_m")
+                        if isinstance(radial_range, (int, float)):
+                            text += f" · portée radiale caméra ≈{float(radial_range):.2f}m"
+                        elif isinstance(forward, (int, float)):
+                            text += f" · profondeur avant caméra ≈{float(forward):.2f}m"
+                        text += " (approx.)"
                         if isinstance(metric.get("uncertainty_m_approx"), (int, float)):
                             text += f" ±{float(metric['uncertainty_m_approx']):.2f}m approx."
                         if isinstance(metric.get("bearing_deg_approx"), (int, float)):
@@ -3365,7 +3371,8 @@ Memory honesty — two distinct cases:
                 response = (
                     f"Caméra Body · YOLOX · {frame_age} · frame {yolo.get('frame_id') or 'courante'} : "
                     f"{len(detections)} détection(s) 2D — {visual}. "
-                    "Les distances sont des estimations MiDaS ancrées radar quand une association synchronisée et non ambiguë existe; sinon elles sont omises ou signalées comme candidates non validées."
+                    "Les distances disponibles sont des estimations monoculaires MiDaS dans le repère approximatif de la caméra; elles ne sont pas automatiquement des coordonnées de navigation du robot. "
+                    "Le radar mesure uniquement la personne explicitement appariée à une cible synchronisée; sa distance ou son échelle ne sont pas transférées à la TV ni aux autres boîtes. Les candidats hors plage validée restent non validés."
                 )
                 perception = {"available": True, "camera": {
                     "source": "yolox", "frame_id": yolo.get("frame_id"),
@@ -3390,8 +3397,8 @@ Memory honesty — two distinct cases:
                         error = calibration.get("holdout_rmse_m", calibration.get("rmse_m"))
                         response += (
                             f" Calibration MiDaS active sur {range_text}"
-                            + (f" (erreur holdout {float(error):.2f} m)." if isinstance(error, (int, float)) else ".")
-                            + (" Les distances affichées sont des estimations par boîte, synchronisées à moins de 250 ms; l'ancre radar-personne est présente." if metric_packet.get("radar_anchor_available") else " Aucune ancre radar-personne synchronisée n'est disponible pour estimer la scène.")
+                            + (f" (RMSE holdout global {float(error):.2f} m; ce n'est pas un intervalle de confiance individuel)." if isinstance(error, (int, float)) else ".")
+                            + (" Une ancre radar-personne synchronisée existe dans ce paquet, mais elle ne s'applique qu'à la détection explicitement appariée; elle ne corrige pas les autres objets." if metric_packet.get("radar_anchor_available") else " Aucune ancre radar-personne synchronisée n'est disponible dans ce paquet; les distances d'objets reposent sur le fit métrique MiDaS.")
                         )
                 snapshot = body.body_snapshot() if callable(getattr(body, "body_snapshot", None)) else None
                 if isinstance(snapshot, dict) and self._is_simulated_body_snapshot(snapshot):

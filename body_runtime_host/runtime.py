@@ -217,23 +217,146 @@ def interpret_body_observation(subject: str, value: dict) -> dict:
     elif modality == "yolox":
         detections = [item for item in (value.get("detections") or []) if isinstance(item, dict)]
         labels = []
-        for item in detections[:12]:
+        frame_id = value.get("frame_id")
+        captured_at = value.get("captured_at", value.get("timestamp"))
+        packet_metric = value.get("metric_depth") if isinstance(value.get("metric_depth"), dict) else {}
+        facts = []
+        for index, item in enumerate(detections[:12]):
             confidence = number(item, "confidence")
             if confidence is None:
                 confidence = number(item, "score")
             label = str(item.get("label") or item.get("class_name") or "object")
             metric = item.get("metric_depth") if isinstance(item.get("metric_depth"), dict) else {}
-            distance = number(metric, "distance_m")
-            suffix = f" ({confidence:.0%})" if confidence is not None else ""
-            suffix += f", estimated range {distance:.2f} m" if distance is not None else ""
-            labels.append(label + suffix)
-        facts = []
-        for item in detections[:12]:
-            facts.append({"label": item.get("label") or item.get("class_name"),
-                          "confidence": item.get("confidence", item.get("score")),
-                          "bbox": item.get("bbox"), "metric_depth": item.get("metric_depth")})
-        summary = (f"YOLOX detects {len(detections)} object box(es): " + ", ".join(labels) + ".") if detections else "YOLOX has no detections in the latest frame."
+            # Body metric-depth packets use range_m (radial distance) and
+            # forward_m (camera-forward projection); older adapters may use
+            # distance_m. Keep those meanings distinct instead of silently
+            # dropping a valid estimate from the Brain-facing interpretation.
+            range_m = number(metric, "range_m")
+            if range_m is None:
+                range_m = number(metric, "distance_m")
+            forward_m = number(metric, "forward_m")
+            lateral_m = number(metric, "lateral_m")
+            vertical_m = number(metric, "vertical_m")
+            bearing_deg = number(metric, "bearing_deg_approx")
+            uncertainty_m = number(metric, "uncertainty_m_approx")
+            available = metric.get("available") is True and (range_m is not None or forward_m is not None)
+            candidate = number(metric, "candidate_range_m")
+            radar_matched = metric.get("radar_track_associated") is True
+            metric_source = metric.get("source")
+            radar_direct = metric_source == "synchronized_mmwave_person_anchor" or radar_matched
+            if available:
+                distance_state = "estimated_extrapolated" if metric.get("calibration_extrapolated") else "estimated"
+                distance_text = f"range ≈{range_m:.2f} m" if range_m is not None else f"forward depth ≈{forward_m:.2f} m"
+                if range_m is not None and forward_m is not None:
+                    distance_text += f", forward ≈{forward_m:.2f} m"
+                if uncertainty_m is not None and not radar_direct:
+                    distance_text += f", approximate uncertainty ±{uncertainty_m:.2f} m"
+            elif candidate is not None:
+                distance_state = "candidate_unvalidated"
+                distance_text = f"candidate range {candidate:.2f} m, outside validated support"
+            else:
+                distance_state = "unavailable"
+                distance_text = str(metric.get("reason") or "no metric position estimate")
+
+            if radar_matched:
+                radar_association = {
+                    "state": "matched_to_this_detection",
+                    "target_id": metric.get("radar_target_id"),
+                    "frame_delta_s": metric.get("radar_frame_delta_s"),
+                    "bearing_error_deg": metric.get("radar_bearing_error_deg"),
+                    "meaning": "This detection is the synchronized radar-associated person; the radar measurement applies to this person only.",
+                }
+            elif packet_metric.get("radar_anchor_available") is True:
+                radar_association = {
+                    "state": "anchor_exists_but_not_associated_to_this_detection",
+                    "target_id": packet_metric.get("radar_anchor_target_id"),
+                    "meaning": "A radar/person anchor exists in this packet but is not associated with this detection and was not transferred to it.",
+                }
+            else:
+                radar_association = {"state": "none"}
+
+            item_frame = metric.get("frame_id") or frame_id
+            item_captured_at = metric.get("captured_at", captured_at)
+            relative_geometry = metric.get("body_person_target_geometry")
+            facts.append({
+                "detection_index_in_frame": index,
+                "label": item.get("label") or item.get("class_name"),
+                "confidence": confidence,
+                "bbox_xyxy_px": item.get("bbox"),
+                "frame_id": item_frame,
+                "captured_at": item_captured_at,
+                "position_estimate": {
+                    "state": distance_state,
+                    "range_m": range_m if available else None,
+                    "forward_m": forward_m if available else None,
+                    "lateral_m": lateral_m if available else None,
+                    "vertical_m": vertical_m if available else None,
+                    "bearing_deg_approx": bearing_deg if available else number(metric, "candidate_bearing_deg_approx"),
+                    "candidate_range_m": candidate,
+                    "candidate_forward_m": number(metric, "candidate_forward_m"),
+                    "candidate_lateral_m": number(metric, "candidate_lateral_m"),
+                    "candidate_vertical_m": number(metric, "candidate_vertical_m"),
+                    "uncertainty_m_approx": uncertainty_m if available and not radar_direct else None,
+                    "uncertainty_state": "not_reported_for_direct_radar_range" if radar_direct else "approximate_midas_fit_and_box_spread" if uncertainty_m is not None else "unavailable",
+                    "midas_depth_spread_m": metric.get("midas_depth_spread_m"),
+                    "coordinate_frame": (
+                        "body_radar_horizontal_camera_vertical_approximate" if radar_direct
+                        else metric.get("coordinate_frame")
+                    ),
+                    "source": metric_source,
+                    "component_sources": {
+                        "range_forward_lateral": "synchronized_mmwave_person_anchor" if radar_direct else metric_source,
+                        "vertical": "paired_yolox_box_midas_calibrated" if radar_direct else metric_source,
+                    } if available else {},
+                    "frame_delta_s": metric.get("frame_delta_s"),
+                    "calibrated_range_m": (
+                        metric.get("calibrated_range_m")
+                        or (packet_metric.get("calibration", {}).get("calibrated_range_m")
+                            if isinstance(packet_metric.get("calibration"), dict) else None)
+                    ),
+                    "calibration_extrapolated": metric.get("calibration_extrapolated"),
+                    "calibration_rmse_m": metric.get("calibration_rmse_m"),
+                    "reason": metric.get("reason") if not available else None,
+                },
+                "radar_association": radar_association,
+                "person_target_geometry": ({
+                    "status": "approximate",
+                    "person_to_target_m": relative_geometry.get("person_to_target_m_approx"),
+                    "angle_at_body_deg": relative_geometry.get("angle_at_body_deg_approx"),
+                    "angle_at_person_deg": relative_geometry.get("angle_at_person_deg_approx"),
+                    "target_depth_validated": relative_geometry.get("target_depth_validated"),
+                    "basis": relative_geometry.get("basis"),
+                } if isinstance(relative_geometry, dict) else None),
+            })
+
+            confidence_text = f" ({confidence:.0%})" if confidence is not None else ""
+            radar_text = "radar-associated person" if radar_matched else "not radar-associated"
+            labels.append(f"{label}{confidence_text}: {distance_text}; {radar_text}")
+        summary = (
+            f"YOLOX frame {frame_id or 'unknown'} captured_at={captured_at or 'unknown'}: "
+            + (f"{len(detections)} object box(es): " + "; ".join(labels) + "." if detections
+               else "no detections in this frame.")
+        )
+        fit_error = number(
+            packet_metric.get("calibration") if isinstance(packet_metric.get("calibration"), dict) else {},
+            "holdout_rmse_m",
+        )
+        if fit_error is None:
+            fit_error = number(
+                packet_metric.get("calibration") if isinstance(packet_metric.get("calibration"), dict) else {},
+                "rmse_m",
+            )
+        calibration_note = (
+            "The reported calibration RMSE is a global fit/holdout statistic, not a measured per-object confidence interval."
+        )
         limits = ["A detection box is 2D; use only timestamp-matched metric-depth fields for distance. A label alone is not a complete scene or position."]
+        limits.extend([
+            "Camera-frame monocular estimates are approximate and are not automatically positions in the robot/world navigation frame.",
+            "A radar anchor is associated only with its explicitly matched person detection; never transfer that range or scale to another box.",
+            calibration_note,
+        ])
+        if fit_error is not None:
+            limits.append(f"Current global calibration holdout RMSE: {fit_error:.3f} m.")
         state = str(value.get("state") or "unavailable")
     elif modality in {"fnk0031.usb_status", "robot.capability_inventory"}:
         hardware_status = value if modality == "fnk0031.usb_status" else {}

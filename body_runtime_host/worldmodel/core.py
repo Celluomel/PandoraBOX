@@ -1353,7 +1353,8 @@ class EmbodiedWorldModel:
             active_plan = self.plan_runtime.active_plan()
             route_state = self.route_memory.snapshot()
         lines = [
-            "CURRENT EMBODIED STATE (physical evidence owned by the Body):",
+            "BODY WORLD-MODEL CONTEXT (cached state plus persistent memory; not a synchronized sensor snapshot):",
+            "Every pose, scene, and sensor item has its own source and observation time. Treat state older than 15 seconds as historical for present-tense answers. Persistent anchors and learned memory are not live observations.",
             f"- Learned {n_steps} embodied steps; prediction error (EMA) {ema:.3f}.",
             f"- Memory: {stats['lieux']['count']} places (avg reliability "
             f"{stats['lieux'].get('avg_reliability', 0):.2f}), "
@@ -1363,20 +1364,22 @@ class EmbodiedWorldModel:
         ]
         if body_state:
             stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(body_state["timestamp"]))
+            body_age = max(0.0, time.time() - float(body_state.get("timestamp") or 0.0))
+            body_freshness = "RECENT" if body_age <= 15.0 else "HISTORICAL/STALE"
             position = ", ".join(f"{value:.2f}" for value in body_state["position"])
             posture = body_state.get("posture") or {}
             holding = posture.get("holding", "nothing")
             capabilities = body_state.get("capabilities") or {}
             capability_text = ", ".join(f"{key}={value}" for key, value in capabilities.items()) or "not reported"
             lines.append(
-                f"- Current Body pose: position=({position}), yaw={body_state['orientation']:.2f} rad, "
+                f"- Body pose cache ({body_freshness}, age={body_age:.1f}s): position=({position}), yaw={body_state['orientation']:.2f} rad, "
                 f"holding={holding} (observed {stamp}); frame={body_state.get('coordinate_frame', 'local_map')}, "
                 f"position_source={body_state.get('position_source', 'unknown')}, "
                 f"accuracy={body_state.get('position_accuracy_m', 'unknown')}m."
             )
             if body_state.get("geo"):
-                lines.append("- Body geographic fix (optional): " + json.dumps(body_state["geo"], ensure_ascii=False)[:500] + ".")
-            lines.append(f"- Current Body capabilities: {capability_text}.")
+                lines.append(f"- Body geographic state ({body_freshness}, age={body_age:.1f}s; optional): " + json.dumps(body_state["geo"], ensure_ascii=False)[:500] + ".")
+            lines.append(f"- World-model capability fields ({body_freshness}; source follows pose source): {capability_text}.")
             current_route = route_state.get("current") or {}
             lines.append(
                 f"- Route memory: {route_state.get('waypoints', 0)} metric waypoints, "
@@ -1391,11 +1394,13 @@ class EmbodiedWorldModel:
                     + "."
                 )
         else:
-            lines.append("- Current Body pose: unavailable; no Body observation has been received yet.")
+            lines.append("- Body pose cache: unavailable; no Body observation has been received yet.")
         if observation:
             stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(observation["timestamp"]))
+            observation_age = max(0.0, time.time() - float(observation.get("timestamp") or 0.0))
+            observation_freshness = "RECENT" if observation_age <= 15.0 else "HISTORICAL/STALE"
             lines.append(
-                f"- Current scene observation: {observation.get('text') or 'no scene description'} "
+                f"- Scene observation cache ({observation_freshness}, age={observation_age:.1f}s): {observation.get('text') or 'no scene description'} "
                 f"(source={observation.get('source')}, observed {stamp})."
             )
         interpreter = self.scene_interpreter.status()
@@ -1476,14 +1481,14 @@ class EmbodiedWorldModel:
         if sim_status is not None:
             task = "complete" if sim_status.get("done") else "in progress"
             lines.append(
-                f"- Physical task state: {task} (carrying={sim_status.get('carrying')}, "
+                f"- Simulator task state (not physical confirmation): {task} (carrying={sim_status.get('carrying')}, "
                 f"stage={sim_status.get('task_stage')}, goal={sim_status.get('shelf')}, "
                 f"steps={sim_status.get('steps')}, collisions={sim_status.get('collisions')})."
             )
             if sim_status.get("done"):
                 lines.append(
-                    f"- Final Body pose from the live simulator: position={sim_status.get('body')}, "
-                    f"heading={sim_status.get('heading_deg')} degrees; this is the authoritative present state."
+                    f"- Final simulated pose only: position={sim_status.get('body')}, "
+                    f"heading={sim_status.get('heading_deg')} degrees; this does not establish the physical robot pose."
                 )
             lines.append(
                 "- Body objective sequence: "
@@ -1522,7 +1527,7 @@ class EmbodiedWorldModel:
                 lines.append("- Sensor source: none attached (body without sensors).")
         if last_success >= 0:
             lines.append(f"- Last goal success at step {last_success}.")
-        lines.append("Treat this as grounded physical evidence, not abstract belief. Do not infer an unobserved body state.")
+        lines.append("Treat each record according to its stated source, frame, timestamp, and freshness. Simulation output is never proof of physical hardware, pose, sensing, or movement; do not infer an unobserved Body state.")
         return "\n".join(lines)
 
     # ── logging ─────────────────────────────────────────────────────────────
