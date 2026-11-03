@@ -600,6 +600,13 @@ class BodyHost:
         self._power_motion_since: float | None = None
         self._power_motion_last_sequence = None
         self._visual_odometry = VisualOdometry()
+        self._visual_odometry_status_lock = threading.Lock()
+        self._visual_odometry_cached_status: dict = {
+            "state": "waiting", "available": False,
+            "source": "camera_midas_rgbd", "simulated": False,
+            "reason": "background visual odometry has not processed a synchronized frame yet",
+        }
+        self._visual_odometry_status_updated_at = time.monotonic()
         self._yolo_fallback_lock = threading.Lock()
         self._body_vlm_test_lock = threading.Lock()
         self._body_vlm_test_status: dict = {"status": "idle", "job_id": None}
@@ -1961,8 +1968,13 @@ class BodyHost:
         result = self._segmentation_service.status()
         return {"available": bool(result.get("mask_png_base64")), **result}
 
-    def visual_odometry_status(self) -> dict:
-        """Estimate experimental relative body motion from synchronized live sensors."""
+    @staticmethod
+    def visual_odometry_refresh_interval(mode: str) -> float:
+        """Return the Body-owned visual odometry worker cadence for a power mode."""
+        return {"DEV": 0.5, "ATTENTIVE": 0.75, "IDLE": 1.0}.get(str(mode or "").upper(), 0.75)
+
+    def _update_visual_odometry_status(self) -> dict:
+        """Consume the latest synchronized camera/depth frame in the service worker."""
         depth = self._midas_service.status()
         frame = self._midas_service.analyzed_frame(depth.get("frame_id")) or {}
         calibration = self._midas_metric_calibration.status()
@@ -1973,13 +1985,64 @@ class BodyHost:
             float(frame.get("captured_at") or 0.0), max_delta_s=0.5
         )
         detections = (yolo or {}).get("detections") or []
+        # The sensor polling loop owns IMU reads. Reading it here used to add
+        # unnecessary hardware RPCs every time a browser requested this endpoint.
         imu_source = self._get_imu_bridge_source()
-        try:
-            imu_source.read()
-        except Exception:
-            pass
         imu_history = imu_source.status().get("history", [])
         return self._visual_odometry.update(frame, depth, calibration, detections, imu_history)
+
+    def visual_odometry_loop(self) -> None:
+        """Keep experimental visual odometry advancing without a dashboard client."""
+        while not self.stop_event.is_set():
+            mode = str(self._power_mode.status().get("mode") or "DEV").upper()
+            interval = self.visual_odometry_refresh_interval(mode)
+            if mode == "IDLE":
+                with self._visual_odometry_status_lock:
+                    previous = self._visual_odometry_cached_status
+                    self._visual_odometry_cached_status = {
+                        **previous, "state": "paused", "available": False,
+                        "last_state": previous.get("state"),
+                        "reason": "visual odometry paused in IDLE power mode",
+                    }
+                    self._visual_odometry_status_updated_at = time.monotonic()
+            else:
+                try:
+                    result = self._update_visual_odometry_status()
+                    with self._visual_odometry_status_lock:
+                        self._visual_odometry_cached_status = dict(result)
+                        self._visual_odometry_status_updated_at = time.monotonic()
+                except Exception as exc:
+                    LOG.debug("Background visual odometry update failed: %s", exc)
+                    with self._visual_odometry_status_lock:
+                        self._visual_odometry_cached_status = {
+                            **self._visual_odometry.status(), "state": "degraded",
+                            "available": False, "reason": str(exc)[:240],
+                        }
+                        self._visual_odometry_status_updated_at = time.monotonic()
+            self.stop_event.wait(interval)
+
+    def visual_odometry_status(self) -> dict:
+        """Return cached experimental odometry; HTTP reads never perform inference."""
+        with self._visual_odometry_status_lock:
+            result = dict(self._visual_odometry_cached_status)
+            updated_at = self._visual_odometry_status_updated_at
+        result["status_age_s"] = round(max(0.0, time.monotonic() - updated_at), 3)
+        captured_at = result.get("captured_at")
+        if captured_at is not None:
+            try:
+                frame_age = max(0.0, time.time() - float(captured_at))
+                result["frame_age_s"] = round(frame_age, 3)
+                mode = str(self._power_mode.status().get("mode") or "DEV").upper()
+                stale_after = max(2.5, self.visual_odometry_refresh_interval(mode) * 3.0)
+                if result.get("available") and frame_age > stale_after:
+                    result["last_state"] = result.get("state")
+                    result.update({
+                        "state": "stale", "available": False,
+                        "reason": f"last synchronized camera/depth frame is {frame_age:.1f}s old",
+                    })
+            except (TypeError, ValueError, OverflowError):
+                result["frame_age_s"] = None
+        return result
 
     def midas_metric_calibration(self) -> dict:
         return self._midas_metric_calibration.status()
@@ -5464,6 +5527,7 @@ class BodyHost:
         threads = [
             threading.Thread(target=self.poll_loop, name="body-sensors", daemon=True),
             threading.Thread(target=self.camera_perception_loop, name="body-camera-perception", daemon=True),
+            threading.Thread(target=self.visual_odometry_loop, name="body-visual-odometry", daemon=True),
             threading.Thread(target=self.power_energy_loop, name="body-power-energy", daemon=True),
         ]
         # Keep the bridge loop alive even when disabled so the UI can enable it

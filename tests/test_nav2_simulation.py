@@ -16,7 +16,9 @@ class Nav2SimulationTests(unittest.TestCase):
         self.assertFalse(readiness["hardware_actuation_enabled"])
         self.assertTrue(any("odometry" in blocker.lower() for blocker in readiness["blockers"]))
         self.assertTrue(any("cmd_vel" in blocker for blocker in readiness["blockers"]))
-        self.assertTrue(any("sampling cadence" in blocker for blocker in readiness["blockers"]))
+        self.assertTrue(any("synchronized timing" in blocker for blocker in readiness["blockers"]))
+        self.assertEqual(readiness["typed_sensor_streams_fresh"], 0)
+        self.assertEqual(readiness["typed_sensor_streams_required"], 4)
         self.assertGreaterEqual(len(readiness["required_before_physical_test"]), 4)
 
     def test_physical_sensor_topic_contract_is_explicit(self):

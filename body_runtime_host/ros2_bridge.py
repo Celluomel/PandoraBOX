@@ -148,10 +148,10 @@ class Ros2ObservationBridge:
         """Describe repository-level hardware blockers without implying ROS graph readiness is physical readiness."""
         sensor_publishers = sensor_publishers or {}
         blockers = [
-            "Typed outputs follow the world-model sampling cadence (default 2 s), not a validated control-rate stream",
+            "Typed sensor topics are live, but synchronized timing and a validated navigation control-rate stream are not established",
             "Available HC-SR04 and LD2450 coverage is not a 360-degree navigation costmap source",
-            "Stock and opt-in custom FNHR profiles expose blocking gait actions, not continuous cmd_vel control",
-            "FNK0031 stock firmware reports no planar pose or odometry",
+            "The FNK0031 adapter exposes blocking gait actions, not interruptible continuous cmd_vel control",
+            "FNK0031 leg pose is command-derived; no measured planar pose or odometry is reported",
             "No physical map/localization/robot-TF bringup is configured in this repository",
             "No physical-motion safety controller or independent emergency stop is integrated here",
         ]
@@ -172,6 +172,8 @@ class Ros2ObservationBridge:
             "sensor_platform": "Body and robot are one co-mounted physical platform; Body sensors are robot sensors",
             "blockers": blockers,
             "sensor_streams": sensor_streams,
+            "typed_sensor_streams_fresh": sum(1 for state in sensor_streams.values() if state["fresh"]),
+            "typed_sensor_streams_required": len(required_sensor_streams),
             "required_before_physical_test": [
                 "calibrated, timestamped planar odometry with a validated map->odom->base_link TF chain",
                 "typed, timestamped physical obstacle data with verified frame IDs and sensor QoS",
