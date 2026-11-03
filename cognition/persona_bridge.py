@@ -2410,8 +2410,16 @@ Memory honesty — two distinct cases:
                     "hardware capability is not proof that a test was performed. For questions about "
                     "tests, report only explicit test records/results in the supplied evidence; otherwise "
                     "say the test history is not available. Never invent movement trials, measured leg "
-                    "feedback, odometry, or sensor-test coverage. A command-derived FNHR pose is not "
-                    "measured servo feedback.\n"
+                    "feedback, odometry, or sensor-test coverage. For actuator questions, answer from the "
+                    "specific hardware inventory: servo_motors_installed=false means no physical servo "
+                    "motors are installed and locomotion is unavailable. actuation_enabled is only a "
+                    "software authorization flag; it never proves motors are installed, powered, ready, or "
+                    "moving. FNHR joint_angle estimates are commanded/internal estimates, not measured "
+                    "servo positions; when servos are absent, physical servo angles are not applicable, "
+                    "not measured zero. Do not substitute IMU roll/pitch/yaw for leg or servo angles, and "
+                    "do not call IMU noise 'parasitic movement' without explicit evidence. Answer only the "
+                    "requested Body subsystem; do not dump the same full sensor report for every mention "
+                    "of 'Body'. A bare 'Body' is ambiguous and should receive a brief clarification.\n"
                     f"{_body_context[-12500:]}"
                 )
             system_prompt += (
@@ -2752,8 +2760,8 @@ Memory honesty — two distinct cases:
             else:
                 labels = "BODY_DIAGNOSTIC, BODY_ACTION, or NORMAL"
                 classifier_labels = "BODY_DIAGNOSTIC|BODY_ACTION|NORMAL"
-                meaning = "requests a read-only Body diagnostic, requests physical actuation now, or is ordinary conversation"
-            system = f"Classify whether the user's latest message {meaning}. Return exactly one label and nothing else: {labels}. Understand the user's language semantically across languages; do not use a phrase list or translate by matching words. BODY_DIAGNOSTIC means inspect or test current sensor, camera, robot, or capability evidence without sending commands. A checklist or request to test a capability remains BODY_DIAGNOSTIC even if it mentions movement examples such as forward or crawl. BODY_ACTION means the user asks the Body to perform a physical action now. A question about whether the Body can act is read-only NORMAL. A short imperative or affirmative can confirm the already prepared plan when its conversational function is approval, while a new physical objective is NEW_ACTION. A refusal or withdrawal is CANCEL. This classification is only a gate for physical actuation; read-only questions must be answered from timestamped evidence and must never be compiled as a motor plan. Infer the speech act from context and intent, not vocabulary alone."
+                meaning = "explicitly requests a read-only Body inspection/test to be run now, requests physical actuation now, or is ordinary conversation"
+            system = f"Classify whether the user's latest message {meaning}. Return exactly one label and nothing else: {labels}. Understand the user's language semantically across languages; do not use a phrase list or translate by matching words. BODY_DIAGNOSTIC is only for an explicit request to perform/check a diagnostic now; it is not the default for a factual question, a mention of the Body, or a bare word such as 'body'. Factual questions about Body sensors, camera, motor/servo inventory, or status are NORMAL and belong to the main conversational model with timestamped evidence. A checklist or request to test a capability remains BODY_DIAGNOSTIC even if it mentions movement examples such as forward or crawl. BODY_ACTION means the user asks the Body to perform a physical action now. A question about whether the Body can act is read-only NORMAL. A short imperative or affirmative can confirm the already prepared plan when its conversational function is approval, while a new physical objective is NEW_ACTION. A refusal or withdrawal is CANCEL. This classification is only a gate for physical actuation; read-only questions must be answered from timestamped evidence and must never be compiled as a motor plan. Infer the speech act from context and intent, not vocabulary alone."
             if retry and pending:
                 system += " Re-evaluate the speech act carefully. The user is responding immediately after the Body asked whether to execute the already validated plan."
             if confirmation_probe:
@@ -2802,6 +2810,7 @@ Memory honesty — two distinct cases:
                     "Classify the user's latest message for the Body interface. "
                     "Return exactly JSON with route equal to one of: body_diagnostic, body_action, normal. body_diagnostic means inspect or test current sensor/camera/controller evidence without sending commands; a checklist that mentions movement examples is still diagnostic. body_action means the user requests physical movement or manipulation now. "
                     "Every read-only question about Body sensors, camera, detections, distances, battery, GPS, status, capabilities, or workspace is normal: let the main conversational model answer from the timestamped Body evidence already included in its context. "
+                    "A factual question about motors/servos is also normal. A bare mention such as 'body' is ambiguous and is not a request for a full diagnostic. "
                     "Do not turn a request to inspect/test into a physical action plan. Use semantic meaning across languages, not a fixed phrase list."
                 )
             raw = fast(text, system, model=model, timeout=6.0, max_tokens=120)
@@ -3739,7 +3748,9 @@ Memory honesty — two distinct cases:
         normalized = str(text or "").lower().strip()
         body_reference = re.search(
             r"\b(body|robot|ventuno|fnk0031|gps|gnss|sensor|sensors|capteur|capteurs|"
-            r"yolox|midas|tof|mmwave|radar|odometry|odom|ultrasonic|ultrasonique)\b",
+            r"yolox|midas|tof|mmwave|radar|odometry|odom|ultrasonic|ultrasonique|"
+            r"motor|motors|engine|engines|servo|servos|servomotor|servomoteur|servomoteurs|"
+            r"moteur|moteurs|jambe|jambes|articulation|articulations)\b",
             normalized,
         )
         # This is only a high-recall gateway to the semantic action classifier,
@@ -4045,6 +4056,13 @@ Memory honesty — two distinct cases:
     def handle_body_chat_turn(self, user_input: str, user_id: str = "default") -> dict | None:
         """Handle only Body-specific turns; return None for normal dialogue."""
         pending = self._pending_body_plans.get(str(user_id))
+        bare_body_reference = re.fullmatch(r"[\W_]*(?:the\s+|le\s+|mon\s+|my\s+)?body[\W_]*", str(user_input or "").strip(), re.IGNORECASE)
+        if not pending and bare_body_reference:
+            return {
+                "handled": True,
+                "status": "clarification",
+                "response": "Que veux-tu savoir du Body : ses capteurs, sa caméra, ses moteurs/servos, son énergie ou ses capacités ?",
+            }
         if not pending and not (self._may_route_to_body(user_input) or self._may_route_to_local_camera(user_input)):
             return None
         route = self._classify_body_chat_turn(user_input, pending=pending)

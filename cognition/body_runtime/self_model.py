@@ -57,26 +57,58 @@ def body_functional_self_model(
                     f"operational={record.get('operational', 'unknown')}; authorized={record.get('authorized', 'unknown')}{action_text}."
                 )
     else:
-        controller = latest.get("fnk0031.usb_status")
-        controller_value = controller.get("value") if isinstance(controller, dict) else None
-        if isinstance(controller_value, dict):
-            observed_at = stamp(controller)
-            age = max(0.0, current - observed_at) if observed_at else None
-            age_note = f"age={age:.1f}s" if age is not None else "age unknown"
-            readiness = robot_capability_report(observations, "locomotion", now=current)
-            motors = controller_value.get("servo_motors_installed")
-            hardware = "installed" if motors is True else "absent" if motors is False else "unknown"
-            lines.append(f"- Active robot profile: FNK0031; servo inventory={hardware} ({age_note}; FNK adapter/legacy report).")
-            motion = "command path is available; this alone does not prove movement occurred" if readiness["ready"] else "blocked or unknown: required hardware, connection, authorization, freshness, or provenance is not confirmed"
-            lines.append(f"- Robot capability locomotion: {motion}.")
-            supported = controller_value.get("supported_actions")
-            if isinstance(supported, list) and supported:
-                lines.append("- Controller-reported primitives: " + ", ".join(str(value) for value in supported[:12]) + ".")
-            if isinstance(controller_value.get("estimated_leg_state"), dict):
-                semantics = "measured feedback" if controller_value.get("estimated_state_is_measured") else "FNHR command-derived estimate, not measured servo position"
-                lines.append(f"- Robot joint/leg state: available as {semantics}.")
-        else:
-            lines.append("- Robot profile/capability inventory: unknown; Body has not supplied a current structured report. Do not infer hardware from the simulator or robot name.")
+        lines.append("- Robot profile/capability inventory: unknown; Body has not supplied a current structured report. Do not infer hardware from the simulator or robot name.")
+
+    # Keep controller state visible even when a separate robot inventory is
+    # present. Inventory and USB status answer different questions and must not
+    # be silently collapsed into a generic claim that motors are ready.
+    controller = latest.get("fnk0031.usb_status")
+    controller_value = controller.get("value") if isinstance(controller, dict) else None
+    if isinstance(controller_value, dict):
+        observed_at = stamp(controller)
+        age = max(0.0, current - observed_at) if observed_at else None
+        age_note = f"age={age:.1f}s" if age is not None else "age unknown"
+        connected = controller_value.get("connected") is True
+        motors = controller_value.get("servo_motors_installed")
+        hardware = "absent" if motors is False else "installed" if motors is True else "unknown"
+        lines.append(
+            f"- FNK0031 controller: USB {'connected' if connected else 'not confirmed connected'}; "
+            f"servo motors {hardware} per Body hardware inventory ({age_note})."
+        )
+        lines.append(
+            "- Actuation enabled is only a software authorization flag. It does not mean motors are installed, powered, or moving. "
+            "If servo inventory is absent, physical locomotion is unavailable regardless of that flag."
+        )
+        readiness = robot_capability_report(observations, "locomotion", now=current)
+        lines.append(
+            "- Physical locomotion: "
+            + ("available according to fresh installed/operational/authorized evidence; this does not prove movement occurred"
+               if readiness["ready"] and motors is True
+               else "unavailable because servo motors are declared absent"
+               if motors is False
+               else "not established because installed/operational/authorized hardware evidence is incomplete")
+            + "."
+        )
+        supported = controller_value.get("supported_actions")
+        if isinstance(supported, list) and supported:
+            lines.append("- FNK controller command primitives (not proof of physical capability): " + ", ".join(str(value) for value in supported[:12]) + ".")
+        leg_state = controller_value.get("estimated_leg_state")
+        if isinstance(leg_state, dict):
+            measured = controller_value.get("estimated_state_is_measured") is True or leg_state.get("measured_feedback") is True
+            angle_rows = []
+            for leg in leg_state.get("legs", []):
+                if isinstance(leg, dict) and isinstance(leg.get("joint_angles_deg"), (list, tuple)):
+                    angle_rows.append(f"L{leg.get('leg', '?')}={list(leg['joint_angles_deg'])}")
+            lines.append(
+                "- FNHR joint angles: "
+                + ("measured feedback" if measured else "command-derived estimates only")
+                + ("; " + "; ".join(angle_rows) if angle_rows else "")
+                + (". Physical servo angles are not applicable because servos are declared absent." if motors is False else ".")
+            )
+        elif motors is False:
+            lines.append("- Physical servo angles: not applicable; servos are absent. Do not substitute IMU roll/pitch/yaw or synthetic zero-degree measurements.")
+    elif not isinstance(inventory_value, dict):
+        lines.append("- Controller status: unavailable; do not infer motor installation, power, readiness, joint angles, or movement.")
 
     world = latest.get("body.world_model")
     world_value = world.get("value") if isinstance(world, dict) else None
