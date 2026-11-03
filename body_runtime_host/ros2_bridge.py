@@ -88,6 +88,7 @@ class Ros2ObservationBridge:
         action_server_available = False
         mock_action_server_available = False
         graph = {"topics": {}, "services": []}
+        graph["publisher_types"] = {}
         if nav2_packages_available and node is not None:
             try:
                 services = node.get_service_names_and_types()
@@ -113,6 +114,17 @@ class Ros2ObservationBridge:
                 }
             except Exception:
                 graph["topics"] = {}
+            try:
+                graph["publisher_types"] = {
+                    topic: [str(getattr(endpoint, "topic_type", ""))
+                            for endpoint in node.get_publishers_info_by_topic(topic)]
+                    for topic in ("/map", "/odom", "/tf", "/scan", "/cmd_vel")
+                }
+            except Exception:
+                # An unavailable endpoint API must fail closed in the physical
+                # preflight rather than treating a subscriber as a publisher.
+                graph["publisher_types"] = {topic: [] for topic in
+                                             ("/map", "/odom", "/tf", "/scan", "/cmd_vel")}
         simulation_status = self._nav2_simulation.status() if self._nav2_simulation else {
             "enabled": False, "simulation_only": True,
             "note": "Enable the Nav2 simulation in Body ROS 2 settings.",
@@ -124,7 +136,8 @@ class Ros2ObservationBridge:
         result["nav2_server_available"] = action_server_available
         result["nav2_mock_server_available"] = mock_action_server_available
         result["nav2_preflight"] = self._nav2_preflight(
-            nav2_packages_available, action_server_available, graph["topics"], graph["services"]
+            nav2_packages_available, action_server_available, graph["topics"], graph["services"],
+            publisher_types=graph["publisher_types"],
         )
         result["physical_nav2_preflight"] = self._physical_nav2_preflight(body_sensor_status)
         result["nav2_simulation"] = simulation_status
@@ -204,8 +217,9 @@ class Ros2ObservationBridge:
             }
 
     @staticmethod
-    def _nav2_preflight(packages_available, action_server_available, topics, services):
-        """Report graph prerequisites without treating package presence as robot readiness."""
+    def _nav2_preflight(packages_available, action_server_available, topics, services,
+                        publisher_types=None):
+        """Report graph prerequisites; when supplied, require real publisher endpoints."""
         requirements = {
             "/map": {"nav_msgs/msg/OccupancyGrid"},
             "/odom": {"nav_msgs/msg/Odometry"},
@@ -214,9 +228,16 @@ class Ros2ObservationBridge:
             "/cmd_vel": {"geometry_msgs/msg/Twist", "geometry_msgs/msg/TwistStamped"},
         }
         present = {}
+        publisher_counts = {}
         for topic, accepted in requirements.items():
-            types = set(topics.get(topic, []))
+            # Graph topic names also include topics known only through local
+            # subscriptions. Runtime status supplies actual publisher endpoint
+            # types so a bridge's own subscription cannot satisfy preflight.
+            types = set((publisher_types or {}).get(topic, [])) if publisher_types is not None \
+                else set(topics.get(topic, []))
             present[topic] = bool(types & accepted)
+            publisher_counts[topic] = len((publisher_types or {}).get(topic, [])) \
+                if publisher_types is not None else None
         blockers = []
         if not packages_available:
             blockers.append("ROS 2 navigation message packages are unavailable")
@@ -232,6 +253,7 @@ class Ros2ObservationBridge:
             "packages_available": bool(packages_available),
             "action_server_available": bool(action_server_available),
             "topics": present,
+            "publisher_counts": publisher_counts,
             "blockers": blockers,
             "scope": "ROS graph preflight only; does not certify frames, sensor freshness, calibration, or physical safety",
         }
@@ -338,6 +360,31 @@ class Ros2ObservationBridge:
         if not isinstance(modalities, dict):
             return False
         sent = []
+        errors = []
+
+        def publish_typed(key, message):
+            publisher = publishers.get(key)
+            if publisher is None:
+                return False
+            try:
+                publisher.publish(message)
+            except Exception as exc:
+                error = str(exc)[:200]
+                with self._lock:
+                    status = self._body_sensor_status.get(key, {})
+                    status["last_error"] = error
+                    self._body_sensor_status[key] = status
+                    errors.append(f"{key}: {error}")
+                return False
+            with self._lock:
+                status = self._body_sensor_status.get(key, {})
+                status["count"] = int(status.get("count", 0)) + 1
+                status["last_published_at"] = time.time()
+                status.pop("last_error", None)
+                self._body_sensor_status[key] = status
+            sent.append(key)
+            return True
+
         try:
             imu = modalities.get("imu") or {}
             if imu.get("simulated") is False and imu.get("available", True) and publishers.get("imu"):
@@ -364,27 +411,28 @@ class Ros2ObservationBridge:
                 message.linear_acceleration.x, message.linear_acceleration.y, message.linear_acceleration.z = [float(v) * 9.80665 for v in accel]
                 message.angular_velocity_covariance = [0.02, 0, 0, 0, 0.02, 0, 0, 0, 0.04]
                 message.linear_acceleration_covariance = [0.1, 0, 0, 0, 0.1, 0, 0, 0, 0.1]
-                publishers["imu"].publish(message)
-                sent.append("imu")
+                publish_typed("imu", message)
 
             gps = modalities.get("gps") or {}
-            if gps.get("simulated") is False and publishers.get("gps") and gps.get("latitude") is not None and gps.get("longitude") is not None:
+            if gps.get("simulated") is False and publishers.get("gps"):
                 from sensor_msgs.msg import NavSatFix
                 message = NavSatFix()
                 message.header.frame_id = "gps"
                 self._set_ros_stamp(message.header, gps.get("timestamp") or time.time())
-                message.status.status = 0 if gps.get("fix") else -1
+                fix_valid = bool(gps.get("fix")) and gps.get("latitude") is not None and gps.get("longitude") is not None
+                message.status.status = 0 if fix_valid else -1
                 message.status.service = 1
-                message.latitude, message.longitude = float(gps["latitude"]), float(gps["longitude"])
-                message.altitude = float(gps.get("altitude_m") or 0.0)
+                message.latitude = float(gps["latitude"]) if fix_valid else math.nan
+                message.longitude = float(gps["longitude"]) if fix_valid else math.nan
+                altitude = gps.get("altitude_m")
+                message.altitude = float(altitude) if fix_valid and altitude is not None else math.nan
                 message.position_covariance_type = NavSatFix.COVARIANCE_TYPE_UNKNOWN
-                publishers["gps"].publish(message)
-                sent.append("gps")
+                publish_typed("gps", message)
 
             tof = modalities.get("tof") or {}
             if tof.get("simulated") is False and publishers.get("tof") and tof.get("available") and tof.get("distance_m") is not None:
-                publishers["tof"].publish(self._range_message(tof, frame_id=str(tof.get("frame") or "tof_front"), ultrasonic=False))
-                sent.append("tof")
+                publish_typed("tof", self._range_message(
+                    tof, frame_id=str(tof.get("frame") or "tof_front"), ultrasonic=False))
 
             ultrasonic = modalities.get("ultrasonic") or {}
             by_id = {str(item.get("id")): item for item in ultrasonic.get("sensors", []) if isinstance(item, dict)}
@@ -396,12 +444,12 @@ class Ros2ObservationBridge:
                 sample = by_id.get(sensor_id)
                 if sample and ultrasonic.get("simulated") is False and publishers.get(key):
                     sample = {**sample, "timestamp": ultrasonic.get("timestamp")}
-                    publishers[key].publish(self._range_message(sample, frame_id=frame, ultrasonic=True))
-                    sent.append(key)
+                    publish_typed(key, self._range_message(sample, frame_id=frame, ultrasonic=True))
 
             radar = modalities.get("mmwave_radar") or {}
             if radar.get("simulated") is False and publishers.get("mmwave_targets") and radar.get("available", True):
                 from sensor_msgs.msg import PointCloud2
+                from std_msgs.msg import Header
                 from sensor_msgs_py import point_cloud2
                 points = []
                 for target in radar.get("targets", []):
@@ -409,25 +457,21 @@ class Ros2ObservationBridge:
                     if len(position) >= 3 and all(math.isfinite(float(v)) for v in position[:3]):
                         points.append(tuple(float(v) for v in position[:3]))
                 stamp = float(radar.get("timestamp") or time.time())
-                header = node.get_clock().now().to_msg()
-                seconds, nanoseconds = int(stamp), int((stamp % 1) * 1_000_000_000)
-                header.sec, header.nanosec = seconds, nanoseconds
+                header = Header()
+                self._set_ros_stamp(header, stamp)
                 header.frame_id = str(radar.get("frame") or "ld2450")
-                publishers["mmwave_targets"].publish(point_cloud2.create_cloud_xyz32(header, points))
-                sent.append("mmwave_targets")
+                publish_typed("mmwave_targets", point_cloud2.create_cloud_xyz32(header, points))
         except Exception as exc:
             with self._lock:
                 self._status["body_sensor_publish_error"] = str(exc)[:200]
             return False
         with self._lock:
-            for key in sent:
-                status = self._body_sensor_status.get(key, {})
-                status["count"] = int(status.get("count", 0)) + 1
-                status["last_published_at"] = time.time()
-                self._body_sensor_status[key] = status
             self._status["body_sensor_observation_count"] = int(self._status.get("body_sensor_observation_count", 0)) + 1
             self._status["body_sensor_last_published_at"] = time.time()
-            self._status.pop("body_sensor_publish_error", None)
+            if errors:
+                self._status["body_sensor_publish_error"] = "; ".join(errors)[:200]
+            else:
+                self._status.pop("body_sensor_publish_error", None)
         return bool(sent)
 
     def _start_nav2_simulation(self, node=None):

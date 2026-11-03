@@ -5238,7 +5238,47 @@ class BodyHost:
             return
         publish = getattr(bridge, "publish_body_sensor_observation", None)
         if callable(publish):
-            publish(observation.as_dict() if callable(getattr(observation, "as_dict", None)) else observation)
+            payload = observation.as_dict() if callable(getattr(observation, "as_dict", None)) else observation
+            if isinstance(payload, dict):
+                payload = dict(payload)
+                modalities = dict(payload.get("modalities") or {})
+                # Some physical source adapters keep their latest successful
+                # sample in adapter status even when an upstream source replaces
+                # Observation.modalities. Reuse that cache here; do not poll a
+                # sensor twice or promote simulated data to hardware telemetry.
+                source = getattr(self._worldmodel, "source", None)
+                cache_ttl = {"imu": 3.0, "gps": 3.0, "tof": 1.5,
+                             "ultrasonic": 1.5, "mmwave_radar": 1.25}
+                while source is not None:
+                    for modality in ("imu", "gps", "tof", "ultrasonic", "mmwave_radar"):
+                        attribute = "radar" if modality == "mmwave_radar" else modality
+                        adapter = getattr(source, "__dict__", {}).get(attribute)
+                        status_fn = getattr(adapter, "status", None)
+                        if adapter is None or not callable(status_fn):
+                            continue
+                        try:
+                            status = status_fn()
+                            age = status.get("last_ok_age_s") if isinstance(status, dict) else None
+                            sample = status.get("sample") if isinstance(status, dict) else None
+                            if modality == "mmwave_radar" and sample is None:
+                                frame = getattr(adapter, "last_frame", None)
+                                if frame is not None and callable(getattr(frame, "as_dict", None)):
+                                    sample = {**frame.as_dict(), "available": bool(status.get("available")),
+                                              "simulated": False}
+                            if (isinstance(sample, dict) and sample.get("simulated") is False
+                                    and age is not None and float(age) <= cache_ttl[modality]):
+                                current = modalities.get(modality)
+                                current_at = float(current.get("timestamp") or 0.0) if isinstance(current, dict) else 0.0
+                                sample_at = float(sample.get("timestamp") or 0.0)
+                                if not isinstance(current, dict) or sample_at > current_at:
+                                    modalities[modality] = sample
+                        except Exception:
+                            # A failed optional adapter must not suppress the
+                            # other physical sensor messages in this observation.
+                            continue
+                    source = getattr(source, "source", None)
+                payload["modalities"] = modalities
+            publish(payload)
 
     def reload_worldmodel_source(self) -> dict:
         """Re-resolve the sensor source (after a config change) and restart."""
