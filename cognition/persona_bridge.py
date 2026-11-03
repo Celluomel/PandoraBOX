@@ -2417,10 +2417,13 @@ Memory honesty — two distinct cases:
                     "moving. FNHR joint_angle estimates are commanded/internal estimates, not measured "
                     "servo positions; when servos are absent, physical servo angles are not applicable, "
                     "not measured zero. Do not substitute IMU roll/pitch/yaw for leg or servo angles, and "
-                    "do not call IMU noise 'parasitic movement' without explicit evidence. Answer only the "
-                    "requested Body subsystem; do not dump the same full sensor report for every mention "
-                    "of 'Body'. A bare 'Body' is ambiguous and should receive a brief clarification.\n"
-                    f"{_body_context[-12500:]}"
+                    "do not call IMU noise 'parasitic movement' without explicit evidence. For every read-only "
+                    "Body sensor, battery, actuator, or camera question, analyze the relevant Body-originated "
+                    "observations in the supplied context; do not answer with a route-specific canned digest. "
+                    "State measured facts first, then your inference and its limits. Answer only the requested "
+                    "Body subsystem; do not dump the same full sensor report for every mention of 'Body'. "
+                    "A bare 'Body' is ambiguous and should receive a brief clarification.\n"
+                    f"{_body_context[-20000:]}"
                 )
             system_prompt += (
                 "\n\n━━ FINAL CAMERA SOURCE GROUNDING ━━\n"
@@ -2752,7 +2755,7 @@ Memory honesty — two distinct cases:
                 if confirmation_probe:
                     labels = "CONFIRM, CANCEL, or NORMAL"
                     classifier_labels = "CONFIRM|CANCEL|NORMAL"
-                    meaning = "approves, rejects, or does not approve the already validated physical Body plan"
+                    meaning = "approves, rejects, or does not approve the already validated physical Body plan; read-only questions about Body sensor/camera evidence are NORMAL and should go to the main conversational model"
                 else:
                     labels = "CONFIRM, CANCEL, NEW_ACTION, BODY_STATUS, BODY_DIAGNOSTIC, or NORMAL"
                     classifier_labels = "CONFIRM|CANCEL|NEW_ACTION|BODY_STATUS|BODY_DIAGNOSTIC|NORMAL"
@@ -2766,6 +2769,7 @@ Memory honesty — two distinct cases:
                 system += " Re-evaluate the speech act carefully. The user is responding immediately after the Body asked whether to execute the already validated plan."
             if confirmation_probe:
                 system += " This is a confirmation-focused second judgment: do not classify an approval as a status request merely because it contains the word plan or action."
+                system += " A read-only question about Body telemetry, including battery, sensors, camera, or motor inventory, is not approval or cancellation; return NORMAL so the main conversational model can analyze the timestamped Body evidence."
             prompt = json.dumps({
                 "recent_dialogue": self._recent_dialogue_excerpt(),
                 "pending_objective": pending.get("plan", {}).get("objective", "") if isinstance(pending, dict) else "",
@@ -2802,7 +2806,7 @@ Memory honesty — two distinct cases:
                     "message semantically. Return exactly JSON with route equal to one of: "
                     + ("confirm, cancel, normal" if confirmation_probe else "confirm, cancel, new_action, body_status, body_diagnostic, normal")
                     + ". confirm means approval to execute the waiting plan; cancel means rejection; "
-                    + ("normal means unrelated conversation." if confirmation_probe else "new_action means a different physical objective; body_status means asking whether the task is complete, what step is active, or for the latest robot/controller movement status; body_diagnostic means inspect current evidence without executing any action; normal means unrelated conversation.")
+                    + ("normal means no approval/cancellation, including a read-only question about Body sensors, camera, battery, or hardware; answer it through the main conversational model from timestamped Body evidence." if confirmation_probe else "new_action means a different physical objective; body_status means asking whether the task is complete, what step is active, or for the latest robot/controller movement status; body_diagnostic means inspect current evidence without executing any action; normal means unrelated conversation or any factual Body question that belongs to the main conversational model.")
                     + " Do not use a fixed phrase list."
                 )
             else:
@@ -4100,17 +4104,21 @@ Memory honesty — two distinct cases:
                 elif reroute == "cancel":
                     route = reroute
                 else:
-                    return self._body_status_response(user_input)
+                    # Read-only Body telemetry and status belong to the main
+                    # conversational model, which receives the timestamped
+                    # Body snapshot in its system context.
+                    return None
             else:
                 # Read-only Body questions go to the conversational LLM with
                 # timestamped Body evidence in its system context. Do not
                 # replace its answer with a fixed route-specific response.
                 return None
         if route == "body_diagnostic":
-            # A request to test/inspect is strictly read-only. Preserve any
-            # pending plan, but never pass the diagnostic text to the motor
-            # planner or treat its examples as commands.
-            return self._body_diagnostic_response()
+            # Diagnostics are read-only. Let the main conversational model
+            # analyze the timestamped Body observations already in context;
+            # this route must never turn them into a fixed sensor digest or a
+            # motor plan.
+            return None
         if not pending and route != "body_action":
             return None
         if pending and route == "confirm":

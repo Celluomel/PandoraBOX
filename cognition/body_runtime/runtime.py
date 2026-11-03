@@ -718,7 +718,7 @@ class BodyRuntime:
             "BODY GROUNDING STATUS (authoritative for physical self-report):",
             "Answer questions about the physical body from this section first. "
             "If it says unavailable, explicitly say that the Body has not supplied that fact.",
-            "Body sensor/camera and robot-status records preserve raw fields and attach body_interpretation.v1 before transmission. Use both: report the Body's measured fact, functional meaning, timestamp/freshness, and stated limits. A no-return state is unknown coverage, not proof of an empty area; a sensor return is not a semantic object identity. FNHR joint angles are command-derived estimates, not measured servo positions; if servos are absent, physical angles are not applicable, never claim measured zero degrees.",
+            "Every physical sensor and Body camera fact must come from a Body-originated, timestamped observation in this section. The Body attaches body_sensor_interpretation.v1 alongside the raw fields; the Brain's conversational LLM must analyze these facts for every read-only sensor question, as it analyzes camera evidence. Do not copy a fixed sensor-by-sensor script or claim the Body interpretation itself is an independent Brain analysis. Explain relevant relationships among readings only when their timestamps, frames, and sensor geometry support that comparison. A no-return state is unknown coverage, not proof of an empty area; a sensor return is not a semantic object identity. Battery level is an estimate when derived from INA232 input-rail energy, and its quality/state fields govern how strongly it can be stated. FNHR joint angles are command-derived estimates, not measured servo positions; if servos are absent, physical angles are not applicable, never claim measured zero degrees.",
         ]
         bridge_connected = bool(self._bridge_devices)
         lines.append(
@@ -882,15 +882,23 @@ class BodyRuntime:
             # the current bridged sensor and perception samples.
             lines.extend([
                 "LATEST BODY EVIDENCE DIGEST (timestamped records available to the LLM):",
-                "Read-only questions should be answered by reasoning over these records; preserve their source and freshness.",
+                "The main conversational LLM must analyze these Body records for every read-only Body sensor/camera question. Use raw measurement plus Body interpretation, source, observed/received timestamps, and freshness; summarize only evidence relevant to the question, explain uncertainty, and do not turn the Body's structured digest into a canned answer.",
             ])
-            for item in observations[:10]:
+            digest_subjects = {
+                "body.runtime", "fnk0031.usb_status", "robot.capability_inventory",
+            }
+            digest_items = [
+                item for item in observations
+                if str(item.get("subject") or "").startswith(("sensor.", "camera."))
+                or str(item.get("subject") or "") in digest_subjects
+            ]
+            for item in digest_items[:24]:
                 try:
                     value = json.dumps(item.get("value"), ensure_ascii=False, separators=(",", ":"), default=str)
                 except Exception:
                     value = str(item.get("value"))
-                if len(value) > 1600:
-                    value = value[:1597] + "..."
+                if len(value) > 2200:
+                    value = value[:2197] + "..."
                 age = max(0.0, time.time() - float(item.get("observed_at") or time.time()))
                 lines.append(
                     f"- {item.get('subject')} | source={item.get('source')} | "
