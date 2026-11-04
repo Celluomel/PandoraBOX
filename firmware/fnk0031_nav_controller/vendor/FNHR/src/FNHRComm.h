@@ -30,6 +30,7 @@ public:
 
   void UpdateCommunication();
   void UpdateOrder();
+  float GetSupplyVoltage();
 
   RobotAction robotAction;
   bool commFunction;
@@ -106,8 +107,6 @@ private:
   const unsigned int ledBlinkCycle = 20;
   int ledState = 0;
   void UpdateStateLED();
-
-  float GetSupplyVoltage();
 
   void SaveRobotBootState(Robot::State state);
   Robot::State GetRobotBootState();

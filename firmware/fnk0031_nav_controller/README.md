@@ -50,14 +50,31 @@ on the real robot.
   control pairing key in a separate EEPROM block.
 
 The ESP8266 retains the Freenove soft AP while also joining the configured
-router and serves the custom FNHR ASCII protocol on TCP port `8888`. Each TCP
-connection must first send `AUTH <pairing-key>`; only then can it send `PING`,
-`CMD state`, or the existing bounded movement commands. The Body generates
-and stores this key in its local secret file, then pairs the FNK over USB.
-Control traffic is unencrypted; use only on a trusted WPA2 network. This adds
-no odometry and does not make a blocking gait preemptible. Physical commands
-remain blocked in the Body while servos are declared absent or actuation is
-disabled.
+router and serves TCP port `8888`. The server accepts both the custom FNHR
+ASCII protocol and Freenove's original binary frames (`0x80`, order and
+optional 7-bit arguments, `0x81`). Supported Freenove requests include echo,
+supply voltage, I/O, relative leg movement, gait and body-pose commands. The
+Body ASCII connection still must first send `AUTH <pairing-key>`; its
+authentication is unchanged. The legacy Freenove binary protocol has no
+authentication, so any client able to reach port `8888` on the trusted LAN can
+issue its supported commands. Do not expose this port to an untrusted network.
+The Body generates and stores its key in its local secret file, then pairs the
+FNK over USB. Control traffic is unencrypted; use only on a trusted WPA2
+network. This adds no odometry and does not make a blocking gait preemptible.
+Physical Body-issued commands remain blocked while servos are declared absent
+or actuation is disabled; the legacy Freenove app path is a separate direct
+controller interface and must be treated as an actuation control.
+
+## Freenove app connection
+
+Connect the phone to the same Wi-Fi LAN as the FNK0031, then enter the FNK's
+station IP address and TCP port `8888` in the Freenove Android app. The default
+Freenove hotspot remains available as well. This provides protocol
+compatibility; it does not add Bluetooth. The FNK's Wi-Fi module is an
+ESP8266, which has Wi-Fi but no Bluetooth radio. The optional stock handheld
+remote uses a separate 2.4 GHz RF24 link. Switching the ESP8266 between access
+point and Wi-Fi client modes therefore does not disable Bluetooth; Bluetooth
+is not the transport used by this board/app path.
 
 `crawl` is bounded to a 42 mm translation vector and an 18 degree turn. `twist`
 is bounded to ±30 mm X/Y, 0–45 mm Z, and a 15-degree rotation magnitude.

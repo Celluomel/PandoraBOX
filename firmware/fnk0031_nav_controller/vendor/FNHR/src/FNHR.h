@@ -27,6 +27,7 @@ public:
   // Returns FNHR's command-derived leg state, not measured servo feedback.
   bool GetEstimatedLegState(int leg, float &x, float &y, float &z,
                             float &jointA, float &jointB, float &jointC);
+  float GetSupplyVoltage();
 
  /*
   * Brief     Start the robot

@@ -14,6 +14,11 @@
 
 FNHR::FNHR() {}
 
+float FNHR::GetSupplyVoltage()
+{
+  return communication.GetSupplyVoltage();
+}
+
 bool FNHR::GetEstimatedLegState(int legIndex, float &x, float &y, float &z,
                                 float &jointA, float &jointB, float &jointC)
 {

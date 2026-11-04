@@ -41,6 +41,9 @@ String wifiRxBuffer;
 char wifiLineBuffers[WIFI_LINKS][LINE_CAPACITY];
 size_t wifiLineLengths[WIFI_LINKS] = {0};
 bool wifiLineOverflows[WIFI_LINKS] = {false};
+bool wifiFrameActive[WIFI_LINKS] = {false};
+byte wifiFrameLengths[WIFI_LINKS] = {0};
+byte wifiFrameBuffers[WIFI_LINKS][32] = {{0}};
 int activeWifiLink = -1;
 
 static int hexValue(char value) {
@@ -171,10 +174,10 @@ static bool connectConfiguredWifi() {
   return wifiConnected;
 }
 
-static bool sendWifiTcp(int linkId, const String &payload) {
-  if (linkId < 0 || linkId >= WIFI_LINKS || payload.length() == 0) return false;
+static bool sendWifiBytes(int linkId, const byte *payload, size_t length) {
+  if (linkId < 0 || linkId >= WIFI_LINKS || !payload || length == 0) return false;
   while (Serial2.available()) Serial2.read();
-  Serial2.print("AT+CIPSEND="); Serial2.print(linkId); Serial2.print(','); Serial2.println(payload.length());
+  Serial2.print("AT+CIPSEND="); Serial2.print(linkId); Serial2.print(','); Serial2.println(length);
   String received;
   const unsigned long promptDeadline = millis() + 1500;
   bool prompt = false;
@@ -187,7 +190,7 @@ static bool sendWifiTcp(int linkId, const String &payload) {
     if (!prompt) delay(1);
   }
   if (!prompt) return false;
-  Serial2.print(payload);
+  Serial2.write(payload, length);
   received = "";
   const unsigned long sendDeadline = millis() + 2500;
   while (millis() < sendDeadline) {
@@ -200,6 +203,10 @@ static bool sendWifiTcp(int linkId, const String &payload) {
     delay(1);
   }
   return false;
+}
+
+static bool sendWifiTcp(int linkId, const String &payload) {
+  return sendWifiBytes(linkId, reinterpret_cast<const byte *>(payload.c_str()), payload.length());
 }
 
 static void sendCommandLine(const String &line) {
@@ -474,6 +481,151 @@ static void handleWifiLine(int linkId, char *line) {
   handleCommand(line, linkId);
 }
 
+static void sendFreenoveReply(int linkId, byte order, const byte *data = nullptr, byte dataLength = 0) {
+  byte response[32];
+  if (dataLength > sizeof(response) - 3) return;
+  response[0] = 0x80;
+  response[1] = order;
+  for (byte index = 0; index < dataLength; ++index) response[index + 2] = data[index];
+  response[dataLength + 2] = 0x81;
+  sendWifiBytes(linkId, response, dataLength + 3);
+}
+
+static bool freenoveLengthIs(const byte *frame, byte length, byte order, byte expectedLength) {
+  return length == expectedLength && frame[0] == 0x80 && frame[1] == order && frame[length - 1] == 0x81;
+}
+
+// The Android/Processing app sends the original FNHR binary frame:
+// 0x80, order, zero or more 7-bit arguments, 0x81. This is separate from the
+// authenticated ASCII protocol used by the Body on the same TCP port.
+static void handleFreenoveWifiFrame(int linkId, const byte *frame, byte length) {
+  if (length < 3 || frame[0] != 0x80 || frame[length - 1] != 0x81) return;
+  for (byte index = 1; index + 1 < length; ++index) {
+    if (frame[index] > 127) return;
+  }
+  const byte order = frame[1];
+  if (order == 0 && freenoveLengthIs(frame, length, order, 3)) {
+    sendFreenoveReply(linkId, 1);
+    return;
+  }
+  if (order == 10 && freenoveLengthIs(frame, length, order, 3)) {
+    const int voltageCentivolts = static_cast<int>(robot.GetSupplyVoltage() * 100.0f);
+    const byte voltage[] = {
+      static_cast<byte>(voltageCentivolts / 128),
+      static_cast<byte>(voltageCentivolts % 128)
+    };
+    sendFreenoveReply(linkId, 11, voltage, sizeof(voltage));
+    return;
+  }
+  if (order == 20 && freenoveLengthIs(frame, length, order, 5)) {
+    const byte pins[] = {20, 21, A0, A1, 15, 14, 2, 3};
+    if (frame[2] >= sizeof(pins) || frame[3] > 1) return;
+    pinMode(pins[frame[2]], OUTPUT);
+    digitalWrite(pins[frame[2]], frame[3] ? HIGH : LOW);
+    sendFreenoveReply(linkId, 23);
+    return;
+  }
+
+  bool isBlockingAction = false;
+  if (order == 80 && freenoveLengthIs(frame, length, order, 3)) isBlockingAction = true;
+  else if (order == 82 && freenoveLengthIs(frame, length, order, 3)) isBlockingAction = true;
+  else if (order == 84 && freenoveLengthIs(frame, length, order, 3)) isBlockingAction = true;
+  else if (order == 86 && freenoveLengthIs(frame, length, order, 3)) isBlockingAction = true;
+  else if (order == 88 && freenoveLengthIs(frame, length, order, 3)) isBlockingAction = true;
+  else if (order == 90 && freenoveLengthIs(frame, length, order, 3)) isBlockingAction = true;
+  else if (order == 92 && freenoveLengthIs(frame, length, order, 3)) {
+    robot.ActiveMode();
+    sendFreenoveReply(linkId, 23);
+    return;
+  } else if (order == 94 && freenoveLengthIs(frame, length, order, 3)) {
+    robot.SleepMode();
+    actionActive = false;
+    sendFreenoveReply(linkId, 23);
+    return;
+  } else if (order == 96 && freenoveLengthIs(frame, length, order, 3)) {
+    robot.SwitchMode();
+    sendFreenoveReply(linkId, 23);
+    return;
+  } else if (order == 110 && freenoveLengthIs(frame, length, order, 6)) {
+    isBlockingAction = true;
+  } else if (order == 112 && freenoveLengthIs(frame, length, order, 4)) {
+    isBlockingAction = true;
+  } else if (order == 114 && freenoveLengthIs(frame, length, order, 6)) {
+    isBlockingAction = true;
+  } else if (order == 116 && freenoveLengthIs(frame, length, order, 6)) {
+    isBlockingAction = true;
+  } else if (order == 118 && freenoveLengthIs(frame, length, order, 9)) {
+    isBlockingAction = true;
+  } else if (order == 30 && freenoveLengthIs(frame, length, order, 7)) {
+    robot.LegMoveToRelatively(frame[2], frame[3] - 64, frame[4] - 64, frame[5] - 64);
+    sendFreenoveReply(linkId, 23);
+    return;
+  } else {
+    // Installation and calibration orders are not acknowledged as successful
+    // because they are not implemented by this custom profile.
+    return;
+  }
+
+  if (!isBlockingAction) return;
+  sendFreenoveReply(linkId, 21);
+  Serial.flush();
+  if (order == 80) robot.CrawlForward();
+  else if (order == 82) robot.CrawlBackward();
+  else if (order == 84) robot.CrawlLeft();
+  else if (order == 86) robot.CrawlRight();
+  else if (order == 88) robot.TurnLeft();
+  else if (order == 90) robot.TurnRight();
+  else if (order == 110) robot.Crawl(frame[2] - 64, frame[3] - 64, frame[4] - 64);
+  else if (order == 112) robot.ChangeBodyHeight(frame[2] - 64);
+  else if (order == 114) robot.MoveBody(frame[2] - 64, frame[3] - 64, frame[4] - 64);
+  else if (order == 116) robot.RotateBody(frame[2] - 64, frame[3] - 64, frame[4] - 64);
+  else if (order == 118) {
+    robot.TwistBody(frame[2] - 64, frame[3] - 64, frame[4] - 64,
+                    frame[5] - 64, frame[6] - 64, frame[7] - 64);
+  }
+  lastActionCompletedAt = millis();
+  actionActive = true;
+  sendFreenoveReply(linkId, 23);
+}
+
+static void receiveWifiPayloadByte(int linkId, byte value) {
+  if (linkId < 0 || linkId >= WIFI_LINKS) return;
+  if (value == 0x80) {
+    wifiFrameActive[linkId] = true;
+    wifiFrameLengths[linkId] = 0;
+    wifiLineLengths[linkId] = 0;
+    wifiLineOverflows[linkId] = false;
+    wifiFrameBuffers[linkId][wifiFrameLengths[linkId]++] = value;
+    return;
+  }
+  if (wifiFrameActive[linkId]) {
+    if (wifiFrameLengths[linkId] >= sizeof(wifiFrameBuffers[linkId])) {
+      wifiFrameActive[linkId] = false;
+      wifiFrameLengths[linkId] = 0;
+      return;
+    }
+    wifiFrameBuffers[linkId][wifiFrameLengths[linkId]++] = value;
+    if (value == 0x81) {
+      handleFreenoveWifiFrame(linkId, wifiFrameBuffers[linkId], wifiFrameLengths[linkId]);
+      wifiFrameActive[linkId] = false;
+      wifiFrameLengths[linkId] = 0;
+    }
+    return;
+  }
+  if (value == '\r') return;
+  if (value == '\n') {
+    if (wifiLineOverflows[linkId]) sendWifiTcp(linkId, "ERROR line_too_long\n");
+    else if (wifiLineLengths[linkId] > 0) {
+      wifiLineBuffers[linkId][wifiLineLengths[linkId]] = '\0';
+      handleWifiLine(linkId, wifiLineBuffers[linkId]);
+    }
+    wifiLineLengths[linkId] = 0;
+    wifiLineOverflows[linkId] = false;
+  } else if (wifiLineLengths[linkId] + 1 < LINE_CAPACITY) {
+    wifiLineBuffers[linkId][wifiLineLengths[linkId]++] = static_cast<char>(value);
+  } else wifiLineOverflows[linkId] = true;
+}
+
 static void receiveWifi() {
   while (Serial2.available()) {
     if (wifiRxBuffer.length() >= 768) wifiRxBuffer.remove(0, wifiRxBuffer.length() - 256);
@@ -486,11 +638,19 @@ static void receiveWifi() {
       const int closedAt = wifiRxBuffer.indexOf(closed);
       if (closedAt >= 0) {
         wifiLinkAuthorized[linkId] = false;
+        wifiFrameActive[linkId] = false;
+        wifiFrameLengths[linkId] = 0;
+        wifiLineLengths[linkId] = 0;
+        wifiLineOverflows[linkId] = false;
         wifiRxBuffer.remove(closedAt, closed.length());
       }
       const int connectedAt = wifiRxBuffer.indexOf(connected);
       if (connectedAt >= 0) {
         wifiLinkAuthorized[linkId] = false;
+        wifiFrameActive[linkId] = false;
+        wifiFrameLengths[linkId] = 0;
+        wifiLineLengths[linkId] = 0;
+        wifiLineOverflows[linkId] = false;
         wifiRxBuffer.remove(connectedAt, connected.length());
       }
     }
@@ -513,19 +673,7 @@ static void receiveWifi() {
     const String payload = wifiRxBuffer.substring(colon + 1, colon + 1 + payloadLength);
     wifiRxBuffer.remove(0, colon + 1 + payloadLength);
     for (unsigned int index = 0; index < payload.length(); ++index) {
-      const char value = payload[index];
-      if (value == '\r') continue;
-      if (value == '\n') {
-        if (wifiLineOverflows[linkId]) sendWifiTcp(linkId, "ERROR line_too_long\n");
-        else if (wifiLineLengths[linkId] > 0) {
-          wifiLineBuffers[linkId][wifiLineLengths[linkId]] = '\0';
-          handleWifiLine(linkId, wifiLineBuffers[linkId]);
-        }
-        wifiLineLengths[linkId] = 0;
-        wifiLineOverflows[linkId] = false;
-      } else if (wifiLineLengths[linkId] + 1 < LINE_CAPACITY) {
-        wifiLineBuffers[linkId][wifiLineLengths[linkId]++] = value;
-      } else wifiLineOverflows[linkId] = true;
+      receiveWifiPayloadByte(linkId, static_cast<byte>(payload[index]));
     }
   }
 }
