@@ -37,7 +37,11 @@ bool wifiConnected = false;
 char wifiStationIp[16] = {0};
 char wifiControlToken[WIFI_TOKEN_LENGTH + 1] = {0};
 bool wifiLinkAuthorized[WIFI_LINKS] = {false};
-String wifiRxBuffer;
+static const byte WIFI_RX_HEADER_CAPACITY = 64;
+char wifiRxHeader[WIFI_RX_HEADER_CAPACITY] = {0};
+byte wifiRxHeaderLength = 0;
+int wifiPayloadLink = -1;
+int wifiPayloadRemaining = 0;
 char wifiLineBuffers[WIFI_LINKS][LINE_CAPACITY];
 size_t wifiLineLengths[WIFI_LINKS] = {0};
 bool wifiLineOverflows[WIFI_LINKS] = {false};
@@ -645,57 +649,61 @@ static void receiveWifiPayloadByte(int linkId, byte value) {
   } else wifiLineOverflows[linkId] = true;
 }
 
+static void resetWifiLink(byte linkId) {
+  if (linkId >= WIFI_LINKS) return;
+  wifiLinkAuthorized[linkId] = false;
+  wifiFrameActive[linkId] = false;
+  wifiFrameLengths[linkId] = 0;
+  wifiLineLengths[linkId] = 0;
+  wifiLineOverflows[linkId] = false;
+}
+
 static void receiveWifi() {
   while (Serial2.available()) {
-    if (wifiRxBuffer.length() >= 768) wifiRxBuffer.remove(0, wifiRxBuffer.length() - 256);
-    wifiRxBuffer += static_cast<char>(Serial2.read());
-  }
-  while (true) {
-    for (byte linkId = 0; linkId < WIFI_LINKS; ++linkId) {
-      const String closed = String(linkId) + ",CLOSED";
-      const String connected = String(linkId) + ",CONNECT";
-      const int closedAt = wifiRxBuffer.indexOf(closed);
-      if (closedAt >= 0) {
-        wifiLinkAuthorized[linkId] = false;
-        wifiFrameActive[linkId] = false;
-        wifiFrameLengths[linkId] = 0;
-        wifiLineLengths[linkId] = 0;
-        wifiLineOverflows[linkId] = false;
-        wifiRxBuffer.remove(closedAt, closed.length());
-      }
-      const int connectedAt = wifiRxBuffer.indexOf(connected);
-      if (connectedAt >= 0) {
-        wifiLinkAuthorized[linkId] = false;
-        wifiFrameActive[linkId] = false;
-        wifiFrameLengths[linkId] = 0;
-        wifiLineLengths[linkId] = 0;
-        wifiLineOverflows[linkId] = false;
-        wifiRxBuffer.remove(connectedAt, connected.length());
-      }
-    }
-    const int marker = wifiRxBuffer.indexOf("+IPD,");
-    if (marker < 0) {
-      if (wifiRxBuffer.length() > 32) wifiRxBuffer.remove(0, wifiRxBuffer.length() - 16);
-      return;
-    }
-    if (marker > 0) wifiRxBuffer.remove(0, marker);
-    const int comma = wifiRxBuffer.indexOf(',', 5);
-    const int colon = wifiRxBuffer.indexOf(':', comma + 1);
-    if (comma < 0 || colon < 0) return;
-    const int linkId = wifiRxBuffer.substring(5, comma).toInt();
-    const int payloadLength = wifiRxBuffer.substring(comma + 1, colon).toInt();
-    if (linkId < 0 || linkId >= WIFI_LINKS || payloadLength < 0 || payloadLength > 256) {
-      wifiRxBuffer.remove(0, colon + 1);
+    const byte value = static_cast<byte>(Serial2.read());
+    if (wifiPayloadRemaining > 0) {
+      receiveWifiPayloadByte(wifiPayloadLink, value);
+      if (--wifiPayloadRemaining == 0) wifiPayloadLink = -1;
       continue;
     }
-    if (wifiRxBuffer.length() < colon + 1 + payloadLength) return;
-    // The +IPD payload is binary. Arduino String::substring() treats its data
-    // as NUL-terminated text, so a valid FNHR frame such as 80 00 81 is cut
-    // after its first byte. Read the bytes in place before removing the frame.
-    for (int index = 0; index < payloadLength; ++index) {
-      receiveWifiPayloadByte(linkId, static_cast<byte>(wifiRxBuffer[colon + 1 + index]));
+
+    if (value == '\r') continue;
+    if (value == '\n') {
+      wifiRxHeader[wifiRxHeaderLength] = '\0';
+      char *event = strstr(wifiRxHeader, ",CONNECT");
+      if (!event) event = strstr(wifiRxHeader, ",CLOSED");
+      if (event) {
+        const int linkId = atoi(wifiRxHeader);
+        if (linkId >= 0 && linkId < WIFI_LINKS) resetWifiLink(static_cast<byte>(linkId));
+      }
+      wifiRxHeaderLength = 0;
+      wifiRxHeader[0] = '\0';
+      continue;
     }
-    wifiRxBuffer.remove(0, colon + 1 + payloadLength);
+
+    if (wifiRxHeaderLength + 1 >= WIFI_RX_HEADER_CAPACITY) {
+      wifiRxHeaderLength = 0;
+      wifiRxHeader[0] = '\0';
+    }
+    wifiRxHeader[wifiRxHeaderLength++] = static_cast<char>(value);
+    wifiRxHeader[wifiRxHeaderLength] = '\0';
+
+    if (value != ':') continue;
+    char *marker = strstr(wifiRxHeader, "+IPD,");
+    if (marker) {
+      char *linkText = marker + 5;
+      char *comma = strchr(linkText, ',');
+      if (comma) {
+        const int linkId = atoi(linkText);
+        const int payloadLength = atoi(comma + 1);
+        if (linkId >= 0 && linkId < WIFI_LINKS && payloadLength > 0 && payloadLength <= 256) {
+          wifiPayloadLink = linkId;
+          wifiPayloadRemaining = payloadLength;
+        }
+      }
+    }
+    wifiRxHeaderLength = 0;
+    wifiRxHeader[0] = '\0';
   }
 }
 
