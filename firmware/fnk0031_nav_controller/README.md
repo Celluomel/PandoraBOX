@@ -37,6 +37,27 @@ on the real robot.
   `robot.TwistBody(...)` action; returns `STARTED twist` and `DONE twist`.
 - `CMD stop` -> `robot.SleepMode()` when the firmware is able to process the
   command.
+- `WIFI SET <ssid_hex> <password_hex>` -> saves UTF-8 SSID/password bytes in
+  FNK EEPROM starting at address 160, joins the network with the ESP8266 in
+  SoftAP+Station mode, and reports only connection state and station IP. The
+  Body UI sends this command over USB; the password is not persisted by Body.
+- `WIFI STATUS` -> reports `WIFI CONNECTED <ip>`, `WIFI JOIN FAILED`, or the
+  Freenove AP state. It does not rejoin or interrupt the current connection.
+- `WIFI CLEAR` -> disconnects the station and erases the credential block from
+  EEPROM and erases the Wi-Fi pairing key. FNHR calibration/settings below
+  address 160 are not touched.
+- `WIFI TOKEN <64 lowercase hex chars>` -> stores the Body-generated Wi-Fi
+  control pairing key in a separate EEPROM block.
+
+The ESP8266 retains the Freenove soft AP while also joining the configured
+router and serves the custom FNHR ASCII protocol on TCP port `8888`. Each TCP
+connection must first send `AUTH <pairing-key>`; only then can it send `PING`,
+`CMD state`, or the existing bounded movement commands. The Body generates
+and stores this key in its local secret file, then pairs the FNK over USB.
+Control traffic is unencrypted; use only on a trusted WPA2 network. This adds
+no odometry and does not make a blocking gait preemptible. Physical commands
+remain blocked in the Body while servos are declared absent or actuation is
+disabled.
 
 `crawl` is bounded to a 42 mm translation vector and an 18 degree turn. `twist`
 is bounded to ±30 mm X/Y, 0–45 mm Z, and a 15-degree rotation magnitude.
@@ -50,8 +71,7 @@ velocity (m/s) to gait displacement or speed.
    The FNHR V12.6 source and its CC BY-SA 3.0 license are included under
    `vendor/FNHR`. Install the `RF24` and `FlexiTimer2` Arduino libraries if
    they are not already available in the IDE; FNHR includes both.
-2. Compile without uploading. This source has not yet been compiled against
-   the locally installed AVR core and library versions.
+2. Compile before uploading with the Mega 2560 target.
 3. Before upload, save the currently installed stock firmware and confirm the
    loss of the stock remote/Processing control path is acceptable.
 4. First upload and test with no servos attached or with the chassis securely
@@ -64,4 +84,6 @@ velocity (m/s) to gait displacement or speed.
    odometry, sensor transforms, map/localization, and independent E-stop have
    passed physical tests.
 
-The sketch has not been compiled or run on a V3.2 controller in this workspace.
+Wi-Fi setup has been implemented for the ESP8266 AT interface used by FNHR.
+Verify station association from the Body UI after entering the network
+credentials. No robot movement is part of Wi-Fi setup.

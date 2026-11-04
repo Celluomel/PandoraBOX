@@ -28,6 +28,7 @@ import math
 import os
 import platform
 import re
+import secrets
 import signal
 import shlex
 import shutil
@@ -56,6 +57,7 @@ from body_runtime_host.worldmodel.reconstruction_capture import ReconstructionCa
 LOG = logging.getLogger("lumina.body")
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / "data" / "body" / "config.json"
+YOLO_PREVIEW_COAST_SECONDS = 5.0
 
 
 def _calibration_midas_record(midas: dict, now: float, last_snapshot_at: float,
@@ -563,6 +565,7 @@ class BodyHost:
         self._fnk_usb_last_publish = 0.0
         self._fnk_controller = None
         self._fnk_manual_control_lock = threading.Lock()
+        self._fnk_wifi_provision_lock = threading.Lock()
         self._fnk_manual_control_last_at = 0.0
         self._fnk_controller_lock = threading.Lock()
         self._fnk_controller_last: dict | None = None
@@ -763,10 +766,25 @@ class BodyHost:
         """Persist Body settings while keeping secret values environment-backed."""
         CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
         safe = dict(self.config)
-        for key in ("HOME_ASSISTANT_TOKEN", "BODY_BRIDGE_TOKEN", "BODY_COMMAND_APPROVAL_SECRET", "ROBOT_TOKEN", "FNK0031_TOKEN", "FNK0050_TOKEN", "BODY_LLM_TOKEN", "BODY_RECONSTRUCTION_WORKER_TOKEN"):
+        for key in ("HOME_ASSISTANT_TOKEN", "BODY_BRIDGE_TOKEN", "BODY_COMMAND_APPROVAL_SECRET", "ROBOT_TOKEN", "FNK0031_TOKEN", "FNK0031_WIFI_CONTROL_TOKEN", "FNK0050_TOKEN", "BODY_LLM_TOKEN", "BODY_RECONSTRUCTION_WORKER_TOKEN"):
             if safe.get(key) and not str(safe[key]).startswith("@env:"):
                 safe[key] = f"@env:{key}"
         CONFIG_PATH.write_text(json.dumps(safe, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    def _persist_runtime_secret(self, name: str, value: str) -> None:
+        """Store a generated device secret in the Body environment file, not config.json."""
+        os.environ[name] = value
+        self.config[name] = f"@env:{name}"
+        secret_path = ROOT / "body_venv" / ".env"
+        secret_path.parent.mkdir(parents=True, exist_ok=True)
+        existing: dict[str, str] = {}
+        if secret_path.exists():
+            for line in secret_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+                if "=" in line and not line.lstrip().startswith("#"):
+                    key, secret_value = line.split("=", 1)
+                    existing[key.strip()] = secret_value.strip()
+        existing[name] = value
+        secret_path.write_text("".join(f"{key}={secret_value}\n" for key, secret_value in existing.items()), encoding="utf-8")
 
     def _apply_power_mode(self, old_mode: str, new_mode: str) -> dict:
         """Apply scheduling policy to Body vision only; never touch hardware safety paths."""
@@ -1391,7 +1409,7 @@ class BodyHost:
         if self._power_mode.status().get("mode") == "IDLE":
             return {"available": False, "camera": {"state": "camera paused · IDLE"},
                     "yolo": {"state": "paused", "detections": [], "paired": False},
-                    "status": "camera paused · IDLE"}
+                    "status": "camera paused · IDLE", "server_time": time.time()}
         frame = self._camera_provider() or {}
         if frame:
             frame = {**frame, "camera_height_m": self._camera_height_m()}
@@ -1406,7 +1424,7 @@ class BodyHost:
                 latest_at = float(latest_yolo.get("captured_at") or 0.0)
                 yolo_age = max(0.0, time.time() - latest_at) if latest_at else float("inf")
                 preview_detections = (latest_yolo.get("detections") or []) \
-                    if latest_yolo.get("state") == "ready" and yolo_age <= 1.0 else []
+                    if latest_yolo.get("state") == "ready" and yolo_age <= YOLO_PREVIEW_COAST_SECONDS else []
                 yolo = {
                     **latest_yolo,
                     "state": "stale" if latest_yolo.get("state") == "ready" else latest_yolo.get("state", "unavailable"),
@@ -1415,13 +1433,14 @@ class BodyHost:
                     "preview_only": bool(preview_detections),
                     "frame_delta_s": abs(camera_at - latest_at) if camera_at and latest_at else None,
                 }
-            return {"available": True, "camera": frame, "yolo": yolo}
+            return {"available": True, "camera": frame, "yolo": yolo, "server_time": time.time()}
         settings = self.camera_settings()
         return {
             "available": False,
             "camera": {},
             "status": settings.get("capture", {}).get("status", "disabled"),
             "error": settings.get("capture", {}).get("last_error", ""),
+            "server_time": time.time(),
         }
 
     def camera_image(self) -> dict:
@@ -3237,6 +3256,8 @@ class BodyHost:
             "leg_count": int(self.value("FNK0031_LEG_COUNT", 6) or 6),
             "platform": str(self.value("FNK0031_PLATFORM", "ventuno_q_gateway") or "ventuno_q_gateway"),
             "serial_port": str(self.value("FNK0031_SERIAL_PORT", "") or ""),
+            "wifi_host": str(self.value("FNK0031_WIFI_HOST", "") or ""),
+            "wifi_port": int(self.value("FNK0031_WIFI_PORT", 8888) or 8888),
         }
 
     def fnk0031_usb_status(self) -> dict:
@@ -3244,16 +3265,28 @@ class BodyHost:
 
         settings = self.fnk0031_settings()
         port = settings["serial_port"]
-        source_type = FNK0031CustomUSBSource if settings["platform"] == "usb_serial_custom" else FNK0031USBSource
-        probe = source_type(port, timeout=min(2.0, settings["timeout"]),
-                            actuation_enabled=settings["actuation_enabled"]) if port else None
-        custom_profile = settings["platform"] == "usb_serial_custom"
+        custom_profile = settings["platform"] in {"usb_serial_custom", "wifi_tcp_custom"}
+        if settings["platform"] == "wifi_tcp_custom":
+            from body_runtime_host.fnk0031_usb import FNK0031CustomTCPSource
+            try:
+                probe = FNK0031CustomTCPSource(
+                    settings["wifi_host"], str(self.value("FNK0031_WIFI_CONTROL_TOKEN", "") or ""),
+                    settings["wifi_port"], timeout=min(2.0, settings["timeout"]),
+                    actuation_enabled=settings["actuation_enabled"],
+                )
+            except ValueError as exc:
+                probe = None
+                self._fnk_usb_status_error = str(exc)
+        else:
+            source_type = FNK0031CustomUSBSource if settings["platform"] == "usb_serial_custom" else FNK0031USBSource
+            probe = source_type(port, timeout=min(2.0, settings["timeout"]),
+                                actuation_enabled=settings["actuation_enabled"]) if port else None
         status = probe.status() if probe else {
             "source": "fnk0031_usb",
             "controller_model": "Freenove Crawling Robot Controller V3.2",
             "firmware_profile": ("custom_fnhr_ascii_v2" if custom_profile
                                  else "stock FNHR framed serial protocol"),
-            "transport": ("USB serial / custom FNHR ASCII controller" if custom_profile
+            "transport": ("authenticated TCP / custom FNHR ASCII controller" if settings["platform"] == "wifi_tcp_custom" else "USB serial / custom FNHR ASCII controller" if custom_profile
                            else "USB serial / stock FNHR framed protocol"),
             "protocol": ("custom_fnhr_ascii_v2" if custom_profile else "fnhr_framed_serial"), "port": "",
             "connected": False, "actuation_enabled": settings["actuation_enabled"],
@@ -3312,6 +3345,107 @@ class BodyHost:
             "plugin_enabled": bool(self.value("BODY_PLUGIN_ROBOT_ENABLED", False)),
         }
 
+    def _fnk0031_wifi_config_source(self):
+        settings = self.fnk0031_settings()
+        if settings["platform"] not in {"usb_serial_custom", "wifi_tcp_custom"} or not settings["serial_port"]:
+            raise RuntimeError("FNK0031 Wi-Fi provisioning requires the custom USB firmware and a configured USB port")
+        from body_runtime_host.fnk0031_usb import FNK0031CustomUSBSource
+        return FNK0031CustomUSBSource(settings["serial_port"], timeout=settings["timeout"])
+
+    def fnk0031_wifi_status(self) -> dict:
+        lock = self._fnk_wifi_provision_lock
+        if not lock.acquire(timeout=25.0):
+            raise TimeoutError("FNK Wi-Fi setup/status operation is still running")
+        try:
+            return self._fnk0031_wifi_status_locked()
+        finally:
+            lock.release()
+
+    def _fnk0031_wifi_status_locked(self) -> dict:
+        # This endpoint is read-only. Do not contend with the actuation lock:
+        # USB traffic is already serialized by FNK0031USBSource._SERIAL_LOCK,
+        # while a Wi-Fi probe is an independent authenticated PING.
+        settings = self.fnk0031_settings()
+        if settings["platform"] == "wifi_tcp_custom":
+            from body_runtime_host.fnk0031_usb import FNK0031CustomTCPSource
+            source = FNK0031CustomTCPSource(
+                settings["wifi_host"], str(self.value("FNK0031_WIFI_CONTROL_TOKEN", "") or ""),
+                settings["wifi_port"], timeout=settings["timeout"],
+                actuation_enabled=settings["actuation_enabled"],
+            )
+            status = source.wifi_status()
+        else:
+            from body_runtime_host.fnk0031_usb import FNK0031CustomUSBSource, _WIFI_PROVISIONING
+            source = FNK0031CustomUSBSource(
+                settings["serial_port"], timeout=max(20.0, settings["timeout"])
+            )
+            _WIFI_PROVISIONING.set()
+            try:
+                status = source.wifi_status()
+            finally:
+                _WIFI_PROVISIONING.clear()
+        status["control_reachable"] = False
+        if status.get("connected") and status.get("ip"):
+            token = str(self.value("FNK0031_WIFI_CONTROL_TOKEN", "") or "")
+            if token:
+                from body_runtime_host.fnk0031_usb import FNK0031CustomTCPSource
+                probe = FNK0031CustomTCPSource(
+                    status["ip"], token, settings["wifi_port"], timeout=2.0,
+                    actuation_enabled=settings["actuation_enabled"],
+                )
+                status["control_reachable"] = probe.ping()
+                if not status["control_reachable"]:
+                    status["control_error"] = probe.last_error
+            else:
+                status["control_error"] = "Body Wi-Fi pairing token is not configured"
+        return {"ok": True, **status}
+
+    def configure_fnk0031_wifi(self, payload: dict) -> dict:
+        ssid = payload.get("ssid")
+        password = payload.get("password", "")
+        if not isinstance(ssid, str) or not isinstance(password, str):
+            raise ValueError("SSID and password must be text")
+        settings = self.fnk0031_settings()
+        if settings["platform"] not in {"usb_serial_custom", "wifi_tcp_custom"} or not settings["serial_port"]:
+            raise RuntimeError("FNK0031 Wi-Fi provisioning requires the custom USB firmware and a configured USB port")
+        lock = self._fnk_wifi_provision_lock
+        if not lock.acquire(timeout=35.0):
+            raise TimeoutError("An FNK Wi-Fi provisioning request is already running; settings were not sent")
+        try:
+            token = str(self.value("FNK0031_WIFI_CONTROL_TOKEN", "") or "")
+            if not token:
+                token = secrets.token_hex(32)
+                self._persist_runtime_secret("FNK0031_WIFI_CONTROL_TOKEN", token)
+                self.save_config()
+            from body_runtime_host.fnk0031_usb import FNK0031CustomUSBSource, _WIFI_PROVISIONING
+            source = FNK0031CustomUSBSource(
+                settings["serial_port"], timeout=max(30.0, settings["timeout"])
+            )
+            _WIFI_PROVISIONING.set()
+            try:
+                result = source.configure_wifi(ssid, password, token)
+            finally:
+                _WIFI_PROVISIONING.clear()
+            result.pop("password", None)
+            result["credential_storage"] = "FNK0031 EEPROM only; Body does not persist the password"
+            return result
+        finally:
+            lock.release()
+
+    def clear_fnk0031_wifi(self) -> dict:
+        lock = self._fnk_wifi_provision_lock
+        if not lock.acquire(timeout=35.0):
+            raise TimeoutError("An FNK Wi-Fi provisioning request is already running; settings were not changed")
+        try:
+            from body_runtime_host.fnk0031_usb import _WIFI_PROVISIONING
+            _WIFI_PROVISIONING.set()
+            try:
+                return self._fnk0031_wifi_config_source().clear_wifi()
+            finally:
+                _WIFI_PROVISIONING.clear()
+        finally:
+            lock.release()
+
     def fnk0031_leg_test(self, payload: dict) -> dict:
         if payload.get("board_only_confirmed") is not True:
             raise ValueError("confirm that the FNK0031 board has no servos attached")
@@ -3357,11 +3491,11 @@ class BodyHost:
             raise RuntimeError("FNK0031 physical leg movement is blocked: servo motors are not declared installed")
         if not settings["actuation_enabled"]:
             raise RuntimeError("physical actuation is disabled in Body configuration")
-        if settings["platform"] != "usb_serial_custom" or not settings["serial_port"]:
-            raise RuntimeError("manual VR control requires the custom FNHR USB firmware and configured serial port")
+        if settings["platform"] not in {"usb_serial_custom", "wifi_tcp_custom"}:
+            raise RuntimeError("manual VR control requires the custom FNHR USB or authenticated Wi-Fi transport")
         if payload.get("deadman") is not True:
             raise ValueError("hold the VR right-stick click deadman while sending a command")
-        from body_runtime_host.fnk0031_usb import FNK0031CustomUSBSource
+        from body_runtime_host.fnk0031_usb import FNK0031CustomTCPSource, FNK0031CustomUSBSource
 
         if not self._fnk_manual_control_lock.acquire(blocking=False):
             raise RuntimeError("an FNHR gait is already running; command not queued")
@@ -3370,9 +3504,17 @@ class BodyHost:
             if now - self._fnk_manual_control_last_at < 1.2:
                 raise RuntimeError("manual gait rate limit; wait for the next control interval")
             self._fnk_manual_control_last_at = now
-            source = FNK0031CustomUSBSource(
-                settings["serial_port"], timeout=settings["timeout"], actuation_enabled=True
-            )
+            if settings["platform"] == "wifi_tcp_custom":
+                source = FNK0031CustomTCPSource(
+                    settings["wifi_host"], str(self.value("FNK0031_WIFI_CONTROL_TOKEN", "") or ""),
+                    settings["wifi_port"], timeout=settings["timeout"], actuation_enabled=True
+                )
+            else:
+                if not settings["serial_port"]:
+                    raise RuntimeError("FNK0031 custom USB configuration port is missing")
+                source = FNK0031CustomUSBSource(
+                    settings["serial_port"], timeout=settings["timeout"], actuation_enabled=True
+                )
             if not source.ping():
                 raise RuntimeError(f"FNK0031 is not responding: {source.last_error}")
             return source.execute_manual_control(str(payload.get("mode", "crawl")), payload)
@@ -3804,7 +3946,7 @@ class BodyHost:
         """Forward a read-only FNK USB health snapshot to the Brain bridge."""
         if (
             not bool(self.value("BODY_PLUGIN_ROBOT_ENABLED", False))
-            or str(self.value("FNK0031_PLATFORM", "")).lower() not in {"usb_serial", "usb_serial_custom"}
+            or str(self.value("FNK0031_PLATFORM", "")).lower() not in {"usb_serial", "usb_serial_custom", "wifi_tcp_custom"}
         ):
             return False
         interval = max(10.0, float(self.value("FNK0031_POLL_INTERVAL", 5) or 5))
@@ -4128,11 +4270,16 @@ class BodyHost:
 
     def update_fnk0031_settings(self, payload: dict) -> dict:
         platform = str(payload.get("platform", "ventuno_q_gateway") or "ventuno_q_gateway").strip().lower()
-        if platform not in {"ventuno_q_gateway", "usb_serial", "usb_serial_custom", "esp32", "mega_wifi", "fnk0031_simulator"}:
+        if platform not in {"ventuno_q_gateway", "usb_serial", "usb_serial_custom", "wifi_tcp_custom", "esp32", "mega_wifi", "fnk0031_simulator"}:
             raise ValueError("unsupported FNK0031 hardware topology")
+        wifi_host = str(payload.get("wifi_host", self.value("FNK0031_WIFI_HOST", "")) or "").strip()
+        if len(wifi_host) > 253 or any(char in wifi_host for char in "/:@?#"):
+            raise ValueError("FNK0031 Wi-Fi host must be an IP address or hostname, without a URL scheme or path")
         self.config.update({
             "FNK0031_URL": str(payload.get("url", "") or "").strip().rstrip("/"),
             "FNK0031_SERIAL_PORT": str(payload.get("serial_port", self.value("FNK0031_SERIAL_PORT", "")) or "").strip(),
+            "FNK0031_WIFI_HOST": wifi_host,
+            "FNK0031_WIFI_PORT": 8888,
             "FNK0031_TIMEOUT": max(0.5, float(payload.get("timeout", 5.0) or 5.0)),
             "FNK0031_POLL_INTERVAL": max(1, int(payload.get("poll_interval", 5) or 5)),
             "FNK0031_SNN_ENABLED": bool(payload.get("snn_enabled", False)),
@@ -5415,10 +5562,13 @@ class BodyHost:
             pass
         mode = str(model_config.get("mode") or "sim").strip().lower()
         real_mmwave_selected = bool(self.value("BODY_PLUGIN_MMWAVE_RADAR_ENABLED", False))
+        source_config = dict(self.config)
+        if self.value("FNK0031_WIFI_CONTROL_TOKEN", ""):
+            source_config["FNK0031_WIFI_CONTROL_TOKEN"] = str(self.value("FNK0031_WIFI_CONTROL_TOKEN", ""))
         usb_robot_selected = (
             bool(self.value("BODY_PLUGIN_ROBOT_ENABLED", False))
             and str(self.value("FNK0031_PLATFORM", "") or "").strip().lower()
-            in {"usb_serial", "usb_serial_custom"}
+            in {"usb_serial", "usb_serial_custom", "wifi_tcp_custom"}
         )
         if mode == "sim" and not usb_robot_selected:
             try:
@@ -5441,7 +5591,7 @@ class BodyHost:
             return augment_with_ultrasonic(source, self.config)
         if mode == "bridge":
             return None
-        source = augment_with_mmwave(resolve_source(self.config, self.latest), self.config)
+        source = augment_with_mmwave(resolve_source(source_config, self.latest), self.config)
         source = augment_with_imu(source, self.config, self._get_imu_bridge_source())
         source = augment_with_tof(source, self.config)
         source = augment_with_gps(source, self.config, self._get_gps_bridge_source())
@@ -5849,6 +5999,11 @@ class BodyHost:
                     self._send(owner.power_mode_status())
                 elif path == "/plugins/fnk0031_wifi/usb/status":
                     self._send(owner.fnk0031_usb_status())
+                elif path == "/plugins/fnk0031_wifi/wifi/status":
+                    try:
+                        self._send(owner.fnk0031_wifi_status())
+                    except (RuntimeError, TimeoutError) as exc:
+                        self._send({"ok": False, "error": str(exc)}, 409)
                 elif path == "/plugins/fnk0031_wifi/modules":
                     self._send(owner.fnk0031_modules())
                 elif path == "/plugins/fnk0031_wifi/modules/status":
@@ -6149,6 +6304,16 @@ class BodyHost:
                         self._send(owner.update_fnk0050_settings(body))
                     elif path == "/plugins/fnk0031_wifi/settings":
                         self._send(owner.update_fnk0031_settings(body))
+                    elif path == "/plugins/fnk0031_wifi/wifi/configure":
+                        try:
+                            self._send(owner.configure_fnk0031_wifi(body), 200)
+                        except (ValueError, RuntimeError, TimeoutError) as exc:
+                            self._send({"ok": False, "error": str(exc)}, 409)
+                    elif path == "/plugins/fnk0031_wifi/wifi/clear":
+                        try:
+                            self._send(owner.clear_fnk0031_wifi(), 200)
+                        except (RuntimeError, TimeoutError) as exc:
+                            self._send({"ok": False, "error": str(exc)}, 409)
                     elif path == "/plugins/fnk0031_wifi/leg-test":
                         try:
                             self._send(owner.fnk0031_leg_test(body))

@@ -739,6 +739,15 @@ def resolve_source(config: Dict[str, Any], latest: Optional[Dict[str, Dict[str, 
                 timeout=float(config.get("FNK0031_TIMEOUT", 5.0) or 5.0),
                 actuation_enabled=bool(config.get("FNK0031_ACTUATION_ENABLED", config.get("BODY_ACTUATION_ENABLED", False))),
             )
+        if platform == "wifi_tcp_custom":
+            from ..fnk0031_usb import FNK0031CustomTCPSource
+            return FNK0031CustomTCPSource(
+                host=str(config.get("FNK0031_WIFI_HOST", "") or ""),
+                token=str(config.get("FNK0031_WIFI_CONTROL_TOKEN", "") or ""),
+                port=int(config.get("FNK0031_WIFI_PORT", 8888) or 8888),
+                timeout=float(config.get("FNK0031_TIMEOUT", 5.0) or 5.0),
+                actuation_enabled=bool(config.get("FNK0031_ACTUATION_ENABLED", config.get("BODY_ACTUATION_ENABLED", False))),
+            )
         url = str(config.get("FNK0031_URL") or config.get("ROBOT_URL", "") or "").strip()
         if url:
             return FNK0031WifiSource(config)

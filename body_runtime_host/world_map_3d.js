@@ -3,6 +3,8 @@ import { disparityToPriorMeters, rawDepthToMeters } from './depth_projection.js'
 
 const byId = (id) => document.getElementById(id);
 const sourceStates = Object.create(null);
+let sensorServerTimeOffsetSeconds = 0;
+const sensorNowSeconds = () => Date.now() / 1000 + sensorServerTimeOffsetSeconds;
 const staleAfterSeconds = { camera: 5, yolo: 5, midas: 5, odometry: 5, segmentation: 5, radar: 2, gps: 5, imu: 2, tof: 2, ultrasonic: 0.6 };
 const physicalSources = ['camera', 'radar', 'gps', 'imu', 'tof', 'ultrasonic'];
 const cameraRadarGeometry = { horizontalFovDeg: 70, yawOffsetDeg: 0, lateralOffsetM: 0, calibrated: false };
@@ -942,8 +944,11 @@ function drawBoxes(detections, width, height) {
 }
 
 function visibleYoloDetections(yolo) {
-  const age = Number(yolo?.captured_at) > 0 ? Date.now() / 1000 - Number(yolo.captured_at) : Infinity;
-  if (!['ready', 'stale'].includes(yolo?.state) || age < 0 || age > 2.5) return [];
+  const age = Number(yolo?.captured_at) > 0 ? sensorNowSeconds() - Number(yolo.captured_at) : Infinity;
+  // Keep the last valid boxes through brief inference stalls. They are rendered
+  // amber with a LAST SEEN age label after the live threshold, then expire with
+  // the overlay track coast window so stale detections are never presented as live.
+  if (!['ready', 'stale'].includes(yolo?.state) || age < 0 || age > yoloOverlayCoastSeconds) return [];
   return (yolo.detections || []).filter(item => {
     const confidence = Number(item.confidence ?? item.score ?? 0);
     const box = item.bbox;
@@ -967,13 +972,13 @@ function overlayBoxIou(a, b) {
 }
 
 function updateYoloOverlayTracks(yolo) {
-  const now = Date.now() / 1000;
+  const now = sensorNowSeconds();
   const capturedAt = Number(yolo?.captured_at) || 0;
   const observationAge = capturedAt > 0 ? now - capturedAt : Infinity;
   const detections = visibleYoloDetections(yolo);
   const frameKey = String(yolo?.frame_id || capturedAt);
   if (frameKey && frameKey !== lastOverlayYoloKey && detections.length
-      && observationAge >= 0 && observationAge <= 2.5) {
+      && observationAge >= 0 && observationAge <= yoloOverlayCoastSeconds) {
     lastOverlayYoloKey = frameKey;
     const unmatched = new Set(yoloOverlayTracks.map((_, index) => index));
     for (const detection of detections) {
@@ -2217,8 +2222,16 @@ async function refreshSensors() {
   if (sensorBusy || activeSource !== 'sensors') return;
   sensorBusy = true;
   try {
+    const requestStartedAt = Date.now() / 1000;
     const response = await fetch('/body/camera/frame', { cache: 'no-store' });
     const frame = await response.json();
+    const receivedAt = Date.now() / 1000;
+    const serverTime = Number(frame.server_time);
+    if (Number.isFinite(serverTime) && serverTime > 0) {
+      // Compare capture timestamps in the Ventuno clock domain. Using the PC
+      // wall clock directly made every sample look stale when the clocks drifted.
+      sensorServerTimeOffsetSeconds = serverTime - (requestStartedAt + receivedAt) / 2;
+    }
     setSensorFetchFailure('camera', false);
     const currentCamera = frame.camera || {};
     const yolo = frame.yolo || {};
@@ -2227,7 +2240,7 @@ async function refreshSensors() {
     latestSensorYolo = yolo;
     const cameraState = byId('world-map-camera-state');
     const cameraEmpty = byId('world-map-camera-empty');
-    const frameAge = Number(currentCamera.captured_at) > 0 ? Math.max(0, Date.now() / 1000 - Number(currentCamera.captured_at)) : Infinity;
+    const frameAge = Number(currentCamera.captured_at) > 0 ? Math.max(0, sensorNowSeconds() - Number(currentCamera.captured_at)) : Infinity;
     if (cameraState) {
       cameraState.textContent = currentCamera.image_base64
         ? `LIVE · ${currentCamera.width || '—'}×${currentCamera.height || '—'} · ${Number.isFinite(frameAge) ? frameAge.toFixed(1) + 's' : 'age —'}`
@@ -2247,7 +2260,7 @@ async function refreshSensors() {
       imageWrap.style.aspectRatio = `${currentCamera.width}/${currentCamera.height}`;
     }
     const detections = updateYoloOverlayTracks(yolo);
-    const yoloAge = Number(yolo.captured_at) > 0 ? Date.now() / 1000 - Number(yolo.captured_at) : Infinity;
+    const yoloAge = Number(yolo.captured_at) > 0 ? sensorNowSeconds() - Number(yolo.captured_at) : Infinity;
     const yoloOverlayKey = `${yolo.state || 'disabled'}:${yolo.frame_id || ''}:${detections.map(item => `${item.overlayAgeS.toFixed(1)}:${item.bbox.join(',')}`).join(';')}`;
     if (yoloOverlayKey !== displayedYoloOverlayKey) {
       drawBoxes(detections, currentCamera.width || 640, currentCamera.height || 480);

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import math
+import socket
 import threading
 import time
 from contextlib import contextmanager
@@ -12,6 +13,7 @@ from typing import Any
 LOG = logging.getLogger("lumina.body.fnk0031_usb")
 _SERIAL_LOCK = threading.RLock()
 _SERIAL_CONNECTIONS: dict[tuple[str, Any], Any] = {}
+_WIFI_PROVISIONING = threading.Event()
 
 CONTROLLER_MODEL = "Freenove Crawling Robot Controller V3.2"
 CONTROLLER_FIRMWARE = "stock FNHR framed serial protocol"
@@ -97,6 +99,8 @@ class FNK0031USBSource:
 
     @contextmanager
     def _open(self):
+        if _WIFI_PROVISIONING.is_set() and not getattr(self, "_wifi_provisioning", False):
+            raise TimeoutError("FNK0031 USB is reserved for Wi-Fi provisioning")
         factory = self._serial_factory
         if factory is None:
             try:
@@ -105,7 +109,9 @@ class FNK0031USBSource:
                 raise RuntimeError("pyserial is missing; install body_requirements.txt") from exc
             factory = serial.Serial
         key = (self.port, factory if self._serial_factory is not None else 0)
-        with _SERIAL_LOCK:
+        if not _SERIAL_LOCK.acquire(timeout=self.timeout):
+            raise TimeoutError(f"FNK0031 USB serial port {self.port} stayed busy for {self.timeout:.1f}s")
+        try:
             connection = _SERIAL_CONNECTIONS.get(key)
             if connection is None or getattr(connection, "is_open", True) is False:
                 if self._serial_factory is None:
@@ -130,6 +136,8 @@ class FNK0031USBSource:
                     close()
                 _SERIAL_CONNECTIONS.pop(key, None)
                 raise
+        finally:
+            _SERIAL_LOCK.release()
 
     @staticmethod
     def _frame(order: int, payload: bytes = b"") -> bytes:
@@ -368,6 +376,103 @@ class FNK0031CustomUSBSource(FNK0031USBSource):
     name = "fnk0031_custom_usb"
     firmware_profile = "custom_fnhr_ascii_v2"
 
+    @staticmethod
+    def _encode_wifi_text(value: str, label: str, maximum_bytes: int, allow_empty: bool = False) -> str:
+        if not isinstance(value, str):
+            raise ValueError(f"Wi-Fi {label} must be text")
+        encoded = value.encode("utf-8")
+        if (not encoded and not allow_empty) or len(encoded) > maximum_bytes:
+            raise ValueError(f"Wi-Fi {label} must be {'0' if allow_empty else '1'}..{maximum_bytes} UTF-8 bytes")
+        if any(byte < 0x20 or byte == 0x7f for byte in encoded):
+            raise ValueError(f"Wi-Fi {label} cannot contain control characters")
+        return encoded.hex()
+
+    def configure_wifi(self, ssid: str, password: str, control_token: str = "") -> dict[str, Any]:
+        """Send Wi-Fi credentials directly to the board; never persist or log them on Body."""
+        ssid_hex = self._encode_wifi_text(ssid, "SSID", 32)
+        password_hex = self._encode_wifi_text(password, "password", 64, allow_empty=True)
+        token = str(control_token or "").strip().lower()
+        if len(token) != 64 or any(char not in "0123456789abcdef" for char in token):
+            raise ValueError("Wi-Fi control pairing token must be 64 lowercase hexadecimal characters")
+        if not self.port:
+            raise RuntimeError("FNK0031 USB configuration port is not set")
+        try:
+            self._wifi_provisioning = True
+            with self._open() as connection:
+                if hasattr(connection, "reset_input_buffer"):
+                    connection.reset_input_buffer()
+                connection.write(f"WIFI TOKEN {token}\n".encode("ascii"))
+                connection.flush()
+                token_response = self._read_line(connection, time.monotonic() + 5.0)
+                if token_response != "WIFI TOKEN SAVED":
+                    raise RuntimeError("FNK0031 did not confirm Wi-Fi control pairing")
+                command = f"WIFI SET {ssid_hex} {password_hex}\n"
+                connection.write(command.encode("ascii"))
+                connection.flush()
+                response = self._read_line(connection, time.monotonic() + 28.0)
+            if response.startswith("WIFI CONNECTED "):
+                result = {
+                    "ok": True, "configured": True, "connected": True,
+                    "ssid": ssid,
+                    "ip": response.removeprefix("WIFI CONNECTED ").strip() or None,
+                }
+            elif response == "WIFI SAVED JOIN FAILED":
+                result = {
+                    "ok": False, "configured": True, "connected": False,
+                    "ssid": ssid,
+                    "error": "credentials saved, but the ESP8266 could not join the selected Wi-Fi",
+                }
+            else:
+                raise RuntimeError("FNK0031 returned an unexpected Wi-Fi configuration response")
+            self.last_error = "" if result["connected"] else str(result.get("error", ""))
+            self.last_ok = time.time()
+            return result
+        except Exception as exc:
+            self.last_error = str(exc)
+            raise
+        finally:
+            self._wifi_provisioning = False
+
+    def wifi_status(self) -> dict[str, Any]:
+        if not self.port:
+            return {"configured": False, "connected": False, "error": "FNK0031 USB configuration port is not set"}
+        self._wifi_provisioning = True
+        try:
+            with self._open() as connection:
+                if hasattr(connection, "reset_input_buffer"):
+                    connection.reset_input_buffer()
+                connection.write(b"WIFI STATUS\n")
+                connection.flush()
+                response = self._read_line(connection, time.monotonic() + 5.0)
+        finally:
+            self._wifi_provisioning = False
+        if response.startswith("WIFI CONNECTED "):
+            return {"configured": True, "connected": True,
+                    "ip": response.removeprefix("WIFI CONNECTED ").strip() or None}
+        if response == "WIFI JOIN FAILED":
+            return {"configured": True, "connected": False,
+                    "error": "not associated with the configured Wi-Fi"}
+        if response.startswith("WIFI NOT CONFIGURED"):
+            return {"configured": False, "connected": False, "ap": response.removeprefix("WIFI NOT CONFIGURED · AP ")}
+        raise RuntimeError("FNK0031 returned an unexpected Wi-Fi status response")
+
+    def clear_wifi(self) -> dict[str, Any]:
+        if not self.port:
+            raise RuntimeError("FNK0031 USB configuration port is not set")
+        self._wifi_provisioning = True
+        try:
+            with self._open() as connection:
+                if hasattr(connection, "reset_input_buffer"):
+                    connection.reset_input_buffer()
+                connection.write(b"WIFI CLEAR\n")
+                connection.flush()
+                response = self._read_line(connection, time.monotonic() + 5.0)
+        finally:
+            self._wifi_provisioning = False
+        if response != "WIFI CLEARED":
+            raise RuntimeError("FNK0031 did not confirm clearing its stored Wi-Fi credentials")
+        return {"ok": True, "configured": False, "connected": False}
+
     def _read_line(self, connection, deadline: float) -> str:
         line = bytearray()
         while time.monotonic() < deadline:
@@ -388,10 +493,17 @@ class FNK0031CustomUSBSource(FNK0031USBSource):
             connection.reset_input_buffer()
         connection.write((command + "\n").encode("ascii"))
         connection.flush()
-        response = self._read_line(connection, time.monotonic() + (timeout or self.timeout))
-        if response != expected:
+        deadline = time.monotonic() + (timeout or self.timeout)
+        while time.monotonic() < deadline:
+            response = self._read_line(connection, deadline)
+            if response == expected:
+                return response
+            # Board reset/boot banners can arrive after the host flushes its
+            # serial input buffer. They are not replies to the request.
+            if response == "READY FNK0031_NAV_V2":
+                continue
             raise RuntimeError(f"unexpected custom FNHR response {response!r}; expected {expected!r}")
-        return response
+        raise TimeoutError(f"timed out waiting for custom FNHR response {expected!r}")
 
     def ping(self) -> bool:
         if not self.port:
@@ -623,3 +735,72 @@ class FNK0031CustomUSBSource(FNK0031USBSource):
             "board_only_test": {"action": "single_leg_z_step", "max_delta_mm": 5},
             "remote_preserved": False,
         }
+
+
+class _SocketTextConnection:
+    """Small pyserial-compatible text adapter for the FNK TCP line protocol."""
+
+    def __init__(self, connection: socket.socket):
+        self.connection = connection
+
+    def read(self, count: int = 1) -> bytes:
+        try:
+            return self.connection.recv(count)
+        except socket.timeout:
+            return b""
+
+    def write(self, payload: bytes) -> int:
+        self.connection.sendall(payload)
+        return len(payload)
+
+    def flush(self) -> None:
+        return None
+
+
+class FNK0031CustomTCPSource(FNK0031CustomUSBSource):
+    """Authenticated Wi-Fi transport for the custom FNHR ASCII firmware."""
+
+    name = "fnk0031_custom_wifi"
+
+    def __init__(self, host: str, token: str, port: int = 8888, timeout: float = 5.0,
+                 actuation_enabled: bool = False):
+        super().__init__(f"{host}:{int(port)}", timeout=timeout,
+                         actuation_enabled=actuation_enabled)
+        self.host = str(host or "").strip()
+        self.tcp_port = int(port)
+        self.control_token = str(token or "").strip().lower()
+        if not self.host:
+            raise ValueError("FNK0031 Wi-Fi host is not configured")
+        if len(self.control_token) != 64 or any(char not in "0123456789abcdef" for char in self.control_token):
+            raise ValueError("FNK0031 Wi-Fi control pairing is missing or invalid")
+        if not 1 <= self.tcp_port <= 65535:
+            raise ValueError("FNK0031 Wi-Fi port is invalid")
+
+    @contextmanager
+    def _open(self):
+        connection = socket.create_connection((self.host, self.tcp_port), timeout=self.timeout)
+        connection.settimeout(0.1)
+        text_connection = _SocketTextConnection(connection)
+        try:
+            text_connection.write(f"AUTH {self.control_token}\n".encode("ascii"))
+            response = self._read_line(text_connection, time.monotonic() + self.timeout)
+            if response != "AUTH OK":
+                raise PermissionError("FNK0031 rejected Wi-Fi control pairing")
+            yield text_connection
+        finally:
+            connection.close()
+
+    def wifi_status(self) -> dict[str, Any]:
+        return {"configured": True, "connected": self.ping(), "ip": self.host,
+                "control_transport": "authenticated TCP over Wi-Fi", "port": self.tcp_port}
+
+    def status(self) -> dict[str, Any]:
+        result = super().status()
+        result.update({
+            "source": self.name,
+            "transport": "authenticated TCP / custom FNHR ASCII controller",
+            "port": self.tcp_port,
+            "host": self.host,
+            "baudrate": None,
+        })
+        return result
