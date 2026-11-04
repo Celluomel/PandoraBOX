@@ -44,6 +44,11 @@ bool wifiLineOverflows[WIFI_LINKS] = {false};
 bool wifiFrameActive[WIFI_LINKS] = {false};
 byte wifiFrameLengths[WIFI_LINKS] = {0};
 byte wifiFrameBuffers[WIFI_LINKS][32] = {{0}};
+unsigned long freenoveFramesReceived = 0;
+unsigned long freenoveRepliesSent = 0;
+unsigned long freenoveReplyFailures = 0;
+int freenoveLastOrder = -1;
+byte freenoveLastLength = 0;
 int activeWifiLink = -1;
 
 static int hexValue(char value) {
@@ -348,6 +353,16 @@ static void handleCommand(char *line, int wifiLink = -1) {
     activeWifiLink = -1;
     return;
   }
+  if (strcmp(line, "CMD freenove") == 0) {
+    String diagnostic = String("FREENOVE rx=") + freenoveFramesReceived +
+      " reply_ok=" + freenoveRepliesSent +
+      " reply_fail=" + freenoveReplyFailures +
+      " last_order=" + freenoveLastOrder +
+      " last_bytes=" + freenoveLastLength;
+    sendCommandLine(diagnostic);
+    activeWifiLink = -1;
+    return;
+  }
   if (strcmp(line, "CMD state") == 0) {
     String state = String("STATE ") + millis();
     for (int leg = 1; leg <= 6; ++leg) {
@@ -488,7 +503,8 @@ static void sendFreenoveReply(int linkId, byte order, const byte *data = nullptr
   response[1] = order;
   for (byte index = 0; index < dataLength; ++index) response[index + 2] = data[index];
   response[dataLength + 2] = 0x81;
-  sendWifiBytes(linkId, response, dataLength + 3);
+  if (sendWifiBytes(linkId, response, dataLength + 3)) ++freenoveRepliesSent;
+  else ++freenoveReplyFailures;
 }
 
 static bool freenoveLengthIs(const byte *frame, byte length, byte order, byte expectedLength) {
@@ -499,6 +515,9 @@ static bool freenoveLengthIs(const byte *frame, byte length, byte order, byte ex
 // 0x80, order, zero or more 7-bit arguments, 0x81. This is separate from the
 // authenticated ASCII protocol used by the Body on the same TCP port.
 static void handleFreenoveWifiFrame(int linkId, const byte *frame, byte length) {
+  ++freenoveFramesReceived;
+  freenoveLastLength = length;
+  freenoveLastOrder = length >= 2 ? frame[1] : -1;
   if (length < 3 || frame[0] != 0x80 || frame[length - 1] != 0x81) return;
   for (byte index = 1; index + 1 < length; ++index) {
     if (frame[index] > 127) return;
