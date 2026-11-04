@@ -30,6 +30,10 @@ class AppSettings(BaseModel):
     # Local multilingual sentence encoder for background affect estimation.
     AFFECT_EMBEDDING_MODEL: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
     LLM_BASE_URL: str = "http://localhost:11434"
+    CODEX_CLI_PATH: str = "codex"
+    LLM_PREVIOUS_PROVIDER: str = ""
+    LLM_PREVIOUS_MODEL: str = ""
+    LLM_PREVIOUS_BASE_URL: str = ""
     OPENAI_API_KEY: str = ""
     ANTHROPIC_API_KEY: str = ""
     RESEARCH_SEARCH_BACKEND: str = "auto"   # "auto"|"claude"|"brave"|"rss"|"stealth"

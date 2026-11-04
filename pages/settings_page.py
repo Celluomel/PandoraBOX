@@ -148,6 +148,7 @@ async def settings_page(tab: str = 'llm'):
                         'ollama':   'http://localhost:11434',
                         'lmstudio': 'http://localhost:1234/v1',
                         'openai':   'https://api.openai.com/v1',
+                        'codex':    '',
                     }
                     with ui.grid(columns=2).classes('w-full gap-4'):
                         llm_url   = ui.input(
@@ -161,7 +162,7 @@ async def settings_page(tab: str = 'llm'):
                                 llm_url.value = default
 
                         llm_prov  = ui.select(
-                            ['ollama', 'lmstudio', 'openai'],
+                            ['ollama', 'lmstudio', 'openai', 'codex'],
                             label='Provider', value=config.LLM_PROVIDER,
                             on_change=_s_on_provider_change
                         ).props('outlined dense').classes('dark-input')
@@ -178,7 +179,8 @@ async def settings_page(tab: str = 'llm'):
                         ui.markdown(
                             "- **ollama** → `http://localhost:11434` · run `ollama serve` first\n"
                             "- **lmstudio** → `http://localhost:1234/v1` · start LM Studio server\n"
-                            "- **openai** → requires API key above"
+                            "- **openai** → requires API key above\n"
+                            "- **codex** → uses the local Codex CLI sign-in and app-server; no API key"
                         ).style('font-size:0.82rem;color:#94a3b8;line-height:1.7')
 
                 # ── Memory tab ────────────────────────────────────────
@@ -2639,6 +2641,20 @@ Write in first person, as PandoraBOX reflecting on herself. Be specific, not gen
                 async def save_all():
                     # ── 1. Push UI values into config ────────────────────────
                     config.PERSONA_NAME   = (persona_name_input.value or "PandoraBOX").strip()
+                    selected_llm = (
+                        str(llm_prov.value or ""),
+                        str(llm_model.value or ""),
+                        str(llm_url.value or ""),
+                    )
+                    current_llm = (
+                        str(config.LLM_PROVIDER or ""),
+                        str(config.LLM_MODEL or ""),
+                        str(config.LLM_BASE_URL or ""),
+                    )
+                    if selected_llm != current_llm:
+                        config.LLM_PREVIOUS_PROVIDER = current_llm[0]
+                        config.LLM_PREVIOUS_MODEL = current_llm[1]
+                        config.LLM_PREVIOUS_BASE_URL = current_llm[2]
                     config.LLM_PROVIDER = llm_prov.value
                     config.LLM_MODEL = llm_model.value
                     config.LLM_BASE_URL = llm_url.value
@@ -2720,6 +2736,23 @@ Write in first person, as PandoraBOX reflecting on herself. Be specific, not gen
 
                     ui.notify('✅ Settings saved and applied!', type='positive', position='bottom-right')
                     print(f"\n✅ Settings applied: {config.LLM_PROVIDER}/{config.LLM_MODEL}")
+
+                async def restore_previous_llm():
+                    previous_provider = str(getattr(config, 'LLM_PREVIOUS_PROVIDER', '') or '').strip()
+                    previous_model = str(getattr(config, 'LLM_PREVIOUS_MODEL', '') or '').strip()
+                    previous_url = str(getattr(config, 'LLM_PREVIOUS_BASE_URL', '') or '').strip()
+                    if not previous_provider or not previous_model:
+                        ui.notify('No previous LLM configuration has been saved yet.', type='warning')
+                        return
+                    llm_prov.value = previous_provider
+                    llm_model.value = previous_model
+                    llm_url.value = previous_url
+                    await save_all()
+
+                ui.button(
+                    '↩ Restore previous LLM configuration',
+                    on_click=restore_previous_llm
+                ).props('outline color=blue-grey').classes('mr-2')
 
                 ui.button(
                     '💾 Save & Apply', on_click=save_all

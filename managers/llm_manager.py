@@ -6,6 +6,7 @@ import threading
 import time
 from typing import Optional, List, Dict, Iterator
 from abc import ABC, abstractmethod
+from managers.codex_app_server_provider import CodexAppServerProvider
 
 logger = logging.getLogger(__name__)
 
@@ -828,6 +829,7 @@ PROVIDER_MAP = {
     "ollama":   OllamaProvider,
     "lmstudio": LMStudioProvider,
     "openai":   OpenAIProvider,
+    "codex":    CodexAppServerProvider,
 }
 
 
@@ -844,12 +846,16 @@ def create_llm_manager(
     if provider not in PROVIDER_MAP:
         raise ValueError(f"Unknown LLM provider: '{provider}'. Valid: {list(PROVIDER_MAP)}")
 
+    provider_class = PROVIDER_MAP[provider]
+
     if provider in ("ollama", "lmstudio"):
         kwargs.setdefault("base_url", config.LLM_BASE_URL)
     elif provider == "openai":
         kwargs.setdefault("api_key", config.OPENAI_API_KEY)
+    elif provider == "codex":
+        kwargs.setdefault("executable", getattr(config, "CODEX_CLI_PATH", "codex"))
 
-    instance = PROVIDER_MAP[provider](model=model, **kwargs)
+    instance = provider_class(model=model, **kwargs)
     manager = LLMManager(instance, text_model=text_model)
     logger.info(
         f"LLM manager created: {provider}/{model} "
