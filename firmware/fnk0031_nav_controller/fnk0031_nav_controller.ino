@@ -689,11 +689,13 @@ static void receiveWifi() {
       continue;
     }
     if (wifiRxBuffer.length() < colon + 1 + payloadLength) return;
-    const String payload = wifiRxBuffer.substring(colon + 1, colon + 1 + payloadLength);
-    wifiRxBuffer.remove(0, colon + 1 + payloadLength);
-    for (unsigned int index = 0; index < payload.length(); ++index) {
-      receiveWifiPayloadByte(linkId, static_cast<byte>(payload[index]));
+    // The +IPD payload is binary. Arduino String::substring() treats its data
+    // as NUL-terminated text, so a valid FNHR frame such as 80 00 81 is cut
+    // after its first byte. Read the bytes in place before removing the frame.
+    for (int index = 0; index < payloadLength; ++index) {
+      receiveWifiPayloadByte(linkId, static_cast<byte>(wifiRxBuffer[colon + 1 + index]));
     }
+    wifiRxBuffer.remove(0, colon + 1 + payloadLength);
   }
 }
 
