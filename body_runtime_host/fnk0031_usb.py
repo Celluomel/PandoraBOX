@@ -85,6 +85,8 @@ class FNK0031USBSource:
     """Speak the framed binary protocol used by stock Freenove FNHR firmware."""
 
     name = "fnk0031_usb"
+    startup_ready_banner: str | None = None
+    startup_ready_timeout_s = 0.0
 
     def __init__(self, port: str, timeout: float = 5.0, actuation_enabled: bool = False,
                  serial_factory=None):
@@ -119,15 +121,43 @@ class FNK0031USBSource:
                     connection.port = self.port
                     connection.dtr = False
                     connection.open()
-                    LOG.info(
-                        "FNK0031 USB port %s opened; waiting %.1fs for controller startup",
-                        self.port,
-                        SERIAL_STARTUP_SETTLE_SECONDS,
-                    )
-                    time.sleep(SERIAL_STARTUP_SETTLE_SECONDS)
+                    connection._fnk_startup_ready = False
                 else:
                     connection = factory(self.port, 115200, timeout=0.1, write_timeout=self.timeout)
+                    connection._fnk_startup_ready = True
                 _SERIAL_CONNECTIONS[key] = connection
+            startup_banner = self.startup_ready_banner if self._serial_factory is None else None
+            if startup_banner and not getattr(connection, "_fnk_startup_ready", False):
+                timeout_s = max(1.0, float(self.startup_ready_timeout_s or 1.0))
+                LOG.info(
+                    "FNK0031 USB port %s opened; waiting for %r (up to %.1fs)",
+                    self.port,
+                    startup_banner,
+                    timeout_s,
+                )
+                deadline = time.monotonic() + timeout_s
+                line = bytearray()
+                while time.monotonic() < deadline:
+                    raw = connection.read(1)
+                    if not raw:
+                        continue
+                    if raw in (b"\n", b"\r"):
+                        if line.decode("ascii", errors="replace").strip() == startup_banner:
+                            connection._fnk_startup_ready = True
+                            LOG.info("FNK0031 USB startup confirmed on %s", self.port)
+                            break
+                        line.clear()
+                    elif len(line) < 256:
+                        line.extend(raw)
+                    else:
+                        line.clear()
+                if not getattr(connection, "_fnk_startup_ready", False):
+                    # Keep the same open serial connection: opening it again can
+                    # reset the FNK and restart its blocking ESP8266 Wi-Fi join.
+                    raise TimeoutError(
+                        f"FNK0031 firmware startup banner not received on {self.port} "
+                        f"within {timeout_s:.0f}s; keeping the serial port open for retry"
+                    )
             try:
                 yield connection
             except Exception:
@@ -375,6 +405,8 @@ class FNK0031CustomUSBSource(FNK0031USBSource):
 
     name = "fnk0031_custom_usb"
     firmware_profile = "custom_fnhr_ascii_v2"
+    startup_ready_banner = "READY FNK0031_NAV_V2"
+    startup_ready_timeout_s = 50.0
 
     @staticmethod
     def _encode_wifi_text(value: str, label: str, maximum_bytes: int, allow_empty: bool = False) -> str:
