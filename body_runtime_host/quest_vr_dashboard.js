@@ -328,7 +328,7 @@ export class QuestVRDashboard {
       this.gpsMapStickZoomAccumulator = 0;
     }
     this.drawDashboard();
-    this.drawGpsMapWindow();
+    if (this.gpsMapVisible) this.drawGpsMapWindow();
   }
 
   beginGpsMapPan(controller, raycaster) {
@@ -381,7 +381,8 @@ export class QuestVRDashboard {
   setPowerWindowVisible(visible) {
     this.powerWindowVisible = Boolean(visible);
     this.powerWindowRoot.visible = this.visible && this.powerWindowVisible;
-    this.drawDashboard(); this.drawPowerWindow();
+    this.drawDashboard();
+    if (this.powerWindowVisible) this.drawPowerWindow();
   }
 
   resizePowerWindow(factor) {
@@ -713,17 +714,17 @@ export class QuestVRDashboard {
     this.sensorStatus.runtime = Number.isFinite(remainingWh) && watts > 0
       ? `${Math.floor(remainingWh / watts)}H ${Math.floor((remainingWh / watts % 1) * 60)}M EST.` : '—';
     this.drawDashboard();
-    this.drawPowerWindow();
+    if (this.powerWindowVisible) this.drawPowerWindow();
   }
 
   updateSystemMetrics(metrics) {
     this.systemMetrics = metrics || {};
-    this.drawPowerWindow();
+    if (this.powerWindowVisible) this.drawPowerWindow();
   }
 
   setPowerWindowMessage(message = '') {
     this.powerWindowMessage = String(message || '');
-    this.drawPowerWindow();
+    if (this.powerWindowVisible) this.drawPowerWindow();
   }
 
   updateDepthIntrinsics(intrinsics, width, height) {
@@ -819,6 +820,7 @@ export class QuestVRDashboard {
   }
 
   drawDashboard() {
+    if (!this.visible) return;
     const now = performance.now();
     const minIntervalMs = 250;
     const elapsed = now - (this.lastDashboardDrawAt || 0);
@@ -1978,6 +1980,12 @@ export class QuestVRDashboard {
     if (this.gpsMapRoot) this.gpsMapRoot.visible = this.visible && this.gpsMapVisible;
     if (this.powerWindowRoot) this.powerWindowRoot.visible = this.visible && this.powerWindowVisible;
     if (this.fnkRoot) this.fnkRoot.visible = this.visible && this.fnkVisible;
+    if (this.visible) {
+      this.drawDashboard();
+      if (this.gpsMapVisible) this.drawGpsMapWindow();
+      if (this.powerWindowVisible) this.drawPowerWindow();
+      if (this.fnkVisible) this.drawFnkControlWindow();
+    }
   }
 
   setFnkVisible(visible) {
@@ -1986,7 +1994,7 @@ export class QuestVRDashboard {
     else { this.fnkSceneInputSelected = false; this.fnkControllerInput = null; }
     this.fnkRoot.visible = this.visible && this.fnkVisible;
     this.drawDashboard();
-    this.drawFnkControlWindow();
+    if (this.fnkVisible) this.drawFnkControlWindow();
   }
 
   updateFnkHardwareStatus(status) {
@@ -1999,7 +2007,7 @@ export class QuestVRDashboard {
           : `CONNECTED · ${status.firmware_profile || 'INCOMPATIBLE FIRMWARE'}`
         : `BOARD OFFLINE · ${status?.last_error || 'waiting for USB'}`;
     }
-    this.drawFnkControlWindow();
+    if (this.fnkVisible) this.drawFnkControlWindow();
   }
 
   selectFnkLeg(leg) {
