@@ -20,11 +20,12 @@ renderer.autoClear = false;
 renderer.info.autoReset = false;
 const xrParams = new URLSearchParams(window.location.search);
 const xrRenderSettings = {
-  foveation: Math.min(1, Math.max(0, Number(xrParams.get('foveation') ?? 0.2))),
-  scale: Math.min(1.5, Math.max(0.5, Number(xrParams.get('scale') ?? 1.2))),
+  // Balanced defaults leave headroom for the sensor cloud and independent VR panels.
+  foveation: Math.min(1, Math.max(0, Number(xrParams.get('foveation') ?? 0.65))),
+  scale: Math.min(1.5, Math.max(0.5, Number(xrParams.get('scale') ?? 1.0))),
 };
-if (!Number.isFinite(xrRenderSettings.foveation)) xrRenderSettings.foveation = 0.2;
-if (!Number.isFinite(xrRenderSettings.scale)) xrRenderSettings.scale = 1.2;
+if (!Number.isFinite(xrRenderSettings.foveation)) xrRenderSettings.foveation = 0.65;
+if (!Number.isFinite(xrRenderSettings.scale)) xrRenderSettings.scale = 1.0;
 const xrQualityPresets = {
   balanced: { foveation: 0.65, scale: 1 },
   sharp: { foveation: 0.2, scale: 1.2 },
@@ -70,6 +71,16 @@ function perfTick(time) {
     perfStats.last = time; perfStats.frames = 0; perfStats.sum = 0; perfStats.max = 0;
   }
   renderer.info.reset();
+}
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = 5000) {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(new Error(`Request timed out after ${timeoutMs} ms`)), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    window.clearTimeout(timer);
+  }
 }
 
 const scene = new THREE.Scene();
@@ -333,59 +344,6 @@ function updateTwinFromHardware() {
   else sensorTwin.setTelemetry();
   twinStatusLabel.visible = Boolean(legs);
 }
-const twinCameraCanvas = document.createElement('canvas');
-twinCameraCanvas.width = 640;
-twinCameraCanvas.height = 480;
-const twinCameraContext = twinCameraCanvas.getContext('2d');
-const twinCameraTexture = new THREE.CanvasTexture(twinCameraCanvas);
-twinCameraTexture.colorSpace = THREE.SRGBColorSpace;
-twinCameraTexture.generateMipmaps = false;
-twinCameraTexture.minFilter = THREE.LinearFilter;
-const twinCameraScreen = new THREE.Mesh(new THREE.PlaneGeometry(1.25, 0.94),
-  new THREE.MeshBasicMaterial({ map: twinCameraTexture, side: THREE.DoubleSide, depthWrite: false }));
-twinCameraScreen.position.set(0, 0.58, -1.25);
-twinCameraScreen.visible = false;
-sensorSceneGroup.add(twinCameraScreen);
-let twinCameraRenderKey = '';
-function updateTwinCameraScreen() {
-  const now = Date.now() / 1000;
-  const bitmap = vrDashboard.cameraBitmap;
-  twinCameraScreen.visible = Boolean(bitmap) && fresh(vrDashboard.cameraCapturedAt, now);
-  if (!twinCameraScreen.visible) return;
-  const yolo = latestSensorYolo;
-  const paired = yolo?.state === 'ready' && fresh(yolo.captured_at, now)
-    && (String(yolo.frame_id) === String(vrDashboard.cameraFrameId)
-      || Math.abs(Number(yolo.captured_at) - Number(vrDashboard.cameraCapturedAt)) <= 0.2);
-  const key = `${vrDashboard.cameraFrameId}|${paired ? yolo.frame_id : 'unpaired'}|${paired ? yolo.completed_at : ''}`;
-  if (key === twinCameraRenderKey) return;
-  twinCameraRenderKey = key;
-  twinCameraContext.drawImage(bitmap, 0, 0, twinCameraCanvas.width, twinCameraCanvas.height);
-  if (paired) {
-    for (const detection of (Array.isArray(yolo.detections) ? yolo.detections : []).slice(0, 12)) {
-      const box = detection.bbox;
-      if (!Array.isArray(box) || box.length !== 4) continue;
-      const x0 = Number(box[0]) * 640, y0 = Number(box[1]) * 480;
-      const x1 = Number(box[2]) * 640, y1 = Number(box[3]) * 480;
-      if (![x0, y0, x1, y1].every(Number.isFinite)) continue;
-      twinCameraContext.strokeStyle = '#63d7ae';
-      twinCameraContext.lineWidth = 3;
-      twinCameraContext.strokeRect(x0, y0, x1 - x0, y1 - y0);
-      twinCameraContext.fillStyle = '#081d16';
-      twinCameraContext.font = 'bold 17px sans-serif';
-      const label = String(detection.label || detection.class_name || detection.class || 'object').slice(0, 24);
-      twinCameraContext.fillText(label, x0 + 2, Math.max(19, y0 - 5));
-    }
-  }
-  twinCameraTexture.needsUpdate = true;
-}
-const twinFrustumPoints = [];
-for (const [x, y] of [[-0.625, 1.05], [0.625, 1.05], [0.625, 0.11], [-0.625, 0.11]]) {
-  twinFrustumPoints.push(0, 0.23, -0.16, x, y, -1.25);
-}
-const twinFrustum = new THREE.LineSegments(new THREE.BufferGeometry().setAttribute('position',
-  new THREE.Float32BufferAttribute(twinFrustumPoints, 3)),
-new THREE.LineBasicMaterial({ color: '#80dfc6', transparent: true, opacity: 0.7 }));
-sensorSceneGroup.add(twinFrustum);
 const semanticSplatGroup = new THREE.Group();
 world.add(semanticSplatGroup);
 const semanticSplatNodes = new Map();
@@ -428,6 +386,7 @@ let sensorDepthHeightM = 0.12;
 let sensorDepthCapturedAt = 0;
 let sensorCloudBuffers = null;
 let sensorCloudTargetMax = 100;
+let lastSensorVisualUpdateAt = 0;
 try {
   const storedDensity = Number(localStorage.getItem('pandorabox.quest-vr-dot-density'));
   if (Number.isFinite(storedDensity)) sensorCloudTargetMax = Math.max(60, Math.min(160, Math.round(storedDensity / 10) * 10));
@@ -593,7 +552,7 @@ async function pollCameraFrame() {
   if (!vrDashboard.visible || cameraPollInFlight) return;
   cameraPollInFlight = true;
   try {
-    const response = await fetch('/body/camera/image', { cache: 'no-store', credentials: 'same-origin' });
+    const response = await fetchWithTimeout('/body/camera/image', { cache: 'no-store', credentials: 'same-origin' }, 4000);
     if (!response.ok) throw new Error(`Camera frame HTTP ${response.status}`);
     const result = await response.json();
     const frame = result.camera || {};
@@ -605,10 +564,10 @@ async function pollCameraFrame() {
     if (String(frameId) === String(lastCameraFrameId)) return;
     lastCameraFrameId = frameId;
     await vrDashboard.setCameraFrame(frame);
-    if ((cameraBackgroundActive || activeSceneMode === 'sensors') && vrDashboard.cameraBitmap) {
+    if (cameraBackgroundActive && vrDashboard.cameraBitmap) {
       cameraBackgroundTexture.image = vrDashboard.cameraBitmap;
       cameraBackgroundTexture.needsUpdate = true;
-      if (cameraBackgroundActive) updateCameraArcGeometry(vrDashboard.cameraBitmap);
+      updateCameraArcGeometry(vrDashboard.cameraBitmap);
     }
   } catch (error) {
     vrDashboard.setCameraStatus('CAMERA · RECONNECTING', true);
@@ -621,7 +580,7 @@ async function pollCameraFrame() {
 function startCameraPolling() {
   stopCameraPolling();
   void pollCameraFrame();
-  cameraPollTimer = window.setInterval(pollCameraFrame, 1000 / 30);
+  cameraPollTimer = window.setInterval(pollCameraFrame, 1000 / 15);
 }
 
 function stopCameraPolling() {
@@ -1004,7 +963,7 @@ async function pollSensorDepth() {
   sensorDepthPollInFlight = true;
   try {
     await refreshSensorMetricCalibration();
-    const response = await fetch('/body/camera/depth', { cache: 'no-store', credentials: 'same-origin' });
+    const response = await fetchWithTimeout('/body/camera/depth', { cache: 'no-store', credentials: 'same-origin' }, 5000);
     if (!response.ok) throw new Error('MiDaS endpoint unavailable');
     const depth = await response.json();
     latestSensorDepthStatus = depth;
@@ -1035,7 +994,7 @@ async function pollSensorYolo() {
   if (sensorYoloPollInFlight || activeSceneMode !== 'sensors') return;
   sensorYoloPollInFlight = true;
   try {
-    const response = await fetch('/body/camera/yolo/status', { cache: 'no-store', credentials: 'same-origin' });
+    const response = await fetchWithTimeout('/body/camera/yolo/status', { cache: 'no-store', credentials: 'same-origin' }, 3500);
     if (!response.ok) throw new Error('YOLOX endpoint unavailable');
     latestSensorYolo = await response.json();
     vrDashboard.updateYoloResult(latestSensorYolo);
@@ -2138,8 +2097,8 @@ window.addEventListener('resize', () => {
 });
 
 setInterval(pollBody, 1200);
-setInterval(pollSensorDepthScene, 1000 / 30);
-setInterval(() => { if (activeSceneMode === 'sensors') void pollSensorYolo(); }, 1000 / 30);
+setInterval(pollSensorDepthScene, 500);
+setInterval(() => { if (activeSceneMode === 'sensors') void pollSensorYolo(); }, 500);
 setInterval(() => { if (activeSceneMode === 'sensors') void pollSensorRadar(); }, 800);
 setInterval(() => { if (activeSceneMode === 'sensors') void pollUltrasonicStatus(); }, 500);
 setInterval(() => { if (activeSceneMode === 'sensors' && !renderer.xr.isPresenting) void pollCameraFrame(); }, 1000);
@@ -2149,12 +2108,13 @@ let leftMenuWasPressed = false;
 renderer.setAnimationLoop((time, xrFrame) => {
   perfTick(time);
   const deltaSeconds = previousFrameAt ? (time - previousFrameAt) / 1000 : 1 / 90;
-  smoothSensorCloud(deltaSeconds);
-  updateSensorYoloTracks(deltaSeconds);
-  updateSensorPointUniforms();
-  if (activeSceneMode === 'sensors') {
-    updateTwinCameraScreen();
+  if (time - lastSensorVisualUpdateAt >= 1000 / 30) {
+    const visualDelta = lastSensorVisualUpdateAt ? Math.min(0.1, (time - lastSensorVisualUpdateAt) / 1000) : deltaSeconds;
+    smoothSensorCloud(visualDelta);
+    updateSensorYoloTracks(visualDelta);
+    lastSensorVisualUpdateAt = time;
   }
+  updateSensorPointUniforms();
   previousFrameAt = time;
   if (!renderer.xr.isPresenting) orbit.update();
   const session = renderer.xr.getSession();
@@ -2177,7 +2137,7 @@ renderer.setAnimationLoop((time, xrFrame) => {
         vrDashboard.updateFnkControllerOrientation([q.x, q.y, q.z, q.w]);
       }
     }
-    if (vrDashboard.fnkVisible && time - lastFnkVisualFrameAt >= 1000 / 30) {
+    if (vrDashboard.fnkVisible && time - lastFnkVisualFrameAt >= 1000 / 6) {
       lastFnkVisualFrameAt = time;
       vrDashboard.drawFnkControlWindow();
     }

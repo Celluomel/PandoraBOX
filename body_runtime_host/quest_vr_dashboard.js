@@ -115,10 +115,12 @@ export class QuestVRDashboard {
     this.fnkContext = this.fnkCanvas.getContext('2d');
     this.fnkTexture = new THREE.CanvasTexture(this.fnkCanvas);
     this.fnkTexture.colorSpace = THREE.SRGBColorSpace;
-    this.fnkTexture.generateMipmaps = true;
-    this.fnkTexture.minFilter = THREE.LinearMipmapLinearFilter;
+    // Avoid rebuilding a full mip chain for this frequently redrawn panel;
+    // the upload can otherwise stall WebGL rendering on Quest.
+    this.fnkTexture.generateMipmaps = false;
+    this.fnkTexture.minFilter = THREE.LinearFilter;
     this.fnkTexture.magFilter = THREE.LinearFilter;
-    this.fnkTexture.anisotropy = Math.min(8, Number(maxAnisotropy) || 1);
+    this.fnkTexture.anisotropy = 1;
     this.fnkPanel = new THREE.Mesh(
       new THREE.PlaneGeometry(2.8, 2.613),
       new THREE.MeshBasicMaterial({ map: this.fnkTexture, depthTest: false, depthWrite: false, side: THREE.DoubleSide }),
@@ -157,11 +159,14 @@ export class QuestVRDashboard {
     this.cameraMessage = 'CAMERA · WAITING';
     this.cameraBackgroundActive = false;
     this.cameraHitArea = null;
+    this.lastCameraHeaderDrawAt = 0;
 
     const canvas = document.createElement('canvas');
-    const renderScale = 4 / 3;
-    canvas.width = 4096;
-    canvas.height = 1536;
+    // Keep the HUD legible while avoiding a 25 MB texture upload on every
+    // telemetry redraw. The camera image has its own texture below.
+    const renderScale = 1;
+    canvas.width = 3072;
+    canvas.height = 1152;
     this.canvas = canvas;
     this.context = canvas.getContext('2d');
     this.context.setTransform(renderScale, 0, 0, renderScale, 0, 0);
@@ -170,10 +175,10 @@ export class QuestVRDashboard {
     this.loadSavedPose();
     this.texture = new THREE.CanvasTexture(canvas);
     this.texture.colorSpace = THREE.SRGBColorSpace;
-    this.texture.generateMipmaps = true;
-    this.texture.minFilter = THREE.LinearMipmapLinearFilter;
+    this.texture.generateMipmaps = false;
+    this.texture.minFilter = THREE.LinearFilter;
     this.texture.magFilter = THREE.LinearFilter;
-    this.texture.anisotropy = Math.min(8, Number(maxAnisotropy) || 1);
+    this.texture.anisotropy = 1;
     const geometry = new THREE.PlaneGeometry(3.1, 1.1625, 1, 1);
     const panel = new THREE.Mesh(
       geometry,
@@ -184,6 +189,24 @@ export class QuestVRDashboard {
     panel.renderOrder = 1000;
     this.root.add(panel);
     this.panels.push(panel);
+    this.cameraFeedCanvas = document.createElement('canvas');
+    this.cameraFeedCanvas.width = 768;
+    this.cameraFeedCanvas.height = 600;
+    this.cameraFeedContext = this.cameraFeedCanvas.getContext('2d');
+    this.cameraFeedTexture = new THREE.CanvasTexture(this.cameraFeedCanvas);
+    this.cameraFeedTexture.colorSpace = THREE.SRGBColorSpace;
+    this.cameraFeedTexture.generateMipmaps = false;
+    this.cameraFeedTexture.minFilter = THREE.LinearFilter;
+    this.cameraFeedTexture.magFilter = THREE.LinearFilter;
+    this.cameraFeedTexture.anisotropy = 1;
+    this.cameraFeedPanel = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({
+      map: this.cameraFeedTexture, transparent: true, depthTest: false, depthWrite: false, side: THREE.DoubleSide,
+    }));
+    this.cameraFeedPanel.visible = false;
+    this.cameraFeedPanel.renderOrder = 1002;
+    // Parent the feed to the HUD plane so resize, movement and curvature apply
+    // to the video and its YOLO overlay exactly as they do to the HUD itself.
+    this.panel.add(this.cameraFeedPanel);
     this.robotVisual = createFnk0031Visual(THREE);
     this.robotVisual.group.position.set(-0.36, -0.04, -0.84);
     this.robotVisual.group.scale.setScalar(.24);
@@ -213,10 +236,10 @@ export class QuestVRDashboard {
     this.gpsMapContext = this.gpsMapCanvas.getContext('2d');
     this.gpsMapTexture = new THREE.CanvasTexture(this.gpsMapCanvas);
     this.gpsMapTexture.colorSpace = THREE.SRGBColorSpace;
-    this.gpsMapTexture.generateMipmaps = true;
-    this.gpsMapTexture.minFilter = THREE.LinearMipmapLinearFilter;
+    this.gpsMapTexture.generateMipmaps = false;
+    this.gpsMapTexture.minFilter = THREE.LinearFilter;
     this.gpsMapTexture.magFilter = THREE.LinearFilter;
-    this.gpsMapTexture.anisotropy = Math.min(8, Number(maxAnisotropy) || 1);
+    this.gpsMapTexture.anisotropy = 1;
     this.gpsMapRoot = new THREE.Group();
     this.gpsMapRoot.visible = false;
     this.gpsMapPanel = new THREE.Mesh(
@@ -237,10 +260,10 @@ export class QuestVRDashboard {
     this.powerWindowContext = this.powerWindowCanvas.getContext('2d');
     this.powerWindowTexture = new THREE.CanvasTexture(this.powerWindowCanvas);
     this.powerWindowTexture.colorSpace = THREE.SRGBColorSpace;
-    this.powerWindowTexture.generateMipmaps = true;
-    this.powerWindowTexture.minFilter = THREE.LinearMipmapLinearFilter;
+    this.powerWindowTexture.generateMipmaps = false;
+    this.powerWindowTexture.minFilter = THREE.LinearFilter;
     this.powerWindowTexture.magFilter = THREE.LinearFilter;
-    this.powerWindowTexture.anisotropy = Math.min(8, Number(maxAnisotropy) || 1);
+    this.powerWindowTexture.anisotropy = 1;
     this.powerWindowPanel = new THREE.Mesh(
       new THREE.PlaneGeometry(3.8, 2.364),
       new THREE.MeshBasicMaterial({ map: this.powerWindowTexture, depthTest: false, depthWrite: false, side: THREE.DoubleSide }),
@@ -262,7 +285,6 @@ export class QuestVRDashboard {
   updateTelemetry(telemetry) {
     this.telemetry = telemetry;
     this.drawDashboard();
-    if (this.fnkVisible) this.drawFnkControlWindow();
   }
 
   updateImuStatus(status) {
@@ -736,7 +758,9 @@ export class QuestVRDashboard {
   }
 
   updateSensorStatus(status) {
-    this.sensorStatus = { ...this.sensorStatus, ...status };
+    const next = { ...this.sensorStatus, ...status };
+    if (Object.keys(next).every(key => next[key] === this.sensorStatus[key])) return;
+    this.sensorStatus = next;
     this.drawDashboard();
   }
 
@@ -780,6 +804,23 @@ export class QuestVRDashboard {
   }
 
   drawDashboard() {
+    const now = performance.now();
+    const minIntervalMs = 250;
+    const elapsed = now - (this.lastDashboardDrawAt || 0);
+    if (elapsed < minIntervalMs) {
+      if (!this.dashboardDrawTimer) {
+        this.dashboardDrawTimer = window.setTimeout(() => {
+          this.dashboardDrawTimer = null;
+          this.drawDashboard();
+        }, Math.max(0, minIntervalMs - elapsed));
+      }
+      return;
+    }
+    this.lastDashboardDrawAt = now;
+    this.renderDashboard();
+  }
+
+  renderDashboard() {
     const ctx = this.context;
     const width = this.logicalWidth;
     const height = this.logicalHeight;
@@ -1017,21 +1058,18 @@ export class QuestVRDashboard {
     ctx.fillStyle = '#0b1512';
     ctx.beginPath(); ctx.roundRect(imageX, imageY, imageWidth, imageHeight, 20); ctx.fill();
     if (this.cameraBitmap && !this.cameraBackgroundActive) {
-      const scale = Math.max(imageWidth / this.cameraBitmap.width, imageHeight / this.cameraBitmap.height);
-      const drawWidth = this.cameraBitmap.width * scale;
-      const drawHeight = this.cameraBitmap.height * scale;
-      ctx.save();
-      ctx.beginPath(); ctx.roundRect(imageX, imageY, imageWidth, imageHeight, 20); ctx.clip();
-      ctx.drawImage(this.cameraBitmap, imageX + (imageWidth - drawWidth) / 2, imageY + (imageHeight - drawHeight) / 2, drawWidth, drawHeight);
-      ctx.restore();
-      this.drawYoloOverlay(ctx, imageX, imageY, imageWidth, imageHeight, scale,
-        imageX + (imageWidth - drawWidth) / 2, imageY + (imageHeight - drawHeight) / 2);
-      ctx.fillStyle = 'rgba(4, 13, 11, .78)';
-      ctx.beginPath(); ctx.roundRect(imageX + 16, imageY + imageHeight - 48, 390, 34, 12); ctx.fill();
-      ctx.fillStyle = '#d9f5e4'; ctx.font = '700 19px ui-monospace, monospace';
-      ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
-      ctx.fillText(this.cameraBackgroundActive ? 'TRIGGER · RESTORE 3D VIEW' : 'TRIGGER · USE AS 3D BACKGROUND', imageX + 28, imageY + imageHeight - 31);
+      const panelWidth = 3.1 * imageWidth / this.logicalWidth;
+      const panelHeight = 1.1625 * imageHeight / this.logicalHeight;
+      this.cameraFeedPanel.scale.set(panelWidth, panelHeight, 1);
+      this.cameraFeedPanel.position.set(
+        3.1 * ((imageX + imageWidth / 2) / this.logicalWidth - 0.5),
+        1.1625 * (0.5 - (imageY + imageHeight / 2) / this.logicalHeight),
+        0.006,
+      );
+      this.cameraFeedPanel.visible = true;
+      this.updateCameraFeedTexture();
     } else if (this.cameraBackgroundActive) {
+      this.cameraFeedPanel.visible = false;
       ctx.fillStyle = 'rgba(4, 13, 11, .72)';
       ctx.beginPath(); ctx.roundRect(imageX + 16, imageY + 16, imageWidth - 32, imageHeight - 32, 18); ctx.fill();
       ctx.fillStyle = '#d9f5e4'; ctx.font = '700 24px ui-monospace, monospace';
@@ -1040,12 +1078,42 @@ export class QuestVRDashboard {
       ctx.fillStyle = '#a9c3b2'; ctx.font = '600 21px ui-monospace, monospace';
       ctx.fillText('TRIGGER TO RESTORE 3D VIEW', imageX + imageWidth / 2, imageY + imageHeight / 2 + 24);
     } else {
+      this.cameraFeedPanel.visible = false;
       ctx.fillStyle = '#bbd6c5';
       ctx.font = '700 27px ui-monospace, monospace';
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       ctx.fillText(this.cameraMessage, imageX + imageWidth / 2, imageY + imageHeight / 2);
     }
     this.drawDetectionSummary(ctx, x + 18, imageY + imageHeight + 18, imageWidth, y + height - 18);
+  }
+
+  updateCameraFeedTexture(force = false) {
+    const bitmap = this.cameraBitmap;
+    if (!bitmap || this.cameraBackgroundActive || !this.cameraFeedContext) {
+      this.cameraFeedPanel.visible = false;
+      return;
+    }
+    this.cameraFeedPanel.visible = true;
+    const renderKey = `${this.cameraFrameId}|${this.yoloFrameId}|${this.cameraBackgroundActive}`;
+    if (!force && renderKey === this.cameraFeedRenderKey) return;
+    this.cameraFeedRenderKey = renderKey;
+    const ctx = this.cameraFeedContext;
+    const width = this.cameraFeedCanvas.width, height = this.cameraFeedCanvas.height;
+    const scale = Math.max(width / bitmap.width, height / bitmap.height);
+    const drawWidth = bitmap.width * scale, drawHeight = bitmap.height * scale;
+    const offsetX = (width - drawWidth) / 2, offsetY = (height - drawHeight) / 2;
+    ctx.clearRect(0, 0, width, height);
+    ctx.save();
+    ctx.beginPath(); ctx.roundRect(0, 0, width, height, 28); ctx.clip();
+    ctx.drawImage(bitmap, offsetX, offsetY, drawWidth, drawHeight);
+    this.drawYoloOverlay(ctx, 0, 0, width, height, scale, offsetX, offsetY);
+    ctx.fillStyle = 'rgba(4, 13, 11, .78)';
+    ctx.beginPath(); ctx.roundRect(18, height - 68, 540, 46, 14); ctx.fill();
+    ctx.fillStyle = '#d9f5e4'; ctx.font = '700 25px ui-monospace, monospace';
+    ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    ctx.fillText('TRIGGER · USE AS 3D BACKGROUND', 34, height - 45);
+    ctx.restore();
+    this.cameraFeedTexture.needsUpdate = true;
   }
 
   detectionColor(label) {
@@ -1858,29 +1926,36 @@ export class QuestVRDashboard {
     }
     try {
       const bytes = Uint8Array.from(atob(encoded), character => character.charCodeAt(0));
-      const source = await createImageBitmap(new Blob([bytes], { type: frame.mime_type || 'image/jpeg' }));
-      const displaySource = source;
-      const bitmap = await createImageBitmap(displaySource);
+      const bitmap = await createImageBitmap(new Blob([bytes], { type: frame.mime_type || 'image/jpeg' }));
       this.cameraBitmap?.close?.();
       this.cameraBitmap = bitmap;
       this.cameraFrameId = String(frame.frame_id || '');
       this.cameraCapturedAt = Number(frame.captured_at) || 0;
       this.cameraMessage = 'LIVE';
       this.sensorStatus.camera = `LIVE · ${frame.width || bitmap.width}×${frame.height || bitmap.height}`;
-      this.drawDashboard();
+      this.cameraFeedRenderKey = '';
+      this.updateCameraFeedTexture(true);
+      const now = performance.now();
+      if (now - this.lastCameraHeaderDrawAt >= 1000) {
+        this.lastCameraHeaderDrawAt = now;
+        this.drawDashboard();
+      }
     } catch {
       this.setCameraStatus('CAMERA · DECODE ERROR');
     }
   }
 
   setCameraStatus(message, preserveFrame = false) {
+    const changed = this.cameraMessage !== message || (!preserveFrame && Boolean(this.cameraBitmap));
     if (!preserveFrame) {
       this.cameraBitmap?.close?.();
       this.cameraBitmap = null;
+      this.cameraFeedRenderKey = '';
+      this.cameraFeedPanel.visible = false;
     }
     this.cameraMessage = message;
     this.sensorStatus.camera = message.replace(/^CAMERA\s*·\s*/i, '');
-    this.drawDashboard();
+    if (changed) this.drawDashboard();
   }
 
   setVisible(visible) {
@@ -2520,6 +2595,8 @@ export class QuestVRDashboard {
   setCameraBackgroundActive(active) {
     this.cameraBackgroundActive = Boolean(active);
     this.drawDashboard();
+    this.cameraFeedRenderKey = '';
+    this.updateCameraFeedTexture(true);
   }
 
   setActionBusy(busy) {
@@ -2538,14 +2615,23 @@ export class QuestVRDashboard {
     raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
     raycaster.ray.direction.set(0, 0, -1).applyMatrix4(rotation);
     this.scene.updateMatrixWorld(true);
-    // The separate Gait Lab is an interactive window. Let its controls receive
-    // clicks even when another dashboard surface happens to overlap in depth.
+    const densityHit = this.sceneMode === 'sensors' ? raycaster.intersectObject(this.panel, false)[0] : null;
+    const densityPoint = densityHit?.uv ? {
+      x: densityHit.uv.x * this.logicalWidth,
+      y: (1 - densityHit.uv.y) * this.logicalHeight,
+    } : null;
+    const densityArea = this.sensorPointDensityHitArea;
+    const onDensitySlider = Boolean(densityPoint && densityArea
+      && densityPoint.x >= densityArea.x && densityPoint.x <= densityArea.x + densityArea.width
+      && densityPoint.y >= densityArea.y && densityPoint.y <= densityArea.y + densityArea.height);
+    // Keep the slider reachable even when the Gait Lab overlaps the HUD.
     const fnkHit = this.fnkVisible ? raycaster.intersectObject(this.fnkPanel, false)[0] : null;
-    const hit = fnkHit || raycaster.intersectObjects(this.panels.filter(panel => (panel !== this.gpsMapPanel || this.gpsMapVisible)
+    const hit = (this.sensorDensityDragController === controller || onDensitySlider) ? densityHit : fnkHit;
+    const resolvedHit = hit || raycaster.intersectObjects(this.panels.filter(panel => (panel !== this.gpsMapPanel || this.gpsMapVisible)
       && (panel !== this.powerWindowPanel || this.powerWindowVisible)
       && (panel !== this.fnkPanel || this.fnkVisible)), false)[0];
-    const mapPoint = hit?.object === this.gpsMapPanel && hit.uv
-      ? { x: hit.uv.x * this.gpsMapCanvas.width, y: (1 - hit.uv.y) * this.gpsMapCanvas.height } : null;
+    const mapPoint = resolvedHit?.object === this.gpsMapPanel && resolvedHit.uv
+      ? { x: resolvedHit.uv.x * this.gpsMapCanvas.width, y: (1 - resolvedHit.uv.y) * this.gpsMapCanvas.height } : null;
     const inMapBody = mapPoint && mapPoint.x >= 28 && mapPoint.x <= this.gpsMapCanvas.width - 28
       && mapPoint.y >= 132 && mapPoint.y <= this.gpsMapCanvas.height - 32;
     if (inMapBody) this.gpsMapHoveredController = controller;
@@ -2563,22 +2649,21 @@ export class QuestVRDashboard {
         this.gpsMapPanLastPoint = mapPoint;
       } else this.gpsMapPanLastPoint = null;
     }
-    if (this.sensorDensityDragController === controller && hit?.object === this.panel && hit.uv) {
-      const x = hit.uv.x * this.logicalWidth;
-      const y = (1 - hit.uv.y) * this.logicalHeight;
+    if (this.sensorDensityDragController === controller && densityPoint) {
+      const { x, y } = densityPoint;
       const area = this.sensorPointDensityHitArea;
       if (area && y >= area.y && y <= area.y + area.height
           && x >= area.x && x <= area.x + area.width) this.setSensorPointDensityAt(x);
     }
-    if (!hit) { this.pointerRing.visible = false; return null; }
-    const panel = hit.object;
+    if (!resolvedHit) { this.pointerRing.visible = false; return null; }
+    const panel = resolvedHit.object;
     if (this.pointerRing.parent !== panel) panel.add(this.pointerRing);
-    const localPoint = panel.worldToLocal(hit.point.clone());
+    const localPoint = panel.worldToLocal(resolvedHit.point.clone());
     const normal = this.pointerNormal.set(0, 0, 1);
     this.pointerRing.position.copy(localPoint).addScaledVector(normal, 0.012);
     this.pointerRing.quaternion.setFromUnitVectors(this.pointerForward, normal);
     this.pointerRing.visible = true;
-    return hit;
+    return resolvedHit;
   }
 
   isControllerOverDashboard(controller, raycaster) {
@@ -2599,6 +2684,16 @@ export class QuestVRDashboard {
     raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
     raycaster.ray.direction.set(0, 0, -1).applyMatrix4(rotation);
     this.scene.updateMatrixWorld(true);
+    const densityHit = this.sceneMode === 'sensors' ? raycaster.intersectObject(this.panel, false)[0] : null;
+    if (densityHit?.uv && this.sensorPointDensityHitArea) {
+      const x = densityHit.uv.x * this.logicalWidth;
+      const y = (1 - densityHit.uv.y) * this.logicalHeight;
+      const area = this.sensorPointDensityHitArea;
+      if (x >= area.x && x <= area.x + area.width && y >= area.y && y <= area.y + area.height) {
+        this.setSensorPointDensityAt(x);
+        return 'sensor-point-density';
+      }
+    }
     const fnkHit = this.fnkVisible ? raycaster.intersectObject(this.fnkPanel, false)[0] : null;
     const hit = fnkHit || raycaster.intersectObjects(this.panels.filter(panel => (panel !== this.gpsMapPanel || this.gpsMapVisible)
       && (panel !== this.powerWindowPanel || this.powerWindowVisible)
