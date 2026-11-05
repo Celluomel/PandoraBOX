@@ -43,7 +43,11 @@ if (qualitySelect) {
     const preset = xrQualityPresets[qualitySelect.value];
     if (!preset) return;
     Object.assign(xrRenderSettings, preset);
+    if (renderer.xr.isPresenting) renderer.xr.setFoveation(xrRenderSettings.foveation);
     try { localStorage.setItem('pandorabox.quest-vr-quality', qualitySelect.value); } catch {}
+    setStatus(renderer.xr.isPresenting
+      ? `VR quality · foveation updated live; render scale ${xrRenderSettings.scale.toFixed(1)} applies next XR session.`
+      : `VR quality · ${qualitySelect.value}; render scale ${xrRenderSettings.scale.toFixed(1)} applies on XR entry.`);
   });
 }
 const perfStats = { last: 0, frames: 0, sum: 0, max: 0, previous: 0 };
@@ -72,11 +76,15 @@ const hudPreview = new URLSearchParams(window.location.search).get('hud_preview'
 if (hudPreview) vrDashboard.setVisible(true);
 const cameraBackgroundTexture = new THREE.Texture();
 cameraBackgroundTexture.colorSpace = THREE.SRGBColorSpace;
+cameraBackgroundTexture.generateMipmaps = false;
+cameraBackgroundTexture.minFilter = THREE.LinearFilter;
+cameraBackgroundTexture.magFilter = THREE.LinearFilter;
 cameraBackgroundTexture.repeat.set(1, -1);
 cameraBackgroundTexture.offset.set(0, 1);
 let cameraBackgroundActive = false;
 let cameraArcAspect = null;
 let cameraArcWorldScale = null;
+let cameraArcHalfAngle = null;
 const cameraArcRoot = new THREE.Group();
 const cameraArcMaterial = new THREE.MeshBasicMaterial({ map: cameraBackgroundTexture, side: THREE.DoubleSide, depthTest: false, depthWrite: false });
 const cameraArc = new THREE.Mesh(new THREE.BufferGeometry(), cameraArcMaterial);
@@ -137,10 +145,10 @@ const bodyGroup = new THREE.Group();
 world.add(bodyGroup);
 const sensorSceneGroup = new THREE.Group();
 sensorSceneGroup.visible = false;
-// Widen and lift the live point cloud in VR so it remains legible beside the
-// large movable HUD/map. Keep forward depth unscaled so range still maps to Z.
+// Preserve the larger VR presentation without stretching individual axes.
+// This is a uniform display scale; sensor values and labels remain metric.
 const sensorSceneDisplayScale = 1.8;
-sensorSceneGroup.scale.set(sensorSceneDisplayScale, sensorSceneDisplayScale, 1);
+sensorSceneGroup.scale.setScalar(sensorSceneDisplayScale);
 world.add(sensorSceneGroup);
 const sensorGround = new THREE.Group();
 const sensorGroundPlane = new THREE.Mesh(
@@ -160,7 +168,8 @@ function createSensorPointMaterial() {
     depthWrite: false,
     vertexColors: true,
     uniforms: {
-      uSizeM: { value: 0.04 },
+      uStepPx: { value: 4 },
+      uFocalPixels: { value: 500 },
       uViewportHeight: { value: 1 },
       uOpacity: { value: 0.94 },
       uFadeNear: { value: 2.0 },
@@ -168,7 +177,8 @@ function createSensorPointMaterial() {
       uStale: { value: 0 },
     },
     vertexShader: `
-      uniform float uSizeM;
+      uniform float uStepPx;
+      uniform float uFocalPixels;
       uniform float uViewportHeight;
       uniform float uFadeNear;
       uniform float uFadeFar;
@@ -179,7 +189,8 @@ function createSensorPointMaterial() {
         vec4 viewPosition = modelViewMatrix * vec4(position, 1.0);
         float dist = max(0.1, -viewPosition.z);
         gl_Position = projectionMatrix * viewPosition;
-        gl_PointSize = clamp(uSizeM * uViewportHeight * 0.5 * projectionMatrix[1][1] / dist, 2.0, 24.0);
+        float sampleWorldStep = uStepPx * dist / max(1.0, uFocalPixels);
+        gl_PointSize = clamp(sampleWorldStep * uViewportHeight * 0.5 * projectionMatrix[1][1] / dist * 1.15, 2.0, 48.0);
         vFade = 1.0 - 0.55 * smoothstep(uFadeNear, uFadeFar, dist);
       }
     `,
@@ -538,6 +549,7 @@ function buildSensorDepthCloud(depth, depthImage, colorImage) {
   if (!sensorCloudBuffers || sensorCloudBuffers.count !== grid.count) {
     sensorCloudBuffers = {
       count: grid.count,
+      targetCount: 0,
       positions: new Float32Array(grid.count * 3),
       colors: new Float32Array(grid.count * 3),
       nextPositions: new Float32Array(grid.count * 3),
@@ -553,28 +565,21 @@ function buildSensorDepthCloud(depth, depthImage, colorImage) {
   const mount = mountFor(null, depth);
   const intrinsics = intrinsicsFor(depthImage.width, depthImage.height, depth.intrinsics || depth.camera_intrinsics || {});
   vrDashboard.updateDepthIntrinsics(intrinsics, depthImage.width, depthImage.height);
+  sensorDepthCloud.material.uniforms.uStepPx.value = grid.step;
+  sensorDepthCloud.material.uniforms.uFocalPixels.value = intrinsics.fy;
   const count = fillDepthCloud({
     depth: depthImage, color: colorImage, grid, intrinsics, calibration: sensorMetricCalibration,
     heightM: mount.heightM, positions: sensorCloudBuffers.nextPositions, colors: sensorCloudBuffers.nextColors,
   });
-  const blend = sensorCloudBuffers.initialized ? 0.45 : 1;
   const valueCount = count * 3;
-  for (let i = 0; i < valueCount; i++) {
-    const nextPosition = sensorCloudBuffers.nextPositions[i];
-    const nextColor = sensorCloudBuffers.nextColors[i];
-    if (blend === 1) {
-      sensorCloudBuffers.positions[i] = nextPosition;
-      sensorCloudBuffers.colors[i] = nextColor;
-    } else {
-      sensorCloudBuffers.positions[i] += (nextPosition - sensorCloudBuffers.positions[i]) * blend;
-      sensorCloudBuffers.colors[i] += (nextColor - sensorCloudBuffers.colors[i]) * blend;
-    }
+  if (!sensorCloudBuffers.initialized) {
+    sensorCloudBuffers.positions.set(sensorCloudBuffers.nextPositions.subarray(0, valueCount));
+    sensorCloudBuffers.colors.set(sensorCloudBuffers.nextColors.subarray(0, valueCount));
+    sensorCloudBuffers.initialized = true;
   }
-  sensorCloudBuffers.initialized = true;
+  sensorCloudBuffers.targetCount = count;
   const geometry = sensorDepthCloud.geometry;
   geometry.setDrawRange(0, count);
-  geometry.getAttribute('position').needsUpdate = true;
-  geometry.getAttribute('color').needsUpdate = true;
   sensorDepthValues = depthImage;
   sensorDepthFrame = depth;
   sensorDepthIntrinsics = intrinsics;
@@ -582,6 +587,33 @@ function buildSensorDepthCloud(depth, depthImage, colorImage) {
   sensorDepthCapturedAt = Number(depth.captured_at) || 0;
   updateSensorYolo(latestSensorYolo);
   return true;
+}
+
+function smoothSensorCloud(deltaSeconds) {
+  if (!sensorCloudBuffers?.initialized || sensorCloudBuffers.targetCount <= 0) return;
+  const alpha = 1 - Math.exp(-Math.max(0, Math.min(0.1, Number(deltaSeconds) || 0)) / 0.08);
+  if (alpha < 0.001) return;
+  const valueCount = sensorCloudBuffers.targetCount * 3;
+  const positions = sensorCloudBuffers.positions;
+  const colors = sensorCloudBuffers.colors;
+  const targetPositions = sensorCloudBuffers.nextPositions;
+  const targetColors = sensorCloudBuffers.nextColors;
+  let changed = false;
+  for (let index = 0; index < valueCount; index += 1) {
+    const positionDelta = targetPositions[index] - positions[index];
+    const colorDelta = targetColors[index] - colors[index];
+    if (Math.abs(positionDelta) > 0.0001) {
+      positions[index] += positionDelta * alpha;
+      changed = true;
+    }
+    if (Math.abs(colorDelta) > 0.0005) {
+      colors[index] += colorDelta * alpha;
+      changed = true;
+    }
+  }
+  if (!changed) return;
+  sensorDepthCloud.geometry.getAttribute('position').needsUpdate = true;
+  sensorDepthCloud.geometry.getAttribute('color').needsUpdate = true;
 }
 
 function sensorYoloBoxIou(a, b) {
@@ -1706,11 +1738,21 @@ function anchorCameraArcInScene() {
 function updateCameraArcGeometry(bitmap) {
   const aspect = Math.max(0.5, Math.min(3, Number(bitmap?.width) / Math.max(1, Number(bitmap?.height)) || 16 / 9));
   const worldScale = Math.max(0.01, Math.abs(Number(world.scale.x) || 1));
-  if (cameraArcAspect !== null && Math.abs(aspect - cameraArcAspect) < 0.01 && Math.abs(worldScale - cameraArcWorldScale) < 0.005) return;
+  const depthWidth = Number(sensorDepthValues?.width);
+  const depthFx = Number(sensorDepthIntrinsics?.fx);
+  const frameFx = depthWidth > 0 && depthFx > 0 ? depthFx * bitmap.width / depthWidth : 0;
+  const halfAngle = frameFx > 0
+    ? Math.atan(bitmap.width / (2 * frameFx))
+    : (70 * Math.PI / 180) / 2;
+  if (cameraArcAspect !== null
+    && Math.abs(aspect - cameraArcAspect) < 0.01
+    && Math.abs(worldScale - cameraArcWorldScale) < 0.005
+    && cameraArcHalfAngle !== null
+    && Math.abs(halfAngle - cameraArcHalfAngle) < 0.001) return;
   cameraArcAspect = aspect;
   cameraArcWorldScale = worldScale;
+  cameraArcHalfAngle = halfAngle;
   const radius = 12 / worldScale;
-  const halfAngle = Math.PI * 0.305;
   const width = 2 * radius * Math.sin(halfAngle);
   const height = width / aspect;
   const segments = 72;
@@ -1903,6 +1945,7 @@ let leftMenuWasPressed = false;
 renderer.setAnimationLoop((time, xrFrame) => {
   perfTick(time);
   const deltaSeconds = previousFrameAt ? (time - previousFrameAt) / 1000 : 1 / 90;
+  smoothSensorCloud(deltaSeconds);
   updateSensorYoloTracks(deltaSeconds);
   updateSensorPointUniforms();
   previousFrameAt = time;
