@@ -2137,7 +2137,12 @@ renderer.setAnimationLoop((time, xrFrame) => {
         vrDashboard.updateFnkControllerOrientation([q.x, q.y, q.z, q.w]);
       }
     }
-    if (vrDashboard.fnkVisible && time - lastFnkVisualFrameAt >= 1000 / 6) {
+    const fnkPreviewActive = !vrDashboard.fnkPreviewPaused && (
+      vrDashboard.fnkPreviewDemo
+      || (vrDashboard.fnkTab !== 'twist' && Object.values(vrDashboard.fnkPreviewKeys || {}).some(Boolean))
+      || Boolean(vrDashboard.fnkControllerInput)
+    );
+    if (vrDashboard.fnkVisible && fnkPreviewActive && time - lastFnkVisualFrameAt >= 1000 / 4) {
       lastFnkVisualFrameAt = time;
       vrDashboard.drawFnkControlWindow();
     }

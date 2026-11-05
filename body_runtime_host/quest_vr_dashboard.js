@@ -95,7 +95,7 @@ export class QuestVRDashboard {
     this.fnkSpeed = 1;
     this.fnkPreviewPaused = false;
     this.fnkPreviewDemo = false;
-    this.fnkPreviewKeys = { w: true };
+    this.fnkPreviewKeys = {};
     this.fnkPreviewVelocity = { x: 0, y: -1, turn: 0 };
     this.fnkPreviewDemoStartedAt = 0;
     this.fnkControllerInput = null;
