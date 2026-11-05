@@ -2,6 +2,8 @@ import * as THREE from '../frontend/node_modules/three/build/three.module.js';
 import { OrbitControls } from '../frontend/node_modules/three/examples/jsm/controls/OrbitControls.js';
 import * as GaussianSplats3D from '../frontend/node_modules/@mkkellogg/gaussian-splats-3d/build/gaussian-splats-3d.module.js';
 import { QuestVRDashboard } from './quest_vr_dashboard.js';
+import { createFnk0031Visual } from './fnk0031_visual.js';
+import { fresh, radarTargets, ultrasonicRanges, tofRange, batteryEstimate, commandLegs } from './hexapod_twin_telemetry.js';
 import {
   cloudGrid, decodeGray16Png, fillDepthCloud, intrinsicsFor, mountFor, sampleDepthMeters, yoloMatchesDepth,
 } from './depth_projection.js';
@@ -101,6 +103,7 @@ let lastFnkHardwareAt = 0;
   let lastFnkVisualFrameAt = 0;
 let xrFollowYaw = null;
 let xrSceneFollowing = false;
+let sensorTwinPlacedInXR = false;
 const xrSceneOffset = new THREE.Vector3();
 let xrSceneYawOffset = 0;
 scene.background = null;
@@ -152,13 +155,13 @@ sensorSceneGroup.scale.setScalar(sensorSceneDisplayScale);
 world.add(sensorSceneGroup);
 const sensorGround = new THREE.Group();
 const sensorGroundPlane = new THREE.Mesh(
-  new THREE.PlaneGeometry(4.2, 4.2),
+  new THREE.PlaneGeometry(6, 6),
   new THREE.MeshLambertMaterial({ color: '#14241b', side: THREE.DoubleSide, transparent: true, opacity: 0.14 }),
 );
 sensorGroundPlane.rotation.x = -Math.PI / 2;
 sensorGroundPlane.position.y = -0.035;
 sensorGround.add(sensorGroundPlane);
-const sensorGroundGrid = new THREE.GridHelper(4.2, 14, '#4e8d69', '#294c3a');
+const sensorGroundGrid = new THREE.GridHelper(6, 20, '#4e8d69', '#294c3a');
 sensorGroundGrid.position.y = 0.005;
 sensorGround.add(sensorGroundGrid);
 sensorSceneGroup.add(sensorGround);
@@ -234,6 +237,155 @@ const sensorBodyLabel = labelSprite('BODY · SENSOR ORIGIN');
 sensorBodyLabel.scale.set(0.9, 0.17, 1);
 sensorBodyLabel.position.set(0, 0.43, 0);
 sensorBodyMarker.add(sensorBodyLabel);
+sensorBodyMesh.visible = false;
+sensorBodyNose.visible = false;
+sensorBodyLabel.material.map?.dispose?.();
+sensorBodyLabel.material.dispose();
+sensorBodyMarker.remove(sensorBodyLabel);
+const sensorTwin = createFnk0031Visual(THREE);
+sensorTwin.group.scale.setScalar(0.28);
+sensorBodyMarker.add(sensorTwin.group);
+const twinStatusLabel = labelSprite('FNK0031 · command model / no measured joints');
+twinStatusLabel.scale.set(1.5, 0.2, 1);
+twinStatusLabel.position.set(0, 0.45, 0);
+sensorBodyMarker.add(twinStatusLabel);
+const twinBattery = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.014, 0.028),
+  new THREE.MeshBasicMaterial({ color: '#63d7ae' }));
+twinBattery.position.set(0, 0.25, 0.02);
+twinBattery.visible = false;
+sensorBodyMarker.add(twinBattery);
+const twinRings = new THREE.Group();
+sensorSceneGroup.add(twinRings);
+for (const radius of [0.5, 1, 1.5, 2, 2.5]) {
+  const ring = new THREE.Mesh(new THREE.RingGeometry(radius - 0.006, radius + 0.006, 96),
+    new THREE.MeshBasicMaterial({ color: '#4a8f78', transparent: true, opacity: 0.65, side: THREE.DoubleSide }));
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.y = 0.01;
+  twinRings.add(ring);
+  const label = labelSprite(`${radius} m`);
+  label.scale.set(0.28, 0.09, 1);
+  label.position.set(radius, 0.07, 0);
+  twinRings.add(label);
+}
+function makeTwinFan(halfAngle, yaw, height, color, maxRange) {
+  const count = halfAngle < 0.1 ? 3 : 25;
+  const positions = new Float32Array((count + 2) * 3);
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  const indices = [];
+  for (let index = 1; index <= count; index++) indices.push(0, index, index + 1);
+  geometry.setIndex(indices);
+  const mesh = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({ color, transparent: true,
+    opacity: 0.22, side: THREE.DoubleSide, depthWrite: false }));
+  mesh.position.y = height;
+  mesh.visible = false;
+  sensorSceneGroup.add(mesh);
+  return { mesh, positions, count, halfAngle, yaw, maxRange, baseColor: color };
+}
+const twinFans = {
+  radar: makeTwinFan(Math.PI / 3, 0, 0.045, '#78b8ff', 2.5),
+  front_left: makeTwinFan(0.23, -0.32, 0.06, '#63d7ae', 2),
+  front_right: makeTwinFan(0.23, 0.32, 0.07, '#63d7ae', 2),
+  rear: makeTwinFan(0.18, Math.PI, 0.08, '#a7a0ec', 2),
+  tof: makeTwinFan(0.035, 0, 0.1, '#e6f5ec', 2.5),
+};
+function setTwinFan(fan, distance, coverageOnly = false) {
+  fan.mesh.visible = Number.isFinite(distance) && distance > 0;
+  if (!fan.mesh.visible) return;
+  const length = Math.min(fan.maxRange, distance);
+  for (let index = 0; index <= fan.count; index++) {
+    const angle = fan.yaw + (index / fan.count * 2 - 1) * fan.halfAngle;
+    const offset = (index + 1) * 3;
+    fan.positions[offset] = -Math.sin(angle) * length;
+    fan.positions[offset + 1] = 0;
+    fan.positions[offset + 2] = -Math.cos(angle) * length;
+  }
+  fan.mesh.geometry.attributes.position.needsUpdate = true;
+  fan.mesh.geometry.computeBoundingSphere();
+  const color = coverageOnly ? fan.baseColor : distance < 0.35 ? '#f17c70' : distance < 0.8 ? '#efcb76' : fan.baseColor;
+  fan.mesh.material.color.set(color);
+}
+let twinRadarStatus = null;
+let twinUltrasonicStatus = null;
+let twinTofStatus = null;
+let twinHardwareStatus = null;
+let twinPowerStatus = null;
+function updateTwinFromHardware() {
+  if (activeSceneMode !== 'sensors') return;
+  const now = Date.now() / 1000;
+  const targets = radarTargets(twinRadarStatus, now);
+  const inRadarFan = targets.filter(item => Math.abs(Math.atan2(item.left, item.forward)) <= Math.PI / 3);
+  const ranges = ultrasonicRanges(twinUltrasonicStatus, now);
+  const tof = tofRange(twinTofStatus, now);
+  const radarFresh = twinRadarStatus?.available && fresh(twinRadarStatus.sample?.timestamp, now);
+  setTwinFan(twinFans.radar, radarFresh ? (inRadarFan.length ? Math.min(...inRadarFan.map(item => item.distance)) : 2.5) : null,
+    !inRadarFan.length);
+  for (const id of ['front_left', 'front_right', 'rear']) setTwinFan(twinFans[id], ranges[id]);
+  setTwinFan(twinFans.tof, tof);
+  const battery = batteryEstimate(twinPowerStatus);
+  twinBattery.visible = Boolean(battery);
+  if (battery) {
+    twinBattery.scale.x = Math.max(0.02, battery.percent / 100);
+    twinBattery.material.color.set(battery.percent < 20 ? '#f17c70' : battery.percent < 40 ? '#efcb76' : '#63d7ae');
+  }
+  const legs = commandLegs(twinHardwareStatus, now);
+  if (legs) sensorTwin.setEstimatedLegState({ legs });
+  else sensorTwin.setTelemetry();
+  twinStatusLabel.visible = Boolean(legs);
+}
+const twinCameraCanvas = document.createElement('canvas');
+twinCameraCanvas.width = 640;
+twinCameraCanvas.height = 480;
+const twinCameraContext = twinCameraCanvas.getContext('2d');
+const twinCameraTexture = new THREE.CanvasTexture(twinCameraCanvas);
+twinCameraTexture.colorSpace = THREE.SRGBColorSpace;
+twinCameraTexture.generateMipmaps = false;
+twinCameraTexture.minFilter = THREE.LinearFilter;
+const twinCameraScreen = new THREE.Mesh(new THREE.PlaneGeometry(1.25, 0.94),
+  new THREE.MeshBasicMaterial({ map: twinCameraTexture, side: THREE.DoubleSide, depthWrite: false }));
+twinCameraScreen.position.set(0, 0.58, -1.25);
+twinCameraScreen.visible = false;
+sensorSceneGroup.add(twinCameraScreen);
+let twinCameraRenderKey = '';
+function updateTwinCameraScreen() {
+  const now = Date.now() / 1000;
+  const bitmap = vrDashboard.cameraBitmap;
+  twinCameraScreen.visible = Boolean(bitmap) && fresh(vrDashboard.cameraCapturedAt, now);
+  if (!twinCameraScreen.visible) return;
+  const yolo = latestSensorYolo;
+  const paired = yolo?.state === 'ready' && fresh(yolo.captured_at, now)
+    && (String(yolo.frame_id) === String(vrDashboard.cameraFrameId)
+      || Math.abs(Number(yolo.captured_at) - Number(vrDashboard.cameraCapturedAt)) <= 0.2);
+  const key = `${vrDashboard.cameraFrameId}|${paired ? yolo.frame_id : 'unpaired'}|${paired ? yolo.completed_at : ''}`;
+  if (key === twinCameraRenderKey) return;
+  twinCameraRenderKey = key;
+  twinCameraContext.drawImage(bitmap, 0, 0, twinCameraCanvas.width, twinCameraCanvas.height);
+  if (paired) {
+    for (const detection of (Array.isArray(yolo.detections) ? yolo.detections : []).slice(0, 12)) {
+      const box = detection.bbox;
+      if (!Array.isArray(box) || box.length !== 4) continue;
+      const x0 = Number(box[0]) * 640, y0 = Number(box[1]) * 480;
+      const x1 = Number(box[2]) * 640, y1 = Number(box[3]) * 480;
+      if (![x0, y0, x1, y1].every(Number.isFinite)) continue;
+      twinCameraContext.strokeStyle = '#63d7ae';
+      twinCameraContext.lineWidth = 3;
+      twinCameraContext.strokeRect(x0, y0, x1 - x0, y1 - y0);
+      twinCameraContext.fillStyle = '#081d16';
+      twinCameraContext.font = 'bold 17px sans-serif';
+      const label = String(detection.label || detection.class_name || detection.class || 'object').slice(0, 24);
+      twinCameraContext.fillText(label, x0 + 2, Math.max(19, y0 - 5));
+    }
+  }
+  twinCameraTexture.needsUpdate = true;
+}
+const twinFrustumPoints = [];
+for (const [x, y] of [[-0.625, 1.05], [0.625, 1.05], [0.625, 0.11], [-0.625, 0.11]]) {
+  twinFrustumPoints.push(0, 0.23, -0.16, x, y, -1.25);
+}
+const twinFrustum = new THREE.LineSegments(new THREE.BufferGeometry().setAttribute('position',
+  new THREE.Float32BufferAttribute(twinFrustumPoints, 3)),
+new THREE.LineBasicMaterial({ color: '#80dfc6', transparent: true, opacity: 0.7 }));
+sensorSceneGroup.add(twinFrustum);
 const semanticSplatGroup = new THREE.Group();
 world.add(semanticSplatGroup);
 const semanticSplatNodes = new Map();
@@ -356,6 +508,14 @@ const xrFollowBodyOffset = new THREE.Vector3();
 const xrFollowYawAxis = new THREE.Vector3(0, 1, 0);
 
 function updateXRSceneFollow(xrCamera) {
+  if (activeSceneMode === 'sensors' && !sensorTwinPlacedInXR) {
+    const head = new THREE.Vector3();
+    xrCamera.getWorldPosition(head);
+    const yaw = new THREE.Euler().setFromQuaternion(xrCamera.quaternion, 'YXZ').y;
+    xrSceneOffset.set(head.x - Math.sin(yaw) * 1.8, 0, head.z - Math.cos(yaw) * 1.8);
+    xrSceneYawOffset = yaw;
+    sensorTwinPlacedInXR = true;
+  }
   const status = latestWorldStatus || {};
   const simulationRunning = activeSceneMode === 'simulation'
     && status.mode === 'sim'
@@ -445,10 +605,10 @@ async function pollCameraFrame() {
     if (String(frameId) === String(lastCameraFrameId)) return;
     lastCameraFrameId = frameId;
     await vrDashboard.setCameraFrame(frame);
-    if (cameraBackgroundActive && vrDashboard.cameraBitmap) {
+    if ((cameraBackgroundActive || activeSceneMode === 'sensors') && vrDashboard.cameraBitmap) {
       cameraBackgroundTexture.image = vrDashboard.cameraBitmap;
       cameraBackgroundTexture.needsUpdate = true;
-      updateCameraArcGeometry(vrDashboard.cameraBitmap);
+      if (cameraBackgroundActive) updateCameraArcGeometry(vrDashboard.cameraBitmap);
     }
   } catch (error) {
     vrDashboard.setCameraStatus('CAMERA · RECONNECTING', true);
@@ -748,7 +908,8 @@ function updateSensorYolo(yolo) {
 
 function updateSensorRadar(perception) {
   const radar = perception?.modalities?.mmwave_radar || {};
-  const targets = Array.isArray(radar.targets) ? radar.targets : [];
+  const targets = fresh(radar.timestamp, Date.now() / 1000)
+    && Array.isArray(radar.targets) ? radar.targets : [];
   const bodyPosition = perception?.body?.position || [0, 0, 0];
   const yaw = Number(perception?.body?.orientation || 0);
   const sourceFrame = String(radar.frame || 'body').toLowerCase();
@@ -777,8 +938,13 @@ function updateSensorRadar(perception) {
     const marker = new THREE.Mesh(new THREE.SphereGeometry(0.085, 12, 10), new THREE.MeshBasicMaterial({ color }));
     marker.position.set(-local.left, 0.12, -local.forward);
     sensorRadarGroup.add(marker);
+    const halo = new THREE.Mesh(new THREE.RingGeometry(0.12, 0.16, 32),
+      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.85, side: THREE.DoubleSide }));
+    halo.rotation.x = -Math.PI / 2;
+    halo.position.set(-local.left, 0.018, -local.forward);
+    sensorRadarGroup.add(halo);
     const speedText = Number.isFinite(radial) ? ` ${radial >= 0 ? '+' : ''}${radial.toFixed(2)} m/s` : '';
-    const label = labelSprite(`${classification}${speedText}`);
+    const label = labelSprite(`${classification} · ${local.distance.toFixed(2)} m${speedText}`);
     label.position.set(-local.left, 0.38, -local.forward);
     sensorRadarGroup.add(label);
   }
@@ -890,6 +1056,7 @@ async function pollSensorRadar() {
     const response = await fetch('/plugins/mmwave_radar/status', { cache: 'no-store', credentials: 'same-origin' });
     if (!response.ok) throw new Error('mmWave endpoint unavailable');
     const radarStatus = await response.json();
+    twinRadarStatus = radarStatus;
     const radarSample = radarStatus.sample || {};
     const bodyPerception = latestWorldStatus?.perception || {};
     sensorRadarTargetCount = updateSensorRadar({
@@ -897,6 +1064,7 @@ async function pollSensorRadar() {
       modalities: { mmwave_radar: radarSample },
     });
   } catch (error) {
+    twinRadarStatus = null;
     console.warn('Could not refresh VR mmWave targets:', error);
   } finally {
     sensorRadarPollInFlight = false;
@@ -909,12 +1077,36 @@ async function pollUltrasonicStatus() {
   try {
     const response = await fetch('/plugins/ultrasonic/status', { cache: 'no-store', credentials: 'same-origin' });
     if (!response.ok) throw new Error('Ultrasonic endpoint unavailable');
-    vrDashboard.updateUltrasonicStatus(await response.json());
+    twinUltrasonicStatus = await response.json();
+    vrDashboard.updateUltrasonicStatus(twinUltrasonicStatus);
   } catch (error) {
+    twinUltrasonicStatus = null;
     vrDashboard.updateUltrasonicStatus({ available: false, sample: null, error: error.message });
   } finally {
     ultrasonicPollInFlight = false;
   }
+}
+
+let twinTofBusy = false;
+async function pollTwinTof() {
+  if (activeSceneMode !== 'sensors' || twinTofBusy) return;
+  twinTofBusy = true;
+  try {
+    const response = await fetch('/plugins/tof/status', { cache: 'no-store', credentials: 'same-origin' });
+    twinTofStatus = response.ok ? await response.json() : null;
+  } catch { twinTofStatus = null; }
+  finally { twinTofBusy = false; }
+}
+
+let twinHardwareBusy = false;
+async function pollTwinHardware() {
+  if (activeSceneMode !== 'sensors' || twinHardwareBusy) return;
+  twinHardwareBusy = true;
+  try {
+    const response = await fetch('/plugins/fnk0031_wifi/usb/status', { cache: 'no-store', credentials: 'same-origin' });
+    twinHardwareStatus = response.ok ? await response.json() : null;
+  } catch { twinHardwareStatus = null; }
+  finally { twinHardwareBusy = false; }
 }
 
 function pollSensorScene() {
@@ -1189,8 +1381,10 @@ async function pollPowerStatus() {
   try {
     const response = await fetch('/body/power-mode', { cache: 'no-store', credentials: 'same-origin' });
     if (!response.ok) throw new Error(`Power status HTTP ${response.status}`);
-    vrDashboard.updatePowerStatus(await response.json());
+    twinPowerStatus = await response.json();
+    vrDashboard.updatePowerStatus(twinPowerStatus);
   } catch (error) {
+    twinPowerStatus = null;
     vrDashboard.updatePowerStatus({ mode: 'OFFLINE' });
   } finally {
     powerStatusPollInFlight = false;
@@ -1337,14 +1531,15 @@ async function selectSceneMode(mode) {
   const gaussian = document.querySelector('#scene-mode-gaussian');
   if (mode === 'sensors') {
     activeSceneMode = 'sensors';
+    sensorTwinPlacedInXR = false;
     vrDashboard.setSceneMode('sensors');
     if (!sensorViewInitialized) {
       await refreshSensorMetricCalibration();
       const calibratedFarRange = Number(sensorMetricCalibration?.calibrated_range_m?.[1]);
       const frameRange = sensorMetricCalibration?.available && Number.isFinite(calibratedFarRange)
         ? Math.max(1.5, Math.min(5, calibratedFarRange + 0.5)) : 6.9;
-      orbit.target.set(0, 0.55, -frameRange * 0.42);
-      camera.position.set(0, 0.55 + frameRange * 0.42, frameRange * 1.05);
+      orbit.target.set(0, 0.4, -frameRange * 0.2);
+      camera.position.set(frameRange * 0.27, 0.55 + frameRange * 0.37, frameRange * 0.77);
       camera.lookAt(orbit.target);
       orbit.update();
       sensorViewInitialized = true;
@@ -1364,6 +1559,8 @@ async function selectSceneMode(mode) {
     setStatus('Connecting live MiDaS, YOLOX and mmWave sensors…');
     void pollSensorScene();
     void pollSensorDepth();
+    void pollTwinTof();
+    void pollTwinHardware();
     return;
   }
   if (mode === 'gaussian') {
@@ -1847,6 +2044,7 @@ async function enterXR(mode) {
     renderer.xr.setFramebufferScaleFactor(xrRenderSettings.scale);
     renderer.xr.setFoveation(xrRenderSettings.foveation);
     await renderer.xr.setSession(session);
+    sensorTwinPlacedInXR = false;
     vrDashboard.setFnkTeleop(false);
     leftMenuWasPressed = false;
     orbit.enabled = false;
@@ -1871,6 +2069,7 @@ async function enterXR(mode) {
       xrFollowYaw = null;
       xrSceneOffset.set(0, 0, 0);
       xrSceneYawOffset = 0;
+      sensorTwinPlacedInXR = false;
       vrDashboard.setFollowing(false);
       vrDashboard.leaveSession();
       stopCameraPolling();
@@ -1914,8 +2113,12 @@ setInterval(pollGpsStatus, 1500);
 void pollPowerStatus();
 setInterval(pollPowerStatus, 5000);
 setInterval(pollSystemMetrics, 1000);
+setInterval(pollTwinTof, 1200);
+setInterval(pollTwinHardware, 3000);
+setInterval(updateTwinFromHardware, 500);
 window.__pbQuestReady = true;
 if (statusNode.textContent === 'Starting 3D scene…') setStatus('3D renderer ready · connecting to Body world model…');
+if (xrParams.get('scene') === 'sensors') void selectSceneMode('sensors');
 
 document.querySelector('#recenter').addEventListener('click', () => {
   const distance = Math.max(12, Number(latestWorldStatus?.source?.width) || 12, Number(latestWorldStatus?.source?.height) || 12) * 1.3;
@@ -1939,6 +2142,7 @@ setInterval(pollSensorDepthScene, 1000 / 30);
 setInterval(() => { if (activeSceneMode === 'sensors') void pollSensorYolo(); }, 1000 / 30);
 setInterval(() => { if (activeSceneMode === 'sensors') void pollSensorRadar(); }, 800);
 setInterval(() => { if (activeSceneMode === 'sensors') void pollUltrasonicStatus(); }, 500);
+setInterval(() => { if (activeSceneMode === 'sensors' && !renderer.xr.isPresenting) void pollCameraFrame(); }, 1000);
 void pollBody();
 let previousFrameAt = 0;
 let leftMenuWasPressed = false;
@@ -1948,6 +2152,9 @@ renderer.setAnimationLoop((time, xrFrame) => {
   smoothSensorCloud(deltaSeconds);
   updateSensorYoloTracks(deltaSeconds);
   updateSensorPointUniforms();
+  if (activeSceneMode === 'sensors') {
+    updateTwinCameraScreen();
+  }
   previousFrameAt = time;
   if (!renderer.xr.isPresenting) orbit.update();
   const session = renderer.xr.getSession();
