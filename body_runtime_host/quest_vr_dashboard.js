@@ -49,7 +49,8 @@ export class QuestVRDashboard {
     this.telemetry = null;
     this.imuStatus = null;
     this.gpsStatus = null;
-    this.gpsMap = new QuestGpsMap(() => { this.drawDashboard(); this.drawGpsMapWindow(); });
+    this.gpsMapDrawTimer = null;
+    this.gpsMap = new QuestGpsMap(() => this.scheduleGpsMapRedraw());
     this.gpsMapVisible = false;
     this.gpsMapWorldAnchored = false;
     this.gpsMapPose = null;
@@ -302,13 +303,27 @@ export class QuestVRDashboard {
       ? `${sample.fix === true || Number(sample.fix_quality) > 0 ? 'FIX' : 'NO FIX'} · ${Number.isFinite(inView) ? `${inView} SV` : 'GSV —'}`
       : 'OFFLINE';
     this.drawDashboard();
-    this.drawGpsMapWindow();
+    if (this.gpsMapVisible) this.drawGpsMapWindow();
+  }
+
+  scheduleGpsMapRedraw() {
+    if (!this.gpsMapVisible || this.gpsMapDrawTimer !== null) return;
+    // Tile grids commonly complete dozens of image loads together. Coalesce
+    // them so each burst uploads the large map canvas only once per 250 ms.
+    this.gpsMapDrawTimer = window.setTimeout(() => {
+      this.gpsMapDrawTimer = null;
+      if (this.gpsMapVisible) this.drawGpsMapWindow();
+    }, 250);
   }
 
   setGpsMapVisible(visible) {
     this.gpsMapVisible = Boolean(visible);
     this.gpsMapRoot.visible = this.visible && this.gpsMapVisible;
     if (!this.gpsMapVisible) {
+      if (this.gpsMapDrawTimer !== null) {
+        window.clearTimeout(this.gpsMapDrawTimer);
+        this.gpsMapDrawTimer = null;
+      }
       this.gpsMapPanController = null; this.gpsMapPanLastPoint = null; this.gpsMapHoveredController = null;
       this.gpsMapStickZoomAccumulator = 0;
     }
