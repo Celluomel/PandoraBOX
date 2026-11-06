@@ -1944,7 +1944,9 @@ export class QuestVRDashboard {
       return;
     }
     try {
-      const bytes = Uint8Array.from(atob(encoded), character => character.charCodeAt(0));
+      const binary = atob(encoded);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
       const bitmap = await createImageBitmap(new Blob([bytes], { type: frame.mime_type || 'image/jpeg' }));
       this.cameraBitmap?.close?.();
       this.cameraBitmap = bitmap;
@@ -2272,10 +2274,10 @@ export class QuestVRDashboard {
     }[gait] || { duty: .5, offsets: [0, .5, .5, 0, 0, .5] };
     const duty = gaitSpec.duty, offsets = gaitSpec.offsets;
     const now = performance.now();
-    // This canvas is intentionally redrawn at 4 Hz. A 50 ms cap designed for a
-    // 20 Hz draw loop discarded 80% of elapsed time, making gait travel look
-    // five times slower whenever the preview was active.
-    const dt = this.fnkPreviewLastAt ? Math.min(.30, Math.max(0, (now - this.fnkPreviewLastAt) / 1000)) : 0;
+    // The texture is uploaded at 2 Hz to leave CPU/GPU headroom for the live
+    // camera and point cloud. Match the simulation step to that cadence so the
+    // preview keeps real-time speed instead of advancing only on redraw time.
+    const dt = this.fnkPreviewLastAt ? Math.min(.60, Math.max(0, (now - this.fnkPreviewLastAt) / 1000)) : 0;
     this.fnkPreviewLastAt = now;
     const latched = this.fnkPreviewDemo && !twist ? {} : { ...(this.fnkPreviewKeys || {}) };
     const combos = [['w'], ['s'], ['a'], ['d'], ['q'], ['e'], ['w', 'a'], ['w', 'd']];

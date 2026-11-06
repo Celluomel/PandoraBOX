@@ -46,7 +46,7 @@ if (qualitySelect) {
     const preset = xrQualityPresets[qualitySelect.value];
     if (!preset) return;
     Object.assign(xrRenderSettings, preset);
-    if (renderer.xr.isPresenting) renderer.xr.setFoveation(xrRenderSettings.foveation);
+    if (renderer.xr.isPresenting) applyEffectiveXrFoveation();
     try { localStorage.setItem('pandorabox.quest-vr-quality', qualitySelect.value); } catch {}
     setStatus(renderer.xr.isPresenting
       ? `VR quality · foveation updated live; render scale ${xrRenderSettings.scale.toFixed(1)} applies next XR session.`
@@ -66,7 +66,8 @@ function perfTick(time) {
     console.info('[quest-perf]', {
       meanFrameMs: Number((perfStats.sum / perfStats.frames).toFixed(2)), maxFrameMs: Number(perfStats.max.toFixed(2)),
       calls: info.render.calls, triangles: info.render.triangles, points: info.render.points,
-      foveation: xrRenderSettings.foveation, scale: xrRenderSettings.scale,
+      foveation: vrDashboard.fnkVisible ? Math.max(xrRenderSettings.foveation, 0.85) : xrRenderSettings.foveation,
+      gaitLabOpen: vrDashboard.fnkVisible, scale: xrRenderSettings.scale,
     });
     perfStats.last = time; perfStats.frames = 0; perfStats.sum = 0; perfStats.max = 0;
   }
@@ -85,6 +86,15 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 5000) {
 
 const scene = new THREE.Scene();
 const vrDashboard = new QuestVRDashboard(THREE, renderer.capabilities.getMaxAnisotropy());
+function applyEffectiveXrFoveation() {
+  if (!renderer.xr.isPresenting) return;
+  // The Gait Lab adds a large animated canvas texture and live controller work.
+  // Increase peripheral foveation only while that panel is open, then restore
+  // the user's selected quality as soon as it closes.
+  const requested = Number(xrRenderSettings.foveation) || 0;
+  const effective = vrDashboard.fnkVisible ? Math.max(requested, 0.85) : requested;
+  renderer.xr.setFoveation(effective);
+}
 const hudPreview = new URLSearchParams(window.location.search).get('hud_preview') === '1';
 if (hudPreview) vrDashboard.setVisible(true);
 const cameraBackgroundTexture = new THREE.Texture();
@@ -634,7 +644,9 @@ function disposeChildren(group) {
 
 async function decodeSensorImage(encoded, mime = 'image/jpeg') {
   if (!encoded) return null;
-  const bytes = Uint8Array.from(atob(encoded), character => character.charCodeAt(0));
+  const binary = atob(encoded);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
   const bitmap = await createImageBitmap(new Blob([bytes], { type: mime }));
   const canvas = document.createElement('canvas');
   canvas.width = bitmap.width;
@@ -1675,6 +1687,7 @@ function selectAt(controller) {
   if (hudAction === 'gps-map-window' || hudAction === 'gps-map-zoom-level') return;
   if (hudAction === 'fnk-control') {
     vrDashboard.setFnkVisible(!vrDashboard.fnkVisible);
+    applyEffectiveXrFoveation();
     return;
   }
   if (hudAction === 'fnk-window') {
@@ -2150,7 +2163,7 @@ renderer.setAnimationLoop((time, xrFrame) => {
       || (vrDashboard.fnkTab !== 'twist' && Object.values(vrDashboard.fnkPreviewKeys || {}).some(Boolean))
       || Boolean(vrDashboard.fnkControllerInput)
     );
-    if (vrDashboard.fnkVisible && fnkPreviewActive && time - lastFnkVisualFrameAt >= 1000 / 4) {
+    if (vrDashboard.fnkVisible && fnkPreviewActive && time - lastFnkVisualFrameAt >= 1000 / 2) {
       lastFnkVisualFrameAt = time;
       vrDashboard.drawFnkControlWindow();
     }
