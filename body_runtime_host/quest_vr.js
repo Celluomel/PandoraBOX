@@ -54,6 +54,9 @@ if (qualitySelect) {
   });
 }
 const perfStats = { last: 0, frames: 0, sum: 0, max: 0, previous: 0 };
+let fnkRenderDegraded = false;
+let fnkRenderRecoveryWindows = 0;
+let fnkVisualRefreshMs = 500;
 function perfTick(time) {
   if (perfStats.previous) {
     const delta = time - perfStats.previous;
@@ -63,11 +66,36 @@ function perfTick(time) {
   if (!perfStats.last) perfStats.last = time;
   if (time - perfStats.last >= 5000 && perfStats.frames) {
     const info = renderer.info;
+    const meanFrameMs = perfStats.sum / perfStats.frames;
+    if (vrDashboard.fnkVisible) {
+      if (!fnkRenderDegraded && (meanFrameMs >= 25 || perfStats.max >= 120)) {
+        fnkRenderDegraded = true;
+        fnkRenderRecoveryWindows = 0;
+        fnkVisualRefreshMs = 1000;
+        applyEffectiveXrFoveation();
+      } else if (fnkRenderDegraded && meanFrameMs < 20 && perfStats.max < 50) {
+        fnkRenderRecoveryWindows += 1;
+        if (fnkRenderRecoveryWindows >= 3) {
+          fnkRenderDegraded = false;
+          fnkRenderRecoveryWindows = 0;
+          fnkVisualRefreshMs = 500;
+          applyEffectiveXrFoveation();
+        }
+      } else if (fnkRenderDegraded) {
+        fnkRenderRecoveryWindows = 0;
+      }
+    } else if (fnkRenderDegraded) {
+      fnkRenderDegraded = false;
+      fnkRenderRecoveryWindows = 0;
+      fnkVisualRefreshMs = 500;
+      applyEffectiveXrFoveation();
+    }
     console.info('[quest-perf]', {
-      meanFrameMs: Number((perfStats.sum / perfStats.frames).toFixed(2)), maxFrameMs: Number(perfStats.max.toFixed(2)),
+      meanFrameMs: Number(meanFrameMs.toFixed(2)), maxFrameMs: Number(perfStats.max.toFixed(2)),
       calls: info.render.calls, triangles: info.render.triangles, points: info.render.points,
-      foveation: vrDashboard.fnkVisible ? Math.max(xrRenderSettings.foveation, 0.85) : xrRenderSettings.foveation,
-      gaitLabOpen: vrDashboard.fnkVisible, scale: xrRenderSettings.scale,
+      foveation: vrDashboard.fnkVisible ? Math.max(xrRenderSettings.foveation, fnkRenderDegraded ? 0.95 : 0.85) : xrRenderSettings.foveation,
+      gaitLabOpen: vrDashboard.fnkVisible, gaitRenderDegraded: fnkRenderDegraded,
+      gaitRefreshHz: 1000 / fnkVisualRefreshMs, scale: xrRenderSettings.scale,
     });
     perfStats.last = time; perfStats.frames = 0; perfStats.sum = 0; perfStats.max = 0;
   }
@@ -92,7 +120,7 @@ function applyEffectiveXrFoveation() {
   // Increase peripheral foveation only while that panel is open, then restore
   // the user's selected quality as soon as it closes.
   const requested = Number(xrRenderSettings.foveation) || 0;
-  const effective = vrDashboard.fnkVisible ? Math.max(requested, 0.85) : requested;
+  const effective = vrDashboard.fnkVisible ? Math.max(requested, fnkRenderDegraded ? 0.95 : 0.85) : requested;
   renderer.xr.setFoveation(effective);
 }
 const hudPreview = new URLSearchParams(window.location.search).get('hud_preview') === '1';
@@ -563,7 +591,7 @@ async function pollCameraFrame() {
   if (!vrDashboard.visible || cameraPollInFlight) return;
   // The Gait Lab adds a second animated canvas. Ease camera transport while it
   // is open so JPEG decode/texture uploads leave more XR frame-time headroom.
-  const minPollIntervalMs = vrDashboard.fnkVisible ? 100 : 1000 / 15;
+  const minPollIntervalMs = vrDashboard.fnkVisible ? (fnkRenderDegraded ? 125 : 100) : 1000 / 15;
   const pollStartedAt = performance.now();
   if (pollStartedAt - lastCameraPollAt < minPollIntervalMs) return;
   lastCameraPollAt = pollStartedAt;
@@ -1687,6 +1715,11 @@ function selectAt(controller) {
   if (hudAction === 'gps-map-window' || hudAction === 'gps-map-zoom-level') return;
   if (hudAction === 'fnk-control') {
     vrDashboard.setFnkVisible(!vrDashboard.fnkVisible);
+    if (!vrDashboard.fnkVisible) {
+      fnkRenderDegraded = false;
+      fnkRenderRecoveryWindows = 0;
+      fnkVisualRefreshMs = 500;
+    }
     applyEffectiveXrFoveation();
     return;
   }
@@ -2163,7 +2196,7 @@ renderer.setAnimationLoop((time, xrFrame) => {
       || (vrDashboard.fnkTab !== 'twist' && Object.values(vrDashboard.fnkPreviewKeys || {}).some(Boolean))
       || Boolean(vrDashboard.fnkControllerInput)
     );
-    if (vrDashboard.fnkVisible && fnkPreviewActive && time - lastFnkVisualFrameAt >= 1000 / 2) {
+    if (vrDashboard.fnkVisible && fnkPreviewActive && time - lastFnkVisualFrameAt >= fnkVisualRefreshMs) {
       lastFnkVisualFrameAt = time;
       vrDashboard.drawFnkControlWindow();
     }
