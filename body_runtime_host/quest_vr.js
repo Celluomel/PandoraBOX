@@ -54,7 +54,7 @@ if (qualitySelect) {
   });
 }
 const perfStats = { last: 0, frames: 0, sum: 0, max: 0, previous: 0 };
-let fnkRenderDegraded = false;
+let renderQualityDegraded = false;
 let fnkRenderRecoveryWindows = 0;
 let fnkVisualRefreshMs = 500;
 function perfTick(time) {
@@ -67,35 +67,28 @@ function perfTick(time) {
   if (time - perfStats.last >= 5000 && perfStats.frames) {
     const info = renderer.info;
     const meanFrameMs = perfStats.sum / perfStats.frames;
-    if (vrDashboard.fnkVisible) {
-      if (!fnkRenderDegraded && (meanFrameMs >= 25 || perfStats.max >= 120)) {
-        fnkRenderDegraded = true;
-        fnkRenderRecoveryWindows = 0;
-        fnkVisualRefreshMs = 1000;
-        applyEffectiveXrFoveation();
-      } else if (fnkRenderDegraded && meanFrameMs < 20 && perfStats.max < 50) {
-        fnkRenderRecoveryWindows += 1;
-        if (fnkRenderRecoveryWindows >= 3) {
-          fnkRenderDegraded = false;
-          fnkRenderRecoveryWindows = 0;
-          fnkVisualRefreshMs = 500;
-          applyEffectiveXrFoveation();
-        }
-      } else if (fnkRenderDegraded) {
-        fnkRenderRecoveryWindows = 0;
-      }
-    } else if (fnkRenderDegraded) {
-      fnkRenderDegraded = false;
+    if (!renderQualityDegraded && (meanFrameMs >= 25 || perfStats.max >= 120)) {
+      renderQualityDegraded = true;
       fnkRenderRecoveryWindows = 0;
-      fnkVisualRefreshMs = 500;
+      fnkVisualRefreshMs = 1000;
       applyEffectiveXrFoveation();
+    } else if (renderQualityDegraded && meanFrameMs < 20 && perfStats.max < 50) {
+      fnkRenderRecoveryWindows += 1;
+      if (fnkRenderRecoveryWindows >= 3) {
+        renderQualityDegraded = false;
+        fnkRenderRecoveryWindows = 0;
+        fnkVisualRefreshMs = 500;
+        applyEffectiveXrFoveation();
+      }
+    } else if (renderQualityDegraded) {
+      fnkRenderRecoveryWindows = 0;
     }
     console.info('[quest-perf]', {
       meanFrameMs: Number(meanFrameMs.toFixed(2)), maxFrameMs: Number(perfStats.max.toFixed(2)),
       calls: info.render.calls, triangles: info.render.triangles, points: info.render.points,
       geometries: info.memory.geometries, textures: info.memory.textures,
-      foveation: vrDashboard.fnkVisible ? Math.max(xrRenderSettings.foveation, fnkRenderDegraded ? 0.95 : 0.85) : xrRenderSettings.foveation,
-      gaitLabOpen: vrDashboard.fnkVisible, gaitRenderDegraded: fnkRenderDegraded,
+      foveation: renderer.xr.isPresenting ? Math.max(xrRenderSettings.foveation, renderQualityDegraded ? 0.95 : (vrDashboard.fnkVisible ? 0.85 : 0)) : xrRenderSettings.foveation,
+      gaitLabOpen: vrDashboard.fnkVisible, renderQualityDegraded,
       gaitRefreshHz: 1000 / fnkVisualRefreshMs, scale: xrRenderSettings.scale,
     });
     perfStats.last = time; perfStats.frames = 0; perfStats.sum = 0; perfStats.max = 0;
@@ -121,7 +114,8 @@ function applyEffectiveXrFoveation() {
   // Increase peripheral foveation only while that panel is open, then restore
   // the user's selected quality as soon as it closes.
   const requested = Number(xrRenderSettings.foveation) || 0;
-  const effective = vrDashboard.fnkVisible ? Math.max(requested, fnkRenderDegraded ? 0.95 : 0.85) : requested;
+  const effective = renderQualityDegraded ? Math.max(requested, 0.95)
+    : vrDashboard.fnkVisible ? Math.max(requested, 0.85) : requested;
   renderer.xr.setFoveation(effective);
 }
 const hudPreview = new URLSearchParams(window.location.search).get('hud_preview') === '1';
@@ -405,7 +399,7 @@ const selectable = [];
 const controllerRays = [];
 const colorByKind = { table: '#d3bd67', chair: '#83b3d5', obstacle: '#a77ba5', mobile_obstacle: '#db83bf', target: '#efa678' };
 let lastFrame = null;
-let sceneRenderKey = '';
+const sceneObjectNodes = new Map();
 let basePosition = null;
 let firstData = true;
 let latestObjects = [];
@@ -557,42 +551,45 @@ function updateXRSceneFollow(xrCamera) {
   world.position.copy(xrFollowTarget).sub(xrFollowBodyOffset);
 }
 
-function readThumbstick(gamepad) {
-  const axes = gamepad?.axes || [];
-  const primary = [Number(axes[0]) || 0, Number(axes[1]) || 0];
-  const secondary = [Number(axes[2]) || 0, Number(axes[3]) || 0];
-  return Math.hypot(...secondary) > Math.hypot(...primary) ? secondary : primary;
-}
-
 function applyDeadzone(value, deadzone = 0.16) {
   const magnitude = Math.abs(value);
   if (magnitude <= deadzone) return 0;
   return Math.sign(value) * Math.min(1, (magnitude - deadzone) / (1 - deadzone));
 }
 
-function updateXRLocomotion(inputSources, xrCamera, deltaSeconds) {
+const xrLocomotionVector = new THREE.Vector3();
+function updateXRLocomotion(inputSources, headYaw, deltaSeconds) {
   if (vrDashboard.grabbedController) return;
   const elapsed = Math.max(0, Math.min(0.05, Number(deltaSeconds) || 0));
   if (!elapsed) return;
-  const sources = [...inputSources].filter(source => source.gamepad);
-  const left = sources.find(source => source.handedness === 'left');
-  const right = sources.find(source => source.handedness === 'right');
-  const fallback = sources[0];
-  const moveStick = readThumbstick((left || fallback)?.gamepad);
-  const turnStick = right ? readThumbstick(right.gamepad) : [0, 0];
-  const moveX = applyDeadzone(moveStick[0]);
-  const moveForward = -applyDeadzone(moveStick[1]);
-  const headYaw = new THREE.Euler().setFromQuaternion(xrCamera.quaternion, 'YXZ').y;
-  const move = new THREE.Vector3(moveX, 0, -moveForward).applyAxisAngle(xrFollowYawAxis, headYaw);
-  xrSceneOffset.addScaledVector(move, -2.4 * elapsed);
-  xrSceneYawOffset -= applyDeadzone(turnStick[0]) * 1.35 * elapsed;
+  let left = null, right = null, fallback = null;
+  for (const source of inputSources) {
+    if (!source.gamepad) continue;
+    fallback ||= source;
+    if (source.handedness === 'left') left = source;
+    else if (source.handedness === 'right') right = source;
+  }
+  const movePad = left?.gamepad || fallback?.gamepad;
+  const moveAxes = movePad?.axes || [];
+  let moveX = Number(moveAxes[0]) || 0, moveY = Number(moveAxes[1]) || 0;
+  const moveX2 = Number(moveAxes[2]) || 0, moveY2 = Number(moveAxes[3]) || 0;
+  if (Math.hypot(moveX2, moveY2) > Math.hypot(moveX, moveY)) { moveX = moveX2; moveY = moveY2; }
+  const turnAxes = right?.gamepad?.axes || [];
+  let turnX = Number(turnAxes[0]) || 0, turnY = Number(turnAxes[1]) || 0;
+  const turnX2 = Number(turnAxes[2]) || 0, turnY2 = Number(turnAxes[3]) || 0;
+  if (Math.hypot(turnX2, turnY2) > Math.hypot(turnX, turnY)) turnX = turnX2;
+  const moveForward = -applyDeadzone(moveY);
+  xrLocomotionVector.set(applyDeadzone(moveX), 0, -moveForward)
+    .applyAxisAngle(xrFollowYawAxis, headYaw);
+  xrSceneOffset.addScaledVector(xrLocomotionVector, -2.4 * elapsed);
+  xrSceneYawOffset -= applyDeadzone(turnX) * 1.35 * elapsed;
 }
 
 async function pollCameraFrame() {
   if (!vrDashboard.visible || cameraPollInFlight) return;
   // The Gait Lab adds a second animated canvas. Ease camera transport while it
   // is open so JPEG decode/texture uploads leave more XR frame-time headroom.
-  const minPollIntervalMs = vrDashboard.fnkVisible ? (fnkRenderDegraded ? 125 : 100) : 1000 / 15;
+  const minPollIntervalMs = vrDashboard.fnkVisible ? (renderQualityDegraded ? 125 : 100) : 1000 / 15;
   const pollStartedAt = performance.now();
   if (pollStartedAt - lastCameraPollAt < minPollIntervalMs) return;
   lastCameraPollAt = pollStartedAt;
@@ -601,6 +598,7 @@ async function pollCameraFrame() {
     const response = await fetchWithTimeout('/body/camera/image', { cache: 'no-store', credentials: 'same-origin' }, 4000);
     if (!response.ok) throw new Error(`Camera frame HTTP ${response.status}`);
     const result = await response.json();
+    if (!vrDashboard.visible || document.visibilityState !== 'visible') return;
     const frame = result.camera || {};
     if (!result.available || !frame.image_base64) {
       vrDashboard.setCameraStatus(`CAMERA · ${String(result.status || 'NO FRAME').toUpperCase()}`, true);
@@ -1049,8 +1047,10 @@ async function pollSensorDepth() {
         if (gray?.pixels) depthImage = { width: gray.width, height: gray.height, pixels: gray.pixels };
       }
       const color = await colorPromise;
+      if (activeSceneMode !== 'sensors' || document.visibilityState !== 'visible') return;
       if (depthImage && color && buildSensorDepthCloud(depth, depthImage, color)) sensorFrameId = depth.frame_id;
     }
+    if (activeSceneMode !== 'sensors' || document.visibilityState !== 'visible') return;
     const yoloCount = updateSensorYolo(latestSensorYolo);
     updateSensorReadout(depth, yoloCount, sensorRadarTargetCount);
   } catch (error) {
@@ -1067,6 +1067,7 @@ async function pollSensorYolo() {
     const response = await fetchWithTimeout('/body/camera/yolo/status', { cache: 'no-store', credentials: 'same-origin' }, 3500);
     if (!response.ok) throw new Error('YOLOX endpoint unavailable');
     latestSensorYolo = await response.json();
+    if (activeSceneMode !== 'sensors' || document.visibilityState !== 'visible') return;
     vrDashboard.updateYoloResult(latestSensorYolo);
     const yoloCount = updateSensorYolo(latestSensorYolo);
     updateSensorReadout(latestSensorDepthStatus, yoloCount, sensorRadarTargetCount);
@@ -1085,6 +1086,7 @@ async function pollSensorRadar() {
     const response = await fetch('/plugins/mmwave_radar/status', { cache: 'no-store', credentials: 'same-origin' });
     if (!response.ok) throw new Error('mmWave endpoint unavailable');
     const radarStatus = await response.json();
+    if (activeSceneMode !== 'sensors' || document.visibilityState !== 'visible') return;
     twinRadarStatus = radarStatus;
     const radarSample = radarStatus.sample || {};
     const bodyPerception = latestWorldStatus?.perception || {};
@@ -1107,6 +1109,7 @@ async function pollUltrasonicStatus() {
     const response = await fetch('/plugins/ultrasonic/status', { cache: 'no-store', credentials: 'same-origin' });
     if (!response.ok) throw new Error('Ultrasonic endpoint unavailable');
     twinUltrasonicStatus = await response.json();
+    if (activeSceneMode !== 'sensors' || document.visibilityState !== 'visible') return;
     vrDashboard.updateUltrasonicStatus(twinUltrasonicStatus);
   } catch (error) {
     twinUltrasonicStatus = null;
@@ -1145,7 +1148,7 @@ function pollSensorScene() {
 }
 
 function pollSensorDepthScene() {
-  if (activeSceneMode === 'sensors') void pollSensorDepth();
+  if (document.visibilityState === 'visible' && activeSceneMode === 'sensors') void pollSensorDepth();
 }
 
 function objectGeometry(item) {
@@ -1226,37 +1229,6 @@ function rebuildScene(frame) {
   const semanticSplatScene = perception.semantic_splats || {};
   const semanticGroups = Array.isArray(semanticSplatScene.groups)
     ? semanticSplatScene.groups.filter(group => group && typeof group === 'object') : [];
-  const renderKey = JSON.stringify({
-    pose: [position[0], position[1], body.orientation],
-    objects: objects.map(item => [item.id, item.label, item.kind, item.size,
-      item.position?.[0], item.position?.[1], item.position?.[2]]),
-    semantic: semanticGroups.map(group => [group.entity_id, group.center_m, group.extent_m,
-      group.confidence, group.label, group.role, group.description, group.attributes,
-      group.relations, group.image_region]),
-  });
-  if (renderKey === sceneRenderKey) {
-    updateSceneStatus(frame, perception, objects, semanticGroups, semanticSplatScene);
-    vrDashboard.update(frame);
-    return;
-  }
-  sceneRenderKey = renderKey;
-  selectionMarker.visible = false;
-  if (selectedLabel) {
-    world.remove(selectedLabel);
-    selectedLabel.material.map?.dispose();
-    selectedLabel.material.dispose();
-    selectedLabel = null;
-  }
-  while (objectsGroup.children.length) {
-    const child = objectsGroup.children[objectsGroup.children.length - 1];
-    objectsGroup.remove(child);
-    child.traverse(node => {
-      node.geometry?.dispose();
-      if (Array.isArray(node.material)) node.material.forEach(material => material.dispose());
-      else node.material?.dispose();
-    });
-  }
-  selectable.length = 0;
   if (!basePosition) basePosition = [Number(position[0]) || 0, Number(position[1]) || 0, Number(position[2]) || 0];
   configureSceneFrame(frame, position);
   const bodyX = (Number(position[0]) || 0) - basePosition[0];
@@ -1267,23 +1239,53 @@ function rebuildScene(frame) {
 
   latestObjects = objects;
   const semanticByEntity = new Map(semanticGroups.map(group => [String(group.entity_id), group]));
-  for (const item of latestObjects) {
+  const liveObjectKeys = new Set();
+  selectable.length = 0;
+  for (let index = 0; index < latestObjects.length; index += 1) {
+    const item = latestObjects[index];
     if (!Array.isArray(item.position)) continue;
     const px = (Number(item.position[0]) || 0) - basePosition[0];
     const pz = -((Number(item.position[1]) || 0) - basePosition[1]);
     const kind = String(item.kind || 'object').toLowerCase();
-    const mesh = new THREE.Mesh(
-      objectGeometry(item),
-      new THREE.MeshLambertMaterial({ color: colorByKind[kind] || '#a9c4b2', emissive: colorByKind[kind] || '#a9c4b2', emissiveIntensity: kind.includes('mobile') ? 0.12 : 0.035 }),
-    );
+    const id = String(item.id || `${kind}:${index}`);
+    liveObjectKeys.add(id);
+    const structureKey = `${kind}|${String(item.label || id)}|${JSON.stringify(item.size || null)}`;
+    let nodes = sceneObjectNodes.get(id);
+    if (nodes && nodes.structureKey !== structureKey) {
+      objectsGroup.remove(nodes.mesh, nodes.label);
+      nodes.mesh.geometry.dispose();
+      nodes.mesh.material.dispose();
+      nodes.label.material.map?.dispose();
+      nodes.label.material.dispose();
+      sceneObjectNodes.delete(id);
+      nodes = null;
+    }
+    if (!nodes) {
+      const tint = colorByKind[kind] || '#a9c4b2';
+      const mesh = new THREE.Mesh(
+        objectGeometry(item),
+        new THREE.MeshLambertMaterial({ color: tint, emissive: tint, emissiveIntensity: kind.includes('mobile') ? 0.12 : 0.035 }),
+      );
+      const label = labelSprite(item.label || item.id || kind);
+      objectsGroup.add(mesh, label);
+      nodes = { mesh, label, structureKey };
+      sceneObjectNodes.set(id, nodes);
+    }
+    const { mesh, label } = nodes;
     mesh.position.set(px, kind.includes('obstacle') ? 0.58 : kind === 'table' || kind === 'chair' ? 0.38 : 0.25, pz);
     mesh.userData.entity = item;
     mesh.userData.semanticGroup = semanticByEntity.get(String(item.id)) || null;
-    objectsGroup.add(mesh);
     selectable.push(mesh);
-    const label = labelSprite(item.label || item.id || kind);
     label.position.set(px, 1.2, pz);
-    objectsGroup.add(label);
+  }
+  for (const [id, nodes] of sceneObjectNodes) {
+    if (liveObjectKeys.has(id)) continue;
+    objectsGroup.remove(nodes.mesh, nodes.label);
+    nodes.mesh.geometry.dispose();
+    nodes.mesh.material.dispose();
+    nodes.label.material.map?.dispose();
+    nodes.label.material.dispose();
+    sceneObjectNodes.delete(id);
   }
   const activeSplatIds = new Set();
   for (const group of semanticGroups) {
@@ -1717,7 +1719,6 @@ function selectAt(controller) {
   if (hudAction === 'fnk-control') {
     vrDashboard.setFnkVisible(!vrDashboard.fnkVisible);
     if (!vrDashboard.fnkVisible) {
-      fnkRenderDegraded = false;
       fnkRenderRecoveryWindows = 0;
       fnkVisualRefreshMs = 500;
     }
@@ -2058,6 +2059,7 @@ async function enterXR(mode) {
     renderer.xr.setFramebufferScaleFactor(xrRenderSettings.scale);
     renderer.xr.setFoveation(xrRenderSettings.foveation);
     await renderer.xr.setSession(session);
+    applyEffectiveXrFoveation();
     sensorTwinPlacedInXR = false;
     vrDashboard.setFnkTeleop(false);
     leftMenuWasPressed = false;
@@ -2118,18 +2120,14 @@ document.querySelector('#quest-simulation').addEventListener('click', () => togg
 document.querySelector('#scene-mode-simulation').addEventListener('click', () => selectSceneMode('simulation'));
 document.querySelector('#scene-mode-sensors').addEventListener('click', () => selectSceneMode('sensors'));
 document.querySelector('#scene-mode-gaussian').addEventListener('click', () => selectSceneMode('gaussian'));
-void refreshGaussianAssetStatus();
-setInterval(refreshGaussianAssetStatus, 10000);
-void pollImuStatus();
-setInterval(pollImuStatus, 1000);
-void pollGpsStatus();
-setInterval(pollGpsStatus, 1500);
-void pollPowerStatus();
-setInterval(pollPowerStatus, 5000);
-setInterval(pollSystemMetrics, 1000);
-setInterval(pollTwinTof, 1200);
-setInterval(pollTwinHardware, 3000);
-setInterval(updateTwinFromHardware, 500);
+setInterval(() => { if (document.visibilityState === 'visible' && activeSceneMode === 'gaussian') void refreshGaussianAssetStatus(); }, 10000);
+setInterval(() => { if (document.visibilityState === 'visible' && vrDashboard.visible) void pollImuStatus(); }, 1000);
+setInterval(() => { if (document.visibilityState === 'visible' && vrDashboard.visible && vrDashboard.gpsMapVisible) void pollGpsStatus(); }, 1500);
+setInterval(() => { if (document.visibilityState === 'visible' && vrDashboard.visible) void pollPowerStatus(); }, 5000);
+setInterval(() => { if (document.visibilityState === 'visible' && vrDashboard.visible && vrDashboard.powerWindowVisible) void pollSystemMetrics(); }, 1000);
+setInterval(() => { if (document.visibilityState === 'visible' && activeSceneMode === 'sensors') void pollTwinTof(); }, 1200);
+setInterval(() => { if (document.visibilityState === 'visible' && activeSceneMode === 'sensors') void pollTwinHardware(); }, 3000);
+setInterval(() => { if (document.visibilityState === 'visible' && activeSceneMode === 'sensors') updateTwinFromHardware(); }, 500);
 window.__pbQuestReady = true;
 if (statusNode.textContent === 'Starting 3D scene…') setStatus('3D renderer ready · connecting to Body world model…');
 if (xrParams.get('scene') === 'sensors') void selectSceneMode('sensors');
@@ -2151,19 +2149,22 @@ window.addEventListener('resize', () => {
   renderer.setSize(width, height, false);
 });
 
-setInterval(pollBody, 1200);
+setInterval(() => { if (document.visibilityState === 'visible') void pollBody(); }, 1200);
 setInterval(pollSensorDepthScene, 500);
-setInterval(() => { if (activeSceneMode === 'sensors') void pollSensorYolo(); }, 500);
-setInterval(() => { if (activeSceneMode === 'sensors') void pollSensorRadar(); }, 800);
-setInterval(() => { if (activeSceneMode === 'sensors') void pollUltrasonicStatus(); }, 500);
-setInterval(() => { if (activeSceneMode === 'sensors' && !renderer.xr.isPresenting) void pollCameraFrame(); }, 1000);
+setInterval(() => { if (document.visibilityState === 'visible' && activeSceneMode === 'sensors') void pollSensorYolo(); }, 500);
+setInterval(() => { if (document.visibilityState === 'visible' && activeSceneMode === 'sensors') void pollSensorRadar(); }, 800);
+setInterval(() => { if (document.visibilityState === 'visible' && activeSceneMode === 'sensors') void pollUltrasonicStatus(); }, 500);
+setInterval(() => { if (document.visibilityState === 'visible' && activeSceneMode === 'sensors' && !renderer.xr.isPresenting) void pollCameraFrame(); }, 1000);
 void pollBody();
 let previousFrameAt = 0;
 let leftMenuWasPressed = false;
+const activeInputSources = [];
+const xrCameraEuler = new THREE.Euler();
 renderer.setAnimationLoop((time, xrFrame) => {
   perfTick(time);
   const deltaSeconds = previousFrameAt ? (time - previousFrameAt) / 1000 : 1 / 90;
-  if (time - lastSensorVisualUpdateAt >= 1000 / 30) {
+  const sensorVisualIntervalMs = renderer.xr.isPresenting && renderQualityDegraded ? 1000 / 15 : 1000 / 30;
+  if (time - lastSensorVisualUpdateAt >= sensorVisualIntervalMs) {
     const visualDelta = lastSensorVisualUpdateAt ? Math.min(0.1, (time - lastSensorVisualUpdateAt) / 1000) : deltaSeconds;
     smoothSensorCloud(visualDelta);
     updateSensorYoloTracks(visualDelta);
@@ -2177,10 +2178,20 @@ renderer.setAnimationLoop((time, xrFrame) => {
   if (session) {
     const xrCamera = renderer.xr.getCamera(camera);
     updateXRSceneFollow(xrCamera);
-    const headYaw = new THREE.Euler().setFromQuaternion(xrCamera.quaternion, 'YXZ').y;
-    const active = [...session.inputSources].filter(source => source.gamepad);
-    const leftInput = active.find(source => source.handedness === 'left');
-    const menuPressed = Boolean(leftInput?.gamepad?.buttons?.slice(6).some(button => button?.pressed));
+    const headYaw = xrCameraEuler.setFromQuaternion(xrCamera.quaternion, 'YXZ').y;
+    activeInputSources.length = 0;
+    let leftInput = null;
+    for (const source of session.inputSources) {
+      if (!source.gamepad) continue;
+      activeInputSources.push(source);
+      if (source.handedness === 'left') leftInput = source;
+    }
+    const active = activeInputSources;
+    let menuPressed = false;
+    const leftButtons = leftInput?.gamepad?.buttons || [];
+    for (let index = 6; index < leftButtons.length; index += 1) {
+      if (leftButtons[index]?.pressed) { menuPressed = true; break; }
+    }
     if (menuPressed && !leftMenuWasPressed && vrDashboard.fnkVisible) vrDashboard.toggleFnkTeleop();
     leftMenuWasPressed = menuPressed;
     if (vrDashboard.fnkVisible && xrFrame && leftInput) {
@@ -2189,46 +2200,51 @@ renderer.setAnimationLoop((time, xrFrame) => {
       const pose = referenceSpace && controllerSpace ? xrFrame.getPose(controllerSpace, referenceSpace) : null;
       if (pose?.transform?.orientation) {
         const q = pose.transform.orientation;
-        vrDashboard.updateFnkControllerOrientation([q.x, q.y, q.z, q.w]);
+        vrDashboard.updateFnkControllerOrientation(q.x, q.y, q.z, q.w);
       }
     }
-    const fnkPreviewActive = !vrDashboard.fnkPreviewPaused && (
-      vrDashboard.fnkPreviewDemo
-      || (vrDashboard.fnkTab !== 'twist' && Object.values(vrDashboard.fnkPreviewKeys || {}).some(Boolean))
-      || Boolean(vrDashboard.fnkControllerInput)
-    );
+    let fnkKeyActive = false;
+    if (vrDashboard.fnkTab !== 'twist') {
+      for (const key in vrDashboard.fnkPreviewKeys) {
+        if (vrDashboard.fnkPreviewKeys[key]) { fnkKeyActive = true; break; }
+      }
+    }
+    const fnkPreviewActive = !vrDashboard.fnkPreviewPaused
+      && (vrDashboard.fnkPreviewDemo || fnkKeyActive || Boolean(vrDashboard.fnkControllerInput));
     if (vrDashboard.fnkVisible && fnkPreviewActive && time - lastFnkVisualFrameAt >= fnkVisualRefreshMs) {
       lastFnkVisualFrameAt = time;
       vrDashboard.drawFnkControlWindow();
     }
     const fnkDriving = vrDashboard.updateFnkStickControl(active);
-    if (!vrDashboard.grabbedController && !fnkDriving) updateXRLocomotion(active, xrCamera, deltaSeconds);
+    if (!vrDashboard.grabbedController && !fnkDriving) updateXRLocomotion(active, headYaw, deltaSeconds);
     vrDashboard.clearPointer();
     for (const ray of controllerRays) updateControllerPointer(ray.controller, ray.beam, ray.reticle);
     vrDashboard.updateGpsMapHoverZoom(active, deltaSeconds);
-    const controllers = active.map(source => {
-      const axes = source.gamepad.axes || [];
-      const primaryMagnitude = Math.hypot(Number(axes[0]) || 0, Number(axes[1]) || 0);
-      const secondaryMagnitude = Math.hypot(Number(axes[2]) || 0, Number(axes[3]) || 0);
-      const axisOffset = secondaryMagnitude > primaryMagnitude ? 2 : 0;
-      const pressed = source.gamepad.buttons?.some(button => button.pressed) || false;
-      return {
-        handedness: source.handedness || 'controller',
-        x: Number(axes[axisOffset] ?? 0),
-        y: Number(axes[axisOffset + 1] ?? 0),
-        pressed,
-        profile: source.profiles?.[0] || 'unknown',
-        gamepadMapping: source.gamepad.mapping || 'custom',
-        buttonCount: source.gamepad.buttons?.length || 0,
-        menuButtonExposed: (source.gamepad.buttons?.length || 0) > 6,
-      };
-    });
-    const headingDegrees = Math.round(headYaw * 180 / Math.PI);
-    const telemetry = `HEAD ${headingDegrees}° · ${controllers.map(item => `${item.handedness} ${item.x.toFixed(1)},${item.y.toFixed(1)}${item.pressed ? ' · button' : ''}`).join(' | ') || 'NO CONTROLLER'}`;
-    document.querySelector('#xr-input').textContent = telemetry;
-    if (vrDashboard.visible && performance.now() - lastDashboardTelemetryAt >= 200) {
+    const telemetryNow = performance.now();
+    if (telemetryNow - lastDashboardTelemetryAt >= 500) {
+      const controllers = active.map(source => {
+        const axes = source.gamepad.axes || [];
+        const primaryMagnitude = Math.hypot(Number(axes[0]) || 0, Number(axes[1]) || 0);
+        const secondaryMagnitude = Math.hypot(Number(axes[2]) || 0, Number(axes[3]) || 0);
+        const axisOffset = secondaryMagnitude > primaryMagnitude ? 2 : 0;
+        let pressed = false;
+        for (const button of source.gamepad.buttons || []) if (button.pressed) { pressed = true; break; }
+        return {
+          handedness: source.handedness || 'controller',
+          x: Number(axes[axisOffset] ?? 0),
+          y: Number(axes[axisOffset + 1] ?? 0),
+          pressed,
+          profile: source.profiles?.[0] || 'unknown',
+          gamepadMapping: source.gamepad.mapping || 'custom',
+          buttonCount: source.gamepad.buttons?.length || 0,
+          menuButtonExposed: (source.gamepad.buttons?.length || 0) > 6,
+        };
+      });
+      const headingDegrees = Math.round(headYaw * 180 / Math.PI);
+      const telemetry = `HEAD ${headingDegrees}° · ${controllers.map(item => `${item.handedness} ${item.x.toFixed(1)},${item.y.toFixed(1)}${item.pressed ? ' · button' : ''}`).join(' | ') || 'NO CONTROLLER'}`;
+      document.querySelector('#xr-input').textContent = telemetry;
       vrDashboard.updateTelemetry({ headingDegrees, controllers });
-      lastDashboardTelemetryAt = performance.now();
+      lastDashboardTelemetryAt = telemetryNow;
     }
     // Controller telemetry feeds the Gait Lab only. Polling it while the panel
     // is closed needlessly exercises the Body's controller/status path.
@@ -2260,9 +2276,8 @@ renderer.setAnimationLoop((time, xrFrame) => {
   }
   if ((session || hudPreview) && vrDashboard.visible) {
     const xrCamera = session ? renderer.xr.getCamera(camera) : camera;
-    vrDashboard.updateAdjustment(deltaSeconds, session ? [...session.inputSources].filter(source => source.gamepad) : []);
+    vrDashboard.updateAdjustment(deltaSeconds, session ? activeInputSources : []);
     vrDashboard.syncPose(xrCamera);
-    vrDashboard.cachePose(xrCamera);
     vrDashboard.persistPose(xrCamera);
     renderer.clearDepth();
     renderer.render(vrDashboard.scene, camera);

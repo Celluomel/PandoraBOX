@@ -1,6 +1,9 @@
 import { createFnk0031Visual } from './fnk0031_visual.js';
 import { QuestGpsMap } from './quest_gps_map.js';
 
+const DEFAULT_FNK_GYRO_POSE = Object.freeze({ x: 0, y: 0, z: 24, roll: 0, pitch: 0, yaw: 0 });
+const controllerDeadzone = value => Math.abs(value) < 0.18 ? 0 : Math.sign(value) * (Math.abs(value) - 0.18) / 0.82;
+
 export class QuestVRDashboard {
   constructor(THREE, maxAnisotropy = 1) {
     this.THREE = THREE;
@@ -362,12 +365,15 @@ export class QuestVRDashboard {
       this.gpsMapStickZoomAccumulator = 0;
       return;
     }
-    const right = inputSources.find(source => source.handedness === 'right' && source.gamepad);
+    let right = null;
+    for (const source of inputSources) {
+      if (source.handedness === 'right' && source.gamepad) { right = source; break; }
+    }
     const axes = right?.gamepad?.axes || [];
-    const first = [Number(axes[0]) || 0, Number(axes[1]) || 0];
-    const second = [Number(axes[2]) || 0, Number(axes[3]) || 0];
-    const stick = Math.hypot(...second) > Math.hypot(...first) ? second : first;
-    const vertical = Math.abs(stick[1]) > 0.2 ? stick[1] : 0;
+    const y = Math.hypot(Number(axes[2]) || 0, Number(axes[3]) || 0)
+      > Math.hypot(Number(axes[0]) || 0, Number(axes[1]) || 0)
+      ? Number(axes[3]) || 0 : Number(axes[1]) || 0;
+    const vertical = Math.abs(y) > 0.2 ? y : 0;
     const elapsed = Math.max(0, Math.min(0.05, Number(deltaSeconds) || 0));
     this.gpsMapStickZoomAccumulator += -vertical * elapsed * 1.5;
     const steps = Math.trunc(this.gpsMapStickZoomAccumulator);
@@ -641,7 +647,7 @@ export class QuestVRDashboard {
   applyPowerWindowSize() { this.powerWindowPanel?.scale.set(this.powerWindowWidthScale, this.powerWindowHeightScale, 1); }
 
   persistPowerWindowPose(xrCamera, force = false) {
-    if (!xrCamera || !this.powerWindowWorldAnchored || (!force && performance.now() - this.lastPowerWindowPosePersistAt < 750)) return;
+    if (!xrCamera || !this.powerWindowWorldAnchored || (!force && performance.now() - this.lastPowerWindowPosePersistAt < 2500)) return;
     xrCamera.getWorldPosition(this.scratchPosition); xrCamera.getWorldQuaternion(this.scratchQuaternion);
     const inverseHead = this.scratchQuaternion.clone().invert();
     this.powerWindowHeadOffsetPosition.copy(this.powerWindowRoot.position).sub(this.scratchPosition).applyQuaternion(inverseHead);
@@ -684,7 +690,7 @@ export class QuestVRDashboard {
   }
 
   persistGpsMapPose(xrCamera, force = false) {
-    if (!xrCamera || !this.gpsMapWorldAnchored || (!force && performance.now() - this.lastGpsMapPosePersistAt < 750)) return;
+    if (!xrCamera || !this.gpsMapWorldAnchored || (!force && performance.now() - this.lastGpsMapPosePersistAt < 2500)) return;
     xrCamera.getWorldPosition(this.scratchPosition);
     xrCamera.getWorldQuaternion(this.scratchQuaternion);
     const inverseHead = this.scratchQuaternion.clone().invert();
@@ -977,7 +983,7 @@ export class QuestVRDashboard {
   }
 
   persistFnkPose(xrCamera, force = false) {
-    if (!xrCamera || !this.fnkWorldAnchored || (!force && performance.now() - this.lastFnkPosePersistAt < 750)) return;
+    if (!xrCamera || !this.fnkWorldAnchored || (!force && performance.now() - this.lastFnkPosePersistAt < 2500)) return;
     xrCamera.getWorldPosition(this.scratchPosition);
     xrCamera.getWorldQuaternion(this.scratchQuaternion);
     const inverseHead = this.scratchQuaternion.clone().invert();
@@ -1948,6 +1954,7 @@ export class QuestVRDashboard {
       const bytes = new Uint8Array(binary.length);
       for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
       const bitmap = await createImageBitmap(new Blob([bytes], { type: frame.mime_type || 'image/jpeg' }));
+      if (!this.visible || document.visibilityState !== 'visible') { bitmap.close?.(); return; }
       this.cameraBitmap?.close?.();
       this.cameraBitmap = bitmap;
       this.cameraFrameId = String(frame.frame_id || '');
@@ -2044,9 +2051,8 @@ export class QuestVRDashboard {
 
   toggleFnkTeleop() { this.setFnkTeleop(!this.fnkTeleopArmed); }
 
-  updateFnkControllerOrientation(orientation) {
-    if (!orientation || orientation.length !== 4) return;
-    this.fnkGyroCurrent.set(orientation[0], orientation[1], orientation[2], orientation[3]).normalize();
+  updateFnkControllerOrientation(x, y, z, w) {
+    this.fnkGyroCurrent.set(x, y, z, w).normalize();
     if (this.fnkVisible && this.fnkTab === 'twist' && !this.fnkGyroBaseline) {
       this.fnkGyroBaseline = this.fnkGyroCurrent.clone();
       this.fnkGyroPoseBase = { ...(this.fnkPoseValues || { x: 0, y: 0, z: 24, roll: 0, pitch: 0, yaw: 0 }) };
@@ -2127,18 +2133,20 @@ export class QuestVRDashboard {
   }
 
   updateFnkStickControl(inputSources = []) {
-    const right = inputSources.find(source => source.handedness === 'right');
-    const left = inputSources.find(source => source.handedness === 'left');
+    let right = null, left = null;
+    for (const source of inputSources) {
+      if (source.handedness === 'right') right = source;
+      else if (source.handedness === 'left') left = source;
+    }
     if (!this.fnkVisible || this.fnkSceneInputSelected) return false;
-    const read = source => {
-      const axes = source?.gamepad?.axes || [];
-      const a = [Number(axes[0]) || 0, Number(axes[1]) || 0];
-      const b = [Number(axes[2]) || 0, Number(axes[3]) || 0];
-      return Math.hypot(...b) > Math.hypot(...a) ? b : a;
-    };
-    const dz = value => Math.abs(value) < 0.18 ? 0 : Math.sign(value) * (Math.abs(value) - 0.18) / 0.82;
-    const [rx, ry] = read(right).map(dz);
-    const [lx] = read(left).map(dz);
+    const rightAxes = right?.gamepad?.axes || [], leftAxes = left?.gamepad?.axes || [];
+    const rightOffset = Math.hypot(Number(rightAxes[2]) || 0, Number(rightAxes[3]) || 0)
+      > Math.hypot(Number(rightAxes[0]) || 0, Number(rightAxes[1]) || 0) ? 2 : 0;
+    const leftOffset = Math.hypot(Number(leftAxes[2]) || 0, Number(leftAxes[3]) || 0)
+      > Math.hypot(Number(leftAxes[0]) || 0, Number(leftAxes[1]) || 0) ? 2 : 0;
+    const rx = controllerDeadzone(Number(rightAxes[rightOffset]) || 0);
+    const ry = controllerDeadzone(Number(rightAxes[rightOffset + 1]) || 0);
+    const lx = controllerDeadzone(Number(leftAxes[leftOffset]) || 0);
     const hw=this.fnkHardwareStatus||{};
     const crawlX = rx * 42;
     const crawlY = -ry * 42;
@@ -2146,6 +2154,7 @@ export class QuestVRDashboard {
     let move;
     let gyroTarget = null;
     let trigger = 0;
+    let rxDeg = 0, ryDeg = 0, rzDeg = 0;
     if (this.fnkTab === 'twist') {
       if (!this.fnkGyroBaseline) { this.fnkControllerInput=null; return true; }
       this.fnkGyroDelta.copy(this.fnkGyroBaseline).invert().multiply(this.fnkGyroCurrent).normalize();
@@ -2159,17 +2168,20 @@ export class QuestVRDashboard {
       const degrees = radians * 180 / Math.PI;
       const rotationScale = Math.min(1, 15 / Math.max(degrees, 0.001));
       trigger = Number(right?.gamepad?.buttons?.[0]?.value) || 0;
-      const rxDeg=degrees < 1.5 ? 0 : this.fnkGyroAxis.x*degrees*rotationScale,ryDeg=degrees < 1.5 ? 0 : this.fnkGyroAxis.y*degrees*rotationScale,rzDeg=degrees < 1.5 ? 0 : this.fnkGyroAxis.z*degrees*rotationScale;
-      const base=this.fnkGyroPoseBase||{x:0,y:0,z:24,roll:0,pitch:0,yaw:0};
-      this.fnkPoseValues={x:base.x+rx*30,y:base.y-ry*30,z:base.z+trigger*21,roll:base.roll+rxDeg,pitch:base.pitch+ryDeg,yaw:base.yaw+rzDeg};
-      this.fnkControllerInput={x:rx,y:-ry,angle:rzDeg/15};
-      move = { mode: 'twist', x: rx * 30, y: -ry * 30, z: 24+trigger*21,
-        rx: rxDeg, ry: ryDeg, rz: rzDeg };
-      if (degrees >= 1.5) gyroTarget = this.fnkGyroCurrent.clone();
+      rxDeg=degrees < 1.5 ? 0 : this.fnkGyroAxis.x*degrees*rotationScale;
+      ryDeg=degrees < 1.5 ? 0 : this.fnkGyroAxis.y*degrees*rotationScale;
+      rzDeg=degrees < 1.5 ? 0 : this.fnkGyroAxis.z*degrees*rotationScale;
+      const base=this.fnkGyroPoseBase||DEFAULT_FNK_GYRO_POSE;
+      this.fnkPoseValues ||= { x: 0, y: 0, z: 24, roll: 0, pitch: 0, yaw: 0 };
+      this.fnkPoseValues.x=base.x+rx*30; this.fnkPoseValues.y=base.y-ry*30; this.fnkPoseValues.z=base.z+trigger*21;
+      this.fnkPoseValues.roll=base.roll+rxDeg; this.fnkPoseValues.pitch=base.pitch+ryDeg; this.fnkPoseValues.yaw=base.yaw+rzDeg;
+      this.fnkControllerInput ||= { x: 0, y: 0, angle: 0 };
+      this.fnkControllerInput.x=rx; this.fnkControllerInput.y=-ry; this.fnkControllerInput.angle=rzDeg/15;
+      if (degrees >= 1.5) gyroTarget = this.fnkGyroCurrent;
       if (!gyroTarget && Math.max(Math.abs(rx), Math.abs(ry), trigger) < 0.12) { this.fnkControllerInput=null; return true; }
     } else {
-      move = { mode: 'crawl', x: crawlX / crawlScale, y: crawlY / crawlScale, angle: -lx * 18 };
-      this.fnkControllerInput={x:rx,y:ry,angle:-lx};
+      this.fnkControllerInput ||= { x: 0, y: 0, angle: 0 };
+      this.fnkControllerInput.x=rx; this.fnkControllerInput.y=ry; this.fnkControllerInput.angle=-lx;
       if (Math.max(Math.abs(rx), Math.abs(ry), Math.abs(lx)) < 0.12) this.fnkControllerInput=null;
     }
     const hasInput = this.fnkTab === 'twist'
@@ -2177,11 +2189,16 @@ export class QuestVRDashboard {
       : Math.max(Math.abs(rx), Math.abs(ry), Math.abs(lx)) >= 0.12;
     if (!hasInput) return true;
     if(hw.connected!==true||hw.firmware_profile!=='custom_fnhr_ascii_v2'||hw.actuation_enabled!==true){
-      const pose=this.fnkTab==='twist'?`ROLL ${move.rx.toFixed(1)}° · PITCH ${move.ry.toFixed(1)}° · YAW ${move.rz.toFixed(1)}°`:`X ${move.x.toFixed(2)} · Y ${move.y.toFixed(2)} · TURN ${move.angle.toFixed(2)}`;
+      const pose=this.fnkTab==='twist'?`ROLL ${rxDeg.toFixed(1)}° · PITCH ${ryDeg.toFixed(1)}° · YAW ${rzDeg.toFixed(1)}°`:`X ${(crawlX/crawlScale).toFixed(2)} · Y ${(crawlY/crawlScale).toFixed(2)} · TURN ${(-lx*18).toFixed(2)}`;
       this.fnkMessage=`CONTROLLER PREVIEW · ${pose}${this.fnkTeleopArmed?' · HARDWARE COMMANDS BLOCKED':''}`;
       return true;
     }
     if (this.fnkDriveInFlight || performance.now() - this.fnkLastDriveAt < 1600) return true;
+    move = this.fnkTab === 'twist'
+      ? { mode: 'twist', x: rx * 30, y: -ry * 30, z: 24 + trigger * 21,
+        rx: rxDeg, ry: ryDeg, rz: rzDeg }
+      : { mode: 'crawl', x: crawlX / crawlScale, y: crawlY / crawlScale, angle: -lx * 18 };
+    if (gyroTarget) gyroTarget = gyroTarget.clone();
     void this.sendFnkManualControl(move, gyroTarget);
     return true;
   }
@@ -2841,15 +2858,22 @@ export class QuestVRDashboard {
         : this.grabbedWindow === 'fnk' ? this.fnkRoot : this.root;
     if (!this.grabbedPanel) return;
     const elapsed = Math.max(0, Math.min(0.05, Number(deltaSeconds) || 0));
-    const stick = source => {
-      const axes = source?.gamepad?.axes || [];
-      const first = [Number(axes[0]) || 0, Number(axes[1]) || 0];
-      const second = [Number(axes[2]) || 0, Number(axes[3]) || 0];
-      return Math.hypot(...second) > Math.hypot(...first) ? second : first;
-    };
-    const [widthInput, depthInput] = stick(this.grabInputSource);
-    const otherSource = inputSources.find(source => source !== this.grabInputSource && source.handedness !== this.grabInputSource?.handedness);
-    const [, heightInput] = stick(otherSource);
+    const grabbedAxes = this.grabInputSource?.gamepad?.axes || [];
+    const grabbedOffset = Math.hypot(Number(grabbedAxes[2]) || 0, Number(grabbedAxes[3]) || 0)
+      > Math.hypot(Number(grabbedAxes[0]) || 0, Number(grabbedAxes[1]) || 0) ? 2 : 0;
+    const widthInput = Number(grabbedAxes[grabbedOffset]) || 0;
+    const depthInput = Number(grabbedAxes[grabbedOffset + 1]) || 0;
+    let otherSource = null;
+    for (const source of inputSources) {
+      if (source !== this.grabInputSource && source.handedness !== this.grabInputSource?.handedness) {
+        otherSource = source;
+        break;
+      }
+    }
+    const otherAxes = otherSource?.gamepad?.axes || [];
+    const otherOffset = Math.hypot(Number(otherAxes[2]) || 0, Number(otherAxes[3]) || 0)
+      > Math.hypot(Number(otherAxes[0]) || 0, Number(otherAxes[1]) || 0) ? 2 : 0;
+    const heightInput = Number(otherAxes[otherOffset + 1]) || 0;
     this.grabRayDirection.set(0, 0, -1).applyQuaternion(this.scratchQuaternion).normalize();
     if (Math.abs(depthInput) > 0.12) this.grabAnchorDistance = Math.max(0.2, Math.min(8, this.grabAnchorDistance - depthInput * elapsed * 1.8));
     if (this.grabbedWindow === 'gps-map') {
@@ -2989,7 +3013,7 @@ export class QuestVRDashboard {
     this.persistGpsMapPose(xrCamera);
     this.persistPowerWindowPose(xrCamera);
     this.persistFnkPose(xrCamera);
-    if (this.headLocked || (!force && performance.now() - this.lastPosePersistAt < 750)) return;
+    if (this.headLocked || (!force && performance.now() - this.lastPosePersistAt < 2500)) return;
     xrCamera.getWorldPosition(this.scratchPosition);
     xrCamera.getWorldQuaternion(this.scratchQuaternion);
     const inverseHead = this.scratchQuaternion.clone().invert();
@@ -2997,16 +3021,6 @@ export class QuestVRDashboard {
     this.headOffsetQuaternion.copy(inverseHead).multiply(this.root.quaternion).normalize();
     this.cachedPose = this.makeSavedPose();
     this.writeSavedPose();
-  }
-
-  cachePose(xrCamera) {
-    if (!xrCamera || this.headLocked) return;
-    xrCamera.getWorldPosition(this.scratchPosition);
-    xrCamera.getWorldQuaternion(this.scratchQuaternion);
-    const inverseHead = this.scratchQuaternion.clone().invert();
-    this.headOffsetPosition.copy(this.root.position).sub(this.scratchPosition).applyQuaternion(inverseHead);
-    this.headOffsetQuaternion.copy(inverseHead).multiply(this.root.quaternion).normalize();
-    this.cachedPose = this.makeSavedPose();
   }
 
   makeSavedPose() {
