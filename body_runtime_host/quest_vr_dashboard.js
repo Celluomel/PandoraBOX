@@ -912,7 +912,8 @@ export class QuestVRDashboard {
     const fnk = this.controller || {};
     const xr = this.telemetry || {};
     const top = 24;
-    const bottom = height - 68;
+    // Reserve a dedicated footer row for the instructions and action buttons.
+    const bottom = height - 100;
     const panelHeight = bottom - top;
     const margin = 30;
     const gap = 20;
@@ -934,9 +935,9 @@ export class QuestVRDashboard {
     ctx.textAlign = 'left';
     ctx.fillText(this.grabbedController
       ? `${this.grabbedWindow === 'gps-map' ? 'GPS MAP' : this.grabbedWindow === 'power' ? 'COMPUTE + POWER' : this.grabbedWindow === 'fnk' ? 'FNK CONTROL' : 'HUD'} GRABBED · PICKED POINT STAYS UNDER POINTER · STICKS RESIZE / ADJUST DISTANCE`
-      : 'HOLD LATERAL GRIP TO MOVE WINDOWS · FRONT TRIGGER SELECTS BUTTONS / DRAGS DENSITY', margin + 8, height - 14);
+      : 'HOLD LATERAL GRIP TO MOVE WINDOWS · FRONT TRIGGER SELECTS BUTTONS / DRAGS DENSITY', margin + 8, height - 82);
     ctx.textAlign = 'right';
-    ctx.fillText(this.following ? 'CAMERA FOLLOW · BODY' : 'SCENE VIEW · FIXED', width - margin - 8, height - 14);
+    ctx.fillText(this.following ? 'CAMERA FOLLOW · BODY' : 'SCENE VIEW · FIXED', width - margin - 8, height - 82);
     ctx.restore();
     this.texture.needsUpdate = true;
   }
@@ -947,12 +948,21 @@ export class QuestVRDashboard {
     const simulationReady = this.frame?.mode === 'sim';
     const simulationRunning = Boolean(this.frame?.running);
     const simulationLabel = simulationRunning ? 'PAUSE SIMULATION' : 'START SIMULATION';
-    const mapX = this.logicalWidth / 2 - 664;
-    const powerX = this.logicalWidth / 2 - 472;
-    const simulationX = this.logicalWidth / 2 - 280;
-    const sensorX = this.logicalWidth / 2 - 20;
-    const fnkX = this.logicalWidth / 2 + 240;
-    const exitX = this.logicalWidth / 2 + 462;
+    const margin = 40;
+    const sliderX = this.logicalWidth / 2 + 850;
+    const rightEdge = this.sceneMode === 'sensors' ? sliderX - margin : this.logicalWidth - margin;
+    const buttons = [
+      { key: 'hud-size-down', width: 132, label: 'HUD SIZE −', fill: 'rgba(28, 48, 47, .96)', stroke: '#78d8d0', text: '#e5fffa' },
+      { key: 'hud-size-up', width: 132, label: 'HUD SIZE +', fill: 'rgba(28, 48, 47, .96)', stroke: '#78d8d0', text: '#e5fffa' },
+      { key: 'gps-map', width: 180, label: this.gpsMapVisible ? 'CLOSE GPS MAP' : 'GPS MAP', fill: 'rgba(31, 73, 77, .96)', stroke: '#78d8d0', text: '#e5fffa' },
+      { key: 'power-window', width: 180, label: this.powerWindowVisible ? 'CLOSE POWER' : 'COMPUTE + POWER', fill: 'rgba(31, 73, 77, .96)', stroke: '#78d8d0', text: '#e5fffa' },
+      { key: 'simulation', width: 248, label: this.actionBusy ? 'PLEASE WAIT' : simulationReady ? simulationLabel : 'SIMULATION OFFLINE', fill: 'rgba(31, 105, 78, .96)', stroke: '#75edbd', text: '#e5fff3', enabled: simulationReady },
+      { key: 'sensor-mode', width: 248, label: this.sceneMode === 'sensors' ? 'SHOW SIMULATION' : 'SHOW LIVE SENSORS', fill: 'rgba(31, 73, 77, .96)', stroke: '#78d8d0', text: '#e5fffa' },
+      { key: 'fnk-control', width: 206, label: this.fnkVisible ? 'CLOSE GAIT LAB' : 'HEXAPOD GAIT LAB', fill: 'rgba(31, 105, 78, .96)', stroke: '#75edbd', text: '#e5fff3' },
+      { key: 'exit', width: 206, label: this.actionBusy ? 'PLEASE WAIT' : 'EXIT VR', fill: 'rgba(91, 53, 42, .96)', stroke: '#f0a888', text: '#fff0e8' },
+    ];
+    const totalButtonWidth = buttons.reduce((total, button) => total + button.width, 0);
+    const gap = Math.max(24, (rightEdge - margin - totalButtonWidth) / (buttons.length - 1));
     const drawButton = (key, x, width, label, fill, stroke, textColor, enabled = true) => {
       const height = 48;
       this.actionHitAreas[key] = { x: x - 16, y: buttonY - 12, width: width + 32, height: height + 24, enabled: enabled && !this.actionBusy };
@@ -964,20 +974,16 @@ export class QuestVRDashboard {
       ctx.fillStyle = textColor;
       ctx.font = '700 22px ui-monospace, monospace';
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      ctx.fillText(label, x + width / 2, buttonY + height / 2);
+      ctx.fillText(label, x + width / 2, buttonY + height / 2, width - 20);
       ctx.globalAlpha = 1;
     };
-    drawButton('hud-size-down', this.logicalWidth / 2 - 856, 132, 'HUD SIZE −', 'rgba(28, 48, 47, .96)', '#78d8d0', '#e5fffa');
-    drawButton('hud-size-up', this.logicalWidth / 2 - 716, 132, 'HUD SIZE +', 'rgba(28, 48, 47, .96)', '#78d8d0', '#e5fffa');
-    drawButton('gps-map', mapX, 180, this.gpsMapVisible ? 'CLOSE GPS MAP' : 'GPS MAP', 'rgba(31, 73, 77, .96)', '#78d8d0', '#e5fffa');
-    drawButton('power-window', powerX, 180, this.powerWindowVisible ? 'CLOSE POWER' : 'COMPUTE + POWER', 'rgba(31, 73, 77, .96)', '#78d8d0', '#e5fffa');
-    drawButton('simulation', simulationX, 248, this.actionBusy ? 'PLEASE WAIT' : simulationReady ? simulationLabel : 'SIMULATION OFFLINE', 'rgba(31, 105, 78, .96)', '#75edbd', '#e5fff3', simulationReady);
-    drawButton('sensor-mode', sensorX, 248, this.sceneMode === 'sensors' ? 'SHOW SIMULATION' : 'SHOW LIVE SENSORS', 'rgba(31, 73, 77, .96)', '#78d8d0', '#e5fffa');
-    drawButton('fnk-control', fnkX, 206, this.fnkVisible ? 'CLOSE GAIT LAB' : 'HEXAPOD GAIT LAB', 'rgba(31, 105, 78, .96)', '#75edbd', '#e5fff3');
-    drawButton('exit', exitX, 206, this.actionBusy ? 'PLEASE WAIT' : 'EXIT VR', 'rgba(91, 53, 42, .96)', '#f0a888', '#fff0e8');
+    let buttonX = margin;
+    for (const button of buttons) {
+      drawButton(button.key, buttonX, button.width, button.label, button.fill, button.stroke, button.text, button.enabled ?? true);
+      buttonX += button.width + gap;
+    }
     this.sensorPointDensityHitArea = null;
     if (this.sceneMode === 'sensors') {
-      const sliderX = this.logicalWidth / 2 + 850;
       const sliderWidth = this.logicalWidth - sliderX - 30;
       const trackY = buttonY - 18;
       const ratio = (this.sensorPointDensity - 60) / 100;
