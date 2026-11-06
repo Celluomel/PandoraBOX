@@ -822,7 +822,9 @@ export class QuestVRDashboard {
   drawDashboard() {
     if (!this.visible) return;
     const now = performance.now();
-    const minIntervalMs = 250;
+    // The Gait Lab animates its own texture. Reduce uploads of the large HUD
+    // texture while it is visible; camera video remains on its own texture.
+    const minIntervalMs = this.fnkVisible ? 500 : 250;
     const elapsed = now - (this.lastDashboardDrawAt || 0);
     if (elapsed < minIntervalMs) {
       if (!this.dashboardDrawTimer) {
@@ -2270,7 +2272,10 @@ export class QuestVRDashboard {
     }[gait] || { duty: .5, offsets: [0, .5, .5, 0, 0, .5] };
     const duty = gaitSpec.duty, offsets = gaitSpec.offsets;
     const now = performance.now();
-    const dt = this.fnkPreviewLastAt ? Math.min(.05, Math.max(0, (now - this.fnkPreviewLastAt) / 1000)) : 0;
+    // This canvas is intentionally redrawn at 4 Hz. A 50 ms cap designed for a
+    // 20 Hz draw loop discarded 80% of elapsed time, making gait travel look
+    // five times slower whenever the preview was active.
+    const dt = this.fnkPreviewLastAt ? Math.min(.30, Math.max(0, (now - this.fnkPreviewLastAt) / 1000)) : 0;
     this.fnkPreviewLastAt = now;
     const latched = this.fnkPreviewDemo && !twist ? {} : { ...(this.fnkPreviewKeys || {}) };
     const combos = [['w'], ['s'], ['a'], ['d'], ['q'], ['e'], ['w', 'a'], ['w', 'd']];

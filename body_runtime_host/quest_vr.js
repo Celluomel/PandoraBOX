@@ -106,6 +106,7 @@ cameraArc.renderOrder = -1000;
 cameraArcRoot.add(cameraArc);
 let cameraPollTimer = null;
 let cameraPollInFlight = false;
+let lastCameraPollAt = 0;
 let imuPollInFlight = false;
 let lastCameraFrameId = null;
 let lastDashboardTelemetryAt = 0;
@@ -550,6 +551,12 @@ function updateXRLocomotion(inputSources, xrCamera, deltaSeconds) {
 
 async function pollCameraFrame() {
   if (!vrDashboard.visible || cameraPollInFlight) return;
+  // The Gait Lab adds a second animated canvas. Ease camera transport while it
+  // is open so JPEG decode/texture uploads leave more XR frame-time headroom.
+  const minPollIntervalMs = vrDashboard.fnkVisible ? 100 : 1000 / 15;
+  const pollStartedAt = performance.now();
+  if (pollStartedAt - lastCameraPollAt < minPollIntervalMs) return;
+  lastCameraPollAt = pollStartedAt;
   cameraPollInFlight = true;
   try {
     const response = await fetchWithTimeout('/body/camera/image', { cache: 'no-store', credentials: 'same-origin' }, 4000);
@@ -587,6 +594,7 @@ function stopCameraPolling() {
   if (cameraPollTimer !== null) window.clearInterval(cameraPollTimer);
   cameraPollTimer = null;
   cameraPollInFlight = false;
+  lastCameraPollAt = 0;
   lastCameraFrameId = null;
 }
 
@@ -2175,7 +2183,9 @@ renderer.setAnimationLoop((time, xrFrame) => {
       vrDashboard.updateTelemetry({ headingDegrees, controllers });
       lastDashboardTelemetryAt = performance.now();
     }
-    if (vrDashboard.visible && performance.now() - lastFnkTelemetryAt >= 500) {
+    // Controller telemetry feeds the Gait Lab only. Polling it while the panel
+    // is closed needlessly exercises the Body's controller/status path.
+    if (vrDashboard.visible && vrDashboard.fnkVisible && performance.now() - lastFnkTelemetryAt >= 1000) {
       lastFnkTelemetryAt = performance.now();
       fetch('/plugins/fnk0031_wifi/controller', { cache: 'no-store', credentials: 'same-origin' })
         .then(response => response.ok ? response.json() : null)
