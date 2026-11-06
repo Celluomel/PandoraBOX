@@ -93,6 +93,7 @@ function perfTick(time) {
     console.info('[quest-perf]', {
       meanFrameMs: Number(meanFrameMs.toFixed(2)), maxFrameMs: Number(perfStats.max.toFixed(2)),
       calls: info.render.calls, triangles: info.render.triangles, points: info.render.points,
+      geometries: info.memory.geometries, textures: info.memory.textures,
       foveation: vrDashboard.fnkVisible ? Math.max(xrRenderSettings.foveation, fnkRenderDegraded ? 0.95 : 0.85) : xrRenderSettings.foveation,
       gaitLabOpen: vrDashboard.fnkVisible, gaitRenderDegraded: fnkRenderDegraded,
       gaitRefreshHz: 1000 / fnkVisualRefreshMs, scale: xrRenderSettings.scale,
@@ -657,6 +658,27 @@ function labelSprite(text) {
   sprite.scale.set(1.25, 0.24, 1);
   return sprite;
 }
+
+// Keep the floor-plan body model and its label texture alive across pose updates.
+// Rebuilding them for each changed pose caused avoidable GPU resource churn.
+const bodyMarker = new THREE.Group();
+const bodyMarkerMesh = new THREE.Mesh(
+  new THREE.CylinderGeometry(0.28, 0.32, 0.32, 24),
+  new THREE.MeshLambertMaterial({ color: '#8ee5b1', emissive: '#1a5736', emissiveIntensity: 0.55 }),
+);
+bodyMarkerMesh.position.y = 0.2;
+bodyMarker.add(bodyMarkerMesh);
+const bodyMarkerNose = new THREE.Mesh(
+  new THREE.ConeGeometry(0.12, 0.36, 16),
+  new THREE.MeshLambertMaterial({ color: '#d8ffe5' }),
+);
+bodyMarkerNose.rotation.z = -Math.PI / 2;
+bodyMarkerNose.position.set(0.38, 0.22, 0);
+bodyMarker.add(bodyMarkerNose);
+const bodyMarkerLabel = labelSprite('BODY');
+bodyMarkerLabel.position.y = 0.85;
+bodyMarker.add(bodyMarkerLabel);
+bodyGroup.add(bodyMarker);
 
 function disposeChildren(group) {
   while (group.children.length) {
@@ -1239,30 +1261,9 @@ function rebuildScene(frame) {
   configureSceneFrame(frame, position);
   const bodyX = (Number(position[0]) || 0) - basePosition[0];
   const bodyZ = -((Number(position[1]) || 0) - basePosition[1]);
-  const bodyMarker = new THREE.Group();
   bodyMarker.position.set(bodyX, 0, bodyZ);
-  const bodyMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.32, 0.32, 24), new THREE.MeshLambertMaterial({ color: '#8ee5b1', emissive: '#1a5736', emissiveIntensity: 0.55 }));
-  bodyMesh.position.y = 0.2;
-  bodyMarker.add(bodyMesh);
-  const nose = new THREE.Mesh(new THREE.ConeGeometry(0.12, 0.36, 16), new THREE.MeshLambertMaterial({ color: '#d8ffe5' }));
-  nose.rotation.z = -Math.PI / 2;
-  nose.position.set(0.38, 0.22, 0);
-  bodyMarker.add(nose);
   const yaw = Number(body.orientation) || 0;
   bodyMarker.rotation.y = yaw;
-  const bodyLabel = labelSprite('BODY');
-  bodyLabel.position.y = 0.85;
-  bodyMarker.add(bodyLabel);
-  while (bodyGroup.children.length) {
-    const child = bodyGroup.children[bodyGroup.children.length - 1];
-    bodyGroup.remove(child);
-    child.traverse(node => {
-      node.geometry?.dispose();
-      if (Array.isArray(node.material)) node.material.forEach(material => material.dispose());
-      else { node.material?.map?.dispose(); node.material?.dispose(); }
-    });
-  }
-  bodyGroup.add(bodyMarker);
 
   latestObjects = objects;
   const semanticByEntity = new Map(semanticGroups.map(group => [String(group.entity_id), group]));
