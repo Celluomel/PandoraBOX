@@ -157,9 +157,16 @@ export function fillDepthCloud({ depth, color, grid, intrinsics, calibration, he
 }
 
 /** Decodes the 16-bit grayscale PNG sent by the MiDaS worker (non-interlaced, color type 0). */
+export function base64ToBytes(base64) {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  return bytes;
+}
+
 export async function decodeGray16Png(base64) {
   if (typeof DecompressionStream === 'undefined') throw new Error('PNG decompression is unavailable');
-  const bytes = Uint8Array.from(atob(base64), char => char.charCodeAt(0));
+  const bytes = base64ToBytes(base64);
   const signature = [137, 80, 78, 71, 13, 10, 26, 10];
   if (!signature.every((value, index) => bytes[index] === value)) throw new Error('Invalid PNG signature');
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);

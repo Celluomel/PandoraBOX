@@ -288,13 +288,24 @@ export class QuestVRDashboard {
 
   updateTelemetry(telemetry) {
     this.telemetry = telemetry;
+    const heading = Math.round((Number(telemetry?.headingDegrees) || 0) / 5) * 5;
+    const controllerKey = (telemetry?.controllers || []).map(item => [
+      item.handedness || '', Number(item.x || 0).toFixed(1), Number(item.y || 0).toFixed(1),
+      item.pressed ? 1 : 0, item.profile || '', item.gamepadMapping || '', Number(item.buttonCount || 0),
+      item.menuButtonExposed ? 1 : 0,
+    ].join(':')).join('|');
+    const key = `${heading}|${controllerKey}`;
+    if (key === this.lastTelemetryDrawKey) return;
+    this.lastTelemetryDrawKey = key;
     this.drawDashboard();
   }
 
   updateImuStatus(status) {
     this.imuStatus = status || null;
     const sample = this.imuStatus?.sample || {};
-    this.sensorStatus.imu = this.imuStatus?.available && sample.attitude_valid ? 'ATTITUDE OK' : 'NO FRESH SAMPLE';
+    const nextStatus = this.imuStatus?.available && sample.attitude_valid ? 'ATTITUDE OK' : 'NO FRESH SAMPLE';
+    if (this.sensorStatus.imu === nextStatus) return;
+    this.sensorStatus.imu = nextStatus;
     this.drawDashboard();
   }
 
@@ -302,11 +313,29 @@ export class QuestVRDashboard {
     this.gpsStatus = status || null;
     const sample = this.gpsStatus?.sample || this.gpsStatus?.source_status?.sample || {};
     const inView = Number(sample.satellites_in_view);
-    this.sensorStatus.gps = this.gpsStatus?.available
+    const nextStatus = this.gpsStatus?.available
       ? `${sample.fix === true || Number(sample.fix_quality) > 0 ? 'FIX' : 'NO FIX'} · ${Number.isFinite(inView) ? `${inView} SV` : 'GSV —'}`
       : 'OFFLINE';
-    this.drawDashboard();
-    if (this.gpsMapVisible) this.drawGpsMapWindow();
+    if (this.sensorStatus.gps !== nextStatus) {
+      this.sensorStatus.gps = nextStatus;
+      this.drawDashboard();
+    }
+    if (this.gpsMapVisible) {
+      const latitude = Number(sample.latitude_deg ?? sample.latitude ?? sample.lat);
+      const longitude = Number(sample.longitude_deg ?? sample.longitude ?? sample.lon ?? sample.lng);
+      let timestamp = Number(sample.timestamp ?? this.gpsStatus?.timestamp);
+      if (timestamp > 1e12) timestamp /= 1000;
+      const ageBucket = Number.isFinite(timestamp) ? Math.floor(Math.max(0, Date.now() / 1000 - timestamp)) : 'unknown';
+      const accuracy = Number(sample.horizontal_accuracy_m ?? sample.accuracy_m);
+      const mapKey = [Number.isFinite(latitude) ? latitude.toFixed(6) : '—',
+        Number.isFinite(longitude) ? longitude.toFixed(6) : '—', sample.fix, sample.valid, sample.fix_quality,
+        Number(sample.satellites ?? sample.satellites_used), Number.isFinite(accuracy) ? accuracy.toFixed(1) : '—', ageBucket,
+        this.gpsMap.layer, this.gpsMap.zoom].join('|');
+      if (mapKey !== this.lastGpsMapStatusKey) {
+        this.lastGpsMapStatusKey = mapKey;
+        this.drawGpsMapWindow();
+      }
+    }
   }
 
   scheduleGpsMapRedraw() {
@@ -754,6 +783,17 @@ export class QuestVRDashboard {
 
   updateUltrasonicStatus(status) {
     this.ultrasonicStatus = status || null;
+    const sample = this.ultrasonicStatus?.sample || {};
+    const signature = ['front_left', 'front_right', 'rear'].map(key => {
+      const value = sample[key] || {};
+      const distance = Number(value.distance_m ?? Number(value.distance_mm) / 1000);
+      const age = Number(value.age_ms);
+      return value.available === true
+        ? `${Number.isFinite(distance) ? distance.toFixed(2) : '—'}:${Number.isFinite(age) && age > 750 ? 'stale' : 'live'}`
+        : String(value.error || 'NO DATA');
+    }).join('|');
+    if (signature === this.lastUltrasonicDrawKey) return;
+    this.lastUltrasonicDrawKey = signature;
     this.drawDashboard();
   }
 
@@ -830,7 +870,7 @@ export class QuestVRDashboard {
     const now = performance.now();
     // The Gait Lab animates its own texture. Reduce uploads of the large HUD
     // texture while it is visible; camera video remains on its own texture.
-    const minIntervalMs = this.fnkVisible ? 500 : 250;
+    const minIntervalMs = this.fnkVisible ? 750 : 500;
     const elapsed = now - (this.lastDashboardDrawAt || 0);
     if (elapsed < minIntervalMs) {
       if (!this.dashboardDrawTimer) {

@@ -5,7 +5,7 @@ import { QuestVRDashboard } from './quest_vr_dashboard.js';
 import { createFnk0031Visual } from './fnk0031_visual.js';
 import { fresh, radarTargets, ultrasonicRanges, tofRange, batteryEstimate, commandLegs } from './hexapod_twin_telemetry.js';
 import {
-  cloudGrid, decodeGray16Png, fillDepthCloud, intrinsicsFor, mountFor, sampleDepthMeters, yoloMatchesDepth,
+  base64ToBytes, cloudGrid, decodeGray16Png, fillDepthCloud, intrinsicsFor, mountFor, sampleDepthMeters, yoloMatchesDepth,
 } from './depth_projection.js';
 
 const canvas = document.querySelector('#scene');
@@ -99,10 +99,19 @@ function perfTick(time) {
 async function fetchWithTimeout(url, options = {}, timeoutMs = 5000) {
   const controller = new AbortController();
   const timer = window.setTimeout(() => controller.abort(new Error(`Request timed out after ${timeoutMs} ms`)), timeoutMs);
+  const clearTimer = () => window.clearTimeout(timer);
   try {
-    return await fetch(url, { ...options, signal: controller.signal });
-  } finally {
-    window.clearTimeout(timer);
+    const response = await fetch(url, { ...options, signal: controller.signal });
+    // fetch() resolves once headers arrive. Keep the deadline active through
+    // JSON/image response consumption so a stalled body cannot strand a poll.
+    return {
+      get ok() { if (!response.ok) clearTimer(); return response.ok; },
+      get status() { return response.status; },
+      json: (...args) => response.json(...args).finally(clearTimer),
+    };
+  } catch (error) {
+    clearTimer();
+    throw error;
   }
 }
 
@@ -143,8 +152,8 @@ let lastCameraPollAt = 0;
 let imuPollInFlight = false;
 let lastCameraFrameId = null;
 let lastDashboardTelemetryAt = 0;
-let lastFnkTelemetryAt = 0;
-let lastFnkHardwareAt = 0;
+let fnkControllerPollInFlight = false;
+let fnkControllerNextPollAt = 0;
   let lastFnkVisualFrameAt = 0;
 let xrFollowYaw = null;
 let xrSceneFollowing = false;
@@ -412,6 +421,7 @@ let sensorDepthPollInFlight = false;
 let sensorYoloPollInFlight = false;
 let sensorRadarPollInFlight = false;
 let ultrasonicPollInFlight = false;
+let bodyPollInFlight = false;
 let sensorFrameId = '';
 let sensorDepthValues = null;
 let sensorDepthFrame = null;
@@ -692,9 +702,7 @@ function disposeChildren(group) {
 
 async function decodeSensorImage(encoded, mime = 'image/jpeg') {
   if (!encoded) return null;
-  const binary = atob(encoded);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  const bytes = base64ToBytes(encoded);
   const bitmap = await createImageBitmap(new Blob([bytes], { type: mime }));
   const canvas = document.createElement('canvas');
   canvas.width = bitmap.width;
@@ -710,7 +718,7 @@ async function refreshSensorMetricCalibration() {
   if (now - sensorCalibrationCheckedAt < 10000) return;
   sensorCalibrationCheckedAt = now;
   try {
-    const response = await fetch('/body/camera/depth-calibration', { cache: 'no-store', credentials: 'same-origin' });
+    const response = await fetchWithTimeout('/body/camera/depth-calibration', { cache: 'no-store', credentials: 'same-origin' }, 3500);
     if (response.ok) sensorMetricCalibration = await response.json();
   } catch (error) {
     console.warn('Could not load persistent MiDaS metric calibration:', error);
@@ -1083,7 +1091,7 @@ async function pollSensorRadar() {
   if (sensorRadarPollInFlight || activeSceneMode !== 'sensors') return;
   sensorRadarPollInFlight = true;
   try {
-    const response = await fetch('/plugins/mmwave_radar/status', { cache: 'no-store', credentials: 'same-origin' });
+    const response = await fetchWithTimeout('/plugins/mmwave_radar/status', { cache: 'no-store', credentials: 'same-origin' }, 3500);
     if (!response.ok) throw new Error('mmWave endpoint unavailable');
     const radarStatus = await response.json();
     if (activeSceneMode !== 'sensors' || document.visibilityState !== 'visible') return;
@@ -1106,7 +1114,7 @@ async function pollUltrasonicStatus() {
   if (ultrasonicPollInFlight || activeSceneMode !== 'sensors') return;
   ultrasonicPollInFlight = true;
   try {
-    const response = await fetch('/plugins/ultrasonic/status', { cache: 'no-store', credentials: 'same-origin' });
+    const response = await fetchWithTimeout('/plugins/ultrasonic/status', { cache: 'no-store', credentials: 'same-origin' }, 3500);
     if (!response.ok) throw new Error('Ultrasonic endpoint unavailable');
     twinUltrasonicStatus = await response.json();
     if (activeSceneMode !== 'sensors' || document.visibilityState !== 'visible') return;
@@ -1124,7 +1132,7 @@ async function pollTwinTof() {
   if (activeSceneMode !== 'sensors' || twinTofBusy) return;
   twinTofBusy = true;
   try {
-    const response = await fetch('/plugins/tof/status', { cache: 'no-store', credentials: 'same-origin' });
+    const response = await fetchWithTimeout('/plugins/tof/status', { cache: 'no-store', credentials: 'same-origin' }, 2500);
     twinTofStatus = response.ok ? await response.json() : null;
   } catch { twinTofStatus = null; }
   finally { twinTofBusy = false; }
@@ -1132,12 +1140,16 @@ async function pollTwinTof() {
 
 let twinHardwareBusy = false;
 async function pollTwinHardware() {
-  if (activeSceneMode !== 'sensors' || twinHardwareBusy) return;
+  if (twinHardwareBusy || (activeSceneMode !== 'sensors' && !(vrDashboard.visible && vrDashboard.fnkVisible))) return;
   twinHardwareBusy = true;
   try {
-    const response = await fetch('/plugins/fnk0031_wifi/usb/status', { cache: 'no-store', credentials: 'same-origin' });
+    const response = await fetchWithTimeout('/plugins/fnk0031_wifi/usb/status', { cache: 'no-store', credentials: 'same-origin' }, 2500);
     twinHardwareStatus = response.ok ? await response.json() : null;
-  } catch { twinHardwareStatus = null; }
+    if (twinHardwareStatus && vrDashboard.fnkVisible) vrDashboard.updateFnkHardwareStatus(twinHardwareStatus);
+  } catch (error) {
+    twinHardwareStatus = null;
+    if (vrDashboard.fnkVisible) vrDashboard.updateFnkHardwareStatus({ connected: false, last_error: error.message });
+  }
   finally { twinHardwareBusy = false; }
 }
 
@@ -1338,8 +1350,10 @@ function updateSceneStatus(frame, perception, objects, semanticGroups, semanticS
 }
 
 async function pollBody() {
+  if (bodyPollInFlight || document.visibilityState !== 'visible') return;
+  bodyPollInFlight = true;
   try {
-    const response = await fetch('/worldmodel/status', { cache: 'no-store', credentials: 'same-origin' });
+    const response = await fetchWithTimeout('/worldmodel/status', { cache: 'no-store', credentials: 'same-origin' }, 4000);
     if (!response.ok) throw new Error(`Body status HTTP ${response.status}`);
     const frame = await response.json();
     latestWorldStatus = frame;
@@ -1356,6 +1370,8 @@ async function pollBody() {
     rebuildScene(frame);
   } catch (error) {
     setStatus(`Cannot read Body perception: ${error.message}`, true);
+  } finally {
+    bodyPollInFlight = false;
   }
 }
 
@@ -1363,7 +1379,7 @@ async function pollImuStatus() {
   if (imuPollInFlight) return;
   imuPollInFlight = true;
   try {
-    const response = await fetch('/plugins/imu/status', { cache: 'no-store', credentials: 'same-origin' });
+    const response = await fetchWithTimeout('/plugins/imu/status', { cache: 'no-store', credentials: 'same-origin' }, 3500);
     if (!response.ok) throw new Error(`IMU status HTTP ${response.status}`);
     vrDashboard.updateImuStatus(await response.json());
   } catch (error) {
@@ -1376,7 +1392,7 @@ async function pollGpsStatus() {
   if (gpsPollInFlight) return;
   gpsPollInFlight = true;
   try {
-    const response = await fetch('/plugins/gps/status', { cache: 'no-store', credentials: 'same-origin' });
+    const response = await fetchWithTimeout('/plugins/gps/status', { cache: 'no-store', credentials: 'same-origin' }, 3500);
     if (!response.ok) throw new Error(`GPS status HTTP ${response.status}`);
     vrDashboard.updateGpsStatus(await response.json());
   } catch (error) {
@@ -1389,7 +1405,7 @@ async function pollPowerStatus() {
   if (powerStatusPollInFlight) return;
   powerStatusPollInFlight = true;
   try {
-    const response = await fetch('/body/power-mode', { cache: 'no-store', credentials: 'same-origin' });
+    const response = await fetchWithTimeout('/body/power-mode', { cache: 'no-store', credentials: 'same-origin' }, 3500);
     if (!response.ok) throw new Error(`Power status HTTP ${response.status}`);
     twinPowerStatus = await response.json();
     vrDashboard.updatePowerStatus(twinPowerStatus);
@@ -1406,7 +1422,7 @@ async function pollSystemMetrics() {
   if (systemMetricsPollInFlight || !vrDashboard.visible || !vrDashboard.powerWindowVisible) return;
   systemMetricsPollInFlight = true;
   try {
-    const response = await fetch('/system/metrics', { cache: 'no-store', credentials: 'same-origin' });
+    const response = await fetchWithTimeout('/system/metrics', { cache: 'no-store', credentials: 'same-origin' }, 3500);
     if (!response.ok) throw new Error(`System metrics HTTP ${response.status}`);
     vrDashboard.updateSystemMetrics(await response.json());
   } catch (error) {
@@ -1467,7 +1483,7 @@ async function refreshGaussianAssetStatus() {
   const button = document.querySelector('#scene-mode-gaussian');
   if (!button) return;
   try {
-    const response = await fetch('/worldmodel/reconstruction/asset', { cache: 'no-store', credentials: 'same-origin' });
+    const response = await fetchWithTimeout('/worldmodel/reconstruction/asset', { cache: 'no-store', credentials: 'same-origin' }, 5000);
     if (!response.ok) throw new Error(`Asset status HTTP ${response.status}`);
     gaussianAssetStatus = await response.json();
     const ready = gaussianAssetStatus.available === true && gaussianAssetStatus.renderer_available === true;
@@ -1871,12 +1887,12 @@ async function toggleSimulationFromHud() {
   syncSimulationControl();
   setStatus(running ? 'Pausing World Model simulation…' : 'Starting World Model simulation…');
   try {
-    const response = await fetch('/worldmodel/run', {
+    const response = await fetchWithTimeout('/worldmodel/run', {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ running: !running, shuffle: !running }),
-    });
+    }, 8000);
     if (!response.ok) throw new Error(`World Model HTTP ${response.status}`);
     const result = await response.json();
     if (typeof result.running === 'boolean') {
@@ -2126,7 +2142,7 @@ setInterval(() => { if (document.visibilityState === 'visible' && vrDashboard.vi
 setInterval(() => { if (document.visibilityState === 'visible' && vrDashboard.visible) void pollPowerStatus(); }, 5000);
 setInterval(() => { if (document.visibilityState === 'visible' && vrDashboard.visible && vrDashboard.powerWindowVisible) void pollSystemMetrics(); }, 1000);
 setInterval(() => { if (document.visibilityState === 'visible' && activeSceneMode === 'sensors') void pollTwinTof(); }, 1200);
-setInterval(() => { if (document.visibilityState === 'visible' && activeSceneMode === 'sensors') void pollTwinHardware(); }, 3000);
+setInterval(() => { if (document.visibilityState === 'visible') void pollTwinHardware(); }, 3000);
 setInterval(() => { if (document.visibilityState === 'visible' && activeSceneMode === 'sensors') updateTwinFromHardware(); }, 500);
 window.__pbQuestReady = true;
 if (statusNode.textContent === 'Starting 3D scene…') setStatus('3D renderer ready · connecting to Body world model…');
@@ -2160,9 +2176,11 @@ let previousFrameAt = 0;
 let leftMenuWasPressed = false;
 const activeInputSources = [];
 const xrCameraEuler = new THREE.Euler();
+let lastQuestLoopErrorAt = 0;
 renderer.setAnimationLoop((time, xrFrame) => {
+  try {
   perfTick(time);
-  const deltaSeconds = previousFrameAt ? (time - previousFrameAt) / 1000 : 1 / 90;
+  const deltaSeconds = previousFrameAt ? Math.min(0.1, (time - previousFrameAt) / 1000) : 1 / 90;
   const sensorVisualIntervalMs = renderer.xr.isPresenting && renderQualityDegraded ? 1000 / 15 : 1000 / 30;
   if (time - lastSensorVisualUpdateAt >= sensorVisualIntervalMs) {
     const visualDelta = lastSensorVisualUpdateAt ? Math.min(0.1, (time - lastSensorVisualUpdateAt) / 1000) : deltaSeconds;
@@ -2248,19 +2266,23 @@ renderer.setAnimationLoop((time, xrFrame) => {
     }
     // Controller telemetry feeds the Gait Lab only. Polling it while the panel
     // is closed needlessly exercises the Body's controller/status path.
-    if (vrDashboard.visible && vrDashboard.fnkVisible && performance.now() - lastFnkTelemetryAt >= 1000) {
-      lastFnkTelemetryAt = performance.now();
-      fetch('/plugins/fnk0031_wifi/controller', { cache: 'no-store', credentials: 'same-origin' })
-        .then(response => response.ok ? response.json() : null)
-        .then(controllerStatus => { if (controllerStatus) vrDashboard.updateController(controllerStatus); })
-        .catch(() => {});
-    }
-    if (vrDashboard.visible && vrDashboard.fnkVisible && performance.now() - lastFnkHardwareAt >= 3000) {
-      lastFnkHardwareAt = performance.now();
-      fetch('/plugins/fnk0031_wifi/usb/status', { cache: 'no-store', credentials: 'same-origin' })
-        .then(response => response.ok ? response.json() : null)
-        .then(status => { if (status) vrDashboard.updateFnkHardwareStatus(status); })
-        .catch(error => vrDashboard.updateFnkHardwareStatus({ connected: false, last_error: error.message }));
+    if (vrDashboard.visible && vrDashboard.fnkVisible && !fnkControllerPollInFlight && performance.now() >= fnkControllerNextPollAt) {
+      fnkControllerPollInFlight = true;
+      let fnkControllerPollSucceeded = false;
+      fetchWithTimeout('/plugins/fnk0031_wifi/controller', { cache: 'no-store', credentials: 'same-origin' }, 2500)
+        .then(response => {
+          if (!response.ok) throw new Error(`FNK controller HTTP ${response.status}`);
+          return response.json();
+        })
+        .then(controllerStatus => {
+          fnkControllerPollSucceeded = true;
+          vrDashboard.updateController(controllerStatus);
+        })
+        .catch(() => {})
+        .finally(() => {
+          fnkControllerPollInFlight = false;
+          fnkControllerNextPollAt = performance.now() + (fnkControllerPollSucceeded ? 1000 : 5000);
+        });
     }
   }
   if (activeSceneMode === 'gaussian' && gaussianViewer?.splatRenderReady) {
@@ -2281,5 +2303,14 @@ renderer.setAnimationLoop((time, xrFrame) => {
     vrDashboard.persistPose(xrCamera);
     renderer.clearDepth();
     renderer.render(vrDashboard.scene, camera);
+  }
+  } catch (error) {
+    const now = performance.now();
+    if (now - lastQuestLoopErrorAt >= 2000) {
+      lastQuestLoopErrorAt = now;
+      console.error('[quest-loop] frame callback failed; animation loop will continue', error);
+      try { setStatus(`VR render error · ${error?.message || String(error)}`, true); } catch {}
+    }
+    try { renderer.render(scene, camera); } catch {}
   }
 });
