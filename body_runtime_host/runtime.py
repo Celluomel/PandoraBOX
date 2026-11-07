@@ -5844,6 +5844,47 @@ class BodyHost:
                 except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
                     LOG.debug("Body HTTP client disconnected before JSON response completed")
 
+            def _send_midas_raw_png(self, since_frame_id: str | None = None) -> None:
+                """Send calibrated MiDaS depth as binary PNG, without JSON/base64 expansion."""
+                result = owner.camera_depth(
+                    include_raw=True, include_preview=False, include_color=False,
+                    since_frame_id=since_frame_id,
+                )
+                encoded = result.get("depth_raw_png_base64")
+                if result.get("unchanged") or not encoded:
+                    self.send_response(204)
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                try:
+                    image = base64.b64decode(encoded, validate=True)
+                    metadata = {
+                        key: result.get(key) for key in (
+                            "available", "state", "runtime", "device", "frame_id",
+                            "captured_at", "width", "height", "latency_ms", "inference_ms",
+                            "worker_received_at", "published_at", "depth_raw_min", "depth_raw_max",
+                            "depth_type", "camera_height_m", "camera_profile", "error",
+                        ) if key in result
+                    }
+                    metadata_header = base64.b64encode(
+                        json.dumps(metadata, separators=(",", ":")).encode("utf-8")
+                    ).decode("ascii")
+                except (ValueError, TypeError) as exc:
+                    self._send({"available": False, "error": f"invalid MiDaS raw PNG: {exc}"}, 502)
+                    return
+                try:
+                    self.send_response(200)
+                    self.send_header("Content-Type", "image/png")
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("X-Content-Type-Options", "nosniff")
+                    self.send_header("X-Body-Depth-Meta", metadata_header)
+                    self.send_header("Content-Length", str(len(image)))
+                    self.end_headers()
+                    self._write_response(image)
+                except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                    LOG.debug("Body HTTP client disconnected before binary MiDaS response completed")
+
             def _send_reconstruction_asset(self) -> None:
                 asset = owner._reconstruction_capture.asset_file()
                 if asset is None:
@@ -6060,6 +6101,10 @@ class BodyHost:
                     self._send(owner.camera_frame())
                 elif path == "/body/camera/image":
                     self._send(owner.camera_image())
+                elif path == "/body/camera/depth/raw.png":
+                    query = parse_qs(urlparse(self.path).query)
+                    since_frame_id = (query.get("since_frame_id") or [None])[0]
+                    self._send_midas_raw_png(since_frame_id=since_frame_id)
                 elif path == "/body/camera/depth":
                     query = parse_qs(urlparse(self.path).query)
                     include_raw = (query.get("include_raw") or ["1"])[0] != "0"

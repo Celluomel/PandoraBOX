@@ -1328,11 +1328,11 @@ async function updateCloudCameraPlane(frame) {
 }
 
 async function loadDepthFrame(depth) {
-  const rawAvailable = depth?.depth_raw_png_base64
+  const rawAvailable = (depth?.depth_raw_png_bytes || depth?.depth_raw_png_base64)
     && Number.isFinite(Number(depth.depth_raw_min)) && Number.isFinite(Number(depth.depth_raw_max));
   if (rawAvailable) {
     try {
-      const image = await decodeGray16Png(depth.depth_raw_png_base64);
+      const image = await decodeGray16Png(depth.depth_raw_png_bytes || depth.depth_raw_png_base64);
       image.rawMin = Number(depth.depth_raw_min);
       image.rawMax = Number(depth.depth_raw_max);
       image.frameId = String(depth.frame_id || '');
@@ -1345,6 +1345,7 @@ async function loadDepthFrame(depth) {
       console.warn('Could not decode raw 16-bit MiDaS depth; using preview:', error);
     }
   }
+  if (!depth?.depth_gray_jpeg_base64) throw new Error('MiDaS depth response has neither a raw map nor a preview');
   const image = await loadDepthImage(depth.depth_gray_jpeg_base64, 'image/jpeg');
   image.normalizedValues = image.values;
   image.frameId = String(depth.frame_id || '');
@@ -1357,7 +1358,8 @@ async function loadDepthFrame(depth) {
 
 async function decodeGray16Png(base64) {
   if (typeof DecompressionStream === 'undefined') throw new Error('PNG decompression is unavailable');
-  const bytes = Uint8Array.from(atob(base64), char => char.charCodeAt(0));
+  const bytes = base64 instanceof Uint8Array
+    ? base64 : Uint8Array.from(atob(base64), char => char.charCodeAt(0));
   const signature = [137, 80, 78, 71, 13, 10, 26, 10];
   if (!signature.every((value, index) => bytes[index] === value)) throw new Error('Invalid PNG signature');
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
@@ -2730,14 +2732,32 @@ async function refreshSensorDepth() {
   try {
     const displayedFrameId = activeRender === '3d'
       ? cloudFrameId : String(byId('world-map-depth-image')?.dataset.frameId || '');
-    const query = new URLSearchParams({
-      include_raw: activeRender === '3d' && Boolean(metricDepthCalibration?.available) ? '1' : '0',
-      include_preview: '1',
-      include_color: activeRender === '3d' ? '0' : '1',
-    });
-    if (displayedFrameId) query.set('since_frame_id', displayedFrameId);
-    const response = await fetch(`/body/camera/depth?${query}`, { cache: 'no-store' });
-    const depthStatus = await response.json();
+    const binaryRawDepth = activeRender === '3d' && Boolean(metricDepthCalibration?.available);
+    let depthStatus;
+    if (binaryRawDepth) {
+      const query = new URLSearchParams();
+      if (displayedFrameId) query.set('since_frame_id', displayedFrameId);
+      const response = await fetch(`/body/camera/depth/raw.png?${query}`, { cache: 'no-store' });
+      if (response.status === 204) {
+        updateCloudHud();
+        return;
+      }
+      if (!response.ok) throw new Error(`MiDaS raw depth HTTP ${response.status}`);
+      const metadataHeader = response.headers.get('X-Body-Depth-Meta');
+      if (!metadataHeader) throw new Error('MiDaS raw depth response is missing metadata');
+      const metadata = JSON.parse(atob(metadataHeader));
+      depthStatus = { ...metadata, depth_raw_png_bytes: new Uint8Array(await response.arrayBuffer()) };
+    } else {
+      const query = new URLSearchParams({
+        include_raw: '0',
+        include_preview: '1',
+        include_color: activeRender === '3d' ? '0' : '1',
+      });
+      if (displayedFrameId) query.set('since_frame_id', displayedFrameId);
+      const response = await fetch(`/body/camera/depth?${query}`, { cache: 'no-store' });
+      if (!response.ok) throw new Error(`MiDaS depth HTTP ${response.status}`);
+      depthStatus = await response.json();
+    }
     setSensorFetchFailure('depth', false);
     const segmentation = latestSegmentation;
     latestSensorDepth = depthStatus;
@@ -2770,7 +2790,7 @@ async function refreshSensorDepth() {
         setImage(byId('world-map-depth-image'), byId('world-map-depth-empty'), depthStatus.depth_jpeg_base64);
         byId('world-map-depth-image').dataset.frameId = depthFrameId;
       }
-      if (needsCloud && depthStatus.depth_gray_jpeg_base64) {
+      if (needsCloud && (depthStatus.depth_gray_jpeg_base64 || depthStatus.depth_raw_png_base64 || depthStatus.depth_raw_png_bytes)) {
         cloudBuildingKey = depthRenderKey;
         try {
           const updated = await rebuildDepthCloud(depthStatus, segmentation);
@@ -3003,14 +3023,18 @@ function updateCloudHud() {
   const cameraAtForStale = Number(latestCameraFrame?.captured_at);
   const cameraDeltaForStale = cameraAtForStale > 0 && renderedDepthAt > 0
     ? Math.abs(cameraAtForStale - renderedDepthAt) : NaN;
-  const stale = !Number.isFinite(frameAge) || frameAge > 0.5
+  // Calibrated depth may take over a second to reach the Quest browser over
+  // Wi-Fi. Warn on a genuinely old retained cloud; detections still use their
+  // stricter 1.25s metric-distance validity gate below.
+  const cloudStaleAfterSeconds = 2.0;
+  const stale = !Number.isFinite(frameAge) || frameAge > cloudStaleAfterSeconds
     || (Number.isFinite(cameraDeltaForStale) && cameraDeltaForStale > 0.5);
   const staleBanner = byId('world-map-cloud-stale');
   if (staleBanner) {
     staleBanner.hidden = !stale;
     staleBanner.textContent = !Number.isFinite(frameAge)
       ? 'MiDaS frame unavailable'
-      : frameAge > 0.5 ? `STALE · MiDaS frame ${frameAge.toFixed(1)} s old · last depth frame retained`
+      : frameAge > cloudStaleAfterSeconds ? `STALE · MiDaS frame ${frameAge.toFixed(1)} s old · last depth frame retained`
         : `STALE · camera/depth differ by ${cameraDeltaForStale.toFixed(1)} s · detections hidden`;
   }
   if (cloudPoints?.material?.uniforms) {
@@ -3252,7 +3276,7 @@ function segmentationMatchesDepth(segmentation, depth) {
 }
 
 async function rebuildDepthCloud(depth, segmentation = latestSegmentation) {
-  if (!cloud || !depth.depth_gray_jpeg_base64) return;
+  if (!cloud || (!depth.depth_gray_jpeg_base64 && !depth.depth_raw_png_base64 && !depth.depth_raw_png_bytes)) return;
   const token = ++cloudBuildToken;
   const image = await loadDepthFrame(depth);
   const previewColor = depth.depth_jpeg_base64
