@@ -110,8 +110,18 @@ def interpret_body_observation(subject: str, value: dict) -> dict:
                 meaning = f"Nearest acoustic reflector returned at {distance:.2f} m in the {zone} beam."
             elif error == "too_close":
                 meaning = f"A return is below the usable minimum range in the {zone} beam (<0.02 m)."
-            elif error in {"no_echo", "echo_timeout", "stale_or_no_echo"}:
-                meaning = f"No valid acoustic range is available in the {zone} beam; the zone is unknown, not confirmed clear."
+            elif error == "echo_high_before_trigger":
+                meaning = f"The {zone} ECHO line was already HIGH before a ping; this is an electrical/input fault indication, not a range."
+            elif error == "echo_timeout":
+                meaning = f"The {zone} ECHO line rose but stayed HIGH beyond 60 ms; no valid range was measured."
+            elif error == "no_echo":
+                pulse_ms = number(channel, "last_echo_pulse_us")
+                if pulse_ms is not None:
+                    pulse_ms /= 1000.0
+                meaning = (f"The {zone} HC-SR04 reported its no-return pulse ({pulse_ms:.1f} ms); "
+                           "there is no valid range inside the sensor's specified range.") if pulse_ms is not None and pulse_ms >= 30.0 else f"No ECHO rising edge arrived within 30 ms in the {zone} beam; coverage is unknown, not confirmed clear."
+            elif error == "stale_or_no_echo":
+                meaning = f"The last {zone} range is stale; current coverage is unknown, not confirmed clear."
             else:
                 meaning = f"The {zone} channel has no current valid range."
             facts.append({
@@ -119,6 +129,12 @@ def interpret_body_observation(subject: str, value: dict) -> dict:
                 "zone": zone,
                 "state": channel_state,
                 "distance_m": distance if channel_state == "valid_return" else None,
+                "echo_level": channel.get("echo_level"),
+                "echo_high_before_trigger": channel.get("echo_high_before_trigger"),
+                "last_echo_pulse_us": channel.get("last_echo_pulse_us"),
+                "no_echo_count": channel.get("no_echo_count"),
+                "echo_high_before_trigger_count": channel.get("echo_high_before_trigger_count"),
+                "echo_timeout_count": channel.get("echo_timeout_count"),
                 "sequence": channel.get("sequence"),
                 "age_ms": channel.get("age_ms"),
                 "meaning": meaning,

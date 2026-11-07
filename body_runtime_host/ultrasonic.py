@@ -84,6 +84,14 @@ class VentunoBridgeUltrasonicSource:
                         "id": str(item.get("id") or "unknown"),
                         "trigger_pin": str(item.get("trigger_pin") or ""),
                         "echo_pin": str(item.get("echo_pin") or ""),
+                        "echo_level": str(item.get("echo_level") or "unknown"),
+                        "echo_high_before_trigger": bool(item.get("echo_high_before_trigger", False)),
+                        "last_echo_pulse_us": int(item.get("last_echo_pulse_us", 0) or 0),
+                        "no_echo_count": int(item.get("no_echo_count", 0) or 0),
+                        "echo_high_before_trigger_count": int(
+                            item.get("echo_high_before_trigger_count", 0) or 0
+                        ),
+                        "echo_timeout_count": int(item.get("echo_timeout_count", 0) or 0),
                         "available": available,
                         "distance_mm": distance if available else None,
                         "distance_m": distance / 1000.0 if available else None,

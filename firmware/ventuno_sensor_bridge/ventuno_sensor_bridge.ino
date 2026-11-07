@@ -65,12 +65,58 @@ bool calibrationStable = false;
 bool gravityReferenceValid = false;
 #if BODY_ENABLE_TOF
 Adafruit_VL53L1X tof;
+static const uint32_t TOF_POLL_INTERVAL_MS = 25;
+static const uint32_t TOF_RETRY_INITIAL_MS = 2000;
+static const uint32_t TOF_RETRY_MAX_MS = 30000;
 #endif
 bool tofReady = false;
+#if BODY_ENABLE_TOF
 uint32_t lastTofInitAttempt = 0;
+uint32_t nextTofPollAt = 0;
+uint32_t tofRetryDelayMs = TOF_RETRY_INITIAL_MS;
 uint32_t tofSequence = 0;
+uint32_t tofBusErrorCount = 0;
+uint8_t tofConsecutiveBusErrors = 0;
+int16_t tofLastBusErrorCode = 0;
 uint32_t latestTofAt = 0;
 int16_t latestTofDistanceMm = -1;
+
+void backoffTofRetry() {
+  tofRetryDelayMs = tofRetryDelayMs >= TOF_RETRY_MAX_MS / 2
+      ? TOF_RETRY_MAX_MS : tofRetryDelayMs * 2;
+}
+
+// Do a short identity read before entering the Adafruit driver's longer init
+// sequence. A missing sensor must never hold setup in tof.begin(). The model
+// ID registers are read-only (0x010F..0x0110, expected 0xEACC).
+bool tofDeviceResponds() {
+  Wire1.beginTransmission(0x29);
+  Wire1.write(static_cast<uint8_t>(0x01));
+  Wire1.write(static_cast<uint8_t>(0x0F));
+  const uint8_t writeStatus = Wire1.endTransmission();
+  if (writeStatus != 0) {
+    ++tofBusErrorCount;
+    tofLastBusErrorCode = -static_cast<int16_t>(writeStatus);
+    return false;
+  }
+
+  const size_t bytesRead = Wire1.requestFrom(static_cast<uint8_t>(0x29), static_cast<size_t>(2));
+  if (bytesRead != 2 || Wire1.available() < 2) {
+    while (Wire1.available() > 0) (void)Wire1.read();
+    ++tofBusErrorCount;
+    tofLastBusErrorCode = -2;
+    return false;
+  }
+  const uint16_t modelId = (static_cast<uint16_t>(Wire1.read()) << 8)
+      | static_cast<uint16_t>(Wire1.read());
+  if (modelId != 0xEACC) {
+    ++tofBusErrorCount;
+    tofLastBusErrorCode = -3;
+    return false;
+  }
+  return true;
+}
+#endif
 
 void setBatteryDisplay(int percent) {
   batteryDisplayPercent = constrain(percent, -1, 100);
@@ -123,6 +169,8 @@ static const char *ultrasonicNames[ULTRASONIC_COUNT] = {
     "front_left", "front_right", "rear"};
 static const uint32_t ULTRASONIC_TRIGGER_INTERVAL_US = 100000;
 static const uint32_t ULTRASONIC_ECHO_TIMEOUT_US = 30000;
+static const uint32_t ULTRASONIC_NO_ECHO_PULSE_US = 30000;
+static const uint32_t ULTRASONIC_ECHO_FALL_TIMEOUT_US = 60000;
 static const uint32_t ULTRASONIC_STALE_MS = 600;
 static const uint8_t ULTRASONIC_CHANNEL_MASK = BODY_ULTRASONIC_CHANNEL_MASK & 0x07;
 static_assert(BODY_ULTRASONIC_CHANNEL_MASK >= 0 && BODY_ULTRASONIC_CHANNEL_MASK <= 7,
@@ -131,6 +179,11 @@ struct UltrasonicChannel {
   uint32_t sampleAtMs = 0;
   uint32_t sequence = 0;
   uint16_t distanceMm = 0;
+  uint32_t noEchoCount = 0;
+  uint32_t echoHighBeforeTriggerCount = 0;
+  uint32_t echoTimeoutCount = 0;
+  uint32_t lastEchoPulseUs = 0;
+  bool echoWasHighBeforeTrigger = false;
   const char *error = "waiting_for_echo";
 };
 UltrasonicChannel ultrasonicChannels[ULTRASONIC_COUNT];
@@ -140,10 +193,31 @@ uint8_t activeUltrasonic = 0;
 uint8_t nextUltrasonic = 0;
 uint32_t ultrasonicPhaseAtUs = 0;
 uint32_t ultrasonicEchoRiseUs = 0;
+volatile uint32_t ultrasonicEchoRiseAtUs[ULTRASONIC_COUNT] = {};
+volatile uint32_t ultrasonicEchoFallAtUs[ULTRASONIC_COUNT] = {};
+volatile uint32_t ultrasonicEchoRiseSequence[ULTRASONIC_COUNT] = {};
+volatile uint32_t ultrasonicEchoFallSequence[ULTRASONIC_COUNT] = {};
+uint32_t ultrasonicEchoRiseSequenceAtTrigger = 0;
+uint32_t ultrasonicEchoFallSequenceAtTrigger = 0;
 uint32_t ultrasonicNextTriggerUs = 0;
 uint32_t ultrasonicSequence = 0;
 uint8_t firmwareSetupStage = 0;
 uint32_t firmwareLoopSequence = 0;
+
+void captureUltrasonicEchoEdge(uint8_t index) {
+  const uint32_t edgeAtUs = micros();
+  if (digitalRead(ultrasonicEchoPins[index]) == HIGH) {
+    ultrasonicEchoRiseAtUs[index] = edgeAtUs;
+    ++ultrasonicEchoRiseSequence[index];
+  } else {
+    ultrasonicEchoFallAtUs[index] = edgeAtUs;
+    ++ultrasonicEchoFallSequence[index];
+  }
+}
+
+void captureUltrasonicEchoLeft() { captureUltrasonicEchoEdge(0); }
+void captureUltrasonicEchoRight() { captureUltrasonicEchoEdge(1); }
+void captureUltrasonicEchoRear() { captureUltrasonicEchoEdge(2); }
 
 int nextEnabledUltrasonic(uint8_t start) {
   for (uint8_t offset = 0; offset < ULTRASONIC_COUNT; ++offset) {
@@ -162,6 +236,19 @@ void updateUltrasonic() {
     if (selected < 0) return;
     activeUltrasonic = static_cast<uint8_t>(selected);
     nextUltrasonic = (activeUltrasonic + 1) % ULTRASONIC_COUNT;
+    UltrasonicChannel &channel = ultrasonicChannels[activeUltrasonic];
+    // HC-SR04 ECHO must be LOW while idle. If it is already HIGH before
+    // TRIG, do not mistake that level for a new echo pulse.
+    if (digitalRead(ultrasonicEchoPins[activeUltrasonic]) == HIGH) {
+      channel.echoWasHighBeforeTrigger = true;
+      ++channel.echoHighBeforeTriggerCount;
+      channel.error = "echo_high_before_trigger";
+      ultrasonicNextTriggerUs = nowUs + ULTRASONIC_TRIGGER_INTERVAL_US;
+      return;
+    }
+    channel.echoWasHighBeforeTrigger = false;
+    ultrasonicEchoRiseSequenceAtTrigger = ultrasonicEchoRiseSequence[activeUltrasonic];
+    ultrasonicEchoFallSequenceAtTrigger = ultrasonicEchoFallSequence[activeUltrasonic];
     digitalWrite(ultrasonicTriggerPins[activeUltrasonic], HIGH);
     ultrasonicPhaseAtUs = nowUs;
     ultrasonicNextTriggerUs = nowUs + ULTRASONIC_TRIGGER_INTERVAL_US;
@@ -171,6 +258,8 @@ void updateUltrasonic() {
 
   if (ultrasonicPhase == ULTRASONIC_TRIGGER) {
     if (nowUs - ultrasonicPhaseAtUs < 10) return;
+    ultrasonicEchoRiseSequenceAtTrigger = ultrasonicEchoRiseSequence[activeUltrasonic];
+    ultrasonicEchoFallSequenceAtTrigger = ultrasonicEchoFallSequence[activeUltrasonic];
     digitalWrite(ultrasonicTriggerPins[activeUltrasonic], LOW);
     ultrasonicPhaseAtUs = nowUs;
     ultrasonicPhase = ULTRASONIC_WAIT_RISE;
@@ -178,23 +267,31 @@ void updateUltrasonic() {
   }
 
   if (ultrasonicPhase == ULTRASONIC_WAIT_RISE) {
-    if (digitalRead(ultrasonicEchoPins[activeUltrasonic]) == HIGH) {
-      ultrasonicEchoRiseUs = nowUs;
+    if (ultrasonicEchoRiseSequence[activeUltrasonic] != ultrasonicEchoRiseSequenceAtTrigger) {
+      ultrasonicEchoRiseUs = ultrasonicEchoRiseAtUs[activeUltrasonic];
       ultrasonicPhase = ULTRASONIC_WAIT_FALL;
       return;
     }
     if (nowUs - ultrasonicPhaseAtUs >= ULTRASONIC_ECHO_TIMEOUT_US) {
-      ultrasonicChannels[activeUltrasonic].error = "no_echo";
+      UltrasonicChannel &channel = ultrasonicChannels[activeUltrasonic];
+      ++channel.noEchoCount;
+      channel.error = "no_echo";
       ultrasonicPhase = ULTRASONIC_IDLE;
     }
     return;
   }
 
-  if (digitalRead(ultrasonicEchoPins[activeUltrasonic]) == LOW) {
-    const uint32_t pulseUs = nowUs - ultrasonicEchoRiseUs;
+  if (ultrasonicEchoFallSequence[activeUltrasonic] != ultrasonicEchoFallSequenceAtTrigger) {
+    const uint32_t echoFallAtUs = ultrasonicEchoFallAtUs[activeUltrasonic];
+    if (static_cast<int32_t>(echoFallAtUs - ultrasonicEchoRiseUs) < 0) return;
+    const uint32_t pulseUs = echoFallAtUs - ultrasonicEchoRiseUs;
     const uint32_t distanceMm = (pulseUs * 343UL + 1000UL) / 2000UL;
     UltrasonicChannel &channel = ultrasonicChannels[activeUltrasonic];
-    if (distanceMm < 20) {
+    channel.lastEchoPulseUs = pulseUs;
+    if (pulseUs >= ULTRASONIC_NO_ECHO_PULSE_US) {
+      ++channel.noEchoCount;
+      channel.error = "no_echo";
+    } else if (distanceMm < 20) {
       channel.error = "too_close";
     } else if (distanceMm <= 4000) {
       channel.distanceMm = static_cast<uint16_t>(distanceMm);
@@ -207,8 +304,10 @@ void updateUltrasonic() {
     ultrasonicPhase = ULTRASONIC_IDLE;
     return;
   }
-  if (nowUs - ultrasonicEchoRiseUs >= ULTRASONIC_ECHO_TIMEOUT_US) {
-    ultrasonicChannels[activeUltrasonic].error = "echo_timeout";
+  if (nowUs - ultrasonicEchoRiseUs >= ULTRASONIC_ECHO_FALL_TIMEOUT_US) {
+    UltrasonicChannel &channel = ultrasonicChannels[activeUltrasonic];
+    ++channel.echoTimeoutCount;
+    channel.error = "echo_timeout";
     ultrasonicPhase = ULTRASONIC_IDLE;
   }
 #endif
@@ -222,7 +321,7 @@ String readUltrasonicSample() {
 #endif
   const uint32_t now = millis();
   bool anyFresh = false;
-  char channels[600];
+  char channels[900];
   size_t used = 0;
   for (uint8_t i = 0; i < ULTRASONIC_COUNT; ++i) {
     const UltrasonicChannel &channel = ultrasonicChannels[i];
@@ -234,12 +333,22 @@ String readUltrasonicSample() {
     anyFresh = anyFresh || fresh;
     const int written = snprintf(channels + used, sizeof(channels) - used,
         "%s{\"id\":\"%s\",\"trigger_pin\":\"D%u\",\"echo_pin\":\"D%u\","
-        "\"available\":%s,\"distance_mm\":%s,\"timestamp_ms\":%lu,\"sequence\":%lu,\"error\":\"%s\"}",
+        "\"available\":%s,\"distance_mm\":%s,\"timestamp_ms\":%lu,\"sequence\":%lu,"
+        "\"echo_level\":\"%s\",\"echo_high_before_trigger\":%s,"
+        "\"last_echo_pulse_us\":%lu,\"no_echo_count\":%lu,"
+        "\"echo_high_before_trigger_count\":%lu,\"echo_timeout_count\":%lu,"
+        "\"error\":\"%s\"}",
         i ? "," : "", ultrasonicNames[i],
         i == 0 ? 2 : i == 1 ? 4 : 6, i == 0 ? 3 : i == 1 ? 5 : 9,
         fresh ? "true" : "false", fresh ? String(channel.distanceMm).c_str() : "null",
         static_cast<unsigned long>(channel.sampleAtMs),
         static_cast<unsigned long>(channel.sequence),
+        !channelEnabled ? "DISABLED" : digitalRead(ultrasonicEchoPins[i]) == HIGH ? "HIGH" : "LOW",
+        channel.echoWasHighBeforeTrigger ? "true" : "false",
+        static_cast<unsigned long>(channel.lastEchoPulseUs),
+        static_cast<unsigned long>(channel.noEchoCount),
+        static_cast<unsigned long>(channel.echoHighBeforeTriggerCount),
+        static_cast<unsigned long>(channel.echoTimeoutCount),
         fresh ? "" : (channelEnabled ? channel.error : disabledError));
     if (written <= 0 || static_cast<size_t>(written) >= sizeof(channels) - used) {
       return String("{\"available\":false,\"sensor\":\"hc_sr04_array\",\"error\":\"payload_overflow\"}");
@@ -439,19 +548,37 @@ String readMovementSample() {
 }
 
 String readTofSample() {
+#if !BODY_ENABLE_TOF
+  return String("{\"available\":false,\"sensor\":\"vl53l1x\",\"error\":\"tof_disabled_in_firmware\"}");
+#else
   if (!tofReady) {
-    return String("{\"available\":false,\"sensor\":\"vl53l1x\",\"error\":\"sensor_not_detected\"}");
+    char payload[180];
+    snprintf(payload, sizeof(payload),
+             "{\"available\":false,\"sensor\":\"vl53l1x\","
+             "\"error\":\"sensor_not_detected_or_bus_error\","
+             "\"i2c_error_count\":%lu,\"last_i2c_error\":%d}",
+             static_cast<unsigned long>(tofBusErrorCount), tofLastBusErrorCode);
+    return String(payload);
   }
   if (latestTofDistanceMm < 0 || !latestTofAt || millis() - latestTofAt > 1000) {
-    return String("{\"available\":false,\"sensor\":\"vl53l1x\",\"frame\":\"body_front\",\"error\":\"no_valid_range\"}");
+    char payload[180];
+    snprintf(payload, sizeof(payload),
+             "{\"available\":false,\"sensor\":\"vl53l1x\","
+             "\"frame\":\"body_front\",\"error\":\"no_valid_range\","
+             "\"i2c_error_count\":%lu,\"last_i2c_error\":%d}",
+             static_cast<unsigned long>(tofBusErrorCount), tofLastBusErrorCode);
+    return String(payload);
   }
-  char payload[240];
+  char payload[280];
   snprintf(payload, sizeof(payload),
            "{\"available\":true,\"sensor\":\"cqrobot_vl53l1x\",\"frame\":\"body_front\","
-           "\"direction\":\"front\",\"sequence\":%lu,\"timestamp_ms\":%lu,\"distance_mm\":%d}",
+           "\"direction\":\"front\",\"sequence\":%lu,\"timestamp_ms\":%lu,"
+           "\"distance_mm\":%d,\"i2c_error_count\":%lu,\"last_i2c_error\":%d}",
            static_cast<unsigned long>(tofSequence),
-           static_cast<unsigned long>(latestTofAt), latestTofDistanceMm);
+           static_cast<unsigned long>(latestTofAt), latestTofDistanceMm,
+           static_cast<unsigned long>(tofBusErrorCount), tofLastBusErrorCode);
   return String(payload);
+#endif
 }
 
 void acceptGpsLine() {
@@ -659,7 +786,7 @@ void setup() {
   Bridge.provide_safe("body_imu_read", readMovementSample);
   Bridge.provide_safe("body_tof_read", readTofSample);
   Bridge.provide_safe("body_ultrasonic_read", readUltrasonicSample);
-  Bridge.provide("body_ld2450_read", readLatestLd2450);
+  Bridge.provide_safe("body_ld2450_read", readLatestLd2450);
   Bridge.provide_safe("body_gps_read", readGpsSample);
   Bridge.provide_safe("body_battery_indicator_set", setBatteryDisplay);
   batteryMatrix.begin();
@@ -677,6 +804,15 @@ void setup() {
     ++firmwareSetupStage;
     pinMode(ultrasonicEchoPins[i], INPUT);
     ++firmwareSetupStage;
+  }
+  if (ULTRASONIC_CHANNEL_MASK & 0x01) {
+    attachInterrupt(digitalPinToInterrupt(ultrasonicEchoPins[0]), captureUltrasonicEchoLeft, CHANGE);
+  }
+  if (ULTRASONIC_CHANNEL_MASK & 0x02) {
+    attachInterrupt(digitalPinToInterrupt(ultrasonicEchoPins[1]), captureUltrasonicEchoRight, CHANGE);
+  }
+  if (ULTRASONIC_CHANNEL_MASK & 0x04) {
+    attachInterrupt(digitalPinToInterrupt(ultrasonicEchoPins[2]), captureUltrasonicEchoRear, CHANGE);
   }
   ultrasonicNextTriggerUs = micros();
 #endif
@@ -696,12 +832,19 @@ void setup() {
 #endif
 #if BODY_ENABLE_TOF
   firmwareSetupStage = 50;
-  tofReady = tof.begin(0x29, &Wire1);
-  if (tofReady) {
-    tof.setTimingBudget(50);
-    tofReady = tof.startRanging();
+  if (tofDeviceResponds()) {
+    tofReady = tof.begin(0x29, &Wire1);
+    if (tofReady) {
+      tofReady = tof.setTimingBudget(50) && tof.startRanging();
+    }
+  } else {
+    tofReady = false;
   }
   lastTofInitAttempt = millis();
+  nextTofPollAt = lastTofInitAttempt;
+  tofRetryDelayMs = TOF_RETRY_INITIAL_MS;
+  if (!tofReady) ++tofBusErrorCount;
+  if (!tofReady && tof.vl_status != 0) tofLastBusErrorCode = tof.vl_status;
   firmwareSetupStage = 51;
 #endif
 
@@ -754,22 +897,65 @@ void loop() {
   }
 #endif
 #if BODY_ENABLE_TOF
-  if (!tofReady && millis() - lastTofInitAttempt >= 2000) {
-    lastTofInitAttempt = millis();
-    tofReady = tof.begin(0x29, &Wire1);
+  const uint32_t tofNow = millis();
+  if (!tofReady && tofNow - lastTofInitAttempt >= tofRetryDelayMs) {
+    lastTofInitAttempt = tofNow;
+    if (tofDeviceResponds()) {
+      tofReady = tof.begin(0x29, &Wire1);
+      if (tofReady) {
+        tofReady = tof.setTimingBudget(50) && tof.startRanging();
+      }
+    } else {
+      tofReady = false;
+    }
     if (tofReady) {
-      tof.setTimingBudget(50);
-      tofReady = tof.startRanging();
+      tofRetryDelayMs = TOF_RETRY_INITIAL_MS;
+      tofConsecutiveBusErrors = 0;
+      nextTofPollAt = tofNow;
+    } else {
+      ++tofBusErrorCount;
+      if (tof.vl_status != 0) tofLastBusErrorCode = tof.vl_status;
+      backoffTofRetry();
     }
   }
-  if (tofReady && tof.dataReady()) {
-    const int16_t distance = tof.distance();
-    if (distance > 0) {
-      latestTofDistanceMm = distance;
-      latestTofAt = millis();
-      ++tofSequence;
+  // The ranging budget is 50 ms. Polling every loop iteration (about 1 ms)
+  // needlessly monopolizes the shared Wire1 bus used by the IMU. Give IMU its
+  // scheduled read first, then check ToF at 40 Hz from the cached loop.
+  if (tofReady && static_cast<int32_t>(tofNow - nextTofPollAt) >= 0) {
+    nextTofPollAt = tofNow + TOF_POLL_INTERVAL_MS;
+    const bool tofHasData = tof.dataReady();
+    if (!tofHasData && tof.vl_status != 0) {
+      ++tofBusErrorCount;
+      ++tofConsecutiveBusErrors;
+      tofLastBusErrorCode = tof.vl_status;
+      if (tofConsecutiveBusErrors >= 3) {
+        // A sick ToF must not monopolize the shared Qwiic bus indefinitely.
+        // Back off retries so subsequent IMU cycles get the bus first.
+        tofReady = false;
+        lastTofInitAttempt = tofNow;
+        backoffTofRetry();
+      }
+    } else if (tofHasData) {
+      tofConsecutiveBusErrors = 0;
+      const int16_t distance = tof.distance();
+      const int16_t distanceStatus = tof.vl_status;
+      const bool interruptCleared = tof.clearInterrupt();
+      if (distance > 0) {
+        latestTofDistanceMm = distance;
+        latestTofAt = millis();
+        ++tofSequence;
+      } else if (distanceStatus != 0) {
+        ++tofBusErrorCount;
+        tofLastBusErrorCode = distanceStatus;
+      }
+      if (!interruptCleared) {
+        ++tofBusErrorCount;
+        tofLastBusErrorCode = tof.vl_status;
+        tofReady = false;
+        lastTofInitAttempt = millis();
+        backoffTofRetry();
+      }
     }
-    tof.clearInterrupt();
   }
 #endif
   if (radarUartIrqResult == 0) {

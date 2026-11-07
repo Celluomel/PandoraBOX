@@ -24,19 +24,42 @@ that device. Nothing here publishes sensor data to the LAN or changes the
 Linux USB, FNK0031, or Body HTTP interfaces. GPS uses USART3 / `Serial1` at
 38400 baud by default (`BODY_GPS_BAUD` overrides it); UART7 remains D7/RX
 and D8/TX at 256000 baud. Modulino Movement and VL53L1X share Qwiic / Wire1;
-the VL53L1X uses address 0x29. Since probing an absent ToF sensor interferes
-with the Modulino on this shared bus, ToF probing is disabled by default. Enable
-it only after connecting the sensor with `BODY_ENABLE_TOF=1` when deploying.
+the VL53L1X uses address 0x29. ToF is disabled by default because its library
+initializer can block the shared bus when the sensor or wiring is faulty. When
+explicitly enabled with `BODY_ENABLE_TOF=1`, firmware first checks the read-only
+model ID registers before entering the driver initializer. Keep it disabled
+until the initializer is verified not to block the other devices. When enabled,
+firmware samples the IMU first and polls ToF readiness every
+25 ms instead of on every main-loop pass. Failed ToF initialization retries
+back off up to 30 seconds; three consecutive I2C read errors pause ToF polling
+and enter that retry path. ToF RPC payloads include an I2C error count and the
+last driver error so bus faults can be distinguished from an ordinary no-range
+sample. This reduces contention but cannot recover a physically held-low SDA or
+SCL line; wiring or power must be corrected in that case. The Adafruit VL53L1X
+initialization is synchronous, so it still depends on the board I2C driver's
+transaction timeout behavior.
 Body publishes its single forward beam as `perception.modalities.tof`, without
 fabricating a range when the sensor is absent.
+
+Ultrasonic ECHO edges are timestamped by GPIO interrupts so I2C and other main
+loop work cannot quantize pulse duration. Diagnostics distinguish an ECHO line
+already HIGH before a ping (`echo_high_before_trigger`), no rising edge within
+30 ms (`no_echo`), the HC-SR04 no-return pulse of about 38 ms (`no_echo`), and
+an echo pulse that remains HIGH for 60 ms (`echo_timeout`). A valid no-return
+pulse must be allowed to finish; treating its 38 ms HIGH time as a stuck line
+caused false `echo_timeout` reports.
+Each channel reports its current ECHO logic level and cumulative counts for
+these conditions. The pre-trigger check prevents a stuck HIGH input from being
+mistaken for a new echo.
 
 ## Direct CLI build and deployment
 
 This firmware is independent of App Lab. It initializes `Wire1` for the
 Qwiic Modulino, reads GPS on `Serial1` and UART7 at 256000 baud, and provides
 the local Router RPCs `body_imu_read`, `body_tof_read`, `body_ultrasonic_read`,
-`body_ld2450_read`, and `body_gps_read`. Ultrasonic pings are sequenced at
-least 60 ms apart, use non-blocking echo timing with a 30 ms timeout, and never
+`body_ld2450_read`, and `body_gps_read`. Ultrasonic pings are sequenced 100 ms
+apart (about 3.3 measurements/s per channel), use interrupt-timestamped echo
+timing with a 30 ms no-rise timeout and a 60 ms stuck-HIGH timeout, and never
 turn a missing echo into a zero-distance measurement. The Body configuration selects
 `ventuno_bridge_ld2450`; the runtime adds parsed physical radar targets to
 `perception.modalities.mmwave_radar` while retaining the current robot source.

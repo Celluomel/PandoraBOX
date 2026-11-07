@@ -2682,8 +2682,13 @@ async function refreshLiveUltrasonic() {
       element.textContent = channel?.available
         ? `${displayNumber(channel.distance_m, 2, ' m')} · ${channel.echo_pin || 'echo'}`
         : channel?.error === 'too_close' ? 'Too close · <2 cm'
-          : channel?.error === 'no_echo' ? 'No echo'
-            : channel?.error === 'echo_timeout' ? 'Echo stuck · timeout'
+          : channel?.error === 'no_echo' ? (Number(channel.last_echo_pulse_us) >= 30000
+              ? `No echo · ${(Number(channel.last_echo_pulse_us) / 1000).toFixed(0)} ms pulse`
+              : `No echo · line ${channel.echo_level || '—'}`)
+            : channel?.error === 'echo_high_before_trigger'
+              ? `ECHO already HIGH before ping · ${channel.echo_high_before_trigger_count || 0}×`
+              : channel?.error === 'echo_timeout'
+                ? `Echo stayed HIGH >60 ms · ${channel.echo_timeout_count || 0}×`
               : channel?.error === 'too_far' ? 'Beyond 4 m' : 'No data';
     }
   } catch (error) {
