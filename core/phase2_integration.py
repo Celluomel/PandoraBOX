@@ -15,6 +15,7 @@ Usage:
 """
 from pathlib import Path
 from typing import Dict, Any, Optional, List
+import math
 
 class Phase2Orchestrator:
     """
@@ -117,7 +118,25 @@ class Phase2Orchestrator:
         Returns narrative string or None.
         """
         if self.components['narrative_synthesizer']:
-            return self.components['narrative_synthesizer'].create_narrative_from_cycle(cycle_data)
+            # EmotionalStateManager is an object with an `.emotions` mapping,
+            # while the narrative synthesizer consumes a name -> float dict.
+            # Normalize both shapes here so callers can pass live cognitive state.
+            normalized = dict(cycle_data) if isinstance(cycle_data, dict) else {}
+            raw_emotions = normalized.get('emotions', {})
+            if not isinstance(raw_emotions, dict):
+                raw_emotions = getattr(raw_emotions, 'emotions', {})
+            emotions: Dict[str, float] = {}
+            if isinstance(raw_emotions, dict):
+                for name, item in raw_emotions.items():
+                    value = getattr(item, 'value', item)
+                    try:
+                        numeric = float(value)
+                    except (TypeError, ValueError, OverflowError):
+                        continue
+                    if math.isfinite(numeric):
+                        emotions[str(name)] = numeric
+            normalized['emotions'] = emotions
+            return self.components['narrative_synthesizer'].create_narrative_from_cycle(normalized)
         return None
     
     def link_resolved_threads(self, resolved_threads: List[Dict]) -> List[Dict]:

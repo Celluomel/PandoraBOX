@@ -623,3 +623,9 @@ Un tour humain de contrôle a terminé avec 59 étapes. Les sept étapes essenti
 Après ces corrections : `test_module_tick_log.py` (**5 tests**), `test_brain_workflow_status.py` (**8 tests**), tests d’intégrité/pipeline et différés (**5 tests**) passent; `py_compile` et `git diff --check` passent. La suite entière des tours peer reste non validée dans le sandbox, comme indiqué dans l’addendum précédent.
 
 La prochaine trace différée expose aussi uniquement le type d’exception (par exemple `ValueError`), jamais son message, afin de diagnostiquer `continuity_analysis_post_response` sans fuite de texte de conversation. Ce point, les probes corrigées et la mise à jour tardive de l’intégrité sont inclus dans le correctif local testé; ils demandent tous le redémarrage suivant pour une validation live.
+
+## Addendum — défaut Phase 2 confirmé par le nouveau tick log
+
+Le redémarrage avec la télémétrie corrigée a révélé une erreur réelle dans `phase2_orchestrator.synthesize_narrative` : `AttributeError`. La lecture du chemin montre que `InternalThoughtLoop` passait directement l’objet `EmotionalStateManager`; `NarrativeSynthesizer._get_dominant_emotion` attend un mapping et appelle `.items()`. Le pont Phase 2 normalise désormais les deux formes acceptées (manager ou dictionnaire) en `{nom: valeur_float}`, filtre les valeurs non numériques/non finies et transmet ce contrat au synthétiseur. Aucun autre module n’est modifié.
+
+Le test d’intégration local exécute le vrai `NarrativeSynthesizer` avec la forme d’émotions du manager, et vérifie que la sortie narrative est produite. Les trois tests Phase 2, cinq tests du tick log et huit tests de statut workflow passent; `py_compile` et `git diff --check` passent également. Le processus live actuel a encore l’ancienne version de Phase 2; un redémarrage après commit sera nécessaire pour confirmer que son compteur Phase 2 reste sans erreur et qu’une narration est produite.
