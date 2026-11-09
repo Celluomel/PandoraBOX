@@ -266,6 +266,10 @@ class PeerConversationStoreTests(unittest.TestCase):
             route.endpoint for route in module.router.routes
             if route.path == "/lumina-network/receive" and "POST" in route.methods
         )
+        epistemic_endpoint = next(
+            route.endpoint for route in module.router.routes
+            if route.path == "/lumina-network/epistemic" and "POST" in route.methods
+        )
         core_package = ModuleType("core")
         core_package.__path__ = [str(ROOT / "core")]
         core_state = ModuleType("core.state")
@@ -296,6 +300,9 @@ class PeerConversationStoreTests(unittest.TestCase):
             with self.assertRaises(module.HTTPException) as master_chat:
                 _run(chat_endpoint(Request({"text": "unexpected inbound"})))
             self.assertEqual(master_chat.exception.status_code, 403)
+            with self.assertRaises(module.HTTPException) as master_epistemic:
+                _run(epistemic_endpoint(Request({"sender_id": "master"})))
+            self.assertEqual(master_epistemic.exception.status_code, 403)
 
             settings_module.config.LUMINA_NETWORK_ROLE = "child"
             with self.assertRaises(module.HTTPException) as child_push:
@@ -308,6 +315,11 @@ class PeerConversationStoreTests(unittest.TestCase):
                     "text": "unexpected peer", "sender_id": "other-brain",
                 })))
             self.assertEqual(wrong_master.exception.status_code, 403)
+
+            with self.assertRaises(module.HTTPException) as wrong_epistemic_sender:
+                _run(epistemic_endpoint(Request({"sender_id": "other-brain"})))
+            self.assertEqual(wrong_epistemic_sender.exception.status_code, 403)
+            self.assertFalse(_run(epistemic_endpoint(Request({"sender_id": "master"})))['incorporated'])
 
     def test_end_to_end_peer_exchange_transports_scoped_reply_and_trace(self):
         child_store = PeerConversationStore()

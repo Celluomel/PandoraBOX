@@ -43,6 +43,11 @@ network manager, and its UI cannot start child dialogues. The inbound
 `/lumina-network/receive` push endpoint is denied unless a master explicitly
 sets `LUMINA_ALLOW_CHILD_INITIATED_MESSAGES` to `true`.
 
+The child also accepts `/lumina-network/epistemic` updates only from the
+configured master. The master sends these through the child URL and includes
+the per-child shared API key; a master instance rejects epistemic updates that
+would arrive from a child.
+
 The default role is `master` to preserve existing deployments where
 `LUMINA_NETWORK_ENABLED` already opted into the parent connector. Use
 `standalone` to run the Brain without either network role.

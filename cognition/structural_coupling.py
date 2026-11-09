@@ -153,12 +153,19 @@ class StructuralCoupling:
             for child_id, child in net._children.items():
                 try:
                     import urllib.request
-                    payload = json.dumps(asdict(update)).encode()
+                    payload_data = asdict(update)
+                    payload_data.update({
+                        "sender_id": "master",
+                        "sender_name": getattr(net, "_master_name", "Lumina"),
+                    })
+                    payload = json.dumps(payload_data).encode()
                     req = urllib.request.Request(
-                        f"http://{child.host}:{child.port}"
-                        f"/lumina-network/epistemic",
+                        f"{child.url.rstrip('/')}/lumina-network/epistemic",
                         data=payload,
-                        headers={"Content-Type":"application/json"},
+                        headers={
+                            "Content-Type": "application/json",
+                            **({"x-lumina-api-key": child.api_key} if child.api_key else {}),
+                        },
                         method="POST",
                     )
                     with urllib.request.urlopen(req, timeout=5) as resp:

@@ -193,10 +193,17 @@ async def lumina_network_children(request: Request):
 async def lumina_network_epistemic(request: Request):
     """Receive peer epistemic updates without sharing identity or beliefs."""
     from core.state import state
+    from managers.settings_manager import config
 
     try:
         body = await request.json()
         _authorize_peer_request(request, body)
+        role = str(getattr(config, "LUMINA_NETWORK_ROLE", "master") or "master").strip().lower()
+        if role != "child":
+            raise HTTPException(403, "Epistemic updates are accepted only by a configured child Brain")
+        expected_master_id = str(getattr(config, "LUMINA_MASTER_ID", "master") or "master")
+        if str(body.get("sender_id", "")) != expected_master_id:
+            raise HTTPException(403, "Epistemic updates must come from the configured master")
         organism = getattr(getattr(state, "persona", None), "_organism", None)
         loop = getattr(organism, "_loop", None) if organism else None
         coupling = getattr(loop, "_structural_coupling", None) if loop else None
@@ -204,6 +211,8 @@ async def lumina_network_epistemic(request: Request):
             coupling.receive_update(body)
             return {"status": "ok", "incorporated": True}
         return {"status": "no_coupling_module", "incorporated": False}
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.exception("Peer epistemic update failed")
         return {"status": "error", "detail": str(exc)}
