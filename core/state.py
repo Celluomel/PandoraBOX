@@ -418,6 +418,16 @@ class AppState:
                     'slow_cycle_errors': getattr(loop, '_slow_cycle_error_count', None),
                     'last_slow_cycle_error_type': getattr(loop, '_last_slow_cycle_error_type', None),
                     'initialized_modules': loop_modules,
+                    'module_ticks': (
+                        loop.module_tick_snapshot()
+                        if loop is not None and callable(getattr(loop, 'module_tick_snapshot', None))
+                        else {}
+                    ),
+                    'module_tick_analysis': (
+                        loop.module_tick_analysis()
+                        if loop is not None and callable(getattr(loop, 'module_tick_analysis', None))
+                        else None
+                    ),
                 },
                 'global_workspace': {'available': workspace is not None},
                 'memory': {'available': self.memory is not None},

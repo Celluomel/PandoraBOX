@@ -49,6 +49,7 @@ import logging
 import threading
 import time
 from datetime import datetime
+from functools import wraps
 from pathlib import Path
 from typing import Any, Optional, TYPE_CHECKING
 
@@ -56,6 +57,52 @@ if TYPE_CHECKING:
     from cognition.cognitive_organism import CognitiveOrganism
 
 logger = logging.getLogger(__name__)
+
+_TICK_PROBES = {
+    "_tte": ("thought_thread_engine", ("step",)),
+    "_cde": ("cognitive_dissonance_engine", ("step",)),
+    "_dts": ("dominant_thought_selector", ("select",)),
+    "_mte": ("meta_thread_evaluator", ("evaluate",)),
+    "_naw": ("narrative_arc_writer", ("watch_thread_resolution", "watch_cde_resolution", "watch_mte_stall_overcome", "synthesise_arc")),
+    "_phase1": ("phase1_orchestrator", ("enhanced_cycle", "resolve_stuck_threads", "evaluate_thoughts_and_create_goals")),
+    "_phase2": ("phase2_orchestrator", ("evaluate_thoughts_advanced", "create_and_mutate_goals", "synthesize_narrative", "link_resolved_threads")),
+    "_resource_economy": ("cognitive_resource_economy", ("tick",)),
+    "_goal_quality_filter": ("goal_quality_filter", ("run",)),
+    "_thread_lifecycle_mgr": ("thread_lifecycle_manager", ("run",)),
+    "_goal_consolidator": ("goal_consolidator", ("run", "consolidate")),
+    "_semantic_graph_cleaner": ("semantic_graph_cleaner", ("run", "clean")),
+    "_contradiction_reviser": ("contradiction_belief_reviser", ("tick", "run")),
+    "_self_concept_sync": ("self_concept_synchronizer", ("run", "sync", "synchronize")),
+    "_persistent_exec_loop": ("persistent_executive_loop", ("tick", "update_goals")),
+    "_arbitration_learning": ("arbitration_learning", ("tick", "update")),
+    "_governor": ("cognitive_governor", ("tick", "evaluate")),
+    "_goal_action_executor": ("goal_action_executor", ("tick", "execute")),
+    "_commitment_layer": ("decision_commitment_layer", ("tick", "commit")),
+    "_motivational_field": ("motivational_field", ("tick",)),
+    "_aspiration_synthesis": ("aspirational_synthesis", ("tick",)),
+    "_generative_aspiration": ("generative_aspiration", ("tick",)),
+    "_temporal_projection": ("temporal_projection", ("tick",)),
+    "_cross_layer_feedback": ("cross_layer_feedback", ("tick",)),
+    "_causal_mechanism": ("causal_mechanism_model", ("tick",)),
+    "_long_horizon_planner": ("long_horizon_planner", ("tick",)),
+    "_flux_mind_model": ("flux_mind_model", ("tick",)),
+    "_narrative_compression": ("narrative_compression", ("tick",)),
+    "_meta_learning_audit": ("meta_learning_audit", ("tick",)),
+    "_structural_coupling": ("structural_coupling", ("tick",)),
+    "_temporal_self_projection": ("temporal_self_projection", ("tick",)),
+    "_autonomous_reflection": ("autonomous_reflection", ("tick",)),
+    "_proactive_outreach": ("proactive_outreach", ("tick",)),
+    "_autonomous_curiosity_resolver": ("autonomous_curiosity_resolver", ("tick",)),
+    "_auto_experiment": ("autonomous_experimentation", ("tick",)),
+    "_capability_development": ("capability_development", ("tick",)),
+    "_cognitive_restructuring": ("cognitive_restructuring", ("tick",)),
+    "_counterfactual_sim": ("counterfactual_simulator", ("tick",)),
+    "_introspective_observer": ("introspective_observer", ("tick",)),
+    "_cognitive_audit": ("cognitive_audit", ("tick",)),
+    "_cognitive_immune": ("cognitive_immune", ("tick",)),
+    "_flux_engine": ("cognitive_flux_engine", ("compute_and_write",)),
+    "_attention_engine": ("cognitive_attention_engine", ("compute_and_write", "update_from_feedback", "update_from_context_feedback", "decay_bias", "decay_context")),
+}
 
 
 def _llm_available(ai_sys: Any) -> bool:
@@ -118,6 +165,9 @@ class InternalThoughtLoop:
         self._last_slow_cycle_error_type = ""
         self._pending_thoughts: list[str] = []   # queued for next interaction
         self._lock = threading.Lock()
+        from core.module_tick_log import ModuleTickLog
+        self._module_tick_log = ModuleTickLog()
+        self._module_tick_wrapped: set[tuple[int, str]] = set()
         # Predictive models are shared by the background cycle and the live
         # response path. A first chat turn may arrive before slow-cycle
         # initialization, so create them on demand under a dedicated lock.
@@ -297,6 +347,95 @@ class InternalThoughtLoop:
 
         # ── AutonomousCuriosityResolver — Phase 5.0, promotes curiosity into goals
         self._autonomous_curiosity_resolver: Optional["AutonomousCuriosityResolver"] = None
+        self._refresh_module_tick_probes()
+
+    def _refresh_module_tick_probes(self) -> None:
+        """Attach bounded probes to known module entrypoints, without logging each tick."""
+        for attr_name, (module_name, methods) in _TICK_PROBES.items():
+            module = getattr(self, attr_name, None)
+            self._module_tick_log.register(
+                module_name,
+                initialized=module is not None,
+                cadence="conditional slow-cycle / threshold gate",
+            )
+            if module is None:
+                continue
+            for method_name in methods:
+                key = (id(module), method_name)
+                if key in self._module_tick_wrapped:
+                    continue
+                bound_method = getattr(module, method_name, None)
+                if not callable(bound_method):
+                    continue
+
+                @wraps(bound_method)
+                def observed(*args, __bound=bound_method, __module=module_name,
+                             __method=method_name, **kwargs):
+                    started = time.perf_counter()
+                    try:
+                        output = __bound(*args, **kwargs)
+                    except Exception as exc:
+                        self._module_tick_log.record(
+                            __module, __method, started_at=started,
+                            duration_ms=(time.perf_counter() - started) * 1000,
+                            error=exc,
+                        )
+                        raise
+                    self._module_tick_log.record(
+                        __module, __method, started_at=started,
+                        duration_ms=(time.perf_counter() - started) * 1000,
+                        output=output,
+                    )
+                    return output
+
+                observed.__lumina_module_tick_probe__ = True
+                try:
+                    setattr(module, method_name, observed)
+                    self._module_tick_wrapped.add(key)
+                except Exception:
+                    # Keep the module visible as initialized but unobserved;
+                    # never make a cognitive tick fail because instrumentation
+                    # could not be attached.
+                    logger.debug("Tick probe could not attach to %s.%s", module_name, method_name)
+
+    def module_tick_snapshot(self) -> dict[str, dict[str, Any]]:
+        """Return live module existence plus observed tick/output-health evidence."""
+        snapshot = self._module_tick_log.snapshot()
+        for attr_name, (module_name, _methods) in _TICK_PROBES.items():
+            module = getattr(self, attr_name, None)
+            entry = snapshot.setdefault(module_name, {})
+            entry["initialized"] = module is not None
+            if module is None:
+                entry["state"] = "unavailable"
+            elif entry.get("tick_count", 0) == 0:
+                entry["state"] = "initialized_unobserved"
+            elif entry.get("last_status") == "failed":
+                entry["state"] = "error"
+            elif entry.get("last_output", {}).get("quality") == "invalid_numeric":
+                entry["state"] = "degraded"
+            elif entry.get("state") != "degraded":
+                entry["state"] = "healthy"
+        return snapshot
+
+    def module_tick_analysis(self) -> dict[str, Any]:
+        """Summarize tick coverage and output integrity for the status API."""
+        analysis = self._module_tick_log.analysis()
+        states: dict[str, int] = {}
+        executed = 0
+        snapshot = self._module_tick_log.snapshot()
+        for _attr, (module_name, _methods) in _TICK_PROBES.items():
+            module = getattr(self, _attr, None)
+            entry = snapshot.get(module_name, {})
+            if module is None:
+                state = "unavailable"
+            else:
+                state = entry.get("state", "initialized_unobserved")
+            states[state] = states.get(state, 0) + 1
+            executed += int(entry.get("tick_count", 0) > 0)
+        analysis["module_count"] = len(_TICK_PROBES)
+        analysis["executed_module_count"] = executed
+        analysis["states"] = states
+        return analysis
 
     @staticmethod
     def _resolve_cycle_state_path() -> Path:
@@ -591,6 +730,7 @@ class InternalThoughtLoop:
 
     def _slow_cycle_impl(self) -> None:
         """Inner body of the slow cycle (called under lock)."""
+        self._refresh_module_tick_probes()
         self._slow_cycle_count += 1
         self._save_cycle_state()
         o = self._organism

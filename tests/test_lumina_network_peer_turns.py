@@ -187,6 +187,87 @@ class PeerHistoryIsolationTests(unittest.TestCase):
             bridge._last_turn_trace["status"], "completed_with_stage_failures",
         )
 
+    def test_pipeline_integrity_checks_core_stages_and_peer_scope(self):
+        from cognition.persona_bridge import PersonaBridge
+
+        bridge = PersonaBridge.__new__(PersonaBridge)
+        bridge._turn_trace_lock = threading.Lock()
+        bridge._last_turn_trace = {
+            "scope": "peer",
+            "stages": {
+                "readiness": {"status": "passed"},
+                "input_safety": {"status": "passed"},
+                "prompt_assembly": {"status": "completed"},
+                "primary_generation": {"status": "completed"},
+                "output_safety": {"status": "passed"},
+                "response_finalization": {"status": "completed"},
+                "response": {"status": "completed"},
+                "body_observation_context": {"status": "injected"},
+                "memory_retrieval": {"status": "skipped_by_scope"},
+                "optional": {"status": ["broken"]},
+            },
+        }
+
+        bridge._finish_turn_trace("completed")
+        integrity = bridge._last_turn_trace["pipeline_integrity"]
+
+        self.assertEqual(integrity["status"], "incomplete_evidence")
+        self.assertEqual(integrity["missing_core_stages"], [])
+        self.assertEqual(integrity["malformed_stages"], ["optional"])
+        self.assertEqual(integrity["peer_scope_violations"], ["body_observation_context"])
+
+    def test_pipeline_integrity_accepts_complete_scoped_turn(self):
+        from cognition.persona_bridge import PersonaBridge
+
+        bridge = PersonaBridge.__new__(PersonaBridge)
+        bridge._turn_trace_lock = threading.Lock()
+        bridge._last_turn_trace = {
+            "scope": "peer",
+            "stages": {
+                "readiness": {"status": "passed"},
+                "input_safety": {"status": "passed"},
+                "prompt_assembly": {"status": "completed"},
+                "primary_generation": {"status": "completed"},
+                "output_safety": {"status": "passed"},
+                "response_finalization": {"status": "completed"},
+                "response": {"status": "completed"},
+                "body_observation_context": {"status": "skipped_by_scope"},
+            },
+        }
+
+        bridge._finish_turn_trace("completed")
+
+        self.assertEqual(
+            bridge._last_turn_trace["pipeline_integrity"]["status"], "consistent",
+        )
+
+    def test_pipeline_integrity_flags_out_of_order_stages(self):
+        from cognition.persona_bridge import PersonaBridge
+
+        bridge = PersonaBridge.__new__(PersonaBridge)
+        bridge._turn_trace_lock = threading.Lock()
+        bridge._last_turn_trace = {
+            "scope": "peer",
+            "stages": {
+                "readiness": {"status": "passed"},
+                "input_safety": {"status": "passed"},
+                "prompt_assembly": {"status": "completed", "at": 2.0},
+                "primary_generation": {"status": "completed", "at": 1.0},
+                "output_safety": {"status": "passed", "at": 3.0},
+                "response_finalization": {"status": "completed", "at": 4.0},
+                "response": {"status": "completed", "at": 5.0},
+            },
+        }
+
+        bridge._finish_turn_trace("completed")
+        integrity = bridge._last_turn_trace["pipeline_integrity"]
+
+        self.assertEqual(integrity["status"], "incomplete_evidence")
+        self.assertEqual(
+            integrity["stage_order_violations"],
+            ["primary_generation_before_prompt_assembly"],
+        )
+
     def test_peer_turn_does_not_write_into_global_active_cognitive_context(self):
         from cognition.persona_bridge import PersonaBridge
 

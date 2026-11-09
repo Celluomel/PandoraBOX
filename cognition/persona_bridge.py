@@ -486,9 +486,9 @@ class PersonaBridge:
             if self._last_turn_trace:
                 stages = self._last_turn_trace.get("stages", {})
                 has_stage_failure = any(
-                    isinstance(stage, dict) and stage.get("status") in {
-                        "failed", "invalid_output",
-                    }
+                    isinstance(stage, dict)
+                    and isinstance(stage.get("status"), str)
+                    and stage.get("status") in {"failed", "invalid_output"}
                     for stage in stages.values()
                 )
                 self._last_turn_trace["status"] = (
@@ -496,6 +496,100 @@ class PersonaBridge:
                     if status == "completed" and has_stage_failure
                     else status
                 )
+                stage_status = {
+                    name: value.get("status")
+                    for name, value in stages.items()
+                    if isinstance(value, dict)
+                }
+                missing_core = []
+                for stage_name, expected in (
+                    ("readiness", {"passed"}),
+                    ("input_safety", {"passed"}),
+                    ("prompt_assembly", {"completed"}),
+                    ("output_safety", {"passed", "replaced"}),
+                    ("response_finalization", {"completed"}),
+                    ("response", {"completed"}),
+                ):
+                    value = stage_status.get(stage_name)
+                    if not isinstance(value, str) or value not in expected:
+                        missing_core.append(stage_name)
+                has_generation = any(
+                    isinstance(stage_status.get(name), str)
+                    and stage_status.get(name) in accepted
+                    for name, accepted in (
+                        ("primary_generation", {"completed"}),
+                        ("fast_first_pass", {"selected_direct", "delegated"}),
+                        ("deterministic_reasoning", {"selected_direct", "completed"}),
+                    )
+                )
+                if not has_generation:
+                    missing_core.append("generation")
+                peer_scope_violations = []
+                if self._last_turn_trace.get("scope") == "peer":
+                    for stage_name in (
+                        "memory_retrieval", "brain_pc_camera_context",
+                        "body_observation_context", "empathy_read",
+                        "empathy_context", "empathy_outcome",
+                        "human_relational_graph", "human_profile_learning",
+                        "active_context_prompt", "active_context_update",
+                    ):
+                        value = stage_status.get(stage_name)
+                        if value is not None and (
+                            not isinstance(value, str)
+                            or value not in {"skipped_by_scope", "skipped_by_policy"}
+                        ):
+                            peer_scope_violations.append(stage_name)
+                integrity_issues = missing_core + [
+                    f"peer_scope:{name}" for name in peer_scope_violations
+                ]
+                malformed_stages = sorted(
+                    name for name, value in stage_status.items()
+                    if not isinstance(value, str) or not value
+                )
+                integrity_issues.extend(
+                    f"malformed_stage:{name}" for name in malformed_stages
+                )
+                stage_order_violations = []
+                for earlier, later in (
+                    ("prompt_assembly", "primary_generation"),
+                    ("primary_generation", "output_safety"),
+                    ("output_safety", "response_finalization"),
+                    ("response_finalization", "response"),
+                ):
+                    left = stages.get(earlier, {})
+                    right = stages.get(later, {})
+                    if (
+                        isinstance(left, dict) and isinstance(right, dict)
+                        and isinstance(left.get("at"), (int, float))
+                        and isinstance(right.get("at"), (int, float))
+                        and right["at"] < left["at"]
+                    ):
+                        stage_order_violations.append(f"{later}_before_{earlier}")
+                integrity_issues.extend(
+                    f"stage_order:{item}" for item in stage_order_violations
+                )
+                self._last_turn_trace["pipeline_integrity"] = {
+                    "status": "consistent" if not integrity_issues else "incomplete_evidence",
+                    "checked_at": time.time(),
+                    "required_core_stages": 7,
+                    "missing_core_stages": missing_core,
+                    "malformed_stages": malformed_stages,
+                    "stage_order_violations": stage_order_violations,
+                    "peer_scope_violations": peer_scope_violations,
+                    "failed_stages": sorted(
+                        name for name, value in stage_status.items()
+                        if isinstance(value, str) and value in {"failed", "invalid_output"}
+                    ),
+                    "conditional_skips": sorted(
+                        name for name, value in stage_status.items()
+                        if (isinstance(value, str) and value.startswith("skipped_")) or (
+                            isinstance(value, str) and value in {
+                            "not_applicable", "not_selected", "no_active_context",
+                            "empty", "disabled", "unavailable",
+                            }
+                        )
+                    ),
+                }
                 self._last_turn_trace["completed_at"] = time.time()
 
     def get_last_turn_trace(self) -> dict:
