@@ -1513,7 +1513,15 @@ async def network_action(payload: NetworkAction):
         return {'ok': True, 'action': 'dialogue_started', 'dialogue_id': dialogue_id}
     online = await network.ping_child(payload.child_id)
     _event('Flux ping completed', payload.child_id)
-    return {'ok': True, 'action': 'ping', 'online': online}
+    child = next((item for item in network.list_children() if item['id'] == payload.child_id), None)
+    return {
+        'ok': True,
+        'action': 'ping',
+        'online': online,
+        'url': child.get('url', '') if child else '',
+        'latency_ms': child.get('latency_ms') if child else None,
+        'error': child.get('last_error', '') if child and not online else '',
+    }
 
 
 @router.get('/network/dialogue/{dialogue_id}')

@@ -106,6 +106,7 @@ class ChildLumina:
     online:       bool = False
     last_ping:    float = 0.0
     latency_ms:   float = 0.0
+    last_error:   str = ""
     turn_count:   int   = 0
     last_snapshot_share: float = 0.0  # Phase 6.5 — cooldown for share_workspace_snapshot()
     last_cognitive_trace: Optional[dict] = None
@@ -231,6 +232,7 @@ class LuminaNetwork:
                 "role":       c.role,
                 "online":     c.online,
                 "latency_ms": round(c.latency_ms, 1),
+                "last_error": c.last_error,
                 "turn_count": c.turn_count,
                 "last_cognitive_trace": c.last_cognitive_trace,
             }
@@ -250,14 +252,21 @@ class LuminaNetwork:
             t0 = time.time()
             async with self._aiohttp.ClientSession() as session:
                 async with session.get(
-                    f"{child.url}/status", timeout=self._aiohttp.ClientTimeout(total=3)
+                    f"{child.url}/status", timeout=self._aiohttp.ClientTimeout(total=10)
                 ) as resp:
                     child.online     = resp.status == 200
                     child.latency_ms = (time.time() - t0) * 1000
                     child.last_ping  = time.time()
+                    child.last_error = "" if child.online else f"HTTP {resp.status} from /status"
                     return child.online
-        except Exception:
+        except Exception as exc:
             child.online = False
+            child.last_ping = time.time()
+            child.last_error = f"{type(exc).__name__}: {exc}"[:240]
+            logger.warning(
+                "Flux health check failed for %s at %s/status: %s",
+                child.name, child.url, child.last_error,
+            )
             return False
 
     async def ping_all(self) -> Dict[str, bool]:
@@ -360,6 +369,7 @@ class LuminaNetwork:
                 ) as resp:
                     child.latency_ms = (time.time() - t0) * 1000
                     child.online     = True
+                    child.last_error = ""
                     if resp.status == 200:
                         try:
                             data = await resp.json()
@@ -387,6 +397,7 @@ class LuminaNetwork:
                         response_text = f"[Child error {resp.status}: {body[:80]}]"
         except Exception as e:
             child.online  = False
+            child.last_error = f"{type(e).__name__}: {e}"[:240]
             response_text = f"[Network error: {e}]"
 
         # ── Commit only completed pair exchanges ─────────────────────────

@@ -1515,18 +1515,34 @@ async def main_page():
                             with ui.card().classes('w-full p-3').style('background:#1e293b;border:1px solid #334155'):
                                 with ui.row().classes('w-full items-center justify-between'):
                                     with ui.row().classes('items-center gap-2'):
-                                        _sc = '#22c55e' if _ch['online'] else '#64748b'
-                                        ui.html(f'<div style="width:8px;height:8px;border-radius:50%;background:{_sc}"></div>')
+                                        _status_label = ui.label('Online' if _ch['online'] else 'Offline').classes(
+                                            'text-xs text-green-400' if _ch['online'] else 'text-xs text-slate-500'
+                                        )
                                         ui.label(_cnm).classes('font-semibold text-sm text-slate-200')
-                                    ui.label(f"{_ch['latency_ms']:.0f}ms").classes('text-xs text-slate-500')
+                                    _latency_label = ui.label(
+                                        f"{_ch['latency_ms']:.0f}ms" if _ch['online'] else '—'
+                                    ).classes('text-xs text-slate-500')
                                 ui.label(_ch['url']).classes('text-xs text-slate-600 font-mono mt-1')
 
                                 with ui.row().classes('gap-2 mt-2 flex-wrap'):
 
                                     # ── Ping ──────────────────────────────────────
-                                    async def _ping(__cid=_cid, __cn=_cnm):
+                                    async def _ping(__cid=_cid, __cn=_cnm, __status=_status_label, __latency=_latency_label):
                                         ok = await state.lumina_network.ping_child(__cid)
-                                        ui.notify(f"{__cn}: {'✅ online' if ok else '❌ offline'}",
+                                        child_status = next(
+                                            (item for item in state.lumina_network.list_children() if item['id'] == __cid),
+                                            {},
+                                        )
+                                        __status.set_text('Online' if ok else 'Offline')
+                                        __status.classes(
+                                            add='text-green-400' if ok else 'text-slate-500',
+                                            remove='text-slate-500' if ok else 'text-green-400',
+                                        )
+                                        __latency.set_text(
+                                            f"{child_status.get('latency_ms', 0):.0f}ms" if ok else '—'
+                                        )
+                                        detail = '' if ok else f" · {child_status.get('last_error') or 'health check failed'}"
+                                        ui.notify(f"{__cn}: {'✅ online' if ok else '❌ offline'}{detail}",
                                                   type='positive' if ok else 'warning', position='bottom-right')
                                     ui.button('Ping', icon='wifi', on_click=_ping).props('flat dense size=sm color=indigo')
 
