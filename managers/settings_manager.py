@@ -327,6 +327,11 @@ def apply_env_overrides(settings: AppSettings) -> AppSettings:
         'OPENAI_API_KEY': os.getenv('OPENAI_API_KEY'),
         'TTS_PROVIDER': os.getenv('ROBOT_TTS_PROVIDER'),
         'NICEGUI_PORT': os.getenv('ROBOT_PORT'),
+        # Process-local topology overrides let one source checkout launch a
+        # master and child with distinct roles and TCP listeners.
+        'LUMINA_NETWORK_ROLE': os.getenv('LUMINA_NETWORK_ROLE'),
+        'BRAIN_API_HOST': os.getenv('BRAIN_API_HOST'),
+        'BRAIN_API_PORT': os.getenv('BRAIN_API_PORT'),
     }
     
     modified = False

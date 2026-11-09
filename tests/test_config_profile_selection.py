@@ -18,6 +18,19 @@ class ConfigProfileSelectionTests(unittest.TestCase):
         with patch.dict(os.environ, {"LUMINA_CONFIG_PATH": "config_Flux.json"}):
             self.assertEqual(resolve_config_path(), Path("config_Flux.json"))
 
+    def test_process_role_and_listener_can_be_overridden_without_editing_profile(self):
+        env = {
+            "LUMINA_NETWORK_ROLE": "child",
+            "BRAIN_API_HOST": "127.0.0.1",
+            "BRAIN_API_PORT": "8767",
+        }
+        with patch.dict(os.environ, env, clear=False), patch("builtins.print"):
+            loaded, changed = settings_manager.apply_env_overrides(settings_manager.AppSettings())
+        self.assertTrue(changed)
+        self.assertEqual(loaded.LUMINA_NETWORK_ROLE, "child")
+        self.assertEqual(loaded.BRAIN_API_HOST, "127.0.0.1")
+        self.assertEqual(loaded.BRAIN_API_PORT, 8767)
+
     def test_explicit_path_is_expanded(self):
         self.assertEqual(resolve_config_path("~/lumina-child.json"), Path("~/lumina-child.json").expanduser())
 
