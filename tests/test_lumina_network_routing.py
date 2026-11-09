@@ -129,8 +129,19 @@ class LuminaNetworkConversationRoutingTests(unittest.TestCase):
 
         self.assertEqual(list(network._children), ["child"])
         self.assertEqual(network._children["child"].name, "Flux")
-        self.assertEqual(network._children["child"].url, "http://192.168.0.28:8765")
+        self.assertEqual(network._children["child"].url, "http://127.0.0.1:8767")
         self.assertEqual(config["LUMINA_MASTER_NAME"], "Lumina")
+
+    def test_child_uses_shared_secret_when_peer_entry_has_no_key(self):
+        network = self._network()
+        network._children = {}
+        settings_module = __import__("managers.settings_manager", fromlist=["config"])
+        with patch.object(settings_module.config, "LUMINA_NETWORK_API_KEY", "test-shared-key"):
+            network.load_from_config([{
+                "id": "flux", "name": "FLUX", "url": "http://127.0.0.1:8767",
+                "role": "child", "api_key": "",
+            }])
+        self.assertEqual(network._children["flux"].api_key, "test-shared-key")
 
     def test_remote_cognitive_trace_is_bounded_and_requires_peer_scope(self):
         sanitized = sanitize_trace({

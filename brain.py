@@ -48,8 +48,8 @@ _parser = _ap.ArgumentParser(description="PandoraBOX headless brain runner")
 _parser.add_argument("--repl",         action="store_true", help="Launch interactive terminal REPL")
 _parser.add_argument("--no-api",       action="store_true", help="Disable REST API")
 _parser.add_argument("--no-telegram",  action="store_true", help="Disable Telegram connector")
-_parser.add_argument("--port",         type=int, default=None, help="REST API port (default: BRAIN_API_PORT from config.json)")
-_parser.add_argument("--host",         default="127.0.0.1",   help="REST API host (default 127.0.0.1)")
+_parser.add_argument("--port",         type=int, default=None, help="REST API port (default: BRAIN_API_PORT from the selected config profile)")
+_parser.add_argument("--host",         default=None,         help="REST API bind host (default: BRAIN_API_HOST from the selected config profile)")
 _parser.add_argument("--vision",       action="store_true",   help="Enable camera (default: off)")
 _ARGS = _parser.parse_args() if __name__ == "__main__" else _parser.parse_args([])
 
@@ -97,6 +97,8 @@ from managers.settings_manager import config
 # beside the main process.  The Body remains independently bound to BODY_PORT.
 if _ARGS.port is None:
     _ARGS.port = int(getattr(config, "BRAIN_API_PORT", 8765) or 8765)
+if _ARGS.host is None:
+    _ARGS.host = str(getattr(config, "BRAIN_API_HOST", "127.0.0.1") or "127.0.0.1")
 from core.state import state
 
 async def _boot() -> bool:

@@ -179,6 +179,11 @@ class LuminaNetwork:
 
     def load_from_config(self, children_config: list) -> None:
         """Load only concrete peers; commented examples are not endpoints."""
+        try:
+            from managers.settings_manager import config as app_config
+            shared_api_key = str(getattr(app_config, "LUMINA_NETWORK_API_KEY", "") or "")
+        except Exception:
+            shared_api_key = ""
         for index, c in enumerate(children_config or []):
             if not isinstance(c, dict):
                 logger.warning("Ignoring malformed LUMINA_CHILDREN entry at index %d", index)
@@ -197,7 +202,7 @@ class LuminaNetwork:
                 child_id = c.get("id", f"child_{len(self._children)}"),
                 name     = c.get("name", "PandoraBOX-Child"),
                 url      = url,
-                api_key  = c.get("api_key", ""),
+                api_key  = c.get("api_key") or shared_api_key,
                 role     = c.get("role", "child"),
             )
 

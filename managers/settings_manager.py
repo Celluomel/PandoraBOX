@@ -8,8 +8,20 @@ from typing import Optional, List, Callable
 from pydantic import BaseModel, validator
 from secret_store import SECRET_FIELDS, config_reference, resolve, store
 
-# Configuration file path
-CONFIG_FILE = Path('config.json')
+def resolve_config_path(value: Optional[str] = None) -> Path:
+    """Return the per-process configuration path.
+
+    LUMINA_CONFIG_PATH lets multiple Brain instances share one checkout while
+    keeping their role, identity, network settings, and listening interface
+    separate. Relative paths are resolved from the process working directory.
+    """
+    selected = value if value is not None else os.environ.get('LUMINA_CONFIG_PATH', 'config.json')
+    return Path(selected).expanduser()
+
+
+# Each process can select its own profile, e.g. config.json (master) or
+# config_Flux.json (child), without changing the shared source tree.
+CONFIG_FILE = resolve_config_path()
 BACKUP_DIR = Path('config_backups')
 
 class AppSettings(BaseModel):
@@ -340,7 +352,7 @@ def apply_env_overrides(settings: AppSettings) -> AppSettings:
 
 # ----- CORE LOAD/SAVE -----
 def load_settings() -> AppSettings:
-    """Load settings from config.json with validation and env overrides"""
+    """Load the selected settings profile with validation and env overrides."""
     settings = AppSettings()  # Start with defaults
     
     if CONFIG_FILE.exists():
@@ -365,6 +377,16 @@ def load_settings() -> AppSettings:
         # Save defaults
         save_settings(settings)
     
+    # Secrets are stored outside the profile and shared by processes launched
+    # from this checkout. Resolve even fields omitted from older config files.
+    for key in SECRET_FIELDS:
+        if not hasattr(settings, key):
+            continue
+        current = getattr(settings, key, '')
+        resolved = resolve(key, current)
+        if resolved:
+            setattr(settings, key, resolved)
+
     # Apply environment overrides
     settings, overridden = apply_env_overrides(settings)
     if overridden:
@@ -379,7 +401,7 @@ def load_settings() -> AppSettings:
     return settings
 
 def save_settings(settings: AppSettings):
-    """Save settings to config.json with automatic backup"""
+    """Save settings to the selected profile with automatic backup."""
     # Create backup before overwriting
     if CONFIG_FILE.exists():
         create_backup()

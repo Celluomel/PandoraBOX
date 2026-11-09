@@ -1,4 +1,5 @@
 @echo off
+cd /d "%~dp0"
 echo ==========================================
 echo  PandoraBOX Cognitive Organism - Windows
 echo ==========================================
@@ -128,5 +129,5 @@ echo.
 echo [*] Starting PandoraBOX Brain Only
 echo [*] Press Ctrl+C to stop.
 echo.
-python brain.py --host 0.0.0.0 --port 8765
+python brain.py
 pause
