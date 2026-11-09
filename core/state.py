@@ -498,9 +498,16 @@ class AppState:
             turn_id = ""
         record_stage = getattr(persona, "record_deferred_turn_stage", None)
 
-        def record(stage_name: str, status: str, detail: str = "") -> None:
+        def record(
+            stage_name: str, status: str, detail: str = "", error_type: str = "",
+        ) -> None:
             if turn_id and callable(record_stage):
-                record_stage(turn_id, stage_name, status, detail)
+                if error_type:
+                    record_stage(
+                        turn_id, stage_name, status, detail, error_type=error_type,
+                    )
+                else:
+                    record_stage(turn_id, stage_name, status, detail)
 
         def run_stages():
             if callable(deferred):
@@ -508,8 +515,11 @@ class AppState:
                     result = deferred(user_text, assistant_text, user_id, reflection_epoch)
                     result_status = str(result or "unavailable")
                     record("continuity_analysis_post_response", result_status)
-                except Exception:
-                    record("continuity_analysis_post_response", "failed")
+                except Exception as exc:
+                    record(
+                        "continuity_analysis_post_response", "failed",
+                        error_type=type(exc).__name__,
+                    )
                     logger.exception("Deferred continuity analysis failed")
             else:
                 record("continuity_analysis_post_response", "skipped_unavailable")
@@ -521,8 +531,11 @@ class AppState:
                         if isinstance(result, dict) else "failed"
                     )
                     record("goal_means_post_response", result_status)
-                except Exception:
-                    record("goal_means_post_response", "failed")
+                except Exception as exc:
+                    record(
+                        "goal_means_post_response", "failed",
+                        error_type=type(exc).__name__,
+                    )
                     logger.exception("Deferred goal-means analysis failed")
             else:
                 record("goal_means_post_response", "skipped_unavailable")

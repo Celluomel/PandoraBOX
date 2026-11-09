@@ -432,6 +432,7 @@ class PersonaBridge:
 
     def _record_turn_stage(
         self, name: str, status: str, detail: str = "", *, turn_id: str = "",
+        error_type: str = "",
     ) -> None:
         with self._turn_trace_lock:
             trace = getattr(self, "_last_turn_trace", None)
@@ -445,6 +446,8 @@ class PersonaBridge:
             stage = {"status": status, "at": time.time()}
             if detail:
                 stage["detail"] = str(detail)[:240]
+            if error_type:
+                stage["error_type"] = str(error_type).rsplit(".", 1)[-1][:64]
             trace.setdefault("stages", {})[name] = stage
             health_by_stage = getattr(self, "_turn_stage_health", None)
             if health_by_stage is None:
@@ -495,11 +498,14 @@ class PersonaBridge:
 
     def record_deferred_turn_stage(
         self, turn_id: str, name: str, status: str, detail: str = "",
+        error_type: str = "",
     ) -> None:
         """Attach an asynchronous post-answer result to its originating turn."""
         if not turn_id:
             return
-        self._record_turn_stage(name, status, detail, turn_id=turn_id)
+        self._record_turn_stage(
+            name, status, detail, turn_id=turn_id, error_type=error_type,
+        )
 
     def _finish_turn_trace(self, status: str) -> None:
         with self._turn_trace_lock:

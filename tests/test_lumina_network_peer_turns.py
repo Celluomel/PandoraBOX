@@ -206,6 +206,7 @@ class PeerHistoryIsolationTests(unittest.TestCase):
 
         bridge.record_deferred_turn_stage(
             "audit-turn", "continuity_analysis_post_response", "failed",
+            error_type="builtins.ValueError",
         )
         trace = bridge.get_last_turn_trace()
 
@@ -216,6 +217,10 @@ class PeerHistoryIsolationTests(unittest.TestCase):
         self.assertEqual(
             trace["pipeline_integrity"]["failed_stages"],
             ["continuity_analysis_post_response"],
+        )
+        self.assertEqual(
+            trace["stages"]["continuity_analysis_post_response"]["error_type"],
+            "ValueError",
         )
 
     def test_pipeline_integrity_checks_core_stages_and_peer_scope(self):
