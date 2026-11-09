@@ -1,9 +1,12 @@
 # Lumina Network Roles
 
-The same Brain code can run as a master or as a child. Each process selects its
-own configuration profile with `LUMINA_CONFIG_PATH`; both processes may use the
-same checkout and working directory. Relative profile paths are resolved from
-the process working directory. The default remains `config.json`.
+The same Brain code can run as a master or as a child. The recommended Windows
+deployment uses two folders containing the same code. Each process starts with
+the normal `BrainOnly.bat` (or `start.bat`) from its folder and reads that
+folder's `config.json`; the role, persona name, API port, and memory paths in
+that file distinguish the instances. No role-specific launcher is required.
+`LUMINA_CONFIG_PATH` remains available for deployments that intentionally use
+one checkout with multiple profiles.
 
 ## Master
 
@@ -22,17 +25,17 @@ the process working directory. The default remains `config.json`.
 }
 ```
 
-On Windows, the normal `start.bat` process can keep using `config.json`. Start
-the FLUX child with `start_flux_child.bat`. It selects `config_Flux.json`; that
-profile declares the child role and its `127.0.0.1:8767` listener. The launcher
-does not overwrite the profile or data files.
+For the two-folder deployment, keep Lumina's master settings in the main
+folder's `config.json` and the chosen child persona's settings in the child's
+own `config.json`. For example, Lumina listens on 8765 and lists the child URL
+at 8767; the child sets `LUMINA_NETWORK_ROLE` to `child`, its chosen
+`PERSONA_NAME`, and `BRAIN_API_PORT` to 8767. Keep each folder's existing data
+and configuration when syncing code. `body_runtime_host/` and
+`cognition/body_runtime/` may be omitted from a child deployment that does not
+use Body features.
 
-That launcher also works from a separate, already prepared child directory.
-Copy the tracked Brain code there, keep that directory's own data/config, and
-omit `body_runtime_host/` and `cognition/body_runtime/` if the child test does
-not use Body features.
-
-To run both processes from a single checkout instead, use PowerShell:
+To run both processes from a single checkout instead, use PowerShell and
+separate config profiles:
 
 ```powershell
 $env:LUMINA_CONFIG_PATH = 'config_Flux.json'
