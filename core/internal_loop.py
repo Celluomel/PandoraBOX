@@ -118,6 +118,10 @@ class InternalThoughtLoop:
         self._last_slow_cycle_error_type = ""
         self._pending_thoughts: list[str] = []   # queued for next interaction
         self._lock = threading.Lock()
+        # Predictive models are shared by the background cycle and the live
+        # response path. A first chat turn may arrive before slow-cycle
+        # initialization, so create them on demand under a dedicated lock.
+        self._predictive_models_lock = threading.Lock()
         # Proposal-driven capability experiments run only in the slow loop.
         self._capability_development = None
 
@@ -351,6 +355,40 @@ class InternalThoughtLoop:
             tmp.replace(self._cycle_state_path)
         except Exception as e:
             logger.debug(f"[InternalLoop] cycle-state save failed: {e}")
+
+    def ensure_predictive_models(self):
+        """Return shared predictive models, initializing them on demand.
+
+        Streaming chat can begin before the background loop reaches its lazy
+        initialization thresholds. Using this helper from both paths keeps
+        the first interaction from silently skipping predictive cognition and
+        prevents duplicate instances racing between the chat and loop threads.
+        """
+        with self._predictive_models_lock:
+            organism = self._organism
+            if getattr(self, "_consequence_model", None) is None:
+                try:
+                    from cognition.predictive_consequence_model import PredictiveConsequenceModel
+                    self._consequence_model = PredictiveConsequenceModel(organism)
+                    logger.info("[InternalLoop] PredictiveConsequenceModel ready ✅")
+                except Exception as exc:
+                    logger.warning("[InternalLoop] PredictiveConsequenceModel init failed: %s", exc)
+                    self._consequence_model = None
+
+            if getattr(self, "_world_self_dynamics", None) is None:
+                ai_system = getattr(organism, "ai_system", None)
+                if ai_system is not None:
+                    try:
+                        from cognition.world_self_dynamics_model import WorldSelfDynamicsModel
+                        self._world_self_dynamics = WorldSelfDynamicsModel(organism, ai_system)
+                        logger.info("[InternalLoop] WorldSelfDynamicsModel ready ✅")
+                    except Exception as exc:
+                        logger.warning("[InternalLoop] WorldSelfDynamicsModel init failed: %s", exc)
+                        self._world_self_dynamics = None
+            return (
+                getattr(self, "_consequence_model", None),
+                getattr(self, "_world_self_dynamics", None),
+            )
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -620,25 +658,11 @@ class InternalThoughtLoop:
         except Exception as _mf:
             logger.debug(f"[InternalLoop] MotivationalField error (non-fatal): {_mf}")
 
-        # ── v53: PredictiveConsequenceModel — record state after each cycle ─────
-        # Records state transitions so the model can learn consequences of
-        # action types over time.  Outcome is recorded here (post-cycle)
-        # matching the action recorded pre-response in cognitive_organism.
-        try:
-            if not hasattr(self, '_consequence_model'):
-                self._consequence_model = None
-            if self._consequence_model is None and self._slow_cycle_count > 1:
-                from cognition.predictive_consequence_model import PredictiveConsequenceModel
-                self._consequence_model = PredictiveConsequenceModel(o)
-                logger.info("[InternalLoop] PredictiveConsequenceModel ready ✅")
-            if self._consequence_model is not None:
-                # PCM record_outcome moved to cognitive_organism.py (per-response)
-                # so calibration resolves once per message, not once per slow cycle.
-                # Previously only the last message per slow cycle resolved —
-                # all others expired from pending without calibrating.
-                pass
-        except Exception as _pcm:
-            logger.debug(f"[InternalLoop] ConsequenceModel error (non-fatal): {_pcm}")
+        # Initialize shared predictive models after the first slow cycle if no
+        # response turn has requested them yet. Live turns call this same
+        # idempotent helper immediately, so startup timing cannot skip them.
+        if self._slow_cycle_count > 1:
+            self.ensure_predictive_models()
 
         # ── v54: AspirationalSynthesisEngine — generative aspiration ──────────
         try:
@@ -669,24 +693,6 @@ class InternalThoughtLoop:
                 self._temporal_projection.tick(self._slow_cycle_count)
         except Exception as _tp:
             logger.debug(f"[InternalLoop] TemporalProjection error (non-fatal): {_tp}")
-
-        # ── v56: WorldSelfDynamicsModel lifecycle ─────────────────────────────
-        # WSDM transitions are paired in CognitiveOrganism._post_interaction,
-        # against the response that created the pending context. A periodic
-        # slow cycle must never consume that pending turn while its LLM call is
-        # still running (the PCM outcome was already moved to per-response
-        # finalization for the same reason).
-        try:
-            if not hasattr(self, '_world_self_dynamics'):
-                self._world_self_dynamics = None
-            if self._world_self_dynamics is None and self._slow_cycle_count > 1:
-                _ai_sys = getattr(o, 'ai_system', None)
-                if _ai_sys:
-                    from cognition.world_self_dynamics_model import WorldSelfDynamicsModel
-                    self._world_self_dynamics = WorldSelfDynamicsModel(o, _ai_sys)
-                    logger.info("[InternalLoop] WorldSelfDynamicsModel ready ✅")
-        except Exception as _wsdm:
-            logger.debug(f"[InternalLoop] WorldSelfDynamics error (non-fatal): {_wsdm}")
 
         # ── v57: CrossLayerFeedback — upward causal loops ──────────────────────
         # Reads outputs from higher layers and writes to operating parameters

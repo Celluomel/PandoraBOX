@@ -1041,8 +1041,12 @@ class CognitiveOrganism:
             "prospective_status": "not_applicable",
         }
         loop = getattr(self, "_loop", None)
-        pcm = getattr(loop, "_consequence_model", None) if loop else None
-        wsdm = getattr(loop, "_world_self_dynamics", None) if loop else None
+        ensure_predictive_models = getattr(loop, "ensure_predictive_models", None) if loop else None
+        if callable(ensure_predictive_models):
+            pcm, wsdm = ensure_predictive_models()
+        else:
+            pcm = getattr(loop, "_consequence_model", None) if loop else None
+            wsdm = getattr(loop, "_world_self_dynamics", None) if loop else None
         interaction_n = int(getattr(getattr(self, "ai_system", None), "_interaction_count", 0) or 0)
         action = "analytical"
 

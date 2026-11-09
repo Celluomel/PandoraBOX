@@ -2,10 +2,55 @@ import sys
 import threading
 import types
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 
 class StreamingPredictiveContextTests(unittest.TestCase):
+    def test_first_streaming_turn_initializes_models_before_slow_cycle_threshold(self):
+        from cognition.cognitive_organism import CognitiveOrganism
+        from core.internal_loop import InternalThoughtLoop
+
+        pcm = Mock()
+        pcm.classify.return_value = "reasoning"
+        pcm.read_state.return_value = [0.1, 0.2]
+        wsdm = Mock()
+        organism = types.SimpleNamespace(
+            ai_system=types.SimpleNamespace(_interaction_count=0),
+        )
+        loop = InternalThoughtLoop.__new__(InternalThoughtLoop)
+        loop._organism = organism
+        loop._predictive_models_lock = threading.Lock()
+        loop._consequence_model = None
+        loop._world_self_dynamics = None
+        organism._loop = loop
+
+        prospective = types.ModuleType("cognition.prospective_deliberation")
+        prospective.deliberate = Mock(return_value=types.SimpleNamespace(advisory=""))
+        original = sys.modules.get("cognition.prospective_deliberation")
+        sys.modules["cognition.prospective_deliberation"] = prospective
+        try:
+            with patch(
+                "cognition.predictive_consequence_model.PredictiveConsequenceModel",
+                return_value=pcm,
+            ) as make_pcm, patch(
+                "cognition.world_self_dynamics_model.WorldSelfDynamicsModel",
+                return_value=wsdm,
+            ) as make_wsdm:
+                result = CognitiveOrganism.prepare_response_context(
+                    organism, "first peer turn", user_id="lumina_peer_master",
+                )
+        finally:
+            if original is None:
+                sys.modules.pop("cognition.prospective_deliberation", None)
+            else:
+                sys.modules["cognition.prospective_deliberation"] = original
+
+        make_pcm.assert_called_once_with(organism)
+        make_wsdm.assert_called_once_with(organism, organism.ai_system)
+        self.assertEqual(result["pcm_status"], "prepared")
+        self.assertEqual(result["wsdm_status"], "prepared")
+        self.assertEqual(result["prospective_status"], "completed")
+
     def test_cognitive_organism_prepares_pcm_wsdm_and_prospective_stages(self):
         from cognition.cognitive_organism import CognitiveOrganism
 
