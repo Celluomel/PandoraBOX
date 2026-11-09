@@ -23,9 +23,9 @@ the process working directory. The default remains `config.json`.
 ```
 
 On Windows, the normal `start.bat` process can keep using `config.json`. Start
-the FLUX child with `start_flux_child.bat`. It selects `config_Flux.json`, sets
-the child role, and binds the child to `127.0.0.1:8767`; it does not overwrite
-the profile or data files.
+the FLUX child with `start_flux_child.bat`. It selects `config_Flux.json`; that
+profile declares the child role and its `127.0.0.1:8767` listener. The launcher
+does not overwrite the profile or data files.
 
 That launcher also works from a separate, already prepared child directory.
 Copy the tracked Brain code there, keep that directory's own data/config, and
