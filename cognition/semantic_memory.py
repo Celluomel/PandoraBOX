@@ -182,16 +182,22 @@ class SemanticMemory:
                 (concept_id, str(source)[:80], str(role)[:40], confidence, time.time()),
             )
 
-    def recent_user_topics(self, limit: int = 15, min_strength: float = 0.5) -> List[str]:
-        """Return concepts grounded in human-authored turns."""
+    def recent_user_topics(self, limit: int = 15, min_strength: float = 0.5,
+                           min_observations: int = 2) -> List[str]:
+        """Return repeated concepts grounded in human-authored turns.
+
+        A one-off utterance can guide an immediate response, but is insufficient
+        evidence for promoting a persistent autonomous goal.
+        """
         with self._conn() as conn:
             rows = conn.execute(
                 """SELECT c.name, MAX(o.observed_at), MAX(o.confidence), c.strength
                    FROM concept_observations o JOIN concepts c ON c.id = o.concept_id
                    WHERE o.role = 'user_topic' AND c.strength >= ?
                    GROUP BY c.id
+                   HAVING COUNT(*) >= ?
                    ORDER BY MAX(o.confidence) DESC, MAX(o.observed_at) DESC, c.strength DESC
-                   LIMIT ?""", (min_strength, limit)
+                   LIMIT ?""", (min_strength, max(1, int(min_observations)), limit)
             ).fetchall()
         return [row[0] for row in rows]
 

@@ -97,6 +97,9 @@ class AutonomousOrchestrator:
         self._task: Optional[asyncio.Task] = None
         self._cycle_count = 0
         self._last_activity: str = "none"
+        self._last_cycle_at = 0.0
+        self._cycle_error_count = 0
+        self._last_cycle_error_type = ""
 
         logger.info("🧠 AutonomousOrchestrator created")
 
@@ -154,6 +157,8 @@ class AutonomousOrchestrator:
             except asyncio.CancelledError:
                 break
             except Exception as e:
+                self._cycle_error_count += 1
+                self._last_cycle_error_type = type(e).__name__
                 logger.error(f"[Orchestrator] cycle error: {e}")
             await asyncio.sleep(CYCLE_INTERVAL)
 
@@ -193,6 +198,7 @@ class AutonomousOrchestrator:
                     f"activity={activity!r} "
                     f"drives={drives.as_dict()}"
                 )
+        self._last_cycle_at = time.time()
 
     # ── Status ────────────────────────────────────────────────────────────
 

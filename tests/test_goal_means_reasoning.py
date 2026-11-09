@@ -212,10 +212,21 @@ class GoalMeansReasoningTests(unittest.TestCase):
             (ROOT / "cognition/persona_bridge.py").read_text(encoding="utf-8"), method
         )
         self.assertIn("goal_means_contract(effective_input)", source)
-        self.assertIn("generate_interactive_analysis", source)
         self.assertIn("guarded_response", source)
         self.assertIn("_validate_before_display", source)
         self.assertLess(source.index("goal_means_contract(effective_input)"), source.index("def _stream():"))
+
+        bridge_source = (ROOT / "cognition/persona_bridge.py").read_text(encoding="utf-8")
+        tree = ast.parse(bridge_source)
+        deferred = next(
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "run_deferred_goal_means_analysis"
+        )
+        deferred_source = ast.get_source_segment(bridge_source, deferred)
+        self.assertIn("analysis_prompt(user_text", deferred_source)
+        self.assertIn("generate_bare_result", deferred_source)
+        self.assertIn("parse_analysis", deferred_source)
 
     def test_blocking_fallback_keeps_quantitative_guard(self):
         source = (ROOT / "cognition/persona_bridge.py").read_text(encoding="utf-8")
@@ -223,7 +234,7 @@ class GoalMeansReasoningTests(unittest.TestCase):
         method = next(
             node for node in ast.walk(tree)
             if isinstance(node, ast.AsyncFunctionDef)
-            and node.name == "get_response_stream"
+            and node.name == "_get_response_stream_impl"
         )
         method_source = ast.get_source_segment(source, method)
         fallback_call = method_source.index("self._system.get_response")

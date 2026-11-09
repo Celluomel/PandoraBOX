@@ -63,6 +63,11 @@ _STOP = {
     "sont", "dois", "doit", "faire", "fait", "ma", "mon", "mes", "au",
     "aux", "du", "des", "les", "une", "un", "et", "ou", "pas", "qui",
     "que", "quoi", "où", "leur", "leurs", "nous", "vous", "dans", "sur",
+    # Conversation fillers and inflected forms frequently extracted as topics.
+    "toujours", "quelles", "quels", "assez", "sois", "soit", "soyez",
+    "savoir", "curieux", "curieuse", "curiosité", "tente", "essayez",
+    "essaie", "peux", "peut", "pourrais", "pourrait", "dites", "faut",
+    "semble", "sembler", "vraiment",
 }
 
 # Minimum character length for a concept to be kept
@@ -74,6 +79,7 @@ _GENERIC_CONCEPTS = {
     "someone", "anyone", "everyone", "person", "people", "world", "life",
     "work", "working", "done", "doing", "able", "going", "being",
     "different", "important", "possible", "available",
+    "chose", "choses", "truc", "trucs",
 }
 
 _EXTRACTION_PROMPT = """Extract concepts and relations from this exchange.
@@ -127,9 +133,13 @@ class SemanticExtractor:
         response:      str,
         meta_scores:   Optional[Dict] = None,
         workspace=None,
+        observation_role: str = "user_topic",
     ):
         """Queue every completed turn for asynchronous semantic extraction."""
-        item = (user_input, response, meta_scores, workspace)
+        role = str(observation_role or "user_topic")
+        if role not in {"user_topic", "peer_topic"}:
+            role = "user_topic"
+        item = (user_input, response, meta_scores, workspace, role)
         with self._lock:
             self._queue.put_nowait(item)
             if self._worker_running:
@@ -156,7 +166,8 @@ class SemanticExtractor:
             finally:
                 self._queue.task_done()
 
-    def _extract(self, user_input, response, meta_scores, workspace):
+    def _extract(self, user_input, response, meta_scores, workspace,
+                 observation_role="user_topic"):
         try:
             t0 = time.time()
             concepts, relations, topic, cog_load = self._parse(user_input, response)
@@ -164,10 +175,16 @@ class SemanticExtractor:
             # Write to semantic memory
             for c in concepts:
                 self._memory.upsert_concept(c, strength_boost=0.04)
-            # Keep user-grounded topics distinct from assistant-generated prose.
-            for c in self._keyword_extract(user_input or ""):
+            # Keep interlocutor topics distinct from assistant prose and from
+            # other interlocutors. FLUX may contribute shared concepts, but its
+            # utterances must never qualify as human-originated goal evidence.
+            is_peer = observation_role == "peer_topic"
+            for c in dict.fromkeys(self._keyword_extract(user_input or "")):
                 self._memory.record_observation(
-                    c, source="conversation", role="user_topic", confidence=0.8
+                    c,
+                    source="peer_dialogue" if is_peer else "conversation",
+                    role=observation_role,
+                    confidence=0.8,
                 )
             for rel in relations:
                 self._memory.upsert_relation(
@@ -177,8 +194,12 @@ class SemanticExtractor:
             if workspace and topic:
                 try:
                     workspace.broadcast(
-                        source   = "semantic_extractor",
-                        content  = f"semantic: {topic} — concepts: {', '.join(concepts[:3])}",
+                        source   = "peer_semantic_extractor" if is_peer else "semantic_extractor",
+                        content  = (
+                            f"peer hypothesis: {topic} — extracted concepts: {', '.join(concepts[:3])}"
+                            if is_peer else
+                            f"semantic: {topic} — concepts: {', '.join(concepts[:3])}"
+                        ),
                         priority = 0.4,
                     )
                 except Exception:

@@ -56,12 +56,6 @@ import managers.settings_manager as _settings_mod
 from managers.settings_manager import config, on_settings_changed, get_persona_name
 
 from core.state import state
-from core.agent_controller import AgentController
-from core.agent_state import AgentState
-
-_agent_state = AgentState()
-controller   = AgentController(state, agent=_agent_state)
-
 # Debug: print active configuration at startup
 print('\n' + '=' * 50)
 print('🔧 LOADED CONFIGURATION:')
@@ -112,9 +106,11 @@ import asyncio as _asyncio
 
 # Optional React interface shares the existing runtime and remains opt-in.
 from core.interface_api import router as _interface_router
+from core.lumina_peer_api import mount_lumina_peer_routes
 from pathlib import Path as _Path
 from starlette.staticfiles import StaticFiles as _StaticFiles
 _nicegui_app.include_router(_interface_router)
+mount_lumina_peer_routes(_nicegui_app)
 _interface_dist = _Path(__file__).parent / 'frontend' / 'dist'
 if _interface_dist.is_dir():
     _nicegui_app.mount('/next', _StaticFiles(directory=str(_interface_dist), html=True), name='interface')
@@ -255,6 +251,7 @@ from nicegui import ui, app
 if __name__ in {'__main__', '__mp_main__'}:
 
     _body_bridge_listener = None
+    _brain_api_listener = None
 
     # ── Pre-warm brain on server startup — before any browser connects ──
     async def _on_startup():
@@ -263,7 +260,7 @@ if __name__ in {'__main__', '__mp_main__'}:
         By the time a browser opens, state.ready is True and the
         page renders immediately — no splash screen wait.
         """
-        global _body_bridge_listener
+        global _body_bridge_listener, _brain_api_listener
 
         # Bind port 8786 immediately; the full Brain can take a while to warm
         # up. The WebSocket handler rejects retries until state.ready so an
@@ -277,6 +274,15 @@ if __name__ in {'__main__', '__mp_main__'}:
             )
         except Exception as exc:
             logger.exception('Body bridge listener failed to start: %s', exc)
+
+        # Keep the headless Brain API available when the full UI is launched.
+        # FLUX and other clients use the same configured API port (8765 by
+        # default); the interface remains on NICEGUI_PORT (8080 by default).
+        try:
+            from core.brain_api_server import start_brain_api_server
+            _brain_api_listener = start_brain_api_server(config)
+        except Exception as exc:
+            logger.exception('Brain REST API listener failed to start: %s', exc)
 
         if not state.ready and not state.initializing:
             logger.info('🧠 Pre-warming PandoraBOX brain on startup…')
@@ -292,16 +298,21 @@ if __name__ in {'__main__', '__mp_main__'}:
             except Exception:
                 pass
 
-            if state.orchestrator is not None:
+            if state.ready and state.orchestrator is not None:
                 import asyncio as _asyncio
                 _asyncio.create_task(state.orchestrator.start())
                 logger.info('🧠 Orchestrator started')
+            elif state.orchestrator is not None:
+                logger.warning('Orchestrator not started because the Brain core is degraded')
 
             if config.CAMERA_AUTOSTART and state.vision:
                 import asyncio as _asyncio
                 await _asyncio.to_thread(state.vision.start_camera)
 
-            logger.info('✅ Brain pre-warm complete — ready for connections')
+            if state.ready:
+                logger.info('✅ Brain pre-warm complete — ready for connections')
+            else:
+                logger.error('❌ Brain pre-warm complete in degraded state; check initialization errors')
 
     from managers.security_manager import security
     app.on_startup(_on_startup)
@@ -314,6 +325,11 @@ if __name__ in {'__main__', '__mp_main__'}:
             stop_body_bridge_server(_body_bridge_listener)
         except Exception as exc:
             logger.warning('Body bridge listener shutdown failed: %s', exc)
+        try:
+            from core.brain_api_server import stop_brain_api_server
+            stop_brain_api_server(_brain_api_listener)
+        except Exception as exc:
+            logger.warning('Brain REST API shutdown failed: %s', exc)
         try:
             organism = getattr(getattr(state, 'persona', None), '_organism', None)
             if organism is not None and hasattr(organism, 'shutdown'):

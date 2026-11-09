@@ -51,7 +51,7 @@ _parser.add_argument("--no-telegram",  action="store_true", help="Disable Telegr
 _parser.add_argument("--port",         type=int, default=None, help="REST API port (default: BRAIN_API_PORT from config.json)")
 _parser.add_argument("--host",         default="127.0.0.1",   help="REST API host (default 127.0.0.1)")
 _parser.add_argument("--vision",       action="store_true",   help="Enable camera (default: off)")
-_ARGS = _parser.parse_args()
+_ARGS = _parser.parse_args() if __name__ == "__main__" else _parser.parse_args([])
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -68,8 +68,8 @@ import sys
 import os
 import asyncio
 import logging
-import threading
 import time
+import uuid
 from pathlib import Path
 
 logging.basicConfig(
@@ -98,7 +98,6 @@ from managers.settings_manager import config
 if _ARGS.port is None:
     _ARGS.port = int(getattr(config, "BRAIN_API_PORT", 8765) or 8765)
 from core.state import state
-state.local_vision_launch_enabled = bool(_ARGS.vision)
 
 async def _boot() -> bool:
     """
@@ -106,6 +105,7 @@ async def _boot() -> bool:
     Returns True when the brain is ready to accept messages.
     """
     logger.info("🧠 Booting PandoraBOX cognitive organism…")
+    state.local_vision_launch_enabled = bool(_ARGS.vision)
 
     # Disable camera autostart unless --vision flag was passed.
     # Use __dict__ bypass so it works on both pydantic v1 and v2
@@ -119,7 +119,9 @@ async def _boot() -> bool:
     await state.initialize()
 
     if not state.ready:
-        logger.error("❌ Brain boot failed — LLM unavailable. Check config.json / LM Studio.")
+        logger.error(
+            "❌ Brain core unavailable — check LLM provider and PersonaBridge initialization."
+        )
         return False
 
     logger.info(f"✅ LLM ready        — {config.LLM_PROVIDER}/{config.LLM_MODEL}")
@@ -155,13 +157,14 @@ from fastapi import FastAPI, HTTPException
 from fastapi.requests import Request
 from fastapi.responses import StreamingResponse, Response
 from pydantic import BaseModel
-import uvicorn
 
 api = FastAPI(
     title="PandoraBOX Brain API",
     description="Headless REST interface to the PandoraBOX cognitive organism.",
     version="1.0.0",
 )
+from core.lumina_peer_api import mount_lumina_peer_routes
+mount_lumina_peer_routes(api)
 
 # Global messaging manager — set in _main after start()
 _messaging = None
@@ -304,14 +307,29 @@ class ChatRequest(BaseModel):
 async def chat(req: ChatRequest):
     if not state.ready or not state.persona:
         raise HTTPException(503, "Brain not ready yet — try again in a moment")
+    state.notify_user_turn(req.text, req.user_id)
 
     if req.stream:
         async def _sse():
+            assistant_parts = []
+            turn_completed = False
+            completed_turn_id = ""
+            cognitive_scope_id = req.user_id
             async for chunk in state.persona.get_response_stream(req.text, req.user_id):
                 if isinstance(chunk, dict) and chunk.get("__meta__"):
+                    turn_completed = not bool(chunk.get("error"))
+                    completed_turn_id = str(chunk.get("turn_id") or "")
+                    cognitive_scope_id = str(chunk.get("cognitive_scope_id") or req.user_id)
                     yield f"data: [DONE] {chunk.get('emotion','neutral')}\n\n"
                 else:
+                    if chunk is not None:
+                        assistant_parts.append(str(chunk))
                     yield f"data: {chunk}\n\n"
+            if turn_completed:
+                state.schedule_deferred_cognitive_stages(
+                    req.text, "".join(assistant_parts), req.user_id,
+                    turn_id=completed_turn_id, cognitive_scope_id=cognitive_scope_id,
+                )
         return StreamingResponse(_sse(), media_type="text/event-stream")
 
     full_text   = ""
@@ -319,10 +337,16 @@ async def chat(req: ChatRequest):
     token_count = 0
     sources     = []
     body_plan   = None
+    turn_completed = False
+    completed_turn_id = ""
+    cognitive_scope_id = req.user_id
     async for chunk in state.persona.get_response_stream(req.text, req.user_id):
         if isinstance(chunk, dict):
             if chunk.get("__meta__"):
                 emotion = chunk.get("emotion", "neutral")
+                turn_completed = not bool(chunk.get("error"))
+                completed_turn_id = str(chunk.get("turn_id") or "")
+                cognitive_scope_id = str(chunk.get("cognitive_scope_id") or req.user_id)
                 if chunk.get("body_plan") is not None:
                     body_plan = chunk.get("body_plan")
             elif chunk.get("type") == "web_sources":
@@ -332,6 +356,12 @@ async def chat(req: ChatRequest):
         elif chunk is not None:
             full_text   += str(chunk)
             token_count += 1
+
+    if turn_completed:
+        state.schedule_deferred_cognitive_stages(
+            req.text, full_text, req.user_id,
+            turn_id=completed_turn_id, cognitive_scope_id=cognitive_scope_id,
+        )
 
     return {
         "response": full_text.strip(),
@@ -422,183 +452,6 @@ async def messaging_users():
     return {"users": _messaging.list_users()}
 
 
-# ── POST /lumina-network/chat ──────────────────────────────────────────
-@api.post('/lumina-network/chat')
-async def lumina_network_chat(request: Request):
-    body            = await request.json()
-    text            = body.get('text', '').strip()
-    sender_id       = body.get('sender_id', 'lumina_master')
-    sender_name     = body.get('sender_name', 'Master')
-    conversation_id = body.get('conversation_id', '')
-
-    # Phase 6.5 — Peer Workspace Snapshot: a distinct message type from
-    # ordinary chat. Master sends a small projection of ITS workspace
-    # (focus + top hypotheses only); Flux does NOT copy it in — that
-    # would be one brain running twice (explicitly warned against in the
-    # architecture proposal this implements). Instead Flux feeds it into
-    # its OWN UniversalConnector as a peer_cognition percept and lets its
-    # OWN deliberate() (own goals, own tensions, own pressure) produce an
-    # independent result, informed by but not dictated by the snapshot.
-    if body.get('message_type') == 'workspace_snapshot':
-        if not state.ready or not state.persona:
-            raise HTTPException(503, 'Brain not ready')
-        snapshot = body.get('snapshot') or {}
-        shared_focus = str(snapshot.get('focus') or '').strip()
-        org = getattr(state.persona, '_organism', None)
-        if org is None or not shared_focus:
-            return {'response': '', 'sender_id': 'flux', 'sender_name': 'Flux',
-                    'conversation_id': conversation_id}
-        try:
-            from cognition.universal_connector import Percept, get_universal_connector
-            get_universal_connector(org).perceive(Percept(
-                modality   = "peer_cognition",
-                source     = "lumina_master",
-                payload    = shared_focus[:200],
-                confidence = 0.6,
-                salience   = 0.5,
-                provenance = {"exchange": "workspace_snapshot", "sender": sender_name},
-            ))
-        except Exception as e:
-            logger.debug(f"[brain] snapshot percept failed (non-fatal): {e}")
-
-        flux_focus = ""
-        try:
-            from cognition.recursive_deliberation import deliberate
-            deliberate(org, shared_focus)
-            gw = getattr(org, 'workspace', None)
-            if gw is not None:
-                flux_focus = gw.get_state().focus or ""
-        except Exception as e:
-            logger.debug(f"[brain] own deliberation failed (non-fatal): {e}")
-
-        from managers.settings_manager import config as _child_cfg
-        child_persona = getattr(_child_cfg, 'PERSONA_NAME', 'Flux')
-        logger.info(f"🌐 [network] snapshot from {sender_name} -> Flux focus: {flux_focus[:60]!r}")
-        return {
-            'response':         flux_focus,
-            'sender_id':        child_persona.lower().replace(' ', '_'),
-            'sender_name':      child_persona,
-            'conversation_id':  conversation_id,
-        }
-
-    if not text:
-        raise HTTPException(400, 'text required')
-    if not state.ready or not state.persona:
-        raise HTTPException(503, 'Brain not ready')
-    full_text = ''
-    # v53/v56: pre-response cognitive recording on the child (Flux) side
-    # Flux also learns from PandoraBOX-Flux exchanges — symmetric architecture.
-    _child_pcm = _child_wsdm = None
-    _master_uid = f"lumina_master_{sender_id}"
-    _flux_action = "philosophical"
-    try:
-        _org  = getattr(getattr(state, 'persona', None), '_organism', None)
-        _loop = getattr(_org, '_loop', None) if _org else None
-        _child_pcm  = getattr(_loop, '_consequence_model', None) if _loop else None
-        _child_wsdm = getattr(_loop, '_world_self_dynamics', None) if _loop else None
-        if _child_pcm:
-            _flux_action = _child_pcm.classify(text)
-            _flux_state  = _child_pcm.read_state()
-            _child_pcm.record_action(_flux_action, _flux_state, interaction_n=0)
-        if _child_wsdm:
-            _child_wsdm.record_context(
-                action_type = _flux_action,
-                user_id     = _master_uid,
-            )
-    except Exception:
-        pass
-
-    async for chunk in state.persona.get_response_stream(text, user_id=sender_id):
-        if isinstance(chunk, dict): continue
-        full_text += chunk
-
-    # v53/v56: post-response outcome recording on Flux side
-    try:
-        if full_text and (_child_pcm or _child_wsdm):
-            resp_words   = len(full_text.split())
-            has_question = "?" in full_text
-            _outcome = (
-                "positive" if (resp_words > 20 and has_question)
-                else "neutral" if resp_words > 8
-                else "negative"
-            )
-            if _child_pcm:
-                _child_pcm.record_outcome(_child_pcm.read_state(), _outcome)
-            if _child_wsdm:
-                _child_wsdm.record_outcome(
-                    outcome       = _outcome,
-                    user_id       = _master_uid,
-                    response_text = full_text,
-                    user_input    = text,
-                )
-    except Exception:
-        pass
-    # Child responds with its own persona name from config
-    from managers.settings_manager import config as _child_cfg
-    child_persona = getattr(_child_cfg, 'PERSONA_NAME', 'Child')
-    # ── Persist to child memory + LLM history ────────────────────────────
-    try:
-        if state.memory and full_text:
-            mem_text = (
-                f"[Dialogue with {sender_name}] "
-                f"{sender_name}: {text} | "
-                f"{child_persona}: {full_text}"
-            )
-            state.memory.add_memory(mem_text, metadata={
-                "role": "network_dialogue",
-                "peer": sender_name,
-                "conv_id": conversation_id,
-            })
-        # LLM history on child side — master message as "user", child reply as "assistant"
-        if state.llm and hasattr(state.llm, "history") and full_text:
-            state.llm.history.append({"role": "user",      "content": f"[{sender_name}]: {text}"})
-            state.llm.history.append({"role": "assistant", "content": full_text})
-    except Exception:
-        pass
-
-    logger.info(f'\U0001f310 [network] {sender_name} \u2192 {child_persona}: {text[:40]!r} \u2192 {full_text[:40]!r}')
-    return {'response': full_text.strip(), 'sender_id': child_persona.lower().replace(' ', '_'), 'sender_name': child_persona, 'conversation_id': conversation_id}
-
-
-# ── POST /lumina-network/receive ───────────────────────────────────────
-@api.post('/lumina-network/receive')
-async def lumina_network_receive(request: Request):
-    body = await request.json()
-    if not state.lumina_network:
-        raise HTTPException(503, 'LuminaNetwork not enabled')
-    response = await state.lumina_network.receive_from_child(body)
-    return {'response': response}
-
-
-# ── GET /lumina-network/children ───────────────────────────────────────
-@api.get('/lumina-network/children')
-async def lumina_network_children():
-    if not state.lumina_network:
-        return {'children': []}
-    return {'children': state.lumina_network.list_children()}
-
-
-# ── POST /lumina-network/epistemic  (v65 StructuralCoupling) ─────────────────
-@api.post('/lumina-network/epistemic')
-async def lumina_network_epistemic(request: Request):
-    """
-    Receives an EpistemicUpdate from the master instance.
-    Incorporates resolved concepts as curiosity seeds, skill signals
-    as exploration prompts.  Does NOT share identity or beliefs.
-    """
-    try:
-        body = await request.json()
-        org  = getattr(getattr(state, 'persona', None), '_organism', None)
-        loop = getattr(org, '_loop', None) if org else None
-        sc   = getattr(loop, '_structural_coupling', None) if loop else None
-        if sc:
-            sc.receive_update(body)
-            return {'status': 'ok', 'incorporated': True}
-        return {'status': 'no_coupling_module', 'incorporated': False}
-    except Exception as e:
-        return {'status': 'error', 'detail': str(e)}
-
-
 # ── POST /messaging/send ──────────────────────────────────────────
 class SendRequest(BaseModel):
     platform: str     # "whatsapp" | "telegram"
@@ -686,16 +539,33 @@ async def _repl():
             print("   ⏳ Brain not ready yet — please wait…")
             continue
 
+        state.notify_user_turn(text, user_id)
+
         print("PandoraBOX: ", end="", flush=True)
         emotion = "neutral"
+        assistant_parts = []
+        turn_completed = False
+        completed_turn_id = ""
+        cognitive_scope_id = user_id
         try:
             async for chunk in state.persona.get_response_stream(text, user_id):
                 if isinstance(chunk, dict) and chunk.get("__meta__"):
                     emotion = chunk.get("emotion", "neutral")
+                    turn_completed = not bool(chunk.get("error"))
+                    completed_turn_id = str(chunk.get("turn_id") or "")
+                    cognitive_scope_id = str(chunk.get("cognitive_scope_id") or user_id)
                 else:
+                    if chunk is not None:
+                        assistant_parts.append(str(chunk))
                     print(chunk, end="", flush=True)
         except Exception as e:
             print(f"\n[Error: {e}]")
+
+        if turn_completed:
+            state.schedule_deferred_cognitive_stages(
+                text, "".join(assistant_parts), user_id,
+                turn_id=completed_turn_id, cognitive_scope_id=cognitive_scope_id,
+            )
 
         print(f"\n   ({emotion})\n")
 
@@ -733,27 +603,15 @@ async def _main():
         _messaging = await _start_messaging()
 
     # ── REST API in background thread ─────────────────────────────────
-    api_server = None
-    api_thread = None
+    api_listener = None
     bridge_listener = None
     if not _ARGS.no_api:
         logger.info(f"🌐 REST API → http://{_ARGS.host}:{_ARGS.port}")
         logger.info(f"   Docs    → http://{_ARGS.host}:{_ARGS.port}/docs")
-
-        cfg = uvicorn.Config(
-            app=api,
-            host=_ARGS.host,
-            port=_ARGS.port,
-            log_level="warning",
-            access_log=False,
+        from core.brain_api_server import start_brain_api_server
+        api_listener = start_brain_api_server(
+            config, api, host=_ARGS.host, port=_ARGS.port,
         )
-        api_server = uvicorn.Server(cfg)
-
-        def _run_api():
-            asyncio.run(api_server.serve())
-
-        api_thread = threading.Thread(target=_run_api, daemon=True, name="api-server")
-        api_thread.start()
 
         if bool(getattr(config, "BODY_BRIDGE_LISTEN_ENABLED", False)):
             try:
@@ -819,8 +677,9 @@ async def _main():
             sess.on_shutdown(state.llm.history)
     except Exception:
         pass
-    if api_server:
-        api_server.should_exit = True
+    if api_listener:
+        from core.brain_api_server import stop_brain_api_server
+        stop_brain_api_server(api_listener)
     if bridge_listener:
         from core.body_bridge_server import stop_body_bridge_server
         stop_body_bridge_server(bridge_listener)

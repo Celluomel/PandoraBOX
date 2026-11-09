@@ -17,8 +17,8 @@ class BodyAwarenessContextTest(unittest.TestCase):
             model = EmbodiedWorldModel(data_dir=temp_dir, source=SimRobotSource())
             context = model.context_for_brain()
 
-        self.assertIn("CURRENT EMBODIED STATE", context)
-        self.assertIn("Current Body pose: unavailable", context)
+        self.assertIn("BODY WORLD-MODEL CONTEXT", context)
+        self.assertIn("Body pose cache (RECENT", context)
         self.assertIn("Sensor source: simulated robot sandbox", context)
-        self.assertIn("Do not infer an unobserved body state", context)
+        self.assertIn("do not infer an unobserved Body state", context)
 

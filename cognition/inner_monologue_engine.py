@@ -131,7 +131,7 @@ mechanically reproduce it, just let it guide you."""
         self._avg_pass1_ms   = 0.0
 
         if self._enabled:
-            logger.info("[InnerMonologue] Two-pass architecture enabled")
+            logger.info("[InnerMonologue] Inline inner-process directive enabled (single response generation)")
         else:
             logger.info("[InnerMonologue] LLM not available — single-pass fallback active")
 

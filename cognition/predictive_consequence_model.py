@@ -253,6 +253,32 @@ class PredictiveConsequenceModel:
         action_type, state_before, interaction_n = self._pending
         self._pending = None
 
+        self.record_observed_transition(
+            action_type, state_before, state_after,
+            interaction_n=interaction_n, outcome=outcome,
+            resolve_calibration=True,
+        )
+
+    def record_observed_transition(
+        self,
+        action_type: str,
+        state_before: List[float],
+        state_after: List[float],
+        *,
+        interaction_n: int = 0,
+        outcome: str = "neutral",
+        resolve_calibration: bool = False,
+    ) -> None:
+        """Persist one explicit transition without using shared pending state.
+
+        Concurrent sources (for example, a slow FLUX HTTP exchange and a
+        human chat turn) must provide their own before/after snapshots. The
+        default deliberately does not resolve a global calibration forecast;
+        callers with a matching prediction can opt in explicitly.
+        """
+        state_before = [float(value) for value in state_before]
+        state_after = [float(value) for value in state_after]
+
         delta = [
             round(a - b, 4)
             for a, b in zip(state_after, state_before)
@@ -276,15 +302,23 @@ class PredictiveConsequenceModel:
             f"att Δ{delta[2]:+.3f} ({outcome})"
         )
 
-        # Phase 3.1: resolve any pending calibration prediction for this
-        # action_type now that we know the actual outcome. This is what
-        # closes the loop — predicted_confidence vs actual correctness.
+        # Resolve only when the caller knows this transition belongs to the
+        # outstanding prediction. Peer exchanges do not own human forecasts.
         try:
-            if self._calibration_engine is not None:
+            if resolve_calibration and self._calibration_engine is not None:
+                energy_delta = (
+                    state_after[0] - state_before[0]
+                    if state_before and state_after else 0.0
+                )
+                actual_direction = (
+                    "positive" if energy_delta > 0.01 else
+                    "negative" if energy_delta < -0.01 else
+                    "neutral"
+                )
                 self._calibration_engine.resolve_prediction(
                     module="pcm",
                     key=action_type,
-                    actual_direction=outcome,
+                    actual_direction=actual_direction,
                 )
         except Exception as _cal_e:
             logger.debug(f"[ConsequenceModel] Calibration resolve error: {_cal_e}")

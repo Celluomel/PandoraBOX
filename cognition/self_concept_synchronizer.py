@@ -48,6 +48,9 @@ class SelfConceptSynchronizer:
     def run(self) -> Dict[str, Any]:
         report = {
             'beliefs_synced':  0,
+            'beliefs_eligible_from_identity': 0,
+            'beliefs_pruned_by_cap': 0,
+            'beliefs_total_after_sync': 0,
             'milestones_found': 0,
             'coherence_before': 0.0,
             'coherence_after':  0.0,
@@ -63,6 +66,13 @@ class SelfConceptSynchronizer:
         # 1. Sync beliefs → self_concept.beliefs
         synced = self._sync_beliefs(sc)
         report['beliefs_synced'] = synced
+        report['beliefs_eligible_from_identity'] = getattr(
+            self, '_last_eligible_beliefs', 0
+        )
+        report['beliefs_pruned_by_cap'] = getattr(self, '_last_cap_pruned', 0)
+        report['beliefs_total_after_sync'] = sum(
+            isinstance(value, dict) for value in sc.get('beliefs', {}).values()
+        ) if isinstance(sc.get('beliefs', {}), dict) else len(sc.get('beliefs', []))
 
         # 2. Recompute coherence
         new_coherence = self._compute_coherence(sc)
@@ -163,7 +173,9 @@ class SelfConceptSynchronizer:
     # Hard cap on total beliefs stored (prune lowest if exceeded)
     BELIEF_MAX_COUNT = 40
     # Categories that are too noisy to sync from identity.json
-    BELIEF_SKIP_CATEGORIES = frozenset({'thread_learning', 'raw_extraction', 'noise'})
+    BELIEF_SKIP_CATEGORIES = frozenset({
+        'thread_learning', 'raw_extraction', 'noise', 'semantic_concept',
+    })
 
     def _sync_beliefs(self, sc: Dict) -> int:
         """
@@ -186,12 +198,23 @@ class SelfConceptSynchronizer:
             if b.get('name') and b.get('category') not in self.BELIEF_SKIP_CATEGORIES
             and b.get('confidence', 0) >= self.BELIEF_MIN_CONFIDENCE
         }
+        self._last_eligible_beliefs = len(incoming)
+        self._last_cap_pruned = 0
+
+        # Apply the cap before merging. Adding every eligible belief and then
+        # pruning the overflow made the same low-ranked beliefs appear as
+        # "synced" and "pruned" on every consolidation cycle. Stable tie
+        # breaking keeps the admitted set identical when confidence ties.
+        incoming = dict(sorted(
+            incoming.items(),
+            key=lambda item: (-item[1].get('confidence', 0), str(item[0]))
+        )[:self.BELIEF_MAX_COUNT])
 
         existing = sc.get('beliefs', {})
         if isinstance(existing, list):
             existing = {b.get('name', str(i)): b for i, b in enumerate(existing)}
 
-        synced = 0
+        changed_keys = set()
 
         # ── Pass 1: decay existing beliefs that haven't been reinforced ──────
         pruned = []
@@ -257,12 +280,12 @@ class SelfConceptSynchronizer:
                     'source':     b.get('source', 'identity.json'),
                     'synced_at':  _now(),
                 }
-                synced += 1
+                changed_keys.add(_norm_key)
             else:
                 # Update confidence if improved
                 if b.get('confidence', 0) > existing[_norm_key].get('confidence', 0):
                     existing[_norm_key]['confidence'] = b['confidence']
-                    synced += 1
+                    changed_keys.add(_norm_key)
                 existing[_norm_key]['name'] = _norm_name  # repair corrupted name in place
                 existing[_norm_key].setdefault('valence', b.get('valence', 'positive'))
                 existing[_norm_key].setdefault('source',  b.get('source',  'identity.json'))
@@ -277,9 +300,10 @@ class SelfConceptSynchronizer:
         if len(existing) > self.BELIEF_MAX_COUNT:
             sorted_keys = sorted(
                 existing.keys(),
-                key=lambda k: existing[k].get('confidence', 0)
+                key=lambda k: (existing[k].get('confidence', 0), str(k))
             )
             overflow = len(existing) - self.BELIEF_MAX_COUNT
+            self._last_cap_pruned = overflow
             for k in sorted_keys[:overflow]:
                 del existing[k]
             logger.info(
@@ -288,14 +312,19 @@ class SelfConceptSynchronizer:
             )
 
         sc['beliefs'] = existing
-        return synced
+        # Count only incoming changes which survived the cap. This keeps the
+        # metric aligned with persisted state rather than transient candidates.
+        return sum(key in existing for key in changed_keys)
 
     # ── Coherence ─────────────────────────────────────────────────────────────
 
     def _compute_coherence(self, sc: Dict) -> float:
-        """
-        Coherence = weighted average of belief confidence per category.
-        More high-confidence beliefs of diverse categories = higher coherence.
+        """Compute confidence coherence from recognized evidence categories.
+
+        Category count is not evidence of consistency. The former diversity
+        bonus let metadata/unknown categories raise coherence independently
+        of belief quality, so unknown categories are excluded and no diversity
+        bonus is applied.
         """
         beliefs = sc.get('beliefs', {})
         if isinstance(beliefs, dict):
@@ -315,6 +344,8 @@ class SelfConceptSynchronizer:
                 continue
             cat  = b.get('category', 'other')
             conf = b.get('confidence', 0.5)
+            if cat not in self.COHERENCE_WEIGHTS:
+                continue
             by_cat.setdefault(cat, []).append(conf)
 
         if not by_cat:
@@ -331,11 +362,7 @@ class SelfConceptSynchronizer:
 
         base = total_score / total_weight if total_weight > 0 else 0.3
 
-        # Diversity bonus: more categories = higher coherence
-        diversity = min(1.0, len(by_cat) / 5.0)
-        coherence = base * 0.7 + diversity * 0.3
-
-        return round(max(0.0, min(1.0, coherence)), 4)
+        return round(max(0.0, min(1.0, base)), 4)
 
     # ── Milestones ────────────────────────────────────────────────────────────
 

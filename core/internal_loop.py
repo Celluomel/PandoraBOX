@@ -111,6 +111,11 @@ class InternalThoughtLoop:
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._slow_cycle_count = 0
+        self._last_fast_cycle_at = 0.0
+        self._fast_cycle_error_count = 0
+        self._last_slow_cycle_at = 0.0
+        self._slow_cycle_error_count = 0
+        self._last_slow_cycle_error_type = ""
         self._pending_thoughts: list[str] = []   # queued for next interaction
         self._lock = threading.Lock()
         # Proposal-driven capability experiments run only in the slow loop.
@@ -392,8 +397,11 @@ class InternalThoughtLoop:
         tension_active  = False   # hysteresis state — persists across fast cycles
 
         while self._running:
+            fast_cycle_completed = False
             try:
                 self._fast_cycle()
+                self._last_fast_cycle_at = time.time()
+                fast_cycle_completed = True
 
                 now          = time.time()
                 elapsed_slow = now - last_slow
@@ -432,6 +440,8 @@ class InternalThoughtLoop:
                     last_slow = now
 
             except Exception as e:
+                if not fast_cycle_completed:
+                    self._fast_cycle_error_count += 1
                 logger.error(f"[InternalLoop] Cycle error: {e}", exc_info=True)
 
             time.sleep(FAST_CYCLE_SECONDS)
@@ -533,6 +543,11 @@ class InternalThoughtLoop:
             return
         try:
             self._slow_cycle_impl()
+            self._last_slow_cycle_at = time.time()
+        except Exception as exc:
+            self._slow_cycle_error_count += 1
+            self._last_slow_cycle_error_type = type(exc).__name__
+            raise
         finally:
             self._lock.release()
 
@@ -655,9 +670,12 @@ class InternalThoughtLoop:
         except Exception as _tp:
             logger.debug(f"[InternalLoop] TemporalProjection error (non-fatal): {_tp}")
 
-        # ── v56: WorldSelfDynamicsModel — causal dynamics recording ───────────
-        # Records post-interaction self+world deltas each slow cycle,
-        # matching the context recorded pre-response in cognitive_organism.
+        # ── v56: WorldSelfDynamicsModel lifecycle ─────────────────────────────
+        # WSDM transitions are paired in CognitiveOrganism._post_interaction,
+        # against the response that created the pending context. A periodic
+        # slow cycle must never consume that pending turn while its LLM call is
+        # still running (the PCM outcome was already moved to per-response
+        # finalization for the same reason).
         try:
             if not hasattr(self, '_world_self_dynamics'):
                 self._world_self_dynamics = None
@@ -667,16 +685,6 @@ class InternalThoughtLoop:
                     from cognition.world_self_dynamics_model import WorldSelfDynamicsModel
                     self._world_self_dynamics = WorldSelfDynamicsModel(o, _ai_sys)
                     logger.info("[InternalLoop] WorldSelfDynamicsModel ready ✅")
-            if self._world_self_dynamics is not None:
-                wsdm = self._world_self_dynamics
-                if wsdm._pending is not None:
-                    _ai   = getattr(o, 'ai_system', None)
-                    _emo  = getattr(_ai, 'emotional_state', None) if _ai else None
-                    _val  = "neutral"
-                    if _emo:
-                        ev = getattr(_emo, 'overall_valence', 0.0)
-                        _val = "positive" if ev > 0.2 else "negative" if ev < -0.2 else "neutral"
-                    wsdm.record_outcome(outcome=_val)
         except Exception as _wsdm:
             logger.debug(f"[InternalLoop] WorldSelfDynamics error (non-fatal): {_wsdm}")
 

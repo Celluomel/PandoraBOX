@@ -39,7 +39,6 @@ from managers.security_manager import security, RateLimitError, SecurityViolatio
 
 from core.state import state
 from core.connection import connection_monitor
-from core.agent_controller import AgentController
 from core.agent_state import AgentState, VisionOutput as _VisionOutput
 
 from utils.user_switcher_ui import build_user_chip, refresh_chip
@@ -49,7 +48,6 @@ from utils.enhanced_css import ENHANCED_GLOBAL_CSS
 from pages.shared import GLOBAL_CSS, _safe_ui, _drain_ui_queue, _build_proactive_prompt
 
 _agent_state = AgentState()
-controller = AgentController(state, agent=_agent_state)
 
 logger = logging.getLogger(__name__)
 
@@ -453,10 +451,12 @@ async def main_page():
                         if children_cfg:
                             state.lumina_network.load_from_config(children_cfg)
                         master_name = getattr(config, 'LUMINA_MASTER_NAME', 'PandoraBOX-Master')
-                        master_url  = f"http://127.0.0.1:{getattr(config, 'NICEGUI_PORT', 8080)}"
+                        from core.lumina_network_config import master_callback_base_url
+                        master_url = master_callback_base_url(config)
                         state.lumina_network.set_master_info(master_url, master_name)
                         state.lumina_network.set_bubble_fn(_network_bubble)
-                        ui.notify(f'🌐 Network connector started — {len(children_cfg)} child(ren)', type='positive', position='top')
+                        loaded_children = len(state.lumina_network.list_children())
+                        ui.notify(f'🌐 Network connector started — {loaded_children} child(ren)', type='positive', position='top')
                     except Exception as _e:
                         ui.notify(f'Network init error: {_e}', type='warning', position='top')
             else:
@@ -874,6 +874,11 @@ async def main_page():
             except Exception as _se:
                 logger.warning(f"Security gate error: {_se}")
 
+            # Feed the sanitized turn into the autonomous cognitive
+            # orchestrator. Voice-start reports presence before the
+            # transcript exists; this callback has the actual user text.
+            state.notify_user_turn(text, user_manager.active_id)
+
             # Reset presence-engine silence detector — user is interacting
             try:
                 if state.vision and state.vision.presence_engine:
@@ -886,8 +891,8 @@ async def main_page():
                 if state.lumina_network and hasattr(state.lumina_network, 'inject_user_message'):
                     # Check if any dialogue task is running
                     if any(not t.done() for t in _dialogue_tasks.values()):
-                        state.lumina_network.inject_user_message(text)
-                        return  # message handled by dialogue — skip normal LLM response
+                        if state.lumina_network.inject_user_message(text):
+                            return  # routed into exactly one active peer dialogue
             except Exception:
                 pass
 
@@ -927,8 +932,8 @@ async def main_page():
                     # show_bubble stays False (was already False)
 
             # ── Capture vision exactly once (if needed) ──────────────────
-            # Result is passed into the controller so it never calls
-            # analyze_frame_async a second time on the same turn.
+            # Reuse this turn's capture so the response path does not call
+            # analyze_frame_async a second time.
             injected_vision = None
             if should_capture:
                 status_label.set_text('👁️ Analyzing camera feed…')
@@ -961,7 +966,7 @@ async def main_page():
                 except Exception as e:
                     logger.warning(f"Vision capture failed: {e}")
 
-            # ── Controller-driven flow (Sections 4-11 of spec) ───────────
+            # ── PersonaBridge cognitive response flow ───────────────────
             # The LLM always runs — when vision was captured it receives
             # injected_vision and can respond conversationally about what
             # it sees.  The old early-return on keyword/always is gone.
@@ -1094,6 +1099,14 @@ async def main_page():
                 set_core_state('')
                 main_page._current_state = ''
                 return
+
+            state.schedule_deferred_cognitive_stages(
+                text, accumulated_text, user_manager.active_id,
+                turn_id=str(result.get("turn_id") or ""),
+                cognitive_scope_id=str(
+                    result.get("cognitive_scope_id") or user_manager.active_id
+                ),
+            )
 
             if state.persona and state.persona.research:
                 low_conf = result.get("confidence", 1.0) < 0.5 if isinstance(result, dict) else False

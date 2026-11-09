@@ -35,7 +35,7 @@ import logging
 import threading
 import time
 import uuid
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field, asdict, fields
 from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -86,6 +86,8 @@ class ThoughtThread:
     created_at:      float                 = field(default_factory=time.time)
     last_advanced:   float                 = field(default_factory=time.time)
     source:          str                   = "internal"  # curiosity / user / pressure / dissonance
+    # Retained for compatibility with persisted TTE and lifecycle helpers.
+    iteration_count: int                   = 0
 
     def age_hours(self) -> float:
         return (time.time() - self.created_at) / 3600.0
@@ -186,6 +188,7 @@ class ThoughtThreadEngine:
                 "action":       thread.planned_actions[0] if thread.planned_actions else None,
             }
             thread.history.append(snapshot)
+            thread.iteration_count = max(thread.iteration_count + 1, len(thread.history))
             if len(thread.history) > MAX_HISTORY_ENTRIES:
                 thread.history = thread.history[-MAX_HISTORY_ENTRIES:]
 
@@ -452,13 +455,36 @@ class ThoughtThreadEngine:
             return
         try:
             data = json.loads(self._path.read_text(encoding="utf-8"))
-            for tid, td in data.items():
-                td["status"] = ThoughtThreadStatus(td.get("status", "active"))
-                self._threads[tid] = ThoughtThread(**td)
+            if not isinstance(data, dict):
+                raise ValueError("thought-thread store must be an object")
+            known_fields = {item.name for item in fields(ThoughtThread)}
+            loaded = 0
+            rejected = 0
+            for tid, raw_thread in data.items():
+                if not isinstance(raw_thread, dict):
+                    rejected += 1
+                    continue
+                try:
+                    thread_data = {key: value for key, value in raw_thread.items()
+                                   if key in known_fields}
+                    thread_data.setdefault("id", tid)
+                    thread_data["status"] = ThoughtThreadStatus(
+                        thread_data.get("status", "active")
+                    )
+                    self._threads[tid] = ThoughtThread(**thread_data)
+                    loaded += 1
+                except Exception as item_error:
+                    rejected += 1
+                    logger.warning("[TTE] Skipping invalid thread %s: %s", tid, item_error)
             # Only keep non-completed threads
             self._threads = {
                 tid: t for tid, t in self._threads.items()
                 if t.status not in (ThoughtThreadStatus.COMPLETED, ThoughtThreadStatus.FAILED)
             }
+            if rejected:
+                logger.warning(
+                    "[TTE] Loaded %d valid thread(s); skipped %d invalid record(s)",
+                    loaded, rejected,
+                )
         except Exception as e:
             logger.warning(f"[TTE] Load error (starting fresh): {e}")

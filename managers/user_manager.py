@@ -417,6 +417,17 @@ class UserManager:
                 continue
             for match in re.finditer(pattern, text, flags=re.IGNORECASE):
                 value = match.group(1).strip(" ,;:")
+                if kind == "characteristic" and re.search(
+                    r"\b(?:curieux|curieuse|curious)\s+(?:"
+                    r"(?:de\s+|d['’])(?:savoir|comprendre|connaitre|connaître|voir)|"
+                    r"to\s+(?:know|understand|learn|find)|"
+                    r"about\s+(?:how|why|what|whether|if))\b",
+                    value,
+                    flags=re.IGNORECASE,
+                ):
+                    # Conversational lead-ins such as "je suis curieux de comprendre"
+                    # describe the current question, not a durable user trait.
+                    continue
                 if value and len(value.split()) <= 16:
                     learned.append((kind, value))
         if not learned:

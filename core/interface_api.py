@@ -229,6 +229,11 @@ async def status():
         'uptime': round(state.get_uptime()),
         'cycle': getattr(loop, '_slow_cycle_count', None),
         'engines': {'persona': persona is not None, 'organism': org is not None, 'loop': loop is not None},
+        'brain_workflow': (
+            state.brain_workflow_status()
+            if callable(getattr(state, 'brain_workflow_status', None))
+            else {'available': False}
+        ),
         'providers': {
             'stt': active_stt or config.STT_PROVIDER,
             'tts': active_tts or config.TTS_PROVIDER,
@@ -809,13 +814,18 @@ async def network_status():
     state = _runtime()
     from managers.settings_manager import config
     network = getattr(state, 'lumina_network', None)
+    role = str(getattr(config, 'LUMINA_NETWORK_ROLE', 'master') or 'master').strip().lower()
     configured = getattr(config, 'LUMINA_CHILDREN', []) or []
     children = network.list_children() if network else [
         {'id': c.get('id', 'child'), 'name': c.get('name', 'Flux'), 'url': c.get('url', ''),
          'role': c.get('role', 'child'), 'online': False, 'latency_ms': 0, 'turn_count': 0}
         for c in configured
     ]
-    return {'enabled': bool(getattr(config, 'LUMINA_NETWORK_ENABLED', False)), 'children': children}
+    return {
+        'enabled': bool(getattr(config, 'LUMINA_NETWORK_ENABLED', False)) and role == 'master',
+        'role': role,
+        'children': children if role == 'master' else [],
+    }
 
 
 @router.post('/connector/home-assistant/discover')
@@ -872,7 +882,7 @@ _SETTING_FIELDS = {
     'RESPONSE_VERBOSITY', 'RESPONSE_TOKENS_CONCISE', 'RESPONSE_TOKENS_VERBOSE',
     'CUSTOM_SYSTEM_PROMPT', 'LOG_FULL_PROMPTS', 'OBSERVATORY_ENABLED',
     'OBSERVATORY_BASELINE_SAMPLES', 'OBSERVATORY_EMERGENCE_THRESHOLD',
-    'NICEGUI_HOST', 'UNIVERSAL_CONNECTOR_ENABLED', 'BODY_RUNTIME_ENABLED', 'BODY_PLUGIN_HOME_ASSISTANT_ENABLED', 'BODY_PLUGIN_FNK0050_ENABLED',
+    'NICEGUI_HOST', 'LUMINA_MASTER_CALLBACK_URL', 'UNIVERSAL_CONNECTOR_ENABLED', 'BODY_RUNTIME_ENABLED', 'BODY_PLUGIN_HOME_ASSISTANT_ENABLED', 'BODY_PLUGIN_FNK0050_ENABLED',
     'BODY_HOST', 'BODY_PORT', 'BODY_URL', 'BODY_HTTP_USERNAME', 'BODY_HTTP_PASSWORD', 'BODY_HTTP_CA_CERT',
     'HOME_ASSISTANT_ENABLED', 'HOME_ASSISTANT_PRESENCE_ENABLED',
     'HOME_ASSISTANT_URL', 'HOME_ASSISTANT_TOKEN', 'HOME_ASSISTANT_VERIFY_SSL',
@@ -1453,6 +1463,9 @@ async def update_language(payload: LanguageUpdate):
 @router.post('/network/toggle')
 async def network_toggle():
     from managers.settings_manager import config, save_settings
+    role = str(getattr(config, 'LUMINA_NETWORK_ROLE', 'master') or 'master').strip().lower()
+    if role != 'master':
+        raise HTTPException(409, 'Only a master Brain can enable outbound child networking.')
     enabled = not bool(getattr(config, 'LUMINA_NETWORK_ENABLED', False))
     config.__dict__['LUMINA_NETWORK_ENABLED'] = enabled
     save_settings(config, silent=True)
@@ -1461,7 +1474,8 @@ async def network_toggle():
         from cognition.lumina_network import LuminaNetwork
         state.lumina_network = LuminaNetwork(state.persona, state.llm)
         state.lumina_network.load_from_config(getattr(config, 'LUMINA_CHILDREN', []) or [])
-        state.lumina_network.set_master_info(f"http://127.0.0.1:{getattr(config, 'NICEGUI_PORT', 8080)}", getattr(config, 'LUMINA_MASTER_NAME', 'PandoraBOX-Master'))
+        from core.lumina_network_config import master_callback_base_url
+        state.lumina_network.set_master_info(master_callback_base_url(config), getattr(config, 'LUMINA_MASTER_NAME', 'PandoraBOX-Master'))
     elif not enabled and getattr(state, 'lumina_network', None):
         await state.lumina_network.stop()
         state.lumina_network = None
@@ -1472,6 +1486,10 @@ async def network_toggle():
 @router.post('/network/action')
 async def network_action(payload: NetworkAction):
     state = _runtime()
+    from managers.settings_manager import config
+    role = str(getattr(config, 'LUMINA_NETWORK_ROLE', 'master') or 'master').strip().lower()
+    if role != 'master':
+        raise HTTPException(409, 'Only a master Brain can initiate peer dialogue.')
     network = getattr(state, 'lumina_network', None)
     if not network:
         raise HTTPException(409, 'Flux network is disabled.')
@@ -1505,7 +1523,7 @@ async def network_dialogue(dialogue_id: str):
     if not session:
         raise HTTPException(410, 'This Flux dialogue is no longer available, possibly because PandoraBOX restarted. Start a new dialogue from the main window.')
     network = getattr(state, 'lumina_network', None)
-    history = network.get_history(dialogue_id) if network else []
+    history = network.get_history(dialogue_id, peer_id=session.get('child_id')) if network else []
     return {
         **session,
         'active': dialogue_id in _dialogues and 'finished_at' not in session,
@@ -1747,6 +1765,7 @@ async def chat(payload: Turn, request: Request):
         raise HTTPException(400, str(exc)) from exc
     if not text:
         raise HTTPException(400, 'Enter a message first.')
+    state.notify_user_turn(text, user_id)
     # Keep ambient perception socially grounded on the migrated interface.
     # The legacy page already notified PresenceEngine; this API path did not.
     try:
@@ -1770,6 +1789,8 @@ async def chat(payload: Turn, request: Request):
         llm_turn_reserved = False
         turn_completed = False
         assistant_parts = []
+        completed_turn_id = ""
+        cognitive_scope_id = user_id
 
         async def emit(kind, **fields):
             nonlocal seq
@@ -1849,6 +1870,12 @@ async def chat(payload: Turn, request: Request):
                     if stopped.is_set():
                         break
                     if isinstance(chunk, dict):
+                        if chunk.get('__meta__'):
+                            completed_turn_id = str(chunk.get('turn_id') or '')
+                            cognitive_scope_id = str(
+                                chunk.get('cognitive_scope_id') or user_id
+                            )
+                            continue
                         if chunk.get('type') == 'reasoning' and chunk.get('text'):
                             await emit('reasoning', text=str(chunk['text'])[:4000])
                         elif chunk.get('type') == 'web_sources' and chunk.get('sources'):
@@ -1889,17 +1916,11 @@ async def chat(payload: Turn, request: Request):
                 pass
             _turn_lock.release()
             if turn_completed:
-                deferred = getattr(state.persona, 'run_deferred_analysis', None)
-                if callable(deferred):
-                    task = asyncio.create_task(asyncio.to_thread(
-                        deferred,
-                        text,
-                        ''.join(assistant_parts),
-                        user_id,
-                        reflection_epoch,
-                    ))
-                    _workers.add(task)
-                    task.add_done_callback(_workers.discard)
+                state.schedule_deferred_cognitive_stages(
+                    text, ''.join(assistant_parts), user_id, reflection_epoch,
+                    turn_id=completed_turn_id,
+                    cognitive_scope_id=cognitive_scope_id,
+                )
 
     worker = asyncio.create_task(produce())
     _workers.add(worker)

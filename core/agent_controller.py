@@ -1,8 +1,13 @@
 """
-AgentController – full execution flow (Sections 4–8 of the spec).
+Legacy standalone AgentController pipeline (Sections 4–8 of its original spec).
 
-Replaces the ad-hoc system_prompt construction in app.py's handle_send()
-with the layered architecture described in the spec:
+This class is not the active Lumina chat or Lumina↔FLUX controller. The current
+chat path is PersonaBridge; it owns the cognitive harness, scoped peer history,
+Body-action policy, and complete per-turn stage trace. Do not route peer turns
+through this legacy pipeline: it has no peer identity/history boundary and its
+memory, camera, and response paths are human-scoped.
+
+The original standalone flow is retained for explicit legacy integrations:
 
   1.  Capture user input
   2.  Update AgentState time classification
@@ -16,12 +21,12 @@ with the layered architecture described in the spec:
   10. Return sanitized text  →  caller sends to TTS
   11. Store summarised emotional memory
 
-Usage in app.py
----------------
+Original (inactive) app.py integration
+--------------------------------------
     from core.agent_controller import AgentController
     controller = AgentController(state)
 
-    # In handle_send():
+    # In handle_send() — not used by the current Lumina chat path:
     result = await controller.process(text)
     response_text = result["speech"]     # sanitized, TTS-ready
     raw_response  = result["raw"]        # full LLM output for chat bubble

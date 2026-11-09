@@ -385,10 +385,11 @@ class CognitiveOrganism:
 
     # ── Pipeline stages ───────────────────────────────────────────────────────
 
-    def _pre_interaction(self, user_input: str) -> None:
+    def _pre_interaction(self, user_input: str, *, mark_user_active: bool = True) -> None:
         """Regenerate energy and collect background thoughts."""
         self.energy.regenerate()
-        self.sleep_cycle.mark_user_active()
+        if mark_user_active:
+            self.sleep_cycle.mark_user_active()
         llm_scheduler  # ensure singleton imported
 
         # ── v37: Self-model causal influence ─────────────────────────────
@@ -406,11 +407,12 @@ class CognitiveOrganism:
             self._last_influence_result = None
 
         # ── v46: Emotional memory — on_user_arrival priming ───────────────
-        try:
-            _uid = getattr(self, '_current_user_id', 'default')
-            self.emotional_memory.on_user_arrival(_uid)
-        except Exception:
-            pass
+        if mark_user_active:
+            try:
+                _uid = getattr(self, '_current_user_id', 'default')
+                self.emotional_memory.on_user_arrival(_uid)
+            except Exception:
+                pass
 
         # ── v3: Generate prediction before interaction ────────────────────
         try:
@@ -431,7 +433,7 @@ class CognitiveOrganism:
                     topic = thought.split("think more about:")[-1].strip()
                     self.curiosity.stimulate(topic, amount=0.1, source="internal")
 
-    def _update_cycle(self, user_input: str) -> Dict[str, Any]:
+    def _update_cycle(self, user_input: str, *, user_present: bool = True) -> Dict[str, Any]:
         """Run all internal state updates and return a cycle_data dict."""
         now = time.time()
 
@@ -489,7 +491,7 @@ class CognitiveOrganism:
         self.goal_ecology.update_from_tensions(
             tensions,
             energy_level=self.energy.level(),
-            user_present=True,
+            user_present=user_present,
         )
 
         # ── Update attention ──────────────────────────────────────────────────
@@ -520,7 +522,9 @@ class CognitiveOrganism:
             "active_goals": active_goals,
         }
 
-    def _arbitrate(self, cycle_data: Dict, user_input: str) -> Any:
+    def _arbitrate(
+        self, cycle_data: Dict, user_input: str, *, user_present: bool = True,
+    ) -> Any:
         """Run arbitration to select dominant drive and reasoning style."""
         ranked = self.goal_ecology.ranked_drives(self.energy.level())
         tensions = cycle_data["tensions"]
@@ -528,7 +532,7 @@ class CognitiveOrganism:
         decision = self.arbitration.decide(
             ranked_drives=ranked,
             energy_level=self.energy.level(),
-            user_is_present=True,
+            user_is_present=user_present,
             user_has_question="?" in user_input,
             identity_stress=tensions.identity_stress,
             contradiction_pressure=tensions.contradiction_pressure,
@@ -1018,6 +1022,80 @@ class CognitiveOrganism:
         budget.save()
         return result
 
+    def prepare_response_context(
+        self, user_input: str, user_id: str = "default",
+    ) -> dict[str, Any]:
+        """Run pre-generation predictive stages for a streamed chat turn.
+
+        Interactive chat streams through PersonaBridge and does not enter
+        ``_call_ai_system``. This method makes the predictive models' pre-action
+        recording, advisories and prospective deliberation available to that
+        path so the later ``_post_interaction`` can resolve the same turn.
+        """
+        result: dict[str, Any] = {
+            "action_type": None,
+            "pcm_status": "unavailable",
+            "pcm_advisory": "",
+            "wsdm_status": "unavailable",
+            "wsdm_narrative": "",
+            "prospective_status": "not_applicable",
+        }
+        loop = getattr(self, "_loop", None)
+        pcm = getattr(loop, "_consequence_model", None) if loop else None
+        wsdm = getattr(loop, "_world_self_dynamics", None) if loop else None
+        interaction_n = int(getattr(getattr(self, "ai_system", None), "_interaction_count", 0) or 0)
+        action = "analytical"
+
+        if pcm is not None:
+            try:
+                action = pcm.classify(user_input)
+                state_before = pcm.read_state()
+                pcm.record_action(action, state_before, interaction_n=interaction_n)
+                result["action_type"] = action
+                result["pcm_status"] = "prepared"
+                result["pcm_advisory"] = str(pcm.predict_and_advise(user_input, state_before) or "")
+            except Exception as exc:
+                result["pcm_status"] = "failed"
+                result["pcm_error"] = str(exc)[:200]
+                logger.warning("[CognitiveOrganism] streaming PCM preparation failed: %s", exc)
+
+            try:
+                from cognition.prospective_deliberation import deliberate
+                deliberation = deliberate(
+                    pcm, wsdm, action, pcm.read_state(), user_id=user_id,
+                )
+                advisory = str(getattr(deliberation, "advisory", "") or "")
+                if advisory:
+                    result["pcm_advisory"] = " ".join(
+                        part for part in (result["pcm_advisory"], advisory) if part
+                    )
+                result["prospective_status"] = (
+                    "completed" if deliberation is not None else "not_applicable"
+                )
+            except Exception as exc:
+                result["prospective_status"] = "failed"
+                result["prospective_error"] = str(exc)[:200]
+                logger.debug("[CognitiveOrganism] prospective deliberation failed: %s", exc)
+        else:
+            result["prospective_status"] = "skipped_model_unavailable"
+
+        if wsdm is not None:
+            try:
+                if result["action_type"] is None and pcm is not None:
+                    action = pcm.classify(user_input)
+                wsdm.record_context(
+                    action_type=action,
+                    user_id=user_id,
+                    interaction_n=interaction_n,
+                )
+                result["wsdm_status"] = "prepared"
+                result["wsdm_narrative"] = str(wsdm.narrative_summary(action, user_id) or "")
+            except Exception as exc:
+                result["wsdm_status"] = "failed"
+                result["wsdm_error"] = str(exc)[:200]
+                logger.warning("[CognitiveOrganism] streaming WSDM preparation failed: %s", exc)
+        return result
+
     def _call_ai_system(
         self,
         user_input: str,
@@ -1198,6 +1276,7 @@ class CognitiveOrganism:
         response: str,
         cycle_data: Dict,
         decision: Any,
+        human_interaction: bool = True,
     ) -> None:
         """Post-response processing: evaluate, learn, update state."""
         self._last_interaction_ts = time.time()
@@ -1355,6 +1434,7 @@ class CognitiveOrganism:
                     "confidence": getattr(eval_result, "confidence_score", 0.5),
                 },
                 workspace = self.workspace,
+                observation_role=("user_topic" if human_interaction else "peer_topic"),
             )
         except Exception:
             pass
@@ -1387,14 +1467,14 @@ class CognitiveOrganism:
             pass
 
         # Record drive satisfaction based on response quality
-        if decision.dominant_drive == "help_user":
+        if human_interaction and decision.dominant_drive == "help_user":
             # Heuristic: longer, structured responses likely more helpful
             word_count = len(response.split())
             satisfaction = min(0.9, 0.5 + word_count / 1000.0)
             self.goal_ecology.record_satisfaction("help_user", satisfaction)
 
         # Curiosity satisfied if research was done or question was answered
-        if "?" in response and self.curiosity.global_level() > 0.5:
+        if human_interaction and "?" in response and self.curiosity.global_level() > 0.5:
             top = self.curiosity.top_topic()
             if top:
                 self.curiosity.stimulate(top, amount=0.05, source="user_signal")

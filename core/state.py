@@ -54,6 +54,8 @@ class AppState:
         self.ready      = False
         self.start_time = time.time()
         self.initializing = False
+        self._vision_attached_to_cognition = False
+        self._deferred_cognitive_tasks = set()
         
         # Thread-safe audio→UI queue
         self.transcription_queue = queue.Queue()
@@ -103,28 +105,6 @@ class AppState:
                     organism=organism,
                     workspace=getattr(organism, 'workspace', None),
                 )
-                # Wire vision into the internal loop for ambient perception
-                if self.vision is not None:
-                    try:
-                        loop = getattr(organism, '_loop', None)
-                        if loop and hasattr(loop, 'attach_vision'):
-                            loop.attach_vision(self.vision)
-                        # Also wire vision onto organism so brain bridge can read it
-                        try:
-                            if hasattr(loop, '_organism_ref'):
-                                org = loop._organism_ref
-                            else:
-                                from cognition.cognitive_organism import CognitiveOrganism
-                                org = None
-                                for attr in ('_organism', 'organism'):
-                                    org = getattr(loop, attr, None)
-                                    if org: break
-                            if org is not None:
-                                org._vision_manager = self.vision
-                        except Exception:
-                            pass
-                    except Exception as _ve:
-                        logger.warning(f"Ambient vision wiring failed (non-fatal): {_ve}")
                 # Wire messaging manager into execution layer (if configured later)
                 organism.orchestrator = self.orchestrator
                 logger.info("✅ Autonomous Orchestrator created (will start on first use)")
@@ -159,10 +139,13 @@ class AppState:
                 else:
                     self.vision = None
 
+        # PersonaBridge starts the CognitiveOrganism before AppState creates
+        # the vision manager. Attach here, after both objects exist; attempting
+        # this during orchestrator construction silently skipped the wiring.
+        self._wire_vision_to_cognition()
+
         self.audio      = None
         self.conv_audio = None
-        self.ready = bool(self.llm)
-        self.initializing = False
 
         # ── Wire Strategic Cognitive Engine ─────────────────────────────────
         try:
@@ -180,7 +163,11 @@ class AppState:
         # ── Wire PandoraBOX Network ─────────────────────────────────────────────────
         try:
             _net_cfg = __import__('managers.settings_manager', fromlist=['config']).config
-            if getattr(_net_cfg, 'LUMINA_NETWORK_ENABLED', False):
+            _network_role = str(getattr(_net_cfg, 'LUMINA_NETWORK_ROLE', 'master') or 'master').strip().lower()
+            if _network_role not in {'master', 'child', 'standalone'}:
+                logger.warning("Unknown LUMINA_NETWORK_ROLE=%r; using standalone", _network_role)
+                _network_role = 'standalone'
+            if getattr(_net_cfg, 'LUMINA_NETWORK_ENABLED', False) and _network_role == 'master':
                 from cognition.lumina_network import LuminaNetwork
                 self.lumina_network = LuminaNetwork(
                     persona = self.persona,
@@ -190,11 +177,16 @@ class AppState:
                 if _children_cfg:
                     self.lumina_network.load_from_config(_children_cfg)
                 _master_name = getattr(_net_cfg, 'LUMINA_MASTER_NAME', 'PandoraBOX-Master')
-                _master_url  = f"http://127.0.0.1:{getattr(_net_cfg, 'NICEGUI_PORT', 8080)}"
+                from core.lumina_network_config import master_callback_base_url
+                _master_url = master_callback_base_url(_net_cfg)
                 self.lumina_network.set_master_info(_master_url, _master_name)
                 logger.info(f"🌐 LuminaNetwork ready — {len(_children_cfg)} child(ren)")
             else:
                 self.lumina_network = None
+                if _network_role == 'child':
+                    logger.info("🌐 Lumina network role=child — accepts master requests; outbound peer network disabled")
+                elif _network_role == 'standalone':
+                    logger.info("🌐 Lumina network role=standalone — peer networking disabled")
         except Exception as _e:
             logger.warning(f"LuminaNetwork init failed (non-fatal): {_e}")
             self.lumina_network = None
@@ -328,6 +320,222 @@ class AppState:
                 await get_universal_connector(organism).reconcile_home_assistant_monitor()
         except Exception as _e:
             logger.warning("Home Assistant monitor startup failed (non-fatal): %s", _e)
+
+        # `ready` gates the Body bridge and must represent the conversational
+        # Brain core, not merely successful construction of an LLM wrapper.
+        self.ready = bool(
+            self.llm
+            and self.persona
+            and getattr(self.persona, 'is_ready', False)
+        )
+        self.initializing = False
+        if not self.ready:
+            logger.error(
+                "Brain initialization completed degraded: llm=%s persona=%s",
+                self.llm is not None,
+                bool(self.persona and getattr(self.persona, 'is_ready', False)),
+            )
+
+    def _wire_vision_to_cognition(self) -> bool:
+        """Attach the Brain-PC vision manager to the live cognitive organism."""
+        self._vision_attached_to_cognition = False
+        if self.vision is None or self.persona is None:
+            return False
+
+        organism = getattr(self.persona, '_organism', None)
+        if organism is None:
+            return False
+
+        loop = getattr(organism, '_loop', None)
+        attach = getattr(loop, 'attach_vision', None)
+        try:
+            if callable(attach):
+                attach(self.vision)
+                self._vision_attached_to_cognition = True
+            else:
+                # Keep direct Brain-side access available even if a custom
+                # organism implementation has no ambient-thought loop hook.
+                organism._vision_manager = self.vision
+                self._vision_attached_to_cognition = True
+        except Exception:
+            logger.exception("Brain-PC vision attachment to cognition failed")
+            return False
+
+        if self._vision_attached_to_cognition:
+            logger.info("Brain-PC vision manager attached to cognitive organism")
+        return self._vision_attached_to_cognition
+
+    def brain_workflow_status(self) -> dict:
+        """Return an observational snapshot of the Brain's own workflow."""
+        persona = self.persona
+        organism = getattr(persona, '_organism', None) if persona else None
+        loop = getattr(organism, '_loop', None) if organism else None
+        loop_thread = getattr(loop, '_thread', None) if loop else None
+        workspace = getattr(organism, 'workspace', None) if organism else None
+        loop_modules = {}
+        if loop is not None:
+            for module_name in (
+                '_tte', '_cde', '_dts', '_mte', '_naw', '_phase1', '_phase2',
+                '_resource_economy', '_goal_quality_filter', '_long_horizon_planner',
+                '_autonomous_reflection', '_auto_experiment', '_cognitive_audit',
+                '_cognitive_immune', '_flux_engine', '_attention_engine',
+            ):
+                loop_modules[module_name.lstrip('_')] = getattr(loop, module_name, None) is not None
+        orchestrator_task = getattr(self.orchestrator, '_task', None)
+        orchestrator_task_alive = bool(
+            orchestrator_task is not None
+            and not orchestrator_task.done()
+        )
+        return {
+            'ready': bool(self.ready and persona and getattr(persona, 'is_ready', False)),
+            'initializing': bool(self.initializing),
+            'response_pipeline': 'PersonaBridge.get_response_stream',
+            'components': {
+                'llm': {'available': self.llm is not None},
+                'persona_bridge': {
+                    'available': persona is not None,
+                    'ready': bool(persona and getattr(persona, 'is_ready', False)),
+                    'chat_stage': getattr(persona, '_chat_stage', 'idle') if persona else 'unavailable',
+                    'last_turn': persona.get_last_turn_trace() if persona and hasattr(persona, 'get_last_turn_trace') else None,
+                    'goal_means': persona.get_goal_means_status() if persona and hasattr(persona, 'get_goal_means_status') else None,
+                },
+                'cognitive_organism': {
+                    'available': organism is not None,
+                    'initialized_modules': {
+                        name: getattr(organism, name, None) is not None
+                        for name in ('energy', 'attention', 'curiosity', 'goal_ecology',
+                                     'arbitration', 'meta_cognition', 'workspace', 'semantic_memory')
+                    } if organism is not None else {},
+                },
+                'internal_thought_loop': {
+                    'available': loop is not None,
+                    'running': bool(getattr(loop, '_running', False)),
+                    'thread_alive': bool(loop_thread and loop_thread.is_alive()),
+                    'slow_cycles': getattr(loop, '_slow_cycle_count', None),
+                    'last_fast_cycle_at': getattr(loop, '_last_fast_cycle_at', None),
+                    'fast_cycle_errors': getattr(loop, '_fast_cycle_error_count', None),
+                    'last_slow_cycle_at': getattr(loop, '_last_slow_cycle_at', None),
+                    'slow_cycle_errors': getattr(loop, '_slow_cycle_error_count', None),
+                    'last_slow_cycle_error_type': getattr(loop, '_last_slow_cycle_error_type', None),
+                    'initialized_modules': loop_modules,
+                },
+                'global_workspace': {'available': workspace is not None},
+                'memory': {'available': self.memory is not None},
+                'brain_pc_vision': {
+                    'manager_available': self.vision is not None,
+                    'camera_active': bool(getattr(self.vision, 'camera_active', False)) if self.vision else False,
+                    'attached_to_cognition': self._vision_attached_to_cognition,
+                },
+                'autonomous_orchestrator': {
+                    'available': self.orchestrator is not None,
+                    # The flag can remain true after an unhandled exception
+                    # terminates _run(). Report effective runtime health, not
+                    # only the requested lifecycle state.
+                    'running': bool(
+                        getattr(self.orchestrator, '_running', False)
+                        and orchestrator_task_alive
+                    ),
+                    'requested_running': bool(getattr(self.orchestrator, '_running', False)),
+                    'task_alive': orchestrator_task_alive,
+                    'cycles': getattr(self.orchestrator, '_cycle_count', None),
+                    'last_cycle_at': getattr(self.orchestrator, '_last_cycle_at', None),
+                    'cycle_errors': getattr(self.orchestrator, '_cycle_error_count', None),
+                    'last_cycle_error_type': getattr(self.orchestrator, '_last_cycle_error_type', None),
+                },
+            },
+        }
+
+    def notify_user_turn(self, text: str, user_id: str = "default") -> bool:
+        """Feed an accepted human turn to the autonomous cognitive loop once.
+
+        Call this at user-input boundaries after validation/sanitization. Peer
+        dialogue and internally generated/proactive turns must use their own
+        pathways and must not be represented as human input here.
+        """
+        text = str(text or "").strip()
+        if not text or self.orchestrator is None:
+            return False
+        try:
+            self.orchestrator.notify_user_message(text, user_id)
+            return True
+        except Exception:
+            logger.exception("Accepted user turn could not be queued for the orchestrator")
+            return False
+
+    def schedule_deferred_cognitive_stages(
+        self, user_text: str, assistant_text: str, user_id: str = "default",
+        reflection_epoch: int = 0, turn_id: str = "", cognitive_scope_id: str = "",
+    ) -> bool:
+        """Schedule bounded post-answer analysis without delaying chat delivery."""
+        persona = self.persona
+        if persona is None or not assistant_text:
+            return False
+        deferred = getattr(persona, "run_deferred_analysis", None)
+        goal_means = getattr(persona, "run_deferred_goal_means_analysis", None)
+        if not callable(deferred) and not callable(goal_means):
+            return False
+        try:
+            trace = persona.get_last_turn_trace() if callable(
+                getattr(persona, "get_last_turn_trace", None)
+            ) else {}
+            if not isinstance(trace, dict):
+                trace = {}
+            turn_id = str(turn_id or trace.get("turn_id") or "")
+            cognitive_scope_id = str(
+                cognitive_scope_id or trace.get("cognitive_scope_id") or user_id
+            )
+        except Exception:
+            turn_id = ""
+        record_stage = getattr(persona, "record_deferred_turn_stage", None)
+
+        def record(stage_name: str, status: str, detail: str = "") -> None:
+            if turn_id and callable(record_stage):
+                record_stage(turn_id, stage_name, status, detail)
+
+        def run_stages():
+            if callable(deferred):
+                try:
+                    result = deferred(user_text, assistant_text, user_id, reflection_epoch)
+                    result_status = str(result or "unavailable")
+                    record("continuity_analysis_post_response", result_status)
+                except Exception:
+                    record("continuity_analysis_post_response", "failed")
+                    logger.exception("Deferred continuity analysis failed")
+            else:
+                record("continuity_analysis_post_response", "skipped_unavailable")
+            if callable(goal_means):
+                try:
+                    result = goal_means(user_text, user_id, user_id, cognitive_scope_id)
+                    result_status = (
+                        str(result.get("status") or "failed")
+                        if isinstance(result, dict) else "failed"
+                    )
+                    record("goal_means_post_response", result_status)
+                except Exception:
+                    record("goal_means_post_response", "failed")
+                    logger.exception("Deferred goal-means analysis failed")
+            else:
+                record("goal_means_post_response", "skipped_unavailable")
+
+        record("continuity_analysis_post_response", "scheduled")
+        record("goal_means_post_response", "scheduled")
+
+        try:
+            task = asyncio.create_task(asyncio.to_thread(run_stages))
+        except RuntimeError:
+            record("continuity_analysis_post_response", "failed", "no_running_event_loop")
+            record("goal_means_post_response", "failed", "no_running_event_loop")
+            logger.warning("Deferred cognitive stages were not scheduled: no running event loop")
+            return False
+        self._deferred_cognitive_tasks.add(task)
+
+        def finish(done_task):
+            self._deferred_cognitive_tasks.discard(done_task)
+            if not done_task.cancelled() and done_task.exception() is not None:
+                logger.error("Deferred cognitive stages failed: %s", done_task.exception())
+
+        task.add_done_callback(finish)
+        return True
 
     def ensure_audio_ready(self) -> bool:
         if self.audio:
@@ -474,10 +682,12 @@ class AppState:
                 camera_id=getattr(cfg, 'CAMERA_ID', 0),
                 target_fps=getattr(cfg, 'CAMERA_FPS', 5)
             )
+            self._wire_vision_to_cognition()
             logger.info("✅ Vision reloaded")
         except Exception as e:
             logger.error(f"Vision reload failed: {e}")
             self.vision = None
+            self._wire_vision_to_cognition()
 
     def add_memory(self, content: str, role: str):
         if self.memory:

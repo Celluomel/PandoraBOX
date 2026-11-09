@@ -689,6 +689,9 @@ class GoalEngine:
                 t_lower = topic.lower().strip()
                 if len(t_lower) < 4:      # skip noise words
                     continue
+                if self._is_lexical_noise_topic(t_lower):
+                    logger.info("[GoalEngine] rejected lexical-noise topic %r", topic)
+                    continue
                 if t_lower in seen_topics:  # dedup across batch AND existing goals
                     continue
                 if self._is_external_task_topic(t_lower):
@@ -696,17 +699,11 @@ class GoalEngine:
                         "GoalEngine: skipping user-owned task topic %r", topic
                     )
                     continue
-                # Filter out noise topics using the same statistical filter
-                # used by CuriosityEngine — prevents 'understanding', 'statement'
-                # etc. from becoming persistent goals
-                try:
-                    from cognition.topic_quality import get_topic_filter
-                    _tqf = get_topic_filter()
-                    if not self._is_valid_goal_topic(t_lower):
-                        logger.debug(f"[GoalEngine] Skipping noise topic: {t_lower!r}")
-                        continue
-                except Exception:
-                    pass
+                # Fail closed if semantic topic scoring is unavailable; the
+                # conversation fragment must not become a durable goal.
+                if not self._is_valid_goal_topic(t_lower):
+                    logger.debug(f"[GoalEngine] Skipping noise topic: {t_lower!r}")
+                    continue
 
                 intent_kind, temporal_scope = _goal_intent(motive.name, topic)
                 goal = Goal(
@@ -892,6 +889,11 @@ class GoalEngine:
         'capable instrospection', 'gemma primary', "you're creating",
         'you re creating', 'right now', 'right here', 'i think', 'i feel',
         'i know', 'i want', 'i need', 'i am', 'i was', 'i have',
+        # French conversational fragments and inflections seen in goal logs.
+        'toujours', 'quelles', 'quelle', 'quels', 'assez', 'sois', 'soit',
+        'soyez', 'savoir', 'curieux', 'curieuse', 'curiosité', 'tente',
+        'essayez', 'essaie', 'peux', 'peut', 'pourrais', 'pourrait',
+        'dis', 'dites', 'faut', 'semble', 'vraiment', 'arxchiv',
     }
 
     def add_goal(self, goal: Goal):
@@ -900,6 +902,10 @@ class GoalEngine:
 
         if self._is_external_task_topic(topic):
             logger.info("GoalEngine: rejected user-owned task topic %r", goal.topic)
+            return
+
+        if self._is_lexical_noise_topic(topic):
+            logger.info("GoalEngine: rejected lexical-noise topic %r", goal.topic)
             return
 
         if not self._is_valid_goal_topic(topic):
@@ -972,6 +978,24 @@ class GoalEngine:
             except Exception:
                 pass
     
+    @classmethod
+    def _is_lexical_noise_topic(cls, topic: str) -> bool:
+        """Reject function-word fragments before semantic scoring/admission."""
+        normalized = unicodedata.normalize("NFKD", str(topic or "").casefold())
+        normalized = "".join(ch for ch in normalized if not unicodedata.combining(ch))
+        normalized = " ".join(re.findall(r"[^\W\d_]+", normalized, flags=re.UNICODE))
+        words = normalized.split()
+        noise = set()
+        for item in cls._NOISE_TOPICS:
+            item = unicodedata.normalize("NFKD", item.casefold())
+            noise.add("".join(ch for ch in item if not unicodedata.combining(ch)))
+        if not words or normalized in noise:
+            return True
+        content = [word for word in words if word not in noise]
+        # Bare tokens (including misspelled feed fragments) lack enough
+        # context to become a persistent goal. Curiosity goals should be phrases.
+        return not content or len(words) == 1 or any(word in noise for word in words)
+
     def mark_action(self, goal_id: str, action_type: Optional[str] = None):
         """Mark that an action was taken for this goal.
 
@@ -1255,7 +1279,9 @@ class GoalEngine:
                 if sem:
                     # Query provenance, not the whole concept graph. Assistant
                     # confirmations must never become autonomous goals.
-                    raw_topics = sem.recent_user_topics(limit=15, min_strength=0.5)
+                    raw_topics = sem.recent_user_topics(
+                        limit=15, min_strength=0.5, min_observations=2
+                    )
 
                     # Score topics semantically in one dimension-safe batch.
                     # If embeddings are busy/unavailable, defer promotion and

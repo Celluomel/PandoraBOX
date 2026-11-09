@@ -73,13 +73,42 @@ class SelfDescription:
         return drifted
 
     def as_natural_language(self) -> str:
-        lines = ["My current architectural self-description:"]
+        lines = [
+            "Verified architecture registry (partial; only registered components are listed).",
+            "Treat these entries as evidence about named components and parameters, not as a complete inventory.",
+            "Do not invent internal mechanisms, equations, or causal explanations that are not listed here.",
+        ]
         with self._lock:
             for c in self.components.values():
                 lines.append(
                     f"- {c.name} ({c.module_path}): {c.role}. "
-                    f"Key params: {c.key_parameters}. Hash={c.last_hash}"
+                    f"Observed configuration: {c.key_parameters}."
                 )
+        if len(lines) == 3:
+            lines.append("- No architecture components are currently registered; do not infer details.")
+        return "\n".join(lines)
+
+    def prompt_context(self) -> str:
+        """Return a bounded, factual architecture block suitable for chat prompts."""
+        with self._lock:
+            components = list(self.components.values())
+        if not components:
+            return (
+                "VERIFIED ARCHITECTURE: no components have been registered in the self-description "
+                "module. Do not infer particular mechanisms from an empty registry."
+            )
+        lines = [
+            "VERIFIED ARCHITECTURE (partial registry; this is not a complete process-flow audit):",
+            "Use only the named roles/configuration below as verified self-description. "
+            "Do not invent equations, physical sensations, or unlisted mechanisms.",
+        ]
+        for component in components[:12]:
+            lines.append(
+                f"- {component.name} [{component.module_path}]: {component.role}; "
+                f"configuration={component.key_parameters}."
+            )
+        if len(components) > 12:
+            lines.append(f"- {len(components) - 12} additional registered components omitted from this prompt block.")
         return "\n".join(lines)
 
     def detect_drift(self, name: str, current_params: Dict[str, Any]) -> bool:

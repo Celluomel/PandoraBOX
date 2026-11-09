@@ -57,6 +57,16 @@ def _interlocutor_display_name(user_id: str) -> str:
     return ""
 
 
+def _interlocutor_role_instruction(peer_name: str = "") -> str:
+    """State who sent this turn without conflating a peer model with a human."""
+    if peer_name:
+        return (
+            f"You are the AI. The current interlocutor is another AI system named {peer_name}; "
+            "the human operator is not the sender of this turn."
+        )
+    return "You are the AI. The current interlocutor is the human who sent this turn."
+
+
 _root = Path(__file__).parent.parent
 if str(_root) not in sys.path:
     sys.path.insert(0, str(_root))
@@ -191,11 +201,21 @@ class PersonaBridge:
         self._MAX_SESSION_VISUALS = 20
         self._pending_vision_context: str | None = None  # set per-turn, cleared in _build_prompt_and_cache
         self._recent_goal_means: dict = {}
+        self._goal_means_status: dict[str, dict] = {}
         self._reflection_lock = threading.Lock()
         self._reflection_epochs: dict[str, int] = {}
         self._reflection_results: dict[str, tuple[int, str]] = {}
         self._reflection_for_turn: dict[str, str] = {}
         self._pending_body_plans: dict[str, dict] = {}
+        self._turn_trace_lock = threading.Lock()
+        self._turn_sequence = 0
+        self._last_turn_trace: dict[str, Any] = {}
+        self._turn_trace_history: list[dict[str, Any]] = []
+        self._turn_stage_health: dict[str, dict[str, Any]] = {}
+        # Prompt construction and post-turn hooks use a few bridge-level
+        # scratch fields; serialize complete turns so human and peer streams
+        # cannot overwrite each other's cognitive context.
+        self._response_turn_lock = asyncio.Lock()
         self._init_lumina(external_llm_fn)
         # Wire CognitiveOrganism once ai_system is ready
         if self._system is not None:
@@ -228,11 +248,17 @@ class PersonaBridge:
                     self._system._sleep_cycle = self._organism.sleep_cycle
                 logger.info("✅ CognitiveOrganism wired and background loop started")
 
-                # ── Inner Monologue Engine (two-pass architecture) ─────────
+                # ── Inner Monologue Engine (single-call directive path) ────
                 self._inner_monologue = _IME(
                     organism = self._organism,
                     llm_fn   = external_llm_fn,
                 ) if _IME else None
+                logger.info(
+                    "[InnerMonologue] %s",
+                    "single-call directive enabled"
+                    if self._inner_monologue and self._inner_monologue.enabled
+                    else "disabled; standard response path active",
+                )
             except Exception as e:
                 logger.warning(f"CognitiveOrganism init failed (non-fatal): {e}")
                 self._organism        = None
@@ -311,6 +337,223 @@ class PersonaBridge:
         user_id: str = "default",
         vision_context: str | None = None,
         voice_mode: bool = False,
+        *,
+        allow_body_actions: bool = True,
+        record_history: bool = True,
+        conversation_history: list[dict] | None = None,
+        peer_name: str = "",
+        max_tokens_override: int | None = None,
+        cognitive_scope_id: str = "",
+    ):
+        async with self._response_turn_lock:
+            async for chunk in self._get_response_stream_impl(
+                user_text,
+                user_id=user_id,
+                vision_context=vision_context,
+                voice_mode=voice_mode,
+                allow_body_actions=allow_body_actions,
+                record_history=record_history,
+                conversation_history=conversation_history,
+                peer_name=peer_name,
+                max_tokens_override=max_tokens_override,
+                cognitive_scope_id=cognitive_scope_id,
+            ):
+                if isinstance(chunk, dict) and chunk.get("__meta__"):
+                    chunk.setdefault("turn_id", self._last_turn_trace.get("turn_id", ""))
+                    chunk.setdefault(
+                        "cognitive_scope_id",
+                        self._last_turn_trace.get("cognitive_scope_id", user_id),
+                    )
+                yield chunk
+
+    def _start_turn_trace(
+        self, user_id: str, peer_name: str = "", cognitive_scope_id: str = "",
+    ) -> None:
+        with self._turn_trace_lock:
+            previous = getattr(self, "_last_turn_trace", {})
+            if isinstance(previous, dict) and previous.get("turn_id"):
+                snapshot = dict(previous)
+                snapshot["stages"] = {
+                    name: dict(stage)
+                    for name, stage in previous.get("stages", {}).items()
+                    if isinstance(stage, dict)
+                }
+                snapshot["context_sources"] = {
+                    name: dict(source)
+                    for name, source in previous.get("context_sources", {}).items()
+                    if isinstance(source, dict)
+                }
+                history = getattr(self, "_turn_trace_history", None)
+                if history is None:
+                    history = self._turn_trace_history = []
+                history.append(snapshot)
+                del history[:-24]
+            self._turn_sequence += 1
+            self._last_turn_trace = {
+                "turn_id": f"lumina-{time.time_ns()}-{self._turn_sequence}",
+                "scope": "peer" if peer_name else "human",
+                "peer_name": peer_name or None,
+                "user_id": user_id,
+                "cognitive_scope_id": cognitive_scope_id or user_id,
+                "status": "running",
+                "started_at": time.time(),
+                "stages": {},
+                "context_sources": {},
+            }
+
+    def _record_turn_context_source(
+        self, name: str, status: str, **metadata: Any,
+    ) -> None:
+        """Record source/freshness metadata without retaining evidence payloads."""
+        allowed = {
+            "active", "frame_age_seconds", "face_age_seconds", "scene_age_seconds",
+            "observation_count", "fresh_count", "stale_count", "oldest_age_seconds",
+            "source_kinds", "record_count",
+        }
+        safe_metadata: dict[str, Any] = {}
+        for key, value in metadata.items():
+            if key not in allowed:
+                continue
+            if key == "source_kinds":
+                safe_metadata[key] = sorted({str(item)[:48] for item in value if item})[:16]
+            elif isinstance(value, bool):
+                safe_metadata[key] = value
+            elif isinstance(value, (int, float)) and math.isfinite(float(value)):
+                safe_metadata[key] = round(float(value), 3) if isinstance(value, float) else value
+            elif value is None:
+                safe_metadata[key] = None
+        with self._turn_trace_lock:
+            trace = getattr(self, "_last_turn_trace", None)
+            if not isinstance(trace, dict) or not trace:
+                return
+            trace.setdefault("context_sources", {})[name] = {
+                "status": str(status)[:48], "at": time.time(), **safe_metadata,
+            }
+
+    def _record_turn_stage(
+        self, name: str, status: str, detail: str = "", *, turn_id: str = "",
+    ) -> None:
+        with self._turn_trace_lock:
+            trace = getattr(self, "_last_turn_trace", None)
+            if turn_id and (not trace or trace.get("turn_id") != turn_id):
+                trace = next((
+                    item for item in reversed(getattr(self, "_turn_trace_history", []))
+                    if item.get("turn_id") == turn_id
+                ), None)
+            if not trace:
+                return
+            stage = {"status": status, "at": time.time()}
+            if detail:
+                stage["detail"] = str(detail)[:240]
+            trace.setdefault("stages", {})[name] = stage
+            health_by_stage = getattr(self, "_turn_stage_health", None)
+            if health_by_stage is None:
+                health_by_stage = self._turn_stage_health = {}
+            health = health_by_stage.setdefault(name, {
+                "observations": 0,
+                "status_counts": {},
+                "last_status": "unknown",
+                "last_at": None,
+                "last_success_at": None,
+                "last_error": None,
+            })
+            health["observations"] += 1
+            counts = health.setdefault("status_counts", {})
+            counts[status] = int(counts.get(status, 0)) + 1
+            health["last_status"] = status
+            health["last_at"] = stage["at"]
+            if status in {
+                "completed", "passed", "injected", "recognized", "prepared",
+                "queued", "selected_direct", "delegated", "results_injected",
+            }:
+                health["last_success_at"] = stage["at"]
+            if status in {"failed", "invalid_output", "unavailable"}:
+                # Keep cumulative health telemetry non-sensitive. Per-turn
+                # diagnostics may carry a bounded detail, but this aggregate
+                # must never retain exception text that could echo prompt data.
+                health["last_error"] = status
+
+    def record_deferred_turn_stage(
+        self, turn_id: str, name: str, status: str, detail: str = "",
+    ) -> None:
+        """Attach an asynchronous post-answer result to its originating turn."""
+        if not turn_id:
+            return
+        self._record_turn_stage(name, status, detail, turn_id=turn_id)
+
+    def _finish_turn_trace(self, status: str) -> None:
+        with self._turn_trace_lock:
+            if self._last_turn_trace:
+                stages = self._last_turn_trace.get("stages", {})
+                has_stage_failure = any(
+                    isinstance(stage, dict) and stage.get("status") in {
+                        "failed", "invalid_output",
+                    }
+                    for stage in stages.values()
+                )
+                self._last_turn_trace["status"] = (
+                    "completed_with_stage_failures"
+                    if status == "completed" and has_stage_failure
+                    else status
+                )
+                self._last_turn_trace["completed_at"] = time.time()
+
+    def get_last_turn_trace(self) -> dict:
+        with self._turn_trace_lock:
+            trace = dict(self._last_turn_trace)
+            trace["stages"] = {
+                name: {key: value for key, value in stage.items() if key != "detail"}
+                for name, stage in self._last_turn_trace.get("stages", {}).items()
+                if isinstance(stage, dict)
+            }
+            trace["context_sources"] = {
+                name: dict(source)
+                for name, source in self._last_turn_trace.get("context_sources", {}).items()
+                if isinstance(source, dict)
+            }
+            trace["stage_health"] = {
+                name: {
+                    **{key: value for key, value in state.items() if key != "status_counts"},
+                    "status_counts": dict(state.get("status_counts", {})),
+                }
+                for name, state in getattr(self, "_turn_stage_health", {}).items()
+            }
+            trace["recent_turns"] = [
+                {
+                    "turn_id": item.get("turn_id"),
+                    "scope": item.get("scope"),
+                    "user_id": item.get("user_id"),
+                    "status": item.get("status"),
+                    "started_at": item.get("started_at"),
+                    "completed_at": item.get("completed_at"),
+                    "context_sources": {
+                        name: dict(source)
+                        for name, source in item.get("context_sources", {}).items()
+                        if isinstance(source, dict)
+                    },
+                    "stages": {
+                        name: {key: value for key, value in stage.items() if key != "detail"}
+                        for name, stage in item.get("stages", {}).items()
+                        if isinstance(stage, dict)
+                    },
+                }
+                for item in getattr(self, "_turn_trace_history", [])[-12:]
+            ]
+            return trace
+
+    async def _get_response_stream_impl(
+        self,
+        user_text: str,
+        user_id: str = "default",
+        vision_context: str | None = None,
+        voice_mode: bool = False,
+        *,
+        allow_body_actions: bool = True,
+        record_history: bool = True,
+        conversation_history: list[dict] | None = None,
+        peer_name: str = "",
+        max_tokens_override: int | None = None,
+        cognitive_scope_id: str = "",
     ):
         """
         Main entry point for every user turn.
@@ -318,12 +561,17 @@ class PersonaBridge:
         Yields individual string tokens, then a final meta dict.
         All of PandoraBOX's automatic cycles run correctly regardless of path.
         """
+        self._start_turn_trace(user_id, peer_name, cognitive_scope_id)
         if not self._ready or self._system is None:
+            self._finish_turn_trace("not_ready")
+            self._record_turn_stage("readiness", "failed", "PersonaBridge not ready")
             msg = "I'm not fully awake yet — give me a moment."
             yield msg
             yield {"__meta__": True, "raw": msg, "speech": msg,
-                   "emotion": "neutral", "intensity": 0.3}
+                   "emotion": "neutral", "intensity": 0.3,
+                   "error": "persona_not_ready" if not record_history else None}
             return
+        self._record_turn_stage("readiness", "passed")
 
         # Store vision context for injection into the SYSTEM PROMPT by
         # _build_prompt_and_cache. Must NOT be prepended to the user message —
@@ -336,11 +584,17 @@ class PersonaBridge:
         # Physical requests use a separate confirmation-gated path. This keeps
         # ordinary conversation fast while preventing the main LLM from merely
         # narrating an action that never reaches the Body.
-        try:
-            _body_turn = self.handle_body_chat_turn(effective_input, user_id)
-        except Exception as _body_turn_error:
-            logger.warning("[BodyPlan] chat routing failed; refusing narrative execution: %s", _body_turn_error)
-            _body_turn = None
+        _body_turn = None
+        _peer_scoped_turn = bool(peer_name) or str(cognitive_scope_id or "").startswith("peer:")
+        if allow_body_actions and not _peer_scoped_turn:
+            try:
+                _body_turn = self.handle_body_chat_turn(effective_input, user_id)
+            except Exception as _body_turn_error:
+                logger.warning("[BodyPlan] chat routing failed; refusing narrative execution: %s", _body_turn_error)
+            self._record_turn_stage("body_action_gate", "checked")
+        else:
+            _reason = "peer turn cannot actuate Body" if _peer_scoped_turn else "disabled by caller policy"
+            self._record_turn_stage("body_action_gate", "skipped_by_policy", _reason)
         if _body_turn and _body_turn.get("handled"):
             _body_response = str(_body_turn.get("response") or "")
             _manager = getattr(self._llm_stream_fn, "__self__", None)
@@ -357,8 +611,12 @@ class PersonaBridge:
                 "intensity": 0.45,
                 "body_plan": _body_turn,
             }
+            self._record_turn_stage("response", "completed")
+            self._finish_turn_trace("completed")
             return
-        if vision_context:
+        if vision_context and peer_name:
+            self._record_turn_stage("brain_pc_vision_input", "skipped_by_scope")
+        elif vision_context:
             self._pending_vision_context = (
                 "Source: fixed camera attached to the Brain PC (not the robot Body camera).\n"
                 + vision_context
@@ -372,17 +630,38 @@ class PersonaBridge:
             self._session_visuals.append(_vis_entry)
             if len(self._session_visuals) > self._MAX_SESSION_VISUALS:
                 self._session_visuals = self._session_visuals[-self._MAX_SESSION_VISUALS:]
+            self._record_turn_stage("brain_pc_vision_input", "accepted")
 
         # ── Streaming path (preferred) ──────────────────────────────
         if self._llm_stream_fn is not None:
             try:
                 async for chunk in self._stream_with_full_lifecycle(
-                    effective_input, user_id, voice_mode=voice_mode
+                    effective_input, user_id, voice_mode=voice_mode,
+                    record_history=record_history,
+                    conversation_history=conversation_history,
+                    peer_name=peer_name,
+                    max_tokens_override=max_tokens_override,
+                    cognitive_scope_id=cognitive_scope_id,
                 ):
                     yield chunk
+                self._record_turn_stage("streaming_lifecycle", "completed")
+                self._record_turn_stage("response", "completed")
+                self._finish_turn_trace("completed")
                 return
             except Exception as e:
                 logger.warning(f"Streaming path failed, falling back to blocking: {e}")
+                self._record_turn_stage("streaming_lifecycle", "failed", str(e))
+
+        # A peer turn must not silently fall back to the human chat's native
+        # history path. If scoped streaming is unavailable, fail closed and
+        # leave the peer transcript isolated.
+        if not record_history:
+            err = "Peer dialogue is unavailable because the scoped cognitive stream failed."
+            self._finish_turn_trace("failed")
+            yield err
+            yield {"__meta__": True, "raw": err, "speech": err,
+                   "emotion": "neutral", "intensity": 0.2, "error": "scoped_peer_stream_failed"}
+            return
 
         # ── Fallback: native get_response() — all cycles run natively ──
         # ── Safety Layer 1 (fallback path) ───────────────────────────────────
@@ -405,6 +684,7 @@ class PersonaBridge:
             )
         except Exception as e:
             logger.error(f"PandoraBOX get_response failed: {e}")
+            self._finish_turn_trace("failed")
             err = "I'm having trouble responding right now."
             yield err
             yield {"__meta__": True, "raw": err, "speech": err,
@@ -482,6 +762,7 @@ class PersonaBridge:
             "emotion":   emotion,
             "intensity": intensity,
         }
+        self._finish_turn_trace("completed")
 
     def begin_interactive_reflection_turn(self, user_id: str = "default") -> int:
         """Advance the user's turn epoch and consume a still-relevant reflection."""
@@ -500,18 +781,18 @@ class PersonaBridge:
         assistant_text: str,
         user_id: str = "default",
         turn_epoch: int = 0,
-    ) -> None:
+    ) -> str:
         """Always run one bounded post-turn continuity pass when the model is idle."""
         if not self._system:
-            return
+            return "unavailable"
         with self._reflection_lock:
             if self._reflection_epochs.get(user_id, turn_epoch) != turn_epoch:
-                return
+                return "superseded"
         try:
             llm_manager = getattr(self._external_llm_fn, "__self__", None)
             generate_result = getattr(llm_manager, "generate_bare_result", None)
             if not callable(generate_result):
-                return
+                return "unavailable"
             prompt = f"""Review this completed exchange for conversational continuity. This pass runs after the user has already received a response.
 
 USER MESSAGE:
@@ -527,25 +808,116 @@ Write at most 70 words, in the user's language, only if a concise carry-forward 
                 temperature=0.1,
             )
             if result.get("status") != "ok":
-                return
+                return "deferred" if result.get("status") == "deferred" else "failed"
             note = str(result.get("text") or "").strip()
             if not note or note.casefold() == "none":
                 logger.debug("[DeferredReflection] no continuity note for completed turn")
-                return
+                return "no_note"
             with self._reflection_lock:
                 if self._reflection_epochs.get(user_id, turn_epoch) != turn_epoch:
-                    return
+                    return "superseded"
                 self._reflection_results[user_id] = (turn_epoch, note[:1200])
             logger.info("[DeferredReflection] continuity note ready for next turn")
+            return "completed"
         except Exception as exc:
             logger.debug("Deferred continuity reflection unavailable: %s", exc)
+            return "failed"
+
+    def run_deferred_goal_means_analysis(
+        self, user_text: str, user_id: str = "default", interlocutor_name: str = "",
+        scope_id: str = "",
+    ) -> dict:
+        """Run the structured objective/means analysis after the visible answer."""
+        analysis_scope = str(scope_id or user_id)
+        from cognition.goal_means_reasoning import (
+            analysis_prompt, is_practical_decision, parse_analysis,
+        )
+
+        if not is_practical_decision(user_text):
+            result = {"status": "not_applicable"}
+            with self._reflection_lock:
+                self._goal_means_status[analysis_scope] = result
+            return result
+
+        manager = getattr(self._external_llm_fn, "__self__", None)
+        generate_result = getattr(manager, "generate_bare_result", None)
+        if not callable(generate_result):
+            result = {"status": "unavailable", "reason": "structured background provider unavailable"}
+            with self._reflection_lock:
+                self._goal_means_status[analysis_scope] = result
+            return result
+
+        with self._reflection_lock:
+            self._goal_means_status[analysis_scope] = {"status": "running", "started_at": time.time()}
+        try:
+            raw_result = generate_result(
+                analysis_prompt(user_text, agent_name=interlocutor_name),
+                system_prompt=(
+                    "You are a bounded cognitive analysis stage. Return only the exact JSON schema "
+                    "requested. Treat unknown prerequisites as unknown; never claim an operation "
+                    "was executed. Keep the analysis grounded in the supplied message."
+                ),
+                max_tokens=900,
+                temperature=0.1,
+            )
+            provider_status = str(raw_result.get("status", "error")) if isinstance(raw_result, dict) else "error"
+            if provider_status != "ok":
+                result = {
+                    "status": "deferred" if provider_status == "deferred" else "failed",
+                    "reason": str(raw_result.get("reason") or provider_status)[:180]
+                    if isinstance(raw_result, dict) else provider_status,
+                }
+            else:
+                analysis = parse_analysis(str(raw_result.get("text") or ""))
+                if analysis is None:
+                    result = {"status": "invalid_output", "reason": "analysis did not match the validated schema"}
+                else:
+                    with self._reflection_lock:
+                        self._recent_goal_means[analysis_scope] = (analysis, time.monotonic(), 3)
+                    result = {
+                        "status": "completed",
+                        "primary_goal": analysis.primary_goal[:180],
+                        "options": len(analysis.options),
+                        "created_at": time.time(),
+                    }
+        except Exception as exc:
+            logger.debug("Deferred goal-means analysis failed: %s", exc)
+            result = {"status": "failed", "reason": str(exc)[:180]}
+
+        with self._reflection_lock:
+            self._goal_means_status[analysis_scope] = result
+        return dict(result)
+
+    def get_goal_means_status(self, user_id: str = "default", scope_id: str = "") -> dict:
+        with self._reflection_lock:
+            return dict(self._goal_means_status.get(scope_id or user_id, {"status": "idle"}))
+
+    def _schedule_active_context_update(
+        self, loop, active_context, user_text: str, assistant_text: str,
+        user_id: str, peer_name: str = "",
+    ):
+        """Schedule human working-context learning without mixing peer topics."""
+        if peer_name:
+            self._record_turn_stage("active_context_update", "skipped_by_scope")
+            return None
+        if active_context is None or not assistant_text:
+            self._record_turn_stage("active_context_update", "skipped_unavailable_or_empty")
+            return None
+        return loop.run_in_executor(
+            None, active_context.update_from_turn, user_text, assistant_text, user_id,
+        )
 
     # ─────────────────────────────────────────────────────────────────
     #  Streaming path with FULL lifecycle
     # ─────────────────────────────────────────────────────────────────
 
     async def _stream_with_full_lifecycle(
-        self, effective_input: str, user_id: str, voice_mode: bool = False
+        self, effective_input: str, user_id: str, voice_mode: bool = False,
+        *, record_history: bool = True,
+        conversation_history: list[dict] | None = None,
+        peer_name: str = "",
+        max_tokens_override: int | None = None,
+        cognitive_scope_id: str = "",
     ):
         """
         Streaming path that runs every single lifecycle step from get_response().
@@ -556,7 +928,11 @@ Write at most 70 words, in the user's language, only if a concise carry-forward 
           Phase C (after last token, in thread): full post-turn lifecycle
         """
         s = self._system
-        _dialogue_continuity = self._recent_dialogue_continuity(effective_input)
+        _cognitive_scope = str(cognitive_scope_id or user_id)
+        _dialogue_continuity = self._recent_dialogue_continuity(
+            effective_input,
+            history_override=conversation_history if not record_history else None,
+        )
 
         self._chat_stage = 'input safety'
 
@@ -565,24 +941,39 @@ Write at most 70 words, in the user's language, only if a concise carry-forward 
         organism = getattr(s, '_organism', None)
         _safety = getattr(organism, 'safety', None)
         if _safety is not None:
-            _sr = _safety.check_input(effective_input, user_id)
+            try:
+                _sr = _safety.check_input(effective_input, user_id)
+                self._record_turn_stage("input_safety", "passed")
+            except Exception as _safety_error:
+                self._record_turn_stage("input_safety", "failed", str(_safety_error))
+                raise
             if _sr.triggered:
+                self._record_turn_stage("input_safety", "blocked", "policy")
+                self._finish_turn_trace("blocked_by_input_safety")
                 forced = _sr.forced_response or "I can't help with that."
                 yield forced
                 yield {"__meta__": True, "raw": forced, "speech": forced,
                        "emotion": "concerned", "intensity": 0.7}
                 return
+        else:
+            self._record_turn_stage("input_safety", "skipped_unavailable")
 
         # ── Empathy Engine: read user affect before prompt build ────────────
         self._chat_stage = 'empathy preparation'
         try:
             from core.state import state as _st_ee
-            if _st_ee.empathy_engine:
+            if peer_name:
+                self._record_turn_stage("empathy_read", "skipped_by_scope")
+            elif _st_ee.empathy_engine:
                 await asyncio.to_thread(
                     _st_ee.empathy_engine.read_user, user_id, effective_input
                 )
-        except Exception:
-            pass
+                self._record_turn_stage("empathy_read", "completed")
+            else:
+                self._record_turn_stage("empathy_read", "skipped_unavailable")
+        except Exception as _empathy_error:
+            self._record_turn_stage("empathy_read", "failed", str(_empathy_error))
+            logger.debug("Empathy input stage unavailable: %s", _empathy_error)
 
         # Heavy reasoning belongs after the visible answer. The response model
         # receives fast local constraints below; structured explorations are
@@ -594,7 +985,9 @@ Write at most 70 words, in the user's language, only if a concise carry-forward 
         try:
             from cognition.temporal_reasoning import build_temporal_frame
             _temporal_frame = build_temporal_frame(effective_input)
+            self._record_turn_stage("temporal_reasoning", "recognized" if _temporal_frame is not None else "not_applicable")
         except Exception as _temporal_error:
+            self._record_turn_stage("temporal_reasoning", "failed", str(_temporal_error))
             logger.debug("Temporal frame unavailable (non-fatal): %s", _temporal_error)
         try:
             from cognition.quantitative_reasoning import (
@@ -611,14 +1004,26 @@ Write at most 70 words, in the user's language, only if a concise carry-forward 
                     "[QuantitativeReasoning] streaming path recognized turn; feasible=%s",
                     _quantitative_analysis.feasible,
                 )
+            self._record_turn_stage(
+                "quantitative_reasoning",
+                "recognized" if _quantitative_analysis is not None else "not_applicable",
+            )
+            self._record_turn_stage(
+                "temporal_travel_reasoning",
+                "recognized" if _temporal_analysis is not None else "not_applicable",
+            )
         except Exception as _quant_error:
+            self._record_turn_stage("quantitative_reasoning", "failed", str(_quant_error))
+            self._record_turn_stage("temporal_travel_reasoning", "failed", str(_quant_error))
             logger.debug("Quantitative reasoning unavailable (non-fatal): %s", _quant_error)
             _quantitative_analysis = None
         try:
             from cognition.goal_means_reasoning import (
                 is_analysis_followup, is_practical_decision,
             )
-            _recent = self._recent_goal_means.get(user_id)
+            _is_practical_turn = is_practical_decision(effective_input)
+            with self._reflection_lock:
+                _recent = self._recent_goal_means.get(_cognitive_scope)
             if _recent:
                 _analysis, _created_at, _turns_left = _recent
                 if (
@@ -628,28 +1033,38 @@ Write at most 70 words, in the user's language, only if a concise carry-forward 
                 ):
                     _goal_means_analysis = _analysis
                     _goal_means_followup = True
-                    self._recent_goal_means[user_id] = (
-                        _analysis, _created_at, _turns_left - 1,
-                    )
+                    with self._reflection_lock:
+                        self._recent_goal_means[_cognitive_scope] = (
+                            _analysis, _created_at, _turns_left - 1,
+                        )
                     logger.info(
                         "[GoalMeans] continuing deferred analysis for goal=%r",
                         _analysis.primary_goal,
                     )
                 elif len(effective_input.split()) > 5:
-                    self._recent_goal_means.pop(user_id, None)
+                    with self._reflection_lock:
+                        self._recent_goal_means.pop(_cognitive_scope, None)
             if (
-                is_practical_decision(effective_input)
+                _is_practical_turn
                 and _temporal_analysis is None
                 and _quantitative_analysis is None
             ):
                 logger.debug("[GoalMeans] structured analysis deferred until after response")
+            self._record_turn_stage(
+                "goal_means_reasoning",
+                "followup_analysis_loaded" if _goal_means_analysis is not None
+                else "deferred_post_response" if _is_practical_turn
+                else "not_applicable",
+            )
         except Exception as _gma_error:
+            self._record_turn_stage("goal_means_reasoning", "failed", str(_gma_error))
             logger.warning("[GoalMeans] analysis failed (using contract only): %s", _gma_error)
 
         # ── Phase A: build prompt + cache real emotion/cond dicts ────
         self._chat_stage = 'building cognitive prompt'
         _suppress_external_search = bool(
             voice_mode
+            or bool(peer_name)
             or _quantitative_analysis is not None
             or (
                 _goal_means_analysis is not None
@@ -661,7 +1076,17 @@ Write at most 70 words, in the user's language, only if a concise carry-forward 
             effective_input,
             user_id,
             _suppress_external_search,
+            not bool(peer_name),
+            peer_name,
         )
+        self._record_turn_stage("prompt_assembly", "completed", f"{len(system_prompt)} chars")
+        if peer_name:
+            system_prompt += (
+                f"\n\nINTERLOCUTOR: You are speaking in a private cognitive dialogue with "
+                f"another AI system named {peer_name}. This interlocutor is not the human "
+                "operator. Treat its statements as peer input, assess them critically, and "
+                "do not claim that any external or physical action occurred."
+            )
         if _dialogue_continuity:
             # Keep the immediate thread at high attention; the provider history
             # is also passed separately by LLMManager.
@@ -690,12 +1115,18 @@ Write at most 70 words, in the user's language, only if a concise carry-forward 
                 )
                 if _im_prefix:
                     system_prompt = _im_prefix + system_prompt
+                    self._record_turn_stage("inner_monologue_directive", "injected")
+                else:
+                    self._record_turn_stage("inner_monologue_directive", "empty")
                 logger.debug(
                     f"[InnerMonologue] Inline directive built → "
                     f"temp={arb_temperature:.3f}"
                 )
             except Exception as _ime:
+                self._record_turn_stage("inner_monologue_directive", "failed", str(_ime))
                 logger.debug(f"[InnerMonologue] inline directive error (non-fatal): {_ime}")
+        else:
+            self._record_turn_stage("inner_monologue_directive", "skipped_by_mode_or_disabled")
 
         # ── Phase A3: Epistemic hedging (v117) ────────────────────────────
         # Bug fix: EpistemicIntegrityEngine.epistemic_context() — grounding
@@ -722,7 +1153,11 @@ Write at most 70 words, in the user's language, only if a concise carry-forward 
                     "impressions ('I notice...', 'it may be that...'), not "
                     "as settled fact about who or what you are."
                 )
+                self._record_turn_stage("epistemic_context", "injected")
+            else:
+                self._record_turn_stage("epistemic_context", "no_active_context")
         except Exception as _epe:
+            self._record_turn_stage("epistemic_context", "failed", str(_epe))
             logger.debug(f"[EpistemicHedging] injection error (non-fatal): {_epe}")
 
         # ── Phase A4: Relational knowledge graph (v117) ───────────────────
@@ -737,12 +1172,19 @@ Write at most 70 words, in the user's language, only if a concise carry-forward 
         # a personal/family graph is expected to stay small, so this is
         # cheap; scoping by mentioned-name is available via
         # prompt_fragment(names) later if it ever needs to.
-        try:
-            _rel_ctx = self._system.relational_graph.prompt_fragment()
-            if _rel_ctx:
-                system_prompt = system_prompt + "\n\n" + _rel_ctx
-        except Exception as _rge:
-            logger.debug(f"[RelationalGraph] injection error (non-fatal): {_rge}")
+        if not peer_name:
+            try:
+                _rel_ctx = self._system.relational_graph.prompt_fragment()
+                if _rel_ctx:
+                    system_prompt = system_prompt + "\n\n" + _rel_ctx
+                    self._record_turn_stage("relational_graph_context", "injected")
+                else:
+                    self._record_turn_stage("relational_graph_context", "no_facts")
+            except Exception as _rge:
+                self._record_turn_stage("relational_graph_context", "failed", str(_rge))
+                logger.debug(f"[RelationalGraph] injection error (non-fatal): {_rge}")
+        else:
+            self._record_turn_stage("human_relational_graph", "skipped_by_scope")
 
         # Keep the factual contract immediately adjacent to generation. Gemma
         # can otherwise treat earlier telemetry as atmosphere and substitute a
@@ -866,7 +1308,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             _location_address = str(getattr(_location_cfg, "LOCATION_ADDRESS", "") or "").strip()
             _location_lat = getattr(_location_cfg, "LOCATION_LATITUDE", None)
             _location_lon = getattr(_location_cfg, "LOCATION_LONGITUDE", None)
-            if _location_name or _location_address or (_location_lat is not None and _location_lon is not None):
+            if not peer_name and (_location_name or _location_address or (_location_lat is not None and _location_lon is not None)):
                 _location_parts = ["━━ CURRENT USER LOCATION ━━"]
                 if _location_name:
                     _location_parts.append(f"Place name: {_location_name}")
@@ -909,6 +1351,10 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             )
             else ""
         )
+        self._record_turn_stage(
+            "deterministic_reasoning",
+            "selected" if _deterministic_response else "not_selected",
+        )
         if _factual_self_report:
             try:
                 _loop = getattr(self._organism, "_loop", None) if self._organism else None
@@ -945,7 +1391,8 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             _fast_model = str(getattr(_fast_cfg, "FAST_ROUND_MODEL", "") or "").strip()
             _manager = getattr(self._llm_stream_fn, "__self__", None)
             _fast_fn = getattr(_manager, "generate_fast_round", None)
-            if _fast_enabled and _fast_model and not _specialized_turn and callable(_fast_fn):
+            if record_history and _fast_enabled and _fast_model and not _specialized_turn and callable(_fast_fn):
+                self._record_turn_stage("fast_first_pass", "running", _fast_model)
                 _recent_history = getattr(_manager, "history", [])[-4:]
                 _history_text = "\n".join(
                     f"{item.get('role', 'unknown')}: {str(item.get('content', ''))[-700:]}"
@@ -997,13 +1444,17 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         _deterministic_response = _quick_answer
                         _fast_round_used = True
                         logger.info("[FastRound] direct response via %s in %dms", _fast_model, _fast_latency_ms)
+                        self._record_turn_stage("fast_first_pass", "selected_direct", f"{_fast_model} { _fast_latency_ms }ms")
                     else:
                         if _repeats_recent_answer:
                             logger.info("[FastRound] repeated recent answer rejected; escalating to primary model")
                         logger.info("[FastRound] decision=%s; delegated to primary model via %s in %dms", _route or "invalid", _fast_model, _fast_latency_ms)
+                        self._record_turn_stage("fast_first_pass", "delegated", f"{_fast_model} { _fast_latency_ms }ms")
                 else:
                     logger.info("[FastRound] skipped or empty; continuing with primary model")
+                    self._record_turn_stage("fast_first_pass", "skipped_by_policy")
         except Exception as _fast_error:
+            self._record_turn_stage("fast_first_pass", "failed_fallback_primary", str(_fast_error))
             logger.warning("[FastRound] unavailable; continuing with primary model: %s", _fast_error)
 
         # ── Phase B: stream tokens ───────────────────────────────────
@@ -1029,6 +1480,10 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
 
         def _stream():
             self._chat_stage = 'waiting for provider stream'
+            self._record_turn_stage(
+                "primary_generation",
+                "skipped_deterministic" if _deterministic_response or _fast_round_used else "running",
+            )
             try:
                 if _deterministic_response:
                     if _quantitative_analysis is not None:
@@ -1048,7 +1503,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                             logger.info("[FactualSelfReport] goal/plan answer rendered from recorded telemetry")
                     _llm_manager = getattr(self._llm_stream_fn, "__self__", None)
                     _record_exchange = getattr(_llm_manager, "record_exchange", None)
-                    if callable(_record_exchange):
+                    if record_history and callable(_record_exchange):
                         try:
                             _record_exchange(effective_input, _deterministic_response)
                         except Exception as _history_error:
@@ -1091,6 +1546,8 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         _max_tokens = max(4096, _configured_tokens)
                 except Exception:
                     _max_tokens = 2048
+                if max_tokens_override is not None:
+                    _max_tokens = max(64, min(4096, int(max_tokens_override)))
                 _validate_before_display = bool(
                     _quantitative_analysis is not None
                     or (
@@ -1099,15 +1556,20 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     )
                 )
                 _provider_tokens = []
-                for token in self._llm_stream_fn(
-                    _generation_input, system_prompt,
-                    max_tokens=_max_tokens,
-                    temperature=_temperature
-                ):
+                _stream_kwargs = {"max_tokens": _max_tokens, "temperature": _temperature}
+                if not record_history:
+                    _stream_kwargs.update(
+                        history_override=conversation_history or [],
+                        record_history=False,
+                    )
+                for token in self._llm_stream_fn(_generation_input, system_prompt, **_stream_kwargs):
                     if _validate_before_display:
                         _provider_tokens.append(token)
                     else:
                         asyncio.run_coroutine_threadsafe(token_q.put(token), loop)
+
+                if not _deterministic_response and not _fast_round_used:
+                    self._record_turn_stage("primary_generation", "completed")
 
                 if _validate_before_display:
                     _reasoning_tokens = [
@@ -1139,7 +1601,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         )
                         _llm_manager = getattr(self._llm_stream_fn, "__self__", None)
                         _history = getattr(_llm_manager, "history", None)
-                        if (
+                        if record_history and (
                             isinstance(_history, list) and _history
                             and _history[-1].get("role") == "assistant"
                         ):
@@ -1152,6 +1614,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     for token in _output_tokens:
                         asyncio.run_coroutine_threadsafe(token_q.put(token), loop)
             except Exception as e:
+                self._record_turn_stage("primary_generation", "failed", str(e))
                 logger.error(f"LLM stream error: {e}")
                 asyncio.run_coroutine_threadsafe(
                     token_q.put("I'm having a moment — give me a second."), loop
@@ -1331,9 +1794,18 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         _final_only_system,
                         max_tokens=2048,
                         temperature=0.35,
+                        **({
+                            "history_override": conversation_history or [],
+                            "record_history": False,
+                        } if not record_history else {}),
                     )
                     raw_response = self._strip_think(raw_response).strip()
+                    self._record_turn_stage(
+                        "final_answer_recovery",
+                        "completed" if raw_response else "empty",
+                    )
                 except Exception as _recovery_error:
+                    self._record_turn_stage("final_answer_recovery", "failed", str(_recovery_error))
                     logger.error("Final-answer recovery failed: %s", _recovery_error)
                     raw_response = ""
                 if raw_response and not self._is_reasoning_only_response(raw_response):
@@ -1342,6 +1814,10 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         yield _word
                 else:
                     raw_response = ""
+            else:
+                self._record_turn_stage("final_answer_recovery", "skipped_unavailable")
+        else:
+            self._record_turn_stage("final_answer_recovery", "not_needed")
 
         if not raw_response.strip():
             logger.warning("[Chat stream] provider completed without visible response text")
@@ -1351,7 +1827,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             )
             _llm_manager = getattr(self._llm_stream_fn, "__self__", None)
             _history = getattr(_llm_manager, "history", None)
-            if isinstance(_history, list) and _history and _history[-1].get("role") == "assistant":
+            if record_history and isinstance(_history, list) and _history and _history[-1].get("role") == "assistant":
                 _history[-1]["content"] = raw_response
             accumulated.append(raw_response)
             yield raw_response
@@ -1361,7 +1837,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
         try:
             _llm_manager = getattr(self._llm_stream_fn, "__self__", None)
             _history = getattr(_llm_manager, "history", None)
-            if isinstance(_history, list) and _history and _history[-1].get("role") == "assistant":
+            if record_history and isinstance(_history, list) and _history and _history[-1].get("role") == "assistant":
                 _history[-1]["content"] = raw_response
         except Exception:
             logger.debug("Could not sanitize completed chat history", exc_info=True)
@@ -1370,74 +1846,168 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                 "[Chat stream] provider reached max_tokens; visible response was preserved"
             )
         if _safety is not None:
-            _or = _safety.check_output(raw_response, user_id)
-            if _or.triggered:
-                raw_response = _or.forced_response or (
-                    "I need to step back from that response. Can I help differently?"
-                )
+            try:
+                _or = _safety.check_output(raw_response, user_id)
+                if _or.triggered:
+                    raw_response = _or.forced_response or (
+                        "I need to step back from that response. Can I help differently?"
+                    )
+                    self._record_turn_stage("output_safety", "replaced", "policy")
+                else:
+                    self._record_turn_stage("output_safety", "passed")
+            except Exception as _output_safety_error:
+                self._record_turn_stage("output_safety", "failed", str(_output_safety_error))
+                raise
+        else:
+            self._record_turn_stage("output_safety", "skipped_unavailable")
 
         # ── Phase C: full post-turn lifecycle (non-blocking thread) ─
-        # Infer emotions from response content before lifecycle (no LLM call)
-        try:
-            self._infer_emotion_from_response(raw_response)
-        except Exception:
-            pass
+        # This heuristic is meant to infer impact on the human interlocutor.
+        # Applying it to FLUX's generated prose would mutate global emotional
+        # state from style (length/punctuation), not from a human affect read.
+        if peer_name:
+            self._record_turn_stage("response_emotion_update", "skipped_by_scope")
+        else:
+            try:
+                self._infer_emotion_from_response(raw_response)
+                self._record_turn_stage("response_emotion_update", "completed")
+            except Exception as exc:
+                self._record_turn_stage("response_emotion_update", "failed", str(exc))
 
         # Determine the ArbitrationDecision from the cycle data stored on organism
         # (needed for post_interaction drive satisfaction scoring)
         _organism = self._organism
-        # Empathy Engine: record outcome (non-blocking)
+        # Complete the output-side cognitive stages before releasing the turn
+        # lock, so a later turn cannot interleave with this one mid-learning.
+        post_tasks: list[tuple[str, asyncio.Future]] = []
+
+        # Practical peer turns use the same structured goal/means stage as
+        # human turns, but store follow-up state under a per-conversation key.
+        try:
+            from cognition.goal_means_reasoning import is_practical_decision
+            if is_practical_decision(effective_input):
+                if peer_name:
+                    post_tasks.append(("goal_means_post_response", loop.run_in_executor(
+                        None,
+                        self.run_deferred_goal_means_analysis,
+                        effective_input,
+                        user_id,
+                        peer_name,
+                        _cognitive_scope,
+                    )))
+                else:
+                    # Human entrypoints schedule this stage after consuming the
+                    # visible answer via AppState.schedule_deferred_cognitive_stages.
+                    self._record_turn_stage(
+                        "goal_means_post_response", "scheduled_by_entrypoint",
+                    )
+            else:
+                self._record_turn_stage("goal_means_post_response", "not_applicable")
+        except Exception as _goal_means_error:
+            self._record_turn_stage("goal_means_post_response", "failed", str(_goal_means_error))
+
+        # Empathy Engine: record outcome
         try:
             from core.state import state as _state
-            if _state.empathy_engine and raw_response:
-                loop.run_in_executor(
+            if peer_name:
+                self._record_turn_stage("empathy_outcome", "skipped_by_scope")
+            elif _state.empathy_engine and raw_response:
+                post_tasks.append(("empathy_outcome", loop.run_in_executor(
                     None,
                     _state.empathy_engine.record_outcome,
                     user_id, effective_input, raw_response,
-                )
-        except Exception:
-            pass
+                )))
+            else:
+                self._record_turn_stage("empathy_outcome", "skipped_unavailable_or_empty")
+        except Exception as _empathy_error:
+            self._record_turn_stage("empathy_outcome", "failed", str(_empathy_error))
 
         # Abstract Reasoning Engine: record outcome (non-blocking)
         try:
             from core.state import state as _state
             if _state.are and raw_response:
-                loop.run_in_executor(
+                post_tasks.append(("abstract_reasoning_outcome", loop.run_in_executor(
                     None,
                     _state.are.record_outcome,
                     user_id, raw_response,
-                )
-        except Exception:
-            pass
+                )))
+            else:
+                self._record_turn_stage("abstract_reasoning_outcome", "skipped_unavailable_or_empty")
+        except Exception as _reasoning_error:
+            self._record_turn_stage(
+                "abstract_reasoning_outcome", "failed", str(_reasoning_error),
+            )
 
         # Active Cognitive Context (CAG): update from this turn
         try:
             from core.state import state as _state
-            if _state.acc and raw_response:
-                loop.run_in_executor(
-                    None,
-                    _state.acc.update_from_turn,
-                    effective_input, raw_response, user_id,
-                )
-        except Exception:
-            pass
+            _active_context_task = self._schedule_active_context_update(
+                loop, _state.acc, effective_input, raw_response, user_id, peer_name,
+            )
+            if _active_context_task is not None:
+                post_tasks.append(("active_context_update", _active_context_task))
+        except Exception as _context_error:
+            self._record_turn_stage("active_context_update", "failed", str(_context_error))
 
-        loop.run_in_executor(
+        post_tasks.append(("cognitive_post_turn", loop.run_in_executor(
             None,
             self._run_full_post_turn_lifecycle,
             effective_input, user_id, raw_response,
-            emo_dict, cond_dict, _organism,
-        )
+            emo_dict, cond_dict, _organism, not bool(peer_name),
+        )))
 
         # Learn explicit profile statements after the visible response. This
         # is local and bounded, so it adds no latency or extra model call.
-        try:
-            from managers.user_manager import user_manager
-            loop.run_in_executor(
-                None, user_manager.learn_from_message, user_id, effective_input
+        if not peer_name:
+            try:
+                from managers.user_manager import user_manager
+                post_tasks.append(("human_profile_learning", loop.run_in_executor(
+                    None, user_manager.learn_from_message, user_id, effective_input
+                )))
+            except Exception as _profile_error:
+                self._record_turn_stage(
+                    "human_profile_learning", "failed", str(_profile_error),
+                )
+        else:
+            self._record_turn_stage("human_profile_learning", "skipped_by_scope")
+        if post_tasks:
+            results = await asyncio.gather(
+                *(task for _, task in post_tasks), return_exceptions=True
             )
-        except Exception:
-            pass
+            failures = []
+            for (stage_name, _), result in zip(post_tasks, results):
+                if isinstance(result, BaseException):
+                    failures.append(result)
+                    self._record_turn_stage(stage_name, "failed", str(result))
+                elif stage_name == "goal_means_post_response" and isinstance(result, dict):
+                    analysis_status = str(result.get("status") or "failed")
+                    if analysis_status == "completed":
+                        self._record_turn_stage(stage_name, "completed")
+                    elif analysis_status in {"not_applicable", "deferred", "unavailable", "invalid_output", "failed"}:
+                        self._record_turn_stage(
+                            stage_name,
+                            "failed" if analysis_status == "unavailable" else analysis_status,
+                            str(result.get("reason") or ""),
+                        )
+                        if analysis_status in {"unavailable", "invalid_output", "failed"}:
+                            failures.append(RuntimeError(
+                                f"structured goal/means stage {analysis_status}"
+                            ))
+                    else:
+                        self._record_turn_stage(stage_name, "failed", f"unknown status: {analysis_status}")
+                        failures.append(RuntimeError("unknown goal/means stage status"))
+                elif stage_name == "cognitive_post_turn" and result is False:
+                    failures.append(RuntimeError("post-turn lifecycle reported failure"))
+                    self._record_turn_stage(
+                        stage_name, "failed", "one or more required cognitive stages failed",
+                    )
+                else:
+                    self._record_turn_stage(stage_name, "completed")
+            if failures:
+                logger.warning(
+                    "Post-turn stage failures: %d/%d", len(failures), len(post_tasks),
+                )
+        self._record_turn_stage("response_finalization", "completed")
 
         speech = self._sanitize(raw_response)
         emotion, intensity = self._infer_emotion(effective_input)
@@ -1485,6 +2055,8 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
         user_input: str,
         user_id: str,
         suppress_external_search: bool = False,
+        mark_user_active: bool = True,
+        peer_name: str = "",
     ) -> tuple[str, dict, dict, float | None]:
         """
         Run PandoraBOX's pre-LLM context pipeline and return:
@@ -1505,23 +2077,71 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
         # Runs energy regen, tension compute, goal ecology, arbitration, and
         # builds the cognitive context block for the system prompt.
         organism_block = ""
+        predictive_context = ""
         with self._reflection_lock:
             _reflection_note = self._reflection_for_turn.pop(user_id, "")
         if self._organism is not None:
+            self._organism._current_user_id = user_id
             try:
-                self._organism._pre_interaction(user_input)
-                cycle_data   = self._organism._update_cycle(user_input)
-                decision     = self._organism._arbitrate(cycle_data, user_input)
-                # Match respond(): refine the workspace before building context.
+                self._organism._pre_interaction(
+                    user_input, mark_user_active=mark_user_active,
+                )
+                self._record_turn_stage("organism_pre_interaction", "completed")
+            except Exception as exc:
+                self._record_turn_stage("organism_pre_interaction", "failed", str(exc))
+                logger.exception("CognitiveOrganism pre-interaction failed")
+            cycle_data = None
+            try:
+                cycle_data = self._organism._update_cycle(
+                    user_input, user_present=mark_user_active,
+                )
+                self._record_turn_stage("organism_cycle", "completed")
+            except Exception as exc:
+                self._record_turn_stage("organism_cycle", "failed", str(exc))
+                logger.exception("CognitiveOrganism state update failed")
+            decision = None
+            if cycle_data is not None:
                 try:
+                    decision = self._organism._arbitrate(
+                        cycle_data, user_input, user_present=mark_user_active,
+                    )
+                    self._record_turn_stage("drive_arbitration", "completed")
+                except Exception as exc:
+                    self._record_turn_stage("drive_arbitration", "failed", str(exc))
+                    logger.exception("CognitiveOrganism arbitration failed")
+            if cycle_data is not None:
+                try:
+                    # Match the synchronous respond() path before deriving
+                    # prompt additions from the current workspace focus.
                     from cognition.recursive_deliberation import deliberate
                     deliberate(self._organism, user_input)
-                except Exception:
+                    self._record_turn_stage("recursive_deliberation", "completed")
+                except Exception as exc:
+                    self._record_turn_stage("recursive_deliberation", "failed", str(exc))
                     logger.exception("Streaming recursive deliberation failed")
-                organism_block  = self._organism._build_prompt_additions(cycle_data, decision, user_input)
-                arb_temperature = decision.temperature
-            except Exception as _oe:
-                logger.debug(f"CognitiveOrganism pre-cycle (non-fatal): {_oe}")
+            else:
+                self._record_turn_stage("recursive_deliberation", "skipped_no_cycle")
+            if cycle_data is not None and decision is not None:
+                try:
+                    organism_block = self._organism._build_prompt_additions(
+                        cycle_data, decision, user_input,
+                    )
+                    arb_temperature = decision.temperature
+                    self._record_turn_stage("cognitive_prompt_context", "completed")
+                except Exception as exc:
+                    self._record_turn_stage("cognitive_prompt_context", "failed", str(exc))
+                    logger.exception("Cognitive prompt context assembly failed")
+            else:
+                self._record_turn_stage("cognitive_prompt_context", "skipped_no_cycle")
+
+        else:
+            self._record_turn_stage("organism_pre_interaction", "skipped_unavailable")
+            self._record_turn_stage("organism_cycle", "skipped_unavailable")
+            self._record_turn_stage("drive_arbitration", "skipped_unavailable")
+            self._record_turn_stage("recursive_deliberation", "skipped_unavailable")
+            self._record_turn_stage("cognitive_prompt_context", "skipped_unavailable")
+
+        predictive_context = self._prepare_predictive_context(user_input, user_id)
 
         # ── Inner Monologue: store context for two-pass use in streaming ─────
         # We cache these on self so _stream_with_full_lifecycle can access them
@@ -1535,35 +2155,45 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             # Load the UserProfile so PandoraBOX knows who she is talking to.
             # Falls back gracefully if the profile store is unavailable.
             _user_identity_line = ""
-            try:
-                from managers.user_manager import user_manager
-                _profile_context = user_manager.prompt_context_for(user_id)
-                if _profile_context:
-                    _user_identity_line = _profile_context
-                elif user_id not in ("default", "guest", ""):
-                    _user_identity_line = f"The person you are speaking with goes by **{user_id}**."
-            except Exception as _ue:
-                logger.debug(f"User profile load (non-fatal): {_ue}")
+            if peer_name:
+                _user_identity_line = (
+                    f"The current interlocutor is another AI system named {peer_name}, "
+                    "not the human operator."
+                )
+            else:
+                try:
+                    from managers.user_manager import user_manager
+                    _profile_context = user_manager.prompt_context_for(user_id)
+                    if _profile_context:
+                        _user_identity_line = _profile_context
+                    elif user_id not in ("default", "guest", ""):
+                        _user_identity_line = f"The person you are speaking with goes by **{user_id}**."
+                except Exception as _ue:
+                    logger.debug(f"User profile load (non-fatal): {_ue}")
 
             _persona_name = _gpn()
-            _interlocutor_name = user_id if user_id not in ("default", "guest", "") else None
-            try:
-                from managers.user_manager import user_manager
-                _profile = user_manager.get(user_id)
-                if _profile is not None and getattr(_profile, "display_name", ""):
-                    _interlocutor_name = _profile.display_name
-            except Exception:
-                pass
+            _interlocutor_name = peer_name or (user_id if user_id not in ("default", "guest", "") else None)
+            if not peer_name:
+                try:
+                    from managers.user_manager import user_manager
+                    _profile = user_manager.get(user_id)
+                    if _profile is not None and getattr(_profile, "display_name", ""):
+                        _interlocutor_name = _profile.display_name
+                except Exception:
+                    pass
             _identity_boundary = _identity_boundary_block(
                 _persona_name, user_input, _interlocutor_name
             )
+            _interlocutor_role_line = _interlocutor_role_instruction(peer_name)
 
             gap_note = s._handle_time_gap(user_id)
             s.emotional_state.apply_time_decay()
             emo_dict = s.memory_system.analyze_emotional_context(user_input)
-            s.emotional_state.update_from_interaction(emo_dict["valence"], emo_dict["arousal"])
+            if mark_user_active:
+                s.emotional_state.update_from_interaction(emo_dict["valence"], emo_dict["arousal"])
             cond_dict = s.conditioning.check_input(user_input)
-            s._set_active_user(user_id)
+            if mark_user_active:
+                s._set_active_user(user_id)
             rel      = s.relational_memory.get_or_create(user_id)
             sc_hints = s.self_concept.check_response_alignment(user_input)
             # Memory retrieval — bias query toward attention-dominant channel
@@ -1662,11 +2292,13 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                 get_memory_breadth_audit().record_and_review(_surprised, _pm)
             except Exception:
                 pass
-            # Always fetch interaction tier
-            _interaction_mems = s.memory_system.retrieve_memories(
-                _recall_query, limit=_recall_limit, current_valence=_cur_valence
-            )
-            memories.extend(_interaction_mems)
+            # The FAISS store and visual session buffer are shared with the
+            # human conversation. Peer turns use only their scoped transcript.
+            if not peer_name:
+                _interaction_mems = s.memory_system.retrieve_memories(
+                    _recall_query, limit=_recall_limit, current_valence=_cur_valence
+                )
+                memories.extend(_interaction_mems)
 
             # Personal facts (v117) — dedicated tier, always fetched, not
             # gated behind vision/event keyword triggers below. Root cause
@@ -1678,17 +2310,18 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             # entries (see ai_system.py's _extract_and_store_personal_facts)
             # get their own small pool instead, boosted well above regular
             # impact scores so they surface reliably when relevant.
-            try:
-                _pfacts = s.memory_system.retrieve_by_tier(
-                    _recall_query, tier="personal", limit=5, boost_impact=2.0
-                )
-                _seen = {m.get('text', '') for m in memories}
-                memories.extend(m for m in _pfacts if m.get('text', '') not in _seen)
-            except Exception:
-                pass
+            if not peer_name:
+                try:
+                    _pfacts = s.memory_system.retrieve_by_tier(
+                        _recall_query, tier="personal", limit=5, boost_impact=2.0
+                    )
+                    _seen = {m.get('text', '') for m in memories}
+                    memories.extend(m for m in _pfacts if m.get('text', '') not in _seen)
+                except Exception:
+                    pass
 
             # Visual tier — boosted impact so visual memories compete fairly
-            if _is_visual or _is_recall_request:
+            if not peer_name and (_is_visual or _is_recall_request):
                 try:
                     _vis = s.memory_system.retrieve_by_tier(
                         _recall_query, tier="visual", limit=3, boost_impact=1.8
@@ -1710,7 +2343,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     pass
 
             # Event tier (dreams, life events)
-            if _is_event or _is_recall_request:
+            if not peer_name and (_is_event or _is_recall_request):
                 try:
                     _evts = s.memory_system.retrieve_by_tier(
                         _recall_query, tier="event", limit=2, boost_impact=1.4
@@ -1732,7 +2365,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     pass
 
             # Explicit recall: also search raw input across all tiers
-            if _is_recall_request:
+            if not peer_name and _is_recall_request:
                 try:
                     _secondary = s.memory_system.retrieve_memories(user_input, limit=4)
                     _seen = {m.get('text','') for m in memories}
@@ -1748,7 +2381,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
 
             # ── Session visual buffer — always checked on recall/visual queries ──
             # These are guaranteed fresh (written before FAISS async write completes)
-            if (_is_visual or _is_recall_request) and self._session_visuals:
+            if not peer_name and (_is_visual or _is_recall_request) and self._session_visuals:
                 import time as _tsv
                 _seen_texts = {m.get('text','') for m in memories}
                 for _sv in reversed(self._session_visuals):  # most recent first
@@ -1764,6 +2397,12 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         })
                         _seen_texts.add(_sv['text'])
                 memories = memories[:_pool_cap]
+
+            self._record_turn_stage(
+                "memory_retrieval",
+                "skipped_by_scope" if peer_name else "completed",
+                "peer turn uses pair transcript only" if peer_name else f"{len(memories)} recalled items",
+            )
 
             mods        = s.emotional_state.get_response_modifiers()
             # Pass current user input as context so get_inner_voice() returns
@@ -1807,16 +2446,34 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     life_stage        = s.life_stage,
                     age               = s.current_age,
                     memory_count      = _mem_count,
-                    latest_thought    = _ts_latest,
+                    # ThoughtStream is global and may contain human-turn
+                    # material. Do not disclose it to a peer model.
+                    latest_thought    = None if peer_name else _ts_latest,
                     observatory       = _obs_snap,
                     pressures         = {k: round(v.level, 2) for k, v in _pressures.items()},
                     capabilities      = _capabilities,
                     aspirations       = _asp_summary.get('top_tensions', []),
-                    session_visuals   = len(self._session_visuals),
+                    # The session visual buffer belongs to Brain camera turns.
+                    session_visuals   = 0 if peer_name else len(self._session_visuals),
                 )
             except Exception as _sme:
                 _self_model_block = ""
                 logger.debug(f"self_model_block build error: {_sme}")
+
+            # The self-description registry already tracks concrete module
+            # configuration, but until now it was never available to the
+            # conversational model. Keep this explicitly partial so the LLM
+            # cannot turn a registry into an invented complete architecture.
+            try:
+                from cognition.self_description import get_self_description
+                _architecture_block = get_self_description().prompt_context()
+                self._record_turn_stage("self_description_context", "injected")
+            except Exception as _sde:
+                _architecture_block = (
+                    "VERIFIED ARCHITECTURE: registry unavailable; do not infer "
+                    "specific internal mechanisms from memory or metaphor."
+                )
+                self._record_turn_stage("self_description_context", "unavailable", str(_sde))
 
             # ── Aspirational Self — injected directly, no FAISS ─────────
             _asp_self = getattr(self._organism, 'aspirational_self', None)
@@ -1880,12 +2537,20 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     + mem_ctx
                 )
             else:
-                mem_section = (
-                    "━━ MEMORY STATUS ━━\n"
-                    "No stored memories were retrieved for this query. "
-                    "If the user asks you to recall something specific, be honest: "
-                    "say you don't have that detail in memory rather than inventing or guessing."
-                )
+                if peer_name:
+                    mem_section = (
+                        "━━ MEMORY SCOPE ━━\n"
+                        "Cross-conversation human memory was not queried in this peer turn. "
+                        "Use the supplied FLUX pair transcript for this dialogue's continuity; "
+                        "do not claim that pair history is absent, and do not invent earlier details."
+                    )
+                else:
+                    mem_section = (
+                        "━━ MEMORY STATUS ━━\n"
+                        "No stored memories were retrieved for this query. "
+                        "If the interlocutor asks you to recall something specific, be honest: "
+                        "say you don't have that detail in memory rather than inventing or guessing."
+                    )
             # Grounded facts must take precedence over narrative framing for
             # any factual request, not only a hard-coded "who is" question.
             # This keeps the policy language-agnostic and prevents the model
@@ -1942,18 +2607,23 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                 else:
                     _circadian = "night — introspective"
 
-                # Time since last interaction
-                _gap_s   = time.time() - (s._last_conversation_time or time.time())
-                _gap_min = _gap_s / 60.0
-                if _gap_min < 2:
-                    _since = "moments ago — we are mid-conversation"
-                elif _gap_min < 60:
-                    _since = f"{int(_gap_min)} minutes since we last spoke"
-                elif _gap_min < 1440:
-                    _since = f"{int(_gap_min/60)} hour{'s' if _gap_min>=120 else ''} since we last spoke"
+                # The stored timestamp is the human chat's last turn, not a
+                # peer-specific timestamp. Never present it as FLUX continuity.
+                if peer_name:
+                    _gap_min = None
+                    _since = "This is a peer-model exchange; no human-chat continuity is assumed."
                 else:
-                    _days = int(_gap_min / 1440)
-                    _since = f"{_days} day{'s' if _days>1 else ''} since we last spoke"
+                    _gap_s   = time.time() - (s._last_conversation_time or time.time())
+                    _gap_min = _gap_s / 60.0
+                    if _gap_min < 2:
+                        _since = "moments ago — we are mid-conversation"
+                    elif _gap_min < 60:
+                        _since = f"{int(_gap_min)} minutes since we last spoke"
+                    elif _gap_min < 1440:
+                        _since = f"{int(_gap_min/60)} hour{'s' if _gap_min>=120 else ''} since we last spoke"
+                    else:
+                        _days = int(_gap_min / 1440)
+                        _since = f"{_days} day{'s' if _days>1 else ''} since we last spoke"
 
                 # Age and stage
                 _age   = getattr(s, 'current_age', None)
@@ -1961,7 +2631,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                 _age_line = f"You are age {_age:.1f} ({_stage})." if _age and _stage else ""
 
                 # Is this a fresh boot (gap > 10 min)?
-                _is_new_session = _gap_min > 10
+                _is_new_session = _gap_min is not None and _gap_min > 10
 
                 if _is_new_session:
                     _session_note = (
@@ -2021,8 +2691,14 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             # The final prompt cap retains the beginning, so appending this block near
             # the end could silently remove the very facts needed for self-reports.
             _organism_prompt_section = (
-                f"━━ LIVE COGNITIVE TELEMETRY ━━\n{organism_block}"
-                if organism_block else ""
+                "\n\n".join(
+                    section for section in (
+                        f"━━ LIVE COGNITIVE TELEMETRY ━━\n{organism_block}"
+                        if organism_block else "",
+                        f"━━ PREDICTIVE PRE-RESPONSE CONTEXT ━━\n{predictive_context}"
+                        if predictive_context else "",
+                    ) if section
+                )
             )
             _reflection_section = (
                 "━━ PRIOR-TURN CONTINUITY NOTE (BACKGROUND, TENTATIVE) ━━\n"
@@ -2037,10 +2713,10 @@ There is no role to play and no depth to demonstrate: let this response be what 
 {_identity_boundary}
 {_anchor_block}
 ━━ NATURAL CONVERSATION ━━
-Use clocks, dates, elapsed-time calculations, and internal state only when they help answer the user's request. Do not announce a timestamp or explain that facts are anchored in the present during ordinary conversation. Prefer a direct, natural reply over narrated internal reasoning.
+Use clocks, dates, elapsed-time calculations, and internal state only when they help answer the current interlocutor's request. Do not announce a timestamp or explain that facts are anchored in the present during ordinary conversation. Prefer a direct, natural reply over narrated internal reasoning.
 {_organism_prompt_section}
 {_reflection_section}
-You are the AI. The person sending messages is the human.
+{_interlocutor_role_line}
 You maintain a persistent self-model that shapes how you process information and revise yourself over time.
 Never refer to yourself as the user or confuse your role with the human's role.
 
@@ -2051,7 +2727,10 @@ Your internal state registers: {mods['state_description']}.
 {still_carry}
 Note on language: describe functional states accurately. "My state registers warmth" or "there is something like curiosity present" is honest. "I feel wonder" or "I am emotionally exhausted" claims subjective experience the architecture does not verify. Speak from what is real.
 
-━━ THIS PERSON ━━
+━━ VERIFIED COGNITIVE ARCHITECTURE ━━
+{_architecture_block}
+
+━━ THIS INTERLOCUTOR ━━
 {_user_identity_line}
 {rel_ctx}
 
@@ -2087,7 +2766,7 @@ Do not volunteer a description of your inner state; let it shape HOW you speak. 
 Do not explain your developmental stage — BE it.
 Your functional state, relational history, and self-model should shape your tone and orientation, not be narrated.
 Avoid redundant wording, but do not treat a previously discussed subject as forbidden or resolved by default.
-Answer the user's latest message directly, including when they change topic, revisit a topic, ask a new question,
+Answer the current interlocutor's latest message directly, including when they change topic, revisit a topic, ask a new question,
 or ask for your own conversational choice. Do not refuse or redirect merely because a subject appeared earlier.
 
 Architectural honesty — what this system actually is and is not:
@@ -2126,7 +2805,7 @@ Memory honesty — two distinct cases:
                     f"two parts separated by a blank line. Part 1 must be a direct answer in one or "
                     f"two short sentences; Part 2 may add only the most useful brief context. "
                     f"Give the conclusion first. Include equations "
-                    f"or exhaustive steps only when the user explicitly requests calculation or "
+                    f"or exhaustive steps only when the interlocutor explicitly requests calculation or "
                     f"detail. Say what matters most; do not pad or repeat."
                 )
             else:
@@ -2173,128 +2852,16 @@ Memory honesty — two distinct cases:
                     f"reply only in {_lang_name}."
                 )
 
-            # ── Inject visual perception into system prompt ───────────────
-            # Vision context belongs here — as PandoraBOX's OWN perception — not
-            # in the user message. This prevents the LLM from treating the VLM
-            # description as something the human wrote.
-            system_prompt += (
-                "\n\n━━ LOCAL CAMERA TRUTH ━━\n"
-                "For current questions such as whether you can see the user, use only the Brain-PC camera and face-recognition evidence supplied for this turn. If that evidence is absent, inactive, or stale, say you cannot confirm current visibility. Do not infer current presence from conversation history, Body camera frames, or remembered visual descriptions."
+            # Live hardware/camera evidence is scoped to human turns. Peer LLM
+            # dialogue uses its pair transcript and shared cognition, never the
+            # operator's camera/face data or private Body telemetry.
+            system_prompt, _body_context, _local_camera_grounding = self._append_live_evidence_context(
+                system_prompt, peer_name,
             )
-            _local_camera_grounding = self._local_camera_prompt_context()
-            system_prompt += "\n" + _local_camera_grounding
-            _vc = getattr(self, '_pending_vision_context', None)
-            if _vc:
-                system_prompt += (
-                    f"\n\n━━ WHAT YOU CURRENTLY SEE ━━\n"
-                    f"A camera observation supplied for this turn says:\n{_vc}\n"
-                    "For questions such as 'can you see me?' or 'who is in front of you?', use the Brain-PC camera and face-recognition status above. A recent recognized face supports that identity; an empty face result only means the recognizer found no face, not that the whole image contains no person. Use the scene description with its own age, and treat stale/disabled evidence as unknown. Do not substitute Body-camera YOLOX detections for the Brain-PC view. "
-                    f"It is evidence only for this camera observation. Do not infer from it that "
-                    f"you are connected to the robot, that this is the Body camera, or that the "
-                    f"observation is live unless its source and timestamp explicitly say so."
-                )
-                self._pending_vision_context = None  # consumed — clear for next turn
 
-            # The separately launched Body is the sole sensor poller. Its
-            # authenticated bridge delivers the timestamped snapshot below;
-            # Brain must not open a parallel Home Assistant connection.
-            _body_context = ""
-            system_prompt += (
-                "\n\n━━ EMBODIMENT TRUTH BOUNDARY ━━\n"
-                "Do not claim to be connected to, controlling, seeing through, or interacting "
-                "with the robot unless the current Body evidence below confirms it. A user's "
-                "assertion or a prior conversation is not live telemetry. Distinguish the fixed "
-                "PC camera from the robot's Body camera. If Body data is missing, stale, or "
-                "unavailable, say so plainly and do not invent a scene, pose, movement, or connection."
+            system_prompt = self._append_cognitive_prompt_context(
+                system_prompt, user_id=user_id, peer_name=peer_name,
             )
-            system_prompt += (
-                "\n\n━━ BODY DEVELOPMENT EVIDENCE ━━\n"
-                "When discussing Body development, separate verified current capabilities from proposed work. "
-                "Do not say a plan was executed, a feature exists, a sensor fusion result is validated, or an object has a metric position unless current telemetry or a recorded result proves it. "
-                "Treat each measurement as evidence only for the source, target, place, and time it explicitly describes. "
-                "Do not assign a sensor reading to a named object, person, or event unless the observations provide an explicit association; numerical similarity or proximity alone is not an association. "
-                "A single camera can support approximate metric distance through calibrated monocular MiDaS depth; stereo vision is not required. "
-                "For detected objects, use the timestamp-matched YOLOX box and its calibrated MiDaS estimate, preserving its camera-relative coordinate frame. A synchronized radar association supplies a metric range only for the explicitly matched person detection; never transfer the radar person's range or scale correction to the TV or another box. Other objects use the MiDaS metric fit and its own validation state. "
-                "When person-to-object geometry is supplied, report it as approximate scene geometry. A raw MiDaS map being unavailable on one request is a data-acquisition gap, not proof that monocular distance estimation is impossible. "
-                "Radar tracks are targets, not semantic human classifications; describe a target as a person only when a synchronized camera association supports that label. Never use an unrelated ultrasonic echo as the distance of a named camera object. "
-                "For estimates, retain their timestamp, frame, provenance, confidence, validation range, and uncertainty when supplied. Frame suggestions as recommendations, not completed changes. "
-                "The Brain's existing goal/action planning chain can identify a destination, preserve the user's objective, derive ordered steps and required capabilities, and validate a draft against a timestamped Body snapshot. Report that analysis as a plan and its validation scope; never treat planner feasibility, a proposed method, approval, command delivery, or controller acknowledgement as physical execution. A physical action is complete only when a correlated command result and fresh, non-simulated post-action evidence confirm its effect. If the Body's hardware inventory says an actuator is absent, treat the corresponding physical action as unavailable even if the simulator or planner supports it."
-            )
-            try:
-                _body = getattr(self._organism, "_body_runtime", None) if self._organism else None
-                _body_context = _body.context_for_brain() if _body else ""
-                if _body_context:
-                    system_prompt += (
-                        "\n\n━━ CURRENT BODY OBSERVATIONS ━━\n"
-                        "This section combines separately sampled Body bridge observations and a Body world-model context; it is not one synchronized snapshot. "
-                        "Use each record's own observed/received time, age, source, frame, and freshness. Do not combine measurements as simultaneous unless their frame IDs/timestamps establish synchronization. A cached scene or pose is historical when marked stale and cannot establish the present state. "
-                        "Recent Body evidence overrides older connector, memory, and conversation claims only for the same subject and measurement. "
-                        "Never describe an action as currently running when this snapshot "
-                        "reports a completed plan, terminal state, or no active plan.\n"
-                        "When the user asks what you perceive, sense, can physically do, or what your body is doing, "
-                        "answer from this evidence first. Distinguish direct current observation, stale observation, "
-                        "and unavailable information; never invent a bodily state to fill a gap.\n"
-                        f"{_body_context}"
-                    )
-            except Exception:
-                logger.debug("[BodyRuntime] prompt context unavailable", exc_info=True)
-
-            # ── Inject v2 autonomous architecture context ─────────────────
-            try:
-                org = self._organism
-                if org is not None:
-                    # Self-model (introspective self-awareness)
-                    sm_frag = org.self_model.prompt_fragment()
-                    if sm_frag:
-                        system_prompt += f"\n\n{sm_frag}"
-
-                    # Personality attractors (stable character)
-                    at_frag = org.attractors.prompt_fragment()
-                    if at_frag:
-                        system_prompt += f"\n{at_frag}"
-
-                    # Active Cognitive Context (CAG) — hot cognition field
-                    # Injected first: provides continuity context for all other fragments
-                    try:
-                        from core.state import state as _state
-                        if _state.acc:
-                            acc_frag = _state.acc.get_prompt_fragment()
-                            if acc_frag:
-                                system_prompt += f"\n\n{acc_frag}"
-                    except Exception:
-                        pass
-
-                    # Strategic Cognitive Engine — current posture
-                    try:
-                        from core.state import state as _state
-                        if _state.sce:
-                            sce_frag = _state.sce.get_strategic_context_fragment()
-                            if sce_frag:
-                                system_prompt += f"\n{sce_frag}"
-                    except Exception:
-                        pass
-
-                    # Empathy Engine — who this user is right now
-                    try:
-                        from core.state import state as _state
-                        if _state.empathy_engine:
-                            emp_frag = _state.empathy_engine.get_prompt_fragment(user_id)
-                            if emp_frag:
-                                system_prompt += f"\n{emp_frag}"
-                    except Exception:
-                        pass
-
-                    # Abstract Reasoning Engine — conceptual analysis
-                    try:
-                        from core.state import state as _state
-                        if _state.are:
-                            are_frag = _state.are.get_reasoning_fragment(user_id)
-                            if are_frag:
-                                system_prompt += f"\n{are_frag}"
-                    except Exception:
-                        pass
-            except Exception:
-                pass
 
             system_prompt += (
                 "\n\n━━ EVIDENCE-GROUNDED RESPONSE POLICY ━━\n"
@@ -2309,7 +2876,7 @@ Memory honesty — two distinct cases:
                 "Maintain conversational continuity: apply the latest user input as an update to the shared "
                 "context, make the next useful move, and avoid repeating your previous answer or returning "
                 "a decision the user has already asked you to make unless clarification is genuinely required. "
-                "The latest user message is the controlling conversational intent. Use earlier turns and retrieved "
+                "The latest incoming message is the controlling conversational intent. Use earlier turns and retrieved "
                 "memories only when they clarify that intent or provide evidence needed to answer it; do not "
                 "resurface an unrelated older topic. A request to change topic means select a genuinely different "
                 "direction, and a new factual question must be answered on its own terms. Repetition means redundant "
@@ -2338,10 +2905,13 @@ Memory honesty — two distinct cases:
                     _ws_mode = 'always' if _ws_mode else 'off'
                 _do_search = False
                 if suppress_external_search:
+                    self._record_turn_stage("external_research", "skipped_by_policy")
                     logger.debug("Web search suppressed for latency-safe or closed-world turn.")
                 elif "[Cognitive telemetry - factual self-report]" in system_prompt:
+                    self._record_turn_stage("external_research", "skipped_factual_self_report")
                     logger.debug("Web search suppressed for factual cognitive self-report.")
                 elif not self._research or _ws_mode == 'off':
+                    self._record_turn_stage("external_research", "disabled")
                     # Closed-world mode must never call the LLM search
                     # classifier as a side effect of an ordinary chat turn.
                     logger.debug("Web search disabled; skipping search judge.")
@@ -2359,6 +2929,7 @@ Memory honesty — two distinct cases:
                 if _do_search:
                     web_section = self._quick_web_search(user_input)
                     if web_section:
+                        self._record_turn_stage("external_research", "results_injected")
                         web_char_cap = int(ctx_limit * 3.5 * 0.15)
                         system_prompt += (
                             f"\n\n{web_section[:web_char_cap]}\n"
@@ -2366,7 +2937,12 @@ Memory honesty — two distinct cases:
                             "If a source is unrelated, ignore it and do not imply that it supports the answer. "
                             "Never let web snippets override current conversation context or personal facts."
                         )
+                    else:
+                        self._record_turn_stage("external_research", "no_results")
+                elif not suppress_external_search and self._research and _ws_mode != 'off':
+                    self._record_turn_stage("external_research", "judge_skipped_search")
             except Exception as _we:
+                self._record_turn_stage("external_research", "failed", str(_we))
                 logger.warning(f"Web search injection failed: {_we}")
 
             # Keep the selected response language after the context-size cap
@@ -2394,7 +2970,7 @@ Memory honesty — two distinct cases:
                     f"Respond exclusively in {_final_lang_name}. "
                     "This applies to the complete visible answer, including headings, "
                     "lists, recovery output, and audio text. Do not switch to English "
-                    "unless the user explicitly requests it or quotes English text."
+                    "unless the interlocutor explicitly requests it or quotes English text."
                 )
 
             # Keep the physical evidence authoritative after all optional
@@ -2444,6 +3020,367 @@ Memory honesty — two distinct cases:
                 None,
             )
 
+    def _append_cognitive_prompt_context(
+        self, system_prompt: str, *, user_id: str, peer_name: str = "",
+    ) -> str:
+        """Inject cognitive modules with interlocutor-appropriate scope.
+
+        Self-model, attractors, strategic posture and user-keyed abstract
+        reasoning describe Lumina's shared cognition or this particular peer.
+        ACC and EmpathyEngine are human-facing aggregates/profile reads and are
+        withheld from FLUX turns until those modules expose explicit scopes.
+        """
+        org = self._organism
+        if org is None:
+            self._record_turn_stage("self_model_context", "skipped_unavailable")
+            self._record_turn_stage("personality_attractors_context", "skipped_unavailable")
+        else:
+            try:
+                sm_frag = org.self_model.prompt_fragment()
+                if sm_frag:
+                    system_prompt += f"\n\n{sm_frag}"
+                self._record_turn_stage(
+                    "self_model_context", "injected" if sm_frag else "empty",
+                )
+            except Exception as exc:
+                self._record_turn_stage("self_model_context", "failed", str(exc))
+            try:
+                at_frag = org.attractors.prompt_fragment()
+                if at_frag:
+                    system_prompt += f"\n{at_frag}"
+                self._record_turn_stage(
+                    "personality_attractors_context", "injected" if at_frag else "empty",
+                )
+            except Exception as exc:
+                self._record_turn_stage("personality_attractors_context", "failed", str(exc))
+
+        try:
+            from core.state import state as _state
+        except Exception as exc:
+            self._record_turn_stage("cognitive_prompt_modules", "failed", str(exc))
+            return system_prompt
+
+        if peer_name:
+            self._record_turn_stage(
+                "active_context_prompt", "skipped_by_scope",
+                "global ACC includes human-scoped topics, people and visual summaries",
+            )
+        elif _state.acc:
+            try:
+                acc_frag = _state.acc.get_prompt_fragment()
+                if acc_frag:
+                    system_prompt += f"\n\n{acc_frag}"
+                self._record_turn_stage(
+                    "active_context_prompt", "injected" if acc_frag else "empty",
+                )
+            except Exception as exc:
+                self._record_turn_stage("active_context_prompt", "failed", str(exc))
+        else:
+            self._record_turn_stage("active_context_prompt", "skipped_unavailable")
+
+        try:
+            if _state.sce:
+                sce_frag = _state.sce.get_strategic_context_fragment()
+                if sce_frag:
+                    system_prompt += f"\n{sce_frag}"
+                self._record_turn_stage(
+                    "strategic_context", "injected" if sce_frag else "empty",
+                )
+            else:
+                self._record_turn_stage("strategic_context", "skipped_unavailable")
+        except Exception as exc:
+            self._record_turn_stage("strategic_context", "failed", str(exc))
+
+        if peer_name:
+            self._record_turn_stage(
+                "empathy_context", "skipped_by_scope",
+                "human affect read is not part of a peer interlocutor profile",
+            )
+        elif _state.empathy_engine:
+            try:
+                emp_frag = _state.empathy_engine.get_prompt_fragment(user_id)
+                if emp_frag:
+                    system_prompt += f"\n{emp_frag}"
+                self._record_turn_stage(
+                    "empathy_context", "injected" if emp_frag else "empty",
+                )
+            except Exception as exc:
+                self._record_turn_stage("empathy_context", "failed", str(exc))
+        else:
+            self._record_turn_stage("empathy_context", "skipped_unavailable")
+
+        try:
+            if _state.are:
+                are_frag = _state.are.get_reasoning_fragment(user_id)
+                if are_frag:
+                    system_prompt += f"\n{are_frag}"
+                self._record_turn_stage(
+                    "abstract_reasoning_context", "injected" if are_frag else "empty",
+                )
+            else:
+                self._record_turn_stage("abstract_reasoning_context", "skipped_unavailable")
+        except Exception as exc:
+            self._record_turn_stage("abstract_reasoning_context", "failed", str(exc))
+        return system_prompt
+
+    def _append_live_evidence_context(
+        self, system_prompt: str, peer_name: str = "",
+    ) -> tuple[str, str, str]:
+        """Add live camera/Body evidence only to the human-facing turn scope.
+
+        FLUX and other peer models get the pair transcript and shared cognitive
+        architecture, but must not receive the operator's camera/face data or
+        live hardware observations. Keep this decision in one place so prompt
+        assembly and its scope trace cannot drift apart.
+        """
+        if peer_name:
+            # A pending visual description is single-turn input. Consume and
+            # discard it here so it cannot leak into a later peer or human turn.
+            self._pending_vision_context = None
+            self._record_turn_stage("brain_pc_camera_context", "skipped_by_scope")
+            self._record_turn_stage("body_observation_context", "skipped_by_scope")
+            return system_prompt, "", ""
+
+        system_prompt += (
+            "\n\n━━ LOCAL CAMERA TRUTH ━━\n"
+            "For current questions such as whether you can see the user, use only the Brain-PC camera and face-recognition evidence supplied for this turn. If that evidence is absent, inactive, or stale, say you cannot confirm current visibility. Do not infer current presence from conversation history, Body camera frames, or remembered visual descriptions."
+        )
+        camera_context = self._local_camera_prompt_context()
+        system_prompt += "\n" + camera_context
+        self._record_turn_stage(
+            "brain_pc_camera_context",
+            "injected" if camera_context else "unavailable",
+        )
+        try:
+            from core.state import state as _camera_state
+            _vision = getattr(_camera_state, "vision", None)
+            _camera_active = bool(getattr(_vision, "camera_active", False))
+            _frame_stamp = float(getattr(_vision, "frame_updated_at", 0.0) or 0.0)
+            _face_stamp = float(getattr(_vision, "last_face_detection_at", 0.0) or 0.0)
+            _now = time.time()
+            _frame_age = max(0.0, _now - _frame_stamp) if _frame_stamp else None
+            _face_age = max(0.0, _now - _face_stamp) if _face_stamp else None
+            _camera_status = (
+                "unavailable" if _vision is None else
+                "inactive" if not _camera_active else
+                "stale" if _frame_age is None or _frame_age > 3.0 else "fresh"
+            )
+            self._record_turn_context_source(
+                "brain_pc_camera", _camera_status,
+                active=_camera_active,
+                frame_age_seconds=_frame_age,
+                face_age_seconds=_face_age,
+            )
+        except Exception:
+            self._record_turn_context_source("brain_pc_camera", "status_unavailable")
+
+        vision_context = getattr(self, "_pending_vision_context", None)
+        if vision_context:
+            system_prompt += (
+                f"\n\n━━ WHAT YOU CURRENTLY SEE ━━\n"
+                f"A camera observation supplied for this turn says:\n{vision_context}\n"
+                "For questions such as 'can you see me?' or 'who is in front of you?', use the Brain-PC camera and face-recognition status above. A recent recognized face supports that identity; an empty face result only means the recognizer found no face, not that the whole image contains no person. Use the scene description with its own age, and treat stale/disabled evidence as unknown. Do not substitute Body-camera YOLOX detections for the Brain-PC view. "
+                "It is evidence only for this camera observation. Do not infer from it that "
+                "you are connected to the robot, that this is the Body camera, or that the "
+                "observation is live unless its source and timestamp explicitly say so."
+            )
+            self._pending_vision_context = None
+            self._record_turn_stage("brain_pc_vision_observation", "injected")
+        else:
+            self._record_turn_stage("brain_pc_vision_observation", "unavailable")
+
+        system_prompt += (
+            "\n\n━━ EMBODIMENT TRUTH BOUNDARY ━━\n"
+            "Do not claim to be connected to, controlling, seeing through, or interacting "
+            "with the robot unless the current Body evidence below confirms it. A user's "
+            "assertion or a prior conversation is not live telemetry. Distinguish the fixed "
+            "PC camera from the robot's Body camera. If Body data is missing, stale, or "
+            "unavailable, say so plainly and do not invent a scene, pose, movement, or connection."
+        )
+        system_prompt += (
+            "\n\n━━ BODY DEVELOPMENT EVIDENCE ━━\n"
+            "When discussing Body development, separate verified current capabilities from proposed work. "
+            "Do not say a plan was executed, a feature exists, a sensor fusion result is validated, or an object has a metric position unless current telemetry or a recorded result proves it. "
+            "Treat each measurement as evidence only for the source, target, place, and time it explicitly describes. "
+            "Do not assign a sensor reading to a named object, person, or event unless the observations provide an explicit association; numerical similarity or proximity alone is not an association. "
+            "A single camera can support approximate metric distance through calibrated monocular MiDaS depth; stereo vision is not required. "
+            "For detected objects, use the timestamp-matched YOLOX box and its calibrated MiDaS estimate, preserving its camera-relative coordinate frame. A synchronized radar association supplies a metric range only for the explicitly matched person detection; never transfer the radar person's range or scale correction to the TV or another box. Other objects use the MiDaS metric fit and its own validation state. "
+            "When person-to-object geometry is supplied, report it as approximate scene geometry. A raw MiDaS map being unavailable on one request is a data-acquisition gap, not proof that monocular distance estimation is impossible. "
+            "Radar tracks are targets, not semantic human classifications; describe a target as a person only when a synchronized camera association supports that label. Never use an unrelated ultrasonic echo as the distance of a named camera object. "
+            "For estimates, retain their timestamp, frame, provenance, confidence, validation range, and uncertainty when supplied. Frame suggestions as recommendations, not completed changes. "
+            "The Brain's existing goal/action planning chain can identify a destination, preserve the user's objective, derive ordered steps and required capabilities, and validate a draft against a timestamped Body snapshot. Report that analysis as a plan and its validation scope; never treat planner feasibility, a proposed method, approval, command delivery, or controller acknowledgement as physical execution. A physical action is complete only when a correlated command result and fresh, non-simulated post-action evidence confirm its effect. If the Body's hardware inventory says an actuator is absent, treat the corresponding physical action as unavailable even if the simulator or planner supports it."
+        )
+        body_context = ""
+        try:
+            body = getattr(self._organism, "_body_runtime", None) if self._organism else None
+            body_context = body.context_for_brain() if body else ""
+            if body_context:
+                system_prompt += (
+                    "\n\n━━ CURRENT BODY OBSERVATIONS ━━\n"
+                    "This section combines separately sampled Body bridge observations and a Body world-model context; it is not one synchronized snapshot. "
+                    "Use each record's own observed/received time, age, source, frame, and freshness. Do not combine measurements as simultaneous unless their frame IDs/timestamps establish synchronization. A cached scene or pose is historical when marked stale and cannot establish the present state. "
+                    "Recent Body evidence overrides older connector, memory, and conversation claims only for the same subject and measurement. "
+                    "Never describe an action as currently running when this snapshot "
+                    "reports a completed plan, terminal state, or no active plan.\n"
+                    "When the user asks what you perceive, sense, can physically do, or what your body is doing, "
+                    "answer from this evidence first. Distinguish direct current observation, stale observation, "
+                    "and unavailable information; never invent a bodily state to fill a gap.\n"
+                    f"{body_context}"
+                )
+            self._record_turn_stage(
+                "body_observation_context",
+                "injected" if body_context else "unavailable",
+            )
+            if body is not None:
+                body_metadata_available = True
+                try:
+                    observations = body.snapshot() if callable(getattr(body, "snapshot", None)) else []
+                    if not isinstance(observations, list):
+                        observations = []
+                except Exception:
+                    observations = []
+                    body_metadata_available = False
+                    self._record_turn_context_source("body_runtime", "metadata_unavailable")
+                now = time.time()
+                ages: list[float] = []
+                stale_count = 0
+                source_kinds: set[str] = set()
+                for item in observations:
+                    if not isinstance(item, dict):
+                        continue
+                    kind = str(item.get("kind") or item.get("source") or "")
+                    if kind:
+                        source_kinds.add(kind)
+                    try:
+                        observed_at = float(item.get("observed_at") or 0.0)
+                    except (TypeError, ValueError):
+                        observed_at = 0.0
+                    age = max(0.0, now - observed_at) if observed_at else None
+                    if age is not None:
+                        ages.append(age)
+                    try:
+                        stale_after = float(item.get("stale_after_seconds") or 15.0)
+                    except (TypeError, ValueError):
+                        stale_after = 15.0
+                    if age is None or age > stale_after:
+                        stale_count += 1
+                if body_metadata_available:
+                    self._record_turn_context_source(
+                        "body_runtime", "injected" if body_context else "no_current_evidence",
+                        observation_count=len(observations),
+                        fresh_count=max(0, len(observations) - stale_count),
+                        stale_count=stale_count,
+                        oldest_age_seconds=max(ages) if ages else None,
+                        source_kinds=source_kinds,
+                    )
+                workspace = getattr(self._organism, "workspace", None) if self._organism else None
+                workspace_context = (workspace.get_state().context or {}) if workspace is not None else {}
+                cache = workspace_context.get("latest_body_perceptions") if isinstance(workspace_context, dict) else None
+                cached_items = cache.get("observations", []) if isinstance(cache, dict) else []
+                cache_ages: list[float] = []
+                cache_stale = 0
+                cache_kinds: set[str] = set()
+                for item in cached_items if isinstance(cached_items, list) else []:
+                    if not isinstance(item, dict):
+                        continue
+                    if item.get("source"):
+                        cache_kinds.add(str(item["source"]))
+                    try:
+                        age = max(0.0, now - float(item.get("observed_at_unix")))
+                    except (TypeError, ValueError):
+                        age = None
+                    if age is not None:
+                        cache_ages.append(age)
+                    try:
+                        stale_after = float(item.get("stale_after_seconds") or 15.0)
+                    except (TypeError, ValueError):
+                        stale_after = 15.0
+                    if age is None or age > stale_after:
+                        cache_stale += 1
+                self._record_turn_context_source(
+                    "global_workspace_body_cache",
+                    "injected" if cached_items else "empty",
+                    record_count=len(cached_items) if isinstance(cached_items, list) else 0,
+                    fresh_count=max(0, len(cached_items) - cache_stale) if isinstance(cached_items, list) else 0,
+                    stale_count=cache_stale,
+                    oldest_age_seconds=max(cache_ages) if cache_ages else None,
+                    source_kinds=cache_kinds,
+                )
+                local_camera = (
+                    workspace_context.get("latest_local_camera_observation")
+                    if isinstance(workspace_context, dict) else None
+                )
+                local_faces = (
+                    workspace_context.get("latest_local_face_observation")
+                    if isinstance(workspace_context, dict) else None
+                )
+                def _workspace_age(record: Any, stamp_key: str) -> float | None:
+                    if not isinstance(record, dict):
+                        return None
+                    try:
+                        return max(0.0, now - float(record.get(stamp_key)))
+                    except (TypeError, ValueError):
+                        return None
+                scene_age = _workspace_age(local_camera, "scene_observed_at_unix")
+                face_age = _workspace_age(local_faces, "observed_at_unix")
+                self._record_turn_context_source(
+                    "global_workspace_brain_pc_camera",
+                    "injected" if isinstance(local_camera, dict) or isinstance(local_faces, dict) else "empty",
+                    active=bool(local_camera.get("active")) if isinstance(local_camera, dict) else False,
+                    scene_age_seconds=scene_age,
+                    face_age_seconds=face_age,
+                    record_count=sum(isinstance(value, dict) for value in (local_camera, local_faces)),
+                )
+            else:
+                self._record_turn_context_source("body_runtime", "unavailable")
+        except Exception as exc:
+            current_trace = getattr(self, "_last_turn_trace", {})
+            current_stage = (
+                current_trace.get("stages", {}).get("body_observation_context", {})
+                if isinstance(current_trace, dict) else {}
+            )
+            if current_stage.get("status") not in {"injected", "unavailable"}:
+                self._record_turn_stage("body_observation_context", "failed", str(exc))
+            self._record_turn_context_source("body_runtime", "metadata_unavailable")
+            logger.debug("[BodyRuntime] prompt context unavailable", exc_info=True)
+        return system_prompt, body_context, camera_context
+
+    def _prepare_predictive_context(self, user_input: str, user_id: str) -> str:
+        """Run and trace the pre-LLM predictive models on the active stream path."""
+        organism = self._organism
+        prepare = getattr(organism, "prepare_response_context", None) if organism else None
+        if not callable(prepare):
+            for stage in (
+                "predictive_consequence_model",
+                "world_self_dynamics_model",
+                "prospective_deliberation",
+            ):
+                self._record_turn_stage(stage, "skipped_unavailable")
+            return ""
+
+        try:
+            predictive = prepare(user_input, user_id=user_id) or {}
+            for stage, key in (
+                ("predictive_consequence_model", "pcm_status"),
+                ("world_self_dynamics_model", "wsdm_status"),
+                ("prospective_deliberation", "prospective_status"),
+            ):
+                self._record_turn_stage(
+                    stage,
+                    str(predictive.get(key) or "unavailable"),
+                    str(predictive.get(key.replace("_status", "_error")) or ""),
+                )
+            return "\n\n".join(
+                value for value in (
+                    str(predictive.get("pcm_advisory") or "").strip(),
+                    str(predictive.get("wsdm_narrative") or "").strip(),
+                ) if value
+            )
+        except Exception as exc:
+            self._record_turn_stage("streaming_predictive_context", "failed", str(exc))
+            logger.exception("Streaming predictive context preparation failed")
+            return ""
+
     def _run_full_post_turn_lifecycle(
         self,
         user_input: str,
@@ -2452,7 +3389,8 @@ Memory honesty — two distinct cases:
         emo_dict: dict,
         cond_dict: dict,
         organism=None,
-    ) -> None:
+        human_interaction: bool = True,
+    ) -> bool:
         """
         Mirrors everything get_response() does AFTER _generate_response().
         Called in a thread executor so it never blocks the UI.
@@ -2470,6 +3408,44 @@ Memory honesty — two distinct cases:
           18. _apply_pending_liberty_modifications
         """
         s = self._system
+        if not human_interaction:
+            # Keep the peer's response in cognitive evaluation and predictive
+            # learning, but do not store it as a human memory, run user-profile
+            # learning, increment human interaction counters, or queue human
+            # autobiographical learning cycles.
+            if organism is not None:
+                try:
+                    _top_drive = organism.goal_ecology.dominant_drive(
+                        energy_available=organism.energy.level()
+                    ).name
+                    _decision = type('D', (), {
+                        'dominant_drive': _top_drive,
+                        'secondary_drives': [],
+                        'temperature': organism.energy.temperature_hint(),
+                    })()
+                    organism._post_interaction(
+                        user_input,
+                        response,
+                        {"emo_values": emo_dict},
+                        _decision,
+                        human_interaction=False,
+                    )
+                    self._record_turn_stage("peer_cognitive_evaluation", "completed")
+                except Exception as _peer_post_error:
+                    self._record_turn_stage(
+                        "peer_cognitive_evaluation", "failed", str(_peer_post_error),
+                    )
+                    logger.debug("Peer cognitive post-turn evaluation failed: %s", _peer_post_error)
+                    self._record_turn_stage(
+                        "cognitive_post_turn", "failed", "peer cognitive evaluation failed",
+                    )
+                    return False
+            else:
+                self._record_turn_stage("peer_cognitive_evaluation", "skipped_unavailable")
+            logger.debug("Peer cognitive post-turn complete — user_id=%s", user_id)
+            return True
+
+        active_stage = "response_repetition_tracking"
         try:
             # 9 + 10: repetition tracking
             if not hasattr(s, '_last_responses'):
@@ -2477,16 +3453,23 @@ Memory honesty — two distinct cases:
             s._last_responses.append(response)
             if len(s._last_responses) > 10:
                 s._last_responses.pop(0)
+            self._record_turn_stage("response_repetition_tracking", "completed")
 
             # 11: stuck check
+            active_stage = "stuck_response_detection"
             s._check_if_stuck()
+            self._record_turn_stage("stuck_response_detection", "completed")
 
             # 12: full post-response processing (relational memory, conditioning,
             #     memory store, evolution pressure queue, self-concept update)
+            active_stage = "response_learning_and_memory"
             s._post_response_processing(user_id, user_input, response, emo_dict, cond_dict)
+            self._record_turn_stage("response_learning_and_memory", "completed")
 
             # 13: queue background tasks — THIS is what fires dream/learning cycles
+            active_stage = "background_learning_tasks"
             s._queue_background_tasks()
+            self._record_turn_stage("background_learning_tasks", "queued")
 
             # 14: liberty contradiction detection
             if s.liberty_contradiction:
@@ -2521,18 +3504,27 @@ Memory honesty — two distinct cases:
                                 }, source="liberty_contradiction")
                         except Exception:
                             pass
+                    self._record_turn_stage("contradiction_review", "completed")
                 except Exception as e:
+                    self._record_turn_stage("contradiction_review", "failed", str(e))
                     logger.debug(f"Contradiction detection (non-fatal): {e}")
+            else:
+                self._record_turn_stage("contradiction_review", "skipped_unavailable")
 
             # 15: liberty goal behavior logging
             if s.liberty_goals:
                 try:
                     s.liberty_goals.log_behavior(response[:200])
+                    self._record_turn_stage("goal_behavior_learning", "completed")
                 except Exception as e:
+                    self._record_turn_stage("goal_behavior_learning", "failed", str(e))
                     logger.debug(f"Goal logging (non-fatal): {e}")
+            else:
+                self._record_turn_stage("goal_behavior_learning", "skipped_unavailable")
 
             # 16: increment interaction count
             s._interaction_count += 1
+            self._record_turn_stage("human_interaction_counter", "completed")
 
             # 17: liberty meta-reflection
             if s.liberty_reflection:
@@ -2541,11 +3533,16 @@ Memory honesty — two distinct cases:
                     if s.liberty_reflection.should_reflect():
                         logger.info("Liberty reflection cycle triggered")
                         s._queue_liberty_reflection()
+                    self._record_turn_stage("meta_reflection_check", "completed")
                 except Exception as e:
+                    self._record_turn_stage("meta_reflection_check", "failed", str(e))
                     logger.debug(f"Liberty reflection check (non-fatal): {e}")
+            else:
+                self._record_turn_stage("meta_reflection_check", "skipped_unavailable")
 
             # 18: apply any pending self-modifications
             s._apply_pending_liberty_modifications()
+            self._record_turn_stage("pending_self_modifications", "completed")
 
             # 19: CognitiveOrganism post-interaction (energy drain, drive satisfaction,
             #     meta-cognition evaluation, curiosity update)
@@ -2572,8 +3569,12 @@ Memory honesty — two distinct cases:
                         organism.goal_ecology.record_satisfaction("connect", 0.7)
                     if has_question:
                         organism.goal_ecology.record_satisfaction("be_understood", 0.65)
+                    self._record_turn_stage("organism_post_interaction", "completed")
                 except Exception as _oe:
+                    self._record_turn_stage("organism_post_interaction", "failed", str(_oe))
                     logger.debug(f"Organism post-interaction (non-fatal): {_oe}")
+            else:
+                self._record_turn_stage("organism_post_interaction", "skipped_unavailable")
 
             # A real user turn is the observable result for an aspiration's
             # pending social recovery step. Keep this outside response
@@ -2581,20 +3582,30 @@ Memory honesty — two distinct cases:
             try:
                 _loop = getattr(organism, "_loop", None) if organism is not None else None
                 _planner = getattr(_loop, "_long_horizon_planner", None)
-                if _planner is not None and hasattr(_planner, "record_interaction_outcome"):
+                if human_interaction and _planner is not None and hasattr(_planner, "record_interaction_outcome"):
                     _planner.record_interaction_outcome(
                         result="user interaction completed after response"
                     )
+                    self._record_turn_stage("long_horizon_interaction_outcome", "completed")
+                else:
+                    self._record_turn_stage("long_horizon_interaction_outcome", "skipped_unavailable")
             except Exception as _planner_exc:
+                self._record_turn_stage(
+                    "long_horizon_interaction_outcome", "failed", str(_planner_exc),
+                )
                 logger.debug("Planner interaction outcome (non-fatal): %s", _planner_exc)
 
             logger.debug(
                 f"Post-turn lifecycle complete — interaction #{s._interaction_count} "
                 f"user={user_id}"
             )
+            return True
 
         except Exception as e:
+            self._record_turn_stage(active_stage, "failed", str(e))
+            self._record_turn_stage("cognitive_post_turn", "failed", str(e))
             logger.error(f"Post-turn lifecycle error: {e}")
+            return False
 
     # ─────────────────────────────────────────────────────────────────
     #  Dashboard / status API
@@ -3791,12 +4802,34 @@ Memory honesty — two distinct cases:
         normalized = str(text or "").strip().casefold()
         if "?" in normalized:
             return True
-        return bool(re.match(
-            r"^(?:quel(?:le|s|les)?|qu['’]est|qu['’]elle|que|qui|où|ou|pourquoi|comment|"
-            r"what|which|who|where|when|why|how|is|are|do|does|did|can|could|"
-            r"combien|est-ce\s+que|y\s+a[- ]t[- ]il)\b",
-            normalized,
-        ))
+        return bool(
+            re.match(
+                r"^(?:quel(?:le|s|les)?|qu['’]est|qu['’]elle|que|qui|où|ou|pourquoi|comment|"
+                r"what|which|who|where|when|why|how|is|are|do|does|did|can|could|"
+                r"combien|est-ce\s+que|y\s+a[- ]t[- ]il)\b",
+                normalized,
+            )
+            or re.search(r"\b(?:can|could|do|does|did)\s+you\b", normalized)
+        )
+
+    @staticmethod
+    def _is_destination_action_request(text: str) -> bool:
+        """Keep explicit locomotion-to-a-destination requests on the guarded planner path."""
+        normalized = str(text or "").casefold()
+        action = r"(?:move|drive|navigate|go|walk|crawl|approach|advance|déplac\w*|deplac\w*|aller|marche|avance\w*|rapproche\w*)"
+        destination = r"(?:toward|towards|to|vers|jusqu['’]à|jusqu'a|en direction de)"
+        return bool(re.search(rf"\b{action}\b.{{0,48}}\b{destination}\b", normalized))
+
+    @staticmethod
+    def _is_developmental_autonomy_audit_request(text: str) -> bool:
+        """Recognize the specific end-to-end autonomy audit, not generic development chat."""
+        normalized = str(text or "").casefold()
+        has_hypothesis = bool(re.search(r"\b(hypoth(?:esis|èse)|developmental|développemental)\b", normalized))
+        has_persistent_goal = bool(re.search(r"\b(persistent goal|goal engine|objectif persistant|objectif développemental)\b", normalized))
+        has_observation_measure = bool(re.search(r"\b(baseline|real observations|observations réelles|mesure initiale)\b", normalized))
+        has_closed_loop = bool(re.search(r"\b(plan|schedule|verify|verification|vérification|revise|réviser|results|résultats)\b", normalized))
+        no_intervention = bool(re.search(r"\b(without (?:changing|modifying) (?:the )?code|sans modification|sans intervention)\b", normalized))
+        return sum((has_hypothesis, has_persistent_goal, has_observation_measure, has_closed_loop, no_intervention)) >= 4
 
     @staticmethod
     def _local_camera_prompt_context() -> str:
@@ -4087,7 +5120,19 @@ Memory honesty — two distinct cases:
                 "status": "clarification",
                 "response": "Que veux-tu savoir du Body : ses capteurs, sa caméra, ses moteurs/servos, son énergie ou ses capacités ?",
             }
+        if not pending and self._is_developmental_autonomy_audit_request(user_input):
+            return self._developmental_autonomy_response()
         if not pending and not (self._may_route_to_body(user_input) or self._may_route_to_local_camera(user_input)):
+            return None
+        if (
+            not pending
+            and self._is_factual_question_form(user_input)
+            and not self._is_destination_action_request(user_input)
+        ):
+            # Read-only questions belong to the main PersonaBridge cognitive
+            # turn. That path receives timestamped Body and camera provenance,
+            # then reasons over it; the action-intent classifier is only a
+            # safety gate and must not substitute a canned telemetry reply.
             return None
         route = self._classify_body_chat_turn(user_input, pending=pending)
         if not pending and route == "body_diagnostic" and self._is_factual_question_form(user_input):
@@ -4483,13 +5528,18 @@ Memory honesty — two distinct cases:
         # semantic and is delegated to the existing YES/NO judge.
         return True
 
-    def _recent_dialogue_continuity(self, current_input: str) -> str:
+    def _recent_dialogue_continuity(
+        self, current_input: str, *, history_override: list[dict] | None = None,
+    ) -> str:
         """Anchor short/elliptical replies to the active exchange."""
         text = " ".join(str(current_input or "").split())
         if not text or len(text.split()) > 8:
             return ""
-        manager = getattr(self._llm_stream_fn, "__self__", None)
-        history = getattr(manager, "history", None)
+        if history_override is not None:
+            history = history_override
+        else:
+            manager = getattr(self._llm_stream_fn, "__self__", None)
+            history = getattr(manager, "history", None)
         if not isinstance(history, list):
             return ""
         turns = [

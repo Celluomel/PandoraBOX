@@ -355,13 +355,12 @@ class IntentionPlanningTests(unittest.TestCase):
             self.assertTrue(reloaded._is_external_task_topic("lavage voiture"))
 
     def test_fragment_topics_are_not_durable_goals(self):
-        self.assertFalse(GoalEngine._is_valid_goal_topic("travaille certains"))
-        self.assertTrue(GoalEngine._is_valid_goal_topic("cognitive architecture"))
-
         with tempfile.TemporaryDirectory() as folder:
             engine = GoalEngine(
                 NS(), persistence_file=str(Path(folder) / "goals.json")
             )
+            self.assertFalse(engine._is_valid_goal_topic("travaille certains"))
+            self.assertTrue(engine._is_valid_goal_topic("cognitive architecture"))
             fragment = Goal(
                 id="fragment", topic="travaille certains",
                 origin="resolve_uncertainty", priority=0.9, energy=0.9,

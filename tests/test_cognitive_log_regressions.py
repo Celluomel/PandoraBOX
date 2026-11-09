@@ -1,0 +1,219 @@
+"""Regression tests for concrete cognitive defects found in the Nov 9 log."""
+import json
+from pathlib import Path
+import sys
+import tempfile
+import types
+import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
+
+# Import focused modules without executing the package-level application
+# bootstrap (`cognition.__init__` imports the full model/ML dependency stack).
+ROOT = Path(__file__).parents[1]
+_modules_before = set(sys.modules)
+for package_name, package_path in (
+    ("cognition", ROOT / "cognition"),
+    ("core", ROOT / "core"),
+    ("core.data", ROOT / "core" / "data"),
+):
+    if package_name not in sys.modules:
+        package = types.ModuleType(package_name)
+        package.__path__ = [str(package_path)]
+        sys.modules[package_name] = package
+
+from cognition.goal_engine import GoalEngine
+from cognition.grounded_introspection import GroundedIntrospectionGenerator
+from cognition.semantic_extractor import SemanticExtractor
+from cognition.semantic_memory import SemanticMemory
+from cognition.self_concept_synchronizer import SelfConceptSynchronizer
+from cognition.self_description import SelfDescription
+from cognition.thought_thread_engine import ThoughtThreadEngine
+from managers.user_manager import UserManager
+
+# Keep the package namespace clean for the rest of unittest discovery. The
+# imported class objects remain usable by these isolated tests.
+for _name in list(sys.modules):
+    if _name not in _modules_before and (
+        _name == "cognition" or _name.startswith("cognition.")
+        or _name in {"core", "core.data"} or _name.startswith("core.data.")
+    ):
+        sys.modules.pop(_name, None)
+
+
+class CognitiveLogRegressionTests(unittest.TestCase):
+    def test_self_description_prompt_is_factual_and_marks_registry_partial(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            description = SelfDescription(str(Path(temp_dir) / "self.json"))
+            description.register_or_update(
+                "ExampleModule", "cognition/example.py", "bounded evidence tracking",
+                {"enabled": True},
+            )
+
+            block = description.prompt_context()
+
+        self.assertIn("partial registry", block)
+        self.assertIn("ExampleModule", block)
+        self.assertIn("bounded evidence tracking", block)
+        self.assertIn("Do not invent equations", block)
+
+    def test_self_description_prompt_does_not_claim_unregistered_mechanisms(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            description = SelfDescription(str(Path(temp_dir) / "self.json"))
+            block = description.prompt_context()
+
+        self.assertIn("no components have been registered", block)
+        self.assertIn("Do not infer", block)
+
+    def test_semantic_extractor_discards_french_filler_topics(self):
+        extractor = SemanticExtractor(SimpleNamespace())
+        concepts = extractor._keyword_extract(
+            "Je suis curieux de savoir quelles choses tu sais toujours."
+        )
+        self.assertFalse(set(concepts) & {
+            "curieux", "savoir", "quelles", "choses", "toujours"
+        })
+
+    def test_peer_semantics_are_not_recorded_as_human_goal_evidence(self):
+        class _Memory:
+            def __init__(self):
+                self.observations = []
+
+            def upsert_concept(self, *_args, **_kwargs):
+                return 1
+
+            def record_observation(self, *args, **kwargs):
+                self.observations.append((args, kwargs))
+
+            def upsert_relation(self, *_args, **_kwargs):
+                pass
+
+        class _Workspace:
+            def __init__(self):
+                self.events = []
+
+            def broadcast(self, **kwargs):
+                self.events.append(kwargs)
+
+        memory = _Memory()
+        workspace = _Workspace()
+        extractor = SemanticExtractor(memory)
+        extractor._extract(
+            "shared robot cognition", "A peer reply", None, workspace,
+            observation_role="peer_topic",
+        )
+
+        self.assertTrue(memory.observations)
+        self.assertTrue(all(
+            kwargs["role"] == "peer_topic"
+            and kwargs["source"] == "peer_dialogue"
+            for _, kwargs in memory.observations
+        ))
+        self.assertEqual(workspace.events[0]["source"], "peer_semantic_extractor")
+        self.assertIn("peer hypothesis:", workspace.events[0]["content"])
+
+    def test_autonomous_user_topics_need_repeated_observations(self):
+        with tempfile.TemporaryDirectory() as directory:
+            memory = SemanticMemory(str(Path(directory) / "semantic.sqlite"))
+            memory.record_observation("visual odometry", "conversation", "user_topic", 0.8)
+            self.assertNotIn("visual odometry", memory.recent_user_topics())
+            memory.record_observation("visual odometry", "conversation", "user_topic", 0.8)
+            self.assertIn("visual odometry", memory.recent_user_topics())
+
+    def test_goal_admission_rejects_log_fragments_but_keeps_real_phrases(self):
+        for noise in ("toujours", "quelles", "arxchiv", "assez", "sois"):
+            self.assertTrue(GoalEngine._is_lexical_noise_topic(noise), noise)
+        self.assertFalse(GoalEngine._is_lexical_noise_topic("cognitive architecture"))
+
+    def test_tte_migrates_iteration_count_and_keeps_valid_records(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "thought_threads.json"
+            path.write_text(json.dumps({
+                "thread-a": {
+                    "topic": "cognitive architecture", "goal": "understand it",
+                    "iteration_count": 7, "status": "active",
+                },
+                "broken": {"topic": "incomplete", "status": "not-a-status"},
+            }), encoding="utf-8")
+
+            engine = ThoughtThreadEngine(str(path))
+
+            self.assertEqual(len(engine.all_threads()), 1)
+            self.assertEqual(engine.get_thread("thread-a").iteration_count, 7)
+            self.assertTrue(path.exists())
+
+    def test_introspection_does_not_present_other_as_a_real_orientation(self):
+        generator = GroundedIntrospectionGenerator(organism=None)
+        question = generator._derive_question({
+            "idx": 0.31, "consistency": 0.60,
+            "dominant_orientation": "other",
+        }, "self description", 0)
+        self.assertNotIn("'other'", question)
+        self.assertNotIn("tendency toward", question)
+
+    def test_unknown_belief_categories_do_not_inflate_coherence(self):
+        synchronizer = SelfConceptSynchronizer.__new__(SelfConceptSynchronizer)
+        score = synchronizer._compute_coherence({"beliefs": {
+            "known": {"category": "expressed_belief", "confidence": 0.6},
+            "unknown-a": {"category": "noise_a", "confidence": 1.0},
+            "unknown-b": {"category": "noise_b", "confidence": 1.0},
+            "unknown-c": {"category": "noise_c", "confidence": 1.0},
+            "unknown-d": {"category": "noise_d", "confidence": 1.0},
+        }})
+        self.assertEqual(score, 0.6)
+
+    def test_self_concept_cap_is_stable_and_does_not_report_transient_churn(self):
+        synchronizer = SelfConceptSynchronizer.__new__(SelfConceptSynchronizer)
+        synchronizer.dal = SimpleNamespace(get_beliefs=lambda: [
+            {
+                "name": f"belief_{index:02d}",
+                "category": "expressed_belief",
+                "confidence": 0.8,
+            }
+            for index in range(60)
+        ] + [
+            {
+                "name": f"raw_concept_{index}",
+                "category": "semantic_concept",
+                "confidence": 0.99,
+            }
+            for index in range(3)
+        ])
+        beliefs = {}
+
+        first_synced = synchronizer._sync_beliefs(beliefs)
+        first_keys = set(beliefs["beliefs"])
+        second_synced = synchronizer._sync_beliefs(beliefs)
+
+        self.assertEqual(synchronizer._last_eligible_beliefs, 60)
+        self.assertEqual(len(first_keys), synchronizer.BELIEF_MAX_COUNT)
+        self.assertEqual(first_keys, set(beliefs["beliefs"]))
+        self.assertEqual(first_synced, synchronizer.BELIEF_MAX_COUNT)
+        self.assertEqual(second_synced, 0)
+        self.assertEqual(synchronizer._last_cap_pruned, 0)
+        self.assertFalse(any(key.startswith("raw_concept_") for key in first_keys))
+
+    def test_epistemic_lead_in_is_not_saved_as_a_durable_user_characteristic(self):
+        examples = (
+            "Je suis curieux de savoir comment ton moteur fonctionne.",
+            "Je suis curieux de comprendre comment ton moteur fonctionne.",
+            "I'm curious about whether the controller is connected.",
+            "I'm curious to learn how the cognitive loop works.",
+        )
+        for index, message in enumerate(examples):
+            with self.subTest(message=message), tempfile.TemporaryDirectory() as directory:
+                manager = UserManager(Path(directory) / f"users-{index}.json")
+                profile = manager.create("Fred")
+                settings = SimpleNamespace(get_persona_name=lambda: "Lumina")
+                boundary = SimpleNamespace(claims_persona_identity=lambda *_: False)
+                with patch.dict(sys.modules, {
+                    "managers.settings_manager": settings,
+                    "cognition.identity_boundary": boundary,
+                }):
+                    changed = manager.learn_from_message(profile.id, message)
+                self.assertFalse(changed)
+                self.assertEqual(profile.characteristics, [])
+
+
+if __name__ == "__main__":
+    unittest.main()

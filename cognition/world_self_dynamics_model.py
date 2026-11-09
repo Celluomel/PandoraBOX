@@ -214,8 +214,12 @@ class WorldSelfDynamicsModel:
         interaction_n: int = 0,
     ) -> None:
         """Record context immediately before an interaction fires."""
-        ctx = self._read_context(user_id)
+        ctx = self.capture_context(user_id)
         self._pending = (action_type, user_id, ctx, interaction_n)
+
+    def capture_context(self, user_id: str = "default") -> List[float]:
+        """Return a detached context snapshot for independently tracked turns."""
+        return list(self._read_context(user_id))
 
     def record_outcome(
         self,
@@ -230,8 +234,29 @@ class WorldSelfDynamicsModel:
         action_type, pending_uid, ctx_before, interaction_n = self._pending
         self._pending = None
 
-        # Read post-interaction state
-        ctx_after     = self._read_context(user_id)
+        self.record_observed_transition(
+            action_type, pending_uid, ctx_before, self.capture_context(user_id),
+            interaction_n=interaction_n, outcome=outcome,
+            response_text=response_text, user_input=user_input,
+            resolve_calibration=True,
+        )
+
+    def record_observed_transition(
+        self,
+        action_type: str,
+        user_id: str,
+        context_before: List[float],
+        context_after: List[float],
+        *,
+        interaction_n: int = 0,
+        outcome: str = "neutral",
+        response_text: str = "",
+        user_input: str = "",
+        resolve_calibration: bool = False,
+    ) -> None:
+        """Persist an explicit transition without touching shared pending state."""
+        ctx_before = [float(value) for value in context_before]
+        ctx_after = [float(value) for value in context_after]
 
         # Self-delta: differences in first 4 dims (self-state)
         self_delta = [
@@ -282,15 +307,23 @@ class WorldSelfDynamicsModel:
             f"world: trust{trust_delta:+.3f} eng={engagement:.2f} skill+{skill_gain:.3f}"
         )
 
-        # Phase 3.2: resolve any pending calibration prediction for this
-        # action_type now that the actual outcome is known. Mirrors PCM's
-        # Phase 3.1 record_outcome() resolution exactly.
+        # Do not resolve an unrelated human prediction from a concurrent peer
+        # exchange unless its caller explicitly owns that prediction.
         try:
-            if self._calibration_engine is not None:
+            if resolve_calibration and self._calibration_engine is not None:
+                energy_delta = (
+                    ctx_after[0] - ctx_before[0]
+                    if ctx_before and ctx_after else 0.0
+                )
+                actual_direction = (
+                    "positive" if energy_delta > 0.01 else
+                    "negative" if energy_delta < -0.01 else
+                    "neutral"
+                )
                 self._calibration_engine.resolve_prediction(
                     module="wsdm",
                     key=action_type,
-                    actual_direction=outcome,
+                    actual_direction=actual_direction,
                 )
         except Exception as _cal_e:
             logger.debug(f"[WorldSelfDynamics] Calibration resolve error: {_cal_e}")

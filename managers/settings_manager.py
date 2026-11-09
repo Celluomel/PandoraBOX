@@ -141,7 +141,18 @@ class AppSettings(BaseModel):
     # Format: [{"id":"child_a","name":"PandoraBOX-A","url":"http://IP:8765","api_key":"","role":"child"}]
     LUMINA_CHILDREN: list = []
     LUMINA_NETWORK_ENABLED: bool = False   # set True to activate the connector
+    # One deployable Brain codebase supports either topology role. A master
+    # owns children and initiates peer requests; a child only serves its own
+    # cognitive replies and never creates an outbound LuminaNetwork.
+    LUMINA_NETWORK_ROLE: str = "master"  # "master" | "child" | "standalone"
+    LUMINA_ALLOW_CHILD_INITIATED_MESSAGES: bool = False
+    LUMINA_MASTER_ID: str = "master"
+    # Shared secret required for peer requests arriving from another host.
+    # Keep blank for loopback-only development; never commit a real key.
+    LUMINA_NETWORK_API_KEY: str = ""
     LUMINA_MASTER_NAME: str = "PandoraBOX-Master"
+    # Empty preserves the loopback-only callback for same-machine deployments.
+    LUMINA_MASTER_CALLBACK_URL: str = ""
     # Phase 6.4 — real cognitive differentiation for a peer instance (Flux).
     # "collaborative" (default): no change to prompt behavior.
     # "epistemic_challenger": this instance's own system prompt is biased
@@ -358,6 +369,12 @@ def load_settings() -> AppSettings:
     settings, overridden = apply_env_overrides(settings)
     if overridden:
         print("⚡ Environment overrides applied")
+
+    role = str(getattr(settings, "LUMINA_NETWORK_ROLE", "master") or "master").strip().lower()
+    if role not in {"master", "child", "standalone"}:
+        print(f"⚠️ Invalid LUMINA_NETWORK_ROLE={role!r}; using standalone")
+        role = "standalone"
+    settings.LUMINA_NETWORK_ROLE = role
     
     return settings
 

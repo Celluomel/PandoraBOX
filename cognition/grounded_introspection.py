@@ -202,13 +202,18 @@ class GroundedIntrospectionGenerator:
         idx = state.get('idx', 0.0)
         consistency = state.get('consistency', 1.0)
         dominant = state.get('dominant_orientation', 'unknown')
+        has_dominant = bool(dominant and str(dominant).casefold() not in {
+            'other', 'unknown', 'none', 'null', 'n/a'
+        })
 
         if idx > 0.20 and consistency < 0.75:
             state['source'] = 'idx_drift'
+            orientation_clause = (
+                f", with a tendency toward '{dominant}'" if has_dominant else ""
+            )
             return (
                 f"Your identity drift index is {idx:.2f} and your recent "
-                f"decisions show {consistency:.0%} consistency, with a "
-                f"tendency toward '{dominant}'.\n\n"
+                f"decisions show {consistency:.0%} consistency{orientation_clause}.\n\n"
                 f"In one sentence, what pattern in '{topic_clean}' might be "
                 f"causing you to drift away from your stated orientation? "
                 f"Name a specific mechanism, not a general principle."
@@ -217,9 +222,12 @@ class GroundedIntrospectionGenerator:
         # ── Signal 3: IDX high but consistency OK (gradual drift) ─────────
         if idx >= 0.26:
             state['source'] = 'idx_high'
+            orientation_clause = (
+                f" Your dominant orientation is '{dominant}'." if has_dominant else ""
+            )
             return (
                 f"Your identity drift index is {idx:.2f} — above the stable "
-                f"threshold. Your dominant orientation is '{dominant}'.\n\n"
+                f"threshold.{orientation_clause}\n\n"
                 f"In one sentence, what assumption about '{topic_clean}' are "
                 f"you making that might not be holding up under pressure?"
             )

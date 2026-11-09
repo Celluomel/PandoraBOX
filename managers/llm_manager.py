@@ -691,14 +691,18 @@ class LLMManager:
         self,
         prompt: str,
         system_prompt: Optional[str] = None,
+        *,
+        history_override: Optional[List[Dict]] = None,
+        record_history: bool = True,
         **kwargs,
     ) -> str:
         """Regenerate a missing final channel after a reasoning-only stream."""
         kwargs.setdefault("max_tokens", 600)
         kwargs.setdefault("temperature", 0.45)
         kwargs.setdefault("model", self.text_model)
-        prior_history = self.history
-        if (
+        prior_history = history_override if history_override is not None else self.history
+        prior_history = [dict(item) for item in prior_history]
+        if history_override is None and (
             len(prior_history) >= 2
             and prior_history[-2].get("role") == "user"
             and prior_history[-1].get("role") == "assistant"
@@ -714,7 +718,7 @@ class LLMManager:
             response = self.provider.generate_with_history(
                 recovery_prompt, prior_history, system_prompt, **kwargs
             )
-        if self.history and self.history[-1].get("role") == "assistant":
+        if record_history and self.history and self.history[-1].get("role") == "assistant":
             self.history[-1]["content"] = response
         return response
 
@@ -747,6 +751,9 @@ class LLMManager:
         prompt: str,
         system_prompt: Optional[str] = None,
         use_vision_model: bool = False,
+        *,
+        history_override: Optional[List[Dict]] = None,
+        record_history: bool = True,
         **kwargs
     ) -> Iterator[str]:
         """Stream response tokens.  Accumulates them for history on completion.
@@ -755,7 +762,12 @@ class LLMManager:
         text turns never wait for LLaVA's heavier inference stack.
         """
         model = self.provider.model if use_vision_model else self.text_model
-        self._trim_history()
+        if record_history:
+            self._trim_history()
+        conversation_history = (
+            [dict(item) for item in history_override]
+            if history_override is not None else self.history
+        )
         accumulated = []
         owns_chat_marker = not self._chat_active.is_set()
         if owns_chat_marker:
@@ -767,7 +779,7 @@ class LLMManager:
             logger.info("Interactive stream waited %.0fms for an in-flight provider call", lock_wait * 1000)
         try:
             for token in self.provider.generate_with_history_stream(
-                prompt, self.history, system_prompt, model=model, **kwargs
+                prompt, conversation_history, system_prompt, model=model, **kwargs
             ):
                 if isinstance(token, dict):
                     yield token
@@ -786,10 +798,11 @@ class LLMManager:
             r"<think>[\s\S]*?(?:</think>|$)|<analysis>[\s\S]*?(?:</analysis>|$)",
             "", full_response, flags=re.IGNORECASE,
         ).strip()
-        self.history.extend([
-            {"role": "user",      "content": prompt},
-            {"role": "assistant", "content": full_response},
-        ])
+        if record_history:
+            self.history.extend([
+                {"role": "user",      "content": prompt},
+                {"role": "assistant", "content": full_response},
+            ])
 
     def generate_with_vision(
         self,

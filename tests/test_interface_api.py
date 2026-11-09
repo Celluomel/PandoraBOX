@@ -30,7 +30,12 @@ class InterfaceTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         api._turn_lock = asyncio.Lock()
         api._events.clear()
-        self.runtime = SimpleNamespace(ready=True, persona=Persona(), vision=None, llm=None, get_uptime=lambda: 120)
+        self.user_turns = []
+        self.runtime = SimpleNamespace(
+            ready=True, persona=Persona(), vision=None, llm=None,
+            get_uptime=lambda: 120,
+            notify_user_turn=lambda text, user_id: self.user_turns.append((text, user_id)),
+        )
         self.modules = {
             'managers.settings_manager': SimpleNamespace(
                 config=SimpleNamespace(
@@ -89,6 +94,7 @@ class InterfaceTests(unittest.IsolatedAsyncioTestCase):
         async with self.client() as client:
             response = await client.post('/api/interface/chat', json={'text': 'Current topic'})
         self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.user_turns, [('Current topic', 'test-user')])
         self.assertEqual(calls, [{'topic': 'Current topic'}])
 
     async def test_missing_dialogue_is_expired(self):

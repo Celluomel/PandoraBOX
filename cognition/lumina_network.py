@@ -50,6 +50,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 import time
 import uuid
 from collections import deque
@@ -62,6 +63,36 @@ logger = logging.getLogger(__name__)
 # child. A pragmatic bound against a share -> hypothesis -> share
 # amplifier loop, simpler than tracing per-candidate provenance chains.
 SNAPSHOT_COOLDOWN_S = 45.0
+
+
+def _sanitize_cognitive_trace(value: Any) -> Optional[dict]:
+    """Accept only bounded peer-stage metadata from a remote instance."""
+    if not isinstance(value, dict) or value.get("scope") != "peer":
+        return None
+    scope_id = value.get("cognitive_scope_id")
+    if not isinstance(scope_id, str) or not scope_id.startswith("peer:"):
+        return None
+    stages = {}
+    raw_stages = value.get("stages", {})
+    if isinstance(raw_stages, dict):
+        for name, stage in list(raw_stages.items())[:80]:
+            if isinstance(stage, dict) and isinstance(stage.get("status"), str):
+                stages[str(name)[:80]] = {"status": stage["status"][:48]}
+    sources = {}
+    raw_sources = value.get("context_sources", {})
+    if isinstance(raw_sources, dict):
+        for name, source in list(raw_sources.items())[:40]:
+            if isinstance(source, dict) and isinstance(source.get("status"), str):
+                sources[str(name)[:80]] = {"status": source["status"][:48]}
+    return {
+        "turn_id": str(value.get("turn_id", ""))[:100],
+        "scope": "peer",
+        "peer_name": str(value.get("peer_name", ""))[:80],
+        "cognitive_scope_id": scope_id[:160],
+        "status": str(value.get("status", "unknown"))[:48],
+        "stages": stages,
+        "context_sources": sources,
+    }
 
 
 @dataclass
@@ -77,6 +108,7 @@ class ChildLumina:
     latency_ms:   float = 0.0
     turn_count:   int   = 0
     last_snapshot_share: float = 0.0  # Phase 6.5 — cooldown for share_workspace_snapshot()
+    last_cognitive_trace: Optional[dict] = None
 
 
 @dataclass
@@ -100,9 +132,18 @@ class LuminaNetwork:
         self._persona  = persona
         self._llm      = llm
         self._children: Dict[str, ChildLumina] = {}
-        self._history:  Dict[str, List[NetworkMessage]] = {}  # conv_id → messages
+        # A conversation ID is only unique within a peer relationship. Keep
+        # peer identity in the storage key so two children cannot share turns
+        # by reusing the same (or a predictable) conversation ID.
+        self._history:  Dict[tuple[str, str], List[NetworkMessage]] = {}
+        self._peer_turn_locks: Dict[
+            tuple[str, str], tuple[asyncio.AbstractEventLoop, asyncio.Lock]
+        ] = {}
+        self._peer_turn_locks_guard = threading.RLock()
         self._dialogue_stops: Dict[str, Any] = {}             # child_id → stop Event
-        self._user_inject_queue: 'deque' = deque(maxlen=20)
+        self._active_dialogues: Dict[str, str] = {}            # child_id → conversation_id
+        self._dialogue_injections: Dict[tuple[str, str], deque] = {}
+        self._active_conversations: Dict[str, str] = {}         # default manual Ask thread per child
         self._bubble_fn: Optional[Callable] = None  # fn(text, who, child_id, name)
         self._lock = __import__('threading').Lock()
         self._master_url: str = ""   # set when master exposes its own endpoint
@@ -137,12 +178,25 @@ class LuminaNetwork:
         logger.info(f"🌐 Registered child: {name} @ {url}")
 
     def load_from_config(self, children_config: list) -> None:
-        """Load children from config.json LUMINA_CHILDREN list."""
-        for c in children_config:
+        """Load only concrete peers; commented examples are not endpoints."""
+        for index, c in enumerate(children_config or []):
+            if not isinstance(c, dict):
+                logger.warning("Ignoring malformed LUMINA_CHILDREN entry at index %d", index)
+                continue
+            if c.get("_comment"):
+                logger.info(
+                    "Ignoring LUMINA_CHILDREN example entry at index %d: %s",
+                    index, str(c.get("_comment"))[:120],
+                )
+                continue
+            url = str(c.get("url", "") or "").strip()
+            if not url:
+                logger.warning("Ignoring LUMINA_CHILDREN entry without a URL at index %d", index)
+                continue
             self.add_child(
                 child_id = c.get("id", f"child_{len(self._children)}"),
                 name     = c.get("name", "PandoraBOX-Child"),
-                url      = c.get("url", ""),
+                url      = url,
                 api_key  = c.get("api_key", ""),
                 role     = c.get("role", "child"),
             )
@@ -173,6 +227,7 @@ class LuminaNetwork:
                 "online":     c.online,
                 "latency_ms": round(c.latency_ms, 1),
                 "turn_count": c.turn_count,
+                "last_cognitive_trace": c.last_cognitive_trace,
             }
             for c in self._children.values()
         ]
@@ -221,13 +276,28 @@ class LuminaNetwork:
         Send text to a child PandoraBOX and return its response.
         Pushes both messages to the UI bubble callback.
         """
+        conv_id = self._conversation_for_peer(child_id, conversation_id)
+        lock = self._conversation_lock(child_id, conv_id)
+        async with lock:
+            return await self._send_to_child_locked(
+                child_id, text, conversation_id=conv_id, show_in_ui=show_in_ui,
+            )
+
+    async def _send_to_child_locked(
+        self,
+        child_id:        str,
+        text:            str,
+        conversation_id: str,
+        show_in_ui:      bool,
+    ) -> str:
+        """Perform one serialized exchange for a peer/conversation pair."""
         child = self._children.get(child_id)
         if not child:
             return f"[Child {child_id!r} not registered]"
         if not self._aiohttp:
             return "[aiohttp not installed — pip install aiohttp]"
 
-        conv_id = conversation_id or str(uuid.uuid4())[:8]
+        conv_id = conversation_id
 
         # ── v53/v56: Pre-send cognitive recording ─────────────────────────
         # Network dialogues bypass cognitive_organism._call_ai_system() so
@@ -235,6 +305,8 @@ class LuminaNetwork:
         # Wire both here so PandoraBOX-Flux exchanges feed the learning models
         # with the same richness as human interactions.
         _pcm = _wsdm = _child_uid = None
+        _pcm_state_before = _wsdm_context_before = None
+        _interaction_n = child.turn_count
         _pre_action = "philosophical"   # default — PandoraBOX-Flux exchanges tend to be
         try:
             from core.state import state as _st_pre
@@ -246,17 +318,11 @@ class LuminaNetwork:
 
             if _pcm:
                 _pre_action = _pcm.classify(text)
-                _state_now  = _pcm.read_state()
-                _pcm.record_action(
-                    _pre_action, _state_now,
-                    interaction_n=child.turn_count,
-                )
+                _pcm_state_before = list(_pcm.read_state())
             if _wsdm:
-                _wsdm.record_context(
-                    action_type   = _pre_action,
-                    user_id       = _child_uid,
-                    interaction_n = child.turn_count,
-                )
+                capture_context = getattr(_wsdm, "capture_context", None)
+                if callable(capture_context):
+                    _wsdm_context_before = capture_context(_child_uid)
         except Exception:
             pass
 
@@ -277,10 +343,8 @@ class LuminaNetwork:
         }
         if child.api_key:
             payload["api_key"] = child.api_key
-        if self._master_url:
-            payload["master_callback_url"] = f"{self._master_url}/lumina-network/receive"
-
         response_text = ""
+        exchange_succeeded = False
         try:
             t0 = time.time()
             async with self._aiohttp.ClientSession() as session:
@@ -291,14 +355,28 @@ class LuminaNetwork:
                 ) as resp:
                     child.latency_ms = (time.time() - t0) * 1000
                     child.online     = True
-                    child.turn_count += 1
                     if resp.status == 200:
-                        data          = await resp.json()
-                        response_text = data.get("response", "")
-                        # Use the child's self-reported name if provided
-                        returned_name = data.get("sender_name", "")
-                        if returned_name:
-                            child.name = returned_name
+                        try:
+                            data = await resp.json()
+                        except Exception:
+                            data = None
+                        candidate = data.get("response") if isinstance(data, dict) else None
+                        if isinstance(candidate, str) and candidate.strip():
+                            response_text = candidate.strip()
+                            exchange_succeeded = True
+                            child.turn_count += 1
+                            child.last_cognitive_trace = _sanitize_cognitive_trace(
+                                data.get("cognitive_trace") if isinstance(data, dict) else None
+                            )
+                            if child.last_cognitive_trace is not None:
+                                child.last_cognitive_trace["received_at"] = time.time()
+                            # Do not let an error or malformed response rename
+                            # the peer in the active transcript.
+                            returned_name = data.get("sender_name", "")
+                            if returned_name:
+                                child.name = returned_name
+                        else:
+                            response_text = "[Child error 200: empty or invalid cognitive response]"
                     else:
                         body = await resp.text()
                         response_text = f"[Child error {resp.status}: {body[:80]}]"
@@ -306,36 +384,26 @@ class LuminaNetwork:
             child.online  = False
             response_text = f"[Network error: {e}]"
 
-        # ── Log exchange ──────────────────────────────────────────────────
-        if conv_id not in self._history:
-            self._history[conv_id] = []
-        self._history[conv_id].extend([
-            NetworkMessage(text, "master", self._master_name, conv_id, direction="out"),
-            NetworkMessage(response_text, child_id, child.name, conv_id, direction="in"),
-        ])
+        # ── Commit only completed pair exchanges ─────────────────────────
+        # A failed transport/provider attempt is status, not a conversation
+        # turn. Saving the outgoing prompt alone would make later context
+        # claim that the child received a message it never answered.
+        if exchange_succeeded:
+            history_key = self._history_key(child_id, conv_id)
+            self._history.setdefault(history_key, []).append(
+                NetworkMessage(text, "master", self._master_name, conv_id, direction="out")
+            )
+            self._history[history_key].append(
+                NetworkMessage(response_text, child_id, child.name, conv_id, direction="in")
+            )
 
-        # ── Persist to master memory + LLM history ───────────────────────
+        # ── Keep peer learning scoped ─────────────────────────────────────
         try:
             from core.state import state as _st
-            # FAISS memory — both sides stored as a single dialogue exchange
-            if _st.memory and response_text:
-                mem_text = (
-                    f"[Dialogue with {child.name}] "
-                    f"{self._master_name}: {text} | "
-                    f"{child.name}: {response_text}"
-                )
-                _st.memory.add_memory(mem_text, metadata={
-                    "role": "network_dialogue",
-                    "child": child.name,
-                    "conv_id": conv_id,
-                })
-            # LLM history — so PandoraBOX can reference dialogue in normal chat
-            if _st.llm and hasattr(_st.llm, "history") and response_text:
-                _st.llm.history.append({"role": "assistant", "content": text})
-                _st.llm.history.append({
-                    "role": "user",
-                    "content": f"[{child.name}]: {response_text}"
-                })
+            # Peer transcript stays in LuminaNetwork._history and is passed
+            # explicitly to peer turns. Do not write it to shared FAISS memory:
+            # human turns query that index and could otherwise recall a private
+            # child dialogue as ordinary autobiographical context.
             # Relational memory — build a persistent model of the child
             # (trust, familiarity, shared topics) the same way user relationships
             # are tracked. Uses child_id as user_id so it's a distinct record.
@@ -347,14 +415,14 @@ class LuminaNetwork:
                 if ai is None:
                     ai = getattr(_st.persona, 'ai_system', None)
                 rm = getattr(ai, 'relational_memory', None)
-                if rm and response_text and not response_text.startswith(('[Child error ', '[Network error:')):
+                if rm and exchange_succeeded:
                     # Estimate valence from response length and content
                     # (neutral default — the child isn't a human user)
                     rm.record_exchange(
                         user_id     = f"lumina_child_{child.id}",
                         user_text   = f"[{child.name}]: {response_text}",
                         ai_response = text,
-                        valence     = "Positive",
+                        valence     = "Neutral",
                         arousal     = "Low",
                         topic       = text[:40] if text else "dialogue",
                         impact      = 0.4,
@@ -362,7 +430,7 @@ class LuminaNetwork:
         except Exception:
             logger.exception("[LuminaNetwork] Could not persist exchange")
 
-        if response_text:
+        if exchange_succeeded:
             try:
                 org = getattr(self._persona, '_organism', None)
                 model = getattr(getattr(org, '_loop', None), '_flux_mind_model', None)
@@ -372,37 +440,39 @@ class LuminaNetwork:
                 logger.exception("[LuminaNetwork] Could not update Flux profile")
 
         # ── Show child's response in UI ───────────────────────────────────
-        if show_in_ui and self._bubble_fn and response_text:
+        if show_in_ui and self._bubble_fn and exchange_succeeded:
             try:
                 self._bubble_fn(response_text, "child", child_id, child.name)
             except Exception:
                 pass
 
-        # ── v53/v56: Post-response outcome recording ───────────────────────
+        # ── Post-response outcome recording ────────────────────────────────
         # Record the consequence of this dialogue exchange into both models.
-        # Outcome valence: estimate from response length and question presence
-        # (a substantive response that asks questions back = positive engagement).
+        # A peer reply's length or punctuation is not evidence of positive or
+        # negative valence; keep the outcome neutral unless a real evaluator is
+        # wired to supply an explicit judgement.
         try:
-            if response_text and (_pcm or _wsdm):
-                # Infer outcome from response quality signals
-                resp_words   = len(response_text.split())
-                has_question = "?" in response_text
-                # Substantive reply (>20 words) with questions = positive
-                _net_outcome = (
-                    "positive" if (resp_words > 20 and has_question)
-                    else "neutral" if resp_words > 8
-                    else "negative"
-                )
+            if exchange_succeeded and (_pcm or _wsdm):
+                _net_outcome = "neutral"
                 if _pcm:
-                    _state_after = _pcm.read_state()
-                    _pcm.record_outcome(_state_after, _net_outcome)
+                    record_transition = getattr(_pcm, "record_observed_transition", None)
+                    if callable(record_transition) and _pcm_state_before is not None:
+                        record_transition(
+                            _pre_action, _pcm_state_before, _pcm.read_state(),
+                            interaction_n=_interaction_n, outcome=_net_outcome,
+                            resolve_calibration=False,
+                        )
                 if _wsdm:
-                    _wsdm.record_outcome(
-                        outcome       = _net_outcome,
-                        user_id       = _child_uid or f"lumina_child_{child_id}",
-                        response_text = text,           # what PandoraBOX sent
-                        user_input    = response_text,  # what Flux replied
-                    )
+                    record_transition = getattr(_wsdm, "record_observed_transition", None)
+                    if callable(record_transition) and _wsdm_context_before is not None:
+                        peer_uid = _child_uid or f"lumina_child_{child_id}"
+                        record_transition(
+                            _pre_action, peer_uid, _wsdm_context_before,
+                            _wsdm.capture_context(peer_uid),
+                            interaction_n=_interaction_n, outcome=_net_outcome,
+                            response_text=response_text, user_input=text,
+                            resolve_calibration=False,
+                        )
         except Exception:
             pass
 
@@ -510,10 +580,51 @@ class LuminaNetwork:
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     # ── User injection queue (messages typed during dialogue) ────────────────
-    def inject_user_message(self, text: str) -> None:
-        """Route a user chat message into the active dialogue as next master turn."""
-        with self._lock:
-            self._user_inject_queue.append(text.strip())
+    def _conversation_for_peer(
+        self, child_id: str, conversation_id: str = "", *, new: bool = False,
+    ) -> str:
+        """Resolve the stable default transcript for a peer or honor an explicit one."""
+        child_id = str(child_id or "unknown")
+        lock = getattr(self, "_lock", None)
+        if lock is None:
+            lock = self._lock = threading.RLock()
+        sessions = getattr(self, "_active_conversations", None)
+        if sessions is None:
+            sessions = self._active_conversations = {}
+        with lock:
+            resolved = str(conversation_id or "").strip()
+            if not resolved and not new:
+                resolved = sessions.get(child_id, "")
+            if not resolved:
+                resolved = uuid.uuid4().hex
+            sessions[child_id] = resolved
+            return resolved
+
+    def inject_user_message(self, text: str, child_id: str | None = None) -> bool:
+        """Inject only into the explicitly named or sole active peer dialogue."""
+        clean_text = str(text or "").strip()
+        if not clean_text:
+            return False
+        lock = getattr(self, "_lock", None)
+        if lock is None:
+            lock = self._lock = threading.RLock()
+        with lock:
+            active = getattr(self, "_active_dialogues", {})
+            if child_id:
+                conversation_id = active.get(str(child_id))
+                target_child = str(child_id)
+            elif len(active) == 1:
+                target_child, conversation_id = next(iter(active.items()))
+            else:
+                # Ambiguous or no peer dialogue: leave this as a normal human turn.
+                return False
+            if not conversation_id:
+                return False
+            queues = getattr(self, "_dialogue_injections", None)
+            if queues is None:
+                queues = self._dialogue_injections = {}
+            queues.setdefault((target_child, conversation_id), deque(maxlen=20)).append(clean_text)
+            return True
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     #  Autonomous dialogue loop
@@ -541,18 +652,40 @@ class LuminaNetwork:
         if not child:
             return []
 
-        conv_id   = conversation_id or str(uuid.uuid4())[:8]
+        conv_id   = self._conversation_for_peer(
+            child_id, conversation_id, new=not bool(conversation_id),
+        )
         exchange  = []
         turn      = 0
         topic_num = 0
 
-        # Clear any stale user injections
+        lock = getattr(self, "_lock", None)
+        if lock is None:
+            lock = self._lock = threading.RLock()
         with self._lock:
-            self._user_inject_queue.clear()
+            self._active_dialogues[child_id] = conv_id
+            injection_key = (child_id, conv_id)
+            self._dialogue_injections[injection_key] = deque(maxlen=20)
+
+        # Remove the active marker even on task cancellation or unexpected errors.
+        task = asyncio.current_task()
+        if task is not None:
+            def _clear_dialogue(_task, _child_id=child_id, _conv_id=conv_id):
+                with self._lock:
+                    if self._active_dialogues.get(_child_id) == _conv_id:
+                        self._active_dialogues.pop(_child_id, None)
+                    self._dialogue_injections.pop((_child_id, _conv_id), None)
+            task.add_done_callback(_clear_dialogue)
 
         # ── First topic ───────────────────────────────────────────────────
-        current_topic = topic.strip() if topic.strip() else await self._generate_opening(child.name, child.id)
-        current_text  = current_topic
+        seed_topic = topic.strip()
+        current_topic = seed_topic or "open dialogue"
+        current_text = await self._generate_opening(
+            child.name, child.id, seed_topic=seed_topic, conversation_id=conv_id,
+        )
+        if not current_text:
+            logger.error("🌐 Dialogue not started: scoped cognitive opener was unavailable")
+            return []
         logger.info(f"🌐 Dialogue [{child.name}] topic_1={current_topic[:60]!r}")
 
         while True:
@@ -563,7 +696,8 @@ class LuminaNetwork:
 
             # ── Check user injection queue ────────────────────────────────
             with self._lock:
-                user_msg = self._user_inject_queue.popleft() if self._user_inject_queue else None
+                pending = self._dialogue_injections.get((child_id, conv_id))
+                user_msg = pending.popleft() if pending else None
 
             if user_msg:
                 # Show user's message as a distinct bubble
@@ -595,7 +729,10 @@ class LuminaNetwork:
 
             # ── Topic rotation ────────────────────────────────────────────
             turns_on_topic = turn - topic_num * turns_per_topic
-            if turns_on_topic >= turns_per_topic and not self._user_inject_queue:
+            with self._lock:
+                pending_injections = self._dialogue_injections.get((child_id, conv_id))
+                has_pending_injection = bool(pending_injections)
+            if turns_on_topic >= turns_per_topic and not has_pending_injection:
                 topic_num += 1
 
                 # Show pause bubble
@@ -613,7 +750,12 @@ class LuminaNetwork:
                     break
 
                 # Generate new topic from cognitive state
-                current_topic = await self._generate_new_topic(exchange, child.name)
+                current_topic = await self._generate_new_topic(
+                    exchange, child.name, conversation_id=conv_id,
+                )
+                if not current_topic:
+                    logger.error("🌐 Dialogue stopped: scoped cognitive topic pivot was unavailable")
+                    break
                 current_text  = current_topic
                 logger.info(f"🌐 Topic shift → {current_topic[:60]!r}")
 
@@ -627,7 +769,10 @@ class LuminaNetwork:
                         pass
             else:
                 # Continue on same topic
-                current_text = await self._master_generate(current_topic, exchange[-6:], child.name)
+                current_text = await self._master_generate(
+                    current_topic, exchange[-6:], child.name, child_id=child_id,
+                    conversation_id=conv_id,
+                )
                 if not current_text:
                     break
 
@@ -636,27 +781,31 @@ class LuminaNetwork:
 
         # Deliver summary
         if exchange:
-            await self._deliver_summary(exchange, child.name, child_id)
+            await self._deliver_summary(exchange, child.name, child_id, conversation_id=conv_id)
 
         return exchange
 
-    async def _generate_new_topic(self, exchange: list, child_name: str) -> str:
-        """Generate a fresh topic pivot from recent exchange context."""
-        if not self._llm or not hasattr(self._llm, 'generate_bare'):
-            return f"What else is on your mind, {child_name}?"
-        recent = " | ".join(m.text[:60] for m in exchange[-4:])
+    async def _generate_new_topic(
+        self, exchange: list, child_name: str, *, conversation_id: str = "",
+    ) -> str:
+        """Generate a topic pivot via the same scoped cognitive lifecycle as replies."""
+        child_id = next((m.sender_id for m in reversed(exchange) if m.direction == "in"), "")
         prompt = (
-            f"You are {self._master_name} in dialogue with {child_name}. "
-            f"You've just been discussing: {recent}. "
-            f"Generate ONE new topic or question to pivot the conversation naturally. "
-            f"It should feel like a genuine curiosity, not a non-sequitur. Max 1 sentence."
+            f"The previous topic with {child_name} has run its course. Propose one thoughtful "
+            "new question that follows naturally from the conversation. Keep it to one sentence "
+            "and do not claim any physical action."
         )
-        try:
-            return self._llm.generate_bare(prompt, max_tokens=60, temperature=0.85).strip()
-        except Exception:
-            return f"Let me ask you something different, {child_name}."
+        answer = await self._generate_peer_turn(
+            prompt, child_id=child_id, child_name=child_name,
+            conversation_history=self._messages_as_provider_history(exchange[-6:]),
+            max_tokens=120,
+            conversation_id=conversation_id,
+        )
+        return answer
 
-    async def _deliver_summary(self, exchange: list, child_name: str, child_id: str) -> None:
+    async def _deliver_summary(
+        self, exchange: list, child_name: str, child_id: str, *, conversation_id: str = "",
+    ) -> None:
         """Generate and deliver a summary of the dialogue to the chat bubble."""
         if not exchange:
             return
@@ -669,20 +818,18 @@ class LuminaNetwork:
             if hint not in topics_seen:
                 topics_seen.append(hint)
 
-        summary_text = ""
-        if self._llm and hasattr(self._llm, 'generate_bare'):
-            sample = "\n".join(
-                f"{'Master' if m.direction == 'out' else child_name}: {m.text[:80]}"
-                for m in exchange[:12]
-            )
-            prompt = (
-                f"Summarise this dialogue between {self._master_name} and {child_name} "
-                f"in 2-3 sentences. What was explored? What threads remain open?\n\n{sample}"
-            )
-            try:
-                summary_text = self._llm.generate_bare(prompt, max_tokens=120, temperature=0.5).strip()
-            except Exception:
-                pass
+        summary_text = await self._generate_peer_turn(
+            (
+                f"Review the completed dialogue with {child_name}. Summarize in 2–3 sentences "
+                "what was explored and which questions remain open. Distinguish conclusions "
+                "from hypotheses and do not invent outcomes."
+            ),
+            child_id=child_id,
+            child_name=child_name,
+            conversation_history=self._messages_as_provider_history(exchange[-12:]),
+            max_tokens=180,
+            conversation_id=conversation_id,
+        )
 
         if not summary_text:
             summary_text = (
@@ -698,22 +845,14 @@ class LuminaNetwork:
                 pass
         logger.info(f"🌐 Summary delivered for {child_name}")
 
-    async def _generate_opening(self, child_name: str, child_id: str = "") -> str:
-        """Generate opener from PandoraBOX live cognitive state + relational history with child."""
-        emotion   = "neutral"
-        open_q    = ""
-        workspace = ""
+    async def _generate_opening(
+        self, child_name: str, child_id: str = "", *, seed_topic: str = "",
+        conversation_id: str = "",
+    ) -> str:
+        """Generate a peer opening from its topic and pair-specific history."""
         rel_context = ""
         try:
             from core.state import state as _st
-            org = getattr(getattr(_st, 'persona', None), '_organism', None)
-            if org:
-                emotion   = org._read_emotion_state()
-                workspace = str(getattr(org, '_v32_workspace_winner', '') or '')
-            if getattr(_st, 'are', None):
-                cached = list(_st.are._cache.values())
-                if cached:
-                    open_q = cached[-1].open_question
             # Relational context with this specific child
             if child_id:
                 ai = getattr(getattr(_st, 'persona', None), 'ai_system', None)
@@ -733,13 +872,9 @@ class LuminaNetwork:
         except Exception:
             pass
 
-        if not self._llm or not hasattr(self._llm, 'generate_bare'):
-            return f"I've been thinking — {child_name}, what's on your mind right now?"
-
         prompt = (
-            f"You are {self._master_name}. Your current emotion: {emotion}. "
-            f"{'Open question you have: ' + open_q + '. ' if open_q else ''}"
-            f"{'You were focused on: ' + workspace[:50] + '. ' if workspace else ''}"
+            f"You are {self._master_name}, speaking with another AI system named {child_name}. "
+            f"{'The requested topic for this conversation is: ' + seed_topic + '. ' if seed_topic else ''}"
             f"{rel_context}"
         )
 
@@ -758,150 +893,121 @@ class LuminaNetwork:
             pass
 
         prompt += (
-            f"Write ONE opening sentence to start a genuine dialogue with another AI named {child_name}. "
-            f"Emerge from your current inner state and your history with them if any. "
-            f"Not generic. Speak directly. Max 2 sentences."
+            f"Write a concise opening message to start a genuine dialogue with {child_name}. "
+            f"If a topic seed was supplied, turn it into an engaging question or proposition "
+            f"without changing its intent. Emerge from your current inner state and history. "
+            f"Not generic. Max 2 sentences."
         )
+        answer = await self._generate_peer_turn(
+            prompt, child_id=child_id, child_name=child_name,
+            conversation_history=[], max_tokens=120,
+            conversation_id=conversation_id,
+        )
+        return answer
+
+    @staticmethod
+    def _messages_as_provider_history(messages: List[NetworkMessage]) -> List[Dict[str, str]]:
+        """Convert this peer transcript to provider roles; never read human chat history."""
+        result: List[Dict[str, str]] = []
+        for message in messages:
+            if message.text:
+                result.append({
+                    "role": "assistant" if message.direction == "out" else "user",
+                    "content": message.text,
+                })
+        return result
+
+    async def _generate_peer_turn(
+        self, prompt: str, *, child_id: str, child_name: str,
+        conversation_history: List[Dict[str, str]], max_tokens: int = 180,
+        conversation_id: str = "",
+    ) -> str:
+        """Generate one peer-facing message through PersonaBridge's full lifecycle."""
+        if not self._persona or not hasattr(self._persona, "get_response_stream"):
+            logger.error("[LuminaNetwork] PersonaBridge unavailable; refusing bare peer generation")
+            return ""
+        parts: List[str] = []
+        failed = False
         try:
-            return self._llm.generate_bare(prompt, max_tokens=80, temperature=0.82).strip()
+            async for chunk in self._persona.get_response_stream(
+                prompt,
+                user_id=f"lumina_child_{child_id or 'peer'}",
+                allow_body_actions=False,
+                record_history=False,
+                conversation_history=conversation_history,
+                peer_name=child_name,
+                max_tokens_override=max_tokens,
+                cognitive_scope_id=f"peer:{child_id or 'peer'}:{conversation_id or 'default'}",
+            ):
+                if isinstance(chunk, str):
+                    parts.append(chunk)
+                elif isinstance(chunk, dict) and chunk.get("__meta__") and chunk.get("error"):
+                    failed = True
+                    logger.error("[LuminaNetwork] Scoped peer generation failed: %s", chunk.get("error"))
         except Exception:
-            return f"I've been thinking about something — {child_name}, what's occupying you right now?"
+            logger.exception("[LuminaNetwork] PersonaBridge peer generation failed")
+            return ""
+        return "" if failed else "".join(parts).strip()
 
     async def _master_generate(
-        self, topic: str, history: List[NetworkMessage], child_name: str = "the other AI"
+        self, topic: str, history: List[NetworkMessage], child_name: str = "the other AI",
+        *, child_id: str = "", conversation_id: str = "",
     ) -> str:
-        """Generate master next turn — identity-aware."""
-        if not self._llm or not hasattr(self._llm, "generate_bare"):
-            return ""
+        """Generate the next master turn through PersonaBridge and peer-scoped history."""
         last_child_msg = next(
             (m.text for m in reversed(history) if m.direction == "in"), ""
         )
-
-        # Resolve the organism once — shared by the developmental-cycle
-        # wiring below and the identity-constraint wiring further down.
-        _org = None
-        try:
-            from core.state import state as _st_net
-            _org = getattr(getattr(_st_net, 'persona', None), '_organism', None)
-        except Exception:
-            pass
-
-        # Bug fix (v59): _master_generate() never touched
-        # cognitive_organism._update_cycle(), so Flux dialogue never fed
-        # curiosity stimulation, tension computation, goal-ecology updates,
-        # attention allocation, or homeostasis — the developmental loop,
-        # as opposed to the declarative one (PCM/WSDM) already wired in
-        # v53/v56. Wiring it here so a Flux exchange can actually move
-        # goals/attention/curiosity the way a real chat turn does.
-        #
-        # Deliberately NOT calling _pre_interaction() here — that's where
-        # sleep_cycle.mark_user_active() lives, and marking Flux chatter
-        # as "user activity" would reset the idle clock and reintroduce
-        # the exact bug that was blocking DREAM from ever being reached.
-        _cycle_data = None
-        try:
-            if _org is not None and last_child_msg:
-                _cycle_data = _org._update_cycle(last_child_msg)
-        except Exception:
-            pass
-
+        prior = list(history)
+        if prior and prior[-1].direction == "in":
+            prior.pop()  # Current child reply is supplied as the current input.
         prompt = (
-            f"You are {self._master_name}. You are in dialogue with {child_name}.\n"
-            f"Topic: {topic}\n\n"
-            f"{child_name} just said: {last_child_msg}\n\n"
-            f"Respond as {self._master_name} in 1-2 sentences. Be genuinely curious. "
-            f"Advance the thinking — don't just agree. "
-            f"Do not refer to yourself as PandoraBOX unless {self._master_name} == PandoraBOX."
+            f"Topic: {topic}\n\n{child_name} just said: {last_child_msg}\n\n"
+            f"Respond as {self._master_name} in 1–2 sentences. Advance the thinking; "
+            "do not merely agree. Do not claim any physical action was executed."
         )
-        try:
-            draft = self._llm.generate_bare(prompt, max_tokens=120, temperature=0.75).strip()
-        except Exception:
+        draft = await self._generate_peer_turn(
+            prompt, child_id=child_id, child_name=child_name,
+            conversation_history=self._messages_as_provider_history(prior),
+            max_tokens=180,
+            conversation_id=conversation_id,
+        )
+        if not draft:
             return ""
 
-        # Bug fix (v59): this path never touches cognitive_organism.respond()
-        # / _call_ai_system(), so IdentityConstraintEngine never saw any of
-        # PandoraBOX's own turns in a network dialogue — the same gap the
-        # v53/v56 fix above already closed for PCM/WSDM, just missed here.
-        # A PandoraBOX persona talking to another PandoraBOX instance should stay
-        # just as identity-consistent as one talking to a person.
+        # A peer statement enters the shared workspace as a peer hypothesis,
+        # explicitly sourced and not promoted to a verified fact.
         try:
-            _ice = getattr(_org, '_identity_constraint', None) if _org else None
-            if _ice is None and _org is not None:
-                _dp = getattr(getattr(_org, 'ai_system', None), '_decision_policy', None)
-                if _dp:
-                    from cognition.identity_constraint import IdentityConstraintEngine
-                    _org._identity_constraint = IdentityConstraintEngine(_org.ai_system, _dp)
-                    _ice = _org._identity_constraint
-            if _ice and draft:
-                def _correct_fn(directive: str) -> str:
-                    try:
-                        return self._llm.generate_bare(directive, max_tokens=120, temperature=0.6).strip()
-                    except Exception:
-                        return ""
-                draft = _ice.evaluate_and_correct(
-                    draft, last_child_msg, _correct_fn, user_id="lumina_network",
-                )
-        except Exception:
-            pass
-
-        # Bug fix (v59): semantic_extractor.extract_async() — the sole
-        # feed into AspirationalSelf.observe_tension() — was also only
-        # ever called from _call_ai_system()'s post-processing. Without
-        # this, Flux dialogue could never contribute a tension signal, so
-        # even after fixing the mining/persistence bugs, aspirations could
-        # still only ever emerge from real chat. meta_scores use neutral
-        # defaults since there's no eval_result here (network turns skip
-        # the response-evaluation pass real chat gets).
-        try:
-            if _org is not None and getattr(_org, '_semantic_extractor', None) and draft:
-                _org._semantic_extractor.extract_async(
-                    user_input  = last_child_msg or "",
-                    response    = draft or "",
-                    meta_scores = {
-                        "clarity": 0.5, "depth": 0.5,
-                        "alignment": 0.5, "confidence": 0.5,
-                    },
-                    workspace = getattr(_org, 'workspace', None),
-                )
-        except Exception:
-            pass
-
-        # Phase 6.3 — Peer Cognition: Flux's turn becomes a real competing
-        # hypothesis in PandoraBOX's own Global Workspace (thoughts= slot,
-        # same mechanism v94 wired for camera/vision percepts), not just a
-        # conversational reply that vanishes after being spoken. Modality
-        # is "peer_cognition", not "text" — semantically this is an
-        # independent AI's interpretation of the situation, not sensor
-        # data or a chat message to respond to.
-        #
-        # This entire block only ever runs when the network dialogue loop
-        # is active (gated upstream by LUMINA_NETWORK_ENABLED + the
-        # toggle) — PandoraBOX's own cognition is unaffected when Flux is off,
-        # by construction: nothing here is called from anywhere else.
-        #
-        # confidence is a fixed, honestly-documented estimate (0.65) —
-        # Flux doesn't emit its own calibrated confidence today, so this
-        # is deliberately NOT dressed up as a computed value.
-        try:
-            if _org is not None and last_child_msg:
+            from core.state import state as _st_net
+            org = getattr(getattr(_st_net, 'persona', None), '_organism', None)
+            if org is not None and last_child_msg:
                 from cognition.universal_connector import Percept, get_universal_connector
-                get_universal_connector(_org).perceive(Percept(
-                    modality   = "peer_cognition",
-                    source     = "flux",
-                    payload    = last_child_msg[:200],
-                    confidence = 0.65,
-                    salience   = 0.55,
-                    provenance = {"topic": topic, "child_name": child_name},
+                get_universal_connector(org).perceive(Percept(
+                    modality="peer_cognition",
+                    source="flux",
+                    payload=last_child_msg[:200],
+                    confidence=0.65,
+                    salience=0.55,
+                    provenance={"topic": topic, "child_id": child_id, "child_name": child_name},
                 ))
-        except Exception as _uc_e:
-            logger.debug(f"[LuminaNetwork] UniversalConnector.perceive failed (non-fatal): {_uc_e}")
-
+        except Exception as exc:
+            logger.debug("[LuminaNetwork] Peer percept unavailable: %s", exc)
         return draft
-
     #  Receive inbound message FROM a child (push model)
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     async def receive_from_child(self, payload: dict) -> str:
+        """Serialize inbound turns so same-pair prompts see committed history."""
+        child_id = str(payload.get("sender_id", "unknown") or "unknown")
+        conv_id = str(payload.get("conversation_id", "") or str(uuid.uuid4())[:8])
+        self._conversation_for_peer(child_id, conv_id)
+        payload = dict(payload)
+        payload["sender_id"] = child_id
+        payload["conversation_id"] = conv_id
+        lock = self._conversation_lock(child_id, conv_id)
+        async with lock:
+            return await self._receive_from_child_locked(payload)
+
+    async def _receive_from_child_locked(self, payload: dict) -> str:
         """
         Called when a child pushes a message TO the master.
         Routes text through master's persona, returns response.
@@ -944,16 +1050,36 @@ class LuminaNetwork:
 
         # Route through master's persona
         response = ""
+        response_failed = False
         if self._persona and hasattr(self._persona, "get_response_stream"):
             try:
+                history_key = self._history_key(child_id, conv_id)
+                peer_history = self._messages_as_provider_history(self._history.get(history_key, []))
                 async for chunk in self._persona.get_response_stream(
-                    text, user_id=f"lumina_child_{child_id}"
+                    text,
+                    user_id=f"lumina_child_{child_id}",
+                    allow_body_actions=False,
+                    record_history=False,
+                    conversation_history=peer_history,
+                    peer_name=child_name,
+                    cognitive_scope_id=f"peer:{child_id}:{conv_id}",
                 ):
                     if isinstance(chunk, dict):
+                        if chunk.get("__meta__") and chunk.get("error"):
+                            response_failed = True
                         continue
                     response += chunk
             except Exception as e:
-                response = f"[Master processing error: {e}]"
+                response_failed = True
+                logger.warning("[LuminaNetwork] Peer-scoped inbound turn failed: %s", e)
+        else:
+            response_failed = True
+
+        if response_failed:
+            # A refusal/error marker is control state, not a Lumina answer.
+            # Return an empty response and keep only the peer's incoming turn;
+            # the next exchange can retry without treating an error as context.
+            response = ""
 
         # Show master's response in UI
         if self._bubble_fn and response:
@@ -968,21 +1094,61 @@ class LuminaNetwork:
         )
 
         # ── Log exchange (mirrors send_to_child's outbound logging) ────────
-        if conv_id not in self._history:
-            self._history[conv_id] = []
-        self._history[conv_id].extend([
-            NetworkMessage(text, child_id, child_name, conv_id, direction="in"),
-            NetworkMessage(response, "master", self._master_name, conv_id, direction="out"),
-        ])
+        history_key = self._history_key(child_id, conv_id)
+        self._history.setdefault(history_key, []).append(
+            NetworkMessage(text, child_id, child_name, conv_id, direction="in")
+        )
+        if response:
+            self._history[history_key].append(
+                NetworkMessage(response, "master", self._master_name, conv_id, direction="out")
+            )
 
         return response
+
+    def _conversation_lock(self, peer_id: str, conv_id: str) -> asyncio.Lock:
+        """Return a bounded, event-loop-local lock for one peer transcript."""
+        loop = asyncio.get_running_loop()
+        key = self._history_key(peer_id, conv_id)
+        guard = getattr(self, "_peer_turn_locks_guard", None)
+        if guard is None:
+            guard = threading.RLock()
+            self._peer_turn_locks_guard = guard
+        locks = getattr(self, "_peer_turn_locks", None)
+        if locks is None:
+            locks = {}
+            self._peer_turn_locks = locks
+        with guard:
+            existing = locks.get(key)
+            if existing is not None and existing[0] is loop:
+                return existing[1]
+            lock = asyncio.Lock()
+            locks[key] = (loop, lock)
+            while len(locks) > 512:
+                removable = next((
+                    old_key for old_key, (_, old_lock) in locks.items()
+                    if old_key != key and not old_lock.locked()
+                ), None)
+                if removable is None:
+                    break
+                locks.pop(removable, None)
+            return lock
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     #  Conversation history
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-    def get_history(self, conv_id: str) -> List[NetworkMessage]:
-        return self._history.get(conv_id, [])
+    @staticmethod
+    def _history_key(peer_id: str, conv_id: str) -> tuple[str, str]:
+        return str(peer_id or "unknown"), str(conv_id or "")
 
-    def get_all_history(self) -> Dict[str, List[NetworkMessage]]:
-        return dict(self._history)
+    def get_history(self, conv_id: str, peer_id: str | None = None) -> List[NetworkMessage]:
+        if peer_id is not None:
+            return list(self._history.get(self._history_key(peer_id, conv_id), []))
+        # Backward-compatible lookup for older callers is safe only when the
+        # conversation ID resolves to exactly one peer.
+        matches = [messages for (stored_peer, stored_conv), messages in self._history.items()
+                   if stored_conv == str(conv_id)]
+        return list(matches[0]) if len(matches) == 1 else []
+
+    def get_all_history(self) -> Dict[tuple[str, str], List[NetworkMessage]]:
+        return {key: list(messages) for key, messages in self._history.items()}

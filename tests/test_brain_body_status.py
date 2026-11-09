@@ -61,7 +61,7 @@ class BrainBodyStatusResponseTest(unittest.TestCase):
         self.assertFalse(result["audit"]["real_observation_baseline"])
         self.assertIsNone(result["audit"]["id"])
 
-    def test_sensor_data_question_returns_hardware_telemetry_not_camera_detections(self):
+    def test_sensor_data_question_uses_main_cognitive_turn_not_body_classifier_digest(self):
         from cognition.persona_bridge import PersonaBridge
 
         now = __import__("time").time()
@@ -90,12 +90,12 @@ class BrainBodyStatusResponseTest(unittest.TestCase):
 
         result = bridge.handle_body_chat_turn("what are the body sensors providing")
 
-        self.assertIn("front_left 0.75m", result["response"])
-        self.assertIn("front_right 2.28m", result["response"])
-        self.assertNotIn("person", result["response"])
-        self.assertNotIn("0.5", result["response"])
+        # A read-only sensor query proceeds through the main LLM turn, which
+        # receives the timestamped Body observation context. It is not answered
+        # by a classifier or a fixed telemetry string.
+        self.assertIsNone(result)
 
-    def test_gps_localization_question_returns_coordinates_and_map_link(self):
+    def test_gps_localization_question_uses_main_cognitive_turn(self):
         from cognition.persona_bridge import PersonaBridge
 
         now = __import__("time").time()
@@ -113,10 +113,7 @@ class BrainBodyStatusResponseTest(unittest.TestCase):
 
         result = bridge.handle_body_chat_turn("from GPS coordinates can you establish the localisation")
 
-        self.assertIn("48.862452, 2.118805", result["response"])
-        self.assertIn("openstreetmap.org", result["location"]["map_url"])
-        self.assertFalse(result["location"]["stale"])
-        self.assertIn("pas sa pose précise", result["response"])
+        self.assertIsNone(result)
 
     def test_move_toward_person_explains_missing_metric_localization_and_sends_nothing(self):
         from cognition.persona_bridge import PersonaBridge
@@ -286,9 +283,7 @@ class BrainBodyStatusResponseTest(unittest.TestCase):
         for prompt in ("what is the levele of the body battery", "what is the level of the body battery"):
             with self.subTest(prompt=prompt):
                 result = bridge.handle_body_chat_turn(prompt)
-                self.assertIn("61.0%", result["response"])
-                self.assertNotIn("YOLOX", result["response"])
-                self.assertNotIn("camera", result["response"].lower())
+                self.assertIsNone(result)
 
     def test_body_status_formats_live_sensor_channels_without_raw_json_dump(self):
         from cognition.persona_bridge import PersonaBridge
