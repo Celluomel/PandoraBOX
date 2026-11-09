@@ -472,6 +472,26 @@ class PersonaBridge:
                 # diagnostics may carry a bounded detail, but this aggregate
                 # must never retain exception text that could echo prompt data.
                 health["last_error"] = status
+            if trace.get("completed_at") and isinstance(trace.get("pipeline_integrity"), dict):
+                failed_stages = sorted(
+                    stage_name for stage_name, stage_value in trace.get("stages", {}).items()
+                    if isinstance(stage_value, dict)
+                    and isinstance(stage_value.get("status"), str)
+                    and stage_value["status"] in {"failed", "invalid_output"}
+                )
+                integrity = trace["pipeline_integrity"]
+                integrity["failed_stages"] = failed_stages
+                integrity["status"] = (
+                    "incomplete_evidence"
+                    if failed_stages or integrity.get("missing_core_stages")
+                    or integrity.get("malformed_stages")
+                    or integrity.get("stage_order_violations")
+                    or integrity.get("peer_scope_violations")
+                    else "consistent"
+                )
+                integrity["checked_at"] = time.time()
+                if failed_stages and trace.get("status") == "completed":
+                    trace["status"] = "completed_with_stage_failures"
 
     def record_deferred_turn_stage(
         self, turn_id: str, name: str, status: str, detail: str = "",
@@ -568,6 +588,13 @@ class PersonaBridge:
                 integrity_issues.extend(
                     f"stage_order:{item}" for item in stage_order_violations
                 )
+                failed_stage_names = sorted(
+                    name for name, value in stage_status.items()
+                    if isinstance(value, str) and value in {"failed", "invalid_output"}
+                )
+                integrity_issues.extend(
+                    f"failed_stage:{name}" for name in failed_stage_names
+                )
                 self._last_turn_trace["pipeline_integrity"] = {
                     "status": "consistent" if not integrity_issues else "incomplete_evidence",
                     "checked_at": time.time(),
@@ -576,10 +603,7 @@ class PersonaBridge:
                     "malformed_stages": malformed_stages,
                     "stage_order_violations": stage_order_violations,
                     "peer_scope_violations": peer_scope_violations,
-                    "failed_stages": sorted(
-                        name for name, value in stage_status.items()
-                        if isinstance(value, str) and value in {"failed", "invalid_output"}
-                    ),
+                    "failed_stages": failed_stage_names,
                     "conditional_skips": sorted(
                         name for name, value in stage_status.items()
                         if (isinstance(value, str) and value.startswith("skipped_")) or (

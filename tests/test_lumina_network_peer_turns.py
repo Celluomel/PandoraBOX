@@ -186,6 +186,37 @@ class PeerHistoryIsolationTests(unittest.TestCase):
         self.assertEqual(
             bridge._last_turn_trace["status"], "completed_with_stage_failures",
         )
+        self.assertEqual(
+            bridge._last_turn_trace["pipeline_integrity"]["failed_stages"],
+            ["response_learning_and_memory"],
+        )
+        self.assertEqual(
+            bridge._last_turn_trace["pipeline_integrity"]["status"],
+            "incomplete_evidence",
+        )
+
+    def test_late_deferred_failure_updates_finished_turn_integrity(self):
+        from cognition.persona_bridge import PersonaBridge
+
+        bridge = PersonaBridge.__new__(PersonaBridge)
+        bridge._turn_trace_lock = threading.Lock()
+        bridge._last_turn_trace = {"turn_id": "audit-turn", "stages": {}}
+        bridge._turn_stage_health = {}
+        bridge._finish_turn_trace("completed")
+
+        bridge.record_deferred_turn_stage(
+            "audit-turn", "continuity_analysis_post_response", "failed",
+        )
+        trace = bridge.get_last_turn_trace()
+
+        self.assertEqual(trace["status"], "completed_with_stage_failures")
+        self.assertEqual(
+            trace["pipeline_integrity"]["status"], "incomplete_evidence",
+        )
+        self.assertEqual(
+            trace["pipeline_integrity"]["failed_stages"],
+            ["continuity_analysis_post_response"],
+        )
 
     def test_pipeline_integrity_checks_core_stages_and_peer_scope(self):
         from cognition.persona_bridge import PersonaBridge

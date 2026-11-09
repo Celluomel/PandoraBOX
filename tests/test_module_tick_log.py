@@ -62,6 +62,38 @@ class ModuleTickLogTests(unittest.TestCase):
         self.assertFalse(tick["last_output"]["numeric_fields"]["score"]["finite"])
         self.assertEqual(loop.module_tick_analysis()["executed_module_count"], 1)
 
+    def test_probe_targets_match_live_internal_loop_entrypoints(self):
+        calls = []
+        loop = InternalThoughtLoop.__new__(InternalThoughtLoop)
+        loop._module_tick_log = ModuleTickLog()
+        loop._module_tick_wrapped = set()
+        loop._goal_action_executor = SimpleNamespace(
+            run_tick=lambda: calls.append("goal_action") or {"success": False},
+        )
+        loop._persistent_exec_loop = SimpleNamespace(
+            review=lambda organism: calls.append("persistent_review") or {},
+        )
+        loop._arbitration_learning = SimpleNamespace(
+            review=lambda goals, cycle: calls.append("arbitration_review") or {},
+        )
+        loop._governor = SimpleNamespace(
+            begin_cycle=lambda **kwargs: calls.append("governor_cycle"),
+        )
+
+        loop._refresh_module_tick_probes()
+        loop._goal_action_executor.run_tick()
+        loop._persistent_exec_loop.review(None)
+        loop._arbitration_learning.review(None, 1)
+        loop._governor.begin_cycle()
+
+        snapshot = loop.module_tick_snapshot()
+        for module_name in (
+            "goal_action_executor", "persistent_executive_loop",
+            "arbitration_learning", "cognitive_governor",
+        ):
+            self.assertEqual(snapshot[module_name]["tick_count"], 1)
+        self.assertEqual(len(calls), 4)
+
 
 if __name__ == "__main__":
     unittest.main()
