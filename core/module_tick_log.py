@@ -9,7 +9,7 @@ import traceback
 from typing import Any
 
 
-def summarize_output(value: Any) -> dict[str, Any]:
+def summarize_output(value: Any, *, side_effect_only: bool = False) -> dict[str, Any]:
     """Describe result shape and numeric validity without retaining prose."""
     result: dict[str, Any] = {"type": type(value).__name__}
     if value is None or isinstance(value, (bool, int, float)):
@@ -23,6 +23,7 @@ def summarize_output(value: Any) -> dict[str, Any]:
             if result["finite"]:
                 result["value"] = value
         result["quality"] = (
+            "side_effect_only" if value is None and side_effect_only else
             "empty" if value is None else
             "invalid_numeric" if result.get("finite") is False else
             "present"
@@ -103,7 +104,8 @@ class ModuleTickLog:
             )
 
     def record(self, name: str, method: str, *, started_at: float,
-               duration_ms: float, output: Any = None, error: BaseException | None = None) -> None:
+               duration_ms: float, output: Any = None, error: BaseException | None = None,
+               side_effect_only: bool = False) -> None:
         now = time.time()
         with self._lock:
             item = self._modules.setdefault(name, {
@@ -128,7 +130,7 @@ class ModuleTickLog:
             if error is None:
                 item["last_status"] = "completed"
                 item["last_success_at"] = now
-                item["last_output"] = summarize_output(output)
+                item["last_output"] = summarize_output(output, side_effect_only=side_effect_only)
                 item["state"] = (
                     "degraded"
                     if item["last_output"].get("quality") == "invalid_numeric"

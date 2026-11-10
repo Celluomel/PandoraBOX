@@ -18,6 +18,16 @@ class ModuleTickLogTests(unittest.TestCase):
         self.assertEqual(summary["non_finite_fields"], ["bad"])
         self.assertNotIn("private generated text", repr(summary))
 
+    def test_declared_side_effect_only_none_is_not_reported_as_empty_output(self):
+        ticks = ModuleTickLog()
+        ticks.register("side_effect", initialized=True)
+        ticks.record("side_effect", "tick", started_at=1.0, duration_ms=1.0,
+                     output=None, side_effect_only=True)
+
+        state = ticks.snapshot()["side_effect"]
+        self.assertEqual(state["last_output"]["quality"], "side_effect_only")
+        self.assertEqual(ticks.analysis()["last_output_qualities"], {"side_effect_only": 1})
+
     def test_tick_log_tracks_execution_and_error_without_retaining_exception_text(self):
         ticks = ModuleTickLog()
         ticks.register("sample", initialized=True)
@@ -79,6 +89,24 @@ class ModuleTickLogTests(unittest.TestCase):
         self.assertEqual(tick["last_output"]["quality"], "invalid_numeric")
         self.assertFalse(tick["last_output"]["numeric_fields"]["score"]["finite"])
         self.assertEqual(loop.module_tick_analysis()["executed_module_count"], 1)
+
+    def test_internal_loop_probe_uses_declared_none_return_contract(self):
+        class SideEffectModule:
+            def tick(self) -> None:
+                self.did_run = True
+
+        module = SideEffectModule()
+        loop = InternalThoughtLoop.__new__(InternalThoughtLoop)
+        loop._module_tick_log = ModuleTickLog()
+        loop._module_tick_wrapped = set()
+        loop._resource_economy = module
+
+        loop._refresh_module_tick_probes()
+        module.tick()
+
+        output = loop.module_tick_snapshot()["cognitive_resource_economy"]["last_output"]
+        self.assertTrue(module.did_run)
+        self.assertEqual(output["quality"], "side_effect_only")
 
     def test_probe_targets_match_live_internal_loop_entrypoints(self):
         calls = []

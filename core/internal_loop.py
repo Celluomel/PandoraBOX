@@ -45,6 +45,7 @@ Thread safety:
 """
 
 import json
+import inspect
 import logging
 import threading
 import time
@@ -367,10 +368,20 @@ class InternalThoughtLoop:
                 bound_method = getattr(module, method_name, None)
                 if not callable(bound_method):
                     continue
+                try:
+                    return_annotation = inspect.signature(bound_method).return_annotation
+                    side_effect_only = (
+                        return_annotation is None
+                        or return_annotation is type(None)
+                        or str(return_annotation) in {"None", "NoneType"}
+                    )
+                except (TypeError, ValueError):
+                    side_effect_only = False
 
                 @wraps(bound_method)
                 def observed(*args, __bound=bound_method, __module=module_name,
-                             __method=method_name, **kwargs):
+                             __method=method_name, __side_effect_only=side_effect_only,
+                             **kwargs):
                     started = time.perf_counter()
                     try:
                         output = __bound(*args, **kwargs)
@@ -385,6 +396,7 @@ class InternalThoughtLoop:
                         __module, __method, started_at=started,
                         duration_ms=(time.perf_counter() - started) * 1000,
                         output=output,
+                        side_effect_only=__side_effect_only,
                     )
                     return output
 
