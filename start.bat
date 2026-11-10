@@ -226,5 +226,11 @@ echo [*] Existing interface: http://localhost:8080/
 echo [*] The Body is not started by this launcher. Start it separately with start_body.bat when needed.
 echo [*] Press Ctrl+C to stop.
 echo.
-"%LUMINA_PYTHON%" app.py
+if /I "%LUMINA_MODULE_EXECUTION_AUDIT%"=="1" (
+    echo [AUDIT] Python file execution profiling is enabled for this session.
+    echo [AUDIT] It adds overhead and records paths and counts only.
+    "%LUMINA_PYTHON%" scripts\audit_runtime_python_execution.py app.py
+) else (
+    "%LUMINA_PYTHON%" app.py
+)
 pause
