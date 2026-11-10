@@ -398,7 +398,11 @@ class MotivationalField:
             needs += self._detect_coherence_gap(slow_cycle)
 
             for need in needs:
-                self._act_on_need(need, slow_cycle)
+                if not self._act_on_need(need, slow_cycle):
+                    logger.warning(
+                        "[MotivationalField] need action not committed; leaving retryable: %s",
+                        need.need_type,
+                    )
                 with self._lock:
                     self._state.need_log.append(asdict(need))
                     if len(self._state.need_log) > MAX_NEED_LOG:
@@ -680,39 +684,44 @@ class MotivationalField:
 
     # ── Acting on needs ───────────────────────────────────────────────────────
 
-    def _act_on_need(self, need: MotivationalNeed, slow_cycle: int) -> None:
+    def _act_on_need(self, need: MotivationalNeed, slow_cycle: int) -> bool:
         """
         Translate a detected need into a concrete organism action.
         Each need type has a specific mechanical response.
         """
         try:
             if need.need_type == "concept_accumulation":
-                self._act_concept_accumulation(need, slow_cycle)
+                acted = self._act_concept_accumulation(need, slow_cycle)
 
             elif need.need_type == "skill_stagnation":
-                self._act_skill_stagnation(need, slow_cycle)
+                acted = self._act_skill_stagnation(need, slow_cycle)
 
             elif need.need_type == "social_isolation":
-                self._act_social_isolation(need)
+                acted = self._act_social_isolation(need)
 
             elif need.need_type == "expression_accumulation":
-                self._act_expression_accumulation(need, slow_cycle)
+                acted = self._act_expression_accumulation(need, slow_cycle)
 
             elif need.need_type == "coherence_gap":
-                self._act_coherence_gap(need)
+                acted = self._act_coherence_gap(need)
+            else:
+                acted = False
 
-            need.acted_on = True
+            need.acted_on = bool(acted)
+            return need.acted_on
 
         except Exception as e:
             logger.debug(f"[MotivationalField] _act_on_need error: {e}")
+            need.acted_on = False
+            return False
 
     def _act_concept_accumulation(
         self, need: MotivationalNeed, slow_cycle: int
-    ) -> None:
-        """Inject a resolution goal with priority boost into GoalEngine."""
+    ) -> bool:
+        """Submit a resolution goal through GoalEngine's persistence boundary."""
         ge = getattr(self._ai, 'goal_engine', None)
         if not ge:
-            return
+            return False
         import uuid
         from cognition.goal_engine import Goal
         goal = Goal(
@@ -724,17 +733,19 @@ class MotivationalField:
             created_cycle = slow_cycle,
             last_active   = slow_cycle,
         )
-        with ge._lock:
-            # Don't add duplicate if similar topic exists
-            existing = [g for g in ge._goals.values()
-                        if need.target in g.topic.lower()
-                        and g.status == 'active']
-            if not existing:
-                ge._goals[goal.id] = goal
-                logger.info(
-                    f"[MotivationalField] ✦ Internal goal injected: "
-                    f"'{goal.topic}' (priority={goal.priority:.2f})"
-                )
+        existing = getattr(ge, "_goals", {}).values()
+        if any(
+            need.target.casefold() in str(getattr(item, "topic", "")).casefold()
+            and getattr(item, "status", "") == "active"
+            for item in existing
+        ):
+            return True
+        if not ge.add_goal(goal):
+            return False
+        logger.info(
+            "[MotivationalField] Internal goal committed: %s (priority=%.2f)",
+            goal.topic, goal.priority,
+        )
         # Boost resolution engine urgency for this concept
         re = getattr(self._organism, '_loop', None)
         re = getattr(re, '_resolution_engine', None) if re else None
@@ -748,14 +759,15 @@ class MotivationalField:
                     amount=0.35,
                     source="internal_need",
                 )
+        return True
 
     def _act_skill_stagnation(
         self, need: MotivationalNeed, slow_cycle: int
-    ) -> None:
-        """Inject a skill-deepening exploration goal into GoalEngine."""
+    ) -> bool:
+        """Submit a skill goal through GoalEngine's persistence boundary."""
         ge = getattr(self._ai, 'goal_engine', None)
         if not ge:
-            return
+            return False
         import uuid
         from cognition.goal_engine import Goal
         goal = Goal(
@@ -767,16 +779,16 @@ class MotivationalField:
             created_cycle = slow_cycle,
             last_active   = slow_cycle,
         )
-        with ge._lock:
-            existing = [g for g in ge._goals.values()
-                        if need.target in g.topic.lower()
-                        and g.status == 'active']
-            if not existing:
-                ge._goals[goal.id] = goal
-                logger.info(
-                    f"[MotivationalField] ✦ Skill goal injected: "
-                    f"'{goal.topic}' (priority={goal.priority:.2f})"
-                )
+        existing = getattr(ge, "_goals", {}).values()
+        if any(
+            need.target.casefold() in str(getattr(item, "topic", "")).casefold()
+            and getattr(item, "status", "") == "active"
+            for item in existing
+        ):
+            return True
+        if not ge.add_goal(goal):
+            return False
+        logger.info("[MotivationalField] Skill goal committed: %s", goal.topic)
         # Also stimulate curiosity in this domain
         ce = getattr(self._organism, 'curiosity', None)
         if ce:
@@ -785,8 +797,9 @@ class MotivationalField:
                 amount=0.30,
                 source="internal_need",
             )
+        return True
 
-    def _act_social_isolation(self, need: MotivationalNeed) -> None:
+    def _act_social_isolation(self, need: MotivationalNeed) -> bool:
         """
         Boost social drive in PressureSystem and lower OutreachGate
         threshold by temporarily reducing required trust floor.
@@ -799,17 +812,19 @@ class MotivationalField:
                 f"[MotivationalField] ✦ Social isolation: "
                 f"boosted social reservoir by {need.urgency * 0.25:.2f}"
             )
+            return True
+        return False
 
     def _act_expression_accumulation(
         self, need: MotivationalNeed, slow_cycle: int
-    ) -> None:
+    ) -> bool:
         """
         Generate an expression goal and attempt to trigger outreach if
         a child PandoraBOX is available.
         """
         ge = getattr(self._ai, 'goal_engine', None)
         if not ge:
-            return
+            return False
         import uuid
         from cognition.goal_engine import Goal
         goal = Goal(
@@ -821,13 +836,14 @@ class MotivationalField:
             created_cycle = slow_cycle,
             last_active   = slow_cycle,
         )
-        with ge._lock:
-            ge._goals[goal.id] = goal
+        if not ge.add_goal(goal):
+            return False
 
         with self._lock:
             self._state.last_outreach_cycle = slow_cycle
+        return True
 
-    def _act_coherence_gap(self, need: MotivationalNeed) -> None:
+    def _act_coherence_gap(self, need: MotivationalNeed) -> bool:
         """
         Trigger deep reflection immediately (bypass schedule).
         Sets a flag on AutonomousReflectionEngine to run evolution
@@ -835,8 +851,10 @@ class MotivationalField:
         """
         loop = getattr(self._organism, '_loop', None)
         ar   = getattr(loop, '_autonomous_reflection', None) if loop else None
+        acted = False
         if ar:
             ar._force_evolution_synthesis = True
+            acted = True
             logger.info(
                 f"[MotivationalField] ✦ Coherence gap: "
                 f"forcing evolution synthesis on next reflection tick"
@@ -845,6 +863,8 @@ class MotivationalField:
         ps = getattr(self._organism, 'pressure', None)
         if ps and hasattr(ps, 'boost'):
             ps.boost('identity', need.urgency * 0.20)
+            acted = True
+        return acted
 
     # ── Persistence ───────────────────────────────────────────────────────────
 

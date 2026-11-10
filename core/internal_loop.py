@@ -762,29 +762,6 @@ class InternalThoughtLoop:
         except Exception as _re:
             logger.debug(f"[InternalLoop] ResourceEconomy error (non-fatal): {_re}")
 
-        # ── v117: GoalEngine.tick() — was never called anywhere ───────────────
-        # GoalEngine.tick() (goal_engine.py:930) is documented in its own
-        # docstring as "Main autonomous tick — called from internal_loop each
-        # slow cycle" — derive_motivations() → generate_candidates() →
-        # active_goals. It had no caller ANYWHERE in the codebase (confirmed
-        # by an exhaustive grep, not an assumption): PersistentExecutiveLoop
-        # only reviews/reduces goals that already exist, arbitration_learning
-        # only reads goal_engine as a reference, no other file calls .tick().
-        # Net effect: GoalEngine.get_active_goals() could never return
-        # anything, ever, regardless of pressure/identity/topic state — which
-        # is also why recursive_deliberation.deliberate()'s _gather_live_goals()
-        # always came back empty and Global Workspace's "Current focus" could
-        # never populate even after the aspirational-pressure→motivation fix
-        # (goal_engine.py's derive_motivations() aspirational branch), since
-        # that method is itself only reachable from this never-called tick().
-        try:
-            _ai_for_goals = getattr(o, 'ai_system', None)
-            _ge = getattr(_ai_for_goals, 'goal_engine', None) if _ai_for_goals else None
-            if _ge:
-                _ge.tick()
-        except Exception as _ge_e:
-            logger.debug(f"[InternalLoop] GoalEngine.tick error (non-fatal): {_ge_e}")
-
         # ── v50: CognitiveBehaviorGate — lazy init on organism ────────────────
         try:
             if not hasattr(o, 'behavior_gate') or o.behavior_gate is None:

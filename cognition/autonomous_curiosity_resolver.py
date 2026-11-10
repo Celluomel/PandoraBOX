@@ -103,7 +103,8 @@ class AutonomousCuriosityResolver:
                     continue
                 if self._is_duplicate(topic, existing):
                     continue
-                self._create_goal(ge, topic, curiosity_val, slow_cycle)
+                if not self._create_goal(ge, topic, curiosity_val, slow_cycle):
+                    continue
                 with self._lock:
                     self._promoted.add(topic)
                 # Block a second near-duplicate in the same tick
@@ -199,7 +200,7 @@ class AutonomousCuriosityResolver:
         return False
 
     def _create_goal(self, goal_engine: Any, topic: str,
-                     curiosity: float, slow_cycle: int) -> None:
+                     curiosity: float, slow_cycle: int) -> bool:
         try:
             from cognition.goal_engine import Goal
             import uuid
@@ -214,7 +215,10 @@ class AutonomousCuriosityResolver:
                 created_cycle = slow_cycle,
                 last_active   = slow_cycle,
             )
-            goal_engine.add_goal(goal)
-            logger.debug(f"[CuriosityResolver] Goal created: '{topic}' p={priority:.2f}")
+            if not goal_engine.add_goal(goal):
+                return False
+            logger.info("[CuriosityResolver] Goal committed: %r p=%.2f", topic, priority)
+            return True
         except Exception as e:
             logger.debug(f"[CuriosityResolver] _create_goal error '{topic}': {e}")
+            return False
