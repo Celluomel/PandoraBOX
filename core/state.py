@@ -513,8 +513,16 @@ class AppState:
             if callable(deferred):
                 try:
                     result = deferred(user_text, assistant_text, user_id, reflection_epoch)
-                    result_status = str(result or "unavailable")
-                    record("continuity_analysis_post_response", result_status)
+                    if isinstance(result, dict):
+                        result_status = str(result.get("status") or "unavailable")
+                        result_error_type = str(result.get("error_type") or "")
+                    else:
+                        result_status = str(result or "unavailable")
+                        result_error_type = ""
+                    record(
+                        "continuity_analysis_post_response", result_status,
+                        error_type=result_error_type,
+                    )
                 except Exception as exc:
                     record(
                         "continuity_analysis_post_response", "failed",

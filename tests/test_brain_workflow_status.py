@@ -230,6 +230,36 @@ class BrainWorkflowStatusTests(unittest.TestCase):
             "turn-123", "goal_means_post_response", "not_applicable", "",
         )
 
+    def test_deferred_continuity_error_type_is_recorded_without_message(self):
+        persona = SimpleNamespace(
+            get_last_turn_trace=Mock(return_value={"turn_id": "turn-safe"}),
+            record_deferred_turn_stage=Mock(),
+            run_deferred_analysis=Mock(return_value={
+                "status": "failed", "error_type": "ProviderTimeout",
+            }),
+        )
+        state = AppState.__new__(AppState)
+        state.persona = persona
+        state._deferred_cognitive_tasks = set()
+        task = _CallbackTask()
+        captured = {}
+
+        def fake_to_thread(callback):
+            captured["callback"] = callback
+            return object()
+
+        with patch("core.state.asyncio.to_thread", new=Mock(side_effect=fake_to_thread)):
+            with patch("core.state.asyncio.create_task", new=Mock(return_value=task)):
+                self.assertTrue(state.schedule_deferred_cognitive_stages(
+                    "question", "answer", "fred", 1,
+                ))
+
+        captured["callback"]()
+        persona.record_deferred_turn_stage.assert_any_call(
+            "turn-safe", "continuity_analysis_post_response", "failed", "",
+            error_type="ProviderTimeout",
+        )
+
     def test_deferred_stage_updates_its_original_turn_after_a_new_turn_starts(self):
         bridge = PersonaBridge.__new__(PersonaBridge)
         bridge._turn_trace_lock = threading.Lock()

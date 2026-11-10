@@ -422,14 +422,10 @@ class InternalThoughtLoop:
         analysis = self._module_tick_log.analysis()
         states: dict[str, int] = {}
         executed = 0
-        snapshot = self._module_tick_log.snapshot()
+        snapshot = self.module_tick_snapshot()
         for _attr, (module_name, _methods) in _TICK_PROBES.items():
-            module = getattr(self, _attr, None)
             entry = snapshot.get(module_name, {})
-            if module is None:
-                state = "unavailable"
-            else:
-                state = entry.get("state", "initialized_unobserved")
+            state = entry.get("state", "unknown")
             states[state] = states.get(state, 0) + 1
             executed += int(entry.get("tick_count", 0) > 0)
         analysis["module_count"] = len(_TICK_PROBES)
@@ -720,6 +716,11 @@ class InternalThoughtLoop:
             return
         try:
             self._slow_cycle_impl()
+            if getattr(self, "_module_tick_log", None) is not None:
+                # Some modules are created lazily during a cycle. Refresh after
+                # it too, so the status snapshot reflects their current state
+                # and the probes attach before their next invocation.
+                self._refresh_module_tick_probes()
             self._last_slow_cycle_at = time.time()
         except Exception as exc:
             self._slow_cycle_error_count += 1

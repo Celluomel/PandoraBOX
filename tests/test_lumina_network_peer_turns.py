@@ -584,6 +584,24 @@ class PeerHistoryIsolationTests(unittest.TestCase):
         )
         self.assertEqual(bridge.get_goal_means_status("fred")["status"], "idle")
 
+    def test_deferred_continuity_returns_only_exception_type_for_audit(self):
+        from cognition.persona_bridge import PersonaBridge
+
+        class _Provider:
+            def generate_bare_result(self, *args, **kwargs):
+                raise RuntimeError("private prompt-bearing provider message")
+
+        bridge = PersonaBridge.__new__(PersonaBridge)
+        bridge._system = object()
+        bridge._external_llm_fn = _Provider().generate_bare_result
+        bridge._reflection_lock = threading.Lock()
+        bridge._reflection_epochs = {}
+
+        result = bridge.run_deferred_analysis("question", "answer", "fred", 0)
+
+        self.assertEqual(result, {"status": "failed", "error_type": "RuntimeError"})
+        self.assertNotIn("private prompt", str(result))
+
 
 class _FakePersona:
     def __init__(self, response="Lumina peer response"):

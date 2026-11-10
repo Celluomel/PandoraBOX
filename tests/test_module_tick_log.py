@@ -94,6 +94,19 @@ class ModuleTickLogTests(unittest.TestCase):
             self.assertEqual(snapshot[module_name]["tick_count"], 1)
         self.assertEqual(len(calls), 4)
 
+    def test_analysis_uses_live_initialization_after_lazy_creation(self):
+        loop = InternalThoughtLoop.__new__(InternalThoughtLoop)
+        loop._module_tick_log = ModuleTickLog()
+        loop._module_tick_wrapped = set()
+        loop._tte = SimpleNamespace(step=lambda: [])
+        loop._module_tick_log.register("thought_thread_engine", initialized=False)
+
+        analysis = loop.module_tick_analysis()
+
+        self.assertEqual(analysis["module_count"], 43)
+        self.assertEqual(analysis["states"]["initialized_unobserved"], 1)
+        self.assertEqual(analysis["states"]["unavailable"], 42)
+
 
 if __name__ == "__main__":
     unittest.main()

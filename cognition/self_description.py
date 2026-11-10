@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass, asdict, field
 from pathlib import Path
@@ -25,6 +26,20 @@ from threading import Lock
 from typing import Any, Dict
 
 logger = logging.getLogger(__name__)
+
+
+def is_architecture_query(user_input: str) -> bool:
+    """Identify requests about Lumina's implementation, for evidence routing only.
+
+    This does not answer the request or assign module facts; it only enables the
+    live module-tick manifest to be added to the model's evidence context.
+    """
+    text = " ".join(str(user_input or "").casefold().split())
+    return bool(re.search(
+        r"\b(?:cognitive\s+)?(?:architecture|harness|harnais|modules?|"
+        r"mechanisms?|mécanismes?|fonctionnement|processus\s+cognitifs?)\b",
+        text,
+    ))
 
 
 @dataclass
@@ -88,27 +103,62 @@ class SelfDescription:
             lines.append("- No architecture components are currently registered; do not infer details.")
         return "\n".join(lines)
 
-    def prompt_context(self) -> str:
+    def prompt_context(
+        self, module_tick_snapshot: Dict[str, Dict[str, Any]] | None = None,
+    ) -> str:
         """Return a bounded, factual architecture block suitable for chat prompts."""
         with self._lock:
             components = list(self.components.values())
         if not components:
-            return (
-                "VERIFIED ARCHITECTURE: no components have been registered in the self-description "
+            lines = [
+                "VERIFIED ARCHITECTURE: no components are registered in the self-description "
                 "module. Do not infer particular mechanisms from an empty registry."
-            )
-        lines = [
-            "VERIFIED ARCHITECTURE (partial registry; this is not a complete process-flow audit):",
-            "Use only the named roles/configuration below as verified self-description. "
-            "Do not invent equations, physical sensations, or unlisted mechanisms.",
-        ]
-        for component in components[:12]:
-            lines.append(
-                f"- {component.name} [{component.module_path}]: {component.role}; "
-                f"configuration={component.key_parameters}."
-            )
-        if len(components) > 12:
-            lines.append(f"- {len(components) - 12} additional registered components omitted from this prompt block.")
+            ]
+        else:
+            lines = [
+                "VERIFIED ARCHITECTURE (partial registry; this is not a complete process-flow audit):",
+                "Use only the named roles/configuration below as verified self-description. "
+                "Do not invent equations, physical sensations, or unlisted mechanisms.",
+            ]
+            for component in components[:12]:
+                lines.append(
+                    f"- {component.name} [{component.module_path}]: {component.role}; "
+                    f"configuration={component.key_parameters}."
+                )
+            if len(components) > 12:
+                lines.append(f"- {len(components) - 12} additional registered components omitted from this prompt block.")
+        if module_tick_snapshot is not None:
+            lines.extend([
+                "RUNTIME MODULE TICK SNAPSHOT (this process since its latest start; not a full semantic audit):",
+                "A tick proves the instrumented method returned without an observed exception. "
+                "state=healthy does not prove its result is correct; quality=empty means no value was returned. "
+                "initialized_unobserved means no instrumented call was observed in this process window.",
+            ])
+            for name, entry in sorted(module_tick_snapshot.items()):
+                if not isinstance(name, str) or not isinstance(entry, dict):
+                    continue
+                ticks = entry.get("tick_count", 0)
+                errors = entry.get("error_count", 0)
+                try:
+                    ticks = max(0, int(ticks))
+                except (TypeError, ValueError):
+                    ticks = 0
+                try:
+                    errors = max(0, int(errors))
+                except (TypeError, ValueError):
+                    errors = 0
+                state = str(entry.get("state", "unknown"))[:32]
+                last_output = entry.get("last_output")
+                quality = str(
+                    last_output.get("quality", "not_observed")
+                    if isinstance(last_output, dict) else "not_observed"
+                )[:32]
+                methods = entry.get("observed_methods", [])
+                methods = ",".join(str(method)[:48] for method in methods[:4]) if isinstance(methods, list) else ""
+                lines.append(
+                    f"- {name}: state={state}; ticks={ticks}; errors={errors}; "
+                    f"last_output_quality={quality}; observed_methods={methods or 'none'}."
+                )
         return "\n".join(lines)
 
     def detect_drift(self, name: str, current_params: Dict[str, Any]) -> bool:
