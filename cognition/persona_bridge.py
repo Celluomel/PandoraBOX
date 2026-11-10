@@ -408,7 +408,9 @@ class PersonaBridge:
         allowed = {
             "active", "frame_age_seconds", "face_age_seconds", "scene_age_seconds",
             "observation_count", "fresh_count", "stale_count", "oldest_age_seconds",
-            "source_kinds", "record_count",
+            "source_kinds", "record_count", "module_count", "observed_count",
+            "tick_count", "error_count", "initialized_unobserved_count",
+            "unavailable_count",
         }
         safe_metadata: dict[str, Any] = {}
         for key, value in metadata.items():
@@ -528,18 +530,32 @@ class PersonaBridge:
                     if isinstance(value, dict)
                 }
                 missing_core = []
-                for stage_name, expected in (
-                    ("readiness", {"passed"}),
-                    ("input_safety", {"passed"}),
-                    ("prompt_assembly", {"completed"}),
-                    ("output_safety", {"passed", "replaced"}),
-                    ("response_finalization", {"completed"}),
-                    ("response", {"completed"}),
-                ):
+                deterministic_body_path = (
+                    stage_status.get("deterministic_body_response") == "completed"
+                )
+                if deterministic_body_path:
+                    required_stages = (
+                        ("readiness", {"passed"}),
+                        ("body_action_gate", {"checked"}),
+                        ("body_action_resolution", {"completed"}),
+                        ("response_finalization", {"completed"}),
+                        ("response", {"completed"}),
+                        ("deterministic_body_response", {"completed"}),
+                    )
+                else:
+                    required_stages = (
+                        ("readiness", {"passed"}),
+                        ("input_safety", {"passed"}),
+                        ("prompt_assembly", {"completed"}),
+                        ("output_safety", {"passed", "replaced"}),
+                        ("response_finalization", {"completed"}),
+                        ("response", {"completed"}),
+                    )
+                for stage_name, expected in required_stages:
                     value = stage_status.get(stage_name)
                     if not isinstance(value, str) or value not in expected:
                         missing_core.append(stage_name)
-                has_generation = any(
+                has_generation = deterministic_body_path or any(
                     isinstance(stage_status.get(name), str)
                     and stage_status.get(name) in accepted
                     for name, accepted in (
@@ -604,7 +620,11 @@ class PersonaBridge:
                 self._last_turn_trace["pipeline_integrity"] = {
                     "status": "consistent" if not integrity_issues else "incomplete_evidence",
                     "checked_at": time.time(),
-                    "required_core_stages": 7,
+                    "required_core_stages": len(required_stages) + (0 if deterministic_body_path else 1),
+                    "execution_path": (
+                        "deterministic_body_action" if deterministic_body_path
+                        else "generative_chat"
+                    ),
                     "missing_core_stages": missing_core,
                     "malformed_stages": malformed_stages,
                     "stage_order_violations": stage_order_violations,
@@ -721,6 +741,16 @@ class PersonaBridge:
             self._record_turn_stage("body_action_gate", "skipped_by_policy", _reason)
         if _body_turn and _body_turn.get("handled"):
             _body_response = str(_body_turn.get("response") or "")
+            # Body action decisions are intentionally resolved without an LLM
+            # generation. Record this as its own auditable path so the normal
+            # generative-stage validator does not report prompt/generation
+            # stages as missing for a deliberate, safety-gated reply.
+            self._record_turn_stage(
+                "body_action_resolution",
+                "completed" if _body_response else "invalid_output",
+                str(_body_turn.get("status") or _body_turn.get("reason") or "")[:200],
+            )
+            self._record_turn_stage("response_finalization", "completed")
             _manager = getattr(self._llm_stream_fn, "__self__", None)
             _record_exchange = getattr(_manager, "record_exchange", None)
             if callable(_record_exchange):
@@ -736,6 +766,7 @@ class PersonaBridge:
                 "body_plan": _body_turn,
             }
             self._record_turn_stage("response", "completed")
+            self._record_turn_stage("deterministic_body_response", "completed")
             self._finish_turn_trace("completed")
             return
         if vision_context and peer_name:
@@ -1065,6 +1096,15 @@ Write at most 70 words, in the user's language, only if a concise carry-forward 
         """
         s = self._system
         _cognitive_scope = str(cognitive_scope_id or user_id)
+        # This flag is consumed later inside the streaming worker below. It
+        # must live in this method's scope; the prompt builder runs in a
+        # separate worker thread and its local variables are not shared.
+        try:
+            from cognition.self_description import is_architecture_query
+            _architecture_query = is_architecture_query(effective_input)
+        except Exception as _architecture_query_error:
+            _architecture_query = False
+            logger.debug("Architecture query detection unavailable: %s", _architecture_query_error)
         _dialogue_continuity = self._recent_dialogue_continuity(
             effective_input,
             history_override=conversation_history if not record_history else None,
@@ -1615,6 +1655,11 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
         self._chat_stage = 'waiting for inference worker'
 
         def _stream():
+            # This worker may replace the precomputed answer after validating
+            # it against the turn trace. Declare the closure assignment
+            # explicitly; otherwise Python treats the name as local and the
+            # stage check below raises UnboundLocalError before generation.
+            nonlocal _deterministic_response
             self._chat_stage = 'waiting for provider stream'
             self._record_turn_stage(
                 "primary_generation",
@@ -1622,7 +1667,19 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             )
             try:
                 if _deterministic_response:
-                    if _quantitative_analysis is not None:
+                    if _architecture_query:
+                        from cognition.self_description import trace_grounded_architecture_answer
+                        _visible_candidate = str(_deterministic_response or "")
+                        _guarded = trace_grounded_architecture_answer(
+                            effective_input, self.get_last_turn_trace(),
+                        )
+                        _was_replaced = _visible_candidate.strip() != _guarded.strip()
+                        _deterministic_response = _guarded
+                        self._record_turn_stage(
+                            "architecture_claim_validation",
+                            "replaced_unverified_claims" if _was_replaced else "passed",
+                        )
+                    elif _quantitative_analysis is not None:
                         self._chat_stage = 'grounded physical constraint'
                         logger.info(
                             "[QuantitativeReasoning] physically infeasible turn resolved without LLM; agent=%s",
@@ -1686,6 +1743,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     _max_tokens = max(64, min(4096, int(max_tokens_override)))
                 _validate_before_display = bool(
                     _quantitative_analysis is not None
+                    or _architecture_query
                     or (
                         _goal_means_analysis is not None
                         and _goal_means_analysis.unique_feasible_option() is not None
@@ -1715,26 +1773,45 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         token for token in _provider_tokens if isinstance(token, str)
                     )
                     _visible_candidate = self._strip_think(_candidate)
-                    if _quantitative_analysis is not None:
+                    if _architecture_query:
+                        from cognition.self_description import trace_grounded_architecture_answer
+                        _guarded = trace_grounded_architecture_answer(
+                            effective_input, self.get_last_turn_trace(),
+                        )
+                        _was_replaced = _visible_candidate.strip() != _guarded.strip()
+                        self._record_turn_stage(
+                            "architecture_claim_validation",
+                            "replaced_unverified_claims" if _was_replaced else "passed",
+                        )
+                    elif _quantitative_analysis is not None:
                         from cognition.quantitative_reasoning import guard_quantitative_response
                         _guarded, _was_replaced = guard_quantitative_response(
                             _visible_candidate,
                             _quantitative_analysis,
                             verbosity=_response_verbosity,
                         )
-                    else:
+                    elif _goal_means_analysis is not None:
                         from cognition.goal_means_reasoning import guarded_response
                         _guarded, _was_replaced = guarded_response(
                             _visible_candidate, _goal_means_analysis, effective_input,
                             continuation=_goal_means_followup,
                         )
-                    for token in _reasoning_tokens:
-                        asyncio.run_coroutine_threadsafe(token_q.put(token), loop)
+                    else:
+                        _guarded, _was_replaced = _visible_candidate, False
+                    if not _architecture_query:
+                        for token in _reasoning_tokens:
+                            asyncio.run_coroutine_threadsafe(token_q.put(token), loop)
                     if _was_replaced:
-                        logger.warning(
-                            "[ReasoningGuard] final response failed the validated "
-                            "constraint; replaced before display"
-                        )
+                        if _architecture_query:
+                            logger.warning(
+                                "[ArchitectureGuard] replaced generated architecture claims "
+                                "with the current turn's trace-grounded evidence"
+                            )
+                        else:
+                            logger.warning(
+                                "[ReasoningGuard] final response failed the validated "
+                                "constraint; replaced before display"
+                            )
                         _llm_manager = getattr(self._llm_stream_fn, "__self__", None)
                         _history = getattr(_llm_manager, "history", None)
                         if record_history and (
@@ -2600,28 +2677,56 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             # configuration, but until now it was never available to the
             # conversational model. Keep this explicitly partial so the LLM
             # cannot turn a registry into an invented complete architecture.
+            _architecture_query = False
             try:
                 from cognition.self_description import (
                     get_self_description, is_architecture_query,
                 )
+                _architecture_query = is_architecture_query(user_input)
                 _module_tick_snapshot = None
-                if is_architecture_query(user_input):
+                _module_entries = []
+                if _architecture_query:
                     _loop = getattr(self._organism, "_loop", None)
                     _snapshot_fn = getattr(_loop, "module_tick_snapshot", None)
                     if callable(_snapshot_fn):
                         _module_tick_snapshot = _snapshot_fn()
+                    _module_entries = (
+                        [item for item in _module_tick_snapshot.values() if isinstance(item, dict)]
+                        if isinstance(_module_tick_snapshot, dict) else []
+                    )
+                    def _safe_nonnegative_int(value):
+                        try:
+                            return max(0, int(value or 0))
+                        except (TypeError, ValueError):
+                            return 0
+                    _manifest_status = (
+                        "injected" if _module_entries
+                        else "empty" if isinstance(_module_tick_snapshot, dict)
+                        else "unavailable"
+                    )
                     self._record_turn_context_source(
                         "module_tick_manifest",
-                        "injected" if isinstance(_module_tick_snapshot, dict) else "unavailable",
-                        module_count=len(_module_tick_snapshot) if isinstance(_module_tick_snapshot, dict) else 0,
+                        _manifest_status,
+                        module_count=len(_module_entries),
                         observed_count=sum(
-                            int((item or {}).get("tick_count", 0) > 0)
-                            for item in _module_tick_snapshot.values()
-                            if isinstance(item, dict)
+                            int(_safe_nonnegative_int(item.get("tick_count")) > 0)
+                            for item in _module_entries
                         ) if isinstance(_module_tick_snapshot, dict) else 0,
+                        tick_count=sum(_safe_nonnegative_int(item.get("tick_count")) for item in _module_entries),
+                        error_count=sum(_safe_nonnegative_int(item.get("error_count")) for item in _module_entries),
+                        initialized_unobserved_count=sum(
+                            str(item.get("state", "")) == "initialized_unobserved"
+                            for item in _module_entries
+                        ),
+                        unavailable_count=sum(
+                            str(item.get("state", "")) == "unavailable"
+                            for item in _module_entries
+                        ),
                     )
                 _architecture_block = get_self_description().prompt_context(
-                    module_tick_snapshot=_module_tick_snapshot,
+                    module_tick_snapshot=(
+                        _module_tick_snapshot if _module_entries else None
+                    ),
                 )
                 self._record_turn_stage("self_description_context", "injected")
             except Exception as _sde:
@@ -3147,7 +3252,9 @@ Memory honesty — two distinct cases:
                     "tests, report only explicit test records/results in the supplied evidence; otherwise "
                     "say the test history is not available. Never invent movement trials, measured leg "
                     "feedback, odometry, or sensor-test coverage. For actuator questions, answer from the "
-                    "specific hardware inventory: servo_motors_installed=false means no physical servo "
+                    "specific timestamped hardware inventory. The conditional rule below is not a current observation: "
+                    "only report servo_motors_installed=false when an actual inventory record says false. "
+                    "When the inventory record says servo_motors_installed=false, no physical servo "
                     "motors are installed and locomotion is unavailable. actuation_enabled is only a "
                     "software authorization flag; it never proves motors are installed, powered, ready, or "
                     "moving. FNHR joint_angle estimates are commanded/internal estimates, not measured "
@@ -3156,6 +3263,8 @@ Memory honesty — two distinct cases:
                     "do not call IMU noise 'parasitic movement' without explicit evidence. For every read-only "
                     "Body sensor, battery, actuator, or camera question, analyze the relevant Body-originated "
                     "observations in the supplied context; do not answer with a route-specific canned digest. "
+                    "Keep evidence categories strictly separate: `sensor.*` records are sensor measurements; `camera.*` records are camera evidence; `body.runtime` is runtime/power status; hardware inventory and the persisted capability ledger are capability evidence, not sensor readings. "
+                    "For a sensor question, list and analyze only relevant `sensor.*` records and state bridge freshness/availability. Never present hardware inventory, learned capability confidence/counts, or other historical records as sensor observations. Omit unrelated categories instead of dumping them. If no relevant fresh `sensor.*` record exists, say so clearly; injected context or historical capability evidence does not establish live telemetry. "
                     "State measured facts first, then your inference and its limits. Answer only the requested "
                     "Body subsystem; do not dump the same full sensor report for every mention of 'Body'. "
                     "A bare 'Body' is ambiguous and should receive a brief clarification.\n"
@@ -3370,6 +3479,7 @@ Memory honesty — two distinct cases:
             "The Brain's existing goal/action planning chain can identify a destination, preserve the user's objective, derive ordered steps and required capabilities, and validate a draft against a timestamped Body snapshot. Report that analysis as a plan and its validation scope; never treat planner feasibility, a proposed method, approval, command delivery, or controller acknowledgement as physical execution. A physical action is complete only when a correlated command result and fresh, non-simulated post-action evidence confirm its effect. If the Body's hardware inventory says an actuator is absent, treat the corresponding physical action as unavailable even if the simulator or planner supports it."
         )
         body_context = ""
+        body = None
         try:
             body = getattr(self._organism, "_body_runtime", None) if self._organism else None
             body_context = body.context_for_brain() if body else ""
@@ -3381,15 +3491,12 @@ Memory honesty — two distinct cases:
                     "Recent Body evidence overrides older connector, memory, and conversation claims only for the same subject and measurement. "
                     "Never describe an action as currently running when this snapshot "
                     "reports a completed plan, terminal state, or no active plan.\n"
+                    "Keep Body evidence categories separate: `sensor.*` is sensor measurement, `camera.*` is camera evidence, `body.runtime` is runtime/power status, and hardware inventory or learned capability history is not a sensor reading. For a sensor question, analyze only relevant sensor records and bridge freshness; omit unrelated capability-ledger entries. If no fresh relevant sensor record exists, say so; context injection alone does not prove live telemetry.\n"
                     "When the user asks what you perceive, sense, can physically do, or what your body is doing, "
                     "answer from this evidence first. Distinguish direct current observation, stale observation, "
                     "and unavailable information; never invent a bodily state to fill a gap.\n"
                     f"{body_context}"
                 )
-            self._record_turn_stage(
-                "body_observation_context",
-                "injected" if body_context else "unavailable",
-            )
             if body is not None:
                 body_metadata_available = True
                 try:
@@ -3424,14 +3531,20 @@ Memory honesty — two distinct cases:
                     if age is None or age > stale_after:
                         stale_count += 1
                 if body_metadata_available:
+                    self._record_turn_stage(
+                        "body_observation_context",
+                        "injected" if len(observations) > stale_count else "no_current_evidence",
+                    )
                     self._record_turn_context_source(
-                        "body_runtime", "injected" if body_context else "no_current_evidence",
+                        "body_runtime", "injected" if len(observations) > stale_count else "no_current_evidence",
                         observation_count=len(observations),
                         fresh_count=max(0, len(observations) - stale_count),
                         stale_count=stale_count,
                         oldest_age_seconds=max(ages) if ages else None,
                         source_kinds=source_kinds,
                     )
+                else:
+                    self._record_turn_stage("body_observation_context", "metadata_unavailable")
                 workspace = getattr(self._organism, "workspace", None) if self._organism else None
                 workspace_context = (workspace.get_state().context or {}) if workspace is not None else {}
                 cache = workspace_context.get("latest_body_perceptions") if isinstance(workspace_context, dict) else None
@@ -3491,6 +3604,7 @@ Memory honesty — two distinct cases:
                     record_count=sum(isinstance(value, dict) for value in (local_camera, local_faces)),
                 )
             else:
+                self._record_turn_stage("body_observation_context", "unavailable")
                 self._record_turn_context_source("body_runtime", "unavailable")
         except Exception as exc:
             current_trace = getattr(self, "_last_turn_trace", {})

@@ -35,11 +35,108 @@ def is_architecture_query(user_input: str) -> bool:
     live module-tick manifest to be added to the model's evidence context.
     """
     text = " ".join(str(user_input or "").casefold().split())
-    return bool(re.search(
-        r"\b(?:cognitive\s+)?(?:architecture|harness|harnais|modules?|"
-        r"mechanisms?|mécanismes?|fonctionnement|processus\s+cognitifs?)\b",
-        text,
-    ))
+    if re.search(r"\b(?:architecture|harness|harnais)\b", text):
+        return True
+    # Generic mentions of "modules" are not architecture questions. Route to
+    # the trace manifest only when the user is explicitly asking about runtime
+    # execution/tick evidence.
+    return bool(
+        re.search(r"\bmodules?\b", text)
+        and re.search(
+            r"\b(?:tick(?:s|ed)?|exécut(?:é|és|ée|ées|ion)|observé(?:e|es|s)?|"
+            r"initialis(?:é|és|ée|ées|ation)|indisponible(?:s)?|compteurs?)\b",
+            text,
+        )
+    )
+
+
+def trace_grounded_architecture_answer(user_input: str, trace: Dict[str, Any]) -> str:
+    """Summarize only architecture evidence recorded for the current turn.
+
+    Runtime traces prove stage execution, not semantic correctness or a
+    component's purpose. Architecture answers therefore use observed stage
+    names and statuses, and explicitly state that limit.
+    """
+    stages = trace.get("stages", {}) if isinstance(trace, dict) else {}
+    context_sources = trace.get("context_sources", {}) if isinstance(trace, dict) else {}
+    normalized = " ".join(str(user_input or "").casefold().split())
+    manifest = context_sources.get("module_tick_manifest", {}) if isinstance(context_sources, dict) else {}
+    module_tick_question = bool(
+        re.search(r"\bmodules?\b", normalized)
+        and re.search(r"\b(?:tick|exécut|observ|initialis|indisponible|compteur)", normalized)
+    )
+    if module_tick_question and (
+        not isinstance(manifest, dict)
+        or manifest.get("status") != "injected"
+        or int(manifest.get("module_count", 0) or 0) <= 0
+    ):
+        return (
+            "Je ne peux pas confirmer ces compteurs à partir de la trace de ce tour : "
+            "aucun manifeste de ticks non vide n’y est disponible. Les chiffres cités dans la question "
+            "ne deviennent pas des observations du processus. Il faut une trace runtime instrumentée "
+            "pour distinguer modules tickés, initialisés sans tick observé et indisponibles."
+        )
+    if module_tick_question and isinstance(manifest, dict) and manifest.get("status") == "injected":
+        module_count = int(manifest.get("module_count", 0) or 0)
+        observed_count = int(manifest.get("observed_count", 0) or 0)
+        tick_count = int(manifest.get("tick_count", 0) or 0)
+        error_count = int(manifest.get("error_count", 0) or 0)
+        initialized_unobserved = int(manifest.get("initialized_unobserved_count", 0) or 0)
+        unavailable = int(manifest.get("unavailable_count", 0) or 0)
+        french = bool(re.search(r"\b(?:le|la|les|des|du|est|sont|explique|précisément|permettent|conclure|observé|exécuté|modules?)\b", normalized))
+        if french:
+            return (
+                f"Le manifeste de ce processus recense {module_count} modules : {observed_count} avec au moins un tick observé, "
+                f"{tick_count} ticks et {error_count} erreurs instrumentées; {initialized_unobserved} sont initialisés sans tick observé "
+                f"et {unavailable} sont indisponibles. Cela décrit uniquement ce que l’instrumentation a enregistré. "
+                "`initialisé sans tick observé` ne prouve ni qu’aucun code du module n’a été exécuté, ni qu’il n’a produit aucun effet; "
+                "`indisponible` décrit l’état du registre, pas nécessairement l’ensemble des fichiers Python. Ces compteurs ne valident pas la qualité cognitive des sorties."
+            )
+        return (
+            f"This process manifest lists {module_count} modules: {observed_count} with at least one observed tick, "
+            f"{tick_count} ticks and {error_count} instrumented errors; {initialized_unobserved} are initialized with no observed tick "
+            f"and {unavailable} are unavailable. This reports only what instrumentation recorded. "
+            "`initialized with no observed tick` does not prove that no code in the module ran or had side effects; "
+            "`unavailable` describes the registry state, not necessarily every Python file. These counters do not validate the cognitive quality of outputs."
+        )
+    observed: list[str] = []
+
+    for name in ("self_description_context", "prompt_assembly"):
+        stage = stages.get(name) if isinstance(stages, dict) else None
+        status = stage.get("status") if isinstance(stage, dict) else None
+        if status:
+            observed.append(f"`{name}={status}`")
+
+    if isinstance(context_sources, dict):
+        manifest = context_sources.get("module_tick_manifest")
+        if isinstance(manifest, dict) and manifest.get("status"):
+            observed.append(f"`module_tick_manifest={manifest['status']}`")
+
+    generation = None
+    if isinstance(stages, dict):
+        for name in ("primary_generation", "fast_first_pass", "deterministic_reasoning"):
+            stage = stages.get(name)
+            if isinstance(stage, dict) and stage.get("status") in {
+                "completed", "selected_direct", "delegated", "selected",
+            }:
+                generation = f"`{name}={stage['status']}`"
+                break
+    if generation:
+        observed.append(generation)
+
+    evidence = ", ".join(observed) if observed else "aucune étape d’architecture exploitable n’est enregistrée pour ce tour"
+    french = bool(re.search(r"\b(?:comment|quels?|quelle|décris|décrire|harnais|fonctionnement|étapes?)\b", normalized))
+    if french:
+        return (
+            f"Pour ce tour, la trace enregistre : {evidence}. Cela prouve le passage par ces étapes, "
+            "pas le rôle sémantique de modules ni la justesse du raisonnement. Le manifeste de ticks "
+            "indique quels appels ont été observés; il ne vérifie pas leurs résultats."
+        )
+    return (
+        f"For this turn, the trace records: {evidence}. This proves those stages were traversed, "
+        "not the semantic role of modules or the correctness of the reasoning. The tick manifest "
+        "shows which calls were observed; it does not validate their results."
+    )
 
 
 @dataclass

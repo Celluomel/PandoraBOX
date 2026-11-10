@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 _turn_lock = asyncio.Lock()
 _audio_lock = asyncio.Lock()
 _workers = set()
+_CHAT_FIRST_TOKEN_TIMEOUT_SECONDS = 180.0
 _events = deque(maxlen=40)
 _presence_messages = deque(maxlen=40)
 _timings = {}
@@ -1841,7 +1842,13 @@ async def chat(payload: Turn, request: Request):
                     try:
                         done, _ = await asyncio.wait(
                             {next_task, stop_task},
-                            timeout=120.0 if first else 180.0,
+                            # PersonaBridge's provider-token queue allows 150 s
+                            # for local-model prefill. Keep the HTTP consumer's
+                            # first-chunk deadline beyond that so the bridge can
+                            # emit its own timeout/fallback and close the turn
+                            # trace instead of cancelling it while generation
+                            # still reports "running".
+                            timeout=_CHAT_FIRST_TOKEN_TIMEOUT_SECONDS if first else 180.0,
                             return_when=asyncio.FIRST_COMPLETED,
                         )
                         if stop_task in done:
