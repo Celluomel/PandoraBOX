@@ -276,7 +276,10 @@ class LongHorizonPlanner:
             objective=topic,
             source="goal",
             source_id=goal_id,
-            success_criteria="A grounded insight or externally observable result is recorded",
+            success_criteria=(
+                str(getattr(goal, "success_criteria", "") or "").strip()
+                or "A grounded insight or externally observable result is recorded"
+            ),
             reasoning_episode_id=episode.id if episode else "",
             decision_rationale=episode.decision_rationale if episode else "",
             reasoning_confidence=episode.confidence if episode else 0.0,

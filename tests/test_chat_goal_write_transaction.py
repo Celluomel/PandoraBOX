@@ -2,6 +2,7 @@ import json
 from types import SimpleNamespace
 
 from cognition.goal_engine import GoalEngine
+from cognition.long_horizon_planner import LongHorizonPlanner
 from cognition.persona_bridge import PersonaBridge
 
 
@@ -102,3 +103,29 @@ def test_explicit_goal_handler_executes_transaction_and_returns_verified_receipt
     assert result["goal_write"]["source_turn_id"] == "turn-explicit-goal-1"
     stored = json.loads((tmp_path / "goals.json").read_text(encoding="utf-8"))
     assert result["goal_write"]["id"] in stored["goals"]
+
+
+def test_goal_success_criterion_flows_into_downstream_plan(tmp_path):
+    criteria = "Five consecutive reviewed answers have zero fact/inference category errors."
+    engine = GoalEngine(ai_system=None, persistence_file=str(tmp_path / "goals.json"))
+    engine._is_valid_goal_topic = lambda _topic: True
+    written = engine.create_user_requested_goal(
+        "improve grounded fact and inference separation",
+        criteria,
+        "turn-plan-flow-1",
+    )
+    assert written["verified"] is True
+
+    planner = LongHorizonPlanner(
+        organism=SimpleNamespace(ai_system=SimpleNamespace(goal_engine=engine)),
+        ai_system=engine,
+        path=str(tmp_path / "plans.json"),
+    )
+    planner._get_reasoner = lambda: None
+    goal = engine.get_goal_by_id(written["id"])
+    plan = planner.ensure_goal_plan(goal)
+
+    assert plan is not None
+    assert plan.source == "goal"
+    assert plan.source_id == written["id"]
+    assert plan.success_criteria == criteria
