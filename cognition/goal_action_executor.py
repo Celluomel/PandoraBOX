@@ -222,7 +222,11 @@ class GoalActionExecutor:
             return self._pending_insights.popleft()
         return None
 
-    def run_tick(self) -> Optional[Dict]:
+    def run_tick(
+        self,
+        preferred_goal_id: Optional[str] = None,
+        selection_is_authoritative: bool = False,
+    ) -> Optional[Dict]:
         """
         Select and execute one action for the highest-priority eligible goal.
         Returns a report dict or None if nothing ran.
@@ -243,7 +247,31 @@ class GoalActionExecutor:
             logger.info("[GoalActionExecutor] No eligible goals (all below min_activation=0.10 or none active)")
             return None
 
-        goal = self._select_eligible_goal(active)
+        if selection_is_authoritative:
+            if not preferred_goal_id:
+                logger.info(
+                    "[GoalActionExecutor] Fresh workspace decision selected no executable goal; "
+                    "skipping unrelated-goal fallback"
+                )
+                return None
+            goal = next(
+                (candidate for candidate in active if str(getattr(candidate, "id", "")) == preferred_goal_id),
+                None,
+            )
+            if goal is None:
+                logger.info(
+                    "[GoalActionExecutor] Workspace-selected goal %s is not active; skipping action",
+                    preferred_goal_id,
+                )
+                return None
+            if time.time() - self._last_action_time.get(goal.id, 0) <= GOAL_ACTION_COOLDOWN:
+                logger.info(
+                    "[GoalActionExecutor] Workspace-selected goal %s is on action cooldown",
+                    preferred_goal_id,
+                )
+                return None
+        else:
+            goal = self._select_eligible_goal(active)
         if not goal:
             logger.info(f"[GoalActionExecutor] All {len(active)} eligible goals on {GOAL_ACTION_COOLDOWN}s cooldown — next action in ~{GOAL_ACTION_COOLDOWN//60}min")
             return None

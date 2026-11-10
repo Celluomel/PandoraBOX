@@ -64,7 +64,7 @@ class SimpleThoughtEvaluator:
             thoughts = thoughts_data.get('thoughts', [])
             _use_dal = False
 
-        suggestions = []
+        suggestions_by_concept = {}
         evaluated_count = 0
         
         print(f"\n🧠 Evaluating {len(thoughts)} thoughts...")
@@ -100,21 +100,40 @@ class SimpleThoughtEvaluator:
             if evaluation:
                 if evaluation['should_create_goal']:
                     if not self._has_existing_goal(goals_data, evaluation['concept']):
-                        _hyp = evaluation.get('hypothesis', '')
-                        suggestions.append({
+                        _concept_key = " ".join(
+                            str(evaluation['concept']).replace("_", " ").casefold().split()
+                        )
+                        suggestion = {
                             'type': evaluation['goal_type'],
                             'concept': evaluation['concept'],
                             'priority': evaluation['priority'],
                             'origin_thought': thought.get('id', self._generate_id(thought)),
+                            'origin_content': str(thought.get('content') or thought.get('text') or "")[:1200],
                             'created_at': datetime.now().isoformat(),
                             'conceptual_friction': evaluation.get('friction', ''),
                             'actionability': evaluation.get('actionability', 0.5),
-                            'hypothesis': _hyp,
+                            'hypothesis': '',
+                            'hypothesis_pending': bool(evaluation.get('hypothesis_pending')),
+                            'supporting_thought_ids': [
+                                str(thought.get('id') or self._generate_id(thought))
+                            ],
                             'name': (
                                 f"test_hypothesis_{evaluation['concept'][:30]}"
-                                if _hyp else evaluation['concept']
+                                if evaluation.get('hypothesis_pending') else evaluation['concept']
                             ),
-                        })
+                        }
+                        previous = suggestions_by_concept.get(_concept_key)
+                        if previous is None:
+                            suggestions_by_concept[_concept_key] = suggestion
+                        else:
+                            previous['priority'] = max(previous['priority'], suggestion['priority'])
+                            previous['actionability'] = max(
+                                previous['actionability'], suggestion['actionability']
+                            )
+                            previous['hypothesis_pending'] |= suggestion['hypothesis_pending']
+                            previous['supporting_thought_ids'].extend(
+                                suggestion['supporting_thought_ids']
+                            )
                 
                 thought['evaluated'] = True
                 thought['evaluation'] = {
@@ -163,7 +182,12 @@ class SimpleThoughtEvaluator:
                 pass
 
         print(f"   ✅ Evaluated {evaluated_count} new thoughts")
-        print(f"   🎯 Generated {len(suggestions)} goal suggestions")
+        suggestions = sorted(
+            suggestions_by_concept.values(),
+            key=lambda item: (item['priority'], item['actionability']),
+            reverse=True,
+        )
+        print(f"   🎯 Generated {len(suggestions)} distinct goal proposals")
         
         return suggestions
     
@@ -194,9 +218,12 @@ class SimpleThoughtEvaluator:
         # For high-priority tensions: generate a concrete hypothesis instead of
         # just labelling the tension. This shifts action from 'resolve_tension'
         # to 'test_hypothesis' — the key upgrade the analysis identified.
-        hypothesis = None
+        hypothesis_pending = False
         if thought_type == 'tension' and priority >= 0.65:
-            hypothesis = self._generate_hypothesis(text, concept)
+            # Expensive LLM synthesis is deferred until workspace competition
+            # selects this proposal. Evaluating every thought must stay a
+            # cheap scoring pass, not 1 LLM call per candidate.
+            hypothesis_pending = True
 
         return {
             'type': thought_type,
@@ -204,8 +231,8 @@ class SimpleThoughtEvaluator:
             'priority': priority,
             'actionability': actionability,
             'friction': friction,
-            'goal_type': 'test_hypothesis' if hypothesis else goal_type,
-            'hypothesis': hypothesis,
+            'goal_type': 'test_hypothesis' if hypothesis_pending else goal_type,
+            'hypothesis_pending': hypothesis_pending,
             'should_create_goal': should_create_goal
         }
     

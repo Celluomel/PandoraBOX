@@ -109,6 +109,9 @@ class Goal:
     # Link an explicitly user-requested goal to the exact chat turn that
     # caused the write; autonomous goals leave this empty.
     source_turn_id: str = ""
+    # Autonomous thought-evaluator proposals retain their originating thought
+    # across persistence so a committed goal can be traced to its evidence.
+    source_thought_id: str = ""
     # User-requested development goals require explicit criterion evidence;
     # completing a search/action alone is not evidence that the goal was met.
     success_criteria_verified: bool = False
@@ -1072,6 +1075,87 @@ class GoalEngine:
             "topic": clean_topic,
             "success_criteria": clean_criteria,
             "source_turn_id": turn_id,
+            "status": goal.status,
+        }
+
+    def commit_selected_thought_proposal(
+        self, proposal: Dict[str, object], cycle: int
+    ) -> Dict[str, object]:
+        """Persist one workspace-selected proposal and verify its exact record.
+
+        Evaluator output is a proposal, not a goal. This is the single
+        transition boundary from arbitration to the persistent goal registry.
+        Losing proposals never reach this method.
+        """
+        concept = " ".join(str(proposal.get("concept") or "").replace("_", " ").split())[:240]
+        if not concept:
+            return {"created": False, "verified": False, "reason": "missing_concept"}
+
+        proposal_type = str(proposal.get("type") or "uncertainty")
+        source_thought_id = str(proposal.get("origin_thought") or "").strip()
+        hypothesis = " ".join(str(proposal.get("hypothesis") or "").split())[:500]
+        goal_type = str(proposal.get("goal_type") or proposal_type)
+        origin = f"thought_evaluator:{goal_type}"
+        if proposal_type == "tension" and hypothesis:
+            origin = "thought_evaluator:test_hypothesis"
+
+        goal_id = f"Goal_{uuid.uuid4().hex[:8]}"
+        goal = Goal(
+            id=goal_id,
+            topic=concept,
+            origin=origin,
+            priority=float(proposal.get("priority", 0.5) or 0.5),
+            energy=0.75,
+            created_cycle=int(cycle),
+            last_active=int(cycle),
+            intent_kind="correct" if proposal_type == "tension" else "learn",
+            temporal_scope="continuing",
+            desired_effect=(hypothesis or f"Develop grounded understanding of {concept}"),
+            success_criteria=(
+                "A recorded observation supports or falsifies the hypothesis"
+                if hypothesis else f"A grounded insight about {concept} is recorded and verified"
+            ),
+            subject=concept,
+            source_thought_id=source_thought_id,
+        )
+
+        with self._lock:
+            if not self.add_goal(goal):
+                existing = self.get_goal_by_topic(concept)
+                return {
+                    "created": False,
+                    "verified": bool(existing),
+                    "id": existing.id if existing else goal_id,
+                    "topic": concept,
+                    "reason": "existing_goal" if existing else "goal_engine_rejected_or_save_failed",
+                }
+            try:
+                payload = json.loads(self._persistence_file.read_text(encoding="utf-8"))
+                record = payload.get("goals", {}).get(goal_id)
+                verified = bool(
+                    isinstance(record, dict)
+                    and record.get("topic") == concept
+                    and record.get("source_thought_id", "") == source_thought_id
+                    and record.get("desired_effect") == goal.desired_effect
+                )
+            except Exception as exc:
+                logger.warning("[GoalEngine] thought-proposal read-back failed: %s", exc)
+                verified = False
+            if not verified:
+                self._goals.pop(goal_id, None)
+                self._save_goals()
+                return {"created": False, "verified": False, "id": goal_id, "reason": "persistence_readback_failed"}
+
+        logger.info(
+            "[GoalEngine] committed selected thought proposal id=%s topic=%r source_thought=%s",
+            goal_id, concept, source_thought_id or "unknown",
+        )
+        return {
+            "created": True,
+            "verified": True,
+            "id": goal_id,
+            "topic": concept,
+            "source_thought_id": source_thought_id,
             "status": goal.status,
         }
     

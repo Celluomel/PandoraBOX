@@ -207,16 +207,35 @@ class Phase1Orchestrator:
             if resolved > 0 or deferred > 0:
                 print(f"   🔧 Thread resolution: {resolved} resolved, {deferred} deferred")
         
-        # Step 4: Evaluate thoughts (periodically)
+        # Step 4: Produce goal proposals (periodically). These are candidates,
+        # not persisted goals; the workspace must select one before GoalEngine
+        # may commit it.
         goal_suggestions = []
         if self.cycle_count % 5 == 0:
             goal_suggestions = self.evaluate_thoughts_and_create_goals()
             if goal_suggestions:
-                print(f"   💡 Created {len(goal_suggestions)} new goals from thoughts")
+                print(f"   💡 {len(goal_suggestions)} distinct goal proposals for workspace arbitration")
         
         # Step 5: Load current goals and thoughts
         goals = self._load_goals()
         thoughts = self._load_recent_thoughts()
+        proposal_thoughts = []
+        for proposal in goal_suggestions:
+            concept = str(proposal.get("concept") or "").replace("_", " ").strip()
+            if not concept:
+                continue
+            proposal_thoughts.append({
+                "id": f"goal-proposal:{proposal.get('origin_thought') or concept}",
+                "source": "simple_thought_evaluator",
+                "thought_type": "goal_proposal",
+                "concept": proposal.get("concept", ""),
+                "topic": concept,
+                "content": str(proposal.get("hypothesis") or concept),
+                "priority": float(proposal.get("priority", 0.5)),
+                "actionability": float(proposal.get("actionability", 0.5)),
+                "_goal_proposal": proposal,
+            })
+        thoughts.extend(proposal_thoughts)
         tensions = self._load_tensions()
         
         # ═══════════════════════════════════════════════════════════════
@@ -225,6 +244,7 @@ class Phase1Orchestrator:
         
         competition_result = None
         winner = None
+        selected_proposal = None
         
         if self.components['workspace']:
             # Run competition among all candidates
@@ -237,6 +257,14 @@ class Phase1Orchestrator:
             )
             
             winner = competition_result['winner']
+
+            source_data = winner.get("source_data", {}) if isinstance(winner, dict) else {}
+            selected_proposal = (
+                source_data.get("_goal_proposal")
+                if isinstance(source_data, dict) else None
+            )
+            # Expensive hypothesis generation is deferred to InternalLoop,
+            # after executive arbitration has confirmed the final winner.
             
             print(f"   🏆 Attention focus: {winner['name']} ({winner['type']}, score: {winner['score']:.2f})")
             
@@ -262,6 +290,8 @@ class Phase1Orchestrator:
             'winner': winner,  # NEW
             'plan': plan,
             'recommendation': recommendation,
+            'goal_suggestions': goal_suggestions,
+            'selected_goal_proposal': selected_proposal if isinstance(selected_proposal, dict) else None,
             'timestamp': datetime.now().isoformat()
         }
     

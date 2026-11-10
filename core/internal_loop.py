@@ -1161,6 +1161,61 @@ class InternalThoughtLoop:
                     except Exception as _arb_e:
                         logger.debug(f"[InternalLoop] arbitration error (non-fatal): {_arb_e}")
 
+                    # A thought proposal becomes a persistent goal only if it
+                    # survives workspace selection and executive arbitration.
+                    # GoalEngine owns the write and confirms it from disk;
+                    # merely scoring or broadcasting a proposal is not goal
+                    # creation.
+                    _selected_proposal = None
+                    _winner_source = _winner.get("source_data", {}) if isinstance(_winner, dict) else {}
+                    if isinstance(_winner_source, dict):
+                        _selected_proposal = _winner_source.get("_goal_proposal")
+                    if isinstance(_selected_proposal, dict):
+                        if _selected_proposal.get("hypothesis_pending"):
+                            _evaluator = getattr(self._phase1, "components", {}).get("thought_evaluator")
+                            try:
+                                _hypothesis = _evaluator._generate_hypothesis(
+                                    str(_selected_proposal.get("origin_content") or ""),
+                                    str(_selected_proposal.get("concept") or ""),
+                                ) if _evaluator else ""
+                            except Exception as _hypothesis_error:
+                                logger.debug(
+                                    "[InternalLoop] selected proposal hypothesis synthesis failed: %s",
+                                    _hypothesis_error,
+                                )
+                                _hypothesis = ""
+                            _selected_proposal["hypothesis"] = _hypothesis
+                            _selected_proposal["hypothesis_pending"] = False
+                        _selected_goal_engine = getattr(
+                            getattr(o, "ai_system", None), "goal_engine", None
+                        )
+                        if _selected_goal_engine is not None:
+                            try:
+                                _commit = _selected_goal_engine.commit_selected_thought_proposal(
+                                    _selected_proposal, self._slow_cycle_count
+                                )
+                            except Exception as _commit_error:
+                                _commit = {"created": False, "verified": False, "reason": str(_commit_error)}
+                            if _commit.get("created") and _commit.get("verified"):
+                                _winner = dict(_winner)
+                                _winner.update({
+                                    "type": "goal",
+                                    "id": _commit["id"],
+                                    "name": _commit["topic"],
+                                    "topic": _commit["topic"],
+                                    "label": f"Persisted selected goal: {_commit['topic']}",
+                                })
+                                logger.info(
+                                    "[InternalLoop] Selected proposal committed and read-back verified: "
+                                    "goal=%s topic=%r",
+                                    _commit["id"], _commit["topic"],
+                                )
+                            else:
+                                logger.info(
+                                    "[InternalLoop] Selected thought proposal was not committed: %s",
+                                    _commit.get("reason", "not_verified"),
+                                )
+
                     _comp  = _cycle_result.get('competition', {}).get('competition', {})
                     _cands = _comp.get('total_candidates', 0)
                     _margin = _comp.get('winning_margin', 0)
@@ -1172,6 +1227,7 @@ class InternalThoughtLoop:
                     )
                     # Store winner for other systems to read
                     o._v32_workspace_winner = _winner
+                    o._v32_workspace_winner_cycle = self._slow_cycle_count
 
                     # ── WorkspaceBias: commit the focus as an ACTIVE, EMBEDDED
                     # commitment. This is what lets the focus BIAS downstream
@@ -1215,27 +1271,9 @@ class InternalThoughtLoop:
                     except Exception as _emc_e:
                         logger.debug(f'[InternalLoop] EmergenceMetrics error: {_emc_e}')
 
-                    # Action feedback: when a GOAL wins the workspace, mark it
-                    # as having influenced cognition this cycle. This increments
-                    # actions_taken, which boosts energy in the next decay pass
-                    # and feeds the GEI signal. Without this, actions_taken stays
-                    # at 0 forever and the system never gets closure on goals.
-                    if _winner.get('type') == 'goal':
-                        _win_ge = getattr(
-                            getattr(o, 'ai_system', None), 'goal_engine', None
-                        )
-                        if _win_ge:
-                            try:
-                                # Find by topic (the name stored in workspace)
-                                _win_name = _winner.get('name', '')
-                                _win_goal = _win_ge.get_goal_by_topic(_win_name)
-                                if _win_goal:
-                                    _win_ge.mark_action(_win_goal.id)
-                                    logger.debug(
-                                        f"[InternalLoop] ✅ mark_action: {_win_name[:30]}"
-                                    )
-                            except Exception:
-                                pass
+                    # Winning workspace arbitration establishes cognitive
+                    # focus. It is not an executed effect; GoalActionExecutor
+                    # records action feedback only after it actually runs.
 
                     # Refresh curiosity with winner topic — prevents monotonic decay.
                     # Fix: previously did _winner.get('name','').replace('_',' ')
@@ -1303,7 +1341,25 @@ class InternalThoughtLoop:
                     self._goal_action_executor = GoalActionExecutor(o)
                     logger.info("[InternalLoop] GoalActionExecutor ready ✅")
 
-                _action_report = self._goal_action_executor.run_tick()
+                _winner = getattr(o, "_v32_workspace_winner", None)
+                winner_cycle = int(getattr(o, "_v32_workspace_winner_cycle", -10**9))
+                winner_age = self._slow_cycle_count - winner_cycle
+                decision_is_fresh = (
+                    isinstance(_winner, dict)
+                    and 0 <= winner_age <= 2
+                )
+                preferred_goal_id = (
+                    str(_winner.get("id"))
+                    if decision_is_fresh and _winner.get("type") == "goal" and _winner.get("id")
+                    else None
+                )
+                # A fresh arbitration decision is authoritative. If attention
+                # selected a thought/tension or a goal unavailable to the
+                # executor, do not silently act on an unrelated older goal.
+                _action_report = self._goal_action_executor.run_tick(
+                    preferred_goal_id=preferred_goal_id,
+                    selection_is_authoritative=decision_is_fresh,
+                )
                 if _action_report and _action_report.get("success"):
                     logger.info(
                         f"[InternalLoop] ⚡ Goal action: "
@@ -1326,31 +1382,6 @@ class InternalThoughtLoop:
                     )
             except Exception as _tr:
                 logger.debug(f"[InternalLoop] Thread resolution error: {_tr}")
-
-        # ── V32: Phase 1 Thought Evaluation (thought→goal bridge) ─────────
-        # Every 5 slow cycles (~10 minutes), evaluate thoughts and create goals
-        if (self._phase1 and self._slow_cycle_count % 5 == 0
-                and (not self._governor or self._governor.may_run('Phase1ThoughtGoals'))):
-            try:
-                goal_suggestions = self._phase1.evaluate_thoughts_and_create_goals()
-                if goal_suggestions:
-                    logger.info(
-                        f"[InternalLoop] V32 Created {len(goal_suggestions)} goals "
-                        f"from thought evaluation"
-                    )
-                    # Broadcast goal creations to workspace
-                    if hasattr(o, 'workspace'):
-                        for suggestion in goal_suggestions[:3]:  # Max 3 per cycle
-                            try:
-                                o.workspace.broadcast(
-                                    source="v32.thought_evaluator",
-                                    content=f"New goal from thought: {suggestion['concept']}",
-                                    priority=min(0.7, suggestion.get('priority', 0.5)),
-                                )
-                            except Exception:
-                                pass
-            except Exception as _te:
-                logger.debug(f"[InternalLoop] Thought evaluation error: {_te}")
 
         # ── V33: Phase 2 Advanced Thought Evaluation (semantic) ───────────
         # Every 7 slow cycles (~14 minutes), evaluate thoughts with semantic analysis
