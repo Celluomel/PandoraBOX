@@ -23,6 +23,7 @@ for package_name, package_path in (
         sys.modules[package_name] = package
 
 from cognition.goal_engine import GoalEngine
+from cognition.goal_quality_filter import GoalQualityFilter
 from cognition.grounded_introspection import GroundedIntrospectionGenerator
 from cognition.semantic_extractor import SemanticExtractor
 from cognition.semantic_memory import SemanticMemory
@@ -62,7 +63,7 @@ class CognitiveLogRegressionTests(unittest.TestCase):
             description = SelfDescription(str(Path(temp_dir) / "self.json"))
             block = description.prompt_context()
 
-        self.assertIn("no components have been registered", block)
+        self.assertIn("no components are registered", block)
         self.assertIn("Do not infer", block)
 
     def test_semantic_extractor_discards_french_filler_topics(self):
@@ -124,6 +125,22 @@ class CognitiveLogRegressionTests(unittest.TestCase):
         for noise in ("toujours", "quelles", "arxchiv", "assez", "sois"):
             self.assertTrue(GoalEngine._is_lexical_noise_topic(noise), noise)
         self.assertFalse(GoalEngine._is_lexical_noise_topic("cognitive architecture"))
+
+    def test_goal_quality_filter_cannot_preserve_goal_engine_lexical_noise(self):
+        quality = GoalQualityFilter.__new__(GoalQualityFilter)
+        score, reasons = quality._score_goal(
+            {"name": "soory", "origin": "thought_goal_linker", "priority": 0.95,
+             "origin_thoughts": ["supporting thought", "another thought"]},
+            tensions={"curiosity_drive": 1.0}, emotions={"curiosity": 1.0},
+        )
+        self.assertEqual(score, 0.0)
+        self.assertTrue(reasons[0].startswith("lexical-noise topic"))
+
+        real_score, _ = quality._score_goal(
+            {"name": "improve cognitive architecture", "origin": "manual", "priority": 0.5},
+            tensions={}, emotions={},
+        )
+        self.assertGreater(real_score, score)
 
     def test_tte_migrates_iteration_count_and_keeps_valid_records(self):
         with tempfile.TemporaryDirectory() as directory:

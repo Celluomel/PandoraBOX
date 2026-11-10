@@ -106,12 +106,17 @@ class GoalQualityFilter:
             goal['quality_reasons'] = reasons
             report['scored'].append({'id': goal['id'], 'name': goal.get('name',''), 'score': score})
 
-            if score < self.quality_threshold and goal.get('status') == 'active':
+            is_lexical_noise = any(
+                reason.startswith("lexical-noise topic") for reason in reasons
+            )
+            if (score < self.quality_threshold or is_lexical_noise) and goal.get('status') == 'active':
                 # Don't mark low-quality if we're already below the minimum active threshold
                 current_active = len([g for g in goals if g.get('status') == 'active'
                                       and g.get('quality_score', 0.5) >= self.quality_threshold
                                       and g['id'] != goal['id']])
-                if current_active < 4:  # keep at least 4 high-quality goals active
+                if current_active < 4 and not is_lexical_noise:
+                    # Preserve the small active pool for merely low-scoring goals,
+                    # but never keep a topic the GoalEngine itself rejects.
                     pass
                 else:
                     goal['status'] = 'low_quality'
@@ -202,6 +207,12 @@ class GoalQualityFilter:
 
         name  = goal.get('name', '').lower().strip()
         words = set(name.replace('_', ' ').split())
+
+        # GoalEngine is the admission authority. Reuse its hard lexical gate
+        # so this maintenance/scoring path cannot reactivate rejected topics.
+        from cognition.goal_engine import GoalEngine
+        if GoalEngine._is_lexical_noise_topic(name):
+            return 0.0, [f"lexical-noise topic '{name[:80]}'"]
 
         # ── Semantic richness ──────────────────────────────────────────────
         if len(words) <= 1 and name in NOISE_WORDS:
