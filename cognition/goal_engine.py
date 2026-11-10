@@ -106,6 +106,9 @@ class Goal:
     desired_effect: str = ""
     success_criteria: str = ""
     subject: str = ""
+    # Link an explicitly user-requested goal to the exact chat turn that
+    # caused the write; autonomous goals leave this empty.
+    source_turn_id: str = ""
     
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
     
@@ -489,7 +492,7 @@ class GoalEngine:
             )
             return after
     
-    def _save_goals(self):
+    def _save_goals(self) -> bool:
         """Save goals to disk — atomic write via DAL."""
         try:
             self._persistence_file.parent.mkdir(parents=True, exist_ok=True)
@@ -501,12 +504,17 @@ class GoalEngine:
             # Atomic write (tmp → rename) prevents partial-write corruption
             import os
             tmp = self._persistence_file.with_suffix('.tmp')
-            with open(tmp, 'w') as f:
+            with open(tmp, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=2)
             os.replace(tmp, self._persistence_file)
+            persisted = json.loads(self._persistence_file.read_text(encoding="utf-8"))
+            if set(persisted.get("goals", {})) != set(self._goals):
+                raise IOError("Goal persistence read-back did not match the in-memory registry")
             logger.debug(f"Saved {len(self._goals)} goals to disk")
+            return True
         except Exception as e:
             logger.error(f"Failed to save goals: {e}")
+            return False
     
     # ── Motivation Derivation ──────────────────────────────────────────────
     
@@ -902,21 +910,21 @@ class GoalEngine:
         'module', 'modules',
     }
 
-    def add_goal(self, goal: Goal):
-        """Add a new goal to the system, rejecting noise topics."""
+    def add_goal(self, goal: Goal) -> bool:
+        """Add and persist a goal; return True only after the write is confirmed."""
         topic = goal.topic.strip().lower()
 
         if self._is_external_task_topic(topic):
             logger.info("GoalEngine: rejected user-owned task topic %r", goal.topic)
-            return
+            return False
 
         if self._is_lexical_noise_topic(topic):
             logger.info("GoalEngine: rejected lexical-noise topic %r", goal.topic)
-            return
+            return False
 
         if not self._is_valid_goal_topic(topic):
             logger.info("GoalEngine: rejected low-quality topic %r", goal.topic)
-            return
+            return False
 
         # Recycle old non-active records first. A pool full of dormant or
         # completed goals must not permanently block new autonomous goals.
@@ -939,7 +947,7 @@ class GoalEngine:
                     f"GoalEngine: total goal cap ({self.MAX_TOTAL_GOALS}) reached, "
                     f"not adding '{goal.topic}'"
                 )
-                return
+                return False
 
         # Topic cooldown: don't re-create a recently abandoned topic
         _last_abandoned = self._recently_abandoned.get(topic, 0.0)
@@ -948,7 +956,7 @@ class GoalEngine:
                 f"GoalEngine: topic '{goal.topic}' in cooldown "
                 f"({self.TOPIC_COOLDOWN_SECS}s), skipping"
             )
-            return
+            return False
 
         # Reject single-word or known noise topics
         topic_words = topic.split()
@@ -965,17 +973,19 @@ class GoalEngine:
             any(w in {"you're", "you're", "i'm", "it's", "don't", "can't", "won't"} for w in topic.split())
         ):
             logger.debug(f"GoalEngine: rejected noise topic '{goal.topic}'")
-            return
+            return False
 
         with self._lock:
             # Also reject if we already have this topic (near-duplicate)
             existing_topics = {g.topic.lower() for g in self._goals.values()}
             if topic in existing_topics:
                 logger.debug(f"GoalEngine: duplicate topic '{goal.topic}'")
-                return
+                return False
 
             self._goals[goal.id] = goal
-            self._save_goals()
+            if not self._save_goals():
+                self._goals.pop(goal.id, None)
+                return False
             logger.info(f"Added goal: {goal.topic} (origin={goal.origin}, priority={goal.priority:.2f})")
             try:
                 ec = self._economy()
@@ -983,6 +993,82 @@ class GoalEngine:
                     ec.record_goal_opened()
             except Exception:
                 pass
+            return True
+
+    def create_user_requested_goal(
+        self,
+        topic: str,
+        success_criteria: str,
+        source_turn_id: str,
+    ) -> Dict[str, object]:
+        """Persist an explicitly requested goal and verify its stored record.
+
+        This is the side-effect boundary for chat-originated goal creation.
+        A response may claim success only when both GoalEngine admission and
+        a disk read-back confirm the exact goal and source turn.
+        """
+        clean_topic = " ".join(str(topic or "").split())[:240]
+        clean_criteria = " ".join(str(success_criteria or "").split())[:500]
+        turn_id = str(source_turn_id or "").strip()
+        if not clean_topic or not clean_criteria or not turn_id:
+            return {"created": False, "verified": False, "reason": "missing_topic_criteria_or_turn_id"}
+
+        goal_id = f"Goal_{uuid.uuid4().hex[:8]}"
+        goal = Goal(
+            id=goal_id,
+            topic=clean_topic,
+            origin="user_requested_development",
+            priority=0.75,
+            energy=0.75,
+            created_cycle=self._cycle_counter,
+            last_active=self._cycle_counter,
+            intent_kind="learn",
+            temporal_scope="ongoing",
+            desired_effect=f"Improve capability around {clean_topic}",
+            success_criteria=clean_criteria,
+            subject=clean_topic,
+            source_turn_id=turn_id,
+        )
+
+        # Hold the re-entrant lock across admission and read-back so a
+        # concurrent autonomous cycle cannot obscure which turn wrote it.
+        with self._lock:
+            before = dict(self._goals)
+            if not self.add_goal(goal):
+                self._goals.clear()
+                self._goals.update(before)
+                # If the atomic replace happened but its read-back check
+                # failed, put the prior registry back on disk as well.
+                self._save_goals()
+                return {"created": False, "verified": False, "id": goal_id, "reason": "goal_engine_rejected_or_save_failed"}
+            try:
+                payload = json.loads(self._persistence_file.read_text(encoding="utf-8"))
+                record = payload.get("goals", {}).get(goal_id)
+                verified = bool(
+                    isinstance(record, dict)
+                    and record.get("topic") == clean_topic
+                    and record.get("success_criteria") == clean_criteria
+                    and record.get("source_turn_id") == turn_id
+                )
+            except Exception as exc:
+                logger.warning("[GoalEngine] explicit goal read-back failed: %s", exc)
+                verified = False
+
+            if not verified:
+                self._goals.clear()
+                self._goals.update(before)
+                self._save_goals()
+                return {"created": False, "verified": False, "id": goal_id, "reason": "persistence_readback_failed"}
+
+        return {
+            "created": True,
+            "verified": True,
+            "id": goal_id,
+            "topic": clean_topic,
+            "success_criteria": clean_criteria,
+            "source_turn_id": turn_id,
+            "status": goal.status,
+        }
     
     @classmethod
     def _is_lexical_noise_topic(cls, topic: str) -> bool:

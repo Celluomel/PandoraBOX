@@ -533,6 +533,9 @@ class PersonaBridge:
                 deterministic_body_path = (
                     stage_status.get("deterministic_body_response") == "completed"
                 )
+                deterministic_goal_path = (
+                    stage_status.get("deterministic_goal_response") == "completed"
+                )
                 if deterministic_body_path:
                     required_stages = (
                         ("readiness", {"passed"}),
@@ -541,6 +544,14 @@ class PersonaBridge:
                         ("response_finalization", {"completed"}),
                         ("response", {"completed"}),
                         ("deterministic_body_response", {"completed"}),
+                    )
+                elif deterministic_goal_path:
+                    required_stages = (
+                        ("readiness", {"passed"}),
+                        ("goal_write_gate", {"executed", "verified", "blocked", "failed"}),
+                        ("response_finalization", {"completed"}),
+                        ("response", {"completed"}),
+                        ("deterministic_goal_response", {"completed"}),
                     )
                 else:
                     required_stages = (
@@ -555,7 +566,7 @@ class PersonaBridge:
                     value = stage_status.get(stage_name)
                     if not isinstance(value, str) or value not in expected:
                         missing_core.append(stage_name)
-                has_generation = deterministic_body_path or any(
+                has_generation = deterministic_body_path or deterministic_goal_path or any(
                     isinstance(stage_status.get(name), str)
                     and stage_status.get(name) in accepted
                     for name, accepted in (
@@ -620,9 +631,10 @@ class PersonaBridge:
                 self._last_turn_trace["pipeline_integrity"] = {
                     "status": "consistent" if not integrity_issues else "incomplete_evidence",
                     "checked_at": time.time(),
-                    "required_core_stages": len(required_stages) + (0 if deterministic_body_path else 1),
+                    "required_core_stages": len(required_stages) + (0 if (deterministic_body_path or deterministic_goal_path) else 1),
                     "execution_path": (
                         "deterministic_body_action" if deterministic_body_path
+                        else "deterministic_goal_write" if deterministic_goal_path
                         else "generative_chat"
                     ),
                     "missing_core_stages": missing_core,
@@ -724,12 +736,55 @@ class PersonaBridge:
         # instead of treating it as its own first-person perception.
         effective_input = user_text
         self._pending_vision_context = None
+        _peer_scoped_turn = bool(peer_name) or str(cognitive_scope_id or "").startswith("peer:")
+
+        # Explicit goal writes are transactions, not LLM narration. The
+        # handler either persists + reads back the GoalEngine record, or
+        # returns an explicit failure without claiming success.
+        _goal_turn = None
+        if not _peer_scoped_turn:
+            _goal_turn = self._explicit_goal_write_gate(effective_input)
+        elif self._is_explicit_goal_persistence_request(effective_input):
+            _goal_turn = {
+                "handled": True,
+                "status": "blocked_peer_scope",
+                "response": "A peer-scoped turn cannot create a persistent goal in Lumina's human-owned GoalEngine.",
+            }
+        if _goal_turn and _goal_turn.get("handled"):
+            _goal_status = str(_goal_turn.get("status") or "unverified")
+            _goal_success = _goal_status == "persisted_verified"
+            _goal_failed = _goal_status == "write_failed"
+            _goal_stage = "verified" if _goal_success else "failed" if _goal_failed else "blocked"
+            _goal_write = _goal_turn.get("goal_write") or {}
+            _goal_detail = str(
+                _goal_write.get("id") or _goal_write.get("reason") or _goal_status
+            )
+            self._record_turn_stage("goal_write_gate", _goal_stage, _goal_detail)
+            self._record_turn_stage("response_finalization", "completed")
+            _goal_response = str(_goal_turn.get("response") or "")
+            _manager = getattr(self._llm_stream_fn, "__self__", None)
+            _record_exchange = getattr(_manager, "record_exchange", None)
+            if callable(_record_exchange):
+                _record_exchange(effective_input, _goal_response)
+            for _word in _goal_response.split():
+                yield _word + " "
+            yield {
+                "__meta__": True,
+                "raw": _goal_response,
+                "speech": self._sanitize(_goal_response),
+                "emotion": "focused",
+                "intensity": 0.4,
+                "goal_write": _goal_turn,
+            }
+            self._record_turn_stage("response", "completed")
+            self._record_turn_stage("deterministic_goal_response", "completed")
+            self._finish_turn_trace("completed")
+            return
 
         # Physical requests use a separate confirmation-gated path. This keeps
         # ordinary conversation fast while preventing the main LLM from merely
         # narrating an action that never reaches the Body.
         _body_turn = None
-        _peer_scoped_turn = bool(peer_name) or str(cognitive_scope_id or "").startswith("peer:")
         if allow_body_actions and not _peer_scoped_turn:
             try:
                 _body_turn = self.handle_body_chat_turn(effective_input, user_id)
@@ -5084,6 +5139,197 @@ Memory honesty — two distinct cases:
             )
             or re.search(r"\b(?:can|could|do|does|did)\s+you\b", normalized)
         )
+
+    @staticmethod
+    def _is_explicit_goal_persistence_request(text: str) -> bool:
+        """Match direct requests to write a goal, which must not be narrated as an LLM-only side effect."""
+        normalized = str(text or "").strip().casefold()
+        command = re.match(
+            r"^\s*(?:(?:for this audit|for this test|please|s'il te plaît|s’il te plaît)\s*,?\s*)*"
+            r"(?:(?:can|could|would) you\s+|i want you to\s+|je veux que tu\s+|peux-tu\s+|"
+            r"pourrais-tu\s+)?(?:create|add|save|persist|record|establish|set up|"
+            r"créer|crée|ajouter|enregistrer|sauvegarder|persister|établir|définir)\b",
+            normalized,
+        )
+        goal_reference = re.search(
+            r"\b(?:goal|objective|aspiration|goal\s+engine|objectif|but|aspiration)\b",
+            normalized,
+        )
+        return bool(command and goal_reference)
+
+    @staticmethod
+    def _parse_explicit_goal_request(text: str) -> tuple[str, str]:
+        """Extract a user-authored title and criteria from an explicit goal-write request."""
+        raw = str(text or "").strip()
+        title_match = re.search(
+            r"\b(?:goal|objective|objectif|but)\s*:\s*(.+?)(?=\.\s|$)",
+            raw,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if not title_match:
+            return "", ""
+        topic = " ".join(title_match.group(1).split()).strip(" \t\r\n.;:")
+        criteria_match = re.search(
+            r"\b(?:success criteria?|measurable success criteria?|critère de succès(?: mesurable)?|"
+            r"critères de réussite)\s*(?::|is|are|will be|sera|seront)\s*(.+?)(?=\.\s|$)",
+            raw,
+            re.IGNORECASE | re.DOTALL,
+        )
+        criteria = " ".join(criteria_match.group(1).split()).strip(" \t\r\n.;:") if criteria_match else ""
+        if not criteria and topic:
+            criteria = (
+                "Across five consecutive relevant answers, an independent review or the user confirms "
+                "that observed facts and inferences are explicitly separated with zero category errors."
+                if re.search(r"\b(observation|observed|fact|inference|observation|fait|inférence)\b", topic, re.I)
+                else f"Across five consecutive relevant answers about {topic}, a reviewer confirms the stated capability is demonstrated without a material error."
+            )
+        return topic, criteria
+
+    @staticmethod
+    def _is_goal_persistence_verification(text: str) -> bool:
+        """Match questions or challenges about whether a conversational goal write really happened."""
+        normalized = str(text or "").casefold()
+        has_goal = bool(re.search(r"\b(?:goal|objective|objectif|but|aspiration)\b", normalized))
+        asks_id = bool(re.search(
+            r"\b(?:exact\s+(?:persistent\s+)?id|id\s+(?:of|for)|identifier|identifiant)\b",
+            normalized,
+        ))
+        asks_write_status = bool(
+            re.search(r"\b(?:did|have|has|was|is)\b.{0,60}\b(?:saved|persisted|created|recorded)\b", normalized)
+            or re.search(r"\b(?:saved|persisted|created|recorded)\b.{0,60}\b(?:goal|objective|objectif)\b", normalized)
+        )
+        challenges_claim = bool(
+            re.search(r"\b(?:not visible|does not exist|doesn't exist|retract|withdraw|verify|confirm|rétract\w*)\b.{0,80}\b(?:goal|objective|objectif)\b", normalized)
+            or re.search(r"\b(?:goal|objective|objectif)\b.{0,80}\b(?:not visible|does not exist|doesn't exist|retract|withdraw|verify|confirm|rétract\w*)\b", normalized)
+        )
+        asks_proof = asks_id or asks_write_status or challenges_claim
+        return has_goal and asks_proof
+
+    def _goal_persistence_status(self, user_text: str) -> dict:
+        """Answer goal-write verification only from the live GoalEngine registry."""
+        system = self._system
+        engine = getattr(system, "goal_engine", None) if system is not None else None
+        if engine is None or not callable(getattr(engine, "get_active_goals", None)):
+            return {
+                "handled": True,
+                "status": "unverified",
+                "response": (
+                    "I cannot verify that goal write: the live GoalEngine state is unavailable in this turn. "
+                    "I will not claim an ID or persistence without reading it back."
+                ),
+            }
+
+        try:
+            all_goals = list(getattr(engine, "_goals", {}).values())
+            requested_ids = {value.casefold() for value in re.findall(
+                r"\bgoal_[a-z0-9_-]+\b", str(user_text or ""), re.IGNORECASE
+            )}
+            id_matches = [
+                goal for goal in all_goals
+                if str(getattr(goal, "id", "")).casefold() in requested_ids
+            ]
+            if requested_ids:
+                if id_matches:
+                    goal = id_matches[0]
+                    prior_turns = getattr(self, "_turn_trace_history", [])
+                    previous_turn_id = (
+                        str(prior_turns[-1].get("turn_id") or "")
+                        if prior_turns and isinstance(prior_turns[-1], dict) else ""
+                    )
+                    caused_by_previous_turn = bool(
+                        previous_turn_id
+                        and str(getattr(goal, "source_turn_id", "")) == previous_turn_id
+                    )
+                    response = (
+                        f"GoalEngine currently contains {goal.id} ({goal.topic}), status {goal.status}. "
+                        + (
+                            "Its stored source_turn_id matches the immediately preceding chat turn."
+                            if caused_by_previous_turn
+                            else "The registry does not link it to the immediately preceding chat turn."
+                        )
+                    )
+                    status = "found_and_causally_linked" if caused_by_previous_turn else "found_without_turn_link"
+                else:
+                    response = (
+                        "I cannot verify that identifier: no matching goal ID exists in the current GoalEngine registry. "
+                        "The previous claim that it was saved was unsupported."
+                    )
+                    status = "id_not_found"
+            else:
+                active = list(engine.get_active_goals())
+                response = (
+                    f"The live GoalEngine currently reports {len(active)} active goal(s). "
+                    "There is no turn-linked write receipt available here, so I cannot attribute a goal to the preceding chat turn."
+                )
+                status = "live_state_read_without_turn_receipt"
+            return {"handled": True, "status": status, "response": response}
+        except Exception as exc:
+            logger.warning("[GoalWriteGate] GoalEngine read-back failed: %s", exc)
+            return {
+                "handled": True,
+                "status": "unverified",
+                "response": "I cannot verify the goal write because reading the live GoalEngine registry failed; I will not claim it was saved.",
+            }
+
+    def _explicit_goal_write_gate(self, user_text: str) -> dict | None:
+        if self._is_explicit_goal_persistence_request(user_text):
+            is_french = bool(re.search(
+                r"\b(?:créer|crée|ajouter|enregistrer|sauvegarder|objectif|critère)\b",
+                str(user_text or "").casefold(),
+            ))
+            topic, criteria = self._parse_explicit_goal_request(user_text)
+            if not topic:
+                return {
+                    "handled": True,
+                    "status": "needs_goal_title",
+                    "response": (
+                        "Je n'ai pas créé d'objectif : indique son titre explicitement, par exemple « créer un objectif : améliorer… », pour éviter d'en inventer la portée. Aucun changement persistant n'a été fait."
+                        if is_french else
+                        "I did not create a goal: to avoid inventing its scope, provide an explicit title such as 'create a goal: improve …'. No persistent change was made."
+                    ),
+                }
+            engine = getattr(self._system, "goal_engine", None) if self._system is not None else None
+            create = getattr(engine, "create_user_requested_goal", None)
+            turn_id = str(getattr(self, "_last_turn_trace", {}).get("turn_id") or "")
+            if not callable(create) or not turn_id:
+                return {
+                    "handled": True,
+                    "status": "not_executed",
+                    "response": (
+                        "Je n'ai pas créé ni enregistré l'objectif : GoalEngine ou l'identifiant d'audit de ce tour est indisponible."
+                        if is_french else
+                        "I did not create or persist the goal: GoalEngine or this turn's audit ID is unavailable."
+                    ),
+                }
+            result = create(topic, criteria, turn_id)
+            if result.get("created") and result.get("verified"):
+                return {
+                    "handled": True,
+                    "status": "persisted_verified",
+                    "goal_write": result,
+                    "response": (
+                        f"GoalEngine a enregistré puis relu {result['id']} : {result['topic']}. "
+                        f"Critère de réussite : {result['success_criteria']} "
+                        f"L'enregistrement est lié au tour {result['source_turn_id']}."
+                        if is_french else
+                        f"GoalEngine saved and read back {result['id']}: {result['topic']}. "
+                        f"Success criterion: {result['success_criteria']} "
+                        f"The record links to chat turn {result['source_turn_id']}."
+                    ),
+                }
+            return {
+                "handled": True,
+                "status": "write_failed",
+                "goal_write": result,
+                "response": (
+                    "L'enregistrement de l'objectif n'a pas été confirmé. GoalEngine l'a refusé ou la relecture persistante a échoué ; aucun identifiant n'est présenté comme un succès."
+                    if is_french else
+                    "The goal was not confirmed as saved. GoalEngine rejected it or its persistence read-back failed; no goal ID is being reported as successful."
+                ),
+            }
+        if self._is_goal_persistence_verification(user_text):
+            return self._goal_persistence_status(user_text)
+        return None
 
     @staticmethod
     def _is_destination_action_request(text: str) -> bool:
