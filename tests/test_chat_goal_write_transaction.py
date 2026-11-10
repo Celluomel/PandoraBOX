@@ -2,6 +2,7 @@ import json
 from types import SimpleNamespace
 
 from cognition.goal_engine import GoalEngine
+from cognition.goal_completion import goal_completion_eligible, record_goal_completion
 from cognition.long_horizon_planner import LongHorizonPlanner
 from cognition.persona_bridge import PersonaBridge
 
@@ -129,3 +130,30 @@ def test_goal_success_criterion_flows_into_downstream_plan(tmp_path):
     assert plan.source == "goal"
     assert plan.source_id == written["id"]
     assert plan.success_criteria == criteria
+
+
+def test_successful_action_cannot_complete_user_goal_without_criterion_evidence(tmp_path):
+    engine = GoalEngine(ai_system=None, persistence_file=str(tmp_path / "goals.json"))
+    engine._is_valid_goal_topic = lambda _topic: True
+    written = engine.create_user_requested_goal(
+        "improve sensor interpretation",
+        "Five reviewed sensor summaries match source readings.",
+        "turn-criteria-gate-1",
+    )
+    goal = engine.get_goal_by_id(written["id"])
+    engine.mark_action(goal.id, "web_search")
+
+    eligible, reason = goal_completion_eligible(goal)
+    assert eligible is False
+    assert "criterion has not been verified" in reason
+    assert engine.complete_goal(goal.id) is False
+    assert record_goal_completion(goal, goal_engine=engine) is False
+    assert engine.get_goal_by_id(goal.id).status == "active"
+
+    # A trusted verification record is the only route through the new gate.
+    goal.success_criteria_verified = True
+    goal.success_criteria_evidence = "Five reviewed summaries were checked against timestamped sensor records."
+    goal.success_criteria_verified_by = "audit_review"
+    assert goal_completion_eligible(goal)[0] is True
+    assert engine.complete_goal(goal.id) is True
+    assert engine.get_goal_by_id(goal.id).status == "completed"

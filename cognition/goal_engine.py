@@ -109,6 +109,11 @@ class Goal:
     # Link an explicitly user-requested goal to the exact chat turn that
     # caused the write; autonomous goals leave this empty.
     source_turn_id: str = ""
+    # User-requested development goals require explicit criterion evidence;
+    # completing a search/action alone is not evidence that the goal was met.
+    success_criteria_verified: bool = False
+    success_criteria_evidence: str = ""
+    success_criteria_verified_by: str = ""
     
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
     
@@ -1107,20 +1112,43 @@ class GoalEngine:
                 g.last_active = self._cycle_counter
                 self._save_goals()
     
-    def complete_goal(self, goal_id: str, completion: float = 1.0):
-        """Mark a goal as completed."""
+    def complete_goal(self, goal_id: str, completion: float = 1.0) -> bool:
+        """Complete a goal, refusing unverified explicit user criteria."""
         with self._lock:
             if goal_id in self._goals:
-                self._goals[goal_id].status = "completed"
-                self._goals[goal_id].completion = completion
-                self._save_goals()
-                logger.info(f"Goal completed: {self._goals[goal_id].topic}")
+                goal = self._goals[goal_id]
+                if (goal.origin == "user_requested_development"
+                        and not self._has_verified_success_criteria(goal)):
+                    logger.warning(
+                        "Refusing completion of user goal %s: success criterion "
+                        "has no verified evidence", goal_id
+                    )
+                    return False
+                previous_status, previous_completion = goal.status, goal.completion
+                goal.status = "completed"
+                goal.completion = max(0.0, min(1.0, float(completion)))
+                if not self._save_goals():
+                    goal.status, goal.completion = previous_status, previous_completion
+                    return False
+                logger.info(f"Goal completed: {goal.topic}")
                 try:
                     ec = self._economy()
                     if ec:
                         ec.record_goal_closed()
                 except Exception:
                     pass
+                return True
+        return False
+
+    @staticmethod
+    def _has_verified_success_criteria(goal: Goal) -> bool:
+        """Require criterion-specific evidence for explicit user goals."""
+        return bool(
+            str(getattr(goal, "success_criteria", "") or "").strip()
+            and getattr(goal, "success_criteria_verified", False) is True
+            and str(getattr(goal, "success_criteria_evidence", "") or "").strip()
+            and str(getattr(goal, "success_criteria_verified_by", "") or "").strip()
+        )
     
     # ── Goal Query ─────────────────────────────────────────────────────────
     

@@ -86,6 +86,25 @@ def goal_completion_eligible(
     """
     current_tensions = current_tensions or {}
 
+    # A completed action is not the same as a satisfied objective. Explicit
+    # development goals carry their own criterion and must not close merely
+    # because research ran, an insight was generated, or a tension fell.
+    if _gget(goal, "origin", "") == "user_requested_development":
+        criteria = str(_gget(goal, "success_criteria", "") or "").strip()
+        evidence = str(_gget(goal, "success_criteria_evidence", "") or "").strip()
+        verifier = str(_gget(goal, "success_criteria_verified_by", "") or "").strip()
+        if not criteria:
+            return (False, "explicit goal has no success criterion")
+        if not (
+            _gget(goal, "success_criteria_verified", False) is True
+            and evidence
+            and verifier
+        ):
+            return (
+                False,
+                "explicit goal success criterion has not been verified with evidence",
+            )
+
     # B: world-facing action gate
     try:
         non_intro = int(_gget(goal, "non_introspective_actions", 0) or 0)
@@ -195,6 +214,18 @@ def record_goal_completion(
     """
     gid = _gget(goal, "id", "")
     name = _gget(goal, "name") or _gget(goal, "topic") or gid or "goal"
+
+    # Defense in depth: callers must not bypass the criterion gate by writing
+    # directly to either GoalEngine or the legacy DAL representation.
+    if _gget(goal, "origin", "") == "user_requested_development":
+        eligible, gate_reason = goal_completion_eligible(
+            goal, load_current_tensions()
+        )
+        if not eligible:
+            logger.warning(
+                "Refusing explicit goal completion for %s: %s", gid, gate_reason
+            )
+            return False
 
     wrote = False
     # Prefer the object store when we have it (it does economy + persistence).
