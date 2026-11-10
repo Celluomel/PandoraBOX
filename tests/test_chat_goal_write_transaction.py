@@ -130,6 +130,15 @@ def test_goal_success_criterion_flows_into_downstream_plan(tmp_path):
     assert plan.source == "goal"
     assert plan.source_id == written["id"]
     assert plan.success_criteria == criteria
+    assert planner.factual_self_report_snapshot()["dominant_plan"][
+        "success_criteria_status"
+    ] == "unverified"
+    assert engine.record_success_criteria_verification(
+        written["id"], criteria, "reviewed test evidence", "audit_test"
+    ) is True
+    assert planner.factual_self_report_snapshot()["dominant_plan"][
+        "success_criteria_status"
+    ] == "verified"
 
 
 def test_successful_action_cannot_complete_user_goal_without_criterion_evidence(tmp_path):
@@ -150,10 +159,20 @@ def test_successful_action_cannot_complete_user_goal_without_criterion_evidence(
     assert record_goal_completion(goal, goal_engine=engine) is False
     assert engine.get_goal_by_id(goal.id).status == "active"
 
-    # A trusted verification record is the only route through the new gate.
-    goal.success_criteria_verified = True
-    goal.success_criteria_evidence = "Five reviewed summaries were checked against timestamped sensor records."
-    goal.success_criteria_verified_by = "audit_review"
+    # The exact criterion, evidence, and verifier are persisted as one record.
+    criteria = goal.success_criteria
+    assert engine.record_success_criteria_verification(
+        goal.id,
+        criteria,
+        "Five reviewed summaries were checked against timestamped sensor records.",
+        "audit_review",
+    ) is True
+    assert engine.record_success_criteria_verification(
+        goal.id,
+        "a different criterion",
+        "evidence",
+        "audit_review",
+    ) is False
     assert goal_completion_eligible(goal)[0] is True
     assert engine.complete_goal(goal.id) is True
     assert engine.get_goal_by_id(goal.id).status == "completed"

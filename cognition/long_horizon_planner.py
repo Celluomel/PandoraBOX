@@ -774,9 +774,23 @@ class LongHorizonPlanner:
         if plan is not None:
             completed = [step.operation for step in plan.steps if step.status == "completed"]
             next_step = self.current_step(plan.aspiration_domain)
+            source_goal = None
+            if plan.source == "goal":
+                get_goal = getattr(self._goal_engine(), "get_goal_by_id", None)
+                if callable(get_goal):
+                    source_goal = get_goal(plan.source_id)
+            criteria_status = (
+                "verified"
+                if source_goal is not None
+                and getattr(source_goal, "success_criteria_verified", False) is True
+                and str(getattr(source_goal, "success_criteria_evidence", "") or "").strip()
+                and str(getattr(source_goal, "success_criteria_verified_by", "") or "").strip()
+                else "unverified" if plan.source == "goal" else "not_applicable"
+            )
             plan_data = {
                 "objective": plan.objective[:160],
                 "status": plan.status,
+                "success_criteria_status": criteria_status,
                 "steps_completed": plan.steps_completed,
                 "steps_total": len(plan.steps),
                 "completed_operations": completed,
@@ -861,7 +875,8 @@ class LongHorizonPlanner:
             lines.append(
                 f"Dominant active internal plan (it may be independent of the current "
                 f"conversation): objective={plan['objective'][:100]!r}; progress "
-                f"{plan['steps_completed']}/{plan['steps_total']}; completed="
+                f"{plan['steps_completed']}/{plan['steps_total']}; "
+                f"goal criterion={plan.get('success_criteria_status', 'unknown')}; completed="
                 f"{','.join(completed) if completed else 'none'}; next pending="
                 f"{plan['next_operation'] or 'none'}; "
                 "pending operation is not currently executing."
@@ -905,7 +920,9 @@ class LongHorizonPlanner:
             if plan:
                 lines.append(
                     f"Plan interne enregistré : « {plan['objective']} » — "
-                    f"{plan['steps_completed']}/{plan['steps_total']} étapes terminées."
+                    f"{plan['steps_completed']}/{plan['steps_total']} étapes terminées; "
+                    f"critère de l’objectif : "
+                    f"{plan.get('success_criteria_status', 'inconnu')}."
                 )
                 if plan.get("next_operation"):
                     lines.append(f"Prochaine étape enregistrée : {plan['next_operation']}.")
@@ -919,7 +936,8 @@ class LongHorizonPlanner:
             if plan:
                 lines.append(
                     f"Recorded internal plan: “{plan['objective']}” — "
-                    f"{plan['steps_completed']}/{plan['steps_total']} steps complete."
+                    f"{plan['steps_completed']}/{plan['steps_total']} steps complete; "
+                    f"goal criterion: {plan.get('success_criteria_status', 'unknown')}."
                 )
                 if plan.get("next_operation"):
                     lines.append(f"Recorded next step: {plan['next_operation']}.")

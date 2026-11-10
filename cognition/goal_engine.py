@@ -1149,6 +1149,49 @@ class GoalEngine:
             and str(getattr(goal, "success_criteria_evidence", "") or "").strip()
             and str(getattr(goal, "success_criteria_verified_by", "") or "").strip()
         )
+
+    def record_success_criteria_verification(
+        self,
+        goal_id: str,
+        criteria: str,
+        evidence: str,
+        verified_by: str,
+    ) -> bool:
+        """Persist criterion-specific verification from a trusted audit step.
+
+        This records evidence; it does not evaluate free-form criteria itself.
+        Callers must supply the exact criterion and identify the verifying
+        instrument/reviewer. Generic action results must never call this.
+        """
+        evidence = " ".join(str(evidence or "").split())[:2000]
+        verified_by = " ".join(str(verified_by or "").split())[:120]
+        with self._lock:
+            goal = self._goals.get(str(goal_id))
+            if (
+                goal is None
+                or goal.origin != "user_requested_development"
+                or not str(criteria or "").strip()
+                or str(criteria).strip() != str(goal.success_criteria or "").strip()
+                or not evidence
+                or not verified_by
+            ):
+                return False
+            previous = (
+                goal.success_criteria_verified,
+                goal.success_criteria_evidence,
+                goal.success_criteria_verified_by,
+            )
+            goal.success_criteria_verified = True
+            goal.success_criteria_evidence = evidence
+            goal.success_criteria_verified_by = verified_by
+            if not self._save_goals():
+                (
+                    goal.success_criteria_verified,
+                    goal.success_criteria_evidence,
+                    goal.success_criteria_verified_by,
+                ) = previous
+                return False
+            return True
     
     # ── Goal Query ─────────────────────────────────────────────────────────
     
