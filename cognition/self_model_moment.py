@@ -237,24 +237,25 @@ class SelfModelMoment:
         This is placed BEFORE the phenomenal moment — it is the stable
         self against which the current moment is experienced.
         """
-        lines = [f"[Self-model — φ={self.phi:.2f}, {self.coherence_trend}]"]
+        # Keep this source to stable, current-state facts. Narrative thread
+        # and values have dedicated identity consumers; repeating them here
+        # used 100+ prompt tokens and starved other self-state modules.
+        def _short(value: str, limit: int = 96) -> str:
+            value = " ".join(str(value or "").split())
+            return value if len(value) <= limit else value[: limit - 1].rstrip() + "…"
+
+        parts = [f"φ={self.phi:.2f}", f"coherence={self.coherence_trend}"]
 
         if self.qualia_tone and self.qualia_tone != RESTING_QUALIA:
-            lines.append(f"  Felt ground: {self.qualia_tone}")
+            parts.append(f"tone={_short(self.qualia_tone, 72)}")
 
         if self.emotional_ground:
-            lines.append(f"  Emotional ground: {self.emotional_ground}")
+            parts.append(f"affect={_short(self.emotional_ground, 64)}")
 
         if self.capability_stance:
-            lines.append(f"  Capability stance: {self.capability_stance}")
+            parts.append(f"capability={_short(self.capability_stance, 96)}")
 
-        if self.narrative_thread:
-            lines.append(f"  Narrative thread: {self.narrative_thread}")
-
-        if self.top_values:
-            lines.append(f"  Active values: {self.top_values}")
-
-        return "\n".join(lines)
+        return "[Self-model state: " + "; ".join(parts) + "]"
 
 
 # ── Manager ────────────────────────────────────────────────────────────────────

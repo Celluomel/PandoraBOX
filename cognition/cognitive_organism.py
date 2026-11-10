@@ -709,16 +709,13 @@ class CognitiveOrganism:
                 _attn_d  = _jorg.loads(_ap_org.read_text())
                 _pf      = _attn_d.get("primary_focus", "")
                 _sf      = _attn_d.get("secondary_focus", [])
-                _topic   = _attn_d.get("workspace_topic", "")
                 if _pf:
                     _pfl = _pf.replace("_", " ")
                     _sfl = " and ".join(s.replace("_", " ") for s in _sf[:2])
-                    _frag = f"Cognitive focus is on {_pfl}"
+                    _frag = f"Primary cognitive focus: {_pfl[:48]}"
                     if _sfl:
-                        _frag += f", with secondary attention on {_sfl}"
-                    if _topic:
-                        _frag += f". Current workspace theme: {_topic[:50]}"
-                    budget.add("attention", "attention_focus", f"[Cognitive focus] {_frag}.")
+                        _frag += f"; secondary: {_sfl[:48]}"
+                    budget.add("attention", "attention_focus", f"[{_frag}]")
         except Exception:
             pass
 
@@ -958,16 +955,10 @@ class CognitiveOrganism:
                 exc,
             )
 
-        # ── v63: NarrativeCompression — identity themes ───────────────────────
-        try:
-            loop = getattr(self, '_loop', None)
-            nc   = getattr(loop, '_narrative_compression', None) if loop else None
-            if nc and hasattr(nc, 'themes_fragment'):
-                nc_frag = nc.themes_fragment()
-                if nc_frag:
-                    budget.add("identity", "narrative_themes", nc_frag)
-        except Exception:
-            pass
+        # NarrativeCompression publishes its themes into NarrativeIdentity's
+        # current arc. NarrativeIdentity.prompt_fragment() above is the single
+        # downstream consumer; injecting themes again duplicated the same
+        # history and regularly displaced other identity signals.
 
         # ── v66: TemporalSelfProjection — becoming ────────────────────────────
         try:

@@ -76,9 +76,15 @@ CATEGORY_BUDGETS: Dict[str, Tuple[int, int]] = {
     # category → (token_budget, priority)  lower priority = higher priority number
     "factual_telemetry":  (320, 0),
     "self_evidence":      (120, 1),
-    "self_state":         (120, 2),
+    # Self-model, experiential signals, interrupts, and temporal context are
+    # independent producers. Their compact forms need to coexist; the former
+    # cap admitted only the self-model paragraph.
+    "self_state":         (180, 2),
     "identity":           (200, 3),
-    "cognitive_pressure": (100, 4),
+    # The former cap routinely discarded arbitration after energy had taken
+    # its share. Keep decision, workspace, and energy hand-offs eligible while
+    # the global 900-token ceiling still bounds total prompt growth.
+    "cognitive_pressure": (160, 4),
     "attention":          (80,  5),
     "memory_active":      (150, 6),
     "skills":             (120, 7),

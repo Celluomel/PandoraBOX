@@ -40,15 +40,19 @@ class SelfCorrectionEngine:
         query = self._tokens(user_input)
         with self._lock:
             rules = [r for r in self._rules if float(r.get("confidence", 0)) >= 0.55]
-            rules.sort(key=lambda r: (float(r.get("confidence", 0)), int(r.get("uses", 0))), reverse=True)
-            selected = []
+            ranked = []
             for rule in rules:
                 context = self._tokens(str(rule.get("context", "")))
                 overlap = len(query & context) if query and context else 0
-                if not query or overlap > 0 or len(selected) == 0:
-                    selected.append(rule)
-                if len(selected) == 2:
-                    break
+                # A high-confidence correction from an unrelated topic must
+                # not become a standing instruction for every future turn.
+                # Require an actual lexical bridge, then rank by relevance
+                # before confidence/use count.
+                if overlap:
+                    ranked.append((overlap, float(rule.get("confidence", 0)),
+                                   int(rule.get("uses", 0)), rule))
+            ranked.sort(key=lambda item: item[:3], reverse=True)
+            selected = [item[3] for item in ranked[:2]]
         if not selected:
             return ""
         lines = [

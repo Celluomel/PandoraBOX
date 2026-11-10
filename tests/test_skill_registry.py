@@ -42,6 +42,27 @@ class _FakeOrganism:
 
 
 class SkillRegistryTests(unittest.TestCase):
+    def test_prompt_fragment_is_bounded_to_the_best_relevant_skill(self):
+        with tempfile.TemporaryDirectory() as directory:
+            registry = SkillRegistry(_FakeOrganism(), str(Path(directory) / "skills.json"))
+            skill = registry.seed(
+                "technical_architecture",
+                "Architecture analysis",
+                initial_confidence=0.9,
+                name="Technical Architecture Explanation",
+            )
+            for _ in range(5):
+                registry.practice("technical_architecture", success=True, schedule_enrichment=False)
+            skill = registry.skills_snapshot()["technical_architecture"]
+            skill.insights = ["Trace state transitions before changing behavior." * 20]
+            registry.relevant_skills = lambda query, n=1, semantic=False: [skill]
+
+            fragment = registry.prompt_fragment("architecture")
+
+            self.assertIn("Technical Architecture Explanation", fragment)
+            self.assertIn("Key evidence:", fragment)
+            self.assertLess(len(fragment), 320)
+
     def test_legacy_registry_is_migrated_without_losing_evidence(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "skills.json"

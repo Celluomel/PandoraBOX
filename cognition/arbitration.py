@@ -94,19 +94,24 @@ class ArbitrationDecision:
         ecology_fragment: str = "",
         tension_fragment: str = "",
     ) -> str:
-        """Build the full motivational section of the system prompt."""
+        """Build a compact, non-redundant decision hand-off for generation."""
         lines = [
-            f"CURRENT MOTIVATIONAL STATE:",
-            f"  Primary drive: {self.dominant_drive.replace('_', ' ')}",
+            f"[Arbitration decision: {self.dominant_drive.replace('_', ' ')}; "
+            f"style={self.reasoning_style}]"
         ]
         if self.secondary_drives:
             sec = ", ".join(d.replace("_", " ") for d in self.secondary_drives)
-            lines.append(f"  Secondary: {sec}")
-        if tension_fragment:
-            lines.append(f"  Inner state: {tension_fragment}")
-        if ecology_fragment:
-            lines.append(f"  {ecology_fragment}")
-        lines.append(f"  Approach: {self.depth_directive}")
+            lines.append(f"Supporting drives: {sec}.")
+        # Ecology and tension already feed Arbitration.decide(); repeating
+        # their narrative fragments here made the final hand-off >100 tokens
+        # and caused the decision to be dropped by its category budget.
+        # The selected drive/style is the compact downstream result of those
+        # inputs. Keep the args for API compatibility with existing callers.
+        if self.depth_directive:
+            directive = " ".join(self.depth_directive.split())
+            if len(directive) > 180:
+                directive = directive[:179].rsplit(" ", 1)[0] + "…"
+            lines.append(f"Response directive: {directive}")
         return "\n".join(lines)
 
     def to_dict(self) -> Dict[str, Any]:

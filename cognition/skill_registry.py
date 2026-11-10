@@ -550,12 +550,24 @@ class SkillRegistry:
         return count
 
     def prompt_fragment(self, query: str) -> str:
-        """Return skill context for prompt injection, or empty string."""
-        skills = self.relevant_skills(query, n=2)
+        """Return concise, query-relevant capability evidence for the prompt."""
+        skills = self.relevant_skills(query, n=1)
         if not skills:
             return ""
-        frags = [s.prompt_fragment() for s in skills if s.depth >= 1]
-        return "\n".join(frags) if frags else ""
+        skill = skills[0]
+        if skill.depth < 1:
+            return ""
+        label = " ".join((skill.name or skill.domain.replace("_", " ")).split())[:64]
+        fragment = (
+            f"[Relevant skill: {label}; {skill.depth_label()}, "
+            f"confidence={skill.confidence:.0%}]"
+        )
+        if skill.insights:
+            insight = " ".join(str(skill.insights[0]).split())
+            if len(insight) > 220:
+                insight = insight[:219].rsplit(" ", 1)[0] + "…"
+            fragment += f" Key evidence: {insight}"
+        return fragment
 
     def all_domain_confidence(self) -> Dict[str, float]:
         """

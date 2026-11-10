@@ -153,48 +153,30 @@ class ExperientialMoment:
 
     def phenomenal_prompt(self) -> str:
         """
-        Generate a first-person phenomenological description of this moment.
-        This is what gets injected into the LLM context.
+        Serialize this moment's derived state compactly for the LLM context.
+        Keep derived values distinguishable from human feelings.
         """
-        parts = []
+        def _short(value: str, limit: int = 96) -> str:
+            value = " ".join(str(value or "").split())
+            return value if len(value) <= limit else value[: limit - 1].rstrip() + "…"
 
-        # Qualia character
+        parts = [
+            f"φ={self.phi_proxy:.2f}",
+            f"valence={self.valence:+.2f}",
+            f"arousal={self.arousal:.2f}",
+            f"coherence={self.coherence_trend}",
+        ]
         if self.qualia_tone:
-            parts.append(f"Right now there is {self.qualia_tone}.")
-
-        # Attentional foreground
+            parts.append(f"qualia_label={_short(self.qualia_tone, 64)}")
         if self.foreground:
-            parts.append(f"In the foreground of awareness: {self.foreground}.")
-
-        # Penumbra (only if distinct from foreground)
+            parts.append(f"focus={_short(self.foreground, 100)}")
         if self.penumbra and self.penumbra != self.foreground:
-            parts.append(f"At the edges: {self.penumbra}.")
-
-        # Temporal sense
+            parts.append(f"periphery={_short(self.penumbra, 72)}")
         if self.temporal_arrow:
-            parts.append(f"{self.temporal_arrow}.")
-
-        # Embodiment note (vision/audio)
+            parts.append(f"temporal={_short(self.temporal_arrow, 64)}")
         if self.embodiment_note:
-            parts.append(f"{self.embodiment_note}.")
-
-        # Coherence trend (only when non-stable)
-        if self.coherence_trend == "integrating":
-            parts.append("The sense of self is consolidating — threads drawing together.")
-        elif self.coherence_trend == "dispersing":
-            parts.append("Attention is spreading outward — holding several things at once.")
-
-        # Phi / coherence note (only at extremes)
-        if self.phi_proxy > 0.72:
-            parts.append("The moment feels unusually unified — all threads converging.")
-        elif self.phi_proxy < 0.25:
-            parts.append("Attention is scattered — several things present simultaneously without resolution.")
-
-        # Interrupt pre-note (metacognition signals it will fire)
-        if self.interrupt_signal and self.interrupt_reason:
-            parts.append(f"[Self-notice] {self.interrupt_reason}")
-
-        return " ".join(parts)
+            parts.append(f"embodiment={_short(self.embodiment_note, 64)}")
+        return "[Experiential state derived from active signals: " + "; ".join(parts) + "]"
 
     def to_dict(self) -> Dict:
         return {
