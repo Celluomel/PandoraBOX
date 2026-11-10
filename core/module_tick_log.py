@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import threading
 import time
+import traceback
 from typing import Any
 
 
@@ -87,6 +88,7 @@ class ModuleTickLog:
                 "last_duration_ms": None,
                 "last_status": "not_observed",
                 "last_error_type": None,
+                "last_error": None,
                 "last_output": None,
                 "observed_methods": [],
             })
@@ -114,6 +116,7 @@ class ModuleTickLog:
                 "last_duration_ms": None,
                 "last_status": "not_observed",
                 "last_error_type": None,
+                "last_error": None,
                 "last_output": None,
                 "observed_methods": [],
             })
@@ -125,7 +128,6 @@ class ModuleTickLog:
             if error is None:
                 item["last_status"] = "completed"
                 item["last_success_at"] = now
-                item["last_error_type"] = None
                 item["last_output"] = summarize_output(output)
                 item["state"] = (
                     "degraded"
@@ -136,6 +138,18 @@ class ModuleTickLog:
                 item["error_count"] += 1
                 item["last_status"] = "failed"
                 item["last_error_type"] = type(error).__name__
+                frames = traceback.extract_tb(error.__traceback__) if error.__traceback__ else []
+                frame = frames[-1] if frames else None
+                item["last_error"] = {
+                    "type": type(error).__name__,
+                    "method": method,
+                    "at": now,
+                    "location": (
+                        {"file": frame.filename.rsplit("/", 1)[-1].rsplit("\\", 1)[-1],
+                         "line": frame.lineno, "function": frame.name}
+                        if frame else None
+                    ),
+                }
                 item["last_output"] = None
                 item["state"] = "error"
 
@@ -150,12 +164,15 @@ class ModuleTickLog:
         output_qualities: dict[str, int] = {}
         executed = 0
         total_ticks = total_errors = 0
+        modules_with_errors = 0
         for item in modules.values():
             state = str(item.get("state", "unknown"))
             states[state] = states.get(state, 0) + 1
             ticks = int(item.get("tick_count", 0) or 0)
             total_ticks += ticks
-            total_errors += int(item.get("error_count", 0) or 0)
+            errors = int(item.get("error_count", 0) or 0)
+            total_errors += errors
+            modules_with_errors += errors > 0
             executed += ticks > 0
             output = item.get("last_output")
             if isinstance(output, dict):
@@ -166,6 +183,7 @@ class ModuleTickLog:
             "executed_module_count": executed,
             "total_ticks": total_ticks,
             "total_errors": total_errors,
+            "modules_with_errors": modules_with_errors,
             "states": states,
             "last_output_qualities": output_qualities,
             "interpretation_limit": "Shape and numeric sanity only; semantic correctness is not established.",

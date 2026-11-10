@@ -33,6 +33,24 @@ class ModuleTickLogTests(unittest.TestCase):
         self.assertEqual(state["last_error_type"], "RuntimeError")
         self.assertNotIn("sensitive prompt fragment", repr(state))
 
+    def test_tick_log_retains_safe_failure_provenance_after_later_success(self):
+        ticks = ModuleTickLog()
+        ticks.register("sample", initialized=True)
+        try:
+            raise UnboundLocalError("private local value")
+        except UnboundLocalError as exc:
+            ticks.record("sample", "run", started_at=1.0, duration_ms=1.0, error=exc)
+        ticks.record("sample", "run", started_at=2.0, duration_ms=1.0, output={"ok": True})
+
+        state = ticks.snapshot()["sample"]
+        self.assertEqual(state["last_status"], "completed")
+        self.assertEqual(state["last_error_type"], "UnboundLocalError")
+        self.assertEqual(state["last_error"]["method"], "run")
+        self.assertEqual(state["last_error"]["location"]["function"],
+                         "test_tick_log_retains_safe_failure_provenance_after_later_success")
+        self.assertNotIn("private local value", repr(state))
+        self.assertEqual(ticks.analysis()["modules_with_errors"], 1)
+
     def test_registration_distinguishes_unavailable_from_unobserved(self):
         ticks = ModuleTickLog()
         ticks.register("initialized", initialized=True)
