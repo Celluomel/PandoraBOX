@@ -26,7 +26,7 @@ EXCLUDED_DIRS = {
     ".git", ".venv", "venv", "body_venv", "node_modules", "__pycache__",
     ".pytest_cache", ".mypy_cache", ".ruff_cache",
 }
-TEST_OR_TOOL_DIRS = {"tests", "scripts", "archive", "artifacts"}
+TEST_OR_TOOL_DIRS = {"tests", "scripts", "tools", "archive", "artifacts"}
 file_calls: Counter[str] = Counter()
 module_calls: Counter[str] = Counter()
 relative_path_cache: dict[str, str | None] = {}
@@ -80,7 +80,7 @@ def _repository_python_files() -> list[str]:
 def _scope(path: str) -> str:
     parts = {part.casefold() for part in Path(path).parts}
     if "body_runtime_host" in parts:
-        return "separate_body_service"
+        return "body_runtime_code"
     if TEST_OR_TOOL_DIRS.intersection(parts):
         return "test_or_tool"
     return "brain_or_shared_library"
@@ -114,6 +114,7 @@ def _write_report() -> None:
         "pid": os.getpid(),
         "profiling_enabled": True,
         "overhead_note": "sys.setprofile observes Python function/module calls; use for audit sessions only",
+        "scope_note": "Scope labels classify source paths; every listed execution occurred in this app.py process and its Python threads.",
         "repository_python_files": len(files),
         "executed_file_count": len(executed),
         "unexecuted_file_count": len(unexecuted),
