@@ -931,8 +931,18 @@ Write at most 70 words, in the user's language, only if a concise carry-forward 
                 max_tokens=120,
                 temperature=0.1,
             )
-            if result.get("status") != "ok":
-                return "deferred" if result.get("status") == "deferred" else "failed"
+            provider_status = str(result.get("status") or "")
+            if provider_status == "deferred":
+                return "deferred"
+            if provider_status != "ok":
+                # Preserve a bounded failure class for the turn audit. The
+                # provider's reason may contain prompt or backend text, so it
+                # must not be copied into the cognitive trace.
+                error_type = {
+                    "empty": "EmptyProviderOutput",
+                    "error": "ProviderError",
+                }.get(provider_status, "UnexpectedProviderStatus")
+                return {"status": "failed", "error_type": error_type}
             note = str(result.get("text") or "").strip()
             if not note or note.casefold() == "none":
                 logger.debug("[DeferredReflection] no continuity note for completed turn")

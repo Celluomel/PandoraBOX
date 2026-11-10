@@ -602,6 +602,37 @@ class PeerHistoryIsolationTests(unittest.TestCase):
         self.assertEqual(result, {"status": "failed", "error_type": "RuntimeError"})
         self.assertNotIn("private prompt", str(result))
 
+    def test_deferred_continuity_classifies_provider_empty_and_error_results(self):
+        from cognition.persona_bridge import PersonaBridge
+
+        class _Provider:
+            def __init__(self, status):
+                self.status = status
+
+            def generate_bare_result(self, *args, **kwargs):
+                return {
+                    "status": self.status,
+                    "text": "",
+                    "reason": "private provider detail must not enter the trace",
+                }
+
+        for provider_status, expected in (
+            ("empty", "EmptyProviderOutput"),
+            ("error", "ProviderError"),
+            ("unexpected", "UnexpectedProviderStatus"),
+        ):
+            with self.subTest(provider_status=provider_status):
+                bridge = PersonaBridge.__new__(PersonaBridge)
+                bridge._system = object()
+                bridge._external_llm_fn = _Provider(provider_status).generate_bare_result
+                bridge._reflection_lock = threading.Lock()
+                bridge._reflection_epochs = {}
+
+                result = bridge.run_deferred_analysis("question", "answer", "fred", 0)
+
+                self.assertEqual(result, {"status": "failed", "error_type": expected})
+                self.assertNotIn("private provider detail", str(result))
+
 
 class _FakePersona:
     def __init__(self, response="Lumina peer response"):
