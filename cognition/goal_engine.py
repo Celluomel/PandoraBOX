@@ -678,6 +678,7 @@ class GoalEngine:
         # candidates before any are added to self._goals.
         seen_topics = {g.topic.lower() for g in self._goals.values()}
 
+        logged_noise_topics = set()
         for motive in motivations:
             if len(candidates) >= limit:
                 break
@@ -690,7 +691,9 @@ class GoalEngine:
                 if len(t_lower) < 4:      # skip noise words
                     continue
                 if self._is_lexical_noise_topic(t_lower):
-                    logger.info("[GoalEngine] rejected lexical-noise topic %r", topic)
+                    if t_lower not in logged_noise_topics:
+                        logger.debug("[GoalEngine] rejected lexical-noise topic %r", topic)
+                        logged_noise_topics.add(t_lower)
                     continue
                 if t_lower in seen_topics:  # dedup across batch AND existing goals
                     continue
@@ -894,6 +897,9 @@ class GoalEngine:
         'soyez', 'savoir', 'curieux', 'curieuse', 'curiosité', 'tente',
         'essayez', 'essaie', 'peux', 'peut', 'pourrais', 'pourrait',
         'dis', 'dites', 'faut', 'semble', 'vraiment', 'arxchiv',
+        # Generic architecture vocabulary seen repeatedly in introspection
+        # turns; alone it is not a durable developmental goal.
+        'module', 'modules',
     }
 
     def add_goal(self, goal: Goal):

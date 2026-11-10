@@ -77,7 +77,7 @@ class SimpleThoughtEvaluator:
             if thought.get('evaluated', False):
                 evaluated_at = thought.get('evaluated_at', '')
                 try:
-                    from datetime import datetime, timezone
+                    from datetime import timezone
                     ev_ts = datetime.fromisoformat(
                         evaluated_at.replace('Z', '+00:00')
                     ).timestamp() if evaluated_at else 0

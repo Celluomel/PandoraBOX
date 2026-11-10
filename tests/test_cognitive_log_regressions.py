@@ -29,6 +29,7 @@ from cognition.semantic_extractor import SemanticExtractor
 from cognition.semantic_memory import SemanticMemory
 from cognition.self_concept_synchronizer import SelfConceptSynchronizer
 from cognition.self_description import SelfDescription
+from cognition.simple_thought_evaluator import SimpleThoughtEvaluator
 from cognition.thought_thread_engine import ThoughtThreadEngine
 from managers.user_manager import UserManager
 
@@ -43,6 +44,37 @@ for _name in list(sys.modules):
 
 
 class CognitiveLogRegressionTests(unittest.TestCase):
+    def test_simple_thought_evaluator_can_timestamp_a_fresh_goal_candidate(self):
+        class _Dal:
+            def get_thoughts(self, **kwargs):
+                return [{"id": "thought-1", "content": "fresh thought"}]
+
+            def get_goals(self):
+                return []
+
+            def add_thought(self, thought):
+                return None
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            evaluator = SimpleThoughtEvaluator(temp_dir)
+            evaluation = {
+                "type": "uncertainty", "concept": "robot capabilities",
+                "priority": 0.7, "actionability": 0.6,
+                "friction": "unknown", "goal_type": "learn",
+                "hypothesis": None, "should_create_goal": True,
+            }
+            with (
+                patch("core.data.access.DataAccess", return_value=_Dal()),
+                patch.object(evaluator, "_evaluate_thought", return_value=evaluation),
+                patch.object(evaluator, "_has_existing_goal", return_value=False),
+                patch.object(evaluator, "_inject_followup_thoughts"),
+            ):
+                suggestions = evaluator.evaluate_recent_thoughts()
+
+        self.assertEqual(len(suggestions), 1)
+        self.assertEqual(suggestions[0]["concept"], "robot capabilities")
+        self.assertTrue(suggestions[0]["created_at"])
+
     def test_self_description_prompt_is_factual_and_marks_registry_partial(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             description = SelfDescription(str(Path(temp_dir) / "self.json"))
@@ -122,7 +154,10 @@ class CognitiveLogRegressionTests(unittest.TestCase):
             self.assertIn("visual odometry", memory.recent_user_topics())
 
     def test_goal_admission_rejects_log_fragments_but_keeps_real_phrases(self):
-        for noise in ("toujours", "quelles", "arxchiv", "assez", "sois"):
+        for noise in (
+            "toujours", "quelles", "arxchiv", "assez", "sois",
+            "module", "modules", "cognitifs",
+        ):
             self.assertTrue(GoalEngine._is_lexical_noise_topic(noise), noise)
         self.assertFalse(GoalEngine._is_lexical_noise_topic("cognitive architecture"))
 
