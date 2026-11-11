@@ -83,7 +83,7 @@ class Phase2Orchestrator:
             return self.components['advanced_evaluator'].evaluate_recent_thoughts()
         return []
     
-    def create_and_mutate_goals(self, evaluated_thoughts: List[Dict]) -> Dict:
+    def create_and_mutate_goals(self, evaluated_thoughts: List[Dict], goal_engine=None) -> Dict:
         """
         Create new goals and mutate existing ones from evaluated thoughts.
         
@@ -102,7 +102,9 @@ class Phase2Orchestrator:
         }
         
         for thought_eval in evaluated_thoughts:
-            result = linker.process_thought_evaluation(thought_eval)
+            result = linker.process_thought_evaluation(
+                thought_eval, goal_engine=goal_engine
+            )
             
             total_result['created_goals'].extend(result['created_goals'])
             total_result['updated_goals'].extend(result['updated_goals'])

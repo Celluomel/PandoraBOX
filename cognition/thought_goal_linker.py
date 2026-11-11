@@ -25,8 +25,9 @@ class ThoughtGoalLinker:
     - Merge similar goals
     """
     
-    def __init__(self, persona_dir: str = "data/persona"):
+    def __init__(self, persona_dir: str = "data/persona", goal_engine=None):
         self.persona_dir = Path(persona_dir)
+        self.goal_engine = goal_engine
         
         # Similarity threshold for goal merging
         self.merge_threshold = 0.8
@@ -35,7 +36,7 @@ class ThoughtGoalLinker:
         self.urgency_boost_factor = 0.3
         self.repetition_boost_factor = 0.1
     
-    def process_thought_evaluation(self, evaluated_thought: Dict) -> Dict:
+    def process_thought_evaluation(self, evaluated_thought: Dict, goal_engine=None) -> Dict:
         """
         Process an evaluated thought and create/update goals.
         
@@ -54,6 +55,13 @@ class ThoughtGoalLinker:
         
         # Load current goals
         goals = self._load_goals()
+        engine = goal_engine or self.goal_engine
+        if engine is None:
+            from cognition.goal_engine import GoalEngine
+            engine = GoalEngine(
+                None, persistence_file=str(self.persona_dir / "goals.json")
+            )
+            self.goal_engine = engine
         
         # 1. Check if thought links to existing goal
         linked_goal = self._find_similar_goal(evaluated_thought, goals)
@@ -67,13 +75,30 @@ class ThoughtGoalLinker:
         # 2. Create new goal if actionable enough
         elif evaluated_thought.get('actionability', 0) > 0.6:
             new_goal = self._create_goal_from_thought(evaluated_thought)
-            self._add_goal(new_goal)
-            result['created_goals'].append(new_goal['id'])
+            from cognition.goal_engine import Goal
+            engine.reload_from_disk()
+            accepted = engine.add_goal(Goal(
+                id=str(new_goal['id']),
+                topic=str(new_goal.get('description') or new_goal.get('name') or ""),
+                origin="thought_goal_linker",
+                priority=float(new_goal.get('priority', 0.5)),
+                energy=float(new_goal.get('priority', 0.5)),
+                created_cycle=int(getattr(engine, "_cycle_counter", 0)),
+                last_active=int(getattr(engine, "_cycle_counter", 0)),
+                source_thought_id=str(evaluated_thought.get('origin_thought_id') or ""),
+                source_thought_type=str(evaluated_thought.get('type') or "")[:80],
+                source_concept_method="advanced_thought_evaluator",
+            ))
+            if accepted:
+                result['created_goals'].append(new_goal['id'])
         
         # 3. Check for goals to merge (similar goals created from different thoughts)
         if len(goals) > 1:
             merged = self._merge_similar_goals(goals)
             result['merged_goals'].extend(merged)
+
+        if result['updated_goals'] or result['merged_goals']:
+            engine.reload_from_disk()
         
         return result
     

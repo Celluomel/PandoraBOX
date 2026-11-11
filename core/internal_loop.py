@@ -1729,7 +1729,18 @@ class InternalThoughtLoop:
                     )
                     
                     # Create/mutate goals from advanced evaluation
-                    mutations = self._phase2.create_and_mutate_goals(evaluated_thoughts)
+                    _goal_engine = getattr(
+                        getattr(o, "ai_system", None), "goal_engine", None
+                    )
+                    mutations = self._phase2.create_and_mutate_goals(
+                        evaluated_thoughts, goal_engine=_goal_engine
+                    )
+                    if (_goal_engine is not None
+                            and hasattr(_goal_engine, "reload_from_disk") and any(
+                        mutations.get(key)
+                        for key in ("created_goals", "updated_goals", "merged_goals")
+                    )):
+                        _goal_engine.reload_from_disk()
                     
                     created = len(mutations.get('created_goals', []))
                     updated = len(mutations.get('updated_goals', []))
@@ -2671,6 +2682,13 @@ class InternalThoughtLoop:
             try:
                 report = self._goal_consolidator.run()
                 s = report.get('summary', {})
+                _goal_engine = getattr(
+                    getattr(self._organism, "ai_system", None), "goal_engine", None
+                )
+                if (_goal_engine is not None and hasattr(_goal_engine, "reload_from_disk") and sum(
+                    int(s.get(key, 0) or 0) for key in ("merged", "renamed", "archived")
+                )):
+                    _goal_engine.reload_from_disk()
                 if s.get('merged', 0) + s.get('renamed', 0) + s.get('archived', 0) > 0:
                     logger.info(
                         f"[InternalLoop] V36 Goal consolidation: "
