@@ -451,7 +451,15 @@ class CognitiveAuditEngine:
     def _update_consecutive_underperformance(self, snapshot: SignalSnapshot) -> None:
         deficits = snapshot.deficit()
         with self._lock:
-            for name, gap in deficits.items():
+            # A missing sample breaks a consecutive run. Keeping the previous
+            # count across an unavailable interval lets one old under-target
+            # reading combine with a much later reading and falsely satisfy
+            # the two-audit confirmation requirement.
+            for name in SIGNAL_TARGETS:
+                if name not in deficits:
+                    self._state.consecutive_under[name] = 0
+                    continue
+                gap = deficits[name]
                 if gap < 0:
                     self._state.consecutive_under[name] = (
                         self._state.consecutive_under.get(name, 0) + 1

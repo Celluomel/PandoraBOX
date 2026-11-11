@@ -14,12 +14,35 @@ sys.path.insert(0, str(ROOT))
 package = ModuleType('cognition')
 package.__path__ = [str(ROOT / 'cognition')]
 with patch.dict(sys.modules, {'cognition': package}):
-    from cognition.cognitive_audit_engine import AuditState, CognitiveAuditEngine
+    from cognition.cognitive_audit_engine import (
+        AuditState, CognitiveAuditEngine, SignalSnapshot,
+    )
     from cognition.narrative_compression import NarrativeCompression
     from cognition.temporal_projection import TemporalProjection, PathProjection
 
 
 class HealthDataTests(unittest.TestCase):
+    def test_cognitive_audit_breaks_underperformance_streak_on_missing_signal(self):
+        audit = CognitiveAuditEngine.__new__(CognitiveAuditEngine)
+        audit._state = AuditState(consecutive_under={
+            'mean_skill_depth': 8,
+            'question_resolution_rate': 13,
+            'experiment_confirmation_rate': 9,
+        })
+        audit._lock = __import__('threading').Lock()
+
+        audit._update_consecutive_underperformance(SignalSnapshot(
+            slow_cycle=200,
+            timestamp=1000.0,
+            mean_skill_depth=0.3,
+            question_resolution_rate=None,
+            experiment_confirmation_rate=None,
+        ))
+
+        self.assertEqual(audit._state.consecutive_under['mean_skill_depth'], 9)
+        self.assertEqual(audit._state.consecutive_under['question_resolution_rate'], 0)
+        self.assertEqual(audit._state.consecutive_under['experiment_confirmation_rate'], 0)
+
     def test_cognitive_audit_waits_briefly_for_llm_slot_and_exposes_skip_reason(self):
         audit = CognitiveAuditEngine.__new__(CognitiveAuditEngine)
         audit._ai = NS(llm=NS(get_response=Mock(return_value="")))

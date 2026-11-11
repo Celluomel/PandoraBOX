@@ -406,3 +406,11 @@ L’inspection des enregistrements live a relié les modules et leurs effets : `
 Correction locale : ajout d’une classification partagée par provenance (`semantic_concept` et marqueur legacy `semantic_hub_*`), exclusion de ces records lors du bootstrap et de la synchronisation, mise en quarantaine des anciennes entrées dans le self-model avec conservation de leur contenu pour audit, et exclusion du générateur d’objectifs d’identité. Le bootstrapper normalise aussi le préfixe `expressed_` une seule fois. Enfin, `GoalQualityFilter` migre le topic déjà persisté pour l’objectif généré par le système; l’ancien topic est conservé dans `topic_history` avec le motif et l’horodatage.
 
 Vérification locale : **59 passed**, 11 sous-tests, 9 avertissements connus sur le lot provenance, goals, mémoire, registre d’exécution et audit cognitif; `py_compile` et `git diff --check` réussissent. La correction n’est pas chargée dans Lumina; le redémarrage final reste nécessaire pour constater la quarantaine et la migration dans les données actives.
+
+## Les séries de sous-performance sont interrompues par les échantillons absents
+
+Le snapshot live marquait `experiment_confirmation_rate` et `question_resolution_rate` indisponibles alors que `consecutive_under` conservait pour ces signaux une valeur de 293. `_update_consecutive_underperformance()` ne parcourait que les valeurs présentes; une période sans observation ne rompait donc pas la série, et une mesure revenue plus tard pouvait satisfaire artificiellement la règle des deux audits consécutifs.
+
+Correction : tout signal absent du snapshot remet maintenant son compteur de série à zéro; les signaux mesurés continuent leur série normalement. Régression ajoutée couvrant un signal encore mesuré et sous la cible ainsi que deux signaux absents avec anciennes séries positives.
+
+Vérification locale : **60 passed**, 11 sous-tests, 9 avertissements préexistants; compilation et `git diff --check` réussis. Cette correction est locale et attend son commit/push; elle requiert le même redémarrage groupé pour validation live.
