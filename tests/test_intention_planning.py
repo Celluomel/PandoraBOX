@@ -96,6 +96,8 @@ class IntentionPlanningTests(unittest.TestCase):
         self.assertEqual(status["total_plans"], 31)
         self.assertEqual(status["plans_returned"], 20)
         self.assertEqual(status["plans"][0]["domain"], "goal:active")
+        self.assertEqual(status["plans"][0]["status"], "active")
+        self.assertEqual(status["plans"][1]["status"], "completed")
 
     def test_aspiration_plan_uses_public_context_prediction(self):
         with tempfile.TemporaryDirectory() as folder:

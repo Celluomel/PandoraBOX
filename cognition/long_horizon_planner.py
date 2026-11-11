@@ -667,6 +667,7 @@ class LongHorizonPlanner:
             "plans_returned": len(ordered),
             "plans": [
                 {"domain": d,
+                 "status": p.status,
                  "steps": len(p.steps),
                  "completed": p.steps_completed,
                  "objective": p.objective,
