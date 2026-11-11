@@ -228,7 +228,7 @@ Vérification locale : `tests/test_intention_planning.py` + `tests/test_module_t
 
 Poursuivre le lien causal, au-delà du compteur global : suivre un même identifiant d’exécution depuis le slow-cycle et le module qui agit, vers la mutation du planner/registre d’effets, puis vers la lecture qui la confirme. La provenance doit rester bornée et explicite; une sortie de module sans identifiant de tour/cycle ne doit pas être attribuée à un échange utilisateur. Auditer ensuite les scénarios mémoire/contexte, mise à jour des objectifs, et évaluation/expérimentation avec les mêmes critères entrée → sorties requises → mutation → récupération ultérieure. Lumina reste en marche; validation live des correctifs cumulés réservée au redémarrage final.
 
-**Git :** le dernier commit local avant ces changements est `42e1f9c`; `origin/main` demeure sur `17ae81c`. Les présentes corrections sont encore locales et seront commitées avec les seuls fichiers d’audit ciblés.
+**Git à ce point de l’audit :** le commit local le plus récent est `1d0d94f`; `origin/main` demeure sur `17ae81c`. Les corrections décrites dans la section suivante sont encore locales et seront commitées avec les seuls fichiers d’audit ciblés.
 
 ## Provenance de l’action autonome jusqu’au ledger — correction locale
 
@@ -238,4 +238,12 @@ Correction locale : chaque action reçoit un `execution_id`; le cycle de l’Int
 
 Test de preuve : `tests/test_consequence_execution_provenance.py` vérifie le cycle, l’identifiant commun et la chaîne exacte. `tests/test_intention_planning.py` vérifie que le planner persiste la provenance. Résultat du lot `test_consequence_execution_provenance`, `test_intention_planning`, `test_module_tick_log`, `test_goal_engine_execution_order` : **49 passed**, 7 avertissements Pydantic préexistants; `py_compile` et `git diff --check` réussis. Ce résultat démontre la cohérence locale du chemin de code testé, pas encore le comportement du processus déjà démarré.
 
-Le dernier commit de la reprise est `086e659`; cette tranche de provenance doit encore être commitée. Le processus Lumina reste actif et non redémarré. La suite de l’audit examinera si les effets mémoire/objectif hors ConsequenceTracker ont eux aussi des reçus de mutation/relecture, et si les traces par tour exposent une association vérifiable vers ces effets.
+Le dernier commit de la reprise est `1d0d94f`. Le processus Lumina reste actif et non redémarré. La suite de l’audit examinera si les effets mémoire/objectif hors ConsequenceTracker ont eux aussi des reçus de mutation/relecture, et si les traces par tour exposent une association vérifiable vers ces effets.
+
+## Reçu persistant pour l’effet sur le GoalEngine — correction locale
+
+La chaîne autonome se terminait dans le ledger et le planner, mais `GoalActionExecutor` incrémentait aussi `Goal.actions_taken` et le gate d’action externe via `GoalEngine.mark_action()` sans enregistrer l’ID d’exécution. Un compteur GoalEngine pouvait donc changer sans reçu local permettant de le rapprocher de l’action. En outre, la méthode ignorait l’échec de sauvegarde : l’état mémoire restait modifié alors que le JSON persistant pouvait être ancien.
+
+Correction locale : le GoalEngine conserve le dernier type d’action, son `execution_id`, son `cycle_id`, son horodatage, ainsi que l’ID du tour (ou de la pensée) qui a créé le but. Les appels de l’exécuteur transmettent les identifiants d’exécution/cycle. Si la persistance échoue, `mark_action()` restaure les compteurs et le reçu en mémoire et renvoie `False`; les actions synchrones exposent séparément `goal_state_persisted`, sans confondre l’exécution de l’action et sa comptabilisation durable. La prédiction et chaque événement causal transportent l’origine du but sous les champs `goal_source_turn_id` / `goal_source_thought_id`, qui indiquent l’origine du but, pas le tour courant de l’action.
+
+Vérification : le test de provenance contrôle la relecture après reconstruction d’un GoalEngine et le rollback après échec de sauvegarde; le test ledger vérifie que les IDs source suivent chaque lien causal. Lot ciblé : **51 passed**, 7 avertissements Pydantic préexistants; `py_compile` et `git diff --check` réussis. Correctif encore local, pas chargé dans le processus courant.

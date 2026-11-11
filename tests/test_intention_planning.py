@@ -528,7 +528,7 @@ class IntentionPlanningTests(unittest.TestCase):
             planner, _, _ = self._planner(folder)
             goal = NS(id="g-4", topic="understand execution", origin="resolve_uncertainty")
             marked = []
-            goal_engine = NS(mark_action=lambda goal_id, action: marked.append((goal_id, action)))
+            goal_engine = NS(mark_action=lambda goal_id, action, **_kwargs: marked.append((goal_id, action)))
             organism = NS(
                 ai_system=NS(goal_engine=goal_engine),
                 _loop=NS(_long_horizon_planner=planner),

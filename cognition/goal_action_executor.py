@@ -412,7 +412,9 @@ class GoalActionExecutor:
 
         if report['success']:
             # FIX 4: mark_action always called when success=True
-            goal_engine.mark_action(goal.id, action_type)
+            report["goal_state_persisted"] = bool(goal_engine.mark_action(
+                goal.id, action_type, execution_id=execution_id, cycle_id=cycle_id
+            ))
             self._last_action_time[goal.id] = time.time()
             logger.info(
                 f"[GoalActionExecutor] ✅ mark_action called for '{goal.topic[:30]}' "
@@ -2004,7 +2006,10 @@ class GoalActionExecutor:
         if success:
             goal_engine = self._get_goal_engine()
             if goal_engine is not None:
-                goal_engine.mark_action(goal.id, action_type)
+                goal_engine.mark_action(
+                    goal.id, action_type, execution_id=execution_id,
+                    cycle_id=cycle_id,
+                )
             self._last_action_time[goal.id] = time.time()
             self._broadcast(
                 f"[Action:{action_type}] {goal.topic[:40]} - {result[:80]}"
@@ -2024,6 +2029,8 @@ class GoalActionExecutor:
                     "result": result,
                     "execution_id": execution_id or prediction.get("execution_id"),
                     "cycle_id": cycle_id if cycle_id is not None else prediction.get("cycle_id"),
+                    "goal_source_turn_id": prediction.get("goal_source_turn_id", ""),
+                    "goal_source_thought_id": prediction.get("goal_source_thought_id", ""),
                 }
                 get_consequence_tracker(self._o).resolve(
                     prediction, report, cycle_id=report["cycle_id"]

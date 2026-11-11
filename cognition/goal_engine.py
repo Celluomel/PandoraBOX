@@ -112,6 +112,13 @@ class Goal:
     # Autonomous thought-evaluator proposals retain their originating thought
     # across persistence so a committed goal can be traced to its evidence.
     source_thought_id: str = ""
+    # Last autonomous action receipt, persisted with the goal so its counters
+    # can be audited against the causal ledger instead of inferred from totals.
+    last_action_execution_id: str = ""
+    last_action_cycle_id: Optional[int] = None
+    last_action_source_turn_id: str = ""
+    last_action_type: str = ""
+    last_action_at: str = ""
     # User-requested development goals require explicit criterion evidence;
     # completing a search/action alone is not evidence that the goal was met.
     success_criteria_verified: bool = False
@@ -1210,7 +1217,14 @@ class GoalEngine:
         # context to become a persistent goal. Curiosity goals should be phrases.
         return not content or len(words) == 1 or any(word in noise for word in words)
 
-    def mark_action(self, goal_id: str, action_type: Optional[str] = None):
+    def mark_action(
+        self,
+        goal_id: str,
+        action_type: Optional[str] = None,
+        *,
+        execution_id: str = "",
+        cycle_id: Optional[int] = None,
+    ) -> bool:
         """Mark that an action was taken for this goal.
 
         action_type: when a world-facing action (web_search / user_question)
@@ -1221,13 +1235,41 @@ class GoalEngine:
         with self._lock:
             if goal_id in self._goals:
                 g = self._goals[goal_id]
+                previous = (
+                    g.actions_taken,
+                    g.non_introspective_actions,
+                    g.last_active,
+                    g.last_action_execution_id,
+                    g.last_action_cycle_id,
+                    g.last_action_source_turn_id,
+                    g.last_action_type,
+                    g.last_action_at,
+                )
                 g.actions_taken += 1
                 if action_type in NON_INTROSPECTIVE_ACTIONS:
                     g.non_introspective_actions = (
                         getattr(g, "non_introspective_actions", 0) + 1
                     )
                 g.last_active = self._cycle_counter
-                self._save_goals()
+                g.last_action_execution_id = str(execution_id or "")
+                g.last_action_cycle_id = cycle_id
+                g.last_action_source_turn_id = str(g.source_turn_id or "")
+                g.last_action_type = str(action_type or "")
+                g.last_action_at = datetime.now().isoformat()
+                if not self._save_goals():
+                    (
+                        g.actions_taken,
+                        g.non_introspective_actions,
+                        g.last_active,
+                        g.last_action_execution_id,
+                        g.last_action_cycle_id,
+                        g.last_action_source_turn_id,
+                        g.last_action_type,
+                        g.last_action_at,
+                    ) = previous
+                    return False
+                return True
+        return False
     
     def complete_goal(self, goal_id: str, completion: float = 1.0) -> bool:
         """Complete a goal, refusing unverified explicit user criteria."""

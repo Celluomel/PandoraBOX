@@ -115,7 +115,9 @@ class ConsequenceTracker:
     def predict(self, goal_id: str, goal_topic: str, action_type: str,
                 cycle_id: Optional[int] = None,
                 goal_energy: float = 1.0,
-                execution_id: Optional[str] = None) -> Dict[str, Any]:
+                execution_id: Optional[str] = None,
+                goal_source_turn_id: str = "",
+                goal_source_thought_id: str = "") -> Dict[str, Any]:
         if not self.enabled:
             return {"disabled": True, "goal_id": str(goal_id),
                     "action_type": action_type, "goal_topic": goal_topic}
@@ -127,6 +129,8 @@ class ConsequenceTracker:
             "cycle_id": cycle_id,
             "goal_id": str(goal_id),
             "goal_topic": goal_topic,
+            "goal_source_turn_id": str(goal_source_turn_id or ""),
+            "goal_source_thought_id": str(goal_source_thought_id or ""),
             "action_type": action_type,
             "predicted_effect": am["effect"],
             "probe": am["probe"],
@@ -151,6 +155,8 @@ class ConsequenceTracker:
                     "goal_id": str(goal_id), "action": action_type,
                     "pred_id": pred["pred_id"],
                     "execution_id": pred["execution_id"],
+                    "goal_source_turn_id": pred["goal_source_turn_id"],
+                    "goal_source_thought_id": pred["goal_source_thought_id"],
                 },
             )
         return pred
@@ -209,6 +215,8 @@ class ConsequenceTracker:
                 refs={
                     "goal_id": pred["goal_id"], "action": pred["action_type"],
                     "pred_id": pred["pred_id"], "execution_id": execution_id,
+                    "goal_source_turn_id": pred.get("goal_source_turn_id", ""),
+                    "goal_source_thought_id": pred.get("goal_source_thought_id", ""),
                 },
             )
             error_event_id = self.ledger.record(
@@ -221,6 +229,8 @@ class ConsequenceTracker:
                 refs={
                     "goal_id": pred["goal_id"], "action": pred["action_type"],
                     "pred_id": pred["pred_id"], "execution_id": execution_id,
+                    "goal_source_turn_id": pred.get("goal_source_turn_id", ""),
+                    "goal_source_thought_id": pred.get("goal_source_thought_id", ""),
                     "target": "error",
                 },
             )
@@ -234,6 +244,8 @@ class ConsequenceTracker:
                     refs={
                         "goal_id": pred["goal_id"], "action": pred["action_type"],
                         "pred_id": pred["pred_id"], "execution_id": execution_id,
+                        "goal_source_turn_id": pred.get("goal_source_turn_id", ""),
+                        "goal_source_thought_id": pred.get("goal_source_thought_id", ""),
                         "target": "efficacy",
                     },
                 )
@@ -247,6 +259,8 @@ class ConsequenceTracker:
                     refs={
                         "goal_id": pred["goal_id"], "module": pred["attention_module"],
                         "pred_id": pred["pred_id"], "execution_id": execution_id,
+                        "goal_source_turn_id": pred.get("goal_source_turn_id", ""),
+                        "goal_source_thought_id": pred.get("goal_source_thought_id", ""),
                         "target": "attention",
                     },
                 )
