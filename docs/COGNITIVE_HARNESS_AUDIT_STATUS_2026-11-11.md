@@ -632,3 +632,13 @@ Vérification locale après ajout : `tests/test_selected_thought_goal_pipeline.p
 **Mise à jour de statut :** les mentions plus anciennes de sections précédentes disant que les correctifs GoalEngine, Phase 2, completion ou MotivationalField « attendent commit/push » sont historiques et dépassées. Les lots de code ont été poussés sur `main` jusqu’à `d430e05`; ce nouveau test et la présente preuve sont le lot suivant. Le worktree contient par ailleurs d’autres modifications utilisateur non liées; elles ne font pas partie de l’audit et ne sont pas incluses.
 
 **Suite de l’audit du cœur :** le parcours confirme le flux retenu mais pas encore la qualité des décisions en situation de concurrence, ni les effets du GoalEngine autonome sur plusieurs cycles. Étape suivante : scénarios de replay déterministes sur entrées contradictoires/bruitées, avec vérification du gagnant, de la proposition retenue, des buts créés ou rejetés, du broadcast et du cycle suivant. La validation live demeure groupée après redémarrage.
+
+### Broadcast vers le workspace — reçu fondé sur l’admission réelle
+
+L’inspection du producteur de reçus a révélé un faux positif concret : le code incrémentait `broadcast_count` après l’appel à `GlobalWorkspace.broadcast()` sans examiner son booléen. Or l’API retourne `False` quand son filtre sémantique bloque un élément. Le cycle pouvait donc marquer un broadcast comme réussi alors que le workspace ne l’avait pas accepté.
+
+Correction : le broadcast des pensées du GoalEngine compte maintenant uniquement les retours `True`. Les reçus distinguent `completed`, `partial`, `rejected` et `failed`, avec demandes, admissions, refus et exceptions séparés. Les erreurs individuelles ne sont plus avalées comme si elles représentaient une admission.
+
+Tests ajoutés : admission/refus/exception mixte et refus total sans fausse réussite. Vérification locale : boucle, parcours pensée→workspace et régressions cognitives — **43 tests passés, 4 sous-tests passés**; `git diff --check` propre. Les avertissements de dépendances restent sans lien avec ce correctif.
+
+Portée : cela rend la preuve d’effet workspace honnête. La prochaine vérification doit encore suivre ce qui lit effectivement ces éléments après admission et comparer le gagnant du cycle au contexte consommé par le tour de chat; un broadcast accepté ne prouve pas à lui seul qu’il a influencé la réponse.

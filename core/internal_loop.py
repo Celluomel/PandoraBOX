@@ -616,6 +616,38 @@ class InternalThoughtLoop:
             receipt["stages"].append(entry)
             return True
 
+    @staticmethod
+    def _broadcast_goal_thoughts(workspace: Any, thoughts: list[dict[str, Any]]) -> tuple[str, dict[str, int]]:
+        """Report workspace admissions from the broadcast API's actual result."""
+        admitted = 0
+        errors = 0
+        requested = len(thoughts)
+        for thought in thoughts:
+            try:
+                accepted = workspace.broadcast(
+                    source="goal_engine",
+                    content=thought.get("content", ""),
+                    priority=min(0.75, thought.get("priority", 0.5)),
+                )
+                if accepted is True:
+                    admitted += 1
+            except Exception:
+                errors += 1
+
+        rejected = requested - admitted - errors
+        status = (
+            "completed" if admitted == requested
+            else "partial" if admitted
+            else "failed" if errors == requested
+            else "rejected"
+        )
+        return status, {
+            "broadcast_count": admitted,
+            "requested_count": requested,
+            "rejected_count": rejected,
+            "error_count": errors,
+        }
+
     def _finish_cycle_evidence(self, status: str, error_type: str | None = None) -> None:
         lock = getattr(self, "_cycle_evidence_lock", None)
         if lock is None:
@@ -1618,21 +1650,13 @@ class InternalThoughtLoop:
                         )
                     else:
                         _goal_thoughts = _ge.get_goal_thoughts()
-                        _broadcast_count = 0
-                        for thought in _goal_thoughts:
-                            try:
-                                o.workspace.broadcast(
-                                    source   = "goal_engine",
-                                    content  = thought.get("content", ""),
-                                    priority = min(0.75, thought.get("priority", 0.5)),
-                                )
-                                _broadcast_count += 1
-                            except Exception:
-                                pass
+                        _broadcast_status, _broadcast_metrics = self._broadcast_goal_thoughts(
+                            o.workspace, _goal_thoughts
+                        )
                         self._record_cycle_stage(
-                            "goal_thoughts_broadcast", "completed" if _broadcast_count == len(_goal_thoughts) else "partial",
+                            "goal_thoughts_broadcast", _broadcast_status,
                             inputs={"goal_engine_output_ref": _goal_engine_evidence_ref},
-                            output={"broadcast_count": _broadcast_count, "requested_count": len(_goal_thoughts)},
+                            output=_broadcast_metrics,
                         )
                 else:
                     self._record_cycle_stage(

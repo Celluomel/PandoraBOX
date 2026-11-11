@@ -146,3 +146,39 @@ def test_cycle_summary_exposes_only_allowlisted_cognitive_outcome_counts():
     }
     assert "private_topic" not in repr(summary)
     assert "do not expose this" not in repr(summary)
+
+
+def test_goal_broadcast_receipt_counts_only_admissions_and_reports_failures():
+    class _Workspace:
+        def broadcast(self, source, content, priority):
+            if content == "raise":
+                raise RuntimeError("listener failed")
+            return content == "admitted"
+
+    status, counts = InternalThoughtLoop._broadcast_goal_thoughts(
+        _Workspace(),
+        [
+            {"content": "admitted", "priority": 0.7},
+            {"content": "blocked", "priority": 0.6},
+            {"content": "raise", "priority": 0.5},
+        ],
+    )
+
+    assert status == "partial"
+    assert counts == {
+        "broadcast_count": 1,
+        "requested_count": 3,
+        "rejected_count": 1,
+        "error_count": 1,
+    }
+
+
+def test_goal_broadcast_reports_all_rejected_without_claiming_success():
+    status, counts = InternalThoughtLoop._broadcast_goal_thoughts(
+        SimpleNamespace(broadcast=lambda **_kwargs: False),
+        [{"content": "blocked", "priority": 0.7}],
+    )
+
+    assert status == "rejected"
+    assert counts["broadcast_count"] == 0
+    assert counts["rejected_count"] == 1
