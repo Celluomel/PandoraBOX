@@ -99,6 +99,33 @@ def test_activity_from_another_thread_is_not_attributed_to_active_cycle():
     assert loop.cycle_evidence_snapshot()["cycles"][0]["stages"] == []
 
 
+def test_async_worker_result_is_attached_to_its_origin_cycle_not_current_cycle():
+    loop = make_loop()
+    loop._begin_cycle_evidence(10)
+    loop._record_cycle_stage("motivational_field_tick", "completed",
+                             output={"need_scan": "scheduled", "cycle": 10})
+    loop._finish_cycle_evidence("completed")
+    loop._begin_cycle_evidence(11)
+
+    worker_result = []
+    thread = threading.Thread(target=lambda: worker_result.append(
+        loop.record_async_cycle_stage(
+            10, "motivational_field.need_scan", "completed",
+            metrics={"need_count": 2, "acted_count": 1},
+        )
+    ))
+    thread.start()
+    thread.join()
+
+    cycles = loop.cycle_evidence_snapshot(limit=10)["cycles"]
+    origin = next(cycle for cycle in cycles if cycle["cycle_id"] == 10)
+    current = next(cycle for cycle in cycles if cycle["cycle_id"] == 11)
+    assert worker_result == [True]
+    assert origin["stages"][-1]["async_completion"] is True
+    assert origin["stages"][-1]["metrics"] == {"need_count": 2, "acted_count": 1}
+    assert current["stages"] == []
+
+
 def test_cycle_summary_exposes_only_allowlisted_cognitive_outcome_counts():
     loop = make_loop()
     loop._begin_cycle_evidence(6)

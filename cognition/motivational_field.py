@@ -211,6 +211,11 @@ class MotivationalField:
         self._ai        = ai_system
         self._path      = Path(path)
         self._lock      = threading.Lock()
+        self._scan_state_lock = threading.Lock()
+        self._need_scan_state: Dict[str, Any] = {
+            "status": "idle", "cycle": 0, "need_count": 0,
+            "acted_count": 0, "unacted_count": 0,
+        }
         self._state     = FieldState()
         self.drive_vector: Dict[str, float] = {d: 0.5 for d in DRIVE_NAMES}
         self._load()
@@ -222,21 +227,80 @@ class MotivationalField:
 
     # ── Public API ────────────────────────────────────────────────────────────
 
-    def tick(self, slow_cycle: int) -> None:
-        """Called every slow cycle from InternalThoughtLoop."""
+    def tick(self, slow_cycle: int) -> Dict[str, Any]:
+        """Advance drives and report whether asynchronous need work was queued."""
+        result: Dict[str, Any] = {
+            "cycle": int(slow_cycle),
+            "drive_update": "not_due",
+            "need_scan": "not_due",
+        }
         try:
             if slow_cycle % FIELD_EVERY_N == 0:
                 self._integrate_drives(slow_cycle)
+                result["drive_update"] = "attempted"
 
             if slow_cycle % NEED_SCAN_EVERY_N == 0 and slow_cycle > 0:
+                with self._scan_state_lock:
+                    if self._need_scan_state.get("status") == "running":
+                        result["need_scan"] = "skipped_overlap"
+                        result["previous_scan_cycle"] = int(self._need_scan_state.get("cycle", 0))
+                        return result
+                    self._need_scan_state = {
+                        "status": "running", "cycle": int(slow_cycle),
+                        "need_count": 0, "acted_count": 0, "unacted_count": 0,
+                    }
                 threading.Thread(
-                    target=self._scan_needs,
+                    target=self._run_need_scan,
                     args=(slow_cycle,),
                     daemon=True,
                     name="mf-scan",
                 ).start()
+                result["need_scan"] = "scheduled"
         except Exception as e:
             logger.debug(f"[MotivationalField] tick error (non-fatal): {e}")
+            result["tick_error"] = type(e).__name__
+            with self._scan_state_lock:
+                if (self._need_scan_state.get("status") == "running"
+                        and self._need_scan_state.get("cycle") == int(slow_cycle)):
+                    self._need_scan_state = {
+                        "status": "failed", "cycle": int(slow_cycle),
+                        "error_type": type(e).__name__, "need_count": 0,
+                        "acted_count": 0, "unacted_count": 0,
+                    }
+        return result
+
+    def need_scan_status(self) -> Dict[str, Any]:
+        """Return bounded status for the last background need scan."""
+        with self._scan_state_lock:
+            return dict(self._need_scan_state)
+
+    def _run_need_scan(self, slow_cycle: int) -> None:
+        started = time.perf_counter()
+        result = self._scan_needs(slow_cycle)
+        if not isinstance(result, dict):
+            result = {"status": "failed", "error_type": "invalid_scan_result"}
+        result["cycle"] = int(slow_cycle)
+        result["duration_ms"] = round((time.perf_counter() - started) * 1000, 2)
+        with self._scan_state_lock:
+            self._need_scan_state = dict(result)
+
+        # The scan runs on a worker thread, after tick() has returned. Attach
+        # its result to the originating cycle by ID; never attribute it to
+        # whichever cycle happens to be active when the worker finishes.
+        loop = getattr(self._organism, "_loop", None)
+        record_async = getattr(loop, "record_async_cycle_stage", None)
+        if callable(record_async):
+            record_async(
+                slow_cycle,
+                "motivational_field.need_scan",
+                str(result.get("status", "failed")),
+                metrics={
+                    key: result[key]
+                    for key in ("need_count", "acted_count", "unacted_count", "duration_ms")
+                    if isinstance(result.get(key), (int, float))
+                },
+                error_type=result.get("error_type"),
+            )
 
     def dominant_drive(self) -> str:
         """Name of the currently strongest motivational drive."""
@@ -383,7 +447,7 @@ class MotivationalField:
 
     # ── Need detection ────────────────────────────────────────────────────────
 
-    def _scan_needs(self, slow_cycle: int) -> None:
+    def _scan_needs(self, slow_cycle: int) -> Dict[str, Any]:
         """
         Survey organism state for patterns indicating self-originated needs.
         Five detectors run in sequence.  Each may generate a need and act on it.
@@ -397,8 +461,11 @@ class MotivationalField:
             needs += self._detect_expression_accumulation(slow_cycle)
             needs += self._detect_coherence_gap(slow_cycle)
 
+            acted_count = 0
             for need in needs:
-                if not self._act_on_need(need, slow_cycle):
+                if self._act_on_need(need, slow_cycle):
+                    acted_count += 1
+                else:
                     logger.warning(
                         "[MotivationalField] need action not committed; leaving retryable: %s",
                         need.need_type,
@@ -418,9 +485,16 @@ class MotivationalField:
                 )
 
             self._save()
+            return {
+                "status": "completed",
+                "need_count": len(needs),
+                "acted_count": acted_count,
+                "unacted_count": len(needs) - acted_count,
+            }
 
         except Exception as e:
             logger.debug(f"[MotivationalField] _scan_needs error: {e}")
+            return {"status": "failed", "error_type": type(e).__name__}
 
     def _detect_concept_accumulation(
         self, slow_cycle: int

@@ -505,6 +505,7 @@ class InternalThoughtLoop:
             for key in (
                 "type", "status", "success", "created", "verified", "action",
                 "source_thought_source", "source_thought_type", "source_concept_method",
+                "drive_update", "need_scan",
             ):
                 item = value.get(key)
                 if isinstance(item, (str, bool, int, float)) and key != "action":
@@ -516,6 +517,7 @@ class InternalThoughtLoop:
                 "broadcast_count", "requested_count", "total_pressure",
                 "winning_margin", "score", "confidence", "priority", "override",
                 "generation_blocked", "decision_fresh", "winner_age_cycles",
+                "cycle", "previous_scan_cycle",
             }
             numeric_summary = {
                 key: item for key, item in value.items()
@@ -574,6 +576,45 @@ class InternalThoughtLoop:
                 }
             receipt["stages"].append(entry)
             return output_ref
+
+    def record_async_cycle_stage(
+        self, cycle_id: int, stage: str, status: str, *,
+        metrics: dict[str, Any] | None = None, error_type: str | None = None,
+    ) -> bool:
+        """Attach a worker-thread result to its originating retained cycle."""
+        lock = getattr(self, "_cycle_evidence_lock", None)
+        if lock is None:
+            return False
+        with lock:
+            receipt = self._active_cycle_evidence
+            if receipt is None or int(receipt.get("cycle_id", -1)) != int(cycle_id):
+                receipt = next(
+                    (item for item in reversed(self._cycle_evidence)
+                     if int(item.get("cycle_id", -1)) == int(cycle_id)),
+                    None,
+                )
+            if receipt is None:
+                return False
+            if len(receipt["stages"]) >= 256:
+                receipt["omitted_stage_count"] = receipt.get("omitted_stage_count", 0) + 1
+                return False
+            entry: dict[str, Any] = {
+                "stage": str(stage),
+                "status": str(status),
+                "async_completion": True,
+                "inputs": {"origin_cycle_id": int(cycle_id)},
+                "output_ref": None,
+                "output_summary": None,
+            }
+            if metrics:
+                entry["metrics"] = {
+                    str(key): value for key, value in metrics.items()
+                    if isinstance(value, (str, bool, int, float))
+                }
+            if error_type:
+                entry["error_type"] = str(error_type)[:80]
+            receipt["stages"].append(entry)
+            return True
 
     def _finish_cycle_evidence(self, status: str, error_type: str | None = None) -> None:
         lock = getattr(self, "_cycle_evidence_lock", None)
