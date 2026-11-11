@@ -757,6 +757,10 @@ class LongHorizonPlanner:
         if plan is None and goal_plans:
             plan = max(goal_plans, key=lambda item: item.created_at)
 
+        eligible_active_goals = [
+            goal for goal in active_goals
+            if str(getattr(goal, "topic", "")).strip()
+        ]
         goals = [
             {
                 "id": str(getattr(goal, "id", "")),
@@ -773,8 +777,7 @@ class LongHorizonPlanner:
                     * float(getattr(goal, "energy", 0.0)), 3
                 ),
             }
-            for goal in active_goals[:4]
-            if str(getattr(goal, "topic", "")).strip()
+            for goal in eligible_active_goals[:4]
         ]
         plan_data = None
         if plan is not None:
@@ -814,6 +817,7 @@ class LongHorizonPlanner:
         return {
             "captured_at": time.time(),
             "active_goals": goals,
+            "active_goal_count": len(eligible_active_goals),
             "dominant_plan": plan_data,
         }
 
@@ -867,12 +871,14 @@ class LongHorizonPlanner:
     def factual_self_report_fragment(self, user_input: str = "") -> str:
         snapshot = self.factual_self_report_snapshot()
         goals = snapshot["active_goals"]
+        goal_count = int(snapshot.get("active_goal_count", len(goals)))
         plan = snapshot["dominant_plan"]
         goal_topics = [str(goal["topic"]) for goal in goals]
 
         lines = ["[Cognitive telemetry - factual self-report]"]
         lines.append(
-            "Recorded active goals: " + ("; ".join(goal_topics[:4]) if goal_topics else "none")
+            f"Recorded active goal count: {goal_count}. Listed goal topics are a maximum of four: "
+            + ("; ".join(goal_topics[:4]) if goal_topics else "none")
         )
         if not plan:
             lines.append("Operational plan: none recorded for an active goal.")
@@ -917,12 +923,13 @@ class LongHorizonPlanner:
             return ""
         snapshot = self.factual_self_report_snapshot()
         goals = [str(item["topic"]) for item in snapshot["active_goals"] if item.get("topic")]
+        goal_count = int(snapshot.get("active_goal_count", len(goals)))
         plan = snapshot.get("dominant_plan")
         lang = str(language or "auto").casefold().replace("_", "-")
         if lang.startswith("fr"):
             lines = [
                 (
-                    f"{len(goals)} objectif(s) actif(s) enregistré(s) : "
+                    f"{goal_count} objectif(s) actif(s) enregistré(s) : "
                     + (" ; ".join(goals) if goals else "aucun objectif actif vérifié.")
                 ),
             ]
@@ -941,7 +948,7 @@ class LongHorizonPlanner:
         else:
             lines = [
                 (
-                    f"{len(goals)} recorded active goal(s): "
+                    f"{goal_count} recorded active goal(s): "
                     + ("; ".join(goals) if goals else "no verified active goal.")
                 ),
             ]

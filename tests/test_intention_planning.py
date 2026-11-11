@@ -301,7 +301,8 @@ class IntentionPlanningTests(unittest.TestCase):
             fragment = planner.prompt_fragment_for(
                 "checking your capability to set goals and plan for it"
             )
-            self.assertIn("Recorded active goals: checking capability", fragment)
+            self.assertIn("Recorded active goal count: 1", fragment)
+            self.assertIn("maximum of four: checking capability", fragment)
             self.assertIn("progress 1/4", fragment)
             self.assertIn("completed=memory_recall", fragment)
             self.assertIn("next pending=self_question", fragment)
@@ -334,6 +335,7 @@ class IntentionPlanningTests(unittest.TestCase):
         planner = LongHorizonPlanner.__new__(LongHorizonPlanner)
         planner.factual_self_report_snapshot = lambda: {
             "active_goals": [{"topic": "grounded topic"}, {"topic": "second topic"}],
+            "active_goal_count": 5,
             "dominant_plan": None,
         }
 
@@ -344,8 +346,8 @@ class IntentionPlanningTests(unittest.TestCase):
             "combien d'objectifs actifs as-tu ?", "fr"
         )
 
-        self.assertIn("2 recorded active goal(s)", english)
-        self.assertIn("2 objectif(s) actif(s) enregistré(s)", french)
+        self.assertIn("5 recorded active goal(s)", english)
+        self.assertIn("5 objectif(s) actif(s) enregistré(s)", french)
         self.assertIn("grounded topic", english)
         self.assertIn("second topic", english)
 
