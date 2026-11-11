@@ -234,6 +234,29 @@ class PresenceIdentityLanguageTests(unittest.TestCase):
         self.assertEqual(explicit["categories_updated"], ["preference"])
         self.assertTrue(explicit["changed"])
 
+    def test_profile_does_not_promote_bare_copula_state_to_durable_characteristic(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = users.UserManager(Path(directory) / "users.json")
+            profile = manager.create("Fred")
+            settings = SimpleNamespace(get_persona_name=lambda: "Lumina")
+            boundary = SimpleNamespace(claims_persona_identity=lambda *_: False)
+            with patch.dict(sys.modules, {
+                "managers.settings_manager": settings,
+                "cognition.identity_boundary": boundary,
+            }):
+                momentary = manager.learn_from_message(
+                    profile.id, "Je suis curieux.", return_receipt=True,
+                )
+                identity = manager.learn_from_message(
+                    profile.id, "Je suis un développeur logiciel.", return_receipt=True,
+                )
+
+        self.assertEqual(momentary["status"], "no_explicit_profile_fact")
+        self.assertFalse(momentary["changed"])
+        self.assertEqual(profile.characteristics, ["développeur logiciel"])
+        self.assertEqual(identity["status"], "updated")
+        self.assertEqual(identity["categories_updated"], ["characteristic"])
+
     def test_french_presence_repairs_language_and_stale_name(self):
         engine = presence.PresenceEngine.__new__(presence.PresenceEngine)
         engine._org = None

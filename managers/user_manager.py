@@ -470,7 +470,13 @@ class UserManager:
         patterns = (
             ("preference", r"(?:i prefer|i like|i love|i don't like|i dislike|je préfère|j'aime|je n'aime pas)\s+([^.!?]{3,100})"),
             ("interest", r"(?:i am interested in|i'm interested in|i enjoy|je m'intéresse à|je m'interesse a)\s+([^.!?]{3,100})"),
-            ("characteristic", r"(?:i am|i'm|je suis)\s+(?:a |an |un |une )?([^.!?]{3,70})"),
+            # A bare copula predicate ("I am curious", "je suis fatigué")
+            # is ambiguous between a durable trait and the current turn's
+            # state. Only learn a characteristic automatically from explicit
+            # identity-style noun phrases or explicit self-characterization.
+            ("characteristic", r"(?:i am|i'm)\s+(?:a|an)\s+([^.!?]{3,70})"),
+            ("characteristic", r"je suis\s+(?:un|une)\s+([^.!?]{3,70})"),
+            ("characteristic", r"(?:i consider myself|je me considère comme|je me considere comme)\s+([^.!?]{3,70})"),
         )
         for kind, pattern in patterns:
             if kind == "characteristic" and claims_persona_name:
