@@ -231,8 +231,7 @@ def record_goal_completion(
     # Prefer the object store when we have it (it does economy + persistence).
     if goal_engine is not None and hasattr(goal_engine, "complete_goal"):
         try:
-            goal_engine.complete_goal(gid, completion=1.0)
-            wrote = True
+            wrote = goal_engine.complete_goal(gid, completion=1.0) is True
         except Exception as e:
             logger.debug("[Completion] goal_engine.complete_goal failed: %s" % e)
     if not wrote and dal is not None and hasattr(dal, "save_goal"):
@@ -248,12 +247,15 @@ def record_goal_completion(
                     goal.completion = 1.0
                 except Exception:
                     pass
-            dal.save_goal(goal)
-            wrote = True
+            wrote = dal.save_goal(goal) is True
         except Exception as e:
             logger.debug("[Completion] dal.save_goal failed: %s" % e)
 
-    # C: record the life-story chapter (best-effort; never blocks completion).
+    if not wrote:
+        logger.warning("[Completion] persistence did not confirm goal completion: %s", gid)
+        return False
+
+    # C: record the life-story chapter only after a store confirms completion.
     ni = get_narrative_identity(organism)
     if ni is not None and hasattr(ni, "record_chapter"):
         try:
