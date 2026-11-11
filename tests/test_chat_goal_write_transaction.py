@@ -85,6 +85,17 @@ def test_goal_write_detector_does_not_capture_analysis_questions():
     )
 
 
+def test_goal_count_query_is_not_misrouted_to_persistence_receipt():
+    question = (
+        "How many active goals do you currently have? State the number from your "
+        "live recorded goal state and do not modify any goals."
+    )
+    assert not PersonaBridge._is_goal_persistence_verification(question)
+    assert PersonaBridge._is_goal_persistence_verification(
+        "Was the goal saved? Verify its persistent ID."
+    )
+
+
 def test_explicit_goal_handler_executes_transaction_and_returns_verified_receipt(tmp_path):
     engine = GoalEngine(ai_system=None, persistence_file=str(tmp_path / "goals.json"))
     engine._is_valid_goal_topic = lambda _topic: True

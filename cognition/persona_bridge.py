@@ -5478,6 +5478,23 @@ Memory honesty — two distinct cases:
         """Match questions or challenges about whether a conversational goal write really happened."""
         normalized = str(text or "").casefold()
         has_goal = bool(re.search(r"\b(?:goal|objective|objectif|but|aspiration)\b", normalized))
+        # A request for the current count is a state query, not a request to
+        # audit whether a prior write occurred. Keep it on the factual
+        # self-report path so the live snapshot and its count are the source
+        # of truth. Phrases such as "from the recorded goal state" must not
+        # turn a count question into a write-receipt query.
+        asks_owned_goal_count = bool(
+            (
+                re.search(r"\bhow\s+many\b.{0,80}\b(?:active\s+)?goals?\b", normalized)
+                and re.search(r"\b(?:you|your)\b", normalized)
+            )
+            or (
+                re.search(r"\bcombien\b.{0,80}\b(?:objectifs?|buts?)\b", normalized)
+                and re.search(r"\b(?:tu|tes|ton|vous|vos|votre)\b", normalized)
+            )
+        )
+        if asks_owned_goal_count:
+            return False
         asks_id = bool(re.search(
             r"\b(?:exact\s+(?:persistent\s+)?id|id\s+(?:of|for)|identifier|identifiant)\b",
             normalized,
