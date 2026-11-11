@@ -277,6 +277,7 @@ class CognitiveAuditEngine:
         self._path      = Path(path)
         self._state     = AuditState()
         self._lock      = threading.Lock()
+        self._process_started_at = time.time()
         self._proposal_attempt_status = "not_started"
         self._proposal_attempt_detail = ""
         self._load()
@@ -329,6 +330,14 @@ class CognitiveAuditEngine:
             confirmed_trials = sum(
                 1 for t in self._state.trial_log if t.get("outcome") == "confirmed"
             )
+        try:
+            snapshot_timestamp = float(snap.get("timestamp")) if snap else None
+        except (TypeError, ValueError, OverflowError):
+            snapshot_timestamp = None
+        snapshot_age = (
+            max(0.0, time.time() - snapshot_timestamp)
+            if snapshot_timestamp is not None else None
+        )
         worst = None
         worst_actionable = None
         measured: Dict[str, float] = {}
@@ -350,6 +359,12 @@ class CognitiveAuditEngine:
                 pass
         return {
             "last_snapshot": snap,
+            "last_snapshot_age_seconds": round(snapshot_age, 1) if snapshot_age is not None else None,
+            "last_snapshot_process_scope": (
+                "current_process" if snapshot_timestamp is not None
+                and snapshot_timestamp >= self._process_started_at
+                else "persisted_or_unknown" if snap else "unavailable"
+            ),
             "last_audit_cycle": self._state.last_audit_cycle,
             "total_audits": total_audits,
             "total_trials": total_trials + (1 if trial else 0),

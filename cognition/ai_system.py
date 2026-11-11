@@ -606,6 +606,7 @@ class EnhancedPersistence:
 
     def get_all_memories(
         self, tier: Optional[str] = None, memory_type: Optional[str] = None,
+        limit: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """Return persisted memories for deterministic retrieval fallback."""
         try:
@@ -626,6 +627,9 @@ class EnhancedPersistence:
                 if filters:
                     query += " WHERE " + " AND ".join(filters)
                 query += " ORDER BY id DESC"
+                if limit is not None:
+                    query += " LIMIT ?"
+                    params.append(max(0, int(limit)))
                 rows = conn.execute(query, tuple(params)).fetchall()
             columns = [
                 "id", "faiss_id", "text", "timestamp", "impact_score",
@@ -1000,15 +1004,58 @@ class EnhancedMemorySystem:
         if limit <= 0:
             return []
         try:
+            # Prefer the existing semantic index. It already contains a
+            # separate embedding for each user_message; retrieve a bounded
+            # nearest-neighbour window, then apply the source boundary in SQL.
+            # The shared BM25 fallback below is capped so this extra lane does
+            # not tokenize the entire growing conversation archive per turn.
+            if self.embedding_model is not None and self.faiss_index is not None:
+                total = int(getattr(self.faiss_index, "ntotal", 0) or 0)
+                if total > 0:
+                    try:
+                        query_vector = self._embed(query)
+                        candidate_count = min(total, max(120, limit * 24))
+                        distances, indices = self.faiss_index.search(
+                            query_vector, candidate_count
+                        )
+                        valid_ids = [int(value) for value in indices[0] if value != -1]
+                        if valid_ids:
+                            candidates = self.persistence.get_memories_by_ids(valid_ids)
+                            distance_by_id = {
+                                int(indices[0][position]): float(distances[0][position])
+                                for position in range(len(indices[0]))
+                                if int(indices[0][position]) != -1
+                            }
+                            sourced = [
+                                memory for memory in candidates
+                                if memory.get("memory_type") == "user_message"
+                            ]
+                            sourced.sort(key=lambda memory: distance_by_id.get(
+                                int(memory.get("faiss_id", -1)), float("inf")
+                            ))
+                            if sourced:
+                                return [
+                                    dict(memory, relevance=1.0 / (1.0 + max(
+                                        0.0, distance_by_id.get(
+                                            int(memory.get("faiss_id", -1)), float("inf")
+                                        )
+                                    )))
+                                    for memory in sourced[:limit]
+                                ]
+                    except Exception as error:
+                        logger.debug("Semantic user-message recall unavailable: %s", error)
+
             try:
-                memories = self.persistence.get_all_memories(memory_type="user_message")
+                memories = self.persistence.get_all_memories(
+                    memory_type="user_message", limit=2000
+                )
             except TypeError:
                 # Keep lightweight persistence adapters used by integrations
                 # and tests compatible while retaining the type boundary.
                 memories = [
                     memory for memory in self.persistence.get_all_memories()
                     if memory.get("memory_type") == "user_message"
-                ]
+                ][:2000]
             ranked = rank_documents(query, [
                 memory_embedding_text(memory.get("text", ""), "user_message")
                 for memory in memories

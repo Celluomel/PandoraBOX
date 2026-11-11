@@ -19,14 +19,22 @@ from cognition.turn_context_evidence import format_memory_for_prompt
 class _Persistence:
     def __init__(self, rows):
         self.rows = rows
+        self.all_memory_queries = []
 
-    def get_all_memories(self, tier=None):
+    def get_all_memories(self, tier=None, memory_type=None, limit=None):
+        self.all_memory_queries.append((tier, memory_type, limit))
         if tier is None:
-            return list(self.rows)
-        return [row for row in self.rows if row["memory_tier"] == tier]
+            selected = list(self.rows)
+        else:
+            selected = [row for row in self.rows if row["memory_tier"] == tier]
+        if memory_type is not None:
+            selected = [row for row in selected if row["memory_type"] == memory_type]
+        if limit is not None:
+            selected = selected[:limit]
+        return selected
 
-    def get_memories_by_ids(self, _ids):
-        return []
+    def get_memories_by_ids(self, ids):
+        return [row for row in self.rows if row.get("faiss_id") in ids]
 
 
 class _BrokenEmbedder:
@@ -39,6 +47,14 @@ class _Index:
 
     def search(self, *_args):
         raise AssertionError("lexical fallback should run before vector search")
+
+
+class _UserSourceIndex:
+    ntotal = 2
+
+    def search(self, _query, count):
+        assert count == 2
+        return np.array([[0.1, 0.2]], dtype="float32"), np.array([[2, 1]], dtype="int64")
 
 
 class _StaleIndex:
@@ -150,6 +166,29 @@ class MemorySystemFallbackTests(unittest.TestCase):
         )
 
         self.assertEqual(result, [])
+
+    def test_user_source_lane_uses_semantic_neighbours_before_bounded_lexical_fallback(self):
+        self.rows = [
+            {"id": 1, "faiss_id": 1,
+             "text": "User message: Lumina is the master brain; communication goes to Flux in one direction.",
+             "timestamp": datetime.now().isoformat(), "impact_score": 0.5,
+             "memory_type": "user_message", "memory_tier": "interaction",
+             "emotional_valence": "Neutral", "access_count": 0},
+            {"id": 2, "faiss_id": 2,
+             "text": "Conversation — User: How should Lumina and Flux work? | Lumina: Flux is the master and communication is bidirectional.",
+             "timestamp": datetime.now().isoformat(), "impact_score": 0.9,
+             "memory_type": "episodic", "memory_tier": "interaction",
+             "emotional_valence": "Neutral", "access_count": 0},
+        ]
+        system = self._system(embedder=_Embedder(), index=_UserSourceIndex())
+
+        result = system.retrieve_user_authored_memories(
+            "Who leads and is the dialogue one-way or reciprocal?", limit=1
+        )
+
+        self.assertEqual([row["id"] for row in result], [1])
+        self.assertGreater(result[0]["relevance"], 0)
+        self.assertEqual(system.persistence.all_memory_queries, [])
 
 
 if __name__ == "__main__":

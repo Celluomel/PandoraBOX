@@ -1,21 +1,33 @@
 # Audit du harnais cognitif — état et prochaines étapes
 
 **Date :** 11 novembre 2026
-**Statut :** audit en cours — conclusion globale non établie. Dernier commit poussé : `95794b7`.
+**Statut :** audit en cours — conclusion globale non établie. Dernier commit poussé avant cette reprise : `4c00406`.
 
 ## État courant de reprise — après le commit `036816b`
 
 - **Cause mémoire corrigée localement :** le rappel croisé pouvait préférer une ancienne réponse de Lumina à la déclaration source de l’utilisateur. Le nouveau chemin récupère aussi, séparément, un message utilisateur lexicalement pertinent et lui réserve une place dans le contexte borné. Une question antérieure reste explicitement une preuve de la question, pas de sa réponse.
-- **Preuve locale :** reproduction du mauvais classement avant fusion; le candidat utilisateur est ensuite injecté en tête; requête lexicale sans rapport = aucun candidat. Tests mémoire/contexte/tour : `54 passed, 4 sous-tests`; fiabilité mémoire et ordre GoalEngine : `20 passed, 7 sous-tests`; tests profil/résolution identité : `18 passed`; combinaison profil + régressions cognitives : `45 passed, 4 sous-tests`. Compilation et `git diff --check` réussis.
-- **Live :** cette correction n’a pas encore été chargée dans Lumina. Il faut un redémarrage avant les vérifications de rappel français/anglais et l’inspection des reçus candidats/injection.
+- **Preuve locale :** reproduction du mauvais classement avant fusion; le candidat utilisateur est ensuite injecté en tête; requête lexicale sans rapport = aucun candidat. La voie source utilise désormais les voisins FAISS sémantiques puis un fallback lexical plafonné à 2 000 messages. Tests combinés mémoire/contexte/tour, snapshot, flux cognitif et profil : `77 passed, 8 sous-tests`; compilation et `git diff --check` réussis.
+- **Live :** les changements mémoire/profil et la portée d’ancienneté du snapshot ne sont pas encore chargés dans Lumina. Un redémarrage groupé sera nécessaire pour confirmer le rappel français/anglais, l’injection de provenance, les snapshots `current_process` et les reçus de cadence.
 - **Portée :** cela corrige un défaut du harnais de mémoire; cela ne démontre ni la véracité des déclarations utilisateur, ni une qualité globale du Brain. Les scénarios objectifs/workspace/planner, profil, génération factuelle, parole proactive, efficacité et matrice complète de modules restent à auditer.
-- **Git :** `main` local et `origin/main` sont alignés sur `95794b7`; les correctifs mémoire (`935dd43`) et profil (`95794b7`) sont poussés. Modifications Body/UI et artefacts préexistants toujours exclus.
+- **Git :** au départ de ce lot, `main` local et `origin/main` étaient alignés sur `4c00406`. Les corrections d’optimisation mémoire et d’ancienneté des snapshots sont en cours localement; changements Body/UI et artefacts préexistants restent exclus.
 
 ### Mise à jour du 11 novembre — apprentissage du profil
 
 Un replay local du parseur a établi que `learn_from_message("Je suis curieux.")` persistait `curieux` comme caractéristique durable. Le défaut venait du patron générique `je suis …`, qui acceptait sans distinction un état de conversation et une identité stable. Le patron a été restreint aux identités nominales déterminées (« je suis un développeur… », « I am a software developer… ») et aux auto-descriptions explicites (« je me considère comme… », « I consider myself… »). Les préférences/intérêts explicites restent sur leurs patrons propres. « Je suis curieux de savoir… » et « Je suis curieux. » ne modifient donc plus automatiquement le profil.
 
 Tests relancés : `tests/test_presence_identity_language.py` et `tests/test_brain_default_user_resolution.py` — **18 passed**; combinés à la suite de régressions cognitives — **45 passed, 4 sous-tests passés**. Une exception native Windows `0xc0000008` de chargement FAISS est imprimée lors de l’import paresseux déclenché par ces tests, mais le processus pytest continue et termine avec succès; ce bruit/risque d’import tardif reste à isoler. La correction de profil est locale; sa confirmation dans une trace live et sa persistance réelle restent à faire après redémarrage.
+
+### Mise à jour du 11 novembre — fraîcheur des snapshots et coût de rappel
+
+Lecture des endpoints locaux, en lecture seule : `/status` indiquait `ready=true`, modèle Gemma chargé, mémoire FAISS et uptime d’environ 782 s. `/state` exposait le dernier snapshot `cognitive_audit` horodaté 20:33 Europe/Paris; le processus interrogé avait démarré vers 20:54. Le statut ne donnait ni l’âge ni la portée du snapshot : les compteurs d’audit (50 audits, 1 essai terminé, 0 confirmé, aucun essai actif) pouvaient être lus comme un état de ce processus alors qu’ils provenaient d’un snapshot antérieur. C’est un défaut réel de fraîcheur du diagnostic, distinct de la validité des valeurs persistées.
+
+Correction locale : `CognitiveAuditEngine.status_summary()` et `CognitiveImmuneSystem.status_summary()` renvoient maintenant `last_snapshot_age_seconds` et `last_snapshot_process_scope` (`current_process`, `persisted_or_unknown` ou `unavailable`). Les tests vérifient les deux classes avec snapshot pré-processus et snapshot courant. Ils ne changent ni les décisions d’audit ni les données persistées.
+
+La même revue a identifié un coût potentiel dans le nouveau rappel source : BM25 sur chaque message utilisateur ferait tokenizer toute l’archive à chaque tour. La récupération source préfère maintenant le voisinage sémantique FAISS, déjà indexé par message et déjà séparé par rôle, puis applique la provenance `user_message`; le fallback lexical ne parcourt qu’un maximum de 2 000 messages récents. Un test confirme que la voie FAISS ne lance pas le scan lexical, et le test de conflit source/réponse reste vert.
+
+### Lecture prudente de l’état immunitaire live
+
+Le snapshot immunitaire exposé indiquait `self_reference_density=0.947`, `evidence_diversity=0.052`, `immune_score=0.5014`, `consecutive_alerts=0`, `counterfactual_active=false`, `total_activations=0`; les thèmes dominants étaient « uncertainty », un fragment français, « signal » et « modèle ». Le seuil d’alerte dans le code est 0.60 et exige deux alertes consécutives. Le CAG de cet instantané avait `turn_count=0`; dans une instance sans interaction, les sujets internes peuvent augmenter mécaniquement. **Ce n’est pas encore une preuve de défaillance du module ni de santé cognitive** : il faut comparer une période active après interaction avec une période idle, puis vérifier si la diversité et les thèmes répondent à l’entrée utilisateur. Aucun seuil n’est modifié sur la seule base de ce snapshot.
 
 ## Objectif de l’audit
 

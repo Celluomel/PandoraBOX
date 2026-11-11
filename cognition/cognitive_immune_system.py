@@ -258,6 +258,7 @@ class CognitiveImmuneSystem:
         self._path      = Path(path)
         self._state     = ImmuneState()
         self._lock      = threading.Lock()
+        self._process_started_at = time.time()
         self._load()
         logger.info(
             f"[CognitiveImmune] Initialised — "
@@ -302,11 +303,28 @@ class CognitiveImmuneSystem:
     def status_summary(self) -> Dict[str, Any]:
         with self._lock:
             snap = self._state.snapshot_log[-1] if self._state.snapshot_log else {}
+            consecutive_alerts = self._state.consecutive_alerts
+            counterfactual_active = self._state.counterfactual_active
+            total_activations = self._state.total_activations
+        try:
+            snapshot_timestamp = float(snap.get("timestamp")) if snap else None
+        except (TypeError, ValueError, OverflowError):
+            snapshot_timestamp = None
+        snapshot_age = (
+            max(0.0, time.time() - snapshot_timestamp)
+            if snapshot_timestamp is not None else None
+        )
         return {
             "last_snapshot":         snap,
-            "consecutive_alerts":    self._state.consecutive_alerts,
-            "counterfactual_active": self._state.counterfactual_active,
-            "total_activations":     self._state.total_activations,
+            "last_snapshot_age_seconds": round(snapshot_age, 1) if snapshot_age is not None else None,
+            "last_snapshot_process_scope": (
+                "current_process" if snapshot_timestamp is not None
+                and snapshot_timestamp >= self._process_started_at
+                else "persisted_or_unknown" if snap else "unavailable"
+            ),
+            "consecutive_alerts":    consecutive_alerts,
+            "counterfactual_active": counterfactual_active,
+            "total_activations":     total_activations,
         }
 
     def prompt_fragment(self) -> str:
