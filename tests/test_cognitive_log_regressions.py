@@ -38,6 +38,7 @@ from cognition.turn_context_evidence import (
     audit_safe_turn_summary,
     format_memory_for_prompt,
     memory_embedding_text,
+    memory_prompt_injection_evidence,
     memory_retrieval_evidence,
     profile_context_evidence,
 )
@@ -159,6 +160,18 @@ class CognitiveLogRegressionTests(unittest.TestCase):
         self.assertEqual(summary["candidates"][0]["memory_tier"], "episodic")
         self.assertEqual(summary["candidates"][0]["source"], "faiss")
         self.assertNotIn("Private decision content", str(summary))
+
+    def test_memory_injection_receipt_distinguishes_recalled_from_prompted_records(self):
+        memories = [{
+            "id": "injected-1", "text": "private included record",
+            "memory_tier": "personal", "memory_type": "fact",
+        }]
+        receipt = memory_prompt_injection_evidence(memories)
+        summary = audit_safe_turn_summary(receipt)
+
+        self.assertEqual(summary["injected_count"], 1)
+        self.assertEqual(summary["records"][0]["memory_tier"], "personal")
+        self.assertNotIn("private included record", str(summary))
 
     def test_turn_trace_exposes_profile_receipt_without_profile_values(self):
         summary = audit_safe_turn_summary({

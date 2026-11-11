@@ -37,6 +37,7 @@ from cognition.turn_context_evidence import (
     audit_safe_turn_summary,
     format_memory_for_prompt,
     memory_retrieval_evidence,
+    memory_prompt_injection_evidence,
     profile_context_evidence,
 )
 
@@ -1897,7 +1898,7 @@ Write at most 70 words, in the user's language, only if a concise carry-forward 
         self._record_turn_stage(
             "prompt_assembly", "completed", f"{len(system_prompt)} chars",
             output=system_prompt,
-            consumes=("turn_input", "memory_retrieval", "user_profile_context"),
+            consumes=("turn_input", "memory_prompt_context", "user_profile_context"),
         )
         if peer_name:
             system_prompt += (
@@ -3645,6 +3646,11 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
 
             top_memories = memories[:8] if _surprised else memories[:5]
             mem_ctx = "\n".join(_fmt_memory(m) for m in top_memories) if top_memories else ""
+            self._record_turn_stage(
+                "memory_prompt_context", "injected" if top_memories else "empty",
+                output=memory_prompt_injection_evidence(top_memories),
+                consumes=("memory_retrieval",),
+            )
 
             cond_section = ("━━ EXPERIENCE-BASED CAUTION ━━\n" + cond_dict["prompt_note"]) if cond_dict.get("prompt_note") else ""
             if mem_ctx:

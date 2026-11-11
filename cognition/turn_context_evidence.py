@@ -94,6 +94,20 @@ def memory_retrieval_evidence(
     }
 
 
+def memory_prompt_injection_evidence(memories: Iterable[Mapping[str, Any]]) -> dict:
+    """Identify which recalled records actually entered this turn's prompt."""
+    injected = []
+    for memory in memories:
+        text = str(memory.get("text", ""))
+        stable_key = str(memory.get("id") or memory.get("faiss_id") or text)
+        injected.append({
+            "ref": _sha256(stable_key)[:20],
+            "memory_tier": str(memory.get("memory_tier") or "unknown")[:24],
+            "memory_type": str(memory.get("memory_type") or "unknown")[:40],
+        })
+    return {"injected_count": len(injected), "records": injected[:12]}
+
+
 def profile_context_evidence(status: str, source: str, context: str) -> dict:
     """Fingerprint profile prompt material without exposing its contents."""
     return {
@@ -141,6 +155,31 @@ def audit_safe_turn_summary(value: Any) -> dict[str, Any] | None:
             "candidate_count": candidate_count,
             "candidates": candidates,
             "quality": "present" if candidate_count else "empty",
+        }
+
+    if {"injected_count", "records"}.issubset(value):
+        records = []
+        raw_records = value.get("records")
+        if isinstance(raw_records, Iterable) and not isinstance(raw_records, (str, bytes, Mapping)):
+            for record in raw_records:
+                if not isinstance(record, Mapping):
+                    continue
+                records.append({
+                    "ref": str(record.get("ref", ""))[:20],
+                    "memory_tier": str(record.get("memory_tier", "unknown"))[:24],
+                    "memory_type": str(record.get("memory_type", "unknown"))[:40],
+                })
+                if len(records) >= 12:
+                    break
+        try:
+            injected_count = max(0, min(1000, int(value.get("injected_count", len(records)))))
+        except (TypeError, ValueError, OverflowError):
+            injected_count = len(records)
+        return {
+            "type": "memory_prompt_injection_evidence",
+            "injected_count": injected_count,
+            "records": records,
+            "quality": "present" if injected_count else "empty",
         }
 
     if {"status", "source", "context_sha256"}.issubset(value):

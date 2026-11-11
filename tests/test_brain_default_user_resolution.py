@@ -29,6 +29,29 @@ def test_default_user_resolves_to_guest_when_no_named_profile_is_active(tmp_path
     assert manager.resolve_interaction_user_id("default") == manager.GUEST_ID
 
 
+def test_profile_learning_is_persisted_and_available_to_the_next_prompt(tmp_path):
+    users_path = Path(tmp_path) / "users.json"
+    manager = UserManager(path=users_path)
+    profile = manager.create("Fred")
+    manager.set_active(profile.id)
+
+    first_turn_id = manager.resolve_interaction_user_id("default")
+    receipt = manager.learn_from_message(
+        first_turn_id,
+        "I prefer concise technical answers.",
+        return_receipt=True,
+    )
+
+    reloaded = UserManager(path=users_path)
+    next_turn_id = reloaded.resolve_interaction_user_id("default")
+    next_prompt_context = reloaded.prompt_context_for(next_turn_id)
+
+    assert receipt["status"] == "updated"
+    assert receipt["changed"] is True
+    assert first_turn_id == next_turn_id == profile.id
+    assert "Preferences: concise technical answers." in next_prompt_context
+
+
 def test_brain_chat_route_uses_the_resolved_identity_for_both_stream_modes():
     source = Path(__file__).parents[1] / "brain.py"
     tree = ast.parse(source.read_text(encoding="utf-8"))
