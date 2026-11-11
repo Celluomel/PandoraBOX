@@ -182,3 +182,23 @@ def test_goal_broadcast_reports_all_rejected_without_claiming_success():
     assert status == "rejected"
     assert counts["broadcast_count"] == 0
     assert counts["rejected_count"] == 1
+
+
+def test_rejected_thought_proposal_cannot_become_durable_workspace_focus():
+    winner = {"type": "thought", "source_data": {"_goal_proposal": {"concept": "noise"}}}
+
+    assert not InternalThoughtLoop._selected_proposal_commit_admitted(
+        winner,
+        {"created": False, "verified": False, "reason": "goal_engine_rejected"},
+    )
+    assert InternalThoughtLoop._selected_proposal_commit_admitted(
+        winner,
+        {"created": True, "verified": True},
+    )
+    assert InternalThoughtLoop._selected_proposal_commit_admitted(
+        winner,
+        {"created": False, "verified": True, "reason": "existing_goal"},
+    )
+    assert InternalThoughtLoop._selected_proposal_commit_admitted(
+        {"type": "thought", "source_data": {}}, None,
+    )

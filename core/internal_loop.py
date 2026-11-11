@@ -536,6 +536,22 @@ class InternalThoughtLoop:
             return {"kind": "none"}
         return {"kind": type(value).__name__}
 
+    @staticmethod
+    def _selected_proposal_commit_admitted(
+        winner: Any, commit_result: Any,
+    ) -> bool:
+        """Only let a thought proposal create durable focus after verified admission."""
+        source_data = winner.get("source_data", {}) if isinstance(winner, dict) else {}
+        proposal = source_data.get("_goal_proposal") if isinstance(source_data, dict) else None
+        if not isinstance(proposal, dict):
+            return True
+        if not isinstance(commit_result, dict) or not commit_result.get("verified"):
+            return False
+        return bool(
+            commit_result.get("created")
+            or commit_result.get("reason") == "existing_goal"
+        )
+
     def _begin_cycle_evidence(self, cycle_id: int) -> None:
         with self._cycle_evidence_lock:
             self._active_cycle_evidence = {
@@ -1499,6 +1515,18 @@ class InternalThoughtLoop:
                             if isinstance(_commit_result, dict) else None
                         ),
                     )
+                    _proposal_focus_admitted = self._selected_proposal_commit_admitted(
+                        _winner, _commit_result,
+                    )
+                    _proposal_focus_ref = self._record_cycle_stage(
+                        "proposal_durable_focus_admission",
+                        "admitted" if _proposal_focus_admitted else "rejected",
+                        inputs={"selected_proposal_commit_ref": _commit_evidence_ref},
+                        output={"admitted": _proposal_focus_admitted},
+                    )
+                    if isinstance(_selected_proposal, dict) and not _proposal_focus_admitted:
+                        _winner = dict(_winner)
+                        _winner["proposal_admission"] = "rejected"
 
                     _comp  = _cycle_result.get('competition', {}).get('competition', {})
                     _cands = _comp.get('total_candidates', 0)
@@ -1516,7 +1544,7 @@ class InternalThoughtLoop:
                         "winner_published_to_workspace_state", "completed",
                         inputs={
                             "arbitration_output_ref": _arbitration_evidence_ref,
-                            "selected_proposal_commit_ref": _commit_evidence_ref,
+                            "proposal_focus_admission_ref": _proposal_focus_ref,
                         },
                         output=_winner,
                     )
@@ -1527,13 +1555,19 @@ class InternalThoughtLoop:
                     # commitment. This is what lets the focus BIAS downstream
                     # selection and be measured as OVERRIDDEN by real behaviour
                     # (instead of only being a prompt string the LLM may ignore).
-                    try:
-                        from cognition.workspace_bias import get_workspace_bias
-                        get_workspace_bias(o, str(getattr(o, '_data_dir', 'data/persona'))).commit(
-                            _winner, self._slow_cycle_count
+                    if _proposal_focus_admitted:
+                        try:
+                            from cognition.workspace_bias import get_workspace_bias
+                            get_workspace_bias(o, str(getattr(o, '_data_dir', 'data/persona'))).commit(
+                                _winner, self._slow_cycle_count
+                            )
+                        except Exception as _wb_ce:
+                            logger.debug(f"[InternalLoop] workspace-bias commit error (non-fatal): {_wb_ce}")
+                    else:
+                        logger.info(
+                            "[InternalLoop] Rejected proposal remains a cycle observation; "
+                            "durable workspace focus was not updated"
                         )
-                    except Exception as _wb_ce:
-                        logger.debug(f"[InternalLoop] workspace-bias commit error (non-fatal): {_wb_ce}")
                     # Phase 4.x: also expose the full structured snapshot.
                     # Existing consumers of _v32_workspace_winner (a single
                     # string/dict) are untouched; new/updated consumers
@@ -1545,16 +1579,17 @@ class InternalThoughtLoop:
                     # ── DecisionCommitmentLayer ──────────────────────────
                     # Record this decision and enforce temporal consistency.
                     # Lazy-init on first winner so organism is fully ready.
-                    try:
-                        if self._commitment_layer is None:
-                            from cognition.decision_commitment import DecisionCommitmentLayer
-                            self._commitment_layer = DecisionCommitmentLayer(
-                                o, data_dir=str(getattr(o, '_data_dir', 'data/persona'))
-                            )
-                            logger.info('[InternalLoop] DecisionCommitmentLayer ready ✅')
-                        self._commitment_layer.tick(_winner, self._slow_cycle_count)
-                    except Exception as _dcl_e:
-                        logger.debug(f'[InternalLoop] CommitmentLayer error: {_dcl_e}')
+                    if _proposal_focus_admitted:
+                        try:
+                            if self._commitment_layer is None:
+                                from cognition.decision_commitment import DecisionCommitmentLayer
+                                self._commitment_layer = DecisionCommitmentLayer(
+                                    o, data_dir=str(getattr(o, '_data_dir', 'data/persona'))
+                                )
+                                logger.info('[InternalLoop] DecisionCommitmentLayer ready ✅')
+                            self._commitment_layer.tick(_winner, self._slow_cycle_count)
+                        except Exception as _dcl_e:
+                            logger.debug(f'[InternalLoop] CommitmentLayer error: {_dcl_e}')
 
                     # ── EmergenceMetricsCollector ────────────────────────────
                     try:
@@ -1575,7 +1610,11 @@ class InternalThoughtLoop:
                     # back into curiosity.json, actively injecting noise topics.
                     # Now uses the clean 'topic' field; skips entirely if absent
                     # rather than falling back to slug-mangling.
-                    if hasattr(o, 'curiosity') and _winner.get('type') in ('goal', 'thought'):
+                    if (
+                        _proposal_focus_admitted
+                        and hasattr(o, 'curiosity')
+                        and _winner.get('type') in ('goal', 'thought')
+                    ):
                         try:
                             _topic = _winner.get('topic', '')
                             if _topic and len(_topic) > 3:
