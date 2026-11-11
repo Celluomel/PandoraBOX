@@ -21,6 +21,7 @@ Public API consumed by app.py
 
 import asyncio
 import datetime as _dt
+import hashlib
 import json
 import logging
 import math
@@ -36,6 +37,30 @@ from cognition.body_runtime.robot_capabilities import robot_capability_report, r
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+_TURN_OUTPUT_UNSET = object()
+
+
+def _turn_output_evidence(value: Any) -> tuple[str, dict[str, Any]]:
+    """Return a stable fingerprint and redacted shape summary for turn data."""
+    try:
+        from core.module_tick_log import summarize_output
+        summary = summarize_output(value)
+    except Exception:
+        summary = {"type": type(value).__name__, "quality": "shape_only"}
+    try:
+        if isinstance(value, bytes):
+            material = value
+        elif isinstance(value, str):
+            material = value.encode("utf-8", errors="replace")
+        else:
+            material = json.dumps(
+                value, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+                default=lambda item: {"__type__": type(item).__name__},
+            ).encode("utf-8", errors="replace")
+    except Exception:
+        material = type(value).__qualname__.encode("utf-8")
+    return hashlib.sha256(material).hexdigest(), summary
 
 # Research MCP — lazy-imported after PandoraBOX boots so memory_system is ready
 _research_mcp_instance = None
@@ -345,6 +370,7 @@ class PersonaBridge:
         peer_name: str = "",
         max_tokens_override: int | None = None,
         cognitive_scope_id: str = "",
+        turn_id: str = "",
     ):
         async with self._response_turn_lock:
             async for chunk in self._get_response_stream_impl(
@@ -359,6 +385,7 @@ class PersonaBridge:
                 peer_name=peer_name,
                 max_tokens_override=max_tokens_override,
                 cognitive_scope_id=cognitive_scope_id,
+                turn_id=turn_id,
             ):
                 if isinstance(chunk, dict) and chunk.get("__meta__"):
                     chunk.setdefault("turn_id", self._last_turn_trace.get("turn_id", ""))
@@ -370,6 +397,7 @@ class PersonaBridge:
 
     def _start_turn_trace(
         self, user_id: str, peer_name: str = "", cognitive_scope_id: str = "",
+        turn_id: str = "",
     ) -> None:
         with self._turn_trace_lock:
             previous = getattr(self, "_last_turn_trace", {})
@@ -385,6 +413,10 @@ class PersonaBridge:
                     for name, source in previous.get("context_sources", {}).items()
                     if isinstance(source, dict)
                 }
+                snapshot["stage_events"] = [
+                    dict(event) for event in previous.get("stage_events", [])
+                    if isinstance(event, dict)
+                ]
                 history = getattr(self, "_turn_trace_history", None)
                 if history is None:
                     history = self._turn_trace_history = []
@@ -392,7 +424,7 @@ class PersonaBridge:
                 del history[:-24]
             self._turn_sequence += 1
             self._last_turn_trace = {
-                "turn_id": f"lumina-{time.time_ns()}-{self._turn_sequence}",
+                "turn_id": str(turn_id or f"lumina-{time.time_ns()}-{self._turn_sequence}")[:120],
                 "scope": "peer" if peer_name else "human",
                 "peer_name": peer_name or None,
                 "user_id": user_id,
@@ -401,6 +433,7 @@ class PersonaBridge:
                 "started_at": time.time(),
                 "stages": {},
                 "context_sources": {},
+                "stage_events": [],
             }
 
     def _record_turn_context_source(
@@ -436,7 +469,8 @@ class PersonaBridge:
 
     def _record_turn_stage(
         self, name: str, status: str, detail: str = "", *, turn_id: str = "",
-        error_type: str = "",
+        error_type: str = "", output: Any = _TURN_OUTPUT_UNSET,
+        consumes: tuple[str, ...] | list[str] = (), side_effect_only: bool = False,
     ) -> None:
         with self._turn_trace_lock:
             trace = getattr(self, "_last_turn_trace", None)
@@ -452,7 +486,35 @@ class PersonaBridge:
                 stage["detail"] = str(detail)[:240]
             if error_type:
                 stage["error_type"] = str(error_type).rsplit(".", 1)[-1][:64]
+            if output is not _TURN_OUTPUT_UNSET:
+                fingerprint, summary = _turn_output_evidence(output)
+                stage["output_fingerprint"] = fingerprint
+                stage["output_summary"] = summary
+                stage["output_quality"] = summary.get("quality", "unknown")
+                if side_effect_only and output is None:
+                    stage["output_quality"] = "side_effect_only"
+            if consumes:
+                upstream = trace.setdefault("stages", {})
+                stage["consumes"] = [
+                    {
+                        "stage": source,
+                        "fingerprint": (
+                            upstream.get(source, {}).get("output_fingerprint")
+                            if isinstance(upstream.get(source), dict) else None
+                        ),
+                    }
+                    for source in consumes
+                ]
             trace.setdefault("stages", {})[name] = stage
+            events = trace.setdefault("stage_events", [])
+            events.append({
+                "stage": name,
+                "status": status,
+                "at": stage["at"],
+                "output_fingerprint": stage.get("output_fingerprint"),
+                "consumes": list(stage.get("consumes", [])),
+            })
+            del events[:-160]
             health_by_stage = getattr(self, "_turn_stage_health", None)
             if health_by_stage is None:
                 health_by_stage = self._turn_stage_health = {}
@@ -623,6 +685,39 @@ class PersonaBridge:
                 integrity_issues.extend(
                     f"stage_order:{item}" for item in stage_order_violations
                 )
+                data_flow_issues = []
+                for consumer_name, consumer in stages.items():
+                    if not isinstance(consumer, dict):
+                        continue
+                    for reference in consumer.get("consumes", []):
+                        if not isinstance(reference, dict):
+                            data_flow_issues.append(f"malformed_consumer:{consumer_name}")
+                            continue
+                        source_name = str(reference.get("stage") or "")
+                        source = stages.get(source_name)
+                        source_fingerprint = (
+                            source.get("output_fingerprint")
+                            if isinstance(source, dict) else None
+                        )
+                        if not source_fingerprint:
+                            data_flow_issues.append(
+                                f"missing_source_output:{source_name}->{consumer_name}"
+                            )
+                        elif reference.get("fingerprint") != source_fingerprint:
+                            data_flow_issues.append(
+                                f"source_output_mismatch:{source_name}->{consumer_name}"
+                            )
+                        elif (
+                            isinstance(source.get("at"), (int, float))
+                            and isinstance(consumer.get("at"), (int, float))
+                            and consumer["at"] < source["at"]
+                        ):
+                            data_flow_issues.append(
+                                f"consumer_before_source:{source_name}->{consumer_name}"
+                            )
+                integrity_issues.extend(
+                    f"data_flow:{item}" for item in data_flow_issues
+                )
                 failed_stage_names = sorted(
                     name for name, value in stage_status.items()
                     if isinstance(value, str) and value in {"failed", "invalid_output"}
@@ -642,6 +737,7 @@ class PersonaBridge:
                     "missing_core_stages": missing_core,
                     "malformed_stages": malformed_stages,
                     "stage_order_violations": stage_order_violations,
+                    "data_flow_issues": data_flow_issues,
                     "peer_scope_violations": peer_scope_violations,
                     "failed_stages": failed_stage_names,
                     "conditional_skips": sorted(
@@ -664,6 +760,10 @@ class PersonaBridge:
                 for name, stage in self._last_turn_trace.get("stages", {}).items()
                 if isinstance(stage, dict)
             }
+            trace["stage_events"] = [
+                dict(event) for event in self._last_turn_trace.get("stage_events", [])
+                if isinstance(event, dict)
+            ]
             trace["context_sources"] = {
                 name: dict(source)
                 for name, source in self._last_turn_trace.get("context_sources", {}).items()
@@ -694,6 +794,10 @@ class PersonaBridge:
                         for name, stage in item.get("stages", {}).items()
                         if isinstance(stage, dict)
                     },
+                    "stage_events": [
+                        dict(event) for event in item.get("stage_events", [])
+                        if isinstance(event, dict)
+                    ],
                 }
                 for item in getattr(self, "_turn_trace_history", [])[-12:]
             ]
@@ -713,6 +817,7 @@ class PersonaBridge:
         peer_name: str = "",
         max_tokens_override: int | None = None,
         cognitive_scope_id: str = "",
+        turn_id: str = "",
     ):
         """
         Main entry point for every user turn.
@@ -720,7 +825,7 @@ class PersonaBridge:
         Yields individual string tokens, then a final meta dict.
         All of PandoraBOX's automatic cycles run correctly regardless of path.
         """
-        self._start_turn_trace(user_id, peer_name, cognitive_scope_id)
+        self._start_turn_trace(user_id, peer_name, cognitive_scope_id, turn_id)
         if not self._ready or self._system is None:
             self._finish_turn_trace("not_ready")
             self._record_turn_stage("readiness", "failed", "PersonaBridge not ready")
@@ -787,19 +892,31 @@ class PersonaBridge:
             _goal_detail = str(
                 _goal_write.get("id") or _goal_write.get("reason") or _goal_status
             )
-            self._record_turn_stage("goal_write_gate", _goal_stage, _goal_detail)
-            self._record_turn_stage("response_finalization", "completed")
+            self._record_turn_stage(
+                "goal_write_gate", _goal_stage, _goal_detail,
+                output=_goal_turn, consumes=("turn_input",),
+            )
             _goal_response = str(_goal_turn.get("response") or "")
+            self._record_turn_stage(
+                "response_finalization", "completed", output=_goal_response,
+                consumes=("goal_write_gate",),
+            )
             _manager = getattr(self._llm_stream_fn, "__self__", None)
             _record_exchange = getattr(_manager, "record_exchange", None)
             if callable(_record_exchange):
                 _record_exchange(effective_input, _goal_response)
             for _word in _goal_response.split():
                 yield _word + " "
+            _goal_speech = self._sanitize(_goal_response)
+            self._record_turn_stage(
+                "response", "completed",
+                output={"raw": _goal_response, "speech": _goal_speech},
+                consumes=("response_finalization",),
+            )
             yield {
                 "__meta__": True,
                 "raw": _goal_response,
-                "speech": self._sanitize(_goal_response),
+                "speech": _goal_speech,
                 "emotion": "focused",
                 "intensity": 0.4,
                 "goal_write": _goal_turn,
@@ -818,7 +935,11 @@ class PersonaBridge:
                 _body_turn = self.handle_body_chat_turn(effective_input, user_id)
             except Exception as _body_turn_error:
                 logger.warning("[BodyPlan] chat routing failed; refusing narrative execution: %s", _body_turn_error)
-            self._record_turn_stage("body_action_gate", "checked")
+            self._record_turn_stage(
+                "body_action_gate", "checked",
+                output={"action_detected": bool(_body_turn), "allowed": True},
+                consumes=("turn_input",),
+            )
         else:
             _reason = "peer turn cannot actuate Body" if _peer_scoped_turn else "disabled by caller policy"
             self._record_turn_stage("body_action_gate", "skipped_by_policy", _reason)
@@ -832,18 +953,29 @@ class PersonaBridge:
                 "body_action_resolution",
                 "completed" if _body_response else "invalid_output",
                 str(_body_turn.get("status") or _body_turn.get("reason") or "")[:200],
+                output=_body_turn,
+                consumes=("turn_input", "body_action_gate"),
             )
-            self._record_turn_stage("response_finalization", "completed")
+            self._record_turn_stage(
+                "response_finalization", "completed", output=_body_response,
+                consumes=("body_action_resolution",),
+            )
             _manager = getattr(self._llm_stream_fn, "__self__", None)
             _record_exchange = getattr(_manager, "record_exchange", None)
             if callable(_record_exchange):
                 _record_exchange(effective_input, _body_response)
             for _word in _body_response.split():
                 yield _word + " "
+            _body_speech = self._sanitize(_body_response)
+            self._record_turn_stage(
+                "response", "completed",
+                output={"raw": _body_response, "speech": _body_speech},
+                consumes=("response_finalization",),
+            )
             yield {
                 "__meta__": True,
                 "raw": _body_response,
-                "speech": self._sanitize(_body_response),
+                "speech": _body_speech,
                 "emotion": "focused",
                 "intensity": 0.45,
                 "body_plan": _body_turn,
@@ -1507,6 +1639,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                 "Follow the STRUCTURED GOAL-MEANS ANALYSIS when present. "
                 "Lead with the feasible recommendation and its decisive prerequisite."
             )
+
             arb_temperature = min(
                 float(arb_temperature) if arb_temperature is not None else 0.35,
                 0.35,
@@ -1644,6 +1777,14 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             except Exception as _report_error:
                 logger.debug("Factual goal report fallback unavailable: %s", _report_error)
 
+        # This is the exact prompt pair available to the selected inference
+        # route after all context, contracts and routing-specific additions.
+        self._record_turn_stage(
+            "generation_request", "prepared",
+            output={"user_input": _generation_input, "system_prompt": system_prompt},
+            consumes=("turn_input", "prompt_assembly"),
+        )
+
         # Optional Phi first pass: the model judges whether this turn can be
         # answered directly from the supplied conversation. Anything needing
         # tools, stored/current facts, or multi-step reasoning stays on the
@@ -1689,6 +1830,11 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     (f"Recent conversation:\n{_history_text}\n\n" if _history_text else "")
                     + f"Current user message:\n{effective_input}"
                 )
+                self._record_turn_stage(
+                    "fast_first_pass_input", "prepared",
+                    output={"prompt": _fast_prompt, "system_prompt": _fast_system},
+                    consumes=("turn_input",),
+                )
                 _fast_started = time.perf_counter()
                 _fast_raw = await asyncio.to_thread(
                     _fast_fn,
@@ -1718,12 +1864,20 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         _deterministic_response = _quick_answer
                         _fast_round_used = True
                         logger.info("[FastRound] direct response via %s in %dms", _fast_model, _fast_latency_ms)
-                        self._record_turn_stage("fast_first_pass", "selected_direct", f"{_fast_model} { _fast_latency_ms }ms")
+                        self._record_turn_stage(
+                            "fast_first_pass", "selected_direct",
+                            f"{_fast_model} { _fast_latency_ms }ms",
+                            output=_fast_decision, consumes=("fast_first_pass_input",),
+                        )
                     else:
                         if _repeats_recent_answer:
                             logger.info("[FastRound] repeated recent answer rejected; escalating to primary model")
                         logger.info("[FastRound] decision=%s; delegated to primary model via %s in %dms", _route or "invalid", _fast_model, _fast_latency_ms)
-                        self._record_turn_stage("fast_first_pass", "delegated", f"{_fast_model} { _fast_latency_ms }ms")
+                        self._record_turn_stage(
+                            "fast_first_pass", "delegated",
+                            f"{_fast_model} { _fast_latency_ms }ms",
+                            output=_fast_decision, consumes=("fast_first_pass_input",),
+                        )
                 else:
                     logger.info("[FastRound] skipped or empty; continuing with primary model")
                     self._record_turn_stage("fast_first_pass", "skipped_by_policy")
@@ -1791,8 +1945,18 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         )
                         if _fast_round_used:
                             logger.info("[FastRound] response resolved without primary-model generation")
+                            self._record_turn_stage(
+                                "fast_direct_answer", "completed",
+                                output=_deterministic_response,
+                                consumes=("fast_first_pass",),
+                            )
                         else:
                             logger.info("[FactualSelfReport] goal/plan answer rendered from recorded telemetry")
+                            self._record_turn_stage(
+                                "deterministic_reasoning", "selected_direct",
+                                output=_deterministic_response,
+                                consumes=("turn_input",),
+                            )
                     _llm_manager = getattr(self._llm_stream_fn, "__self__", None)
                     _record_exchange = getattr(_llm_manager, "record_exchange", None)
                     if record_history and callable(_record_exchange):
@@ -1855,6 +2019,11 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         history_override=conversation_history or [],
                         record_history=False,
                     )
+                self._record_turn_stage(
+                    "primary_generation_input", "delivered",
+                    output={"user_input": _generation_input, "system_prompt": system_prompt},
+                    consumes=("generation_request",),
+                )
                 for token in self._llm_stream_fn(_generation_input, system_prompt, **_stream_kwargs):
                     if _validate_before_display:
                         _provider_tokens.append(token)
@@ -2077,6 +2246,32 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
         # Runs on the full accumulated response BEFORE lifecycle and meta yield.
         # If triggered, replace response with safe fallback and log.
         raw_response = self._strip_think("".join(accumulated))
+        _answer_origin_stage = (
+            "fast_direct_answer" if _fast_round_used
+            else "deterministic_reasoning" if _deterministic_response
+            else "primary_generation"
+        )
+        if not _deterministic_response and not _fast_round_used:
+            _generation_status = str(
+                self._last_turn_trace.get("stages", {}).get("primary_generation", {}).get("status", "unknown")
+            )
+            if _generation_status == "completed":
+                self._record_turn_stage(
+                    "primary_generation", "completed" if raw_response.strip() else "empty",
+                    output=raw_response, consumes=("primary_generation_input",),
+                )
+            else:
+                if _generation_status in {"running", "unknown"}:
+                    self._record_turn_stage(
+                        "primary_generation", "failed",
+                        "provider stream ended without a completion event",
+                        error_type="IncompleteProviderStream",
+                    )
+                if raw_response.strip():
+                    self._record_turn_stage(
+                        "generation_fallback", "completed", output=raw_response,
+                    )
+                    _answer_origin_stage = "generation_fallback"
         _meta_only = self._is_reasoning_only_response(raw_response)
         if _meta_only:
             logger.warning(
@@ -2116,6 +2311,8 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     self._record_turn_stage(
                         "final_answer_recovery",
                         "completed" if raw_response else "empty",
+                        output=raw_response,
+                        consumes=("primary_generation",),
                     )
                 except Exception as _recovery_error:
                     self._record_turn_stage("final_answer_recovery", "failed", str(_recovery_error))
@@ -2143,6 +2340,10 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             if record_history and isinstance(_history, list) and _history and _history[-1].get("role") == "assistant":
                 _history[-1]["content"] = raw_response
             accumulated.append(raw_response)
+            self._record_turn_stage(
+                "empty_generation_fallback", "completed", output=raw_response,
+            )
+            _answer_origin_stage = "empty_generation_fallback"
             yield raw_response
 
         # LLMManager persists the raw stream before this bridge completes its
@@ -2158,6 +2359,12 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             logger.warning(
                 "[Chat stream] provider reached max_tokens; visible response was preserved"
             )
+
+        _response_source_stage = (
+            "final_answer_recovery"
+            if self._last_turn_trace.get("stages", {}).get("final_answer_recovery", {}).get("status") == "completed"
+            else _answer_origin_stage
+        )
         if _safety is not None:
             try:
                 _or = _safety.check_output(raw_response, user_id)
@@ -2165,14 +2372,25 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     raw_response = _or.forced_response or (
                         "I need to step back from that response. Can I help differently?"
                     )
-                    self._record_turn_stage("output_safety", "replaced", "policy")
+                    self._record_turn_stage(
+                        "output_safety", "replaced", "policy",
+                        output=raw_response, consumes=(_response_source_stage,),
+                    )
                 else:
-                    self._record_turn_stage("output_safety", "passed")
+                    self._record_turn_stage(
+                        "output_safety", "passed", output=raw_response,
+                        consumes=(_response_source_stage,),
+                    )
             except Exception as _output_safety_error:
                 self._record_turn_stage("output_safety", "failed", str(_output_safety_error))
                 raise
         else:
-            self._record_turn_stage("output_safety", "skipped_unavailable")
+            # Preserve the real hand-off even if the optional policy engine
+            # was not initialized; this is a pass-through, not a safety pass.
+            self._record_turn_stage(
+                "output_safety", "skipped_unavailable", output=raw_response,
+                consumes=(_response_source_stage,),
+            )
 
         # ── Phase C: full post-turn lifecycle (non-blocking thread) ─
         # This heuristic is meant to infer impact on the human interlocutor.
@@ -2291,39 +2509,60 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             for (stage_name, _), result in zip(post_tasks, results):
                 if isinstance(result, BaseException):
                     failures.append(result)
-                    self._record_turn_stage(stage_name, "failed", str(result))
+                    self._record_turn_stage(
+                        stage_name, "failed", type(result).__name__,
+                        output=result, consumes=("output_safety",),
+                    )
                 elif stage_name == "goal_means_post_response" and isinstance(result, dict):
                     analysis_status = str(result.get("status") or "failed")
                     if analysis_status == "completed":
-                        self._record_turn_stage(stage_name, "completed")
+                        self._record_turn_stage(
+                            stage_name, "completed", output=result,
+                            consumes=("output_safety",),
+                        )
                     elif analysis_status in {"not_applicable", "deferred", "unavailable", "invalid_output", "failed"}:
                         self._record_turn_stage(
                             stage_name,
                             "failed" if analysis_status == "unavailable" else analysis_status,
                             str(result.get("reason") or ""),
+                            output=result, consumes=("output_safety",),
                         )
                         if analysis_status in {"unavailable", "invalid_output", "failed"}:
                             failures.append(RuntimeError(
                                 f"structured goal/means stage {analysis_status}"
                             ))
                     else:
-                        self._record_turn_stage(stage_name, "failed", f"unknown status: {analysis_status}")
+                        self._record_turn_stage(
+                            stage_name, "failed", f"unknown status: {analysis_status}",
+                            output=result, consumes=("output_safety",),
+                        )
                         failures.append(RuntimeError("unknown goal/means stage status"))
                 elif stage_name == "cognitive_post_turn" and result is False:
                     failures.append(RuntimeError("post-turn lifecycle reported failure"))
                     self._record_turn_stage(
                         stage_name, "failed", "one or more required cognitive stages failed",
+                        output=result, consumes=("output_safety",),
                     )
                 else:
-                    self._record_turn_stage(stage_name, "completed")
+                    self._record_turn_stage(
+                        stage_name, "completed", output=result,
+                        consumes=("output_safety",), side_effect_only=result is None,
+                    )
             if failures:
                 logger.warning(
                     "Post-turn stage failures: %d/%d", len(failures), len(post_tasks),
                 )
-        self._record_turn_stage("response_finalization", "completed")
+        self._record_turn_stage(
+            "response_finalization", "completed", output=raw_response,
+            consumes=("output_safety",),
+        )
 
         speech = self._sanitize(raw_response)
         emotion, intensity = self._infer_emotion(effective_input)
+        self._record_turn_stage(
+            "response", "completed", output={"raw": raw_response, "speech": speech},
+            consumes=("response_finalization",),
+        )
         yield {
             "__meta__":  True,
             "raw":       raw_response,

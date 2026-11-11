@@ -20,7 +20,11 @@ class Persona:
     is_ready = True
     _organism = SimpleNamespace(_loop=SimpleNamespace(_slow_cycle_count=9))
 
+    def __init__(self):
+        self.stream_kwargs = None
+
     async def get_response_stream(self, text, **kwargs):
+        self.stream_kwargs = kwargs
         yield 'Bonjour '
         yield 'Fred'
         yield {'__meta__': True, 'raw': 'Bonjour Fred'}
@@ -160,6 +164,9 @@ class InterfaceTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual([e['type'] for e in events], ['start', 'delta', 'delta', 'done'])
             self.assertEqual([e['seq'] for e in events], [1, 2, 3, 4])
             self.assertEqual(len({e['turn_id'] for e in events}), 1)
+            self.assertEqual(
+                self.runtime.persona.stream_kwargs['turn_id'], events[0]['turn_id']
+            )
             self.assertFalse(api._turn_lock.locked())
 
     async def test_rejects_unready_busy_empty_and_cross_site(self):

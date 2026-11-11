@@ -1841,6 +1841,7 @@ async def chat(payload: Turn, request: Request):
                 'user_id': user_id,
                 'vision_context': vision,
                 'voice_mode': payload.voice_mode,
+                'turn_id': turn_id,
             }
             if payload.displayed_cognitive_trace is not None:
                 stream_kwargs['displayed_cognitive_trace'] = payload.displayed_cognitive_trace
