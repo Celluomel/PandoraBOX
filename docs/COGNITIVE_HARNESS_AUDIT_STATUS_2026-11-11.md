@@ -95,7 +95,7 @@ Pour chaque case, rapporter **observé**, **inféré** ou **inconnu**. Ne pas in
 
 ## État Git et préservation du worktree
 
-Au moment de la rédaction, `main` et `origin/main` sont alignés sur `17ae81c`. Le worktree contient des modifications et fichiers non suivis préexistants sans rapport avec ce document, notamment des changements Body, pages, tests et artefacts. Ils ont été laissés intacts. Ce rapport n’implique pas que ces changements soient inclus dans le commit d’audit.
+À l’état actuel de cette reprise, `main` contient les commits d’audit `045e82a` et `92ef6db`, tandis que `origin/main` reste sur `17ae81c` (avance locale, pas encore poussée). Le worktree contient des modifications et fichiers non suivis préexistants sans rapport avec l’audit, notamment des changements Body, pages, tests et artefacts. Ils restent intacts et exclus des commits d’audit.
 
 ## Critère de clôture
 
@@ -154,4 +154,18 @@ Le routage reconnaît maintenant une référence à un tour antérieur lorsqu’
 - Tests `tests/test_module_tick_log.py` et `tests/test_goal_engine_execution_order.py` : **11 passed**, 9 warnings. Ces tests valident les contrats de journalisation et l’ordre d’exécution du moteur d’objectifs, pas encore les effets d’un tour live.
 - Le processus live est resté prêt pendant cette correction (`/status`: `ready=true`, modèle Gemma chargé, uptime ~1154 s). Aucun redémarrage n’a été effectué; le correctif local n’est donc pas encore chargé par ce processus.
 - Le test rejoue la formulation qui avait échoué et vérifie que le rappel cite le `turn_id` fourni, donne les compteurs présents dans la trace courante et énonce les limites.
-- Commit de ce correctif en préparation; tout autre changement préexistant du worktree reste hors de portée.
+- Correctif commité dans `92ef6db`; tout autre changement préexistant du worktree reste hors de portée.
+
+## Cycle d’auto-audit / essais — défaut et correction locale
+
+La lecture live de `/api/interface/cognitive-health` a donné `total_audits=50`, `total_trials=0`, `active_trial=null`, `mean_skill_depth=0.3` pour une cible de `1.0`, et `consecutive_under.mean_skill_depth=180`. Les taux de confirmation d’expériences et de résolution de questions étaient indisponibles. Le fichier persistant `data/persona/cognitive_params.json` confirme les 50 snapshots, zéro essai et aucune tentative de proposition conservée.
+
+Le code explique le trou d’observabilité : après deux mesures sous cible, le moteur appelle le LLM via `sync_slot(priority=3, skip_if_busy=True)` sans attente. Une indisponibilité, une réponse vide ou un JSON invalide produit `None`; aucun état persistant ne distingue ces cas. Les compteurs ne permettent donc pas de savoir si la cause historique était la saturation du LLM, une réponse invalide ou une autre panne. **La saturation est une hypothèse plausible, pas un fait observé.** Les signaux avec dénominateur nul sont correctement `null` et ne doivent pas être traités comme 0 %.
+
+Correction locale en cours de validation :
+
+- attendre au plus 5 s pour obtenir le créneau LLM de priorité 3, sans attente infinie;
+- conserver les tentatives séparément des essais réellement activés, avec cycle, dimension, statut et détail borné; afficher le total et la dernière cause dans `status_summary`;
+- différencier créneau occupé, erreur LLM, réponse vide/invalide, paramètre refusé, aucun changement et essai activé. Les changements de paramètres restent bornés et aucun essai n’est déclaré avant activation effective.
+
+Vérification locale : **50 passed**, 3 sous-tests passés, 9 warnings sur le lot des tests de données santé, workflow de Brain, traçage de tour, manifeste de ticks et exécution GoalEngine. Cette modification ne peut être confirmée live qu’après le redémarrage final. Avant le correctif, l’API de santé n’exposait pas les tentatives; les valeurs historiques n’identifient donc pas la cause exacte.

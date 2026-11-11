@@ -14,12 +14,52 @@ sys.path.insert(0, str(ROOT))
 package = ModuleType('cognition')
 package.__path__ = [str(ROOT / 'cognition')]
 with patch.dict(sys.modules, {'cognition': package}):
-    from cognition.cognitive_audit_engine import CognitiveAuditEngine
+    from cognition.cognitive_audit_engine import AuditState, CognitiveAuditEngine
     from cognition.narrative_compression import NarrativeCompression
     from cognition.temporal_projection import TemporalProjection, PathProjection
 
 
 class HealthDataTests(unittest.TestCase):
+    def test_cognitive_audit_waits_briefly_for_llm_slot_and_exposes_skip_reason(self):
+        audit = CognitiveAuditEngine.__new__(CognitiveAuditEngine)
+        audit._ai = NS(get_response=Mock(return_value=""))
+        scheduler = ModuleType('core.llm_scheduler')
+        scheduler_instance = NS(sync_slot=Mock(return_value=nullcontext(False)))
+        scheduler.llm_scheduler = scheduler_instance
+
+        with patch.dict(sys.modules, {'core.llm_scheduler': scheduler}):
+            self.assertIsNone(audit._llm_call('bounded proposal prompt'))
+
+        scheduler_instance.sync_slot.assert_called_once_with(
+            priority=3, skip_if_busy=True, caller='cognitive_audit', wait_seconds=5.0,
+        )
+        self.assertEqual(audit._proposal_attempt_status, 'llm_slot_busy')
+
+        audit._ai = NS(get_response=Mock(side_effect=RuntimeError('provider failure')))
+        scheduler_instance.sync_slot.return_value = nullcontext(True)
+        with patch.dict(sys.modules, {'core.llm_scheduler': scheduler}):
+            self.assertIsNone(audit._llm_call('bounded proposal prompt'))
+        self.assertEqual(audit._proposal_attempt_status, 'llm_error')
+
+    def test_cognitive_audit_persists_proposal_attempt_separately_from_trial(self):
+        audit = CognitiveAuditEngine.__new__(CognitiveAuditEngine)
+        audit._state = AuditState()
+        audit._lock = __import__('threading').Lock()
+        with tempfile.TemporaryDirectory() as folder:
+            audit._path = Path(folder) / 'cognitive_params.json'
+            audit._record_proposal_attempt(
+                120, 'mean_skill_depth', 'invalid_response', 'bad JSON',
+            )
+            persisted = json.loads(audit._path.read_text(encoding='utf-8'))
+
+        self.assertEqual(audit.status_summary()['total_trials'], 0)
+        self.assertEqual(audit.status_summary()['proposal_attempt_count'], 1)
+        self.assertEqual(persisted['proposal_attempt_total'], 1)
+        self.assertEqual(
+            persisted['last_proposal_attempt']['status'], 'invalid_response',
+        )
+        self.assertEqual(persisted['trial_log'], [])
+
     def test_audit_reads_current_storage_contracts(self):
         audit = CognitiveAuditEngine.__new__(CognitiveAuditEngine)
         audit._organism = NS(skill_registry=NS(_state=NS(

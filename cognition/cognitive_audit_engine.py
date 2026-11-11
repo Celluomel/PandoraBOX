@@ -237,6 +237,11 @@ class AuditState:
     active_trial:        Optional[Dict]    = None   # serialised DevelopmentProposal
     trial_log:           List[Dict]        = field(default_factory=list)
     committed_params:    Dict[str, Any]    = field(default_factory=dict)
+    # Keep proposal attempts separate from completed trials. A skipped or
+    # invalid proposal is not a trial, but must remain inspectable.
+    proposal_attempt_log: List[Dict]       = field(default_factory=list)
+    last_proposal_attempt: Optional[Dict]  = None
+    proposal_attempt_total: int            = 0
     # track consecutive underperformance per signal (key → count)
     consecutive_under:   Dict[str, int]    = field(default_factory=dict)
 
@@ -264,6 +269,8 @@ class CognitiveAuditEngine:
         self._path      = Path(path)
         self._state     = AuditState()
         self._lock      = threading.Lock()
+        self._proposal_attempt_status = "not_started"
+        self._proposal_attempt_detail = ""
         self._load()
         self._apply_committed_params()
         logger.info(
@@ -335,6 +342,8 @@ class CognitiveAuditEngine:
             "measured_signal_count": len(measured),
             "unavailable_signals": sorted(set(SIGNAL_TARGETS) - set(measured)),
             "active_trial": trial,
+            "proposal_attempt_count": int(self._state.proposal_attempt_total),
+            "last_proposal_attempt": dict(self._state.last_proposal_attempt or {}),
             "committed_params": dict(self._state.committed_params),
             "consecutive_under": dict(self._state.consecutive_under),
         }
@@ -349,6 +358,7 @@ class CognitiveAuditEngine:
     # ── Audit cycle ───────────────────────────────────────────────────────────
 
     def _run_audit(self, slow_cycle: int) -> None:
+        proposal_dimension = ""
         try:
             snapshot = self._read_signals(slow_cycle)
 
@@ -388,19 +398,55 @@ class CognitiveAuditEngine:
             # Generate and activate a trial
             value = snapshot.as_dict()[worst]
             target = SIGNAL_TARGETS[worst]
+            proposal_dimension = worst
+            self._proposal_attempt_status = "requesting_proposal"
+            self._proposal_attempt_detail = ""
             proposal = self._generate_proposal(worst, value, target, slow_cycle)
             if proposal:
                 self._activate_trial(proposal)
+                self._record_proposal_attempt(
+                    slow_cycle, worst, "trial_activated",
+                    f"parameter={proposal.parameter}",
+                )
                 logger.info(
                     f"[CognitiveAudit] 🔬 Trial activated: {worst} "
                     f"({value:.3f} < {target:.2f}) → "
                     f"{proposal.parameter} {proposal.prior_value} → {proposal.proposed_value}"
                 )
+            else:
+                self._record_proposal_attempt(
+                    slow_cycle, worst,
+                    self._proposal_attempt_status,
+                    self._proposal_attempt_detail,
+                )
 
             self._save()
 
         except Exception as e:
+            if proposal_dimension:
+                self._record_proposal_attempt(
+                    slow_cycle, proposal_dimension, "audit_error", str(e)[:240],
+                )
             logger.debug(f"[CognitiveAudit] _run_audit error (non-fatal): {e}")
+
+    def _record_proposal_attempt(
+        self, slow_cycle: int, dimension: str, status: str, detail: str = "",
+    ) -> None:
+        """Persist why a persistent underperforming signal did or did not trial."""
+        attempt = {
+            "slow_cycle": int(slow_cycle),
+            "timestamp": time.time(),
+            "dimension": str(dimension)[:80],
+            "status": str(status)[:48],
+            "detail": str(detail)[:240],
+        }
+        with self._lock:
+            self._state.last_proposal_attempt = attempt
+            self._state.proposal_attempt_log.append(attempt)
+            self._state.proposal_attempt_total += 1
+            if len(self._state.proposal_attempt_log) > MAX_AUDIT_LOG:
+                self._state.proposal_attempt_log = self._state.proposal_attempt_log[-MAX_AUDIT_LOG:]
+        self._save()
 
     def _update_consecutive_underperformance(self, snapshot: SignalSnapshot) -> None:
         deficits = snapshot.deficit()
@@ -499,6 +545,8 @@ class CognitiveAuditEngine:
         slow_cycle: int,
     ) -> Optional[DevelopmentProposal]:
         """Ask the LLM to propose a specific parameter calibration."""
+        self._proposal_attempt_status = "proposal_failed"
+        self._proposal_attempt_detail = "No proposal response was produced."
         current_params = self._current_params()
 
         # Build the parameter change bounds description
@@ -571,6 +619,8 @@ Respond ONLY in JSON (no markdown, no preamble):
             data = json.loads(clean)
             pname = data.get("parameter", "")
             if pname not in PARAM_SPACE:
+                self._proposal_attempt_status = "invalid_parameter"
+                self._proposal_attempt_detail = "Response named a parameter outside the tunable parameter space."
                 logger.debug(f"[CognitiveAudit] Unknown parameter in proposal: {pname}")
                 return None
 
@@ -591,9 +641,13 @@ Respond ONLY in JSON (no markdown, no preamble):
                     proposed = ptype(max(pmin, min(pmax, proposed)))
 
             if proposed == prior:
+                self._proposal_attempt_status = "no_parameter_change"
+                self._proposal_attempt_detail = f"Proposal left {pname} unchanged."
                 logger.debug(f"[CognitiveAudit] Proposal resulted in no change for {pname}")
                 return None
 
+            self._proposal_attempt_status = "proposal_created"
+            self._proposal_attempt_detail = f"parameter={pname}"
             return DevelopmentProposal(
                 dimension           = dimension,
                 signal_at_proposal  = current_value,
@@ -606,6 +660,8 @@ Respond ONLY in JSON (no markdown, no preamble):
             )
 
         except Exception as e:
+            self._proposal_attempt_status = "invalid_response"
+            self._proposal_attempt_detail = str(e)[:240]
             logger.debug(f"[CognitiveAudit] Proposal parse failed: {e} | raw={response[:200]}")
             return None
 
@@ -743,8 +799,11 @@ Respond ONLY in JSON (no markdown, no preamble):
             priority     = 3,
             skip_if_busy = True,
             caller       = caller,
+            wait_seconds = 5.0,
         ) as acquired:
             if not acquired:
+                self._proposal_attempt_status = "llm_slot_busy"
+                self._proposal_attempt_detail = "No LLM slot became available within the bounded 5 s wait."
                 return None
             try:
                 result = self._ai.get_response(
@@ -753,7 +812,13 @@ Respond ONLY in JSON (no markdown, no preamble):
                     temperature = 0.50,
                 ) or ""
             except Exception as e:
+                self._proposal_attempt_status = "llm_error"
+                self._proposal_attempt_detail = str(e)[:240]
                 logger.debug(f"[CognitiveAudit] LLM failed: {e}")
+                return None
+        if not result:
+            self._proposal_attempt_status = "empty_llm_response"
+            self._proposal_attempt_detail = "The LLM slot was acquired but returned no proposal text."
         return result or None
 
     # ── Persistence ───────────────────────────────────────────────────────────
@@ -763,12 +828,18 @@ Respond ONLY in JSON (no markdown, no preamble):
             if self._path.exists():
                 with open(self._path) as f:
                     data = json.load(f)
+                proposal_attempt_log = data.get("proposal_attempt_log") or []
                 self._state = AuditState(
                     last_audit_cycle   = data.get("last_audit_cycle", 0),
                     snapshot_log       = data.get("snapshot_log", []),
                     active_trial       = data.get("active_trial"),
                     trial_log          = data.get("trial_log", []),
                     committed_params   = data.get("committed_params", {}),
+                    proposal_attempt_log = proposal_attempt_log,
+                    last_proposal_attempt = data.get("last_proposal_attempt"),
+                    proposal_attempt_total = int(data.get(
+                        "proposal_attempt_total", len(proposal_attempt_log),
+                    )),
                     consecutive_under  = data.get("consecutive_under", {}),
                 )
         except Exception as e:
@@ -784,6 +855,9 @@ Respond ONLY in JSON (no markdown, no preamble):
                     "active_trial":      self._state.active_trial,
                     "trial_log":         self._state.trial_log,
                     "committed_params":  self._state.committed_params,
+                    "proposal_attempt_log": self._state.proposal_attempt_log,
+                    "last_proposal_attempt": self._state.last_proposal_attempt,
+                    "proposal_attempt_total": self._state.proposal_attempt_total,
                     "consecutive_under": self._state.consecutive_under,
                     "_meta": {
                         "written_at":    time.time(),
