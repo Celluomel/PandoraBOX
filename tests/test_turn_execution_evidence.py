@@ -1,6 +1,11 @@
 import threading
+from types import SimpleNamespace
 
-from cognition.persona_bridge import PersonaBridge
+from cognition.persona_bridge import (
+    PersonaBridge,
+    _prior_assistant_trace_evidence,
+    _turn_output_evidence,
+)
 
 
 def _bridge():
@@ -87,3 +92,34 @@ def test_turn_integrity_labels_deterministic_self_report_path():
     assert integrity["execution_path"] == "deterministic_reasoning"
     assert integrity["required_core_stages"] == 7
     assert integrity["missing_core_stages"] == []
+
+
+def test_prior_answer_trace_link_ignores_enriched_current_prompt():
+    previous_answer = "Live test result: 4 active goals."
+    prior_fingerprint, _ = _turn_output_evidence(previous_answer)
+    manager = SimpleNamespace(history=[
+        {"role": "user", "content": "Previous test question"},
+        {"role": "assistant", "content": previous_answer},
+        {"role": "user", "content": "Current user text plus generated prompt contract"},
+        {"role": "assistant", "content": "Current generated candidate"},
+    ])
+    trace = {"recent_turns": [{
+        "turn_id": "prior-turn",
+        "scope": "human",
+        "status": "completed",
+        "stages": {
+            "response_finalization": {"output_fingerprint": prior_fingerprint},
+        },
+    }]}
+
+    evidence = _prior_assistant_trace_evidence(
+        manager,
+        trace,
+        record_history=True,
+        conversation_history=None,
+        current_exchange_recorded=True,
+    )
+
+    assert evidence["text"] == previous_answer
+    assert evidence["trace_linked"] is True
+    assert evidence["turn_id"] == "prior-turn"

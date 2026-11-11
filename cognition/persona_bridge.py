@@ -66,10 +66,10 @@ def _turn_output_evidence(value: Any) -> tuple[str, dict[str, Any]]:
 def _prior_assistant_trace_evidence(
     manager: Any,
     trace: dict[str, Any],
-    current_input: str,
     *,
     record_history: bool,
     conversation_history: list[dict] | None,
+    current_exchange_recorded: bool = False,
 ) -> dict[str, Any] | None:
     """Link the preceding assistant answer to its completed turn trace when possible.
 
@@ -82,14 +82,10 @@ def _prior_assistant_trace_evidence(
     if not isinstance(source, list):
         return None
     messages = [item for item in source if isinstance(item, dict)]
-    if record_history and len(messages) >= 2:
-        user, assistant = messages[-2:]
-        if (
-            user.get("role") == "user"
-            and str(user.get("content") or "").strip() == str(current_input or "").strip()
-            and assistant.get("role") == "assistant"
-        ):
-            messages = messages[:-2]
+    if record_history and current_exchange_recorded and messages and messages[-1].get("role") == "assistant":
+        messages = messages[:-1]
+        if messages and messages[-1].get("role") == "user":
+            messages = messages[:-1]
     previous = next((
         item for item in reversed(messages)
         if item.get("role") == "assistant" and str(item.get("content") or "").strip()
@@ -2018,9 +2014,10 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         from cognition.self_description import trace_grounded_architecture_answer
                         _llm_manager = getattr(self._llm_stream_fn, "__self__", None)
                         _prior_exchange = _prior_assistant_trace_evidence(
-                            _llm_manager, self.get_last_turn_trace(), effective_input,
+                            _llm_manager, self.get_last_turn_trace(),
                             record_history=record_history,
                             conversation_history=conversation_history,
+                            current_exchange_recorded=False,
                         )
                         _visible_candidate = str(_deterministic_response or "")
                         _guarded = trace_grounded_architecture_answer(
@@ -2146,9 +2143,10 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         from cognition.self_description import trace_grounded_architecture_answer
                         _llm_manager = getattr(self._llm_stream_fn, "__self__", None)
                         _prior_exchange = _prior_assistant_trace_evidence(
-                            _llm_manager, self.get_last_turn_trace(), effective_input,
+                            _llm_manager, self.get_last_turn_trace(),
                             record_history=record_history,
                             conversation_history=conversation_history,
+                            current_exchange_recorded=True,
                         )
                         _guarded = trace_grounded_architecture_answer(
                             effective_input, self.get_last_turn_trace(),
