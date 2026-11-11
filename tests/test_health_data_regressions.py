@@ -30,6 +30,31 @@ class HealthDataTests(unittest.TestCase):
         self.assertEqual(snapshot.mean_skill_depth, 2)
         self.assertAlmostEqual(snapshot.belief_confidence_mean, 0.7)
 
+    def test_audit_marks_empty_denominators_unmeasured(self):
+        audit = CognitiveAuditEngine.__new__(CognitiveAuditEngine)
+        audit._organism = NS(
+            _loop=NS(
+                _autonomous_reflection=NS(
+                    _epistemic=NS(_recent_grounding_rate=lambda: 0.8)),
+                _auto_experiment=NS(_state=NS(
+                    total_experiments=0, total_confirmed=0)),
+                _resolution_engine=NS(_state=NS(
+                    total_resolved=0, total_unresolvable=0)),
+            ),
+            skill_registry=NS(_state=NS(skills={})),
+        )
+        audit._ai = NS(self_concept=NS(_beliefs={}))
+        snapshot = audit._read_signals(42)
+
+        self.assertIsNone(snapshot.experiment_confirmation_rate)
+        self.assertIsNone(snapshot.question_resolution_rate)
+        self.assertIsNone(snapshot.mean_skill_depth)
+        self.assertIsNone(snapshot.belief_confidence_mean)
+        self.assertEqual(snapshot.deficit(), {
+            'epistemic_grounding_rate': 0.8 - 0.6,
+        })
+        self.assertIsNone(snapshot.worst_signal())
+
     def test_projection_restores_nested_paths_and_skips_bad_entry(self):
         path = dict(archetype='intensive', cumulative_cost=0.2,
                     progress_rate=0.1, efficiency=0.5, crosses_critical=False,

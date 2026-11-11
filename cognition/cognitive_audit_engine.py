@@ -176,13 +176,13 @@ class SignalSnapshot:
     """One audit's worth of performance readings."""
     slow_cycle:                    int
     timestamp:                     float
-    epistemic_grounding_rate:      float = 0.0
-    experiment_confirmation_rate:  float = 0.0
-    question_resolution_rate:      float = 0.0
-    mean_skill_depth:              float = 0.0
-    belief_confidence_mean:        float = 0.0
+    epistemic_grounding_rate:      Optional[float] = None
+    experiment_confirmation_rate:  Optional[float] = None
+    question_resolution_rate:     Optional[float] = None
+    mean_skill_depth:              Optional[float] = None
+    belief_confidence_mean:        Optional[float] = None
 
-    def as_dict(self) -> Dict[str, float]:
+    def as_dict(self) -> Dict[str, Optional[float]]:
         return {
             "epistemic_grounding_rate":     self.epistemic_grounding_rate,
             "experiment_confirmation_rate": self.experiment_confirmation_rate,
@@ -192,16 +192,19 @@ class SignalSnapshot:
         }
 
     def deficit(self) -> Dict[str, float]:
-        """Returns gap between signal and target (negative = underperforming)."""
+        """Return measured gaps only; unavailable signals are not zeroes."""
         d = {}
         for name, target in SIGNAL_TARGETS.items():
-            current = getattr(self, name, 0.0)
-            d[name] = current - target
+            current = getattr(self, name, None)
+            if current is not None:
+                d[name] = current - target
         return d
 
     def worst_signal(self) -> Optional[str]:
         """Name of the most underperforming signal, or None if all on target."""
         gaps = self.deficit()
+        if not gaps:
+            return None
         worst = min(gaps, key=gaps.get)
         if gaps[worst] < 0:
             return worst
@@ -221,7 +224,7 @@ class DevelopmentProposal:
     proposed_at_cycle:   int
     proposed_at_time:    float  = field(default_factory=time.time)
     outcome:             str    = "pending"   # "confirmed"|"disconfirmed"|"inconclusive"|"pending"
-    signal_at_eval:      float  = 0.0
+    signal_at_eval:      Optional[float] = None
     evaluated_at_cycle:  int    = 0
     committed:           bool   = False
 
@@ -311,12 +314,15 @@ class CognitiveAuditEngine:
                 1 for t in self._state.trial_log if t.get("outcome") == "confirmed"
             )
         worst = None
+        measured: Dict[str, float] = {}
         if snap:
             try:
-                worst = SignalSnapshot(**{
+                last_snapshot = SignalSnapshot(**{
                     k: v for k, v in snap.items()
                     if k in SignalSnapshot.__dataclass_fields__
-                }).worst_signal()
+                })
+                worst = last_snapshot.worst_signal()
+                measured = last_snapshot.deficit()
             except Exception:
                 pass
         return {
@@ -326,6 +332,8 @@ class CognitiveAuditEngine:
             "total_trials": total_trials,
             "confirmed_trials": confirmed_trials,
             "worst_signal_now": worst,
+            "measured_signal_count": len(measured),
+            "unavailable_signals": sorted(set(SIGNAL_TARGETS) - set(measured)),
             "active_trial": trial,
             "committed_params": dict(self._state.committed_params),
             "consecutive_under": dict(self._state.consecutive_under),
@@ -360,7 +368,10 @@ class CognitiveAuditEngine:
 
             worst = snapshot.worst_signal()
             if worst is None:
-                logger.info("[CognitiveAudit] ✅ All signals on target")
+                if snapshot.deficit():
+                    logger.info("[CognitiveAudit] ✅ All measurable signals on target")
+                else:
+                    logger.info("[CognitiveAudit] No measurable signals available")
                 self._save()
                 return
 
@@ -465,13 +476,16 @@ class CognitiveAuditEngine:
         except Exception:
             pass
 
+        def _fmt(value: Optional[float]) -> str:
+            return f"{value:.2f}" if value is not None else "n/a"
+
         logger.debug(
             f"[CognitiveAudit] Signals @ cycle {slow_cycle}: "
-            f"grounding={snap.epistemic_grounding_rate:.2f} "
-            f"exp_conf={snap.experiment_confirmation_rate:.2f} "
-            f"q_res={snap.question_resolution_rate:.2f} "
-            f"skill_depth={snap.mean_skill_depth:.2f} "
-            f"belief_conf={snap.belief_confidence_mean:.2f}"
+            f"grounding={_fmt(snap.epistemic_grounding_rate)} "
+            f"exp_conf={_fmt(snap.experiment_confirmation_rate)} "
+            f"q_res={_fmt(snap.question_resolution_rate)} "
+            f"skill_depth={_fmt(snap.mean_skill_depth)} "
+            f"belief_conf={_fmt(snap.belief_confidence_mean)}"
         )
         return snap
 
@@ -608,19 +622,22 @@ Respond ONLY in JSON (no markdown, no preamble):
         """Re-read the signal and determine whether the trial improved it."""
         try:
             snapshot = self._read_signals(slow_cycle)
-            signal_now = snapshot.as_dict().get(trial.dimension, 0.0)
+            signal_now = snapshot.as_dict().get(trial.dimension)
             target     = trial.signal_target
             prior      = trial.signal_at_proposal
 
-            # Δ as fraction of target (normalised)
-            delta = signal_now - prior
-
-            if delta >= CONFIRM_THRESHOLD * target:
-                outcome = "confirmed"
-            elif delta <= -DISCONFIRM_THRESHOLD * target:
-                outcome = "disconfirmed"
-            else:
+            # Missing data cannot confirm or disconfirm a live parameter trial.
+            if signal_now is None:
                 outcome = "inconclusive"
+            else:
+                # Δ as fraction of target (normalised)
+                delta = signal_now - prior
+                if delta >= CONFIRM_THRESHOLD * target:
+                    outcome = "confirmed"
+                elif delta <= -DISCONFIRM_THRESHOLD * target:
+                    outcome = "disconfirmed"
+                else:
+                    outcome = "inconclusive"
 
             trial.outcome           = outcome
             trial.signal_at_eval    = signal_now
@@ -635,10 +652,11 @@ Respond ONLY in JSON (no markdown, no preamble):
                 )
             else:
                 self._revert_trial(trial)
+                evaluated_text = f"{signal_now:.3f}" if signal_now is not None else "unavailable"
                 logger.info(
                     f"[CognitiveAudit] ↩ {outcome.capitalize()}: {trial.parameter} "
                     f"reverted to {trial.prior_value} "
-                    f"({trial.dimension}: {prior:.3f} → {signal_now:.3f})"
+                    f"({trial.dimension}: {prior:.3f} → {evaluated_text})"
                 )
 
             with self._lock:
