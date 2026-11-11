@@ -36,6 +36,12 @@ class _Persistence:
     def get_memories_by_ids(self, ids):
         return [row for row in self.rows if row.get("faiss_id") in ids]
 
+    def add_memory(self, memory):
+        next_id = max((int(row.get("id", 0)) for row in self.rows), default=0) + 1
+        row = dict(memory, id=next_id, faiss_id=next_id)
+        self.rows.append(row)
+        return next_id
+
 
 class _BrokenEmbedder:
     def encode(self, _text):
@@ -84,10 +90,16 @@ class MemorySystemFallbackTests(unittest.TestCase):
     def _system(self, embedder=None, index=None):
         system = EnhancedMemorySystem.__new__(EnhancedMemorySystem)
         system.persistence = _Persistence(self.rows)
-        system.config = SimpleNamespace(max_memory_retrieval=5)
+        system.config = SimpleNamespace(
+            max_memory_retrieval=5,
+            faiss=SimpleNamespace(save_interval=100),
+        )
         system.embedding_dim = 3
         system.embedding_model = embedder
         system.faiss_index = index
+        system._counter = 0
+        import threading
+        system._lock = threading.RLock()
         return system
 
     def test_no_embedder_still_recalls_persisted_memory_and_filters_tier(self):
@@ -166,6 +178,23 @@ class MemorySystemFallbackTests(unittest.TestCase):
         )
 
         self.assertEqual(result, [])
+
+    def test_persisted_user_message_is_retrievable_for_a_later_turn(self):
+        system = self._system()
+        stored = system.add_memory(
+            "User message: Lumina sends commands to Flux in one direction.",
+            memory_type="user_message",
+        )
+
+        recalled = system.retrieve_user_authored_memories(
+            "How does the Lumina Flux command flow work?", limit=1,
+        )
+
+        self.assertTrue(stored)
+        self.assertEqual(len(recalled), 1)
+        self.assertEqual(recalled[0]["memory_type"], "user_message")
+        self.assertIn("one direction", recalled[0]["text"])
+        self.assertGreater(recalled[0]["relevance"], 0)
 
     def test_user_source_lane_uses_semantic_neighbours_before_bounded_lexical_fallback(self):
         self.rows = [
