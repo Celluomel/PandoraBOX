@@ -1338,7 +1338,22 @@ class GoalActionExecutor:
                 bel['category']    = 'insight'
                 bel['description'] = f"From self-reflection on goal: {topic}"
                 bel['updated_at']  = time.strftime('%Y-%m-%dT%H:%M:%S')
-                dal.save_belief(bel)
+                belief_saved = bool(dal.save_belief(bel))
+                stored_belief = dal.get_belief_by_name(belief_key)
+                belief_persisted = bool(
+                    belief_saved
+                    and isinstance(stored_belief, dict)
+                    and stored_belief.get("statement") == insight
+                )
+                if not belief_persisted:
+                    self._finalize_async_action(
+                        goal,
+                        ACTION_SELF_QUESTION,
+                        False,
+                        "candidate insight failed belief persistence read-back",
+                        evidence={"belief_persisted": False},
+                    )
+                    return
                 self._recent_insights[belief_key] = time.time()
                 logger.info(f"[GoalActionExecutor] Belief stored: '{belief_key}'")
             except Exception as be:
@@ -1375,7 +1390,8 @@ class GoalActionExecutor:
                 self._record_resolution_outcome(goal, insight)
 
             self._finalize_async_action(
-                goal, ACTION_SELF_QUESTION, True, insight
+                goal, ACTION_SELF_QUESTION, True, insight,
+                evidence={"belief_persisted": True},
             )
 
         except Exception as e:
@@ -1994,6 +2010,7 @@ class GoalActionExecutor:
     def _finalize_async_action(
         self, goal, action_type: str, success: bool, result: str = "",
         *, execution_id: str = "", cycle_id: Optional[int] = None,
+        evidence: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Commit a completed background action to goals, plans and learning."""
         prediction = self._pending_predictions.pop(
@@ -2032,6 +2049,8 @@ class GoalActionExecutor:
                     "goal_source_turn_id": prediction.get("goal_source_turn_id", ""),
                     "goal_source_thought_id": prediction.get("goal_source_thought_id", ""),
                 }
+                if evidence:
+                    report.update(evidence)
                 get_consequence_tracker(self._o).resolve(
                     prediction, report, cycle_id=report["cycle_id"]
                 )

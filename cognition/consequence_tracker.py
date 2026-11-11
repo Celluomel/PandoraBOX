@@ -67,11 +67,11 @@ except Exception:  # pragma: no cover
 # action type -> (measurable probe description, attention module it maps to,
 #                expected effect label). The probe is evaluated in _observe().
 ACTION_MODEL: Dict[str, Dict[str, str]] = {
-    "memory_recall":  {"module": "semantic_memory",   "effect": "evidence_gain",   "probe": "recall_nonempty"},
-    "web_search":     {"module": "goal_ecology",      "effect": "uncertainty_drop","probe": "success"},
-    "self_question":  {"module": "self_model",        "effect": "clarity_gain",    "probe": "success"},
-    "user_question":  {"module": "relational_memory", "effect": "external_feedback","probe": "success"},
-    "bisociative":    {"module": "creative_divergence","effect": "hypothesis_fertility","probe": "success"},
+    "memory_recall":  {"module": "semantic_memory", "effect": "memory_items_retrieved", "probe": "recall_nonempty"},
+    "web_search":     {"module": "goal_ecology", "effect": "research_item_queued", "probe": "success"},
+    "self_question":  {"module": "self_model", "effect": "candidate_insight_persisted", "probe": "insight_persisted"},
+    "user_question":  {"module": "goal_action_executor", "effect": "question_queued", "probe": "question_queued"},
+    "bisociative":    {"module": "creative_divergence", "effect": "hypothesis_generated", "probe": "success"},
 }
 DEFAULT_MODULE = "decision_policy"
 
@@ -132,6 +132,7 @@ class ConsequenceTracker:
             "goal_source_turn_id": str(goal_source_turn_id or ""),
             "goal_source_thought_id": str(goal_source_thought_id or ""),
             "action_type": action_type,
+            "measurement_scope": "operational_output; cognitive benefit is not established",
             "predicted_effect": am["effect"],
             "probe": am["probe"],
             "attention_module": am["module"],
@@ -186,10 +187,16 @@ class ConsequenceTracker:
         eff_delta = self._update_efficacy(pred["goal_id"], pred["action_type"], observed)
 
         # 5b. ATTENTION (nudge the ONE mapped module, renormalise)
-        attn_delta = self._nudge_attention(pred["attention_module"], observed)
+        attn_delta = (
+            None if pred.get("probe") == "question_queued"
+            else self._nudge_attention(pred["attention_module"], observed)
+        )
 
         # 5c. PCM (feed a real record + calibration resolution)
-        pcm_ok = self._feed_pcm(pred, report, observed, outcome)
+        pcm_ok = (
+            False if pred.get("probe") == "question_queued"
+            else self._feed_pcm(pred, report, observed, outcome)
+        )
 
         # metrics
         with self._lock:
@@ -321,6 +328,11 @@ class ConsequenceTracker:
         probe = pred.get("probe", "success")
         success = bool(report.get("success"))
         result = str(report.get("result", "")).lower()
+
+        if probe == "question_queued":
+            return 1.0 if success and result.startswith("question queued:") else 0.0
+        if probe == "insight_persisted":
+            return 1.0 if success and report.get("belief_persisted") is True else 0.0
 
         if probe == "recall_nonempty":
             # memory_recall is a real success only if it returned content

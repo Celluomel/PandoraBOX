@@ -2,11 +2,52 @@ import tempfile
 import unittest
 
 from cognition.causal_ledger import CausalLedger
-from cognition.consequence_tracker import ConsequenceTracker
+from cognition.consequence_tracker import ACTION_MODEL, ConsequenceTracker
 from cognition.goal_engine import Goal, GoalEngine
 
 
 class ConsequenceExecutionProvenanceTests(unittest.TestCase):
+    def test_queued_user_question_is_not_recorded_as_external_feedback(self):
+        self.assertEqual(ACTION_MODEL["user_question"]["effect"], "question_queued")
+        self.assertNotEqual(ACTION_MODEL["user_question"]["effect"], "external_feedback")
+        with tempfile.TemporaryDirectory() as folder:
+            ledger = CausalLedger(folder)
+            tracker = ConsequenceTracker(persona_dir=folder, ledger=ledger)
+            prediction = tracker.predict(
+                "goal-social", "understand user feedback", "user_question",
+                cycle_id=6, execution_id="act-question-6",
+            )
+
+            resolved = tracker.resolve(prediction, {
+                "success": True,
+                "result": "question queued: What is your perspective?",
+            })
+
+            self.assertEqual(resolved["observed"], 1.0)
+            self.assertIsNone(resolved["attention_delta"])
+            self.assertFalse(resolved["pcm_resolved"])
+            outcome = next(e for e in ledger.recent(10) if e["kind"] == "outcome")
+            self.assertEqual(outcome["output_state"]["outcome"], "positive")
+            self.assertEqual(
+                outcome["input_state"]["action"], "user_question"
+            )
+            self.assertFalse((ledger.persona_dir / "cognitive_attention.json").exists())
+
+    def test_self_question_probe_requires_persisted_belief_evidence(self):
+        with tempfile.TemporaryDirectory() as folder:
+            tracker = ConsequenceTracker(persona_dir=folder)
+            prediction = tracker.predict(
+                "goal-self", "understand self model", "self_question"
+            )
+
+            self.assertEqual(tracker._observe(prediction, {
+                "success": True, "result": "A long plausible reflection"
+            }), 0.0)
+            self.assertEqual(tracker._observe(prediction, {
+                "success": True, "result": "A long plausible reflection",
+                "belief_persisted": True,
+            }), 1.0)
+
     def test_prediction_outcome_and_updates_share_exact_execution_chain(self):
         with tempfile.TemporaryDirectory() as folder:
             ledger = CausalLedger(folder)

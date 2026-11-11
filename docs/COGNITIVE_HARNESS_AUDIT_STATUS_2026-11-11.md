@@ -228,7 +228,7 @@ Vérification locale : `tests/test_intention_planning.py` + `tests/test_module_t
 
 Poursuivre le lien causal, au-delà du compteur global : suivre un même identifiant d’exécution depuis le slow-cycle et le module qui agit, vers la mutation du planner/registre d’effets, puis vers la lecture qui la confirme. La provenance doit rester bornée et explicite; une sortie de module sans identifiant de tour/cycle ne doit pas être attribuée à un échange utilisateur. Auditer ensuite les scénarios mémoire/contexte, mise à jour des objectifs, et évaluation/expérimentation avec les mêmes critères entrée → sorties requises → mutation → récupération ultérieure. Lumina reste en marche; validation live des correctifs cumulés réservée au redémarrage final.
 
-**Git à ce point de l’audit :** le commit local le plus récent est `1d0d94f`; `origin/main` demeure sur `17ae81c`. Les corrections décrites dans la section suivante sont encore locales et seront commitées avec les seuls fichiers d’audit ciblés.
+**Git à ce point de l’audit :** le commit local le plus récent est `cfe6ddf`; `origin/main` demeure sur `17ae81c`. Les corrections décrites dans la section suivante sont encore locales et seront commitées avec les seuls fichiers d’audit ciblés.
 
 ## Provenance de l’action autonome jusqu’au ledger — correction locale
 
@@ -247,3 +247,11 @@ La chaîne autonome se terminait dans le ledger et le planner, mais `GoalActionE
 Correction locale : le GoalEngine conserve le dernier type d’action, son `execution_id`, son `cycle_id`, son horodatage, ainsi que l’ID du tour (ou de la pensée) qui a créé le but. Les appels de l’exécuteur transmettent les identifiants d’exécution/cycle. Si la persistance échoue, `mark_action()` restaure les compteurs et le reçu en mémoire et renvoie `False`; les actions synchrones exposent séparément `goal_state_persisted`, sans confondre l’exécution de l’action et sa comptabilisation durable. La prédiction et chaque événement causal transportent l’origine du but sous les champs `goal_source_turn_id` / `goal_source_thought_id`, qui indiquent l’origine du but, pas le tour courant de l’action.
 
 Vérification : le test de provenance contrôle la relecture après reconstruction d’un GoalEngine et le rollback après échec de sauvegarde; le test ledger vérifie que les IDs source suivent chaque lien causal. Lot ciblé : **51 passed**, 7 avertissements Pydantic préexistants; `py_compile` et `git diff --check` réussis. Correctif encore local, pas chargé dans le processus courant.
+
+## Effets de conséquence surévalués — correction locale
+
+Le registre d’actions associait `user_question` à `external_feedback`, mais l’opération ne fait que remplir la file de questions; elle ne reçoit aucune réponse. La résolution immédiate déclarait donc un feedback positif, nudgait `relational_memory` et envoyait une mise à jour au modèle de conséquences avant toute réponse humaine. De même, `self_question` était nommé `clarity_gain`, alors que son test mesurait seulement une réponse qui passait des heuristiques et la sauvegarde d’un belief n’était pas vérifiée.
+
+Correction locale : les labels décrivent maintenant des effets opérationnels (`question_queued`, `candidate_insight_persisted`, `research_item_queued`, etc.) et le scope enregistré dit explicitement que le bénéfice cognitif n’est pas établi. `user_question` n’écrit plus dans l’attention relationnelle ni dans le PCM; sa résolution signifie uniquement que la question a été mise en file. Une `self_question` compte comme persistée seulement si `DataAccess.save_belief()` réussit et si la relecture retrouve exactement la déclaration; sinon l’action est finalisée en échec. Cela ne prouve pas encore que le belief est vrai ou apporte de la clarté, ce qui demande une mesure indépendante.
+
+Résultat : les tests de provenance/action et de planification passent à **53 passed**, 7 avertissements Pydantic préexistants; `py_compile` et `git diff --check` réussis. Correction locale en attente de commit; pas encore chargée par Lumina.
