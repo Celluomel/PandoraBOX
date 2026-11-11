@@ -740,7 +740,9 @@ class PersonaBridge:
                         and stage_status.get(name) in accepted
                         for name, accepted in (
                             ("primary_generation", {"completed"}),
-                            ("fast_first_pass", {"selected_direct", "delegated"}),
+                            # A routing decision is not a generated answer.
+                            # A delegated turn needs primary_generation evidence.
+                            ("fast_first_pass", {"selected_direct"}),
                             ("deterministic_reasoning", {"selected_direct", "completed"}),
                         )
                     )
@@ -2238,13 +2240,6 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                                 "[ReasoningGuard] final response failed the validated "
                                 "constraint; replaced before display"
                             )
-                        _llm_manager = getattr(self._llm_stream_fn, "__self__", None)
-                        _history = getattr(_llm_manager, "history", None)
-                        if record_history and (
-                            isinstance(_history, list) and _history
-                            and _history[-1].get("role") == "assistant"
-                        ):
-                            _history[-1]["content"] = _guarded
                         _output_tokens = re.findall(r"\S+\s*|\s+", _guarded)
                     else:
                         _output_tokens = [
@@ -2319,7 +2314,6 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     after = _think_re_close.split(combined, maxsplit=1)[-1]
                     if after.strip():
                         accumulated.append(after)
-                        yield after
                 continue  # don't yield think content
 
             # A few local instruction-tuned models omit the opening marker and
@@ -2336,7 +2330,6 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                 if not _after_close.strip():
                     if _before_close.strip():
                         accumulated.append(_before_close)
-                        yield _before_close
                     continue
                 # Everything emitted before this orphan marker is a candidate
                 # reasoning prefix; the UI can retract it when it receives
@@ -2348,7 +2341,6 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     accumulated.clear()
                 if _after_close.strip():
                     accumulated.append(_after_close)
-                    yield _after_close
                 continue
 
             # Check if this token opens a think block
@@ -2359,7 +2351,6 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                 before = token[:_open_match.start()]
                 if before.strip():
                     accumulated.append(before)
-                    yield before
                 # Models sometimes emit a complete reasoning block and its
                 # answer in one provider chunk. Keep the parser streaming,
                 # but process that remainder immediately instead of losing it.
@@ -2375,14 +2366,12 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     after = remainder[close_match.end():]
                     if after.strip():
                         accumulated.append(after)
-                        yield after
                 else:
                     _think_buf = [remainder]
                 continue
             # ─────────────────────────────────────────────────────────
 
             accumulated.append(token)
-            yield token
 
         # A few local chat templates place the whole answer in a reasoning
         # channel and omit the closing tag.  Do not silently turn that into an
@@ -2484,8 +2473,6 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     raw_response = ""
                 if raw_response and not self._is_reasoning_only_response(raw_response):
                     accumulated.append(raw_response)
-                    for _word in re.findall(r"\S+\s*|\s+", raw_response):
-                        yield _word
                 else:
                     raw_response = ""
             else:
@@ -2499,26 +2486,12 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                 "I received your message, but the local model returned no visible "
                 "answer. Please try sending it again."
             )
-            _llm_manager = getattr(self._llm_stream_fn, "__self__", None)
-            _history = getattr(_llm_manager, "history", None)
-            if record_history and isinstance(_history, list) and _history and _history[-1].get("role") == "assistant":
-                _history[-1]["content"] = raw_response
             accumulated.append(raw_response)
             self._record_turn_stage(
                 "empty_generation_fallback", "completed", output=raw_response,
             )
             _answer_origin_stage = "empty_generation_fallback"
-            yield raw_response
 
-        # LLMManager persists the raw stream before this bridge completes its
-        # channel stripping. Keep only the user-visible answer in history.
-        try:
-            _llm_manager = getattr(self._llm_stream_fn, "__self__", None)
-            _history = getattr(_llm_manager, "history", None)
-            if record_history and isinstance(_history, list) and _history and _history[-1].get("role") == "assistant":
-                _history[-1]["content"] = raw_response
-        except Exception:
-            logger.debug("Could not sanitize completed chat history", exc_info=True)
         if _finish_reason == "length":
             logger.warning(
                 "[Chat stream] provider reached max_tokens; visible response was preserved"
@@ -2555,6 +2528,23 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                 "output_safety", "skipped_unavailable", output=raw_response,
                 consumes=(_response_source_stage,),
             )
+
+        # Keep persisted conversation history aligned with what was actually
+        # approved for delivery. The model manager stores its raw stream before
+        # channel stripping and this policy gate, so overwrite only afterwards.
+        try:
+            _llm_manager = getattr(self._llm_stream_fn, "__self__", None)
+            _history = getattr(_llm_manager, "history", None)
+            if record_history and isinstance(_history, list) and _history and _history[-1].get("role") == "assistant":
+                _history[-1]["content"] = raw_response
+        except Exception:
+            logger.debug("Could not sanitize completed chat history", exc_info=True)
+
+        # Do not expose answer tokens until the complete response has passed
+        # output safety. A stream cannot retract text that was already sent,
+        # so safety must gate delivery, not merely the final metadata object.
+        if raw_response:
+            yield raw_response
 
         # ── Phase C: full post-turn lifecycle (non-blocking thread) ─
         # This heuristic is meant to infer impact on the human interlocutor.

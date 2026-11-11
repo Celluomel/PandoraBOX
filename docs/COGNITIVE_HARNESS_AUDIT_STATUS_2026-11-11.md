@@ -303,3 +303,21 @@ Lorsque le créneau LLM était occupé, l’exécuteur retirait sa prédiction l
 Correction : `ConsequenceTracker.cancel()` ferme explicitement une prédiction non exécutée, retire son état pending et écrit un événement `deferred` rattaché à la prédiction, sans erreur, feedback ou mise à jour d’efficacité. `_defer_async_action()` appelle désormais cette fermeture. Le rapport expose `n_cancelled`, `n_pending`, `eligible_predictions` et calcule le taux de résolution sur les prédictions d’actions effectivement engagées.
 
 Le test vérifie la chaîne `prediction → deferred`, l’absence de faux échec, zéro prédiction pending et le dénominateur excluant l’action annulée. Le lot ciblé passe à **58 passed**, 7 avertissements Pydantic préexistants; compilation et `git diff --check` réussis. Le processus Lumina n’a toujours pas été redémarré.
+
+## Sortie partielle avant contrôle de sécurité — correction locale
+
+L’audit de la fermeture de tour a trouvé un défaut de séquencement : le chemin principal envoyait chaque fragment de réponse pendant la génération, alors que `check_output()` n’était appelé qu’une fois la réponse complète reçue. Remplacer ensuite la réponse finale ne pouvait pas retirer les fragments déjà transmis. En plus, l’historique LLM était écrasé avec le texte brut avant le contrôle; après un remplacement, l’historique pouvait donc diverger de la réponse effectivement remise.
+
+Correction locale : le texte de réponse est maintenant accumulé sans émission pendant la génération; après le contrôle de sortie, un seul texte final est émis. L’historique assistant est mis à jour après le même contrôle, pour conserver la réponse autorisée/remplacée. Les événements de raisonnement restent sur leur canal distinct et ne sont pas comptés comme texte de réponse. Si le contrôle de sortie lève une exception, le chemin échoue avant d’émettre le texte final.
+
+Une régression AST vérifie que le seul `yield raw_response` se trouve après `check_output()` et qu’aucun fragment du fournisseur (`token`, `before`, `after`) n’est remis directement. Vérification locale : **89 passed**, 3 sous-tests passés, 9 avertissements existants sur le lot de tour, workflow, auto-description, action/pensée, provenance et planification; compilation Python réussie. Le changement de latence est délibéré : la réponse visible attend maintenant la fin du contrôle de sortie, mais le texte peut encore être diffusé avant la fin des apprentissages post-tour.
+
+**Limite de preuve :** `output_safety` est facultatif; lorsque le moteur n’est pas initialisé, la trace reste explicitement `skipped_unavailable` et la réponse est remise en pass-through. Ce correctif garantit le séquencement du contrôle disponible, pas la qualité sémantique du modèle de règles ni une validation cognitive de la réponse.
+
+**Processus et Git :** pas de redémarrage de Lumina. Cette tranche est vérifiée localement et sera commitée séparément; elle ne sera pas chargée dans le processus courant avant le redémarrage final. L’audit continue.
+
+## Route fast déléguée comptée à tort comme génération — correction locale
+
+La validation du pipeline acceptait `fast_first_pass=delegated` comme preuve qu’une réponse avait été générée. Or `delegated` n’est qu’une décision de routage : si le provider principal ne termine pas, la trace pouvait déclarer le cœur du tour complet sans génération primaire ni texte de réponse attribuable. La route directe `selected_direct` reste valide comme chemin alternatif; une délégation exige désormais `primary_generation=completed`.
+
+Vérification : régression qui construit une trace déléguée sans génération et exige `incomplete_evidence` avec l’étape `generation` manquante. Le lot élargi couvrant ces chemins ainsi que mémoire, flux cognitifs, sélection de pensée, raisonnement moyens/buts et transactions d’objectifs passe à **159 passed**, 14 sous-tests, 9 avertissements. Compilation et `git diff --check` réussissent. Pas de redémarrage live; les correctifs restent locaux.

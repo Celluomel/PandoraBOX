@@ -1,4 +1,7 @@
 import threading
+import ast
+import inspect
+from pathlib import Path
 from types import SimpleNamespace
 
 from cognition.persona_bridge import (
@@ -94,6 +97,68 @@ def test_turn_integrity_labels_deterministic_self_report_path():
     assert integrity["execution_path"] == "deterministic_reasoning"
     assert integrity["required_core_stages"] == 7
     assert integrity["missing_core_stages"] == []
+
+
+def test_delegated_fast_route_does_not_count_as_primary_generation():
+    bridge = _bridge()
+    bridge._last_turn_trace["stages"].update({
+        "readiness": {"status": "passed"},
+        "input_safety": {"status": "passed"},
+        "prompt_assembly": {"status": "completed"},
+        "fast_first_pass": {"status": "delegated"},
+        "output_safety": {"status": "passed"},
+        "response_finalization": {"status": "completed"},
+        "response": {"status": "completed"},
+    })
+
+    bridge._finish_turn_trace("completed")
+    integrity = bridge._last_turn_trace["pipeline_integrity"]
+
+    assert integrity["status"] == "incomplete_evidence"
+    assert "generation" in integrity["missing_core_stages"]
+
+
+def test_streamed_answer_is_not_released_before_output_safety_gate():
+    tree = ast.parse(Path(inspect.getfile(PersonaBridge)).read_text(encoding="utf-8"))
+    bridge_class = next(
+        node for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "PersonaBridge"
+    )
+    method = next(
+        node for node in bridge_class.body
+        if isinstance(node, ast.AsyncFunctionDef)
+        and node.name == "_stream_with_full_lifecycle"
+    )
+    yields = [node for node in ast.walk(method) if isinstance(node, ast.Yield)]
+    safety_calls = [
+        node for node in ast.walk(method)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "check_output"
+    ]
+    answer_yields = [
+        node for node in yields
+        if isinstance(node.value, ast.Name) and node.value.id == "raw_response"
+    ]
+    history_writes = [
+        node for node in ast.walk(method)
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(part, ast.Constant) and part.value == "content"
+            for target in node.targets for part in ast.walk(target)
+        )
+    ]
+
+    assert len(safety_calls) == 1
+    assert len(answer_yields) == 1
+    assert len(history_writes) == 1
+    assert history_writes[0].lineno > safety_calls[0].lineno
+    assert answer_yields[0].lineno > safety_calls[0].lineno
+    assert not any(
+        isinstance(node.value, ast.Name)
+        and node.value.id in {"token", "after", "before", "_before_close", "_after_close"}
+        for node in yields
+    )
 
 
 def test_prior_answer_trace_link_ignores_enriched_current_prompt():
