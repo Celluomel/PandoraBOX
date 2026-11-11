@@ -326,6 +326,16 @@ Vérification locale : tests d’injection d’une panne dans les évaluateurs d
 
 **État live :** aucun redémarrage. La vérification intégrée des étapes et des sorties réelles reste réservée au redémarrage unique de fin d’audit.
 
+## Chemins déterministes et repli hors du contrôle de sortie — correction locale
+
+Le parcours des retours anticipés a révélé deux autres écarts au contrat du tour. Les réponses GoalEngine et Body étaient émises sans `check_output()`; le validateur ne demandait ni preuve du contrôle d’entrée ni preuve du contrôle de sortie pour ces chemins. En cas d’échec du flux principal, le fallback bloquant faisait un second contrôle d’entrée sans tracer son résultat, puis contrôlait la sortie avant livraison mais ne consignait pas la génération de fallback, le contrôle ni la réponse finale. L’historique assistant pouvait rester différent du texte effectivement livré.
+
+Correction : les réponses GoalEngine et Body passent maintenant par un contrôle de sortie partagé avant enregistrement de l’échange et livraison. Les routes déterministes exigent dans leur intégrité de trace les étapes de sécurité d’entrée et de sortie ainsi que leur ordre. Le fallback s’appuie sur le contrôle d’entrée central déjà effectué pour ce tour (il ne le répète pas), enregistre `fallback_generation`, passe la réponse par le contrôle de sortie partagé, aligne l’historique avec le texte approuvé, puis clôture avec les reçus de finalisation et de réponse. Le validateur expose `blocking_fallback` et vérifie les preuves spécifiques de cette route.
+
+Tests ciblés : sorties déterministes bloquées/remplacées, erreur d’évaluation, ordre des vérifications et intégrité du fallback, avec les tests de sécurité, transactions GoalEngine, preuve Body, preuve de tour et événements UI : **33 passed, 6 sous-tests**, 9 avertissements de dépendances préexistants. `py_compile` et `git diff --check` réussissent. La persistance d’un objectif reste gouvernée par le contrôle d’entrée avant mutation; le contrôle de sortie valide la confirmation adressée à l’utilisateur après la transaction.
+
+**État live :** Lumina n’a pas été redémarré; aucune de ces nouvelles étapes n’est encore présente dans le processus actif.
+
 ## Route fast déléguée comptée à tort comme génération — correction locale
 
 La validation du pipeline acceptait `fast_first_pass=delegated` comme preuve qu’une réponse avait été générée. Or `delegated` n’est qu’une décision de routage : si le provider principal ne termine pas, la trace pouvait déclarer le cœur du tour complet sans génération primaire ni texte de réponse attribuable. La route directe `selected_direct` reste valide comme chemin alternatif; une délégation exige désormais `primary_generation=completed`.

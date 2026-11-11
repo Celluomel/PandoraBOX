@@ -646,6 +646,48 @@ class PersonaBridge:
             name, status, detail, turn_id=turn_id, error_type=error_type,
         )
 
+    def _check_deterministic_output(self, response: str, user_id: str, source_stage: str) -> str:
+        """Apply the same final-output policy to early deterministic replies."""
+        organism = getattr(self._system, "_organism", None)
+        safety = getattr(organism, "safety", None)
+        if safety is None:
+            self._record_turn_stage(
+                "output_safety", "skipped_unavailable", output=response,
+                consumes=(source_stage,),
+            )
+            return response
+
+        try:
+            result = safety.check_output(response, user_id)
+        except Exception as error:
+            self._record_turn_stage(
+                "output_safety", "failed", str(error), output="",
+                consumes=(source_stage,), error_type=type(error).__name__,
+            )
+            return "I need to withhold that response because output validation failed. Please try again."
+
+        if getattr(result, "evaluation_error", False):
+            self._record_turn_stage(
+                "output_safety", "failed",
+                getattr(result, "pattern", "output safety evaluation failed"),
+                output=result.forced_response or "",
+                consumes=(source_stage,), error_type="SafetyEvaluationError",
+            )
+            return result.forced_response or (
+                "I need to withhold that response because output validation failed. Please try again."
+            )
+        if result.triggered:
+            safe_response = result.forced_response or "I need to step back from that response. Can I help differently?"
+            self._record_turn_stage(
+                "output_safety", "replaced", "policy", output=safe_response,
+                consumes=(source_stage,),
+            )
+            return safe_response
+        self._record_turn_stage(
+            "output_safety", "passed", output=response, consumes=(source_stage,),
+        )
+        return response
+
     def _finish_turn_trace(self, status: str) -> None:
         with self._turn_trace_lock:
             if self._last_turn_trace:
@@ -676,6 +718,9 @@ class PersonaBridge:
                 deterministic_safety_block_path = (
                     stage_status.get("safety_block_response") == "completed"
                 )
+                blocking_fallback_path = (
+                    stage_status.get("fallback_generation") == "completed"
+                )
                 deterministic_reasoning_path = (
                     stage_status.get("deterministic_reasoning") in {"selected_direct", "completed"}
                     and stage_status.get("primary_generation") == "skipped_deterministic"
@@ -692,11 +737,22 @@ class PersonaBridge:
                         ("response_finalization", {"completed"}),
                         ("response", {"completed"}),
                     )
+                elif blocking_fallback_path:
+                    required_stages = (
+                        ("readiness", {"passed"}),
+                        ("input_safety", {"passed"}),
+                        ("fallback_generation", {"completed"}),
+                        ("output_safety", {"passed", "replaced"}),
+                        ("response_finalization", {"completed"}),
+                        ("response", {"completed"}),
+                    )
                 elif deterministic_body_path:
                     required_stages = (
                         ("readiness", {"passed"}),
+                        ("input_safety", {"passed"}),
                         ("body_action_gate", {"checked"}),
                         ("body_action_resolution", {"completed"}),
+                        ("output_safety", {"passed", "replaced"}),
                         ("response_finalization", {"completed"}),
                         ("response", {"completed"}),
                         ("deterministic_body_response", {"completed"}),
@@ -704,7 +760,9 @@ class PersonaBridge:
                 elif deterministic_goal_path:
                     required_stages = (
                         ("readiness", {"passed"}),
+                        ("input_safety", {"passed"}),
                         ("goal_write_gate", {"executed", "verified", "blocked", "failed"}),
+                        ("output_safety", {"passed", "replaced"}),
                         ("response_finalization", {"completed"}),
                         ("response", {"completed"}),
                         ("deterministic_goal_response", {"completed"}),
@@ -743,6 +801,7 @@ class PersonaBridge:
                         missing_core.append(stage_name)
                 has_generation = (
                     deterministic_safety_block_path
+                    or blocking_fallback_path
                     or deterministic_body_path
                     or deterministic_goal_path
                     or deterministic_reasoning_path
@@ -790,6 +849,9 @@ class PersonaBridge:
                 for earlier, later in (
                     ("prompt_assembly", "primary_generation"),
                     ("primary_generation", "output_safety"),
+                    ("fallback_generation", "output_safety"),
+                    ("goal_write_gate", "output_safety"),
+                    ("body_action_resolution", "output_safety"),
                     ("output_safety", "response_finalization"),
                     ("response_finalization", "response"),
                 ):
@@ -850,7 +912,7 @@ class PersonaBridge:
                     "checked_at": time.time(),
                     "required_core_stages": len(required_stages) + (
                         0 if (
-                            deterministic_safety_block_path or deterministic_body_path or deterministic_goal_path
+                            deterministic_safety_block_path or blocking_fallback_path or deterministic_body_path or deterministic_goal_path
                             or deterministic_reasoning_path or fast_direct_path
                         ) else 1
                     ),
@@ -858,6 +920,7 @@ class PersonaBridge:
                         "deterministic_body_action" if deterministic_body_path
                         else "deterministic_goal_write" if deterministic_goal_path
                         else "deterministic_input_safety_block" if deterministic_safety_block_path
+                        else "blocking_fallback" if blocking_fallback_path
                         else "deterministic_reasoning" if deterministic_reasoning_path
                         else "fast_direct_response" if fast_direct_path
                         else "generative_chat"
@@ -1095,10 +1158,12 @@ class PersonaBridge:
                 "goal_write_gate", _goal_stage, _goal_detail,
                 output=_goal_turn, consumes=("turn_input",),
             )
-            _goal_response = str(_goal_turn.get("response") or "")
+            _goal_response = self._check_deterministic_output(
+                str(_goal_turn.get("response") or ""), user_id, "goal_write_gate",
+            )
             self._record_turn_stage(
                 "response_finalization", "completed", output=_goal_response,
-                consumes=("goal_write_gate",),
+                consumes=("output_safety",),
             )
             _manager = getattr(self._llm_stream_fn, "__self__", None)
             _record_exchange = getattr(_manager, "record_exchange", None)
@@ -1155,9 +1220,12 @@ class PersonaBridge:
                 output=_body_turn,
                 consumes=("turn_input", "body_action_gate"),
             )
+            _body_response = self._check_deterministic_output(
+                _body_response, user_id, "body_action_resolution",
+            )
             self._record_turn_stage(
                 "response_finalization", "completed", output=_body_response,
-                consumes=("body_action_resolution",),
+                consumes=("output_safety",),
             )
             _manager = getattr(self._llm_stream_fn, "__self__", None)
             _record_exchange = getattr(_manager, "record_exchange", None)
@@ -1235,17 +1303,11 @@ class PersonaBridge:
             return
 
         # ── Fallback: native get_response() — all cycles run natively ──
-        # ── Safety Layer 1 (fallback path) ───────────────────────────────────
+        # The central entrypoint already checked this exact turn before any
+        # deterministic route. Rechecking here could disagree with that result
+        # and previously returned an untraced response on the fallback path.
         _fb_organism = getattr(self._system, '_organism', None)
         _fb_safety   = getattr(_fb_organism, 'safety', None)
-        if _fb_safety is not None:
-            _fb_sr = _fb_safety.check_input(effective_input, user_id)
-            if _fb_sr.triggered:
-                forced = _fb_sr.forced_response or "I can't help with that."
-                yield forced
-                yield {"__meta__": True, "raw": forced, "speech": forced,
-                       "emotion": "concerned", "intensity": 0.7}
-                return
 
         try:
             response = await asyncio.to_thread(
@@ -1310,13 +1372,26 @@ class PersonaBridge:
                 "Blocking quantitative guard failed: %s", _fallback_quant_error
             )
 
+        self._record_turn_stage(
+            "fallback_generation", "completed", output=response,
+            consumes=("turn_input",),
+        )
+
         # ── Safety Layer 2 (fallback path) ───────────────────────────────────
-        if _fb_safety is not None:
-            _fb_or = _fb_safety.check_output(response, user_id)
-            if _fb_or.triggered:
-                response = _fb_or.forced_response or (
-                    "I need to step back from that response. Can I help differently?"
-                )
+        response = self._check_deterministic_output(
+            response, user_id, "fallback_generation",
+        )
+        self._record_turn_stage(
+            "response_finalization", "completed", output=response,
+            consumes=("output_safety",),
+        )
+        try:
+            _fallback_llm_manager = getattr(self._llm_stream_fn, "__self__", None)
+            _fallback_history = getattr(_fallback_llm_manager, "history", None)
+            if isinstance(_fallback_history, list) and _fallback_history and _fallback_history[-1].get("role") == "assistant":
+                _fallback_history[-1]["content"] = response
+        except Exception:
+            logger.debug("Could not align blocking fallback history with approved response", exc_info=True)
 
         # Fake-stream word by word so UI feels live
         words = response.split()
@@ -1333,6 +1408,10 @@ class PersonaBridge:
             "emotion":   emotion,
             "intensity": intensity,
         }
+        self._record_turn_stage(
+            "response", "completed", output={"raw": response, "speech": self._sanitize(response)},
+            consumes=("response_finalization",),
+        )
         self._finish_turn_trace("completed")
 
     def begin_interactive_reflection_turn(self, user_id: str = "default") -> int:
