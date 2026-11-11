@@ -1,4 +1,5 @@
 """Regression tests for concrete cognitive defects found in the Nov 9 log."""
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -95,6 +96,21 @@ class CognitiveLogRegressionTests(unittest.TestCase):
         self.assertNotIn("private remembered conversation detail", str(evidence))
         self.assertNotIn("private preference", str(profile))
         self.assertEqual(profile["status"], "injected")
+
+    def test_memory_retrieval_keeps_user_query_separate_from_attention_mode(self):
+        query = "Quelle règle avons-nous définie pour Lumina et Flux ?"
+        evidence = memory_retrieval_evidence(
+            query,
+            [{"id": "memory-1", "text": "decision", "relevance": 0.82}],
+            query_source="user_input",
+            attention_mode="relational",
+        )
+
+        self.assertEqual(evidence["query_sha256"], hashlib.sha256(query.encode()).hexdigest())
+        summary = audit_safe_turn_summary(evidence)
+        self.assertEqual(summary["query_source"], "user_input")
+        self.assertEqual(summary["attention_mode"], "relational")
+        self.assertEqual(summary["candidates"][0]["relevance"], 0.82)
 
     def test_turn_trace_exposes_memory_provenance_without_memory_text(self):
         evidence = memory_retrieval_evidence("what did we decide?", [{

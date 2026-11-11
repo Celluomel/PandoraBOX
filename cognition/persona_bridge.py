@@ -3192,6 +3192,8 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             sc_hints = s.self_concept.check_response_alignment(user_input)
             # Memory retrieval — bias query toward attention-dominant channel
             _recall_query = user_input
+            _recall_attention_mode = "unavailable"
+            _recall_query_source = "user_input"
             # ── Detect explicit memory/recall requests ─────────────────
             # When user asks "do you remember X?", extract X and search directly.
             _RECALL_TRIGGERS = (
@@ -3209,15 +3211,12 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     "", user_input, flags=_re.IGNORECASE
                 ).strip() or user_input
                 _recall_query = f"Conversation {_stripped}"
+                _recall_query_source = "explicit_recall"
             elif self._organism is not None:
                 try:
-                    _recall_mode = self._organism.attention.memory_recall_mode()
-                    if _recall_mode == "identity":
-                        _recall_query = f"who I am {user_input}"
-                    elif _recall_mode == "semantic":
-                        _recall_query = f"knowledge facts {user_input}"
-                    elif _recall_mode == "relational":
-                        _recall_query = f"relationship person {user_input}"
+                    _recall_attention_mode = str(
+                        self._organism.attention.memory_recall_mode()
+                    )[:24]
                 except Exception:
                     pass
             # ── Tiered memory retrieval — emergent vocabulary ─────────
@@ -3396,7 +3395,12 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                 "memory_retrieval",
                 "skipped_by_scope" if peer_name else "completed",
                 "peer turn uses pair transcript only" if peer_name else f"{len(memories)} recalled items",
-                output=memory_retrieval_evidence(_recall_query, memories),
+                output=memory_retrieval_evidence(
+                    _recall_query,
+                    memories,
+                    query_source=_recall_query_source,
+                    attention_mode=_recall_attention_mode,
+                ),
             )
 
             mods        = s.emotional_state.get_response_modifiers()
