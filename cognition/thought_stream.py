@@ -651,12 +651,14 @@ class ThoughtStream:
                     for bname, bg in bg_map.items():
                         if bname.lower() in drive_name_lower \
                                 or drive_name_lower in bname.lower():
-                            grounding_index = bg.get("grounding_index", 0.6)
-                            is_speculative  = bg.get("speculative", False)
+                            if bg.get("measurement_status") == "measured":
+                                grounding_index = bg.get("grounding_index", 0.6)
+                                is_speculative  = bg.get("speculative", False)
                             break
                     # Also use overall grounding rate as a floor
                     overall_rate   = eie._recent_grounding_rate()
-                    grounding_index = max(overall_rate, grounding_index)
+                    if overall_rate is not None:
+                        grounding_index = max(overall_rate, grounding_index)
             except Exception:
                 pass
 

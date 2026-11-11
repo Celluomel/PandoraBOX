@@ -110,6 +110,16 @@ Reason about what the architecture is doing. Be honest about uncertainty.
 """.strip()
 
 
+def _grounding_label(result: Any) -> str:
+    if result is None:
+        return "unverified"
+    if getattr(result, "grounded", None) is True:
+        return "screened_consistent"
+    if getattr(result, "screen_status", "") == "inconsistent":
+        return "inconsistent"
+    return "unverified"
+
+
 # ── Dataclasses ───────────────────────────────────────────────────────────────
 
 @dataclass
@@ -273,7 +283,7 @@ If active disagreements are listed above, acknowledge them rather than ignoring 
             mode=  "evolution",
             output= output,
             slow_cycle= slow_cycle,
-            grounding_status=("screened_consistent" if grounding and grounding.grounded else "inconsistent"),
+            grounding_status=_grounding_label(grounding),
             grounding_reason=getattr(grounding, "reason", "validator returned no result"),
         )
         if record.grounding_status != "screened_consistent":
@@ -379,7 +389,7 @@ If any of your beliefs are marked speculative above, weight them accordingly.
             mode=      "contradiction",
             output=    output,
             slow_cycle= slow_cycle,
-            grounding_status=("screened_consistent" if grounding and grounding.grounded else "inconsistent"),
+            grounding_status=_grounding_label(grounding),
             grounding_reason=getattr(grounding, "reason", "validator returned no result"),
         )
         if record.grounding_status != "screened_consistent":
@@ -463,7 +473,7 @@ Answer in 2 sentences. Be specific about which drives if any seem misaligned.
             mode=      "goal_coherence",
             output=    output,
             slow_cycle= slow_cycle,
-            grounding_status=("screened_consistent" if grounding and grounding.grounded else "inconsistent"),
+            grounding_status=_grounding_label(grounding),
             grounding_reason=getattr(grounding, "reason", "validator returned no result"),
         )
         if record.grounding_status != "screened_consistent":

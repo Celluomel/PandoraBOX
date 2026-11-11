@@ -318,7 +318,9 @@ class ProactiveOutreachEngine:
                 "_autonomous_reflection", None
             )
             if are and hasattr(are, "_epistemic"):
-                return max(0.35, are._epistemic._recent_grounding_rate())
+                grounding_rate = are._epistemic._recent_grounding_rate()
+                if grounding_rate is not None:
+                    return max(0.35, grounding_rate)
         except Exception:
             pass
         return 0.65

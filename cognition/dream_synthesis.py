@@ -323,7 +323,7 @@ Respond ONLY with valid JSON (no markdown, no explanation):
         integration_success = result.get("integration_success", 0.5)
 
         # Epistemic grounding rate from EpistemicIntegrityEngine
-        grounding_rate = 0.60   # neutral default
+        grounding_rate = None
         try:
             are = getattr(
                 getattr(self._o, "_loop", None),
@@ -335,13 +335,17 @@ Respond ONLY with valid JSON (no markdown, no explanation):
             pass
 
         # Combined confidence gate — dreams must clear this to form beliefs
-        epistemic_confidence = integration_success * grounding_rate
+        epistemic_confidence = (
+            integration_success * grounding_rate if grounding_rate is not None else 0.0
+        )
         BELIEF_INTEGRATION_THRESHOLD = 0.45
         may_form_beliefs = epistemic_confidence >= BELIEF_INTEGRATION_THRESHOLD
+        grounding_label = f"{grounding_rate:.2f}" if grounding_rate is not None else "unmeasured"
 
         logger.debug(
             f"[DreamSynthesis] Epistemic gate: "
-            f"integration={integration_success:.2f} × grounding={grounding_rate:.2f} "
+            f"integration={integration_success:.2f} × grounding="
+            f"{grounding_label} "
             f"= {epistemic_confidence:.2f} "
             f"({'PASS' if may_form_beliefs else 'BLOCKED — candidate hypothesis only'})"
         )

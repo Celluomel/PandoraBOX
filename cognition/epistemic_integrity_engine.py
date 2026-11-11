@@ -119,12 +119,16 @@ VALENCE_CONSISTENCY_TOL  = 0.25   # emotional valence implied vs. actual
 
 @dataclass
 class GroundingRecord:
-    """Whether a specific reflection output was grounded in measurable state."""
+    """Screening evidence for a reflection; no independent outcome is implied."""
     timestamp:        float = field(default_factory=time.time)
     reflection_mode:  str   = ""
     reflection_cycle: int   = 0
-    grounded:         bool  = True
-    reason:           str   = ""      # why grounded or not
+    reflection_output: str = ""
+    screen_status:    str = "unverified"  # compatible | inconsistent | unverified
+    grounded:         Optional[bool] = None  # None means no positive evidence
+    measurement_source: str = ""
+    measurement_status: str = "unmeasured"
+    reason:           str   = ""
     beliefs_touched:  List[str] = field(default_factory=list)
     confidence_delta: float = 0.0     # net confidence change applied
 
@@ -161,6 +165,8 @@ class BeliefGroundingIndex:
     grounding_index:   float = 0.5    # grounded_tests / total_tests
     last_tested:       float = field(default_factory=time.time)
     speculative:       bool  = False  # True when grounding_index < 0.35
+    measurement_status: str = "unmeasured"
+    measurement_source: str = ""
 
 
 @dataclass
@@ -230,29 +236,32 @@ class EpistemicIntegrityEngine:
         Test whether a reflection output is grounded in the actual state
         that produced it.
 
-        Returns a GroundingRecord indicating whether the interpretation held.
-        Side effects: adjusts SelfBelief/BeliefEntry confidence accordingly.
+        Returns a GroundingRecord with a lexical/state contradiction screen.
+        The screen is not an independent outcome and cannot validate the
+        reflection, change belief confidence, or update grounding metrics.
         """
-        grounded, reason, beliefs_touched = self._check_grounding(
+        screen_result, reason, candidate_beliefs = self._check_grounding(
             reflection_output, reflection_mode, state_snapshot
         )
-
-        delta = self._apply_grounding_effect(beliefs_touched, grounded)
+        screen_status = (
+            "inconsistent" if screen_result is False
+            else "compatible" if screen_result is True
+            else "unverified"
+        )
 
         record = GroundingRecord(
             reflection_mode  = reflection_mode,
             reflection_cycle = reflection_cycle,
-            grounded         = grounded,
+            reflection_output = str(reflection_output or "")[:600],
+            screen_status    = screen_status,
+            grounded         = None,
             reason           = reason,
-            beliefs_touched  = beliefs_touched,
-            confidence_delta = delta,
+            beliefs_touched  = candidate_beliefs,
+            confidence_delta = 0.0,
         )
 
         # Check for disagreement with prior interpretations
         self._check_disagreement(reflection_output, reflection_mode, reflection_cycle)
-
-        # Update grounding index for touched beliefs
-        self._update_grounding_index(beliefs_touched, grounded)
 
         with self._lock:
             self._state.grounding_log.append(asdict(record))
@@ -264,7 +273,7 @@ class EpistemicIntegrityEngine:
 
         logger.debug(
             f"[EpistemicIntegrity] {reflection_mode} cycle={reflection_cycle} "
-            f"grounded={grounded} Δconf={delta:+.3f} reason='{reason[:60]}'"
+            f"screen={screen_status} grounded=unmeasured reason='{reason[:60]}'"
         )
         return record
 
@@ -318,7 +327,9 @@ class EpistemicIntegrityEngine:
         with self._lock:
             speculative = [
                 v for v in self._state.belief_grounding.values()
-                if v.get("speculative", False)
+                if v.get("measurement_status") == "measured"
+                and v.get("measurement_source")
+                and v.get("speculative", False)
             ]
         if speculative:
             names = ", ".join(v["belief_name"] for v in speculative[:3])
@@ -341,9 +352,14 @@ class EpistemicIntegrityEngine:
 
         # Recent grounding rate
         with self._lock:
-            recent = self._state.grounding_log[-10:]
+            recent = [
+                r for r in self._state.grounding_log
+                if r.get("measurement_status") == "measured"
+                and r.get("measurement_source")
+                and r.get("grounded") is not None
+            ][-10:]
         if recent:
-            n_grounded = sum(1 for r in recent if r.get("grounded", True))
+            n_grounded = sum(1 for r in recent if r.get("grounded") is True)
             rate = n_grounded / len(recent)
             if rate < 0.6:
                 lines.append(
@@ -372,7 +388,9 @@ class EpistemicIntegrityEngine:
                 ]),
                 "speculative_beliefs": len([
                     v for v in self._state.belief_grounding.values()
-                    if v.get("speculative", False)
+                if v.get("measurement_status") == "measured"
+                and v.get("measurement_source")
+                and v.get("speculative", False)
                 ]),
                 "recent_grounding_rate": self._recent_grounding_rate(),
             }
@@ -384,10 +402,11 @@ class EpistemicIntegrityEngine:
         output:         str,
         mode:           str,
         state_snapshot: Dict,
-    ) -> Tuple[bool, str, List[str]]:
+    ) -> Tuple[Optional[bool], str, List[str]]:
         """
         Test whether the interpretation is consistent with the actual state.
-        Returns (grounded, reason, beliefs_touched).
+        Returns (True/False/None, reason, beliefs_touched). None means the
+        lexical checks found no contradiction but also no positive evidence.
 
         Grounding tests by mode:
           evolution    → does the phi direction implied match the actual delta?
@@ -417,10 +436,10 @@ class EpistemicIntegrityEngine:
             )
 
         elif mode == "wonder":
-            # Open questions are generative, not falsifiable — always grounded
-            return True, "wonder mode: open questions are not falsifiable", []
+            # Open questions are generative, not truth-apt.
+            return None, "wonder mode: question is not a factual self-claim", []
 
-        return True, "unknown mode: defaulting to grounded", []
+        return None, "unknown mode: no grounding rule is defined", []
 
     def _validate_evolution(
         self,
@@ -429,7 +448,7 @@ class EpistemicIntegrityEngine:
         actual_trend:  str,
         actual_emotional: str,
         beliefs_touched: List[str],
-    ) -> Tuple[bool, str, List[str]]:
+    ) -> Tuple[Optional[bool], str, List[str]]:
         """
         Check: does the evolution interpretation correctly read phi direction
         and, when it discusses emotional state, stay consistent with the
@@ -487,15 +506,17 @@ class EpistemicIntegrityEngine:
                     f"reference the actual emotional ground '{actual_emotional}'"
                 ), beliefs_touched
 
-        beliefs_touched.append("self-understanding")
-        return True, f"phi direction consistent (φ={actual_phi:.2f}, trend={actual_trend})", beliefs_touched
+        return None, (
+            f"no contradiction detected (φ={actual_phi:.2f}, trend={actual_trend}); "
+            "lexical compatibility is not positive evidence"
+        ), []
 
     def _validate_contradiction(
         self,
         output_lower:  str,
         state_snapshot: Dict,
         beliefs_touched: List[str],
-    ) -> Tuple[bool, str, List[str]]:
+    ) -> Tuple[Optional[bool], str, List[str]]:
         """
         Check: does the tension described reference something actually present
         in the state (goals, beliefs, known tensions)?
@@ -506,8 +527,9 @@ class EpistemicIntegrityEngine:
 
         # Identify what the output is claiming is in tension
         tension_keywords = [
-            w for w in output_lower.split()
-            if len(w) > 4 and w not in {
+            w.strip(".,;:?!\"'()[]{}") for w in output_lower.split()
+            if len(w.strip(".,;:?!\"'()[]{}")) > 4
+            and w.strip(".,;:?!\"'()[]{}") not in {
                 "there", "between", "tension", "conflict", "pulling",
                 "against", "these", "those", "which", "their", "where"
             }
@@ -524,16 +546,17 @@ class EpistemicIntegrityEngine:
                 f"(matched {len(matches)} keywords)"
             ), beliefs_touched
 
-        beliefs_touched.append("self-honesty")
-        beliefs_touched.append("self-understanding")
-        return True, f"tension keywords matched state ({len(matches)} overlaps)", beliefs_touched
+        return None, (
+            f"tension keywords overlap state ({len(matches)} matches), but overlap "
+            "does not establish that the tension is real"
+        ), []
 
     def _validate_goal_coherence(
         self,
         output_lower:  str,
         state_snapshot: Dict,
         beliefs_touched: List[str],
-    ) -> Tuple[bool, str, List[str]]:
+    ) -> Tuple[Optional[bool], str, List[str]]:
         """
         Check: does the coherence claim match the actual goal spread?
         """
@@ -592,21 +615,24 @@ class EpistemicIntegrityEngine:
                     f"the actual dominant drive '{dominant_goal}'"
                 ), beliefs_touched
 
-        beliefs_touched.append("goal-clarity")
-        return True, f"goal coherence claim consistent (spread={spread:.2f})", beliefs_touched
+        return None, (
+            f"claim is not contradicted by measured spread={spread:.2f}; "
+            "compatibility is not positive evidence"
+        ), []
 
     # ── Grounding effect ──────────────────────────────────────────────────────
 
     def _apply_grounding_effect(
         self,
         beliefs_touched: List[str],
-        grounded:        bool,
+        grounded:        Optional[bool],
+        measurement_source: str = "",
     ) -> float:
         """
         Adjust SelfBelief confidence based on whether the interpretation
         was grounded.  Returns net delta applied.
         """
-        if not beliefs_touched:
+        if grounded is None or not beliefs_touched or not measurement_source.strip():
             return 0.0
 
         total_delta = 0.0
@@ -656,7 +682,7 @@ class EpistemicIntegrityEngine:
             return None
 
         # Use most recent prior as comparison
-        prior_output = recent_same_mode[-1].get("reason", "")
+        prior_output = recent_same_mode[-1].get("reflection_output", "")
         if not prior_output:
             return None
 
@@ -822,8 +848,11 @@ class EpistemicIntegrityEngine:
     def _update_grounding_index(
         self,
         beliefs_touched: List[str],
-        grounded:        bool,
+        grounded:        Optional[bool],
+        measurement_source: str = "",
     ) -> None:
+        if grounded is None or not beliefs_touched or not measurement_source.strip():
+            return
         with self._lock:
             for name in beliefs_touched:
                 raw = self._state.belief_grounding.get(name)
@@ -837,8 +866,10 @@ class EpistemicIntegrityEngine:
 
                 gi.total_tests   += 1
                 gi.last_tested    = time.time()
+                gi.measurement_source = measurement_source.strip()
                 if grounded:
                     gi.grounded_tests += 1
+                gi.measurement_status = "measured"
                 gi.grounding_index = max(
                     GROUNDING_INDEX_FLOOR,
                     gi.grounded_tests / gi.total_tests
@@ -847,11 +878,16 @@ class EpistemicIntegrityEngine:
 
                 self._state.belief_grounding[name] = asdict(gi)
 
-    def _recent_grounding_rate(self) -> float:
-        recent = self._state.grounding_log[-10:]
+    def _recent_grounding_rate(self) -> Optional[float]:
+        recent = [
+            r for r in self._state.grounding_log
+            if r.get("measurement_status") == "measured"
+            and r.get("measurement_source")
+            and r.get("grounded") is not None
+        ][-10:]
         if not recent:
-            return 1.0
-        return sum(1 for r in recent if r.get("grounded", True)) / len(recent)
+            return None
+        return sum(1 for r in recent if r.get("grounded") is True) / len(recent)
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 

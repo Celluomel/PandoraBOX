@@ -17,7 +17,11 @@ class _Validator:
         return ""
 
     def validate_reflection(self, **_kwargs):
-        return SimpleNamespace(grounded=False, reason="insufficient state overlap")
+        return SimpleNamespace(
+            grounded=None,
+            screen_status="inconsistent",
+            reason="insufficient state overlap",
+        )
 
 
 class _SideEffect:
