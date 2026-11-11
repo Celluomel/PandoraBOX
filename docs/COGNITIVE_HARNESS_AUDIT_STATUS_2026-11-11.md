@@ -1,7 +1,7 @@
 # Audit du harnais cognitif — état et prochaines étapes
 
 **Date :** 11 novembre 2026
-**Statut :** audit en cours — conclusion globale non établie. Dernier commit commun local/GitHub : `7103a68`. Un second correctif du même flux (concurrence entre consommateurs d’outreach et UI) est local, testé, et attend son commit/push. Aucun redémarrage de Lumina n’a été effectué; ces changements locaux ne sont pas encore chargés dans le processus actif.
+**Statut :** audit en cours — conclusion globale non établie. Local `main` et GitHub `origin/main` sont alignés sur `cfc54df`. Les lots outreach et propriété de file sont poussés. Aucun redémarrage de Lumina n’a été effectué; ces changements ne sont pas encore chargés dans le processus actif.
 
 ## État exécutif courant — poursuite module par module
 
@@ -11,7 +11,7 @@
 - **Preuve locale :** `tests/test_proactive_outreach_delivery.py`, `tests/test_intention_planning.py`, `tests/test_self_description_prompt.py`, `tests/test_goal_action_thought_publication.py` — **61 passed**; compilation des modules touchés et `git diff --check` réussis. Les 7 avertissements Pydantic proviennent des validateurs historiques de `settings_manager.py`.
 - **Limite de preuve :** `accepted` signifie que l’API Telegram/Twilio a accepté l’appel; cela ne prouve ni livraison au terminal ni lecture. Aucun envoi externe réel n’a été déclenché pendant les tests. Le chemin live nécessite le redémarrage groupé final.
 - **Suite du cap :** audit des producteurs/consommateurs de mémoire et profil, puis des états de workspace/attention et de génération de réponse, avec vérification des effets aval; maintenir le même rapport et rattacher chaque constat à un scénario/test plutôt qu’à un simple tick.
-- **Git / périmètre :** le lot outreach doit être commité/poussé avec uniquement `brain.py`, `cognition/proactive_outreach.py`, `managers/messaging_manager.py`, son test et ce rapport. Les changements Body/UI/tests préexistants et artefacts non suivis sont hors lot. Ne pas redémarrer Lumina avant le contrôle cumulé.
+- **Git / périmètre :** commits `7103a68` et `cfc54df` ont été poussés. Les changements Body/UI/tests préexistants et artefacts non suivis restent exclus. Ne pas redémarrer Lumina avant le contrôle cumulé.
 
 ## État courant de reprise — commit GitHub `0618621` et lot suivant local
 
@@ -83,7 +83,7 @@ Le parcours montrait deux consommateurs appelant les getters destructifs du `Goa
 
 **Vérification locale :** le nouveau test établit qu’un peek outreach laisse chaque élément disponible pour le getter UI, puis que le getter retire bien l’élément. Suite combinée — `tests/test_proactive_outreach_delivery.py`, `tests/test_intention_planning.py`, `tests/test_self_description_prompt.py`, `tests/test_goal_action_thought_publication.py` — **61 passed**, compilation et `git diff --check` réussis. Aucun flux Telegram/WhatsApp réel n’a été déclenché.
 
-**État Git/live :** lot local, pas encore commité/poussé. Il sera poussé séparément de `7103a68`, avec uniquement les fichiers GAE/outreach/test/rapport. Le scénario live après redémarrage devra vérifier que le même item peut être observé par l’outreach et ensuite affiché par l’UI sans disparition ni répétition intempestive. Poursuivre l’audit des contrats mémoire/profil et workspace après ce correctif.
+**État Git/live :** le lot a été commité et poussé sous `cfc54df`. Le scénario live après redémarrage devra vérifier que le même item peut être observé par l’outreach et ensuite affiché par l’UI sans disparition ni répétition intempestive. Poursuivre l’audit des contrats mémoire/profil et workspace après ce correctif.
 
 ## Synthèse globale faisant autorité — état cumulé, révisé le 11 novembre
 
