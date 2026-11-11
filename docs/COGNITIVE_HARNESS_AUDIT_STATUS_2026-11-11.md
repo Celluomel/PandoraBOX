@@ -386,3 +386,15 @@ Le lot de régression le plus récent passe : **93 tests, 9 sous-tests**; compil
 **Autres points d’audit encore ouverts :** vérifier la continuité d’historique après un fallback natif; contrôler la qualité des réponses et leurs effets aval sur plusieurs scénarios représentatifs; classer les modules sans tick/indisponibles selon leur rôle et preuves observables; isoler l’anomalie FAISS; compléter ensuite l’audit des chemins de génération et des consommateurs, sans confondre tick d’un module et effet causal prouvé.
 
 **Processus :** Lumina n’a pas été redémarré. Le code local est prêt pour le contrôle live au redémarrage final; aucune conclusion d’intégration runtime n’est encore revendiquée.
+
+## Reprise live après redémarrage — blocage de l’auto-calibration corrigé localement
+
+Le socket local a répondu après le redémarrage (`/status`: Brain prêt, modèle LM Studio actif; interface prête et non occupée). Un tour d’audit non moteur a été exécuté avec l’identifiant `1bf4836f-bd69-4f3a-8a75-2af4d0950f88`. La trace serveur compte 62 étapes, `pipeline_integrity=consistent`, zéro étape manquante/échouée et une réponse finalisée; les étapes conditionnelles non applicables sont explicitement marquées. Cela prouve l’exécution du chemin de chat pour ce tour, pas la qualité sémantique du texte ni l’usage de tous les modules à chaque tour.
+
+La lecture live du `CognitiveAuditEngine` a ensuite montré 50 snapshots, aucun essai et aucune tentative de proposition enregistrée à ce relevé. Le relevé suivant a exposé la cause exacte : `llm_error: EnhancedAISystem.get_response() got an unexpected keyword argument 'messages'`. Le moteur appelait la façade conversationnelle avec l’API du modèle bas niveau; chaque génération de proposition échouait donc avant de créer un essai, malgré un signal `mean_skill_depth` durablement sous sa cible.
+
+Correction locale : les propositions de calibration utilisent maintenant `EnhancedAISystem.llm.get_response(messages, max_tokens, temperature)`, l’adaptateur bas niveau configuré. La façade conversationnelle n’est pas appelée pour cette opération interne. Une régression vérifie l’API utilisée, interdit l’appel de la façade et confirme qu’une proposition valide est effectivement produite dans les bornes du paramètre.
+
+Vérification locale : `tests/test_health_data_regressions.py` — **11 passed**; `py_compile` et `git diff --check` réussissent. Le processus live n’a pas été redémarré, donc la correction n’est pas encore chargée ni validée par le prochain cycle d’audit du modèle.
+
+**Suite immédiate :** commit/push de cette correction ciblée, poursuivre l’inspection du workspace et des effets d’objectifs pour identifier la provenance du but narratif de faible qualité observé live, puis demander un redémarrage seulement lorsque le lot de corrections brain-only prêt à vérifier sera réuni.

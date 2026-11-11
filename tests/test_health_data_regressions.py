@@ -22,7 +22,7 @@ with patch.dict(sys.modules, {'cognition': package}):
 class HealthDataTests(unittest.TestCase):
     def test_cognitive_audit_waits_briefly_for_llm_slot_and_exposes_skip_reason(self):
         audit = CognitiveAuditEngine.__new__(CognitiveAuditEngine)
-        audit._ai = NS(get_response=Mock(return_value=""))
+        audit._ai = NS(llm=NS(get_response=Mock(return_value="")))
         scheduler = ModuleType('core.llm_scheduler')
         scheduler_instance = NS(sync_slot=Mock(return_value=nullcontext(False)))
         scheduler.llm_scheduler = scheduler_instance
@@ -35,11 +35,52 @@ class HealthDataTests(unittest.TestCase):
         )
         self.assertEqual(audit._proposal_attempt_status, 'llm_slot_busy')
 
-        audit._ai = NS(get_response=Mock(side_effect=RuntimeError('provider failure')))
+        audit._ai = NS(llm=NS(
+            get_response=Mock(side_effect=RuntimeError('provider failure'))
+        ))
         scheduler_instance.sync_slot.return_value = nullcontext(True)
         with patch.dict(sys.modules, {'core.llm_scheduler': scheduler}):
             self.assertIsNone(audit._llm_call('bounded proposal prompt'))
         self.assertEqual(audit._proposal_attempt_status, 'llm_error')
+
+    def test_cognitive_audit_uses_low_level_adapter_and_can_create_proposal(self):
+        audit = CognitiveAuditEngine.__new__(CognitiveAuditEngine)
+        audit._state = AuditState()
+        audit._organism = NS(_loop=None)
+        response = json.dumps({
+            'parameter': 'generate_every_n',
+            'proposed_value': 20,
+            'rationale': 'A modest change may increase experiment opportunities. '
+                         'The trial will be evaluated against the same signal.',
+        })
+        adapter = NS(get_response=Mock(return_value=response))
+        facade_call = Mock(
+            side_effect=AssertionError('chat facade must not handle internal proposal')
+        )
+        audit._ai = NS(llm=adapter, get_response=facade_call)
+
+        scheduler = ModuleType('core.llm_scheduler')
+        scheduler.llm_scheduler = NS(sync_slot=Mock(return_value=nullcontext(True)))
+        with patch.dict(sys.modules, {'core.llm_scheduler': scheduler}):
+            proposal = audit._generate_proposal(
+                'mean_skill_depth', 0.3, 1.0, 120,
+            )
+
+        self.assertIsNotNone(proposal)
+        self.assertEqual(proposal.parameter, 'generate_every_n')
+        self.assertEqual(proposal.prior_value, 25)
+        self.assertEqual(proposal.proposed_value, 20)
+        adapter.get_response.assert_called_once()
+        call = adapter.get_response.call_args.kwargs
+        self.assertEqual(call['max_tokens'], 200)
+        self.assertEqual(call['temperature'], 0.50)
+        self.assertEqual(call['messages'][0]['role'], 'user')
+        self.assertIn(
+            'mean_skill_depth',
+            call['messages'][0]['content'],
+        )
+        facade_call.assert_not_called()
+        self.assertEqual(audit._proposal_attempt_status, 'proposal_created')
 
     def test_cognitive_audit_persists_proposal_attempt_separately_from_trial(self):
         audit = CognitiveAuditEngine.__new__(CognitiveAuditEngine)

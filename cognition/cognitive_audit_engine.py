@@ -806,7 +806,20 @@ Respond ONLY in JSON (no markdown, no preamble):
                 self._proposal_attempt_detail = "No LLM slot became available within the bounded 5 s wait."
                 return None
             try:
-                result = self._ai.get_response(
+                # CognitiveAuditEngine runs inside EnhancedAISystem, whose
+                # get_response(user_input, ...) is the full conversational
+                # path. Calibration proposals are an internal, bounded task:
+                # send them to the configured model adapter directly, just as
+                # DreamSynthesis and NarrativeCompression do. Calling the
+                # facade with `messages=` raises TypeError and silently leaves
+                # the audit collecting snapshots forever without a single
+                # proposal or trial.
+                llm = getattr(self._ai, "llm", None)
+                if llm is None or not callable(getattr(llm, "get_response", None)):
+                    self._proposal_attempt_status = "llm_unavailable"
+                    self._proposal_attempt_detail = "EnhancedAISystem has no usable LLM adapter."
+                    return None
+                result = llm.get_response(
                     messages    = [{"role": "user", "content": prompt}],
                     max_tokens  = 200,
                     temperature = 0.50,
