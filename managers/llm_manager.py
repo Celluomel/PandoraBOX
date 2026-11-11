@@ -279,19 +279,75 @@ class LMStudioProvider(BaseLLMProvider):
             logger.error(f"LMStudio error: {e}")
             return f"Error: {e}"
 
+    def generate_background_messages(self, messages: List[Dict], **kwargs) -> str:
+        """Use LM Studio's native API to disable hidden reasoning for short jobs.
+
+        The OpenAI-compatible endpoint does not honor ``reasoning_format=none``
+        for every reasoning model. LM Studio's native chat endpoint exposes an
+        explicit ``reasoning: off`` control, which prevents short background
+        tasks from exhausting their output budget before producing visible text.
+        """
+        native_base = self.base_url[:-3] if self.base_url.endswith("/v1") else self.base_url
+        system_parts = []
+        input_messages = []
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            role = str(message.get("role") or "user").strip().upper()
+            content = message.get("content", "")
+            if not isinstance(content, str):
+                content = json.dumps(content, ensure_ascii=False, default=str)
+            if content.strip():
+                if role == "SYSTEM":
+                    system_parts.append(content.strip())
+                else:
+                    input_messages.append((role, content.strip()))
+        if len(input_messages) == 1:
+            input_text = input_messages[0][1]
+        else:
+            input_text = "\n\n".join(
+                f"{role}:\n{content}" for role, content in input_messages
+            )
+        payload = {
+            "model": kwargs.get("model", self.model),
+            "input": input_text,
+            "reasoning": "off",
+            "max_output_tokens": kwargs.get("max_tokens", 600),
+            "temperature": kwargs.get("temperature", 0.7),
+            "store": False,
+        }
+        if system_parts:
+            payload["system_prompt"] = "\n\n".join(system_parts)
+        response = requests.post(
+            f"{native_base}/api/v1/chat",
+            json=payload,
+            timeout=max(1.0, float(kwargs.get("timeout", 60))),
+        )
+        if response.status_code != 200:
+            raise RuntimeError(f"LM Studio native chat status {response.status_code}")
+        result = response.json()
+        return "".join(
+            str(item.get("content") or "")
+            for item in result.get("output", [])
+            if isinstance(item, dict) and item.get("type") == "message"
+        )
+
     def _generate_messages_stream(self, messages: List[Dict], **kwargs) -> Iterator[str]:
         try:
             emitted = 0
             finish_reason = None
-            with requests.post(
-                f"{self.base_url}/chat/completions",
-                json={
+            request_body = {
                     "model":       kwargs.get("model", self.model),
                     "messages":    messages,
                     "temperature": kwargs.get("temperature", 0.7),
                     "max_tokens":  kwargs.get("max_tokens", 600),
                     "stream":      True,
-                },
+                }
+            if "reasoning_format" in kwargs:
+                request_body["reasoning_format"] = kwargs["reasoning_format"]
+            with requests.post(
+                f"{self.base_url}/chat/completions",
+                json=request_body,
                 stream=True,
                 timeout=60
             ) as r:
@@ -646,8 +702,49 @@ class LLMManager:
                     "status": "deferred",
                     "reason": "interactive turn started",
                 }
-            text = self.provider._generate_messages(messages, **kwargs) or ""
+            background_generate = getattr(
+                self.provider, "generate_background_messages", None,
+            )
+            if callable(background_generate):
+                try:
+                    text = background_generate(messages, **kwargs) or ""
+                except Exception as native_error:
+                    logger.warning(
+                        "LM Studio native background call unavailable (%s); "
+                        "falling back to chat completions",
+                        type(native_error).__name__,
+                    )
+                    text = self.provider._generate_messages(messages, **kwargs) or ""
+            else:
+                text = self.provider._generate_messages(messages, **kwargs) or ""
             stripped = str(text).strip()
+            if not stripped:
+                # A few local OpenAI-compatible servers/models return an empty
+                # `message.content` on non-stream completions while the
+                # streaming endpoint still supplies the assistant text. Retry
+                # once via that same provider and keep only public content
+                # tokens; hidden reasoning/finish metadata are never stored.
+                stream = getattr(self.provider, "_generate_messages_stream", None)
+                if callable(stream):
+                    try:
+                        chunks = []
+                        for part in stream(messages, **kwargs):
+                            if isinstance(part, str):
+                                chunks.append(part)
+                            elif isinstance(part, dict) and part.get("type") == "content":
+                                chunks.append(str(part.get("text") or ""))
+                        streamed = "".join(chunks)
+                        streamed_stripped = streamed.strip()
+                        if streamed_stripped and not streamed_stripped.lower().startswith("error:"):
+                            logger.warning("Recovered empty background completion from provider content stream")
+                            return {"text": streamed, "status": "ok", "reason": "stream_fallback"}
+                        if streamed_stripped.lower().startswith("error:"):
+                            return {"text": streamed, "status": "error", "reason": "provider stream error"}
+                    except Exception as stream_error:
+                        logger.warning(
+                            "Background provider stream fallback failed: %s",
+                            type(stream_error).__name__,
+                        )
             if not stripped:
                 return {
                     "text": "",

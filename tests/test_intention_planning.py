@@ -2,6 +2,7 @@
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 import sys
 from types import ModuleType
@@ -22,7 +23,7 @@ from cognition.goal_engine import Goal, GoalEngine, Motivation
 from cognition.intention_reasoner import IntentionReasoner
 from cognition.prompt_context_budget import PromptContextBudget
 from core.planning.multi_step_planner import MultiStepPlanner
-from managers.llm_manager import LLMManager
+from managers.llm_manager import LLMManager, LMStudioProvider
 
 
 class _Prediction:
@@ -460,6 +461,97 @@ class IntentionPlanningTests(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["text"], "A grounded internal observation.")
         self.assertEqual(len(calls), 1)
+
+    def test_background_llm_recovers_empty_nonstream_completion_from_content_stream(self):
+        class _Provider:
+            model = "test-model"
+
+            def _generate_messages(self, messages, **kwargs):
+                return ""
+
+            def _generate_messages_stream(self, messages, **kwargs):
+                yield {"type": "reasoning", "text": "private reasoning must be ignored"}
+                yield "A concise carry-forward note."
+                yield {"type": "finish", "reason": "stop"}
+
+        manager = LLMManager.__new__(LLMManager)
+        manager.provider = _Provider()
+        manager.text_model = "test-model"
+        manager._provider_lock = threading.Lock()
+        manager._chat_active = threading.Event()
+
+        result = manager.generate_bare_result("review this exchange")
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["text"], "A concise carry-forward note.")
+        self.assertEqual(result["reason"], "stream_fallback")
+
+    def test_background_llm_keeps_empty_status_when_stream_has_no_content(self):
+        class _Provider:
+            model = "test-model"
+
+            def _generate_messages(self, messages, **kwargs):
+                return ""
+
+            def _generate_messages_stream(self, messages, **kwargs):
+                yield {"type": "reasoning", "text": "not assistant content"}
+
+        manager = LLMManager.__new__(LLMManager)
+        manager.provider = _Provider()
+        manager.text_model = "test-model"
+        manager._provider_lock = threading.Lock()
+        manager._chat_active = threading.Event()
+
+        result = manager.generate_bare_result("review this exchange")
+
+        self.assertEqual(result["status"], "empty")
+
+    def test_lmstudio_background_uses_native_reasoning_off_endpoint(self):
+        provider = LMStudioProvider(
+            model="test-model", base_url="http://127.0.0.1:1234/v1",
+        )
+        response = NS(
+            status_code=200,
+            json=lambda: {"output": [{"type": "message", "content": "NONE"}]},
+        )
+        with patch("managers.llm_manager.requests.post", return_value=response) as post:
+            text = provider.generate_background_messages(
+                [
+                    {"role": "system", "content": "Keep it concise."},
+                    {"role": "user", "content": "Review this exchange."},
+                ],
+                max_tokens=120,
+                temperature=0.1,
+            )
+
+        self.assertEqual(text, "NONE")
+        args, kwargs = post.call_args
+        self.assertEqual(args[0], "http://127.0.0.1:1234/api/v1/chat")
+        self.assertEqual(kwargs["json"]["reasoning"], "off")
+        self.assertEqual(kwargs["json"]["max_output_tokens"], 120)
+        self.assertEqual(kwargs["json"]["system_prompt"], "Keep it concise.")
+        self.assertEqual(kwargs["json"]["input"], "Review this exchange.")
+
+    def test_background_llm_prefers_provider_native_background_method(self):
+        class _Provider:
+            model = "test-model"
+
+            def generate_background_messages(self, messages, **kwargs):
+                return "NONE"
+
+            def _generate_messages(self, messages, **kwargs):
+                raise AssertionError("regular chat completion should not be used")
+
+        manager = LLMManager.__new__(LLMManager)
+        manager.provider = _Provider()
+        manager.text_model = "test-model"
+        manager._provider_lock = threading.Lock()
+        manager._chat_active = threading.Event()
+
+        result = manager.generate_bare_result("review this exchange")
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["text"], "NONE")
 
     def test_embedding_text_model_falls_back_to_chat_model(self):
         class _Provider:
