@@ -269,7 +269,7 @@ async def main_page():
                 ):
                     if isinstance(chunk, dict) and chunk.get("__meta__"):
                         proactive_msg = chunk.get("speech", "")
-                        break
+                        continue
 
                 if proactive_msg:
                     # ── Semantic deduplication: skip if too similar to last proactive ──
@@ -1015,7 +1015,7 @@ async def main_page():
                 if isinstance(chunk, dict):
                     if chunk.get("__meta__"):
                         result = chunk
-                        break
+                        continue
                     # PersonaBridge can emit auxiliary events (for example
                     # native reasoning or web-source metadata). This page
                     # renders only answer text; never concatenate event dicts

@@ -445,6 +445,7 @@ class PersonaBridge:
         cognitive_scope_id: str = "",
         turn_id: str = "",
     ):
+        _terminal_meta = None
         async with self._response_turn_lock:
             async for chunk in self._get_response_stream_impl(
                 user_text,
@@ -466,7 +467,14 @@ class PersonaBridge:
                         "cognitive_scope_id",
                         self._last_turn_trace.get("cognitive_scope_id", user_id),
                     )
+                    _terminal_meta = chunk
+                    continue
                 yield chunk
+        # Release the per-turn lock before handing out the terminal event.
+        # Consumers commonly stop at metadata; they must not hold the lock
+        # while a suspended generator waits to be closed by garbage collection.
+        if _terminal_meta is not None:
+            yield _terminal_meta
 
     def _start_turn_trace(
         self, user_id: str, peer_name: str = "", cognitive_scope_id: str = "",
@@ -1177,6 +1185,8 @@ class PersonaBridge:
                 output={"raw": _goal_response, "speech": _goal_speech},
                 consumes=("response_finalization",),
             )
+            self._record_turn_stage("deterministic_goal_response", "completed")
+            self._finish_turn_trace("completed")
             yield {
                 "__meta__": True,
                 "raw": _goal_response,
@@ -1185,9 +1195,6 @@ class PersonaBridge:
                 "intensity": 0.4,
                 "goal_write": _goal_turn,
             }
-            self._record_turn_stage("response", "completed")
-            self._record_turn_stage("deterministic_goal_response", "completed")
-            self._finish_turn_trace("completed")
             return
 
         # Physical requests use a separate confirmation-gated path. This keeps
@@ -1239,6 +1246,8 @@ class PersonaBridge:
                 output={"raw": _body_response, "speech": _body_speech},
                 consumes=("response_finalization",),
             )
+            self._record_turn_stage("deterministic_body_response", "completed")
+            self._finish_turn_trace("completed")
             yield {
                 "__meta__": True,
                 "raw": _body_response,
@@ -1247,9 +1256,6 @@ class PersonaBridge:
                 "intensity": 0.45,
                 "body_plan": _body_turn,
             }
-            self._record_turn_stage("response", "completed")
-            self._record_turn_stage("deterministic_body_response", "completed")
-            self._finish_turn_trace("completed")
             return
         if vision_context and peer_name:
             self._record_turn_stage("brain_pc_vision_input", "skipped_by_scope")
@@ -1272,6 +1278,7 @@ class PersonaBridge:
         # ── Streaming path (preferred) ──────────────────────────────
         if self._llm_stream_fn is not None:
             try:
+                _stream_terminal_seen = False
                 async for chunk in self._stream_with_full_lifecycle(
                     effective_input, user_id, voice_mode=voice_mode,
                     record_history=record_history,
@@ -1282,10 +1289,15 @@ class PersonaBridge:
                     displayed_cognitive_trace=_displayed_trace,
                     input_safety_checked=_input_safety_checked,
                 ):
+                    if isinstance(chunk, dict) and chunk.get("__meta__"):
+                        # Finalize before the terminal event: stream clients
+                        # may stop iteration as soon as they receive metadata.
+                        _stream_terminal_seen = True
+                        self._record_turn_stage("streaming_lifecycle", "completed")
+                        self._finish_turn_trace("completed")
                     yield chunk
-                self._record_turn_stage("streaming_lifecycle", "completed")
-                self._record_turn_stage("response", "completed")
-                self._finish_turn_trace("completed")
+                if not _stream_terminal_seen:
+                    raise RuntimeError("stream lifecycle ended without terminal metadata")
                 return
             except Exception as e:
                 logger.warning(f"Streaming path failed, falling back to blocking: {e}")
@@ -1401,6 +1413,11 @@ class PersonaBridge:
                 await asyncio.sleep(0)
 
         emotion, intensity = self._infer_emotion(user_text)
+        self._record_turn_stage(
+            "response", "completed", output={"raw": response, "speech": self._sanitize(response)},
+            consumes=("response_finalization",),
+        )
+        self._finish_turn_trace("completed")
         yield {
             "__meta__":  True,
             "raw":       response,
@@ -1408,11 +1425,6 @@ class PersonaBridge:
             "emotion":   emotion,
             "intensity": intensity,
         }
-        self._record_turn_stage(
-            "response", "completed", output={"raw": response, "speech": self._sanitize(response)},
-            consumes=("response_finalization",),
-        )
-        self._finish_turn_trace("completed")
 
     def begin_interactive_reflection_turn(self, user_id: str = "default") -> int:
         """Advance the user's turn epoch and consume a still-relevant reflection."""

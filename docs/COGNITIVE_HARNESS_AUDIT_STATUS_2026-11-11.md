@@ -336,6 +336,16 @@ Tests ciblés : sorties déterministes bloquées/remplacées, erreur d’évalua
 
 **État live :** Lumina n’a pas été redémarré; aucune de ces nouvelles étapes n’est encore présente dans le processus actif.
 
+## Méta-événement terminal avant clôture et verrou — correction locale
+
+Les interfaces chat et la boucle proactive s’arrêtaient dès réception de `__meta__`. Or plusieurs branches ne clôturaient la trace qu’après ce `yield`; la trace pouvait donc rester ouverte. Le wrapper `get_response_stream()` suspendait aussi le générateur à l’intérieur du verrou global de tour pendant qu’il livrait ce méta-événement. Un consommateur qui s’arrête à cet événement pouvait retarder la libération du verrou, donnant l’impression que les tours suivants étaient bloqués. Dans le chemin LLM, la validation externe réécrivait en plus l’étape `response` déjà fingerprintée avec une entrée minimale, supprimant la preuve de sortie.
+
+Correction : les branches GoalEngine, Body et fallback finalisent les reçus avant leur méta-événement. Le chemin stream marque la fin de vie du tour avant de transmettre le méta-événement et conserve le fingerprint `response` produit par le lifecycle interne. Le wrapper garde le méta-événement terminal en attente, draine le générateur interne, sort du verrou, puis livre le méta-événement. Les consommateurs chat/proactif de la page principale continuent jusqu’à l’épuisement du générateur au lieu de rompre après le méta-événement.
+
+Vérification ciblée : preuve AST de l’ordre clôture→terminal, drainage des consommateurs et libération du verrou avant livraison : 19 tests passent. Lot élargi sur le flux terminal, sécurité, preuve de tour, GoalEngine, Body, workflow et journal des ticks : **91 passed, 9 sous-tests**, 9 avertissements de dépendances préexistants. `py_compile` et `git diff --check` réussissent. Durant la collecte élargie, FAISS a aussi écrit un diagnostic natif Windows `0xc0000008` sur stderr; pytest a néanmoins terminé avec le code 0 et un résumé vert. Il est enregistré comme anomalie de l’environnement de test, non comme résultat Lumina.
+
+**État live :** pas de redémarrage. Ces correctifs restent du code local non chargé par le processus actuel.
+
 ## Route fast déléguée comptée à tort comme génération — correction locale
 
 La validation du pipeline acceptait `fast_first_pass=delegated` comme preuve qu’une réponse avait été générée. Or `delegated` n’est qu’une décision de routage : si le provider principal ne termine pas, la trace pouvait déclarer le cœur du tour complet sans génération primaire ni texte de réponse attribuable. La route directe `selected_direct` reste valide comme chemin alternatif; une délégation exige désormais `primary_generation=completed`.
