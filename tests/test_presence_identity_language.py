@@ -35,6 +35,23 @@ class SequenceLlm:
 
 
 class PresenceIdentityLanguageTests(unittest.TestCase):
+    def test_presence_only_receives_prior_user_message_for_recent_resume(self):
+        face = presence.FacePresenceState("face_17", "Fred")
+        face.last_topic = "Why is the camera identity mentioned?"
+        face.last_topic_ts = 100.0
+
+        self.assertEqual(
+            presence._recent_resume_context(face, "engage", now=110.0),
+            "",
+        )
+        self.assertEqual(
+            presence._recent_resume_context(face, "resume", now=100.0 + 2 * presence.RETURN_THRESHOLD_S + 1),
+            "",
+        )
+        context = presence._recent_resume_context(face, "resume", now=110.0)
+        self.assertIn("historical context, not a new request", context)
+        self.assertIn("Why is the camera identity mentioned?", context)
+
     def test_named_camera_face_creates_and_activates_interlocutor(self):
         with tempfile.TemporaryDirectory() as directory:
             manager = users.UserManager(Path(directory) / "users.json")

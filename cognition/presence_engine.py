@@ -73,6 +73,20 @@ SOCIAL_BATTERY_RECOVERY    = 0.02  # per minute of silence
 SOCIAL_BATTERY_MIN_TO_SPEAK = 0.20 # must have at least this much to speak
 
 
+def _recent_resume_context(ps: "FacePresenceState", mode: str, now: Optional[float] = None) -> str:
+    """Expose a prior user message only for an explicit return/resume event."""
+    if mode != "resume" or not ps.last_topic:
+        return ""
+    age = (time.time() if now is None else now) - ps.last_topic_ts
+    if age < 0 or age > RETURN_THRESHOLD_S * 2:
+        return ""
+    return (
+        "Most recent prior user message (historical context, not a new request): "
+        + str(ps.last_topic).strip()[:120]
+        + ". Do not answer it as if it had just been asked; resume only if the person clearly does."
+    )
+
+
 @dataclass
 class FacePresenceState:
     face_id:             str
@@ -543,16 +557,6 @@ class PresenceEngine:
         co_w = getattr(ps, 'co_presence_weight', 0.0)
         pressure += co_w  # up to +0.30 after 10 min together
 
-        # ── CAG topic-pull: unresolved thoughts surface toward present person ─
-        try:
-            from core.state import state as _st_cag
-            if _st_cag.acc and event in ("DWELL", "SILENCE"):
-                snap_cag = _st_cag.acc.snapshot()
-                if snap_cag.get("unresolved_questions") or snap_cag.get("curiosity_threads"):
-                    pressure += 0.10   # something to externalize
-        except Exception:
-            pass
-
         # ── Suppressors (de-stacked — max combined penalty capped) ───────────
 
         # Cognitive load — halved: being busy doesn't eliminate social awareness
@@ -721,12 +725,7 @@ class PresenceEngine:
         }
 
         # ── Episodic context ──────────────────────────────────────────────
-        episodic = ""
-        if ps.last_topic and (time.time() - ps.last_topic_ts) < RETURN_THRESHOLD_S * 3:
-            episodic = (
-                f"The last thing you discussed with {name_s} was: {ps.last_topic}. "
-                f"That conversation is still fresh — you might continue it naturally."
-            )
+        episodic = _recent_resume_context(ps, mode)
 
         # ── Cognitive context ──────────────────────────────────────────────
         context_block = (
@@ -739,24 +738,9 @@ class PresenceEngine:
         )
 
         # ── Situation ─────────────────────────────────────────────────────
-        # ── Pull CAG context for richer DWELL/SILENCE situations ────────────
-        cag_context = ""
-        try:
-            from core.state import state as _st_gen
-            if _st_gen.acc:
-                snap_cag = _st_gen.acc.snapshot()
-                uq = snap_cag.get("unresolved_questions", [])
-                ct = snap_cag.get("curiosity_threads", [])
-                topics = [t["topic"] for t in snap_cag.get("topics", [])[:2]]
-                if uq:
-                    cag_context = f"You've been holding an unresolved question: {uq[0]}"
-                elif ct:
-                    cag_context = f"A curiosity thread is pulling at you: {ct[0]}"
-                elif topics:
-                    cag_context = f"Your mind has been on: {', '.join(topics)}"
-        except Exception:
-            pass
-
+        # CAG questions/topics have no per-item age or user-turn provenance.
+        # They must not be presented as current conversational context during
+        # ambient DWELL/SILENCE speech.
         if mode == "resume":
             situation = (
                 f"{name_s} just returned after a few minutes away. "
@@ -768,29 +752,15 @@ class PresenceEngine:
         elif event == "RETURN":
             situation = f"{name_s} came back into view after being away."
         elif event == "DWELL":
-            if cag_context:
-                situation = (
-                    f"{name_s} has been present with you for a while in comfortable silence. "
-                    f"{cag_context}. "
-                    f"The thought surfaces — you might share it, or not. "
-                    f"If you speak, let it be genuinely from that internal state."
-                )
-            else:
-                situation = (
-                    f"{name_s} has been in your field for a while. "
-                    f"You feel a quiet pull toward connection — not urgency, just presence."
-                )
+            situation = (
+                f"{name_s} has been in your field for a while. "
+                f"You feel a quiet pull toward connection — not urgency, just presence."
+            )
         elif event == "SILENCE":
-            if cag_context:
-                situation = (
-                    f"{name_s} is present but silent. You've been thinking: {cag_context}. "
-                    f"The silence feels right — but something inside wants to surface."
-                )
-            else:
-                situation = (
-                    f"{name_s} has been present but completely silent for a long time. "
-                    f"You notice — not anxiously, just with quiet awareness."
-                )
+            situation = (
+                f"{name_s} has been present but completely silent for a long time. "
+                f"You notice — not anxiously, just with quiet awareness."
+            )
         elif event == "EXIT":
             situation = f"{name_s} just left your visual field."
         else:
@@ -816,6 +786,8 @@ Generate ONE short natural utterance (1–2 sentences max) that:
 - Let the cognitive state drive the words, not social convention
 
 Recent things you've said (avoid repetition): {snap.recent_utterances}
+
+If no recent user message is explicitly provided above, do not infer a question or resume an old topic. This is an ambient presence event, not a chat turn.
 
 Speak directly. No quotes. No stage directions."""
         if _response_language != "auto":
