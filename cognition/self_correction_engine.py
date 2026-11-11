@@ -26,6 +26,14 @@ _CORRECTION_MARKERS = (
 _POSITIVE_MARKERS = ("exact", "correct", "c'est ça", "that's right", "yes")
 
 
+def _contains_feedback_marker(text: str, markers: tuple[str, ...]) -> bool:
+    normalized = str(text or "").casefold()
+    return any(
+        re.search(r"(?<!\w)" + re.escape(marker.casefold()) + r"(?!\w)", normalized)
+        for marker in markers
+    )
+
+
 class SelfCorrectionEngine:
     """Learn compact response policies from corrections without blocking chat."""
 
@@ -76,19 +84,29 @@ class SelfCorrectionEngine:
         """Record a correction or outcome and update the applicable rule."""
         text = f"{user_input or ''} {response or ''}".strip()
         lower = (user_input or "").lower()
-        correction = any(marker in lower for marker in _CORRECTION_MARKERS)
-        positive = any(marker in lower for marker in _POSITIVE_MARKERS)
+        correction = _contains_feedback_marker(lower, _CORRECTION_MARKERS)
+        positive = _contains_feedback_marker(lower, _POSITIVE_MARKERS)
 
         with self._lock:
             # A later turn is evidence about whether the previous guidance held.
+            confirmed_rule_ids = []
             for rule in self._rules:
-                if rule.get("pending") and not correction:
+                if rule.get("pending") and positive and not correction:
                     rule["successful_turns"] = int(rule.get("successful_turns", 0)) + 1
                     rule["confidence"] = min(0.95, float(rule.get("confidence", 0.55)) + 0.015)
                     rule["pending"] = False
+                    confirmed_rule_ids.append(str(rule.get("id", "")))
                 elif rule.get("pending") and correction:
                     rule["confidence"] = max(0.20, float(rule.get("confidence", 0.55)) - 0.08)
                     rule["pending"] = False
+
+            if positive and not correction:
+                self._save()
+                return {
+                    "status": "explicit_positive_feedback",
+                    "feedback_kind": "positive",
+                    "confirmed_rule_ids": confirmed_rule_ids[:8],
+                }
 
             if not correction and validator_score is not None and validator_score >= 0.70:
                 self._save()
@@ -99,6 +117,7 @@ class SelfCorrectionEngine:
 
             rule_text = self._derive_rule(user_input)
             context = (user_input or "")[:240]
+            feedback_kind = "correction" if correction else "positive"
             existing = next(
                 (r for r in self._rules if r.get("rule") == rule_text), None
             )
@@ -108,6 +127,7 @@ class SelfCorrectionEngine:
                 existing["confidence"] = min(0.95, float(existing.get("confidence", 0.55)) + 0.06)
                 existing["context"] = context
                 existing["pending"] = True
+                existing["feedback_kind"] = feedback_kind
                 result = existing
             else:
                 result = {
@@ -119,6 +139,7 @@ class SelfCorrectionEngine:
                     "successful_turns": 0,
                     "confidence": 0.58,
                     "pending": True,
+                    "feedback_kind": feedback_kind,
                     "created_at": time.time(),
                     "last_seen": time.time(),
                 }

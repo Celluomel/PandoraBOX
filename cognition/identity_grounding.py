@@ -508,7 +508,7 @@ class IdentityGrounding:
             return
         event: Optional[Dict[str, Any]] = None
         now = time.time()
-        if correction:
+        if correction and str(correction.get("feedback_kind", "correction")) == "correction":
             event = {
                 "id": f"self_event_{int(now * 1000)}",
                 "observed_at": now,

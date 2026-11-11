@@ -1595,19 +1595,11 @@ class CognitiveOrganism:
         _validator_score = None
         try:
             val_result = self.cognitive_validator.validate(response)
-            _validator_score = float(val_result.overall_score)
+            _surface_proxy_score = float(val_result.overall_score)
             if val_result.misaligned:
                 logger.debug(
-                    f"[CognitiveOrganism] response misaligned "
-                    f"(score={val_result.overall_score:.2f}): {val_result.notes}"
-                )
-            # Feed low scores as tension signals to AspirationalSelf
-            asp = getattr(self, 'aspirational_self', None)
-            if asp and val_result.overall_score < 0.55:
-                asp.on_interaction_evaluated(
-                    domain  = "reasoning",
-                    score   = val_result.overall_score,
-                    context = (user_input or "")[:80],
+                    f"[CognitiveOrganism] low lexical surface-proxy "
+                    f"(score={_surface_proxy_score:.2f}; not a quality verdict): {val_result.notes}"
                 )
         except Exception:
             pass

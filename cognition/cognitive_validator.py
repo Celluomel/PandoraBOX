@@ -53,12 +53,13 @@ class ValidationResult:
     misaligned:         bool    # True if overall < threshold
     notes:              List[str] = field(default_factory=list)
     timestamp:          float = field(default_factory=time.time)
+    measurement_scope:  str = "lexical_surface_proxy_not_semantic_quality"
 
 
 class CognitiveValidator:
     """
-    Validates that generated responses reflect the cognitive context.
-    No LLM calls — purely lexical / heuristic analysis.
+    Measures lexical/style overlap with cognitive state as a surface diagnostic.
+    It cannot validate semantic correctness, helpfulness, or reasoning quality.
     """
 
     MISALIGNMENT_THRESHOLD = 0.35
@@ -149,10 +150,9 @@ class CognitiveValidator:
 
         if misaligned:
             logger.debug(
-                f"[CognitiveValidator] misalignment detected: "
+                f"[CognitiveValidator] low surface-proxy score (not semantic validation): "
                 f"overall={overall:.2f} notes={notes}"
             )
-            self._emit_misalignment_event(result)
 
         return result
 
@@ -172,6 +172,7 @@ class CognitiveValidator:
             "total_validated":   self._total_validated,
             "misalignment_rate": self.misalignment_rate(),
             "recent_avg_score":  round(avg, 3),
+            "measurement_scope": "lexical_surface_proxy_not_semantic_quality",
         }
 
     def _check_drive_coherence(self, response_lower: str, notes: List[str]) -> float:
@@ -347,13 +348,15 @@ class CognitiveArchitectureMonitor:
             pass
         is_active = (sleep_phase == "active")
 
-        # 1. Validation score (is cognition penetrating language?)
+        # This lexical proxy is diagnostic only; it is not semantic evidence
+        # and must not change the architecture's overall health score.
         val_summary = self._validator.summary()
         val_score = 1.0 - val_summary.get("misalignment_rate", 0.0)
-        scores["language_penetration"] = val_score
+        scores["surface_alignment_heuristic"] = val_score
         if val_score < 0.5:
             warnings.append(
-                f"High misalignment rate: {val_summary.get('misalignment_rate', 0):.0%}"
+                f"Low surface lexical alignment signal: {val_summary.get('misalignment_rate', 0):.0%} "
+                "(not a semantic-quality measurement)"
             )
 
         # 2. Thought stream productivity
@@ -393,7 +396,11 @@ class CognitiveArchitectureMonitor:
             warnings.append("InnerMonologue not running or failing frequently")
 
         # Overall weighted health
-        overall = sum(scores.values()) / max(1, len(scores))
+        health_components = [
+            value for name, value in scores.items()
+            if name != "surface_alignment_heuristic"
+        ]
+        overall = sum(health_components) / max(1, len(health_components))
         overall = round(overall, 3)
 
         return ArchitectureHealthReport(

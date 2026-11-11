@@ -47,7 +47,9 @@ class CognitiveRestructuringEngine:
             self._save()
 
     def observe_turn(self, correction: Optional[Dict[str, Any]], score: Optional[float]) -> None:
-        """Give the active trial real evidence from a completed interaction."""
+        """Advance a trial only on explicit feedback or an independent score."""
+        if correction is None and score is None:
+            return
         with self._lock:
             plan = self._state.get("active_plan")
             if not plan or not plan.get("trial"):
@@ -56,7 +58,12 @@ class CognitiveRestructuringEngine:
             trial["samples"] = int(trial.get("samples", 0)) + 1
             if score is not None:
                 trial.setdefault("scores", []).append(round(float(score), 3))
-            successful = correction is None and (score is None or score >= 0.65)
+            feedback_kind = str((correction or {}).get("feedback_kind", "correction"))
+            successful = (
+                feedback_kind == "positive"
+                if correction is not None
+                else score is not None and score >= 0.65
+            )
             trial["successes"] = int(trial.get("successes", 0)) + int(successful)
             if trial["samples"] < 3:
                 self._save()
