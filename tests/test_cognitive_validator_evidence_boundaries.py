@@ -51,16 +51,29 @@ def test_surface_heuristic_does_not_change_architecture_health_score():
     monitor = CognitiveArchitectureMonitor(_Organism(), _Validator())
     monitor._check_thought_stream = lambda: 0.8
     monitor._check_workspace = lambda: 0.8
-    monitor._check_predictive_mind = lambda: 0.8
+    monitor._o.predictive_mind = type("_PM", (), {
+        "summary": staticmethod(lambda: {"total_predictions": 0, "accuracy": 1.0})
+    })()
     monitor._check_event_bus = lambda: 0.8
     monitor._check_inner_monologue = lambda: 0.8
 
     report = monitor._build_report()
 
     assert report.component_scores["surface_alignment_heuristic"] == 0.0
+    assert report.component_scores["intent_classification_proxy"] == 0.0
     assert report.overall_health == 0.8
     assert report.measurement_scope == "activity_and_availability_proxies_not_output_quality"
     assert any("not a semantic-quality measurement" in warning for warning in report.warnings)
+
+
+def test_predictive_mind_empty_history_is_not_reported_as_perfect_accuracy():
+    organism = _Organism()
+    organism.predictive_mind = type("_PM", (), {
+        "summary": staticmethod(lambda: {"total_predictions": 0, "accuracy": 1.0}),
+    })()
+    monitor = CognitiveArchitectureMonitor(organism, CognitiveValidator(organism))
+
+    assert monitor._check_predictive_mind() == 0.0
 
 
 def test_low_activity_monitor_result_does_not_broadcast_cognitive_claim():
@@ -84,6 +97,21 @@ def test_low_activity_monitor_result_does_not_broadcast_cognitive_claim():
 
     assert report.critical is True
     assert organism.workspace.broadcasts == []
+
+
+def test_historical_event_bus_volume_does_not_count_as_current_activity():
+    class _EventBus:
+        def recent(self, _limit):
+            return []
+
+        def summary(self):
+            return {"total_emitted": 10_000}
+
+    organism = _Organism()
+    organism.event_bus = _EventBus()
+    monitor = CognitiveArchitectureMonitor(organism, CognitiveValidator(organism))
+
+    assert monitor._check_event_bus() == 0.0
 
 
 def test_restructuring_does_not_count_silence_as_success_or_failure(tmp_path):

@@ -376,9 +376,10 @@ class CognitiveArchitectureMonitor:
         if ws_score < 0.3 and is_active:
             warnings.append("GlobalWorkspace inactive")
 
-        # 4. Predictive mind accuracy
+        # Intent prediction is a heuristic classification proxy, not a measure
+        # of response correctness or reasoning quality.
         pm_score = self._check_predictive_mind()
-        scores["prediction_accuracy"] = pm_score
+        scores["intent_classification_proxy"] = pm_score
 
         # 5. EventBus activity
         bus_score = self._check_event_bus()
@@ -399,7 +400,7 @@ class CognitiveArchitectureMonitor:
         # Overall weighted health
         health_components = [
             value for name, value in scores.items()
-            if name != "surface_alignment_heuristic"
+            if name not in {"surface_alignment_heuristic", "intent_classification_proxy"}
         ]
         overall = sum(health_components) / max(1, len(health_components))
         overall = round(overall, 3)
@@ -455,10 +456,15 @@ class CognitiveArchitectureMonitor:
         try:
             pm = getattr(self._o, 'predictive_mind', None)
             if not pm:
-                return 0.5
-            return pm.accuracy()
+                return 0.0
+            summary = pm.summary() if callable(getattr(pm, "summary", None)) else {}
+            total = int(summary.get("total_predictions", getattr(pm, "_total_predictions", 0)) or 0)
+            if total <= 0:
+                return 0.0
+            accuracy = summary.get("accuracy")
+            return float(accuracy) if accuracy is not None else float(pm.accuracy())
         except Exception:
-            return 0.5
+            return 0.0
 
     def _check_event_bus(self) -> float:
         try:
@@ -470,9 +476,8 @@ class CognitiveArchitectureMonitor:
             # Count events emitted in the last 5 minutes
             recent = [e for e in bus.recent(50) if now - e.timestamp < 300]
             if not recent:
-                # Fall back to lifetime total as a weak signal
-                total = bus.summary().get('total_emitted', 0)
-                return min(0.4, total / 20)   # max 0.4 if only historical events
+                # Lifetime traffic cannot establish current communication.
+                return 0.0
             # Healthy = 3+ distinct event types in the window
             types = {e.event_type for e in recent}
             diversity_bonus = min(0.3, len(types) * 0.1)
