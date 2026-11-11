@@ -214,3 +214,18 @@ Après avoir empêché la progression d’un plan d’aspiration à partir d’u
 Les étapes terminées par ce probe sont enregistrées comme exécutées, mais ne reçoivent plus des valeurs numériques fixes de coût/gain. La déviation n’est calculée que si coût **et** effet sont effectivement mesurés; sinon le journal mentionne `effect_not_measured=true`. Le probe interne peut donc compléter son opération, sans prétendre avoir mesuré un gain de confiance utilisateur.
 
 Résultat du lot ciblé : **60 passed**, 3 sous-tests passés, 8 avertissements. Il inclut la migration d’un ancien plan, le maintien d’une vraie étape `user_question` sans réponse, l’exécution du `social_probe` et l’absence de déviation numérique fabriquée. `py_compile` et `git diff --check` réussis. Le process live reste volontairement sur son code antérieur, sans redémarrage.
+
+## Lecture de télémétrie sans mutation et preuve du premier tick paresseux
+
+Deux défauts supplémentaires ont été isolés pendant la poursuite de l’audit :
+
+- `LongHorizonPlanner.status()` et `factual_self_report_snapshot()` appelaient la synchronisation qui ferme les plans dont le but source est terminé. Une requête de statut ou d’auto-description pouvait donc muter et persister le plan; la lecture n’était pas pure. La fermeture relève du cycle de synchronisation du planner. Les fonctions de lecture ne font désormais que rapporter l’état mémorisé. Le test vérifie que le plan reste inchangé durant la lecture, et que le cycle explicite de synchronisation le ferme.
+- Les modules cognitifs créés paresseusement étaient sondés à la fin du cycle lent. Si le constructeur et le premier `tick()` étaient dans le même cycle, cet appel échappait au registre. `InternalThoughtLoop.__setattr__` attache désormais le probe au module au moment de son affectation, avant son premier appel; le rafraîchissement ciblé évite de rescanner les 43 modules à chaque affectation. Le test reproduit une affectation tardive puis vérifie la capture du premier tick et de sa sortie.
+
+Vérification locale : `tests/test_intention_planning.py` + `tests/test_module_tick_log.py` **45 passed**, 7 avertissements Pydantic préexistants; `py_compile` et `git diff --check` réussis. Les changements n’ont pas encore été chargés dans le processus live. La capture du tick établit l’appel et la forme de sortie, pas sa qualité sémantique.
+
+## Prochaine tranche de l’audit
+
+Poursuivre le lien causal, au-delà du compteur global : suivre un même identifiant d’exécution depuis le slow-cycle et le module qui agit, vers la mutation du planner/registre d’effets, puis vers la lecture qui la confirme. La provenance doit rester bornée et explicite; une sortie de module sans identifiant de tour/cycle ne doit pas être attribuée à un échange utilisateur. Auditer ensuite les scénarios mémoire/contexte, mise à jour des objectifs, et évaluation/expérimentation avec les mêmes critères entrée → sorties requises → mutation → récupération ultérieure. Lumina reste en marche; validation live des correctifs cumulés réservée au redémarrage final.
+
+**Git :** le dernier commit local avant ces changements est `42e1f9c`; `origin/main` demeure sur `17ae81c`. Les présentes corrections sont encore locales et seront commitées avec les seuls fichiers d’audit ciblés.

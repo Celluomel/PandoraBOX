@@ -154,6 +154,18 @@ class InternalThoughtLoop:
     loop.shutdown()
     """
 
+    def __setattr__(self, name: str, value: Any) -> None:
+        """Attach a tick probe as soon as a lazily-created module is installed.
+
+        Refreshing only at the end of a slow cycle misses a module's first
+        invocation when construction and ``tick()`` happen in the same cycle.
+        The assignment is the earliest common point that preserves the
+        existing lazy-init flow while making that first call observable.
+        """
+        object.__setattr__(self, name, value)
+        if name in _TICK_PROBES and getattr(self, "_module_tick_log", None) is not None:
+            self._refresh_module_tick_probes(name)
+
     def __init__(self, organism: "CognitiveOrganism"):
         self._organism = organism
         self._running = False
@@ -350,9 +362,11 @@ class InternalThoughtLoop:
         self._autonomous_curiosity_resolver: Optional["AutonomousCuriosityResolver"] = None
         self._refresh_module_tick_probes()
 
-    def _refresh_module_tick_probes(self) -> None:
+    def _refresh_module_tick_probes(self, only_attr: str | None = None) -> None:
         """Attach bounded probes to known module entrypoints, without logging each tick."""
         for attr_name, (module_name, methods) in _TICK_PROBES.items():
+            if only_attr is not None and attr_name != only_attr:
+                continue
             module = getattr(self, attr_name, None)
             self._module_tick_log.register(
                 module_name,

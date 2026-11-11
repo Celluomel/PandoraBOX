@@ -611,7 +611,6 @@ class LongHorizonPlanner:
         return best_action
 
     def status(self) -> Dict:
-        self._synchronize_goal_plans()
         active = [p for p in self._plans.values() if p.status == "active"]
         # The planner retains completed plans as history. Health/status callers
         # poll frequently and the dashboard renders only a few rows, so return
@@ -699,7 +698,6 @@ class LongHorizonPlanner:
 
     def factual_self_report_snapshot(self) -> Dict[str, Any]:
         """Return inspectable state facts without prompt instructions or hidden reasoning."""
-        self._synchronize_goal_plans()
         active_goals: List[Any] = []
         try:
             goal_engine = self._goal_engine()

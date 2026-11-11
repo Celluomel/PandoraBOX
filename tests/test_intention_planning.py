@@ -100,6 +100,34 @@ class IntentionPlanningTests(unittest.TestCase):
         self.assertEqual(status["plans"][0]["status"], "active")
         self.assertEqual(status["plans"][1]["status"], "completed")
 
+    def test_read_only_status_and_self_report_do_not_close_stale_goal_plans(self):
+        with tempfile.TemporaryDirectory() as folder:
+            planner, _, _ = self._planner(folder)
+            goal = NS(id="stale-goal", topic="persisted goal", status="completed")
+            planner._ai = NS(goal_engine=NS(
+                get_goal_by_id=lambda goal_id: goal if goal_id == goal.id else None,
+            ))
+            plan = Plan(
+                aspiration_domain="goal:stale-goal",
+                steps=[PlanStep(
+                    sequence=0, action_type="analytical", operation="memory_recall",
+                    expected_cost=0.03, expected_gain=0.02,
+                )],
+                resource_reserve=0.22,
+                revision_trigger=0.25,
+                horizon=1,
+                source="goal",
+                source_id=goal.id,
+                status="active",
+            )
+            planner._plans["goal:stale-goal"] = plan
+
+            status = planner.status()
+            planner.factual_self_report_snapshot()
+
+            self.assertEqual(status["plans"][0]["status"], "active")
+            self.assertEqual(plan.status, "active")
+
     def test_aspiration_plan_uses_public_context_prediction(self):
         with tempfile.TemporaryDirectory() as folder:
             planner, world_model, aspiration = self._planner(folder)
@@ -660,6 +688,10 @@ class IntentionPlanningTests(unittest.TestCase):
                 )
             )
 
+            # Goal-plan lifecycle changes belong to the planner's mutating
+            # synchronization pass, not a telemetry read. Exercise that pass
+            # explicitly before inspecting the resulting snapshot.
+            planner._synchronize_goal_plans()
             snapshot = planner.factual_self_report_snapshot()
 
             self.assertEqual(plan.status, "completed")

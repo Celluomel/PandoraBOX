@@ -167,6 +167,25 @@ class ModuleTickLogTests(unittest.TestCase):
         self.assertEqual(analysis["states"]["initialized_unobserved"], 1)
         self.assertEqual(analysis["states"]["unavailable"], 42)
 
+    def test_probe_attaches_before_first_call_of_lazily_assigned_module(self):
+        loop = InternalThoughtLoop.__new__(InternalThoughtLoop)
+        loop._module_tick_log = ModuleTickLog()
+        loop._module_tick_wrapped = set()
+        loop._long_horizon_planner = None
+        loop._refresh_module_tick_probes()
+
+        calls = []
+        loop._long_horizon_planner = SimpleNamespace(
+            tick=lambda cycle: calls.append(cycle) or {"cycle": cycle},
+        )
+        result = loop._long_horizon_planner.tick(21)
+
+        observed = loop.module_tick_snapshot()["long_horizon_planner"]
+        self.assertEqual(result, {"cycle": 21})
+        self.assertEqual(calls, [21])
+        self.assertEqual(observed["tick_count"], 1)
+        self.assertEqual(observed["last_output"]["quality"], "present")
+
 
 if __name__ == "__main__":
     unittest.main()
