@@ -1,7 +1,7 @@
 # Audit du harnais cognitif — état et prochaines étapes
 
 **Date :** 11 novembre 2026
-**Statut :** audit en cours — conclusion globale non établie. Dernier commit commun local/GitHub avant le lot profil : `b40c9d6`. Les lots outreach et propriété de file sont poussés; la vérification de persistance du profil comportemental est locale et testée, en attente de commit/push. Aucun redémarrage de Lumina n’a été effectué; les changements récents ne sont pas encore chargés dans le processus actif.
+**Statut :** audit en cours — conclusion globale non établie. Local `main` et GitHub `origin/main` sont alignés sur `c649348`. Outreach, propriété de file et persistance du profil comportemental sont poussés. Aucun redémarrage de Lumina n’a été effectué; les changements récents ne sont pas encore chargés dans le processus actif.
 
 ## État exécutif courant — poursuite module par module
 
@@ -94,7 +94,7 @@ Le chemin `CognitiveOrganism._run_full_post_turn_lifecycle() → update_behavior
 
 **Vérification locale :** `tests/test_world_model_profile_persistence.py` couvre l’écriture relue et le chemin d’échec; suite combinée `test_world_model_profile_persistence`, `test_cognitive_log_regressions`, `test_proactive_outreach_delivery`, `test_intention_planning`, `test_self_description_prompt`, `test_goal_action_thought_publication` — **90 passed, 4 sous-tests passés**; compilation et `git diff --check` réussis.
 
-**État Git/live :** correctif local non commité à cette rédaction; dernière base poussée `b40c9d6`. Après commit/push, validation live à faire au redémarrage groupé : interaction humaine → reçu `updated/persisted=true` puis profil rechargé; simulation d’échec du chemin d’écriture uniquement en test, jamais sur les données Lumina réelles. Le profil comportemental décrit des tendances d’interaction; il ne doit pas être confondu avec les préférences/identité explicites du `UserManager`.
+**État Git/live :** correctif commité et poussé sous `c649348`. Validation live à faire au redémarrage groupé : interaction humaine → reçu `updated/persisted=true` puis profil rechargé; simulation d’échec du chemin d’écriture uniquement en test, jamais sur les données Lumina réelles. Le profil comportemental décrit des tendances d’interaction; il ne doit pas être confondu avec les préférences/identité explicites du `UserManager`.
 
 ## Synthèse globale faisant autorité — état cumulé, révisé le 11 novembre
 
