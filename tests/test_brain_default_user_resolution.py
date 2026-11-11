@@ -52,6 +52,24 @@ def test_profile_learning_is_persisted_and_available_to_the_next_prompt(tmp_path
     assert "Preferences: concise technical answers." in next_prompt_context
 
 
+def test_profile_learning_does_not_claim_update_when_persistence_fails(tmp_path):
+    manager = UserManager(path=Path(tmp_path) / "users.json")
+    profile = manager.create("Fred")
+    before_last_seen = profile.last_seen
+    manager._save = lambda: None
+
+    receipt = manager.learn_from_message(
+        profile.id,
+        "I prefer concise technical answers.",
+        return_receipt=True,
+    )
+
+    assert receipt["status"] == "persistence_failed"
+    assert receipt["changed"] is False
+    assert profile.preferences == []
+    assert profile.last_seen == before_last_seen
+
+
 def test_brain_chat_route_uses_the_resolved_identity_for_both_stream_modes():
     source = Path(__file__).parents[1] / "brain.py"
     tree = ast.parse(source.read_text(encoding="utf-8"))

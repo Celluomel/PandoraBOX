@@ -503,6 +503,11 @@ class UserManager:
         changed = False
         changed_categories = set()
         with self._lock:
+            previous_values = {
+                kind: list(getattr(profile, kind + "s"))
+                for kind, _value in learned[:3]
+            }
+            previous_last_seen = profile.last_seen
             for kind, value in learned[:3]:
                 target = getattr(profile, kind + "s")
                 if value.casefold() not in {item.casefold() for item in target}:
@@ -514,6 +519,25 @@ class UserManager:
                 self._prompt_cache.pop(profile.id, None)
                 profile.touch()
                 self._save()
+                try:
+                    persisted = json.loads(self._path.read_text(encoding="utf-8"))
+                    persisted_profile = persisted.get("users", {}).get(profile.id)
+                    persistence_verified = persisted_profile == profile.to_dict()
+                except Exception:
+                    persistence_verified = False
+                if not persistence_verified:
+                    for kind, values in previous_values.items():
+                        setattr(profile, kind + "s", values)
+                    profile.last_seen = previous_last_seen
+                    self._prompt_cache.pop(profile.id, None)
+                    receipt = {
+                        "status": "persistence_failed",
+                        "changed": False,
+                        "categories_updated": [],
+                        "extracted_count": len(learned),
+                        "quarantined_count": migrated,
+                    }
+                    return receipt if return_receipt else False
         if changed:
             logger.info("Learned explicit profile details for %s", profile.id)
         receipt = {

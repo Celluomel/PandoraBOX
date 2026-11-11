@@ -2990,7 +2990,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             None,
             self._run_full_post_turn_lifecycle,
             effective_input, user_id, raw_response,
-            emo_dict, cond_dict, _organism, not bool(peer_name),
+            emo_dict, cond_dict, _organism, not bool(peer_name), _audit_turn_id,
         )))
 
         # Learn explicit profile statements after the visible response. This
@@ -3006,9 +3006,13 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             except Exception as _profile_error:
                 self._record_turn_stage(
                     "human_profile_learning", "failed", str(_profile_error),
+                    turn_id=_audit_turn_id,
                 )
         else:
-            self._record_turn_stage("human_profile_learning", "skipped_by_scope")
+            self._record_turn_stage(
+                "human_profile_learning", "skipped_by_scope",
+                turn_id=_audit_turn_id,
+            )
         if post_tasks:
             results = await asyncio.gather(
                 *(task for _, task in post_tasks), return_exceptions=True
@@ -3017,9 +3021,24 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             for (stage_name, _), result in zip(post_tasks, results):
                 if isinstance(result, BaseException):
                     failures.append(result)
+                    _profile_input = stage_name == "human_profile_learning"
                     self._record_turn_stage(
                         stage_name, "failed", type(result).__name__,
-                        output=result, consumes=("output_safety",),
+                        output=result,
+                        consumes=("turn_input",) if _profile_input else ("output_safety",),
+                        turn_id=_audit_turn_id,
+                    )
+                elif stage_name == "human_profile_learning" and isinstance(result, dict):
+                    profile_status = str(result.get("status") or "unreported")
+                    profile_failed = profile_status == "persistence_failed"
+                    if profile_failed:
+                        failures.append(RuntimeError("user profile persistence was not verified"))
+                    self._record_turn_stage(
+                        stage_name,
+                        "failed" if profile_failed else profile_status,
+                        output=result,
+                        consumes=("turn_input",),
+                        turn_id=_audit_turn_id,
                     )
                 elif stage_name == "goal_means_post_response" and isinstance(result, dict):
                     analysis_status = str(result.get("status") or "failed")
@@ -3027,6 +3046,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         self._record_turn_stage(
                             stage_name, "completed", output=result,
                             consumes=("output_safety",),
+                            turn_id=_audit_turn_id,
                         )
                     elif analysis_status in {"not_applicable", "deferred", "unavailable", "invalid_output", "failed"}:
                         self._record_turn_stage(
@@ -3034,6 +3054,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                             "failed" if analysis_status == "unavailable" else analysis_status,
                             str(result.get("reason") or ""),
                             output=result, consumes=("output_safety",),
+                            turn_id=_audit_turn_id,
                         )
                         if analysis_status in {"unavailable", "invalid_output", "failed"}:
                             failures.append(RuntimeError(
@@ -3043,6 +3064,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         self._record_turn_stage(
                             stage_name, "failed", f"unknown status: {analysis_status}",
                             output=result, consumes=("output_safety",),
+                            turn_id=_audit_turn_id,
                         )
                         failures.append(RuntimeError("unknown goal/means stage status"))
                 elif stage_name == "cognitive_post_turn" and result is False:
@@ -3050,11 +3072,13 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     self._record_turn_stage(
                         stage_name, "failed", "one or more required cognitive stages failed",
                         output=result, consumes=("output_safety",),
+                        turn_id=_audit_turn_id,
                     )
                 else:
                     self._record_turn_stage(
                         stage_name, "completed", output=result,
                         consumes=("output_safety",), side_effect_only=result is None,
+                        turn_id=_audit_turn_id,
                     )
             if failures:
                 logger.warning(
@@ -3264,6 +3288,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         _profile_status, _profile_source, _user_identity_line,
                     ),
                 },
+                turn_id=audit_turn_id,
             )
 
             _persona_name = _gpn()
@@ -3502,6 +3527,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     query_source=_recall_query_source,
                     attention_mode=_recall_attention_mode,
                 ),
+                turn_id=audit_turn_id,
             )
 
             mods        = s.emotional_state.get_response_modifiers()
@@ -3680,6 +3706,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                 "memory_prompt_context", "injected" if top_memories else "empty",
                 output=memory_prompt_injection_evidence(top_memories),
                 consumes=("memory_retrieval",),
+                turn_id=audit_turn_id,
             )
 
             cond_section = ("━━ EXPERIENCE-BASED CAUTION ━━\n" + cond_dict["prompt_note"]) if cond_dict.get("prompt_note") else ""
@@ -4562,6 +4589,7 @@ Memory honesty — two distinct cases:
         cond_dict: dict,
         organism=None,
         human_interaction: bool = True,
+        audit_turn_id: str = "",
     ) -> bool:
         """
         Mirrors everything get_response() does AFTER _generate_response().
@@ -4610,9 +4638,11 @@ Memory honesty — two distinct cases:
                         "world_model_profile_update",
                         str(_profile_receipt.get("status") or "unreported"),
                         output=_profile_receipt or {"status": "unreported"},
+                        turn_id=audit_turn_id,
                     )
                     self._record_turn_stage(
                         "peer_cognitive_evaluation", "completed", output=_post_receipt,
+                        turn_id=audit_turn_id,
                     )
                 except Exception as _peer_post_error:
                     self._record_turn_stage(
@@ -4752,6 +4782,7 @@ Memory honesty — two distinct cases:
                         "world_model_profile_update",
                         str(_profile_receipt.get("status") or "unreported"),
                         output=_profile_receipt or {"status": "unreported"},
+                        turn_id=audit_turn_id,
                     )
                     # Update additional drive satisfaction based on response quality
                     word_count = len(response.split())

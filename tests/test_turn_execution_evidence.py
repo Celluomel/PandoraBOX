@@ -80,6 +80,27 @@ def test_cognitive_context_is_linked_to_prompt_assembly_on_its_own_turn():
     assert bridge._last_turn_trace["stages"] == {}
 
 
+def test_memory_and_profile_receipts_can_be_attached_to_their_originating_turn():
+    bridge = _bridge()
+    previous = {"turn_id": "turn-memory-profile", "stages": {}}
+    bridge._turn_trace_history.append(previous)
+    bridge._last_turn_trace = {"turn_id": "turn-newer", "stages": {}}
+
+    for stage_name in ("user_profile_context", "memory_retrieval", "memory_prompt_context"):
+        bridge._record_turn_stage(
+            stage_name, "completed", output={"source": stage_name},
+            turn_id="turn-memory-profile",
+        )
+
+    assert set(previous["stages"]) == {
+        "user_profile_context", "memory_retrieval", "memory_prompt_context",
+    }
+    assert bridge._last_turn_trace["stages"] == {}
+    assert all(
+        stage["output_fingerprint"] for stage in previous["stages"].values()
+    )
+
+
 def test_prompt_assembly_declares_cognitive_context_as_an_input():
     source = Path(__file__).resolve().parents[1] / "cognition" / "persona_bridge.py"
     tree = ast.parse(source.read_text(encoding="utf-8"))
@@ -125,6 +146,88 @@ def test_prompt_assembly_declares_cognitive_context_as_an_input():
             if keyword.arg == "turn_id"
         )
         assert isinstance(turn_id, ast.Name) and turn_id.id == "_audit_turn_id"
+
+
+def test_memory_and_profile_context_stages_are_bound_to_prompt_turn():
+    source = Path(__file__).resolve().parents[1] / "cognition" / "persona_bridge.py"
+    tree = ast.parse(source.read_text(encoding="utf-8"))
+    bridge_class = next(
+        node for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "PersonaBridge"
+    )
+    build_prompt = next(
+        node for node in bridge_class.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "_build_prompt_and_cache"
+    )
+    expected = {"user_profile_context", "memory_retrieval", "memory_prompt_context"}
+    observed = set()
+    for node in ast.walk(build_prompt):
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "_record_turn_stage"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and node.args[0].value in expected
+        ):
+            continue
+        observed.add(node.args[0].value)
+        turn_id = next(
+            keyword.value for keyword in node.keywords if keyword.arg == "turn_id"
+        )
+        assert isinstance(turn_id, ast.Name) and turn_id.id == "audit_turn_id"
+    assert observed == expected
+
+
+def test_deferred_profile_and_post_turn_stages_keep_originating_turn_id():
+    source = Path(__file__).resolve().parents[1] / "cognition" / "persona_bridge.py"
+    tree = ast.parse(source.read_text(encoding="utf-8"))
+    bridge_class = next(
+        node for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "PersonaBridge"
+    )
+    stream = next(
+        node for node in bridge_class.body
+        if isinstance(node, ast.AsyncFunctionDef)
+        and node.name == "_stream_with_full_lifecycle"
+    )
+    profile_calls = [
+        node for node in ast.walk(stream)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "_record_turn_stage"
+        and node.args
+        and isinstance(node.args[0], ast.Constant)
+        and node.args[0].value == "human_profile_learning"
+    ]
+    assert profile_calls
+    for call in profile_calls:
+        turn_id = next(
+            keyword.value for keyword in call.keywords if keyword.arg == "turn_id"
+        )
+        assert isinstance(turn_id, ast.Name) and turn_id.id == "_audit_turn_id"
+
+    lifecycle_submissions = [
+        node for node in ast.walk(stream)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "run_in_executor"
+        and any(
+            isinstance(argument, ast.Attribute)
+            and argument.attr == "_run_full_post_turn_lifecycle"
+            for argument in node.args
+        )
+    ]
+    assert len(lifecycle_submissions) == 1
+    lifecycle_index = next(
+        index for index, argument in enumerate(lifecycle_submissions[0].args)
+        if isinstance(argument, ast.Attribute)
+        and argument.attr == "_run_full_post_turn_lifecycle"
+    )
+    lifecycle_arguments = lifecycle_submissions[0].args[lifecycle_index + 1:]
+    assert isinstance(lifecycle_arguments[-1], ast.Name)
+    assert lifecycle_arguments[-1].id == "_audit_turn_id"
 
 
 def test_architecture_claim_check_is_reported_as_scoped_not_general_validation():
