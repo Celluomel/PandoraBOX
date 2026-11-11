@@ -289,31 +289,46 @@ class IntentionPlanningTests(unittest.TestCase):
             self.assertEqual(plan.steps_completed, 0)
             self.assertEqual(plan.last_outcome, {})
 
-    def test_internal_social_recovery_is_named_as_probe_not_user_question(self):
+    def test_unimplemented_social_probe_is_not_reported_as_executed_or_successful(self):
         with tempfile.TemporaryDirectory() as folder:
             planner, world_model, aspiration = self._planner(folder)
-            world_model.read_state = lambda: [0.24, 0.8, 0.8, 0.7, 0.5, 0.6, 0.2, 0.3]
-            plan = planner._build_plan(aspiration)
-
-            self.assertIsNotNone(plan)
-            recovery_steps = [step for step in plan.steps if step.recovery_step]
-            self.assertTrue(recovery_steps)
-            self.assertTrue(all(step.operation == "social_probe" for step in recovery_steps))
-
-            planner._plans["epistemic"] = Plan(
+            legacy_step = PlanStep(
+                sequence=0, action_type="social", operation="social_probe",
+                expected_cost=0.02, expected_gain=0.005, recovery_step=True,
+            )
+            plan = Plan(
                 aspiration_domain="epistemic",
-                steps=[recovery_steps[0]],
+                steps=[legacy_step],
                 resource_reserve=0.2,
                 revision_trigger=0.25,
                 horizon=1,
                 source="aspiration",
                 status="active",
             )
+            planner._plans["epistemic"] = plan
             planner._execute_autonomous_social_step()
 
-            self.assertEqual(planner._plans["epistemic"].steps_completed, 1)
-            self.assertEqual(planner._plans["epistemic"].last_outcome["success"], True)
-            self.assertEqual(planner._plans["epistemic"].outcome_deviations, [])
+            self.assertEqual(plan.steps_completed, 0)
+            self.assertEqual(plan.steps[0].status, "unavailable")
+            self.assertEqual(plan.last_outcome["success"], False)
+            self.assertEqual(plan.last_outcome["status"], "unavailable")
+            self.assertEqual(plan.last_outcome["effect_measured"], False)
+            self.assertEqual(plan.outcome_deviations, [])
+            self.assertIn("no cognitive operator executed", plan.current_decision)
+            self.assertEqual(planner._organism.workspace.events, [])
+            snapshot = planner.factual_self_report_snapshot()["dominant_plan"]
+            self.assertEqual(snapshot["next_operation_status"], "unavailable")
+            self.assertIn("No executor is registered", snapshot["next_operation_result"])
+            self.assertEqual(snapshot["last_outcome"]["status"], "unavailable")
+
+    def test_low_energy_does_not_invent_social_probe_or_energy_recovery(self):
+        with tempfile.TemporaryDirectory() as folder:
+            planner, world_model, aspiration = self._planner(folder)
+            world_model.read_state = lambda: [0.24, 0.8, 0.8, 0.7, 0.5, 0.6, 0.2, 0.3]
+
+            plan = planner._build_plan(aspiration)
+
+            self.assertIsNone(plan)
 
     def test_legacy_aspiration_recovery_step_is_migrated_without_fake_metrics(self):
         with tempfile.TemporaryDirectory() as folder:

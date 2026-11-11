@@ -165,6 +165,8 @@ def sanitize_displayed_cognitive_trace(value: Any) -> Dict[str, Any] | None:
         "steps_total": number(plan.get("steps_total"), integer=True),
         "completed_operations": completed,
         "next_operation": text(plan.get("next_operation"), 80),
+        "next_operation_status": text(plan.get("next_operation_status"), 24),
+        "next_operation_result": text(plan.get("next_operation_result"), 200),
         "reasoning_confidence": number(plan.get("reasoning_confidence")),
         "uncertainties": [
             text(item, 160) for item in plan.get("uncertainties", [])[:3]
@@ -175,8 +177,10 @@ def sanitize_displayed_cognitive_trace(value: Any) -> Dict[str, Any] | None:
         "last_outcome": {
             "operation": text(outcome.get("operation"), 80),
             "success": outcome.get("success") if isinstance(outcome.get("success"), bool) else None,
+            "status": text(outcome.get("status"), 24),
             "result": text(outcome.get("result"), 200),
             "observed_at": number(outcome.get("observed_at")),
+            "effect_measured": outcome.get("effect_measured") if isinstance(outcome.get("effect_measured"), bool) else None,
         } if outcome else None,
     }
     return sanitized
@@ -225,10 +229,20 @@ def trace_grounded_architecture_answer(
         total = _safe_int(plan.get("steps_total"))
         steps_done = _safe_int(plan.get("steps_completed"))
         next_operation = str(plan.get("next_operation") or "aucune")[:80]
+        next_operation_status = str(plan.get("next_operation_status") or "inconnu")[:24]
         outcome = plan.get("last_outcome") if isinstance(plan.get("last_outcome"), dict) else {}
         outcome_operation = str(outcome.get("operation") or "opération non précisée")[:80]
         outcome_result = str(outcome.get("result") or "détail absent")[:200]
-        outcome_status = "échec" if outcome.get("success") is False else "succès" if outcome.get("success") is True else "statut absent"
+        outcome_status = str(outcome.get("status") or (
+            "échec" if outcome.get("success") is False
+            else "succès" if outcome.get("success") is True
+            else "statut absent"
+        ))[:24]
+        effect_note = (
+            " effet mesuré" if outcome.get("effect_measured") is True
+            else " effet non mesuré" if outcome.get("effect_measured") is False
+            else ""
+        )
         captured_at = snapshot.get("captured_at")
         capture_note = ""
         try:
@@ -247,18 +261,25 @@ def trace_grounded_architecture_answer(
                 pass
             return (
                 f"Faits du snapshot UI transmis : {goal_count} objectif(s) actif(s); plan « {objective} », "
-                f"progression {steps_done}/{total}, étapes terminées : {complete_text}, prochaine opération : {next_operation}. "
-                f"Dernier résultat enregistré : {outcome_operation} — {outcome_status} — {outcome_result}{time_note}.{capture_note} "
+                f"progression {steps_done}/{total}, étapes terminées : {complete_text}, "
+                f"prochaine opération : {next_operation} (état : {next_operation_status}). "
+                f"Dernier résultat enregistré : {outcome_operation} — {outcome_status}{effect_note} — {outcome_result}{time_note}.{capture_note} "
                 "Cela décrit l’état affiché du plan; « aucune » signifie qu’aucune étape n’est marquée terminée. "
                 "Aucun composant ne peut être confirmé comme exécuté pendant le tour à partir de ce panneau seul. "
                 "Le snapshot ne fournit pas d’identifiant reliant ce résultat au message analysé, ni de journal par module : "
                 "je ne peux donc pas établir que l’échec a été causé par ce tour ou vérifier indépendamment l’effet de l’opération."
             )
         complete_text = ", ".join(completed) if completed else "none"
+        effect_note = (
+            " effect measured" if outcome.get("effect_measured") is True
+            else " effect not measured" if outcome.get("effect_measured") is False
+            else ""
+        )
         return (
             f"Facts in the transmitted UI snapshot: plan '{objective}', progress {steps_done}/{total}, "
-            f"completed steps: {complete_text}, next operation: {next_operation}. "
-            f"Last recorded outcome: {outcome_operation} — {outcome_status} — {outcome_result}.{capture_note} "
+            f"completed steps: {complete_text}, next operation: {next_operation} "
+            f"(status: {next_operation_status}). "
+            f"Last recorded outcome: {outcome_operation} — {outcome_status}{effect_note} — {outcome_result}.{capture_note} "
             "This is displayed planner state; 'none' means no step is marked completed. The snapshot has no identifier "
             "linking that outcome to the message being analyzed and no per-module execution journal, so no component execution "
             "can be confirmed for this turn from this panel alone, and I cannot attribute the failure to this turn or independently verify the operation's effect."

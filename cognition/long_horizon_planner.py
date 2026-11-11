@@ -56,7 +56,6 @@ REVISION_TRIGGER = 0.25   # deviation fraction that triggers replanning
 SAVE_PATH        = "data/persona/long_horizon_plans.json"
 STATUS_PLAN_LIMIT = 20    # dashboard needs current plans, not the full archive
 
-RECOVERY_ACTIONS = {"social", "creative"}   # low-cost, allow energy recovery
 
 
 @dataclass
@@ -175,7 +174,13 @@ class LongHorizonPlanner:
         threading.Thread(target=self._run, daemon=True, name="lhp-plan").start()
 
     def _execute_autonomous_social_step(self) -> None:
-        """Complete one pending autonomous social/recovery step locally."""
+        """Report recovery probes that have no executor without inventing success.
+
+        ``social_probe`` is a planner label, not an implemented cognitive
+        operator. A workspace broadcast is telemetry and cannot count as the
+        probe's execution or as evidence that cognitive energy recovered.
+        Keep the step pending and expose the missing operator explicitly.
+        """
         asp = getattr(self._organism, "aspirational_self", None)
         if not asp:
             return
@@ -184,7 +189,8 @@ class LongHorizonPlanner:
             if plan.source != "aspiration" or plan.status != "active":
                 continue
             step = self.current_step(domain)
-            if step is None or step.operation == "user_question" or step.action_type != "social":
+            if (step is None or step.operation == "user_question"
+                    or step.action_type != "social" or step.status != "pending"):
                 continue
             aspiration = next(
                 (item for item in asp.aspirations.values()
@@ -197,23 +203,24 @@ class LongHorizonPlanner:
         _, domain = max(candidates)
         plan = self._plans[domain]
         step = self.current_step(domain)
-        self._broadcast(
-            "long_horizon_planner.social_probe",
-            f"[AutonomousSocialProbe] objective={plan.objective[:80]!r}; "
-            f"operation={step.operation if step else 'social'}; no user turn required",
-            0.55,
+        if step is None:
+            return
+        step.status = "unavailable"
+        step.result = "No executor is registered for social_probe; no effect was measured."
+        plan.current_decision = (
+            "social_probe is unavailable: no cognitive operator executed it; "
+            "the step remains incomplete and no recovery effect is claimed."
         )
-        self.record_step_outcome(domain)
-        plan = self._plans.get(domain)
-        if plan:
-            plan.last_outcome = {
-                "operation": step.operation if step else "social",
-                "success": True,
-                "result": "autonomous internal social perspective probe",
-                "observed_at": time.time(),
-            }
-            plan.decision_updated_at = time.time()
-            self._save()
+        plan.decision_updated_at = time.time()
+        plan.last_outcome = {
+            "operation": step.operation,
+            "success": False,
+            "status": "unavailable",
+            "result": step.result,
+            "observed_at": plan.decision_updated_at,
+            "effect_measured": False,
+        }
+        self._save()
 
     def _prepare_goal_plans(self, goals: List[Any]) -> None:
         """Materialize autonomous goal plans without holding the slow-loop lock."""
@@ -787,6 +794,8 @@ class LongHorizonPlanner:
                 "steps_total": len(plan.steps),
                 "completed_operations": completed,
                 "next_operation": next_step.operation if next_step else None,
+                "next_operation_status": next_step.status if next_step else None,
+                "next_operation_result": next_step.result[:200] if next_step else None,
                 "reasoning_confidence": round(plan.reasoning_confidence, 3),
                 "uncertainties": list(plan.uncertainties[:3]),
                 "initial_decision": (plan.decision_rationale or "")[:240],
@@ -873,7 +882,7 @@ class LongHorizonPlanner:
                 f"{plan['steps_completed']}/{plan['steps_total']}; "
                 f"goal criterion={plan.get('success_criteria_status', 'unknown')}; completed="
                 f"{','.join(completed) if completed else 'none'}; next pending="
-                f"{plan['next_operation'] or 'none'}; "
+                f"{plan['next_operation'] or 'none'} ({plan.get('next_operation_status') or 'unknown'}); "
                 "pending operation is not currently executing."
             )
             uncertainty = plan["uncertainties"][0] if plan["uncertainties"] else "none recorded"
@@ -924,7 +933,12 @@ class LongHorizonPlanner:
                     f"{plan.get('success_criteria_status', 'inconnu')}."
                 )
                 if plan.get("next_operation"):
-                    lines.append(f"Prochaine étape enregistrée : {plan['next_operation']}.")
+                    lines.append(
+                        f"Prochaine étape enregistrée : {plan['next_operation']} "
+                        f"(état : {plan.get('next_operation_status') or 'inconnu'})."
+                    )
+                    if plan.get("next_operation_result"):
+                        lines.append(f"Détail : {plan['next_operation_result']}")
             else:
                 lines.append("Aucun plan opérationnel actif n’est enregistré.")
             lines.append("Ce compte rendu reflète l’état enregistré du système.")
@@ -942,7 +956,12 @@ class LongHorizonPlanner:
                     f"goal criterion: {plan.get('success_criteria_status', 'unknown')}."
                 )
                 if plan.get("next_operation"):
-                    lines.append(f"Recorded next step: {plan['next_operation']}.")
+                    lines.append(
+                        f"Recorded next step: {plan['next_operation']} "
+                        f"(status: {plan.get('next_operation_status') or 'unknown'})."
+                    )
+                    if plan.get("next_operation_result"):
+                        lines.append(f"Detail: {plan['next_operation_result']}")
             else:
                 lines.append("No active operational plan is recorded.")
             lines.append("This report reflects the system’s recorded state.")
@@ -1021,29 +1040,23 @@ class LongHorizonPlanner:
                 score = (gain * causal_mult * conf) / max(cost, 0.01)
 
                 # Resource reservation: skip expensive actions if energy too low
-                if energy - cost < RESOURCE_FLOOR and at not in RECOVERY_ACTIONS:
+                if energy - cost < RESOURCE_FLOOR:
                     continue
 
                 if score > best_score:
                     best_at, best_score = at, score
                     best_cost, best_gain = cost, gain
 
-            # Insert recovery step if energy projected too low next step
-            next_step_needs = 0.06   # average cost of next non-recovery step
-            if energy - best_cost < RESOURCE_FLOOR + next_step_needs:
-                steps.append(PlanStep(
-                    sequence=seq, action_type="social",
-                    expected_cost=0.02, expected_gain=0.005,
-                    recovery_step=True, operation="social_probe",
-                ))
-                energy += 0.04   # social steps allow recovery
-            else:
-                steps.append(PlanStep(
-                    sequence=seq, action_type=best_at,
-                    expected_cost=best_cost, expected_gain=best_gain,
-                    operation=self._operation_for_style(best_at),
-                ))
-                energy = max(0.0, energy - best_cost)
+            if best_score <= 0.0:
+                # No modeled action fits the remaining resource budget. Do
+                # not invent a recovery operator or projected energy gain.
+                break
+            steps.append(PlanStep(
+                sequence=seq, action_type=best_at,
+                expected_cost=best_cost, expected_gain=best_gain,
+                operation=self._operation_for_style(best_at),
+            ))
+            energy = max(0.0, energy - best_cost)
 
         if not steps: return None
         return Plan(

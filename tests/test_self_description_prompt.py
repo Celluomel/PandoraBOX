@@ -250,9 +250,13 @@ class SelfDescriptionPromptTests(unittest.TestCase):
                     "steps_total": 15,
                     "completed_operations": [],
                     "next_operation": "memory_recall",
+                    "next_operation_status": "unavailable",
+                    "next_operation_result": "No executor is registered for memory_recall",
                     "last_outcome": {
                         "operation": "memory_recall",
                         "success": False,
+                        "status": "unavailable",
+                        "effect_measured": False,
                         "result": "No matching memory evidence",
                         "observed_at": 1794339900,
                     },
@@ -261,7 +265,8 @@ class SelfDescriptionPromptTests(unittest.TestCase):
         )
         self.assertIn("progress 0/15", answer)
         self.assertIn("completed steps: none", answer)
-        self.assertIn("failure", answer)
+        self.assertIn("unavailable", answer)
+        self.assertIn("effect not measured", answer)
         self.assertIn("no per-module execution journal", answer)
         self.assertIn("no component execution can be confirmed", answer)
         self.assertNotIn("43 modules", answer)
@@ -286,13 +291,19 @@ class SelfDescriptionPromptTests(unittest.TestCase):
                 "completed_operations": [],
                 "last_outcome": {
                     "operation": "recall", "success": False,
+                    "status": "unavailable", "effect_measured": False,
                     "result": "failed", "unbounded": "discard",
                 },
+                "next_operation_status": "unavailable",
+                "next_operation_result": "No executor",
             },
         })
         self.assertNotIn("unexpected", snapshot)
         self.assertNotIn("private_blob", snapshot["active_goals"][0])
         self.assertNotIn("unbounded", snapshot["dominant_plan"]["last_outcome"])
+        self.assertEqual(snapshot["dominant_plan"]["last_outcome"]["status"], "unavailable")
+        self.assertFalse(snapshot["dominant_plan"]["last_outcome"]["effect_measured"])
+        self.assertEqual(snapshot["dominant_plan"]["next_operation_status"], "unavailable")
         self.assertEqual(snapshot["dominant_plan"]["steps_completed"], 0)
 
     def test_stream_lifecycle_classifies_architecture_query_in_closure_scope(self):
