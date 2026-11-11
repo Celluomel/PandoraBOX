@@ -280,9 +280,28 @@ class GoalActionExecutor:
             logger.info(f"[GoalActionExecutor] All {len(active)} eligible goals on {GOAL_ACTION_COOLDOWN}s cooldown — next action in ~{GOAL_ACTION_COOLDOWN//60}min")
             return None
 
-        # Prefer the persistent intention plan. Rotation remains a safe
-        # fallback when the long-horizon planner is unavailable.
-        action_type = self._planned_action(goal) or self._choose_action_rotating(goal)
+        # Prefer the persistent intention plan. Rotation is a fallback only
+        # when no active plan step exists; it must not bypass an unavailable
+        # or unsupported operation and then pretend to follow that plan.
+        planned_action = self._planned_action(goal)
+        if planned_action:
+            action_type = planned_action
+        elif self._plan_has_pending_step(goal):
+            logger.warning(
+                "[GoalActionExecutor] Planned step for goal %s is unavailable; "
+                "suppressing unrelated rotation fallback",
+                getattr(goal, "id", "unknown"),
+            )
+            return {
+                "goal_id": goal.id,
+                "goal_topic": goal.topic,
+                "action": None,
+                "success": False,
+                "result": "planned operation unavailable; fallback suppressed",
+                "skipped": True,
+            }
+        else:
+            action_type = self._choose_action_rotating(goal)
         execution_id = "act_" + uuid.uuid4().hex
 
         async_key = None
@@ -2071,6 +2090,23 @@ class GoalActionExecutor:
         except Exception as e:
             logger.debug("[GoalActionExecutor] planned action unavailable: %s", e)
             return None
+
+    def _plan_has_pending_step(self, goal) -> bool:
+        """Whether a live intention plan exists but offers no executable step."""
+        try:
+            loop = getattr(self._o, "_loop", None)
+            planner = getattr(loop, "_long_horizon_planner", None) if loop else None
+            if planner is None:
+                return False
+            plan = planner.ensure_goal_plan(goal)
+            return bool(
+                plan is not None
+                and plan.status == "active"
+                and plan.steps_completed < len(plan.steps)
+            )
+        except Exception as exc:
+            logger.debug("[GoalActionExecutor] pending plan check unavailable: %s", exc)
+            return False
 
     def _record_plan_outcome(
         self, goal, action_type: str, success: bool, result: str = "",

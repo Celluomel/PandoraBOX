@@ -403,6 +403,26 @@ class IntentionPlanningTests(unittest.TestCase):
         self.assertEqual(calls[0][1][0:3], ("goal-linked", "user_question", True))
         self.assertEqual(calls[0][2]["execution_id"], "")
 
+    def test_unavailable_planned_action_suppresses_unrelated_rotation_fallback(self):
+        goal = NS(id="g-blocked", topic="blocked plan")
+        executor = GoalActionExecutor.__new__(GoalActionExecutor)
+        executor._get_goal_engine = lambda: NS(
+            get_active_goals=lambda min_activation=0.1: [goal],
+        )
+        executor._select_eligible_goal = lambda active: goal
+        executor._last_action_time = {}
+        executor._planned_action = lambda selected: None
+        executor._plan_has_pending_step = lambda selected: True
+        executor._choose_action_rotating = lambda selected: self.fail(
+            "rotation must not bypass an unavailable planned step"
+        )
+
+        result = executor.run_tick()
+
+        self.assertTrue(result["skipped"])
+        self.assertIsNone(result["action"])
+        self.assertIn("fallback suppressed", result["result"])
+
     def test_executor_prevents_duplicate_async_action_for_same_goal(self):
         executor = GoalActionExecutor.__new__(GoalActionExecutor)
         executor._async_actions_in_flight = set()
