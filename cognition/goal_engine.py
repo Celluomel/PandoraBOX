@@ -231,6 +231,7 @@ class GoalEngine:
         # Load persisted goals
         self._load_goals()
         self._load_external_tasks()
+        self._retire_interaction_echo_goals()
         self._retire_external_task_goals()
         self._retire_invalid_active_goals()
         
@@ -339,6 +340,37 @@ class GoalEngine:
         if retired:
             self._save_goals()
             logger.info("Goal quality migration retired %d persisted goal(s)", retired)
+        return retired
+
+    def _retire_interaction_echo_goals(self) -> int:
+        """Retire legacy social goals copied from generic emotional traces.
+
+        Older GoalQualityFilter versions promoted descriptions such as
+        ``Still thinking about: [curiosity] during interaction: <user text>``
+        into persistent social goals. Emotional residue remains valid memory,
+        but a raw interaction was never an explicit durable objective.
+        """
+        legacy_topic = re.compile(
+            r"^still thinking about:\s*\[[^\]]+\]\s*during interaction:",
+            re.IGNORECASE,
+        )
+        retired = 0
+        now = time.time()
+        for goal in self._goals.values():
+            if (goal.status != "active"
+                    or goal.origin != "goal_quality_filter"
+                    or goal.tension_source != "social_drive"
+                    or not legacy_topic.match(goal.topic.strip())):
+                continue
+            goal.status = "abandoned"
+            self._recently_abandoned[goal.topic.casefold()] = now
+            retired += 1
+        if retired:
+            self._save_goals()
+            logger.info(
+                "Retired %d legacy social goal(s) copied from ordinary interactions",
+                retired,
+            )
         return retired
 
     def _retire_external_task_goals(self) -> int:
@@ -491,6 +523,7 @@ class GoalEngine:
             before = len(self._goals)
             self._goals.clear()
             self._load_goals()
+            self._retire_interaction_echo_goals()
             self._retire_external_task_goals()
             self._retire_invalid_active_goals()
             after = len(self._goals)
