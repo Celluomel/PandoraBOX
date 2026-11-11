@@ -506,6 +506,20 @@ class InternalThoughtLoop:
                 item = value.get(key)
                 if isinstance(item, (str, bool, int, float)) and key != "action":
                     summary[key] = item if not isinstance(item, str) else item[:48]
+            safe_numeric_fields = {
+                "active_goal_count", "total_goal_count", "goal_thought_count",
+                "candidate_count", "accepted_candidate_count", "motivation_count",
+                "user_topic_count", "filtered_topic_count", "active_thread_count",
+                "broadcast_count", "requested_count", "total_pressure",
+                "winning_margin", "score", "confidence", "priority", "override",
+                "generation_blocked", "decision_fresh", "winner_age_cycles",
+            }
+            numeric_summary = {
+                key: item for key, item in value.items()
+                if key in safe_numeric_fields and isinstance(item, (bool, int, float))
+            }
+            if numeric_summary:
+                summary["numeric_metrics"] = numeric_summary
             for key in ("all_candidates", "candidates", "goals", "threads"):
                 item = value.get(key)
                 if isinstance(item, (list, tuple)):
@@ -1534,36 +1548,45 @@ class InternalThoughtLoop:
         if _ge is not None and (not self._governor or self._governor.may_run('GoalEngine')):
             try:
                 _ge.tick()
+                _get_tick_report = getattr(_ge, "get_last_tick_report", None)
+                _goal_engine_report = _get_tick_report() if callable(_get_tick_report) else None
+                _goal_engine_status = (
+                    str(_goal_engine_report.get("status", "returned_without_receipt"))
+                    if isinstance(_goal_engine_report, dict) else "returned_without_receipt"
+                )
                 _ge_active = len([g for g in _ge._goals.values() if g.status == "active"])
-                _goal_thoughts = _ge.get_goal_thoughts() if hasattr(o, 'workspace') else []
                 _goal_engine_evidence_ref = self._record_cycle_stage(
-                    "goal_engine_tick", "completed", output={
-                        "active_goal_count": _ge_active,
-                        "goal_thought_count": len(_goal_thoughts),
-                        "workspace_available": hasattr(o, 'workspace'),
-                    },
+                    "goal_engine_tick", _goal_engine_status,
+                    output=_goal_engine_report or {"active_goal_count": _ge_active},
                 )
                 if self._governor:
                     self._governor.record('GoalEngine', _ge_active)
 
                 # Inject active goal thoughts into GW for CCS + Observatory
                 if hasattr(o, 'workspace'):
-                    _broadcast_count = 0
-                    for thought in _goal_thoughts:
-                        try:
-                            o.workspace.broadcast(
-                                source   = "goal_engine",
-                                content  = thought.get("content", ""),
-                                priority = min(0.75, thought.get("priority", 0.5)),
-                            )
-                            _broadcast_count += 1
-                        except Exception:
-                            pass
-                    self._record_cycle_stage(
-                        "goal_thoughts_broadcast", "completed" if _broadcast_count == len(_goal_thoughts) else "partial",
-                        inputs={"goal_engine_output_ref": _goal_engine_evidence_ref},
-                        output={"broadcast_count": _broadcast_count, "requested_count": len(_goal_thoughts)},
-                    )
+                    if _goal_engine_status == "failed":
+                        self._record_cycle_stage(
+                            "goal_thoughts_broadcast", "skipped_upstream_failure",
+                            inputs={"goal_engine_output_ref": _goal_engine_evidence_ref},
+                        )
+                    else:
+                        _goal_thoughts = _ge.get_goal_thoughts()
+                        _broadcast_count = 0
+                        for thought in _goal_thoughts:
+                            try:
+                                o.workspace.broadcast(
+                                    source   = "goal_engine",
+                                    content  = thought.get("content", ""),
+                                    priority = min(0.75, thought.get("priority", 0.5)),
+                                )
+                                _broadcast_count += 1
+                            except Exception:
+                                pass
+                        self._record_cycle_stage(
+                            "goal_thoughts_broadcast", "completed" if _broadcast_count == len(_goal_thoughts) else "partial",
+                            inputs={"goal_engine_output_ref": _goal_engine_evidence_ref},
+                            output={"broadcast_count": _broadcast_count, "requested_count": len(_goal_thoughts)},
+                        )
                 else:
                     self._record_cycle_stage(
                         "goal_thoughts_broadcast", "unavailable",

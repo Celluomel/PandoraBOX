@@ -234,6 +234,11 @@ class GoalEngine:
         self._external_tasks: List[Dict[str, object]] = []
         # topic → timestamp of abandonment (for TOPIC_COOLDOWN_SECS check)
         self._recently_abandoned: Dict[str, float] = {}
+        self._tick_report_lock = RLock()
+        self._last_tick_report: Dict[str, object] = {
+            "status": "not_run",
+            "tick_at": None,
+        }
         
         # Load persisted goals
         self._load_goals()
@@ -1576,9 +1581,20 @@ class GoalEngine:
         _now = _t.time()
         _last = getattr(self, '_last_tick_time', 0.0)
         if _now - _last < 60.0:
+            self._set_tick_report({
+                "status": "skipped_cooldown",
+                "tick_at": _now,
+                "cooldown_remaining_seconds": round(max(0.0, 60.0 - (_now - _last)), 2),
+            })
             logger.debug(f"[GoalEngine] tick skipped (cooldown: {_now-_last:.0f}s)")
             return
         self._last_tick_time = _now
+        metrics = {}
+        filtered_topics = []
+        motivations = []
+        candidates = []
+        accepted = 0
+        _generation_blocked = False
         try:
             # Clean legacy conversational fragments from the live pool as well
             # as at startup, so a long-running process can recover immediately.
@@ -1782,10 +1798,48 @@ class GoalEngine:
             self.update_goals(pressures)
 
             metrics = self.get_metrics()
+            self._set_tick_report({
+                "status": "completed",
+                "tick_at": _now,
+                "motivation_count": len(motivations),
+                "user_topic_count": len(user_topics),
+                "filtered_topic_count": len(filtered_topics),
+                "candidate_count": len(candidates),
+                "accepted_candidate_count": accepted,
+                "generation_blocked": bool(_generation_blocked),
+                "active_goal_count": int(metrics.get("active", 0)),
+                "total_goal_count": int(metrics.get("total_goals", 0)),
+            })
             logger.info(
                 f"[GoalEngine] tick: {metrics['active']} active, "
                 f"{metrics['total_goals']} total, GEI={metrics['gei']:.3f}"
             )
 
         except Exception as e:
+            self._set_tick_report({
+                "status": "failed",
+                "tick_at": _now,
+                "error_type": type(e).__name__,
+                "motivation_count": len(motivations),
+                "filtered_topic_count": len(filtered_topics),
+                "candidate_count": len(candidates),
+                "accepted_candidate_count": accepted,
+            })
             logger.error(f"[GoalEngine] tick failed: {e}", exc_info=True)
+
+    def _set_tick_report(self, report: Dict[str, object]) -> None:
+        """Store a privacy-safe result for the most recent autonomous tick."""
+        lock = getattr(self, "_tick_report_lock", None)
+        if lock is None:
+            self._tick_report_lock = RLock()
+            lock = self._tick_report_lock
+        with lock:
+            self._last_tick_report = dict(report)
+
+    def get_last_tick_report(self) -> Dict[str, object]:
+        """Return the latest tick outcome without exposing topic or exception text."""
+        lock = getattr(self, "_tick_report_lock", None)
+        if lock is None:
+            return dict(getattr(self, "_last_tick_report", {"status": "not_run"}))
+        with lock:
+            return dict(self._last_tick_report)

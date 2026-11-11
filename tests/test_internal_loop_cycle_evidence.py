@@ -97,3 +97,25 @@ def test_activity_from_another_thread_is_not_attributed_to_active_cycle():
 
     assert other_thread_result == [None]
     assert loop.cycle_evidence_snapshot()["cycles"][0]["stages"] == []
+
+
+def test_cycle_summary_exposes_only_allowlisted_cognitive_outcome_counts():
+    loop = make_loop()
+    loop._begin_cycle_evidence(6)
+    loop._record_cycle_stage(
+        "goal_engine_tick", "completed",
+        output={
+            "status": "completed",
+            "active_goal_count": 3,
+            "accepted_candidate_count": 1,
+            "private_topic": "do not expose this",
+        },
+    )
+
+    summary = loop.cycle_evidence_snapshot()["cycles"][0]["stages"][0]["output_summary"]
+    assert summary["numeric_metrics"] == {
+        "active_goal_count": 3,
+        "accepted_candidate_count": 1,
+    }
+    assert "private_topic" not in repr(summary)
+    assert "do not expose this" not in repr(summary)
