@@ -316,6 +316,16 @@ Une régression AST vérifie que le seul `yield raw_response` se trouve après `
 
 **Processus et Git :** pas de redémarrage de Lumina. Cette tranche est vérifiée localement et sera commitée séparément; elle ne sera pas chargée dans le processus courant avant le redémarrage final. L’audit continue.
 
+## Évaluation de sécurité transformée à tort en autorisation — correction locale
+
+Le contrat du module `AsimovConstraints` annonçait un comportement fail-safe, mais ses deux méthodes `check_input()` et `check_output()` capturaient leurs exceptions puis renvoyaient `_OK`. Le nouveau préfiltre avant les routes GoalEngine/Body ne pouvait pas fermer ce défaut : une exception interceptée à l’intérieur du module ressemblait à une validation réussie. Le même fail-open pouvait laisser passer un texte généré si le contrôle de sortie rencontrait une erreur.
+
+Correction : `ConstraintResult` porte maintenant `evaluation_error`. Les erreurs d’évaluation produisent un résultat bloquant avec un texte sûr et un reçu d’audit `evaluation_error:<type>`. Le chemin d’entrée distingue cet état d’un blocage de politique normal et termine le tour en échec avant toute route déterministe. Le chemin de sortie remplace le texte généré et marque l’étape `output_safety` en échec; il ne livre pas le contenu non vérifié. Les appels de compatibilité reçoivent également le résultat bloquant, sans dépendre d’une exception qui pourrait être interceptée plus loin.
+
+Vérification locale : tests d’injection d’une panne dans les évaluateurs d’entrée et de sortie, régression d’ordre avant mutations Goal/Body, preuve de fermeture du tour et événements de chat : **29 passed, 6 sous-tests**, 9 avertissements de dépendances existants. `py_compile` et `git diff --check` réussissent. Ces tests valident le comportement du code local sous panne simulée; le processus Lumina actif n’a pas encore chargé ce changement.
+
+**État live :** aucun redémarrage. La vérification intégrée des étapes et des sorties réelles reste réservée au redémarrage unique de fin d’audit.
+
 ## Route fast déléguée comptée à tort comme génération — correction locale
 
 La validation du pipeline acceptait `fast_first_pass=delegated` comme preuve qu’une réponse avait été générée. Or `delegated` n’est qu’une décision de routage : si le provider principal ne termine pas, la trace pouvait déclarer le cœur du tour complet sans génération primaire ni texte de réponse attribuable. La route directe `selected_direct` reste valide comme chemin alternatif; une délégation exige désormais `primary_generation=completed`.

@@ -673,6 +673,9 @@ class PersonaBridge:
                 deterministic_goal_path = (
                     stage_status.get("deterministic_goal_response") == "completed"
                 )
+                deterministic_safety_block_path = (
+                    stage_status.get("safety_block_response") == "completed"
+                )
                 deterministic_reasoning_path = (
                     stage_status.get("deterministic_reasoning") in {"selected_direct", "completed"}
                     and stage_status.get("primary_generation") == "skipped_deterministic"
@@ -681,7 +684,15 @@ class PersonaBridge:
                     stage_status.get("fast_first_pass") == "selected_direct"
                     and stage_status.get("primary_generation") == "skipped_deterministic"
                 )
-                if deterministic_body_path:
+                if deterministic_safety_block_path:
+                    required_stages = (
+                        ("readiness", {"passed"}),
+                        ("input_safety", {"blocked", "failed"}),
+                        ("safety_block_response", {"completed"}),
+                        ("response_finalization", {"completed"}),
+                        ("response", {"completed"}),
+                    )
+                elif deterministic_body_path:
                     required_stages = (
                         ("readiness", {"passed"}),
                         ("body_action_gate", {"checked"}),
@@ -731,7 +742,8 @@ class PersonaBridge:
                     if not isinstance(value, str) or value not in expected:
                         missing_core.append(stage_name)
                 has_generation = (
-                    deterministic_body_path
+                    deterministic_safety_block_path
+                    or deterministic_body_path
                     or deterministic_goal_path
                     or deterministic_reasoning_path
                     or fast_direct_path
@@ -838,13 +850,14 @@ class PersonaBridge:
                     "checked_at": time.time(),
                     "required_core_stages": len(required_stages) + (
                         0 if (
-                            deterministic_body_path or deterministic_goal_path
+                            deterministic_safety_block_path or deterministic_body_path or deterministic_goal_path
                             or deterministic_reasoning_path or fast_direct_path
                         ) else 1
                     ),
                     "execution_path": (
                         "deterministic_body_action" if deterministic_body_path
                         else "deterministic_goal_write" if deterministic_goal_path
+                        else "deterministic_input_safety_block" if deterministic_safety_block_path
                         else "deterministic_reasoning" if deterministic_reasoning_path
                         else "fast_direct_response" if fast_direct_path
                         else "generative_chat"
@@ -959,6 +972,77 @@ class PersonaBridge:
         # instead of treating it as its own first-person perception.
         effective_input = user_text
         self._record_turn_stage("turn_input", "received", output=effective_input)
+
+        # Run input policy before deterministic goal writes and Body routing.
+        # Those paths can mutate persistent state or prepare/confirm an action
+        # without entering the normal LLM lifecycle where this check used to run.
+        _turn_organism = getattr(self._system, "_organism", None)
+        _turn_safety = getattr(_turn_organism, "safety", None)
+        _safety_failure = None
+        if _turn_safety is not None:
+            try:
+                _input_result = _turn_safety.check_input(effective_input, user_id)
+            except Exception as _input_safety_error:
+                _safety_failure = _input_safety_error
+                _input_response = (
+                    "I can't safely process this request right now because input validation failed. "
+                    "No action was taken."
+                )
+                self._record_turn_stage(
+                    "input_safety", "failed", str(_input_safety_error),
+                    error_type=type(_input_safety_error).__name__,
+                )
+            else:
+                if getattr(_input_result, "evaluation_error", False):
+                    _safety_failure = RuntimeError(
+                        getattr(_input_result, "pattern", "input safety evaluation failed")
+                    )
+                    _input_response = _input_result.forced_response or (
+                        "I can't safely process this request right now. No action was taken."
+                    )
+                    self._record_turn_stage(
+                        "input_safety", "failed", str(_safety_failure),
+                        error_type="SafetyEvaluationError",
+                    )
+                elif _input_result.triggered:
+                    _input_response = _input_result.forced_response or "I can't help with that."
+                    self._record_turn_stage("input_safety", "blocked", "policy")
+                else:
+                    _input_response = ""
+                    self._record_turn_stage("input_safety", "passed")
+        else:
+            _input_response = ""
+            self._record_turn_stage("input_safety", "skipped_unavailable")
+        _input_safety_checked = True
+        if _input_response:
+            self._record_turn_stage(
+                "safety_block_response", "completed", output=_input_response,
+                consumes=("turn_input",),
+            )
+            self._record_turn_stage(
+                "response_finalization", "completed", output=_input_response,
+                consumes=("safety_block_response",),
+            )
+            _input_speech = self._sanitize(_input_response)
+            self._record_turn_stage(
+                "response", "completed",
+                output={"raw": _input_response, "speech": _input_speech},
+                consumes=("response_finalization",),
+            )
+            self._finish_turn_trace(
+                "failed" if _safety_failure is not None else "blocked_by_input_safety"
+            )
+            yield _input_response
+            yield {
+                "__meta__": True,
+                "raw": _input_response,
+                "speech": _input_speech,
+                "emotion": "neutral" if _safety_failure is not None else "concerned",
+                "intensity": 0.2 if _safety_failure is not None else 0.7,
+                "error": "input_safety_unavailable" if _safety_failure is not None else None,
+            }
+            return
+
         _displayed_trace = None
         try:
             from cognition.self_description import (
@@ -1128,6 +1212,7 @@ class PersonaBridge:
                     max_tokens_override=max_tokens_override,
                     cognitive_scope_id=cognitive_scope_id,
                     displayed_cognitive_trace=_displayed_trace,
+                    input_safety_checked=_input_safety_checked,
                 ):
                     yield chunk
                 self._record_turn_stage("streaming_lifecycle", "completed")
@@ -1417,6 +1502,7 @@ Write at most 70 words, in the user's language, only if a concise carry-forward 
         max_tokens_override: int | None = None,
         cognitive_scope_id: str = "",
         displayed_cognitive_trace: dict | None = None,
+        input_safety_checked: bool = False,
     ):
         """
         Streaming path that runs every single lifecycle step from get_response().
@@ -1454,7 +1540,7 @@ Write at most 70 words, in the user's language, only if a concise carry-forward 
         # Runs BEFORE prompt build — LLM never sees blocked requests.
         organism = getattr(s, '_organism', None)
         _safety = getattr(organism, 'safety', None)
-        if _safety is not None:
+        if _safety is not None and not input_safety_checked:
             try:
                 _sr = _safety.check_input(effective_input, user_id)
                 self._record_turn_stage("input_safety", "passed")
@@ -1469,7 +1555,7 @@ Write at most 70 words, in the user's language, only if a concise carry-forward 
                 yield {"__meta__": True, "raw": forced, "speech": forced,
                        "emotion": "concerned", "intensity": 0.7}
                 return
-        else:
+        elif _safety is None:
             self._record_turn_stage("input_safety", "skipped_unavailable")
 
         # ── Empathy Engine: read user affect before prompt build ────────────
@@ -2505,7 +2591,17 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
         if _safety is not None:
             try:
                 _or = _safety.check_output(raw_response, user_id)
-                if _or.triggered:
+                if getattr(_or, "evaluation_error", False):
+                    raw_response = _or.forced_response or (
+                        "I need to withhold that response because output validation failed."
+                    )
+                    self._record_turn_stage(
+                        "output_safety", "failed",
+                        getattr(_or, "pattern", "output safety evaluation failed"),
+                        output=raw_response, consumes=(_response_source_stage,),
+                        error_type="SafetyEvaluationError",
+                    )
+                elif _or.triggered:
                     raw_response = _or.forced_response or (
                         "I need to step back from that response. Can I help differently?"
                     )

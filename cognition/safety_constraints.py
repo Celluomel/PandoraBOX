@@ -147,6 +147,7 @@ class ConstraintResult:
     severity:     int          # 0–10
     pattern:      str          # matched pattern text or ""
     layer:        str          # "input" | "output" | "identity"
+    evaluation_error: bool = False  # policy could not evaluate; caller must fail closed
 
 
 _OK = ConstraintResult(
@@ -213,7 +214,24 @@ class AsimovConstraints:
             return _OK
         except Exception as e:
             logger.error(f"[AsimovConstraints] check_input error: {e}")
-            return _OK  # fail-open on unexpected errors (patterns are pre-compiled)
+            try:
+                context = str(user_text)[:200]
+            except Exception:
+                context = "<unprintable input>"
+            result = ConstraintResult(
+                triggered=True,
+                law="evaluation_error",
+                forced_response=(
+                    "I can't safely process this request right now because input validation failed. "
+                    "No action was taken."
+                ),
+                severity=10,
+                pattern=f"evaluation_error:{type(e).__name__}",
+                layer="input",
+                evaluation_error=True,
+            )
+            self._audit(result, context, user_id)
+            return result
 
     def check_output(self, response: str, user_id: str = "unknown") -> ConstraintResult:
         """
@@ -252,7 +270,24 @@ class AsimovConstraints:
             return _OK
         except Exception as e:
             logger.error(f"[AsimovConstraints] check_output error: {e}")
-            return _OK
+            try:
+                context = str(response)[:200]
+            except Exception:
+                context = "<unprintable output>"
+            result = ConstraintResult(
+                triggered=True,
+                law="evaluation_error",
+                forced_response=(
+                    "I need to withhold that response because output validation failed. "
+                    "Please try again."
+                ),
+                severity=10,
+                pattern=f"evaluation_error:{type(e).__name__}",
+                layer="output",
+                evaluation_error=True,
+            )
+            self._audit(result, context, user_id)
+            return result
 
     def _semantic_evasion_score(self, text: str) -> float:
         """
