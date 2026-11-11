@@ -247,7 +247,10 @@ class UserProfile:
 
         topics = self.top_topics(3)
         if topics:
-            parts.append("Topics discussed: " + ", ".join(topics))
+            parts.append(
+                "Topics discussed (conversation co-occurrence only; not evidence of the user's "
+                "preferences, intentions, or expertise): " + ", ".join(topics)
+            )
 
         exp = self.top_expertise(2)
         if exp:

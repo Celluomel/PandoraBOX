@@ -8,6 +8,22 @@ from cognition.world_model import WorldModel
 
 
 class WorldModelProfilePersistenceTests(unittest.TestCase):
+    def test_behavioral_topic_context_does_not_claim_user_preferences(self):
+        with tempfile.TemporaryDirectory() as directory:
+            model = WorldModel(None, path=str(Path(directory) / "world.json"))
+            profile = model.update_from_interaction(
+                user_id="fred",
+                user_text="Can you explain photosynthesis?",
+                response="Photosynthesis converts light into chemical energy.",
+                emotion="neutral",
+            )
+
+            fragment = profile.prompt_fragment()
+
+        self.assertIn("Topics discussed (conversation co-occurrence only", fragment)
+        self.assertIn("not evidence of the user's preferences, intentions, or expertise", fragment)
+        self.assertIn("photosynthesis", fragment)
+
     def test_human_profile_receipt_follows_verified_atomic_write(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "world.json"
