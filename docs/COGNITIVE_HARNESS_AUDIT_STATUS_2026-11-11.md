@@ -1,7 +1,7 @@
 # Audit du harnais cognitif — état et prochaines étapes
 
 **Date :** 11 novembre 2026
-**Statut :** audit en cours — conclusion globale non établie. Le dernier commit commun local/GitHub est `bba76a4`. Les correctifs profil précédents sont poussés. Un défaut supplémentaire de statut de stage est corrigé et testé localement, mais pas encore commité. Aucun redémarrage de Lumina n’a été effectué; le code récent n’est pas encore chargé dans le processus actif.
+**Statut :** audit en cours — conclusion globale non établie. Le dernier commit commun local/GitHub est `7c560a2`. La normalisation des échecs de persistance du profil est poussée. Un défaut d’attribution des stages asynchrones est corrigé et testé localement, mais pas encore commité. Aucun redémarrage de Lumina n’a été effectué; le code récent n’est pas encore chargé dans le processus actif.
 
 ## État exécutif courant — poursuite module par module
 
@@ -12,6 +12,8 @@
 - **Preuve locale :** lot outreach/planner/GAE — **61 passed**; lot profil comportemental — **90 passed, 4 sous-tests**; lot élargi profil/provenance, identité utilisateur, outreach, planner, self-description et publication GAE — **108 passed, 4 sous-tests**. Compilation des modules touchés et `git diff --check` réussis. Les 7 avertissements Pydantic proviennent des validateurs historiques de `settings_manager.py`.
 - **Profil comportemental → intégrité du tour :** nouveau défaut trouvé dans `PersonaBridge`: `persistence_failed` était enregistré comme statut arbitraire du stage et n’était donc pas compté par l’intégrité de trace, qui ne reconnaît que les échecs normalisés. Le stage est maintenant normalisé en `failed`, garde le statut d’origine dans `detail` et conserve le reçu assaini. Le chemin humain journalise également l’échec sans annoncer une mise à jour persistée.
 - **Preuve locale la plus récente :** `tests/test_turn_execution_evidence.py`, `tests/test_world_model_profile_persistence.py`, `tests/test_cognitive_log_regressions.py`, `tests/test_proactive_outreach_delivery.py` — **50 passed, 4 sous-tests**; `py_compile` et `git diff --check` passent. Ce changement est encore local à la date de cette entrée.
+- **Attribution asynchrone des effets aval :** le post-traitement humain/peer s’exécute dans un thread après génération. La plupart de ses stages appelaient `_record_turn_stage()` sans `audit_turn_id`; en cas de chevauchement, ils pouvaient modifier `_last_turn_trace` d’un nouveau tour. Tous les stages de ce cycle portent désormais explicitement l’ID original. Test à deux traces : le stage peer est ajouté au tour antérieur et la trace plus récente reste vide. Un garde AST vérifie qu’aucun stage du cycle ne perd cet ID.
+- **Preuve locale la plus récente :** suite combinée tour/profil/régressions/outreach — **52 passed, 4 sous-tests**, 9 avertissements de dépendances historiques. La suite combinée nécessite les permissions socket locales Windows; en sandbox strict, le test de thread async outreach échoue à son délai. `py_compile`, garde AST et `git diff --check` passent.
 - **Limite de preuve :** `accepted` signifie que l’API Telegram/Twilio a accepté l’appel; cela ne prouve ni livraison au terminal ni lecture. Aucun envoi externe réel n’a été déclenché pendant les tests. Le chemin live nécessite le redémarrage groupé final.
 - **Suite du cap :** confirmer les producteurs/consommateurs de mémoire et les deux profils (UserManager explicite et WorldModel comportemental), puis les états de workspace/attention et la génération de réponse, avec vérification des effets aval; rattacher chaque constat à un scénario/test plutôt qu’à un simple tick.
 - **Git / périmètre :** commits de correctifs `7103a68`, `cfc54df`, `c649348` et `7729cf8` sont poussés. Les changements Body/UI/tests préexistants et artefacts non suivis restent exclus. Ne pas redémarrer Lumina avant le contrôle cumulé.
@@ -23,6 +25,14 @@ Le reçu `world_model_profile_update` retourné par le cycle post-interaction po
 **Correction locale :** le nouveau helper `_record_world_model_profile_update()` conserve le reçu expurgé et son statut source, transforme les échecs de persistance en statut de stage `failed`, et rattache le stage au `turn_id`. Le chemin humain émet aussi un avertissement explicite. Aucun changement du contenu du profil ni des règles d’apprentissage.
 
 **Test de régression :** le reçu `persistence_failed` doit faire échouer le stage et apparaître dans `output_summary` avec `persisted=false` et `quality=failed`. Lot ciblé : **50 passed, 4 sous-tests**, compilation et `git diff --check` réussis. Pas encore validé dans un processus Lumina redémarré.
+
+### Reprise — attribution des effets post-tour asynchrones
+
+Le post-traitement après réponse est exécuté dans un thread de fond, mais ses appels de trace omettaient l’ID pourtant transmis à `_run_full_post_turn_lifecycle()`. `_record_turn_stage()` retombait alors sur `_last_turn_trace`. Si un second échange commençait pendant ce travail, les états `response_learning_and_memory`, `background_learning_tasks`, réflexion, organisme et résultats peer/humains pouvaient être attribués au mauvais échange. Le même problème affectait les reçus d’échec de ce cycle.
+
+**Correction locale :** chaque stage du cycle (succès, échec et indisponibilité, branches humaine et peer) reçoit maintenant `turn_id=audit_turn_id`. Une régression crée un tour d’origine dans l’historique et un tour plus récent actif, exécute la branche peer indisponible, puis vérifie que seul le tour d’origine reçoit son stage. Un test AST impose le passage de cet ID à chaque appel de trace du cycle.
+
+**Vérification :** `tests/test_turn_execution_evidence.py`, `tests/test_world_model_profile_persistence.py`, `tests/test_cognitive_log_regressions.py`, `tests/test_proactive_outreach_delivery.py` — **52 passed, 4 sous-tests** avec exécution autorisée des sockets locales Windows. Compilation, garde AST et `git diff --check` passent. Le test outreach échoue sous sandbox strict à cause du worker asynchrone/socket et passe hors sandbox. Le correctif n’est pas encore chargé dans Lumina.
 
 ## État courant de reprise — commit GitHub `0618621` et lot suivant local
 

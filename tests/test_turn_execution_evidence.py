@@ -74,6 +74,52 @@ def test_world_model_profile_failure_is_attributed_to_turn_and_fails_stage():
     assert profile_stage["output_summary"]["quality"] == "failed"
 
 
+def test_async_peer_post_turn_stage_does_not_attach_to_newer_turn():
+    bridge = _bridge()
+    originating = {"turn_id": "turn-peer-origin", "stages": {}}
+    newer = {"turn_id": "turn-peer-newer", "stages": {}}
+    bridge._turn_trace_history.append(originating)
+    bridge._last_turn_trace = newer
+    bridge._system = SimpleNamespace()
+
+    result = bridge._run_full_post_turn_lifecycle(
+        "peer message", "flux", "peer response", {}, {},
+        organism=None, human_interaction=False,
+        audit_turn_id="turn-peer-origin",
+    )
+
+    assert result is True
+    assert originating["stages"]["peer_cognitive_evaluation"]["status"] == "skipped_unavailable"
+    assert newer["stages"] == {}
+
+
+def test_every_async_post_turn_stage_is_bound_to_its_originating_turn():
+    source = Path(__file__).resolve().parents[1] / "cognition" / "persona_bridge.py"
+    tree = ast.parse(source.read_text(encoding="utf-8"))
+    bridge_class = next(
+        node for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "PersonaBridge"
+    )
+    lifecycle = next(
+        node for node in bridge_class.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "_run_full_post_turn_lifecycle"
+    )
+    calls = [
+        node for node in ast.walk(lifecycle)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "_record_turn_stage"
+    ]
+    assert calls
+    for call in calls:
+        turn_id = next(
+            (keyword.value for keyword in call.keywords if keyword.arg == "turn_id"),
+            None,
+        )
+        assert isinstance(turn_id, ast.Name) and turn_id.id == "audit_turn_id"
+
+
 def test_cognitive_context_is_linked_to_prompt_assembly_on_its_own_turn():
     bridge = _bridge()
     previous = {"turn_id": "turn-cognitive-context", "stages": {}}

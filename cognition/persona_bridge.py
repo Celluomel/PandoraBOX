@@ -4671,14 +4671,19 @@ Memory honesty — two distinct cases:
                 except Exception as _peer_post_error:
                     self._record_turn_stage(
                         "peer_cognitive_evaluation", "failed", str(_peer_post_error),
+                        turn_id=audit_turn_id,
                     )
                     logger.debug("Peer cognitive post-turn evaluation failed: %s", _peer_post_error)
                     self._record_turn_stage(
                         "cognitive_post_turn", "failed", "peer cognitive evaluation failed",
+                        turn_id=audit_turn_id,
                     )
                     return False
             else:
-                self._record_turn_stage("peer_cognitive_evaluation", "skipped_unavailable")
+                self._record_turn_stage(
+                    "peer_cognitive_evaluation", "skipped_unavailable",
+                    turn_id=audit_turn_id,
+                )
             logger.debug("Peer cognitive post-turn complete — user_id=%s", user_id)
             return True
 
@@ -4690,23 +4695,31 @@ Memory honesty — two distinct cases:
             s._last_responses.append(response)
             if len(s._last_responses) > 10:
                 s._last_responses.pop(0)
-            self._record_turn_stage("response_repetition_tracking", "completed")
+            self._record_turn_stage(
+                "response_repetition_tracking", "completed", turn_id=audit_turn_id,
+            )
 
             # 11: stuck check
             active_stage = "stuck_response_detection"
             s._check_if_stuck()
-            self._record_turn_stage("stuck_response_detection", "completed")
+            self._record_turn_stage(
+                "stuck_response_detection", "completed", turn_id=audit_turn_id,
+            )
 
             # 12: full post-response processing (relational memory, conditioning,
             #     memory store, evolution pressure queue, self-concept update)
             active_stage = "response_learning_and_memory"
             s._post_response_processing(user_id, user_input, response, emo_dict, cond_dict)
-            self._record_turn_stage("response_learning_and_memory", "completed")
+            self._record_turn_stage(
+                "response_learning_and_memory", "completed", turn_id=audit_turn_id,
+            )
 
             # 13: queue background tasks — THIS is what fires dream/learning cycles
             active_stage = "background_learning_tasks"
             s._queue_background_tasks()
-            self._record_turn_stage("background_learning_tasks", "queued")
+            self._record_turn_stage(
+                "background_learning_tasks", "queued", turn_id=audit_turn_id,
+            )
 
             # 14: liberty contradiction detection
             if s.liberty_contradiction:
@@ -4741,27 +4754,41 @@ Memory honesty — two distinct cases:
                                 }, source="liberty_contradiction")
                         except Exception:
                             pass
-                    self._record_turn_stage("contradiction_review", "completed")
+                    self._record_turn_stage(
+                        "contradiction_review", "completed", turn_id=audit_turn_id,
+                    )
                 except Exception as e:
-                    self._record_turn_stage("contradiction_review", "failed", str(e))
+                    self._record_turn_stage(
+                        "contradiction_review", "failed", str(e), turn_id=audit_turn_id,
+                    )
                     logger.debug(f"Contradiction detection (non-fatal): {e}")
             else:
-                self._record_turn_stage("contradiction_review", "skipped_unavailable")
+                self._record_turn_stage(
+                    "contradiction_review", "skipped_unavailable", turn_id=audit_turn_id,
+                )
 
             # 15: liberty goal behavior logging
             if s.liberty_goals:
                 try:
                     s.liberty_goals.log_behavior(response[:200])
-                    self._record_turn_stage("goal_behavior_learning", "completed")
+                    self._record_turn_stage(
+                        "goal_behavior_learning", "completed", turn_id=audit_turn_id,
+                    )
                 except Exception as e:
-                    self._record_turn_stage("goal_behavior_learning", "failed", str(e))
+                    self._record_turn_stage(
+                        "goal_behavior_learning", "failed", str(e), turn_id=audit_turn_id,
+                    )
                     logger.debug(f"Goal logging (non-fatal): {e}")
             else:
-                self._record_turn_stage("goal_behavior_learning", "skipped_unavailable")
+                self._record_turn_stage(
+                    "goal_behavior_learning", "skipped_unavailable", turn_id=audit_turn_id,
+                )
 
             # 16: increment interaction count
             s._interaction_count += 1
-            self._record_turn_stage("human_interaction_counter", "completed")
+            self._record_turn_stage(
+                "human_interaction_counter", "completed", turn_id=audit_turn_id,
+            )
 
             # 17: liberty meta-reflection
             if s.liberty_reflection:
@@ -4770,16 +4797,24 @@ Memory honesty — two distinct cases:
                     if s.liberty_reflection.should_reflect():
                         logger.info("Liberty reflection cycle triggered")
                         s._queue_liberty_reflection()
-                    self._record_turn_stage("meta_reflection_check", "completed")
+                    self._record_turn_stage(
+                        "meta_reflection_check", "completed", turn_id=audit_turn_id,
+                    )
                 except Exception as e:
-                    self._record_turn_stage("meta_reflection_check", "failed", str(e))
+                    self._record_turn_stage(
+                        "meta_reflection_check", "failed", str(e), turn_id=audit_turn_id,
+                    )
                     logger.debug(f"Liberty reflection check (non-fatal): {e}")
             else:
-                self._record_turn_stage("meta_reflection_check", "skipped_unavailable")
+                self._record_turn_stage(
+                    "meta_reflection_check", "skipped_unavailable", turn_id=audit_turn_id,
+                )
 
             # 18: apply any pending self-modifications
             s._apply_pending_liberty_modifications()
-            self._record_turn_stage("pending_self_modifications", "completed")
+            self._record_turn_stage(
+                "pending_self_modifications", "completed", turn_id=audit_turn_id,
+            )
 
             # 19: CognitiveOrganism post-interaction (energy drain, drive satisfaction,
             #     meta-cognition evaluation, curiosity update)
@@ -4819,12 +4854,20 @@ Memory honesty — two distinct cases:
                         organism.goal_ecology.record_satisfaction("connect", 0.7)
                     if has_question:
                         organism.goal_ecology.record_satisfaction("be_understood", 0.65)
-                    self._record_turn_stage("organism_post_interaction", "completed")
+                    self._record_turn_stage(
+                        "organism_post_interaction", "completed", turn_id=audit_turn_id,
+                    )
                 except Exception as _oe:
-                    self._record_turn_stage("organism_post_interaction", "failed", str(_oe))
+                    self._record_turn_stage(
+                        "organism_post_interaction", "failed", str(_oe),
+                        turn_id=audit_turn_id,
+                    )
                     logger.debug(f"Organism post-interaction (non-fatal): {_oe}")
             else:
-                self._record_turn_stage("organism_post_interaction", "skipped_unavailable")
+                self._record_turn_stage(
+                    "organism_post_interaction", "skipped_unavailable",
+                    turn_id=audit_turn_id,
+                )
 
             # A completed chat turn is not evidence that it answered a specific
             # planner-generated question. Until the prompt/response carry an
@@ -4832,6 +4875,7 @@ Memory honesty — two distinct cases:
             self._record_turn_stage(
                 "long_horizon_interaction_outcome",
                 "skipped_unmatched_turn" if human_interaction else "skipped_unavailable",
+                turn_id=audit_turn_id,
             )
 
             logger.debug(
@@ -4841,8 +4885,12 @@ Memory honesty — two distinct cases:
             return True
 
         except Exception as e:
-            self._record_turn_stage(active_stage, "failed", str(e))
-            self._record_turn_stage("cognitive_post_turn", "failed", str(e))
+            self._record_turn_stage(
+                active_stage, "failed", str(e), turn_id=audit_turn_id,
+            )
+            self._record_turn_stage(
+                "cognitive_post_turn", "failed", str(e), turn_id=audit_turn_id,
+            )
             logger.error(f"Post-turn lifecycle error: {e}")
             return False
 
