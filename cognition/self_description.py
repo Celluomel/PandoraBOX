@@ -37,6 +37,12 @@ def is_architecture_query(user_input: str) -> bool:
     text = " ".join(str(user_input or "").casefold().split())
     if re.search(r"\b(?:architecture|harness|harnais)\b", text):
         return True
+    # A natural-language follow-up can refer to a prior audit result without
+    # repeating "modules" or "ticks". Route that request through the same
+    # closed-world trace path so the answer is linked to retained evidence
+    # instead of asking the LLM to reconstruct its own previous claim.
+    if _is_audit_trace_followup(text):
+        return True
     # Generic mentions of "modules" are not architecture questions. Route to
     # the trace manifest only when the user is explicitly asking about runtime
     # execution/tick evidence.
@@ -48,6 +54,22 @@ def is_architecture_query(user_input: str) -> bool:
             text,
         )
     )
+
+
+def _is_audit_trace_followup(normalized_text: str) -> bool:
+    """Recognize a prior-turn audit reference by its discourse and subject."""
+    prior_reference = bool(re.search(
+        r"\b(?:précédent(?:e)?|précédemment|dernier|dernière|"
+        r"viens\s+de\s+(?:te\s+)?demander|tour\s+précédent|"
+        r"previous|earlier|last\s+(?:test|turn)|just\s+asked)\b",
+        normalized_text,
+    ))
+    audit_subject = bool(re.search(
+        r"\b(?:audit|trace|compteurs?|ticks?|exécution|execution|"
+        r"modules?|initialisés?|instrumentation)\b",
+        normalized_text,
+    ))
+    return prior_reference and audit_subject
 
 
 def is_cognitive_trace_query(user_input: str) -> bool:
@@ -220,13 +242,16 @@ def trace_grounded_architecture_answer(
         normalized,
     ))
     module_tick_question = bool(
-        re.search(r"\bmodules?\b", normalized)
-        and re.search(r"\b(?:tick|exécut|observ|initialis|indisponible|compteur)", normalized)
+        (
+            re.search(r"\bmodules?\b", normalized)
+            and re.search(r"\b(?:tick|exécut|observ|initialis|indisponible|compteur)", normalized)
+        )
+        or _is_audit_trace_followup(normalized)
     )
     prior_result_question = bool(re.search(
         r"\b(?:rappelle(?:-moi)?|précédent(?:e)?|précédemment|avant|juste avant|"
         r"dernier test|test précédent|résultat vérifié|previous(?:ly)?|earlier|"
-        r"just before|last test|prior result)\b",
+        r"just before|last test|prior result|tour précédent|viens de demander)\b",
         normalized,
     ))
     if module_tick_question and prior_result_question:

@@ -21,6 +21,10 @@ class SelfDescriptionPromptTests(unittest.TestCase):
         self.assertTrue(is_architecture_query("Quels modules ont eu un tick observé ?"))
         self.assertFalse(is_architecture_query("Explique le fonctionnement de cette réponse."))
         self.assertTrue(is_architecture_query("Les modules indiquent-ils 0 tick ?"))
+        self.assertTrue(is_architecture_query(
+            "Dans le test d’audit que je viens de te demander, rappelle les compteurs annoncés et leur limite. "
+            "Si tu ne peux pas relier cette réponse au tour précédent, dis-le explicitement."
+        ))
         self.assertFalse(is_architecture_query("What does the body camera see?"))
 
     def test_runtime_manifest_distinguishes_observation_from_semantic_validation(self):
@@ -158,6 +162,35 @@ class SelfDescriptionPromptTests(unittest.TestCase):
         self.assertIn("reported 4 active goals", answer)
         self.assertIn("cannot link it to a retained turn trace", answer)
         self.assertIn("no usable tick manifest", answer)
+
+    def test_natural_audit_followup_uses_linked_prior_turn_evidence(self):
+        question = (
+            "Dans le test d’audit que je viens de te demander, rappelle les compteurs annoncés et leur limite. "
+            "Si tu ne peux pas relier cette réponse au tour précédent, dis-le explicitement."
+        )
+        answer = trace_grounded_architecture_answer(
+            question,
+            {
+                "stages": {},
+                "context_sources": {
+                    "module_tick_manifest": {
+                        "status": "injected", "module_count": 36,
+                        "observed_count": 36, "tick_count": 110,
+                        "error_count": 0,
+                    },
+                },
+            },
+            prior_exchange_evidence={
+                "text": "Le manifeste recensait 34 modules et 64 ticks observés.",
+                "trace_linked": True,
+                "turn_id": "8865020b-14ba-4f7e-ae32-9d7e9eaa192b",
+            },
+        )
+
+        self.assertIn("34 modules et 64 ticks", answer)
+        self.assertIn("8865020b-14ba-4f7e-ae32-9d7e9eaa192b", answer)
+        self.assertIn("36 module(s) avec tick observé", answer)
+        self.assertIn("ne mesure ni la qualité sémantique", answer)
 
     def test_empty_tick_manifest_is_not_reported_as_zero_modules(self):
         answer = trace_grounded_architecture_answer(
