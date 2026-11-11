@@ -1887,6 +1887,7 @@ Write at most 70 words, in the user's language, only if a concise carry-forward 
                 and _goal_means_analysis.unique_feasible_option() is not None
             )
         )
+        _audit_turn_id = str(self.get_last_turn_trace().get("turn_id") or "")
         system_prompt, emo_dict, cond_dict, arb_temperature = await asyncio.to_thread(
             self._build_prompt_and_cache,
             effective_input,
@@ -1894,11 +1895,16 @@ Write at most 70 words, in the user's language, only if a concise carry-forward 
             _suppress_external_search,
             not bool(peer_name),
             peer_name,
+            _audit_turn_id,
         )
         self._record_turn_stage(
             "prompt_assembly", "completed", f"{len(system_prompt)} chars",
             output=system_prompt,
-            consumes=("turn_input", "memory_prompt_context", "user_profile_context"),
+            consumes=(
+                "turn_input", "memory_prompt_context", "user_profile_context",
+                "cognitive_prompt_context",
+            ),
+            turn_id=_audit_turn_id,
         )
         if peer_name:
             system_prompt += (
@@ -2197,6 +2203,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             "generation_request", "prepared",
             output={"user_input": _generation_input, "system_prompt": system_prompt},
             consumes=("turn_input", "prompt_assembly"),
+            turn_id=_audit_turn_id,
         )
 
         # Optional Phi first pass: the model judges whether this turn can be
@@ -3100,6 +3107,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
         suppress_external_search: bool = False,
         mark_user_active: bool = True,
         peer_name: str = "",
+        audit_turn_id: str = "",
     ) -> tuple[str, dict, dict, float | None]:
         """
         Run PandoraBOX's pre-LLM context pipeline and return:
@@ -3170,19 +3178,31 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         cycle_data, decision, user_input,
                     )
                     arb_temperature = decision.temperature
-                    self._record_turn_stage("cognitive_prompt_context", "completed")
+                    self._record_turn_stage(
+                        "cognitive_prompt_context", "completed",
+                        output=organism_block, turn_id=audit_turn_id,
+                    )
                 except Exception as exc:
-                    self._record_turn_stage("cognitive_prompt_context", "failed", str(exc))
+                    self._record_turn_stage(
+                        "cognitive_prompt_context", "failed", str(exc),
+                        turn_id=audit_turn_id,
+                    )
                     logger.exception("Cognitive prompt context assembly failed")
             else:
-                self._record_turn_stage("cognitive_prompt_context", "skipped_no_cycle")
+                self._record_turn_stage(
+                    "cognitive_prompt_context", "skipped_no_cycle",
+                    turn_id=audit_turn_id,
+                )
 
         else:
             self._record_turn_stage("organism_pre_interaction", "skipped_unavailable")
             self._record_turn_stage("organism_cycle", "skipped_unavailable")
             self._record_turn_stage("drive_arbitration", "skipped_unavailable")
             self._record_turn_stage("recursive_deliberation", "skipped_unavailable")
-            self._record_turn_stage("cognitive_prompt_context", "skipped_unavailable")
+            self._record_turn_stage(
+                "cognitive_prompt_context", "skipped_unavailable",
+                turn_id=audit_turn_id,
+            )
 
         predictive_context = self._prepare_predictive_context(user_input, user_id)
 

@@ -642,3 +642,13 @@ Correction : le broadcast des pensées du GoalEngine compte maintenant uniquemen
 Tests ajoutés : admission/refus/exception mixte et refus total sans fausse réussite. Vérification locale : boucle, parcours pensée→workspace et régressions cognitives — **43 tests passés, 4 sous-tests passés**; `git diff --check` propre. Les avertissements de dépendances restent sans lien avec ce correctif.
 
 Portée : cela rend la preuve d’effet workspace honnête. La prochaine vérification doit encore suivre ce qui lit effectivement ces éléments après admission et comparer le gagnant du cycle au contexte consommé par le tour de chat; un broadcast accepté ne prouve pas à lui seul qu’il a influencé la réponse.
+
+### Contexte cognitif du tour → prompt reçu par le modèle
+
+La trace du tour marquait la construction du contexte cognitif comme `completed`, mais sans empreinte de sortie et sans lien de consommation dans `prompt_assembly`. Un tick du harnais pouvait donc apparaître à côté d’une réponse sans preuve que son contexte avait été inséré dans le prompt effectivement préparé.
+
+Correction : le constructeur reçoit le `turn_id` capturé avant son exécution dans le worker; la sortie du contexte cognitif est enregistrée sous forme d’empreinte et résumé redigé sur ce tour précis. `prompt_assembly` référence explicitement cette empreinte comme entrée, et `generation_request` reste lié à l’assemblage. La trace ne conserve pas le texte privé du contexte.
+
+Vérification locale : tests de trace de tour, parcours pensée→workspace et reçus internes — **28 tests passés**, compilation de `persona_bridge.py` et `internal_loop.py` réussie, `git diff --check` propre. Le groupe intégré antérieur (11 suites sur boucle, propositions, GoalEngine, completion, MotivationalField et Phase 2) reste vert : **65 tests passés, 4 sous-tests passés**.
+
+Limite : la liaison prouve que le bloc cognitif construit est consommé par l’assemblage du prompt préparé. Elle ne prouve ni que le LLM a suivi ce contexte, ni la qualité sémantique de sa réponse. Ces éléments exigent les scénarios live et l’évaluation des sorties.

@@ -54,6 +54,64 @@ def test_turn_stage_records_redacted_output_and_actual_consumption_link():
     assert trace["semantic_answer_validation"]["status"] == "not_performed"
 
 
+def test_cognitive_context_is_linked_to_prompt_assembly_on_its_own_turn():
+    bridge = _bridge()
+    previous = {"turn_id": "turn-cognitive-context", "stages": {}}
+    bridge._turn_trace_history.append(previous)
+    bridge._last_turn_trace = {"turn_id": "turn-next", "stages": {}}
+
+    bridge._record_turn_stage(
+        "cognitive_prompt_context", "completed",
+        output="[Global workspace] focus: testable audit objective",
+        turn_id="turn-cognitive-context",
+    )
+    bridge._record_turn_stage(
+        "prompt_assembly", "completed", output="full assembled prompt",
+        consumes=("cognitive_prompt_context",),
+        turn_id="turn-cognitive-context",
+    )
+
+    stages = previous["stages"]
+    assert stages["cognitive_prompt_context"]["output_fingerprint"]
+    assert stages["prompt_assembly"]["consumes"] == [{
+        "stage": "cognitive_prompt_context",
+        "fingerprint": stages["cognitive_prompt_context"]["output_fingerprint"],
+    }]
+    assert bridge._last_turn_trace["stages"] == {}
+
+
+def test_prompt_assembly_declares_cognitive_context_as_an_input():
+    source = Path(__file__).resolve().parents[1] / "cognition" / "persona_bridge.py"
+    tree = ast.parse(source.read_text(encoding="utf-8"))
+    bridge_class = next(
+        node for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "PersonaBridge"
+    )
+    stream = next(
+        node for node in bridge_class.body
+        if isinstance(node, ast.AsyncFunctionDef)
+        and node.name == "_stream_with_full_lifecycle"
+    )
+    prompt_calls = [
+        node for node in ast.walk(stream)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "_record_turn_stage"
+        and node.args
+        and isinstance(node.args[0], ast.Constant)
+        and node.args[0].value == "prompt_assembly"
+    ]
+    assert len(prompt_calls) == 1
+    consumes = next(
+        keyword.value for keyword in prompt_calls[0].keywords
+        if keyword.arg == "consumes"
+    )
+    assert "cognitive_prompt_context" in {
+        element.value for element in consumes.elts
+        if isinstance(element, ast.Constant)
+    }
+
+
 def test_architecture_claim_check_is_reported_as_scoped_not_general_validation():
     bridge = _bridge()
     bridge._last_turn_trace["stages"].update({
