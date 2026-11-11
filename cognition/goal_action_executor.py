@@ -1203,13 +1203,6 @@ class GoalActionExecutor:
                 f"'{insight[:80]}'"
             )
 
-            # Store as a thought in the workspace
-            self._add_thought(
-                f"Self-reflection on '{topic[:30]}': {insight}",
-                source="goal_action.self_question",
-                priority=0.55,
-            )
-
             # ── Insight quality gate ────────────────────────────────────
             # Three-layer validation, cheapest first.
             # Layer 1: hard gates (word count, error strings) — always run.
@@ -1358,6 +1351,23 @@ class GoalActionExecutor:
                 logger.info(f"[GoalActionExecutor] Belief stored: '{belief_key}'")
             except Exception as be:
                 logger.debug(f"[GoalActionExecutor] Belief store error: {be}")
+                self._finalize_async_action(
+                    goal,
+                    ACTION_SELF_QUESTION,
+                    False,
+                    "candidate insight belief persistence raised an exception",
+                    evidence={"belief_persisted": False},
+                )
+                return
+
+            # Publish only after both semantic validation and persistent
+            # read-back succeeded. A rejected candidate must not influence
+            # workspace competition or downstream cognitive modules.
+            publication = self._add_thought(
+                f"Self-reflection on '{topic[:30]}': {insight}",
+                source="goal_action.self_question",
+                priority=0.55,
+            )
 
             # Write insight keywords as relations in semantic memory
             # so memory_recall finds them on the next cycle for this goal
@@ -1391,7 +1401,11 @@ class GoalActionExecutor:
 
             self._finalize_async_action(
                 goal, ACTION_SELF_QUESTION, True, insight,
-                evidence={"belief_persisted": True},
+                evidence={
+                    "belief_persisted": True,
+                    "thought_stream_recorded": publication["thought_stream_recorded"],
+                    "workspace_broadcast": publication["workspace_broadcast"],
+                },
             )
 
         except Exception as e:
@@ -2147,29 +2161,36 @@ class GoalActionExecutor:
             return True   # default: allow question
 
     def _add_thought(self, content: str, source: str = "goal_action",
-                     priority: float = 0.45) -> None:
-        """Add a thought to ThoughtStream (using 'content' key) and GlobalWorkspace."""
+                     priority: float = 0.45) -> Dict[str, bool]:
+        """Record a thought in ThoughtStream and broadcast it to workspace."""
+        result = {"thought_stream_recorded": False, "workspace_broadcast": False}
         try:
             ts = getattr(self._o, 'thought_stream', None)
             if ts and hasattr(ts, 'add'):
-                ts.add(content=content, source=source, priority=priority,
-                       thought_type="goal_action")
-        except Exception:
-            pass
-        self._broadcast(content, priority=priority)
+                result["thought_stream_recorded"] = bool(ts.add(
+                    content=content,
+                    source=source,
+                    priority=priority,
+                    thought_type="goal_action",
+                ))
+        except Exception as e:
+            logger.warning("[GoalActionExecutor] ThoughtStream record failed: %s", e)
+        result["workspace_broadcast"] = self._broadcast(content, priority=priority)
+        return result
 
-    def _broadcast(self, content: str, priority: float = 0.45) -> None:
-        """Broadcast to GlobalWorkspace."""
+    def _broadcast(self, content: str, priority: float = 0.45) -> bool:
+        """Broadcast to GlobalWorkspace and report whether it was accepted."""
         try:
             ws = getattr(self._o, 'workspace', None)
             if ws:
-                ws.broadcast(
+                return bool(ws.broadcast(
                     source="goal_action",
                     content=content[:200],
                     priority=min(0.75, priority),
-                )
+                ))
         except Exception:
-            pass
+            logger.debug("[GoalActionExecutor] Workspace broadcast failed", exc_info=True)
+        return False
 
     def _claim_async_action(self, key: Tuple[str, str]) -> bool:
         with self._async_actions_lock:

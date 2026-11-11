@@ -230,6 +230,8 @@ Poursuivre le lien causal, au-delà du compteur global : suivre un même identif
 
 **Git à ce point de l’audit :** le commit local le plus récent est `cfe6ddf`; `origin/main` demeure sur `17ae81c`. Les corrections décrites dans la section suivante sont encore locales et seront commitées avec les seuls fichiers d’audit ciblés.
 
+> Mise à jour du 11 novembre : les sections précédentes décrivent l’état au moment de leur rédaction. Les commits locaux suivants ont depuis été créés : `1d0d94f`, `cfe6ddf`, `a60be72`. Ils ne sont pas encore chargés dans le processus Lumina en cours; aucun redémarrage n’a eu lieu.
+
 ## Provenance de l’action autonome jusqu’au ledger — correction locale
 
 L’audit du chemin `InternalLoop → GoalActionExecutor → ConsequenceTracker → CausalLedger / LongHorizonPlanner` a montré que le tracker savait déjà accepter `cycle_id`, mais que l’exécuteur ne le transmettait pas. Le ledger retrouvait ensuite la prédiction par le dernier couple but/action, ce qui pouvait relier le résultat au mauvais événement si l’ordre des événements changeait. Les résultats du planner n’enregistraient pas l’identité de l’action qui les avait causés.
@@ -255,3 +257,13 @@ Le registre d’actions associait `user_question` à `external_feedback`, mais l
 Correction locale : les labels décrivent maintenant des effets opérationnels (`question_queued`, `candidate_insight_persisted`, `research_item_queued`, etc.) et le scope enregistré dit explicitement que le bénéfice cognitif n’est pas établi. `user_question` n’écrit plus dans l’attention relationnelle ni dans le PCM; sa résolution signifie uniquement que la question a été mise en file. Une `self_question` compte comme persistée seulement si `DataAccess.save_belief()` réussit et si la relecture retrouve exactement la déclaration; sinon l’action est finalisée en échec. Cela ne prouve pas encore que le belief est vrai ou apporte de la clarté, ce qui demande une mesure indépendante.
 
 Résultat : les tests de provenance/action et de planification passent à **53 passed**, 7 avertissements Pydantic préexistants; `py_compile` et `git diff --check` réussis. Correction locale en attente de commit; pas encore chargée par Lumina.
+
+## Publication prématurée et preuve d’effet incomplète — correction locale
+
+Le chemin `self_question` diffusait le texte du LLM dans le GlobalWorkspace avant les contrôles de longueur, de sémantique et de grammaire. Un candidat ensuite rejeté pouvait donc déjà influencer les consommateurs en aval. Autre défaut : une exception pendant la sauvegarde/lecture du belief était seulement journalisée; la coroutine pouvait continuer et finaliser l’action comme réussie sans preuve de persistance. Enfin, `_add_thought()` tentait d’appeler `ThoughtStream.add()`, méthode absente : les appels de mémoire, recherche et introspection n’étaient donc pas enregistrés dans le flux annoncé.
+
+Corrections locales : la publication de l’introspection est déplacée après validation et relecture exacte du belief; une exception de persistance finalise explicitement l’action en échec. `ThoughtStream.add()` existe maintenant comme API publique, valide contenu et priorité, inscrit la pensée dans le buffer et la rend récupérable après flush/redémarrage en conservant `thought_type` et `topic`. `_add_thought()` rapporte séparément l’acceptation par le flux et par le workspace; ces effets sont joints au reçu de réussite de `self_question`.
+
+Tests ciblés : `tests/test_goal_action_thought_publication.py`, `tests/test_consequence_execution_provenance.py`, `tests/test_intention_planning.py`, `tests/test_module_tick_log.py`, `tests/test_goal_engine_execution_order.py`, `tests/test_goal_completion_deadlock.py` : **56 passed**, 7 avertissements de dépréciation Pydantic préexistants. Le test vérifie l’ajout, la relecture après persistance et le rapport d’acceptation des deux consommateurs. Cela valide le contrat local, mais pas encore chaque variante d’erreur du fournisseur LLM ni l’effet live après redémarrage.
+
+**Processus :** Lumina n’a pas été redémarré. Le code corrigé reste local et sera évalué sur le processus après l’unique redémarrage final prévu. L’audit continue sur d’autres scénarios et effets aval.

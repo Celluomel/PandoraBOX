@@ -51,6 +51,7 @@ process rather than a state manager.
 """
 
 import logging
+import math
 import random
 import time
 from collections import deque
@@ -267,6 +268,42 @@ class ThoughtStream:
         self._MAX_OPEN_QUESTIONS: int = 12
 
     # ── Public API ────────────────────────────────────────────────────────────
+
+    def add(self, content: str, source: str = "external",
+            priority: float = 0.45, thought_type: str = "self_observation",
+            topic: str = "") -> bool:
+        """Record a validated thought produced by another cognitive module.
+
+        External producers use this instead of mutating ``_buffer`` directly.
+        The thought becomes visible to ``recent()`` immediately and is included
+        in the next regular persistence flush.
+        """
+        text = str(content or "").strip()
+        if not text:
+            return False
+        try:
+            p = float(priority)
+        except (TypeError, ValueError):
+            return False
+        if not math.isfinite(p) or not 0.0 <= p <= 1.0:
+            return False
+
+        thought = Thought(
+            content=text,
+            source=str(source or "external")[:80],
+            priority=p,
+            thought_type=str(thought_type or "self_observation")[:80],
+            topic=str(topic or "")[:120],
+        )
+        self._buffer.append(thought)
+        self._persist_dirty = True
+        try:
+            obs = getattr(self._o, "observatory", None)
+            if obs and hasattr(obs, "record_thought"):
+                obs.record_thought(text)
+        except Exception:
+            logger.debug("[ThoughtStream] External thought telemetry failed", exc_info=True)
+        return any(item is thought for item in self._buffer)
 
     def tick(self) -> Optional[Thought]:
         """
@@ -986,7 +1023,9 @@ class ThoughtStream:
                     content   = d.get("content", ""),
                     source    = d.get("source", "memory"),
                     priority  = float(d.get("priority", 0.3)),
+                    thought_type = d.get("thought_type", "self_observation"),
                     timestamp = float(d.get("timestamp", 0.0)),
+                    topic     = d.get("topic", ""),
                 )
                 if t.content:
                     self._buffer.append(t)
