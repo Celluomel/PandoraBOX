@@ -1,15 +1,15 @@
 # Audit du harnais cognitif — état et prochaines étapes
 
 **Date :** 11 novembre 2026
-**Statut :** audit en cours — conclusion globale non établie.
+**Statut :** audit en cours — conclusion globale non établie. Dernier commit poussé : `95794b7`.
 
 ## État courant de reprise — après le commit `036816b`
 
 - **Cause mémoire corrigée localement :** le rappel croisé pouvait préférer une ancienne réponse de Lumina à la déclaration source de l’utilisateur. Le nouveau chemin récupère aussi, séparément, un message utilisateur lexicalement pertinent et lui réserve une place dans le contexte borné. Une question antérieure reste explicitement une preuve de la question, pas de sa réponse.
-- **Preuve locale :** reproduction du mauvais classement avant fusion; le candidat utilisateur est ensuite injecté en tête; requête lexicale sans rapport = aucun candidat. Tests : `54 passed, 4 sous-tests` pour le lot mémoire/contexte/tour, puis `20 passed, 7 sous-tests` pour fiabilité mémoire et ordre GoalEngine. Compilation et `git diff --check` réussis.
+- **Preuve locale :** reproduction du mauvais classement avant fusion; le candidat utilisateur est ensuite injecté en tête; requête lexicale sans rapport = aucun candidat. Tests mémoire/contexte/tour : `54 passed, 4 sous-tests`; fiabilité mémoire et ordre GoalEngine : `20 passed, 7 sous-tests`; tests profil/résolution identité : `18 passed`; combinaison profil + régressions cognitives : `45 passed, 4 sous-tests`. Compilation et `git diff --check` réussis.
 - **Live :** cette correction n’a pas encore été chargée dans Lumina. Il faut un redémarrage avant les vérifications de rappel français/anglais et l’inspection des reçus candidats/injection.
 - **Portée :** cela corrige un défaut du harnais de mémoire; cela ne démontre ni la véracité des déclarations utilisateur, ni une qualité globale du Brain. Les scénarios objectifs/workspace/planner, profil, génération factuelle, parole proactive, efficacité et matrice complète de modules restent à auditer.
-- **Git :** le correctif mémoire est maintenant poussé sur `main` à `935dd43`, confirmé localement et sur `origin/main`. Le correctif profil décrit ci-dessous est une nouvelle modification locale en attente de commit. Modifications Body/UI et artefacts préexistants toujours exclus.
+- **Git :** `main` local et `origin/main` sont alignés sur `95794b7`; les correctifs mémoire (`935dd43`) et profil (`95794b7`) sont poussés. Modifications Body/UI et artefacts préexistants toujours exclus.
 
 ### Mise à jour du 11 novembre — apprentissage du profil
 
