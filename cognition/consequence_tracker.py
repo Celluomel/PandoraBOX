@@ -231,6 +231,7 @@ class ConsequenceTracker:
                         for key in (
                             "belief_persisted", "thought_stream_recorded",
                             "workspace_broadcast", "reused_existing_insight",
+                            "research_item_queued", "hypothesis_generated",
                         )
                         if key in report
                     },

@@ -287,3 +287,11 @@ Correction : l’écriture du reçu GoalEngine passe par une fonction isolée qu
 Vérification locale : un test simule une panne d’écriture GoalEngine; le test de ledger vérifie que succès opérationnel, persistance du belief et échec de persistance du compteur restent distincts. Le lot ciblé atteint **57 passed**, 7 warnings Pydantic préexistants; `py_compile` et `git diff --check` sont propres. Le test passe sous `PYTHONUTF8=1`, requis dans cette console Windows pour les impressions Unicode de configuration.
 
 **État live :** aucun redémarrage effectué; le processus actif n’a pas ces corrections en mémoire. Le cycle final de redémarrage reste reporté jusqu’à la fin de l’audit.
+
+## Sorties transmises aux consommateurs — preuve ajoutée
+
+Le rappel mémoire, la recherche Web et l’hypothèse associative produisaient du contenu, mais le reçu ne distinguait pas la création du contenu de son acceptation par le flux de pensées et le workspace. Le résultat de mémoire ne remontait pas ces deux acceptations; les actions asynchrones les ignoraient également.
+
+Les rapports d’action conservent maintenant les deux booléens issus de `_add_thought()`. Les événements `outcome` du ledger sélectionnent les preuves pertinentes : persistance du belief, pensée enregistrée, broadcast workspace accepté/refusé, résultat de recherche mis en file et hypothèse générée. Le test vérifie qu’un workspace qui refuse un broadcast reste distinct d’un ThoughtStream qui l’a accepté; les valeurs ne sont pas fusionnées en un statut générique « réussi ».
+
+Le lot ciblé reste à **57 passed**, 7 warnings Pydantic; `py_compile` et `git diff --check` réussis. Cela augmente l’observabilité des effets, sans démontrer encore que les sorties sont sémantiquement pertinentes ni qu’un consommateur particulier les a utilisées.

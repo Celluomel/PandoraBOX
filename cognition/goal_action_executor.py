@@ -704,8 +704,14 @@ class GoalActionExecutor:
                 f"Memory about '{goal.topic[:30]}': "
                 + " | ".join(parts)
             )
-            self._add_thought(thought, source="goal_action.memory_recall")
-            return {'success': True, 'result': f"recalled ({len(parts)} sources)"}
+            publication = self._add_thought(
+                thought, source="goal_action.memory_recall"
+            )
+            return {
+                'success': True,
+                'result': f"recalled ({len(parts)} sources)",
+                **publication,
+            }
 
         return {'success': False, 'result': "no relevant memories found"}
 
@@ -889,7 +895,9 @@ class GoalActionExecutor:
 
             # Inject into workspace at raised priority (reality-grounded signal)
             thought = f"[Web] {interpretation}"
-            self._add_thought(thought, source="goal_action.web_search", priority=0.62)
+            publication = self._add_thought(
+                thought, source="goal_action.web_search", priority=0.62
+            )
 
             # Write to semantic memory so next memory_recall finds this
             self._store_insight_in_semantic_memory(goal, topic, interpretation)
@@ -909,9 +917,11 @@ class GoalActionExecutor:
                 logger.debug(f"[GoalActionExecutor] skill seed error (non-fatal): {_skill_e}")
 
             # Queue for proactive delivery to user
-            self._pending_insights.append(
-                f"I was just exploring {topic} and found something worth sharing: {interpretation}"
+            queued_insight = (
+                f"I was just exploring {topic} and found something worth sharing: "
+                f"{interpretation}"
             )
+            self._pending_insights.append(queued_insight)
 
             # Track cooldown
             self._last_web_search[goal.id] = time.time()
@@ -923,6 +933,10 @@ class GoalActionExecutor:
             self._finalize_async_action(
                 goal, ACTION_WEB_SEARCH, True,
                 f"interpreted research for {topic[:80]}",
+                evidence={
+                    **publication,
+                    "research_item_queued": True,
+                },
                 execution_id=execution_id, cycle_id=cycle_id,
             )
             return
@@ -1624,7 +1638,7 @@ class GoalActionExecutor:
             )
 
             # Push as BELIEF at priority 0.85 — forces CDE to react as new fact
-            self._add_thought(
+            publication = self._add_thought(
                 f"Hypothesis: {hypothesis}",
                 source="bisociative_engine",
                 priority=0.85,
@@ -1663,6 +1677,10 @@ class GoalActionExecutor:
 
             self._finalize_async_action(
                 goal, ACTION_BISOCIATIVE, True, hypothesis,
+                evidence={
+                    **publication,
+                    "hypothesis_generated": bool(hypothesis),
+                },
                 execution_id=execution_id, cycle_id=cycle_id,
             )
 

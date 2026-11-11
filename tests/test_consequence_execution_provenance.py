@@ -72,6 +72,8 @@ class ConsequenceExecutionProvenanceTests(unittest.TestCase):
                     "result": "usable answer produced",
                     "goal_state_persisted": False,
                     "belief_persisted": True,
+                    "thought_stream_recorded": True,
+                    "workspace_broadcast": False,
                 },
             )
 
@@ -98,6 +100,8 @@ class ConsequenceExecutionProvenanceTests(unittest.TestCase):
             outcome = next(event for event in related if event["kind"] == "outcome")
             self.assertFalse(outcome["input_state"]["goal_state_persisted"])
             self.assertTrue(outcome["output_state"]["belief_persisted"])
+            self.assertTrue(outcome["output_state"]["thought_stream_recorded"])
+            self.assertFalse(outcome["output_state"]["workspace_broadcast"])
             error = next(event for event in related if event["kind"] == "error")
             update = next(event for event in related if event["kind"] == "update")
             chain = ledger.chain(update["event_id"])
