@@ -1688,14 +1688,17 @@ Write at most 70 words, in the user's language, only if a concise carry-forward 
         try:
             from cognition.self_description import (
                 is_architecture_query, is_cognitive_trace_query,
+                is_internal_cognitive_query,
             )
             _cognitive_trace_query = is_cognitive_trace_query(effective_input)
             _architecture_query = (
                 is_architecture_query(effective_input) or _cognitive_trace_query
             )
+            _internal_cognitive_query = is_internal_cognitive_query(effective_input)
         except Exception as _architecture_query_error:
             _architecture_query = False
             _cognitive_trace_query = False
+            _internal_cognitive_query = False
             logger.debug("Architecture query detection unavailable: %s", _architecture_query_error)
         _dialogue_continuity = self._recent_dialogue_continuity(
             effective_input,
@@ -1836,7 +1839,7 @@ Write at most 70 words, in the user's language, only if a concise carry-forward 
             # Architecture/self-audit answers are closed-world: they must be
             # grounded in this process's own trace, not supplemented by web
             # snippets that cannot prove what Lumina executed.
-            or _architecture_query
+            or _internal_cognitive_query
             or _quantitative_analysis is not None
             or (
                 _goal_means_analysis is not None
@@ -3481,15 +3484,17 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             try:
                 from cognition.self_description import (
                     get_self_description, is_architecture_query,
+                    is_internal_cognitive_query,
                     is_cognitive_trace_query,
                 )
                 _trace_only_query = is_cognitive_trace_query(user_input)
                 _architecture_query = (
                     is_architecture_query(user_input) or _trace_only_query
                 )
+                _internal_cognitive_query = is_internal_cognitive_query(user_input)
                 _module_tick_snapshot = None
                 _module_entries = []
-                if _architecture_query and not _trace_only_query:
+                if _internal_cognitive_query and not _trace_only_query:
                     _loop = getattr(self._organism, "_loop", None)
                     _snapshot_fn = getattr(_loop, "module_tick_snapshot", None)
                     if callable(_snapshot_fn):

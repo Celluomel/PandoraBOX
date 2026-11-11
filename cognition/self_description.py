@@ -56,6 +56,33 @@ def is_architecture_query(user_input: str) -> bool:
     )
 
 
+def is_internal_cognitive_query(user_input: str) -> bool:
+    """Route questions about Lumina's own behavior through closed-world evidence.
+
+    This is an intent boundary, not an answer lookup: it keeps external search
+    from being used to explain the running process and makes runtime evidence
+    available to the model when the user asks about a module's behavior.
+    """
+    text = " ".join(str(user_input or "").casefold().split())
+    if is_architecture_query(text):
+        return True
+    asks_cause_or_mechanism = bool(re.search(
+        r"\b(?:why|pourquoi|how|comment|what changed|what caused|"
+        r"qu['’]est-ce qui a changé|ce qui a changé|quelle cause|"
+        r"pour quelle raison|explique.{0,24}(?:fonctionne|apparu|produit))\b",
+        text,
+    ))
+    refers_to_internal_behavior = bool(re.search(
+        r"\b(?:module|code|fonctionnement|comportement|réponse|sortie|"
+        r"réflexion|parole spontanée|ancienne question|contexte|prompt|"
+        r"memory|recall|goalengine|presenceengine|lumina|you said|your answer|"
+        r"your response|you generated|tu as dit|ta réponse|ton message|"
+        r"tu as répondu|tu viens de répondre)\b",
+        text,
+    ))
+    return asks_cause_or_mechanism and refers_to_internal_behavior
+
+
 def _is_audit_trace_followup(normalized_text: str) -> bool:
     """Recognize a prior-turn audit reference by its discourse and subject."""
     prior_reference = bool(re.search(
@@ -434,6 +461,8 @@ class SelfDescription:
             "Verified architecture registry (partial; only registered components are listed).",
             "Treat these entries as evidence about named components and parameters, not as a complete inventory.",
             "Do not invent internal mechanisms, equations, or causal explanations that are not listed here.",
+            "A turn trace proves recorded execution and supplied context, not why a sentence was generated. "
+            "For a specific response's cause, use only linked prompt/output evidence; if absent, say the cause is unverified.",
         ]
         with self._lock:
             for c in self.components.values():
@@ -454,13 +483,17 @@ class SelfDescription:
         if not components:
             lines = [
                 "VERIFIED ARCHITECTURE: no components are registered in the self-description "
-                "module. Do not infer particular mechanisms from an empty registry."
+                "module. Do not infer particular mechanisms from an empty registry.",
+                "A turn trace proves recorded execution and supplied context, not why a sentence was generated. "
+                "For a specific response's cause, use only linked prompt/output evidence; if absent, say the cause is unverified.",
             ]
         else:
             lines = [
                 "VERIFIED ARCHITECTURE (partial registry; this is not a complete process-flow audit):",
                 "Use only the named roles/configuration below as verified self-description. "
                 "Do not invent equations, physical sensations, or unlisted mechanisms.",
+                "A turn trace proves recorded execution and supplied context, not why a sentence was generated. "
+                "For a specific response's cause, use only linked prompt/output evidence; if absent, say the cause is unverified.",
             ]
             for component in components[:12]:
                 lines.append(

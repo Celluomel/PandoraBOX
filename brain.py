@@ -100,6 +100,7 @@ if _ARGS.port is None:
 if _ARGS.host is None:
     _ARGS.host = str(getattr(config, "BRAIN_API_HOST", "127.0.0.1") or "127.0.0.1")
 from core.state import state
+from managers.user_manager import user_manager
 
 async def _boot() -> bool:
     """
@@ -309,15 +310,16 @@ class ChatRequest(BaseModel):
 async def chat(req: ChatRequest):
     if not state.ready or not state.persona:
         raise HTTPException(503, "Brain not ready yet — try again in a moment")
-    state.notify_user_turn(req.text, req.user_id)
+    resolved_user_id = user_manager.resolve_interaction_user_id(req.user_id)
+    state.notify_user_turn(req.text, resolved_user_id)
 
     if req.stream:
         async def _sse():
             assistant_parts = []
             turn_completed = False
             completed_turn_id = ""
-            cognitive_scope_id = req.user_id
-            async for chunk in state.persona.get_response_stream(req.text, req.user_id):
+            cognitive_scope_id = resolved_user_id
+            async for chunk in state.persona.get_response_stream(req.text, resolved_user_id):
                 if isinstance(chunk, dict) and chunk.get("__meta__"):
                     turn_completed = not bool(chunk.get("error"))
                     completed_turn_id = str(chunk.get("turn_id") or "")
@@ -329,7 +331,7 @@ async def chat(req: ChatRequest):
                     yield f"data: {chunk}\n\n"
             if turn_completed:
                 state.schedule_deferred_cognitive_stages(
-                    req.text, "".join(assistant_parts), req.user_id,
+                    req.text, "".join(assistant_parts), resolved_user_id,
                     turn_id=completed_turn_id, cognitive_scope_id=cognitive_scope_id,
                 )
         return StreamingResponse(_sse(), media_type="text/event-stream")
@@ -341,8 +343,8 @@ async def chat(req: ChatRequest):
     body_plan   = None
     turn_completed = False
     completed_turn_id = ""
-    cognitive_scope_id = req.user_id
-    async for chunk in state.persona.get_response_stream(req.text, req.user_id):
+    cognitive_scope_id = resolved_user_id
+    async for chunk in state.persona.get_response_stream(req.text, resolved_user_id):
         if isinstance(chunk, dict):
             if chunk.get("__meta__"):
                 emotion = chunk.get("emotion", "neutral")
@@ -361,7 +363,7 @@ async def chat(req: ChatRequest):
 
     if turn_completed:
         state.schedule_deferred_cognitive_stages(
-            req.text, full_text, req.user_id,
+            req.text, full_text, resolved_user_id,
             turn_id=completed_turn_id, cognitive_scope_id=cognitive_scope_id,
         )
 
@@ -369,7 +371,7 @@ async def chat(req: ChatRequest):
         "response": full_text.strip(),
         "emotion":  emotion,
         "tokens":   token_count,
-        "user_id":  req.user_id,
+        "user_id":  resolved_user_id,
         "sources":  sources,
         "body_plan": body_plan,
     }

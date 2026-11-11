@@ -260,6 +260,22 @@ class UserManager:
     def active_id(self) -> str:
         return self._active_id
 
+    def resolve_interaction_user_id(self, user_id: str | None) -> str:
+        """Resolve the Brain API's generic default to the persisted active user.
+
+        Explicit identities remain untouched. This lets headless `/chat`
+        requests use the same named profile as the UI without guessing from
+        message text or silently switching an explicitly selected user.
+        """
+        requested = str(user_id or "").strip()
+        if requested.casefold() not in {"", "default"}:
+            return requested
+        with self._lock:
+            active_id = str(self._active_id or "").strip()
+            if active_id and active_id in self._users:
+                return active_id
+        return self.GUEST_ID
+
     @property
     def active(self) -> UserProfile:
         return self.get_or_guest(self._active_id)

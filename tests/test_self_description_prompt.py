@@ -9,6 +9,7 @@ from cognition.self_description import (
     SelfDescription,
     is_architecture_query,
     is_cognitive_trace_query,
+    is_internal_cognitive_query,
     sanitize_displayed_cognitive_trace,
     trace_grounded_architecture_answer,
 )
@@ -26,6 +27,16 @@ class SelfDescriptionPromptTests(unittest.TestCase):
             "Si tu ne peux pas relier cette réponse au tour précédent, dis-le explicitement."
         ))
         self.assertFalse(is_architecture_query("What does the body camera see?"))
+
+    def test_internal_behavior_cause_is_closed_world_without_changing_camera_queries(self):
+        self.assertTrue(is_internal_cognitive_query(
+            "Pourquoi une réflexion spontanée sur une ancienne question de caméra pouvait apparaître, "
+            "et qu'est-ce qui a changé pour éviter cette reprise hors contexte ?"
+        ))
+        self.assertTrue(is_internal_cognitive_query(
+            "Why did your response describe a filter that is not in the code?"
+        ))
+        self.assertFalse(is_internal_cognitive_query("What does the body camera see?"))
 
     def test_runtime_manifest_distinguishes_observation_from_semantic_validation(self):
         description = SelfDescription.__new__(SelfDescription)
@@ -58,6 +69,8 @@ class SelfDescriptionPromptTests(unittest.TestCase):
         self.assertIn("last_output_quality=empty", context)
         self.assertIn("conditional_module: state=initialized_unobserved; ticks=0", context)
         self.assertIn("does not prove its result is correct", context)
+        self.assertIn("trace proves recorded execution and supplied context", context)
+        self.assertIn("cause is unverified", context)
 
     def test_runtime_manifest_survives_empty_persistent_registry(self):
         description = SelfDescription.__new__(SelfDescription)
@@ -327,9 +340,9 @@ class SelfDescriptionPromptTests(unittest.TestCase):
             )
         )
         self.assertTrue(any(
-            isinstance(node, ast.Name) and node.id == "_architecture_query"
+            isinstance(node, ast.Name) and node.id == "_internal_cognitive_query"
             for node in ast.walk(search_policy)
-        ), "architecture audit turns must use closed-world evidence")
+        ), "internal cognitive questions must use closed-world evidence")
 
     def test_turn_trace_preserves_aggregated_tick_manifest_counts(self):
         from cognition.persona_bridge import PersonaBridge
