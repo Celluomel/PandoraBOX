@@ -33,6 +33,7 @@ from typing import Any
 from managers.settings_manager import get_persona_name as _gpn
 from cognition.identity_boundary import prompt_block as _identity_boundary_block
 from cognition.body_runtime.robot_capabilities import robot_capability_report, robot_inventory_observation
+from cognition.memory_retrieval import merge_user_authored_memories
 from cognition.turn_context_evidence import (
     audit_safe_turn_summary,
     format_memory_for_prompt,
@@ -3417,7 +3418,16 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                 _interaction_mems = s.memory_system.retrieve_memories(
                     _recall_query, limit=_recall_limit, current_valence=_cur_valence
                 )
-                memories.extend(_interaction_mems)
+                # Cross-source retrieval can rank a fluent, high-impact past
+                # Lumina reply above the user's source statement. Retrieve the
+                # user's own messages through a separate lexical lane and
+                # reserve one relevant source record in the bounded prompt pool.
+                _user_authored_mems = s.memory_system.retrieve_user_authored_memories(
+                    _recall_query, limit=2
+                )
+                memories = merge_user_authored_memories(
+                    _interaction_mems, _user_authored_mems, _recall_limit
+                )
 
             # Personal facts (v117) — dedicated tier, always fetched, not
             # gated behind vision/event keyword triggers below. Root cause

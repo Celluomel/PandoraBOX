@@ -12,6 +12,8 @@ package.__path__ = [str(ROOT / "cognition")]
 sys.modules.setdefault("cognition", package)
 
 from cognition.ai_system import EnhancedMemorySystem
+from cognition.memory_retrieval import merge_user_authored_memories
+from cognition.turn_context_evidence import format_memory_for_prompt
 
 
 class _Persistence:
@@ -104,6 +106,50 @@ class MemorySystemFallbackTests(unittest.TestCase):
         self.assertEqual(result[0]["id"], 2)
         self.assertIsNone(system.embedding_model)
         self.assertIsNone(system.faiss_index)
+
+    def test_source_recall_preserves_user_statement_over_conflicting_lumina_reply(self):
+        query = "What relationship and direction did we define between Lumina and Flux?"
+        self.rows = [
+            {"id": 1, "faiss_id": 1,
+             "text": "User message: Lumina is the master brain; conversation goes one way from Lumina to Flux.",
+             "timestamp": datetime.now().isoformat(), "impact_score": 0.5,
+             "memory_type": "user_message", "memory_tier": "interaction",
+             "emotional_valence": "Neutral", "access_count": 0},
+            {"id": 2, "faiss_id": 2,
+             "text": "Conversation — User: How should Lumina and Flux work? | Lumina: Flux is master and the dialogue is bidirectional.",
+             "timestamp": datetime.now().isoformat(), "impact_score": 1.0,
+             "memory_type": "episodic", "memory_tier": "interaction",
+             "emotional_valence": "Neutral", "access_count": 0},
+        ]
+        system = self._system()
+
+        # Reproduce the actual failure: the shared fallback ranks the false,
+        # longer assistant reply above the user's source statement.
+        primary = system.retrieve_memories(query, limit=2)
+        self.assertEqual(primary[0]["id"], 2)
+
+        source = system.retrieve_user_authored_memories(query, limit=2)
+        recalled = merge_user_authored_memories(primary, source, limit=2)
+
+        self.assertEqual(recalled[0]["id"], 1)
+        rendered = format_memory_for_prompt(recalled[0])
+        self.assertIn("separately indexed, user-authored message", rendered)
+        self.assertIn("a question alone does not establish its answer", rendered)
+        self.assertIn("one way from Lumina to Flux", rendered)
+
+    def test_source_recall_does_not_inject_unrelated_user_message(self):
+        self.rows = [{
+            "id": 3, "faiss_id": 3, "text": "User message: My favorite color is green.",
+            "timestamp": datetime.now().isoformat(), "impact_score": 0.5,
+            "memory_type": "user_message", "memory_tier": "interaction",
+            "emotional_valence": "Neutral", "access_count": 0,
+        }]
+
+        result = self._system().retrieve_user_authored_memories(
+            "How does the cognitive planner select actions?", limit=2
+        )
+
+        self.assertEqual(result, [])
 
 
 if __name__ == "__main__":

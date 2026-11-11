@@ -3,6 +3,14 @@
 **Date :** 11 novembre 2026
 **Statut :** audit en cours — conclusion globale non établie.
 
+## État courant de reprise — après le commit `036816b`
+
+- **Cause mémoire corrigée localement :** le rappel croisé pouvait préférer une ancienne réponse de Lumina à la déclaration source de l’utilisateur. Le nouveau chemin récupère aussi, séparément, un message utilisateur lexicalement pertinent et lui réserve une place dans le contexte borné. Une question antérieure reste explicitement une preuve de la question, pas de sa réponse.
+- **Preuve locale :** reproduction du mauvais classement avant fusion; le candidat utilisateur est ensuite injecté en tête; requête lexicale sans rapport = aucun candidat. Tests : `54 passed, 4 sous-tests` pour le lot mémoire/contexte/tour, puis `20 passed, 7 sous-tests` pour fiabilité mémoire et ordre GoalEngine. Compilation et `git diff --check` réussis.
+- **Live :** cette correction n’a pas encore été chargée dans Lumina. Il faut un redémarrage avant les vérifications de rappel français/anglais et l’inspection des reçus candidats/injection.
+- **Portée :** cela corrige un défaut du harnais de mémoire; cela ne démontre ni la véracité des déclarations utilisateur, ni une qualité globale du Brain. Les scénarios objectifs/workspace/planner, profil, génération factuelle, parole proactive, efficacité et matrice complète de modules restent à auditer.
+- **Git :** commit local `036816b` sur `main`; l’alignement GitHub sera confirmé après push. Modifications Body/UI et artefacts préexistants toujours exclus.
+
 ## Objectif de l’audit
 
 Établir, pour des scénarios représentatifs du Brain, que les composants requis sont réellement exécutés, que leurs sorties sont cohérentes et de qualité suffisante, et que leurs effets en aval peuvent être reliés au tour qui les a déclenchés. Un tick, un statut `healthy` ou une réponse livrée ne démontre pas à lui seul que le raisonnement est correct.
@@ -17,7 +25,7 @@ Cette synthèse remplace, pour l’état actuel, les anciens paragraphes de stat
 |---|---|---|
 | **Tour utilisateur → réponse** | Reçus de tour attribués par `turn_id`; entrée, contexte cognitif, assemblage, génération primaire, contrôle de sortie, fallback et fin de flux couverts par tests ciblés. Un tour live `1bf4836f-bd69-4f3a-8a75-2af4d0950f88` a terminé avec 62 étapes, intégrité d’exécution cohérente et aucune étape manquante/échouée. | **Exécution du chemin prouvée sur des tours échantillonnés.** Cela ne valide pas la factualité : un autre tour live a produit une réponse inventée et injecté cinq résultats Web hors sujet (« pour »). Une trace `consistent` ne mesure que l’ordre et le flux des données. |
 | **Contexte cognitif et continuité multi-tour** | Empreintes des sorties reliées à leur consommation dans le prompt; correction de la frontière entre tour courant et réponse précédente; test du rappel antérieur lié au `turn_id` source. | **Contrat de trace testé; couverture live partielle.** Il reste à refaire un scénario multi-tour après le dernier lot chargé et à noter la qualité du rappel. |
-| **Mémoire conversationnelle** | La requête brute est séparée du biais d’attention; les tours utilisateur et réponses Lumina ont des provenances distinctes; l’indexation conserve une entrée `user_message`; les candidats rappelés et réellement injectés sont distingués par empreintes. Suites de régression dédiées. | **Cause logicielle identifiée et corrigée dans Git, mais fiabilité sémantique non acquise.** Les essais live ont montré plusieurs faux rappels de la règle Lumina→Flux, parfois à partir d’anciennes réponses erronées de Lumina. La correction d’indexation la plus récente n’a pas encore sa confirmation live. |
+| **Mémoire conversationnelle** | La requête brute est séparée du biais d’attention; les tours utilisateur et réponses Lumina ont des provenances distinctes; les candidats rappelés et réellement injectés sont distingués par empreintes. Un nouveau test reproduit le classement erroné d’une réponse Lumina au-dessus de la déclaration utilisateur, puis vérifie la récupération et l’injection séparées de la source utilisateur. | **Cause du classement confirmée et correction locale testée.** La voie principale mélangeait toutes les provenances et laissait impact/récence départager des contenus contradictoires. Le code réserve maintenant un emplacement à un message utilisateur lexicalement pertinent. Le résultat live reste à vérifier après redémarrage; ceci ne transforme pas les propos utilisateur en vérité objective. |
 | **Profil utilisateur** | Résolution du profil actif, contexte de profil tracé, apprentissage humain attribué au tour, écriture vérifiée par relecture de `users.json`; déclarations transitoires mises en quarantaine. Tests de persistance puis réinjection au tour suivant. Un ancien tour live a correctement identifié Fred. | **Chemin de lecture et contrat d’écriture testés; validation live du cycle complet “nouveau fait → persistance → tour suivant” à refaire.** |
 | **Pensées → propositions → objectifs → workspace** | Test de parcours de la pensée structurée vers `GoalEngine`, relecture vérifiée de l’objectif persisté puis consommation en aval; admission unique des créateurs de buts; broadcast compté uniquement si le workspace l’accepte. Les propositions rejetées ne peuvent plus alimenter un focus durable, `WorkspaceBias`, `DecisionCommitment` ou Curiosity. | **Contrats et cas positifs/négatifs testés localement.** Le cas précis de proposition rejetée n’a pas été reproduit en live après le dernier correctif. |
 | **Planification et résultat d’action** | `execution_id`/`cycle_id` propagés du planificateur à la prédiction, au résultat, au ledger et à la mise à jour du plan; échec ne fait plus progresser une étape; étape utilisateur non complétée sans réponse corrélée; clôture requiert une écriture persistée confirmée. Suites de planification/lifecycle dédiées. | **Chaîne logicielle testée; résultat live de bout en bout après les correctifs non encore établi.** Une réponse du LLM ou une étape `completed` ne vaut preuve que si le reçu et l’effet persistent concordent. |
@@ -35,9 +43,34 @@ Les groupes ciblés rapportés dans les sections historiques couvrent les domain
 
 **Le harnais a maintenant des contrats d’exécution et de provenance plus fiables, et plusieurs faux succès/liaisons causales erronées ont été corrigés. L’audit n’établit toujours pas que Lumina produit des sorties globalement fiables ou que tous les composants sont efficaces.** Les échecs live de rappel mémoire et de recherche hors sujet sont des contre-exemples concrets; les corrections correspondantes doivent encore être chargées puis rejouées sur les scénarios. La clôture exige la matrice par scénario, les traces live après le commit courant, des assertions d’effets aval et une évaluation sémantique explicite.
 
+## Reprise de l’audit — récupération mémoire source contre réponse historique
+
+### Cause reproduite
+
+Le chemin mémoire conversationnel classait dans un seul pool les lignes `user_message` et les dialogues contenant une réponse de Lumina. En mode lexical, le score combinait pertinence avec impact et récence; une réponse longue et à fort impact pouvait donc battre la déclaration utilisateur correspondante. Le prompt distinguait ensuite correctement les rôles, mais la déclaration source pouvait déjà être absente des cinq souvenirs injectés. C’est un défaut du contrat de récupération, pas un manque de consigne au LLM.
+
+La régression reproduit ce cas avec une règle utilisateur « Lumina est le cerveau maître; le dialogue va dans un seul sens vers Flux » et une réponse historique contradictoire attribuée à Lumina. Le classement partagé plaçait d’abord la réponse erronée. Le nouveau chemin extrait séparément les messages de type `user_message` avec recouvrement lexical, puis réserve le meilleur candidat correspondant dans le pool borné avant l’injection. Une requête sans termes pertinents ne récupère aucun message utilisateur.
+
+### Correction locale et preuves
+
+- `EnhancedPersistence.get_all_memories()` peut maintenant filtrer par `memory_type` en SQL.
+- `EnhancedMemorySystem.retrieve_user_authored_memories()` classe séparément les seuls messages utilisateur, sans leur appliquer le score d’impact/récence des autres enregistrements.
+- `merge_user_authored_memories()` conserve au plus un candidat utilisateur pertinent en tête du contexte borné puis déduplique le pool général.
+- Le rendu existant maintient l’avertissement épistémique : un message utilisateur prouve ce qui a été dit; une question ne prouve pas sa réponse.
+- Le reçu `memory_retrieval` et la preuve d’injection existants couvrent le pool fusionné, donc le chemin ajouté reste visible dans l’audit par tour.
+- Suites exécutées : mémoire fallback, qualité de récupération, régressions cognitives, exécution de tour et contexte prédictif — **54 passed, 4 sous-tests passés**; fiabilité mémoire et ordre d’exécution GoalEngine — **20 passed, 7 sous-tests passés**. `py_compile` et `git diff --check` réussis.
+
+### Limites et prochaine vérification
+
+La preuve actuelle est une reproduction déterministe locale, pas encore un échange live. La sélection lexicale peut rater une paraphrase sans vocabulaire partagé; elle ne prouve pas qu’une déclaration utilisateur est vraie, et ne doit pas transformer une question antérieure en fait établi. Le coût temps/mémoire sur le corpus complet n’a pas encore été mesuré. Le code exige un redémarrage de Lumina pour être actif; au prochain redémarrage groupé, rejouer le cas Lumina/Flux en formulation française et anglaise, puis vérifier dans la trace que le candidat `user_message` apparaît à la fois dans les candidats récupérés et dans les enregistrements injectés, et que la réponse respecte le sens de la source.
+
+### État de l’audit après cette correction
+
+Ce correctif ferme un défaut causal concret du rappel, mais ne clôt pas l’audit. Restent en particulier : validation live mémoire après redémarrage; continuité profil utilisateur (nouveau fait → persistance → récupération); effets des objectifs sur workspace et planification par tour; qualité de réponses d’introspection et recherche Web hors sujet; résultats d’action réels contre déclarations du LLM; preuves live des reçus `skipped_cadence`/`skipped_governor`; inventaire scénario par scénario des modules requis; enfin profilage d’efficacité et évaluation sémantique avec références. Le dernier snapshot de registre ne doit pas être présenté comme une conclusion de qualité.
+
 ### Synchronisation du code et processus live
 
-`main` local et `origin/main` sont alignés sur `f2853b5`; ce commit ajoute les reçus de cadence et met à jour le rapport. Le relevé live `40/43`, `241 ticks` précède ce commit et ne prouve donc pas l’exécution du nouveau code. Il faut redémarrer Lumina pour charger `f2853b5`; les autres changements préexistants du worktree ne sont pas inclus dans ce commit.
+Au début de cette reprise, `main` local et `origin/main` étaient alignés sur `76ca3ff`. Le lot de rappel mémoire décrit ci-dessus est ensuite devenu une modification locale distincte; son état de commit est indiqué dans la synthèse la plus récente en tête du rapport après validation. Le relevé live `40/43`, `241 ticks` précède les reçus de cadence et le rappel source; il ne prouve donc pas l’exécution de ces changements. Lumina devra être redémarrée après le commit cumulé pour valider les nouveaux chemins.
 
 ## État exécutif
 

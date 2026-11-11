@@ -604,7 +604,9 @@ class EnhancedPersistence:
             logger.error(f"get_memories_by_ids failed: {e}")
             return []
 
-    def get_all_memories(self, tier: Optional[str] = None) -> List[Dict[str, Any]]:
+    def get_all_memories(
+        self, tier: Optional[str] = None, memory_type: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
         """Return persisted memories for deterministic retrieval fallback."""
         try:
             with self.get_connection() as conn:
@@ -613,12 +615,18 @@ class EnhancedPersistence:
                     "emotional_valence, arousal_level, memory_type, memory_tier, access_count "
                     "FROM memories"
                 )
-                params = ()
+                filters = []
+                params = []
                 if tier:
-                    query += " WHERE memory_tier = ?"
-                    params = (tier,)
+                    filters.append("memory_tier = ?")
+                    params.append(tier)
+                if memory_type:
+                    filters.append("memory_type = ?")
+                    params.append(memory_type)
+                if filters:
+                    query += " WHERE " + " AND ".join(filters)
                 query += " ORDER BY id DESC"
-                rows = conn.execute(query, params).fetchall()
+                rows = conn.execute(query, tuple(params)).fetchall()
             columns = [
                 "id", "faiss_id", "text", "timestamp", "impact_score",
                 "emotional_valence", "arousal_level", "memory_type", "memory_tier", "access_count",
@@ -978,6 +986,42 @@ class EnhancedMemorySystem:
             results.append((score, memory))
         results.sort(key=lambda item: item[0], reverse=True)
         return [memory for _, memory in results]
+
+    def retrieve_user_authored_memories(
+        self, query: str, limit: int = 2,
+    ) -> List[Dict[str, Any]]:
+        """Recall source utterances separately from Lumina's past replies.
+
+        This is a lexical provenance path, not a semantic truth classifier:
+        a user question remains only evidence of a question, as the prompt
+        renderer explicitly states. Empty/irrelevant lexical matches are not
+        returned.
+        """
+        if limit <= 0:
+            return []
+        try:
+            try:
+                memories = self.persistence.get_all_memories(memory_type="user_message")
+            except TypeError:
+                # Keep lightweight persistence adapters used by integrations
+                # and tests compatible while retaining the type boundary.
+                memories = [
+                    memory for memory in self.persistence.get_all_memories()
+                    if memory.get("memory_type") == "user_message"
+                ]
+            ranked = rank_documents(query, [
+                memory_embedding_text(memory.get("text", ""), "user_message")
+                for memory in memories
+            ], limit=limit)
+            results = []
+            for index, relevance in ranked:
+                memory = dict(memories[index])
+                memory["relevance"] = relevance
+                results.append(memory)
+            return results
+        except Exception as error:
+            logger.debug("User-authored memory recall unavailable: %s", error)
+            return []
 
     def retrieve_by_tier(
         self,

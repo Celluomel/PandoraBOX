@@ -62,3 +62,40 @@ def rank_documents(query: str, documents: Sequence[str], limit: int = 5) -> List
             scored.append((index, score / (score + 1.0)))
     scored.sort(key=lambda item: (-item[1], item[0]))
     return scored[:limit]
+
+
+def merge_user_authored_memories(
+    primary: Sequence[dict], user_authored: Sequence[dict], limit: int
+) -> List[dict]:
+    """Keep one relevant source utterance in a bounded cross-source recall set.
+
+    The primary retriever ranks all memory types together. Preserve the best
+    separately retrieved user-authored record ahead of that pool so historical
+    assistant wording cannot crowd out the source statement it may have
+    answered incorrectly.
+    """
+    if limit <= 0:
+        return []
+    merged: List[dict] = []
+    seen = set()
+
+    def add(memory: dict) -> None:
+        key = memory.get("id") or memory.get("faiss_id") or memory.get("text")
+        if key in seen:
+            return
+        seen.add(key)
+        merged.append(memory)
+
+    for memory in user_authored:
+        if memory.get("memory_type") == "user_message":
+            add(memory)
+            break
+    for memory in primary:
+        add(memory)
+        if len(merged) >= limit:
+            return merged
+    for memory in user_authored:
+        add(memory)
+        if len(merged) >= limit:
+            break
+    return merged[:limit]
