@@ -33,7 +33,11 @@ from cognition.semantic_memory import SemanticMemory
 from cognition.self_concept_synchronizer import SelfConceptSynchronizer
 from cognition.self_description import SelfDescription
 from cognition.simple_thought_evaluator import SimpleThoughtEvaluator
-from cognition.turn_context_evidence import memory_retrieval_evidence, profile_context_evidence
+from cognition.turn_context_evidence import (
+    audit_safe_turn_summary,
+    memory_retrieval_evidence,
+    profile_context_evidence,
+)
 from cognition.thought_thread_engine import ThoughtThreadEngine
 from managers.user_manager import UserManager
 
@@ -91,6 +95,32 @@ class CognitiveLogRegressionTests(unittest.TestCase):
         self.assertNotIn("private remembered conversation detail", str(evidence))
         self.assertNotIn("private preference", str(profile))
         self.assertEqual(profile["status"], "injected")
+
+    def test_turn_trace_exposes_memory_provenance_without_memory_text(self):
+        evidence = memory_retrieval_evidence("what did we decide?", [{
+            "id": "decision-42", "text": "Private decision content",
+            "memory_tier": "episodic", "memory_type": "conversation",
+            "source": "faiss", "timestamp": "2026-11-10T10:00:00",
+        }])
+
+        summary = audit_safe_turn_summary(evidence)
+
+        self.assertEqual(summary["candidate_count"], 1)
+        self.assertEqual(summary["candidates"][0]["memory_tier"], "episodic")
+        self.assertEqual(summary["candidates"][0]["source"], "faiss")
+        self.assertNotIn("Private decision content", str(summary))
+
+    def test_turn_trace_exposes_profile_receipt_without_profile_values(self):
+        summary = audit_safe_turn_summary({
+            "status": "updated", "changed": True, "quarantined_count": 2,
+            "private_profile_value": "do not expose",
+        })
+
+        self.assertEqual(summary["status"], "updated")
+        self.assertTrue(summary["changed"])
+        self.assertEqual(summary["quarantined_count"], 2)
+        self.assertNotIn("private_profile_value", str(summary))
+        self.assertNotIn("do not expose", str(summary))
 
     def test_simple_thought_evaluator_can_timestamp_a_fresh_goal_candidate(self):
         class _Dal:

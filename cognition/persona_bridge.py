@@ -33,7 +33,11 @@ from typing import Any
 from managers.settings_manager import get_persona_name as _gpn
 from cognition.identity_boundary import prompt_block as _identity_boundary_block
 from cognition.body_runtime.robot_capabilities import robot_capability_report, robot_inventory_observation
-from cognition.turn_context_evidence import memory_retrieval_evidence, profile_context_evidence
+from cognition.turn_context_evidence import (
+    audit_safe_turn_summary,
+    memory_retrieval_evidence,
+    profile_context_evidence,
+)
 
 from pathlib import Path
 
@@ -49,6 +53,9 @@ def _turn_output_evidence(value: Any) -> tuple[str, dict[str, Any]]:
         summary = summarize_output(value)
     except Exception:
         summary = {"type": type(value).__name__, "quality": "shape_only"}
+    safe_summary = audit_safe_turn_summary(value)
+    if safe_summary is not None:
+        summary = safe_summary
     try:
         if isinstance(value, bytes):
             material = value
@@ -3575,7 +3582,10 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     "Historical memories may contain earlier assistant claims that were mistaken; they are records, "
                     "not proof of current state, module existence, or mechanism. Do not use them to verify current architecture. "
                     "Use a record only when it materially helps answer the user's latest message; otherwise ignore it. "
-                    "Never let an older topic displace or redirect the topic of the latest message.\n"
+                    "Never let an older topic displace or redirect the topic of the latest message. "
+                    "When the user asks what was previously decided, agreed, defined, or requested, answer only with details "
+                    "supported by a relevant retrieved record or visible conversation history. Do not replace missing recall "
+                    "with a newly invented interpretation; say the specific detail was not retrieved.\n"
                     + mem_ctx
                 )
             else:
@@ -3590,8 +3600,8 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     mem_section = (
                         "━━ MEMORY STATUS ━━\n"
                         "No stored memories were retrieved for this query. "
-                        "If the interlocutor asks you to recall something specific, be honest: "
-                        "say you don't have that detail in memory rather than inventing or guessing."
+                        "If the interlocutor asks what was previously decided, agreed, defined, requested, or said, "
+                        "be honest that the specific record was not retrieved rather than inventing or guessing."
                     )
             # Grounded facts must take precedence over narrative framing for
             # any factual request, not only a hard-coded "who is" question.

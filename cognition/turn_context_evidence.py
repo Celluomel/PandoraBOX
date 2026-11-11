@@ -37,3 +37,61 @@ def profile_context_evidence(status: str, source: str, context: str) -> dict:
         "source": str(source),
         "context_sha256": _sha256(str(context)),
     }
+
+
+def audit_safe_turn_summary(value: Any) -> dict[str, Any] | None:
+    """Expose bounded provenance fields while keeping private prompt/memory text hidden."""
+    if not isinstance(value, Mapping):
+        return None
+
+    if {"query_sha256", "candidate_count", "candidates"}.issubset(value):
+        candidates = []
+        raw_candidates = value.get("candidates")
+        if isinstance(raw_candidates, Iterable) and not isinstance(raw_candidates, (str, bytes, Mapping)):
+            for candidate in raw_candidates:
+                if not isinstance(candidate, Mapping):
+                    continue
+                candidates.append({
+                    "ref": str(candidate.get("ref", ""))[:20],
+                    "memory_tier": str(candidate.get("memory_tier", "unknown"))[:24],
+                    "memory_type": str(candidate.get("memory_type", "unknown"))[:40],
+                    "source": str(candidate.get("source", "memory_store"))[:40],
+                    "timestamp_present": bool(candidate.get("timestamp_present")),
+                })
+                if len(candidates) >= 12:
+                    break
+        try:
+            candidate_count = max(0, min(1000, int(value.get("candidate_count", len(candidates)))))
+        except (TypeError, ValueError, OverflowError):
+            candidate_count = len(candidates)
+        return {
+            "type": "memory_retrieval_evidence",
+            "query_sha256": str(value.get("query_sha256", ""))[:64],
+            "candidate_count": candidate_count,
+            "candidates": candidates,
+            "quality": "present" if candidate_count else "empty",
+        }
+
+    if {"status", "source", "context_sha256"}.issubset(value):
+        return {
+            "type": "profile_context_evidence",
+            "status": str(value.get("status", ""))[:32],
+            "source": str(value.get("source", ""))[:40],
+            "context_sha256": str(value.get("context_sha256", ""))[:64],
+            "quality": "present",
+        }
+
+    if {"status", "changed", "quarantined_count"}.issubset(value):
+        try:
+            quarantined_count = max(0, min(1000, int(value.get("quarantined_count", 0))))
+        except (TypeError, ValueError, OverflowError):
+            quarantined_count = 0
+        return {
+            "type": "profile_learning_receipt",
+            "status": str(value.get("status", ""))[:48],
+            "changed": bool(value.get("changed")),
+            "quarantined_count": quarantined_count,
+            "quality": "present",
+        }
+
+    return None
