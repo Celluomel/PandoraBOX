@@ -256,6 +256,12 @@ class CognitiveLogRegressionTests(unittest.TestCase):
                         "statement": "Frequently referenced concept: calme (20 uses)",
                         "confidence": 0.85,
                     },
+                    "insight_from_semantic_hub": {
+                        "name": "insight_from_semantic_hub",
+                        "statement": "It signifies a disconnect: Frequently referenced concept: calme "
+                                    "but my actual behavior doesn't back that up",
+                        "confidence": 0.45,
+                    },
                     "expressed_practical": {
                         "name": "expressed_practical",
                         "statement": "I value practical approaches that work",
@@ -293,6 +299,14 @@ class CognitiveLogRegressionTests(unittest.TestCase):
                 "violations": 11,
                 "affirmations": 0,
             },
+            "insight_from_semantic_hub": {
+                "name": "insight_from_semantic_hub",
+                "statement": "Frequently referenced concept: calme but my actual behavior "
+                            "doesn't back that up",
+                "confidence": 0.45,
+                "violations": 3,
+                "affirmations": 0,
+            },
             "expressed_practical": {
                 "name": "expressed_practical",
                 "statement": "I value practical approaches that work",
@@ -303,11 +317,70 @@ class CognitiveLogRegressionTests(unittest.TestCase):
         synchronizer._sync_beliefs(state)
 
         self.assertNotIn("expressed_semantic_hub_calme", state["beliefs"])
+        self.assertNotIn("insight_from_semantic_hub", state["beliefs"])
         self.assertIn("expressed_practical", state["beliefs"])
         self.assertIn(
             "expressed_semantic_hub_calme", state["provenance_quarantine"]
         )
-        self.assertEqual(synchronizer._last_provenance_quarantined, 1)
+        self.assertIn("insight_from_semantic_hub", state["provenance_quarantine"])
+        self.assertEqual(synchronizer._last_provenance_quarantined, 2)
+
+    def test_synchronizer_quarantines_identity_store_hubs_and_derived_insights(self):
+        with tempfile.TemporaryDirectory() as directory:
+            identity_path = Path(directory, "identity.json")
+            original_hub = {
+                "name": "expressed_semantic_hub_calme",
+                "statement": "Frequently referenced concept: calme (20 uses)",
+                "confidence": 0.85,
+            }
+            original_insight = {
+                "name": "insight_from_semantic_hub",
+                "statement": "Frequently referenced concept: calme but my actual behavior "
+                            "doesn't back that up",
+                "confidence": 0.45,
+            }
+            identity_path.write_text(json.dumps({"beliefs": {
+                "expressed_semantic_hub_calme": original_hub,
+                "insight_from_semantic_hub": original_insight,
+                "expressed_practical": {"name": "expressed_practical", "confidence": 0.8},
+            }}), encoding="utf-8")
+
+            synchronizer = SelfConceptSynchronizer(directory)
+            moved = synchronizer._quarantine_identity_provenance()
+            migrated = json.loads(identity_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(moved, 2)
+        self.assertEqual(set(migrated["beliefs"]), {"expressed_practical"})
+        self.assertEqual(
+            migrated["provenance_quarantine"]["expressed_semantic_hub_calme"]["statement"],
+            original_hub["statement"],
+        )
+        self.assertEqual(
+            migrated["provenance_quarantine"]["insight_from_semantic_hub"]["statement"],
+            original_insight["statement"],
+        )
+
+    def test_identity_provenance_quarantine_preserves_list_schema(self):
+        with tempfile.TemporaryDirectory() as directory:
+            identity_path = Path(directory, "identity.json")
+            identity_path.write_text(json.dumps({"beliefs": [
+                {"name": "expressed_semantic_hub_calme", "statement":
+                 "Frequently referenced concept: calme (20 uses)"},
+                {"name": "expressed_practical", "statement": "Useful belief"},
+            ]}), encoding="utf-8")
+
+            synchronizer = SelfConceptSynchronizer(directory)
+            moved = synchronizer._quarantine_identity_provenance()
+            migrated = json.loads(identity_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(moved, 1)
+        self.assertIsInstance(migrated["beliefs"], list)
+        self.assertEqual([belief["name"] for belief in migrated["beliefs"]],
+                         ["expressed_practical"])
+        self.assertEqual(
+            migrated["provenance_quarantine"]["expressed_semantic_hub_calme"]["statement"],
+            "Frequently referenced concept: calme (20 uses)",
+        )
 
     def test_identity_topic_generator_ignores_semantic_hub_violation_counts(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -317,6 +390,14 @@ class CognitiveLogRegressionTests(unittest.TestCase):
                         "name": "expressed_semantic_hub_calme",
                         "statement": "Frequently referenced concept: calme (20 uses)",
                         "confidence": 0.85,
+                        "violations": 11,
+                        "affirmations": 0,
+                    },
+                    "insight_from_semantic_hub": {
+                        "name": "insight_from_semantic_hub",
+                        "statement": "Frequently referenced concept: calme but my actual behavior "
+                                    "doesn't back that up",
+                        "confidence": 0.45,
                         "violations": 11,
                         "affirmations": 0,
                     },

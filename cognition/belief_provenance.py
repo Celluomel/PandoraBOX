@@ -23,3 +23,30 @@ def is_semantic_concept_belief(record: Mapping[str, Any] | None, key: str = "") 
     while name.startswith("expressed_"):
         name = name[len("expressed_"):]
     return name.startswith("semantic_hub_")
+
+
+def is_semantic_hub_derived_insight(
+    record: Mapping[str, Any] | None, key: str = "",
+) -> bool:
+    """Recognize the legacy identity-contradiction insight built from hub stats."""
+    if not isinstance(record, Mapping):
+        return False
+    text = " ".join((
+        str(key), str(record.get("name") or ""),
+        str(record.get("statement") or ""),
+        str(record.get("description") or ""),
+    )).lower()
+    return (
+        "frequently referenced concept:" in text
+        and "but my actual behavior doesn't back that up" in text
+    )
+
+
+def is_semantic_provenance_contamination(
+    record: Mapping[str, Any] | None, key: str = "",
+) -> bool:
+    """True for graph-statistic beliefs and legacy insights derived from them."""
+    return (
+        is_semantic_concept_belief(record, key)
+        or is_semantic_hub_derived_insight(record, key)
+    )

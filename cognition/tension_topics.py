@@ -41,7 +41,7 @@ import json
 import random
 import time
 from pathlib import Path
-from cognition.belief_provenance import is_semantic_concept_belief
+from cognition.belief_provenance import is_semantic_provenance_contamination
 
 
 def generate_curiosity_topic(persona_dir: Path) -> str:
@@ -104,7 +104,7 @@ def generate_identity_topic(persona_dir: Path) -> str:
             if beliefs:
                 contested = [
                     b for b in beliefs.values()
-                    if not is_semantic_concept_belief(b)
+                    if not is_semantic_provenance_contamination(b)
                     if b.get('violations', 0) > b.get('affirmations', 0)
                     and b.get('statement')
                 ]
@@ -116,7 +116,7 @@ def generate_identity_topic(persona_dir: Path) -> str:
                     )
                 uncertain = [
                     b for b in beliefs.values()
-                    if not is_semantic_concept_belief(b)
+                    if not is_semantic_provenance_contamination(b)
                     if b.get('confidence', 1.0) < 0.4 and b.get('statement')
                 ]
                 if uncertain:

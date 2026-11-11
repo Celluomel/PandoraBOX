@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from core.data.access import DataAccess
-from cognition.belief_provenance import is_semantic_concept_belief
+from cognition.belief_provenance import is_semantic_provenance_contamination
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +52,7 @@ class SelfConceptSynchronizer:
             'beliefs_eligible_from_identity': 0,
             'beliefs_pruned_by_cap': 0,
             'beliefs_quarantined_by_provenance': 0,
+            'identity_records_quarantined_by_provenance': 0,
             'beliefs_total_after_sync': 0,
             'milestones_found': 0,
             'coherence_before': 0.0,
@@ -64,6 +65,12 @@ class SelfConceptSynchronizer:
         # 'before' reading every session when the cache held a past better value.
         # The live computation is ground truth — don't override it with stale cache.
         report['coherence_before'] = sc.get('state', {}).get('coherence', 0.0)
+
+        # Move legacy graph-statistic beliefs and insights derived from them
+        # out of the active identity store before syncing its remaining beliefs.
+        report['identity_records_quarantined_by_provenance'] = (
+            self._quarantine_identity_provenance()
+        )
 
         # 1. Sync beliefs → self_concept.beliefs
         synced = self._sync_beliefs(sc)
@@ -200,7 +207,7 @@ class SelfConceptSynchronizer:
         # Build a lookup by name for fast dedup
         incoming = {
             b.get('name', ''): b for b in (beliefs or [])
-            if b.get('name') and not is_semantic_concept_belief(b)
+            if b.get('name') and not is_semantic_provenance_contamination(b)
             and b.get('category') not in self.BELIEF_SKIP_CATEGORIES
             and b.get('confidence', 0) >= self.BELIEF_MIN_CONFIDENCE
         }
@@ -226,11 +233,17 @@ class SelfConceptSynchronizer:
         # the active self-model while preserving their full payload for audit.
         quarantine = sc.setdefault('provenance_quarantine', {})
         for key, belief in list(existing.items()):
-            if not is_semantic_concept_belief(belief, key):
+            if not is_semantic_provenance_contamination(belief, key):
                 continue
             quarantine.setdefault(key, {
                 **belief,
-                'quarantine_reason': 'semantic_graph_statistic_is_not_self_belief',
+                'quarantine_reason': (
+                    'legacy_insight_derived_from_semantic_graph_statistic'
+                    if 'Frequently referenced concept:' in str(
+                        belief.get('statement') or belief.get('description') or ''
+                    )
+                    else 'semantic_graph_statistic_is_not_self_belief'
+                ),
                 'quarantined_at': _now(),
             })
             del existing[key]
@@ -337,6 +350,58 @@ class SelfConceptSynchronizer:
         # Count only incoming changes which survived the cap. This keeps the
         # metric aligned with persisted state rather than transient candidates.
         return sum(key in existing for key in changed_keys)
+
+    def _quarantine_identity_provenance(self) -> int:
+        """Preserve contaminated identity records but remove them from active beliefs."""
+        identity = self._load_json('identity.json')
+        beliefs = identity.get('beliefs', {})
+        beliefs_are_list = isinstance(beliefs, list)
+        if beliefs_are_list:
+            entries = [
+                (str(item.get('name') or index), item)
+                for index, item in enumerate(beliefs)
+                if isinstance(item, dict)
+            ]
+        elif isinstance(beliefs, dict):
+            entries = list(beliefs.items())
+        else:
+            return 0
+
+        quarantine = identity.setdefault('provenance_quarantine', {})
+        moved = 0
+        contaminated_keys = set()
+        for key, record in entries:
+            if not is_semantic_provenance_contamination(record, str(key)):
+                continue
+            contaminated_keys.add(str(key))
+            if isinstance(record, dict):
+                derived_insight = 'Frequently referenced concept:' in str(
+                    record.get('statement') or record.get('description') or ''
+                )
+                reason = (
+                    'legacy_insight_derived_from_semantic_graph_statistic'
+                    if derived_insight
+                    else 'semantic_graph_statistic_is_not_self_belief'
+                )
+                quarantine.setdefault(str(key), {
+                    **record,
+                    'quarantine_reason': reason,
+                    'quarantined_at': _now(),
+                })
+            moved += 1
+
+        if moved:
+            if beliefs_are_list:
+                identity['beliefs'] = [
+                    record for key, record in entries if key not in contaminated_keys
+                ]
+            else:
+                for key in contaminated_keys:
+                    beliefs.pop(key, None)
+                identity['beliefs'] = beliefs
+            identity['updated_at'] = _now()
+            self._save_json('identity.json', identity)
+        return moved
 
     # ── Coherence ─────────────────────────────────────────────────────────────
 

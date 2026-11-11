@@ -22,7 +22,7 @@ from typing import Any, Dict, List, Optional
 
 from core.data.access import DataAccess
 from core.data.schemas import make_belief
-from cognition.belief_provenance import is_semantic_concept_belief
+from cognition.belief_provenance import is_semantic_provenance_contamination
 
 logger = logging.getLogger(__name__)
 
@@ -144,7 +144,7 @@ class BeliefBootstrapper:
             # not identity.json. They inflate the identity store with graph
             # nodes (semantic_hub_goal, semantic_hub_explore, etc.) that are
             # corpus statistics, not self-beliefs.
-            if is_semantic_concept_belief(raw):
+            if is_semantic_provenance_contamination(raw):
                 continue
 
             conf = raw.get('confidence', 0.5)
