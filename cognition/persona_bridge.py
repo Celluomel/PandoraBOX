@@ -1115,12 +1115,14 @@ class PersonaBridge:
             return
 
         _displayed_trace = None
+        _trace_query = False
         try:
             from cognition.self_description import (
                 is_cognitive_trace_query,
                 sanitize_displayed_cognitive_trace,
             )
-            if is_cognitive_trace_query(effective_input):
+            _trace_query = bool(is_cognitive_trace_query(effective_input))
+            if _trace_query:
                 _displayed_trace = sanitize_displayed_cognitive_trace(
                     displayed_cognitive_trace
                 )
@@ -1312,6 +1314,71 @@ class PersonaBridge:
             yield err
             yield {"__meta__": True, "raw": err, "speech": err,
                    "emotion": "neutral", "intensity": 0.2, "error": "scoped_peer_stream_failed"}
+            return
+
+        # The blocking compatibility path has no access to the live Body,
+        # Brain-camera, or displayed-trace context assembled by the cognitive
+        # stream. Never answer those questions from that incomplete prompt.
+        _needs_live_context = bool(
+            _trace_query
+            or self._may_route_to_body(effective_input)
+            or self._may_route_to_local_camera(effective_input)
+        )
+        if _needs_live_context:
+            if _trace_query:
+                err = (
+                    "Je ne peux pas vérifier la trace cognitive de ce tour : le flux cognitif a échoué, "
+                    "et son contexte affiché n’est pas disponible dans le repli."
+                )
+                err_en = (
+                    "I cannot verify this turn's Cognitive Trace: the cognitive stream failed, "
+                    "and its displayed context is unavailable to the fallback."
+                )
+            elif self._may_route_to_local_camera(effective_input):
+                err = (
+                    "Je ne peux pas répondre sur la caméra pour ce tour : le flux qui apporte "
+                    "l’observation caméra a échoué. Aucune nouvelle observation n’a été vérifiée."
+                )
+                err_en = (
+                    "I cannot answer the camera question for this turn: the stream that supplies "
+                    "the camera observation failed. No new observation was verified."
+                )
+            else:
+                err = (
+                    "Je ne peux pas répondre sur le Body pour ce tour : le flux qui apporte "
+                    "son contexte et ses mesures a échoué. Aucune donnée live n’a été vérifiée."
+                )
+                err_en = (
+                    "I cannot answer the Body question for this turn: the stream that supplies "
+                    "its context and measurements failed. No live data was verified."
+                )
+            response = err_en if re.search(r"\b(what|which|who|where|when|why|how|is|are|do|does|did|can|could)\b", effective_input, re.I) else err
+            self._record_turn_stage(
+                "fallback_generation", "blocked_context",
+                "legacy fallback lacks the live context required by this turn",
+                output={"response": response, "context_required": True},
+                consumes=("turn_input",),
+            )
+            response = self._check_deterministic_output(
+                response, user_id, "fallback_generation",
+            )
+            self._record_turn_stage(
+                "response_finalization", "completed", output=response,
+                consumes=("output_safety",),
+            )
+            speech = self._sanitize(response)
+            self._record_turn_stage(
+                "response", "completed",
+                output={"raw": response, "speech": speech},
+                consumes=("response_finalization",),
+            )
+            self._finish_turn_trace("failed")
+            yield response
+            yield {
+                "__meta__": True, "raw": response, "speech": speech,
+                "emotion": "neutral", "intensity": 0.2,
+                "error": "contextual_fallback_blocked",
+            }
             return
 
         # ── Fallback: native get_response() — all cycles run natively ──

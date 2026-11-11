@@ -73,7 +73,8 @@ def test_goal_and_body_routes_gate_output_before_recording_final_answer():
         and isinstance(node.func, ast.Attribute)
         and node.func.attr == "_check_deterministic_output"
     ]
-    assert len(helper_calls) == 3
+    # Goal, Body, contextual fail-closed, and ordinary blocking fallback.
+    assert len(helper_calls) == 4
 
     finish = next(
         node for node in bridge_class.body

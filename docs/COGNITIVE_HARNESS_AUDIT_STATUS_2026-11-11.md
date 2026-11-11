@@ -336,6 +336,16 @@ Tests ciblés : sorties déterministes bloquées/remplacées, erreur d’évalua
 
 **État live :** Lumina n’a pas été redémarré; aucune de ces nouvelles étapes n’est encore présente dans le processus actif.
 
+## Repli de chat sans contexte live — correction locale
+
+Le chemin principal injecte les observations courantes du Body, de la caméra PC et de la Cognitive Trace dans le flux cognitif. Si ce flux échouait, le fallback historique appelait `AI_SYSTEM.get_response()` avec seulement le texte utilisateur. Pour une question sur le Body ou la caméra, le modèle pouvait alors produire une réponse fluide sans les observations qui auraient dû la justifier; pour une question de trace, il n’avait pas le snapshot affiché. Le chat classique transmet aussi une observation PC à chaque tour lorsque la perception autonome est active, donc bloquer le fallback sur la seule présence de cette observation aurait également interrompu des conversations sans rapport.
+
+Correction locale : avant le fallback sans contexte, le tour est classé selon son besoin d’observations Body, caméra ou Cognitive Trace. Si une de ces sources est nécessaire, le fallback LLM est refusé; Lumina indique explicitement que le flux a échoué et qu’aucune observation live n’a été vérifiée. La présence d’une observation caméra en arrière-plan ne suffit pas, à elle seule, à bloquer les tours ordinaires. Le refus passe encore par le contrôle de sortie et reçoit des étapes de fallback, finalisation et réponse, puis la trace se termine avec `status=failed` et une erreur terminale attribuable.
+
+Vérification locale : le garde-fou précède l’appel natif `get_response`; les régressions AST vérifient les besoins Body/caméra/trace, le cas d’une vision de fond et la clôture explicite en échec. Lot ciblé : **93 passed, 9 sous-tests**, 9 avertissements de dépendances préexistants; `py_compile` et `git diff --check` réussissent. Pendant la collecte, l’extension native FAISS a imprimé une exception Windows `0xc0000008` sur stderr; pytest a néanmoins terminé avec code 0 et résumé vert, anomalie à suivre séparément.
+
+**État live :** aucun redémarrage. Le processus courant n’a pas chargé ce correctif; la vérification intégrée reste réservée au redémarrage final.
+
 ## Méta-événement terminal avant clôture et verrou — correction locale
 
 Les interfaces chat et la boucle proactive s’arrêtaient dès réception de `__meta__`. Or plusieurs branches ne clôturaient la trace qu’après ce `yield`; la trace pouvait donc rester ouverte. Le wrapper `get_response_stream()` suspendait aussi le générateur à l’intérieur du verrou global de tour pendant qu’il livrait ce méta-événement. Un consommateur qui s’arrête à cet événement pouvait retarder la libération du verrou, donnant l’impression que les tours suivants étaient bloqués. Dans le chemin LLM, la validation externe réécrivait en plus l’étape `response` déjà fingerprintée avec une entrée minimale, supprimant la preuve de sortie.
