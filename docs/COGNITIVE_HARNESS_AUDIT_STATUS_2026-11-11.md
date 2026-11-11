@@ -369,3 +369,20 @@ Le flux PersonaBridge peut émettre des dictionnaires d’événement (`reasonin
 Correction : la page classique prend maintenant uniquement les chaînes comme texte de réponse, traite le dictionnaire méta comme clôture du tour et ignore les événements auxiliaires/non textuels au lieu de les afficher ou de casser le flux. Une régression AST cible précisément la boucle qui met à jour la bulle de réponse et impose le `continue` avant la concaténation.
 
 Vérification cumulée : **160 passed**, 14 sous-tests, 9 avertissements existants; compilation des fichiers modifiés et `git diff --check` réussis. Le test d’intégration live avec le modèle n’a pas encore eu lieu et attend le redémarrage final. Lumina reste actuellement en marche.
+
+## Point de reprise avant redémarrage final
+
+Les quatre dernières corrections de ce cycle sont commitées localement, dans cet ordre :
+
+- `74157ee` — l’échec d’évaluation de sécurité bloque au lieu d’autoriser.
+- `b038cbb` — les réponses déterministes et le fallback passent par le contrôle de sortie.
+- `2688e97` — clôture de trace, drainage du flux et libération du verrou avant l’événement terminal.
+- `180523d` — aucune réponse Body/caméra/trace via un fallback dépourvu du contexte live requis.
+
+Le lot de régression le plus récent passe : **93 tests, 9 sous-tests**; compilation et contrôle de diff réussis. Il reste 9 avertissements de dépendances connus et le diagnostic natif FAISS Windows `0xc0000008` durant la collecte, sans échec pytest.
+
+**À faire après le redémarrage unique demandé :** interroger le endpoint de santé et l’API de trace du Brain; vérifier un tour ordinaire puis un tour Body/caméra avec contexte disponible; provoquer un échec de streaming sur une question contextuelle si cela peut être fait sans perturber le modèle; contrôler chaque identifiant de tour, les sources injectées, les étapes de sécurité/génération/finalisation et les événements finaux. Confirmer que la conversation ordinaire conserve son historique en fallback, que les questions contextuelles échouent explicitement si leur flux échoue, et que le verrou est libéré après chaque tour.
+
+**Autres points d’audit encore ouverts :** vérifier la continuité d’historique après un fallback natif; contrôler la qualité des réponses et leurs effets aval sur plusieurs scénarios représentatifs; classer les modules sans tick/indisponibles selon leur rôle et preuves observables; isoler l’anomalie FAISS; compléter ensuite l’audit des chemins de génération et des consommateurs, sans confondre tick d’un module et effet causal prouvé.
+
+**Processus :** Lumina n’a pas été redémarré. Le code local est prêt pour le contrôle live au redémarrage final; aucune conclusion d’intégration runtime n’est encore revendiquée.
