@@ -35,6 +35,7 @@ from cognition.identity_boundary import prompt_block as _identity_boundary_block
 from cognition.body_runtime.robot_capabilities import robot_capability_report, robot_inventory_observation
 from cognition.turn_context_evidence import (
     audit_safe_turn_summary,
+    format_memory_for_prompt,
     memory_retrieval_evidence,
     profile_context_evidence,
 )
@@ -3560,11 +3561,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     return ""
 
             def _fmt_memory(m: dict) -> str:
-                mtype = m.get('memory_type', 'memory')
-                text  = m.get('text', '')
-                # Truncate very long entries for prompt economy
-                if len(text) > 300:
-                    text = text[:297] + '…'
+                rendered = format_memory_for_prompt(m)
                 tags = []
                 when = _relative_time(m.get('timestamp', ''))
                 if when:
@@ -3573,7 +3570,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                 if valence and valence != 'Neutral':
                     tags.append(f"felt {valence.lower()}")
                 tag_str = f" ({', '.join(tags)})" if tags else ""
-                return f"- [{mtype}]{tag_str} {text}"
+                return f"{rendered}{tag_str}"
 
             top_memories = memories[:8] if _surprised else memories[:5]
             mem_ctx = "\n".join(_fmt_memory(m) for m in top_memories) if top_memories else ""
@@ -3588,8 +3585,10 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     "Use a record only when it materially helps answer the user's latest message; otherwise ignore it. "
                     "Never let an older topic displace or redirect the topic of the latest message. "
                     "When the user asks what was previously decided, agreed, defined, or requested, answer only with details "
-                    "supported by a relevant retrieved record or visible conversation history. Do not replace missing recall "
-                    "with a newly invented interpretation; say the specific detail was not retrieved.\n"
+                    "supported by a relevant retrieved record or visible conversation history. In a stored dialogue record, "
+                    "a USER question proves only what was asked, not its answer; a LUMINA reply proves only what Lumina said, "
+                    "not that it was true or agreed. Prefer explicit user-authored statements for user decisions. Do not replace "
+                    "missing recall with a newly invented interpretation; say the specific detail was not retrieved.\n"
                     + mem_ctx
                 )
             else:

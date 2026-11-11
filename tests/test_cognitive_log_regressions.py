@@ -36,6 +36,7 @@ from cognition.self_description import SelfDescription
 from cognition.simple_thought_evaluator import SimpleThoughtEvaluator
 from cognition.turn_context_evidence import (
     audit_safe_turn_summary,
+    format_memory_for_prompt,
     memory_retrieval_evidence,
     profile_context_evidence,
 )
@@ -111,6 +112,20 @@ class CognitiveLogRegressionTests(unittest.TestCase):
         self.assertEqual(summary["query_source"], "user_input")
         self.assertEqual(summary["attention_mode"], "relational")
         self.assertEqual(summary["candidates"][0]["relevance"], 0.82)
+
+    def test_prompt_memory_keeps_user_message_separate_from_unverified_lumina_reply(self):
+        rendered = format_memory_for_prompt({
+            "memory_type": "episodic",
+            "text": (
+                "Conversation — User: Quelle règle avons-nous définie ? "
+                "| Lumina: Nous avons défini que les échanges sont bidirectionnels."
+            ),
+        })
+
+        self.assertIn("USER MESSAGE", rendered)
+        self.assertIn("a question alone does not establish its answer", rendered)
+        self.assertIn("LUMINA REPLY", rendered)
+        self.assertIn("unverified and not proof", rendered)
 
     def test_turn_trace_exposes_memory_provenance_without_memory_text(self):
         evidence = memory_retrieval_evidence("what did we decide?", [{
