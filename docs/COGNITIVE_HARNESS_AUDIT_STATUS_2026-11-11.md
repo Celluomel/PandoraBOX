@@ -277,3 +277,13 @@ Correction locale : chaque repli `self_question` est maintenant verrouillé comm
 Vérification : le test causal contrôle que la référence d’action parente est conservée sur chaque événement de la chaîne. Lot ciblé : **56 passed**, 7 avertissements Pydantic préexistants; compilation et `git diff --check` réussis. Le test direct du helper asynchrone de repli n’est pas inclus dans ce lot; la liaison est couverte par la compilation, le contrat de tracker/ledger et les tests de planification, et reste à vérifier en live.
 
 **Processus :** toujours aucun redémarrage. Ces corrections locales ne sont pas chargées dans Lumina; l’unique redémarrage reste réservé à la fin de l’audit.
+
+## Échec de comptabilisation qui interrompait la clôture — correction locale
+
+Le reçu GoalEngine était un effet secondaire distinct du résultat de l’action. En async, `mark_action()` n’était pas protégé : une exception pouvait interrompre la finalisation avant la résolution du tracker et du planner. En synchrone, une exception identique pouvait sortir de `run_tick`. À l’inverse, son retour `False` était facile à confondre avec l’échec de l’action elle-même.
+
+Correction : l’écriture du reçu GoalEngine passe par une fonction isolée qui capture l’exception, rapporte si le reçu a été persisté et laisse le résultat opérationnel réel continuer vers la clôture. Le reçu renvoyé par la finalisation async expose les deux états. Le ledger enregistre séparément `success` et `goal_state_persisted`, ainsi que les preuves de persistance du belief et d’acceptation des consommateurs de pensée. Le résultat n’affirme donc pas que la comptabilisation interne a réussi quand elle a échoué.
+
+Vérification locale : un test simule une panne d’écriture GoalEngine; le test de ledger vérifie que succès opérationnel, persistance du belief et échec de persistance du compteur restent distincts. Le lot ciblé atteint **57 passed**, 7 warnings Pydantic préexistants; `py_compile` et `git diff --check` sont propres. Le test passe sous `PYTHONUTF8=1`, requis dans cette console Windows pour les impressions Unicode de configuration.
+
+**État live :** aucun redémarrage effectué; le processus actif n’a pas ces corrections en mémoire. Le cycle final de redémarrage reste reporté jusqu’à la fin de l’audit.

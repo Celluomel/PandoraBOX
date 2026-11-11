@@ -218,8 +218,23 @@ class ConsequenceTracker:
                 kind="outcome",
                 cause=f"{pred['action_type']} on '{pred['goal_topic'][:40]}' -> observed={observed:.2f} ({outcome})",
                 cycle_id=cycle_id,
-                input_state={"action": pred["action_type"], "success": report.get("success")},
-                output_state={"observed": observed, "outcome": outcome},
+                input_state={
+                    "action": pred["action_type"],
+                    "success": report.get("success"),
+                    "goal_state_persisted": report.get("goal_state_persisted"),
+                },
+                output_state={
+                    "observed": observed,
+                    "outcome": outcome,
+                    **{
+                        key: report[key]
+                        for key in (
+                            "belief_persisted", "thought_stream_recorded",
+                            "workspace_broadcast", "reused_existing_insight",
+                        )
+                        if key in report
+                    },
+                },
                 confidence=_CONF_BASE,
                 parent_event_ids=[root_id] if root_id else [],
                 refs={

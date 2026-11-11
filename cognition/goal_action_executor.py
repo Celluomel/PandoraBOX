@@ -418,9 +418,9 @@ class GoalActionExecutor:
 
         if report['success']:
             # FIX 4: mark_action always called when success=True
-            report["goal_state_persisted"] = bool(goal_engine.mark_action(
-                goal.id, action_type, execution_id=execution_id, cycle_id=cycle_id
-            ))
+            report["goal_state_persisted"] = self._persist_goal_action_receipt(
+                goal_engine, goal.id, action_type, execution_id, cycle_id
+            )
             self._last_action_time[goal.id] = time.time()
             logger.info(
                 f"[GoalActionExecutor] ✅ mark_action called for '{goal.topic[:30]}' "
@@ -2006,6 +2006,36 @@ class GoalActionExecutor:
         ai_sys = getattr(self._o, 'ai_system', None)
         return getattr(ai_sys, 'goal_engine', None)
 
+    @staticmethod
+    def _persist_goal_action_receipt(
+        goal_engine, goal_id: str, action_type: str,
+        execution_id: str, cycle_id: Optional[int],
+    ) -> bool:
+        """Persist the action counter without masking the real action result."""
+        if goal_engine is None:
+            return False
+        try:
+            persisted = bool(goal_engine.mark_action(
+                goal_id,
+                action_type,
+                execution_id=execution_id,
+                cycle_id=cycle_id,
+            ))
+            if not persisted:
+                logger.warning(
+                    "[GoalActionExecutor] GoalEngine receipt was not persisted "
+                    "for execution=%s",
+                    execution_id,
+                )
+            return persisted
+        except Exception:
+            logger.warning(
+                "[GoalActionExecutor] GoalEngine receipt raised for execution=%s",
+                execution_id,
+                exc_info=True,
+            )
+            return False
+
     def _planned_action(self, goal) -> Optional[str]:
         try:
             loop = getattr(self._o, "_loop", None)
@@ -2137,7 +2167,7 @@ class GoalActionExecutor:
         self, goal, action_type: str, success: bool, result: str = "",
         *, execution_id: str = "", cycle_id: Optional[int] = None,
         evidence: Optional[Dict[str, Any]] = None,
-    ) -> None:
+    ) -> Dict[str, Any]:
         """Commit a completed background action to goals, plans and learning."""
         prediction = self._pending_predictions.pop(
             (str(goal.id), action_type), None
@@ -2146,13 +2176,12 @@ class GoalActionExecutor:
             execution_id = execution_id or str(prediction.get("execution_id") or "")
             if cycle_id is None:
                 cycle_id = prediction.get("cycle_id")
+        goal_state_persisted = False
         if success:
             goal_engine = self._get_goal_engine()
-            if goal_engine is not None:
-                goal_engine.mark_action(
-                    goal.id, action_type, execution_id=execution_id,
-                    cycle_id=cycle_id,
-                )
+            goal_state_persisted = self._persist_goal_action_receipt(
+                goal_engine, goal.id, action_type, execution_id, cycle_id
+            )
             self._last_action_time[goal.id] = time.time()
             self._broadcast(
                 f"[Action:{action_type}] {goal.topic[:40]} - {result[:80]}"
@@ -2161,29 +2190,36 @@ class GoalActionExecutor:
             goal, action_type, success, result,
             execution_id=execution_id, cycle_id=cycle_id,
         )
+        receipt = {
+            "goal_id": str(goal.id),
+            "action": action_type,
+            "success": bool(success),
+            "result": result,
+            "execution_id": execution_id,
+            "cycle_id": cycle_id,
+            "goal_state_persisted": goal_state_persisted,
+        }
+        if evidence:
+            receipt.update(evidence)
         if prediction is not None:
             try:
                 from cognition.consequence_tracker import get_consequence_tracker
-                report = {
-                    "goal_id": goal.id,
+                receipt.update({
                     "goal_topic": goal.topic,
-                    "action": action_type,
-                    "success": success,
-                    "result": result,
                     "execution_id": execution_id or prediction.get("execution_id"),
                     "cycle_id": cycle_id if cycle_id is not None else prediction.get("cycle_id"),
                     "goal_source_turn_id": prediction.get("goal_source_turn_id", ""),
                     "goal_source_thought_id": prediction.get("goal_source_thought_id", ""),
-                }
-                if evidence:
-                    report.update(evidence)
+                    "parent_execution_id": prediction.get("parent_execution_id", ""),
+                })
                 get_consequence_tracker(self._o).resolve(
-                    prediction, report, cycle_id=report["cycle_id"]
+                    prediction, receipt, cycle_id=receipt["cycle_id"]
                 )
             except Exception as e:
                 logger.debug(
                     "[GoalActionExecutor] async consequence resolution error: %s", e
                 )
+        return receipt
 
     def _has_semantic_memory(self) -> bool:
         sem = getattr(self._o, 'semantic_memory', None)

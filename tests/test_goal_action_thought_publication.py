@@ -55,5 +55,14 @@ class GoalActionThoughtPublicationTests(unittest.TestCase):
         self.assertFalse(stream.add("not valid priority", priority=float("nan")))
         self.assertEqual(stream.recent(), [])
 
+    def test_goal_receipt_failure_is_reported_without_raising(self):
+        class GoalEngine:
+            def mark_action(self, *_args, **_kwargs):
+                raise OSError("persistence unavailable")
+
+        self.assertFalse(GoalActionExecutor._persist_goal_action_receipt(
+            GoalEngine(), "goal-a", "self_question", "execution-a", 4
+        ))
+
 if __name__ == "__main__":
     unittest.main()
