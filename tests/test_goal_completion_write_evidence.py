@@ -2,6 +2,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from cognition.goal_completion import record_goal_completion
+from cognition.goal_engine import Goal, GoalEngine
 
 
 class _Narrative:
@@ -51,3 +52,23 @@ def test_completion_narrative_follows_confirmed_engine_write():
     assert result is True
     assert len(narrative.chapters) == 1
     assert "criterion met" in narrative.chapters[0]["description"]
+
+
+def test_goal_engine_does_not_skip_lifecycle_when_completion_write_fails(tmp_path):
+    engine = GoalEngine(None, persistence_file=str(tmp_path / "goals.json"))
+    goal = Goal(
+        id="goal-lifecycle", topic="investigate cognitive lifecycle",
+        origin="autonomous", priority=0.8, energy=0.10,
+        created_cycle=1, last_active=1, persistence=10,
+        actions_taken=3, non_introspective_actions=1,
+    )
+    assert engine.add_goal(goal)
+
+    with (
+        patch("cognition.goal_completion.goal_completion_eligible", return_value=(True, "eligible")),
+        patch("cognition.goal_completion.load_current_tensions", return_value={}),
+        patch("cognition.goal_completion.record_goal_completion", return_value=False),
+    ):
+        engine.update_goals()
+
+    assert engine.get_goal_by_id(goal.id).status == "dormant"

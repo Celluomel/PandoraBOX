@@ -1971,14 +1971,20 @@ class GoalActionExecutor:
                     self._goal_insight_counts.pop(goal.id, None)
                     self._save_insight_counts()
                     if eligible:
-                        record_goal_completion(
+                        completion_written = record_goal_completion(
                             goal, goal_engine=ge, organism=self._o,
                             reason=f"{count} insights; {reason}",
                         )
-                        logger.info(
-                            f"[GoalActionExecutor] GOAL COMPLETED after "
-                            f"{count} insights: '{goal.topic[:40]}' - {reason}"
-                        )
+                        if completion_written:
+                            logger.info(
+                                f"[GoalActionExecutor] GOAL COMPLETED after "
+                                f"{count} insights: '{goal.topic[:40]}' - {reason}"
+                            )
+                        else:
+                            logger.warning(
+                                "[GoalActionExecutor] Completion was eligible but not persisted: %s",
+                                goal.id,
+                            )
                     else:
                         # Introspected enough but not actually complete —
                         # go dormant instead of faking completion.

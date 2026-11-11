@@ -88,6 +88,7 @@ class GoalQualityFilter:
             'boosted': [],
             'generated': [],
             'topics_repaired_by_provenance': 0,
+            'completion_write_failed': [],
         }
 
         report['topics_repaired_by_provenance'] = self._repair_legacy_semantic_hub_topics(
@@ -173,9 +174,15 @@ class GoalQualityFilter:
                 continue
             eligible, reason = goal_completion_eligible(goal, tensions)
             if eligible:
-                record_goal_completion(goal, dal=dal, reason=reason)
-                settled.append(goal.get('name') or goal.get('id', ''))
-                logger.info(f"[GQF] Settled: '{goal.get('name', '')}' - {reason}")
+                if record_goal_completion(goal, dal=dal, reason=reason):
+                    settled.append(goal.get('name') or goal.get('id', ''))
+                    logger.info(f"[GQF] Settled: '{goal.get('name', '')}' - {reason}")
+                else:
+                    report['completion_write_failed'].append(goal.get('id', ''))
+                    logger.warning(
+                        "[GQF] Eligible completion was not persisted: %s",
+                        goal.get('id', ''),
+                    )
         report['settled'] = settled
 
         # The quality pass has written status/priority changes through
@@ -202,6 +209,7 @@ class GoalQualityFilter:
             'noise_marked':   len(report['marked_noise']),
             'boosted':        len(report['boosted']),
             'settled':        len(report.get('settled', [])),
+            'completion_write_failed': len(report.get('completion_write_failed', [])),
             'generated':      len(report['generated']),
             'high_quality':   sum(1 for s in report['scored'] if s['score'] >= self.boost_threshold),
         }

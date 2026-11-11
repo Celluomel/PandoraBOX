@@ -922,16 +922,21 @@ class GoalEngine:
                             getattr(self.ai_system, "_organism", None)
                             if self.ai_system else None
                         )
-                        record_goal_completion(
+                        completion_written = record_goal_completion(
                             goal, goal_engine=self, organism=org,
                             reason=("long-lived: %d actions over %d cycles; %s"
                                     % (goal.actions_taken, goal.persistence, reason)),
                         )
-                        logger.info("Goal auto-completed: '%s' "
-                                    "(%d actions, %d cycles)"
-                                    % (goal.topic, goal.actions_taken,
-                                       goal.persistence))
-                        continue
+                        if completion_written:
+                            logger.info("Goal auto-completed: '%s' "
+                                        "(%d actions, %d cycles)"
+                                        % (goal.topic, goal.actions_taken,
+                                           goal.persistence))
+                            continue
+                        logger.warning(
+                            "Goal auto-completion was eligible but persistence failed: %s",
+                            goal.id,
+                        )
                     # B/A not yet satisfied — keep it active; the GQF settlement
                     # pass or future actions may close it properly.
 
