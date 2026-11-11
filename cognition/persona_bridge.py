@@ -62,6 +62,61 @@ def _turn_output_evidence(value: Any) -> tuple[str, dict[str, Any]]:
         material = type(value).__qualname__.encode("utf-8")
     return hashlib.sha256(material).hexdigest(), summary
 
+
+def _prior_assistant_trace_evidence(
+    manager: Any,
+    trace: dict[str, Any],
+    current_input: str,
+    *,
+    record_history: bool,
+    conversation_history: list[dict] | None,
+) -> dict[str, Any] | None:
+    """Link the preceding assistant answer to its completed turn trace when possible.
+
+    The provider appends the current exchange before post-generation validation,
+    while deterministic answers are validated before being recorded. Handle both
+    orderings without exposing unrelated history or treating an unlinked answer
+    as verified evidence.
+    """
+    source = getattr(manager, "history", None) if record_history else conversation_history
+    if not isinstance(source, list):
+        return None
+    messages = [item for item in source if isinstance(item, dict)]
+    if record_history and len(messages) >= 2:
+        user, assistant = messages[-2:]
+        if (
+            user.get("role") == "user"
+            and str(user.get("content") or "").strip() == str(current_input or "").strip()
+            and assistant.get("role") == "assistant"
+        ):
+            messages = messages[:-2]
+    previous = next((
+        item for item in reversed(messages)
+        if item.get("role") == "assistant" and str(item.get("content") or "").strip()
+    ), None)
+    if previous is None:
+        return None
+    content = str(previous.get("content") or "").strip()
+    fingerprint = hashlib.sha256(content.encode("utf-8", errors="replace")).hexdigest()
+    linked_turn = None
+    for prior_turn in reversed(trace.get("recent_turns", [])) if isinstance(trace, dict) else []:
+        if not isinstance(prior_turn, dict) or prior_turn.get("scope") != "human":
+            continue
+        stages = prior_turn.get("stages", {})
+        if not isinstance(stages, dict):
+            continue
+        final = stages.get("response_finalization") or stages.get("response") or {}
+        if isinstance(final, dict) and final.get("output_fingerprint") == fingerprint:
+            linked_turn = prior_turn
+            break
+    return {
+        "text": content[:1200],
+        "fingerprint": fingerprint,
+        "trace_linked": linked_turn is not None,
+        "turn_id": str(linked_turn.get("turn_id") or "") if linked_turn else "",
+        "turn_status": str(linked_turn.get("status") or "") if linked_turn else "",
+    }
+
 # Research MCP — lazy-imported after PandoraBOX boots so memory_system is ready
 _research_mcp_instance = None
 
@@ -1961,10 +2016,16 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                 if _deterministic_response:
                     if _architecture_query:
                         from cognition.self_description import trace_grounded_architecture_answer
+                        _llm_manager = getattr(self._llm_stream_fn, "__self__", None)
+                        _prior_exchange = _prior_assistant_trace_evidence(
+                            _llm_manager, self.get_last_turn_trace(), effective_input,
+                            record_history=record_history,
+                            conversation_history=conversation_history,
+                        )
                         _visible_candidate = str(_deterministic_response or "")
                         _guarded = trace_grounded_architecture_answer(
                             effective_input, self.get_last_turn_trace(),
-                            displayed_cognitive_trace,
+                            displayed_cognitive_trace, _prior_exchange,
                         )
                         _was_replaced = _visible_candidate.strip() != _guarded.strip()
                         _deterministic_response = _guarded
@@ -2083,9 +2144,15 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     _visible_candidate = self._strip_think(_candidate)
                     if _architecture_query:
                         from cognition.self_description import trace_grounded_architecture_answer
+                        _llm_manager = getattr(self._llm_stream_fn, "__self__", None)
+                        _prior_exchange = _prior_assistant_trace_evidence(
+                            _llm_manager, self.get_last_turn_trace(), effective_input,
+                            record_history=record_history,
+                            conversation_history=conversation_history,
+                        )
                         _guarded = trace_grounded_architecture_answer(
                             effective_input, self.get_last_turn_trace(),
-                            displayed_cognitive_trace,
+                            displayed_cognitive_trace, _prior_exchange,
                         )
                         _was_replaced = _visible_candidate.strip() != _guarded.strip()
                         self._record_turn_stage(

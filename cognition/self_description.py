@@ -137,6 +137,7 @@ def trace_grounded_architecture_answer(
     user_input: str,
     trace: Dict[str, Any],
     displayed_cognitive_trace: Dict[str, Any] | None = None,
+    prior_exchange_evidence: Dict[str, Any] | None = None,
 ) -> str:
     """Summarize only architecture evidence recorded for the current turn.
 
@@ -214,10 +215,69 @@ def trace_grounded_architecture_answer(
             "can be confirmed for this turn from this panel alone, and I cannot attribute the failure to this turn or independently verify the operation's effect."
         )
 
+    french = bool(re.search(
+        r"\b(?:le|la|les|des|du|est|sont|explique|précisément|permettent|conclure|observé|exécuté)\b",
+        normalized,
+    ))
     module_tick_question = bool(
         re.search(r"\bmodules?\b", normalized)
         and re.search(r"\b(?:tick|exécut|observ|initialis|indisponible|compteur)", normalized)
     )
+    prior_result_question = bool(re.search(
+        r"\b(?:rappelle(?:-moi)?|précédent(?:e)?|précédemment|avant|juste avant|"
+        r"dernier test|test précédent|résultat vérifié|previous(?:ly)?|earlier|"
+        r"just before|last test|prior result)\b",
+        normalized,
+    ))
+    if module_tick_question and prior_result_question:
+        prior = prior_exchange_evidence if isinstance(prior_exchange_evidence, dict) else {}
+        prior_text = str(prior.get("text") or "").strip()
+        if prior_text:
+            linked = bool(prior.get("trace_linked"))
+            french = french or any(
+                marker in normalized
+                for marker in ("rappelle", "résultat", "précédent", "juste avant", "exécution")
+            )
+            if french:
+                linkage = (
+                    f"Cette réponse est liée au tour {str(prior.get('turn_id') or '')[:100]} terminé. "
+                    if linked else
+                    "Je retrouve cette réponse dans l’historique, mais je ne peux pas la relier à une trace de tour conservée. "
+                )
+                current = (
+                    f"La trace de CE tour indique {int(manifest.get('observed_count', 0) or 0)} module(s) avec tick observé, "
+                    f"{int(manifest.get('tick_count', 0) or 0)} ticks et {int(manifest.get('error_count', 0) or 0)} erreur(s) instrumentée(s). "
+                    "Cela ne mesure ni la qualité sémantique des sorties ni l’effet aval."
+                    if isinstance(manifest, dict) and manifest.get("status") == "injected" else
+                    "Aucun manifeste de ticks exploitable n’est présent dans la trace de ce tour."
+                )
+                return (
+                    f"Réponse du tour précédent : « {prior_text} » {linkage}"
+                    f"{current} « Initialisé sans tick observé » ne prouve pas l’absence d’exécution; "
+                    "et un tick ne prouve pas à lui seul un résultat cognitif correct."
+                )
+            linkage = (
+                f"This answer is linked to completed turn {str(prior.get('turn_id') or '')[:100]}. "
+                if linked else
+                "I found this answer in history but cannot link it to a retained turn trace. "
+            )
+            current = (
+                f"This turn's trace records {int(manifest.get('observed_count', 0) or 0)} modules with observed ticks, "
+                f"{int(manifest.get('tick_count', 0) or 0)} ticks, and {int(manifest.get('error_count', 0) or 0)} instrumented errors. "
+                "That does not measure semantic output quality or downstream effect."
+                if isinstance(manifest, dict) and manifest.get("status") == "injected" else
+                "This turn has no usable tick manifest."
+            )
+            return (
+                f"Previous-turn answer: ‘{prior_text}’ {linkage}{current} "
+                "An initialized module with no observed tick is not proof that no code ran; a tick alone does not prove a correct cognitive result."
+            )
+        return (
+            "Je n’ai pas de réponse précédente disponible à relier à cette question. "
+            "La trace actuelle ne peut pas reconstituer le résultat du test précédent; elle décrit uniquement les ticks observés pour ce tour."
+            if french else
+            "I have no previous answer available to link to this question. The current trace cannot reconstruct the prior test result; it reports only ticks observed for this turn."
+        )
     if module_tick_question and (
         not isinstance(manifest, dict)
         or manifest.get("status") != "injected"

@@ -119,6 +119,46 @@ class SelfDescriptionPromptTests(unittest.TestCase):
         self.assertIn("ne prouve ni qu’aucun code du module n’a été exécuté", answer)
         self.assertIn("ne valident pas la qualité cognitive", answer)
 
+    def test_previous_test_question_preserves_prior_answer_and_current_tick_limits(self):
+        answer = trace_grounded_architecture_answer(
+            "Rappelle-moi le résultat vérifié du test juste avant et ce qu’il ne permet pas encore de conclure sur l’exécution des modules.",
+            {
+                "stages": {},
+                "context_sources": {
+                    "module_tick_manifest": {
+                        "status": "injected", "module_count": 43,
+                        "observed_count": 41, "tick_count": 366,
+                        "error_count": 0,
+                    },
+                },
+            },
+            prior_exchange_evidence={
+                "text": "Le compteur vérifié était de 4 objectifs actifs.",
+                "trace_linked": True,
+                "turn_id": "prior-turn-123",
+            },
+        )
+
+        self.assertIn("4 objectifs actifs", answer)
+        self.assertIn("prior-turn-123", answer)
+        self.assertIn("41 module(s) avec tick observé", answer)
+        self.assertIn("ne mesure ni la qualité sémantique", answer)
+        self.assertIn("ne prouve pas à lui seul", answer)
+
+    def test_previous_test_question_does_not_claim_unlinked_history_is_verified(self):
+        answer = trace_grounded_architecture_answer(
+            "What ticks did the modules show in the previous test?",
+            {"stages": {}, "context_sources": {}},
+            prior_exchange_evidence={
+                "text": "It reported 4 active goals.",
+                "trace_linked": False,
+            },
+        )
+
+        self.assertIn("reported 4 active goals", answer)
+        self.assertIn("cannot link it to a retained turn trace", answer)
+        self.assertIn("no usable tick manifest", answer)
+
     def test_empty_tick_manifest_is_not_reported_as_zero_modules(self):
         answer = trace_grounded_architecture_answer(
             "Les modules ont-ils exécuté des ticks ?",
