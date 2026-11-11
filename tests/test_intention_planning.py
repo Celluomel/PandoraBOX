@@ -90,6 +90,8 @@ class IntentionPlanningTests(unittest.TestCase):
 
             self.assertEqual(planner.status()["active_plans"], 1)
             self.assertTrue((Path(folder) / "plans.json").exists())
+            snapshot = planner.factual_self_report_snapshot()
+            self.assertIsNone(snapshot["dominant_plan"]["last_outcome"])
             self.assertIn(
                 planner.preferred_next_action(),
                 {"analytical", "philosophical", "deep_reasoning", "social",

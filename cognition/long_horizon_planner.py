@@ -803,7 +803,7 @@ class LongHorizonPlanner:
                 )[:500],
                 "decision_revision": plan.decision_revision,
                 "decision_updated_at": plan.decision_updated_at or plan.created_at,
-                "last_outcome": dict(plan.last_outcome),
+                "last_outcome": dict(plan.last_outcome) if plan.last_outcome else None,
             }
         return {
             "captured_at": time.time(),
