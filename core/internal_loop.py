@@ -502,7 +502,10 @@ class InternalThoughtLoop:
         """Return a deliberately small, non-text summary suitable for status APIs."""
         if isinstance(value, dict):
             summary: dict[str, Any] = {"kind": "mapping", "field_count": len(value)}
-            for key in ("type", "status", "success", "created", "verified", "action"):
+            for key in (
+                "type", "status", "success", "created", "verified", "action",
+                "source_thought_source", "source_thought_type", "source_concept_method",
+            ):
                 item = value.get(key)
                 if isinstance(item, (str, bool, int, float)) and key != "action":
                     summary[key] = item if not isinstance(item, str) else item[:48]
@@ -1416,7 +1419,10 @@ class InternalThoughtLoop:
                             {"created": bool(_commit_result.get("created")),
                              "verified": bool(_commit_result.get("verified")),
                              "goal_id_ref": self._evidence_fingerprint(_commit_result.get("id")),
-                             "topic_ref": self._evidence_fingerprint(_commit_result.get("topic"))}
+                             "topic_ref": self._evidence_fingerprint(_commit_result.get("topic")),
+                             "source_thought_source": _commit_result.get("source_thought_source", ""),
+                             "source_thought_type": _commit_result.get("source_thought_type", ""),
+                             "source_concept_method": _commit_result.get("source_concept_method", "")}
                             if isinstance(_commit_result, dict) else None
                         ),
                     )

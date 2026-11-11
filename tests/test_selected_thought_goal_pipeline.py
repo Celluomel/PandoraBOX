@@ -17,6 +17,10 @@ def test_selected_thought_proposal_is_persisted_with_source_evidence(tmp_path):
         "concept": "cognitive_execution_flow",
         "priority": 0.82,
         "origin_thought": "thought-42",
+        "origin_thought_source": "cognitive_loop",
+        "origin_thought_type": "tension_awareness",
+        "origin_thought_timestamp": "2026-11-11T20:00:00Z",
+        "concept_source": "structured_topic",
         "hypothesis": "If the selected goal is routed directly, action selection will preserve focus.",
     }
 
@@ -29,6 +33,10 @@ def test_selected_thought_proposal_is_persisted_with_source_evidence(tmp_path):
     goal = persisted["goals"][result["id"]]
     assert goal["topic"] == "cognitive execution flow"
     assert goal["source_thought_id"] == "thought-42"
+    assert goal["source_thought_source"] == "cognitive_loop"
+    assert goal["source_thought_type"] == "tension_awareness"
+    assert goal["source_thought_timestamp"] == "2026-11-11T20:00:00Z"
+    assert goal["source_concept_method"] == "structured_topic"
     assert goal["desired_effect"] == proposal["hypothesis"]
 
 
@@ -61,6 +69,22 @@ def test_high_priority_tension_defers_llm_synthesis_until_selected(tmp_path):
 
     assert result["hypothesis_pending"] is True
     assert result["goal_type"] == "test_hypothesis"
+
+
+def test_thought_evaluator_prefers_existing_structured_topic():
+    evaluator = SimpleThoughtEvaluator(Path("."))
+    evaluator._compute_priority = lambda *_args: 0.7
+    evaluator._compute_actionability = lambda *_args: 0.6
+    evaluator._identify_friction = lambda *_args: "test"
+    evaluator._determine_goal_type = lambda *_args: "learn"
+
+    result = evaluator._evaluate_thought({
+        "content": "I wonder why this generic generated sentence exists",
+        "topic": "cognitive_execution_flow",
+    })
+
+    assert result["concept"] == "cognitive execution flow"
+    assert result["concept_source"] == "structured_topic"
 
 
 def test_authoritative_non_goal_decision_does_not_fall_back_to_old_goal():

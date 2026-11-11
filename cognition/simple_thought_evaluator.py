@@ -108,6 +108,10 @@ class SimpleThoughtEvaluator:
                             'concept': evaluation['concept'],
                             'priority': evaluation['priority'],
                             'origin_thought': thought.get('id', self._generate_id(thought)),
+                            'origin_thought_source': str(thought.get('source') or '')[:100],
+                            'origin_thought_type': str(thought.get('thought_type') or thought.get('type') or '')[:80],
+                            'origin_thought_timestamp': str(thought.get('timestamp') or '')[:80],
+                            'concept_source': evaluation.get('concept_source', 'legacy_text_extraction'),
                             'origin_content': str(thought.get('content') or thought.get('text') or "")[:1200],
                             'created_at': datetime.now().isoformat(),
                             'conceptual_friction': evaluation.get('friction', ''),
@@ -134,6 +138,12 @@ class SimpleThoughtEvaluator:
                             previous['supporting_thought_ids'].extend(
                                 suggestion['supporting_thought_ids']
                             )
+                            previous.setdefault('supporting_thought_provenance', []).append({
+                                'id': suggestion['origin_thought'],
+                                'source': suggestion['origin_thought_source'],
+                                'type': suggestion['origin_thought_type'],
+                                'timestamp': suggestion['origin_thought_timestamp'],
+                            })
                 
                 thought['evaluated'] = True
                 thought['evaluation'] = {
@@ -203,7 +213,14 @@ class SimpleThoughtEvaluator:
         if thought_type == 'mundane':
             return None
         
-        concept = self._extract_concept(text)
+        # ThoughtStream carries a clean structured topic when its producer
+        # knows the subject. Prefer that over guessing from the first words
+        # of generated prose; retain extraction for legacy thoughts without it.
+        structured_topic = thought.get("topic") or thought.get("concept")
+        concept = " ".join(str(structured_topic).replace("_", " ").split()) if structured_topic else ""
+        concept_source = "structured_topic" if concept else "legacy_text_extraction"
+        if not concept:
+            concept = self._extract_concept(text)
         priority = self._compute_priority(text, thought_type)
         actionability = self._compute_actionability(text, thought_type)
         friction = self._identify_friction(text, thought_type)
@@ -233,6 +250,7 @@ class SimpleThoughtEvaluator:
             'friction': friction,
             'goal_type': 'test_hypothesis' if hypothesis_pending else goal_type,
             'hypothesis_pending': hypothesis_pending,
+            'concept_source': concept_source,
             'should_create_goal': should_create_goal
         }
     

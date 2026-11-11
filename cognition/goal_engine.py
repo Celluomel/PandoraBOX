@@ -112,6 +112,10 @@ class Goal:
     # Autonomous thought-evaluator proposals retain their originating thought
     # across persistence so a committed goal can be traced to its evidence.
     source_thought_id: str = ""
+    source_thought_source: str = ""
+    source_thought_type: str = ""
+    source_thought_timestamp: str = ""
+    source_concept_method: str = ""
     # Last autonomous action receipt, persisted with the goal so its counters
     # can be audited against the causal ledger instead of inferred from totals.
     last_action_execution_id: str = ""
@@ -1162,6 +1166,10 @@ class GoalEngine:
             ),
             subject=concept,
             source_thought_id=source_thought_id,
+            source_thought_source=str(proposal.get("origin_thought_source") or "")[:100],
+            source_thought_type=str(proposal.get("origin_thought_type") or "")[:80],
+            source_thought_timestamp=str(proposal.get("origin_thought_timestamp") or "")[:80],
+            source_concept_method=str(proposal.get("concept_source") or "legacy_text_extraction")[:80],
         )
 
         with self._lock:
@@ -1181,6 +1189,9 @@ class GoalEngine:
                     isinstance(record, dict)
                     and record.get("topic") == concept
                     and record.get("source_thought_id", "") == source_thought_id
+                    and record.get("source_thought_source", "") == goal.source_thought_source
+                    and record.get("source_thought_type", "") == goal.source_thought_type
+                    and record.get("source_thought_timestamp", "") == goal.source_thought_timestamp
                     and record.get("desired_effect") == goal.desired_effect
                 )
             except Exception as exc:
@@ -1201,6 +1212,9 @@ class GoalEngine:
             "id": goal_id,
             "topic": concept,
             "source_thought_id": source_thought_id,
+            "source_thought_source": goal.source_thought_source,
+            "source_thought_type": goal.source_thought_type,
+            "source_concept_method": goal.source_concept_method,
             "status": goal.status,
         }
     
@@ -1778,9 +1792,7 @@ class GoalEngine:
                 candidates = self.generate_candidates(motivations, use_topics, limit=3)
                 accepted = 0
                 for goal in candidates:
-                    before = len(self._goals)
-                    self.add_goal(goal)
-                    if len(self._goals) > before or goal.id in self._goals:
+                    if self.add_goal(goal):
                         accepted += 1
                 if candidates:
                     logger.debug(

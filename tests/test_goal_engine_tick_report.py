@@ -60,3 +60,16 @@ def test_goal_engine_reports_cooldown_as_skip_not_completion():
     report = engine.get_last_tick_report()
     assert report["status"] == "skipped_cooldown"
     assert report["cooldown_remaining_seconds"] > 0
+
+
+def test_goal_engine_counts_only_successful_persistent_admissions():
+    engine = make_engine()
+    engine.generate_candidates = lambda _motivations, _topics, limit: [
+        SimpleNamespace(id="saved"), SimpleNamespace(id="rejected")
+    ]
+    engine.add_goal = lambda goal: goal.id == "saved"
+    engine.tick()
+
+    report = engine.get_last_tick_report()
+    assert report["candidate_count"] == 2
+    assert report["accepted_candidate_count"] == 1

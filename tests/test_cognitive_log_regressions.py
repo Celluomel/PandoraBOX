@@ -188,7 +188,11 @@ class CognitiveLogRegressionTests(unittest.TestCase):
     def test_simple_thought_evaluator_can_timestamp_a_fresh_goal_candidate(self):
         class _Dal:
             def get_thoughts(self, **kwargs):
-                return [{"id": "thought-1", "content": "fresh thought"}]
+                return [{
+                    "id": "thought-1", "content": "fresh thought",
+                    "source": "cognitive_loop", "thought_type": "tension_awareness",
+                    "timestamp": "2026-11-11T20:00:00Z",
+                }]
 
             def get_goals(self):
                 return []
@@ -203,6 +207,7 @@ class CognitiveLogRegressionTests(unittest.TestCase):
                 "priority": 0.7, "actionability": 0.6,
                 "friction": "unknown", "goal_type": "learn",
                 "hypothesis": None, "should_create_goal": True,
+                "concept_source": "legacy_text_extraction",
             }
             with (
                 patch("core.data.access.DataAccess", return_value=_Dal()),
@@ -215,6 +220,8 @@ class CognitiveLogRegressionTests(unittest.TestCase):
         self.assertEqual(len(suggestions), 1)
         self.assertEqual(suggestions[0]["concept"], "robot capabilities")
         self.assertTrue(suggestions[0]["created_at"])
+        self.assertEqual(suggestions[0]["origin_thought_source"], "cognitive_loop")
+        self.assertEqual(suggestions[0]["origin_thought_type"], "tension_awareness")
 
     def test_self_description_prompt_is_factual_and_marks_registry_partial(self):
         with tempfile.TemporaryDirectory() as temp_dir:
