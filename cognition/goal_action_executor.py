@@ -2132,8 +2132,18 @@ class GoalActionExecutor:
         }
 
     def _defer_async_action(self, goal, action_type: str, reason: str) -> None:
-        """Discard an unexecuted prediction without recording a false failure."""
-        self._pending_predictions.pop((str(goal.id), action_type), None)
+        """Close an unexecuted prediction as deferred, never as an action failure."""
+        prediction = self._pending_predictions.pop((str(goal.id), action_type), None)
+        if prediction is not None:
+            try:
+                from cognition.consequence_tracker import get_consequence_tracker
+                tracker = get_consequence_tracker(self._o)
+                if tracker is not None and hasattr(tracker, "cancel"):
+                    tracker.cancel(prediction, reason=reason)
+            except Exception as exc:
+                logger.debug(
+                    "[GoalActionExecutor] deferred prediction closure failed: %s", exc
+                )
         logger.debug(
             "[GoalActionExecutor] Deferred %s for goal %s (%s)",
             action_type,

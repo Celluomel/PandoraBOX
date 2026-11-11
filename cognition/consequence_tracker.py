@@ -104,8 +104,10 @@ class ConsequenceTracker:
         self.metrics = {
             "n_predictions": 0,
             "n_resolved": 0,
+            "n_cancelled": 0,
             "abs_error_sum": 0.0,
             "per_action": {},
+            "cancelled_per_action": {},
             "pcm_resolutions": 0,
         }
 
@@ -311,6 +313,51 @@ class ConsequenceTracker:
             "pcm_resolved": pcm_ok,
         }
 
+    def cancel(self, pred: Optional[Dict[str, Any]], reason: str = "deferred") -> Dict[str, Any]:
+        """Close a prediction whose action never ran; do not score it as failure."""
+        if not pred or pred.get("disabled") or not pred.get("pred_id"):
+            return {"cancelled": False, "reason": "no active prediction"}
+
+        pred_id = str(pred["pred_id"])
+        with self._lock:
+            active = self._pending.pop(pred_id, None)
+            if active is None:
+                return {"cancelled": False, "reason": "prediction is not pending"}
+            self.metrics["n_cancelled"] += 1
+            action = str(active.get("action_type") or "unknown")
+            by_action = self.metrics["cancelled_per_action"]
+            by_action[action] = by_action.get(action, 0) + 1
+
+        event_id = None
+        if self.ledger:
+            try:
+                event_id = self.ledger.record(
+                    kind="deferred",
+                    cause=f"{pred.get('action_type', 'action')} not run: {str(reason)[:120]}",
+                    cycle_id=pred.get("cycle_id"),
+                    input_state={"action": pred.get("action_type"), "status": "deferred"},
+                    output_state={"prediction_cancelled": True},
+                    parent_event_ids=[pred["prediction_event_id"]]
+                    if pred.get("prediction_event_id") else [],
+                    refs={
+                        "goal_id": pred.get("goal_id", ""),
+                        "action": pred.get("action_type", ""),
+                        "pred_id": pred_id,
+                        "execution_id": pred.get("execution_id", ""),
+                        "goal_source_turn_id": pred.get("goal_source_turn_id", ""),
+                        "goal_source_thought_id": pred.get("goal_source_thought_id", ""),
+                        "parent_execution_id": pred.get("parent_execution_id", ""),
+                    },
+                )
+            except Exception:
+                pass
+        return {
+            "cancelled": True,
+            "pred_id": pred_id,
+            "execution_id": pred.get("execution_id", ""),
+            "event_id": event_id,
+        }
+
     # ────────────────────────────────────────────────────────────────────────
     # FEEDBACK HOOK  (REAL: re-weights future action selection)
     # ────────────────────────────────────────────────────────────────────────
@@ -334,8 +381,16 @@ class ConsequenceTracker:
     # METRIC
     # ────────────────────────────────────────────────────────────────────────
     def closure_report(self) -> Dict[str, Any]:
-        m = dict(self.metrics)
-        m["resolution_rate"] = round(m["n_resolved"] / m["n_predictions"], 4) if m["n_predictions"] else 0.0
+        with self._lock:
+            m = dict(self.metrics)
+            m["per_action"] = {k: dict(v) for k, v in self.metrics["per_action"].items()}
+            m["cancelled_per_action"] = dict(self.metrics["cancelled_per_action"])
+            m["n_pending"] = len(self._pending)
+        m["eligible_predictions"] = max(0, m["n_predictions"] - m["n_cancelled"])
+        m["resolution_rate"] = (
+            round(m["n_resolved"] / m["eligible_predictions"], 4)
+            if m["eligible_predictions"] else 0.0
+        )
         m["mean_abs_error"] = round(m["abs_error_sum"] / m["n_resolved"], 4) if m["n_resolved"] else 0.0
         for a, pa in m["per_action"].items():
             pa["mean_abs_error"] = round(pa["abs_error_sum"] / pa["n"], 4) if pa["n"] else 0.0

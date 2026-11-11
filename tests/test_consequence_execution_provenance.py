@@ -7,6 +7,27 @@ from cognition.goal_engine import Goal, GoalEngine
 
 
 class ConsequenceExecutionProvenanceTests(unittest.TestCase):
+    def test_deferred_prediction_is_closed_without_becoming_a_failure(self):
+        with tempfile.TemporaryDirectory() as folder:
+            ledger = CausalLedger(folder)
+            tracker = ConsequenceTracker(persona_dir=folder, ledger=ledger)
+            prediction = tracker.predict(
+                "goal-deferred", "wait for LLM capacity", "self_question",
+                cycle_id=12, execution_id="act-deferred-12",
+            )
+
+            result = tracker.cancel(prediction, "LLM scheduler busy")
+            report = tracker.closure_report()
+            kinds = [event["kind"] for event in ledger.recent(10)]
+
+            self.assertTrue(result["cancelled"])
+            self.assertEqual(report["n_predictions"], 1)
+            self.assertEqual(report["n_cancelled"], 1)
+            self.assertEqual(report["n_pending"], 0)
+            self.assertEqual(report["eligible_predictions"], 0)
+            self.assertEqual(report["n_resolved"], 0)
+            self.assertEqual(kinds, ["prediction", "deferred"])
+
     def test_queued_user_question_is_not_recorded_as_external_feedback(self):
         self.assertEqual(ACTION_MODEL["user_question"]["effect"], "question_queued")
         self.assertNotEqual(ACTION_MODEL["user_question"]["effect"], "external_feedback")

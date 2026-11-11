@@ -295,3 +295,11 @@ Le rappel mémoire, la recherche Web et l’hypothèse associative produisaient 
 Les rapports d’action conservent maintenant les deux booléens issus de `_add_thought()`. Les événements `outcome` du ledger sélectionnent les preuves pertinentes : persistance du belief, pensée enregistrée, broadcast workspace accepté/refusé, résultat de recherche mis en file et hypothèse générée. Le test vérifie qu’un workspace qui refuse un broadcast reste distinct d’un ThoughtStream qui l’a accepté; les valeurs ne sont pas fusionnées en un statut générique « réussi ».
 
 Le lot ciblé reste à **57 passed**, 7 warnings Pydantic; `py_compile` et `git diff --check` réussis. Cela augmente l’observabilité des effets, sans démontrer encore que les sorties sont sémantiquement pertinentes ni qu’un consommateur particulier les a utilisées.
+
+## Prédictions orphelines quand le LLM diffère une action — correction locale
+
+Lorsque le créneau LLM était occupé, l’exécuteur retirait sa prédiction locale pour ne pas comptabiliser un échec. Le `ConsequenceTracker` gardait pourtant la prédiction dans son dictionnaire `_pending`; elle gonflait `n_predictions` et laissait le rapport de fermeture sans résolution correspondante. Les métriques pouvaient donc confondre une action jamais exécutée avec une action exécutée sans effet.
+
+Correction : `ConsequenceTracker.cancel()` ferme explicitement une prédiction non exécutée, retire son état pending et écrit un événement `deferred` rattaché à la prédiction, sans erreur, feedback ou mise à jour d’efficacité. `_defer_async_action()` appelle désormais cette fermeture. Le rapport expose `n_cancelled`, `n_pending`, `eligible_predictions` et calcule le taux de résolution sur les prédictions d’actions effectivement engagées.
+
+Le test vérifie la chaîne `prediction → deferred`, l’absence de faux échec, zéro prédiction pending et le dénominateur excluant l’action annulée. Le lot ciblé passe à **58 passed**, 7 avertissements Pydantic préexistants; compilation et `git diff --check` réussis. Le processus Lumina n’a toujours pas été redémarré.
