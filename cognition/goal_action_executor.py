@@ -382,11 +382,17 @@ class GoalActionExecutor:
             elif action_type in (ACTION_WEB_SEARCH, ACTION_SELF_QUESTION, ACTION_BISOCIATIVE):
                 # FIX 3: fire via daemon thread + asyncio.run() — guaranteed execution
                 if action_type == ACTION_WEB_SEARCH:
-                    coro = self._action_web_search(goal)
+                    coro = self._action_web_search(
+                        goal, execution_id=execution_id, cycle_id=cycle_id
+                    )
                 elif action_type == ACTION_BISOCIATIVE:
-                    coro = self._action_bisociative_hypothesis(goal)
+                    coro = self._action_bisociative_hypothesis(
+                        goal, execution_id=execution_id, cycle_id=cycle_id
+                    )
                 else:
-                    coro = self._action_self_question(goal)
+                    coro = self._action_self_question(
+                        goal, execution_id=execution_id, cycle_id=cycle_id
+                    )
                 if _ct_pred is not None:
                     self._pending_predictions[(str(goal.id), action_type)] = _ct_pred
                 self._fire(
@@ -782,7 +788,9 @@ class GoalActionExecutor:
         logger.info(f"[GoalActionExecutor] 🎯 User question queued: {recent_insight!r}")
         return {'success': True, 'result': f"question queued: {recent_insight[:60]}"}
 
-    async def _action_web_search(self, goal) -> None:
+    async def _action_web_search(
+        self, goal, *, execution_id: str = "", cycle_id: Optional[int] = None
+    ) -> None:
         """
         Search the real web for goal-relevant information, then interpret
         results through the prism of PandoraBOX's current emotional state and beliefs.
@@ -840,9 +848,13 @@ class GoalActionExecutor:
             if not results:
                 logger.info(f"[GoalActionExecutor] 🌐 No results for {query!r} — falling back")
                 self._finalize_async_action(
-                    goal, ACTION_WEB_SEARCH, False, "search returned no results"
+                    goal, ACTION_WEB_SEARCH, False, "search returned no results",
+                    execution_id=execution_id, cycle_id=cycle_id,
                 )
-                await self._action_self_question(goal)
+                await self._fallback_self_question(
+                    goal, parent_action=ACTION_WEB_SEARCH,
+                    parent_execution_id=execution_id, cycle_id=cycle_id,
+                )
                 return
 
             # Collect raw snippets (get_results fields: title, snippet, content, url)
@@ -854,9 +866,13 @@ class GoalActionExecutor:
 
             if not raw_snippets:
                 self._finalize_async_action(
-                    goal, ACTION_WEB_SEARCH, False, "search results had no usable content"
+                    goal, ACTION_WEB_SEARCH, False, "search results had no usable content",
+                    execution_id=execution_id, cycle_id=cycle_id,
                 )
-                await self._action_self_question(goal)
+                await self._fallback_self_question(
+                    goal, parent_action=ACTION_WEB_SEARCH,
+                    parent_execution_id=execution_id, cycle_id=cycle_id,
+                )
                 return
 
             raw_context = "\n".join(f"- {s}" for s in raw_snippets[:3])
@@ -907,6 +923,7 @@ class GoalActionExecutor:
             self._finalize_async_action(
                 goal, ACTION_WEB_SEARCH, True,
                 f"interpreted research for {topic[:80]}",
+                execution_id=execution_id, cycle_id=cycle_id,
             )
             return
 
@@ -916,9 +933,13 @@ class GoalActionExecutor:
             logger.warning(f"[GoalActionExecutor] web_search error: {e}", exc_info=True)
 
         self._finalize_async_action(
-            goal, ACTION_WEB_SEARCH, False, "research did not produce a usable result"
+            goal, ACTION_WEB_SEARCH, False, "research did not produce a usable result",
+            execution_id=execution_id, cycle_id=cycle_id,
         )
-        await self._action_self_question(goal)
+        await self._fallback_self_question(
+            goal, parent_action=ACTION_WEB_SEARCH,
+            parent_execution_id=execution_id, cycle_id=cycle_id,
+        )
 
     def _get_identity_context(self) -> tuple:
         """
@@ -1005,7 +1026,9 @@ class GoalActionExecutor:
             logger.debug(f"[GoalActionExecutor] identity filter error: {e}")
         return ""
 
-    async def _action_self_question(self, goal) -> None:
+    async def _action_self_question(
+        self, goal, *, execution_id: str = "", cycle_id: Optional[int] = None
+    ) -> None:
         """
         FIX 3 (async side): Called inside asyncio.run() in a daemon thread.
         Uses state.llm.generate_bare() — the correct sync path for internal
@@ -1022,7 +1045,8 @@ class GoalActionExecutor:
                     "— goal will retry next cycle"
                 )
                 self._finalize_async_action(
-                    goal, ACTION_SELF_QUESTION, False, "LLM backend unavailable"
+                    goal, ACTION_SELF_QUESTION, False, "LLM backend unavailable",
+                    execution_id=execution_id, cycle_id=cycle_id,
                 )
                 return
 
@@ -1050,19 +1074,42 @@ class GoalActionExecutor:
             last_stored = self._recent_insights.get(belief_key, 0)
             age = time.time() - last_stored
             if age < INSIGHT_DEDUPE_WINDOW:
+                belief_persisted = False
+                try:
+                    from core.data.access import DataAccess
+                    stored = DataAccess().get_belief_by_name(belief_key)
+                    belief_persisted = bool(
+                        isinstance(stored, dict)
+                        and str(stored.get("statement", "")).strip()
+                    )
+                except Exception as exc:
+                    logger.debug(
+                        "[GoalActionExecutor] Deduplicated insight read-back failed: %s",
+                        exc,
+                    )
                 logger.info(
                     f"[GoalActionExecutor] ⏭ Dedup: '{topic[:30]}' "
                     f"(stored {int(age)}s ago < {INSIGHT_DEDUPE_WINDOW}s) "
-                    f"— advancing prompt frame for next cycle"
+                    f"— persistence_verified={belief_persisted}"
                 )
-                # Advance frame so the NEXT cycle uses a different prompt angle
-                self._frame_index[goal.id] = (
-                    self._frame_index.get(goal.id, 0) + 1
-                ) % len(_SELF_QUESTION_FRAMES)
-                self._finalize_async_action(
-                    goal, ACTION_SELF_QUESTION, True,
-                    "recent grounded insight already exists",
-                )
+                if belief_persisted:
+                    # Advance frame so the NEXT cycle uses a different prompt angle.
+                    self._frame_index[goal.id] = (
+                        self._frame_index.get(goal.id, 0) + 1
+                    ) % len(_SELF_QUESTION_FRAMES)
+                    self._finalize_async_action(
+                        goal, ACTION_SELF_QUESTION, True,
+                        "recent grounded insight already exists",
+                        evidence={"belief_persisted": True, "reused_existing_insight": True},
+                        execution_id=execution_id, cycle_id=cycle_id,
+                    )
+                else:
+                    self._finalize_async_action(
+                        goal, ACTION_SELF_QUESTION, False,
+                        "recent-insight cache had no persisted belief",
+                        evidence={"belief_persisted": False},
+                        execution_id=execution_id, cycle_id=cycle_id,
+                    )
                 return
 
             # State-grounded introspection: derive question from IDX, contradictions,
@@ -1194,6 +1241,7 @@ class GoalActionExecutor:
                     ACTION_SELF_QUESTION,
                     False,
                     generation["reason"] or "LLM returned no usable response",
+                    execution_id=execution_id, cycle_id=cycle_id,
                 )
                 return
 
@@ -1217,7 +1265,8 @@ class GoalActionExecutor:
                     f"'{insight[:60]}'"
                 )
                 self._finalize_async_action(
-                    goal, ACTION_SELF_QUESTION, False, "insight failed minimum length"
+                    goal, ACTION_SELF_QUESTION, False, "insight failed minimum length",
+                    execution_id=execution_id, cycle_id=cycle_id,
                 )
                 return
             if insight.lower().startswith(("error:", "error ")):
@@ -1226,7 +1275,8 @@ class GoalActionExecutor:
                     f"'{insight[:60]}'"
                 )
                 self._finalize_async_action(
-                    goal, ACTION_SELF_QUESTION, False, "provider returned an error"
+                    goal, ACTION_SELF_QUESTION, False, "provider returned an error",
+                    execution_id=execution_id, cycle_id=cycle_id,
                 )
                 return
 
@@ -1267,6 +1317,7 @@ class GoalActionExecutor:
                         self._finalize_async_action(
                             goal, ACTION_SELF_QUESTION, False,
                             "insight failed semantic quality validation",
+                            execution_id=execution_id, cycle_id=cycle_id,
                         )
                         return
             except Exception as _emb_e:
@@ -1288,6 +1339,7 @@ class GoalActionExecutor:
                     self._finalize_async_action(
                         goal, ACTION_SELF_QUESTION, False,
                         "insight had no grammatical predicate",
+                        execution_id=execution_id, cycle_id=cycle_id,
                     )
                     return
 
@@ -1314,6 +1366,7 @@ class GoalActionExecutor:
                     self._finalize_async_action(
                         goal, ACTION_SELF_QUESTION, False,
                         "insight failed lexical fallback validation",
+                        execution_id=execution_id, cycle_id=cycle_id,
                     )
                     return
 
@@ -1345,6 +1398,7 @@ class GoalActionExecutor:
                         False,
                         "candidate insight failed belief persistence read-back",
                         evidence={"belief_persisted": False},
+                        execution_id=execution_id, cycle_id=cycle_id,
                     )
                     return
                 self._recent_insights[belief_key] = time.time()
@@ -1357,6 +1411,7 @@ class GoalActionExecutor:
                     False,
                     "candidate insight belief persistence raised an exception",
                     evidence={"belief_persisted": False},
+                    execution_id=execution_id, cycle_id=cycle_id,
                 )
                 return
 
@@ -1406,17 +1461,21 @@ class GoalActionExecutor:
                     "thought_stream_recorded": publication["thought_stream_recorded"],
                     "workspace_broadcast": publication["workspace_broadcast"],
                 },
+                execution_id=execution_id, cycle_id=cycle_id,
             )
 
         except Exception as e:
             logger.warning(f"[GoalActionExecutor] self_question error: {e}", exc_info=True)
             self._finalize_async_action(
-                goal, ACTION_SELF_QUESTION, False, str(e)
+                goal, ACTION_SELF_QUESTION, False, str(e),
+                execution_id=execution_id, cycle_id=cycle_id,
             )
 
     # ── Bisociative Collision Engine (FIX 6) ──────────────────────────────────
 
-    async def _action_bisociative_hypothesis(self, goal) -> None:
+    async def _action_bisociative_hypothesis(
+        self, goal, *, execution_id: str = "", cycle_id: Optional[int] = None
+    ) -> None:
         """
         Breaks the meta-loop by colliding the current internal tension with
         a maximally dissimilar episodic memory (the Chaos Fetcher).
@@ -1437,9 +1496,13 @@ class GoalActionExecutor:
             if not llm or not hasattr(llm, 'generate_bare'):
                 logger.warning("[GoalActionExecutor] bisociative: LLM backend not available — goal will retry next cycle")
                 self._finalize_async_action(
-                    goal, ACTION_BISOCIATIVE, False, "LLM backend unavailable"
+                    goal, ACTION_BISOCIATIVE, False, "LLM backend unavailable",
+                    execution_id=execution_id, cycle_id=cycle_id,
                 )
-                await self._action_self_question(goal)
+                await self._fallback_self_question(
+                    goal, parent_action=ACTION_BISOCIATIVE,
+                    parent_execution_id=execution_id, cycle_id=cycle_id,
+                )
                 return
 
             # Fix: goal.topic is frozen at creation time; regenerate from
@@ -1477,9 +1540,13 @@ class GoalActionExecutor:
                     f"'{topic[:30]}' — falling back to self_question"
                 )
                 self._finalize_async_action(
-                    goal, ACTION_BISOCIATIVE, False, "no episodic anchor available"
+                    goal, ACTION_BISOCIATIVE, False, "no episodic anchor available",
+                    execution_id=execution_id, cycle_id=cycle_id,
                 )
-                await self._action_self_question(goal)
+                await self._fallback_self_question(
+                    goal, parent_action=ACTION_BISOCIATIVE,
+                    parent_execution_id=execution_id, cycle_id=cycle_id,
+                )
                 return
 
             anchor_text = anchor['content'].strip()[:200]
@@ -1595,7 +1662,8 @@ class GoalActionExecutor:
                 pass
 
             self._finalize_async_action(
-                goal, ACTION_BISOCIATIVE, True, hypothesis
+                goal, ACTION_BISOCIATIVE, True, hypothesis,
+                execution_id=execution_id, cycle_id=cycle_id,
             )
 
         except Exception as e:
@@ -1604,9 +1672,13 @@ class GoalActionExecutor:
                 exc_info=True,
             )
             self._finalize_async_action(
-                goal, ACTION_BISOCIATIVE, False, str(e)
+                goal, ACTION_BISOCIATIVE, False, str(e),
+                execution_id=execution_id, cycle_id=cycle_id,
             )
-            await self._action_self_question(goal)
+            await self._fallback_self_question(
+                goal, parent_action=ACTION_BISOCIATIVE,
+                parent_execution_id=execution_id, cycle_id=cycle_id,
+            )
 
     @staticmethod
     def _local_bisociative_fallback(topic: str, anchor: str) -> str:
@@ -2020,6 +2092,46 @@ class GoalActionExecutor:
             goal.id,
             reason,
         )
+
+    async def _fallback_self_question(
+        self, goal, *, parent_action: str, parent_execution_id: str,
+        cycle_id: Optional[int]
+    ) -> None:
+        """Run a fallback as a distinct, locked action with its own prediction."""
+        key = (str(goal.id), ACTION_SELF_QUESTION)
+        if not self._claim_async_action(key):
+            logger.info(
+                "[GoalActionExecutor] Skip %s fallback: self_question already in flight",
+                parent_action,
+            )
+            return
+
+        execution_id = f"fallback-{uuid.uuid4().hex}"
+        try:
+            from cognition.consequence_tracker import get_consequence_tracker
+            tracker = get_consequence_tracker(self._o)
+            if tracker is not None and getattr(tracker, "enabled", False):
+                self._pending_predictions[key] = tracker.predict(
+                    goal_id=str(goal.id),
+                    goal_topic=str(getattr(goal, "topic", "")),
+                    action_type=ACTION_SELF_QUESTION,
+                    cycle_id=cycle_id,
+                    goal_energy=float(getattr(goal, "energy", 1.0)),
+                    execution_id=execution_id,
+                    goal_source_turn_id=str(getattr(goal, "source_turn_id", "") or ""),
+                    goal_source_thought_id=str(getattr(goal, "source_thought_id", "") or ""),
+                    parent_execution_id=parent_execution_id,
+                )
+            logger.info(
+                "[GoalActionExecutor] Run %s fallback as self_question execution=%s",
+                parent_action,
+                execution_id,
+            )
+            await self._action_self_question(
+                goal, execution_id=execution_id, cycle_id=cycle_id
+            )
+        finally:
+            self._release_async_action(key)
 
     def _finalize_async_action(
         self, goal, action_type: str, success: bool, result: str = "",

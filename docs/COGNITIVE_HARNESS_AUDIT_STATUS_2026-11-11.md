@@ -267,3 +267,13 @@ Corrections locales : la publication de l’introspection est déplacée après 
 Tests ciblés : `tests/test_goal_action_thought_publication.py`, `tests/test_consequence_execution_provenance.py`, `tests/test_intention_planning.py`, `tests/test_module_tick_log.py`, `tests/test_goal_engine_execution_order.py`, `tests/test_goal_completion_deadlock.py` : **56 passed**, 7 avertissements de dépréciation Pydantic préexistants. Le test vérifie l’ajout, la relecture après persistance et le rapport d’acceptation des deux consommateurs. Cela valide le contrat local, mais pas encore chaque variante d’erreur du fournisseur LLM ni l’effet live après redémarrage.
 
 **Processus :** Lumina n’a pas été redémarré. Le code corrigé reste local et sera évalué sur le processus après l’unique redémarrage final prévu. L’audit continue sur d’autres scénarios et effets aval.
+
+## Replis asynchrones sans attribution — correction locale complémentaire
+
+Les erreurs ou résultats vides de `web_search` et `bisociative_hypothesis` déclenchaient directement une coroutine `self_question` dans le même flux. Cette action secondaire n’avait ni prédiction autonome ni `execution_id` propre; ses résultats pouvaient être attribués à la mauvaise étape du planner ou rester sans provenance. Le chemin dédupliqué de `self_question` marquait également une réussite depuis `_recent_insights` en mémoire, sans relire le belief persistant; le tracker, lui, ne reconnaissait pas cette réussite faute de preuve.
+
+Correction locale : chaque repli `self_question` est maintenant verrouillé comme action distincte, reçoit son propre `execution_id` et une prédiction de conséquence, conserve le cycle et porte `parent_execution_id` dans tous les événements du ledger. Si une introspection identique est déjà en cours, le repli ne la duplique pas. La déduplication n’est considérée réussie que si une relecture retrouve un belief persistant non vide; le reçu expose `belief_persisted=true` et `reused_existing_insight=true`. Les chemins de finalisation transportent les identifiants explicites de l’action qui s’est réellement achevée.
+
+Vérification : le test causal contrôle que la référence d’action parente est conservée sur chaque événement de la chaîne. Lot ciblé : **56 passed**, 7 avertissements Pydantic préexistants; compilation et `git diff --check` réussis. Le test direct du helper asynchrone de repli n’est pas inclus dans ce lot; la liaison est couverte par la compilation, le contrat de tracker/ledger et les tests de planification, et reste à vérifier en live.
+
+**Processus :** toujours aucun redémarrage. Ces corrections locales ne sont pas chargées dans Lumina; l’unique redémarrage reste réservé à la fin de l’audit.

@@ -55,6 +55,5 @@ class GoalActionThoughtPublicationTests(unittest.TestCase):
         self.assertFalse(stream.add("not valid priority", priority=float("nan")))
         self.assertEqual(stream.recent(), [])
 
-
 if __name__ == "__main__":
     unittest.main()

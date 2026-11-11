@@ -61,6 +61,7 @@ class ConsequenceExecutionProvenanceTests(unittest.TestCase):
                 execution_id="act-audit-27-1",
                 goal_source_turn_id="turn-user-origin",
                 goal_source_thought_id="thought-origin",
+                parent_execution_id="act-parent-search-27",
             )
             result = tracker.resolve(
                 prediction,
@@ -89,6 +90,7 @@ class ConsequenceExecutionProvenanceTests(unittest.TestCase):
             self.assertTrue(all(
                 event["refs"]["goal_source_turn_id"] == "turn-user-origin"
                 and event["refs"]["goal_source_thought_id"] == "thought-origin"
+                and event["refs"]["parent_execution_id"] == "act-parent-search-27"
                 for event in related
             ))
             outcome = next(event for event in related if event["kind"] == "outcome")

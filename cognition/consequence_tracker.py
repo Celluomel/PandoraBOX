@@ -117,7 +117,8 @@ class ConsequenceTracker:
                 goal_energy: float = 1.0,
                 execution_id: Optional[str] = None,
                 goal_source_turn_id: str = "",
-                goal_source_thought_id: str = "") -> Dict[str, Any]:
+                goal_source_thought_id: str = "",
+                parent_execution_id: str = "") -> Dict[str, Any]:
         if not self.enabled:
             return {"disabled": True, "goal_id": str(goal_id),
                     "action_type": action_type, "goal_topic": goal_topic}
@@ -131,6 +132,7 @@ class ConsequenceTracker:
             "goal_topic": goal_topic,
             "goal_source_turn_id": str(goal_source_turn_id or ""),
             "goal_source_thought_id": str(goal_source_thought_id or ""),
+            "parent_execution_id": str(parent_execution_id or ""),
             "action_type": action_type,
             "measurement_scope": "operational_output; cognitive benefit is not established",
             "predicted_effect": am["effect"],
@@ -158,6 +160,7 @@ class ConsequenceTracker:
                     "execution_id": pred["execution_id"],
                     "goal_source_turn_id": pred["goal_source_turn_id"],
                     "goal_source_thought_id": pred["goal_source_thought_id"],
+                    "parent_execution_id": pred["parent_execution_id"],
                 },
             )
         return pred
@@ -224,6 +227,7 @@ class ConsequenceTracker:
                     "pred_id": pred["pred_id"], "execution_id": execution_id,
                     "goal_source_turn_id": pred.get("goal_source_turn_id", ""),
                     "goal_source_thought_id": pred.get("goal_source_thought_id", ""),
+                    "parent_execution_id": pred.get("parent_execution_id", ""),
                 },
             )
             error_event_id = self.ledger.record(
@@ -238,6 +242,7 @@ class ConsequenceTracker:
                     "pred_id": pred["pred_id"], "execution_id": execution_id,
                     "goal_source_turn_id": pred.get("goal_source_turn_id", ""),
                     "goal_source_thought_id": pred.get("goal_source_thought_id", ""),
+                    "parent_execution_id": pred.get("parent_execution_id", ""),
                     "target": "error",
                 },
             )
@@ -253,6 +258,7 @@ class ConsequenceTracker:
                         "pred_id": pred["pred_id"], "execution_id": execution_id,
                         "goal_source_turn_id": pred.get("goal_source_turn_id", ""),
                         "goal_source_thought_id": pred.get("goal_source_thought_id", ""),
+                        "parent_execution_id": pred.get("parent_execution_id", ""),
                         "target": "efficacy",
                     },
                 )
@@ -268,6 +274,7 @@ class ConsequenceTracker:
                         "pred_id": pred["pred_id"], "execution_id": execution_id,
                         "goal_source_turn_id": pred.get("goal_source_turn_id", ""),
                         "goal_source_thought_id": pred.get("goal_source_thought_id", ""),
+                        "parent_execution_id": pred.get("parent_execution_id", ""),
                         "target": "attention",
                     },
                 )
