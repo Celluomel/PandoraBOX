@@ -600,6 +600,14 @@ class PersonaBridge:
                 deterministic_goal_path = (
                     stage_status.get("deterministic_goal_response") == "completed"
                 )
+                deterministic_reasoning_path = (
+                    stage_status.get("deterministic_reasoning") in {"selected_direct", "completed"}
+                    and stage_status.get("primary_generation") == "skipped_deterministic"
+                )
+                fast_direct_path = (
+                    stage_status.get("fast_first_pass") == "selected_direct"
+                    and stage_status.get("primary_generation") == "skipped_deterministic"
+                )
                 if deterministic_body_path:
                     required_stages = (
                         ("readiness", {"passed"}),
@@ -617,6 +625,25 @@ class PersonaBridge:
                         ("response", {"completed"}),
                         ("deterministic_goal_response", {"completed"}),
                     )
+                elif deterministic_reasoning_path:
+                    required_stages = (
+                        ("readiness", {"passed"}),
+                        ("input_safety", {"passed"}),
+                        ("prompt_assembly", {"completed"}),
+                        ("deterministic_reasoning", {"selected_direct", "completed"}),
+                        ("output_safety", {"passed", "replaced"}),
+                        ("response_finalization", {"completed"}),
+                        ("response", {"completed"}),
+                    )
+                elif fast_direct_path:
+                    required_stages = (
+                        ("readiness", {"passed"}),
+                        ("input_safety", {"passed"}),
+                        ("fast_first_pass", {"selected_direct"}),
+                        ("output_safety", {"passed", "replaced"}),
+                        ("response_finalization", {"completed"}),
+                        ("response", {"completed"}),
+                    )
                 else:
                     required_stages = (
                         ("readiness", {"passed"}),
@@ -630,13 +657,19 @@ class PersonaBridge:
                     value = stage_status.get(stage_name)
                     if not isinstance(value, str) or value not in expected:
                         missing_core.append(stage_name)
-                has_generation = deterministic_body_path or deterministic_goal_path or any(
-                    isinstance(stage_status.get(name), str)
-                    and stage_status.get(name) in accepted
-                    for name, accepted in (
-                        ("primary_generation", {"completed"}),
-                        ("fast_first_pass", {"selected_direct", "delegated"}),
-                        ("deterministic_reasoning", {"selected_direct", "completed"}),
+                has_generation = (
+                    deterministic_body_path
+                    or deterministic_goal_path
+                    or deterministic_reasoning_path
+                    or fast_direct_path
+                    or any(
+                        isinstance(stage_status.get(name), str)
+                        and stage_status.get(name) in accepted
+                        for name, accepted in (
+                            ("primary_generation", {"completed"}),
+                            ("fast_first_pass", {"selected_direct", "delegated"}),
+                            ("deterministic_reasoning", {"selected_direct", "completed"}),
+                        )
                     )
                 )
                 if not has_generation:
@@ -728,10 +761,17 @@ class PersonaBridge:
                 self._last_turn_trace["pipeline_integrity"] = {
                     "status": "consistent" if not integrity_issues else "incomplete_evidence",
                     "checked_at": time.time(),
-                    "required_core_stages": len(required_stages) + (0 if (deterministic_body_path or deterministic_goal_path) else 1),
+                    "required_core_stages": len(required_stages) + (
+                        0 if (
+                            deterministic_body_path or deterministic_goal_path
+                            or deterministic_reasoning_path or fast_direct_path
+                        ) else 1
+                    ),
                     "execution_path": (
                         "deterministic_body_action" if deterministic_body_path
                         else "deterministic_goal_write" if deterministic_goal_path
+                        else "deterministic_reasoning" if deterministic_reasoning_path
+                        else "fast_direct_response" if fast_direct_path
                         else "generative_chat"
                     ),
                     "missing_core_stages": missing_core,

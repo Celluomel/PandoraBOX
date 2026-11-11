@@ -64,3 +64,26 @@ def test_turn_integrity_detects_stale_upstream_output_fingerprint():
     assert bridge._last_turn_trace["pipeline_integrity"]["data_flow_issues"] == [
         "source_output_mismatch:prompt->generation"
     ]
+
+
+def test_turn_integrity_labels_deterministic_self_report_path():
+    bridge = _bridge()
+    bridge._last_turn_trace["stages"].update({
+        "readiness": {"status": "passed"},
+        "turn_input": {"status": "received"},
+        "input_safety": {"status": "passed"},
+        "prompt_assembly": {"status": "completed"},
+        "deterministic_reasoning": {"status": "selected_direct"},
+        "primary_generation": {"status": "skipped_deterministic"},
+        "output_safety": {"status": "passed"},
+        "response_finalization": {"status": "completed"},
+        "response": {"status": "completed"},
+    })
+
+    bridge._finish_turn_trace("completed")
+    integrity = bridge._last_turn_trace["pipeline_integrity"]
+
+    assert integrity["status"] == "consistent"
+    assert integrity["execution_path"] == "deterministic_reasoning"
+    assert integrity["required_core_stages"] == 7
+    assert integrity["missing_core_stages"] == []
