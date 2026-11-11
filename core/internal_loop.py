@@ -552,6 +552,26 @@ class InternalThoughtLoop:
             or commit_result.get("reason") == "existing_goal"
         )
 
+    @staticmethod
+    def _workspace_focus_for_consumers(winner: Any, admitted: bool) -> Any:
+        """Do not expose a rejected goal proposal as an active cognitive focus."""
+        source_data = winner.get("source_data", {}) if isinstance(winner, dict) else {}
+        proposal = source_data.get("_goal_proposal") if isinstance(source_data, dict) else None
+        if isinstance(proposal, dict) and not admitted:
+            # Keep the original candidate in this cycle's competition and
+            # arbitration receipts. Publish only a neutral, authoritative
+            # observation so prompt, presence and action consumers cannot
+            # mistake the rejected topic for a current focus or fall back to
+            # an unrelated older goal.
+            return {
+                "type": "rejected_proposal",
+                "proposal_admission": "rejected",
+                "name": "",
+                "topic": "",
+                "score": 0.0,
+            }
+        return winner
+
     def _begin_cycle_evidence(self, cycle_id: int) -> None:
         with self._cycle_evidence_lock:
             self._active_cycle_evidence = {
@@ -1531,14 +1551,25 @@ class InternalThoughtLoop:
                     _comp  = _cycle_result.get('competition', {}).get('competition', {})
                     _cands = _comp.get('total_candidates', 0)
                     _margin = _comp.get('winning_margin', 0)
-                    logger.info(
-                        f"[InternalLoop] 🏆 Workspace winner: "
-                        f"{_winner.get('label', _winner.get('type','?')+' | '+_winner.get('name','?'))[:60]} "
-                        f"| score={_winner.get('score',0):.2f} "
-                        f"(from {_cands} candidates, margin={_margin:.2f})"
-                    )
+                    if isinstance(_selected_proposal, dict) and not _proposal_focus_admitted:
+                        logger.info(
+                            "[InternalLoop] Workspace proposal rejected from focus: %s "
+                            "| score=%.2f (from %s candidates, margin=%.2f)",
+                            _winner.get("label", _winner.get("type", "?") + " | " + _winner.get("name", "?"))[:60],
+                            float(_winner.get("score", 0) or 0), _cands, _margin,
+                        )
+                    else:
+                        logger.info(
+                            f"[InternalLoop] 🏆 Workspace winner: "
+                            f"{_winner.get('label', _winner.get('type','?')+' | '+_winner.get('name','?'))[:60]} "
+                            f"| score={_winner.get('score',0):.2f} "
+                            f"(from {_cands} candidates, margin={_margin:.2f})"
+                        )
                     # Store winner for other systems to read
-                    o._v32_workspace_winner = _winner
+                    _published_workspace_winner = self._workspace_focus_for_consumers(
+                        _winner, _proposal_focus_admitted,
+                    )
+                    o._v32_workspace_winner = _published_workspace_winner
                     o._v32_workspace_winner_cycle = self._slow_cycle_count
                     _winner_evidence_ref = self._record_cycle_stage(
                         "winner_published_to_workspace_state", "completed",
@@ -1546,7 +1577,10 @@ class InternalThoughtLoop:
                             "arbitration_output_ref": _arbitration_evidence_ref,
                             "proposal_focus_admission_ref": _proposal_focus_ref,
                         },
-                        output=_winner,
+                        output={
+                            "published_winner": _published_workspace_winner,
+                            "raw_cycle_winner_ref": self._evidence_fingerprint(_winner),
+                        },
                     )
                     o._v32_workspace_winner_evidence_ref = _winner_evidence_ref
                     o._v32_workspace_winner_evidence_cycle = self._slow_cycle_count

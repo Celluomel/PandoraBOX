@@ -5,10 +5,12 @@ from types import SimpleNamespace
 
 from cognition.goal_engine import GoalEngine
 from cognition.goal_action_executor import GoalActionExecutor
+from cognition.cognitive_preprocessor import CognitivePreProcessor
 from cognition.simple_thought_evaluator import SimpleThoughtEvaluator
 from cognition.thought_stream import Thought
 from cognition.workspace_competition import WorkspaceCompetition
 from core.data.access import DataAccess
+from core.internal_loop import InternalThoughtLoop
 
 
 def test_selected_thought_proposal_is_persisted_with_source_evidence(tmp_path):
@@ -203,3 +205,28 @@ def test_internal_loop_uses_one_proposal_evaluation_path_and_authoritative_winne
 
     assert evaluator_calls == [], "Phase1 owns proposal evaluation; no second independent loop may consume thoughts"
     assert len(executor_calls) == 1, "the executor must receive arbitration authority explicitly"
+
+
+def test_rejected_proposal_stays_in_cycle_evidence_but_not_consumer_focus():
+    candidate = {
+        "type": "thought",
+        "name": "notice pull toward",
+        "topic": "notice pull toward",
+        "score": 0.63,
+        "source_data": {"_goal_proposal": {"concept": "notice pull toward"}},
+    }
+
+    published = InternalThoughtLoop._workspace_focus_for_consumers(candidate, admitted=False)
+
+    assert candidate["name"] == "notice pull toward"  # retain raw cycle evidence
+    assert published == {
+        "type": "rejected_proposal",
+        "proposal_admission": "rejected",
+        "name": "",
+        "topic": "",
+        "score": 0.0,
+    }
+    assert CognitivePreProcessor._workspace_winner_block(
+        SimpleNamespace(_v32_workspace_winner=published)
+    ) == ""
+    assert InternalThoughtLoop._workspace_focus_for_consumers(candidate, admitted=True) is candidate
