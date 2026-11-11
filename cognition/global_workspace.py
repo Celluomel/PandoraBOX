@@ -202,22 +202,37 @@ class GlobalWorkspace:
 
     def update_state(self, source: str, **fields) -> WorkspaceState:
         """
-        Merge `fields` into the shared WorkspaceState and record provenance.
+        Merge supported fields into the shared WorkspaceState and record
+        provenance. Context updates merge by key so independent subsystem
+        publishers do not erase one another's entries. Provenance metadata is
+        owned by this class and cannot be overwritten through this method.
 
         Any subsystem can call this with just the fields it computed this
         cycle — e.g. world_model.py might call
             workspace.update_state("world_model", predicted_futures=[...])
         without needing to know or overwrite what identity/goals/calibration
-        wrote. Unknown field names are ignored (logged at debug level via
-        the caller, not raised) so a typo in one adapter can't crash others.
+        wrote. Unknown and provenance-owned field names are ignored so an
+        adapter typo cannot forge a receipt or crash the cognitive cycle.
         """
+        writable_fields = {
+            "focus", "intention", "active_hypotheses", "uncertainty",
+            "predicted_futures", "goals", "motivations", "narrative_state",
+            "executive_policy", "confidence", "context",
+        }
+        accepted_fields = [key for key in fields if key in writable_fields]
         with self._state_lock:
-            for key, value in fields.items():
-                if hasattr(self._state, key):
-                    setattr(self._state, key, value)
+            for key in accepted_fields:
+                value = copy.deepcopy(fields[key])
+                if key == "context":
+                    context = copy.deepcopy(self._state.context or {})
+                    context.update(value or {})
+                    value = context
+                setattr(self._state, key, value)
+            if not accepted_fields:
+                return copy.deepcopy(self._state)
             self._state.updated_by.append({
                 "source": source,
-                "fields": list(fields.keys()),
+                "fields": accepted_fields,
                 "timestamp": round(time.time(), 3),
             })
             self._state.updated_by = self._state.updated_by[-50:]
@@ -228,7 +243,7 @@ class GlobalWorkspace:
         """Atomically merge context keys so concurrent sensor publishers do not overwrite each other."""
         with self._state_lock:
             context = dict(self._state.context or {})
-            context.update(updates or {})
+            context.update(copy.deepcopy(updates or {}))
             self._state.context = context
             self._state.updated_by.append({
                 "source": source,
@@ -249,7 +264,7 @@ class GlobalWorkspace:
         now = time.time()
         stamped = []
         for h in hypotheses:
-            h = dict(h)
+            h = copy.deepcopy(dict(h))
             h.setdefault("_ws_expires_at", now + HYPOTHESIS_TTL)
             stamped.append(h)
         with self._state_lock:

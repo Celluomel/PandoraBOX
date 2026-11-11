@@ -75,3 +75,36 @@ def test_state_summary_nested_values_are_isolated():
     live = workspace.get_state()
     assert live.context["nested"]["value"] == 1
     assert live.updated_by
+
+
+def test_context_publishers_merge_keys_and_copy_input_payloads():
+    workspace = GlobalWorkspace()
+    first_payload = {"world_model": {"objects": ["chair"]}}
+    second_payload = {"introspection": {"mode": "reflective"}}
+
+    workspace.update_state("world_model", context=first_payload)
+    workspace.update_state("introspection", context=second_payload)
+    first_payload["world_model"]["objects"].append("mutated later")
+    second_payload["introspection"]["mode"] = "mutated later"
+
+    context = workspace.get_state().context
+    assert context == {
+        "world_model": {"objects": ["chair"]},
+        "introspection": {"mode": "reflective"},
+    }
+
+
+def test_unknown_and_provenance_fields_do_not_create_false_receipts():
+    workspace = GlobalWorkspace()
+    before = workspace.get_state().last_updated
+
+    state = workspace.update_state(
+        "untrusted_writer",
+        misspelled_focus_field="false focus",
+        updated_by=[{"source": "forged"}],
+        last_updated=-1,
+    )
+
+    assert state.updated_by == []
+    assert state.focus is None
+    assert state.last_updated == before
