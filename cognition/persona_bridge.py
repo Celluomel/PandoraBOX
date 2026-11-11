@@ -2404,7 +2404,11 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     )
                 )
                 _provider_tokens = []
-                _stream_kwargs = {"max_tokens": _max_tokens, "temperature": _temperature}
+                _stream_kwargs = {
+                    "max_tokens": _max_tokens,
+                    "temperature": _temperature,
+                    "audit_turn_id": str(self.get_last_turn_trace().get("turn_id") or ""),
+                }
                 if not record_history:
                     _stream_kwargs.update(
                         history_override=conversation_history or [],
@@ -2748,8 +2752,17 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             _answer_origin_stage = "empty_generation_fallback"
 
         if _finish_reason == "length":
+            _recovery_stage = (
+                self._last_turn_trace.get("stages", {}).get("final_answer_recovery", {})
+                if isinstance(self._last_turn_trace, dict) else {}
+            )
             logger.warning(
-                "[Chat stream] provider reached max_tokens; visible response was preserved"
+                "[Chat stream] provider reached max_tokens; turn_id=%s "
+                "recovery=%s visible_chars=%d",
+                str(self._last_turn_trace.get("turn_id") or "")
+                if isinstance(self._last_turn_trace, dict) else "",
+                str(_recovery_stage.get("status") or "not_needed"),
+                len(raw_response),
             )
 
         _response_source_stage = (

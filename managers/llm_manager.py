@@ -387,7 +387,9 @@ class LMStudioProvider(BaseLLMProvider):
                         continue
             if emitted == 0:
                 logger.warning(
-                    "LMStudio stream completed without content (finish_reason=%s, messages=%d)",
+                    "LMStudio stream completed without visible content "
+                    "(turn_id=%s, finish_reason=%s, messages=%d)",
+                    str(kwargs.get("audit_turn_id") or ""),
                     finish_reason,
                     len(messages),
                 )
