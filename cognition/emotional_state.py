@@ -107,6 +107,7 @@ BASELINE_WEIGHTS: Dict[str, Dict[str, float]] = {
 # Floor for baseline values — even the most anxious persona has some floor
 BASELINE_FLOOR = 0.05
 BASELINE_CEIL  = 0.85
+EMOTIONAL_STATE_SCHEMA_VERSION = 2
 
 
 @dataclass
@@ -201,7 +202,11 @@ class EmotionalStateManager:
         for emotion, weights in BASELINE_WEIGHTS.items():
             base = EMOTION_DEFAULT_BASELINES.get(emotion, 0.3)
             for trait, weight in weights.items():
-                base += traits.get(trait, 0.5) * weight
+                # Personality is a disposition around a neutral affect level,
+                # not a permanent positive-emotion accumulator. Centering each
+                # trait prevents ordinary mid/high trait values from pinning
+                # several emotional baselines at BASELINE_CEIL.
+                base += (traits.get(trait, 0.5) - 0.5) * weight
             baselines[emotion] = max(BASELINE_FLOOR, min(BASELINE_CEIL, base))
         return baselines
 
@@ -748,6 +753,7 @@ class EmotionalStateManager:
     def _save(self):
         try:
             data = {
+                "schema_version": EMOTIONAL_STATE_SCHEMA_VERSION,
                 "emotions": {
                     name: {
                         "value":           emo.value,
@@ -773,11 +779,20 @@ class EmotionalStateManager:
             if not self._path.exists():
                 return
             data = json.loads(self._path.read_text())
+            schema_version = int(data.get("schema_version", 1))
+            needs_migration = schema_version < EMOTIONAL_STATE_SCHEMA_VERSION
             for name, saved in data.get("emotions", {}).items():
                 if name in self.emotions:
                     emo = self.emotions[name]
-                    emo.value           = float(saved.get("value",           emo.baseline))
-                    emo.baseline        = float(saved.get("baseline",        emo.baseline))
+                    saved_value = float(saved.get("value", emo.baseline))
+                    saved_baseline = float(saved.get("baseline", emo.baseline))
+                    if needs_migration:
+                        # Recenter old personality-derived baselines while
+                        # preserving the current transient affect deviation.
+                        emo.value = max(0.0, min(1.0, emo.baseline + saved_value - saved_baseline))
+                    else:
+                        emo.value = saved_value
+                        emo.baseline = saved_baseline
                     emo.last_updated_ts = float(saved.get("last_updated_ts", time.time()))
             self._history = data.get("history", [])
             self._recent_affect_events = data.get("recent_affect_events", [])[-20:]
@@ -785,6 +800,12 @@ class EmotionalStateManager:
             self._mood_valence      = float(data.get("mood_valence", self._mood_valence))
             self._mood_arousal      = float(data.get("mood_arousal", self._mood_arousal))
             self._mood_last_updated = float(data.get("mood_last_updated", time.time()))
+            if needs_migration:
+                self._save()
+                logger.info(
+                    "Emotional state migrated from schema %s to %s with deviations preserved",
+                    schema_version, EMOTIONAL_STATE_SCHEMA_VERSION,
+                )
             logger.info(f"Emotional state loaded ({len(self.emotions)} emotions)")
         except Exception as e:
             logger.error(f"EmotionalState load failed: {e}")

@@ -38,6 +38,18 @@ class SelfDescriptionPromptTests(unittest.TestCase):
         ))
         self.assertFalse(is_internal_cognitive_query("What does the body camera see?"))
 
+    def test_self_affect_questions_are_closed_world_but_general_emotion_questions_are_not(self):
+        self.assertTrue(is_internal_cognitive_query(
+            "Quelles émotions fonctionnelles sont actives en toi maintenant?"
+        ))
+        self.assertTrue(is_internal_cognitive_query(
+            "What feelings are active in Lumina right now?"
+        ))
+        self.assertTrue(is_internal_cognitive_query("Comment te sens-tu?"))
+        self.assertFalse(is_internal_cognitive_query(
+            "What emotions are commonly associated with curiosity?"
+        ))
+
     def test_runtime_manifest_distinguishes_observation_from_semantic_validation(self):
         description = SelfDescription.__new__(SelfDescription)
         description._lock = threading.Lock()

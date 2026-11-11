@@ -37,6 +37,7 @@ import logging
 import math
 import random
 import re
+import unicodedata
 from typing import List, Optional
 from urllib.parse import urlparse, quote_plus
 
@@ -57,6 +58,23 @@ _LOW = {
 }
 _BLACKLIST = _LOW  # same set
 
+# Query terms that contribute little evidence of topical relevance on their own.
+# This is deliberately a retrieval stop-list, not an intent/answer dictionary.
+_SEARCH_STOPWORDS = {
+    "a", "about", "after", "all", "also", "and", "are", "as", "at", "based",
+    "be", "because", "before", "being", "between", "can", "could", "describe",
+    "do", "does", "for", "from", "have", "how", "in", "into", "is", "it",
+    "me", "more", "of", "on", "or", "please", "right", "since", "the", "their",
+    "them", "there", "these", "this", "to", "use", "what", "when", "where",
+    "which", "who", "why", "with", "would", "you", "your", "au", "aux", "avec",
+    "ce", "ces", "comment", "dans", "de", "des", "du", "elle", "en", "est",
+    "et", "eux", "il", "ils", "je", "la", "le", "les", "leur", "leurs", "lui",
+    "mais", "maintenant", "me", "mes", "mon", "ne", "nos", "notre", "nous", "on",
+    "ou", "par", "pas", "pour", "qu", "que", "quel", "quelle", "quelles", "quels",
+    "qui", "sa", "ses", "son", "sont", "selon", "sur", "ta", "te", "tes", "toi",
+    "ton", "tu", "un", "une", "vos", "votre", "vous", "y",
+}
+
 
 def _cred(url: str) -> float:
     if not url:
@@ -71,6 +89,62 @@ def _cred(url: str) -> float:
 def _is_blocked(url: str) -> bool:
     d = urlparse(url).netloc.lower().lstrip("www.")
     return any(b in d for b in _BLACKLIST)
+
+
+def _search_tokens(text: str) -> set[str]:
+    """Normalize useful lexical terms for a conservative search relevance check."""
+    raw_tokens = re.findall(r"[^\W_]+", str(text or "").casefold(), flags=re.UNICODE)
+    tokens: set[str] = set()
+    for token in raw_tokens:
+        token = "".join(
+            char for char in unicodedata.normalize("NFKD", token)
+            if not unicodedata.combining(char)
+        )
+        if token.endswith("s") and len(token) > 4:
+            token = token[:-1]
+        if len(token) >= 3 and token not in _SEARCH_STOPWORDS:
+            tokens.add(token)
+    return tokens
+
+
+def _rank_search_results(query: str, results: List[dict], limit: int) -> List[dict]:
+    """Rank merged provider results by query-term coverage, then source credibility.
+
+    A long query needs at least two informative term matches; this prevents a
+    generic grammar page matching only an interrogative word from being passed
+    downstream as evidence. Weak matches are omitted rather than merely ranked
+    lower. Scores are retrieval heuristics, not factual-confidence estimates.
+    """
+    query_terms = _search_tokens(query)
+    if not query_terms:
+        return []
+
+    min_matches = 1 if len(query_terms) <= 2 else 2
+    ranked: list[dict] = []
+    for result in results:
+        text = " ".join((
+            str(result.get("title") or ""),
+            str(result.get("snippet") or ""),
+            str(result.get("content") or "")[:1200],
+        ))
+        result_terms = _search_tokens(text)
+        matched = query_terms & result_terms
+        if len(matched) < min_matches:
+            continue
+
+        relevance = len(matched) / len(query_terms)
+        if relevance < 0.20:
+            continue
+        credibility = max(0.0, min(1.0, float(result.get("credibility", 0.5) or 0.0)))
+        ranked.append({
+            **result,
+            "relevance": round(relevance, 3),
+            "rank_score": round(0.85 * relevance + 0.15 * credibility, 3),
+            "matched_query_terms": sorted(matched),
+        })
+
+    ranked.sort(key=lambda item: (item["rank_score"], item["relevance"], item["credibility"]), reverse=True)
+    return ranked[:max(0, limit)]
 
 
 def _r(title: str, url: str, snippet: str = "", content: str = "", src: str = "") -> dict:
@@ -575,8 +649,12 @@ def get_results(query: str, cfg: Optional[SearchConfig] = None, num: int = 5) ->
             logger.info("All API/RSS tiers exhausted — falling back to stealth browser")
             _add(_stealth(query, num))
 
-    all_results.sort(key=lambda x: x["credibility"], reverse=True)
-    final = all_results[:num]
+    final = _rank_search_results(query, all_results, num)
+    if all_results and not final:
+        logger.info(
+            "search_providers: discarded %d result(s) below relevance threshold for %r",
+            len(all_results), query,
+        )
     srcs  = {r["source"] for r in final}
     logger.info(f"search_providers: {len(final)} results for {query!r} via {srcs}")
     return final

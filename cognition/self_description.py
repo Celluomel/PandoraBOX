@@ -66,6 +66,17 @@ def is_internal_cognitive_query(user_input: str) -> bool:
     text = " ".join(str(user_input or "").casefold().split())
     if is_architecture_query(text):
         return True
+    # Self-reports about modeled affect are closed-world questions too. They
+    # must use the live emotional channels/appraisal receipt, not the generic
+    # web-search judge (which can mistake French question words such as
+    # "quelles" for a request about grammar).
+    asks_about_self_affect = bool(
+        re.search(r"\b(?:what|which|how|quelles?|quels?|comment|que)\b", text)
+        and re.search(r"\b(?:emotions?|émotions?|feelings?|sentiments?|affect|feel|feeling|sens)\b", text)
+        and re.search(r"\b(?:you|your|toi|tu|ton|ta|tes|lumina|me|moi)\b", text)
+    )
+    if asks_about_self_affect:
+        return True
     asks_cause_or_mechanism = bool(re.search(
         r"\b(?:why|pourquoi|how|comment|what changed|what caused|"
         r"qu['’]est-ce qui a changé|ce qui a changé|quelle cause|"

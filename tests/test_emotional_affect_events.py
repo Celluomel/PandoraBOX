@@ -1,5 +1,6 @@
 """Tests for affect being caused by cognitive appraisals and reaching thought output."""
 import tempfile
+import json
 import unittest
 from pathlib import Path
 import sys
@@ -53,6 +54,37 @@ class EmotionalAffectEventTests(unittest.TestCase):
             self.assertEqual(receipt["status"], "unmapped_event")
             self.assertEqual(state.get_current_values(), before)
             self.assertEqual(state.get_recent_affect_events(), [])
+
+    def test_personality_changes_neutral_baselines_without_pinning_them_high(self):
+        personality = NS(to_dict=lambda: {
+            "curiosity": 0.64, "creativity": 0.57, "confidence": 0.52,
+            "empathy_emotional": 0.78, "empathy": 0.63, "pragmatism": 0.59,
+        })
+        with tempfile.TemporaryDirectory() as folder:
+            state = EmotionalStateManager(str(Path(folder) / "emotion.json"), personality)
+            self.assertGreater(state.emotions["curiosity"].baseline, 0.30)
+            self.assertLess(state.emotions["curiosity"].baseline, 0.60)
+            self.assertLess(state.emotions["warmth"].baseline, 0.60)
+            self.assertLess(state.emotions["satisfaction"].baseline, 0.60)
+
+    def test_legacy_high_baselines_migrate_while_preserving_affect_deviation(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "emotion.json"
+            now = 1_794_434_000.0
+            path.write_text(json.dumps({
+                "emotions": {
+                    "curiosity": {"value": 0.99, "baseline": 0.85, "last_updated_ts": now},
+                    "warmth": {"value": 0.98, "baseline": 0.85, "last_updated_ts": now},
+                    "satisfaction": {"value": 0.95, "baseline": 0.85, "last_updated_ts": now},
+                },
+                "history": [], "recent_affect_events": [],
+            }))
+            state = EmotionalStateManager(str(path))
+            self.assertAlmostEqual(state.emotions["curiosity"].baseline, 0.30)
+            self.assertAlmostEqual(state.emotions["curiosity"].value, 0.44)
+            migrated = json.loads(path.read_text())
+            self.assertEqual(migrated["schema_version"], 2)
+            self.assertAlmostEqual(migrated["emotions"]["curiosity"]["baseline"], 0.30)
 
     def test_affect_event_survives_reload_and_snapshot_exposes_new_channels(self):
         with tempfile.TemporaryDirectory() as folder:

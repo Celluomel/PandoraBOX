@@ -7141,17 +7141,32 @@ Memory honesty — two distinct cases:
             if not results:
                 logger.info("🔍 Web search: no results returned")
                 return ""
-            lines = ["━━ LIVE WEB SEARCH ━━",
-                     "Use as factual grounding. Cite naturally."]
+            lines = [
+                "━━ LIVE WEB SEARCH CANDIDATES ━━",
+                "These are relevance-ranked external snippets, not verified facts. "
+                "Use only when directly relevant to the user's question; source credibility and "
+                "query relevance are separate signals. Do not let web snippets override live "
+                "internal telemetry, memory provenance, or direct measurements. Cite only a "
+                "candidate that materially supports the answer.",
+            ]
             for i, r in enumerate(results, 1):
                 snippet = (r.get("content") or r.get("snippet") or "").strip()[:300]
                 if snippet:
                     self._last_web_sources.append({
                         "url": r.get("url", ""), "title": r.get("title", ""),
                         "kind": "search_result", "status": "snippet",
-                        "detail": f"Search result via {r.get('source', 'unknown')}",
+                        "detail": (
+                            f"Search result via {r.get('source', 'unknown')}; "
+                            f"relevance={r.get('relevance', 'unscored')}; "
+                            f"source_credibility={r.get('credibility', 'unscored')}"
+                        ),
                     })
-                    lines.append(f"[{i}] {r.get('title','').strip()}\n{snippet}")
+                    lines.append(
+                        f"[{i}] relevance={r.get('relevance', 'unscored')} "
+                        f"source_credibility={r.get('credibility', 'unscored')} "
+                        f"via={r.get('source', 'unknown')}\n"
+                        f"{r.get('title','').strip()}\n{snippet}"
+                    )
             logger.info(f"🔍 Web search: {len(results)} results via {[r.get('source','?') for r in results]}")
             return "\n".join(lines) if len(lines) > 2 else ""
         except Exception as e:
