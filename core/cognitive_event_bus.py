@@ -187,6 +187,78 @@ def wire_cognitive_bus(organism: Any, bus: CognitiveEventBus) -> None:
     This is the central place where emergent cognitive chains are defined.
     """
 
+    # Route internal appraisal events into the persistent affect model. Keep
+    # a receipt on each event so emission is not mistaken for an applied shift.
+    def on_affective_event(event: CognitiveEvent):
+        # PressureSystem emits DRIVE_SATISFIED followed by TENSION_RELEASED
+        # with the same payload for one satiation. The latter remains useful
+        # to other subscribers, but applying both affect profiles would count
+        # one cognitive outcome twice.
+        if event.event_type == TENSION_RELEASED and event.source == "pressure_system":
+            recent = bus.recent(2)
+            prior_payload = dict(recent[-2].payload) if len(recent) == 2 else {}
+            prior_payload.pop("affect_outcome", None)
+            if (len(recent) == 2 and recent[-2].event_type == DRIVE_SATISFIED
+                    and recent[-2].source == event.source
+                    and prior_payload == event.payload):
+                event.payload["affect_outcome"] = {
+                    "status": "already_counted", "cause": DRIVE_SATISFIED
+                }
+                return
+
+        ai = getattr(organism, "ai_system", None)
+        affect = getattr(ai, "emotional_state", None) if ai is not None else None
+        apply_event = getattr(affect, "update_from_cognitive_event", None)
+        if not callable(apply_event):
+            event.payload["affect_outcome"] = {"status": "affect_engine_unavailable"}
+            return
+
+        intensity_keys = {
+            SURPRISE_DETECTED: ("error_level", "salience"),
+            PREDICTION_ERROR: ("error_level", "salience"),
+            CONTRADICTION_DETECTED: ("pressure", "severity", "salience"),
+            IDENTITY_THREATENED: ("severity", "salience"),
+            IDENTITY_AFFIRMED: ("significance", "salience"),
+            DRIVE_SATISFIED: ("amount", "salience"),
+            TENSION_RELEASED: ("amount", "salience"),
+            ENERGY_CRITICAL: ("level", "salience"),
+            ENERGY_RESTORED: ("salience",),
+            MEMORY_INTRUSION: ("score", "salience"),
+            CURIOSITY_PEAKED: ("pressure", "salience"),
+            LIFE_EVENT_RECORDED: ("significance", "salience"),
+        }
+        value = 0.45
+        for key in intensity_keys.get(event.event_type, ("salience",)):
+            try:
+                raw = float(event.payload[key])
+                if event.event_type == ENERGY_CRITICAL and key == "level":
+                    value = 1.0 - raw / 100.0 if raw > 1.0 else 1.0 - raw
+                elif key == "amount":
+                    value = min(1.0, max(value, raw * 2.5))
+                else:
+                    value = raw
+                break
+            except (KeyError, TypeError, ValueError):
+                continue
+        value = max(0.0, min(1.0, value))
+        try:
+            event.payload["affect_outcome"] = apply_event(
+                event.event_type, intensity=value, source=event.source
+            )
+        except Exception as exc:
+            event.payload["affect_outcome"] = {
+                "status": "failed", "error": type(exc).__name__
+            }
+            logger.debug("[EventBus] affect update failed", exc_info=True)
+
+    for affect_event in (
+        SURPRISE_DETECTED, PREDICTION_ERROR, CONTRADICTION_DETECTED,
+        IDENTITY_THREATENED, IDENTITY_AFFIRMED, DRIVE_SATISFIED,
+        TENSION_RELEASED, ENERGY_CRITICAL, ENERGY_RESTORED,
+        MEMORY_INTRUSION, CURIOSITY_PEAKED, LIFE_EVENT_RECORDED,
+    ):
+        bus.on(affect_event, on_affective_event)
+
     # ── 1. Contradiction detected → raise tension + stimulate curiosity ───────
     def on_contradiction(event: CognitiveEvent):
         topic    = event.payload.get("topic", "")

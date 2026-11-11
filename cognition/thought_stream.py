@@ -1318,33 +1318,30 @@ class ThoughtStream:
         if not emo:
             return None
         try:
-            mood      = getattr(emo, 'valence', None) or getattr(emo, 'current_mood', lambda: 'neutral')()
-            intensity = float(getattr(emo, 'arousal', 0.4))
-            mood_str  = str(mood)
-            templates = {
-                'positive': [
-                    "There's a pleasant warmth in my processing today.",
-                    "I feel settled and receptive right now.",
-                    "Something feels right about the current moment.",
-                ],
-                'negative': [
-                    "I sense some tension beneath my processing.",
-                    "Something feels unresolved — I'm not sure what.",
-                    "There's a low undercurrent of discomfort I'm noticing.",
-                ],
-                'neutral': [
-                    "My emotional state is balanced — calm and ready.",
-                    "I feel even-keeled, processing clearly.",
-                    "Neutral equanimity — a good state to think from.",
-                ],
-            }
-            key = 'positive' if 'pos' in mood_str or 'joy' in mood_str or 'happ' in mood_str \
-                else 'negative' if 'neg' in mood_str or 'sad' in mood_str or 'tens' in mood_str \
-                else 'neutral'
+            values = emo.get_current_values() if callable(getattr(emo, 'get_current_values', None)) else {}
+            description = (
+                emo.get_state_description()
+                if callable(getattr(emo, 'get_state_description', None)) else ""
+            )
+            if not description and values:
+                dominant = max(values, key=values.get)
+                descriptor = {
+                    "curiosity": "curious", "warmth": "warm and connected",
+                    "anxiety": "uncertain and alert", "satisfaction": "satisfied",
+                    "frustration": "frustrated", "enthusiasm": "energized",
+                    "surprise": "surprised", "sadness": "sad", "relief": "relieved",
+                    "disappointment": "disappointed", "anticipation": "expectant",
+                }.get(dominant, dominant.replace('_', ' '))
+                description = f"I feel {descriptor}"
+            if not description:
+                return None
+            arousal = 0.4
+            if callable(getattr(emo, 'get_overall_valence_arousal', None)):
+                _, arousal = emo.get_overall_valence_arousal()
             return Thought(
-                content=random.choice(templates[key]),
+                content=str(description),
                 source="emotion", thought_type="emotional_coloring",
-                priority=0.2 + intensity * 0.3,
+                priority=0.2 + max(0.0, min(1.0, float(arousal))) * 0.3,
             )
         except Exception:
             return None

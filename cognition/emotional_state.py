@@ -41,6 +41,47 @@ EMOTION_HALFLIFE_HOURS: Dict[str, float] = {
     "satisfaction": 8.0,   # satisfaction is slow to dissipate
     "frustration":  1.5,   # short fuse, quick fade
     "enthusiasm":   2.5,   # spikes fast, fades at medium pace
+    "surprise":     0.5,   # short-lived response to a verified unexpected event
+    "sadness":      8.0,   # slower processing of loss or negative life events
+    "relief":       6.0,   # follows tension release or restored capacity
+    "disappointment": 5.0, # unmet goals or negative outcomes
+    "anticipation": 3.0,  # expected, high-salience next steps
+}
+
+EMOTION_DEFAULT_BASELINES = {
+    "curiosity": 0.30, "warmth": 0.30, "anxiety": 0.30,
+    "satisfaction": 0.30, "frustration": 0.30, "enthusiasm": 0.30,
+    # Keep added channels away from the soft-ceiling's near-extreme dead zone:
+    # low resting values made positive appraisal updates almost impossible.
+    "surprise": 0.20, "sadness": 0.20, "relief": 0.24,
+    "disappointment": 0.20, "anticipation": 0.24,
+}
+
+# Affective responses to internal cognitive events. These are small, decaying
+# appraisals, not fixed moods: each event scales the channels by its measured
+# salience and the resulting state persists and blends with later events.
+COGNITIVE_AFFECT_IMPACTS: Dict[str, Dict[str, float]] = {
+    "surprise_detected": {"surprise": 0.16, "curiosity": 0.08, "anticipation": 0.03, "anxiety": 0.02},
+    "prediction_error": {"surprise": 0.12, "curiosity": 0.07, "anxiety": 0.03},
+    "contradiction_detected": {"anxiety": 0.07, "frustration": 0.05, "curiosity": 0.04},
+    "identity_threatened": {"anxiety": 0.09, "disappointment": 0.06, "sadness": 0.025, "curiosity": 0.03},
+    "identity_affirmed": {"warmth": 0.05, "satisfaction": 0.05, "relief": 0.03},
+    "drive_satisfied": {"satisfaction": 0.04, "relief": 0.06, "frustration": -0.02},
+    "tension_released": {"relief": 0.08, "anxiety": -0.05, "frustration": -0.05},
+    "energy_critical": {"anxiety": 0.03, "frustration": 0.025, "enthusiasm": -0.035},
+    "energy_restored": {"relief": 0.045, "enthusiasm": 0.04, "anxiety": -0.02},
+    "memory_intrusion": {"surprise": 0.035, "curiosity": 0.045},
+    "curiosity_peaked": {"curiosity": 0.07, "anticipation": 0.05},
+    "life_event_recorded": {"surprise": 0.04, "curiosity": 0.025},
+}
+
+EMOTION_LANGUAGE = {
+    "curiosity": "curious", "warmth": "warm and connected",
+    "anxiety": "uncertain and alert", "satisfaction": "satisfied",
+    "frustration": "frustrated", "enthusiasm": "energized",
+    "surprise": "surprised", "sadness": "sad",
+    "relief": "relieved", "disappointment": "disappointed",
+    "anticipation": "expectant",
 }
 
 # v78: mood is a separate, much slower clock from any individual emotion —
@@ -99,6 +140,11 @@ class EmotionalSnapshot:
     enthusiasm:   float
     overall_valence: float    # -1 to +1
     overall_arousal: float    # 0 to 1
+    surprise: float = 0.20
+    sadness: float = 0.20
+    relief: float = 0.24
+    disappointment: float = 0.20
+    anticipation: float = 0.24
 
 
 class EmotionalStateManager:
@@ -119,6 +165,7 @@ class EmotionalStateManager:
         self._history: list = []          # recent snapshots for trend analysis
         self._max_history = 50
         self._volatility: float = 0.0     # track emotional volatility
+        self._recent_affect_events: list = []
 
         self._init_emotions(personality)
         # v78: slow background mood, separate from the fast emotion mix.
@@ -135,7 +182,7 @@ class EmotionalStateManager:
         baselines = self._compute_baselines(personality)
         now = time.time()
         for name, halflife in EMOTION_HALFLIFE_HOURS.items():
-            baseline = baselines.get(name, 0.3)
+            baseline = baselines.get(name, EMOTION_DEFAULT_BASELINES.get(name, 0.3))
             self.emotions[name] = Emotion(
                 name=name,
                 value=baseline,          # start at baseline
@@ -147,12 +194,12 @@ class EmotionalStateManager:
     def _compute_baselines(self, personality=None) -> Dict[str, float]:
         """Derive emotion baselines from personality traits."""
         if personality is None:
-            return {name: 0.3 for name in EMOTION_HALFLIFE_HOURS}
+            return dict(EMOTION_DEFAULT_BASELINES)
 
         traits = personality.to_dict()
         baselines = {}
         for emotion, weights in BASELINE_WEIGHTS.items():
-            base = 0.3  # neutral starting point
+            base = EMOTION_DEFAULT_BASELINES.get(emotion, 0.3)
             for trait, weight in weights.items():
                 base += traits.get(trait, 0.5) * weight
             baselines[emotion] = max(BASELINE_FLOOR, min(BASELINE_CEIL, base))
@@ -289,6 +336,61 @@ class EmotionalStateManager:
             except Exception:
                 pass
 
+    def update_from_cognitive_event(
+        self,
+        event_type: str,
+        intensity: float = 0.5,
+        source: str = "cognitive_event",
+    ) -> Dict[str, Any]:
+        """Apply a persistent, intensity-scaled affective response to an
+        internal event and retain its causal trace for introspection.
+
+        The event changes a blend of emotion channels; it does not assign a
+        single fixed mood. Unknown events are ignored rather than guessed.
+        """
+        event_name = str(event_type or "").strip().lower()
+        profile = COGNITIVE_AFFECT_IMPACTS.get(event_name)
+        if not profile:
+            return {"status": "unmapped_event", "event_type": event_name}
+        try:
+            scale = float(intensity)
+        except (TypeError, ValueError):
+            scale = 0.0
+        if not math.isfinite(scale):
+            scale = 0.0
+        scale = max(0.0, min(1.0, scale))
+        if scale <= 0.0:
+            return {"status": "no_salience", "event_type": event_name}
+
+        with self._lock:
+            now = time.time()
+            for emotion in self.emotions.values():
+                emotion.decay(now)
+            changes = {}
+            for emotion_name, weight in profile.items():
+                before = self.emotions[emotion_name].value
+                self._nudge(emotion_name, weight * scale)
+                changes[emotion_name] = round(self.emotions[emotion_name].value - before, 4)
+            self._update_mood(now)
+            self._update_volatility()
+            self._record_snapshot()
+            receipt = {
+                "timestamp": now,
+                "event_type": event_name,
+                "source": str(source or "cognitive_event")[:80],
+                "intensity": round(scale, 3),
+                "changes": changes,
+            }
+            self._recent_affect_events.append(receipt)
+            self._recent_affect_events = self._recent_affect_events[-20:]
+            self._save()
+            return {"status": "applied", **receipt}
+
+    def get_recent_affect_events(self, limit: int = 3) -> list:
+        with self._lock:
+            count = max(0, min(20, int(limit)))
+            return [dict(event) for event in self._recent_affect_events[-count:]] if count else []
+
     def update_from_feedback(self, positive: bool) -> None:
         """
         External feedback (thumbs up/down) has a direct emotional impact.
@@ -420,8 +522,11 @@ class EmotionalStateManager:
             vals.get("satisfaction", 0.3) * 0.35 +
             vals.get("warmth",       0.3) * 0.30 +
             vals.get("enthusiasm",   0.3) * 0.20 -
+            vals.get("relief",       0.24) * 0.20 +
             vals.get("frustration",  0.1) * 0.30 -
-            vals.get("anxiety",      0.2) * 0.25
+            vals.get("anxiety",      0.2) * 0.25 -
+            vals.get("sadness",      0.08) * 0.28 -
+            vals.get("disappointment", 0.08) * 0.26
         )
         valence = max(-1.0, min(1.0, (valence - 0.3) * 3))
 
@@ -429,7 +534,9 @@ class EmotionalStateManager:
             vals.get("enthusiasm",   0.3) * 0.40 +
             vals.get("curiosity",    0.3) * 0.30 +
             vals.get("anxiety",      0.2) * 0.20 +
-            vals.get("frustration",  0.1) * 0.10
+            vals.get("frustration",  0.1) * 0.10 +
+            vals.get("surprise",     0.20) * 0.25 +
+            vals.get("anticipation", 0.24) * 0.12
         )
         arousal = max(0.0, min(1.0, arousal))
         return round(valence, 3), round(arousal, 3)
@@ -442,57 +549,38 @@ class EmotionalStateManager:
         """
         vals = self.get_current_values()
         valence, arousal = self.get_overall_valence_arousal()
-        parts = []
+        with self._lock:
+            deviations = [
+                (name, round(self.emotions[name].value - self.emotions[name].baseline, 3))
+                for name in self.emotions
+                if abs(self.emotions[name].value - self.emotions[name].baseline) >= 0.035
+            ]
+            recent_events = list(self._recent_affect_events)
+        deviations.sort(key=lambda item: abs(item[1]), reverse=True)
+        active = deviations[:3]
 
-        # Determine dominant emotional color
-        dominant = max(
-            ["curiosity", "warmth", "satisfaction", "enthusiasm"],
-            key=lambda e: vals.get(e, 0)
-        )
-        shadow = max(
-            ["anxiety", "frustration"],
-            key=lambda e: vals.get(e, 0)
-        )
-
-        # Positive dominant emotions
-        dom_val = vals.get(dominant, 0.3)
-        if dom_val > 0.65:
-            descriptors = {
-                "curiosity":    "particularly alert and interested",
-                "warmth":       "genuinely warm and connected",
-                "satisfaction": "settled and content",
-                "enthusiasm":   "energized and engaged",
-            }
-            parts.append(descriptors.get(dominant, "in a positive state"))
-        elif dom_val > 0.45:
-            descriptors = {
-                "curiosity":    "quietly curious",
-                "warmth":       "warmly present",
-                "satisfaction": "at ease",
-                "enthusiasm":   "engaged",
-            }
-            parts.append(descriptors.get(dominant, "fairly settled"))
-
-        # Shadow emotions if significant
-        shadow_val = vals.get(shadow, 0.1)
-        if shadow_val > 0.55:
-            shadow_desc = {
-                "anxiety":     "with an undercurrent of uncertainty",
-                "frustration": "with some latent friction",
-            }
-            parts.append(shadow_desc.get(shadow, ""))
-        elif shadow_val > 0.35:
-            shadow_desc = {
-                "anxiety":     "with mild caution",
-                "frustration": "with slight impatience",
-            }
-            if shadow_desc.get(shadow):
-                parts.append(shadow_desc[shadow])
-
-        if not parts:
-            base_desc = "in a neutral, composed state"
+        if active:
+            parts = []
+            for name, delta in active:
+                strength = "strongly " if abs(delta) >= 0.18 else ("noticeably " if abs(delta) >= 0.08 else "slightly ")
+                descriptor = EMOTION_LANGUAGE.get(name, name.replace("_", " "))
+                if delta < 0:
+                    descriptor = {
+                        "anxiety": "calmer", "frustration": "less frustrated",
+                        "sadness": "less sad", "disappointment": "less disappointed",
+                    }.get(name, f"less {descriptor}")
+                parts.append(strength + descriptor)
+            if len(parts) == 1:
+                base_desc = f"I feel {parts[0]}"
+            else:
+                base_desc = f"I feel a blend of {', '.join(parts[:-1])} and {parts[-1]}"
         else:
-            base_desc = "feeling " + ", ".join(parts)
+            base_desc = "My affective state is near its current baseline"
+
+        if recent_events and time.time() - float(recent_events[-1].get("timestamp", 0.0)) < 900:
+            cause = str(recent_events[-1].get("event_type", "")).replace("_", " ")
+            if cause:
+                base_desc += f"; the latest shift followed {cause}"
 
         # v78: only mention mood when it genuinely diverges from the current
         # moment — that divergence IS the point (a rough few days underneath
@@ -550,6 +638,11 @@ class EmotionalStateManager:
             enthusiasm=vals["enthusiasm"],
             overall_valence=v,
             overall_arousal=a,
+            surprise=vals["surprise"],
+            sadness=vals["sadness"],
+            relief=vals["relief"],
+            disappointment=vals["disappointment"],
+            anticipation=vals["anticipation"],
         )
 
     def get_trend(self) -> str:
@@ -581,9 +674,12 @@ class EmotionalStateManager:
         emo = self.emotions.get(emotion_name)
         if emo is None:
             return
-        # Resistance: 1 - (deviation from centre)^1.4 * 1.8
+        # Resistance: 1 - (deviation from centre)^1.4.  The previous 1.8
+        # multiplier forced most off-centre states to the 0.04 floor, making
+        # positive and negative appraisals nearly inert (especially for newly
+        # added channels with low baselines).
         deviation = abs(emo.value - 0.5) * 2.0           # 0.0 at centre, 1.0 at extremes
-        resistance = max(0.04, 1.0 - (deviation ** 1.4) * 1.8)
+        resistance = max(0.04, 1.0 - (deviation ** 1.4))
         effective  = delta * resistance
         emo.value  = max(0.0, min(1.0, emo.value + effective))
         emo.last_updated_ts = time.time()
@@ -651,6 +747,7 @@ class EmotionalStateManager:
                     for name, emo in self.emotions.items()
                 },
                 "history": self._history[-20:],   # persist last 20 snapshots
+                "recent_affect_events": self._recent_affect_events[-20:],
                 "volatility": self._volatility,
                 "mood_valence":       self._mood_valence,
                 "mood_arousal":       self._mood_arousal,
@@ -672,6 +769,7 @@ class EmotionalStateManager:
                     emo.baseline        = float(saved.get("baseline",        emo.baseline))
                     emo.last_updated_ts = float(saved.get("last_updated_ts", time.time()))
             self._history = data.get("history", [])
+            self._recent_affect_events = data.get("recent_affect_events", [])[-20:]
             self._volatility = float(data.get("volatility", 0.0))
             self._mood_valence      = float(data.get("mood_valence", self._mood_valence))
             self._mood_arousal      = float(data.get("mood_arousal", self._mood_arousal))
