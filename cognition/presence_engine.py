@@ -47,6 +47,9 @@ import logging
 import re
 import threading
 import time
+import hashlib
+import uuid
+from collections import deque
 from difflib import SequenceMatcher
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
@@ -153,6 +156,8 @@ class PresenceEngine:
         # External occupancy signals (Home Assistant, future sensors). These
         # establish co-presence without asserting an unverified identity.
         self._external_presence: Dict[str, Dict[str, Any]] = {}
+        self._audit_lock = threading.Lock()
+        self._audit_records = deque(maxlen=40)
 
         # Social hunger — accumulates during isolation / prolonged cognition
         self._social_hunger:         float = 0.0
@@ -185,6 +190,44 @@ class PresenceEngine:
     def set_chat_fn(self, chat_fn) -> None:
         self._bubble_fn = chat_fn
         logger.info("👁️  PresenceEngine: chat fn registered")
+
+    def audit_snapshot(self) -> List[Dict[str, Any]]:
+        """Return bounded, content-redacted receipts for ambient decisions."""
+        with self._audit_lock:
+            return [dict(item) for item in self._audit_records]
+
+    def _record_audit(
+        self,
+        presence_id: str,
+        event: str,
+        decision: str,
+        *,
+        mode: str = "",
+        pressure: Optional[float] = None,
+        reason: str = "",
+        context: Optional[Dict[str, Any]] = None,
+        utterance: str = "",
+        delivery: str = "",
+    ) -> None:
+        text = str(utterance or "")
+        record = {
+            "presence_id": presence_id,
+            "timestamp": time.time(),
+            "trigger": "camera_presence",
+            "event": str(event),
+            "decision": str(decision),
+            "mode": str(mode),
+            "pressure": round(float(pressure), 3) if pressure is not None else None,
+            "reason": str(reason or "")[:180],
+            "context_sources": dict(context or {}),
+            "generation_path": "generate_bare" if text and self._llm and hasattr(self._llm, "generate_bare") else "generate_or_fallback" if text else "not_run",
+            "utterance_chars": len(text),
+            "utterance_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest() if text else "",
+            "delivery": str(delivery or "not_attempted"),
+            "chat_turn_id": None,
+        }
+        with self._audit_lock:
+            self._audit_records.append(record)
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     #  Public API
@@ -320,11 +363,13 @@ class PresenceEngine:
         Decides: engage, resume, or observe silently.
         """
         now = time.time()
+        presence_id = f"presence-{uuid.uuid4().hex}"
 
         # Face transitions are evaluated on worker threads. A transition may
         # have queued just before the user sent a chat message, so re-check the
         # shared interaction clock before doing any LLM work.
         if self.chat_is_active():
+            self._record_audit(presence_id, event, "silent", reason="interactive_conversation_active")
             logger.info(
                 f"👁️  [{event}] {face_name} → silent (interactive conversation active)"
             )
@@ -344,11 +389,14 @@ class PresenceEngine:
         with self._lock:
             ps = self._faces.get(face_id)
             if ps is None:
+                self._record_audit(presence_id, event, "skipped", reason="face_state_missing")
                 return
             if now - self._last_any_reaction < REACTION_COOLDOWN_S:
+                self._record_audit(presence_id, event, "silent", reason="reaction_cooldown")
                 logger.debug(f"👁️  [{event}] {face_name} → cooldown active, silent")
                 return
             if event not in ("EXIT",) and ps.reaction_count >= MAX_REACTIONS_PER_FACE:
+                self._record_audit(presence_id, event, "silent", reason="per_face_reaction_cap")
                 logger.debug(f"👁️  [{event}] {face_name} → reaction cap reached")
                 return
 
@@ -358,6 +406,7 @@ class PresenceEngine:
             battery = self._social_battery
 
         if battery < SOCIAL_BATTERY_MIN_TO_SPEAK and event not in ("EXIT",):
+            self._record_audit(presence_id, event, "silent", reason="social_battery_below_threshold")
             logger.info(
                 f"👁️  [{event}] {face_name} → silent (social battery={battery:.2f})"
             )
@@ -380,6 +429,10 @@ class PresenceEngine:
         elif pressure >= ENGAGE_THRESHOLD:
             mode = "engage"
         else:
+            self._record_audit(
+                presence_id, event, "silent", pressure=pressure,
+                reason="below_engage_threshold",
+            )
             logger.info(
                 f"👁️  [{event}] {face_name} → silent "
                 f"(pressure={pressure:.2f} < {ENGAGE_THRESHOLD}, {rationale})"
@@ -411,6 +464,10 @@ class PresenceEngine:
         face_name = self._refresh_face_identity(face_id, face_name)
         utterance = self._generate_reaction(face_name, event, mode, ps, snap)
         if not utterance:
+            self._record_audit(
+                presence_id, event, "generation_empty", mode=mode,
+                pressure=pressure, reason=rationale,
+            )
             return
 
         # ── Remember what was said ────────────────────────────────────────
@@ -447,7 +504,20 @@ class PresenceEngine:
                 _st_pe.acc.update_social_field(face_name, event)
         except Exception:
             pass
-        self._deliver(utterance)
+        topic_age = max(0.0, now - ps.last_topic_ts) if ps.last_topic_ts else None
+        delivery = self._deliver(utterance, presence_id=presence_id)
+        self._record_audit(
+            presence_id, event, "utterance_generated", mode=mode,
+            pressure=pressure, reason="pressure_gate_passed",
+            context={
+                "emotion_snapshot": bool(snap.emotion),
+                "workspace_snapshot": bool(snap.workspace_winner),
+                "unresolved_tension_snapshot": bool(snap.unresolved_tension),
+                "historical_user_message_injected": bool(_recent_resume_context(ps, mode, now)),
+                "last_topic_age_seconds": round(topic_age, 1) if topic_age is not None else None,
+            },
+            utterance=utterance, delivery=delivery,
+        )
 
     def _refresh_face_identity(self, face_id: str, face_name: str) -> str:
         """Return the latest known name for a face before proactive speech."""
@@ -978,7 +1048,7 @@ Speak directly. No quotes. No stage directions."""
     #  Delivery
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-    def _deliver(self, text: str) -> None:
+    def _deliver(self, text: str, *, presence_id: str = "") -> str:
         # Camera presence can run concurrently with chat. The interface owns
         # the authoritative turn lock; check it immediately before delivery
         # so a late reaction cannot interrupt visible chat or TTS.
@@ -986,25 +1056,29 @@ Speak directly. No quotes. No stage directions."""
             from core.interface_api import interactive_turn_active
             if interactive_turn_active():
                 logger.debug("PresenceEngine delivery suppressed during interactive chat turn")
-                return
+                return "suppressed_interactive_turn"
         except Exception:
             pass
         if self.chat_is_active():
             logger.debug("PresenceEngine delivery suppressed after recent chat interaction")
-            return
+            return "suppressed_chat_grace"
+        delivered = []
         if callable(self._tts):
             try:
-                self._tts(text)
+                self._tts(text, presence_id=presence_id)
+                delivered.append("tts")
             except Exception as e:
                 logger.debug(f"PresenceEngine TTS error: {e}")
 
         if self._bubble_fn is not None:
             try:
                 self._bubble_fn(text)
+                delivered.append("bubble")
             except Exception as e:
                 logger.debug(f"PresenceEngine chat bubble error: {e}")
         else:
             logger.info(f"👁️  [utterance — no GUI] {text}")
+        return "+".join(delivered) if delivered else "logged_no_delivery_callback"
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     #  Helpers

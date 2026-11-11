@@ -249,12 +249,12 @@ class AppState:
         if self.vision is not None:
             organism = getattr(self.persona, '_organism', None) if self.persona else None
 
-            def _tts_speak(text: str) -> None:
+            def _tts_speak(text: str, *, presence_id: str = "") -> None:
                 """Push text to TTS — walk all available audio handles."""
                 try:
                     try:
                         from core.interface_api import record_presence
-                        record_presence(text)
+                        record_presence(text, presence_id=presence_id)
                     except Exception:
                         pass
                     # FluidVoice / AudioManager both expose .speak(text)

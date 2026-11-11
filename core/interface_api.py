@@ -111,11 +111,14 @@ def _body_runtime_for_state():
     return body, None
 
 
-def _event(label, turn_id=None):
-    _events.append({'id': str(uuid.uuid4()), 'label': label, 'timestamp': time.time(), 'turn_id': turn_id})
+def _event(label, turn_id=None, presence_id=None):
+    _events.append({
+        'id': str(uuid.uuid4()), 'label': label, 'timestamp': time.time(),
+        'turn_id': turn_id, 'presence_id': presence_id,
+    })
 
 
-def record_presence(text: str):
+def record_presence(text: str, *, presence_id: str = ""):
     """Publish a proactive PresenceEngine utterance to interface clients."""
     # Presence may finish an older camera-triggered reaction while a user turn
     # is already in progress. Never inject that message into the active
@@ -124,8 +127,11 @@ def record_presence(text: str):
         logger.debug('Suppressed proactive presence utterance during interactive turn')
         return
     if text and text.strip():
-        _presence_messages.append({'id': str(uuid.uuid4()), 'text': text.strip(), 'timestamp': time.time()})
-        _event('Proactive presence utterance')
+        _presence_messages.append({
+            'id': str(uuid.uuid4()), 'presence_id': str(presence_id or ""),
+            'text': text.strip(), 'timestamp': time.time(),
+        })
+        _event('Proactive presence utterance', presence_id=str(presence_id or "") or None)
 
 
 def interactive_turn_active() -> bool:
@@ -221,6 +227,12 @@ async def status():
     context = {}
     system = getattr(persona, '_system', None)
     body = getattr(org, '_body_runtime', None) if org is not None else getattr(state, 'body_runtime', None)
+    vision = getattr(state, 'vision', None)
+    presence_engine = getattr(vision, 'presence_engine', None) if vision is not None else None
+    presence_trace = (
+        presence_engine.audit_snapshot()
+        if callable(getattr(presence_engine, 'audit_snapshot', None)) else []
+    )
     return {
         'version': 1,
         'ready': bool(state.ready and persona and persona.is_ready),
@@ -250,6 +262,7 @@ async def status():
         'timings': dict(_timings),
         'events': list(_events),
         'presence_messages': list(_presence_messages),
+        'presence_trace': presence_trace,
         'body_runtime': body.status() if body is not None else {'available': False, 'running': False},
     }
 

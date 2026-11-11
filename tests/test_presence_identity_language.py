@@ -1,9 +1,13 @@
 """Regression tests for camera identity and localized presence speech."""
 import importlib.util
+import ast
 import json
 from pathlib import Path
 import sys
 import tempfile
+import threading
+from collections import deque
+import hashlib
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -35,6 +39,70 @@ class SequenceLlm:
 
 
 class PresenceIdentityLanguageTests(unittest.TestCase):
+    def test_interface_status_exposes_presence_receipts_and_message_ids(self):
+        tree = ast.parse((ROOT / "core" / "interface_api.py").read_text(encoding="utf-8"))
+        status = next(
+            node for node in tree.body
+            if isinstance(node, ast.AsyncFunctionDef) and node.name == "status"
+        )
+        record = next(
+            node for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "record_presence"
+        )
+        self.assertTrue(any(
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "audit_snapshot"
+            for node in ast.walk(status)
+        ))
+        self.assertTrue(any(
+            isinstance(node, ast.Constant)
+            and node.value == "presence_trace"
+            for node in ast.walk(status)
+        ))
+        self.assertTrue(any(
+            isinstance(node, ast.Constant)
+            and node.value == "presence_id"
+            for node in ast.walk(record)
+        ))
+
+    def test_presence_receipt_links_decision_and_redacted_output_without_raw_text(self):
+        engine = presence.PresenceEngine.__new__(presence.PresenceEngine)
+        engine._audit_lock = threading.Lock()
+        engine._audit_records = deque(maxlen=2)
+        engine._llm = SequenceLlm()
+        utterance = "La pièce est calme."
+
+        engine._record_audit(
+            "presence-test", "SILENCE", "utterance_generated", mode="engage",
+            pressure=0.42, reason="pressure_gate_passed",
+            context={"historical_user_message_injected": False},
+            utterance=utterance, delivery="tts",
+        )
+        trace = engine.audit_snapshot()[0]
+
+        self.assertEqual(trace["presence_id"], "presence-test")
+        self.assertEqual(trace["trigger"], "camera_presence")
+        self.assertEqual(trace["decision"], "utterance_generated")
+        self.assertEqual(trace["utterance_sha256"], hashlib.sha256(utterance.encode()).hexdigest())
+        self.assertNotIn(utterance, str(trace))
+        self.assertIsNone(trace["chat_turn_id"])
+        self.assertEqual(trace["context_sources"]["historical_user_message_injected"], False)
+
+    def test_presence_delivery_passes_presence_id_to_tts_sink(self):
+        engine = presence.PresenceEngine.__new__(presence.PresenceEngine)
+        received = []
+        engine._global_last_interaction = 0.0
+        engine._tts = lambda text, *, presence_id="": received.append((text, presence_id))
+        engine._bubble_fn = None
+        with patch.dict(sys.modules, {
+            "core.interface_api": SimpleNamespace(interactive_turn_active=lambda: False),
+        }):
+            delivery = engine._deliver("Hello", presence_id="presence-123")
+
+        self.assertEqual(delivery, "tts")
+        self.assertEqual(received, [("Hello", "presence-123")])
+
     def test_presence_only_receives_prior_user_message_for_recent_resume(self):
         face = presence.FacePresenceState("face_17", "Fred")
         face.last_topic = "Why is the camera identity mentioned?"
