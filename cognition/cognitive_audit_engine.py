@@ -54,12 +54,11 @@ Architecture
 
 Proposal generation
 ────────────────────
-  An LLM call (temperature 0.50, deliberate) receives:
-    - the underperforming signal name, current value, and target
-    - the full current cognitive_params dict
-    - the bounded change space for each parameter
-  It returns a JSON proposal: which parameter to change, from what
-  value to what value, and why.
+  An LLM call (temperature 0.50, deliberate) receives the underperforming
+  signal and only parameters with an explicitly validated causal mapping to
+  that signal. If no such parameter exists, the engine records that limitation
+  and does not mutate a live module global. Code independently enforces the
+  mapping, parameter bounds, and maximum change.
 
   The proposed change is applied immediately to the live module globals
   (no restart required) and written to data/persona/cognitive_params.json
@@ -163,6 +162,15 @@ PARAM_MODULE_MAP: Dict[str, Tuple[str, str]] = {
     "grounding_boost":        ("cognition.epistemic_integrity_engine",   "GROUNDING_BOOST"),
     "curiosity_halflife_hrs": ("cognition.curiosity_engine",             "CURIOSITY_HALFLIFE_HOURS"),
     "reflection_every_n":     ("core.internal_loop",                     "REFLECTION_EVERY_N"),
+}
+
+# A parameter may only be trialed against a signal it can directly affect.
+# Frequency knobs can alter sample volume, but do not establish a causal
+# improvement in confirmation/resolution rates or verified skill depth.
+# The two confidence parameters directly affect the measured mean belief
+# confidence; other pairings remain disabled until their causal path is tested.
+SIGNAL_PARAMETER_MAP: Dict[str, Tuple[str, ...]] = {
+    "belief_confidence_mean": ("grounding_boost", "decay_rate_base"),
 }
 
 MAX_AUDIT_LOG   = 50
@@ -272,6 +280,7 @@ class CognitiveAuditEngine:
         self._proposal_attempt_status = "not_started"
         self._proposal_attempt_detail = ""
         self._load()
+        self._recover_incompatible_active_trial()
         self._apply_committed_params()
         logger.info(
             f"[CognitiveAudit] Initialised — "
@@ -321,6 +330,7 @@ class CognitiveAuditEngine:
                 1 for t in self._state.trial_log if t.get("outcome") == "confirmed"
             )
         worst = None
+        worst_actionable = None
         measured: Dict[str, float] = {}
         if snap:
             try:
@@ -330,15 +340,26 @@ class CognitiveAuditEngine:
                 })
                 worst = last_snapshot.worst_signal()
                 measured = last_snapshot.deficit()
+                actionable = {
+                    name: gap for name, gap in measured.items()
+                    if name in SIGNAL_PARAMETER_MAP and gap < 0
+                }
+                if actionable:
+                    worst_actionable = min(actionable, key=actionable.get)
             except Exception:
                 pass
         return {
             "last_snapshot": snap,
             "last_audit_cycle": self._state.last_audit_cycle,
             "total_audits": total_audits,
-            "total_trials": total_trials,
+            "total_trials": total_trials + (1 if trial else 0),
+            "completed_trials": total_trials,
             "confirmed_trials": confirmed_trials,
             "worst_signal_now": worst,
+            "worst_actionable_signal_now": worst_actionable,
+            "non_actionable_signals": sorted(
+                set(SIGNAL_TARGETS) - set(SIGNAL_PARAMETER_MAP)
+            ),
             "measured_signal_count": len(measured),
             "unavailable_signals": sorted(set(SIGNAL_TARGETS) - set(measured)),
             "active_trial": trial,
@@ -376,10 +397,30 @@ class CognitiveAuditEngine:
                 self._save()
                 return
 
-            worst = snapshot.worst_signal()
+            deficits = snapshot.deficit()
+            actionable_deficits = {
+                name: gap for name, gap in deficits.items()
+                if name in SIGNAL_PARAMETER_MAP and gap < 0
+            }
+            worst = min(actionable_deficits, key=actionable_deficits.get) if actionable_deficits else None
             if worst is None:
-                if snapshot.deficit():
-                    logger.info("[CognitiveAudit] ✅ All measurable signals on target")
+                unsupported = [
+                    name for name, gap in deficits.items()
+                    if gap < 0 and name not in SIGNAL_PARAMETER_MAP
+                ]
+                if unsupported:
+                    self._record_proposal_attempt(
+                        slow_cycle,
+                        unsupported[0],
+                        "no_causally_mapped_parameter",
+                        "Underperforming signal has no validated parameter mapping; no live parameter was changed.",
+                    )
+                    logger.info(
+                        "[CognitiveAudit] No justified tuning parameter for: %s",
+                        ", ".join(unsupported),
+                    )
+                elif deficits:
+                    logger.info("[CognitiveAudit] ✅ All measurable actionable signals on target")
                 else:
                     logger.info("[CognitiveAudit] No measurable signals available")
                 self._save()
@@ -555,11 +596,19 @@ class CognitiveAuditEngine:
         """Ask the LLM to propose a specific parameter calibration."""
         self._proposal_attempt_status = "proposal_failed"
         self._proposal_attempt_detail = "No proposal response was produced."
+        allowed_parameters = SIGNAL_PARAMETER_MAP.get(dimension, ())
+        if not allowed_parameters:
+            self._proposal_attempt_status = "no_causally_mapped_parameter"
+            self._proposal_attempt_detail = (
+                f"No validated tunable parameter directly maps to signal {dimension}."
+            )
+            return None
         current_params = self._current_params()
 
         # Build the parameter change bounds description
         param_desc_lines = []
-        for pname, (default, pmin, pmax, ptype) in PARAM_SPACE.items():
+        for pname in allowed_parameters:
+            default, pmin, pmax, ptype = PARAM_SPACE[pname]
             cur = current_params.get(pname, default)
             param_desc_lines.append(
                 f"  {pname}: current={cur}, range=[{pmin},{pmax}], type={ptype.__name__}"
@@ -593,19 +642,11 @@ UNDERPERFORMING SIGNAL
   target:  {target:.2f}
   deficit: {current_value - target:.3f}
 
-CURRENT COGNITIVE PARAMETERS
+VALIDATED CANDIDATE PARAMETERS FOR THIS SIGNAL
 {param_desc}
-
-PARAMETER SEMANTICS
-  resolve_every_n:        How often (slow cycles) questions are resolved. Lower = more frequent.
-  generate_every_n:       How often new experiments are generated. Lower = more frequent.
-  decay_rate_base:        Rate at which beliefs lose confidence without validation. Higher = faster decay.
-  grounding_boost:        Confidence gain when a belief is evidence-validated. Higher = stronger grounding.
-  curiosity_halflife_hrs: Hours for curiosity to halve. Higher = topics stay active longer.
-  reflection_every_n:     How often autonomous reflection runs. Lower = more frequent.
 {guidance_note}
 TASK
-Select one parameter to change to improve {dimension}.
+Select one parameter only from the validated candidate list to improve {dimension}.
 Reason concisely (2 sentences max).
 The change must stay within the stated range.
 Change magnitude must not exceed 30% of current value.
@@ -626,10 +667,15 @@ Respond ONLY in JSON (no markdown, no preamble):
             clean = response.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
             data = json.loads(clean)
             pname = data.get("parameter", "")
-            if pname not in PARAM_SPACE:
-                self._proposal_attempt_status = "invalid_parameter"
-                self._proposal_attempt_detail = "Response named a parameter outside the tunable parameter space."
-                logger.debug(f"[CognitiveAudit] Unknown parameter in proposal: {pname}")
+            if pname not in allowed_parameters or pname not in PARAM_SPACE:
+                self._proposal_attempt_status = "parameter_signal_mismatch"
+                self._proposal_attempt_detail = (
+                    f"Parameter {pname!r} is not causally mapped to signal {dimension}."
+                )
+                logger.warning(
+                    "[CognitiveAudit] Rejected parameter/signal mismatch: %s -> %s",
+                    dimension, pname,
+                )
                 return None
 
             default, pmin, pmax, ptype = PARAM_SPACE[pname]
@@ -865,6 +911,54 @@ Respond ONLY in JSON (no markdown, no preamble):
                 )
         except Exception as e:
             logger.warning(f"[CognitiveAudit] Load failed (using defaults): {e}")
+
+    def _recover_incompatible_active_trial(self) -> None:
+        """Rollback a persisted trial whose parameter cannot affect its signal."""
+        raw = self._state.active_trial
+        if not raw:
+            return
+        dimension = str(raw.get("dimension", ""))
+        parameter = str(raw.get("parameter", ""))
+        if parameter in SIGNAL_PARAMETER_MAP.get(dimension, ()):
+            return
+
+        trial = dict(raw)
+        trial.update({
+            "outcome": "rejected_causal_mismatch",
+            "signal_at_eval": None,
+            "evaluated_at_cycle": int(self._state.last_audit_cycle or 0),
+            "committed": False,
+        })
+        prior_value = trial.get("prior_value")
+        if parameter in PARAM_MODULE_MAP and prior_value is not None:
+            self._set_module_global(parameter, prior_value)
+
+        with self._lock:
+            self._state.trial_log.append(trial)
+            if len(self._state.trial_log) > MAX_TRIAL_LOG:
+                self._state.trial_log = self._state.trial_log[-MAX_TRIAL_LOG:]
+            self._state.active_trial = None
+            if dimension in SIGNAL_TARGETS:
+                self._state.consecutive_under[dimension] = 0
+            attempt = {
+                "slow_cycle": int(self._state.last_audit_cycle or 0),
+                "timestamp": time.time(),
+                "dimension": dimension[:80],
+                "status": "trial_reverted_causal_mismatch",
+                "detail": (
+                    f"Restored {parameter}={prior_value}; no validated causal mapping to {dimension}."
+                ),
+            }
+            self._state.last_proposal_attempt = attempt
+            self._state.proposal_attempt_log.append(attempt)
+            self._state.proposal_attempt_total += 1
+            if len(self._state.proposal_attempt_log) > MAX_AUDIT_LOG:
+                self._state.proposal_attempt_log = self._state.proposal_attempt_log[-MAX_AUDIT_LOG:]
+        logger.warning(
+            "[CognitiveAudit] Rolled back persisted trial with unsupported mapping: %s -> %s",
+            dimension, parameter,
+        )
+        self._save()
 
     def _save(self) -> None:
         try:

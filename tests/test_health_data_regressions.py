@@ -66,14 +66,14 @@ class HealthDataTests(unittest.TestCase):
             self.assertIsNone(audit._llm_call('bounded proposal prompt'))
         self.assertEqual(audit._proposal_attempt_status, 'llm_error')
 
-    def test_cognitive_audit_uses_low_level_adapter_and_can_create_proposal(self):
+    def test_cognitive_audit_uses_low_level_adapter_with_mapped_parameter(self):
         audit = CognitiveAuditEngine.__new__(CognitiveAuditEngine)
         audit._state = AuditState()
         audit._organism = NS(_loop=None)
         response = json.dumps({
-            'parameter': 'generate_every_n',
-            'proposed_value': 20,
-            'rationale': 'A modest change may increase experiment opportunities. '
+            'parameter': 'grounding_boost',
+            'proposed_value': 0.039,
+            'rationale': 'A modest change affects belief confidence directly. '
                          'The trial will be evaluated against the same signal.',
         })
         adapter = NS(get_response=Mock(return_value=response))
@@ -86,24 +86,117 @@ class HealthDataTests(unittest.TestCase):
         scheduler.llm_scheduler = NS(sync_slot=Mock(return_value=nullcontext(True)))
         with patch.dict(sys.modules, {'core.llm_scheduler': scheduler}):
             proposal = audit._generate_proposal(
-                'mean_skill_depth', 0.3, 1.0, 120,
+                'belief_confidence_mean', 0.3, 0.5, 120,
             )
 
         self.assertIsNotNone(proposal)
-        self.assertEqual(proposal.parameter, 'generate_every_n')
-        self.assertEqual(proposal.prior_value, 25)
-        self.assertEqual(proposal.proposed_value, 20)
+        self.assertEqual(proposal.parameter, 'grounding_boost')
+        self.assertEqual(proposal.prior_value, 0.03)
+        self.assertEqual(proposal.proposed_value, 0.039)
         adapter.get_response.assert_called_once()
         call = adapter.get_response.call_args.kwargs
         self.assertEqual(call['max_tokens'], 200)
         self.assertEqual(call['temperature'], 0.50)
         self.assertEqual(call['messages'][0]['role'], 'user')
         self.assertIn(
-            'mean_skill_depth',
+            'belief_confidence_mean',
             call['messages'][0]['content'],
         )
+        self.assertIn('grounding_boost', call['messages'][0]['content'])
+        self.assertNotIn('generate_every_n', call['messages'][0]['content'])
         facade_call.assert_not_called()
         self.assertEqual(audit._proposal_attempt_status, 'proposal_created')
+
+    def test_cognitive_audit_refuses_unmapped_signal_without_calling_llm(self):
+        audit = CognitiveAuditEngine.__new__(CognitiveAuditEngine)
+        adapter = NS(get_response=Mock())
+        audit._ai = NS(llm=adapter)
+
+        proposal = audit._generate_proposal('mean_skill_depth', 0.3, 1.0, 160)
+
+        self.assertIsNone(proposal)
+        adapter.get_response.assert_not_called()
+        self.assertEqual(
+            audit._proposal_attempt_status, 'no_causally_mapped_parameter',
+        )
+
+    def test_cognitive_audit_rejects_llm_parameter_outside_signal_mapping(self):
+        audit = CognitiveAuditEngine.__new__(CognitiveAuditEngine)
+        audit._state = AuditState()
+        audit._organism = NS(_loop=None)
+        response = json.dumps({
+            'parameter': 'generate_every_n',
+            'proposed_value': 20,
+            'rationale': 'This parameter changes experiment frequency.',
+        })
+        adapter = NS(get_response=Mock(return_value=response))
+        audit._ai = NS(llm=adapter)
+        scheduler = ModuleType('core.llm_scheduler')
+        scheduler.llm_scheduler = NS(sync_slot=Mock(return_value=nullcontext(True)))
+
+        with patch.dict(sys.modules, {'core.llm_scheduler': scheduler}):
+            proposal = audit._generate_proposal(
+                'belief_confidence_mean', 0.3, 0.5, 160,
+            )
+
+        self.assertIsNone(proposal)
+        self.assertEqual(
+            audit._proposal_attempt_status, 'parameter_signal_mismatch',
+        )
+
+    def test_cognitive_audit_does_not_tune_unmapped_worst_signal(self):
+        audit = CognitiveAuditEngine.__new__(CognitiveAuditEngine)
+        audit._state = AuditState()
+        audit._lock = __import__('threading').Lock()
+        audit._proposal_attempt_status = 'not_started'
+        audit._proposal_attempt_detail = ''
+        snapshot = SignalSnapshot(
+            slow_cycle=200, timestamp=1000.0, mean_skill_depth=0.3,
+            belief_confidence_mean=0.8, epistemic_grounding_rate=0.9,
+        )
+        audit._read_signals = lambda _cycle: snapshot
+        with tempfile.TemporaryDirectory() as folder:
+            audit._path = Path(folder) / 'cognitive_params.json'
+            audit._run_audit(200)
+
+        self.assertIsNone(audit._state.active_trial)
+        self.assertEqual(audit._state.proposal_attempt_total, 1)
+        self.assertEqual(
+            audit._state.last_proposal_attempt['status'],
+            'no_causally_mapped_parameter',
+        )
+        self.assertEqual(
+            audit._state.last_proposal_attempt['dimension'], 'mean_skill_depth',
+        )
+
+    def test_cognitive_audit_counts_active_trial_and_rolls_back_legacy_mismatch(self):
+        audit = CognitiveAuditEngine.__new__(CognitiveAuditEngine)
+        audit._state = AuditState(active_trial={
+            'dimension': 'mean_skill_depth', 'signal_at_proposal': 0.3,
+            'signal_target': 1.0, 'parameter': 'grounding_boost',
+            'prior_value': 0.03, 'proposed_value': 0.039,
+            'rationale': 'legacy mismatched trial', 'proposed_at_cycle': 9640,
+            'proposed_at_time': 1000.0, 'outcome': 'pending',
+            'signal_at_eval': None, 'evaluated_at_cycle': 0,
+            'committed': False,
+        }, consecutive_under={'mean_skill_depth': 3})
+        audit._lock = __import__('threading').Lock()
+        self.assertEqual(audit.status_summary()['total_trials'], 1)
+        with tempfile.TemporaryDirectory() as folder:
+            audit._path = Path(folder) / 'cognitive_params.json'
+            with patch.object(CognitiveAuditEngine, '_set_module_global') as set_global:
+                audit._recover_incompatible_active_trial()
+
+        set_global.assert_called_once_with('grounding_boost', 0.03)
+        self.assertIsNone(audit._state.active_trial)
+        self.assertEqual(
+            audit._state.trial_log[-1]['outcome'], 'rejected_causal_mismatch',
+        )
+        self.assertEqual(audit._state.consecutive_under['mean_skill_depth'], 0)
+        self.assertEqual(
+            audit._state.last_proposal_attempt['status'],
+            'trial_reverted_causal_mismatch',
+        )
 
     def test_cognitive_audit_persists_proposal_attempt_separately_from_trial(self):
         audit = CognitiveAuditEngine.__new__(CognitiveAuditEngine)
