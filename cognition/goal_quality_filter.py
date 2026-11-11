@@ -63,10 +63,19 @@ class GoalQualityFilter:
 
     # ── Public API ────────────────────────────────────────────────────────────
 
-    def run(self) -> Dict[str, Any]:
-        """Run full goal quality pass. Returns a report."""
+    def run(self, goal_engine=None) -> Dict[str, Any]:
+        """Run the quality pass; route newly generated goals through admission."""
         from core.data.access import DataAccess
         dal = DataAccess(str(self.persona_dir))
+
+        # GQF is also used as a standalone maintenance script. Even in that
+        # mode, generated goals must use the same admission invariants as the
+        # cognitive loop rather than writing around GoalEngine directly.
+        if goal_engine is None:
+            from cognition.goal_engine import GoalEngine
+            goal_engine = GoalEngine(
+                None, persistence_file=str(self.persona_dir / "goals.json")
+            )
 
         goals   = dal.get_goals()
         tensions = dal.get_tensions()
@@ -169,6 +178,13 @@ class GoalQualityFilter:
                 logger.info(f"[GQF] Settled: '{goal.get('name', '')}' - {reason}")
         report['settled'] = settled
 
+        # The quality pass has written status/priority changes through
+        # DataAccess. Refresh the live registry before asking it to admit a
+        # replacement, otherwise a stale active record can undo the filter's
+        # decision or overwrite its state during GoalEngine persistence.
+        if goal_engine is not None and hasattr(goal_engine, "reload_from_disk"):
+            goal_engine.reload_from_disk()
+
         # Generate replacement goals for dominant un-covered tensions
         # Hard cap: never exceed HARD_CAP_GOALS active goals across all generators
         HARD_CAP_GOALS = 12
@@ -177,7 +193,9 @@ class GoalQualityFilter:
             logger.info(f"[GQF] ⛔ Cap reached ({current_active} active ≥ {HARD_CAP_GOALS}), skipping generation")
             new_goals = []
         else:
-            new_goals = self._generate_tension_goals(tensions, goals, dal)
+            new_goals = self._generate_tension_goals(
+                tensions, goals, dal, goal_engine=goal_engine
+            )
         report['generated'] = [g['name'] for g in new_goals]
 
         report['summary'] = {
@@ -338,6 +356,8 @@ class GoalQualityFilter:
         tensions: Dict[str, float],
         existing_goals: List[Dict],
         dal: Any,
+        *,
+        goal_engine: Any,
     ) -> List[Dict]:
         """
         For each dominant tension that has no strong aligned goal,
@@ -399,7 +419,24 @@ class GoalQualityFilter:
                 logger.debug(f"[GQF] Skipping duplicate topic: {new_stem!r}")
                 continue
             active_stems.add(new_stem)
-            dal.save_goal(new_goal)
+            from cognition.goal_engine import Goal
+            admitted = goal_engine.add_goal(Goal(
+                id=new_goal["id"],
+                topic=new_goal["topic"],
+                origin="goal_quality_filter",
+                priority=new_goal["priority"],
+                energy=new_goal["energy"],
+                created_cycle=int(getattr(goal_engine, "_cycle_counter", 0)),
+                last_active=int(getattr(goal_engine, "_cycle_counter", 0)),
+                tension_source=tension_key,
+                tension_level=level,
+            ))
+            if not admitted:
+                logger.info(
+                    "[GQF] GoalEngine rejected generated tension goal (%s)",
+                    tension_key,
+                )
+                continue
             new_goals.append(new_goal)
             logger.info(f"[GQF] Generated: {new_goal['name']} (pri={new_goal['priority']:.2f})")
 

@@ -229,6 +229,10 @@ class GoalEngine:
         # acquires this same lock on the same thread.
         self._lock = RLock()
         self._goals: Dict[str, Goal] = {}
+        # Records managed by DataAccess (e.g. GQF low-quality/archive records)
+        # can be intentionally absent from the live Goal object pool. Preserve
+        # them on writes unless the engine explicitly recycles their IDs.
+        self._deleted_goal_ids: set[str] = set()
         self._topic_quality_cache: Dict[str, bool] = {}
         self._cycle_counter: int = 0
         self._persistence_file = Path(persistence_file or "data/persona/goals.json")
@@ -550,12 +554,41 @@ class GoalEngine:
             return after
     
     def _save_goals(self) -> bool:
-        """Save goals to disk — atomic write via DAL."""
+        """Atomically persist live goals without erasing DAL-owned metadata."""
         try:
             self._persistence_file.parent.mkdir(parents=True, exist_ok=True)
+            existing_data = {}
+            if self._persistence_file.exists():
+                try:
+                    existing_data = json.loads(
+                        self._persistence_file.read_text(encoding="utf-8")
+                    )
+                except Exception:
+                    existing_data = {}
+            existing_goals = existing_data.get("goals", {})
+            if isinstance(existing_goals, list):
+                existing_goals = {
+                    str(item.get("id") or item.get("goal_id") or index): item
+                    for index, item in enumerate(existing_goals)
+                    if isinstance(item, dict)
+                }
+            if not isinstance(existing_goals, dict):
+                existing_goals = {}
+            goals_payload = {
+                str(goal_id): dict(record)
+                for goal_id, record in existing_goals.items()
+                if str(goal_id) not in self._deleted_goal_ids and isinstance(record, dict)
+            }
+            for goal_id, goal in self._goals.items():
+                record = goals_payload.get(str(goal_id), {})
+                # Dataclass fields are authoritative for live records; fields
+                # owned by other subsystems (quality scores, repair history)
+                # survive if GoalEngine does not model them.
+                record.update(asdict(goal))
+                goals_payload[str(goal_id)] = record
             data = {
                 'cycle_counter': self._cycle_counter,
-                'goals': {gid: asdict(g) for gid, g in self._goals.items()},
+                'goals': goals_payload,
                 'saved_at': datetime.now().isoformat()
             }
             # Atomic write (tmp → rename) prevents partial-write corruption
@@ -565,8 +598,12 @@ class GoalEngine:
                 json.dump(data, f, indent=2)
             os.replace(tmp, self._persistence_file)
             persisted = json.loads(self._persistence_file.read_text(encoding="utf-8"))
-            if set(persisted.get("goals", {})) != set(self._goals):
-                raise IOError("Goal persistence read-back did not match the in-memory registry")
+            persisted_goals = persisted.get("goals", {})
+            if not isinstance(persisted_goals, dict) or not set(self._goals).issubset(persisted_goals):
+                raise IOError("Goal persistence read-back did not contain the live registry")
+            if self._deleted_goal_ids.intersection(persisted_goals):
+                raise IOError("Goal persistence read-back retained explicitly recycled goals")
+            self._deleted_goal_ids.clear()
             logger.debug(f"Saved {len(self._goals)} goals to disk")
             return True
         except Exception as e:
@@ -983,29 +1020,6 @@ class GoalEngine:
             logger.info("GoalEngine: rejected low-quality topic %r", goal.topic)
             return False
 
-        # Recycle old non-active records first. A pool full of dormant or
-        # completed goals must not permanently block new autonomous goals.
-        if len(self._goals) >= self.MAX_TOTAL_GOALS:
-            recyclable = [g for g in self._goals.values() if g.status in {
-                "dormant", "completed", "abandoned", "low_quality", "deferred",
-            }]
-            if recyclable:
-                victim = min(
-                    recyclable,
-                    key=lambda g: (getattr(g, "last_active", 0), getattr(g, "persistence", 0)),
-                )
-                self._goals.pop(victim.id, None)
-                logger.info(
-                    "GoalEngine: recycled non-active goal '%s' to admit '%s'",
-                    victim.topic, goal.topic,
-                )
-            else:
-                logger.debug(
-                    f"GoalEngine: total goal cap ({self.MAX_TOTAL_GOALS}) reached, "
-                    f"not adding '{goal.topic}'"
-                )
-                return False
-
         # Topic cooldown: don't re-create a recently abandoned topic
         _last_abandoned = self._recently_abandoned.get(topic, 0.0)
         if time.time() - _last_abandoned < self.TOPIC_COOLDOWN_SECS:
@@ -1039,9 +1053,37 @@ class GoalEngine:
                 logger.debug(f"GoalEngine: duplicate topic '{goal.topic}'")
                 return False
 
+            # Recycle only after all rejection gates pass, so an invalid or
+            # duplicate candidate cannot evict a dormant goal from the pool.
+            victim = None
+            if len(self._goals) >= self.MAX_TOTAL_GOALS:
+                recyclable = [g for g in self._goals.values() if g.status in {
+                    "dormant", "completed", "abandoned", "low_quality", "deferred",
+                }]
+                if recyclable:
+                    victim = min(
+                        recyclable,
+                        key=lambda g: (getattr(g, "last_active", 0), getattr(g, "persistence", 0)),
+                    )
+                    self._goals.pop(victim.id, None)
+                    self._deleted_goal_ids.add(victim.id)
+                    logger.info(
+                        "GoalEngine: recycled non-active goal '%s' to admit '%s'",
+                        victim.topic, goal.topic,
+                    )
+                else:
+                    logger.debug(
+                        "GoalEngine: total goal cap (%d) reached; not adding '%s'",
+                        self.MAX_TOTAL_GOALS, goal.topic,
+                    )
+                    return False
+
             self._goals[goal.id] = goal
             if not self._save_goals():
                 self._goals.pop(goal.id, None)
+                if victim is not None:
+                    self._goals[victim.id] = victim
+                    self._deleted_goal_ids.discard(victim.id)
                 return False
             logger.info(f"Added goal: {goal.topic} (origin={goal.origin}, priority={goal.priority:.2f})")
             try:

@@ -2577,28 +2577,41 @@ class InternalThoughtLoop:
         """V34: Phase 4 goal quality, belief, and thread lifecycle maintenance."""
         if (self._goal_quality_filter and self._slow_cycle_count % 20 == 0
                 and (not self._governor or self._governor.may_run('GQF'))):
-            try:
-                report = self._goal_quality_filter.run()
-                s = report.get('summary', {})
-                if self._governor:
-                    self._governor.record('GQF', s.get('noise_marked', 0) + s.get('generated', 0) + s.get('boosted', 0))
-                if s.get('noise_marked', 0) + s.get('generated', 0) > 0:
-                    logger.info(
-                        f"[InternalLoop] V34 Goal quality: "
-                        f"{s.get('noise_marked',0)} noise removed, "
-                        f"{s.get('generated',0)} new goals generated"
-                    )
-                    # GQF persists through DataAccess while GoalEngine is a
-                    # long-lived in-memory service. Refresh it before the
-                    # next action/GEI computation can observe stale state.
+            _mf = getattr(self, "_motivational_field", None)
+            _scan_status = (
+                _mf.need_scan_status() if _mf and hasattr(_mf, "need_scan_status") else {}
+            )
+            if _scan_status.get("status") == "running":
+                self._record_cycle_stage(
+                    "goal_quality_filter", "skipped_motivational_scan_running",
+                    inputs={"motivational_scan_cycle": _scan_status.get("cycle")},
+                )
+            else:
+                try:
                     _ge = getattr(
                         getattr(self._organism, 'ai_system', None),
                         'goal_engine', None,
                     )
+                    report = self._goal_quality_filter.run(goal_engine=_ge)
+                    s = report.get('summary', {})
+                    if self._governor:
+                        self._governor.record('GQF', s.get('noise_marked', 0) + s.get('generated', 0) + s.get('boosted', 0))
+                    if s.get('noise_marked', 0) + s.get('generated', 0) > 0:
+                        logger.info(
+                            f"[InternalLoop] V34 Goal quality: "
+                            f"{s.get('noise_marked',0)} noise removed, "
+                            f"{s.get('generated',0)} new goals generated"
+                        )
+                    # GQF persists through DataAccess; synchronize its
+                    # accepted changes before later actions/GEI consume them.
                     if _ge is not None and hasattr(_ge, 'reload_from_disk'):
                         _ge.reload_from_disk()
-            except Exception as _e4:
-                logger.debug(f"[InternalLoop] Phase 4 goal quality failed: {_e4}")
+                except Exception as _e4:
+                    self._record_cycle_stage(
+                        "goal_quality_filter", "failed",
+                        metrics={"error_type": type(_e4).__name__},
+                    )
+                    logger.debug(f"[InternalLoop] Phase 4 goal quality failed: {_e4}")
 
         if self._contradiction_reviser:
             # Confronts pending contradictions, revises the underlying
