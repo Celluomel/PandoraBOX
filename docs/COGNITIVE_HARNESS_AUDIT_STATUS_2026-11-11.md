@@ -671,6 +671,8 @@ Correction locale : le `turn_id` capturé au début du tour est maintenant trans
 
 Vérification locale : six suites mémoire, contexte, trace de tour et résolution du profil — **70 tests passés, 11 sous-tests passés**; `tests/test_presence_identity_language.py` — **11 tests passés**; compilation Python réussie. Avertissements de dépendances uniquement.
 
+Ce lot est commit et poussé sur `main` (`6b908a0 Bind memory and profile evidence to cognitive turns`).
+
 Limite d’exécution Windows : la suite peer a passé ses 17 premiers cas affichés, puis s’est bloquée dans `test_real_persona_stream_wrapper_runs_peer_scope_and_records_policy_trace` avant l’exécution effective de sa coroutine. Une trace `faulthandler` situe l’attente dans la création du self-pipe `socketpair` du nouvel event loop Windows (`asyncio.run`), pas dans le corps du test. La suite complète peer n’est donc pas déclarée verte; le test de streaming réel reste à valider dans un environnement où cette création de socket locale fonctionne.
 
 ### Lecture du log interne partagé le 11 novembre
