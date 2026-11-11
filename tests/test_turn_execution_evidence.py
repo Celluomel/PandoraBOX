@@ -3,6 +3,8 @@ from types import SimpleNamespace
 
 from cognition.persona_bridge import (
     PersonaBridge,
+    _prior_assistant_evidence_detail,
+    _prior_assistant_evidence_summary,
     _prior_assistant_trace_evidence,
     _turn_output_evidence,
 )
@@ -123,3 +125,51 @@ def test_prior_answer_trace_link_ignores_enriched_current_prompt():
     assert evidence["text"] == previous_answer
     assert evidence["trace_linked"] is True
     assert evidence["turn_id"] == "prior-turn"
+
+
+def test_prior_assistant_evidence_summary_keeps_text_out_of_trace_metadata():
+    answer = "Sensitive previous assistant response"
+    fingerprint, _ = _turn_output_evidence(answer)
+    summary = _prior_assistant_evidence_summary({
+        "text": answer,
+        "fingerprint": fingerprint,
+        "trace_linked": True,
+        "turn_id": "prior-turn-42",
+        "turn_status": "completed",
+    })
+
+    assert summary == {
+        "available": True,
+        "trace_linked": True,
+        "turn_id": "prior-turn-42",
+        "fingerprint": fingerprint,
+    }
+    assert answer not in repr(summary)
+    detail = _prior_assistant_evidence_detail(summary)
+    assert "trace_linked=True" in detail
+    assert "turn_id=prior-turn-42" in detail
+    assert f"answer_fingerprint={fingerprint}" in detail
+    assert answer not in detail
+
+
+def test_architecture_validation_can_link_candidate_prior_evidence_and_final_output():
+    bridge = _bridge()
+    bridge._record_turn_stage("turn_input", "received", output="follow-up")
+    bridge._record_turn_stage("primary_generation_input", "delivered", output={"prompt": "bounded"})
+    bridge._record_turn_stage("generation_candidate", "completed", output="candidate", consumes=("primary_generation_input",))
+    bridge._record_turn_stage(
+        "prior_assistant_evidence", "linked",
+        output={"available": True, "trace_linked": True, "turn_id": "prior-turn", "fingerprint": "abc123"},
+    )
+    bridge._record_turn_stage(
+        "architecture_claim_validation", "replaced_unverified_claims",
+        output="grounded final", consumes=("generation_candidate", "prior_assistant_evidence", "turn_input"),
+    )
+
+    stages = bridge._last_turn_trace["stages"]
+    validation = stages["architecture_claim_validation"]
+    assert validation["output_fingerprint"] == _turn_output_evidence("grounded final")[0]
+    assert [item["stage"] for item in validation["consumes"]] == [
+        "generation_candidate", "prior_assistant_evidence", "turn_input",
+    ]
+    assert validation["consumes"][0]["fingerprint"] == stages["generation_candidate"]["output_fingerprint"]

@@ -113,6 +113,28 @@ def _prior_assistant_trace_evidence(
         "turn_status": str(linked_turn.get("status") or "") if linked_turn else "",
     }
 
+
+def _prior_assistant_evidence_summary(evidence: dict[str, Any] | None) -> dict[str, Any]:
+    """Return trace-safe metadata for prior-turn evidence, never its text."""
+    if not isinstance(evidence, dict) or not str(evidence.get("text") or "").strip():
+        return {"available": False, "trace_linked": False, "turn_id": "", "fingerprint": ""}
+    return {
+        "available": True,
+        "trace_linked": bool(evidence.get("trace_linked")),
+        "turn_id": str(evidence.get("turn_id") or "")[:120],
+        "fingerprint": str(evidence.get("fingerprint") or "")[:64],
+    }
+
+
+def _prior_assistant_evidence_detail(summary: dict[str, Any]) -> str:
+    """Expose only bounded linkage metadata in the human-readable trace detail."""
+    return (
+        f"available={bool(summary.get('available'))}; "
+        f"trace_linked={bool(summary.get('trace_linked'))}; "
+        f"turn_id={str(summary.get('turn_id') or '')[:120]}; "
+        f"answer_fingerprint={str(summary.get('fingerprint') or '')[:64]}"
+    )
+
 # Research MCP — lazy-imported after PandoraBOX boots so memory_system is ready
 _research_mcp_instance = None
 
@@ -2020,6 +2042,18 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                             current_exchange_recorded=False,
                         )
                         _visible_candidate = str(_deterministic_response or "")
+                        _prior_summary = _prior_assistant_evidence_summary(_prior_exchange)
+                        self._record_turn_stage(
+                            "prior_assistant_evidence",
+                            "linked" if _prior_summary["trace_linked"] else
+                            "unlinked" if _prior_summary["available"] else "not_found",
+                            detail=_prior_assistant_evidence_detail(_prior_summary),
+                            output=_prior_summary,
+                        )
+                        self._record_turn_stage(
+                            "deterministic_reasoning", "selected_direct",
+                            output=_visible_candidate, consumes=("turn_input",),
+                        )
                         _guarded = trace_grounded_architecture_answer(
                             effective_input, self.get_last_turn_trace(),
                             displayed_cognitive_trace, _prior_exchange,
@@ -2029,6 +2063,8 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         self._record_turn_stage(
                             "architecture_claim_validation",
                             "replaced_unverified_claims" if _was_replaced else "passed",
+                            output=_guarded,
+                            consumes=("deterministic_reasoning", "prior_assistant_evidence", "turn_input"),
                         )
                     elif _quantitative_analysis is not None:
                         self._chat_stage = 'grounded physical constraint'
@@ -2148,6 +2184,20 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                             conversation_history=conversation_history,
                             current_exchange_recorded=True,
                         )
+                        _prior_summary = _prior_assistant_evidence_summary(_prior_exchange)
+                        self._record_turn_stage(
+                            "prior_assistant_evidence",
+                            "linked" if _prior_summary["trace_linked"] else
+                            "unlinked" if _prior_summary["available"] else "not_found",
+                            detail=_prior_assistant_evidence_detail(_prior_summary),
+                            output=_prior_summary,
+                        )
+                        self._record_turn_stage(
+                            "generation_candidate",
+                            "completed" if _visible_candidate else "empty",
+                            output=_visible_candidate,
+                            consumes=("primary_generation_input",),
+                        )
                         _guarded = trace_grounded_architecture_answer(
                             effective_input, self.get_last_turn_trace(),
                             displayed_cognitive_trace, _prior_exchange,
@@ -2156,6 +2206,8 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         self._record_turn_stage(
                             "architecture_claim_validation",
                             "replaced_unverified_claims" if _was_replaced else "passed",
+                            output=_guarded,
+                            consumes=("generation_candidate", "prior_assistant_evidence", "turn_input"),
                         )
                     elif _quantitative_analysis is not None:
                         from cognition.quantitative_reasoning import guard_quantitative_response
@@ -2356,6 +2408,13 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             else "deterministic_reasoning" if _deterministic_response
             else "primary_generation"
         )
+        _architecture_validation = self._last_turn_trace.get("stages", {}).get(
+            "architecture_claim_validation", {}
+        )
+        if isinstance(_architecture_validation, dict) and _architecture_validation.get("status") in {
+            "passed", "replaced_unverified_claims",
+        }:
+            _answer_origin_stage = "architecture_claim_validation"
         if not _deterministic_response and not _fast_round_used:
             _generation_status = str(
                 self._last_turn_trace.get("stages", {}).get("primary_generation", {}).get("status", "unknown")
