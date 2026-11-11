@@ -428,6 +428,11 @@ class AppState:
                         if loop is not None and callable(getattr(loop, 'module_tick_analysis', None))
                         else None
                     ),
+                    'cycle_evidence': (
+                        loop.cycle_evidence_snapshot()
+                        if loop is not None and callable(getattr(loop, 'cycle_evidence_snapshot', None))
+                        else {'retained': 0, 'cycles': []}
+                    ),
                 },
                 'global_workspace': {'available': workspace is not None},
                 'memory': {'available': self.memory is not None},

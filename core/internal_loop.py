@@ -45,10 +45,12 @@ Thread safety:
 """
 
 import json
+import hashlib
 import inspect
 import logging
 import threading
 import time
+from collections import deque
 from datetime import datetime
 from functools import wraps
 from pathlib import Path
@@ -181,6 +183,12 @@ class InternalThoughtLoop:
         from core.module_tick_log import ModuleTickLog
         self._module_tick_log = ModuleTickLog()
         self._module_tick_wrapped: set[tuple[int, str]] = set()
+        # Per-cycle causal evidence complements the long-lived aggregate tick
+        # counters. Keep only bounded, content-free hashes and stage metadata.
+        self._cycle_evidence_lock = threading.RLock()
+        self._cycle_evidence: deque[dict[str, Any]] = deque(maxlen=40)
+        self._active_cycle_evidence: dict[str, Any] | None = None
+        self._active_cycle_thread_id: int | None = None
         # Predictive models are shared by the background cycle and the live
         # response path. A first chat turn may arrive before slow-cycle
         # initialization, so create them on demand under a dedicated lock.
@@ -400,18 +408,35 @@ class InternalThoughtLoop:
                     try:
                         output = __bound(*args, **kwargs)
                     except Exception as exc:
+                        duration_ms = (time.perf_counter() - started) * 1000
                         self._module_tick_log.record(
                             __module, __method, started_at=started,
-                            duration_ms=(time.perf_counter() - started) * 1000,
+                            duration_ms=duration_ms,
                             error=exc,
                         )
+                        try:
+                            self._record_cycle_stage(
+                                f"module_tick:{__module}.{__method}", "failed",
+                                metrics={"duration_ms": round(duration_ms, 2), "error_type": type(exc).__name__},
+                            )
+                        except Exception:
+                            pass
                         raise
+                    duration_ms = (time.perf_counter() - started) * 1000
                     self._module_tick_log.record(
                         __module, __method, started_at=started,
-                        duration_ms=(time.perf_counter() - started) * 1000,
+                        duration_ms=duration_ms,
                         output=output,
                         side_effect_only=__side_effect_only,
                     )
+                    try:
+                        self._record_cycle_stage(
+                            f"module_tick:{__module}.{__method}", "completed",
+                            output=output,
+                            metrics={"duration_ms": round(duration_ms, 2)},
+                        )
+                    except Exception:
+                        pass
                     return output
 
                 observed.__lumina_module_tick_probe__ = True
@@ -461,6 +486,111 @@ class InternalThoughtLoop:
         analysis["executed_module_count"] = executed
         analysis["states"] = states
         return analysis
+
+    @staticmethod
+    def _evidence_fingerprint(value: Any) -> str | None:
+        """Hash structured cycle values without retaining potentially private text."""
+        try:
+            payload = json.dumps(value, sort_keys=True, ensure_ascii=False,
+                                 separators=(",", ":"), default=str)
+        except Exception:
+            return None
+        return hashlib.sha256(payload.encode("utf-8", errors="replace")).hexdigest()[:20]
+
+    @staticmethod
+    def _evidence_summary(value: Any) -> dict[str, Any]:
+        """Return a deliberately small, non-text summary suitable for status APIs."""
+        if isinstance(value, dict):
+            summary: dict[str, Any] = {"kind": "mapping", "field_count": len(value)}
+            for key in ("type", "status", "success", "created", "verified", "action"):
+                item = value.get(key)
+                if isinstance(item, (str, bool, int, float)) and key != "action":
+                    summary[key] = item if not isinstance(item, str) else item[:48]
+            for key in ("all_candidates", "candidates", "goals", "threads"):
+                item = value.get(key)
+                if isinstance(item, (list, tuple)):
+                    summary[f"{key}_count"] = len(item)
+            return summary
+        if isinstance(value, (list, tuple, set)):
+            return {"kind": type(value).__name__, "item_count": len(value)}
+        if value is None:
+            return {"kind": "none"}
+        return {"kind": type(value).__name__}
+
+    def _begin_cycle_evidence(self, cycle_id: int) -> None:
+        with self._cycle_evidence_lock:
+            self._active_cycle_evidence = {
+                "cycle_id": int(cycle_id),
+                "started_at": time.time(),
+                "status": "running",
+                "stages": [],
+            }
+            self._active_cycle_thread_id = threading.get_ident()
+
+    def _record_cycle_stage(
+        self, stage: str, status: str, *, inputs: dict[str, Any] | None = None,
+        output: Any = None, metrics: dict[str, Any] | None = None,
+    ) -> str | None:
+        """Record a stage and explicit consumer references in the active slow cycle."""
+        lock = getattr(self, "_cycle_evidence_lock", None)
+        if lock is None:
+            return None
+        with lock:
+            receipt = getattr(self, "_active_cycle_evidence", None)
+            if receipt is None or getattr(self, "_active_cycle_thread_id", None) != threading.get_ident():
+                return None
+            if len(receipt["stages"]) >= 256:
+                receipt["omitted_stage_count"] = receipt.get("omitted_stage_count", 0) + 1
+                return None
+            output_ref = self._evidence_fingerprint(output) if output is not None else None
+            entry: dict[str, Any] = {
+                "stage": str(stage),
+                "status": str(status),
+                "inputs": inputs or {},
+                "output_ref": output_ref,
+                "output_summary": self._evidence_summary(output) if output is not None else None,
+            }
+            if metrics:
+                entry["metrics"] = {
+                    str(key): value for key, value in metrics.items()
+                    if isinstance(value, (str, bool, int, float))
+                }
+            receipt["stages"].append(entry)
+            return output_ref
+
+    def _finish_cycle_evidence(self, status: str, error_type: str | None = None) -> None:
+        lock = getattr(self, "_cycle_evidence_lock", None)
+        if lock is None:
+            return
+        with lock:
+            receipt = getattr(self, "_active_cycle_evidence", None)
+            if receipt is None:
+                return
+            receipt["status"] = status
+            receipt["finished_at"] = time.time()
+            receipt["duration_ms"] = round((receipt["finished_at"] - receipt["started_at"]) * 1000, 2)
+            if error_type:
+                receipt["error_type"] = str(error_type)
+            self._cycle_evidence.append(receipt)
+            self._active_cycle_evidence = None
+            self._active_cycle_thread_id = None
+
+    def cycle_evidence_snapshot(self, limit: int = 5) -> dict[str, Any]:
+        """Expose recent bounded causal receipts; semantic correctness is not inferred."""
+        lock = getattr(self, "_cycle_evidence_lock", None)
+        if lock is None:
+            return {"retained": 0, "cycles": []}
+        with lock:
+            bounded_limit = max(0, min(int(limit), 10))
+            cycles = list(self._cycle_evidence)[-bounded_limit:] if bounded_limit else []
+            if self._active_cycle_evidence is not None:
+                cycles.append(dict(self._active_cycle_evidence))
+            return {
+                "retained": len(self._cycle_evidence),
+                "capacity": 40,
+                "evidence_scope": "internal_cycle_execution_and_explicit_dataflow; semantic_quality_not_assessed",
+                "cycles": json.loads(json.dumps(cycles, default=str)),
+            }
 
     @staticmethod
     def _resolve_cycle_state_path() -> Path:
@@ -751,9 +881,11 @@ class InternalThoughtLoop:
                 # and the probes attach before their next invocation.
                 self._refresh_module_tick_probes()
             self._last_slow_cycle_at = time.time()
+            self._finish_cycle_evidence("completed")
         except Exception as exc:
             self._slow_cycle_error_count += 1
             self._last_slow_cycle_error_type = type(exc).__name__
+            self._finish_cycle_evidence("failed", type(exc).__name__)
             raise
         finally:
             self._lock.release()
@@ -762,6 +894,7 @@ class InternalThoughtLoop:
         """Inner body of the slow cycle (called under lock)."""
         self._refresh_module_tick_probes()
         self._slow_cycle_count += 1
+        self._begin_cycle_evidence(self._slow_cycle_count)
         self._save_cycle_state()
         o = self._organism
 
@@ -1083,6 +1216,15 @@ class InternalThoughtLoop:
                 _cycle_result = self._phase1.enhanced_cycle(None)
                 pressure_result = _cycle_result.get('pressure', {})
                 total_pressure  = pressure_result.get('total', 0.5)
+                _phase1_competition_output = _cycle_result.get("competition", {})
+                _phase1_competition_metrics = _phase1_competition_output.get("competition", {})
+                _phase1_evidence_ref = self._record_cycle_stage(
+                    "phase1_competition", "completed", output=_phase1_competition_output,
+                    metrics={
+                        "total_pressure": float(total_pressure),
+                        "candidate_count": int(_phase1_competition_metrics.get("total_candidates", 0) or 0),
+                    },
+                )
                 # Retain the ordered Phase 1 proposal for observability and
                 # downstream deliberation. It was previously computed and lost.
                 o._v32_action_plan = _cycle_result.get('plan', [])
@@ -1090,6 +1232,8 @@ class InternalThoughtLoop:
                 # Log workspace winner — the dominant cognitive focus
                 _winner = _cycle_result.get('winner')
                 if _winner:
+                    _arbitration_status = "no_candidate"
+                    _arbitration_output = _winner
                     # Phase 4.1/4.2: Executive Arbitration — re-score top
                     # candidates via prospective prediction; override the
                     # raw-score winner if a runner-up predicts a
@@ -1145,6 +1289,7 @@ class InternalThoughtLoop:
                         # making it look like arbitration wasn't running at
                         # all. It now logs (and counts) every run.
                         if _arb is None:
+                            _arbitration_status = "no_arbitration_result"
                             self._arbitration_skipped += 1
                             logger.debug(
                                 "[InternalLoop] ⚖️ Executive arbitration: "
@@ -1152,6 +1297,7 @@ class InternalThoughtLoop:
                                 "winner not goal-type)"
                             )
                         else:
+                            _arbitration_status = "completed"
                             self._arbitration_runs += 1
                             # Phase 5.4: record this decision for later outcome
                             # review, regardless of override — learning from
@@ -1171,12 +1317,24 @@ class InternalThoughtLoop:
                                     f"[InternalLoop] ⚖️ Executive arbitration: {_arb.reasoning}"
                                 )
                                 _winner = _arb.arbitrated_winner
+                                _arbitration_output = _winner
                             else:
                                 logger.info(
                                     f"[InternalLoop] ⚖️ Executive arbitration: {_arb.reasoning}"
                                 )
+                            _arbitration_output = {
+                                "overridden": bool(_arb.overridden),
+                                "winner": _winner,
+                                "reason_ref": self._evidence_fingerprint(_arb.reasoning),
+                            }
                     except Exception as _arb_e:
+                        _arbitration_status = "failed"
                         logger.debug(f"[InternalLoop] arbitration error (non-fatal): {_arb_e}")
+                    _arbitration_evidence_ref = self._record_cycle_stage(
+                        "executive_arbitration", _arbitration_status,
+                        inputs={"competition_output_ref": _phase1_evidence_ref},
+                        output=_arbitration_output,
+                    )
 
                     # A thought proposal becomes a persistent goal only if it
                     # survives workspace selection and executive arbitration.
@@ -1184,6 +1342,7 @@ class InternalThoughtLoop:
                     # merely scoring or broadcasting a proposal is not goal
                     # creation.
                     _selected_proposal = None
+                    _commit_result = None
                     _winner_source = _winner.get("source_data", {}) if isinstance(_winner, dict) else {}
                     if isinstance(_winner_source, dict):
                         _selected_proposal = _winner_source.get("_goal_proposal")
@@ -1213,6 +1372,7 @@ class InternalThoughtLoop:
                                 )
                             except Exception as _commit_error:
                                 _commit = {"created": False, "verified": False, "reason": str(_commit_error)}
+                            _commit_result = _commit
                             if _commit.get("created") and _commit.get("verified"):
                                 _winner = dict(_winner)
                                 _winner.update({
@@ -1232,6 +1392,20 @@ class InternalThoughtLoop:
                                     "[InternalLoop] Selected thought proposal was not committed: %s",
                                     _commit.get("reason", "not_verified"),
                                 )
+                    _commit_evidence_ref = self._record_cycle_stage(
+                        "selected_proposal_commit",
+                        "verified_commit" if isinstance(_commit_result, dict) and _commit_result.get("created") and _commit_result.get("verified")
+                        else "rejected_or_unverified" if isinstance(_commit_result, dict)
+                        else "no_selected_proposal",
+                        inputs={"arbitrated_winner_ref": _arbitration_evidence_ref},
+                        output=(
+                            {"created": bool(_commit_result.get("created")),
+                             "verified": bool(_commit_result.get("verified")),
+                             "goal_id_ref": self._evidence_fingerprint(_commit_result.get("id")),
+                             "topic_ref": self._evidence_fingerprint(_commit_result.get("topic"))}
+                            if isinstance(_commit_result, dict) else None
+                        ),
+                    )
 
                     _comp  = _cycle_result.get('competition', {}).get('competition', {})
                     _cands = _comp.get('total_candidates', 0)
@@ -1245,6 +1419,16 @@ class InternalThoughtLoop:
                     # Store winner for other systems to read
                     o._v32_workspace_winner = _winner
                     o._v32_workspace_winner_cycle = self._slow_cycle_count
+                    _winner_evidence_ref = self._record_cycle_stage(
+                        "winner_published_to_workspace_state", "completed",
+                        inputs={
+                            "arbitration_output_ref": _arbitration_evidence_ref,
+                            "selected_proposal_commit_ref": _commit_evidence_ref,
+                        },
+                        output=_winner,
+                    )
+                    o._v32_workspace_winner_evidence_ref = _winner_evidence_ref
+                    o._v32_workspace_winner_evidence_cycle = self._slow_cycle_count
 
                     # ── WorkspaceBias: commit the focus as an ACTIVE, EMBEDDED
                     # commitment. This is what lets the focus BIAS downstream
@@ -1306,6 +1490,20 @@ class InternalThoughtLoop:
                         except Exception:
                             pass
 
+                if not _winner:
+                    _no_winner_ref = self._record_cycle_stage(
+                        "executive_arbitration", "skipped_no_winner",
+                        inputs={"competition_output_ref": _phase1_evidence_ref},
+                    )
+                    self._record_cycle_stage(
+                        "selected_proposal_commit", "no_winner",
+                        inputs={"arbitrated_winner_ref": _no_winner_ref},
+                    )
+                    self._record_cycle_stage(
+                        "winner_published_to_workspace_state", "no_winner",
+                        inputs={"competition_output_ref": _phase1_evidence_ref},
+                    )
+
                 # Log high pressure
                 if total_pressure > 0.7:
                     logger.info(
@@ -1317,7 +1515,15 @@ class InternalThoughtLoop:
                 o._v32_decision_pressure = pressure_result
 
             except Exception as _p1e:
+                self._record_cycle_stage("phase1_competition", "failed", metrics={"error_type": type(_p1e).__name__})
                 logger.debug(f"[InternalLoop] Phase 1 pressure/workspace error: {_p1e}")
+        elif self._phase1:
+            self._record_cycle_stage(
+                "phase1_competition",
+                "skipped_governor" if self._slow_cycle_count % 2 == 0 else "skipped_cadence",
+            )
+        else:
+            self._record_cycle_stage("phase1_competition", "unavailable")
 
         # ── GoalEngine: autonomous goal formation & maintenance ───────────
         # tick() now correctly reads pressures from organism.pressure and
@@ -1329,22 +1535,47 @@ class InternalThoughtLoop:
             try:
                 _ge.tick()
                 _ge_active = len([g for g in _ge._goals.values() if g.status == "active"])
+                _goal_thoughts = _ge.get_goal_thoughts() if hasattr(o, 'workspace') else []
+                _goal_engine_evidence_ref = self._record_cycle_stage(
+                    "goal_engine_tick", "completed", output={
+                        "active_goal_count": _ge_active,
+                        "goal_thought_count": len(_goal_thoughts),
+                        "workspace_available": hasattr(o, 'workspace'),
+                    },
+                )
                 if self._governor:
                     self._governor.record('GoalEngine', _ge_active)
 
                 # Inject active goal thoughts into GW for CCS + Observatory
                 if hasattr(o, 'workspace'):
-                    for thought in _ge.get_goal_thoughts():
+                    _broadcast_count = 0
+                    for thought in _goal_thoughts:
                         try:
                             o.workspace.broadcast(
                                 source   = "goal_engine",
                                 content  = thought.get("content", ""),
                                 priority = min(0.75, thought.get("priority", 0.5)),
                             )
+                            _broadcast_count += 1
                         except Exception:
                             pass
+                    self._record_cycle_stage(
+                        "goal_thoughts_broadcast", "completed" if _broadcast_count == len(_goal_thoughts) else "partial",
+                        inputs={"goal_engine_output_ref": _goal_engine_evidence_ref},
+                        output={"broadcast_count": _broadcast_count, "requested_count": len(_goal_thoughts)},
+                    )
+                else:
+                    self._record_cycle_stage(
+                        "goal_thoughts_broadcast", "unavailable",
+                        inputs={"goal_engine_output_ref": _goal_engine_evidence_ref},
+                    )
             except Exception as _ge_e:
+                self._record_cycle_stage("goal_engine_tick", "failed", metrics={"error_type": type(_ge_e).__name__})
                 logger.debug(f"[InternalLoop] Goal engine tick error: {_ge_e}")
+        elif _ge is not None:
+            self._record_cycle_stage("goal_engine_tick", "skipped_governor")
+        else:
+            self._record_cycle_stage("goal_engine_tick", "unavailable")
 
         # ── GoalActionExecutor: translate goals → concrete actions ───────────
         # Runs every _action_every_n slow cycles. Picks the highest-activation
@@ -1378,6 +1609,17 @@ class InternalThoughtLoop:
                     selection_is_authoritative=decision_is_fresh,
                     cycle_id=self._slow_cycle_count,
                 )
+                _previous_winner_ref = getattr(o, "_v32_workspace_winner_evidence_ref", None)
+                self._record_cycle_stage(
+                    "goal_action_executor", "completed" if _action_report is not None else "no_action_report",
+                    inputs={
+                        "winner_output_ref": _previous_winner_ref if decision_is_fresh else None,
+                        "decision_fresh": decision_is_fresh,
+                        "winner_age_cycles": winner_age,
+                        "preferred_goal_id_ref": self._evidence_fingerprint(preferred_goal_id) if preferred_goal_id else None,
+                    },
+                    output=_action_report,
+                )
                 if _action_report and _action_report.get("success"):
                     logger.info(
                         f"[InternalLoop] ⚡ Goal action: "
@@ -1386,7 +1628,10 @@ class InternalThoughtLoop:
                         f"{_action_report['result'][:60]}"
                     )
             except Exception as _ae:
+                self._record_cycle_stage("goal_action_executor", "failed", metrics={"error_type": type(_ae).__name__})
                 logger.debug(f"[InternalLoop] GoalActionExecutor error: {_ae}")
+        else:
+            self._record_cycle_stage("goal_action_executor", "skipped_cadence")
 
         # ── V32: Phase 1 Thread Resolution (prevent infinite loops) ───────
         # Every 10 slow cycles (~20 minutes), resolve stuck thought threads
@@ -1794,6 +2039,10 @@ class InternalThoughtLoop:
 
                 # 1. TTE step — advance/spawn/prune threads
                 active_threads = self._tte.step(tte_ctx)
+                _tte_evidence_ref = self._record_cycle_stage(
+                    "thought_thread_engine", "completed", output=active_threads,
+                    metrics={"active_thread_count": len(active_threads) if hasattr(active_threads, "__len__") else -1},
+                )
 
                 # 2. CDE step — detect dissonance, spawn meta-threads
                 ai_sys  = getattr(o, "ai_system", None)
@@ -1834,6 +2083,12 @@ class InternalThoughtLoop:
                     tte_ctx  = tte_ctx,
                     organism = o,
                 )
+                _cde_evidence_ref = self._record_cycle_stage(
+                    "cognitive_dissonance_engine", "completed",
+                    inputs={"thread_state_ref": _tte_evidence_ref},
+                    output=active_threads,
+                    metrics={"active_thread_count": len(active_threads) if hasattr(active_threads, "__len__") else -1},
+                )
 
                 # 3. DTS — select dominant thought
                 sel_ctx = SelectorContext(
@@ -1844,9 +2099,19 @@ class InternalThoughtLoop:
                     energy          = tte_ctx.energy,
                 )
                 result = self._dts.select(sel_ctx)
+                _dts_evidence_ref = self._record_cycle_stage(
+                    "dominant_thought_selector", "completed",
+                    inputs={"thread_state_ref": _cde_evidence_ref},
+                    output=result,
+                )
 
                 # Store on organism for CognitivePreProcessor to consume
                 o._dominant_thought = result
+                self._record_cycle_stage(
+                    "dominant_thought_published", "completed",
+                    inputs={"selector_output_ref": _dts_evidence_ref},
+                    output={"has_dominant": bool(getattr(result, "dominant", None))},
+                )
 
                 # ── MetaThreadEvaluator: conscious oversight of thread quality ──
                 # Evaluates whether the dominant thread is actually progressing,
@@ -2033,7 +2298,10 @@ class InternalThoughtLoop:
 
 
             except Exception as _tte_e:
+                self._record_cycle_stage("thought_thread_cde_dts_chain", "failed", metrics={"error_type": type(_tte_e).__name__})
                 logger.debug(f"[InternalLoop] TTE/CDE/DTS tick error (non-fatal): {_tte_e}")
+        else:
+            self._record_cycle_stage("thought_thread_cde_dts_chain", "unavailable")
 
         # ── Phase 2.8 / 2.9: Vital cycle labelling ──────────────────────────
         _IS_CONSOLIDATION = (self._slow_cycle_count % 5 == 0 and self._slow_cycle_count > 0)
