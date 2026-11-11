@@ -4356,24 +4356,13 @@ Memory honesty — two distinct cases:
             else:
                 self._record_turn_stage("organism_post_interaction", "skipped_unavailable")
 
-            # A real user turn is the observable result for an aspiration's
-            # pending social recovery step. Keep this outside response
-            # generation so it cannot add latency to the chat path.
-            try:
-                _loop = getattr(organism, "_loop", None) if organism is not None else None
-                _planner = getattr(_loop, "_long_horizon_planner", None)
-                if human_interaction and _planner is not None and hasattr(_planner, "record_interaction_outcome"):
-                    _planner.record_interaction_outcome(
-                        result="user interaction completed after response"
-                    )
-                    self._record_turn_stage("long_horizon_interaction_outcome", "completed")
-                else:
-                    self._record_turn_stage("long_horizon_interaction_outcome", "skipped_unavailable")
-            except Exception as _planner_exc:
-                self._record_turn_stage(
-                    "long_horizon_interaction_outcome", "failed", str(_planner_exc),
-                )
-                logger.debug("Planner interaction outcome (non-fatal): %s", _planner_exc)
+            # A completed chat turn is not evidence that it answered a specific
+            # planner-generated question. Until the prompt/response carry an
+            # explicit correlation id, do not advance a social plan here.
+            self._record_turn_stage(
+                "long_horizon_interaction_outcome",
+                "skipped_unmatched_turn" if human_interaction else "skipped_unavailable",
+            )
 
             logger.debug(
                 f"Post-turn lifecycle complete — interaction #{s._interaction_count} "

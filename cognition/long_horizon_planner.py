@@ -184,9 +184,7 @@ class LongHorizonPlanner:
             if plan.source != "aspiration" or plan.status != "active":
                 continue
             step = self.current_step(domain)
-            if step is None or (
-                step.operation != "user_question" and step.action_type != "social"
-            ):
+            if step is None or step.operation == "user_question" or step.action_type != "social":
                 continue
             aspiration = next(
                 (item for item in asp.aspirations.values()
@@ -528,103 +526,63 @@ class LongHorizonPlanner:
             )
         self._save()
 
-    def record_interaction_outcome(self, result: str = "user interaction completed") -> None:
-        """Use a real user turn to complete a pending social plan step.
-
-        Aspiration plans are autonomous, so they are not owned by a GoalActionExecutor.
-        Their ``social``/``user_question`` recovery step nevertheless needs a real-world
-        observation.  A completed chat turn is that observation; this method deliberately
-        advances only the current social step of the highest-tension aspiration.
-        """
-        asp = getattr(self._organism, "aspirational_self", None)
-        if not asp:
-            return
-        candidates: List[Tuple[float, str]] = []
-        for domain, plan in self._plans.items():
-            if plan.source != "aspiration" or plan.status != "active":
-                continue
-            step = self.current_step(domain)
-            if step is None or (step.operation != "user_question" and step.action_type != "social"):
-                continue
-            aspiration = next(
-                (item for item in asp.aspirations.values()
-                 if getattr(item, "domain", None) == domain),
-                None,
-            )
-            candidates.append((float(getattr(aspiration, "tension", 0.0)), domain))
-        if not candidates:
-            return
-        _, domain = max(candidates)
-        self.record_step_outcome(domain, actual_cost=0.02, actual_gain=0.005)
-        plan = self._plans.get(domain)
-        if plan:
-            plan.last_outcome = {
-                "operation": "user_question",
-                "success": True,
-                "result": str(result)[:240],
-                "observed_at": time.time(),
-            }
-            if plan.status != "completed":
-                plan.current_decision = (
-                    "user interaction completed the social step; "
-                    f"proceed to {self.current_step(domain).operation if self.current_step(domain) else 'completion'}."
-                )
-            plan.decision_updated_at = time.time()
-            self._save()
-
     def record_autonomous_action_outcome(
-        self, operation: str, success: bool, result: str = ""
+        self,
+        operation: str,
+        success: bool,
+        result: str = "",
+        *,
+        aspiration_domain: Optional[str] = None,
     ) -> None:
         """Resolve the current aspiration step from a completed autonomous action.
 
-        Aspiration plans are not owned by a user goal, so the goal executor's
-        goal-specific callback cannot advance them. Match only the current
-        pending operation and advance one best-tension aspiration; never mark
-        an unrelated or already-completed step as done.
+        The caller must identify the exact aspiration plan. Inferring a plan
+        from a generic operation name is ambiguous when several plans share
+        the same next operation, so missing provenance fails closed.
         """
         asp = getattr(self._organism, "aspirational_self", None)
-        if not asp:
+        if not asp or not aspiration_domain:
             return
-        candidates = []
-        for domain, plan in self._plans.items():
-            if plan.source != "aspiration" or plan.status != "active":
-                continue
-            step = self.current_step(domain)
-            # GoalActionExecutor reports the coarse action type (for example
-            # ``social``), while aspiration steps retain the concrete
-            # operation (for example ``user_question``). Accept both names
-            # so a valid completed action can advance the persisted plan.
-            if step is None or (
-                step.operation != operation and step.action_type != operation
-            ):
-                continue
-            aspiration = next(
-                (a for a in asp.aspirations.values()
-                 if getattr(a, "domain", None) == domain), None
+        plan = self._plans.get(aspiration_domain)
+        if not plan or plan.source != "aspiration" or plan.status != "active":
+            return
+        step = self.current_step(aspiration_domain)
+        if step is None or (step.operation != operation and step.action_type != operation):
+            return
+        if success:
+            # Only a completed operation can advance the plan. The former
+            # failure path advanced it too, despite having no success evidence.
+            self.record_step_outcome(
+                aspiration_domain, actual_cost=0.05, actual_gain=0.05
             )
-            candidates.append((float(getattr(aspiration, "tension", 0.0)), domain))
-        if not candidates:
-            return
-        _, domain = max(candidates)
-        self.record_step_outcome(
-            domain,
-            actual_cost=0.05 if success else 0.08,
-            actual_gain=0.05 if success else 0.0,
-        )
-        plan = self._plans.get(domain)
-        if plan:
+        else:
+            # A failed operation is an attempt, not completed progress.
+            step.attempts += 1
+            step.status = "pending"
+            step.result = str(result)[:240]
+            plan.last_revised = time.time()
             plan.last_outcome = {
                 "operation": operation,
-                "success": bool(success),
+                "success": False,
                 "result": str(result)[:240],
-                "observed_at": time.time(),
+                "observed_at": plan.last_revised,
             }
             plan.current_decision = (
-                f"{operation} {'succeeded' if success else 'failed'}; "
-                f"aspiration step {'advanced' if success else 'retained for revision'}."
+                f"{operation} failed; aspiration step remains pending; "
+                "progress was not advanced."
             )
-            plan.decision_updated_at = time.time()
+            plan.decision_updated_at = plan.last_revised
             self._save()
+            return
+        plan.last_outcome = {
+            "operation": operation,
+            "success": True,
+            "result": str(result)[:240],
+            "observed_at": time.time(),
+        }
+        plan.current_decision = f"{operation} succeeded; aspiration step advanced."
+        plan.decision_updated_at = time.time()
+        self._save()
 
     def preferred_next_action(self) -> Optional[str]:
         """Action type the planner most wants to execute next."""

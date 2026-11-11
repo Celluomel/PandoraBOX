@@ -17,7 +17,7 @@ sys.modules.setdefault("cognition", cognition_package)
 core_package = ModuleType("core")
 core_package.__path__ = [str(ROOT / "core")]
 sys.modules.setdefault("core", core_package)
-from cognition.long_horizon_planner import LongHorizonPlanner, Plan
+from cognition.long_horizon_planner import LongHorizonPlanner, Plan, PlanStep
 from cognition.goal_action_executor import GoalActionExecutor
 from cognition.goal_engine import Goal, GoalEngine, Motivation
 from cognition.intention_reasoner import IntentionReasoner
@@ -161,6 +161,116 @@ class IntentionPlanningTests(unittest.TestCase):
             self.assertEqual(plan.decision_revision, 2)
             self.assertEqual(plan.decision_rationale, initial_decision)
             self.assertEqual(episode.decision_rationale, plan.current_decision)
+
+    def test_failed_autonomous_action_does_not_complete_aspiration_step(self):
+        with tempfile.TemporaryDirectory() as folder:
+            planner, _, _ = self._planner(folder)
+            plan = Plan(
+                aspiration_domain="epistemic",
+                steps=[
+                    PlanStep(
+                        sequence=0,
+                        action_type="analytical",
+                        operation="memory_recall",
+                        expected_cost=0.05,
+                        expected_gain=0.05,
+                    ),
+                ],
+                resource_reserve=0.2,
+                revision_trigger=0.25,
+                horizon=1,
+                source="aspiration",
+                status="active",
+            )
+            planner._plans["epistemic"] = plan
+
+            planner.record_autonomous_action_outcome(
+                "memory_recall", False, "no usable evidence",
+                aspiration_domain="epistemic",
+            )
+
+            self.assertEqual(plan.steps_completed, 0)
+            self.assertEqual(plan.steps[0].status, "pending")
+            self.assertEqual(plan.steps[0].attempts, 1)
+            self.assertEqual(plan.last_outcome["success"], False)
+            self.assertIn("progress was not advanced", plan.current_decision)
+
+    def test_autonomous_action_without_plan_provenance_cannot_advance_aspiration(self):
+        with tempfile.TemporaryDirectory() as folder:
+            planner, _, _ = self._planner(folder)
+            plan = Plan(
+                aspiration_domain="epistemic",
+                steps=[PlanStep(
+                    sequence=0, action_type="analytical", operation="memory_recall",
+                    expected_cost=0.05, expected_gain=0.05,
+                )],
+                resource_reserve=0.2,
+                revision_trigger=0.25,
+                horizon=1,
+                source="aspiration",
+                status="active",
+            )
+            planner._plans["epistemic"] = plan
+
+            planner.record_autonomous_action_outcome(
+                "memory_recall", True, "result without source plan"
+            )
+
+            self.assertEqual(plan.steps_completed, 0)
+            self.assertEqual(plan.last_outcome, {})
+
+    def test_autonomous_probe_does_not_claim_a_user_question_was_answered(self):
+        with tempfile.TemporaryDirectory() as folder:
+            planner, _, _ = self._planner(folder)
+            plan = Plan(
+                aspiration_domain="epistemic",
+                steps=[PlanStep(
+                    sequence=0, action_type="social", operation="user_question",
+                    expected_cost=0.02, expected_gain=0.005,
+                )],
+                resource_reserve=0.2,
+                revision_trigger=0.25,
+                horizon=1,
+                source="aspiration",
+                status="active",
+            )
+            planner._plans["epistemic"] = plan
+
+            planner._execute_autonomous_social_step()
+
+            self.assertEqual(plan.steps_completed, 0)
+            self.assertEqual(plan.last_outcome, {})
+
+    def test_goal_action_outcome_is_not_reassigned_to_an_aspiration(self):
+        calls = []
+
+        class PlannerSpy:
+            def record_goal_action_outcome(self, *args):
+                calls.append(("goal", args))
+
+            def record_autonomous_action_outcome(self, *args, **kwargs):
+                calls.append(("aspiration", args, kwargs))
+
+        executor = GoalActionExecutor.__new__(GoalActionExecutor)
+        executor._o = NS(_loop=NS(_long_horizon_planner=PlannerSpy()))
+        goal = NS(id="goal-linked", topic="linked objective")
+
+        executor._record_plan_outcome(goal, "user_question", True, "question queued")
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], "goal")
+        self.assertEqual(calls[0][1][0:3], ("goal-linked", "user_question", True))
+
+    def test_executor_prevents_duplicate_async_action_for_same_goal(self):
+        executor = GoalActionExecutor.__new__(GoalActionExecutor)
+        executor._async_actions_in_flight = set()
+        executor._async_actions_lock = threading.Lock()
+        key = ("goal-async", "self_question")
+
+        self.assertTrue(executor._claim_async_action(key))
+        self.assertFalse(executor._claim_async_action(key))
+        executor._release_async_action(key)
+        self.assertTrue(executor._claim_async_action(key))
 
     def test_reasoning_and_planning_feed_global_workspace(self):
         with tempfile.TemporaryDirectory() as folder:

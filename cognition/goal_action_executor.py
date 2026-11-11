@@ -178,6 +178,8 @@ class GoalActionExecutor:
         self._pending_user_question: Optional[str] = None
         self._pending_insights: deque = deque(maxlen=5)
         self._pending_predictions: Dict[Tuple[str, str], Any] = {}
+        self._async_actions_in_flight: set[Tuple[str, str]] = set()
+        self._async_actions_lock = threading.Lock()
         logger.info("[GoalActionExecutor] Initialised")
 
     def _load_insight_counts(self) -> None:
@@ -280,6 +282,25 @@ class GoalActionExecutor:
         # fallback when the long-horizon planner is unavailable.
         action_type = self._planned_action(goal) or self._choose_action_rotating(goal)
 
+        async_key = None
+        if action_type in (ACTION_WEB_SEARCH, ACTION_SELF_QUESTION, ACTION_BISOCIATIVE):
+            async_key = (str(goal.id), action_type)
+            if not self._claim_async_action(async_key):
+                logger.info(
+                    "[GoalActionExecutor] %s for goal %s is already running; "
+                    "skipping duplicate dispatch",
+                    action_type,
+                    goal.id,
+                )
+                return {
+                    "goal_id": goal.id,
+                    "goal_topic": goal.topic,
+                    "action": action_type,
+                    "success": False,
+                    "result": "duplicate async action suppressed; existing execution still running",
+                    "skipped": True,
+                }
+
         # test_hypothesis goals get temporary priority boost so they compete
         # effectively against generic explore_opportunity goals
         if 'test_hypothesis' in getattr(goal, 'origin', '') and goal.priority < 0.75:
@@ -340,6 +361,7 @@ class GoalActionExecutor:
             'success':    False,
             'result':     '',
         }
+        async_dispatched = False
 
         try:
             if action_type == ACTION_MEMORY_RECALL:
@@ -360,7 +382,14 @@ class GoalActionExecutor:
                     coro = self._action_self_question(goal)
                 if _ct_pred is not None:
                     self._pending_predictions[(str(goal.id), action_type)] = _ct_pred
-                self._fire(coro)
+                self._fire(
+                    coro,
+                    on_error=lambda error: self._finalize_async_action(
+                        goal, action_type, False, f"async action raised: {error}"
+                    ),
+                    on_complete=lambda: self._release_async_action(async_key),
+                )
+                async_dispatched = True
                 # Dispatch is not an outcome. The coroutine records the plan
                 # result only after it has produced usable cognitive output.
                 report['success'] = False
@@ -369,6 +398,9 @@ class GoalActionExecutor:
         except Exception as e:
             logger.warning(f"[GoalActionExecutor] Action failed: {e}", exc_info=True)
             report['result'] = str(e)
+
+        if async_key is not None and not async_dispatched:
+            self._release_async_action(async_key)
 
         if report['success']:
             # FIX 4: mark_action always called when success=True
@@ -1876,9 +1908,6 @@ class GoalActionExecutor:
                 planner.record_goal_action_outcome(
                     str(goal.id), action_type, success, result
                 )
-                planner.record_autonomous_action_outcome(
-                    action_type, success, result
-                )
         except Exception as e:
             logger.debug("[GoalActionExecutor] plan outcome error: %s", e)
 
@@ -2087,8 +2116,21 @@ class GoalActionExecutor:
         except Exception:
             pass
 
+    def _claim_async_action(self, key: Tuple[str, str]) -> bool:
+        with self._async_actions_lock:
+            if key in self._async_actions_in_flight:
+                return False
+            self._async_actions_in_flight.add(key)
+            return True
+
+    def _release_async_action(self, key: Optional[Tuple[str, str]]) -> None:
+        if key is None:
+            return
+        with self._async_actions_lock:
+            self._async_actions_in_flight.discard(key)
+
     @staticmethod
-    def _fire(coro) -> None:
+    def _fire(coro, on_error=None, on_complete=None) -> None:
         """
         FIX 3: Schedule async coroutine from sync context.
 
@@ -2107,6 +2149,23 @@ class GoalActionExecutor:
                 asyncio.run(coro)
             except Exception as e:
                 logger.warning(f"[GoalActionExecutor] async action error: {e}")
+                if callable(on_error):
+                    try:
+                        on_error(e)
+                    except Exception as callback_error:
+                        logger.warning(
+                            "[GoalActionExecutor] async error finalization failed: %s",
+                            callback_error,
+                        )
+            finally:
+                if callable(on_complete):
+                    try:
+                        on_complete()
+                    except Exception as callback_error:
+                        logger.warning(
+                            "[GoalActionExecutor] async completion cleanup failed: %s",
+                            callback_error,
+                        )
 
         t = threading.Thread(target=_runner, daemon=True, name="gae-async")
         t.start()
