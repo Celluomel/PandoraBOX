@@ -108,6 +108,35 @@ def memory_prompt_injection_evidence(memories: Iterable[Mapping[str, Any]]) -> d
     return {"injected_count": len(injected), "records": injected[:12]}
 
 
+def response_learning_evidence(receipt: Mapping[str, Any]) -> dict:
+    """Keep persistence outcomes visible in traces without retaining message text."""
+    def _count(name: str) -> int:
+        try:
+            return max(0, min(1000, int(receipt.get(name, 0))))
+        except (TypeError, ValueError, OverflowError):
+            return 0
+
+    status = str(receipt.get("status") or "unreported")[:32]
+    failed = receipt.get("failed_operations", [])
+    if not isinstance(failed, (list, tuple)):
+        failed = []
+    kinds = receipt.get("memory_write_kinds", [])
+    if not isinstance(kinds, (list, tuple)):
+        kinds = []
+    quality = "failed" if status == "failed" else "present" if status == "completed" else "unverified"
+    return {
+        "type": "response_learning_receipt",
+        "status": status,
+        "memory_write_count": _count("memory_write_count"),
+        "memory_write_kinds": [str(item)[:40] for item in kinds[:8]],
+        "memory_persisted_count": _count("memory_persisted_count"),
+        "personal_fact_attempted_count": _count("personal_fact_attempted_count"),
+        "personal_fact_persisted_count": _count("personal_fact_persisted_count"),
+        "failed_operations": [str(item)[:48] for item in failed[:8]],
+        "quality": quality,
+    }
+
+
 def profile_context_evidence(status: str, source: str, context: str) -> dict:
     """Fingerprint profile prompt material without exposing its contents."""
     status = str(status)
@@ -131,6 +160,9 @@ def audit_safe_turn_summary(value: Any) -> dict[str, Any] | None:
     """Expose bounded provenance fields while keeping private prompt/memory text hidden."""
     if not isinstance(value, Mapping):
         return None
+
+    if value.get("type") == "response_learning_receipt":
+        return response_learning_evidence(value)
 
     if {"query_sha256", "candidate_count", "candidates"}.issubset(value):
         candidates = []

@@ -40,6 +40,7 @@ from cognition.turn_context_evidence import (
     memory_retrieval_evidence,
     memory_prompt_injection_evidence,
     profile_context_evidence,
+    response_learning_evidence,
 )
 
 from pathlib import Path
@@ -4709,10 +4710,28 @@ Memory honesty — two distinct cases:
             # 12: full post-response processing (relational memory, conditioning,
             #     memory store, evolution pressure queue, self-concept update)
             active_stage = "response_learning_and_memory"
-            s._post_response_processing(user_id, user_input, response, emo_dict, cond_dict)
-            self._record_turn_stage(
-                "response_learning_and_memory", "completed", turn_id=audit_turn_id,
+            learning_receipt = s._post_response_processing(
+                user_id, user_input, response, emo_dict, cond_dict,
             )
+            if not isinstance(learning_receipt, dict):
+                learning_receipt = {
+                    "status": "unreported",
+                    "failed_operations": ["missing_learning_receipt"],
+                }
+            learning_failed = learning_receipt.get("status") != "completed"
+            self._record_turn_stage(
+                "response_learning_and_memory",
+                "failed" if learning_failed else "completed",
+                str(learning_receipt.get("status") or "unreported") if learning_failed else "",
+                output=response_learning_evidence(learning_receipt),
+                consumes=("turn_input", "response_finalization"),
+                turn_id=audit_turn_id,
+            )
+            if learning_failed:
+                logger.warning(
+                    "Post-response learning reported an incomplete result for turn %s",
+                    audit_turn_id,
+                )
 
             # 13: queue background tasks — THIS is what fires dream/learning cycles
             active_stage = "background_learning_tasks"

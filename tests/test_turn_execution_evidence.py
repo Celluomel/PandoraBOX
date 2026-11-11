@@ -4,6 +4,7 @@ import inspect
 from pathlib import Path
 from types import SimpleNamespace
 
+from cognition.ai_system import EnhancedAISystem
 from cognition.persona_bridge import (
     PersonaBridge,
     _prior_assistant_evidence_detail,
@@ -118,6 +119,93 @@ def test_every_async_post_turn_stage_is_bound_to_its_originating_turn():
             None,
         )
         assert isinstance(turn_id, ast.Name) and turn_id.id == "audit_turn_id"
+
+
+def test_failed_post_response_memory_write_fails_turn_stage_with_redacted_receipt():
+    bridge = _bridge()
+    bridge._record_turn_stage("turn_input", "received", output="private user text")
+    bridge._record_turn_stage("response_finalization", "completed", output="private answer")
+    system = SimpleNamespace(
+        _last_responses=[],
+        _check_if_stuck=lambda: None,
+        _post_response_processing=lambda *_args: {
+            "status": "failed",
+            "memory_write_count": 2,
+            "memory_write_kinds": ["episodic_exchange", "user_authored_message"],
+            "memory_persisted_count": 1,
+            "failed_operations": ["user_authored_message"],
+        },
+        _queue_background_tasks=lambda: None,
+        liberty_contradiction=None,
+        liberty_goals=None,
+        _interaction_count=0,
+        liberty_reflection=None,
+        _apply_pending_liberty_modifications=lambda: None,
+    )
+    bridge._system = system
+    bridge._organism = None
+
+    result = bridge._run_full_post_turn_lifecycle(
+        "private user text", "user-a", "private answer",
+        {"valence": "Neutral"}, {}, organism=None,
+        audit_turn_id="turn-evidence-1",
+    )
+
+    assert result is True
+    stage = bridge._last_turn_trace["stages"]["response_learning_and_memory"]
+    assert stage["status"] == "failed"
+    assert stage["output_summary"]["failed_operations"] == ["user_authored_message"]
+    assert stage["consumes"] == [
+        {"stage": "turn_input", "fingerprint": bridge._last_turn_trace["stages"]["turn_input"]["output_fingerprint"]},
+        {"stage": "response_finalization", "fingerprint": bridge._last_turn_trace["stages"]["response_finalization"]["output_fingerprint"]},
+    ]
+    assert "private user text" not in repr(stage)
+    assert "private answer" not in repr(stage)
+
+
+def test_post_response_processing_reports_actual_memory_write_results():
+    writes = []
+
+    class Memory:
+        def analyze_emotional_context(self, _text):
+            return {"valence": "Neutral", "arousal": "Low"}
+
+        def add_memory(self, text, _impact, memory_type, *_args, **_kwargs):
+            writes.append(memory_type)
+            return memory_type != "user_message"
+
+    instance = SimpleNamespace(
+        self_concept=SimpleNamespace(update_from_response=lambda *_args: None),
+        memory_system=Memory(),
+        relational_memory=SimpleNamespace(record_exchange=lambda *_args, **_kwargs: None),
+        _quick_topic=lambda _text: "topic",
+        _extract_and_store_personal_facts=lambda _text: {
+            "attempted_count": 0, "persisted_count": 0, "failed_count": 0,
+        },
+        relational_graph=SimpleNamespace(extract_and_store=lambda _text: []),
+        conditioning=SimpleNamespace(record_outcome=lambda *_args, **_kwargs: None),
+        evolution_engine=SimpleNamespace(
+            queue_experience=lambda *_args, **_kwargs: None,
+            evolve=lambda *_args, **_kwargs: None,
+        ),
+        personality=object(),
+        _decision_policy=None,
+        _last_responses=[],
+        _last_user_input="",
+    )
+
+    receipt = EnhancedAISystem._post_response_processing(
+        instance, "user-a", "ordinary user message", "ordinary reply",
+        {"valence": "Neutral", "arousal": "Low"}, {},
+    )
+
+    assert writes == ["episodic", "user_message"]
+    assert receipt["status"] == "failed"
+    assert receipt["memory_write_count"] == 2
+    assert receipt["memory_persisted_count"] == 1
+    assert receipt["failed_operations"] == ["user_authored_message"]
+    assert "ordinary user message" not in repr(receipt)
+    assert "ordinary reply" not in repr(receipt)
 
 
 def test_cognitive_context_is_linked_to_prompt_assembly_on_its_own_turn():

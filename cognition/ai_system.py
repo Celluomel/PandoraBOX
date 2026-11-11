@@ -2195,7 +2195,14 @@ class EnhancedAISystem:
             self._check_if_stuck()
 
             # ── 8. Post-response analysis ──────────────────────────────────
-            self._post_response_processing(user_id, user_input, response, emo, cond)
+            _learning_receipt = self._post_response_processing(
+                user_id, user_input, response, emo, cond,
+            )
+            if not isinstance(_learning_receipt, dict) or _learning_receipt.get("status") != "completed":
+                logger.warning(
+                    "Post-response learning was incomplete for interaction %s",
+                    self._interaction_count + 1,
+                )
 
             # ── 9. Queue background tasks ──────────────────────────────────
             self._queue_background_tasks()
@@ -2441,7 +2448,14 @@ Every response must feel genuinely new — avoid repeating phrases, sentences, o
         self, user_id: str, user_input: str, response: str,
         emo: Dict, cond: Dict
     ):
-        """Everything that happens after a response is generated — non-blocking."""
+        """Run post-response learning and return a bounded persistence receipt."""
+        memory_writes = []
+
+        def _store_memory(kind: str, *args, **kwargs) -> bool:
+            persisted = bool(self.memory_system.add_memory(*args, **kwargs))
+            memory_writes.append({"kind": kind, "persisted": persisted})
+            return persisted
+
         try:
             # Self-concept: scan response for assertions and detect tension
             tension = self.self_concept.update_from_response(response, emo["valence"])
@@ -2474,7 +2488,8 @@ Every response must feel genuinely new — avoid repeating phrases, sentences, o
             _combined_impact = min(0.95, impact + (0.15 if _words_in > 15 and _words_out > 20 else 0.0))
             _u_snippet = user_input[:400].replace("\n", " ")
             _r_snippet = response[:300].replace("\n", " ")
-            self.memory_system.add_memory(
+            _store_memory(
+                "episodic_exchange",
                 f"Conversation — User: {_u_snippet} (felt {emo['valence'].lower()}) | "
                 f"{_gpn()}: {_r_snippet} (responded {resp_emo['valence'].lower()})",
                 _combined_impact, "episodic",
@@ -2485,7 +2500,8 @@ Every response must feel genuinely new — avoid repeating phrases, sentences, o
             # can be dominated by Lumina's much longer generated reply.
             # Keeping a user-authored vector prevents that reply from
             # diluting retrieval of past user decisions and corrections.
-            self.memory_system.add_memory(
+            _store_memory(
+                "user_authored_message",
                 "User message: " + user_input[:1200].replace("\r", " ").replace("\n", " "),
                 _combined_impact, "user_message",
                 emo["valence"], emo["arousal"],
@@ -2502,7 +2518,7 @@ Every response must feel genuinely new — avoid repeating phrases, sentences, o
             # their own pool (see persona_bridge.py's always-on personal-
             # tier fetch) so they don't have to out-compete unrelated
             # small talk to be found later.
-            self._extract_and_store_personal_facts(user_input)
+            personal_fact_receipt = self._extract_and_store_personal_facts(user_input)
 
             # v117: also feed the structured relational graph (typed edges,
             # e.g. twin_of/gender — catches multi-entity relations the flat
@@ -2527,7 +2543,8 @@ Every response must feel genuinely new — avoid repeating phrases, sentences, o
                                        "describe what","what's in front","what you see"))
             if _is_vision_response and _is_vision_query:
                 _vis_text = f"[Vision] {response[:500].strip()}"
-                self.memory_system.add_memory(
+                _store_memory(
+                    "visual_perception",
                     _vis_text, 0.6, "visual_perception",
                     emo["valence"], emo["arousal"],
                     memory_tier="visual",
@@ -2640,8 +2657,29 @@ Every response must feel genuinely new — avoid repeating phrases, sentences, o
             # double-incrementing causes dream/learning cycles to fire at
             # wrong intervals (every 5 turns instead of every 10).
 
+            failed_writes = [item["kind"] for item in memory_writes if not item["persisted"]]
+            if personal_fact_receipt.get("failed_count", 0):
+                failed_writes.append("personal_facts")
+            return {
+                "status": "failed" if failed_writes else "completed",
+                "memory_write_count": len(memory_writes),
+                "memory_write_kinds": [item["kind"] for item in memory_writes[:8]],
+                "memory_persisted_count": sum(1 for item in memory_writes if item["persisted"]),
+                "personal_fact_attempted_count": personal_fact_receipt.get("attempted_count", 0),
+                "personal_fact_persisted_count": personal_fact_receipt.get("persisted_count", 0),
+                "failed_operations": failed_writes[:8],
+            }
+
         except Exception as e:
             logger.error(f"_post_response_processing failed: {e}")
+            return {
+                "status": "failed",
+                "memory_write_count": len(memory_writes),
+                "memory_write_kinds": [item["kind"] for item in memory_writes[:8]],
+                "memory_persisted_count": sum(1 for item in memory_writes if item["persisted"]),
+                "failed_operations": ["post_response_processing_exception"],
+                "error_type": type(e).__name__,
+            }
 
     # ── Background Task Queueing ───────────────────────────────────────────
 
@@ -3088,7 +3126,9 @@ Every response must feel genuinely new — avoid repeating phrases, sentences, o
     )
     _PERSONAL_FACT_STOPWORDS = {"i", "it", "this", "that", "he", "she", "they", "we", "you"}
 
-    def _extract_and_store_personal_facts(self, text: str) -> None:
+    def _extract_and_store_personal_facts(self, text: str) -> Dict[str, int]:
+        attempted = 0
+        persisted = 0
         try:
             facts = []
             for m in self._PERSONAL_FACT_RE.finditer(text):
@@ -3109,15 +3149,27 @@ Every response must feel genuinely new — avoid repeating phrases, sentences, o
                 # my friend" / "everybody is my friend" etc.
                 if not name[0].isupper():
                     continue
-                self.memory_system.add_memory(
+                attempted += 1
+                if self.memory_system.add_memory(
                     f"{name} is the user's {rel}.",
                     impact_score=0.95, memory_type="personal_fact",
                     emotional_valence="Neutral", arousal_level="Low",
                     memory_tier="personal",
-                )
-                logger.info(f"[PersonalFact] Stored: {name} is the user's {rel}")
+                ):
+                    persisted += 1
+                    logger.info(f"[PersonalFact] Stored: {name} is the user's {rel}")
+            return {
+                "attempted_count": attempted,
+                "persisted_count": persisted,
+                "failed_count": attempted - persisted,
+            }
         except Exception as e:
             logger.debug(f"_extract_and_store_personal_facts: {e}")
+            return {
+                "attempted_count": attempted,
+                "persisted_count": persisted,
+                "failed_count": max(1, attempted - persisted),
+            }
 
     # ── User management ───────────────────────────────────────────────────
 
@@ -3331,7 +3383,11 @@ Write a first-person journal reflection (2-4 sentences)."""},
             self.emotional_state.update_from_interaction(valence, arousal)
 
             # Run all post-response subsystem updates
-            self._post_response_processing(user_id, user_text, ai_response, emo, cond)
+            _learning_receipt = self._post_response_processing(
+                user_id, user_text, ai_response, emo, cond,
+            )
+            if not isinstance(_learning_receipt, dict) or _learning_receipt.get("status") != "completed":
+                logger.warning("Post-response learning was incomplete during process_turn")
 
             # Queue background tasks (dream cycles, evolution, cleanup)
             self._queue_background_tasks()
