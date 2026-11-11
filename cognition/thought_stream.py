@@ -1397,8 +1397,11 @@ class ThoughtStream:
                             if sem_mem:
                                 try:
                                     caps = sem_mem.get_capabilities()
-                                    sem_val = caps.get(weak, {}).get('confidence', weak_val)
-                                    trend   = caps.get(weak, {}).get('trend', 0.0)
+                                    cap_data = caps.get(weak, {})
+                                    if cap_data.get('validated_sample_count', 0) < 3:
+                                        raise LookupError("semantic capability has no validated outcome evidence")
+                                    sem_val = cap_data.get('confidence', weak_val)
+                                    trend   = cap_data.get('trend', 0.0)
                                     trend_w = "improving" if trend > 0.01 else ("declining" if trend < -0.01 else "stable")
                                     observations.append(
                                         f"My {weak.replace('_',' ')} feels underdeveloped "                                        f"(~{sem_val:.0%}, {trend_w}).")

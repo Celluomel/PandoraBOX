@@ -269,7 +269,7 @@ class SemanticConsolidator:
                 return
             caps = self._memory.get_capabilities()
             for name, data in caps.items():
-                if name in sm_obj.capabilities and data['sample_count'] >= 3:
+                if name in sm_obj.capabilities and data.get('validated_sample_count', 0) >= 3:
                     # Blend: 30% SemanticMemory, 70% SelfModel (SelfModel has richer signal)
                     old_score = sm_obj.capabilities[name].score
                     new_score = old_score * 0.70 + data['confidence'] * 0.30
@@ -280,16 +280,11 @@ class SemanticConsolidator:
 
     def _consolidate_capabilities(self) -> int:
         """
-        Re-compute long-term trends from capability history.
-        Currently just smooths any outlier values.
+        Do not rewrite capability history without a new outcome sample.
         """
-        caps = self._memory.get_capabilities()
-        updated = 0
-        for name, data in caps.items():
-            conf  = data["confidence"]
-            trend = data["trend"]
-            # Clamp extreme trends
-            if abs(trend) > 0.3:
-                self._memory.update_capability(name, conf)  # resets trend smoothing
-                updated += 1
-        return updated
+        # Capability scores currently have no independent outcome producer.
+        # Rewriting the same confidence to "smooth" a trend used to increment
+        # sample_count without observing a new capability outcome. Keep all
+        # legacy values intact and report no new evidence until that producer
+        # exists.
+        return 0

@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS capabilities (
     confidence   REAL DEFAULT 0.5,
     trend        REAL DEFAULT 0.0,
     sample_count INTEGER DEFAULT 0,
+    validated_sample_count INTEGER DEFAULT 0,
     last_updated REAL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_rel_source ON relations(source_id);
@@ -137,6 +138,15 @@ class SemanticMemory:
     def _init_db(self):
         with self._conn() as conn:
             conn.executescript(_SCHEMA)
+            capability_columns = {
+                row["name"] for row in conn.execute("PRAGMA table_info(capabilities)")
+            }
+            if "validated_sample_count" not in capability_columns:
+                # Additive migration: retain historical proxy scores and mark
+                # them unvalidated rather than deleting or relabelling them.
+                conn.execute(
+                    "ALTER TABLE capabilities ADD COLUMN validated_sample_count INTEGER DEFAULT 0"
+                )
             # Seed capabilities if empty
             cur = conn.execute("SELECT COUNT(*) FROM capabilities")
             if cur.fetchone()[0] == 0:
@@ -276,13 +286,15 @@ class SemanticMemory:
     def get_capabilities(self) -> Dict[str, Dict]:
         with self._conn() as conn:
             rows = conn.execute(
-                "SELECT name, confidence, trend, sample_count FROM capabilities"
+                "SELECT name, confidence, trend, sample_count, validated_sample_count FROM capabilities"
             ).fetchall()
         return {
             r["name"]: {
                 "confidence":   round(r["confidence"], 3),
                 "trend":        round(r["trend"], 4),
                 "sample_count": r["sample_count"],
+                "validated_sample_count": r["validated_sample_count"],
+                "measurement_status": "measured" if r["validated_sample_count"] > 0 else "unmeasured_legacy_or_proxy_updates",
             }
             for r in rows
         }
@@ -297,6 +309,9 @@ class SemanticMemory:
             "relations":     self.relation_count(),
             "top_concepts":  [c.name for c in top],
             "capabilities":  {k: round(v["confidence"], 2) for k, v in caps.items()},
+            "capability_measurement_status": {
+                k: v["measurement_status"] for k, v in caps.items()
+            },
         }
 
     # ── Pruning (called by consolidator) ────────────────────────────────────

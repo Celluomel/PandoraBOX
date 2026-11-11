@@ -10,8 +10,8 @@ Design constraints
 ------------------
   - Must complete in < 1s  (non-blocking, runs in background thread)
   - LLM call is optional  (falls back to keyword extraction if LLM busy)
-  - Output feeds directly into SemanticMemory and GlobalWorkspace
-  - Also updates CognitiveMemory from meta_evaluation score
+  - Durable concepts and relations are grounded in the incoming message
+  - Assistant response text is context, never evidence for its own claims
 """
 
 import json
@@ -82,25 +82,26 @@ _GENERIC_CONCEPTS = {
     "chose", "choses", "truc", "trucs",
 }
 
-_EXTRACTION_PROMPT = """Extract concepts and relations from this exchange.
+_EXTRACTION_PROMPT = """Extract concepts and relations stated or requested in the incoming message.
 Return ONLY valid JSON, no preamble, no markdown.
 
-User: {user_input}
-Assistant response: {response_summary}
+Incoming message: {user_input}
+Assistant response (context only; never use it as evidence): {response_summary}
 
 Return exactly this structure:
 {{
-  "concepts": [{{"name": "concept1", "evidence": "exact words from the exchange"}}],
+  "concepts": [{{"name": "concept1", "evidence": "exact words from the incoming message"}}],
   "relations": [
-    {{"from": "concept1", "to": "concept2", "type": "leads_to", "evidence": "exact words supporting this relation"}}
+    {{"from": "concept1", "to": "concept2", "type": "leads_to", "evidence": "exact words from the incoming message supporting this relation"}}
   ],
   "dominant_topic": "one of the concept names",
   "cognitive_load": 0.0
 }}
 
 Rules:
-- concepts: 2-8 lowercase nouns or noun phrases, max 3 words each; every concept needs an exact evidence phrase
-- relations: max 5, both endpoints must be concepts; evidence must directly support the relation
+- Persist only concepts and relations grounded in the incoming message. Assistant wording is not evidence of an interlocutor's belief, fact, preference, or intent.
+- concepts: 0-8 lowercase nouns or noun phrases, max 3 words each; every concept needs an exact evidence phrase from the incoming message
+- relations: max 5, both endpoints must be concepts; evidence must directly support the relation in the incoming message
 - Do not infer a relation from co-occurrence alone
 - dominant_topic must be selected from concepts
 - cognitive_load: float 0.0-1.0 (0=trivial, 1=very complex reasoning)
@@ -135,11 +136,16 @@ class SemanticExtractor:
         workspace=None,
         observation_role: str = "user_topic",
     ):
-        """Queue every completed turn for asynchronous semantic extraction."""
+        """Queue a completed turn for semantic extraction.
+
+        ``meta_scores`` remains accepted for caller compatibility, but is not
+        persisted as capability evidence: current MetaCognition scores are
+        heuristic proxies without independent outcome validation.
+        """
         role = str(observation_role or "user_topic")
         if role not in {"user_topic", "peer_topic"}:
             role = "user_topic"
-        item = (user_input, response, meta_scores, workspace, role)
+        item = (user_input, response, None, workspace, role)
         with self._lock:
             self._queue.put_nowait(item)
             if self._worker_running:
@@ -205,10 +211,6 @@ class SemanticExtractor:
                 except Exception:
                     pass
 
-            # Update capability scores from meta_scores
-            if meta_scores:
-                self._update_capabilities(meta_scores, cog_load, user_input)
-
             elapsed = time.time() - t0
             logger.info(
                 f"[SemanticExtractor] {len(concepts)} concepts, "
@@ -221,18 +223,11 @@ class SemanticExtractor:
                ) -> Tuple[List[str], List[Dict], str, float]:
         """Try LLM extraction, fall back to keyword extraction."""
 
-        # Keyword fallback — always fast
-        # Preserve user intent ahead of assistant phrasing; use the response
-        # to supplement only when it introduces additional concrete concepts.
+        # Durable graph evidence comes only from the authored input. If
+        # assistant wording were folded into this graph, later recall and
+        # associative thought could recycle Lumina's own claims as evidence.
         user_concepts = self._keyword_extract(user_input)
         kw_concepts = list(user_concepts)
-        seen = set(kw_concepts)
-        for concept in self._keyword_extract(response[:300]):
-            if concept not in seen:
-                kw_concepts.append(concept)
-                seen.add(concept)
-            if len(kw_concepts) >= 8:
-                break
         kw_relations = self._keyword_relations(kw_concepts)
 
         if not self._llm:
@@ -248,25 +243,19 @@ class SemanticExtractor:
             raw = re.sub(r"```(?:json)?|```", "", raw).strip()
             data = json.loads(raw)
 
-            source = f"{user_input}\n{response}".casefold()
-            llm_concepts = self._ground_concepts(data.get("concepts", []), source)
-            user_llm_concepts = self._ground_concepts(data.get("concepts", []), user_input.casefold())
-            # Keep the user's actual topic ahead of concepts introduced only
-            # by a verbose answer; the assistant may elaborate, not retarget.
-            concepts = list(dict.fromkeys(
-                user_concepts + user_llm_concepts + llm_concepts + kw_concepts
-            ))[:8]
-            relations = self._ground_relations(data.get("relations", []), concepts, source)
+            input_source = " ".join((user_input or "").casefold().split())
+            input_llm_concepts = self._ground_concepts(data.get("concepts", []), input_source)
+            concepts = list(dict.fromkeys(user_concepts + input_llm_concepts + kw_concepts))[:8]
+            relations = self._ground_relations(data.get("relations", []), concepts, input_source)
             topic_value = data.get("dominant_topic", "")
             topic = self._normalize_concept(topic_value)
-            if topic not in user_concepts and topic not in user_llm_concepts:
-                topic = (user_llm_concepts[0] if user_llm_concepts else
-                         user_concepts[0] if user_concepts else
-                         concepts[0] if concepts else "")
+            if topic not in user_concepts and topic not in input_llm_concepts:
+                topic = (input_llm_concepts[0] if input_llm_concepts else
+                         user_concepts[0] if user_concepts else "")
             raw_load = float(data.get("cognitive_load", 0.3))
             cog_load = max(0.0, min(1.0, raw_load)) if math.isfinite(raw_load) else 0.3
 
-            # If the model's extraction cannot be grounded in the actual turn,
+            # If the model's extraction cannot be grounded in the user input,
             # use the conservative local concepts and do not invent relations.
             if not concepts:
                 return kw_concepts, [], kw_concepts[0] if kw_concepts else "", 0.3
@@ -366,43 +355,3 @@ class SemanticExtractor:
             if len(relations) == 5:
                 break
         return relations
-
-    def _update_capabilities(self, meta_scores: Dict, cog_load: float, user_input: str = ""):
-        """Map meta-cognition scores to capability updates."""
-        # meta_scores keys: clarity, depth, alignment, confidence, etc.
-        mapping = {
-            "clarity":    "conversation",
-            "depth":      "reasoning",
-            "alignment":  "emotional_support",
-            "confidence": "self_reflection",
-        }
-        for meta_key, cap_name in mapping.items():
-            val = meta_scores.get(meta_key)
-            if val is not None:
-                try:
-                    score = float(val)
-                    if math.isfinite(score):
-                        self._memory.update_capability(cap_name, max(0.0, min(1.0, score)))
-                except (TypeError, ValueError):
-                    continue
-
-        # Cognitive load describes this turn's effort, not memory-analysis
-        # accuracy, so it must not be used to raise/lower that capability.
-        asp = getattr(self._organism, 'aspirational_self', None)
-        if asp and meta_scores:
-            caps_raw = meta_scores.get('capabilities', {})
-            if isinstance(caps_raw, dict):
-                for cap_name, cap_val in caps_raw.items():
-                    try:
-                        score = float(cap_val)
-                    except (TypeError, ValueError):
-                        continue
-                    if math.isfinite(score) and score < 0.5:
-                        asp.observe_tension(
-                            domain        = cap_name,
-                            context       = (meta_scores.get('dominant_topic', '') or
-                                             user_input[:60]),
-                            intensity     = 0.5 - max(0.0, score),
-                            emotional_tag = "negative",
-                            source        = "semantic_extractor",
-                        )

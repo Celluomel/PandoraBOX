@@ -1,4 +1,5 @@
 import json
+import sqlite3
 import sys
 import tempfile
 import time
@@ -15,6 +16,7 @@ from cognition.memory_intrusion import MemoryIntrusionSystem
 from cognition.emotional_memory import EmotionalMemorySystem
 from cognition.empathy_engine import EmpathyEngine
 from cognition.semantic_extractor import SemanticExtractor
+from cognition.semantic_memory import SemanticMemory
 from cognition.tension_topics import generate_social_topic
 
 
@@ -170,33 +172,81 @@ class MemoryReliabilityTests(unittest.TestCase):
         self.assertIn("lavage", concepts)
         self.assertNotIn("voiture au", concepts)
 
-    def test_llm_extraction_keeps_user_topic_ahead_of_verbose_response_concepts(self):
+    def test_llm_extraction_never_persists_response_only_concepts_or_relations(self):
         extractor = SemanticExtractor(_Memory(), llm_fn=lambda _prompt: json.dumps({
             "concepts": [
-                {"name": "embodiment", "evidence": "future embodiment"},
                 {"name": "camera movement", "evidence": "camera movement"},
+                {"name": "future embodiment", "evidence": "future embodiment"},
             ],
-            "relations": [],
-            "dominant_topic": "embodiment",
+            "relations": [{
+                "from": "camera movement", "to": "future embodiment",
+                "type": "enables", "evidence": "camera movement enables future embodiment",
+            }],
+            "dominant_topic": "future embodiment",
             "cognitive_load": 0.4,
         }))
 
         concepts, _, topic, _ = extractor._parse(
-            "I want to understand camera movement.",
-            "This could support future embodiment. " * 20,
+            "I am.",
+            "Camera movement enables future embodiment. " * 20,
         )
 
-        self.assertIn("camera movement", concepts)
-        self.assertIn("embodiment", concepts)
-        self.assertLess(concepts.index("camera movement"), concepts.index("embodiment"))
-        self.assertEqual(topic, "camera movement")
+        self.assertEqual(concepts, [])
+        self.assertEqual(topic, "")
 
-    def test_capability_updates_do_not_mistake_cognitive_load_for_memory_accuracy(self):
+    def test_semantic_extractor_does_not_persist_heuristic_capability_scores(self):
         memory = _Memory()
         extractor = SemanticExtractor(memory)
-        extractor._update_capabilities({"clarity": 1.4, "confidence": float("nan")}, 1.0)
+        extractor._parse = lambda _user, _response: ([], [], "", 0.3)
+        extractor._extract(
+            "", "", {"clarity": 1.0, "depth": 0.5, "alignment": 0.5,
+                     "confidence": 0.5}, None,
+        )
 
-        self.assertEqual(memory.capabilities, [("conversation", 1.0)])
+        self.assertEqual(memory.capabilities, [])
+
+    def test_legacy_semantic_capability_scores_migrate_as_unmeasured(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "semantic.sqlite"
+            conn = sqlite3.connect(database)
+            try:
+                conn.execute(
+                    "CREATE TABLE capabilities (name TEXT PRIMARY KEY, confidence REAL, "
+                    "trend REAL, sample_count INTEGER, last_updated REAL)"
+                )
+                conn.execute(
+                    "INSERT INTO capabilities VALUES ('reasoning', 0.83, 0.12, 7, 123.0)"
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+            memory = SemanticMemory(str(database))
+            capability = memory.get_capabilities()["reasoning"]
+
+            self.assertEqual(capability["confidence"], 0.83)
+            self.assertEqual(capability["sample_count"], 7)
+            self.assertEqual(capability["validated_sample_count"], 0)
+            self.assertEqual(capability["measurement_status"], "unmeasured_legacy_or_proxy_updates")
+
+    def test_capability_consolidation_does_not_fabricate_new_samples(self):
+        from cognition.semantic_consolidator import SemanticConsolidator
+
+        class _Capabilities:
+            updates = []
+
+            def get_capabilities(self):
+                return {"reasoning": {"confidence": 0.8, "trend": 0.5, "sample_count": 4}}
+
+            def update_capability(self, name, score):
+                self.updates.append((name, score))
+
+        memory = _Capabilities()
+        consolidator = object.__new__(SemanticConsolidator)
+        consolidator._memory = memory
+
+        self.assertEqual(consolidator._consolidate_capabilities(), 0)
+        self.assertEqual(memory.updates, [])
 
     def test_user_affect_uses_confident_empathy_read_and_requires_repeated_evidence(self):
         emotional_state = _EmotionalState()

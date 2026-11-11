@@ -1422,12 +1422,6 @@ class CognitiveOrganism:
             self._semantic_extractor.extract_async(
                 user_input  = user_input or "",
                 response    = response   or "",
-                meta_scores = {
-                    "clarity":    getattr(eval_result, "clarity_score",    0.5),
-                    "depth":      getattr(eval_result, "depth_score",      0.5),
-                    "alignment":  getattr(eval_result, "alignment_score",  0.5),
-                    "confidence": getattr(eval_result, "confidence_score", 0.5),
-                },
                 workspace = self.workspace,
                 observation_role=("user_topic" if human_interaction else "peer_topic"),
             )
