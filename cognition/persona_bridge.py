@@ -2337,6 +2337,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             self._record_turn_stage(
                 "primary_generation",
                 "skipped_deterministic" if _deterministic_response or _fast_round_used else "running",
+                turn_id=_audit_turn_id,
             )
             try:
                 if _deterministic_response:
@@ -2469,6 +2470,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     "primary_generation_input", "delivered",
                     output={"user_input": _generation_input, "system_prompt": system_prompt},
                     consumes=("generation_request",),
+                    turn_id=_audit_turn_id,
                 )
                 for token in self._llm_stream_fn(_generation_input, system_prompt, **_stream_kwargs):
                     if _validate_before_display:
@@ -2477,7 +2479,9 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         asyncio.run_coroutine_threadsafe(token_q.put(token), loop)
 
                 if not _deterministic_response and not _fast_round_used:
-                    self._record_turn_stage("primary_generation", "completed")
+                    self._record_turn_stage(
+                        "primary_generation", "completed", turn_id=_audit_turn_id,
+                    )
 
                 if _validate_before_display:
                     _reasoning_tokens = [
@@ -2558,7 +2562,9 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     for token in _output_tokens:
                         asyncio.run_coroutine_threadsafe(token_q.put(token), loop)
             except Exception as e:
-                self._record_turn_stage("primary_generation", "failed", str(e))
+                self._record_turn_stage(
+                    "primary_generation", "failed", str(e), turn_id=_audit_turn_id,
+                )
                 logger.error(f"LLM stream error: {e}")
                 asyncio.run_coroutine_threadsafe(
                     token_q.put("I'm having a moment — give me a second."), loop
@@ -2714,6 +2720,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     "visible_characters": len(raw_response),
                 },
                 consumes=("primary_generation",),
+                turn_id=_audit_turn_id,
             )
         _answer_origin_stage = (
             "fast_direct_answer" if _fast_round_used
@@ -2735,6 +2742,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                 self._record_turn_stage(
                     "primary_generation", "completed" if raw_response.strip() else "empty",
                     output=raw_response, consumes=("primary_generation_input",),
+                    turn_id=_audit_turn_id,
                 )
             else:
                 if _generation_status in {"running", "unknown"}:
@@ -2742,10 +2750,12 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         "primary_generation", "failed",
                         "provider stream ended without a completion event",
                         error_type="IncompleteProviderStream",
+                        turn_id=_audit_turn_id,
                     )
                 if raw_response.strip():
                     self._record_turn_stage(
                         "generation_fallback", "completed", output=raw_response,
+                        turn_id=_audit_turn_id,
                     )
                     _answer_origin_stage = "generation_fallback"
         _meta_only = self._is_reasoning_only_response(raw_response)

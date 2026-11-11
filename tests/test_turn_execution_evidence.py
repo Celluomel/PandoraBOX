@@ -110,6 +110,21 @@ def test_prompt_assembly_declares_cognitive_context_as_an_input():
         element.value for element in consumes.elts
         if isinstance(element, ast.Constant)
     }
+    for stage_name in ("generation_request", "primary_generation_input"):
+        stage_call = next(
+            node for node in ast.walk(stream)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "_record_turn_stage"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and node.args[0].value == stage_name
+        )
+        turn_id = next(
+            keyword.value for keyword in stage_call.keywords
+            if keyword.arg == "turn_id"
+        )
+        assert isinstance(turn_id, ast.Name) and turn_id.id == "_audit_turn_id"
 
 
 def test_architecture_claim_check_is_reported_as_scoped_not_general_validation():
