@@ -1,7 +1,7 @@
 # Audit du harnais cognitif — état et prochaines étapes
 
 **Date :** 11 novembre 2026
-**Statut :** audit en cours — conclusion globale non établie. Le dernier commit commun local/GitHub avant le lot SemanticExtractor est `cad5559`; il a été poussé sous `512729b`. Les corrections du moniteur et de PredictiveMind, l’exclusion du score lexical des boucles d’apprentissage, les preuves mémoire/profil, le focus rejeté et la provenance SemanticMemory sont poussés. Le processus Lumina actif n’a pas été redémarré pour charger les changements de l’audit.
+**Statut :** audit en cours — conclusion globale non établie. Les derniers lots partagés local/GitHub sont `512729b` (provenance SemanticMemory) et `24ac631` (MetaCognition/réflexion). Les corrections du moniteur et de PredictiveMind, l’exclusion du score lexical des boucles d’apprentissage, les preuves mémoire/profil, le focus rejeté et les frontières de preuve SemanticMemory/MetaCognition sont poussés. Le processus Lumina actif n’a pas été redémarré pour charger les changements de l’audit.
 
 ## État exécutif courant — poursuite module par module
 
@@ -920,3 +920,11 @@ Correction locale : `consistency_score` vaut maintenant `None` tant qu’aucun �
 Vérification locale : suites mémoire fiable, cycle de boucle interne et régressions cognitives — **62 tests passés, 11 sous-tests passés**, 9 avertissements historiques de dépendances. Cas ajoutés : cohérence non mesurée, proxy visible en diagnostic mais absent des observations admissibles, y compris après rechargement d’un ancien journal. Compilation et `git diff --check` réussissent. Ce lot est local et doit être commité/poussé avant validation live.
 
 Limite : les signaux de pré-réponse issus des états émotionnels/tensions restent des observations déclaratives du système, pas une validation indépendante de l’état émotionnel. L’audit doit encore examiner le producteur de ces valeurs, ainsi que le chemin de réflexion autonome qui peut persister ses propres sorties. Aucun redémarrage n’a encore eu lieu; je te le demanderai après le prochain lot hors ligne regroupé.
+
+### Réflexion autonome — le contrôle épistémique ignoré par ses consommateurs
+
+Les méthodes de réflexion appelaient `EpistemicIntegrityEngine.validate_reflection()`, mais ignoraient son résultat. Une sortie explicitement déclarée incohérente pouvait malgré tout créer un chapitre identitaire, alimenter ExperientialLearning/PreferenceEngine, ajouter une tension au SelfConcept, être diffusée au workspace ou être absorbée en symbole de soi. Le mode `wonder` n’appelait pas le validateur; son résultat est une question et ne doit pas être enregistré comme un fait sur soi.
+
+Correction locale : les trois modes interprétatifs enregistrent maintenant le statut et la raison du contrôle; si le contrôle manque ou rejette la sortie, le texte reste dans le journal d’audit mais ses effets d’apprentissage sont interrompus. `_store_record()` autorise l’absorption libre et les propositions d’évolution seulement pour un résultat `screened_consistent`. Les questions `wonder` sont marquées `question_only`; elles peuvent alimenter la curiosité, sans création de symbole ni proposition de modification. Le statut est nommé « screened consistent » : le validateur lexical est un filtre de contradiction, pas une preuve de vérité.
+
+Vérification locale : test contrôlé où le validateur rejette une tension — le journal la conserve, SelfConcept et workspace ne reçoivent rien; test du mode question — aucune absorption/proposition de symbole. Suites réflexion autonome, mémoire fiable et régressions cognitives : **51 tests passés, 11 sous-tests passés**, 9 avertissements historiques; `py_compile` et `git diff --check` réussis. Il reste à reproduire le parcours live et à évaluer les faux positifs/faux négatifs du validateur lui-même; le statut `screened_consistent` ne doit jamais être présenté comme une vérification sémantique complète.

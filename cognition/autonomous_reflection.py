@@ -121,6 +121,8 @@ class ReflectionRecord:
     stored_to:       List[str] = field(default_factory=list)  # which systems received it
     slow_cycle:      int   = 0
     token_count:     int   = 0
+    grounding_status: str = "not_checked"
+    grounding_reason: str = ""
 
 
 @dataclass
@@ -260,7 +262,7 @@ If active disagreements are listed above, acknowledge them rather than ignoring 
             return
 
         # v43: Validate the output against the actual state that produced it
-        self._epistemic.validate_reflection(
+        grounding = self._epistemic.validate_reflection(
             reflection_output = output,
             reflection_mode   = "evolution",
             reflection_cycle  = slow_cycle,
@@ -271,7 +273,16 @@ If active disagreements are listed above, acknowledge them rather than ignoring 
             mode=  "evolution",
             output= output,
             slow_cycle= slow_cycle,
+            grounding_status=("screened_consistent" if grounding and grounding.grounded else "inconsistent"),
+            grounding_reason=getattr(grounding, "reason", "validator returned no result"),
         )
+        if record.grounding_status != "screened_consistent":
+            with self._lock:
+                self._state.last_phi_snapshot = current_phi
+                self._state.last_dominant_goal = dominant_goal
+            self._store_record(record)
+            logger.warning("[AutonomousReflection] Evolution output excluded from learning: %s", record.grounding_reason[:160])
+            return
 
         # Store to NarrativeIdentity as a chapter
         try:
@@ -357,7 +368,7 @@ If any of your beliefs are marked speculative above, weight them accordingly.
             return
 
         # v43: Validate against actual state
-        self._epistemic.validate_reflection(
+        grounding = self._epistemic.validate_reflection(
             reflection_output = output,
             reflection_mode   = "contradiction",
             reflection_cycle  = slow_cycle,
@@ -368,7 +379,13 @@ If any of your beliefs are marked speculative above, weight them accordingly.
             mode=      "contradiction",
             output=    output,
             slow_cycle= slow_cycle,
+            grounding_status=("screened_consistent" if grounding and grounding.grounded else "inconsistent"),
+            grounding_reason=getattr(grounding, "reason", "validator returned no result"),
         )
+        if record.grounding_status != "screened_consistent":
+            self._store_record(record)
+            logger.warning("[AutonomousReflection] Contradiction output excluded from learning: %s", record.grounding_reason[:160])
+            return
 
         # Store to SelfConcept as a tension update
         try:
@@ -435,7 +452,7 @@ Answer in 2 sentences. Be specific about which drives if any seem misaligned.
             return
 
         # v43: Validate against actual state
-        self._epistemic.validate_reflection(
+        grounding = self._epistemic.validate_reflection(
             reflection_output = output,
             reflection_mode   = "goal_coherence",
             reflection_cycle  = slow_cycle,
@@ -446,7 +463,13 @@ Answer in 2 sentences. Be specific about which drives if any seem misaligned.
             mode=      "goal_coherence",
             output=    output,
             slow_cycle= slow_cycle,
+            grounding_status=("screened_consistent" if grounding and grounding.grounded else "inconsistent"),
+            grounding_reason=getattr(grounding, "reason", "validator returned no result"),
         )
+        if record.grounding_status != "screened_consistent":
+            self._store_record(record)
+            logger.warning("[AutonomousReflection] Goal-coherence output excluded from learning: %s", record.grounding_reason[:160])
+            return
 
         # Broadcast coherence assessment to workspace
         try:
@@ -516,6 +539,8 @@ Write only the question. One sentence. Make it specific to the actual state abov
             mode=      "wonder",
             output=    output,
             slow_cycle= slow_cycle,
+            grounding_status="question_only",
+            grounding_reason="open question; not validated as a factual self-claim",
         )
 
         # Store to CuriosityEngine as a topic
@@ -706,6 +731,14 @@ Write only the question. One sentence. Make it specific to the actual state abov
                     self._state.reflection_log[-MAX_REFLECTION_LOG:]
             self._state.total_reflections += 1
         self._save()
+
+        if record.grounding_status != "screened_consistent":
+            logger.info(
+                "[AutonomousReflection] Stored non-validated output as audit evidence only; "
+                "symbol/proposal learning skipped (mode=%s status=%s)",
+                record.mode, record.grounding_status,
+            )
+            return
 
         # Phase 6.15 — free-text absorption (reflection_absorber.py),
         # alongside the structured absorption already wired in v107
