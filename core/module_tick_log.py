@@ -72,6 +72,16 @@ def summarize_output(value: Any, *, side_effect_only: bool = False) -> dict[str,
     return result
 
 
+def _state_for_output(output: dict[str, Any] | None) -> str:
+    """Separate successful execution from outputs that are not inspectable."""
+    quality = str((output or {}).get("quality", "unknown"))
+    if quality == "invalid_numeric":
+        return "degraded"
+    if quality in {"empty", "shape_only", "unknown"}:
+        return "output_unverified"
+    return "healthy"
+
+
 class ModuleTickLog:
     """Thread-safe last-value/counter log; never stores module output text."""
 
@@ -97,8 +107,8 @@ class ModuleTickLog:
             item["cadence"] = cadence
             item["state"] = (
                 "unavailable" if not initialized else
-                item.get("state") if item.get("state") == "degraded" else
-                "healthy" if item["last_status"] == "completed" else
+                _state_for_output(item.get("last_output"))
+                if item["last_status"] == "completed" else
                 "error" if item["last_status"] == "failed" else
                 "initialized_unobserved"
             )
@@ -131,11 +141,7 @@ class ModuleTickLog:
                 item["last_status"] = "completed"
                 item["last_success_at"] = now
                 item["last_output"] = summarize_output(output, side_effect_only=side_effect_only)
-                item["state"] = (
-                    "degraded"
-                    if item["last_output"].get("quality") == "invalid_numeric"
-                    else "healthy"
-                )
+                item["state"] = _state_for_output(item["last_output"])
             else:
                 item["error_count"] += 1
                 item["last_status"] = "failed"

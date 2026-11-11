@@ -28,6 +28,20 @@ class ModuleTickLogTests(unittest.TestCase):
         self.assertEqual(state["last_output"]["quality"], "side_effect_only")
         self.assertEqual(ticks.analysis()["last_output_qualities"], {"side_effect_only": 1})
 
+    def test_empty_and_uninspectable_outputs_are_not_marked_healthy(self):
+        ticks = ModuleTickLog()
+        ticks.register("empty", initialized=True)
+        ticks.record("empty", "run", started_at=1.0, duration_ms=1.0, output=None)
+        self.assertEqual(ticks.snapshot()["empty"]["state"], "output_unverified")
+
+        class OpaqueResult:
+            pass
+
+        ticks.register("opaque", initialized=True)
+        ticks.record("opaque", "run", started_at=1.0, duration_ms=1.0,
+                     output=OpaqueResult())
+        self.assertEqual(ticks.snapshot()["opaque"]["state"], "output_unverified")
+
     def test_tick_log_tracks_execution_and_error_without_retaining_exception_text(self):
         ticks = ModuleTickLog()
         ticks.register("sample", initialized=True)

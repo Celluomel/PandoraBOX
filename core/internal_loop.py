@@ -423,10 +423,13 @@ class InternalThoughtLoop:
                 entry["state"] = "initialized_unobserved"
             elif entry.get("last_status") == "failed":
                 entry["state"] = "error"
-            elif entry.get("last_output", {}).get("quality") == "invalid_numeric":
-                entry["state"] = "degraded"
-            elif entry.get("state") != "degraded":
-                entry["state"] = "healthy"
+            else:
+                quality = entry.get("last_output", {}).get("quality")
+                entry["state"] = (
+                    "degraded" if quality == "invalid_numeric" else
+                    "output_unverified" if quality in {"empty", "shape_only", "unknown"} else
+                    "healthy"
+                )
         return snapshot
 
     def module_tick_analysis(self) -> dict[str, Any]:
