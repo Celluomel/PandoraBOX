@@ -30,9 +30,9 @@ Fix: broadcast() now runs a two-stage competition before admitting a new item:
     Exception: high-priority signals (priority ≥ PRIORITY_OVERRIDE) bypass
     the semantic gate — urgent system signals (safety, surprise) always land.
 
-  Stage 3 — Classic priority eviction (unchanged)
-    If the buffer is at capacity after stages 1–2, the lowest-priority item
-    is evicted to make room.
+  Stage 3 — Classic priority eviction
+    If the buffer is at capacity after stages 1–2, a new item must outrank the
+    lowest-priority item. Otherwise it is rejected and broadcast() returns False.
 
 Consequence: the workspace naturally rotates toward diverse content, forcing
 different modules to compete for attention — exactly as GWT predicts.
@@ -63,6 +63,7 @@ Integration model (unchanged API)
 
 import threading
 import time
+import copy
 from collections import deque, defaultdict
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Set
@@ -90,7 +91,7 @@ class WorkspaceState:
     """
     Live, structured snapshot of PandoraBOX's current global cognitive context.
     One instance lives on GlobalWorkspace and is mutated in place via
-    update_state(); read via get_state() (returns a shallow copy).
+    update_state(); readers receive isolated snapshots via get_state().
     """
     focus:               Optional[str]      = None
     intention:            Optional[str]      = None
@@ -113,16 +114,16 @@ class WorkspaceState:
         return {
             "focus":              self.focus,
             "intention":          self.intention,
-            "active_hypotheses":  self.active_hypotheses,
+            "active_hypotheses":  copy.deepcopy(self.active_hypotheses),
             "uncertainty":        round(self.uncertainty, 4),
-            "predicted_futures":  self.predicted_futures,
-            "goals":              self.goals,
-            "motivations":        self.motivations,
+            "predicted_futures":  copy.deepcopy(self.predicted_futures),
+            "goals":              copy.deepcopy(self.goals),
+            "motivations":        copy.deepcopy(self.motivations),
             "narrative_state":    self.narrative_state,
-            "executive_policy":   self.executive_policy,
+            "executive_policy":   copy.deepcopy(self.executive_policy),
             "confidence":         round(self.confidence, 4),
-            "context":            self.context,
-            "updated_by":         self.updated_by[-10:],
+            "context":            copy.deepcopy(self.context),
+            "updated_by":         copy.deepcopy(self.updated_by[-10:]),
             "last_updated":       round(self.last_updated, 3),
         }
 
@@ -177,7 +178,8 @@ class GlobalWorkspace:
 
     def __init__(self, max_items: int = 32):
         self._lock     = threading.RLock()
-        self._buffer: deque = deque(maxlen=max_items)
+        self._capacity = max(1, int(max_items))
+        self._buffer: deque = deque(maxlen=self._capacity)
         self._listeners: List[Callable] = []
         self._blocked_count: int = 0   # diagnostic counter
 
@@ -192,12 +194,11 @@ class GlobalWorkspace:
 
     def get_state(self) -> WorkspaceState:
         """
-        Return the current WorkspaceState. Callers should treat this as
-        read-mostly; use update_state()/set_hypotheses()/edit_executive_policy()
-        to mutate so provenance (updated_by) stays accurate.
+        Return an isolated snapshot. Mutations to it cannot bypass the
+        workspace write APIs or silently skip provenance recording.
         """
         with self._state_lock:
-            return self._state
+            return copy.deepcopy(self._state)
 
     def update_state(self, source: str, **fields) -> WorkspaceState:
         """
@@ -221,7 +222,7 @@ class GlobalWorkspace:
             })
             self._state.updated_by = self._state.updated_by[-50:]
             self._state.last_updated = time.time()
-            return self._state
+            return copy.deepcopy(self._state)
 
     def merge_context(self, source: str, updates: Dict[str, Any]) -> WorkspaceState:
         """Atomically merge context keys so concurrent sensor publishers do not overwrite each other."""
@@ -236,7 +237,7 @@ class GlobalWorkspace:
             })
             self._state.updated_by = self._state.updated_by[-50:]
             self._state.last_updated = time.time()
-            return self._state
+            return copy.deepcopy(self._state)
 
     def set_hypotheses(self, source: str, hypotheses: List[Dict]) -> None:
         """
@@ -288,7 +289,7 @@ class GlobalWorkspace:
             })
             self._state.updated_by = self._state.updated_by[-50:]
             self._state.last_updated = time.time()
-            return pol
+            return copy.deepcopy(pol)
 
     def state_summary(self) -> Dict:
         """Reportability: dashboard-facing summary of the structured state."""
@@ -360,17 +361,18 @@ class GlobalWorkspace:
             if len(source_items) >= self.SOURCE_MAX:
                 oldest = min(source_items, key=lambda i: i.timestamp)
                 items.remove(oldest)
-                self._buffer = deque(items, maxlen=self.CAPACITY)
 
             # ── Stage 3: Classic priority eviction ────────────────────────
-            items = list(self._buffer)
-            if len(items) >= self.CAPACITY:
+            if len(items) >= self._capacity:
                 min_idx = min(range(len(items)), key=lambda i: items[i].priority)
-                if items[min_idx].priority < item.priority:
-                    del items[min_idx]
-                    self._buffer = deque(items, maxlen=self.CAPACITY)
+                if item.priority <= items[min_idx].priority:
+                    self._blocked_count += 1
+                    return False
+                del items[min_idx]
 
-            self._buffer.append(item)
+            # Commit the buffer mutation only after all admission checks pass.
+            items.append(item)
+            self._buffer = deque(items, maxlen=self._capacity)
 
         # Notify listeners (non-blocking, outside lock)
         for cb in self._listeners:
