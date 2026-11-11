@@ -92,6 +92,7 @@ class TopicEntry:
     first_seen: float = field(default_factory=time.time)
     last_seen:  float = field(default_factory=time.time)
     turn_count: int   = 1
+    source_role: str   = "user_topic"
 
 
 @dataclass
@@ -159,10 +160,9 @@ class ActiveCognitiveContext:
         with self._lock:
             self._turn_count += 1
 
-        # ── Extract topics from this turn ─────────────────────────────────
-        self._extract_and_merge_topics(user_text + " " + ai_response)
-
-        # ── Decay old topics ───────────────────────────────────────────────
+        # Topics arrive asynchronously from SemanticExtractor after it has
+        # grounded concepts in the incoming message. Never mine the assistant's
+        # own prose or unvalidated n-grams into persistent prompt context here.
         self._decay_topics()
 
         # ── Pull ARE open question if fresh ───────────────────────────────
@@ -276,8 +276,8 @@ class ActiveCognitiveContext:
 
         # Topics
         if topics:
-            top_topics = [f"{t.topic} ({t.weight:.1f})" for t in topics[:4]]
-            lines.append(f"Active threads: {', '.join(top_topics)}")
+            top_topics = [f"{t.topic} ({t.weight:.1f}; {t.source_role})" for t in topics[:4]]
+            lines.append(f"Extracted conversation concepts (not assistant self-reports): {', '.join(top_topics)}")
 
         # Emotional inertia
         lines.append(f"Emotional inertia: {tone}")
@@ -340,7 +340,12 @@ class ActiveCognitiveContext:
                 "turn_count":     self._turn_count,
                 "session_age_s":  round(time.time() - self._session_start),
                 "topics":         [
-                    {"topic": t.topic, "weight": round(t.weight, 2), "turns": t.turn_count}
+                    {
+                        "topic": t.topic,
+                        "weight": round(t.weight, 2),
+                        "turns": t.turn_count,
+                        "source_role": t.source_role,
+                    }
                     for t in sorted(self._topics.values(), key=lambda x: x.weight, reverse=True)[:5]
                 ],
                 "unresolved_questions": list(self._unresolved_qs)[:4],
@@ -451,23 +456,44 @@ class ActiveCognitiveContext:
         except Exception:
             pass
 
-    def _extract_and_merge_topics(self, text: str) -> None:
-        """
-        Extract topics from text using the LLM (best-effort, non-blocking).
-        Falls back to keyword extraction if LLM is busy.
-        """
-        # Fast heuristic first
-        heuristic_topics = self._heuristic_topics(text)
+    def update_semantic_topics(
+        self,
+        concepts: List[str],
+        *,
+        topic: str = "",
+        evidence_text: str = "",
+        source_role: str = "user_topic",
+    ) -> None:
+        """Accept only extractor concepts grounded in this incoming message."""
+        if source_role not in {"user_topic", "peer_topic"}:
+            return
+        source_text = " ".join(str(evidence_text or "").casefold().split())
+        grounded: list[str] = []
+        for value in concepts[:8]:
+            concept = " ".join(str(value or "").casefold().split())[:80]
+            if concept and len(concept) >= 4 and concept in source_text and concept not in grounded:
+                grounded.append(concept)
+        preferred = " ".join(str(topic or "").casefold().split())
+        ordered = ([preferred] if preferred in grounded else []) + [
+            item for item in grounded if item != preferred
+        ]
+        if not ordered:
+            return
 
+        now = time.time()
         with self._lock:
-            for topic in heuristic_topics:
-                if topic in self._topics:
-                    entry = self._topics[topic]
+            for concept in ordered[:4]:
+                if concept in self._topics:
+                    entry = self._topics[concept]
                     entry.weight    = min(3.0, entry.weight + 0.5)
-                    entry.last_seen = time.time()
+                    entry.last_seen = now
                     entry.turn_count += 1
+                    entry.source_role = source_role
                 else:
-                    self._topics[topic] = TopicEntry(topic=topic)
+                    self._topics[concept] = TopicEntry(
+                        topic=concept, first_seen=now, last_seen=now,
+                        source_role=source_role,
+                    )
 
             # Prune to MAX_TOPICS by weight
             if len(self._topics) > MAX_TOPICS * 2:
@@ -475,6 +501,7 @@ class ActiveCognitiveContext:
                     self._topics.items(), key=lambda x: x[1].weight, reverse=True
                 )
                 self._topics = dict(sorted_topics[:MAX_TOPICS])
+            self._last_fragment = ""
 
     def _decay_topics(self) -> None:
         """Apply weight decay to topics not mentioned this turn."""
@@ -486,46 +513,3 @@ class ActiveCognitiveContext:
             self._topics = {
                 k: v for k, v in self._topics.items() if v.weight > 0.1
             }
-
-    @staticmethod
-    def _heuristic_topics(text: str) -> List[str]:
-        """Extract noun-phrase-like topics using simple pattern matching."""
-        import re
-        # Remove punctuation, lowercase
-        clean = re.sub(r"[^\w\s]", " ", text.lower())
-        words = clean.split()
-
-        # Stop words
-        stop = {
-            "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
-            "have", "has", "had", "do", "does", "did", "will", "would", "could",
-            "should", "may", "might", "shall", "can", "i", "you", "we", "they",
-            "it", "this", "that", "what", "how", "why", "when", "where", "which",
-            "and", "or", "but", "so", "yet", "for", "nor", "if", "then", "than",
-            "of", "in", "on", "at", "to", "by", "with", "from", "about", "as",
-            "my", "your", "his", "her", "its", "our", "their", "me", "him", "them",
-            "up", "out", "not", "no", "just", "very", "also", "even", "like",
-        }
-
-        # Candidate words: length > 4, not stop words
-        candidates = [w for w in words if len(w) > 4 and w not in stop]
-
-        # Bigrams
-        bigrams = [
-            f"{words[i]} {words[i+1]}"
-            for i in range(len(words)-1)
-            if words[i] not in stop and words[i+1] not in stop
-            and len(words[i]) > 3 and len(words[i+1]) > 3
-        ]
-
-        # Deduplicate + limit
-        seen  = set()
-        result = []
-        for t in (bigrams[:3] + candidates[:4]):
-            if t not in seen:
-                seen.add(t)
-                result.append(t)
-            if len(result) >= 4:
-                break
-
-        return result

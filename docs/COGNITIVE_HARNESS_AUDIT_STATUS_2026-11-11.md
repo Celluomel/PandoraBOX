@@ -1,7 +1,7 @@
 # Audit du harnais cognitif — état et prochaines étapes
 
 **Date :** 11 novembre 2026
-**Statut :** audit en cours — conclusion globale non établie. Les derniers lots partagés local/GitHub sont `512729b` (provenance SemanticMemory) et `24ac631` (MetaCognition/réflexion). Les corrections du moniteur et de PredictiveMind, l’exclusion du score lexical des boucles d’apprentissage, les preuves mémoire/profil, le focus rejeté et les frontières de preuve SemanticMemory/MetaCognition sont poussés. Le processus Lumina actif n’a pas été redémarré pour charger les changements de l’audit.
+**Statut :** audit en cours — conclusion globale non établie. Le dernier lot partagé est `74ebac5` (affect cognitif, recherche et classement des résultats); le redémarrage et le contrôle live ont confirmé le chargement des valeurs affectives schema 2 et `sources: []` pour une question introspective. Un défaut CAG trouvé dans cette vérification est en cours de correction locale; les changements préexistants Body/UI restent hors lot. Ne pas conclure sur la qualité cognitive globale à partir de ces contrôles de composants.
 
 ## État exécutif courant — poursuite module par module
 
@@ -974,3 +974,15 @@ Le log `All API/RSS tiers exhausted — falling back to stealth browser` signifi
 Correction locale : les résultats fusionnés sont maintenant évalués par la couverture lexicale des termes informatifs de la requête, avec normalisation Unicode/pluriel, seuil minimal de correspondance et crédibilité du domaine comme facteur secondaire. Les extraits faibles sont rejetés; les candidats conservés portent un score de pertinence distinct de la crédibilité. Le prompt les présente comme des extraits externes non vérifiés, demande de les utiliser seulement s'ils répondent directement, et interdit qu'ils remplacent télémétrie interne ou mesures directes. La recherche externe reste activable; les questions directes sur l'état affectif propre de Lumina sont traitées en source fermée par les changements précédents.
 
 Vérification locale : tests de rejet d'un résultat grammatical qui ne partage que les mots interrogatifs, priorité de la pertinence sur une crédibilité de domaine élevée mais hors sujet, et intégration du repli stealth — ajoutés à affect, routage introspectif, flux cognitifs, Phase 2 et cycle interne : **45 tests passés**, 7 avertissements Pydantic historiques. `git diff --check` passe. Le processus Lumina en cours n'a pas chargé ces changements; ils doivent être commités puis vérifiés après un redémarrage groupé.
+
+### Validation live après le redémarrage de `74ebac5` — affect et recherche
+
+Le processus local répond `ready=true`, modèle `lmstudio/gemma-4-e4b-uncensored-hauhaucs-aggressive`, Persona/Orchestrator actifs. Une question introspective sur les émotions a été envoyée à `/chat`; la réponse porte `sources: []`. Les niveaux cités correspondent à l’état persistant schema 2 lu juste après : satisfaction 0,980, chaleur 0,9995, curiosité 0,807, soulagement 0,737, enthousiasme 0,401. Le dernier reçu dans `recent_affect_events` est bien `drive_satisfied` de `pressure_system`. Cela vérifie la migration chargée, l’exposition du profil affectif au LLM et l’absence de résultat Web injecté sur ce tour. Le champ API `emotion=neutral` reste une étiquette de tonalité de l’entrée, distincte de l’état affectif courant.
+
+### CAG — faux sujets réinjectés dans le contexte (correction locale)
+
+Le snapshot CAG du même tour contenait « quelles émotions », « émotions fonctionnelles », « fonctionnelles sont » et « quelles », toutes avec poids 1.0. La cause est `_heuristic_topics()` dans `ActiveCognitiveContext`: il générait des bigrammes à partir du texte combiné utilisateur + assistant avec une liste d’arrêt anglaise, puis le fragment CAG réinjectait ces chaînes comme « Active threads ». Il existait déjà un `SemanticExtractor` qui valide des concepts contre le texte entrant et distingue le rôle `user_topic`/`peer_topic`, mais le résultat ne nourrissait pas CAG.
+
+Correction locale : CAG ne dérive plus de sujets dans `update_from_turn` et n’analyse plus les réponses de Lumina comme sujets. SemanticExtractor transmet ses concepts déjà ancrés dans le message source via `update_semantic_topics`; CAG vérifie à nouveau que chaque concept figure dans l’évidence entrante, conserve le rôle d’origine dans le snapshot et le prompt, et refuse les sources non conversationnelles. En l’absence de concept validé, la liste reste vide au lieu de créer du bruit.
+
+Vérification locale : tests CAG et SemanticExtractor, plus prompts/contexte, streams cognitifs, Phase 2 et cycle interne — **40 tests passés**, 8 avertissements historiques (7 Pydantic et un avertissement `pkg_resources`); compilation des deux modules réussie. `git diff --check` doit être propre avant commit. Cette correction CAG est locale et n’est pas encore chargée dans le processus Lumina; elle demandera un redémarrage après regroupement et push.

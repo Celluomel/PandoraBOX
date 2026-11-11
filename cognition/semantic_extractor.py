@@ -178,6 +178,23 @@ class SemanticExtractor:
             t0 = time.time()
             concepts, relations, topic, cog_load = self._parse(user_input, response)
 
+            # CAG receives the concepts this extractor already grounded in the
+            # incoming message. This avoids its former independent heuristic
+            # pass over the concatenated user + assistant text.
+            try:
+                from core.state import state as runtime_state
+                active_context = getattr(runtime_state, "acc", None)
+                update_topics = getattr(active_context, "update_semantic_topics", None)
+                if callable(update_topics):
+                    update_topics(
+                        concepts,
+                        topic=topic,
+                        evidence_text=user_input or "",
+                        source_role=observation_role,
+                    )
+            except Exception as context_error:
+                logger.debug("CAG semantic-topic update unavailable: %s", context_error)
+
             # Write to semantic memory
             for c in concepts:
                 self._memory.upsert_concept(c, strength_boost=0.04)
