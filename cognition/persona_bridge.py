@@ -628,6 +628,7 @@ class PersonaBridge:
                 "queued", "selected_direct", "delegated", "results_injected", "updated",
             }:
                 health["last_success_at"] = stage["at"]
+
             if status in {"failed", "invalid_output", "unavailable"}:
                 # Keep cumulative health telemetry non-sensitive. Per-turn
                 # diagnostics may carry a bounded detail, but this aggregate
@@ -660,6 +661,22 @@ class PersonaBridge:
                 integrity["checked_at"] = time.time()
                 if failed_stages and trace.get("status") == "completed":
                     trace["status"] = "completed_with_stage_failures"
+
+    def _record_world_model_profile_update(self, receipt: Any, turn_id: str) -> bool:
+        """Record a profile-write receipt and flag unconfirmed persistence."""
+        if not isinstance(receipt, dict):
+            receipt = {"status": "unreported", "changed": False}
+        status = str(receipt.get("status") or "unreported")
+        failed = status in {"persistence_failed", "failed", "unavailable"}
+        self._record_turn_stage(
+            "world_model_profile_update",
+            "failed" if failed else status,
+            status if failed else "",
+            output=receipt,
+            consumes=("turn_input",),
+            turn_id=turn_id,
+        )
+        return failed
 
     def record_deferred_turn_stage(
         self, turn_id: str, name: str, status: str, detail: str = "",
@@ -4644,11 +4661,8 @@ Memory honesty — two distinct cases:
                         _post_receipt.get("world_model_profile_update", {})
                         if isinstance(_post_receipt, dict) else {}
                     )
-                    self._record_turn_stage(
-                        "world_model_profile_update",
-                        str(_profile_receipt.get("status") or "unreported"),
-                        output=_profile_receipt or {"status": "unreported"},
-                        turn_id=audit_turn_id,
+                    self._record_world_model_profile_update(
+                        _profile_receipt, audit_turn_id,
                     )
                     self._record_turn_stage(
                         "peer_cognitive_evaluation", "completed", output=_post_receipt,
@@ -4788,12 +4802,14 @@ Memory honesty — two distinct cases:
                         _post_receipt.get("world_model_profile_update", {})
                         if isinstance(_post_receipt, dict) else {}
                     )
-                    self._record_turn_stage(
-                        "world_model_profile_update",
-                        str(_profile_receipt.get("status") or "unreported"),
-                        output=_profile_receipt or {"status": "unreported"},
-                        turn_id=audit_turn_id,
+                    profile_persistence_failed = self._record_world_model_profile_update(
+                        _profile_receipt, audit_turn_id,
                     )
+                    if profile_persistence_failed:
+                        logger.warning(
+                            "WorldModel profile update was not persisted for turn %s",
+                            audit_turn_id,
+                        )
                     # Update additional drive satisfaction based on response quality
                     word_count = len(response.split())
                     has_question = "?" in response

@@ -54,6 +54,26 @@ def test_turn_stage_records_redacted_output_and_actual_consumption_link():
     assert trace["semantic_answer_validation"]["status"] == "not_performed"
 
 
+def test_world_model_profile_failure_is_attributed_to_turn_and_fails_stage():
+    bridge = _bridge()
+    bridge._record_turn_stage("turn_input", "completed", output="human turn")
+
+    profile_failed = bridge._record_world_model_profile_update({
+        "status": "persistence_failed",
+        "changed": True,
+        "persisted": False,
+        "interaction_count": 12,
+    }, "turn-evidence-1")
+
+    assert profile_failed is True
+    profile_stage = bridge._last_turn_trace["stages"]["world_model_profile_update"]
+    assert profile_stage["status"] == "failed"
+    assert profile_stage["detail"] == "persistence_failed"
+    assert profile_stage["output_summary"]["status"] == "persistence_failed"
+    assert profile_stage["output_summary"]["persisted"] is False
+    assert profile_stage["output_summary"]["quality"] == "failed"
+
+
 def test_cognitive_context_is_linked_to_prompt_assembly_on_its_own_turn():
     bridge = _bridge()
     previous = {"turn_id": "turn-cognitive-context", "stages": {}}

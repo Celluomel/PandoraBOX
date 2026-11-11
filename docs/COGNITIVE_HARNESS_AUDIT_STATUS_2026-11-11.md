@@ -1,7 +1,7 @@
 # Audit du harnais cognitif — état et prochaines étapes
 
 **Date :** 11 novembre 2026
-**Statut :** audit en cours — conclusion globale non établie. Local `main` et GitHub `origin/main` sont alignés sur `7729cf8`. La preuve profil dans le résumé de trace, les deux lots outreach et la persistance du profil comportemental sont poussés. Aucun redémarrage de Lumina n’a été effectué; le code récent n’est pas encore chargé dans le processus actif.
+**Statut :** audit en cours — conclusion globale non établie. Le dernier commit commun local/GitHub est `bba76a4`. Les correctifs profil précédents sont poussés. Un défaut supplémentaire de statut de stage est corrigé et testé localement, mais pas encore commité. Aucun redémarrage de Lumina n’a été effectué; le code récent n’est pas encore chargé dans le processus actif.
 
 ## État exécutif courant — poursuite module par module
 
@@ -10,9 +10,19 @@
 - **File GAE / UI :** l’outreach et la page principale consommaient la même file destructive. `GoalActionExecutor` fournit maintenant une lecture `peek` verrouillée pour l’outreach; la page reste le consommateur qui dépile. Le contenu GAE n’est plus volé ni supprimé avant l’affichage UI si aucun destinataire externe ne correspond.
 - **Profil comportemental :** le wrapper signalait `updated` dès qu’un objet profil était retourné, alors que `WorldModel._save()` absorbait les erreurs et ne rapportait aucun succès. Le save est maintenant atomique, relu et comparé après écriture; un échec retourne `persistence_failed` au reçu de tour.
 - **Preuve locale :** lot outreach/planner/GAE — **61 passed**; lot profil comportemental — **90 passed, 4 sous-tests**; lot élargi profil/provenance, identité utilisateur, outreach, planner, self-description et publication GAE — **108 passed, 4 sous-tests**. Compilation des modules touchés et `git diff --check` réussis. Les 7 avertissements Pydantic proviennent des validateurs historiques de `settings_manager.py`.
+- **Profil comportemental → intégrité du tour :** nouveau défaut trouvé dans `PersonaBridge`: `persistence_failed` était enregistré comme statut arbitraire du stage et n’était donc pas compté par l’intégrité de trace, qui ne reconnaît que les échecs normalisés. Le stage est maintenant normalisé en `failed`, garde le statut d’origine dans `detail` et conserve le reçu assaini. Le chemin humain journalise également l’échec sans annoncer une mise à jour persistée.
+- **Preuve locale la plus récente :** `tests/test_turn_execution_evidence.py`, `tests/test_world_model_profile_persistence.py`, `tests/test_cognitive_log_regressions.py`, `tests/test_proactive_outreach_delivery.py` — **50 passed, 4 sous-tests**; `py_compile` et `git diff --check` passent. Ce changement est encore local à la date de cette entrée.
 - **Limite de preuve :** `accepted` signifie que l’API Telegram/Twilio a accepté l’appel; cela ne prouve ni livraison au terminal ni lecture. Aucun envoi externe réel n’a été déclenché pendant les tests. Le chemin live nécessite le redémarrage groupé final.
 - **Suite du cap :** confirmer les producteurs/consommateurs de mémoire et les deux profils (UserManager explicite et WorldModel comportemental), puis les états de workspace/attention et la génération de réponse, avec vérification des effets aval; rattacher chaque constat à un scénario/test plutôt qu’à un simple tick.
 - **Git / périmètre :** commits de correctifs `7103a68`, `cfc54df`, `c649348` et `7729cf8` sont poussés. Les changements Body/UI/tests préexistants et artefacts non suivis restent exclus. Ne pas redémarrer Lumina avant le contrôle cumulé.
+
+### Reprise — échec de persistance du profil attribué au tour
+
+Le reçu `world_model_profile_update` retourné par le cycle post-interaction pouvait porter `persistence_failed`, mais `PersonaBridge` recopiait ce texte comme statut du stage. Le calcul d’intégrité ne reconnaissant que les états normalisés (`failed`, `invalid_output`, `unavailable`), une écriture non confirmée pouvait rester invisible dans le verdict du tour. Ce n’est pas un problème de stockage (déjà corrigé); c’est une perte du résultat entre le reçu du producteur et l’audit de l’effet aval.
+
+**Correction locale :** le nouveau helper `_record_world_model_profile_update()` conserve le reçu expurgé et son statut source, transforme les échecs de persistance en statut de stage `failed`, et rattache le stage au `turn_id`. Le chemin humain émet aussi un avertissement explicite. Aucun changement du contenu du profil ni des règles d’apprentissage.
+
+**Test de régression :** le reçu `persistence_failed` doit faire échouer le stage et apparaître dans `output_summary` avec `persisted=false` et `quality=failed`. Lot ciblé : **50 passed, 4 sous-tests**, compilation et `git diff --check` réussis. Pas encore validé dans un processus Lumina redémarré.
 
 ## État courant de reprise — commit GitHub `0618621` et lot suivant local
 
