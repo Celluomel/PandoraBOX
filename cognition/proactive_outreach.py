@@ -332,13 +332,9 @@ class ProactiveOutreachEngine:
         if rel_mem is None:
             return
 
-        # ── GAE content: popped ONCE here, not per-user, since GAE's
-        # queue getters are destructive (popleft()). If no user matches
-        # this tick, the item is logged (see _pop_gae_content) rather than
-        # requeued — GAE produces new insights every ~6 min, so occasional
-        # loss to "no topical match this cycle" is a fair trade against
-        # requeue complexity, and it's still in semantic memory either way.
-        gae_content = self._pop_gae_content()
+        # ── Peek at GAE content without stealing the UI's destructive
+        # delivery queue. The main page remains its owning consumer.
+        gae_content = self._peek_gae_content()
         gae_used    = [False]   # mutable flag set by _check_gae_action_trigger
 
         relationships = getattr(rel_mem, "_rels", {})
@@ -395,20 +391,20 @@ class ProactiveOutreachEngine:
                 f"{gae_content['text'][:120]!r}"
             )
 
-    def _pop_gae_content(self) -> Optional[Dict[str, str]]:
+    def _peek_gae_content(self) -> Optional[Dict[str, str]]:
         """
-        Pop one pending item (question takes priority over insight) from
-        GoalActionExecutor's queues, if any. Returns {'text':..., 'topic':...}
-        or None. Safe no-op if GAE isn't reachable.
+        Read one pending item (question takes priority over insight) without
+        consuming GoalActionExecutor's UI delivery queue. Returns
+        {'text':..., 'topic':...} or None. Safe no-op if GAE isn't reachable.
         """
         try:
             gae = getattr(getattr(self._o, "_loop", None), "_goal_action_executor", None)
             if gae is None:
                 return None
-            q = gae.get_pending_user_question()
+            q = gae.peek_pending_user_question()
             if q:
                 return {"text": q, "topic": q}
-            ins = gae.get_pending_insight()
+            ins = gae.peek_pending_insight()
             if ins:
                 return {"text": ins, "topic": ins}
         except Exception as e:

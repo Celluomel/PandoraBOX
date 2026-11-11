@@ -2,6 +2,7 @@ import asyncio
 import sys
 import threading
 import unittest
+from collections import deque
 from dataclasses import asdict
 from types import ModuleType, SimpleNamespace as NS
 from unittest.mock import patch
@@ -11,6 +12,7 @@ from cognition.proactive_outreach import (
     OutreachState,
     ProactiveOutreachEngine,
 )
+from cognition.goal_action_executor import GoalActionExecutor
 from managers.messaging_manager import MessagingManager
 
 
@@ -94,6 +96,26 @@ class ProactiveOutreachDeliveryTests(unittest.TestCase):
         self.assertFalse(failed["sent"])
         self.assertEqual(failed["delivery_status"], "failed")
         self.assertEqual(engine._state.total_sent, 0)
+
+    def test_outreach_peek_does_not_consume_ui_delivery_queue(self):
+        gae = GoalActionExecutor.__new__(GoalActionExecutor)
+        gae._pending_delivery_lock = threading.Lock()
+        gae._pending_user_question = "What should I inspect next?"
+        gae._pending_insights = deque(["A queued insight"], maxlen=5)
+        engine = ProactiveOutreachEngine.__new__(ProactiveOutreachEngine)
+        engine._o = NS(_loop=NS(_goal_action_executor=gae))
+
+        question = engine._peek_gae_content()
+        self.assertEqual(question["text"], "What should I inspect next?")
+        self.assertEqual(gae.peek_pending_user_question(), question["text"])
+        self.assertEqual(gae.get_pending_user_question(), question["text"])
+        self.assertIsNone(gae.peek_pending_user_question())
+
+        insight = engine._peek_gae_content()
+        self.assertEqual(insight["text"], "A queued insight")
+        self.assertEqual(gae.peek_pending_insight(), insight["text"])
+        self.assertEqual(gae.get_pending_insight(), insight["text"])
+        self.assertIsNone(gae.peek_pending_insight())
 
 
 if __name__ == "__main__":

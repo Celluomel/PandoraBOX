@@ -154,7 +154,7 @@ class GoalActionExecutor:
       - SemanticMemory / FAISSMemory (for memory recall)
       - LLM (for self_question action)
       - Search backend (for web_search action)
-      - Proactive message queue (for user_question and insight delivery)
+      - UI delivery queue (for user_question and insight delivery)
     """
 
     def __init__(self, organism: Any):
@@ -178,6 +178,7 @@ class GoalActionExecutor:
         self._user_questions_sent: int = 0
         self._pending_user_question: Optional[str] = None
         self._pending_insights: deque = deque(maxlen=5)
+        self._pending_delivery_lock = threading.Lock()
         self._pending_predictions: Dict[Tuple[str, str], Any] = {}
         self._async_actions_in_flight: set[Tuple[str, str]] = set()
         self._async_actions_lock = threading.Lock()
@@ -214,16 +215,28 @@ class GoalActionExecutor:
     # ── Public API ─────────────────────────────────────────────────────────────
 
     def get_pending_user_question(self) -> Optional[str]:
-        """Called by the proactive message system to retrieve a queued question."""
-        q = self._pending_user_question
-        self._pending_user_question = None
-        return q
+        """Consume one queued question for delivery to the main UI."""
+        with self._pending_delivery_lock:
+            q = self._pending_user_question
+            self._pending_user_question = None
+            return q
+
+    def peek_pending_user_question(self) -> Optional[str]:
+        """Read a queued question without consuming the UI delivery copy."""
+        with self._pending_delivery_lock:
+            return self._pending_user_question
 
     def get_pending_insight(self) -> Optional[str]:
-        """Called by app.py proactive timer to deliver insights to chat."""
-        if self._pending_insights:
-            return self._pending_insights.popleft()
-        return None
+        """Consume one queued insight for delivery to the main UI."""
+        with self._pending_delivery_lock:
+            if self._pending_insights:
+                return self._pending_insights.popleft()
+            return None
+
+    def peek_pending_insight(self) -> Optional[str]:
+        """Read the next insight without consuming the UI delivery copy."""
+        with self._pending_delivery_lock:
+            return self._pending_insights[0] if self._pending_insights else None
 
     def run_tick(
         self,
@@ -807,7 +820,8 @@ class GoalActionExecutor:
             else:
                 recent_insight = f"I've been thinking about {topic} — what's your take?"
 
-        self._pending_user_question = recent_insight
+        with self._pending_delivery_lock:
+            self._pending_user_question = recent_insight
         self._user_questions_sent += 1
         self._asked_topics[topic_key] = time.time()
         logger.info(f"[GoalActionExecutor] 🎯 User question queued: {recent_insight!r}")
@@ -940,7 +954,8 @@ class GoalActionExecutor:
                 f"I was just exploring {topic} and found something worth sharing: "
                 f"{interpretation}"
             )
-            self._pending_insights.append(queued_insight)
+            with self._pending_delivery_lock:
+                self._pending_insights.append(queued_insight)
 
             # Track cooldown
             self._last_web_search[goal.id] = time.time()
@@ -1468,7 +1483,8 @@ class GoalActionExecutor:
             self._decay_goal_energy(goal)
 
             # Queue insight for proactive delivery to chat
-            self._pending_insights.append(f"I've been reflecting: {insight}")
+            with self._pending_delivery_lock:
+                self._pending_insights.append(f"I've been reflecting: {insight}")
             logger.info("[GoalActionExecutor] Insight queued for proactive delivery")
 
             # Feed insight text into emergence metrics (HRE computation)
