@@ -1,7 +1,7 @@
 # Audit du harnais cognitif — état et prochaines étapes
 
 **Date :** 11 novembre 2026
-**Statut :** audit en cours — conclusion globale non établie. Dernier commit commun local/GitHub avant le lot courant : `90f3836`. Outreach, propriété de file et persistance du profil comportemental sont poussés; la preuve profil dans le résumé de trace est locale et testée, en attente de commit/push. Aucun redémarrage de Lumina n’a été effectué; le code local récent n’est pas encore chargé dans le processus actif.
+**Statut :** audit en cours — conclusion globale non établie. Local `main` et GitHub `origin/main` sont alignés sur `7729cf8`. La preuve profil dans le résumé de trace, les deux lots outreach et la persistance du profil comportemental sont poussés. Aucun redémarrage de Lumina n’a été effectué; le code récent n’est pas encore chargé dans le processus actif.
 
 ## État exécutif courant — poursuite module par module
 
@@ -12,7 +12,7 @@
 - **Preuve locale :** lot outreach/planner/GAE — **61 passed**; lot profil comportemental — **90 passed, 4 sous-tests**; lot élargi profil/provenance, identité utilisateur, outreach, planner, self-description et publication GAE — **108 passed, 4 sous-tests**. Compilation des modules touchés et `git diff --check` réussis. Les 7 avertissements Pydantic proviennent des validateurs historiques de `settings_manager.py`.
 - **Limite de preuve :** `accepted` signifie que l’API Telegram/Twilio a accepté l’appel; cela ne prouve ni livraison au terminal ni lecture. Aucun envoi externe réel n’a été déclenché pendant les tests. Le chemin live nécessite le redémarrage groupé final.
 - **Suite du cap :** confirmer les producteurs/consommateurs de mémoire et les deux profils (UserManager explicite et WorldModel comportemental), puis les états de workspace/attention et la génération de réponse, avec vérification des effets aval; rattacher chaque constat à un scénario/test plutôt qu’à un simple tick.
-- **Git / périmètre :** commits de correctifs `7103a68`, `cfc54df` et `c649348`, ainsi que leurs mises à jour de rapport, ont été poussés. Les changements Body/UI/tests préexistants et artefacts non suivis restent exclus. Ne pas redémarrer Lumina avant le contrôle cumulé.
+- **Git / périmètre :** commits de correctifs `7103a68`, `cfc54df`, `c649348` et `7729cf8` sont poussés. Les changements Body/UI/tests préexistants et artefacts non suivis restent exclus. Ne pas redémarrer Lumina avant le contrôle cumulé.
 
 ## État courant de reprise — commit GitHub `0618621` et lot suivant local
 
@@ -104,7 +104,7 @@ Le chemin d’observabilité `profile_context_evidence()/human_profile_learning 
 
 **Vérification locale :** tests ajoutés pour profil vide/présent, profil persistant/échec et conservation des champs non sensibles du reçu; lot combiné avec persistance WorldModel, régressions cognitives, identité/résolution d’utilisateur, outreach, planner et publication GAE — **108 passed, 4 sous-tests passés**; compilation et `git diff --check` réussis.
 
-**État Git/live :** lot local non commité à cette rédaction, base commune `90f3836`. Il sera commité/poussé uniquement avec `turn_context_evidence.py`, `user_manager.py`, les tests et ce rapport. Le contrôle live après redémarrage doit comparer le reçu brut du tour avec `output_summary`: statut de persistance et niveau de qualité identiques, sans exposition de valeur privée.
+**État Git/live :** le lot a été commité et poussé sous `7729cf8`. Le contrôle live après redémarrage doit comparer le reçu brut du tour avec `output_summary`: statut de persistance et niveau de qualité identiques, sans exposition de valeur privée.
 
 ## Synthèse globale faisant autorité — état cumulé, révisé le 11 novembre
 
