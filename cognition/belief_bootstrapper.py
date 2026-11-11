@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Optional
 
 from core.data.access import DataAccess
 from core.data.schemas import make_belief
+from cognition.belief_provenance import is_semantic_concept_belief
 
 logger = logging.getLogger(__name__)
 
@@ -143,15 +144,17 @@ class BeliefBootstrapper:
             # not identity.json. They inflate the identity store with graph
             # nodes (semantic_hub_goal, semantic_hub_explore, etc.) that are
             # corpus statistics, not self-beliefs.
-            _raw_name = raw.get('name', '')
-            if _raw_name.startswith('semantic_hub_'):
+            if is_semantic_concept_belief(raw):
                 continue
 
             conf = raw.get('confidence', 0.5)
             if conf < 0.2:
                 continue
 
-            belief_name = f"expressed_{raw.get('name', stmt[:20].replace(' ', '_'))}"
+            _source_name = str(raw.get('name') or stmt[:20].replace(' ', '_'))
+            while _source_name.startswith('expressed_'):
+                _source_name = _source_name[len('expressed_'):]
+            belief_name = f"expressed_{_source_name}"
             existing = self.dal.get_belief_by_name(belief_name)
 
             bel = make_belief(

@@ -78,7 +78,12 @@ class GoalQualityFilter:
             'marked_noise': [],
             'boosted': [],
             'generated': [],
+            'topics_repaired_by_provenance': 0,
         }
+
+        report['topics_repaired_by_provenance'] = self._repair_legacy_semantic_hub_topics(
+            goals, dal
+        )
 
         # Precompute embedding-based tension alignment for ALL goals in a single
         # batched embedding call (dimension-safe, one API round-trip). Returns
@@ -282,6 +287,51 @@ class GoalQualityFilter:
         return max(0.0, min(1.0, score)), reasons
 
     # ── Tension-aligned goal generation ───────────────────────────────────────
+
+    def _repair_legacy_semantic_hub_topics(self, goals: List[Dict], dal: Any) -> int:
+        """Rebase generated identity goals polluted by graph-statistic beliefs.
+
+        Older versions copied semantic-hub counts into self-beliefs and used
+        the resulting contradiction sentence as a goal topic. Repair only the
+        known auto-generated identity-tension shape; preserve the prior topic
+        in the record so the migration is auditable and lossless.
+        """
+        from cognition.tension_topics import generate_identity_topic
+
+        repaired = 0
+        for goal in goals:
+            if (
+                goal.get('origin') != 'goal_quality_filter'
+                or goal.get('status') != 'active'
+                or goal.get('tension_source') != 'identity_stress'
+            ):
+                continue
+            topic = str(goal.get('topic') or '')
+            if not (
+                topic.startswith("I keep telling myself '")
+                and "Frequently referenced concept:" in topic
+                and "but my actual behavior doesn't back that up" in topic
+            ):
+                continue
+
+            replacement = generate_identity_topic(self.persona_dir)
+            if not replacement or replacement == topic:
+                continue
+            history = goal.setdefault('topic_history', [])
+            history.append({
+                'topic': topic,
+                'reason': 'semantic_graph_statistic_was_misclassified_as_self_belief',
+                'replaced_at': _now(),
+            })
+            goal['topic'] = replacement
+            goal['topic_provenance_repaired_at'] = _now()
+            dal.save_goal(goal)
+            repaired += 1
+            logger.info(
+                "[GQF] Repaired generated identity topic from semantic-concept provenance: %s",
+                goal.get('name') or goal.get('id'),
+            )
+        return repaired
 
     def _generate_tension_goals(
         self,

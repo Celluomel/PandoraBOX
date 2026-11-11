@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from core.data.access import DataAccess
+from cognition.belief_provenance import is_semantic_concept_belief
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,7 @@ class SelfConceptSynchronizer:
             'beliefs_synced':  0,
             'beliefs_eligible_from_identity': 0,
             'beliefs_pruned_by_cap': 0,
+            'beliefs_quarantined_by_provenance': 0,
             'beliefs_total_after_sync': 0,
             'milestones_found': 0,
             'coherence_before': 0.0,
@@ -70,6 +72,9 @@ class SelfConceptSynchronizer:
             self, '_last_eligible_beliefs', 0
         )
         report['beliefs_pruned_by_cap'] = getattr(self, '_last_cap_pruned', 0)
+        report['beliefs_quarantined_by_provenance'] = getattr(
+            self, '_last_provenance_quarantined', 0
+        )
         report['beliefs_total_after_sync'] = sum(
             isinstance(value, dict) for value in sc.get('beliefs', {}).values()
         ) if isinstance(sc.get('beliefs', {}), dict) else len(sc.get('beliefs', []))
@@ -195,11 +200,13 @@ class SelfConceptSynchronizer:
         # Build a lookup by name for fast dedup
         incoming = {
             b.get('name', ''): b for b in (beliefs or [])
-            if b.get('name') and b.get('category') not in self.BELIEF_SKIP_CATEGORIES
+            if b.get('name') and not is_semantic_concept_belief(b)
+            and b.get('category') not in self.BELIEF_SKIP_CATEGORIES
             and b.get('confidence', 0) >= self.BELIEF_MIN_CONFIDENCE
         }
         self._last_eligible_beliefs = len(incoming)
         self._last_cap_pruned = 0
+        self._last_provenance_quarantined = 0
 
         # Apply the cap before merging. Adding every eligible belief and then
         # pruning the overflow made the same low-ranked beliefs appear as
@@ -213,6 +220,21 @@ class SelfConceptSynchronizer:
         existing = sc.get('beliefs', {})
         if isinstance(existing, list):
             existing = {b.get('name', str(i)): b for i, b in enumerate(existing)}
+
+        # Legacy synchronizations had converted semantic graph hub statistics
+        # into "expressed" self-beliefs. Quarantine those derived records from
+        # the active self-model while preserving their full payload for audit.
+        quarantine = sc.setdefault('provenance_quarantine', {})
+        for key, belief in list(existing.items()):
+            if not is_semantic_concept_belief(belief, key):
+                continue
+            quarantine.setdefault(key, {
+                **belief,
+                'quarantine_reason': 'semantic_graph_statistic_is_not_self_belief',
+                'quarantined_at': _now(),
+            })
+            del existing[key]
+            self._last_provenance_quarantined += 1
 
         changed_keys = set()
 

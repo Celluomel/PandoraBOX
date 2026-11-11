@@ -24,6 +24,8 @@ for package_name, package_path in (
 
 from cognition.goal_engine import GoalEngine
 from cognition.goal_quality_filter import GoalQualityFilter
+from cognition.belief_bootstrapper import BeliefBootstrapper
+from cognition.tension_topics import generate_identity_topic
 from cognition.grounded_introspection import GroundedIntrospectionGenerator
 from cognition.semantic_extractor import SemanticExtractor
 from cognition.semantic_memory import SemanticMemory
@@ -244,6 +246,125 @@ class CognitiveLogRegressionTests(unittest.TestCase):
         self.assertEqual(second_synced, 0)
         self.assertEqual(synchronizer._last_cap_pruned, 0)
         self.assertFalse(any(key.startswith("raw_concept_") for key in first_keys))
+
+    def test_semantic_hub_statistics_never_bootstrap_as_expressed_self_beliefs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, "self_concept.json").write_text(json.dumps({
+                "beliefs": {
+                    "expressed_semantic_hub_calme": {
+                        "name": "expressed_semantic_hub_calme",
+                        "statement": "Frequently referenced concept: calme (20 uses)",
+                        "confidence": 0.85,
+                    },
+                    "expressed_practical": {
+                        "name": "expressed_practical",
+                        "statement": "I value practical approaches that work",
+                        "confidence": 0.8,
+                    },
+                },
+            }), encoding="utf-8")
+
+            class _Dal:
+                saved = []
+
+                def get_belief_by_name(self, name):
+                    return None
+
+                def save_belief(self, belief):
+                    self.saved.append(belief)
+
+            bootstrapper = BeliefBootstrapper.__new__(BeliefBootstrapper)
+            bootstrapper.persona_dir = Path(directory)
+            bootstrapper.dal = _Dal()
+            added, updated = bootstrapper._extract_from_self_concept()
+
+        self.assertEqual((added, updated), (1, 0))
+        self.assertEqual(len(bootstrapper.dal.saved), 1)
+        self.assertEqual(bootstrapper.dal.saved[0]["name"], "expressed_practical")
+
+    def test_synchronizer_quarantines_legacy_semantic_hub_self_beliefs(self):
+        synchronizer = SelfConceptSynchronizer.__new__(SelfConceptSynchronizer)
+        synchronizer.dal = SimpleNamespace(get_beliefs=lambda: [])
+        state = {"beliefs": {
+            "expressed_semantic_hub_calme": {
+                "name": "expressed_semantic_hub_calme",
+                "statement": "Frequently referenced concept: calme (20 uses)",
+                "confidence": 0.85,
+                "violations": 11,
+                "affirmations": 0,
+            },
+            "expressed_practical": {
+                "name": "expressed_practical",
+                "statement": "I value practical approaches that work",
+                "confidence": 0.8,
+            },
+        }}
+
+        synchronizer._sync_beliefs(state)
+
+        self.assertNotIn("expressed_semantic_hub_calme", state["beliefs"])
+        self.assertIn("expressed_practical", state["beliefs"])
+        self.assertIn(
+            "expressed_semantic_hub_calme", state["provenance_quarantine"]
+        )
+        self.assertEqual(synchronizer._last_provenance_quarantined, 1)
+
+    def test_identity_topic_generator_ignores_semantic_hub_violation_counts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, "self_concept.json").write_text(json.dumps({
+                "beliefs": {
+                    "expressed_semantic_hub_calme": {
+                        "name": "expressed_semantic_hub_calme",
+                        "statement": "Frequently referenced concept: calme (20 uses)",
+                        "confidence": 0.85,
+                        "violations": 11,
+                        "affirmations": 0,
+                    },
+                },
+            }), encoding="utf-8")
+            topic = generate_identity_topic(Path(directory))
+
+        self.assertNotIn("Frequently referenced concept", topic)
+
+    def test_goal_quality_filter_rebases_generated_identity_topic_with_provenance(self):
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, "self_concept.json").write_text(json.dumps({
+                "beliefs": {
+                    "expressed_semantic_hub_calme": {
+                        "name": "expressed_semantic_hub_calme",
+                        "statement": "Frequently referenced concept: calme (20 uses)",
+                        "confidence": 0.85,
+                        "violations": 11,
+                        "affirmations": 0,
+                    },
+                },
+            }), encoding="utf-8")
+            goal = {
+                "id": "generated-identity-goal",
+                "name": "clarify_identity_and_values",
+                "origin": "goal_quality_filter",
+                "status": "active",
+                "tension_source": "identity_stress",
+                "topic": "I keep telling myself 'Frequently referenced concept: calme (20 uses)' "
+                         "but my actual behavior doesn't back that up",
+            }
+
+            class _Dal:
+                def __init__(self):
+                    self.saved = []
+
+                def save_goal(self, record):
+                    self.saved.append(dict(record))
+
+            dal = _Dal()
+            quality_filter = GoalQualityFilter(directory)
+            repaired = quality_filter._repair_legacy_semantic_hub_topics([goal], dal)
+
+        self.assertEqual(repaired, 1)
+        self.assertNotIn("Frequently referenced concept", goal["topic"])
+        self.assertEqual(len(goal["topic_history"]), 1)
+        self.assertIn("Frequently referenced concept", goal["topic_history"][0]["topic"])
+        self.assertEqual(len(dal.saved), 1)
 
     def test_epistemic_lead_in_is_not_saved_as_a_durable_user_characteristic(self):
         examples = (
