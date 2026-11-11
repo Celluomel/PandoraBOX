@@ -54,6 +54,7 @@ from __future__ import annotations
 import json
 import math
 import threading
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -113,13 +114,15 @@ class ConsequenceTracker:
     # ────────────────────────────────────────────────────────────────────────
     def predict(self, goal_id: str, goal_topic: str, action_type: str,
                 cycle_id: Optional[int] = None,
-                goal_energy: float = 1.0) -> Dict[str, Any]:
+                goal_energy: float = 1.0,
+                execution_id: Optional[str] = None) -> Dict[str, Any]:
         if not self.enabled:
             return {"disabled": True, "goal_id": str(goal_id),
                     "action_type": action_type, "goal_topic": goal_topic}
         am = ACTION_MODEL.get(action_type, {"module": DEFAULT_MODULE, "effect": "effect", "probe": "success"})
         pred = {
-            "pred_id": f"pr_{abs(hash((goal_id, action_type, datetime.now().isoformat()))) % 10**10:010d}",
+            "pred_id": "pr_" + uuid.uuid4().hex,
+            "execution_id": str(execution_id or uuid.uuid4().hex),
             "ts": datetime.now().isoformat(timespec="seconds"),
             "cycle_id": cycle_id,
             "goal_id": str(goal_id),
@@ -136,7 +139,7 @@ class ConsequenceTracker:
             self.metrics["n_predictions"] += 1
         # ledger: the PREDICTION event (root of this causal chain)
         if self.ledger:
-            self.ledger.record(
+            pred["prediction_event_id"] = self.ledger.record(
                 kind="prediction",
                 cause=(f"predict {am['effect']} from {action_type} on "
                        f"'{goal_topic[:40]}' (conf {_CONF_BASE})"),
@@ -144,7 +147,11 @@ class ConsequenceTracker:
                 cycle_id=cycle_id,
                 output_state=pred,
                 confidence=_CONF_BASE,
-                refs={"goal_id": str(goal_id), "action": action_type},
+                refs={
+                    "goal_id": str(goal_id), "action": action_type,
+                    "pred_id": pred["pred_id"],
+                    "execution_id": pred["execution_id"],
+                },
             )
         return pred
 
@@ -158,13 +165,15 @@ class ConsequenceTracker:
         if not self.enabled:
             return {"resolved": False, "reason": "disabled"}
 
+        cycle_id = cycle_id if cycle_id is not None else pred.get("cycle_id")
+        execution_id = str(pred.get("execution_id") or pred.get("pred_id") or "")
+
         observed = self._observe(pred, report)            # 0.0 / 0.5 / 1.0
         error = round(1.0 - observed, 4)                  # 0.0 = as predicted
         outcome = "positive" if observed >= 0.999 else ("neutral" if observed >= 0.499 else "negative")
 
         root_id = None
         if self.ledger:
-            # find the prediction event id (most recent for this goal+action)
             root_id = self._find_prediction_event(pred)
 
         # 5a. GOAL EFFICACY (real feedback -> re-weights future selection)
@@ -189,7 +198,7 @@ class ConsequenceTracker:
 
         # 5d. LEDGER (error + updates, chained to the prediction event)
         if self.ledger:
-            self.ledger.record(
+            outcome_event_id = self.ledger.record(
                 kind="outcome",
                 cause=f"{pred['action_type']} on '{pred['goal_topic'][:40]}' -> observed={observed:.2f} ({outcome})",
                 cycle_id=cycle_id,
@@ -197,16 +206,23 @@ class ConsequenceTracker:
                 output_state={"observed": observed, "outcome": outcome},
                 confidence=_CONF_BASE,
                 parent_event_ids=[root_id] if root_id else [],
-                refs={"goal_id": pred["goal_id"], "action": pred["action_type"], "pred_id": pred["pred_id"]},
+                refs={
+                    "goal_id": pred["goal_id"], "action": pred["action_type"],
+                    "pred_id": pred["pred_id"], "execution_id": execution_id,
+                },
             )
-            self.ledger.record(
+            error_event_id = self.ledger.record(
                 kind="error",
                 cause=f"prediction_error={error:+.3f} (predicted {pred['predicted_effect']}, got {outcome})",
                 cycle_id=cycle_id,
                 delta={"error": error, "observed": observed},
                 confidence=_CONF_BASE,
-                parent_event_ids=[root_id] if root_id else [],
-                refs={"goal_id": pred["goal_id"], "action": pred["action_type"], "target": "error"},
+                parent_event_ids=[outcome_event_id] if outcome_event_id else ([root_id] if root_id else []),
+                refs={
+                    "goal_id": pred["goal_id"], "action": pred["action_type"],
+                    "pred_id": pred["pred_id"], "execution_id": execution_id,
+                    "target": "error",
+                },
             )
             if eff_delta is not None:
                 self.ledger.record(
@@ -214,8 +230,12 @@ class ConsequenceTracker:
                     cause=(f"efficacy[{pred['goal_id']}|{pred['action_type']}] "
                            f"{eff_delta['before']:.4f} → {eff_delta['after']:.4f}"),
                     cycle_id=cycle_id, delta=eff_delta,
-                    parent_event_ids=[root_id] if root_id else [],
-                    refs={"goal_id": pred["goal_id"], "action": pred["action_type"], "target": "efficacy"},
+                    parent_event_ids=[error_event_id] if error_event_id else ([root_id] if root_id else []),
+                    refs={
+                        "goal_id": pred["goal_id"], "action": pred["action_type"],
+                        "pred_id": pred["pred_id"], "execution_id": execution_id,
+                        "target": "efficacy",
+                    },
                 )
             if attn_delta is not None:
                 self.ledger.record(
@@ -223,8 +243,12 @@ class ConsequenceTracker:
                     cause=(f"attention[{attn_delta['module']}] "
                            f"{attn_delta['before']:.4f} → {attn_delta['after']:.4f}"),
                     cycle_id=cycle_id, delta=attn_delta,
-                    parent_event_ids=[root_id] if root_id else [],
-                    refs={"goal_id": pred["goal_id"], "module": pred["attention_module"], "target": "attention"},
+                    parent_event_ids=[error_event_id] if error_event_id else ([root_id] if root_id else []),
+                    refs={
+                        "goal_id": pred["goal_id"], "module": pred["attention_module"],
+                        "pred_id": pred["pred_id"], "execution_id": execution_id,
+                        "target": "attention",
+                    },
                 )
 
         with self._lock:
@@ -233,6 +257,8 @@ class ConsequenceTracker:
         return {
             "resolved": True,
             "pred_id": pred["pred_id"],
+            "execution_id": execution_id,
+            "cycle_id": cycle_id,
             "observed": observed,
             "outcome": outcome,
             "error": error,
@@ -375,12 +401,14 @@ class ConsequenceTracker:
     def _find_prediction_event(self, pred: Dict[str, Any]) -> Optional[str]:
         if not self.ledger:
             return None
-        # most recent prediction event for this goal+action
+        event_id = pred.get("prediction_event_id")
+        if event_id:
+            return str(event_id)
+        # Recover by exact prediction ID for legacy/injected ledger adapters.
         try:
             for ev in reversed(self.ledger.recent(20)):
                 if ev.get("kind") == "prediction" and \
-                   (ev.get("refs") or {}).get("goal_id") == pred["goal_id"] and \
-                   (ev.get("refs") or {}).get("action") == pred["action_type"]:
+                   (ev.get("refs") or {}).get("pred_id") == pred.get("pred_id"):
                     return ev["event_id"]
         except Exception:
             pass

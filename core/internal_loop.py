@@ -1376,6 +1376,7 @@ class InternalThoughtLoop:
                 _action_report = self._goal_action_executor.run_tick(
                     preferred_goal_id=preferred_goal_id,
                     selection_is_authoritative=decision_is_fresh,
+                    cycle_id=self._slow_cycle_count,
                 )
                 if _action_report and _action_report.get("success"):
                     logger.info(

@@ -53,6 +53,7 @@ import logging
 import re
 import threading
 import time
+import uuid
 from collections import deque
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -228,6 +229,7 @@ class GoalActionExecutor:
         self,
         preferred_goal_id: Optional[str] = None,
         selection_is_authoritative: bool = False,
+        cycle_id: Optional[int] = None,
     ) -> Optional[Dict]:
         """
         Select and execute one action for the highest-priority eligible goal.
@@ -281,6 +283,7 @@ class GoalActionExecutor:
         # Prefer the persistent intention plan. Rotation remains a safe
         # fallback when the long-horizon planner is unavailable.
         action_type = self._planned_action(goal) or self._choose_action_rotating(goal)
+        execution_id = "act_" + uuid.uuid4().hex
 
         async_key = None
         if action_type in (ACTION_WEB_SEARCH, ACTION_SELF_QUESTION, ACTION_BISOCIATIVE):
@@ -330,7 +333,9 @@ class GoalActionExecutor:
                 goal_id    = str(goal.id),
                 goal_topic = goal.topic,
                 action_type= action_type,
+                cycle_id   = cycle_id,
                 goal_energy= float(getattr(goal, "energy", 1.0)),
+                execution_id=execution_id,
             )
         except Exception as _ct_pe:
             logger.debug(f"[GoalActionExecutor] consequence predict error: {_ct_pe}")
@@ -358,6 +363,8 @@ class GoalActionExecutor:
             'goal_id':    goal.id,
             'goal_topic': goal.topic,
             'action':     action_type,
+            'execution_id': execution_id,
+            'cycle_id': cycle_id,
             'success':    False,
             'result':     '',
         }
@@ -385,7 +392,8 @@ class GoalActionExecutor:
                 self._fire(
                     coro,
                     on_error=lambda error: self._finalize_async_action(
-                        goal, action_type, False, f"async action raised: {error}"
+                        goal, action_type, False, f"async action raised: {error}",
+                        execution_id=execution_id, cycle_id=cycle_id,
                     ),
                     on_complete=lambda: self._release_async_action(async_key),
                 )
@@ -413,9 +421,15 @@ class GoalActionExecutor:
             self._broadcast(
                 f"[Action:{action_type}] {goal.topic[:40]} — {report['result'][:80]}"
             )
-            self._record_plan_outcome(goal, action_type, True, report['result'])
+            self._record_plan_outcome(
+                goal, action_type, True, report['result'],
+                execution_id=execution_id, cycle_id=cycle_id,
+            )
         elif not report['result'].endswith("dispatched (async)"):
-            self._record_plan_outcome(goal, action_type, False, report['result'])
+            self._record_plan_outcome(
+                goal, action_type, False, report['result'],
+                execution_id=execution_id, cycle_id=cycle_id,
+            )
 
         # ── CAUSAL CLOSURE: resolve the prediction against the REAL outcome ──
         # Computes prediction error and selectively propagates it to
@@ -427,7 +441,7 @@ class GoalActionExecutor:
                     and not report['result'].endswith("dispatched (async)")):
                 from cognition.consequence_tracker import get_consequence_tracker
                 _ct = get_consequence_tracker(self._o)
-                _res = _ct.resolve(_ct_pred, report)
+                _res = _ct.resolve(_ct_pred, report, cycle_id=cycle_id)
                 if _res.get("resolved"):
                     _ed = _res.get("efficacy_delta") or {}
                     logger.info(
@@ -1900,13 +1914,17 @@ class GoalActionExecutor:
             logger.debug("[GoalActionExecutor] planned action unavailable: %s", e)
             return None
 
-    def _record_plan_outcome(self, goal, action_type: str, success: bool, result: str = "") -> None:
+    def _record_plan_outcome(
+        self, goal, action_type: str, success: bool, result: str = "",
+        *, execution_id: str = "", cycle_id: Optional[int] = None,
+    ) -> None:
         try:
             loop = getattr(self._o, "_loop", None)
             planner = getattr(loop, "_long_horizon_planner", None) if loop else None
             if planner is not None:
                 planner.record_goal_action_outcome(
-                    str(goal.id), action_type, success, result
+                    str(goal.id), action_type, success, result,
+                    execution_id=execution_id, cycle_id=cycle_id,
                 )
         except Exception as e:
             logger.debug("[GoalActionExecutor] plan outcome error: %s", e)
@@ -1972,9 +1990,17 @@ class GoalActionExecutor:
         )
 
     def _finalize_async_action(
-        self, goal, action_type: str, success: bool, result: str = ""
+        self, goal, action_type: str, success: bool, result: str = "",
+        *, execution_id: str = "", cycle_id: Optional[int] = None,
     ) -> None:
         """Commit a completed background action to goals, plans and learning."""
+        prediction = self._pending_predictions.pop(
+            (str(goal.id), action_type), None
+        )
+        if prediction is not None:
+            execution_id = execution_id or str(prediction.get("execution_id") or "")
+            if cycle_id is None:
+                cycle_id = prediction.get("cycle_id")
         if success:
             goal_engine = self._get_goal_engine()
             if goal_engine is not None:
@@ -1983,10 +2009,9 @@ class GoalActionExecutor:
             self._broadcast(
                 f"[Action:{action_type}] {goal.topic[:40]} - {result[:80]}"
             )
-        self._record_plan_outcome(goal, action_type, success, result)
-
-        prediction = self._pending_predictions.pop(
-            (str(goal.id), action_type), None
+        self._record_plan_outcome(
+            goal, action_type, success, result,
+            execution_id=execution_id, cycle_id=cycle_id,
         )
         if prediction is not None:
             try:
@@ -1997,8 +2022,12 @@ class GoalActionExecutor:
                     "action": action_type,
                     "success": success,
                     "result": result,
+                    "execution_id": execution_id or prediction.get("execution_id"),
+                    "cycle_id": cycle_id if cycle_id is not None else prediction.get("cycle_id"),
                 }
-                get_consequence_tracker(self._o).resolve(prediction, report)
+                get_consequence_tracker(self._o).resolve(
+                    prediction, report, cycle_id=report["cycle_id"]
+                )
             except Exception as e:
                 logger.debug(
                     "[GoalActionExecutor] async consequence resolution error: %s", e

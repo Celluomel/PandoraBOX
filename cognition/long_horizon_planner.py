@@ -313,7 +313,8 @@ class LongHorizonPlanner:
         return step.operation
 
     def record_goal_action_outcome(
-        self, goal_id: str, action_type: str, success: bool, result: str = ""
+        self, goal_id: str, action_type: str, success: bool, result: str = "",
+        *, execution_id: str = "", cycle_id: Optional[int] = None,
     ) -> None:
         """Advance a goal intention only after the operation really completed."""
         key = f"goal:{goal_id}"
@@ -396,6 +397,8 @@ class LongHorizonPlanner:
             "success": bool(success),
             "result": result_summary,
             "observed_at": plan.decision_updated_at,
+            "execution_id": str(execution_id or "") or None,
+            "cycle_id": cycle_id,
         }
         if episode is not None:
             plan.reasoning_confidence = episode.confidence

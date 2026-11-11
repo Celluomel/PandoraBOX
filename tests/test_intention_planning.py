@@ -191,6 +191,25 @@ class IntentionPlanningTests(unittest.TestCase):
             self.assertEqual(plan.decision_rationale, initial_decision)
             self.assertEqual(episode.decision_rationale, plan.current_decision)
 
+    def test_goal_outcome_persists_action_execution_provenance(self):
+        with tempfile.TemporaryDirectory() as folder:
+            planner, _, _ = self._planner(folder)
+            goal = NS(id="g-provenance", topic="learn causal audit", origin="resolve_uncertainty")
+            plan = planner.ensure_goal_plan(goal)
+
+            planner.record_goal_action_outcome(
+                goal.id,
+                "memory_recall",
+                True,
+                "recalled one relevant record",
+                execution_id="act-cycle-31-1",
+                cycle_id=31,
+            )
+
+            self.assertEqual(plan.last_outcome["execution_id"], "act-cycle-31-1")
+            self.assertEqual(plan.last_outcome["cycle_id"], 31)
+            self.assertEqual(plan.last_outcome["operation"], "memory_recall")
+
     def test_failed_autonomous_action_does_not_complete_aspiration_step(self):
         with tempfile.TemporaryDirectory() as folder:
             planner, _, _ = self._planner(folder)
@@ -352,8 +371,8 @@ class IntentionPlanningTests(unittest.TestCase):
         calls = []
 
         class PlannerSpy:
-            def record_goal_action_outcome(self, *args):
-                calls.append(("goal", args))
+            def record_goal_action_outcome(self, *args, **kwargs):
+                calls.append(("goal", args, kwargs))
 
             def record_autonomous_action_outcome(self, *args, **kwargs):
                 calls.append(("aspiration", args, kwargs))
@@ -367,6 +386,7 @@ class IntentionPlanningTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0][0], "goal")
         self.assertEqual(calls[0][1][0:3], ("goal-linked", "user_question", True))
+        self.assertEqual(calls[0][2]["execution_id"], "")
 
     def test_executor_prevents_duplicate_async_action_for_same_goal(self):
         executor = GoalActionExecutor.__new__(GoalActionExecutor)
