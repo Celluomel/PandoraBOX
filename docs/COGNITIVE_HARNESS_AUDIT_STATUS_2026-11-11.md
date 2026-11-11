@@ -95,7 +95,7 @@ Pour chaque case, rapporter **observé**, **inféré** ou **inconnu**. Ne pas in
 
 ## État Git et préservation du worktree
 
-À l’état actuel de cette reprise, `main` contient les commits d’audit jusqu’à `7e7835e`, tandis que `origin/main` reste sur `17ae81c` (avance locale, pas encore poussée). Le worktree contient des modifications et fichiers non suivis préexistants sans rapport avec l’audit, notamment des changements Body, pages, tests et artefacts. Ils restent intacts et exclus des commits d’audit.
+À l’état actuel de cette reprise, `main` contient les commits d’audit jusqu’à `d0ff7a0`, tandis que `origin/main` reste sur `17ae81c` (avance locale, pas encore poussée). Le worktree contient des modifications et fichiers non suivis préexistants sans rapport avec l’audit, notamment des changements Body, pages, tests et artefacts. Ils restent intacts et exclus des commits d’audit.
 
 ## Critère de clôture
 
@@ -206,3 +206,11 @@ Le registre de modules classait `healthy` toute méthode qui se terminait sans e
 Le registre distingue maintenant `output_unverified` pour une sortie vide, opaque ou de forme inconnue; `side_effect_only` reste interprété comme une exécution déclarée à effet de bord; un résultat numérique non fini reste `degraded`; `healthy` indique seulement une sortie présente et des contrôles structurels/numeric de base réussis, sans prétendre valider le sens cognitif. Le snapshot de l’InternalLoop applique le même contrat que le registre.
 
 Le lot ciblé (ticks, workflow, intention/planification, traçage de tour) passe : **57 passed**, 3 sous-tests passés, 9 avertissements. `py_compile` des modules modifiés et `git diff --check` passent. Le changement n’est pas chargé dans Lumina avant le redémarrage final.
+
+## Étapes sociales du planner — récupération sans faux effet mesuré
+
+Après avoir empêché la progression d’un plan d’aspiration à partir d’un tour utilisateur non corrélé, une étape de récupération persistée `user_question` aurait pu rester bloquée. Le code de création nommait en réalité cette étape comme une question utilisateur, alors que `_execute_autonomous_social_step()` ne faisait qu’émettre un probe interne. La correction distingue maintenant `social_probe` d’une vraie question; les anciennes étapes de récupération sont migrées au chargement et réécrites sans supprimer l’historique du plan.
+
+Les étapes terminées par ce probe sont enregistrées comme exécutées, mais ne reçoivent plus des valeurs numériques fixes de coût/gain. La déviation n’est calculée que si coût **et** effet sont effectivement mesurés; sinon le journal mentionne `effect_not_measured=true`. Le probe interne peut donc compléter son opération, sans prétendre avoir mesuré un gain de confiance utilisateur.
+
+Résultat du lot ciblé : **60 passed**, 3 sous-tests passés, 8 avertissements. Il inclut la migration d’un ancien plan, le maintien d’une vraie étape `user_question` sans réponse, l’exécution du `social_probe` et l’absence de déviation numérique fabriquée. `py_compile` et `git diff --check` réussis. Le process live reste volontairement sur son code antérieur, sans redémarrage.

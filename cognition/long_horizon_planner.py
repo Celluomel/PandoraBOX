@@ -203,7 +203,7 @@ class LongHorizonPlanner:
             f"operation={step.operation if step else 'social'}; no user turn required",
             0.55,
         )
-        self.record_step_outcome(domain, actual_cost=0.02, actual_gain=0.005)
+        self.record_step_outcome(domain)
         plan = self._plans.get(domain)
         if plan:
             plan.last_outcome = {
@@ -477,17 +477,22 @@ class LongHorizonPlanner:
         except Exception as exc:
             logger.debug("[LongHorizonPlanner] workspace broadcast failed: %s", exc)
 
-    def record_step_outcome(self, aspiration_domain: str,
-                             actual_cost: float, actual_gain: float) -> None:
-        """Update plan with actual outcome; trigger revision if needed."""
+    def record_step_outcome(
+        self,
+        aspiration_domain: str,
+        actual_cost: Optional[float] = None,
+        actual_gain: Optional[float] = None,
+    ) -> None:
+        """Complete a step; compare effects only when both are measured."""
         plan = self._plans.get(aspiration_domain)
         if not plan: return
         idx = plan.steps_completed
         if idx >= len(plan.steps): return
         step = plan.steps[idx]
-        deviation = abs(actual_cost - step.expected_cost) + \
-                    abs(actual_gain - step.expected_gain)
-        plan.outcome_deviations.append(deviation)
+        deviation = None
+        if actual_cost is not None and actual_gain is not None:
+            deviation = abs(actual_cost - step.expected_cost) + abs(actual_gain - step.expected_gain)
+            plan.outcome_deviations.append(deviation)
         step.status = "completed"
         plan.steps_completed += 1
         # A terminal outcome is a completion, not a reason to replan.  The
@@ -506,7 +511,7 @@ class LongHorizonPlanner:
                 f"progress={plan.steps_completed}/{len(plan.steps)}",
                 0.66,
             )
-        elif deviation > REVISION_TRIGGER and len(plan.outcome_deviations) >= 2:
+        elif deviation is not None and deviation > REVISION_TRIGGER and len(plan.outcome_deviations) >= 2:
             logger.info(f"[LongHorizonPlanner] Replanning {aspiration_domain} "
                         f"(deviation={deviation:.2f})")
             threading.Thread(target=self._replan,
@@ -521,7 +526,11 @@ class LongHorizonPlanner:
             self._broadcast(
                 "long_horizon_planner.outcome",
                 f"[PlanStep] domain={aspiration_domain}; operation={step.operation}; "
-                f"deviation={deviation:.2f}; progress={plan.steps_completed}/{len(plan.steps)}",
+                + (
+                    f"deviation={deviation:.2f}; progress={plan.steps_completed}/{len(plan.steps)}"
+                    if deviation is not None else
+                    f"effect_not_measured=true; progress={plan.steps_completed}/{len(plan.steps)}"
+                ),
                 0.52,
             )
         self._save()
@@ -552,9 +561,7 @@ class LongHorizonPlanner:
         if success:
             # Only a completed operation can advance the plan. The former
             # failure path advanced it too, despite having no success evidence.
-            self.record_step_outcome(
-                aspiration_domain, actual_cost=0.05, actual_gain=0.05
-            )
+            self.record_step_outcome(aspiration_domain)
         else:
             # A failed operation is an attempt, not completed progress.
             step.attempts += 1
@@ -1026,7 +1033,7 @@ class LongHorizonPlanner:
                 steps.append(PlanStep(
                     sequence=seq, action_type="social",
                     expected_cost=0.02, expected_gain=0.005,
-                    recovery_step=True, operation="user_question",
+                    recovery_step=True, operation="social_probe",
                 ))
                 energy += 0.04   # social steps allow recovery
             else:
@@ -1079,10 +1086,19 @@ class LongHorizonPlanner:
         try:
             if not self._path.exists(): return
             data = json.loads(self._path.read_text())
+            migrated_recovery_steps = False
             for d, p in data.items():
                 if d.startswith("_"): continue
                 try:
-                    steps = [PlanStep(**s) for s in p.get("steps",[])]
+                    raw_steps = p.get("steps", [])
+                    if p.get("source", "aspiration") == "aspiration":
+                        for step_data in raw_steps:
+                            if (step_data.get("recovery_step")
+                                    and step_data.get("action_type") == "social"
+                                    and step_data.get("operation") == "user_question"):
+                                step_data["operation"] = "social_probe"
+                                migrated_recovery_steps = True
+                    steps = [PlanStep(**step_data) for step_data in raw_steps]
                     self._plans[d] = Plan(
                         aspiration_domain=p["aspiration_domain"],
                         steps=steps,
@@ -1112,5 +1128,11 @@ class LongHorizonPlanner:
                         last_outcome=p.get("last_outcome", {}),
                     )
                 except Exception: pass
+            if migrated_recovery_steps:
+                self._save()
+                logger.info(
+                    "[LongHorizonPlanner] migrated legacy aspiration recovery steps "
+                    "from user_question to social_probe"
+                )
         except Exception as e:
             logger.warning(f"[LongHorizonPlanner] load error: {e}")
