@@ -338,6 +338,7 @@ class PersonaBridge:
         vision_context: str | None = None,
         voice_mode: bool = False,
         *,
+        displayed_cognitive_trace: dict | None = None,
         allow_body_actions: bool = True,
         record_history: bool = True,
         conversation_history: list[dict] | None = None,
@@ -351,6 +352,7 @@ class PersonaBridge:
                 user_id=user_id,
                 vision_context=vision_context,
                 voice_mode=voice_mode,
+                displayed_cognitive_trace=displayed_cognitive_trace,
                 allow_body_actions=allow_body_actions,
                 record_history=record_history,
                 conversation_history=conversation_history,
@@ -704,6 +706,7 @@ class PersonaBridge:
         vision_context: str | None = None,
         voice_mode: bool = False,
         *,
+        displayed_cognitive_trace: dict | None = None,
         allow_body_actions: bool = True,
         record_history: bool = True,
         conversation_history: list[dict] | None = None,
@@ -735,6 +738,31 @@ class PersonaBridge:
         # text and respond with commentary ("Your observation is detailed…")
         # instead of treating it as its own first-person perception.
         effective_input = user_text
+        self._record_turn_stage("turn_input", "received", output=effective_input)
+        _displayed_trace = None
+        try:
+            from cognition.self_description import (
+                is_cognitive_trace_query,
+                sanitize_displayed_cognitive_trace,
+            )
+            if is_cognitive_trace_query(effective_input):
+                _displayed_trace = sanitize_displayed_cognitive_trace(
+                    displayed_cognitive_trace
+                )
+                plan = (_displayed_trace or {}).get("dominant_plan") or {}
+                self._record_turn_context_source(
+                    "displayed_cognitive_trace",
+                    "injected" if _displayed_trace is not None else "unavailable",
+                    captured_at=(_displayed_trace or {}).get("captured_at"),
+                    plan_present=bool(plan),
+                    steps_completed=plan.get("steps_completed"),
+                    steps_total=plan.get("steps_total"),
+                    completed_count=len(plan.get("completed_operations", [])),
+                    last_outcome_success=(plan.get("last_outcome") or {}).get("success")
+                    if isinstance(plan.get("last_outcome"), dict) else None,
+                )
+        except Exception as _displayed_trace_error:
+            logger.debug("Displayed Cognitive Trace routing unavailable: %s", _displayed_trace_error)
         self._pending_vision_context = None
         _peer_scoped_turn = bool(peer_name) or str(cognitive_scope_id or "").startswith("peer:")
 
@@ -852,6 +880,7 @@ class PersonaBridge:
                     peer_name=peer_name,
                     max_tokens_override=max_tokens_override,
                     cognitive_scope_id=cognitive_scope_id,
+                    displayed_cognitive_trace=_displayed_trace,
                 ):
                     yield chunk
                 self._record_turn_stage("streaming_lifecycle", "completed")
@@ -1140,6 +1169,7 @@ Write at most 70 words, in the user's language, only if a concise carry-forward 
         peer_name: str = "",
         max_tokens_override: int | None = None,
         cognitive_scope_id: str = "",
+        displayed_cognitive_trace: dict | None = None,
     ):
         """
         Streaming path that runs every single lifecycle step from get_response().
@@ -1155,10 +1185,16 @@ Write at most 70 words, in the user's language, only if a concise carry-forward 
         # must live in this method's scope; the prompt builder runs in a
         # separate worker thread and its local variables are not shared.
         try:
-            from cognition.self_description import is_architecture_query
-            _architecture_query = is_architecture_query(effective_input)
+            from cognition.self_description import (
+                is_architecture_query, is_cognitive_trace_query,
+            )
+            _cognitive_trace_query = is_cognitive_trace_query(effective_input)
+            _architecture_query = (
+                is_architecture_query(effective_input) or _cognitive_trace_query
+            )
         except Exception as _architecture_query_error:
             _architecture_query = False
+            _cognitive_trace_query = False
             logger.debug("Architecture query detection unavailable: %s", _architecture_query_error)
         _dialogue_continuity = self._recent_dialogue_continuity(
             effective_input,
@@ -1296,6 +1332,10 @@ Write at most 70 words, in the user's language, only if a concise carry-forward 
         _suppress_external_search = bool(
             voice_mode
             or bool(peer_name)
+            # Architecture/self-audit answers are closed-world: they must be
+            # grounded in this process's own trace, not supplemented by web
+            # snippets that cannot prove what Lumina executed.
+            or _architecture_query
             or _quantitative_analysis is not None
             or (
                 _goal_means_analysis is not None
@@ -1310,7 +1350,10 @@ Write at most 70 words, in the user's language, only if a concise carry-forward 
             not bool(peer_name),
             peer_name,
         )
-        self._record_turn_stage("prompt_assembly", "completed", f"{len(system_prompt)} chars")
+        self._record_turn_stage(
+            "prompt_assembly", "completed", f"{len(system_prompt)} chars",
+            output=system_prompt, consumes=("turn_input",),
+        )
         if peer_name:
             system_prompt += (
                 f"\n\nINTERLOCUTOR: You are speaking in a private cognitive dialogue with "
@@ -1727,6 +1770,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         _visible_candidate = str(_deterministic_response or "")
                         _guarded = trace_grounded_architecture_answer(
                             effective_input, self.get_last_turn_trace(),
+                            displayed_cognitive_trace,
                         )
                         _was_replaced = _visible_candidate.strip() != _guarded.strip()
                         _deterministic_response = _guarded
@@ -1832,6 +1876,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         from cognition.self_description import trace_grounded_architecture_answer
                         _guarded = trace_grounded_architecture_answer(
                             effective_input, self.get_last_turn_trace(),
+                            displayed_cognitive_trace,
                         )
                         _was_replaced = _visible_candidate.strip() != _guarded.strip()
                         self._record_turn_stage(
@@ -2736,11 +2781,15 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             try:
                 from cognition.self_description import (
                     get_self_description, is_architecture_query,
+                    is_cognitive_trace_query,
                 )
-                _architecture_query = is_architecture_query(user_input)
+                _trace_only_query = is_cognitive_trace_query(user_input)
+                _architecture_query = (
+                    is_architecture_query(user_input) or _trace_only_query
+                )
                 _module_tick_snapshot = None
                 _module_entries = []
-                if _architecture_query:
+                if _architecture_query and not _trace_only_query:
                     _loop = getattr(self._organism, "_loop", None)
                     _snapshot_fn = getattr(_loop, "module_tick_snapshot", None)
                     if callable(_snapshot_fn):

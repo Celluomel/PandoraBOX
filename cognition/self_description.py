@@ -50,7 +50,94 @@ def is_architecture_query(user_input: str) -> bool:
     )
 
 
-def trace_grounded_architecture_answer(user_input: str, trace: Dict[str, Any]) -> str:
+def is_cognitive_trace_query(user_input: str) -> bool:
+    """Detect questions about the UI's displayed Cognitive Trace snapshot."""
+    text = " ".join(str(user_input or "").casefold().split())
+    mentions_trace = bool(re.search(
+        r"\b(?:cognitive\s+trace|trace\s+(?:cognitive|affichée?|visible)|"
+        r"trace\s+displayed|trace\s+shown)\b", text,
+    ))
+    asks_analysis = bool(re.search(
+        r"\b(?:analy[sz](?:e|ing|is)|analys(?:e|er|ons|er uniquement)|audit|preuve|causal|"
+        r"exécut(?:ion|é|ée|és|ées)|completed|last\s+outcome|"
+        r"résultat|effet|attribut|tour|message)\b", text,
+    ))
+    return mentions_trace and asks_analysis
+
+
+def sanitize_displayed_cognitive_trace(value: Any) -> Dict[str, Any] | None:
+    """Keep only bounded, display-level fields from the browser trace snapshot."""
+    if not isinstance(value, dict):
+        return None
+
+    def text(item: Any, limit: int) -> str:
+        return str(item or "").replace("\x00", "")[:limit]
+
+    def number(item: Any, *, integer: bool = False) -> int | float | None:
+        try:
+            result = float(item)
+            if result != result or result in (float("inf"), float("-inf")):
+                return None
+            result = max(0.0, min(1e12, result))
+            return int(result) if integer else result
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+    sanitized: Dict[str, Any] = {"captured_at": number(value.get("captured_at"))}
+    goals = value.get("active_goals")
+    sanitized["active_goals"] = []
+    if isinstance(goals, list):
+        for goal in goals[:4]:
+            if not isinstance(goal, dict):
+                continue
+            sanitized["active_goals"].append({
+                "id": text(goal.get("id"), 80),
+                "topic": text(goal.get("topic"), 120),
+                "origin": text(goal.get("origin"), 40),
+                "activation": number(goal.get("activation")),
+                "energy": number(goal.get("energy")),
+            })
+
+    plan = value.get("dominant_plan")
+    if not isinstance(plan, dict):
+        sanitized["dominant_plan"] = None
+        return sanitized
+    completed = plan.get("completed_operations")
+    completed = (
+        [text(operation, 80) for operation in completed[:8]]
+        if isinstance(completed, list) else []
+    )
+    outcome = plan.get("last_outcome")
+    outcome = outcome if isinstance(outcome, dict) else {}
+    sanitized["dominant_plan"] = {
+        "objective": text(plan.get("objective"), 160),
+        "status": text(plan.get("status"), 24),
+        "steps_completed": number(plan.get("steps_completed"), integer=True),
+        "steps_total": number(plan.get("steps_total"), integer=True),
+        "completed_operations": completed,
+        "next_operation": text(plan.get("next_operation"), 80),
+        "reasoning_confidence": number(plan.get("reasoning_confidence")),
+        "uncertainties": [
+            text(item, 160) for item in plan.get("uncertainties", [])[:3]
+        ] if isinstance(plan.get("uncertainties"), list) else [],
+        "decision_summary": text(plan.get("decision_summary"), 300),
+        "decision_revision": number(plan.get("decision_revision"), integer=True),
+        "decision_updated_at": number(plan.get("decision_updated_at")),
+        "last_outcome": {
+            "operation": text(outcome.get("operation"), 80),
+            "success": outcome.get("success") if isinstance(outcome.get("success"), bool) else None,
+            "result": text(outcome.get("result"), 200),
+            "observed_at": number(outcome.get("observed_at")),
+        } if outcome else None,
+    }
+    return sanitized
+
+
+def trace_grounded_architecture_answer(
+    user_input: str,
+    trace: Dict[str, Any],
+    displayed_cognitive_trace: Dict[str, Any] | None = None,
+) -> str:
     """Summarize only architecture evidence recorded for the current turn.
 
     Runtime traces prove stage execution, not semantic correctness or a
@@ -61,6 +148,72 @@ def trace_grounded_architecture_answer(user_input: str, trace: Dict[str, Any]) -
     context_sources = trace.get("context_sources", {}) if isinstance(trace, dict) else {}
     normalized = " ".join(str(user_input or "").casefold().split())
     manifest = context_sources.get("module_tick_manifest", {}) if isinstance(context_sources, dict) else {}
+    if is_cognitive_trace_query(user_input):
+        snapshot = displayed_cognitive_trace if isinstance(displayed_cognitive_trace, dict) else None
+        plan = snapshot.get("dominant_plan") if snapshot else None
+        goals = snapshot.get("active_goals") if snapshot else None
+        french = bool(re.search(r"\b(?:quels?|quelle|affichée?|preuve|tour|échec|étapes?)\b", normalized))
+        if not snapshot:
+            return (
+                "Je n’ai pas reçu le snapshot Cognitive Trace affiché par l’interface. "
+                "Je ne peux donc pas en déduire les étapes terminées, le dernier résultat ni leur lien avec ce tour."
+                if french else
+                "I did not receive the Cognitive Trace snapshot shown by the interface, so I cannot report its completed steps, last outcome, or link to this turn."
+            )
+        if not isinstance(plan, dict):
+            return (
+                "Faits affichés : aucun plan dominant n’est présent dans ce snapshot. "
+                "La trace UI ne fournit donc ni étape terminée ni dernier résultat de plan à attribuer. "
+                "Elle ne contient pas de journal d’exécution par module permettant d’établir un lien causal avec ce tour."
+                if french else
+                "Displayed facts: this snapshot has no dominant plan. It therefore provides no completed plan step or last plan outcome to attribute. The UI trace contains no per-module execution journal establishing causality with this turn."
+            )
+
+        objective = str(plan.get("objective") or "(objectif absent)")[:160]
+        completed = plan.get("completed_operations")
+        completed = [str(item)[:80] for item in completed[:8]] if isinstance(completed, list) else []
+        total = _safe_int(plan.get("steps_total"))
+        steps_done = _safe_int(plan.get("steps_completed"))
+        next_operation = str(plan.get("next_operation") or "aucune")[:80]
+        outcome = plan.get("last_outcome") if isinstance(plan.get("last_outcome"), dict) else {}
+        outcome_operation = str(outcome.get("operation") or "opération non précisée")[:80]
+        outcome_result = str(outcome.get("result") or "détail absent")[:200]
+        outcome_status = "échec" if outcome.get("success") is False else "succès" if outcome.get("success") is True else "statut absent"
+        captured_at = snapshot.get("captured_at")
+        capture_note = ""
+        try:
+            age = max(0.0, time.time() - float(captured_at))
+            capture_note = f" Snapshot capturé il y a {age:.0f} s." if french else f" Snapshot captured {age:.0f}s ago."
+        except (TypeError, ValueError):
+            pass
+        if french:
+            goal_count = len(goals) if isinstance(goals, list) else 0
+            complete_text = ", ".join(completed) if completed else "aucune"
+            outcome_time = outcome.get("observed_at")
+            time_note = ""
+            try:
+                time_note = f" (horodaté {float(outcome_time):.0f})"
+            except (TypeError, ValueError):
+                pass
+            return (
+                f"Faits du snapshot UI transmis : {goal_count} objectif(s) actif(s); plan « {objective} », "
+                f"progression {steps_done}/{total}, étapes terminées : {complete_text}, prochaine opération : {next_operation}. "
+                f"Dernier résultat enregistré : {outcome_operation} — {outcome_status} — {outcome_result}{time_note}.{capture_note} "
+                "Cela décrit l’état affiché du plan; « aucune » signifie qu’aucune étape n’est marquée terminée. "
+                "Aucun composant ne peut être confirmé comme exécuté pendant le tour à partir de ce panneau seul. "
+                "Le snapshot ne fournit pas d’identifiant reliant ce résultat au message analysé, ni de journal par module : "
+                "je ne peux donc pas établir que l’échec a été causé par ce tour ou vérifier indépendamment l’effet de l’opération."
+            )
+        complete_text = ", ".join(completed) if completed else "none"
+        return (
+            f"Facts in the transmitted UI snapshot: plan '{objective}', progress {steps_done}/{total}, "
+            f"completed steps: {complete_text}, next operation: {next_operation}. "
+            f"Last recorded outcome: {outcome_operation} — {outcome_status} — {outcome_result}.{capture_note} "
+            "This is displayed planner state; 'none' means no step is marked completed. The snapshot has no identifier "
+            "linking that outcome to the message being analyzed and no per-module execution journal, so no component execution "
+            "can be confirmed for this turn from this panel alone, and I cannot attribute the failure to this turn or independently verify the operation's effect."
+        )
+
     module_tick_question = bool(
         re.search(r"\bmodules?\b", normalized)
         and re.search(r"\b(?:tick|exécut|observ|initialis|indisponible|compteur)", normalized)
@@ -137,6 +290,13 @@ def trace_grounded_architecture_answer(user_input: str, trace: Dict[str, Any]) -
         "not the semantic role of modules or the correctness of the reasoning. The tick manifest "
         "shows which calls were observed; it does not validate their results."
     )
+
+
+def _safe_int(value: Any) -> int:
+    try:
+        return max(0, min(10000, int(value or 0)))
+    except (TypeError, ValueError, OverflowError):
+        return 0
 
 
 @dataclass

@@ -1237,13 +1237,15 @@ export default function App() {
   async function send(text = draft, automatic = false) {
     text = text.trim();
     if (!text || busy || (!automatic && audioBusy) || !connected || !status?.ready || status.busy) return;
+    const lastAssistantMessage = [...messages].reverse().find(message => message.role === 'assistant');
+    const displayedCognitiveTrace = lastAssistantMessage?.telemetry;
     stopAudio(); setError(''); setDraft(''); setBusy(true); setAtBottom(true);
     const assistantId = crypto.randomUUID();
     setMessages(previous => [...previous, { id: crypto.randomUUID(), role: 'user', text }, { id: assistantId, role: 'assistant', text: '' }]);
     const controller = new AbortController(); abort.current = controller;
     let accumulated = ''; let reasoningAccumulated = ''; let complete = false; let spokenCursor = 0; let spokenSentenceCount = 0;
     try {
-      const response = await checked(await fetch('/api/interface/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, voice_mode: automatic }), signal: controller.signal }));
+      const response = await checked(await fetch('/api/interface/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, voice_mode: automatic, displayed_cognitive_trace: displayedCognitiveTrace }), signal: controller.signal }));
       if (!response.body) throw new Error('The response stream is unavailable.');
       for await (const event of readEvents(response.body)) {
         if (event.type === 'error') throw new Error(event.message);

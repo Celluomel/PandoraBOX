@@ -1700,6 +1700,9 @@ class Turn(BaseModel):
     # Voice turns use a latency-optimized cognitive path. Text chat keeps
     # the full auxiliary reasoning pipeline unchanged.
     voice_mode: bool = False
+    # Snapshot visibly attached to the previous assistant turn. It is accepted
+    # only as bounded evidence for explicit Cognitive Trace audit questions.
+    displayed_cognitive_trace: dict | None = None
 
 
 @router.post('/voice/coqui-recording')
@@ -1772,6 +1775,13 @@ async def chat(payload: Turn, request: Request):
         text = security.sanitise_input(payload.text.strip(), user_id)
     except SecurityViolation as exc:
         raise HTTPException(400, str(exc)) from exc
+    if payload.displayed_cognitive_trace is not None:
+        try:
+            trace_size = len(json.dumps(payload.displayed_cognitive_trace, ensure_ascii=False))
+        except (TypeError, ValueError):
+            raise HTTPException(422, 'Displayed cognitive trace must be JSON data.')
+        if trace_size > 20000:
+            raise HTTPException(413, 'Displayed cognitive trace is too large.')
     if not text:
         raise HTTPException(400, 'Enter a message first.')
     state.notify_user_turn(text, user_id)
@@ -1827,12 +1837,14 @@ async def chat(payload: Turn, request: Request):
             _event('Turn started', turn_id)
             await emit('start')
             vision = state.vision.get_visual_context_for_prompt() if state.vision else None
-            stream = state.persona.get_response_stream(
-                text,
-                user_id=user_id,
-                vision_context=vision,
-                voice_mode=payload.voice_mode,
-            )
+            stream_kwargs = {
+                'user_id': user_id,
+                'vision_context': vision,
+                'voice_mode': payload.voice_mode,
+            }
+            if payload.displayed_cognitive_trace is not None:
+                stream_kwargs['displayed_cognitive_trace'] = payload.displayed_cognitive_trace
+            stream = state.persona.get_response_stream(text, **stream_kwargs)
             first = True
             iterator = stream.__aiter__()
             try:

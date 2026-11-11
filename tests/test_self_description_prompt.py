@@ -8,6 +8,8 @@ from cognition.self_description import (
     ComponentDesc,
     SelfDescription,
     is_architecture_query,
+    is_cognitive_trace_query,
+    sanitize_displayed_cognitive_trace,
     trace_grounded_architecture_answer,
 )
 
@@ -136,6 +138,77 @@ class SelfDescriptionPromptTests(unittest.TestCase):
         self.assertIn("ne deviennent pas des observations", answer)
         self.assertNotIn("recense 0 modules", answer)
 
+    def test_cognitive_trace_question_uses_displayed_plan_not_global_tick_manifest(self):
+        question = (
+            "For the audit, analyze only the Cognitive Trace displayed for my last "
+            "message: which components have explicit execution evidence this turn?"
+        )
+        self.assertTrue(is_cognitive_trace_query(question))
+        answer = trace_grounded_architecture_answer(
+            question,
+            {
+                "stages": {},
+                "context_sources": {
+                    "module_tick_manifest": {
+                        "status": "injected", "module_count": 43,
+                        "observed_count": 40, "tick_count": 238,
+                    },
+                },
+            },
+            {
+                "captured_at": 1794340000,
+                "active_goals": [{"topic": "goal a"}, {"topic": "goal b"}],
+                "dominant_plan": {
+                    "objective": "Develop a coherent account of identity",
+                    "steps_completed": 0,
+                    "steps_total": 15,
+                    "completed_operations": [],
+                    "next_operation": "memory_recall",
+                    "last_outcome": {
+                        "operation": "memory_recall",
+                        "success": False,
+                        "result": "No matching memory evidence",
+                        "observed_at": 1794339900,
+                    },
+                },
+            },
+        )
+        self.assertIn("progress 0/15", answer)
+        self.assertIn("completed steps: none", answer)
+        self.assertIn("failure", answer)
+        self.assertIn("no per-module execution journal", answer)
+        self.assertIn("no component execution can be confirmed", answer)
+        self.assertNotIn("43 modules", answer)
+        self.assertNotIn("238 ticks", answer)
+
+    def test_cognitive_trace_question_says_when_snapshot_was_not_sent(self):
+        answer = trace_grounded_architecture_answer(
+            "Analyze only the Cognitive Trace displayed for my last message.",
+            {"stages": {}, "context_sources": {}},
+        )
+        self.assertIn("did not receive the Cognitive Trace snapshot", answer)
+
+    def test_displayed_trace_sanitizer_bounds_and_selects_only_ui_fields(self):
+        snapshot = sanitize_displayed_cognitive_trace({
+            "captured_at": 1000,
+            "unexpected": "must not pass",
+            "active_goals": [{"topic": "goal", "private_blob": "discard"}],
+            "dominant_plan": {
+                "objective": "plan",
+                "steps_completed": "0",
+                "steps_total": 15,
+                "completed_operations": [],
+                "last_outcome": {
+                    "operation": "recall", "success": False,
+                    "result": "failed", "unbounded": "discard",
+                },
+            },
+        })
+        self.assertNotIn("unexpected", snapshot)
+        self.assertNotIn("private_blob", snapshot["active_goals"][0])
+        self.assertNotIn("unbounded", snapshot["dominant_plan"]["last_outcome"])
+        self.assertEqual(snapshot["dominant_plan"]["steps_completed"], 0)
+
     def test_stream_lifecycle_classifies_architecture_query_in_closure_scope(self):
         from cognition.persona_bridge import PersonaBridge
 
@@ -170,6 +243,20 @@ class SelfDescriptionPromptTests(unittest.TestCase):
             isinstance(node, ast.Name) and node.id == "_architecture_query"
             for node in ast.walk(nested_stream)
         ))
+
+        search_policy = next(
+            node for node in ast.walk(function)
+            if isinstance(node, ast.Assign)
+            and any(
+                isinstance(target, ast.Name)
+                and target.id == "_suppress_external_search"
+                for target in node.targets
+            )
+        )
+        self.assertTrue(any(
+            isinstance(node, ast.Name) and node.id == "_architecture_query"
+            for node in ast.walk(search_policy)
+        ), "architecture audit turns must use closed-world evidence")
 
     def test_turn_trace_preserves_aggregated_tick_manifest_counts(self):
         from cognition.persona_bridge import PersonaBridge
