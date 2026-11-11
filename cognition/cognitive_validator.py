@@ -280,19 +280,21 @@ class CognitiveValidator:
 @dataclass
 class ArchitectureHealthReport:
     timestamp:          float
-    overall_health:     float       # 0–1
+    overall_health:     float       # legacy activity index, not cognitive effectiveness
     component_scores:   Dict[str, float]
     warnings:           List[str]
     critical:           bool
+    measurement_scope:  str = "activity_and_availability_proxies_not_output_quality"
 
     def is_healthy(self) -> bool:
+        """Legacy threshold for the activity index; not a quality verdict."""
         return self.overall_health >= 0.5 and not self.critical
 
 
 class CognitiveArchitectureMonitor:
     """
-    Tracks whether the full cognitive architecture is functioning effectively.
-    Detects the "spinning wheels" problem: modules running but not influencing output.
+    Tracks activity and availability proxies for cognitive components.
+    It does not establish that outputs are correct or affect responses usefully.
     """
 
     HEALTH_THRESHOLD  = 0.45
@@ -317,13 +319,12 @@ class CognitiveArchitectureMonitor:
 
         if report.critical:
             logger.warning(
-                f"[ArchMonitor] CRITICAL health={report.overall_health:.2f}: "
+                f"[ArchMonitor] CRITICAL activity proxy={report.overall_health:.2f}: "
                 f"{report.warnings}"
             )
-            self._emit_critical(report)
         elif not report.is_healthy():
             logger.info(
-                f"[ArchMonitor] degraded health={report.overall_health:.2f}: "
+                f"[ArchMonitor] degraded activity proxy={report.overall_health:.2f}: "
                 f"{report.warnings}"
             )
 
@@ -409,6 +410,7 @@ class CognitiveArchitectureMonitor:
             component_scores = scores,
             warnings         = warnings,
             critical         = overall < self.CRITICAL_THRESHOLD,
+            measurement_scope="activity_and_availability_proxies_not_output_quality",
         )
 
     def _check_thought_stream(self) -> float:
@@ -526,18 +528,3 @@ class CognitiveArchitectureMonitor:
             return 0.5
         except Exception:
             return 0.5
-
-    def _emit_critical(self, report: ArchitectureHealthReport) -> None:
-        ws = getattr(self._o, 'workspace', None)
-        if ws:
-            try:
-                ws.broadcast(
-                    source="arch_monitor",
-                    content=(
-                        f"Architecture health critical ({report.overall_health:.0%}): "
-                        f"{'; '.join(report.warnings[:2])}"
-                    ),
-                    priority=0.9,
-                )
-            except Exception:
-                pass

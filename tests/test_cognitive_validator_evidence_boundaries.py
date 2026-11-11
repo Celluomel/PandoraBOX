@@ -59,7 +59,31 @@ def test_surface_heuristic_does_not_change_architecture_health_score():
 
     assert report.component_scores["surface_alignment_heuristic"] == 0.0
     assert report.overall_health == 0.8
+    assert report.measurement_scope == "activity_and_availability_proxies_not_output_quality"
     assert any("not a semantic-quality measurement" in warning for warning in report.warnings)
+
+
+def test_low_activity_monitor_result_does_not_broadcast_cognitive_claim():
+    class _Workspace:
+        def __init__(self):
+            self.broadcasts = []
+
+        def broadcast(self, **kwargs):
+            self.broadcasts.append(kwargs)
+
+    organism = _Organism()
+    organism.workspace = _Workspace()
+    monitor = CognitiveArchitectureMonitor(organism, CognitiveValidator(organism))
+    monitor._check_thought_stream = lambda: 0.0
+    monitor._check_workspace = lambda: 0.0
+    monitor._check_predictive_mind = lambda: 0.0
+    monitor._check_event_bus = lambda: 0.0
+    monitor._check_inner_monologue = lambda: 0.0
+
+    report = monitor.check(force=True)
+
+    assert report.critical is True
+    assert organism.workspace.broadcasts == []
 
 
 def test_restructuring_does_not_count_silence_as_success_or_failure(tmp_path):
