@@ -33,6 +33,7 @@ from typing import Any
 from managers.settings_manager import get_persona_name as _gpn
 from cognition.identity_boundary import prompt_block as _identity_boundary_block
 from cognition.body_runtime.robot_capabilities import robot_capability_report, robot_inventory_observation
+from cognition.turn_context_evidence import memory_retrieval_evidence, profile_context_evidence
 
 from pathlib import Path
 
@@ -614,7 +615,7 @@ class PersonaBridge:
             health["last_at"] = stage["at"]
             if status in {
                 "completed", "passed", "injected", "recognized", "prepared",
-                "queued", "selected_direct", "delegated", "results_injected",
+                "queued", "selected_direct", "delegated", "results_injected", "updated",
             }:
                 health["last_success_at"] = stage["at"]
             if status in {"failed", "invalid_output", "unavailable"}:
@@ -835,6 +836,7 @@ class PersonaBridge:
                         "body_observation_context", "empathy_read",
                         "empathy_context", "empathy_outcome",
                         "human_relational_graph", "human_profile_learning",
+                        "world_model_profile_update",
                         "active_context_prompt", "active_context_update",
                     ):
                         value = stage_status.get(stage_name)
@@ -1843,7 +1845,8 @@ Write at most 70 words, in the user's language, only if a concise carry-forward 
         )
         self._record_turn_stage(
             "prompt_assembly", "completed", f"{len(system_prompt)} chars",
-            output=system_prompt, consumes=("turn_input",),
+            output=system_prompt,
+            consumes=("turn_input", "memory_retrieval", "user_profile_context"),
         )
         if peer_name:
             system_prompt += (
@@ -2901,7 +2904,9 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             try:
                 from managers.user_manager import user_manager
                 post_tasks.append(("human_profile_learning", loop.run_in_executor(
-                    None, user_manager.learn_from_message, user_id, effective_input
+                    None, lambda: user_manager.learn_from_message(
+                        user_id, effective_input, return_receipt=True,
+                    )
                 )))
             except Exception as _profile_error:
                 self._record_turn_stage(
@@ -3115,6 +3120,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             # Load the UserProfile so PandoraBOX knows who she is talking to.
             # Falls back gracefully if the profile store is unavailable.
             _user_identity_line = ""
+            _profile_context = ""
             if peer_name:
                 _user_identity_line = (
                     f"The current interlocutor is another AI system named {peer_name}, "
@@ -3130,6 +3136,27 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         _user_identity_line = f"The person you are speaking with goes by **{user_id}**."
                 except Exception as _ue:
                     logger.debug(f"User profile load (non-fatal): {_ue}")
+
+            if peer_name:
+                _profile_status = "skipped_by_scope"
+                _profile_source = "peer_identity"
+            elif _profile_context:
+                _profile_status = "injected"
+                _profile_source = "named_profile"
+            elif _user_identity_line:
+                _profile_status = "fallback_identity_only"
+                _profile_source = "user_id_fallback"
+            else:
+                _profile_status = "empty"
+                _profile_source = "no_named_profile"
+            self._record_turn_stage(
+                "user_profile_context", _profile_status,
+                output={
+                    **profile_context_evidence(
+                        _profile_status, _profile_source, _user_identity_line,
+                    ),
+                },
+            )
 
             _persona_name = _gpn()
             _interlocutor_name = peer_name or (user_id if user_id not in ("default", "guest", "") else None)
@@ -3362,6 +3389,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                 "memory_retrieval",
                 "skipped_by_scope" if peer_name else "completed",
                 "peer turn uses pair transcript only" if peer_name else f"{len(memories)} recalled items",
+                output=memory_retrieval_evidence(_recall_query, memories),
             )
 
             mods        = s.emotional_state.get_response_modifiers()
@@ -4447,14 +4475,25 @@ Memory honesty — two distinct cases:
                         'secondary_drives': [],
                         'temperature': organism.energy.temperature_hint(),
                     })()
-                    organism._post_interaction(
+                    _post_receipt = organism._post_interaction(
                         user_input,
                         response,
                         {"emo_values": emo_dict},
                         _decision,
                         human_interaction=False,
                     )
-                    self._record_turn_stage("peer_cognitive_evaluation", "completed")
+                    _profile_receipt = (
+                        _post_receipt.get("world_model_profile_update", {})
+                        if isinstance(_post_receipt, dict) else {}
+                    )
+                    self._record_turn_stage(
+                        "world_model_profile_update",
+                        str(_profile_receipt.get("status") or "unreported"),
+                        output=_profile_receipt or {"status": "unreported"},
+                    )
+                    self._record_turn_stage(
+                        "peer_cognitive_evaluation", "completed", output=_post_receipt,
+                    )
                 except Exception as _peer_post_error:
                     self._record_turn_stage(
                         "peer_cognitive_evaluation", "failed", str(_peer_post_error),
@@ -4582,8 +4621,18 @@ Memory honesty — two distinct cases:
                         'temperature': organism.energy.temperature_hint(),
                     })()
                     # Pass real emo_dict so meta_cognition evaluation is grounded
-                    organism._post_interaction(user_input, response,
-                                               {"emo_values": emo_dict}, _decision)
+                    _post_receipt = organism._post_interaction(
+                        user_input, response, {"emo_values": emo_dict}, _decision,
+                    )
+                    _profile_receipt = (
+                        _post_receipt.get("world_model_profile_update", {})
+                        if isinstance(_post_receipt, dict) else {}
+                    )
+                    self._record_turn_stage(
+                        "world_model_profile_update",
+                        str(_profile_receipt.get("status") or "unreported"),
+                        output=_profile_receipt or {"status": "unreported"},
+                    )
                     # Update additional drive satisfaction based on response quality
                     word_count = len(response.split())
                     has_question = "?" in response

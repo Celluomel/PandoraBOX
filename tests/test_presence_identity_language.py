@@ -1,5 +1,6 @@
 """Regression tests for camera identity and localized presence speech."""
 import importlib.util
+import json
 from pathlib import Path
 import sys
 import tempfile
@@ -93,6 +94,60 @@ class PresenceIdentityLanguageTests(unittest.TestCase):
 
             self.assertFalse(changed)
             self.assertEqual(fred.characteristics, [])
+
+    def test_ephemeral_profile_characteristics_are_quarantined_without_prompt_injection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "users.json"
+            transient = [
+                "back still working on your worldmodel",
+                "ravi de l'entendre",
+                "not sure what you mean with objectif actif",
+                "prêt à discuter de n'importe quel sujet",
+                "de retourcomment vas tu",
+                "curieux de savoir ce que tu pense actuellement",
+            ]
+            path.write_text(json.dumps({"active_id": "fred", "users": {
+                "fred": {
+                    "id": "fred", "display_name": "Fred",
+                    "characteristics": transient + ["software developer"],
+                },
+            }}), encoding="utf-8")
+
+            manager = users.UserManager(path)
+            profile = manager.get("fred")
+            prompt = manager.prompt_context_for("fred")
+            persisted = json.loads(path.read_text(encoding="utf-8"))
+
+        self.assertEqual(profile.characteristics, ["software developer"])
+        self.assertEqual(len(profile.profile_provenance_quarantine), len(transient))
+        self.assertNotIn("back still working", prompt)
+        self.assertNotIn("curieux de savoir", prompt)
+        self.assertEqual(len(persisted["users"]["fred"]["profile_provenance_quarantine"]), len(transient))
+
+    def test_profile_learning_receipt_distinguishes_update_from_ephemeral_chat(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = users.UserManager(Path(directory) / "users.json")
+            profile = manager.create("Fred")
+            settings = SimpleNamespace(get_persona_name=lambda: "Lumina")
+            boundary = SimpleNamespace(claims_persona_identity=lambda *_: False)
+            with patch.dict(sys.modules, {
+                "managers.settings_manager": settings,
+                "cognition.identity_boundary": boundary,
+            }):
+                ephemeral = manager.learn_from_message(
+                    profile.id, "I'm back and curious to know what you think.",
+                    return_receipt=True,
+                )
+                explicit = manager.learn_from_message(
+                    profile.id, "I prefer concise technical answers.",
+                    return_receipt=True,
+                )
+
+        self.assertEqual(ephemeral["status"], "no_explicit_profile_fact")
+        self.assertFalse(ephemeral["changed"])
+        self.assertEqual(explicit["status"], "updated")
+        self.assertEqual(explicit["categories_updated"], ["preference"])
+        self.assertTrue(explicit["changed"])
 
     def test_french_presence_repairs_language_and_stale_name(self):
         engine = presence.PresenceEngine.__new__(presence.PresenceEngine)

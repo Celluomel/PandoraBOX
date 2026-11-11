@@ -1573,16 +1573,23 @@ class CognitiveOrganism:
         except Exception:
             pass
 
-        # ── WorldModel: update user profile after every interaction ────────
+        # ── WorldModel: update the human profile, never a peer's profile ──
         try:
-            self.world_model.update_from_interaction(
-                user_id   = getattr(self, '_current_user_id', 'default'),
-                user_text = user_input,
-                response  = response,
-                emotion   = self._read_emotion_state(),
+            from cognition.profile_flow import update_behavioral_user_profile
+            world_profile_update = update_behavioral_user_profile(
+                getattr(self, "world_model", None),
+                user_id=getattr(self, '_current_user_id', 'default'),
+                user_text=user_input,
+                response=response,
+                emotion=self._read_emotion_state(),
+                human_interaction=human_interaction,
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            world_profile_update = {
+                "status": "failed", "changed": False,
+                "error_type": type(exc).__name__,
+            }
+            logger.warning("WorldModel profile update failed: %s", exc)
 
         # ── CognitiveValidator: check response-cognition alignment ─────────
         _validator_score = None
@@ -1781,6 +1788,8 @@ class CognitiveOrganism:
                 )
         except Exception:
             pass
+
+        return {"world_model_profile_update": world_profile_update}
 
     def _read_emotion_state(self) -> str:
         """Return a simple emotion label for predictive_mind / narrative_identity."""

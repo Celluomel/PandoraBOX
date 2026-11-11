@@ -59,6 +59,7 @@ class UserProfile:
     preferences:  List[str]  = field(default_factory=list)
     interests:    List[str]  = field(default_factory=list)
     characteristics: List[str] = field(default_factory=list)
+    profile_provenance_quarantine: List[Dict] = field(default_factory=list)
     color:        str        = "#6366f1"
     created_at:   str        = field(default_factory=lambda: datetime.now().isoformat())
     last_seen:    str        = field(default_factory=lambda: datetime.now().isoformat())
@@ -377,17 +378,60 @@ class UserManager:
         if not profile or profile.id == self.GUEST_ID:
             return ""
         with self._lock:
+            self._quarantine_ephemeral_characteristics(profile)
             cached = self._prompt_cache.get(profile.id)
             if cached is None:
                 cached = profile.short_bio()[:1200]
                 self._prompt_cache[profile.id] = cached
             return cached
 
-    def learn_from_message(self, user_id: str, message: str) -> bool:
+    @staticmethod
+    def _is_ephemeral_characteristic(value: str) -> bool:
+        """Reject conversational state/turn fragments as durable user traits."""
+        normalized = " ".join(str(value or "").casefold().split())
+        return bool(re.match(
+            r"^(?:back\b|de retour|ravi(?:e)?\b|not convinced\b|not sure\b|"
+            r"pr[eê]t(?:e)?\b|curieux(?:euse)?\s+(?:de\s+|d['’])(?:savoir|comprendre|voir)\b|"
+            r"curious\s+(?:to\s+(?:know|understand|see)|about\s+(?:how|why|what))\b)",
+            normalized,
+        ))
+
+    def _quarantine_ephemeral_characteristics(self, profile: UserProfile) -> int:
+        kept = []
+        moved = 0
+        for value in profile.characteristics:
+            if self._is_ephemeral_characteristic(value):
+                if not any(
+                    item.get("value", "").casefold() == str(value).casefold()
+                    for item in profile.profile_provenance_quarantine
+                    if isinstance(item, dict)
+                ):
+                    profile.profile_provenance_quarantine.append({
+                        "value": value,
+                        "reason": "conversation_state_or_question_fragment_not_durable_trait",
+                        "quarantined_at": datetime.now().isoformat(),
+                    })
+                moved += 1
+            else:
+                kept.append(value)
+        if moved:
+            profile.characteristics = kept
+            self._prompt_cache.pop(profile.id, None)
+        return moved
+
+    def learn_from_message(self, user_id: str, message: str, *, return_receipt: bool = False):
         """Persist only explicit preference, interest, and trait statements."""
         profile = self.get(user_id)
-        if not profile or profile.id == self.GUEST_ID or not message:
-            return False
+        if not profile or profile.id == self.GUEST_ID:
+            receipt = {"status": "skipped_no_named_profile", "changed": False}
+            return receipt if return_receipt else False
+        if not message:
+            receipt = {"status": "skipped_empty_message", "changed": False}
+            return receipt if return_receipt else False
+        with self._lock:
+            migrated = self._quarantine_ephemeral_characteristics(profile)
+            if migrated:
+                self._save()
         text = " ".join(str(message).strip().split())
         try:
             from managers.settings_manager import get_persona_name
@@ -428,11 +472,20 @@ class UserManager:
                     # Conversational lead-ins such as "je suis curieux de comprendre"
                     # describe the current question, not a durable user trait.
                     continue
-                if value and len(value.split()) <= 16:
+                if (
+                    value and len(value.split()) <= 16
+                    and not (kind == "characteristic" and self._is_ephemeral_characteristic(value))
+                ):
                     learned.append((kind, value))
         if not learned:
-            return False
+            receipt = {
+                "status": "quarantined_ephemeral_profile_data" if migrated else "no_explicit_profile_fact",
+                "changed": False,
+                "quarantined_count": migrated,
+            }
+            return receipt if return_receipt else False
         changed = False
+        changed_categories = set()
         with self._lock:
             for kind, value in learned[:3]:
                 target = getattr(profile, kind + "s")
@@ -440,13 +493,21 @@ class UserManager:
                     target.append(value)
                     del target[:-8]
                     changed = True
+                    changed_categories.add(kind)
             if changed:
                 self._prompt_cache.pop(profile.id, None)
                 profile.touch()
                 self._save()
         if changed:
             logger.info("Learned explicit profile details for %s", profile.id)
-        return changed
+        receipt = {
+            "status": "updated" if changed else "duplicate_explicit_profile_fact",
+            "changed": changed,
+            "categories_updated": sorted(changed_categories),
+            "extracted_count": len(learned),
+            "quarantined_count": migrated,
+        }
+        return receipt if return_receipt else changed
 
     # ── Persistence ──────────────────────────────────────────────────────────
 
@@ -466,11 +527,17 @@ class UserManager:
             if not self._path.exists():
                 return
             data = json.loads(self._path.read_text())
+            migrated_profiles = False
             for uid, pd in data.get("users", {}).items():
-                self._users[uid] = UserProfile.from_dict(pd)
+                profile = UserProfile.from_dict(pd)
+                if self._quarantine_ephemeral_characteristics(profile):
+                    migrated_profiles = True
+                self._users[uid] = profile
             saved_active = data.get("active_id", self.GUEST_ID)
             if saved_active in self._users:
                 self._active_id = saved_active
+            if migrated_profiles:
+                self._save()
             logger.info(f"👥 Loaded {len(self._users)} users (active: {self._active_id})")
         except Exception as e:
             logger.error(f"UserManager load error: {e}")

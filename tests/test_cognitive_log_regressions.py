@@ -24,6 +24,7 @@ for package_name, package_path in (
 
 from cognition.goal_engine import GoalEngine
 from cognition.goal_quality_filter import GoalQualityFilter
+from cognition.profile_flow import update_behavioral_user_profile
 from cognition.belief_bootstrapper import BeliefBootstrapper
 from cognition.tension_topics import generate_identity_topic
 from cognition.grounded_introspection import GroundedIntrospectionGenerator
@@ -32,6 +33,7 @@ from cognition.semantic_memory import SemanticMemory
 from cognition.self_concept_synchronizer import SelfConceptSynchronizer
 from cognition.self_description import SelfDescription
 from cognition.simple_thought_evaluator import SimpleThoughtEvaluator
+from cognition.turn_context_evidence import memory_retrieval_evidence, profile_context_evidence
 from cognition.thought_thread_engine import ThoughtThreadEngine
 from managers.user_manager import UserManager
 
@@ -46,6 +48,50 @@ for _name in list(sys.modules):
 
 
 class CognitiveLogRegressionTests(unittest.TestCase):
+    def test_behavioral_profile_updates_only_on_human_turns_and_returns_receipt(self):
+        calls = []
+
+        class _WorldModel:
+            def update_from_interaction(self, **kwargs):
+                calls.append(kwargs)
+                return SimpleNamespace(interaction_count=12)
+
+        peer = update_behavioral_user_profile(
+            _WorldModel(), user_id="flux", user_text="peer text", response="peer reply",
+            emotion="neutral", human_interaction=False,
+        )
+        human = update_behavioral_user_profile(
+            _WorldModel(), user_id="fred", user_text="human text", response="answer",
+            emotion="neutral", human_interaction=True,
+        )
+
+        self.assertEqual(peer["status"], "skipped_by_scope")
+        self.assertFalse(peer["changed"])
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["user_id"], "fred")
+        self.assertEqual(human["status"], "updated")
+        self.assertEqual(human["interaction_count"], 12)
+
+    def test_memory_and_profile_trace_receipts_link_context_without_exposing_text(self):
+        memories = [{
+            "id": "memory-private-17",
+            "text": "A private remembered conversation detail",
+            "memory_tier": "personal",
+            "memory_type": "conversation",
+            "timestamp": "2026-11-01T12:00:00",
+        }]
+        evidence = memory_retrieval_evidence("what did we discuss?", memories)
+        profile = profile_context_evidence(
+            "injected", "named_profile", "Preferences: private preference."
+        )
+
+        self.assertEqual(evidence["candidate_count"], 1)
+        self.assertEqual(evidence["candidates"][0]["memory_tier"], "personal")
+        self.assertEqual(len(evidence["candidates"][0]["ref"]), 20)
+        self.assertNotIn("private remembered conversation detail", str(evidence))
+        self.assertNotIn("private preference", str(profile))
+        self.assertEqual(profile["status"], "injected")
+
     def test_simple_thought_evaluator_can_timestamp_a_fresh_goal_candidate(self):
         class _Dal:
             def get_thoughts(self, **kwargs):
