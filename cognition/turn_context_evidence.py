@@ -110,10 +110,20 @@ def memory_prompt_injection_evidence(memories: Iterable[Mapping[str, Any]]) -> d
 
 def profile_context_evidence(status: str, source: str, context: str) -> dict:
     """Fingerprint profile prompt material without exposing its contents."""
+    status = str(status)
+    quality_by_status = {
+        "injected": "present",
+        "fallback_identity_only": "present",
+        "empty": "empty",
+        "skipped_by_scope": "skipped",
+        "unavailable": "unavailable",
+        "failed": "failed",
+    }
     return {
-        "status": str(status),
+        "status": status,
         "source": str(source),
         "context_sha256": _sha256(str(context)),
+        "quality": quality_by_status.get(status, "unverified"),
     }
 
 
@@ -183,25 +193,71 @@ def audit_safe_turn_summary(value: Any) -> dict[str, Any] | None:
         }
 
     if {"status", "source", "context_sha256"}.issubset(value):
+        status = str(value.get("status", ""))[:32]
+        quality_by_status = {
+            "injected": "present",
+            "fallback_identity_only": "present",
+            "empty": "empty",
+            "skipped_by_scope": "skipped",
+            "unavailable": "unavailable",
+            "failed": "failed",
+        }
         return {
             "type": "profile_context_evidence",
-            "status": str(value.get("status", ""))[:32],
+            "status": status,
             "source": str(value.get("source", ""))[:40],
             "context_sha256": str(value.get("context_sha256", ""))[:64],
-            "quality": "present",
+            "quality": quality_by_status.get(status, "unverified"),
         }
 
-    if {"status", "changed", "quarantined_count"}.issubset(value):
+    profile_receipt_statuses = {
+        "updated", "duplicate_explicit_profile_fact", "persistence_failed",
+        "no_explicit_profile_fact", "quarantined_ephemeral_profile_data",
+        "skipped_by_scope", "skipped_no_named_profile", "skipped_empty_message",
+        "no_profile_returned", "failed", "unavailable",
+    }
+    if {"status", "changed"}.issubset(value) and (
+        "quarantined_count" in value or "persisted" in value
+        or str(value.get("status", "")) in profile_receipt_statuses
+    ):
         try:
             quarantined_count = max(0, min(1000, int(value.get("quarantined_count", 0))))
         except (TypeError, ValueError, OverflowError):
             quarantined_count = 0
+        try:
+            extracted_count = max(0, min(1000, int(value.get("extracted_count", 0))))
+        except (TypeError, ValueError, OverflowError):
+            extracted_count = 0
+        try:
+            interaction_count = max(0, min(1_000_000, int(value.get("interaction_count", 0))))
+        except (TypeError, ValueError, OverflowError):
+            interaction_count = None
+        status = str(value.get("status", ""))[:48]
+        persisted_value = value.get("persisted")
+        persisted = persisted_value if isinstance(persisted_value, bool) else None
+        if status in {"persistence_failed", "failed"} or persisted is False:
+            quality = "failed"
+        elif status in {"skipped_by_scope", "skipped_no_named_profile", "skipped_empty_message"}:
+            quality = "skipped"
+        elif status in {"no_explicit_profile_fact", "no_profile_returned", "quarantined_ephemeral_profile_data"}:
+            quality = "empty"
+        elif persisted is True:
+            quality = "present"
+        else:
+            quality = "unverified"
+        categories = value.get("categories_updated", [])
+        if not isinstance(categories, (list, tuple)):
+            categories = []
         return {
             "type": "profile_learning_receipt",
-            "status": str(value.get("status", ""))[:48],
+            "status": status,
             "changed": bool(value.get("changed")),
+            "persisted": persisted,
+            "categories_updated": [str(item)[:32] for item in categories[:8]],
+            "extracted_count": extracted_count,
             "quarantined_count": quarantined_count,
-            "quality": "present",
+            "interaction_count": interaction_count,
+            "quality": quality,
         }
 
     return None

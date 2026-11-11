@@ -99,6 +99,10 @@ class CognitiveLogRegressionTests(unittest.TestCase):
         self.assertNotIn("private remembered conversation detail", str(evidence))
         self.assertNotIn("private preference", str(profile))
         self.assertEqual(profile["status"], "injected")
+        self.assertEqual(profile["quality"], "present")
+        empty_profile = profile_context_evidence("empty", "no_named_profile", "")
+        self.assertEqual(empty_profile["quality"], "empty")
+        self.assertEqual(audit_safe_turn_summary(empty_profile)["quality"], "empty")
 
     def test_memory_retrieval_keeps_user_query_separate_from_attention_mode(self):
         query = "Quelle règle avons-nous définie pour Lumina et Flux ?"
@@ -176,14 +180,26 @@ class CognitiveLogRegressionTests(unittest.TestCase):
     def test_turn_trace_exposes_profile_receipt_without_profile_values(self):
         summary = audit_safe_turn_summary({
             "status": "updated", "changed": True, "quarantined_count": 2,
+            "persisted": True, "categories_updated": ["preference"],
             "private_profile_value": "do not expose",
         })
 
         self.assertEqual(summary["status"], "updated")
         self.assertTrue(summary["changed"])
+        self.assertTrue(summary["persisted"])
+        self.assertEqual(summary["categories_updated"], ["preference"])
+        self.assertEqual(summary["quality"], "present")
         self.assertEqual(summary["quarantined_count"], 2)
         self.assertNotIn("private_profile_value", str(summary))
         self.assertNotIn("do not expose", str(summary))
+
+        failed = audit_safe_turn_summary({
+            "status": "persistence_failed", "changed": True,
+            "persisted": False, "interaction_count": 12,
+        })
+        self.assertEqual(failed["quality"], "failed")
+        self.assertFalse(failed["persisted"])
+        self.assertEqual(failed["interaction_count"], 12)
 
     def test_simple_thought_evaluator_can_timestamp_a_fresh_goal_candidate(self):
         class _Dal:

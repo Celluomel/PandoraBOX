@@ -539,6 +539,7 @@ class UserManager:
                     receipt = {
                         "status": "persistence_failed",
                         "changed": False,
+                        "persisted": False,
                         "categories_updated": [],
                         "extracted_count": len(learned),
                         "quarantined_count": migrated,
@@ -549,6 +550,7 @@ class UserManager:
         receipt = {
             "status": "updated" if changed else "duplicate_explicit_profile_fact",
             "changed": changed,
+            "persisted": True,
             "categories_updated": sorted(changed_categories),
             "extracted_count": len(learned),
             "quarantined_count": migrated,
