@@ -1012,9 +1012,21 @@ async def main_page():
                 user_id=user_manager.active_id,
                 vision_context=raw_vision_text,
             ):
-                if isinstance(chunk, dict) and chunk.get("__meta__"):
-                    result = chunk
-                    break
+                if isinstance(chunk, dict):
+                    if chunk.get("__meta__"):
+                        result = chunk
+                        break
+                    # PersonaBridge can emit auxiliary events (for example
+                    # native reasoning or web-source metadata). This page
+                    # renders only answer text; never concatenate event dicts
+                    # into the visible response bubble.
+                    continue
+                if not isinstance(chunk, str):
+                    logger.warning(
+                        "Ignoring unsupported chat stream chunk type: %s",
+                        type(chunk).__name__,
+                    )
+                    continue
 
                 # First token arriving — remove typing indicator + status
                 if not accumulated_text and typing is not None:

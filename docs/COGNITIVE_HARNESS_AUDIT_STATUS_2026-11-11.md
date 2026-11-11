@@ -321,3 +321,11 @@ Une régression AST vérifie que le seul `yield raw_response` se trouve après `
 La validation du pipeline acceptait `fast_first_pass=delegated` comme preuve qu’une réponse avait été générée. Or `delegated` n’est qu’une décision de routage : si le provider principal ne termine pas, la trace pouvait déclarer le cœur du tour complet sans génération primaire ni texte de réponse attribuable. La route directe `selected_direct` reste valide comme chemin alternatif; une délégation exige désormais `primary_generation=completed`.
 
 Vérification : régression qui construit une trace déléguée sans génération et exige `incomplete_evidence` avec l’étape `generation` manquante. Le lot élargi couvrant ces chemins ainsi que mémoire, flux cognitifs, sélection de pensée, raisonnement moyens/buts et transactions d’objectifs passe à **159 passed**, 14 sous-tests, 9 avertissements. Compilation et `git diff --check` réussissent. Pas de redémarrage live; les correctifs restent locaux.
+
+## Consommateur du chat classique incompatible avec les événements structurés — correction locale
+
+Le flux PersonaBridge peut émettre des dictionnaires d’événement (`reasoning`, sources Web) avant la réponse méta. L’API HTTP les distingue, mais le consommateur de la page de chat classique concaténait chaque élément à `accumulated_text`; un dictionnaire reçu déclenchait un `TypeError` et interrompait le tour. Le vérificateur proactif, lui, ignorait déjà les événements non méta.
+
+Correction : la page classique prend maintenant uniquement les chaînes comme texte de réponse, traite le dictionnaire méta comme clôture du tour et ignore les événements auxiliaires/non textuels au lieu de les afficher ou de casser le flux. Une régression AST cible précisément la boucle qui met à jour la bulle de réponse et impose le `continue` avant la concaténation.
+
+Vérification cumulée : **160 passed**, 14 sous-tests, 9 avertissements existants; compilation des fichiers modifiés et `git diff --check` réussis. Le test d’intégration live avec le modèle n’a pas encore eu lieu et attend le redémarrage final. Lumina reste actuellement en marche.
