@@ -2647,10 +2647,29 @@ class InternalThoughtLoop:
         # ── V34: Phase 4 maintenance ──────────────────────────────────────────
         self._phase4_maintenance()
 
+    def _periodic_module_due(
+        self, attr_name: str, module_name: str, interval: int,
+        governor_name: str,
+    ) -> bool:
+        """Record why an initialized maintenance module did not run this cycle."""
+        if getattr(self, attr_name, None) is None:
+            return False
+        cycle = int(getattr(self, "_slow_cycle_count", 0) or 0)
+        metrics = {"cycle": cycle, "interval_cycles": int(interval)}
+        if interval > 0 and cycle % interval != 0:
+            self._record_cycle_stage(module_name, "skipped_cadence", metrics=metrics)
+            return False
+        governor = getattr(self, "_governor", None)
+        if governor is not None and not governor.may_run(governor_name):
+            self._record_cycle_stage(module_name, "skipped_governor", metrics=metrics)
+            return False
+        return True
+
     def _phase4_maintenance(self) -> None:
         """V34: Phase 4 goal quality, belief, and thread lifecycle maintenance."""
-        if (self._goal_quality_filter and self._slow_cycle_count % 20 == 0
-                and (not self._governor or self._governor.may_run('GQF'))):
+        if self._periodic_module_due(
+            "_goal_quality_filter", "goal_quality_filter", 20, "GQF",
+        ):
             _mf = getattr(self, "_motivational_field", None)
             _scan_status = (
                 _mf.need_scan_status() if _mf and hasattr(_mf, "need_scan_status") else {}
@@ -2723,8 +2742,10 @@ class InternalThoughtLoop:
                 logger.debug(f"[InternalLoop] Phase 4 thread lifecycle failed: {_e4}")
 
         # ── V37: Phase 7 Semantic graph cleaning ─────────────────────────────
-        if (self._semantic_graph_cleaner and self._slow_cycle_count % 50 == 0
-                and (not self._governor or self._governor.may_run('SemanticGraphCleaner'))):
+        if self._periodic_module_due(
+            "_semantic_graph_cleaner", "semantic_graph_cleaner", 50,
+            "SemanticGraphCleaner",
+        ):
             try:
                 report = self._semantic_graph_cleaner.run()
                 total = report.get('purged_concepts',0) + report.get('merged_concepts',0)
@@ -2740,8 +2761,10 @@ class InternalThoughtLoop:
                 logger.debug(f"[InternalLoop] Phase 7 semantic clean failed: {_e7}")
 
         # ── V36: Phase 6 Goal consolidation ──────────────────────────────────
-        if (self._goal_consolidator and self._slow_cycle_count % 18 == 0
-                and (not self._governor or self._governor.may_run('GoalConsolidator'))):
+        if self._periodic_module_due(
+            "_goal_consolidator", "goal_consolidator", 18,
+            "GoalConsolidator",
+        ):
             try:
                 report = self._goal_consolidator.run()
                 s = report.get('summary', {})

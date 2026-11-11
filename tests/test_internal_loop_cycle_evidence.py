@@ -11,6 +11,7 @@ def make_loop():
     loop._cycle_evidence_lock = threading.RLock()
     loop._cycle_evidence = deque(maxlen=40)
     loop._active_cycle_evidence = None
+    loop._module_tick_wrapped = set()
     return loop
 
 
@@ -80,6 +81,57 @@ def test_module_probe_emits_per_cycle_execution_receipt():
     assert stage["output_ref"]
     assert "recovered" not in stage["output_summary"]
     assert stage["output_summary"]["field_count"] == 1
+
+
+def test_periodic_module_not_due_is_explicit_without_counting_a_fake_tick():
+    loop = make_loop()
+    loop._slow_cycle_count = 7
+    loop._goal_quality_filter = object()
+    loop._module_tick_log = ModuleTickLog()
+    loop._module_tick_log.register("goal_quality_filter", initialized=True)
+    loop._begin_cycle_evidence(7)
+
+    assert not loop._periodic_module_due(
+        "_goal_quality_filter", "goal_quality_filter", 20, "GQF",
+    )
+
+    snapshot = loop.module_tick_snapshot()
+    assert snapshot["goal_quality_filter"]["tick_count"] == 0
+    stage = loop.cycle_evidence_snapshot()["cycles"][0]["stages"][0]
+    assert stage["stage"] == "goal_quality_filter"
+    assert stage["status"] == "skipped_cadence"
+    assert stage["metrics"] == {"cycle": 7, "interval_cycles": 20}
+
+
+def test_periodic_module_governor_skip_is_distinct_from_cadence_skip():
+    loop = make_loop()
+    loop._slow_cycle_count = 20
+    loop._goal_quality_filter = object()
+    loop._module_tick_log = ModuleTickLog()
+    loop._module_tick_log.register("goal_quality_filter", initialized=True)
+    loop._governor = SimpleNamespace(may_run=lambda _name: False)
+    loop._begin_cycle_evidence(20)
+
+    assert not loop._periodic_module_due(
+        "_goal_quality_filter", "goal_quality_filter", 20, "GQF",
+    )
+
+    stage = loop.cycle_evidence_snapshot()["cycles"][0]["stages"][0]
+    assert stage["status"] == "skipped_governor"
+    assert stage["metrics"] == {"cycle": 20, "interval_cycles": 20}
+
+
+def test_periodic_module_runs_only_when_due_and_governor_allows():
+    loop = make_loop()
+    loop._slow_cycle_count = 20
+    loop._goal_quality_filter = object()
+    loop._governor = SimpleNamespace(may_run=lambda _name: True)
+    loop._begin_cycle_evidence(20)
+
+    assert loop._periodic_module_due(
+        "_goal_quality_filter", "goal_quality_filter", 20, "GQF",
+    )
+    assert loop.cycle_evidence_snapshot()["cycles"][0]["stages"] == []
 
 
 def test_activity_from_another_thread_is_not_attributed_to_active_cycle():
