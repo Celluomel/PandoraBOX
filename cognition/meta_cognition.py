@@ -50,10 +50,10 @@ class MetaObservation:
 
 @dataclass
 class MetaEvaluation:
-    """Post-response quality assessment."""
-    clarity_score: float       # 0–1
-    consistency_score: float   # 0–1 (with recent beliefs/behavior)
-    confidence_appropriate: bool
+    """Post-response heuristic diagnostics, not an answer-quality verdict."""
+    clarity_score: float       # length-based style proxy, not semantic quality
+    consistency_score: Optional[float]  # None until independently evaluated
+    confidence_appropriate: bool  # heuristic indicator, not calibrated confidence
     emotional_bias_detected: bool
     suggested_improvement: Optional[str]
     timestamp: float = field(default_factory=time.time)
@@ -208,8 +208,8 @@ class MetaCognition:
         emotional_state: Optional[Dict[str, float]] = None,
     ) -> MetaEvaluation:
         """
-        Evaluate a completed response for meta-cognitive signals.
-        These feed into conditioning and self-concept update.
+        Evaluate a completed response for low-cost style diagnostics.
+        This does not validate factuality, semantic consistency, or answer quality.
         """
         emo = emotional_state or {}
         response_hash = response[:8] if response else ""
@@ -233,7 +233,9 @@ class MetaCognition:
         # Confidence appropriate: excessive hedging when anxiety is high is a flag
         confidence_appropriate = not (emotional_bias and hedge_count > 3)
 
-        consistency_score = 0.8  # placeholder — future: compare against belief store
+        # No belief/behavior comparison is implemented here. Do not expose a
+        # constant as if it were a measured consistency result.
+        consistency_score = None
 
         improvement = None
         if not confidence_appropriate:
@@ -242,11 +244,15 @@ class MetaCognition:
             improvement = "Response was quite long. Next time, consider whether the key point could be made more directly."
 
         if improvement:
-            self._log_observation(improvement, "clarity", "note", "post_response", response_hash)
+            # This is a style heuristic only. Keep it visible for diagnostics,
+            # but do not let the internal reflection loop treat it as evidence
+            # about identity, reasoning quality, or factual consistency.
+            self._log_observation(improvement, "style_proxy", "note", "post_response", response_hash)
 
         eval_result = MetaEvaluation(
             clarity_score=round(clarity, 3),
-            consistency_score=round(consistency_score, 3),
+            consistency_score=(round(consistency_score, 3)
+                               if consistency_score is not None else None),
             confidence_appropriate=confidence_appropriate,
             emotional_bias_detected=emotional_bias,
             suggested_improvement=improvement,
@@ -262,6 +268,17 @@ class MetaCognition:
             if category:
                 obs = [o for o in obs if o.category == category]
             return [o.observation for o in obs[-n:]]
+
+    def recent_reflection_observations(self, n: int = 5) -> List[str]:
+        """Return observations eligible to influence durable self-reflection.
+
+        Post-response entries are heuristic style diagnostics, not validated
+        evidence. Excluding by trigger also filters those entries from older
+        persisted logs whose category was previously recorded as ``clarity``.
+        """
+        with self._lock:
+            eligible = [o for o in self._log if o.trigger != "post_response"]
+            return [o.observation for o in eligible[-max(0, int(n)):]] if n > 0 else []
 
     def reflection_summary(self) -> str:
         """

@@ -17,6 +17,7 @@ from cognition.emotional_memory import EmotionalMemorySystem
 from cognition.empathy_engine import EmpathyEngine
 from cognition.semantic_extractor import SemanticExtractor
 from cognition.semantic_memory import SemanticMemory
+from cognition.meta_cognition import MetaCognition
 from cognition.tension_topics import generate_social_topic
 
 
@@ -66,6 +67,35 @@ class _EmotionAnalyzer:
 
 
 class MemoryReliabilityTests(unittest.TestCase):
+    def test_meta_cognition_does_not_report_placeholder_consistency_as_measured(self):
+        with tempfile.TemporaryDirectory() as directory:
+            meta = MetaCognition(str(Path(directory) / "meta.json"))
+            evaluation = meta.post_response_eval(
+                response="A concise response.", user_input="A question."
+            )
+
+        self.assertIsNone(evaluation.consistency_score)
+
+    def test_style_proxy_is_diagnostic_but_not_durable_reflection_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "meta.json"
+            meta = MetaCognition(str(path))
+            meta.post_response_eval(
+                response="word " * 601, user_input="Please summarize."
+            )
+
+            self.assertTrue(meta.recent_observations(n=3))
+            self.assertEqual(meta.recent_reflection_observations(n=3), [])
+
+            # The trigger-based exclusion also covers old entries whose
+            # category was stored as clarity before this boundary existed.
+            data = json.loads(path.read_text(encoding="utf-8"))
+            data["log"][0]["category"] = "clarity"
+            path.write_text(json.dumps(data), encoding="utf-8")
+            reloaded = MetaCognition(str(path))
+
+        self.assertEqual(reloaded.recent_reflection_observations(n=3), [])
+
     def test_ordinary_emotional_interaction_is_not_goal_eligible(self):
         emotions = {"satisfaction": type("Emotion", (), {"value": 0.95})()}
         organism = type("Organism", (), {

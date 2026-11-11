@@ -1,7 +1,7 @@
 # Audit du harnais cognitif — état et prochaines étapes
 
 **Date :** 11 novembre 2026
-**Statut :** audit en cours — conclusion globale non établie. Le dernier commit commun local/GitHub avant ce lot est `cad5559`. Les corrections du moniteur et de PredictiveMind, l’exclusion du score lexical des boucles d’apprentissage, les preuves mémoire/profil et le focus rejeté sont poussés. Le processus Lumina actif n’a pas été redémarré pour charger les changements de l’audit.
+**Statut :** audit en cours — conclusion globale non établie. Le dernier commit commun local/GitHub avant le lot SemanticExtractor est `cad5559`; il a été poussé sous `512729b`. Les corrections du moniteur et de PredictiveMind, l’exclusion du score lexical des boucles d’apprentissage, les preuves mémoire/profil, le focus rejeté et la provenance SemanticMemory sont poussés. Le processus Lumina actif n’a pas été redémarré pour charger les changements de l’audit.
 
 ## État exécutif courant — poursuite module par module
 
@@ -910,3 +910,13 @@ Correction : le chemin de production ne transmet plus ces proxys comme scores de
 Vérification ciblée avec l’environnement du projet (`venv`) : mémoire fiable, régressions cognitives, limites probantes du validateur et persistance du WorldModel — **62 tests passés, 11 sous-tests passés**, 9 avertissements historiques de dépendances. Les assertions couvrent la migration sans perte des scores historiques, le statut non mesuré, l’absence de mise à jour proxy, l’absence de faux nouvel échantillon et le rejet des concepts/relations présents seulement dans la réponse. Le premier échec de migration provenait d’un handle SQLite laissé ouvert dans le test Windows; le test ferme maintenant explicitement la connexion et passe.
 
 Limites : les anciennes valeurs du graphe sémantique assistant/utilisateur déjà fusionnées ne sont pas supprimées ni rétro-étiquetées sans provenance fiable; elles restent des associations historiques non attribuables. Aucun producteur de résultats indépendamment validés pour les compétences n’a encore été identifié, donc ces métriques restent non mesurées. Les tests prouvent les frontières de données, pas la pertinence cognitive des réponses live. Le correctif n’est pas encore chargé dans Lumina; un redémarrage unique sera nécessaire après le commit/push, pour vérifier en live la mémoire, l’attention, les objectifs et les sorties aval.
+
+### MetaCognition → réflexion interne → mémoire épisodique
+
+Le chemin de sortie a révélé que `consistency_score` était fixé à `0.8` bien qu’aucune comparaison avec les croyances ou le comportement ne soit codée. La même évaluation de réponse utilise seulement la longueur, un compteur de phrases d’hésitation et les états émotionnels fournis; elle ne valide ni la factualité, ni la cohérence sémantique, ni la qualité d’une réponse. Ses remarques post-réponse étaient ensuite mêlées aux observations de réflexion interne et pouvaient être écrites en mémoire épisodique comme « Idle reflection », donnant à un proxy de style une persistance cognitive disproportionnée.
+
+Correction locale : `consistency_score` vaut maintenant `None` tant qu’aucun évaluateur indépendant n’existe. Le type et les docstrings identifient clairement la clarté comme proxy de longueur et le drapeau de confiance comme heuristique. Les remarques post-réponse restent consultables en diagnostic sous `style_proxy`, mais `recent_reflection_observations()` exclut les entrées `post_response`, y compris celles des anciens journaux; la boucle interne n’écrit donc plus ces proxys en mémoire réflexive.
+
+Vérification locale : suites mémoire fiable, cycle de boucle interne et régressions cognitives — **62 tests passés, 11 sous-tests passés**, 9 avertissements historiques de dépendances. Cas ajoutés : cohérence non mesurée, proxy visible en diagnostic mais absent des observations admissibles, y compris après rechargement d’un ancien journal. Compilation et `git diff --check` réussissent. Ce lot est local et doit être commité/poussé avant validation live.
+
+Limite : les signaux de pré-réponse issus des états émotionnels/tensions restent des observations déclaratives du système, pas une validation indépendante de l’état émotionnel. L’audit doit encore examiner le producteur de ces valeurs, ainsi que le chemin de réflexion autonome qui peut persister ses propres sorties. Aucun redémarrage n’a encore eu lieu; je te le demanderai après le prochain lot hors ligne regroupé.

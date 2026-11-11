@@ -2935,7 +2935,7 @@ class InternalThoughtLoop:
         # Surface meta-cognitive observations
         if hasattr(o, "meta_cognition"):
             try:
-                recent = o.meta_cognition.recent_observations(n=3)
+                recent = o.meta_cognition.recent_reflection_observations(n=3)
                 for obs in recent:
                     logger.debug(f"[InternalLoop] Meta-obs: {obs}")
                     if isinstance(obs, str) and obs.strip():
