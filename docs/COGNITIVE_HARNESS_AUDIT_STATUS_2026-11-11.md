@@ -1,16 +1,17 @@
 # Audit du harnais cognitif — état et prochaines étapes
 
 **Date :** 11 novembre 2026
-**Statut :** audit en cours — conclusion globale non établie. Local `main` et GitHub `origin/main` sont alignés sur `cfc54df`. Les lots outreach et propriété de file sont poussés. Aucun redémarrage de Lumina n’a été effectué; ces changements ne sont pas encore chargés dans le processus actif.
+**Statut :** audit en cours — conclusion globale non établie. Dernier commit commun local/GitHub avant le lot profil : `b40c9d6`. Les lots outreach et propriété de file sont poussés; la vérification de persistance du profil comportemental est locale et testée, en attente de commit/push. Aucun redémarrage de Lumina n’a été effectué; les changements récents ne sont pas encore chargés dans le processus actif.
 
 ## État exécutif courant — poursuite module par module
 
 - **Objectifs / planification / exécution :** deux défauts causaux ont été corrigés et poussés dans `0618621` et `c8c2ed2`: étapes `social_probe` qui simulaient un progrès/récupération, puis fallback de l’exécuteur vers une action sans rapport lorsque le plan actif était bloqué. Tests ciblés : **52 passés**.
 - **Outreach proactif → messagerie :** correction locale testée. Avant, l’événement était marqué envoyé, le compteur et le cooldown étaient avancés avant l’appel asynchrone; Telegram/WhatsApp absorbaient leurs erreurs et ne rendaient aucun résultat. Désormais l’état reste `pending`, puis devient `accepted` seulement si l’API de transport confirme l’acceptation; échec, absence de mapping ou absence de contenu sont enregistrés comme `failed`. Le compteur et le cooldown ne progressent qu’après acceptation. L’endpoint direct `/messaging/send` renvoie aussi le booléen réel au lieu de toujours répondre `sent: true`.
 - **File GAE / UI :** l’outreach et la page principale consommaient la même file destructive. `GoalActionExecutor` fournit maintenant une lecture `peek` verrouillée pour l’outreach; la page reste le consommateur qui dépile. Le contenu GAE n’est plus volé ni supprimé avant l’affichage UI si aucun destinataire externe ne correspond.
-- **Preuve locale :** `tests/test_proactive_outreach_delivery.py`, `tests/test_intention_planning.py`, `tests/test_self_description_prompt.py`, `tests/test_goal_action_thought_publication.py` — **61 passed**; compilation des modules touchés et `git diff --check` réussis. Les 7 avertissements Pydantic proviennent des validateurs historiques de `settings_manager.py`.
+- **Profil comportemental :** le wrapper signalait `updated` dès qu’un objet profil était retourné, alors que `WorldModel._save()` absorbait les erreurs et ne rapportait aucun succès. Le save est maintenant atomique, relu et comparé après écriture; un échec retourne `persistence_failed` au reçu de tour.
+- **Preuve locale :** lot outreach/planner/GAE — **61 passed**; lot ajouté profil + régressions cognitive_log, outreach, planner, self-description et publication GAE — **90 passed, 4 sous-tests passés**. Compilation des modules touchés et `git diff --check` réussis. Les 7 avertissements Pydantic proviennent des validateurs historiques de `settings_manager.py`.
 - **Limite de preuve :** `accepted` signifie que l’API Telegram/Twilio a accepté l’appel; cela ne prouve ni livraison au terminal ni lecture. Aucun envoi externe réel n’a été déclenché pendant les tests. Le chemin live nécessite le redémarrage groupé final.
-- **Suite du cap :** audit des producteurs/consommateurs de mémoire et profil, puis des états de workspace/attention et de génération de réponse, avec vérification des effets aval; maintenir le même rapport et rattacher chaque constat à un scénario/test plutôt qu’à un simple tick.
+- **Suite du cap :** confirmer les producteurs/consommateurs de mémoire et les deux profils (UserManager explicite et WorldModel comportemental), puis les états de workspace/attention et la génération de réponse, avec vérification des effets aval; rattacher chaque constat à un scénario/test plutôt qu’à un simple tick.
 - **Git / périmètre :** commits `7103a68` et `cfc54df` ont été poussés. Les changements Body/UI/tests préexistants et artefacts non suivis restent exclus. Ne pas redémarrer Lumina avant le contrôle cumulé.
 
 ## État courant de reprise — commit GitHub `0618621` et lot suivant local
@@ -84,6 +85,16 @@ Le parcours montrait deux consommateurs appelant les getters destructifs du `Goa
 **Vérification locale :** le nouveau test établit qu’un peek outreach laisse chaque élément disponible pour le getter UI, puis que le getter retire bien l’élément. Suite combinée — `tests/test_proactive_outreach_delivery.py`, `tests/test_intention_planning.py`, `tests/test_self_description_prompt.py`, `tests/test_goal_action_thought_publication.py` — **61 passed**, compilation et `git diff --check` réussis. Aucun flux Telegram/WhatsApp réel n’a été déclenché.
 
 **État Git/live :** le lot a été commité et poussé sous `cfc54df`. Le scénario live après redémarrage devra vérifier que le même item peut être observé par l’outreach et ensuite affiché par l’UI sans disparition ni répétition intempestive. Poursuivre l’audit des contrats mémoire/profil et workspace après ce correctif.
+
+### Reprise — le profil comportemental ne doit pas annoncer une sauvegarde non vérifiée
+
+Le chemin `CognitiveOrganism._run_full_post_turn_lifecycle() → update_behavioral_user_profile() → WorldModel.update_from_interaction() → WorldModel._save()` mettait à jour un profil à chaque tour humain. Le reçu `updated` ne signifiait jusque-là que « l’objet profil a été retourné ». `_save()` attrapait les erreurs d’écriture sans signaler l’échec, écrivait directement le fichier final et pouvait donc laisser Lumina déclarer un profil mis à jour alors que le stockage n’avait pas été confirmé. Cette voie est distincte de `UserManager.learn_from_message()`, qui apprend les faits explicites et avait déjà une vérification de persistance.
+
+**Correction locale :** `WorldModel._save()` sérialise vers un temporaire, remplace le fichier cible atomiquement, le relit et vérifie l’égalité JSON après normalisation. Il retourne un booléen; `update_from_interaction()` ne retourne son profil qu’après cette confirmation. Le reçu du cycle indique `persistence_failed`, `persisted=false` si cette écriture échoue. La mémoire déjà mutée dans le processus est signalée `changed=true`, sans prétendre qu’elle est durable.
+
+**Vérification locale :** `tests/test_world_model_profile_persistence.py` couvre l’écriture relue et le chemin d’échec; suite combinée `test_world_model_profile_persistence`, `test_cognitive_log_regressions`, `test_proactive_outreach_delivery`, `test_intention_planning`, `test_self_description_prompt`, `test_goal_action_thought_publication` — **90 passed, 4 sous-tests passés**; compilation et `git diff --check` réussis.
+
+**État Git/live :** correctif local non commité à cette rédaction; dernière base poussée `b40c9d6`. Après commit/push, validation live à faire au redémarrage groupé : interaction humaine → reçu `updated/persisted=true` puis profil rechargé; simulation d’échec du chemin d’écriture uniquement en test, jamais sur les données Lumina réelles. Le profil comportemental décrit des tendances d’interaction; il ne doit pas être confondu avec les préférences/identité explicites du `UserManager`.
 
 ## Synthèse globale faisant autorité — état cumulé, révisé le 11 novembre
 

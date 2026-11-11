@@ -26,9 +26,16 @@ def update_behavioral_user_profile(
             response=response,
             emotion=emotion,
         )
+        if profile is None:
+            return {
+                "status": "persistence_failed",
+                "changed": True,
+                "persisted": False,
+            }
         return {
             "status": "updated" if profile is not None else "no_profile_returned",
             "changed": profile is not None,
+            "persisted": True,
             "interaction_count": getattr(profile, "interaction_count", None),
         }
     except Exception as exc:

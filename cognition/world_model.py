@@ -372,7 +372,8 @@ class WorldModel:
                 for exp in profile.expertise.values():
                     exp.decay()
 
-            self._save()
+            if not self._save():
+                return None
             return profile
 
     def learn_vocab(
@@ -658,7 +659,8 @@ class WorldModel:
 
     # ── Persistence ───────────────────────────────────────────────────────────
 
-    def _save(self) -> None:
+    def _save(self) -> bool:
+        temporary_path = None
         try:
             profiles_data = {}
             for uid, p in self.user_profiles.items():
@@ -703,9 +705,23 @@ class WorldModel:
                 "global_topic_df": dict(self._global_topic_df.most_common(200)),
                 "total_docs": self._total_docs,
             }
-            self._path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            temporary_path = self._path.with_name(self._path.name + ".tmp")
+            serialized = json.dumps(data, indent=2, ensure_ascii=False)
+            temporary_path.write_text(
+                serialized, encoding="utf-8"
+            )
+            temporary_path.replace(self._path)
+            persisted = json.loads(self._path.read_text(encoding="utf-8"))
+            return persisted == json.loads(serialized)
         except Exception as e:
+            if temporary_path is not None:
+                try:
+                    temporary_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
             logger.debug(f"[WorldModel] save error: {e}")
+            return False
 
     def _load(self) -> None:
         # Migration (re-applied — regressed after mid-session recovery from
