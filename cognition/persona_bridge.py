@@ -639,6 +639,12 @@ class PersonaBridge:
                     and stage_value["status"] in {"failed", "invalid_output"}
                 )
                 integrity = trace["pipeline_integrity"]
+                incomplete_outputs = sorted(
+                    stage_name for stage_name, stage_value in trace.get("stages", {}).items()
+                    if isinstance(stage_value, dict)
+                    and stage_value.get("status") == "truncated_by_token_limit"
+                )
+                integrity["incomplete_outputs"] = incomplete_outputs
                 integrity["failed_stages"] = failed_stages
                 integrity["status"] = (
                     "incomplete_evidence"
@@ -646,6 +652,7 @@ class PersonaBridge:
                     or integrity.get("malformed_stages")
                     or integrity.get("stage_order_violations")
                     or integrity.get("peer_scope_violations")
+                    or incomplete_outputs
                     else "consistent"
                 )
                 integrity["checked_at"] = time.time()
@@ -925,8 +932,22 @@ class PersonaBridge:
                 integrity_issues.extend(
                     f"failed_stage:{name}" for name in failed_stage_names
                 )
+                incomplete_outputs = sorted(
+                    name for name, value in stages.items()
+                    if isinstance(value, dict)
+                    and value.get("status") == "truncated_by_token_limit"
+                )
+                integrity_issues.extend(
+                    f"incomplete_output:{name}" for name in incomplete_outputs
+                )
                 self._last_turn_trace["pipeline_integrity"] = {
                     "status": "consistent" if not integrity_issues else "incomplete_evidence",
+                    # This verdict is intentionally scoped to execution evidence.
+                    # A complete, correctly ordered pipeline can still produce
+                    # an unsupported or false answer; output safety is not a
+                    # factuality check.
+                    "scope": "execution_order_and_data_flow_only",
+                    "semantic_correctness": "not_assessed",
                     "checked_at": time.time(),
                     "required_core_stages": len(required_stages) + (
                         0 if (
@@ -949,6 +970,7 @@ class PersonaBridge:
                     "data_flow_issues": data_flow_issues,
                     "peer_scope_violations": peer_scope_violations,
                     "failed_stages": failed_stage_names,
+                    "incomplete_outputs": incomplete_outputs,
                     "conditional_skips": sorted(
                         name for name, value in stage_status.items()
                         if (isinstance(value, str) and value.startswith("skipped_")) or (
@@ -959,6 +981,24 @@ class PersonaBridge:
                         )
                     ),
                 }
+                architecture_check = stages.get("architecture_claim_validation")
+                if isinstance(architecture_check, dict):
+                    validation_status = str(architecture_check.get("status") or "unknown")
+                    self._last_turn_trace["semantic_answer_validation"] = {
+                        "status": (
+                            "scoped_check_performed"
+                            if validation_status in {"passed", "replaced_unverified_claims"}
+                            else "check_failed_or_incomplete"
+                        ),
+                        "scope": "architecture_claims_against_current_trace_only",
+                        "stage_status": validation_status,
+                    }
+                else:
+                    self._last_turn_trace["semantic_answer_validation"] = {
+                        "status": "not_performed",
+                        "scope": "none",
+                        "reason": "No general factual-answer validator is wired to the final response.",
+                    }
                 self._last_turn_trace["completed_at"] = time.time()
 
     def get_last_turn_trace(self) -> dict:
@@ -2654,6 +2694,19 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
         # Runs on the full accumulated response BEFORE lifecycle and meta yield.
         # If triggered, replace response with safe fallback and log.
         raw_response = self._strip_think("".join(accumulated))
+        if not _deterministic_response and not _fast_round_used:
+            completion_status = (
+                "truncated_by_token_limit" if _finish_reason == "length"
+                else "completed" if _finish_reason else "completion_metadata_missing"
+            )
+            self._record_turn_stage(
+                "provider_completion", completion_status,
+                output={
+                    "finish_reason": _finish_reason or None,
+                    "visible_characters": len(raw_response),
+                },
+                consumes=("primary_generation",),
+            )
         _answer_origin_stage = (
             "fast_direct_answer" if _fast_round_used
             else "deterministic_reasoning" if _deterministic_response

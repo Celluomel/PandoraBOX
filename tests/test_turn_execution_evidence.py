@@ -49,6 +49,53 @@ def test_turn_stage_records_redacted_output_and_actual_consumption_link():
     assert trace["stages"]["prompt"]["output_fingerprint"]
     assert private_prompt not in repr(trace)
     assert trace["pipeline_integrity"]["data_flow_issues"] == []
+    assert trace["pipeline_integrity"]["scope"] == "execution_order_and_data_flow_only"
+    assert trace["pipeline_integrity"]["semantic_correctness"] == "not_assessed"
+    assert trace["semantic_answer_validation"]["status"] == "not_performed"
+
+
+def test_architecture_claim_check_is_reported_as_scoped_not_general_validation():
+    bridge = _bridge()
+    bridge._last_turn_trace["stages"].update({
+        "readiness": {"status": "passed"},
+        "input_safety": {"status": "passed"},
+        "prompt_assembly": {"status": "completed"},
+        "primary_generation": {"status": "completed"},
+        "architecture_claim_validation": {"status": "passed"},
+        "output_safety": {"status": "passed"},
+        "response_finalization": {"status": "completed"},
+        "response": {"status": "completed"},
+    })
+
+    bridge._finish_turn_trace("completed")
+    trace = bridge.get_last_turn_trace()
+
+    assert trace["semantic_answer_validation"] == {
+        "status": "scoped_check_performed",
+        "scope": "architecture_claims_against_current_trace_only",
+        "stage_status": "passed",
+    }
+    assert trace["pipeline_integrity"]["semantic_correctness"] == "not_assessed"
+
+
+def test_provider_token_limit_marks_output_and_turn_trace_incomplete():
+    bridge = _bridge()
+    bridge._last_turn_trace["stages"].update({
+        "readiness": {"status": "passed"},
+        "input_safety": {"status": "passed"},
+        "prompt_assembly": {"status": "completed"},
+        "primary_generation": {"status": "completed"},
+        "provider_completion": {"status": "truncated_by_token_limit"},
+        "output_safety": {"status": "passed"},
+        "response_finalization": {"status": "completed"},
+        "response": {"status": "completed"},
+    })
+
+    bridge._finish_turn_trace("completed")
+    trace = bridge.get_last_turn_trace()
+
+    assert trace["pipeline_integrity"]["status"] == "incomplete_evidence"
+    assert trace["pipeline_integrity"]["incomplete_outputs"] == ["provider_completion"]
 
 
 def test_turn_integrity_detects_stale_upstream_output_fingerprint():
