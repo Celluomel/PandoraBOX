@@ -620,3 +620,15 @@ Le scan des besoins et l’intégration des drives pouvaient appeler `_save()` d
 Correction locale : les sauvegardes sont maintenant sérialisées, écrites dans un fichier temporaire, remplacées atomiquement et relues pour confirmer les champs principaux. `_save()` retourne un booléen réel. Les sorties de tick/scan distinguent `completed`, `persistence_failed` et `failed`, avec compteurs bornés; le statut expose le dernier état de scan. Un test concurrent vérifie que les écritures répétées restent JSON valides et ne laissent pas de temporaire.
 
 Vérification locale : **45 tests passés et 4 sous-tests passés** (MotivationalField, reçu asynchrone, complétion, persistance objectifs et régressions), compilation réussie, `git diff --check` propre. Ce lot est local et attend commit/push. Les cycles de drive et de besoins ont maintenant un statut d’exécution/durabilité testable; reste à valider un cycle complet à l’exécution live après le redémarrage groupé.
+
+### Parcours pensée structurée → workspace — preuve aval ajoutée
+
+Un test de parcours couvre maintenant les composants réels jusqu’au consommateur suivant : `Thought.to_dict()` → `DataAccess.add_thought/get_thoughts` (normalisation du schéma) → `SimpleThoughtEvaluator.evaluate_recent_thoughts()` → candidat `WorkspaceCompetition` → proposition retenue → `GoalEngine.commit_selected_thought_proposal()` avec relecture vérifiée du registre → `GoalEngine.get_goal_thoughts()`.
+
+Résultat observé : `topic`, identifiant, source et type de la pensée restent cohérents; le sujet structuré (`cognitive_execution_flow`) est utilisé plutôt qu’une extraction du texte; le candidat retenu conserve la proposition source; le but persisté ressort comme candidat actif consommable par le workspace. Le test ne prouve pas que le modèle choisit toujours un sujet pertinent : il prouve le contrat de données et les effets aval sur ce chemin lorsqu’une proposition est retenue.
+
+Vérification locale après ajout : `tests/test_selected_thought_goal_pipeline.py` + `tests/test_cognitive_log_regressions.py` — **34 tests passés, 4 sous-tests passés**; `git diff --check` propre. Avertissements connus de Pydantic, `pkg_resources` et `python_multipart` uniquement.
+
+**Mise à jour de statut :** les mentions plus anciennes de sections précédentes disant que les correctifs GoalEngine, Phase 2, completion ou MotivationalField « attendent commit/push » sont historiques et dépassées. Les lots de code ont été poussés sur `main` jusqu’à `d430e05`; ce nouveau test et la présente preuve sont le lot suivant. Le worktree contient par ailleurs d’autres modifications utilisateur non liées; elles ne font pas partie de l’audit et ne sont pas incluses.
+
+**Suite de l’audit du cœur :** le parcours confirme le flux retenu mais pas encore la qualité des décisions en situation de concurrence, ni les effets du GoalEngine autonome sur plusieurs cycles. Étape suivante : scénarios de replay déterministes sur entrées contradictoires/bruitées, avec vérification du gagnant, de la proposition retenue, des buts créés ou rejetés, du broadcast et du cycle suivant. La validation live demeure groupée après redémarrage.
