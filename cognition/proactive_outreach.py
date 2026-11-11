@@ -58,6 +58,7 @@ import json
 import logging
 import threading
 import time
+import uuid
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -171,12 +172,15 @@ class OutreachGate:
 @dataclass
 class OutreachEvent:
     """A logged outreach attempt."""
+    event_id:     str   = field(default_factory=lambda: uuid.uuid4().hex)
     timestamp:    float = field(default_factory=time.time)
     user_id:      str   = ""
     trigger_type: str   = ""    # "open_question" | "reflection_insight" | "time_gap"
     trigger_text: str   = ""
     message_text: str   = ""
     sent:         bool  = False
+    delivery_status: str = "not_sent"  # pending | accepted | failed | not_sent
+    delivery_error: str = ""
     platform:     str   = ""
 
 
@@ -605,6 +609,9 @@ class ProactiveOutreachEngine:
         """Generate and dispatch the outreach message."""
         text = self._generate_message(event, rel)
         if not text:
+            event.delivery_status = "failed"
+            event.delivery_error = "message generation returned no content"
+            self._record_delivery_attempt(event)
             return
 
         event.message_text = text
@@ -615,6 +622,9 @@ class ProactiveOutreachEngine:
                          "messaging_manager", None)
             if mm is None:
                 logger.debug("[ProactiveOutreach] No messaging_manager — cannot send")
+                event.delivery_status = "failed"
+                event.delivery_error = "messaging manager unavailable"
+                self._record_delivery_attempt(event)
                 return
 
             # Reverse-lookup: lumina user_id → (platform, external_id)
@@ -632,54 +642,93 @@ class ProactiveOutreachEngine:
                 logger.debug(
                     f"[ProactiveOutreach] No platform mapping for {event.user_id}"
                 )
+                event.delivery_status = "failed"
+                event.delivery_error = "no platform mapping for recipient"
+                self._record_delivery_attempt(event)
                 return
 
             event.platform = platform
-            event.sent     = True
+            event.delivery_status = "pending"
+            self._record_delivery_attempt(event)
 
             # Fire async send in background thread
             import asyncio, threading as _th
             def _do_send():
                 try:
-                    asyncio.run(mm.send_message(platform, target, text))
-                    logger.info(
-                        f"[ProactiveOutreach] ✉️  [{platform}] → {event.user_id} "
-                        f"({event.trigger_type}): {text[:60]}"
+                    accepted = bool(asyncio.run(mm.send_message(platform, target, text)))
+                    self._complete_delivery(
+                        event.event_id,
+                        accepted,
+                        "platform reported no successful send" if not accepted else "",
                     )
+                    if accepted:
+                        logger.info(
+                            f"[ProactiveOutreach] ✉️  [{platform}] → {event.user_id} "
+                            f"({event.trigger_type}): {text[:60]}"
+                        )
                 except Exception as e:
                     logger.warning(f"[ProactiveOutreach] Send failed: {e}")
+                    self._complete_delivery(event.event_id, False, str(e))
 
             _th.Thread(target=_do_send, daemon=True).start()
 
         except Exception as e:
             logger.debug(f"[ProactiveOutreach] Send setup failed: {e}")
+            event.delivery_status = "failed"
+            event.delivery_error = str(e)[:240]
+            self._record_delivery_attempt(event)
             return
 
-        # Record
+    def _record_delivery_attempt(self, event: OutreachEvent) -> None:
+        """Persist an attempt without claiming it was delivered."""
         with self._lock:
-            self._state.outreach_log.append(asdict(event))
-            if len(self._state.outreach_log) > 200:
-                self._state.outreach_log = self._state.outreach_log[-200:]
-            self._state.last_outreach_by_user[event.user_id] = time.time()
-            self._state.total_sent += 1
-
+            existing = next(
+                (item for item in self._state.outreach_log if item.get("event_id") == event.event_id),
+                None,
+            )
+            if existing is None:
+                self._state.outreach_log.append(asdict(event))
+                if len(self._state.outreach_log) > 200:
+                    self._state.outreach_log = self._state.outreach_log[-200:]
+            else:
+                existing.update(asdict(event))
         self._save()
 
-        # v51: notify MotivationalField that outreach fired — resets expression window
-        try:
-            from core.state import state as _st
-            _loop = getattr(
-                getattr(getattr(_st, 'persona', None), '_organism', None),
-                '_loop', None
+    def _complete_delivery(self, event_id: str, sent: bool, error: str = "") -> None:
+        """Record transport acceptance only after the platform call returns."""
+        now = time.time()
+        with self._lock:
+            event = next(
+                (item for item in self._state.outreach_log if item.get("event_id") == event_id),
+                None,
             )
-            _mf = getattr(_loop, '_motivational_field', None) if _loop else None
-            if _mf:
-                import threading
-                _cur_cycle = getattr(_loop, '_slow_cycle_count', 0)
-                with _mf._lock:
-                    _mf._state.last_outreach_cycle = _cur_cycle
-        except Exception:
-            pass
+            if event is None:
+                return
+            event["sent"] = bool(sent)
+            # Provider acceptance is the strongest evidence available here;
+            # neither Telegram nor Twilio acceptance proves user receipt/read.
+            event["delivery_status"] = "accepted" if sent else "failed"
+            event["delivery_error"] = "" if sent else str(error or "send failed")[:240]
+            if sent:
+                self._state.last_outreach_by_user[event["user_id"]] = now
+                self._state.total_sent += 1
+        self._save()
+
+        if sent:
+            # v51: only confirmed platform acceptance resets the expression window.
+            try:
+                from core.state import state as _st
+                _loop = getattr(
+                    getattr(getattr(_st, 'persona', None), '_organism', None),
+                    '_loop', None
+                )
+                _mf = getattr(_loop, '_motivational_field', None) if _loop else None
+                if _mf:
+                    _cur_cycle = getattr(_loop, '_slow_cycle_count', 0)
+                    with _mf._lock:
+                        _mf._state.last_outreach_cycle = _cur_cycle
+            except Exception:
+                pass
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 

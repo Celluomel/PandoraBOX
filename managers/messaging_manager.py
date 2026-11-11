@@ -138,16 +138,17 @@ class MessagingManager:
 
         return response or "I'm thinking — give me a moment. 🤔"
 
-    async def send_message(self, platform: str, external_user_id: str, text: str) -> None:
-        """Dispatch a text message to the appropriate platform."""
+    async def send_message(self, platform: str, external_user_id: str, text: str) -> bool:
+        """Dispatch a text message and report whether the platform accepted it."""
         if not text:
-            return
+            return False
         if platform == "telegram":
-            await self._send_telegram(external_user_id, text)
+            return await self._send_telegram(external_user_id, text)
         elif platform == "whatsapp":
-            await self._send_whatsapp(external_user_id, text)
+            return await self._send_whatsapp(external_user_id, text)
         else:
             logger.warning(f"Unknown platform: {platform!r}")
+            return False
 
     def deliver_response(self, lumina_user_id: str, text: str) -> None:
         """
@@ -346,16 +347,19 @@ class MessagingManager:
         except Exception as e:
             logger.error(f"Telegram start failed: {e}")
 
-    async def _send_telegram(self, chat_id: str, text: str) -> None:
+    async def _send_telegram(self, chat_id: str, text: str) -> bool:
         if not self._tg_app:
-            return
+            return False
         # Telegram max message length is 4096 chars
         chunks = [text[i:i+4000] for i in range(0, len(text), 4000)]
+        sent_all = True
         for chunk in chunks:
             try:
                 await self._tg_app.bot.send_message(chat_id=int(chat_id), text=chunk)
             except Exception as e:
                 logger.error(f"Telegram send failed: {e}")
+                sent_all = False
+        return sent_all
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     #  WhatsApp (Twilio)
@@ -378,14 +382,15 @@ class MessagingManager:
         except Exception as e:
             logger.error(f"WhatsApp init failed: {e}")
 
-    async def _send_whatsapp(self, to_number: str, text: str) -> None:
+    async def _send_whatsapp(self, to_number: str, text: str) -> bool:
         if not self._twilio:
-            return
+            return False
         from_number = getattr(self._cfg, "WHATSAPP_FROM", "whatsapp:+14155238886")
         if not to_number.startswith("whatsapp:"):
             to_number = f"whatsapp:{to_number}"
         # WhatsApp via Twilio: 1600 char limit per message
         chunks = [text[i:i+1500] for i in range(0, len(text), 1500)]
+        sent_all = True
         for chunk in chunks:
             try:
                 await asyncio.to_thread(
@@ -396,6 +401,8 @@ class MessagingManager:
                 )
             except Exception as e:
                 logger.error(f"WhatsApp send failed: {e}")
+                sent_all = False
+        return sent_all
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     #  User identity resolution

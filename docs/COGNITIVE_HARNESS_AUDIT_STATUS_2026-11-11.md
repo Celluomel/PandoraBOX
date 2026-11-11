@@ -1,7 +1,16 @@
 # Audit du harnais cognitif — état et prochaines étapes
 
 **Date :** 11 novembre 2026
-**Statut :** audit en cours — conclusion globale non établie. Dernier commit GitHub : `0618621`; le correctif de fallback du planner décrit ci-dessous est encore local et passe les tests ciblés.
+**Statut :** audit en cours — conclusion globale non établie. Dernier commit commun local/GitHub au début de cette reprise : `c8c2ed2`. Le lot « outreach » décrit ci-dessous est local, testé, et attend sa validation Git/push. Aucun redémarrage de Lumina n’a été effectué; les modifications ne sont pas encore dans le processus actif.
+
+## État exécutif courant — poursuite module par module
+
+- **Objectifs / planification / exécution :** deux défauts causaux ont été corrigés et poussés dans `0618621` et `c8c2ed2`: étapes `social_probe` qui simulaient un progrès/récupération, puis fallback de l’exécuteur vers une action sans rapport lorsque le plan actif était bloqué. Tests ciblés : **52 passés**.
+- **Outreach proactif → messagerie :** correction locale testée. Avant, l’événement était marqué envoyé, le compteur et le cooldown étaient avancés avant l’appel asynchrone; Telegram/WhatsApp absorbaient leurs erreurs et ne rendaient aucun résultat. Désormais l’état reste `pending`, puis devient `accepted` seulement si l’API de transport confirme l’acceptation; échec, absence de mapping ou absence de contenu sont enregistrés comme `failed`. Le compteur et le cooldown ne progressent qu’après acceptation. L’endpoint direct `/messaging/send` renvoie aussi le booléen réel au lieu de toujours répondre `sent: true`.
+- **Preuve locale :** `tests/test_proactive_outreach_delivery.py` — **4 passed**; lot combiné outreach + planner + self-description — **56 passed**; compilation de `brain.py`, `cognition/proactive_outreach.py`, `managers/messaging_manager.py` et du test réussie; `git diff --check` propre pour ce lot. Les 7 avertissements Pydantic proviennent des validateurs historiques de `settings_manager.py`.
+- **Limite de preuve :** `accepted` signifie que l’API Telegram/Twilio a accepté l’appel; cela ne prouve ni livraison au terminal ni lecture. Aucun envoi externe réel n’a été déclenché pendant les tests. Le chemin live nécessite le redémarrage groupé final.
+- **Suite du cap :** audit des producteurs/consommateurs de mémoire et profil, puis des états de workspace/attention et de génération de réponse, avec vérification des effets aval; maintenir le même rapport et rattacher chaque constat à un scénario/test plutôt qu’à un simple tick.
+- **Git / périmètre :** le lot outreach doit être commité/poussé avec uniquement `brain.py`, `cognition/proactive_outreach.py`, `managers/messaging_manager.py`, son test et ce rapport. Les changements Body/UI/tests préexistants et artefacts non suivis sont hors lot. Ne pas redémarrer Lumina avant le contrôle cumulé.
 
 ## État courant de reprise — commit GitHub `0618621` et lot suivant local
 
@@ -54,6 +63,16 @@ Dans `GoalActionExecutor.run_tick()`, une étape planifiée indisponible donnait
 **Vérification locale :** les deux suites `tests/test_intention_planning.py` et `tests/test_self_description_prompt.py` passent à **52 passed**, 7 avertissements Pydantic. Le nouveau cas force une étape de plan indisponible et échoue si la rotation tente de sélectionner une action.
 
 **État live :** les deux correctifs du planner restent à charger et valider après un redémarrage groupé de Lumina. Jusqu’à cette vérification, les preuves sont statiques et locales. Le résultat attendu est que les anciens `social_probe` apparaissent indisponibles, ne gonflent plus le progrès et ne déclenchent plus de rotation hors plan.
+
+### Reprise — le canal d’outreach ne doit pas fabriquer une preuve d’envoi
+
+La lecture de `ProactiveOutreachEngine._send()` et `MessagingManager.send_message()` a montré une incohérence de contrat : l’outreach persistait `sent=true`, incrémentait `total_sent` et démarrait le cooldown avant que le thread asynchrone n’appelle le fournisseur. Les fonctions Telegram/WhatsApp absorbaient ensuite les exceptions et ne retournaient aucun statut. Le harnais ne pouvait donc pas distinguer une demande envoyée d’un appel échoué; l’endpoint REST `/messaging/send` répondait lui aussi toujours `{"sent": true}`.
+
+**Correction locale :** les adaptateurs de messagerie retournent maintenant `true` seulement si tous les segments ont été acceptés par leur API, et `false` si le fournisseur manque, si la plateforme est inconnue ou si un segment échoue. L’outreach persiste une tentative `pending`, puis l’achève en `accepted` ou `failed`; seuls les appels acceptés alimentent le compteur et le cooldown. Chaque tentative possède un `event_id` et conserve son erreur. L’état `accepted` décrit uniquement l’acceptation du transport, pas la livraison au téléphone ni la lecture. L’endpoint direct répercute également le booléen réel.
+
+**Vérification locale :** `tests/test_proactive_outreach_delivery.py` — **4 passed**, incluant un rejet asynchrone qui doit rester `failed` et ne pas incrémenter les compteurs; lot combiné avec `tests/test_intention_planning.py` et `tests/test_self_description_prompt.py` — **56 passed**; `py_compile` et `git diff --check` réussis. Première exécution dans le sandbox bloquée avant le test par `asyncio` lors de la création d’un socket local Windows; la relance autorisée hors sandbox a terminé avec succès. Aucun message réel n’a été envoyé.
+
+**État Git/live :** correctif local non encore commité à cette rédaction. Il requiert un redémarrage groupé de Lumina pour contrôle live; jusque-là, aucun effet n’est attribué au processus actif. À valider après redémarrage : tentative sans destinataire, fournisseur en échec et acceptation fournisseur; vérifier l’enregistrement par `event_id`, `sent`, `delivery_status`, compteur et cooldown. Continuer ensuite vers les flux mémoire/profil et workspace; cette correction ne constitue pas une conclusion générale sur la qualité cognitive.
 
 ## Synthèse globale faisant autorité — état cumulé, révisé le 11 novembre
 

@@ -467,8 +467,8 @@ async def messaging_send(req: SendRequest):
     """Push a raw message to any platform (no LLM — direct delivery)."""
     if _messaging is None:
         raise HTTPException(503, "Messaging not started")
-    await _messaging.send_message(req.platform, req.to, req.text)
-    return {"sent": True}
+    accepted = bool(await _messaging.send_message(req.platform, req.to, req.text))
+    return {"sent": accepted, "transport_accepted": accepted}
 
 
 # ══════════════════════════════════════════════════════════════════════
