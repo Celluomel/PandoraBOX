@@ -15,9 +15,16 @@ def format_memory_for_prompt(memory: Mapping[str, Any], max_chars: int = 720) ->
     """Render stored conversation turns with explicit speaker provenance."""
     text = str(memory.get("text", "")).strip()
     limit = max(160, min(1200, int(max_chars)))
+    memory_type = str(memory.get("memory_type", "memory"))[:40]
+    if memory_type == "user_message":
+        user_text = re.sub(r"^User message:\s*", "", text, flags=re.IGNORECASE).strip()
+        return (
+            "- [separately indexed, user-authored message]\n"
+            "  USER MESSAGE (evidence of what the user asked or stated; a question alone does not establish its answer): "
+            + user_text[:min(900, limit)]
+        )[:limit]
     match = re.match(r"^Conversation\s+[—–-]\s*User:\s*(.*)$", text, re.IGNORECASE | re.DOTALL)
     if not match:
-        memory_type = str(memory.get("memory_type", "memory"))[:40]
         return f"- [{memory_type}] {text[:min(300, limit)]}"
 
     content = match.group(1)
@@ -37,6 +44,14 @@ def format_memory_for_prompt(memory: Mapping[str, Any], max_chars: int = 720) ->
     return result[:limit]
 
 
+def memory_embedding_text(text: str, memory_type: str = "") -> str:
+    """Keep user-authored conversation embeddings free of assistant wording."""
+    value = str(text or "").strip()
+    if str(memory_type or "") == "user_message":
+        return re.sub(r"^User message:\s*", "", value, flags=re.IGNORECASE).strip()
+    return value
+
+
 def memory_retrieval_evidence(
     query: str,
     memories: Iterable[Mapping[str, Any]],
@@ -50,7 +65,7 @@ def memory_retrieval_evidence(
         text = str(memory.get("text", ""))
         has_user_message = bool(re.match(
             r"^\s*Conversation\s+[—–-]\s*User:", text, re.IGNORECASE
-        ))
+        )) or str(memory.get("memory_type", "")) == "user_message"
         has_assistant_reply = bool(re.search(
             r"\s+\|\s+(?:Lumina|Assistant):", text, re.IGNORECASE
         ))

@@ -37,6 +37,7 @@ from cognition.simple_thought_evaluator import SimpleThoughtEvaluator
 from cognition.turn_context_evidence import (
     audit_safe_turn_summary,
     format_memory_for_prompt,
+    memory_embedding_text,
     memory_retrieval_evidence,
     profile_context_evidence,
 )
@@ -126,6 +127,24 @@ class CognitiveLogRegressionTests(unittest.TestCase):
         self.assertIn("a question alone does not establish its answer", rendered)
         self.assertIn("LUMINA REPLY", rendered)
         self.assertIn("unverified and not proof", rendered)
+
+    def test_user_message_memory_gets_clean_embedding_and_explicit_prompt_provenance(self):
+        self.assertEqual(
+            memory_embedding_text("User message: Lumina is primary; messages go to Flux.", "user_message"),
+            "Lumina is primary; messages go to Flux.",
+        )
+        rendered = format_memory_for_prompt({
+            "memory_type": "user_message",
+            "text": "User message: Lumina is primary; Flux is the secondary child brain.",
+        })
+        self.assertIn("USER MESSAGE", rendered)
+        self.assertIn("separately indexed, user-authored", rendered)
+        self.assertIn("a question alone does not establish its answer", rendered)
+        evidence = memory_retrieval_evidence("who is primary?", [{
+            "id": "user-message-1", "text": "User message: Lumina is primary.",
+            "memory_type": "user_message", "memory_tier": "interaction",
+        }])
+        self.assertTrue(evidence["candidates"][0]["has_user_message"])
 
     def test_turn_trace_exposes_memory_provenance_without_memory_text(self):
         evidence = memory_retrieval_evidence("what did we decide?", [{

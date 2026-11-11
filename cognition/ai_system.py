@@ -58,6 +58,7 @@ from cognition.behavioral_conditioning import BehavioralConditioningSystem
 from cognition.life_stage_prompting import build_stage_system_block, get_stage_profile
 from cognition.relational_knowledge_graph import RelationalKnowledgeGraph
 from cognition.memory_retrieval import rank_documents
+from cognition.turn_context_evidence import memory_embedding_text
 
 # ── Liberty Components (NEW) ────────────────────────────────────────
 from cognition.self_modification import SelfModificationAuthority
@@ -831,7 +832,13 @@ class EnhancedMemorySystem:
                 rows = c.fetchall()
             if rows:
                 ids  = np.array([r[0] for r in rows], dtype=np.int64)
-                vecs = np.vstack([self._embed(r[1]).flatten() for r in rows])
+                # New speaker-separated user records are embedded without
+                # their storage label; historical combined records remain
+                # readable and keep their legacy embedding semantics.
+                vecs = np.vstack([
+                    self._embed(memory_embedding_text(r[1], "user_message" if r[1].startswith("User message:") else "")).flatten()
+                    for r in rows
+                ])
                 index.add_with_ids(vecs, ids)
             self._save_index(index)
         except Exception as e:
@@ -872,7 +879,7 @@ class EnhancedMemorySystem:
 
                 if self.faiss_index is not None:
                     try:
-                        vec = self._embed(text).flatten()
+                        vec = self._embed(memory_embedding_text(text, memory_type)).flatten()
                         self.faiss_index.add_with_ids(vec.reshape(1,-1), np.array([mid], dtype=np.int64))
                     except Exception as index_error:
                         self.faiss_index = None
@@ -947,7 +954,10 @@ class EnhancedMemorySystem:
         current_valence: Optional[float] = None,
     ) -> List[Dict[str, Any]]:
         memories = self.persistence.get_all_memories(tier=tier)
-        ranked = rank_documents(query, [m.get("text", "") for m in memories], limit=limit)
+        ranked = rank_documents(query, [
+            memory_embedding_text(m.get("text", ""), m.get("memory_type", ""))
+            for m in memories
+        ], limit=limit)
         results = []
         for index, relevance in ranked:
             memory = dict(memories[index])
@@ -2378,6 +2388,16 @@ Every response must feel genuinely new — avoid repeating phrases, sentences, o
                 f"{_gpn()}: {_r_snippet} (responded {resp_emo['valence'].lower()})",
                 _combined_impact, "episodic",
                 emo["valence"], emo["arousal"]
+            )
+            # Index the user's own words independently as well. The combined
+            # episode remains useful as dialogue context, but its embedding
+            # can be dominated by Lumina's much longer generated reply.
+            # Keeping a user-authored vector prevents that reply from
+            # diluting retrieval of past user decisions and corrections.
+            self.memory_system.add_memory(
+                "User message: " + user_input[:1200].replace("\r", " ").replace("\n", " "),
+                _combined_impact, "user_message",
+                emo["valence"], emo["arousal"],
             )
 
             # Personal-fact extraction: catches "X is my Y" (and reverse
