@@ -557,10 +557,7 @@ class PressureSystem:
             if hasattr(o, 'predictive_mind'):
                 acc = o.predictive_mind.accuracy()
                 # Bootstrap guard: suppress until enough predictions recorded
-                _pred_count = (
-                    len(getattr(o.predictive_mind, '_surprise_window', [])) +
-                    getattr(o.predictive_mind, '_high_conf_total', 0)
-                )
+                _pred_count = getattr(o.predictive_mind, '_total_validated_predictions', 0)
                 if _pred_count >= 8:
                     sig["uncertainty"] = max(0.1, 1.0 - acc)
                 else:

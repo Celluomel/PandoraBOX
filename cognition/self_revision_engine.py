@@ -67,8 +67,8 @@ And BEFORE:
 Integration with existing systems
 ───────────────────────────────────
   SelfRevisionEngine reads from:
-    - PredictiveMind._surprise_window  → sustained surprise signal
-    - PredictiveMind last PredictionResult → per-turn error
+    - PredictiveMind independently validated outcomes → sustained surprise signal
+    - PredictiveMind validated PredictionResult → per-turn error
     - EmotionalState                   → actual post-response emotion
     - SelfModelMoment.current          → current phi, qualia, values
     - EthicalReasoningEngine           → value hierarchy update hook
@@ -186,13 +186,14 @@ class SelfRevisionEngine:
         Parameters
         ----------
         organism          : CognitiveOrganism
-        prediction_result : PredictionResult | None
+        prediction_result : independently validated PredictionResult | None
 
         Returns list of RevisionEvents that occurred this turn (may be empty).
         """
         if prediction_result is None:
-            # No prediction was made this turn — still check phi recovery
-            return self._attempt_phi_recovery(organism)
+            # No independently validated prediction outcome exists. Absence
+            # of evidence is not low surprise and must not recover phi.
+            return []
 
         error_level  = getattr(prediction_result, "error_level", 0.0)
         is_surprise  = getattr(prediction_result, "surprise", False)
@@ -302,11 +303,6 @@ class SelfRevisionEngine:
             )
 
         return None
-
-    def _attempt_phi_recovery(self, organism: Any) -> List[RevisionEvent]:
-        """Called when no prediction result exists — still allow phi recovery."""
-        evt = self._revise_phi(organism, 0.0)
-        return [evt] if evt else []
 
     def _write_phi(self, organism: Any, new_phi: float) -> None:
         """Write revised phi back to SelfModelMoment."""

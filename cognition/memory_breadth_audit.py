@@ -1,29 +1,11 @@
 """
 MemoryBreadthAudit — Phase 6.6
 ================================
-The peer-cognition proposal's own caution: don't build a smarter
-retrieval strategy (temporal/divergent/associative neighbors) until the
-existing 6->10 widen-on-surprise mechanism (v90) is shown to produce a
-measurable benefit. This is that measurement, not the smarter strategy —
-deliberately so; building the fancier version first would be exactly the
-kind of decorative-but-unverified addition this whole engagement has
-been finding and fixing.
-
-Same "record a decision, check back later, compare" pattern already
-established by MetaLearningAudit (v64) and ArbitrationLearningTracker
-(v89), applied here to a different question: does widening memory
-retrieval when a recent prediction was surprising actually correlate
-with the NEXT prediction being less surprising — i.e. did the extra
-context genuinely help disambiguate the situation, or did it just add
-noise?
-
-Real, already-computed signal used for "before"/"after": each
-PredictionResult already carries error_level (predictive_mind.py). No
-new metric invented — before = predictive_mind.recent_error_level() at
-the moment retrieval widened (or didn't); after = the same call, read
-back on the NEXT turn's prediction. Tracks two running averages (widened
-vs baseline group) so the two groups can be honestly compared even
-though the two conditions never happen on the exact same turn.
+Compares retrieval widening against a later independently validated
+outcome. It remains unmeasured until PredictiveMind provides outcome
+labels in the same domain as its prediction. The former error signal
+compared user-intent labels with response-register labels, so those
+legacy samples are retained but excluded from evidence.
 """
 from __future__ import annotations
 
@@ -48,6 +30,7 @@ class MemoryBreadthAudit:
         self._pending: List[Dict[str, Any]] = []
         self._widened_deltas: List[float] = []
         self._baseline_deltas: List[float] = []
+        self._legacy_unvalidated = {"pending": [], "widened": [], "baseline": []}
         self._turn_counter = 0
         self._load()
         logger.info("[MemoryBreadthAudit] initialised")
@@ -60,10 +43,26 @@ class MemoryBreadthAudit:
         least REVIEW_DELAY_TURNS old) so the caller doesn't need to
         thread a turn_id through — the counter here IS the turn clock.
         """
-        report = {"reviewed": 0, "still_pending": 0}
-        if predictive_mind is None or not hasattr(predictive_mind, "recent_error_level"):
+        report = {"reviewed": 0, "still_pending": 0, "status": "unmeasured"}
+        if predictive_mind is None or not hasattr(predictive_mind, "summary"):
+            return report
+        try:
+            pm_summary = predictive_mind.summary()
+            validated_count = int(pm_summary.get("validated_predictions", 0) or 0)
+            measurement_status = pm_summary.get("accuracy_status")
+        except Exception:
+            return report
+        if validated_count <= 0 or measurement_status != "measured":
+            # Do not treat absent outcome labels as zero error and do not
+            # complete stale pending observations from the legacy metric.
+            report["still_pending"] = len(self._pending)
+            return report
+        if not hasattr(predictive_mind, "recent_error_level"):
             return report
         current_error = predictive_mind.recent_error_level()
+        if current_error is None:
+            report["still_pending"] = len(self._pending)
+            return report
 
         with self._lock:
             self._turn_counter += 1
@@ -95,17 +94,14 @@ class MemoryBreadthAudit:
             report["still_pending"] = len(still_pending)
 
         if report["reviewed"]:
+            report["status"] = "measured"
             self._save()
         return report
 
     def summary(self) -> Dict[str, Any]:
         """
-        Honest comparison, not a verdict — enough evidence to decide
-        whether the smarter retrieval strategy is worth building, per the
-        proposal's own condition. avg_delta > 0 means error level tended
-        to drop after that condition; the widened-vs-baseline GAP is what
-        actually answers "does widening help disambiguate", not either
-        number alone.
+        Only samples collected with independent outcome labels are active.
+        Old proxy-derived data is reported as excluded legacy metadata.
         """
         def _avg(xs: List[float]) -> Optional[float]:
             return round(sum(xs) / len(xs), 4) if xs else None
@@ -122,6 +118,10 @@ class MemoryBreadthAudit:
             "widened_avg_error_delta": widened_avg,
             "baseline_avg_error_delta": baseline_avg,
             "gap": gap,  # positive gap = widening correlates with more improvement
+            "measurement_status": "measured" if self._widened_deltas or self._baseline_deltas else "unmeasured_no_independent_outcome_labels",
+            "legacy_unvalidated_samples_excluded": {
+                key: len(values) for key, values in self._legacy_unvalidated.items()
+            },
         }
 
     # ── persistence ──────────────────────────────────────────────────────
@@ -131,9 +131,11 @@ class MemoryBreadthAudit:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             with self._lock:
                 data = {
+                    "measurement_schema": "independent_outcome_v1",
                     "pending":          self._pending,
                     "widened_deltas":   self._widened_deltas,
                     "baseline_deltas":  self._baseline_deltas,
+                    "legacy_unvalidated_excluded": self._legacy_unvalidated,
                 }
             with open(self._path, "w") as f:
                 json.dump(data, f, indent=2)
@@ -146,9 +148,19 @@ class MemoryBreadthAudit:
                 return
             data = json.loads(self._path.read_text())
             with self._lock:
-                self._pending = data.get("pending", [])
-                self._widened_deltas = data.get("widened_deltas", [])
-                self._baseline_deltas = data.get("baseline_deltas", [])
+                if data.get("measurement_schema") == "independent_outcome_v1":
+                    self._pending = data.get("pending", [])
+                    self._widened_deltas = data.get("widened_deltas", [])
+                    self._baseline_deltas = data.get("baseline_deltas", [])
+                    self._legacy_unvalidated = data.get("legacy_unvalidated_excluded", self._legacy_unvalidated)
+                else:
+                    # Preserve old file contents, but do not present results
+                    # gathered from the invalid proxy as evidence.
+                    self._legacy_unvalidated = {
+                        "pending": data.get("pending", []),
+                        "widened": data.get("widened_deltas", []),
+                        "baseline": data.get("baseline_deltas", []),
+                    }
         except Exception as e:
             logger.warning(f"[MemoryBreadthAudit] load failed (non-fatal): {e}")
 

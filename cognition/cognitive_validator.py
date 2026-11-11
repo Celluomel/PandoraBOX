@@ -458,7 +458,7 @@ class CognitiveArchitectureMonitor:
             if not pm:
                 return 0.0
             summary = pm.summary() if callable(getattr(pm, "summary", None)) else {}
-            total = int(summary.get("total_predictions", getattr(pm, "_total_predictions", 0)) or 0)
+            total = int(summary.get("validated_predictions", getattr(pm, "_total_validated_predictions", 0)) or 0)
             if total <= 0:
                 return 0.0
             accuracy = summary.get("accuracy")

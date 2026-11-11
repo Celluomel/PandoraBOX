@@ -342,9 +342,9 @@ class CognitiveObservatory:
             if pm and hasattr(pm, 'stability_metrics'):
                 stab = pm.stability_metrics()
                 cb = stab.get('confirmation_bias', 0.5)
-                n_pred = stab.get('total_predictions', 0)
+                n_pred = stab.get('validated_predictions', 0)
                 # Skip if uncalibrated: cb=0.00 with < 5 predictions tanks CCS
-                if n_pred >= 5 and cb > 0.01:
+                if n_pred >= 5 and stab.get('measurement_status') == 'measured' and cb > 0.01:
                     score_parts.append(cb * 0.8)
                 else:
                     score_parts.append(0.45)   # neutral placeholder while calibrating
@@ -523,9 +523,11 @@ class CognitiveObservatory:
         try:
             pm = getattr(self._o, 'predictive_mind', None)
             stab = pm.stability_metrics() if pm and hasattr(pm, 'stability_metrics') else {}
-            surprise_idx = stab.get('surprise_index', 0.12)
+            surprise_measured = stab.get('measurement_status') == 'measured'
+            surprise_idx = stab.get('surprise_index', 0.0) if surprise_measured else 0.0
             novelty      = stab.get('novelty_rate',   0.15)
         except Exception:
+            surprise_measured = False
             surprise_idx = 0.12
             novelty      = 0.15
 
@@ -536,6 +538,10 @@ class CognitiveObservatory:
             surprise_idx  * 0.20 +
             max(0, gei - 0.10) * 0.15
         )
+        if not surprise_measured:
+            # Re-normalize over the remaining terms; an unavailable
+            # prediction-error signal contributes neither anomaly nor health.
+            str_s = (novelty * 0.35 + idx * 0.30 + max(0, gei - 0.10) * 0.15) / 0.80
         str_s = min(1.0, str_s)
         if str_s >= 0.50:
             notes.append(f"⚠️ STR={str_s:.2f} — anomalous cognitive pattern")
@@ -585,8 +591,8 @@ class CognitiveObservatory:
                 cb_raw = stab.get('confirmation_bias', 0.50)
                 # Cap: when PM is uncalibrated (cb≈0.00, few predictions),
                 # don't let uncertainty spike to 1.0 — that falsely inflates IDX.
-                n_pred = stab.get('total_predictions', 0)
-                if n_pred < 5:
+                n_pred = stab.get('validated_predictions', 0)
+                if n_pred < 5 or stab.get('measurement_status') != 'measured':
                     unc = 0.35  # use neutral default while calibrating
                 else:
                     unc = max(0.15, min(0.80, 1.0 - cb_raw))

@@ -5,8 +5,10 @@ Inspired by Karl Friston's Predictive Processing theory.
 
 FIX LOG
 -------
-2026-03-09  Bug: _detect_intent was identical to _predict_intent (tautology).
-            Fix: _detect_intent_from_response reads the actual LLM output.
+2026-03-09  The input-intent and output-register classifiers describe
+            different variables; their mismatch cannot be scored as error.
+            evaluate() now records novelty separately and leaves outcome
+            accuracy/surprise unmeasured until independent labels exist.
 
 2026-03-09  Bug: record_novelty() was never called anywhere.
             Fix: Wired in _update_topic_registry() on every evaluate().
@@ -61,7 +63,7 @@ _NOVELTY_STOPWORDS = frozenset({
 
 
 class PredictiveMind:
-    """Anticipation module. Generates predictions, measures errors, feeds workspace."""
+    """Heuristic anticipation and novelty tracker; outcome quality is unmeasured."""
 
     MAX_HISTORY        = 200
     SURPRISE_THRESHOLD = 0.25   # lowered from 0.6 — real mismatches are now possible
@@ -81,6 +83,8 @@ class PredictiveMind:
         self._results: deque      = deque(maxlen=self.MAX_HISTORY)
         self._confidence: Dict[str, float] = {}
         self._total_predictions   = 0
+        self._total_validated_predictions = 0
+        self._total_validated_errors = 0
         self._total_errors        = 0
         self._surprise_window: deque = deque(maxlen=50)
         self._novelty_window:  deque = deque(maxlen=50)
@@ -92,18 +96,14 @@ class PredictiveMind:
 
     # ── Public API ────────────────────────────────────────────────────────────
 
-    def recent_error_level(self) -> float:
+    def recent_error_level(self) -> Optional[float]:
         """
-        Phase 5.5-adjacent finding (closed-loop audit): the most recent
-        prediction error, for callers that need "how surprised was I just
-        now" without reading _results directly. 0.0 if nothing evaluated
-        yet. Used by persona_bridge.py to widen memory retrieval after a
-        surprising exchange — previously memory retrieval limits were
-        fixed constants regardless of novelty, confirmed by tracing every
-        retrieve_memories()/retrieve_by_tier() call site.
+        Return the most recent independently validated prediction error.
+        None means there is no outcome evidence; it must not be read as
+        zero surprise.
         """
         if not self._results:
-            return 0.0
+            return None
         return self._results[-1].error_level
 
     def predict(self, context: Dict) -> Prediction:
@@ -126,74 +126,31 @@ class PredictiveMind:
 
     def evaluate(self, actual_context: Dict) -> Optional[PredictionResult]:
         """
-        Compare last prediction to what actually happened.
-        FIX: actual_intent is derived from the *response content*, not a re-run
-             of the same classifier on user input.
+        Retire the pending prediction without inventing an outcome label.
+
+        The prediction taxonomy classifies the user's input; the response
+        detector classifies Lumina's writing style. Those are different
+        variables, so their mismatch is not prediction error. A true outcome
+        evaluator needs an independent, same-domain target label.
         """
         if not self._last_prediction:
             return None
 
-        actual_intent  = self._detect_intent_from_response(self._last_response_text)
-        actual_emotion = self._read_current_emotion()
-
-        intent_error  = 0.0 if actual_intent == self._last_prediction.expected_intent else 1.0
-        emotion_error = 0.0 if actual_emotion == self._last_prediction.expected_emotion else 0.5
-        error_level   = (intent_error * 0.7 + emotion_error * 0.3)
-        weighted_error = error_level * self._last_prediction.confidence
-
-        result = PredictionResult(
-            prediction     = self._last_prediction,
-            actual_intent  = actual_intent,
-            actual_emotion = actual_emotion,
-            error_level    = round(weighted_error, 3),
-            surprise       = weighted_error >= self.SURPRISE_THRESHOLD,
-        )
-
-        self._results.append(result)
-        if error_level > 0.3:
-            self._total_errors += 1
-
-        self._surprise_window.append(weighted_error)
-
-        if self._last_prediction.confidence >= 0.75:
-            self._high_conf_total += 1
-            if error_level < 0.3:
-                self._high_conf_correct += 1
-
-        # FIX: wire novelty detection into every evaluation cycle
+        # Novelty is a separate observable from prediction error and remains
+        # useful even while no independently verifiable outcome is available.
         self._update_topic_registry(
             self._last_response_text,
             actual_context.get('user_text', '')
         )
-
-        self._update_confidence(result)
-
-        # ── v78: being wrong should feel like something, not just be logged ──
-        if result.surprise:
-            try:
-                emo = getattr(getattr(self._o, "ai_system", None), "emotional_state", None)
-                if emo and hasattr(emo, "receive_self_influence"):
-                    magnitude = min(1.0, weighted_error)
-                    emo.receive_self_influence({
-                        "curiosity":   +0.015 * (0.5 + magnitude),  # unexpected -> interesting
-                        "frustration": +0.010 * magnitude,          # mildly uncomfortable,
-                                                                     # proportional, fast-decaying
-                        # anxiety deliberately excluded — matches the
-                        # existing "do not reinforce anxiety" principle
-                        # in self_model_influence.py
-                    })
-            except Exception as e:
-                logger.debug(f"[PredictiveMind] surprise->emotion nudge failed (non-fatal): {e}")
-
         logger.debug(
-            f"[PredictiveMind] eval: predicted={self._last_prediction.expected_intent} "
-            f"actual={actual_intent} error={result.error_level:.2f} surprise={result.surprise}"
+            "[PredictiveMind] outcome unvalidated: input-intent and response-register "
+            "labels are not comparable; novelty recorded separately"
         )
 
         self._last_prediction    = None
         self._last_response_text = ""
-        self._last_eval_result   = result   # cached for SelfRevisionEngine
-        return result
+        self._last_eval_result   = None
+        return None
 
     def workspace_signal(self, result: PredictionResult) -> Optional[Dict]:
         if not result.surprise:
@@ -236,11 +193,14 @@ class PredictiveMind:
         exchanges that introduced a new concept).  No longer converges to 0.
         """
         sw = list(self._surprise_window)
-        surprise_idx = round(sum(sw) / len(sw), 3) if sw else 0.0
+        has_validated_outcomes = self._total_validated_predictions > 0
+        surprise_idx = (
+            round(sum(sw) / len(sw), 3) if sw else 0.5
+        )
 
         conf_bias = round(
-            self._high_conf_correct / max(1, self._high_conf_total), 3
-        )
+            self._high_conf_correct / self._high_conf_total, 3
+        ) if self._high_conf_total else 0.5
 
         # FIX: primary novelty from sliding window
         nw = list(self._novelty_window)
@@ -272,7 +232,9 @@ class PredictiveMind:
 
         drift = round(max(0.0, conf_bias - surprise_idx - 0.2), 3)
 
-        if surprise_idx < 0.10:
+        if not has_validated_outcomes:
+            health = "unmeasured"
+        elif surprise_idx < 0.10:
             health = "⚠️ overconfident"
         elif surprise_idx < 0.40:
             health = "✅ stable"
@@ -282,24 +244,30 @@ class PredictiveMind:
             health = "🔴 unstable"
 
         return {
+            "total_predictions": self._total_predictions,
+            "validated_predictions": self._total_validated_predictions,
             "surprise_index":   surprise_idx,
             "confirmation_bias": conf_bias,
             "novelty_rate":      novelty,
             "topic_quality":     round(topic_quality, 3),
             "model_drift":       drift,
             "health":            health,
+            "measurement_status": "measured" if has_validated_outcomes else "unmeasured_no_independent_outcome_labels",
         }
 
     def accuracy(self) -> float:
-        if self._total_predictions == 0:
-            return 1.0
-        return 1.0 - (self._total_errors / self._total_predictions)
+        if self._total_validated_predictions <= 0:
+            return 0.5  # neutral prior; no independent outcome labels exist
+        return 1.0 - (self._total_validated_errors / self._total_validated_predictions)
 
     def summary(self) -> Dict:
         stab = self.stability_metrics()
         return {
             "total_predictions": self._total_predictions,
+            "validated_predictions": self._total_validated_predictions,
             "accuracy":          round(self.accuracy(), 3),
+            "accuracy_status":   "unmeasured_no_independent_outcome_labels"
+            if self._total_validated_predictions == 0 else "measured",
             **stab,
         }
 
@@ -323,8 +291,10 @@ class PredictiveMind:
 
     def _detect_intent_from_response(self, response_text: str) -> str:
         """
-        Detect actual register from PandoraBOX's RESPONSE.
-        FIX: reads response content, not user input — making prediction errors possible.
+        Detect output register for diagnostics only.
+
+        This label is not comparable with _predict_intent(), which labels
+        the user's input. It must not be used as an outcome for that prediction.
         """
         if not response_text:
             return 'statement'

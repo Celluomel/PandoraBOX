@@ -1481,10 +1481,12 @@ class CognitiveOrganism:
             + (f"Homeostasis={_report.homeostasis_score:.2f}" if _report else "Homeostasis=n/a")
         )
 
-        # ── v3: Evaluate prediction, push surprise to workspace ───────────
+        # ── v3: Record novelty; only independently validated outcomes may
+        # feed a surprise signal into workspace learning. ─────────────────
         try:
             from core.cognitive_event_bus import SURPRISE_DETECTED  # import before use
-            # FIX: store actual response first so detect_intent_from_response works
+            # Keep the completed response for topic novelty extraction. Its
+            # register is not an outcome label for the user's input intent.
             self.predictive_mind.store_response(response)
             result = self.predictive_mind.evaluate({
                 'user_text':       user_input,

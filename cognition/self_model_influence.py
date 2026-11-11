@@ -303,7 +303,8 @@ class SelfModelInfluence:
             pm = getattr(organism, "predictive_mind", None)
             if pm and hasattr(pm, "stability_metrics"):
                 stab         = pm.stability_metrics()
-                surprise_idx = stab.get("surprise_index", 0.0)
+                if stab.get("measurement_status") == "measured":
+                    surprise_idx = stab.get("surprise_index", 0.0)
                 novelty_rate = stab.get("novelty_rate",   0.15)
         except Exception:
             pass
@@ -586,7 +587,7 @@ class SelfModelInfluence:
                 return 0.5
             acc = pm.accuracy() if hasattr(pm, "accuracy") else 0.5
             # Early turns (< 5 predictions) use a neutral prior
-            total = getattr(pm, "_total_predictions", 0)
+            total = getattr(pm, "_total_validated_predictions", 0)
             if total < 5:
                 return 0.5
             return float(max(0.0, min(1.0, acc)))

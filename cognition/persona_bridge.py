@@ -3415,7 +3415,8 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             try:
                 _pm = getattr(self._organism, "predictive_mind", None)
                 if _pm and hasattr(_pm, "recent_error_level"):
-                    if _pm.recent_error_level() > 0.5:
+                    _recent_error = _pm.recent_error_level()
+                    if _recent_error is not None and _recent_error > 0.5:
                         _recall_limit = 10
                         _surprised = True
             except Exception:

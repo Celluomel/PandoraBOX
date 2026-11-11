@@ -620,9 +620,11 @@ async def orchestrator_page():
                 summ = pm.summary()
                 acc  = summ.get('accuracy', 1.0)
                 tot  = summ.get('total_predictions', 0)
+                acc_measured = summ.get('accuracy_status') == 'measured'
+                acc_label = f'{acc:.0%}' if acc_measured else 'unmeasured'
                 conf = summ.get('avg_confidence', 0.65)
                 surp = summ.get('recent_surprises', 0)
-                acc_col  = '#22c55e' if acc > 0.7 else '#f59e0b' if acc > 0.4 else '#ef4444'
+                acc_col  = '#22c55e' if acc_measured and acc > 0.7 else '#f59e0b' if acc_measured else '#94a3b8'
                 surp_col = '#ef4444' if surp > 3 else '#f59e0b' if surp > 1 else '#22c55e'
 
                 # Model Stability metrics
@@ -633,31 +635,35 @@ async def orchestrator_page():
                 tq   = stab.get('topic_quality', 1.0)
                 drift= stab.get('model_drift', 0.0)
                 hlth = stab.get('health', '')
+                stability_measured = stab.get('measurement_status') == 'measured'
+                si_label = f'{si:.2f}' if stability_measured else 'unmeasured'
+                cb_label = f'{cb:.2f}' if stability_measured else 'unmeasured'
+                drift_label = f'{drift:.2f}' if stability_measured else 'unmeasured'
 
-                si_col = '#22c55e' if 0.10 <= si <= 0.40 else '#f59e0b' if si < 0.10 else '#ef4444'
-                cb_col = '#ef4444' if cb > 0.85 else '#f59e0b' if cb > 0.70 else '#22c55e'
+                si_col = '#22c55e' if stability_measured and 0.10 <= si <= 0.40 else '#f59e0b' if stability_measured else '#94a3b8'
+                cb_col = '#ef4444' if stability_measured and cb > 0.85 else '#f59e0b' if stability_measured and cb > 0.70 else '#22c55e' if stability_measured else '#94a3b8'
                 tq_col = '#22c55e' if tq >= 0.7 else '#f59e0b' if tq >= 0.5 else '#ef4444'
-                dr_col = '#ef4444' if drift > 0.3 else '#f59e0b' if drift > 0.1 else '#22c55e'
+                dr_col = '#ef4444' if stability_measured and drift > 0.3 else '#f59e0b' if stability_measured and drift > 0.1 else '#22c55e' if stability_measured else '#94a3b8'
 
                 try:
                     _predict_html.set_content(
                     f'<div style="font-size:12px;color:#cbd5e1">'
                     f'<div><span style="color:#94a3b8">Predictions:</span> <b>{tot}</b></div>'
                     f'<div><span style="color:#94a3b8">Accuracy:</span> '
-                    f'<b style="color:{acc_col}">{acc:.0%}</b></div>'
+                    f'<b style="color:{acc_col}">{acc_label}</b></div>'
                     f'<div><span style="color:#94a3b8">Confidence:</span> {conf:.0%}</div>'
                     f'<div><span style="color:#94a3b8">Recent surprises:</span> '
                     f'<b style="color:{surp_col}">{surp}</b></div>'
                     + (f'<div style="margin-top:6px;color:#64748b;font-size:10px">🧠 Model Stability {hlth}</div>'
                        f'<div style="font-size:10px"><span style="color:#94a3b8">Surprise idx:</span> '
-                       f'<b style="color:{si_col}">{si:.2f}</b> '
+                       f'<b style="color:{si_col}">{si_label}</b> '
                        f'<span style="color:#94a3b8">| Confirm bias:</span> '
-                       f'<b style="color:{cb_col}">{cb:.2f}</b></div>'
+                       f'<b style="color:{cb_col}">{cb_label}</b></div>'
                        f'<div style="font-size:10px"><span style="color:#94a3b8">Novelty:</span> {nr:.2f} '
                        f'<span style="color:#94a3b8">| Topic quality:</span> '
                        f'<b style="color:{tq_col}">{tq:.2f}</b> '
                        f'<span style="color:#94a3b8">| Drift:</span> '
-                       f'<b style="color:{dr_col}">{drift:.2f}</b></div>'
+                       f'<b style="color:{dr_col}">{drift_label}</b></div>'
                        if stab else '')
                     + f'</div>'
                 )
