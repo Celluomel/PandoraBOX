@@ -66,6 +66,19 @@ class EmotionalAffectEventTests(unittest.TestCase):
             snapshot = restored.get_snapshot()
             self.assertGreater(snapshot.surprise, 0.05)
 
+    def test_response_context_exposes_live_profile_and_appraisal_cause(self):
+        with tempfile.TemporaryDirectory() as folder:
+            state = self.make_state(folder)
+            state.update_from_cognitive_event(
+                "identity_threatened", intensity=0.7, source="self_model"
+            )
+            modifiers = state.get_response_modifiers()
+            self.assertEqual(len(modifiers["affective_profile"]), 11)
+            self.assertEqual(
+                modifiers["latest_affect_event"]["event_type"], "identity_threatened"
+            )
+            self.assertEqual(modifiers["latest_affect_event"]["source"], "self_model")
+
     def test_event_bus_routes_appraisal_and_deduplicates_satiation_pair(self):
         with tempfile.TemporaryDirectory() as folder:
             state = self.make_state(folder)

@@ -615,6 +615,15 @@ class EmotionalStateManager:
         # Verbosity hint: high curiosity → wants to explore more
         verbose = vals.get("curiosity", 0.3) > 0.6 or vals.get("enthusiasm", 0.3) > 0.6
         terse   = vals.get("frustration", 0.1) > 0.5 or arousal < 0.2
+        recent = self.get_recent_affect_events(1)
+        latest_event = recent[-1] if recent else None
+        if latest_event:
+            latest_event = {
+                "event_type": latest_event.get("event_type"),
+                "source": latest_event.get("source"),
+                "age_seconds": max(0, round(time.time() - float(latest_event.get("timestamp", 0)), 1)),
+                "intensity": latest_event.get("intensity"),
+            }
 
         return {
             "temperature_modifier": round(temp_modifier, 3),
@@ -623,6 +632,8 @@ class EmotionalStateManager:
             "warmth":   vals.get("warmth", 0.3),
             "anxiety":  vals.get("anxiety", 0.2),
             "state_description": self.get_state_description(),
+            "affective_profile": vals,
+            "latest_affect_event": latest_event,
         }
 
     def get_snapshot(self) -> EmotionalSnapshot:
