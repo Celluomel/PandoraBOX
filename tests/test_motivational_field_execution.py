@@ -2,7 +2,7 @@ from types import SimpleNamespace
 import threading
 
 from cognition.autonomous_curiosity_resolver import AutonomousCuriosityResolver
-from cognition.motivational_field import MotivationalField, MotivationalNeed
+from cognition.motivational_field import FieldState, MotivationalField, MotivationalNeed
 
 
 class _GoalEngine:
@@ -57,7 +57,7 @@ def test_motivational_field_reports_async_scan_and_prevents_overlap(monkeypatch)
     field._organism = SimpleNamespace(
         _loop=SimpleNamespace(record_async_cycle_stage=lambda *args, **kwargs: receipts.append((args, kwargs)))
     )
-    field._integrate_drives = lambda _cycle: None
+    field._integrate_drives = lambda _cycle: {"status": "completed", "drive_count": 8}
     field._scan_needs = lambda _cycle: {
         "status": "completed", "need_count": 2,
         "acted_count": 1, "unacted_count": 1,
@@ -77,6 +77,7 @@ def test_motivational_field_reports_async_scan_and_prevents_overlap(monkeypatch)
     first = field.tick(20)
     overlapping = field.tick(40)
 
+    assert first["drive_update"] == "completed"
     assert first["need_scan"] == "scheduled"
     assert overlapping["need_scan"] == "skipped_overlap"
     assert len(workers) == 1
@@ -90,3 +91,32 @@ def test_motivational_field_reports_async_scan_and_prevents_overlap(monkeypatch)
     assert isinstance(status["duration_ms"], float)
     assert receipts[0][0] == (20, "motivational_field.need_scan", "completed")
     assert receipts[0][1]["metrics"]["acted_count"] == 1
+
+
+def test_motivational_field_save_is_atomic_and_serialized(tmp_path):
+    field = MotivationalField.__new__(MotivationalField)
+    field._path = tmp_path / "motivational_field.json"
+    field._lock = threading.Lock()
+    field._save_lock = threading.Lock()
+    field._state = FieldState()
+    field.drive_vector = {"epistemic": 0.5}
+    failures = []
+
+    def writer(value):
+        for _ in range(20):
+            with field._lock:
+                field.drive_vector = {"epistemic": value}
+                field._state.drive_vector = dict(field.drive_vector)
+            if not field._save():
+                failures.append(value)
+
+    workers = [threading.Thread(target=writer, args=(value,)) for value in (0.2, 0.8)]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join()
+
+    persisted = __import__("json").loads(field._path.read_text(encoding="utf-8"))
+    assert failures == []
+    assert persisted["drive_vector"]["epistemic"] in {0.2, 0.8}
+    assert list(tmp_path.glob("*.tmp")) == []

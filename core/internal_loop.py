@@ -517,7 +517,7 @@ class InternalThoughtLoop:
                 "broadcast_count", "requested_count", "total_pressure",
                 "winning_margin", "score", "confidence", "priority", "override",
                 "generation_blocked", "decision_fresh", "winner_age_cycles",
-                "cycle", "previous_scan_cycle",
+                "cycle", "previous_scan_cycle", "drive_count",
             }
             numeric_summary = {
                 key: item for key, item in value.items()

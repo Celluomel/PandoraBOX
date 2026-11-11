@@ -211,6 +211,7 @@ class MotivationalField:
         self._ai        = ai_system
         self._path      = Path(path)
         self._lock      = threading.Lock()
+        self._save_lock = threading.Lock()
         self._scan_state_lock = threading.Lock()
         self._need_scan_state: Dict[str, Any] = {
             "status": "idle", "cycle": 0, "need_count": 0,
@@ -236,8 +237,12 @@ class MotivationalField:
         }
         try:
             if slow_cycle % FIELD_EVERY_N == 0:
-                self._integrate_drives(slow_cycle)
-                result["drive_update"] = "attempted"
+                integration = self._integrate_drives(slow_cycle)
+                result["drive_update"] = str(integration.get("status", "unknown"))
+                if isinstance(integration.get("drive_count"), int):
+                    result["drive_count"] = integration["drive_count"]
+                if integration.get("error_type"):
+                    result["drive_error_type"] = integration["error_type"]
 
             if slow_cycle % NEED_SCAN_EVERY_N == 0 and slow_cycle > 0:
                 with self._scan_state_lock:
@@ -335,11 +340,12 @@ class MotivationalField:
             "top_3":         self.top_drives(3),
             "needs_detected": len(self._state.need_log),
             "last_field_cycle": self._state.last_field_cycle,
+            "need_scan": self.need_scan_status(),
         }
 
     # ── Drive integration ─────────────────────────────────────────────────────
 
-    def _integrate_drives(self, slow_cycle: int) -> None:
+    def _integrate_drives(self, slow_cycle: int) -> Dict[str, Any]:
         """
         Read all existing pressure sources and produce unified drive vector.
         Maps PressureSystem reservoirs → drive names, computes derived drives.
@@ -434,16 +440,21 @@ class MotivationalField:
                 self._state.drive_vector = vector
                 self._state.last_field_cycle = slow_cycle
 
-            self._save()
+            persisted = self._save()
 
             logger.debug(
                 f"[MotivationalField] Drive vector: "
                 + " ".join(f"{k}={v:.2f}" for k, v in
                            sorted(vector.items(), key=lambda x: -x[1])[:4])
             )
+            return {
+                "status": "completed" if persisted else "persistence_failed",
+                "drive_count": len(vector),
+            }
 
         except Exception as e:
             logger.debug(f"[MotivationalField] _integrate_drives error: {e}")
+            return {"status": "failed", "error_type": type(e).__name__}
 
     # ── Need detection ────────────────────────────────────────────────────────
 
@@ -484,9 +495,9 @@ class MotivationalField:
                     + ", ".join(f"{n.need_type}({n.target[:20]})" for n in needs)
                 )
 
-            self._save()
+            persisted = self._save()
             return {
-                "status": "completed",
+                "status": "completed" if persisted else "persistence_failed",
                 "need_count": len(needs),
                 "acted_count": acted_count,
                 "unacted_count": len(needs) - acted_count,
@@ -942,24 +953,37 @@ class MotivationalField:
 
     # ── Persistence ───────────────────────────────────────────────────────────
 
-    def _save(self) -> None:
+    def _save(self) -> bool:
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
-            with self._lock:
-                data = {
-                    "last_field_cycle":        self._state.last_field_cycle,
-                    "last_need_cycle":         self._state.last_need_cycle,
-                    "drive_vector":            self.drive_vector,
-                    "need_log":                self._state.need_log[-MAX_NEED_LOG:],
-                    "skill_practice_snapshot": self._state.skill_practice_snapshot,
-                    "skill_snapshot_cycle":    self._state.skill_snapshot_cycle,
-                    "last_outreach_cycle":     self._state.last_outreach_cycle,
-                    "_meta": {"version": "v51", "ts": time.time()},
-                }
-            with open(self._path, "w") as f:
-                json.dump(data, f, indent=2, default=str)
+            with self._save_lock:
+                with self._lock:
+                    data = {
+                        "last_field_cycle":        self._state.last_field_cycle,
+                        "last_need_cycle":         self._state.last_need_cycle,
+                        "drive_vector":            dict(self.drive_vector),
+                        "need_log":                list(self._state.need_log[-MAX_NEED_LOG:]),
+                        "skill_practice_snapshot": dict(self._state.skill_practice_snapshot),
+                        "skill_snapshot_cycle":    self._state.skill_snapshot_cycle,
+                        "last_outreach_cycle":     self._state.last_outreach_cycle,
+                        "_meta": {"version": "v51", "ts": time.time()},
+                    }
+                temp_path = self._path.with_name(
+                    f"{self._path.name}.{threading.get_ident()}.tmp"
+                )
+                temp_path.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
+                import os
+                os.replace(temp_path, self._path)
+                persisted = json.loads(self._path.read_text(encoding="utf-8"))
+                return bool(
+                    persisted.get("last_field_cycle") == data["last_field_cycle"]
+                    and persisted.get("last_need_cycle") == data["last_need_cycle"]
+                    and persisted.get("drive_vector") == data["drive_vector"]
+                    and len(persisted.get("need_log", [])) == len(data["need_log"])
+                )
         except Exception as e:
             logger.debug(f"[MotivationalField] Save failed: {e}")
+            return False
 
     def _load(self) -> None:
         try:
