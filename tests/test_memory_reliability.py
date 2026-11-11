@@ -15,6 +15,7 @@ from cognition.memory_intrusion import MemoryIntrusionSystem
 from cognition.emotional_memory import EmotionalMemorySystem
 from cognition.empathy_engine import EmpathyEngine
 from cognition.semantic_extractor import SemanticExtractor
+from cognition.tension_topics import generate_social_topic
 
 
 class _Memory:
@@ -63,6 +64,57 @@ class _EmotionAnalyzer:
 
 
 class MemoryReliabilityTests(unittest.TestCase):
+    def test_ordinary_emotional_interaction_is_not_goal_eligible(self):
+        emotions = {"satisfaction": type("Emotion", (), {"value": 0.95})()}
+        organism = type("Organism", (), {
+            "ai_system": type("AI", (), {
+                "emotional_state": type("State", (), {"emotions": emotions})(),
+            })(),
+        })()
+        with tempfile.TemporaryDirectory() as directory:
+            memory = EmotionalMemorySystem(organism, str(Path(directory) / "emotion.json"))
+            memory.record_from_interaction("Réponds uniquement : CONNECTÉ", "A response." * 80)
+
+            self.assertTrue(memory._state.traces)
+            self.assertFalse(memory._state.traces[0]["goal_eligible"])
+
+    def test_social_goal_topic_ignores_unqualified_memory_and_session_summary(self):
+        with tempfile.TemporaryDirectory() as directory:
+            persona_dir = Path(directory)
+            (persona_dir / "emotional_memory.json").write_text(json.dumps({
+                "traces": [{
+                    "timestamp": time.time(),
+                    "description": "raw audit prompt must not become a goal",
+                    "category": "interaction",
+                    "perspective": "organism",
+                }],
+            }), encoding="utf-8")
+            (persona_dir / "session_summary.json").write_text(json.dumps({
+                "text": "another raw conversational summary",
+            }), encoding="utf-8")
+
+            topic = generate_social_topic(persona_dir)
+
+            self.assertNotIn("raw audit prompt", topic)
+            self.assertNotIn("raw conversational summary", topic)
+
+    def test_social_goal_topic_accepts_explicitly_goal_eligible_memory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            persona_dir = Path(directory)
+            (persona_dir / "emotional_memory.json").write_text(json.dumps({
+                "traces": [{
+                    "timestamp": time.time(),
+                    "description": "verify the unresolved calibration hypothesis",
+                    "category": "reflection",
+                    "perspective": "organism",
+                    "goal_eligible": True,
+                }],
+            }), encoding="utf-8")
+
+            topic = generate_social_topic(persona_dir)
+
+            self.assertIn("verify the unresolved calibration hypothesis", topic)
+
     def test_intrusion_reads_memory_dict_and_uses_supported_limit_argument(self):
         memory = _Memory()
         organism = type("Organism", (), {

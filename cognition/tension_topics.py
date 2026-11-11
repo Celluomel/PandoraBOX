@@ -200,16 +200,18 @@ def generate_social_topic(persona_dir: Path) -> str:
     """
     Human-like topic for social_drive.
 
-    Tries four real, live sources in priority order:
+    Uses only sources that explicitly represent unresolved or goal-worthy
+    content, in priority order:
       1. thought_stream.json 'open_questions' — an internal question
          already pressing for resolution.
       2. contradictions.json — an unconfronted gap between a claimed
          belief and actual behavior.
-      3. emotional_memory.json 'traces' — a recent, emotionally
-         significant memory.
-      4. session_summary.json — the most recent compressed conversation
-         chunk, for "fresh in mind conversation."
-    Falls back to a rotating pool only if none of the above are usable.
+      3. emotional_memory.json traces explicitly marked goal_eligible.
+
+    Ordinary interaction memories and free-form session summaries are
+    deliberately excluded: emotional salience or recency alone does not
+    establish a persistent objective. Falls back to a rotating pool only if
+    none of the qualified sources are usable.
     """
     try:
         p = persona_dir / 'thought_stream.json'
@@ -245,24 +247,13 @@ def generate_social_topic(persona_dir: Path) -> str:
             data = json.loads(p.read_text())
             traces = data.get('traces', [])
             recent = sorted(
-                [t for t in traces if t.get('description')],
+                [t for t in traces
+                 if t.get('description') and t.get('goal_eligible') is True],
                 key=lambda t: t.get('timestamp', 0), reverse=True
             )[:5]
             if recent:
                 t = random.choice(recent)
-                return f"Still thinking about: {t['description'][:150]}"
-    except Exception:
-        pass
-
-    try:
-        p = persona_dir / 'session_summary.json'
-        if p.exists():
-            data = json.loads(p.read_text())
-            text = data.get('text', '') if isinstance(data, dict) else ''
-            if text:
-                chunk = text.split('[ADDITIONAL CONTEXT]')[-1].strip()
-                if chunk:
-                    return f"Following up on our conversation: {chunk[:150]}"
+                return f"Following up on an explicitly unresolved thread: {t['description'][:150]}"
     except Exception:
         pass
 

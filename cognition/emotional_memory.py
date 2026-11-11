@@ -80,6 +80,10 @@ class EmotionalTrace:
     perspective:  str   = "organism"  # organism state or lexicon-inferred user cue
     confidence:   float = 0.5
     evidence_source: str = ""
+    # Emotional relevance is not evidence that a conversation should become
+    # an autonomous, persistent goal. Only a caller with explicit unresolved-
+    # goal provenance may opt a trace into goal-topic generation.
+    goal_eligible: bool = False
 
     def residue_weight(self, now: float) -> float:
         """
@@ -164,6 +168,7 @@ class EmotionalMemorySystem:
         perspective:     str   = "organism",
         confidence:      float = 0.5,
         evidence_source: str   = "",
+        goal_eligible:   bool  = False,
     ) -> Optional[EmotionalTrace]:
         """
         Store a trace if the emotional intensity is above threshold.
@@ -185,6 +190,7 @@ class EmotionalMemorySystem:
             perspective      = perspective,
             confidence       = max(0.0, min(1.0, float(confidence))),
             evidence_source  = str(evidence_source or "")[:40],
+            goal_eligible    = goal_eligible is True,
         )
 
         with self._lock:
@@ -432,6 +438,9 @@ class EmotionalMemorySystem:
                     category="interaction",
                     dominant_emotion=dom_name,
                     perspective="organism",
+                    # This trace calibrates emotional residue; the raw user
+                    # request is not itself an enduring objective.
+                    goal_eligible=False,
                 )
 
             # Reuse the turn's existing calibrated affect read. Do not run a
