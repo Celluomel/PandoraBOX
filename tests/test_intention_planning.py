@@ -324,6 +324,31 @@ class IntentionPlanningTests(unittest.TestCase):
         self.assertTrue(LongHorizonPlanner.is_self_report_query("quel est ton objectif actuel"))
         self.assertTrue(LongHorizonPlanner.is_self_report_query("votre véritable but"))
 
+    def test_count_question_about_owned_goals_routes_to_live_self_report(self):
+        question = "For this audit, how many active goals do you currently have?"
+        self.assertTrue(LongHorizonPlanner.is_self_report_query(question))
+        self.assertTrue(LongHorizonPlanner.is_goal_plan_query(question))
+        self.assertTrue(LongHorizonPlanner.is_self_report_query("Combien d'objectifs actifs as-tu ?"))
+
+    def test_goal_count_response_uses_snapshot_count(self):
+        planner = LongHorizonPlanner.__new__(LongHorizonPlanner)
+        planner.factual_self_report_snapshot = lambda: {
+            "active_goals": [{"topic": "grounded topic"}, {"topic": "second topic"}],
+            "dominant_plan": None,
+        }
+
+        english = planner.factual_goal_plan_response(
+            "how many active goals do you currently have?", "en"
+        )
+        french = planner.factual_goal_plan_response(
+            "combien d'objectifs actifs as-tu ?", "fr"
+        )
+
+        self.assertIn("2 recorded active goal(s)", english)
+        self.assertIn("2 objectif(s) actif(s) enregistré(s)", french)
+        self.assertIn("grounded topic", english)
+        self.assertIn("second topic", english)
+
     def test_user_practical_task_cannot_become_autonomous_goal(self):
         with tempfile.TemporaryDirectory() as folder:
             engine = GoalEngine(

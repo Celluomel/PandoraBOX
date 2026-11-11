@@ -679,6 +679,12 @@ class LongHorizonPlanner:
             r"\byour\s+(?:(?:actual|current|real|main|own|active)\s+)?plans?\b",
             r"\b(?:ton|votre)\s+(?:(?:veritable|véritable|actuel|réel|reel|principal|propre)\s+)?(?:but|objectif|plan)s?\b",
             r"\b(?:quel(?:le)?s?\s+(?:est|sont)\s+)(?:ton|votre|tes|vos)\s+(?:but|objectif|plan)s?\b",
+            # Count questions are first-person reports too, even when they use
+            # the natural "how many ... do you have" form instead of "your
+            # goals". Keep this as a grammatical relation (quantity + owned
+            # state), rather than a list of canned question strings.
+            r"\bhow\s+many\b.{0,80}\b(?:active\s+)?goals?\b.{0,60}\b(?:you|your)\b",
+            r"\bcombien\b.{0,80}\b(?:objectifs?|buts?)\b.{0,60}\b(?:tu|tes|ton|vous|vos|votre)\b",
         )
         if any(re.search(pattern, text) for pattern in ownership_patterns):
             return True
@@ -915,7 +921,10 @@ class LongHorizonPlanner:
         lang = str(language or "auto").casefold().replace("_", "-")
         if lang.startswith("fr"):
             lines = [
-                "Objectifs actifs enregistrés : " + (" ; ".join(goals) if goals else "aucun objectif actif vérifié."),
+                (
+                    f"{len(goals)} objectif(s) actif(s) enregistré(s) : "
+                    + (" ; ".join(goals) if goals else "aucun objectif actif vérifié.")
+                ),
             ]
             if plan:
                 lines.append(
@@ -931,7 +940,10 @@ class LongHorizonPlanner:
             lines.append("Ce compte rendu reflète l’état enregistré du système.")
         else:
             lines = [
-                "Recorded active goals: " + ("; ".join(goals) if goals else "no verified active goal."),
+                (
+                    f"{len(goals)} recorded active goal(s): "
+                    + ("; ".join(goals) if goals else "no verified active goal.")
+                ),
             ]
             if plan:
                 lines.append(
