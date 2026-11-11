@@ -17,7 +17,7 @@ sys.modules.setdefault("cognition", cognition_package)
 core_package = ModuleType("core")
 core_package.__path__ = [str(ROOT / "core")]
 sys.modules.setdefault("core", core_package)
-from cognition.long_horizon_planner import LongHorizonPlanner
+from cognition.long_horizon_planner import LongHorizonPlanner, Plan
 from cognition.goal_action_executor import GoalActionExecutor
 from cognition.goal_engine import Goal, GoalEngine, Motivation
 from cognition.intention_reasoner import IntentionReasoner
@@ -72,6 +72,30 @@ class IntentionPlanningTests(unittest.TestCase):
             organism, NS(), path=str(Path(folder) / "plans.json")
         )
         return planner, world_model, aspiration
+
+    def test_status_prioritizes_active_plans_and_bounds_archived_plan_list(self):
+        with tempfile.TemporaryDirectory() as folder:
+            planner, _, _ = self._planner(folder)
+            planner._plans = {
+                f"completed:{index}": Plan(
+                    aspiration_domain=f"completed:{index}", steps=[],
+                    resource_reserve=0.2, revision_trigger=0.25, horizon=0,
+                    status="completed", created_at=float(index), last_revised=float(index),
+                )
+                for index in range(30)
+            }
+            planner._plans["goal:active"] = Plan(
+                aspiration_domain="goal:active", steps=[], resource_reserve=0.2,
+                revision_trigger=0.25, horizon=0, status="active",
+                created_at=1.0, last_revised=1.0,
+            )
+
+            status = planner.status()
+
+        self.assertEqual(status["active_plans"], 1)
+        self.assertEqual(status["total_plans"], 31)
+        self.assertEqual(status["plans_returned"], 20)
+        self.assertEqual(status["plans"][0]["domain"], "goal:active")
 
     def test_aspiration_plan_uses_public_context_prediction(self):
         with tempfile.TemporaryDirectory() as folder:

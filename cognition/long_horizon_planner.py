@@ -54,6 +54,7 @@ HORIZON          = 30     # interactions
 RESOURCE_FLOOR   = 0.22   # minimum cognitive_energy before inserting recovery step
 REVISION_TRIGGER = 0.25   # deviation fraction that triggers replanning
 SAVE_PATH        = "data/persona/long_horizon_plans.json"
+STATUS_PLAN_LIMIT = 20    # dashboard needs current plans, not the full archive
 
 RECOVERY_ACTIONS = {"social", "creative"}   # low-cost, allow energy recovery
 
@@ -647,8 +648,23 @@ class LongHorizonPlanner:
     def status(self) -> Dict:
         self._synchronize_goal_plans()
         active = [p for p in self._plans.values() if p.status == "active"]
+        # The planner retains completed plans as history. Health/status callers
+        # poll frequently and the dashboard renders only a few rows, so return
+        # active plans first plus a bounded recent archive sample. Preserve the
+        # complete store on disk and report its total size separately.
+        ordered = sorted(
+            self._plans.items(),
+            key=lambda item: (
+                item[1].status == "active",
+                item[1].last_revised or item[1].created_at,
+                item[1].created_at,
+            ),
+            reverse=True,
+        )[:STATUS_PLAN_LIMIT]
         return {
             "active_plans": len(active),
+            "total_plans": len(self._plans),
+            "plans_returned": len(ordered),
             "plans": [
                 {"domain": d,
                  "steps": len(p.steps),
@@ -658,7 +674,7 @@ class LongHorizonPlanner:
                  "uncertainties": p.uncertainties,
                  "next": self.current_step(d).action_type
                          if self.current_step(d) else "done"}
-                for d, p in self._plans.items()
+                for d, p in ordered
             ],
         }
 
