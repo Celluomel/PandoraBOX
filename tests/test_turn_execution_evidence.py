@@ -118,6 +118,16 @@ def test_every_stream_pipeline_stage_is_bound_to_originating_turn():
         and node.func.attr == "_record_turn_stage"
     ]
     assert len(stage_calls) >= 70
+    audit_id_assignments = [
+        node for node in ast.walk(stream)
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "_audit_turn_id"
+            for target in node.targets
+        )
+    ]
+    assert len(audit_id_assignments) == 1
+    assert audit_id_assignments[0].lineno < min(call.lineno for call in stage_calls)
     for call in stage_calls:
         turn_id = next(
             (keyword.value for keyword in call.keywords if keyword.arg == "turn_id"),

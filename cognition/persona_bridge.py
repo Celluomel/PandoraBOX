@@ -1799,6 +1799,7 @@ Write at most 70 words, in the user's language, only if a concise carry-forward 
           Phase C (after last token, in thread): full post-turn lifecycle
         """
         s = self._system
+        _audit_turn_id = audit_turn_id
         _cognitive_scope = str(cognitive_scope_id or user_id)
         # This flag is consumed later inside the streaming worker below. It
         # must live in this method's scope; the prompt builder runs in a
@@ -1967,7 +1968,6 @@ Write at most 70 words, in the user's language, only if a concise carry-forward 
                 and _goal_means_analysis.unique_feasible_option() is not None
             )
         )
-        _audit_turn_id = audit_turn_id
         system_prompt, emo_dict, cond_dict, arb_temperature = await asyncio.to_thread(
             self._build_prompt_and_cache,
             effective_input,
