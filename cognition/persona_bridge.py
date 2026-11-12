@@ -3552,7 +3552,9 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                 # user's own messages through a separate lexical lane and
                 # reserve one relevant source record in the bounded prompt pool.
                 _user_authored_mems = s.memory_system.retrieve_user_authored_memories(
-                    _recall_query, limit=6 if _is_recall_request else 2
+                    _recall_query,
+                    limit=6 if _is_recall_request else 2,
+                    explicit_recall=_is_recall_request,
                 )
                 if _is_recall_request:
                     _user_authored_mems = filter_recall_query_records(

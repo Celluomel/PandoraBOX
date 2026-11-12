@@ -102,6 +102,19 @@ class _StaleIndex:
         return np.array([[0.1]], dtype="float32"), np.array([[999]], dtype="int64")
 
 
+class _CrowdedRecallIndex:
+    # The index contains a long conversation history, but its nearest
+    # neighbors are only repeated recall questions from the recent test loop.
+    ntotal = 240
+
+    def search(self, _query, count):
+        assert count == 120
+        return (
+            np.array([[0.01, 0.02]], dtype="float32"),
+            np.array([[2, 3]], dtype="int64"),
+        )
+
+
 class _Embedder:
     def encode(self, _text):
         return np.ones(3, dtype="float32")
@@ -398,6 +411,49 @@ class MemorySystemFallbackTests(unittest.TestCase):
         result = system.retrieve_memories("configured Coqui speaker file")
 
         self.assertEqual(result[0]["id"], 2)
+
+    def test_explicit_recall_falls_back_when_faiss_neighbors_are_only_recall_prompts(self):
+        query = (
+            "For the cognitive harness audit, what did I ask you to verify "
+            "about module outputs?"
+        )
+        self.rows = [
+            {
+                "id": 1, "faiss_id": 1,
+                "text": (
+                    "For the cognitive harness audit, verify each module's "
+                    "outputs and downstream effects against the expected role."
+                ),
+                "timestamp": datetime.now().isoformat(), "impact_score": 0.5,
+                "memory_type": "user_message", "memory_tier": "interaction",
+                "emotional_valence": "Neutral", "access_count": 0,
+            },
+            {
+                "id": 2, "faiss_id": 2,
+                "text": "For the cognitive harness audit, what did I ask you to verify?",
+                "timestamp": datetime.now().isoformat(), "impact_score": 0.5,
+                "memory_type": "user_message", "memory_tier": "interaction",
+                "emotional_valence": "Neutral", "access_count": 0,
+            },
+            {
+                "id": 3, "faiss_id": 3,
+                "text": "Do you remember what I asked about the harness audit?",
+                "timestamp": datetime.now().isoformat(), "impact_score": 0.5,
+                "memory_type": "user_message", "memory_tier": "interaction",
+                "emotional_valence": "Neutral", "access_count": 0,
+            },
+        ]
+        system = self._system(embedder=_Embedder(), index=_CrowdedRecallIndex())
+
+        recalled = system.retrieve_user_authored_memories(
+            query, limit=1, explicit_recall=True,
+        )
+
+        self.assertEqual([memory["id"] for memory in recalled], [1])
+        self.assertTrue(
+            any(query_row[2] is None for query_row in system.persistence.all_memory_queries),
+            "explicit recall must search beyond the bounded recent archive window",
+        )
 
     def test_encoder_failure_disables_broken_vector_path_and_falls_back(self):
         system = self._system(embedder=_BrokenEmbedder(), index=_Index())

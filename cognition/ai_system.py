@@ -57,7 +57,9 @@ from cognition.self_concept import SelfConceptSystem
 from cognition.behavioral_conditioning import BehavioralConditioningSystem
 from cognition.life_stage_prompting import build_stage_system_block, get_stage_profile
 from cognition.relational_knowledge_graph import RelationalKnowledgeGraph
-from cognition.memory_retrieval import faiss_l2_relevance, rank_documents
+from cognition.memory_retrieval import (
+    faiss_l2_relevance, filter_recall_query_records, rank_documents,
+)
 from cognition.turn_context_evidence import memory_embedding_text
 
 # ── Liberty Components (NEW) ────────────────────────────────────────
@@ -1083,7 +1085,7 @@ class EnhancedMemorySystem:
         return [memory for _, memory in results]
 
     def retrieve_user_authored_memories(
-        self, query: str, limit: int = 2,
+        self, query: str, limit: int = 2, *, explicit_recall: bool = False,
     ) -> List[Dict[str, Any]]:
         """Recall source utterances separately from Lumina's past replies.
 
@@ -1095,11 +1097,10 @@ class EnhancedMemorySystem:
         if limit <= 0:
             return []
         try:
-            # Prefer the existing semantic index. It already contains a
-            # separate embedding for each user_message; retrieve a bounded
-            # nearest-neighbour window, then apply the source boundary in SQL.
-            # The shared BM25 fallback below is capped so this extra lane does
-            # not tokenize the entire growing conversation archive per turn.
+            # Prefer the existing semantic index. For explicit historical
+            # recall, filter its bounded neighbor window before deciding it is
+            # sufficient; if it is not, the lexical pass below searches the
+            # full user-message archive to avoid recent-prompt starvation.
             if self.embedding_model is not None and self.faiss_index is not None:
                 total = int(getattr(self.faiss_index, "ntotal", 0) or 0)
                 if total > 0:
@@ -1121,10 +1122,18 @@ class EnhancedMemorySystem:
                                 memory for memory in candidates
                                 if memory.get("memory_type") == "user_message"
                             ]
+                            if explicit_recall:
+                                # Filter self-referential recall questions before
+                                # deciding the semantic lane has enough results.
+                                # Otherwise recent repeated prompts can occupy all
+                                # returned slots and starve older source statements.
+                                sourced = filter_recall_query_records(
+                                    sourced, query=query,
+                                )
                             sourced.sort(key=lambda memory: distance_by_id.get(
                                 int(memory.get("faiss_id", -1)), float("inf")
                             ))
-                            if sourced:
+                            if sourced and (not explicit_recall or len(sourced) >= limit):
                                 return [
                                     dict(memory, relevance=faiss_l2_relevance(
                                         distance_by_id.get(
@@ -1138,15 +1147,19 @@ class EnhancedMemorySystem:
 
             try:
                 memories = self.persistence.get_all_memories(
-                    memory_type="user_message", limit=2000
+                    memory_type="user_message",
+                    limit=None if explicit_recall else 2000,
                 )
             except TypeError:
                 # Keep lightweight persistence adapters used by integrations
                 # and tests compatible while retaining the type boundary.
-                memories = [
+                all_user_messages = [
                     memory for memory in self.persistence.get_all_memories()
                     if memory.get("memory_type") == "user_message"
-                ][:2000]
+                ]
+                memories = all_user_messages if explicit_recall else all_user_messages[:2000]
+            if explicit_recall:
+                memories = filter_recall_query_records(memories, query=query)
             ranked = rank_documents(query, [
                 memory_embedding_text(memory.get("text", ""), "user_message")
                 for memory in memories
