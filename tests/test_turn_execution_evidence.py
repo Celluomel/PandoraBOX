@@ -57,6 +57,23 @@ def test_turn_stage_records_redacted_output_and_actual_consumption_link():
     assert trace["semantic_answer_validation"]["status"] == "not_performed"
 
 
+def test_turn_trace_exposes_safe_stream_failure_type_but_redacts_exception_text():
+    bridge = _bridge()
+    secret_detail = "provider failed while handling private prompt content"
+    bridge._record_turn_stage(
+        "streaming_lifecycle", "failed", secret_detail,
+        error_type="ProviderStreamError",
+    )
+
+    trace = bridge.get_last_turn_trace()
+
+    stage = trace["stages"]["streaming_lifecycle"]
+    assert stage["status"] == "failed"
+    assert stage["error_type"] == "ProviderStreamError"
+    assert "detail" not in stage
+    assert secret_detail not in repr(trace)
+
+
 def test_world_model_profile_failure_is_attributed_to_turn_and_fails_stage():
     bridge = _bridge()
     bridge._record_turn_stage("turn_input", "completed", output="human turn")

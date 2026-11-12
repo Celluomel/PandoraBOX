@@ -1394,7 +1394,14 @@ class PersonaBridge:
                 return
             except Exception as e:
                 logger.warning(f"Streaming path failed, falling back to blocking: {e}")
-                self._record_turn_stage("streaming_lifecycle", "failed", str(e))
+                # Keep the per-turn diagnostic useful without exposing provider
+                # exception text (which can contain prompt or response data).
+                # get_last_turn_trace intentionally redacts `detail` but retains
+                # this bounded exception class for the local audit API.
+                self._record_turn_stage(
+                    "streaming_lifecycle", "failed", str(e),
+                    error_type=type(e).__name__,
+                )
 
         # A peer turn must not silently fall back to the human chat's native
         # history path. If scoped streaming is unavailable, fail closed and
