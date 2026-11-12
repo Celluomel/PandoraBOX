@@ -1,7 +1,7 @@
 # Audit du harnais cognitif — état et prochaines étapes
 
 **Date de mise à jour :** 12 novembre 2026
-**Statut :** audit en cours — conclusion globale non établie. PC et `origin/main` étaient alignés sur `140204a` à la reprise; le nouveau lot de preuve d’exécution de `GoalActionExecutor` est en cours. Lumina répond et son cycle interne tourne, mais l’endpoint n’expose pas l’identifiant de build chargé. Les changements Body/UI préexistants restent hors lot. Les tests de composants seuls ne démontrent pas la qualité cognitive globale.
+**Statut :** audit en cours — conclusion globale non établie. PC et `origin/main` sont alignés sur `61a67fb`. Le processus Lumina observé répond, mais il a démarré avant les derniers correctifs; il ne les a donc pas encore chargés. L’endpoint n’expose pas l’identifiant de build. Les changements Body/UI préexistants restent hors lot. Les tests de composants seuls ne démontrent pas la qualité cognitive globale.
 
 ## Reprise live après redémarrage — 12 novembre 2026
 
@@ -1293,3 +1293,9 @@ Correction locale : les rapports d’action distinguent maintenant `succeeded`, 
 Vérification locale : `tests/test_internal_loop_cycle_evidence.py` et `tests/test_goal_action_memory_recall.py` — **20 passés**, 9 avertissements historiques; `py_compile` et `git diff --check` passent. Python global n’avait pas `pytest`; la suite a été exécutée avec le venv du dépôt. Ce lot est local et nécessite un redémarrage après commit/push avant validation live.
 
 **État global après cette reprise :** chemin chat → prompt → génération → finalisation a une preuve live structurellement cohérente sur un tour, mais la justesse sémantique n’est pas validée. La boucle interne montre l’exécution de 42 modules et des liaisons entre étapes, mais l’utilité et la qualité de la plupart des sorties ne sont pas évaluées. La migration des anciennes étapes du plan, le chemin réel d’exécution du plan d’aspiration, le rappel mémoire paraphrasé, le profil utilisateur et les effets d’objectifs après plusieurs scénarios restent à vérifier. **Conclusion : le harnais n’est pas encore audité de façon concluante.**
+
+### Vérification de l’ordre des redémarrages et de la migration (12 novembre 2026)
+
+Le snapshot live précédent donnait `uptime=783 s` à 18:34:58 CEST, donc un démarrage vers 18:21:55. Le commit `140204a` (migration des reçus de plan) a été créé à 18:33:29, puis `61a67fb` (issues de `GoalActionExecutor`) à 18:40:21. Le processus live précède les deux commits; ses 4/15 étapes anciennes ne sont donc pas une vérification du code corrigé. Le fichier persistant contient toujours 4 étapes sans reçu en `completed`, ce qui est l’état d’avant migration.
+
+Pour lever le doute sans toucher aux données live, le chargeur du dépôt a été exécuté contre une copie temporaire du fichier réel : résultat **4 `completed` → 0 `completed`, 4 `unverified`, `steps_completed=0`, 5 anciennes affirmations conservées** (quatre résultats d’étapes et un résultat plan-level). Cela confirme la migration du code sur le fichier réel sans modifier le fichier d’origine. Après un redémarrage sur le code `61a67fb`, vérifier ensemble : `0/15` progrès vérifié et 4 étapes rejouables; puis le prochain reçu de `GoalActionExecutor` doit montrer l’action, l’issue, un code de raison et l’empreinte d’exécution, avec une clôture asynchrone dans son cycle source si applicable.
