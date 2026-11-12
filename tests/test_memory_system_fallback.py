@@ -3,6 +3,8 @@ import unittest
 from datetime import datetime
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
+from contextlib import contextmanager
+from unittest.mock import patch
 
 import numpy as np
 
@@ -11,6 +13,7 @@ package = ModuleType("cognition")
 package.__path__ = [str(ROOT / "cognition")]
 sys.modules.setdefault("cognition", package)
 
+import cognition.ai_system as ai_system_module
 from cognition.ai_system import EnhancedMemorySystem
 from cognition.memory_retrieval import (
     extract_explicit_recall_topic,
@@ -45,6 +48,18 @@ class _Persistence:
         row = dict(memory, id=next_id, faiss_id=next_id)
         self.rows.append(row)
         return next_id
+
+    @contextmanager
+    def get_connection(self):
+        class _Connection:
+            def execute(self, _query):
+                return self
+
+            def fetchall(self):
+                return [(row.get("faiss_id"),) for row in self_rows if row.get("faiss_id") is not None]
+
+        self_rows = self.rows
+        yield _Connection()
 
 
 class _BrokenEmbedder:
@@ -105,6 +120,18 @@ class MemorySystemFallbackTests(unittest.TestCase):
         import threading
         system._lock = threading.RLock()
         return system
+
+    def test_persisted_faiss_index_must_match_unique_database_ids(self):
+        system = self._system()
+        vector_api = SimpleNamespace(vector_to_array=lambda ids: np.asarray(ids))
+        with patch.object(ai_system_module, "faiss", vector_api):
+            valid = SimpleNamespace(id_map=np.array([1, 2]), ntotal=2)
+            duplicate = SimpleNamespace(id_map=np.array([1, 1]), ntotal=2)
+            stale = SimpleNamespace(id_map=np.array([1, 999]), ntotal=2)
+
+            self.assertTrue(system._index_matches_memory_db(valid))
+            self.assertFalse(system._index_matches_memory_db(duplicate))
+            self.assertFalse(system._index_matches_memory_db(stale))
 
     def test_no_embedder_still_recalls_persisted_memory_and_filters_tier(self):
         system = self._system()

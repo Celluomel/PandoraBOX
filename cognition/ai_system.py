@@ -842,12 +842,40 @@ class EnhancedMemorySystem:
         if path.exists():
             try:
                 idx = faiss.read_index(str(path))
-                if idx.d == self.embedding_dim:
+                if idx.d == self.embedding_dim and self._index_matches_memory_db(idx):
                     logger.info(f"FAISS index loaded ({idx.ntotal} vectors)")
                     return idx
+                logger.warning(
+                    "FAISS index dimension or ID map does not match persisted memories; rebuilding"
+                )
             except Exception as e:
                 logger.error(f"FAISS load failed: {e}")
         return self._build_index_from_db()
+
+    def _index_matches_memory_db(self, index) -> bool:
+        """Reject stale/corrupt ID maps before using persisted vector results.
+
+        IndexIDMap permits duplicate external IDs. A dimension check alone can
+        therefore accept an index whose repeated or deleted IDs crowd the
+        nearest-neighbour window and whose remaining memories are unindexed.
+        Compare the full ID map against SQLite before serving retrieval.
+        """
+        try:
+            id_map = getattr(index, "id_map", None)
+            if id_map is None:
+                return False
+            ids = np.asarray(faiss.vector_to_array(id_map), dtype=np.int64).reshape(-1)
+            if ids.size != int(index.ntotal) or np.unique(ids).size != ids.size:
+                return False
+            with self.persistence.get_connection() as conn:
+                rows = conn.execute(
+                    "SELECT faiss_id FROM memories WHERE faiss_id IS NOT NULL"
+                ).fetchall()
+            persisted_ids = {int(row[0]) for row in rows}
+            return ids.size == len(persisted_ids) and set(map(int, ids)) == persisted_ids
+        except Exception as exc:
+            logger.warning("FAISS index consistency check failed: %s", exc)
+            return False
 
     def _build_index_from_db(self):
         if faiss is None:
