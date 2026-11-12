@@ -130,6 +130,7 @@ def response_learning_evidence(receipt: Mapping[str, Any]) -> dict:
         "memory_write_count": _count("memory_write_count"),
         "memory_write_kinds": [str(item)[:40] for item in kinds[:8]],
         "memory_persisted_count": _count("memory_persisted_count"),
+        "memory_deduplicated_count": _count("memory_deduplicated_count"),
         "personal_fact_attempted_count": _count("personal_fact_attempted_count"),
         "personal_fact_persisted_count": _count("personal_fact_persisted_count"),
         "failed_operations": [str(item)[:48] for item in failed[:8]],

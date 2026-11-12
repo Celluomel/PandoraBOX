@@ -13,6 +13,7 @@ from cognition.persona_bridge import (
     _prior_assistant_trace_evidence,
     _turn_output_evidence,
 )
+from cognition.turn_context_evidence import response_learning_evidence
 
 
 def _bridge():
@@ -254,6 +255,9 @@ def test_post_response_processing_treats_existing_identical_user_memory_as_dedup
     assert receipt["memory_persisted_count"] == 2
     assert receipt["memory_deduplicated_count"] == 1
     assert receipt["failed_operations"] == []
+    evidence = response_learning_evidence(receipt)
+    assert evidence["memory_deduplicated_count"] == 1
+    assert evidence["quality"] == "present"
 
 
 def test_cognitive_context_is_linked_to_prompt_assembly_on_its_own_turn():
