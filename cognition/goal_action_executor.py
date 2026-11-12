@@ -739,9 +739,19 @@ class GoalActionExecutor:
             publication = self._add_thought(
                 thought, source="goal_action.memory_recall"
             )
+            published = bool(
+                publication.get("thought_stream_recorded")
+                or publication.get("workspace_broadcast")
+            )
             return {
-                'success': True,
-                'result': f"recalled ({len(parts)} sources)",
+                'success': published,
+                'memory_retrieved': True,
+                'thought_published': published,
+                'result': (
+                    f"recalled and published ({len(parts)} sources)"
+                    if published else
+                    "memory retrieved, but the resulting thought was not admitted to any cognitive consumer"
+                ),
                 **publication,
             }
 
