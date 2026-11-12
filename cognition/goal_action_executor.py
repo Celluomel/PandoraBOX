@@ -1721,6 +1721,27 @@ class GoalActionExecutor:
                 priority=0.85,
             )
 
+            # A generated string is not a completed cognitive action unless a
+            # downstream consumer admitted it.  In particular, do not cache
+            # search terms, stimulate curiosity, or advance the plan when both
+            # ThoughtStream and GlobalWorkspace rejected the publication.
+            publication_admitted = self._publication_was_admitted(publication)
+            if not publication_admitted:
+                self._finalize_async_action(
+                    goal,
+                    ACTION_BISOCIATIVE,
+                    False,
+                    "hypothesis generated but not admitted to cognitive consumers",
+                    evidence={
+                        **publication,
+                        "hypothesis_generated": bool(hypothesis),
+                        "reason_code": "hypothesis_not_admitted",
+                    },
+                    execution_id=execution_id,
+                    cycle_id=cycle_id,
+                )
+                return
+
             # Cache hypothesis keywords for the NEXT WEB_SEARCH rotation slot
             hyp_words = [
                 w.strip('.,!?\"\':;()') for w in hypothesis.split()
@@ -2483,6 +2504,16 @@ class GoalActionExecutor:
             logger.warning("[GoalActionExecutor] ThoughtStream record failed: %s", e)
         result["workspace_broadcast"] = self._broadcast(content, priority=priority)
         return result
+
+    @staticmethod
+    def _publication_was_admitted(publication: Optional[Dict[str, Any]]) -> bool:
+        """Whether at least one cognitive consumer accepted a publication."""
+        if not isinstance(publication, dict):
+            return False
+        return bool(
+            publication.get("thought_stream_recorded")
+            or publication.get("workspace_broadcast")
+        )
 
     def _broadcast(self, content: str, priority: float = 0.45) -> bool:
         """Broadcast to GlobalWorkspace and report whether it was accepted."""

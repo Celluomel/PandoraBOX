@@ -49,6 +49,22 @@ class GoalActionThoughtPublicationTests(unittest.TestCase):
         })
         self.assertEqual(stream.recent(1)[0].content, "Validated reflection")
 
+    def test_publication_is_admitted_when_any_cognitive_consumer_accepts(self):
+        admitted = GoalActionExecutor._publication_was_admitted
+        self.assertTrue(admitted({
+            "thought_stream_recorded": True,
+            "workspace_broadcast": False,
+        }))
+        self.assertTrue(admitted({
+            "thought_stream_recorded": False,
+            "workspace_broadcast": True,
+        }))
+        self.assertFalse(admitted({
+            "thought_stream_recorded": False,
+            "workspace_broadcast": False,
+        }))
+        self.assertFalse(admitted(None))
+
     def test_empty_external_thought_is_rejected(self):
         stream = ThoughtStream(SimpleNamespace())
         self.assertFalse(stream.add("  "))
