@@ -94,6 +94,22 @@ class PromptContextInfluenceTests(unittest.TestCase):
         self.assertIn("Arbitration decision", assembled)
         self.assertLessEqual(budget._total_used, TOTAL_TOKEN_CAP)
 
+    def test_relevant_self_correction_has_reserved_budget_before_identity_history(self):
+        with tempfile.TemporaryDirectory() as directory:
+            budget = PromptContextBudget(str(Path(directory) / "contributions.json"))
+            budget.add("factual_telemetry", "long_horizon_plan", "p" * 1280)
+            budget.add("self_evidence", "grounded_identity", "e" * 480)
+            budget.add("self_state", "self_model_moment", "s" * 720)
+            budget.add("self_correction", "self_correction", "c" * 480)
+            budget.add("identity", "narrative_identity", "n" * 800)
+
+            budget.assemble()
+            selected = {entry.source for entry in budget._entries if entry.selected}
+
+        self.assertIn("long_horizon_plan", selected)
+        self.assertIn("self_correction", selected)
+        self.assertNotIn("narrative_identity", selected)
+
 
 if __name__ == "__main__":
     unittest.main()

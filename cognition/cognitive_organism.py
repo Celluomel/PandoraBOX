@@ -754,7 +754,7 @@ class CognitiveOrganism:
         try:
             _correction_frag = self._self_correction.prompt_fragment(user_input)
             if _correction_frag:
-                budget.add("meta_systems", "self_correction", _correction_frag)
+                budget.add("self_correction", "self_correction", _correction_frag)
             _restructuring_frag = self._cognitive_restructuring.prompt_fragment()
             if _restructuring_frag:
                 budget.add("meta_systems", "cognitive_restructuring", _restructuring_frag)
@@ -961,11 +961,7 @@ class CognitiveOrganism:
             if lhp and hasattr(lhp, 'prompt_fragment_for'):
                 lhp_frag = lhp.prompt_fragment_for(user_input)
                 if lhp_frag:
-                    category = (
-                        "factual_telemetry"
-                        if lhp_frag.startswith("[Cognitive telemetry") else "identity"
-                    )
-                    budget.add(category, "long_horizon_plan", lhp_frag)
+                    budget.add("factual_telemetry", "long_horizon_plan", lhp_frag)
         except Exception as exc:
             logger.warning(
                 "[CognitiveOrganism] factual planning telemetry unavailable: %s",

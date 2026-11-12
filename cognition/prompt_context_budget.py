@@ -81,6 +81,10 @@ CATEGORY_BUDGETS: Dict[str, Tuple[int, int]] = {
     # independent producers. Their compact forms need to coexist; the former
     # cap admitted only the self-model paragraph.
     "self_state":         (180, 2),
+    # A correction rule is a turn-specific control signal; keep it separate
+    # from the large meta-systems bundle so a relevant rule is not silently
+    # displaced by unrelated telemetry.
+    "self_correction":    (120, 1),
     "identity":           (200, 3),
     # The former cap routinely discarded arbitration after energy had taken
     # its share. Keep decision, workspace, and energy hand-offs eligible while
