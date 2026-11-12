@@ -2577,58 +2577,9 @@ Every response must feel genuinely new — avoid repeating phrases, sentences, o
                     memory_tier="visual",
                 )
 
-            # Conditioning: record outcome — high-impact exchanges seed conditioning
-            if impact > 0.6:
-                positive = emo["valence"] == "Positive"
-                self.conditioning.record_outcome(user_input, positive, strength=impact * 0.5)
-
-            # Queue evolution pressure from this interaction
-            if emo["valence"] == "Positive":
-                self.evolution_engine.queue_experience("positive_interaction", intensity=impact)
-            elif emo["valence"] == "Negative":
-                self.evolution_engine.queue_experience("negative_interaction", intensity=impact)
-
-            # Multi-factor creativity scoring — prevents self-reinforcing loop where
-            # PandoraBOX's own language style inflates creativity_divergent indefinitely.
-            # All three factors must combine above threshold (0.40) to queue the experience.
-            #   Factor 1 (0.35 weight): creative language markers in the response
-            #   Factor 2 (0.45 weight): user engagement = positive + high arousal
-            #   Factor 3 (0.20 weight): response novelty vs user's own words
-            try:
-                _last_resp  = (getattr(self, '_last_responses', ['']) or [''])[-1]
-                _resp_lower = _last_resp.lower()
-                _user_lower = getattr(self, '_last_user_input', '').lower()
-
-                _creative_markers = (
-                    'imagine', 'perhaps', 'what if', 'analogy', 'metaphor',
-                    'like a', 'reminds me of', 'picture this', 'alternatively',
-                    'unexpected', 'novel framing', 'consider this angle',
-                )
-                _marker_count = sum(1 for m in _creative_markers if m in _resp_lower)
-                _creativity_marker_score = min(1.0, _marker_count / 3)
-
-                _engagement_score = (
-                    0.8 if (emo["valence"] == "Positive" and emo.get("arousal") == "High")
-                    else 0.4 if emo["valence"] == "Positive"
-                    else 0.0
-                )
-
-                _stop = {'the','a','an','is','are','was','and','or','in','of','to','it','that','this'}
-                _novel_words = set(_resp_lower.split()) - set(_user_lower.split()) - _stop
-                _novelty_score = min(1.0, len(_novel_words) / 30)
-
-                _creative_score = (
-                    _creativity_marker_score * 0.35
-                    + _engagement_score      * 0.45
-                    + _novelty_score         * 0.20
-                )
-
-                if _creative_score >= 0.40:
-                    self.evolution_engine.queue_experience(
-                        "creative_success", intensity=impact * _creative_score
-                    )
-            except Exception:
-                pass
+            # The detected affect belongs to the user's message. Keep it for
+            # emotional-state and relational context above, but do not treat it
+            # as evidence that the generated response succeeded or was creative.
 
             # Evolve immediately with intensity boost for high-arousal interactions
             # so emotionally significant exchanges produce more change than mundane ones
@@ -2642,40 +2593,17 @@ Every response must feel genuinely new — avoid repeating phrases, sentences, o
             self._last_conversation_time = time.time()
             # NOTE: _interaction_count is incremented by persona_bridge
 
-            # FIX: SelfModel.record_interaction() was never called from the
-            # organism, so self_model.confidence was frozen at its initial
-            # convergence value (0.75) and never reflected actual interaction
-            # success or failure.  It feeds phenomenal_binder signals directly.
-            # success = Positive or Neutral valence (Negative = something went wrong)
-            # domain  = inferred from user_input length proxy
-            # load_delta = scaled by impact so high-stakes interactions cost more
+            # Record exposure and cognitive load, not answer quality. User-input
+            # valence and answer text provide no independent outcome label.
             try:
                 from core.state import state as _st
                 _org = getattr(getattr(_st, 'persona', None), '_organism', None)
                 _sm  = getattr(_org, 'self_model', None) if _org else None
                 if _sm and hasattr(_sm, 'record_interaction'):
-                    _sm_success = emo["valence"] in ("Positive", "Neutral")
-                    _sm_domain  = (
-                        "research"      if len(user_input) > 300
-                        else "reasoning" if "?" in user_input
-                        else "conversation"
-                    )
                     _sm.record_interaction(
-                        success    = _sm_success,
-                        domain     = _sm_domain,
+                        success    = None,
+                        domain     = "conversation",
                         load_delta = min(0.20, impact * 0.15),
-                    )
-            except Exception:
-                pass
-
-            # DecisionPolicy: update value weights from this interaction's outcome
-            try:
-                if self._decision_policy and hasattr(self._decision_policy, 'update_from_interaction'):
-                    _last_resp = (getattr(self, '_last_responses', ['']) or [''])[-1]
-                    self._decision_policy.update_from_interaction(
-                        response = _last_resp,
-                        valence  = emo.get("valence", "Neutral"),
-                        strength = min(1.0, impact),
                     )
             except Exception:
                 pass
@@ -2966,6 +2894,27 @@ Every response must feel genuinely new — avoid repeating phrases, sentences, o
             msg_hash = generate_semantic_hash(last_response) if last_response else ""
             self.persistence.log_feedback(positive, user_id, msg_hash, intensity)
 
+            # Only this explicit user rating is evidence about the response.
+            # User-message affect and assistant wording are not outcome labels.
+            feedback_learning = {"self_model": False, "decision_policy": False}
+            organism = getattr(self, "_organism_ref", None)
+            self_model = getattr(organism, "self_model", None)
+            if self_model and callable(getattr(self_model, "record_outcome", None)):
+                self_model.record_outcome(bool(positive), domain="conversation")
+                feedback_learning["self_model"] = True
+            try:
+                policy = getattr(self, "_decision_policy", None)
+                update_policy = getattr(policy, "update_from_interaction", None)
+                if callable(update_policy) and last_response:
+                    update_policy(
+                        response=last_response,
+                        valence="Positive" if positive else "Negative",
+                        strength=max(0.0, min(1.0, float(intensity))),
+                    )
+                    feedback_learning["decision_policy"] = True
+            except Exception as policy_error:
+                logger.debug("Decision-policy feedback propagation failed: %s", policy_error)
+
             # Explicit ratings are the skill registry's outcome signal; mere
             # response length is not evidence that a skill succeeded.
             try:
@@ -3053,6 +3002,7 @@ Every response must feel genuinely new — avoid repeating phrases, sentences, o
             return {
                 "feedback_received": True,
                 "direction": "positive" if positive else "negative",
+                "outcome_learning": feedback_learning,
                 "emotional_impact": self.emotional_state.get_current_values(),
             }
         except Exception as e:

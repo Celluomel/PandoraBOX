@@ -752,26 +752,20 @@ async def main_page():
             if show_feedback and who == 'bot':
                 feedback_row = ui.row().classes('gap-1 ml-2 mb-1 opacity-50 hover:opacity-100 transition-opacity')
                 with feedback_row:
-                    async def _fb_pos(fb_row=feedback_row):
-                        last = getattr(state.persona, '_system', None)
-                        if last:
-                            resp = getattr(last, '_last_responses', [''])
-                            last_resp = resp[-1] if resp else ''
+                    async def _fb_pos(fb_row=feedback_row, response=text):
+                        if state.persona:
                             await asyncio.to_thread(
-                                state.persona.receive_feedback, True, user_manager.active_id, last_resp
+                                state.persona.receive_feedback, True, user_manager.active_id, response
                             )
                         ui.notify('👍 Positive feedback recorded', type='positive', position='bottom-right')
                         try:
                             fb_row.delete()
                         except Exception:
                             pass
-                    async def _fb_neg(fb_row=feedback_row):
-                        last = getattr(state.persona, '_system', None)
-                        if last:
-                            resp = getattr(last, '_last_responses', [''])
-                            last_resp = resp[-1] if resp else ''
+                    async def _fb_neg(fb_row=feedback_row, response=text):
+                        if state.persona:
                             await asyncio.to_thread(
-                                state.persona.receive_feedback, False, user_manager.active_id, last_resp
+                                state.persona.receive_feedback, False, user_manager.active_id, response
                             )
                         ui.notify('👎 Feedback noted — PandoraBOX will learn from this', type='warning', position='bottom-right')
                         try:
@@ -1069,29 +1063,27 @@ async def main_page():
             if bot_bubble is not None and result:
                 pass  # already set above
                 # Add 👍/👎 below this response so user can rate it in-context
+                _feedback_response = (
+                    (result.get("raw") if isinstance(result, dict) else None)
+                    or accumulated_text
+                )
                 with chat_area:
                     _fb_row = ui.row().classes('gap-1 ml-2 mb-1 opacity-50 hover:opacity-100 transition-opacity')
                     with _fb_row:
-                        async def _fb_pos_chat(_row=_fb_row):
-                            last = getattr(state.persona, '_system', None)
-                            if last:
-                                resp = getattr(last, '_last_responses', [''])
-                                last_resp = resp[-1] if resp else ''
+                        async def _fb_pos_chat(_row=_fb_row, _response=_feedback_response):
+                            if state.persona:
                                 await asyncio.to_thread(
-                                    state.persona.receive_feedback, True, user_manager.active_id, last_resp
+                                    state.persona.receive_feedback, True, user_manager.active_id, _response
                                 )
                             ui.notify('👍 Positive feedback recorded', type='positive', position='bottom-right')
                             try:
                                 _row.delete()
                             except Exception:
                                 pass
-                        async def _fb_neg_chat(_row=_fb_row):
-                            last = getattr(state.persona, '_system', None)
-                            if last:
-                                resp = getattr(last, '_last_responses', [''])
-                                last_resp = resp[-1] if resp else ''
+                        async def _fb_neg_chat(_row=_fb_row, _response=_feedback_response):
+                            if state.persona:
                                 await asyncio.to_thread(
-                                    state.persona.receive_feedback, False, user_manager.active_id, last_resp
+                                    state.persona.receive_feedback, False, user_manager.active_id, _response
                                 )
                             ui.notify('👎 Feedback noted — PandoraBOX will learn from this', type='warning', position='bottom-right')
                             try:
@@ -1130,39 +1122,6 @@ async def main_page():
                     accumulated_text = security.validate_response(accumulated_text)
                 except Exception:
                     pass
-
-            # ── Update self-model and goal ecology after each response ────
-            try:
-                org = getattr(state.persona, '_organism', None)
-                if org is not None:
-                    success = bool(accumulated_text and len(accumulated_text) > 10)
-
-                    # Self-model: record interaction outcome
-                    if hasattr(org, 'self_model'):
-                        # Guess domain from content
-                        domain = 'conversation'
-                        low = (text or '').lower()
-                        if any(w in low for w in ['code','python','function','debug','error']):
-                            domain = 'code_analysis'
-                        elif any(w in low for w in ['search','find','research','look up']):
-                            domain = 'research'
-                        elif any(w in low for w in ['feel','emotion','sad','happy','stress']):
-                            domain = 'emotional_support'
-                        elif any(w in low for w in ['think','reason','why','explain','analyse']):
-                            domain = 'reasoning'
-                        org.self_model.record_interaction(success=success, domain=domain)
-
-                    # Goal ecology: record satisfaction on dominant drive
-                    if hasattr(org, 'goal_ecology') and hasattr(org, 'energy') and success:
-                        dominant = org.goal_ecology.dominant_drive(org.energy.level())
-                        org.goal_ecology.record_satisfaction(dominant.name, 0.6)
-
-                    # Attractor nudge: successful social interaction
-                    if hasattr(org, 'attractors') and success:
-                        org.attractors.nudge('social_engagement', +0.005)
-                        org.attractors.nudge('consistency', +0.003)
-            except Exception as _e:
-                logger.debug(f"Post-response organism update: {_e}")
 
             # Scroll to bottom after full response is rendered
             _scroll_bottom()

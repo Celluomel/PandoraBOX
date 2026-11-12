@@ -20,8 +20,10 @@ Integration
 -----------
   self_model = SelfModel()
 
-  # After each interaction:
-  self_model.record_interaction(success=True, domain="conversation")
+  # Record exposure/load after an unrated interaction:
+  self_model.record_interaction(success=None, domain="conversation")
+  # Apply an outcome only when supported by an explicit/verified signal:
+  self_model.record_outcome(success=True, domain="conversation")
 
   # In PersonaBridge context:
   ctx["self_model"] = self_model.prompt_fragment()
@@ -114,16 +116,20 @@ class SelfModel:
 
     def record_interaction(
         self,
-        success: bool,
+        success: Optional[bool] = None,
         domain: str = "conversation",
         load_delta: float = 0.05,
     ) -> None:
         """
-        Call after each user interaction.
+        Record an interaction and its cognitive load.
+
+        `success=None` means the response has not been independently evaluated.
+        It records exposure/load only; it must not change capability evidence or
+        overall confidence. Use `record_outcome` for an explicit outcome signal.
 
         Parameters
         ----------
-        success    : did the interaction go well?
+        success    : explicit outcome if known; None when unknown
         domain     : capability domain  (e.g. "research", "reasoning")
         load_delta : how much this interaction cost cognitively (0–1)
         """
@@ -131,17 +137,23 @@ class SelfModel:
             self.total_interactions += 1
             self.session_interactions += 1
 
-            if domain in self.capabilities:
-                self.capabilities[domain].update(success)
-
-            # Update overall confidence (exponential moving average)
-            target = 0.75 if success else 0.35
-            self.confidence = 0.92 * self.confidence + 0.08 * target
-            self.confidence = max(0.1, min(1.0, self.confidence))
-
             # Cognitive load decays naturally, spikes on interaction
             self.cognitive_load = min(1.0, self.cognitive_load + load_delta)
 
+        if success is not None:
+            self.record_outcome(success=success, domain=domain)
+            return
+        self._save()
+
+    def record_outcome(self, success: bool, domain: str = "conversation") -> None:
+        """Update competence/confidence only from an observed outcome signal."""
+        with self._lock:
+            if domain in self.capabilities:
+                self.capabilities[domain].update(success)
+
+            target = 0.75 if success else 0.35
+            self.confidence = 0.92 * self.confidence + 0.08 * target
+            self.confidence = max(0.1, min(1.0, self.confidence))
         self._save()
 
     def tick_load_decay(self, elapsed_secs: float = 30.0) -> None:
