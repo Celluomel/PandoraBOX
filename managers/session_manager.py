@@ -72,6 +72,10 @@ class SessionManager:
         """
         self._llm_fn   = llm_fn
         self._lock     = threading.Lock()
+        # Compression may call the LLM and take seconds. Keep it serialized,
+        # but never hold _lock while that inference runs: completed exchanges
+        # must still be checkpointed immediately.
+        self._compression_lock = threading.Lock()
         self._dirty    = False   # True = unsaved changes pending
         self._summary: str = ""  # compressed older context
         os.makedirs("data/persona", exist_ok=True)
@@ -100,16 +104,31 @@ class SessionManager:
 
     def _compress_latest(self):
         """Compress the latest persisted history, never a stale turn snapshot."""
-        with self._lock:
-            latest = self._load_raw()
-            if len(latest) >= COMPRESS_TRIGGER:
-                self._compress(latest)
+        # Skip redundant background jobs if a previous compression is still
+        # running. The active job reads the newest checkpoint itself.
+        if not self._compression_lock.acquire(blocking=False):
+            return
+        committed = False
+        try:
+            committed = self._compress_unlocked(force=False)
+        finally:
+            self._compression_lock.release()
+        if not committed:
+            # A checkpoint may have arrived while the LLM was summarizing.
+            # Retry once the lock is free so the newest history is eventually
+            # compacted without making the completed chat turn wait for it.
+            with self._lock:
+                should_retry = len(self._load_raw()) >= COMPRESS_TRIGGER
+            if should_retry:
+                retry = threading.Timer(0.25, self._compress_latest)
+                retry.daemon = True
+                retry.start()
 
     def _save_and_maybe_compress(self, history: List[Dict]):
         with self._lock:
             self._save_raw(history)
-            if len(history) >= COMPRESS_TRIGGER:
-                self._compress(history)
+        if len(history) >= COMPRESS_TRIGGER:
+            self._compress(history)
 
     # ── Before / after reload_llm ─────────────────────────────────────────────
     def save_before_reload(self, history: List[Dict]) -> List[Dict]:
@@ -210,9 +229,9 @@ class SessionManager:
         logger.info("SessionManager: shutdown save...")
         with self._lock:
             self._save_raw(history)
-            if len(history) >= 4:
-                self._compress(history, force=True)
             self._dirty = False
+        if len(history) >= 4:
+            self._compress(history, force=True)
         logger.info("SessionManager: shutdown save complete")
 
     def clear(self, llm_manager: Any):
@@ -230,8 +249,17 @@ class SessionManager:
         Compress the oldest COMPRESS_WINDOW turns into a summary block.
         After compression the history has MAX_RAW_TURNS - COMPRESS_WINDOW + 1 turns.
         """
+        with self._compression_lock:
+            self._compress_unlocked(force=force)
+
+    def _compress_unlocked(self, force: bool = False) -> bool:
+        """Compress a stable checkpoint without holding the session lock in inference."""
+        with self._lock:
+            history = self._load_raw()
+            previous_summary = self._summary
+
         if len(history) < COMPRESS_WINDOW and not force:
-            return
+            return False
 
         to_compress = history[:COMPRESS_WINDOW]
         keep        = history[COMPRESS_WINDOW:]
@@ -246,22 +274,29 @@ class SessionManager:
         new_summary = self._run_compression(turns_text)
 
         # Prepend previous summary to new one if exists
-        if self._summary:
+        if previous_summary:
             new_summary = (
-                self._summary.rstrip()
+                previous_summary.rstrip()
                 + "\n\n[ADDITIONAL CONTEXT]\n"
                 + new_summary.replace("[CONTEXT FROM EARLIER IN THIS CONVERSATION]\n", "")
             )
 
-        self._summary = new_summary
-        now = datetime.datetime.now().isoformat()
-        self._save_summary_data({"text": new_summary, "saved_at": now})
-        self._save_raw(keep)
+        # A newer exchange may have been checkpointed while the LLM summarized
+        # this snapshot. Never replace it with the older `keep` tail.
+        with self._lock:
+            if self._load_raw() != history or self._summary != previous_summary:
+                logger.info("SessionManager: discarded stale compression snapshot")
+                return False
+            self._summary = new_summary
+            now = datetime.datetime.now().isoformat()
+            self._save_summary_data({"text": new_summary, "saved_at": now})
+            self._save_raw(keep)
 
         logger.info(
             f"SessionManager: compressed {len(to_compress)} turns → summary "
             f"({len(keep)} turns remain)"
         )
+        return True
 
     def _run_compression(self, turns_text: str) -> str:
         """Run LLM compression or fallback to simple join."""

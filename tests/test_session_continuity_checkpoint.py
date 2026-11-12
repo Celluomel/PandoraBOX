@@ -113,6 +113,57 @@ class SessionContinuityCheckpointTests(unittest.TestCase):
         self.assertIn("not independently verified", summary)
         self.assertIn("User asked/stated: Which checks remain?", summary)
 
+    def test_checkpoint_is_not_blocked_by_slow_compression(self):
+        with tempfile.TemporaryDirectory() as folder:
+            raw_path = Path(folder) / "session.json"
+            summary_path = Path(folder) / "summary.json"
+            entered_compressor = threading.Event()
+            release_compressor = threading.Event()
+
+            def slow_compressor(prompt, system):
+                entered_compressor.set()
+                release_compressor.wait(timeout=3)
+                return "[CONTEXT FROM EARLIER IN THIS CONVERSATION]\ncompressed history"
+
+            with patch("managers.session_manager.SESSION_PATH", str(raw_path)), patch(
+                "managers.session_manager.SUMMARY_PATH", str(summary_path)
+            ):
+                session = SessionManager(llm_fn=slow_compressor)
+                history = [
+                    {"role": "user", "content": f"question {i}"}
+                    for i in range(16)
+                ]
+                session.on_exchange_complete(history)
+
+                compressor = threading.Thread(target=session._compress, args=(history,))
+                compressor.start()
+                self.assertTrue(entered_compressor.wait(timeout=1))
+
+                newer_history = history + [
+                    {"role": "assistant", "content": "new answer"}
+                ]
+                checkpoint = threading.Thread(
+                    target=session.on_exchange_complete, args=(newer_history,)
+                )
+                checkpoint.start()
+                checkpoint.join(timeout=0.5)
+                self.assertFalse(checkpoint.is_alive(), "checkpoint waited on compression inference")
+
+                persisted = json.loads(raw_path.read_text(encoding="utf-8"))
+                self.assertEqual(persisted["history"], newer_history)
+
+                release_compressor.set()
+                compressor.join(timeout=2)
+                self.assertFalse(compressor.is_alive())
+
+                # Compression may legitimately compact the newer checkpoint,
+                # but it must retain the latest exchange in its raw tail.
+                persisted = json.loads(raw_path.read_text(encoding="utf-8"))
+                self.assertEqual(
+                    persisted["history"][-1],
+                    {"role": "assistant", "content": "new answer"},
+                )
+
 
 if __name__ == "__main__":
     unittest.main()
