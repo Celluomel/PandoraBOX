@@ -3220,6 +3220,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                 try:
                     organism_block = self._organism._build_prompt_additions(
                         cycle_data, decision, user_input,
+                        turn_id=audit_turn_id,
                     )
                     arb_temperature = decision.temperature
                     self._record_turn_stage(

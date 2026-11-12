@@ -561,6 +561,7 @@ class CognitiveOrganism:
         cycle_data: Dict,
         decision: Any,
         user_input: str,
+        turn_id: Optional[str] = None,
     ) -> str:
         """
         Assemble the cognitive context block to prepend to the system prompt.
@@ -568,7 +569,7 @@ class CognitiveOrganism:
         and record contribution stats for observability.
         """
         from cognition.prompt_context_budget import PromptContextBudget
-        budget   = PromptContextBudget()
+        budget   = PromptContextBudget(turn_id=turn_id)
         tensions = cycle_data["tensions"]
         h_report = cycle_data["h_report"]
 

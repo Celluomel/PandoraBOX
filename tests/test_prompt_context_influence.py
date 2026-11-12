@@ -9,6 +9,19 @@ from cognition.self_model_moment import SelfModelMoment
 
 
 class PromptContextInfluenceTests(unittest.TestCase):
+    def test_admission_record_keeps_the_cognitive_turn_id(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "contributions.json"
+            budget = PromptContextBudget(str(path), turn_id="turn-audit-123")
+            budget.add("self_state", "self_model_moment", "[self model]")
+            budget.assemble()
+            budget.save()
+
+            import json
+            record = json.loads(path.read_text(encoding="utf-8"))[0]
+
+        self.assertEqual(record["turn_id"], "turn-audit-123")
+
     def test_state_fragments_are_compact_and_keep_distinct_signal_types(self):
         self_state = SelfModelMoment(
             phi=0.75,

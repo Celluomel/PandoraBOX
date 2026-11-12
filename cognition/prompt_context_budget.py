@@ -1,7 +1,7 @@
 """
 cognition/prompt_context_budget.py
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-PromptContextBudget — token-budgeted prompt assembly with influence tracking.
+PromptContextBudget — token-budgeted prompt assembly and admission telemetry.
 
 Problem it solves
 ──────────────────
@@ -29,8 +29,9 @@ What this module does
    logged with: source, tokens, selected, reason.
    Persisted to data/persona/prompt_contributions.json (rolling 200).
 
-3. INFLUENCE DASHBOARD — contribution_summary() returns per-source
-   stats: mean tokens, selection rate, last_selected_at.
+3. ADMISSION SUMMARY — contribution_summary() returns per-source
+   stats: mean tokens, admission rate, last_selected_at. This is prompt
+   assembly telemetry, not a measure of model attention or response effect.
    Readable by brain.py /state endpoint and the audit engine.
 
 Token budget (conservative — real tokenisation is ~4 chars/token):
@@ -117,6 +118,7 @@ class ContributionRecord:
     timestamp:    float
     total_tokens: int
     sections:     List[Dict]  # serialised SectionEntries
+    turn_id:      Optional[str] = None
 
 
 # ── Budget ────────────────────────────────────────────────────────────────────
@@ -134,8 +136,13 @@ class PromptContextBudget:
         b.save()                # persist contribution record
     """
 
-    def __init__(self, path: str = "data/persona/prompt_contributions.json") -> None:
+    def __init__(
+        self,
+        path: str = "data/persona/prompt_contributions.json",
+        turn_id: Optional[str] = None,
+    ) -> None:
         self._path     = Path(path)
+        self._turn_id  = str(turn_id).strip() if turn_id else None
         self._entries:  List[SectionEntry] = []
         self._cat_used: Dict[str, int]     = {cat: 0 for cat in CATEGORY_BUDGETS}
         self._total_used = 0
@@ -211,6 +218,7 @@ class PromptContextBudget:
                 timestamp    = time.time(),
                 total_tokens = self._total_used,
                 sections     = [asdict(e) for e in self._entries],
+                turn_id      = self._turn_id,
             )
             existing.append(asdict(record))
             if len(existing) > MAX_CONTRIBUTION_LOG:
