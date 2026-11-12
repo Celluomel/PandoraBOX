@@ -268,7 +268,12 @@ class InternalThoughtLoop:
             # instead of only the collapsed winner (see cognition/
             # global_workspace.py WorkspaceState / set_hypotheses()).
             _gw = getattr(self._organism, "workspace", None)
-            self._phase1 = Phase1Orchestrator(global_workspace=_gw)
+            _goal_engine = getattr(
+                getattr(self._organism, "ai_system", None), "goal_engine", None
+            )
+            self._phase1 = Phase1Orchestrator(
+                global_workspace=_gw, goal_engine=_goal_engine,
+            )
             logger.info("[InternalLoop] V32 Phase 1 Orchestrator ready ✅")
         except Exception as _e:
             self._phase1 = None
@@ -1373,6 +1378,14 @@ class InternalThoughtLoop:
                 total_pressure  = pressure_result.get('total', 0.5)
                 _phase1_competition_output = _cycle_result.get("competition", {})
                 _phase1_competition_metrics = _phase1_competition_output.get("competition", {})
+                _proposal_admission = _cycle_result.get("rejected_goal_suggestions", [])
+                if _proposal_admission:
+                    self._record_cycle_stage(
+                        "goal_proposal_admission", "partial", output={
+                            "rejected_count": len(_proposal_admission),
+                            "rejections": _proposal_admission[:12],
+                        },
+                    )
                 _phase1_evidence_ref = self._record_cycle_stage(
                     "phase1_competition", "completed", output=_phase1_competition_output,
                     metrics={

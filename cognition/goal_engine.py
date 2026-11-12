@@ -341,6 +341,26 @@ class GoalEngine:
         # and persisted goals must remain intact until embeddings are available.
         return False
 
+    def thought_proposal_rejection_reason(self, topic: str) -> str | None:
+        """Apply the durable-goal topic gates before a proposal enters competition.
+
+        The commit path still repeats all admission checks. This early check
+        keeps a proposal that cannot become a durable goal from winning the
+        workspace and displacing an admissible candidate.
+        """
+        normalized = " ".join(str(topic or "").replace("_", " ").casefold().split())
+        if not normalized:
+            return "missing_topic"
+        if self._is_external_task_topic(normalized):
+            return "user_owned_task"
+        if self._is_lexical_noise_topic(normalized):
+            return "lexical_noise"
+        if self._is_valid_goal_topic(normalized):
+            return None
+        with self._lock:
+            semantic_verdict = self._topic_quality_cache.get(normalized)
+        return "low_quality_topic" if semantic_verdict is False else "quality_unavailable"
+
     def _retire_invalid_active_goals(self) -> int:
         """Migrate legacy goals that predate the strict topic-quality gate."""
         retired = 0

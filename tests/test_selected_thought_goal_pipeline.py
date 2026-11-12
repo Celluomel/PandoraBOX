@@ -9,6 +9,7 @@ from cognition.cognitive_preprocessor import CognitivePreProcessor
 from cognition.simple_thought_evaluator import SimpleThoughtEvaluator
 from cognition.thought_stream import Thought
 from cognition.workspace_competition import WorkspaceCompetition
+from core.phase1_integration import Phase1Orchestrator
 from core.data.access import DataAccess
 from core.internal_loop import InternalThoughtLoop
 
@@ -56,6 +57,75 @@ def test_rejected_proposal_does_not_become_a_persisted_goal(tmp_path):
     assert result["created"] is False
     assert result["verified"] is False
     assert not persistence_file.exists()
+
+
+def test_unadmissible_proposal_is_removed_before_workspace_competition(tmp_path):
+    engine = GoalEngine(SimpleNamespace(), persistence_file=str(tmp_path / "goals.json"))
+    engine.thought_proposal_rejection_reason = lambda topic: (
+        "low_quality_topic" if topic == "notice pull toward" else None
+    )
+    phase1 = Phase1Orchestrator.__new__(Phase1Orchestrator)
+    phase1.goal_engine = engine
+    proposals = [
+        {"concept": "notice_pull_toward", "origin_thought": "noise"},
+        {"concept": "grounded perception", "origin_thought": "useful"},
+    ]
+
+    admitted, rejected = phase1._admit_goal_proposals(proposals)
+
+    assert admitted == [proposals[1]]
+    assert rejected == [{
+        "topic_ref": "notice pull toward",
+        "reason": "low_quality_topic",
+        "origin_thought_ref": "noise",
+    }]
+
+
+def test_goal_proposal_gate_matches_quality_and_lexical_admission(tmp_path):
+    engine = GoalEngine(SimpleNamespace(), persistence_file=str(tmp_path / "goals.json"))
+    engine._is_external_task_topic = lambda _topic: False
+    engine._is_valid_goal_topic = lambda topic: topic == "grounded perception"
+
+    assert engine.thought_proposal_rejection_reason("grounded perception") is None
+    assert engine.thought_proposal_rejection_reason("notice pull toward") == "quality_unavailable"
+    assert engine.thought_proposal_rejection_reason("module") == "lexical_noise"
+
+
+def test_enhanced_cycle_competes_only_admissible_goal_proposals():
+    class _Workspace:
+        seen_thoughts = None
+
+        def compete(self, **kwargs):
+            self.seen_thoughts = kwargs["thoughts"]
+            return {"winner": {"name": "existing thought", "type": "thought", "score": 0.5}}
+
+    class _GoalEngine:
+        def thought_proposal_rejection_reason(self, topic):
+            return "low_quality_topic" if topic == "notice pull toward" else None
+
+    phase1 = Phase1Orchestrator.__new__(Phase1Orchestrator)
+    workspace = _Workspace()
+    phase1._global_workspace = None
+    phase1.components = {"workspace": workspace}
+    phase1.goal_engine = _GoalEngine()
+    phase1.cycle_count = 4
+    phase1.gather_perception = lambda _input: {}
+    phase1.get_decision_pressure = lambda: {"total": 0.2}
+    phase1.evaluate_thoughts_and_create_goals = lambda: [
+        {"concept": "notice_pull_toward", "origin_thought": "noise"},
+        {"concept": "grounded_perception", "origin_thought": "useful"},
+    ]
+    phase1._load_goals = lambda: []
+    phase1._load_recent_thoughts = lambda: []
+    phase1._load_tensions = lambda: {}
+    phase1._plan_for_winner = lambda *_args: []
+    phase1._recommend_from_winner = lambda *_args: "continue"
+
+    result = phase1.enhanced_cycle()
+
+    proposal_topics = [item["topic"] for item in workspace.seen_thoughts]
+    assert proposal_topics == ["grounded perception"]
+    assert result["rejected_goal_suggestions"][0]["reason"] == "low_quality_topic"
 
 
 def test_high_priority_tension_defers_llm_synthesis_until_selected(tmp_path):

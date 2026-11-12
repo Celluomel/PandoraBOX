@@ -32,7 +32,7 @@ class Phase1Orchestrator:
     alongside existing PandoraBOX functionality.
     """
     
-    def __init__(self, persona_dir: str = "data/persona", global_workspace=None):
+    def __init__(self, persona_dir: str = "data/persona", global_workspace=None, goal_engine=None):
         self.persona_dir = Path(persona_dir)
         self.cycle_count = 0
         self.enabled = True
@@ -40,6 +40,7 @@ class Phase1Orchestrator:
         # WorkspaceCompetition below so compete() can publish
         # active_hypotheses. None keeps this class fully standalone.
         self._global_workspace = global_workspace
+        self.goal_engine = goal_engine
         
         # Try to load Phase 1 components
         self.components = self._initialize_components()
@@ -148,6 +149,32 @@ class Phase1Orchestrator:
             return self.components['thought_evaluator'].evaluate_recent_thoughts()
         else:
             return []
+
+    def _admit_goal_proposals(self, proposals: List[Dict]) -> tuple[List[Dict], List[Dict]]:
+        """Keep non-admissible durable-goal proposals out of workspace competition."""
+        validator = getattr(self.goal_engine, "thought_proposal_rejection_reason", None)
+        if not callable(validator):
+            return list(proposals or []), []
+        admitted: List[Dict] = []
+        rejected: List[Dict] = []
+        for proposal in proposals or []:
+            if not isinstance(proposal, dict):
+                rejected.append({"reason": "malformed_proposal"})
+                continue
+            concept = str(proposal.get("concept") or "").replace("_", " ").strip()
+            try:
+                reason = validator(concept)
+            except Exception:
+                reason = "validation_error"
+            if reason is None:
+                admitted.append(proposal)
+            else:
+                rejected.append({
+                    "topic_ref": concept[:96],
+                    "reason": str(reason)[:48],
+                    "origin_thought_ref": str(proposal.get("origin_thought") or "")[:96],
+                })
+        return admitted, rejected
     
     def generate_action_plan(self, pressure: Dict, goals: List[Dict]) -> List[Dict]:
         """
@@ -211,10 +238,19 @@ class Phase1Orchestrator:
         # not persisted goals; the workspace must select one before GoalEngine
         # may commit it.
         goal_suggestions = []
+        rejected_goal_suggestions = []
         if self.cycle_count % 5 == 0:
-            goal_suggestions = self.evaluate_thoughts_and_create_goals()
+            raw_goal_suggestions = self.evaluate_thoughts_and_create_goals()
+            goal_suggestions, rejected_goal_suggestions = self._admit_goal_proposals(
+                raw_goal_suggestions
+            )
             if goal_suggestions:
                 print(f"   💡 {len(goal_suggestions)} distinct goal proposals for workspace arbitration")
+            if rejected_goal_suggestions:
+                print(
+                    "   ⏭️  "
+                    f"{len(rejected_goal_suggestions)} goal proposal(s) withheld before arbitration"
+                )
         
         # Step 5: Load current goals and thoughts
         goals = self._load_goals()
@@ -291,6 +327,7 @@ class Phase1Orchestrator:
             'plan': plan,
             'recommendation': recommendation,
             'goal_suggestions': goal_suggestions,
+            'rejected_goal_suggestions': rejected_goal_suggestions,
             'selected_goal_proposal': selected_proposal if isinstance(selected_proposal, dict) else None,
             'timestamp': datetime.now().isoformat()
         }
