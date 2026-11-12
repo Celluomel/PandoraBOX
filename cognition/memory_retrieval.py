@@ -21,6 +21,33 @@ votre vous y etre avoir faire suis sont doit dois
 """).split())
 
 
+def extract_explicit_recall_topic(text: str) -> str:
+    """Remove the request framing from a memory question before retrieval.
+
+    Keep the topic clause so the retriever searches for what the user wants
+    remembered, rather than the current instruction about remembering it.
+    """
+    value = str(text or "").strip()
+    prefixes = (
+        r"^what\s+do\s+you\s+remember\s+about\s+",
+        r"^what\s+have\s+we\s+discussed\s+about\s+",
+        r"^(?:do\s+you\s+remember|can\s+you\s+recall)\s+",
+        r"^(?:rappelle(?:-moi)?|souviens-toi|te\s+souviens-tu)\s+",
+        r"^(?:remember|recall)\s+",
+    )
+    for pattern in prefixes:
+        match = re.match(pattern, value, flags=re.IGNORECASE)
+        if match:
+            value = value[match.end():]
+            break
+    value = re.sub(r"^(?:(?:uniquement|seulement|just|only)\s+)*", "", value, flags=re.IGNORECASE)
+    value = re.sub(r"^(?:ce\s+que|what\s+(?:i|we)\s+(?:asked|said|told\s+you))\s+", "", value, flags=re.IGNORECASE)
+    value = re.sub(r"^(?:je\s+t['’]ai\s+(?:demandé|dit)|i\s+(?:asked|told\s+you))\s+", "", value, flags=re.IGNORECASE)
+    value = re.sub(r"^(?:à\s+propos\s+de|au\s+sujet\s+de|concernant|sur|about|regarding)\s+", "", value, flags=re.IGNORECASE)
+    value = re.sub(r"^(?:uniquement|seulement)\s+", "", value, flags=re.IGNORECASE)
+    return value.strip(" \t\r\n?.,:;\"'«»") or str(text or "").strip()
+
+
 def tokenize(text: str) -> List[str]:
     """Normalize accents and remove common English/French function words."""
     folded = unicodedata.normalize("NFKD", str(text or "").casefold())

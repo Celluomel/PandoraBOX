@@ -33,7 +33,10 @@ from typing import Any
 from managers.settings_manager import get_persona_name as _gpn
 from cognition.identity_boundary import prompt_block as _identity_boundary_block
 from cognition.body_runtime.robot_capabilities import robot_capability_report, robot_inventory_observation
-from cognition.memory_retrieval import merge_user_authored_memories
+from cognition.memory_retrieval import (
+    extract_explicit_recall_topic,
+    merge_user_authored_memories,
+)
 from cognition.turn_context_evidence import (
     audit_safe_turn_summary,
     format_memory_for_prompt,
@@ -3369,13 +3372,9 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             )
             _is_recall_request = any(t in user_input.lower() for t in _RECALL_TRIGGERS)
             if _is_recall_request:
-                # Strip the memory-request framing and search for the topic directly
-                import re as _re
-                _stripped = _re.sub(
-                    r"(rappelle.toi|te rappelles.tu|tu te rappelles|souviens.toi|tu te souviens|"
-                    r"do you remember|can you recall|t'en souviens)[^?]*\??\s*",
-                    "", user_input, flags=_re.IGNORECASE
-                ).strip() or user_input
+                # Search for the requested remembered topic, not the request's
+                # current-turn framing (which otherwise self-matches on retries).
+                _stripped = extract_explicit_recall_topic(user_input)
                 _recall_query = f"Conversation {_stripped}"
                 _recall_query_source = "explicit_recall"
             elif self._organism is not None:
@@ -3489,8 +3488,10 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                 except Exception:
                     pass
 
-            # Visual tier — boosted impact so visual memories compete fairly
-            if not peer_name and (_is_visual or _is_recall_request):
+            # Visual tier — only retrieve visual memories for visual queries.
+            # An explicit recall request can concern any domain; treating all
+            # recall as visual was injecting irrelevant images into text recall.
+            if not peer_name and _is_visual:
                 try:
                     _vis = s.memory_system.retrieve_by_tier(
                         _recall_query, tier="visual", limit=3, boost_impact=1.8

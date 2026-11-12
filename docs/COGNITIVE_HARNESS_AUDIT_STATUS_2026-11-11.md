@@ -1,7 +1,7 @@
 # Audit du harnais cognitif — état et prochaines étapes
 
 **Date de mise à jour :** 12 novembre 2026
-**Statut :** audit en cours — conclusion globale non établie. PC et `origin/main` sont alignés sur `b7cfa77`; ce commit n’est pas encore chargé dans Lumina. Les changements Body/UI préexistants restent hors lot. Les tests de composants seuls ne démontrent pas la qualité cognitive globale.
+**Statut :** audit en cours — conclusion globale non établie. `origin/main` est à `393248b`; les changements d’extraction du sujet de rappel décrits ci-dessous sont encore locaux. Le processus Lumina courant n’a pas chargé les commits `b7cfa77` et ultérieurs. Les changements Body/UI préexistants restent hors lot. Les tests de composants seuls ne démontrent pas la qualité cognitive globale.
 
 ## Reprise live après redémarrage — 12 novembre 2026
 
@@ -14,6 +14,7 @@
 - **À vérifier ensuite :** évaluer la pertinence du rappel sur des requêtes paraphrasées FR/EN avec sources de référence; vérifier le profil explicite par une fixture sans apprendre un fait artificiel sur Fred; auditer la sortie d’architecture contre les preuves qu’elle cite; puis élargir l’évaluation des effets aval sur des scénarios représentatifs. Le correctif de déduplication est local et nécessite un redémarrage ultérieur pour preuve live; je regroupe les changements avant de te demander ce redémarrage.
 - **Rappel paraphrasé — échec qualité observé :** le tour `1b8fa87d-b2c2-4b7a-86aa-3eddfedcc54c` a bien exécuté `memory_retrieval` → `memory_prompt_context` (8 candidats, 5 injectés) → `prompt_assembly` → génération. La réponse n’a cependant pas rappelé les consignes antérieures : elle a reformulé les trois consignes du message courant comme si elles étaient des souvenirs et a inventé des catégories de preuve (« métadonnées », « activation spécifique »). Le lot injecté comprenait aussi un souvenir visuel non pertinent. Le receipt de persistance et l’absence de fait personnel explicite étaient cohérents; la réponse mémoire, elle, ne satisfait pas le niveau attendu. `attention_mode=unavailable`; les scores FAISS autour de 0,54–0,60 ne sont pas un seuil validé.
 - **État du processus observé :** après ce tour, le manifeste indique 39/43 modules observés, 389 ticks, 0 erreur instrumentée; 4 initialisés sans tick et 1 sortie `output_unverified`. Ces chiffres attestent l’activité de modules instrumentés pendant cette session, pas la réussite sémantique du rappel. Le processus tourne encore sur le code antérieur à `b7cfa77`/`42230df`; le correctif de doublons ne peut donc pas encore être vérifié en live.
+- **Cause du mauvais rappel et correction préparée :** le parseur d’explicitation ne retirait pas la formulation « Rappelle uniquement ce que je t’ai demandé concernant… » et relançait la recherche avec tout le message courant; la branche rappel ajoutait aussi systématiquement le pool visuel, quelle que soit la question. Le rappel utilise maintenant la clause sujet extraite de formulations FR/EN testées, et le pool visuel n’est demandé que pour une requête reconnue visuelle. Vérification locale : mémoire + preuve de tour — **31 passed**, compilation et `git diff --check` réussis. Ce correctif est local, à committer/pousser puis vérifier après un redémarrage groupé.
 
 ## État exécutif courant — poursuite module par module
 

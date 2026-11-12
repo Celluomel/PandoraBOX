@@ -12,7 +12,10 @@ package.__path__ = [str(ROOT / "cognition")]
 sys.modules.setdefault("cognition", package)
 
 from cognition.ai_system import EnhancedMemorySystem
-from cognition.memory_retrieval import merge_user_authored_memories
+from cognition.memory_retrieval import (
+    extract_explicit_recall_topic,
+    merge_user_authored_memories,
+)
 from cognition.turn_context_evidence import format_memory_for_prompt
 
 
@@ -111,6 +114,22 @@ class MemorySystemFallbackTests(unittest.TestCase):
         self.assertEqual(general[0]["id"], 1)
         self.assertGreater(general[0]["relevance"], 0)
         self.assertEqual([row["id"] for row in personal], [1])
+
+    def test_explicit_recall_extracts_topic_instead_of_current_request(self):
+        self.assertEqual(
+            extract_explicit_recall_topic(
+                "Rappelle uniquement ce que je t’ai demandé concernant la manière de conduire l’audit du harnais cognitif."
+            ),
+            "la manière de conduire l’audit du harnais cognitif",
+        )
+        self.assertEqual(
+            extract_explicit_recall_topic("What do you remember about my audit priorities?"),
+            "my audit priorities",
+        )
+
+    def test_visual_tier_is_not_implied_by_recall_language(self):
+        query = "Rappelle ce que je t’ai demandé concernant la manière de conduire l’audit"
+        self.assertNotIn("image", extract_explicit_recall_topic(query).casefold())
 
     def test_empty_vector_index_does_not_hide_database_memories(self):
         system = self._system(embedder=object(), index=SimpleNamespace(ntotal=0))
