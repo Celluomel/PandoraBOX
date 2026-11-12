@@ -2791,8 +2791,10 @@ class InternalThoughtLoop:
             except Exception as _e4:
                 logger.debug(f"[InternalLoop] Phase 4 belief bootstrap failed: {_e4}")
 
-        if (self._thread_lifecycle_mgr and self._slow_cycle_count % 15 == 0
-                and (not self._governor or self._governor.may_run('ThreadLifecycle'))):
+        if self._periodic_module_due(
+            "_thread_lifecycle_mgr", "thread_lifecycle_manager", 15,
+            "ThreadLifecycle",
+        ):
             try:
                 report = self._thread_lifecycle_mgr.run()
                 if report.get('threads_processed', 0) > 0:
@@ -2868,9 +2870,9 @@ class InternalThoughtLoop:
         # ── Phase 5.1: Persistent Executive Loop ────────────────────────────
         # Every 10 slow cycles (~20 min) — more frequent than GQF (20 cycles)
         # since this reacts to pressure/trait state, not slow semantic drift.
-        if (self._persistent_exec_loop
-                and self._slow_cycle_count % 10 == 0
-                and (not self._governor or self._governor.may_run('PEL'))):
+        if self._periodic_module_due(
+            "_persistent_exec_loop", "persistent_executive_loop", 10, "PEL",
+        ):
             try:
                 report = self._persistent_exec_loop.review(self._organism)
                 if self._governor:

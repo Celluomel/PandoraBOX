@@ -148,6 +148,28 @@ def test_periodic_module_governor_skip_is_distinct_from_cadence_skip():
     assert stage["metrics"] == {"cycle": 20, "interval_cycles": 20}
 
 
+def test_thread_lifecycle_and_persistent_executive_record_cadence_skips():
+    loop = make_loop()
+    loop._slow_cycle_count = 10144
+    loop._thread_lifecycle_mgr = object()
+    loop._persistent_exec_loop = object()
+    loop._governor = SimpleNamespace(may_run=lambda _name: True)
+    loop._begin_cycle_evidence(10144)
+
+    assert not loop._periodic_module_due(
+        "_thread_lifecycle_mgr", "thread_lifecycle_manager", 15, "ThreadLifecycle"
+    )
+    assert not loop._periodic_module_due(
+        "_persistent_exec_loop", "persistent_executive_loop", 10, "PEL"
+    )
+
+    stages = loop.cycle_evidence_snapshot()["cycles"][0]["stages"]
+    assert [(item["stage"], item["status"]) for item in stages] == [
+        ("thread_lifecycle_manager", "skipped_cadence"),
+        ("persistent_executive_loop", "skipped_cadence"),
+    ]
+
+
 def test_periodic_module_runs_only_when_due_and_governor_allows():
     loop = make_loop()
     loop._slow_cycle_count = 20
