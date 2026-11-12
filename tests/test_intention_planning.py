@@ -292,6 +292,9 @@ class IntentionPlanningTests(unittest.TestCase):
             self.assertEqual(plan.steps_completed, 1)
             self.assertEqual(plan.steps[0].status, "completed")
             self.assertEqual(plan.steps[0].result, "recalled one relevant user-authored record")
+            self.assertEqual(plan.steps[0].execution_id, "turn-abc")
+            self.assertEqual(plan.steps[0].cycle_id, 42)
+            self.assertGreater(plan.steps[0].observed_at, 0)
             self.assertEqual(plan.last_outcome["result"], plan.steps[0].result)
             self.assertEqual(plan.last_outcome["execution_id"], "turn-abc")
             self.assertEqual(plan.last_outcome["cycle_id"], 42)
@@ -300,7 +303,42 @@ class IntentionPlanningTests(unittest.TestCase):
 
             persisted = json.loads(planner._path.read_text(encoding="utf-8"))["epistemic"]
             self.assertEqual(persisted["steps"][0]["result"], plan.last_outcome["result"])
+            self.assertEqual(persisted["steps"][0]["execution_id"], "turn-abc")
             self.assertEqual(persisted["last_outcome"]["execution_id"], "turn-abc")
+
+    def test_plan_snapshot_distinguishes_legacy_progress_from_execution_evidence(self):
+        with tempfile.TemporaryDirectory() as folder:
+            planner, _, _ = self._planner(folder)
+            planner._plans["epistemic"] = Plan(
+                aspiration_domain="epistemic",
+                steps=[
+                    PlanStep(
+                        sequence=0, action_type="analytical", operation="memory_recall",
+                        expected_cost=0.05, expected_gain=0.05,
+                        status="completed", result="",  # legacy progress without receipt
+                    ),
+                    PlanStep(
+                        sequence=1, action_type="analytical", operation="memory_recall",
+                        expected_cost=0.05, expected_gain=0.05,
+                        status="completed", result="retrieved record",
+                        execution_id="exec-2", cycle_id=19, observed_at=123.0,
+                    ),
+                ],
+                resource_reserve=0.2,
+                revision_trigger=0.25,
+                horizon=2,
+                source="aspiration",
+                status="active",
+                steps_completed=2,
+            )
+
+            snapshot = planner.factual_self_report_snapshot()["dominant_plan"]
+            response = planner.factual_goal_plan_response("what are your plans?", "en")
+
+        self.assertEqual(snapshot["steps_completed"], 2)
+        self.assertEqual(snapshot["steps_with_execution_evidence"], 1)
+        self.assertEqual(snapshot["completed_steps_without_execution_evidence"], 1)
+        self.assertIn("1 with execution evidence, 1 without", response)
 
     def test_autonomous_probe_does_not_claim_a_user_question_was_answered(self):
         with tempfile.TemporaryDirectory() as folder:

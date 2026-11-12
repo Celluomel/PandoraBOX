@@ -69,6 +69,10 @@ class PlanStep:
     status:         str = "pending"
     attempts:       int = 0
     result:         str = ""
+    execution_id:   str = ""
+    cycle_id:       Optional[int] = None
+    observed_at:    float = 0.0
+    effect_measured: bool = False
 
 
 @dataclass
@@ -334,6 +338,10 @@ class LongHorizonPlanner:
 
         step.attempts += 1
         step.result = str(result)[:240]
+        step.execution_id = str(execution_id or "")
+        step.cycle_id = cycle_id
+        step.observed_at = time.time()
+        step.effect_measured = False
         episode = None
         if plan.reasoning_episode_id:
             reasoner = self._get_reasoner()
@@ -345,10 +353,18 @@ class LongHorizonPlanner:
         if success:
             step.status = "completed"
             plan.steps_completed += 1
+            step.execution_id = str(execution_id or "")
+            step.cycle_id = cycle_id
+            step.observed_at = time.time()
+            step.effect_measured = False
             if plan.steps_completed >= len(plan.steps):
                 plan.status = "completed"
         else:
             step.status = "failed"
+            step.execution_id = str(execution_id or "")
+            step.cycle_id = cycle_id
+            step.observed_at = time.time()
+            step.effect_measured = False
             plan.outcome_deviations.append(1.0)
             if step.attempts < 2:
                 step.status = "pending"
@@ -517,6 +533,10 @@ class LongHorizonPlanner:
         step.status = "completed"
         step.attempts += 1
         step.result = result_text
+        step.execution_id = str(execution_id or "")
+        step.cycle_id = cycle_id
+        step.observed_at = observed_at
+        step.effect_measured = deviation is not None
         plan.steps_completed += 1
         plan.last_outcome = {
             "operation": step.operation,
@@ -810,6 +830,13 @@ class LongHorizonPlanner:
         plan_data = None
         if plan is not None:
             completed = [step.operation for step in plan.steps if step.status == "completed"]
+            evidenced_steps = [
+                step for step in plan.steps
+                if step.status == "completed"
+                and bool(str(step.result or "").strip())
+                and bool(str(step.execution_id or "").strip())
+                and float(step.observed_at or 0.0) > 0.0
+            ]
             next_step = self.current_step(plan.aspiration_domain)
             source_goal = None
             if plan.source == "goal":
@@ -830,6 +857,21 @@ class LongHorizonPlanner:
                 "success_criteria_status": criteria_status,
                 "steps_completed": plan.steps_completed,
                 "steps_total": len(plan.steps),
+                "steps_with_execution_evidence": len(evidenced_steps),
+                "completed_steps_without_execution_evidence": max(
+                    0, len(completed) - len(evidenced_steps)
+                ),
+                "completed_step_receipts": [
+                    {
+                        "operation": step.operation,
+                        "execution_id": step.execution_id or None,
+                        "cycle_id": step.cycle_id,
+                        "observed_at": step.observed_at or None,
+                        "result_recorded": bool(str(step.result or "").strip()),
+                        "effect_measured": bool(step.effect_measured),
+                    }
+                    for step in plan.steps if step.status == "completed"
+                ],
                 "completed_operations": completed,
                 "next_operation": next_step.operation if next_step else None,
                 "next_operation_status": next_step.status if next_step else None,
@@ -918,6 +960,8 @@ class LongHorizonPlanner:
                 f"Dominant active internal plan (it may be independent of the current "
                 f"conversation): objective={plan['objective'][:100]!r}; progress "
                 f"{plan['steps_completed']}/{plan['steps_total']}; "
+                f"{plan.get('steps_with_execution_evidence', 0)} with execution evidence, "
+                f"{plan.get('completed_steps_without_execution_evidence', 0)} without; "
                 f"goal criterion={plan.get('success_criteria_status', 'unknown')}; completed="
                 f"{','.join(completed) if completed else 'none'}; next pending="
                 f"{plan['next_operation'] or 'none'} ({plan.get('next_operation_status') or 'unknown'}); "
@@ -967,6 +1011,8 @@ class LongHorizonPlanner:
                 lines.append(
                     f"Plan interne enregistré : « {plan['objective']} » — "
                     f"{plan['steps_completed']}/{plan['steps_total']} étapes terminées; "
+                    f"{plan.get('steps_with_execution_evidence', 0)} avec preuve d’exécution, "
+                    f"{plan.get('completed_steps_without_execution_evidence', 0)} sans preuve; "
                     f"critère de l’objectif : "
                     f"{plan.get('success_criteria_status', 'inconnu')}."
                 )
@@ -991,6 +1037,8 @@ class LongHorizonPlanner:
                 lines.append(
                     f"Recorded internal plan: “{plan['objective']}” — "
                     f"{plan['steps_completed']}/{plan['steps_total']} steps complete; "
+                    f"{plan.get('steps_with_execution_evidence', 0)} with execution evidence, "
+                    f"{plan.get('completed_steps_without_execution_evidence', 0)} without; "
                     f"goal criterion: {plan.get('success_criteria_status', 'unknown')}."
                 )
                 if plan.get("next_operation"):
