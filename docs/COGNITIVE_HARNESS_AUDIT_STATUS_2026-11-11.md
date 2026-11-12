@@ -1,7 +1,7 @@
 # Audit du harnais cognitif — état et prochaines étapes
 
 **Date de mise à jour :** 12 novembre 2026
-**Statut :** audit en cours — conclusion globale non établie. PC et `origin/main` étaient alignés sur `47c8188` avant le correctif local de continuité décrit en fin de document. Le processus Lumina est actif sur le code chargé avant ces changements; une validation live groupée demandera un redémarrage après la revue des correctifs. L’endpoint n’expose toujours pas l’identifiant de build. Les changements Body/UI préexistants restent hors lot. Les tests de composants seuls ne démontrent pas la qualité cognitive globale.
+**Statut :** audit en cours — conclusion globale non établie. PC et `origin/main` sont alignés sur `0fc0cb5`. Ce commit resserre le rappel explicite par provenance et sujet demandé, mais le processus Lumina actif n’a pas chargé ce code; la validation live groupée demandera un redémarrage. L’endpoint n’expose toujours pas l’identifiant de build. Les changements Body/UI préexistants restent hors lot. Les tests de composants seuls ne démontrent pas la qualité cognitive globale.
 
 ## Reprise live après redémarrage — 12 novembre 2026
 
