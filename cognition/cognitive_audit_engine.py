@@ -184,6 +184,7 @@ class SignalSnapshot:
     """One audit's worth of performance readings."""
     slow_cycle:                    int
     timestamp:                     float
+    signal_status:                 Dict[str, str] = field(default_factory=dict)
     epistemic_grounding_rate:      Optional[float] = None
     experiment_confirmation_rate:  Optional[float] = None
     question_resolution_rate:     Optional[float] = None
@@ -377,12 +378,28 @@ class CognitiveAuditEngine:
             ),
             "measured_signal_count": len(measured),
             "unavailable_signals": sorted(set(SIGNAL_TARGETS) - set(measured)),
+            "signal_measurement_status": self._snapshot_signal_status(snap),
             "active_trial": trial,
             "proposal_attempt_count": int(self._state.proposal_attempt_total),
             "last_proposal_attempt": dict(self._state.last_proposal_attempt or {}),
             "committed_params": dict(self._state.committed_params),
             "consecutive_under": dict(self._state.consecutive_under),
         }
+
+    @staticmethod
+    def _snapshot_signal_status(snapshot: Dict[str, Any]) -> Dict[str, str]:
+        """Explain whether each audit metric was measured or why it was absent."""
+        recorded = snapshot.get("signal_status", {}) if isinstance(snapshot, dict) else {}
+        result = {}
+        for name in SIGNAL_TARGETS:
+            status = recorded.get(name) if isinstance(recorded, dict) else None
+            if status:
+                result[name] = str(status)[:48]
+            elif snapshot.get(name) is not None:
+                result[name] = "measured_legacy_snapshot"
+            else:
+                result[name] = "legacy_snapshot_without_diagnostic"
+        return result
 
     def prompt_fragment(self) -> str:
         """Returns a short status string for optional prompt injection."""
@@ -527,6 +544,7 @@ class CognitiveAuditEngine:
 
     def _read_signals(self, slow_cycle: int) -> SignalSnapshot:
         snap = SignalSnapshot(slow_cycle=slow_cycle, timestamp=time.time())
+        status = snap.signal_status
 
         # 1. Epistemic grounding rate
         try:
@@ -534,8 +552,13 @@ class CognitiveAuditEngine:
             ar = getattr(ar, '_autonomous_reflection', None) if ar else None
             if ar and hasattr(ar, '_epistemic'):
                 snap.epistemic_grounding_rate = ar._epistemic._recent_grounding_rate()
-        except Exception:
-            pass
+                status["epistemic_grounding_rate"] = (
+                    "measured" if snap.epistemic_grounding_rate is not None else "no_observations"
+                )
+            else:
+                status["epistemic_grounding_rate"] = "source_unavailable"
+        except Exception as exc:
+            status["epistemic_grounding_rate"] = f"read_error:{type(exc).__name__}"
 
         # 2. Experiment confirmation rate
         try:
@@ -547,8 +570,13 @@ class CognitiveAuditEngine:
                     snap.experiment_confirmation_rate = (
                         ae._state.total_confirmed / total
                     )
-        except Exception:
-            pass
+                    status["experiment_confirmation_rate"] = "measured"
+                else:
+                    status["experiment_confirmation_rate"] = "no_observations"
+            else:
+                status["experiment_confirmation_rate"] = "source_unavailable"
+        except Exception as exc:
+            status["experiment_confirmation_rate"] = f"read_error:{type(exc).__name__}"
 
         # 3. Question resolution rate
         try:
@@ -560,8 +588,13 @@ class CognitiveAuditEngine:
                 total = resolved + unresolvable
                 if total > 0:
                     snap.question_resolution_rate = resolved / total
-        except Exception:
-            pass
+                    status["question_resolution_rate"] = "measured"
+                else:
+                    status["question_resolution_rate"] = "no_observations"
+            else:
+                status["question_resolution_rate"] = "source_unavailable"
+        except Exception as exc:
+            status["question_resolution_rate"] = f"read_error:{type(exc).__name__}"
 
         # 4. Mean skill depth
         try:
@@ -570,8 +603,13 @@ class CognitiveAuditEngine:
             if skills:
                 depths = [s.get('depth', 0) for s in skills.values()]
                 snap.mean_skill_depth = sum(depths) / len(depths)
-        except Exception:
-            pass
+                status["mean_skill_depth"] = "measured"
+            elif sr is not None:
+                status["mean_skill_depth"] = "no_observations"
+            else:
+                status["mean_skill_depth"] = "source_unavailable"
+        except Exception as exc:
+            status["mean_skill_depth"] = f"read_error:{type(exc).__name__}"
 
         # 5. Belief confidence mean
         try:
@@ -583,8 +621,13 @@ class CognitiveAuditEngine:
             if sc and hasattr(sc, '_beliefs') and sc._beliefs:
                 confs = [b.confidence for b in sc._beliefs.values()]
                 snap.belief_confidence_mean = sum(confs) / len(confs)
-        except Exception:
-            pass
+                status["belief_confidence_mean"] = "measured"
+            elif sc is not None:
+                status["belief_confidence_mean"] = "no_observations"
+            else:
+                status["belief_confidence_mean"] = "source_unavailable"
+        except Exception as exc:
+            status["belief_confidence_mean"] = f"read_error:{type(exc).__name__}"
 
         def _fmt(value: Optional[float]) -> str:
             return f"{value:.2f}" if value is not None else "n/a"

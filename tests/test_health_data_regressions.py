@@ -247,10 +247,39 @@ class HealthDataTests(unittest.TestCase):
         self.assertIsNone(snapshot.question_resolution_rate)
         self.assertIsNone(snapshot.mean_skill_depth)
         self.assertIsNone(snapshot.belief_confidence_mean)
+        self.assertEqual(snapshot.signal_status, {
+            'epistemic_grounding_rate': 'measured',
+            'experiment_confirmation_rate': 'no_observations',
+            'question_resolution_rate': 'no_observations',
+            'mean_skill_depth': 'no_observations',
+            'belief_confidence_mean': 'no_observations',
+        })
         self.assertEqual(snapshot.deficit(), {
             'epistemic_grounding_rate': 0.8 - 0.6,
         })
         self.assertIsNone(snapshot.worst_signal())
+
+    def test_audit_summary_distinguishes_missing_diagnostics_in_legacy_snapshots(self):
+        audit = CognitiveAuditEngine.__new__(CognitiveAuditEngine)
+        audit._state = AuditState(snapshot_log=[{
+            'slow_cycle': 40,
+            'timestamp': 1000.0,
+            'mean_skill_depth': 0.4,
+            'question_resolution_rate': None,
+        }])
+        audit._lock = __import__('threading').Lock()
+        audit._process_started_at = 900.0
+
+        status = audit.status_summary()
+
+        self.assertEqual(
+            status['signal_measurement_status']['mean_skill_depth'],
+            'measured_legacy_snapshot',
+        )
+        self.assertEqual(
+            status['signal_measurement_status']['question_resolution_rate'],
+            'legacy_snapshot_without_diagnostic',
+        )
 
     def test_projection_restores_nested_paths_and_skips_bad_entry(self):
         path = dict(archetype='intensive', cumulative_cost=0.2,
