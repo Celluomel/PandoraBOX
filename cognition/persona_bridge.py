@@ -3012,6 +3012,15 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
         except Exception:
             logger.debug("Could not sanitize completed chat history", exc_info=True)
 
+        # Freeze the approved answer's receipt before any post-response worker
+        # consumes it. The worker is concurrent and must not observe a missing
+        # or stale `response_finalization` fingerprint.
+        self._record_turn_stage(
+            "response_finalization", "completed", output=raw_response,
+            consumes=("output_safety",),
+            turn_id=_audit_turn_id,
+        )
+
         # Do not expose answer tokens until the complete response has passed
         # output safety. A stream cannot retract text that was already sent,
         # so safety must gate delivery, not merely the final metadata object.
@@ -3204,12 +3213,6 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                 logger.warning(
                     "Post-turn stage failures: %d/%d", len(failures), len(post_tasks),
                 )
-        self._record_turn_stage(
-            "response_finalization", "completed", output=raw_response,
-            consumes=("output_safety",),
-            turn_id=_audit_turn_id,
-        )
-
         speech = self._sanitize(raw_response)
         emotion, intensity = self._infer_emotion(effective_input)
         self._record_turn_stage(

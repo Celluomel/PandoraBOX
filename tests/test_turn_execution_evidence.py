@@ -627,10 +627,42 @@ def test_post_turn_stage_cannot_erase_data_flow_integrity_failure():
 
     bridge._finish_turn_trace("completed")
     assert bridge._last_turn_trace["pipeline_integrity"]["status"] == "incomplete_evidence"
-
     bridge._record_turn_stage("post_turn_effect", "completed", turn_id="turn-evidence-1")
 
     assert bridge._last_turn_trace["pipeline_integrity"]["status"] == "incomplete_evidence"
+
+
+def test_response_finalization_receipt_precedes_post_response_workers():
+    source = Path(__file__).resolve().parents[1] / "cognition" / "persona_bridge.py"
+    tree = ast.parse(source.read_text(encoding="utf-8"))
+    stream = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef)
+        and node.name == "_stream_with_full_lifecycle"
+    )
+    finalization_calls = [
+        node for node in ast.walk(stream)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "_record_turn_stage"
+        and node.args
+        and isinstance(node.args[0], ast.Constant)
+        and node.args[0].value == "response_finalization"
+    ]
+    worker_calls = [
+        node for node in ast.walk(stream)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "run_in_executor"
+        and any(
+            isinstance(argument, ast.Attribute)
+            and argument.attr == "_run_full_post_turn_lifecycle"
+            for argument in node.args
+        )
+    ]
+    assert len(finalization_calls) == 1
+    assert len(worker_calls) == 1
+    assert finalization_calls[0].lineno < worker_calls[0].lineno
 
 
 def test_turn_integrity_labels_deterministic_self_report_path():
