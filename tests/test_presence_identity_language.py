@@ -281,6 +281,36 @@ class PresenceIdentityLanguageTests(unittest.TestCase):
         )
         self.assertEqual(result, "Bonjour Nino.")
 
+    def test_presence_output_contract_rejects_long_and_multisentence_drafts(self):
+        self.assertFalse(presence.PresenceEngine._is_concise_presence_output(
+            "Une première phrase. Une deuxième. Une troisième."
+        ))
+        self.assertFalse(presence.PresenceEngine._is_concise_presence_output("x" * 281))
+        self.assertTrue(presence.PresenceEngine._is_concise_presence_output(
+            "Bonjour Fred. Je te vois."
+        ))
+
+    def test_overlong_ambient_draft_uses_localized_fallback(self):
+        engine = presence.PresenceEngine.__new__(presence.PresenceEngine)
+        engine._org = None
+        engine._llm = SequenceLlm(
+            "La caméra possède une identité qui dépend de sa perspective, "
+            "de son optique et du rôle qu'elle joue dans l'acte de voir. "
+            "Elle ne se réduit pas à son fabricant. La lumière change aussi "
+            "la manière dont la scène apparaît."
+        )
+        engine._recent_utterances = []
+        settings = SimpleNamespace(config=SimpleNamespace(RESPONSE_LANGUAGE="FR"))
+
+        with patch.dict(sys.modules, {"managers.settings_manager": settings}):
+            result = engine._generate_reaction(
+                "Fred", "SILENCE", "engage", presence.FacePresenceState("face_1", "Fred"),
+                presence._CognitiveSnapshot(),
+            )
+
+        self.assertEqual(result, presence.PresenceEngine._fallback("Fred", "SILENCE", "neutral", "fr"))
+        self.assertLessEqual(len(engine._llm.prompts), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

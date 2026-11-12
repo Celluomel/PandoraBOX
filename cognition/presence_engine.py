@@ -74,6 +74,9 @@ RESUME_THRESHOLD           = 0.25  # lower bar for resuming a thread (warmer)
 SOCIAL_BATTERY_DRAIN       = 0.15  # each utterance drains this much
 SOCIAL_BATTERY_RECOVERY    = 0.02  # per minute of silence
 SOCIAL_BATTERY_MIN_TO_SPEAK = 0.20 # must have at least this much to speak
+PRESENCE_OUTPUT_MAX_CHARS = 280
+PRESENCE_OUTPUT_MAX_SENTENCES = 2
+PRESENCE_OUTPUT_MAX_TOKENS = 96
 
 
 def _recent_resume_context(ps: "FacePresenceState", mode: str, now: Optional[float] = None) -> str:
@@ -866,11 +869,13 @@ Speak directly. No quotes. No stage directions."""
         try:
             draft = ""
             if self._llm and hasattr(self._llm, "generate_bare"):
-                # Keep the short-utterance instruction, but leave enough
-                # headroom for slower models to finish the final sentence.
-                draft = self._llm.generate_bare(prompt, max_tokens=160, temperature=0.88).strip()
+                draft = self._llm.generate_bare(
+                    prompt, max_tokens=PRESENCE_OUTPUT_MAX_TOKENS, temperature=0.88
+                ).strip()
             elif self._llm and hasattr(self._llm, "generate"):
-                draft = self._llm.generate(prompt, max_tokens=160, temperature=0.88).strip()
+                draft = self._llm.generate(
+                    prompt, max_tokens=PRESENCE_OUTPUT_MAX_TOKENS, temperature=0.88
+                ).strip()
 
             # PresenceEngine had NO identity/behavior constraint checking at
             # all — every other output path in this codebase gets this
@@ -901,7 +906,7 @@ Speak directly. No quotes. No stage directions."""
                                     )
                                 return self._llm.generate_bare(
                                     directive + hard_constraints,
-                                    max_tokens=160,
+                                    max_tokens=PRESENCE_OUTPUT_MAX_TOKENS,
                                     temperature=0.6,
                                 ).strip()
                             except Exception:
@@ -927,12 +932,13 @@ Speak directly. No quotes. No stage directions."""
                     repair_prompt += f"Return only the rewritten utterance.\n\nUtterance: {draft}"
                     try:
                         repaired = self._llm.generate_bare(
-                            repair_prompt, max_tokens=160, temperature=0.35
+                            repair_prompt, max_tokens=PRESENCE_OUTPUT_MAX_TOKENS, temperature=0.35
                         ).strip()
                     except Exception:
                         repaired = ""
                     if (
                         repaired
+                        and self._is_concise_presence_output(repaired)
                         and not self._language_mismatch(repaired, _response_language)
                         and not self._mentions_other_known_person(repaired, name_s)
                     ):
@@ -941,6 +947,13 @@ Speak directly. No quotes. No stage directions."""
                         "Presence output rejected (language=%s, identity=%s); using localized fallback",
                         wrong_language,
                         wrong_identity,
+                    )
+                    return self._fallback(name_s, event, emotion, _response_language)
+                if not self._is_concise_presence_output(draft):
+                    logger.warning(
+                        "Presence output rejected (length=%d chars, sentence_limit=%d); using localized fallback",
+                        len(draft),
+                        PRESENCE_OUTPUT_MAX_SENTENCES,
                     )
                     return self._fallback(name_s, event, emotion, _response_language)
                 # Local models can ignore the anti-repetition instruction.
@@ -1145,6 +1158,15 @@ Speak directly. No quotes. No stage directions."""
             or SequenceMatcher(None, normalized, " ".join(previous.casefold().split())).ratio() >= .82
             for _, previous in self._recent_utterances[-4:]
         )
+
+    @staticmethod
+    def _is_concise_presence_output(text: str) -> bool:
+        """Enforce the ambient utterance contract after LLM generation."""
+        normalized = " ".join(str(text or "").split())
+        if not normalized or len(normalized) > PRESENCE_OUTPUT_MAX_CHARS:
+            return False
+        sentences = [part for part in re.split(r"(?<=[.!?。！？])\s+", normalized) if part]
+        return len(sentences) <= PRESENCE_OUTPUT_MAX_SENTENCES
 
     @staticmethod
     def _fallback(name: str, event: str, emotion: str, language: str = "auto") -> str:
