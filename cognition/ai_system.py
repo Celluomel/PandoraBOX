@@ -953,57 +953,104 @@ class EnhancedMemorySystem:
         self, query: str, limit: Optional[int] = None,
         current_valence: Optional[float] = None,
     ) -> List[Dict[str, Any]]:
+        memories, _receipt = self.retrieve_memories_with_receipt(
+            query, limit=limit, current_valence=current_valence,
+        )
+        return memories
+
+    def retrieve_memories_with_receipt(
+        self, query: str, limit: Optional[int] = None,
+        current_valence: Optional[float] = None,
+    ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+        """Retrieve episodic candidates and report which backend actually ran.
+
+        The receipt is per-call and safe to attach to a cognitive-turn trace;
+        callers do not infer FAISS use merely because an index was configured.
+        ``current_valence`` optionally applies the existing mood-congruent
+        ranking boost; it does not alter the relevance value exposed per item.
         """
-        current_valence (v78, optional): pass EmotionalStateManager.
-        get_overall_valence_arousal()[0] (range -1..1) to enable
-        mood-congruent recall — memories whose stored emotional_valence
-        matches the current emotional direction get a small boost, the
-        same way a person's current mood colors which memories surface
-        more readily. Omitting it (default) reproduces the exact previous
-        ranking — no behavior change for existing callers.
-        """
+        started = time.perf_counter()
+        backend = "faiss"
+        fallback_reason = None
+        vector_candidate_count = 0
+        memories: List[Dict[str, Any]] = []
         limit = limit or self.config.max_memory_retrieval
         try:
             if self.embedding_model is None or self.faiss_index is None:
-                return self._retrieve_lexically(query, limit, current_valence=current_valence)
-            if self.faiss_index.ntotal == 0:
-                return self._retrieve_lexically(query, limit, current_valence=current_valence)
-            q_vec = self._embed(query)
-            if self.faiss_index is None:
-                return self._retrieve_lexically(query, limit, current_valence=current_valence)
-            n = min(limit * 3, self.faiss_index.ntotal)
-            distances, indices = self.faiss_index.search(q_vec, n)
-            valid_ids = [int(i) for i in indices[0] if i != -1]
-            if not valid_ids:
-                return self._retrieve_lexically(query, limit, current_valence=current_valence)
-            memories = self.persistence.get_memories_by_ids(valid_ids)
-            if not memories:
-                return self._retrieve_lexically(query, limit, current_valence=current_valence)
-            dist_map = {int(indices[0][i]): distances[0][i] for i in range(len(indices[0])) if indices[0][i] != -1}
-            scored = []
-            for m in memories:
-                d = dist_map.get(m["faiss_id"], float("inf"))
-                sim     = faiss_l2_relevance(d)
-                recency = self._recency_score(m["timestamp"])
-                mood_boost = 0.0
-                if current_valence is not None:
-                    mem_val = m.get("emotional_valence", "Neutral")
-                    if current_valence > 0.15 and mem_val == "Positive":
-                        mood_boost = 0.05
-                    elif current_valence < -0.15 and mem_val == "Negative":
-                        mood_boost = 0.05
-                score   = sim * 0.65 + m["impact_score"] * 0.2 + recency * 0.1 + mood_boost
-                scored.append((score, m))
-            scored.sort(key=lambda x: x[0], reverse=True)
-            return [
-                dict(m, relevance=faiss_l2_relevance(
-                    dist_map.get(m["faiss_id"], float("inf"))
-                ))
-                for _, m in scored[:limit]
-            ]
+                backend, fallback_reason = "lexical", "embedding_or_index_unavailable"
+            elif self.faiss_index.ntotal == 0:
+                backend, fallback_reason = "lexical", "empty_vector_index"
+            else:
+                q_vec = self._embed(query)
+                if self.faiss_index is None:
+                    backend, fallback_reason = "lexical", "query_embedding_failed"
+                else:
+                    n = min(limit * 3, self.faiss_index.ntotal)
+                    distances, indices = self.faiss_index.search(q_vec, n)
+                    valid_ids = [int(i) for i in indices[0] if i != -1]
+                    vector_candidate_count = len(valid_ids)
+                    if not valid_ids:
+                        backend, fallback_reason = "lexical", "faiss_returned_no_ids"
+                    else:
+                        memories = self.persistence.get_memories_by_ids(valid_ids)
+                        if not memories:
+                            backend, fallback_reason = "lexical", "faiss_ids_not_in_sqlite"
+                        else:
+                            dist_map = {
+                                int(indices[0][i]): distances[0][i]
+                                for i in range(len(indices[0])) if indices[0][i] != -1
+                            }
+                            scored = []
+                            for memory in memories:
+                                distance = dist_map.get(memory["faiss_id"], float("inf"))
+                                similarity = faiss_l2_relevance(distance)
+                                recency = self._recency_score(memory["timestamp"])
+                                mood_boost = 0.0
+                                if current_valence is not None:
+                                    memory_valence = memory.get("emotional_valence", "Neutral")
+                                    if current_valence > 0.15 and memory_valence == "Positive":
+                                        mood_boost = 0.05
+                                    elif current_valence < -0.15 and memory_valence == "Negative":
+                                        mood_boost = 0.05
+                                score = (
+                                    similarity * 0.65
+                                    + memory["impact_score"] * 0.2
+                                    + recency * 0.1
+                                    + mood_boost
+                                )
+                                scored.append((score, memory))
+                            scored.sort(key=lambda item: item[0], reverse=True)
+                            memories = [
+                                dict(memory, relevance=faiss_l2_relevance(
+                                    dist_map.get(memory["faiss_id"], float("inf"))
+                                ))
+                                for _, memory in scored[:limit]
+                            ]
+            if backend == "lexical":
+                memories = self._retrieve_lexically(
+                    query, limit, current_valence=current_valence,
+                )
         except Exception as e:
             logger.warning(f"Vector retrieval failed; using lexical memory search: {e}")
-            return self._retrieve_lexically(query, limit, current_valence=current_valence)
+            backend = "lexical"
+            fallback_reason = f"vector_error:{type(e).__name__}"
+            try:
+                memories = self._retrieve_lexically(
+                    query, limit, current_valence=current_valence,
+                )
+            except Exception as lexical_error:
+                logger.warning("Lexical memory retrieval failed: %s", lexical_error)
+                backend = "unavailable"
+                fallback_reason = f"lexical_error:{type(lexical_error).__name__}"
+                memories = []
+        receipt = {
+            "backend": backend,
+            "fallback_reason": fallback_reason,
+            "vector_candidate_count": vector_candidate_count,
+            "returned_count": len(memories),
+            "elapsed_ms": round((time.perf_counter() - started) * 1000.0, 2),
+        }
+        return memories, receipt
 
     def _retrieve_lexically(
         self, query: str, limit: int, tier: Optional[str] = None,

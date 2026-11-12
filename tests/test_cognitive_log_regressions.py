@@ -111,6 +111,13 @@ class CognitiveLogRegressionTests(unittest.TestCase):
             [{"id": "memory-1", "text": "decision", "relevance": 0.82}],
             query_source="user_input",
             attention_mode="relational",
+            retrieval_receipt={
+                "backend": "lexical",
+                "fallback_reason": "empty_vector_index",
+                "vector_candidate_count": 0,
+                "returned_count": 1,
+                "elapsed_ms": 2.5,
+            },
         )
 
         self.assertEqual(evidence["query_sha256"], hashlib.sha256(query.encode()).hexdigest())
@@ -118,6 +125,10 @@ class CognitiveLogRegressionTests(unittest.TestCase):
         self.assertEqual(summary["query_source"], "user_input")
         self.assertEqual(summary["attention_mode"], "relational")
         self.assertEqual(summary["candidates"][0]["relevance"], 0.82)
+        self.assertEqual(summary["retrieval"]["backend"], "lexical")
+        self.assertEqual(summary["retrieval"]["fallback_reason"], "empty_vector_index")
+        self.assertEqual(summary["retrieval"]["primary_returned_count"], 1)
+        self.assertEqual(summary["retrieval"]["final_pool_count"], 1)
 
     def test_prompt_memory_keeps_user_message_separate_from_unverified_lumina_reply(self):
         rendered = format_memory_for_prompt({

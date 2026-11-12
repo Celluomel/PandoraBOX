@@ -58,6 +58,7 @@ def memory_retrieval_evidence(
     *,
     query_source: str = "user_input",
     attention_mode: str | None = None,
+    retrieval_receipt: Mapping[str, Any] | None = None,
 ) -> dict:
     """Describe recalled candidates without copying their private text to traces."""
     candidates = []
@@ -85,13 +86,39 @@ def memory_retrieval_evidence(
             "has_user_message": has_user_message,
             "has_assistant_reply": has_assistant_reply,
         })
-    return {
+    evidence = {
         "query_sha256": _sha256(str(query)),
         "query_source": str(query_source)[:32],
         "attention_mode": str(attention_mode or "unavailable")[:24],
         "candidate_count": len(candidates),
         "candidates": candidates,
     }
+    if isinstance(retrieval_receipt, Mapping):
+        try:
+            elapsed_ms = max(0.0, min(600000.0, float(retrieval_receipt.get("elapsed_ms", 0))))
+        except (TypeError, ValueError, OverflowError):
+            elapsed_ms = None
+        try:
+            vector_candidate_count = max(
+                0, min(100000, int(retrieval_receipt.get("vector_candidate_count", 0)))
+            )
+        except (TypeError, ValueError, OverflowError):
+            vector_candidate_count = 0
+        try:
+            primary_returned_count = max(
+                0, min(100000, int(retrieval_receipt.get("returned_count", 0)))
+            )
+        except (TypeError, ValueError, OverflowError):
+            primary_returned_count = 0
+        evidence["retrieval"] = {
+            "backend": str(retrieval_receipt.get("backend") or "unreported")[:24],
+            "fallback_reason": str(retrieval_receipt.get("fallback_reason") or "")[:64],
+            "vector_candidate_count": vector_candidate_count,
+            "primary_returned_count": primary_returned_count,
+            "final_pool_count": len(candidates),
+            "elapsed_ms": elapsed_ms,
+        }
+    return evidence
 
 
 def memory_prompt_injection_evidence(memories: Iterable[Mapping[str, Any]]) -> dict:
@@ -190,7 +217,7 @@ def audit_safe_turn_summary(value: Any) -> dict[str, Any] | None:
             candidate_count = max(0, min(1000, int(value.get("candidate_count", len(candidates)))))
         except (TypeError, ValueError, OverflowError):
             candidate_count = len(candidates)
-        return {
+        summary = {
             "type": "memory_retrieval_evidence",
             "query_sha256": str(value.get("query_sha256", ""))[:64],
             "query_source": str(value.get("query_source", "unknown"))[:32],
@@ -199,6 +226,39 @@ def audit_safe_turn_summary(value: Any) -> dict[str, Any] | None:
             "candidates": candidates,
             "quality": "present" if candidate_count else "empty",
         }
+        retrieval = value.get("retrieval")
+        if isinstance(retrieval, Mapping):
+            try:
+                elapsed_ms = max(0.0, min(600000.0, float(retrieval.get("elapsed_ms", 0))))
+            except (TypeError, ValueError, OverflowError):
+                elapsed_ms = None
+            try:
+                vector_candidate_count = max(
+                    0, min(100000, int(retrieval.get("vector_candidate_count", 0)))
+                )
+            except (TypeError, ValueError, OverflowError):
+                vector_candidate_count = 0
+            try:
+                primary_returned_count = max(
+                    0, min(100000, int(retrieval.get("primary_returned_count", 0)))
+                )
+            except (TypeError, ValueError, OverflowError):
+                primary_returned_count = 0
+            try:
+                final_pool_count = max(
+                    0, min(100000, int(retrieval.get("final_pool_count", candidate_count)))
+                )
+            except (TypeError, ValueError, OverflowError):
+                final_pool_count = candidate_count
+            summary["retrieval"] = {
+                "backend": str(retrieval.get("backend") or "unreported")[:24],
+                "fallback_reason": str(retrieval.get("fallback_reason") or "")[:64],
+                "vector_candidate_count": vector_candidate_count,
+                "primary_returned_count": primary_returned_count,
+                "final_pool_count": final_pool_count,
+                "elapsed_ms": elapsed_ms,
+            }
+        return summary
 
     if {"injected_count", "records"}.issubset(value):
         records = []

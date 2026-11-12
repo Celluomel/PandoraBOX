@@ -3421,10 +3421,19 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                 pass
             # The FAISS store and visual session buffer are shared with the
             # human conversation. Peer turns use only their scoped transcript.
+            _primary_memory_retrieval = None
             if not peer_name:
-                _interaction_mems = s.memory_system.retrieve_memories(
-                    _recall_query, limit=_recall_limit, current_valence=_cur_valence
+                _retrieve_with_receipt = getattr(
+                    s.memory_system, "retrieve_memories_with_receipt", None
                 )
+                if callable(_retrieve_with_receipt):
+                    _interaction_mems, _primary_memory_retrieval = _retrieve_with_receipt(
+                        _recall_query, limit=_recall_limit, current_valence=_cur_valence
+                    )
+                else:
+                    _interaction_mems = s.memory_system.retrieve_memories(
+                        _recall_query, limit=_recall_limit, current_valence=_cur_valence
+                    )
                 # Cross-source retrieval can rank a fluent, high-impact past
                 # Lumina reply above the user's source statement. Retrieve the
                 # user's own messages through a separate lexical lane and
@@ -3551,6 +3560,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     memories,
                     query_source=_recall_query_source,
                     attention_mode=_recall_attention_mode,
+                    retrieval_receipt=_primary_memory_retrieval,
                 ),
                 turn_id=audit_turn_id,
             )

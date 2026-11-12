@@ -82,6 +82,16 @@ class _UserSourceIndex:
         return np.array([[0.1, 0.2]], dtype="float32"), np.array([[2, 1]], dtype="int64")
 
 
+class _WorkingIndex:
+    ntotal = 2
+
+    def search(self, _query, count):
+        return (
+            np.array([[0.2, 0.8]], dtype="float32")[:, :count],
+            np.array([[1, 2]], dtype="int64")[:, :count],
+        )
+
+
 class _StaleIndex:
     ntotal = 1
 
@@ -142,6 +152,30 @@ class MemorySystemFallbackTests(unittest.TestCase):
         self.assertEqual(general[0]["id"], 1)
         self.assertGreater(general[0]["relevance"], 0)
         self.assertEqual([row["id"] for row in personal], [1])
+
+    def test_retrieval_receipt_names_faiss_when_vector_search_runs(self):
+        system = self._system(embedder=_Embedder(), index=_WorkingIndex())
+
+        memories, receipt = system.retrieve_memories_with_receipt(
+            "Arduino camera movement"
+        )
+
+        self.assertEqual(len(memories), 2)
+        self.assertEqual(receipt["backend"], "faiss")
+        self.assertIsNone(receipt["fallback_reason"])
+        self.assertEqual(receipt["vector_candidate_count"], 2)
+        self.assertEqual(receipt["returned_count"], 2)
+
+    def test_retrieval_receipt_names_lexical_fallback_and_reason_when_vectors_unavailable(self):
+        system = self._system()
+
+        memories, receipt = system.retrieve_memories_with_receipt(
+            "configured Coqui speaker file"
+        )
+
+        self.assertTrue(memories)
+        self.assertEqual(receipt["backend"], "lexical")
+        self.assertEqual(receipt["fallback_reason"], "embedding_or_index_unavailable")
 
     def test_explicit_recall_extracts_topic_instead_of_current_request(self):
         self.assertEqual(
