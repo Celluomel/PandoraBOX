@@ -83,6 +83,33 @@ def test_module_probe_emits_per_cycle_execution_receipt():
     assert stage["output_summary"]["field_count"] == 1
 
 
+def test_module_probe_records_hashed_inputs_and_marks_side_effect_only_output():
+    loop = make_loop()
+    loop._module_tick_log = ModuleTickLog()
+
+    class SideEffectModule:
+        def tick(self, context) -> None:
+            self.last_context = context
+
+    loop._side_effect_module = SideEffectModule()
+    loop._begin_cycle_evidence(5)
+    loop._refresh_module_tick_probes(only_attr="_side_effect_module")
+    # Add this one-off probe entry without changing the production registry.
+    from core.internal_loop import _TICK_PROBES
+    _TICK_PROBES["_side_effect_module"] = ("test_side_effect_module", ("tick",))
+    try:
+        loop._refresh_module_tick_probes(only_attr="_side_effect_module")
+        loop._side_effect_module.tick({"private": "do not retain"})
+    finally:
+        _TICK_PROBES.pop("_side_effect_module", None)
+
+    stage = loop.cycle_evidence_snapshot()["cycles"][0]["stages"][0]
+    assert stage["inputs"]["args"][0]["ref"]
+    assert stage["inputs"]["args"][0]["summary"]["field_count"] == 1
+    assert stage["output_summary"] == {"kind": "none", "quality": "side_effect_only"}
+    assert "do not retain" not in repr(stage)
+
+
 def test_periodic_module_not_due_is_explicit_without_counting_a_fake_tick():
     loop = make_loop()
     loop._slow_cycle_count = 7

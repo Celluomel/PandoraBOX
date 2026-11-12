@@ -417,6 +417,7 @@ class InternalThoughtLoop:
                         try:
                             self._record_cycle_stage(
                                 f"module_tick:{__module}.{__method}", "failed",
+                                inputs=self._cycle_input_evidence(args, kwargs),
                                 metrics={"duration_ms": round(duration_ms, 2), "error_type": type(exc).__name__},
                             )
                         except Exception:
@@ -432,8 +433,10 @@ class InternalThoughtLoop:
                     try:
                         self._record_cycle_stage(
                             f"module_tick:{__module}.{__method}", "completed",
+                            inputs=self._cycle_input_evidence(args, kwargs),
                             output=output,
                             metrics={"duration_ms": round(duration_ms, 2)},
+                            side_effect_only=__side_effect_only,
                         )
                     except Exception:
                         pass
@@ -448,6 +451,28 @@ class InternalThoughtLoop:
                     # never make a cognitive tick fail because instrumentation
                     # could not be attached.
                     logger.debug("Tick probe could not attach to %s.%s", module_name, method_name)
+
+    def _cycle_input_evidence(self, args: tuple[Any, ...], kwargs: dict[str, Any]) -> dict[str, Any]:
+        """Hash bounded tick inputs so equal values can be linked across stages.
+
+        Only type/shape summaries and digests enter the retained cycle trace;
+        raw thought, memory, and user text are never copied into audit evidence.
+        """
+        def describe(value: Any) -> dict[str, Any]:
+            return {
+                "ref": self._evidence_fingerprint(value),
+                "summary": self._evidence_summary(value),
+            }
+
+        return {
+            "args": [describe(value) for value in args[:8]],
+            "kwargs": {
+                str(key)[:48]: describe(value)
+                for key, value in list(kwargs.items())[:12]
+            },
+            "omitted_args": max(0, len(args) - 8),
+            "omitted_kwargs": max(0, len(kwargs) - 12),
+        }
 
     def module_tick_snapshot(self) -> dict[str, dict[str, Any]]:
         """Return live module existence plus observed tick/output-health evidence."""
@@ -585,6 +610,7 @@ class InternalThoughtLoop:
     def _record_cycle_stage(
         self, stage: str, status: str, *, inputs: dict[str, Any] | None = None,
         output: Any = None, metrics: dict[str, Any] | None = None,
+        side_effect_only: bool = False,
     ) -> str | None:
         """Record a stage and explicit consumer references in the active slow cycle."""
         lock = getattr(self, "_cycle_evidence_lock", None)
@@ -603,7 +629,10 @@ class InternalThoughtLoop:
                 "status": str(status),
                 "inputs": inputs or {},
                 "output_ref": output_ref,
-                "output_summary": self._evidence_summary(output) if output is not None else None,
+                "output_summary": (
+                    self._evidence_summary(output) if output is not None else
+                    {"kind": "none", "quality": "side_effect_only" if side_effect_only else "empty"}
+                ),
             }
             if metrics:
                 entry["metrics"] = {
