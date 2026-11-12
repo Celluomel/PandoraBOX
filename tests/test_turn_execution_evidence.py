@@ -103,6 +103,29 @@ def test_stream_lifecycle_receives_originating_audit_turn_id():
     assert audit_turn_id.id == "audit_turn_id"
 
 
+def test_every_stream_pipeline_stage_is_bound_to_originating_turn():
+    source = Path(__file__).resolve().parents[1] / "cognition" / "persona_bridge.py"
+    tree = ast.parse(source.read_text(encoding="utf-8"))
+    stream = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef)
+        and node.name == "_stream_with_full_lifecycle"
+    )
+    stage_calls = [
+        node for node in ast.walk(stream)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "_record_turn_stage"
+    ]
+    assert len(stage_calls) >= 70
+    for call in stage_calls:
+        turn_id = next(
+            (keyword.value for keyword in call.keywords if keyword.arg == "turn_id"),
+            None,
+        )
+        assert isinstance(turn_id, ast.Name) and turn_id.id == "_audit_turn_id"
+
+
 def test_world_model_profile_failure_is_attributed_to_turn_and_fails_stage():
     bridge = _bridge()
     bridge._record_turn_stage("turn_input", "completed", output="human turn")
@@ -514,6 +537,26 @@ def test_provider_token_limit_marks_output_and_turn_trace_incomplete():
         "prompt_assembly": {"status": "completed"},
         "primary_generation": {"status": "completed"},
         "provider_completion": {"status": "truncated_by_token_limit"},
+        "output_safety": {"status": "passed"},
+        "response_finalization": {"status": "completed"},
+        "response": {"status": "completed"},
+    })
+
+    bridge._finish_turn_trace("completed")
+    trace = bridge.get_last_turn_trace()
+
+    assert trace["pipeline_integrity"]["status"] == "incomplete_evidence"
+    assert trace["pipeline_integrity"]["incomplete_outputs"] == ["provider_completion"]
+
+
+def test_missing_provider_completion_metadata_is_incomplete_evidence():
+    bridge = _bridge()
+    bridge._last_turn_trace["stages"].update({
+        "readiness": {"status": "passed"},
+        "input_safety": {"status": "passed"},
+        "prompt_assembly": {"status": "completed"},
+        "primary_generation": {"status": "completed"},
+        "provider_completion": {"status": "completion_metadata_missing"},
         "output_safety": {"status": "passed"},
         "response_finalization": {"status": "completed"},
         "response": {"status": "completed"},

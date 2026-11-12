@@ -657,7 +657,9 @@ class PersonaBridge:
                 incomplete_outputs = sorted(
                     stage_name for stage_name, stage_value in trace.get("stages", {}).items()
                     if isinstance(stage_value, dict)
-                    and stage_value.get("status") == "truncated_by_token_limit"
+                    and stage_value.get("status") in {
+                        "truncated_by_token_limit", "completion_metadata_missing",
+                    }
                 )
                 integrity["incomplete_outputs"] = incomplete_outputs
                 integrity["failed_stages"] = failed_stages
@@ -972,7 +974,9 @@ class PersonaBridge:
                 incomplete_outputs = sorted(
                     name for name, value in stages.items()
                     if isinstance(value, dict)
-                    and value.get("status") == "truncated_by_token_limit"
+                    and value.get("status") in {
+                        "truncated_by_token_limit", "completion_metadata_missing",
+                    }
                 )
                 integrity_issues.extend(
                     f"incomplete_output:{name}" for name in incomplete_outputs
@@ -1387,7 +1391,11 @@ class PersonaBridge:
                         # Finalize before the terminal event: stream clients
                         # may stop iteration as soon as they receive metadata.
                         _stream_terminal_seen = True
-                        self._record_turn_stage("streaming_lifecycle", "completed")
+                        self._record_turn_stage(
+                            "streaming_lifecycle", "completed",
+                            output={"terminal_event": "response_meta_received"},
+                            consumes=("response",), turn_id=audit_turn_id,
+                        )
                         self._finish_turn_trace("completed", audit_turn_id)
                     yield chunk
                 if not _stream_terminal_seen:
@@ -1402,6 +1410,7 @@ class PersonaBridge:
                 self._record_turn_stage(
                     "streaming_lifecycle", "failed", str(e),
                     error_type=type(e).__name__,
+                    turn_id=audit_turn_id,
                 )
 
         # A peer turn must not silently fall back to the human chat's native
@@ -1822,12 +1831,12 @@ Write at most 70 words, in the user's language, only if a concise carry-forward 
         if _safety is not None and not input_safety_checked:
             try:
                 _sr = _safety.check_input(effective_input, user_id)
-                self._record_turn_stage("input_safety", "passed")
+                self._record_turn_stage("input_safety", "passed", turn_id=_audit_turn_id)
             except Exception as _safety_error:
-                self._record_turn_stage("input_safety", "failed", str(_safety_error))
+                self._record_turn_stage("input_safety", "failed", str(_safety_error), turn_id=_audit_turn_id)
                 raise
             if _sr.triggered:
-                self._record_turn_stage("input_safety", "blocked", "policy")
+                self._record_turn_stage("input_safety", "blocked", "policy", turn_id=_audit_turn_id)
                 self._finish_turn_trace("blocked_by_input_safety", audit_turn_id)
                 forced = _sr.forced_response or "I can't help with that."
                 yield forced
@@ -1835,23 +1844,23 @@ Write at most 70 words, in the user's language, only if a concise carry-forward 
                        "emotion": "concerned", "intensity": 0.7}
                 return
         elif _safety is None:
-            self._record_turn_stage("input_safety", "skipped_unavailable")
+            self._record_turn_stage("input_safety", "skipped_unavailable", turn_id=_audit_turn_id)
 
         # ── Empathy Engine: read user affect before prompt build ────────────
         self._chat_stage = 'empathy preparation'
         try:
             from core.state import state as _st_ee
             if peer_name:
-                self._record_turn_stage("empathy_read", "skipped_by_scope")
+                self._record_turn_stage("empathy_read", "skipped_by_scope", turn_id=_audit_turn_id)
             elif _st_ee.empathy_engine:
                 await asyncio.to_thread(
                     _st_ee.empathy_engine.read_user, user_id, effective_input
                 )
-                self._record_turn_stage("empathy_read", "completed")
+                self._record_turn_stage("empathy_read", "completed", turn_id=_audit_turn_id)
             else:
-                self._record_turn_stage("empathy_read", "skipped_unavailable")
+                self._record_turn_stage("empathy_read", "skipped_unavailable", turn_id=_audit_turn_id)
         except Exception as _empathy_error:
-            self._record_turn_stage("empathy_read", "failed", str(_empathy_error))
+            self._record_turn_stage("empathy_read", "failed", str(_empathy_error), turn_id=_audit_turn_id)
             logger.debug("Empathy input stage unavailable: %s", _empathy_error)
 
         # Heavy reasoning belongs after the visible answer. The response model
@@ -1864,9 +1873,9 @@ Write at most 70 words, in the user's language, only if a concise carry-forward 
         try:
             from cognition.temporal_reasoning import build_temporal_frame
             _temporal_frame = build_temporal_frame(effective_input)
-            self._record_turn_stage("temporal_reasoning", "recognized" if _temporal_frame is not None else "not_applicable")
+            self._record_turn_stage("temporal_reasoning", "recognized" if _temporal_frame is not None else "not_applicable", turn_id=_audit_turn_id)
         except Exception as _temporal_error:
-            self._record_turn_stage("temporal_reasoning", "failed", str(_temporal_error))
+            self._record_turn_stage("temporal_reasoning", "failed", str(_temporal_error), turn_id=_audit_turn_id)
             logger.debug("Temporal frame unavailable (non-fatal): %s", _temporal_error)
         try:
             from cognition.quantitative_reasoning import (
@@ -1886,14 +1895,16 @@ Write at most 70 words, in the user's language, only if a concise carry-forward 
             self._record_turn_stage(
                 "quantitative_reasoning",
                 "recognized" if _quantitative_analysis is not None else "not_applicable",
+                turn_id=_audit_turn_id,
             )
             self._record_turn_stage(
                 "temporal_travel_reasoning",
                 "recognized" if _temporal_analysis is not None else "not_applicable",
+                turn_id=_audit_turn_id,
             )
         except Exception as _quant_error:
-            self._record_turn_stage("quantitative_reasoning", "failed", str(_quant_error))
-            self._record_turn_stage("temporal_travel_reasoning", "failed", str(_quant_error))
+            self._record_turn_stage("quantitative_reasoning", "failed", str(_quant_error), turn_id=_audit_turn_id)
+            self._record_turn_stage("temporal_travel_reasoning", "failed", str(_quant_error), turn_id=_audit_turn_id)
             logger.debug("Quantitative reasoning unavailable (non-fatal): %s", _quant_error)
             _quantitative_analysis = None
         try:
@@ -1934,9 +1945,10 @@ Write at most 70 words, in the user's language, only if a concise carry-forward 
                 "followup_analysis_loaded" if _goal_means_analysis is not None
                 else "deferred_post_response" if _is_practical_turn
                 else "not_applicable",
+                turn_id=_audit_turn_id,
             )
         except Exception as _gma_error:
-            self._record_turn_stage("goal_means_reasoning", "failed", str(_gma_error))
+            self._record_turn_stage("goal_means_reasoning", "failed", str(_gma_error), turn_id=_audit_turn_id)
             logger.warning("[GoalMeans] analysis failed (using contract only): %s", _gma_error)
 
         # ── Phase A: build prompt + cache real emotion/cond dicts ────
@@ -2008,18 +2020,18 @@ Write at most 70 words, in the user's language, only if a concise carry-forward 
                 )
                 if _im_prefix:
                     system_prompt = _im_prefix + system_prompt
-                    self._record_turn_stage("inner_monologue_directive", "injected")
+                    self._record_turn_stage("inner_monologue_directive", "injected", turn_id=_audit_turn_id)
                 else:
-                    self._record_turn_stage("inner_monologue_directive", "empty")
+                    self._record_turn_stage("inner_monologue_directive", "empty", turn_id=_audit_turn_id)
                 logger.debug(
                     f"[InnerMonologue] Inline directive built → "
                     f"temp={arb_temperature:.3f}"
                 )
             except Exception as _ime:
-                self._record_turn_stage("inner_monologue_directive", "failed", str(_ime))
+                self._record_turn_stage("inner_monologue_directive", "failed", str(_ime), turn_id=_audit_turn_id)
                 logger.debug(f"[InnerMonologue] inline directive error (non-fatal): {_ime}")
         else:
-            self._record_turn_stage("inner_monologue_directive", "skipped_by_mode_or_disabled")
+            self._record_turn_stage("inner_monologue_directive", "skipped_by_mode_or_disabled", turn_id=_audit_turn_id)
 
         # ── Phase A3: Epistemic hedging (v117) ────────────────────────────
         # Bug fix: EpistemicIntegrityEngine.epistemic_context() — grounding
@@ -2046,11 +2058,11 @@ Write at most 70 words, in the user's language, only if a concise carry-forward 
                     "impressions ('I notice...', 'it may be that...'), not "
                     "as settled fact about who or what you are."
                 )
-                self._record_turn_stage("epistemic_context", "injected")
+                self._record_turn_stage("epistemic_context", "injected", turn_id=_audit_turn_id)
             else:
-                self._record_turn_stage("epistemic_context", "no_active_context")
+                self._record_turn_stage("epistemic_context", "no_active_context", turn_id=_audit_turn_id)
         except Exception as _epe:
-            self._record_turn_stage("epistemic_context", "failed", str(_epe))
+            self._record_turn_stage("epistemic_context", "failed", str(_epe), turn_id=_audit_turn_id)
             logger.debug(f"[EpistemicHedging] injection error (non-fatal): {_epe}")
 
         # ── Phase A4: Relational knowledge graph (v117) ───────────────────
@@ -2070,14 +2082,14 @@ Write at most 70 words, in the user's language, only if a concise carry-forward 
                 _rel_ctx = self._system.relational_graph.prompt_fragment()
                 if _rel_ctx:
                     system_prompt = system_prompt + "\n\n" + _rel_ctx
-                    self._record_turn_stage("relational_graph_context", "injected")
+                    self._record_turn_stage("relational_graph_context", "injected", turn_id=_audit_turn_id)
                 else:
-                    self._record_turn_stage("relational_graph_context", "no_facts")
+                    self._record_turn_stage("relational_graph_context", "no_facts", turn_id=_audit_turn_id)
             except Exception as _rge:
-                self._record_turn_stage("relational_graph_context", "failed", str(_rge))
+                self._record_turn_stage("relational_graph_context", "failed", str(_rge), turn_id=_audit_turn_id)
                 logger.debug(f"[RelationalGraph] injection error (non-fatal): {_rge}")
         else:
-            self._record_turn_stage("human_relational_graph", "skipped_by_scope")
+            self._record_turn_stage("human_relational_graph", "skipped_by_scope", turn_id=_audit_turn_id)
 
         # Keep the factual contract immediately adjacent to generation. Gemma
         # can otherwise treat earlier telemetry as atmosphere and substitute a
@@ -2248,6 +2260,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
         self._record_turn_stage(
             "deterministic_reasoning",
             "selected" if _deterministic_response else "not_selected",
+            turn_id=_audit_turn_id,
         )
         if _factual_self_report:
             try:
@@ -2295,7 +2308,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             _manager = getattr(self._llm_stream_fn, "__self__", None)
             _fast_fn = getattr(_manager, "generate_fast_round", None)
             if record_history and _fast_enabled and _fast_model and not _specialized_turn and callable(_fast_fn):
-                self._record_turn_stage("fast_first_pass", "running", _fast_model)
+                self._record_turn_stage("fast_first_pass", "running", _fast_model, turn_id=_audit_turn_id)
                 _recent_history = getattr(_manager, "history", [])[-4:]
                 _history_text = "\n".join(
                     f"{item.get('role', 'unknown')}: {str(item.get('content', ''))[-700:]}"
@@ -2322,6 +2335,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     "fast_first_pass_input", "prepared",
                     output={"prompt": _fast_prompt, "system_prompt": _fast_system},
                     consumes=("turn_input",),
+                    turn_id=_audit_turn_id,
                 )
                 _fast_started = time.perf_counter()
                 _fast_raw = await asyncio.to_thread(
@@ -2359,6 +2373,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                             "fast_first_pass", "selected_direct",
                             f"{_fast_model} { _fast_latency_ms }ms",
                             output=_fast_decision, consumes=("fast_first_pass_input",),
+                            turn_id=_audit_turn_id,
                         )
                     else:
                         if _repeats_recent_answer:
@@ -2368,12 +2383,13 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                             "fast_first_pass", "delegated",
                             f"{_fast_model} { _fast_latency_ms }ms",
                             output=_fast_decision, consumes=("fast_first_pass_input",),
+                            turn_id=_audit_turn_id,
                         )
                 else:
                     logger.info("[FastRound] skipped or empty; continuing with primary model")
-                    self._record_turn_stage("fast_first_pass", "skipped_by_policy")
+                    self._record_turn_stage("fast_first_pass", "skipped_by_policy", turn_id=_audit_turn_id)
         except Exception as _fast_error:
-            self._record_turn_stage("fast_first_pass", "failed_fallback_primary", str(_fast_error))
+            self._record_turn_stage("fast_first_pass", "failed_fallback_primary", str(_fast_error), turn_id=_audit_turn_id)
             logger.warning("[FastRound] unavailable; continuing with primary model: %s", _fast_error)
 
         # ── Phase B: stream tokens ───────────────────────────────────
@@ -2428,10 +2444,12 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                             "unlinked" if _prior_summary["available"] else "not_found",
                             detail=_prior_assistant_evidence_detail(_prior_summary),
                             output=_prior_summary,
+                            turn_id=_audit_turn_id,
                         )
                         self._record_turn_stage(
                             "deterministic_reasoning", "selected_direct",
                             output=_visible_candidate, consumes=("turn_input",),
+                            turn_id=_audit_turn_id,
                         )
                         _guarded = trace_grounded_architecture_answer(
                             effective_input, self.get_last_turn_trace(),
@@ -2444,6 +2462,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                             "replaced_unverified_claims" if _was_replaced else "passed",
                             output=_guarded,
                             consumes=("deterministic_reasoning", "prior_assistant_evidence", "turn_input"),
+                            turn_id=_audit_turn_id,
                         )
                     elif _quantitative_analysis is not None:
                         self._chat_stage = 'grounded physical constraint'
@@ -2462,6 +2481,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                                 "fast_direct_answer", "completed",
                                 output=_deterministic_response,
                                 consumes=("fast_first_pass",),
+                                turn_id=_audit_turn_id,
                             )
                         else:
                             logger.info("[FactualSelfReport] goal/plan answer rendered from recorded telemetry")
@@ -2469,6 +2489,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                                 "deterministic_reasoning", "selected_direct",
                                 output=_deterministic_response,
                                 consumes=("turn_input",),
+                                turn_id=_audit_turn_id,
                             )
                     _llm_manager = getattr(self._llm_stream_fn, "__self__", None)
                     _record_exchange = getattr(_llm_manager, "record_exchange", None)
@@ -2577,12 +2598,14 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                             "unlinked" if _prior_summary["available"] else "not_found",
                             detail=_prior_assistant_evidence_detail(_prior_summary),
                             output=_prior_summary,
+                            turn_id=_audit_turn_id,
                         )
                         self._record_turn_stage(
                             "generation_candidate",
                             "completed" if _visible_candidate else "empty",
                             output=_visible_candidate,
                             consumes=("primary_generation_input",),
+                            turn_id=_audit_turn_id,
                         )
                         _guarded = trace_grounded_architecture_answer(
                             effective_input, self.get_last_turn_trace(),
@@ -2594,6 +2617,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                             "replaced_unverified_claims" if _was_replaced else "passed",
                             output=_guarded,
                             consumes=("generation_candidate", "prior_assistant_evidence", "turn_input"),
+                            turn_id=_audit_turn_id,
                         )
                     elif _architecture_query:
                         # General architecture questions receive the partial,
@@ -2612,6 +2636,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                                 "evidence": "partial_self_description_and_runtime_manifest",
                             },
                             consumes=("generation_candidate", "self_description_context", "turn_input"),
+                            turn_id=_audit_turn_id,
                         )
                     elif _quantitative_analysis is not None:
                         from cognition.quantitative_reasoning import guard_quantitative_response
@@ -2796,20 +2821,6 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
         # Runs on the full accumulated response BEFORE lifecycle and meta yield.
         # If triggered, replace response with safe fallback and log.
         raw_response = self._strip_think("".join(accumulated))
-        if not _deterministic_response and not _fast_round_used:
-            completion_status = (
-                "truncated_by_token_limit" if _finish_reason == "length"
-                else "completed" if _finish_reason else "completion_metadata_missing"
-            )
-            self._record_turn_stage(
-                "provider_completion", completion_status,
-                output={
-                    "finish_reason": _finish_reason or None,
-                    "visible_characters": len(raw_response),
-                },
-                consumes=("primary_generation",),
-                turn_id=_audit_turn_id,
-            )
         _answer_origin_stage = (
             "fast_direct_answer" if _fast_round_used
             else "deterministic_reasoning" if _deterministic_response
@@ -2846,6 +2857,20 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         turn_id=_audit_turn_id,
                     )
                     _answer_origin_stage = "generation_fallback"
+        if not _deterministic_response and not _fast_round_used:
+            completion_status = (
+                "truncated_by_token_limit" if _finish_reason == "length"
+                else "completed" if _finish_reason else "completion_metadata_missing"
+            )
+            self._record_turn_stage(
+                "provider_completion", completion_status,
+                output={
+                    "finish_reason": _finish_reason or None,
+                    "visible_characters": len(raw_response),
+                },
+                consumes=("primary_generation",),
+                turn_id=_audit_turn_id,
+            )
         _meta_only = self._is_reasoning_only_response(raw_response)
         if _meta_only:
             logger.warning(
@@ -2887,9 +2912,10 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         "completed" if raw_response else "empty",
                         output=raw_response,
                         consumes=("primary_generation",),
+                        turn_id=_audit_turn_id,
                     )
                 except Exception as _recovery_error:
-                    self._record_turn_stage("final_answer_recovery", "failed", str(_recovery_error))
+                    self._record_turn_stage("final_answer_recovery", "failed", str(_recovery_error), turn_id=_audit_turn_id)
                     logger.error("Final-answer recovery failed: %s", _recovery_error)
                     raw_response = ""
                 if raw_response and not self._is_reasoning_only_response(raw_response):
@@ -2897,9 +2923,9 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                 else:
                     raw_response = ""
             else:
-                self._record_turn_stage("final_answer_recovery", "skipped_unavailable")
+                self._record_turn_stage("final_answer_recovery", "skipped_unavailable", turn_id=_audit_turn_id)
         else:
-            self._record_turn_stage("final_answer_recovery", "not_needed")
+            self._record_turn_stage("final_answer_recovery", "not_needed", turn_id=_audit_turn_id)
 
         if not raw_response.strip():
             logger.warning("[Chat stream] provider completed without visible response text")
@@ -2910,6 +2936,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             accumulated.append(raw_response)
             self._record_turn_stage(
                 "empty_generation_fallback", "completed", output=raw_response,
+                turn_id=_audit_turn_id,
             )
             _answer_origin_stage = "empty_generation_fallback"
 
@@ -2944,6 +2971,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         getattr(_or, "pattern", "output safety evaluation failed"),
                         output=raw_response, consumes=(_response_source_stage,),
                         error_type="SafetyEvaluationError",
+                        turn_id=_audit_turn_id,
                     )
                 elif _or.triggered:
                     raw_response = _or.forced_response or (
@@ -2952,14 +2980,16 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     self._record_turn_stage(
                         "output_safety", "replaced", "policy",
                         output=raw_response, consumes=(_response_source_stage,),
+                        turn_id=_audit_turn_id,
                     )
                 else:
                     self._record_turn_stage(
                         "output_safety", "passed", output=raw_response,
                         consumes=(_response_source_stage,),
+                        turn_id=_audit_turn_id,
                     )
             except Exception as _output_safety_error:
-                self._record_turn_stage("output_safety", "failed", str(_output_safety_error))
+                self._record_turn_stage("output_safety", "failed", str(_output_safety_error), turn_id=_audit_turn_id)
                 raise
         else:
             # Preserve the real hand-off even if the optional policy engine
@@ -2967,6 +2997,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             self._record_turn_stage(
                 "output_safety", "skipped_unavailable", output=raw_response,
                 consumes=(_response_source_stage,),
+                turn_id=_audit_turn_id,
             )
 
         # Keep persisted conversation history aligned with what was actually
@@ -2994,6 +3025,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
         self._record_turn_stage(
             "response_emotion_update",
             "skipped_by_scope" if peer_name else "skipped_no_independent_appraisal",
+            turn_id=_audit_turn_id,
         )
 
         # Determine the ArbitrationDecision from the cycle data stored on organism
@@ -3022,17 +3054,18 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     # visible answer via AppState.schedule_deferred_cognitive_stages.
                     self._record_turn_stage(
                         "goal_means_post_response", "scheduled_by_entrypoint",
+                        turn_id=_audit_turn_id,
                     )
             else:
-                self._record_turn_stage("goal_means_post_response", "not_applicable")
+                self._record_turn_stage("goal_means_post_response", "not_applicable", turn_id=_audit_turn_id)
         except Exception as _goal_means_error:
-            self._record_turn_stage("goal_means_post_response", "failed", str(_goal_means_error))
+            self._record_turn_stage("goal_means_post_response", "failed", str(_goal_means_error), turn_id=_audit_turn_id)
 
         # Empathy Engine: record outcome
         try:
             from core.state import state as _state
             if peer_name:
-                self._record_turn_stage("empathy_outcome", "skipped_by_scope")
+                self._record_turn_stage("empathy_outcome", "skipped_by_scope", turn_id=_audit_turn_id)
             elif _state.empathy_engine and raw_response:
                 post_tasks.append(("empathy_outcome", loop.run_in_executor(
                     None,
@@ -3040,9 +3073,9 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     user_id, effective_input, raw_response,
                 )))
             else:
-                self._record_turn_stage("empathy_outcome", "skipped_unavailable_or_empty")
+                self._record_turn_stage("empathy_outcome", "skipped_unavailable_or_empty", turn_id=_audit_turn_id)
         except Exception as _empathy_error:
-            self._record_turn_stage("empathy_outcome", "failed", str(_empathy_error))
+            self._record_turn_stage("empathy_outcome", "failed", str(_empathy_error), turn_id=_audit_turn_id)
 
         # Abstract Reasoning Engine: record outcome (non-blocking)
         try:
@@ -3054,10 +3087,11 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     user_id, raw_response,
                 )))
             else:
-                self._record_turn_stage("abstract_reasoning_outcome", "skipped_unavailable_or_empty")
+                self._record_turn_stage("abstract_reasoning_outcome", "skipped_unavailable_or_empty", turn_id=_audit_turn_id)
         except Exception as _reasoning_error:
             self._record_turn_stage(
                 "abstract_reasoning_outcome", "failed", str(_reasoning_error),
+                turn_id=_audit_turn_id,
             )
 
         # Active Cognitive Context (CAG): update from this turn
@@ -3069,7 +3103,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             if _active_context_task is not None:
                 post_tasks.append(("active_context_update", _active_context_task))
         except Exception as _context_error:
-            self._record_turn_stage("active_context_update", "failed", str(_context_error))
+            self._record_turn_stage("active_context_update", "failed", str(_context_error), turn_id=_audit_turn_id)
 
         post_tasks.append(("cognitive_post_turn", loop.run_in_executor(
             None,
@@ -3172,6 +3206,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
         self._record_turn_stage(
             "response_finalization", "completed", output=raw_response,
             consumes=("output_safety",),
+            turn_id=_audit_turn_id,
         )
 
         speech = self._sanitize(raw_response)
@@ -3179,6 +3214,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
         self._record_turn_stage(
             "response", "completed", output={"raw": raw_response, "speech": speech},
             consumes=("response_finalization",),
+            turn_id=_audit_turn_id,
         )
         yield {
             "__meta__":  True,
