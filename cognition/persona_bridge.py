@@ -1381,6 +1381,7 @@ class PersonaBridge:
                     cognitive_scope_id=cognitive_scope_id,
                     displayed_cognitive_trace=_displayed_trace,
                     input_safety_checked=_input_safety_checked,
+                    audit_turn_id=audit_turn_id,
                 ):
                     if isinstance(chunk, dict) and chunk.get("__meta__"):
                         # Finalize before the terminal event: stream clients
@@ -1777,6 +1778,7 @@ Write at most 70 words, in the user's language, only if a concise carry-forward 
         cognitive_scope_id: str = "",
         displayed_cognitive_trace: dict | None = None,
         input_safety_checked: bool = False,
+        audit_turn_id: str = "",
     ):
         """
         Streaming path that runs every single lifecycle step from get_response().

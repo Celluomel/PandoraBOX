@@ -74,6 +74,35 @@ def test_turn_trace_exposes_safe_stream_failure_type_but_redacts_exception_text(
     assert secret_detail not in repr(trace)
 
 
+def test_stream_lifecycle_receives_originating_audit_turn_id():
+    source = Path(__file__).resolve().parents[1] / "cognition" / "persona_bridge.py"
+    tree = ast.parse(source.read_text(encoding="utf-8"))
+    bridge_class = next(
+        node for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "PersonaBridge"
+    )
+    methods = {
+        node.name: node for node in bridge_class.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    lifecycle = methods["_stream_with_full_lifecycle"]
+    assert "audit_turn_id" in {arg.arg for arg in lifecycle.args.kwonlyargs}
+
+    calls = [
+        node for node in ast.walk(methods["_get_response_stream_impl"])
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "_stream_with_full_lifecycle"
+    ]
+    assert len(calls) == 1
+    audit_turn_id = next(
+        (keyword.value for keyword in calls[0].keywords if keyword.arg == "audit_turn_id"),
+        None,
+    )
+    assert isinstance(audit_turn_id, ast.Name)
+    assert audit_turn_id.id == "audit_turn_id"
+
+
 def test_world_model_profile_failure_is_attributed_to_turn_and_fails_stage():
     bridge = _bridge()
     bridge._record_turn_stage("turn_input", "completed", output="human turn")
