@@ -1,7 +1,7 @@
 # Audit du harnais cognitif — état et prochaines étapes
 
-**Date :** 11 novembre 2026
-**Statut :** audit en cours — conclusion globale non établie. `origin/main` est à `025132b` (corrections GlobalWorkspace : admission effective, snapshots isolés, fusion contextuelle et provenance protégée). Lumina n’a pas encore redémarré depuis les commits récents; CAG et workspace attendent donc une validation live groupée. Le dernier contrôle live antérieur avait confirmé l’affect schema 2 et `sources: []` sur une question introspective. Les changements Body/UI préexistants restent hors lot. Les contrôles de composants seuls ne démontrent pas la qualité cognitive globale.
+**Date de mise à jour :** 12 novembre 2026
+**Statut :** audit en cours — conclusion globale non établie. `origin/main` est à `6cfd95a`; PC et GitHub concordent. Lumina a redémarré avant les deux derniers lots `c2d655f` et `6cfd95a`, donc ce processus ne les a pas encore chargés. Les changements Body/UI préexistants restent hors lot. Les tests de composants seuls ne démontrent pas la qualité cognitive globale.
 
 ## État exécutif courant — poursuite module par module
 
@@ -1013,4 +1013,12 @@ La revue du chemin `memory_recall → ThoughtStream/GlobalWorkspace → plan de 
 
 Correction locale : le reçu distingue `memory_retrieved` de `thought_published`; l’action n’est déclarée réussie que si au moins un consommateur confirme l’admission. Sinon, elle échoue avec le motif explicite « mémoire récupérée mais pensée non admise », permettant au plan de ne pas traiter la récupération comme un progrès effectif.
 
-Vérification locale (`test_goal_action_memory_recall`, planification, workspace, routage d’architecture) : **65 tests passés**, 7 avertissements Pydantic historiques; compilation et `git diff --check` réussis. Reste à pousser ce lot après mise à jour du présent rapport, puis à valider en live un rappel non vide dont les reçus distinguent récupération et admission.
+Vérification locale (`test_goal_action_memory_recall`, planification, workspace, routage d’architecture) : **65 tests passés**, 7 avertissements Pydantic historiques; compilation et `git diff --check` réussis. Le correctif est poussé dans `6cfd95a`; il reste à valider en live un rappel non vide dont les reçus distinguent récupération et admission.
+
+### Limite restante du rappel vectoriel — score de voisinage ≠ pertinence validée
+
+La lecture du chemin principal `AI_System.retrieve_memories()` montre que le mode FAISS retourne toujours les meilleurs voisins jusqu’à `limit`, sans filtre minimal. `relevance` vaut `1 / (1 + distance_L2)` sur des embeddings non normalisés; ce nombre classe les résultats d’une requête, mais aucun test ne valide qu’un résultat donné est assez pertinent pour être injecté. Le mode lexical élimine les documents à score nul, mais ne couvre pas la voie vectorielle. Le prompt demande bien au LLM d’ignorer une mémoire non pertinente, ce qui est une consigne, pas une preuve que l’injection ne biaise pas la réponse.
+
+Je ne fixe pas un seuil arbitraire : les distances L2 ne sont pas calibrées ici et un seuil pourrait supprimer des souvenirs corrects ou admettre du bruit. Pour résoudre ce point proprement, l’audit doit mesurer les distributions de scores sur un jeu de requêtes pertinentes et non pertinentes en français/anglais, vérifier le classement et la décision d’abstention, puis choisir/tester une règle de rejet. La validation live devra vérifier aussi la trace `memory_retrieval` → `memory_prompt_context` et la réponse, avec mémoire pertinente et mémoire hors sujet.
+
+**Prochain redémarrage Lumina requis :** oui, pour charger `c2d655f` (routage architecture vs Cognitive Trace) et `6cfd95a` (succès de memory_recall seulement après admission). Après redémarrage, rejouer la question de contrôle sur la fusion du workspace et une question de rappel mémoire; inspecter pour chacune le `turn_id`, les étapes, les sources injectées et les effets aval. Cette validation live est la prochaine étape, pas une clôture de l’audit.
