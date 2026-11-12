@@ -4,9 +4,49 @@ import unittest
 from cognition.causal_ledger import CausalLedger
 from cognition.consequence_tracker import ACTION_MODEL, ConsequenceTracker
 from cognition.goal_engine import Goal, GoalEngine
+from cognition.goal_action_executor import GoalActionExecutor
 
 
 class ConsequenceExecutionProvenanceTests(unittest.TestCase):
+    def test_web_search_source_citations_survive_in_causal_outcome(self):
+        with tempfile.TemporaryDirectory() as folder:
+            ledger = CausalLedger(folder)
+            tracker = ConsequenceTracker(persona_dir=folder, ledger=ledger)
+            prediction = tracker.predict(
+                "goal-research", "audit source grounding", "web_search",
+                cycle_id=33, execution_id="act-research-33",
+            )
+            sources = [{
+                "title": "Primary source",
+                "url": "https://example.org/report",
+                "source": "test_provider",
+            }]
+
+            tracker.resolve(prediction, {
+                "success": True,
+                "result": "interpreted research",
+                "research_item_queued": True,
+                "research_sources": sources,
+            })
+
+            outcome = next(
+                event for event in ledger.recent(10)
+                if event["kind"] == "outcome"
+            )
+            self.assertEqual(outcome["output_state"]["research_sources"], sources)
+            self.assertEqual(
+                GoalActionExecutor._research_source_reference({
+                    "title": "Primary source",
+                    "url": "https://example.org/report",
+                    "source": "test_provider",
+                }),
+                sources[0],
+            )
+            self.assertIsNone(GoalActionExecutor._research_source_reference({
+                "title": "No citation",
+                "url": "file:///private/path",
+            }))
+
     def test_deferred_prediction_is_closed_without_becoming_a_failure(self):
         with tempfile.TemporaryDirectory() as folder:
             ledger = CausalLedger(folder)

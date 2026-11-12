@@ -940,10 +940,18 @@ class GoalActionExecutor:
 
             # Collect raw snippets (get_results fields: title, snippet, content, url)
             raw_snippets = []
+            research_sources = []
             for r in results[:4]:
                 snippet = (r.get('content') or r.get('snippet') or r.get('title') or '').strip()
                 if snippet and len(snippet) > 20:
                     raw_snippets.append(snippet[:200])
+                    source_ref = self._research_source_reference(r)
+                    if source_ref and source_ref["url"] not in {
+                        source["url"] for source in research_sources
+                    }:
+                        research_sources.append(source_ref)
+                    if len(research_sources) >= 3:
+                        break
 
             if not raw_snippets:
                 self._finalize_async_action(
@@ -996,6 +1004,12 @@ class GoalActionExecutor:
                 f"I was just exploring {topic} and found something worth sharing: "
                 f"{interpretation}"
             )
+            if research_sources:
+                citations = "; ".join(
+                    f"{source['title']} — {source['url']}"
+                    for source in research_sources
+                )
+                queued_insight += f"\nSources: {citations}"
             with self._pending_delivery_lock:
                 self._pending_insights.append(queued_insight)
 
@@ -1012,6 +1026,7 @@ class GoalActionExecutor:
                 evidence={
                     **publication,
                     "research_item_queued": True,
+                    "research_sources": research_sources,
                 },
                 execution_id=execution_id, cycle_id=cycle_id,
             )
@@ -2514,6 +2529,20 @@ class GoalActionExecutor:
             publication.get("thought_stream_recorded")
             or publication.get("workspace_broadcast")
         )
+
+    @staticmethod
+    def _research_source_reference(result: Any) -> Optional[Dict[str, str]]:
+        """Keep bounded, usable citation provenance from a web result."""
+        if not isinstance(result, dict):
+            return None
+        url = str(result.get("url") or "").strip()
+        if not url.startswith(("https://", "http://")):
+            return None
+        return {
+            "title": str(result.get("title") or url).strip()[:200],
+            "url": url[:1000],
+            "source": str(result.get("source") or "unknown")[:80],
+        }
 
     def _broadcast(self, content: str, priority: float = 0.45) -> bool:
         """Broadcast to GlobalWorkspace and report whether it was accepted."""
