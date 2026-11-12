@@ -3134,6 +3134,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                 post_tasks.append(("human_profile_learning", loop.run_in_executor(
                     None, lambda: user_manager.learn_from_message(
                         user_id, effective_input, return_receipt=True,
+                        source_turn_id=_audit_turn_id,
                     )
                 )))
             except Exception as _profile_error:

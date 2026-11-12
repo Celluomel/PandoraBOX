@@ -19,6 +19,7 @@ Profile fields:
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -59,6 +60,7 @@ class UserProfile:
     preferences:  List[str]  = field(default_factory=list)
     interests:    List[str]  = field(default_factory=list)
     characteristics: List[str] = field(default_factory=list)
+    profile_fact_provenance: Dict[str, Dict[str, List[Dict]]] = field(default_factory=dict)
     profile_provenance_quarantine: List[Dict] = field(default_factory=list)
     color:        str        = "#6366f1"
     created_at:   str        = field(default_factory=lambda: datetime.now().isoformat())
@@ -386,7 +388,7 @@ class UserManager:
         profile = self.active
         if profile.id == self.GUEST_ID:
             return ""
-        return profile.short_bio()
+        return self.prompt_context_for(profile.id)
 
     def prompt_context_for(self, user_id: str) -> str:
         """Return a small cached profile block for the critical chat path."""
@@ -397,7 +399,49 @@ class UserManager:
             self._quarantine_ephemeral_characteristics(profile)
             cached = self._prompt_cache.get(profile.id)
             if cached is None:
-                cached = profile.short_bio()[:1200]
+                parts = [f"User's name: {profile.display_name}."]
+                if profile.notes.strip():
+                    parts.append(
+                        "Legacy profile notes (source turn not recorded; treat as unverified): "
+                        + profile.notes.strip()
+                    )
+                for kind, label in (
+                    ("preference", "preferences"),
+                    ("interest", "interests"),
+                    ("characteristic", "characteristics"),
+                ):
+                    values = getattr(profile, kind + "s")
+                    provenanced = []
+                    legacy = []
+                    for value in values:
+                        fact_key = hashlib.sha256(value.casefold().encode("utf-8")).hexdigest()
+                        provenance = profile.profile_fact_provenance
+                        category = provenance.get(kind, {}) if isinstance(provenance, dict) else {}
+                        sources = category.get(fact_key, []) if isinstance(category, dict) else []
+                        if isinstance(sources, list) and sources and isinstance(sources[-1], dict):
+                            source = sources[-1]
+                            turn_id = str(source.get("turn_id") or "")
+                            source_hash = str(source.get("source_sha256") or "")[:12]
+                            source_ref = ", ".join(
+                                item for item in (
+                                    f"turn {turn_id}" if turn_id else "",
+                                    f"source {source_hash}" if source_hash else "",
+                                ) if item
+                            )
+                            provenanced.append(
+                                f"{value} [explicit user statement"
+                                f"{': ' + source_ref if source_ref else ''}]"
+                            )
+                        else:
+                            legacy.append(value)
+                    if provenanced:
+                        parts.append(f"User-stated {label}: " + "; ".join(provenanced[:4]) + ".")
+                    if legacy:
+                        parts.append(
+                            f"Legacy {label} without source receipt (unverified): "
+                            + "; ".join(legacy[:4]) + "."
+                        )
+                cached = " ".join(parts)[:1200]
                 self._prompt_cache[profile.id] = cached
             return cached
 
@@ -435,7 +479,14 @@ class UserManager:
             self._prompt_cache.pop(profile.id, None)
         return moved
 
-    def learn_from_message(self, user_id: str, message: str, *, return_receipt: bool = False):
+    def learn_from_message(
+        self,
+        user_id: str,
+        message: str,
+        *,
+        return_receipt: bool = False,
+        source_turn_id: str = "",
+    ):
         """Persist only explicit preference, interest, and trait statements."""
         profile = self.get(user_id)
         if not profile or profile.id == self.GUEST_ID:
@@ -508,14 +559,41 @@ class UserManager:
             return receipt if return_receipt else False
         changed = False
         changed_categories = set()
+        provenance_records_added = 0
+        source_sha256 = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        recorded_at = datetime.now().isoformat()
         with self._lock:
             previous_values = {
                 kind: list(getattr(profile, kind + "s"))
                 for kind, _value in learned[:3]
             }
             previous_last_seen = profile.last_seen
+            previous_provenance = json.loads(json.dumps(profile.profile_fact_provenance))
             for kind, value in learned[:3]:
                 target = getattr(profile, kind + "s")
+                fact_key = hashlib.sha256(value.casefold().encode("utf-8")).hexdigest()
+                category_provenance = profile.profile_fact_provenance.setdefault(kind, {})
+                sources = category_provenance.setdefault(fact_key, [])
+                already_recorded = any(
+                    isinstance(item, dict)
+                    and (
+                        item.get("turn_id") == source_turn_id
+                        if source_turn_id
+                        else item.get("source_sha256") == source_sha256
+                    )
+                    for item in sources
+                )
+                if not already_recorded:
+                    sources.append({
+                        "turn_id": str(source_turn_id or ""),
+                        "source_sha256": source_sha256,
+                        "recorded_at": recorded_at,
+                        "source_role": "user",
+                    })
+                    del sources[:-5]
+                    changed = True
+                    changed_categories.add(kind)
+                    provenance_records_added += 1
                 if value.casefold() not in {item.casefold() for item in target}:
                     target.append(value)
                     del target[:-8]
@@ -534,6 +612,7 @@ class UserManager:
                 if not persistence_verified:
                     for kind, values in previous_values.items():
                         setattr(profile, kind + "s", values)
+                    profile.profile_fact_provenance = previous_provenance
                     profile.last_seen = previous_last_seen
                     self._prompt_cache.pop(profile.id, None)
                     receipt = {
@@ -554,6 +633,7 @@ class UserManager:
             "categories_updated": sorted(changed_categories),
             "extracted_count": len(learned),
             "quarantined_count": migrated,
+            "provenance_records": provenance_records_added,
         }
         return receipt if return_receipt else changed
 

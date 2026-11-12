@@ -40,6 +40,7 @@ def test_profile_learning_is_persisted_and_available_to_the_next_prompt(tmp_path
         first_turn_id,
         "I prefer concise technical answers.",
         return_receipt=True,
+        source_turn_id="profile-turn-1",
     )
 
     reloaded = UserManager(path=users_path)
@@ -49,7 +50,40 @@ def test_profile_learning_is_persisted_and_available_to_the_next_prompt(tmp_path
     assert receipt["status"] == "updated"
     assert receipt["changed"] is True
     assert first_turn_id == next_turn_id == profile.id
-    assert "Preferences: concise technical answers." in next_prompt_context
+    assert "User-stated preferences: concise technical answers" in next_prompt_context
+    assert "turn profile-turn-1" in next_prompt_context
+
+
+def test_profile_fact_provenance_is_persisted_and_rendered_as_source_link(tmp_path):
+    users_path = Path(tmp_path) / "users.json"
+    manager = UserManager(path=users_path)
+    profile = manager.create("Fred")
+
+    receipt = manager.learn_from_message(
+        profile.id,
+        "I prefer concise technical answers.",
+        return_receipt=True,
+        source_turn_id="turn-123",
+    )
+    prompt_context = manager.prompt_context_for(profile.id)
+    reloaded = UserManager(path=users_path)
+    persisted_profile = reloaded.get(profile.id)
+
+    assert receipt["status"] == "updated"
+    assert receipt["provenance_records"] == 1
+    assert "explicit user statement: turn turn-123" in prompt_context
+    assert persisted_profile.profile_fact_provenance["preference"]
+
+
+def test_legacy_profile_facts_are_labeled_unverified_until_reasserted(tmp_path):
+    manager = UserManager(path=Path(tmp_path) / "users.json")
+    profile = manager.create("Fred")
+    manager.set_active(profile.id)
+    profile.preferences.append("concise technical answers")
+    manager._save()
+
+    assert "Legacy preferences without source receipt (unverified)" in manager.prompt_context_for(profile.id)
+    assert "Legacy preferences without source receipt (unverified)" in manager.active_context_for_prompt()
 
 
 def test_profile_learning_does_not_claim_update_when_persistence_fails(tmp_path):
