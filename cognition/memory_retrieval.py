@@ -26,6 +26,37 @@ votre vous y etre avoir faire suis sont doit dois
 """).split())
 
 
+_HISTORICAL_REQUEST_PATTERNS = (
+    re.compile(
+        r"\bquel(?:le)?s?\s+(?P<topic>[^?!.]{1,100}?)\s+"
+        r"(?:ai|avais|aurais)-je\s+"
+        r"(?:demand[ée]s?|dit|formul[ée]s?|pos[ée]s?)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bquel(?:le)?s?\s+(?P<topic>[^?!.]{1,100}?)\s+"
+        r"est-ce\s+que\s+j['’](?:ai|avais|aurais)\s+"
+        r"(?:demand[ée]s?|dit|formul[ée]s?|pos[ée]s?)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bwhat\s+(?P<topic>[^?!.]{1,100}?)\s+"
+        r"(?:did|have|had)\s+i\s+"
+        r"(?:ask(?:ed)?|request(?:ed)?|say|said|tell\s+you|told\s+you)\b",
+        re.IGNORECASE,
+    ),
+)
+
+
+def _historical_request_match(text: str):
+    value = str(text or "")
+    for pattern in _HISTORICAL_REQUEST_PATTERNS:
+        match = pattern.search(value)
+        if match:
+            return match
+    return None
+
+
 def faiss_l2_relevance(distance: float) -> float:
     """Map squared-L2 distance between unit vectors to non-negative cosine relevance.
 
@@ -52,20 +83,7 @@ def extract_explicit_recall_topic(text: str) -> str:
     value = str(text or "").strip()
     # Historical-request questions are recall requests even without the
     # literal verbs "remember" or "recall". Keep only their subject clause.
-    french_asked = re.search(
-        r"\bquel(?:le)?s?\s+(?P<topic>[^?!.]{1,100}?)\s+"
-        r"(?:ai-je|est-ce\s+que\s+j['’]ai)\s+"
-        r"(?:demand[ée]s?|dit|formul[ée]s?|pos[ée]s?)\b",
-        value,
-        flags=re.IGNORECASE,
-    )
-    english_asked = re.search(
-        r"\bwhat\s+(?P<topic>[^?!.]{1,100}?)\s+did\s+i\s+"
-        r"(?:ask|request|say|tell\s+you)\b",
-        value,
-        flags=re.IGNORECASE,
-    )
-    asked_match = french_asked or english_asked
+    asked_match = _historical_request_match(value)
     if asked_match:
         leading_context = value[:asked_match.start()]
         leading_context = re.sub(
@@ -116,17 +134,9 @@ def extract_explicit_recall_topic(text: str) -> str:
 def _explicit_recall_focus(text: str) -> str:
     """Return the requested historical subject, excluding conversation framing."""
     value = str(text or "").strip()
-    patterns = (
-        r"\bquel(?:le)?s?\s+(?P<topic>[^?!.]{1,100}?)\s+"
-        r"(?:ai-je|est-ce\s+que\s+j['’]ai)\s+"
-        r"(?:demand[ée]s?|dit|formul[ée]s?|pos[ée]s?)\b",
-        r"\bwhat\s+(?P<topic>[^?!.]{1,100}?)\s+did\s+i\s+"
-        r"(?:ask|request|say|tell\s+you)\b",
-    )
-    for pattern in patterns:
-        match = re.search(pattern, value, flags=re.IGNORECASE)
-        if match:
-            return match.group("topic").strip(" \t\r\n,;:«»\"'")
+    match = _historical_request_match(value)
+    if match:
+        return match.group("topic").strip(" \t\r\n,;:«»\"'")
     return extract_explicit_recall_topic(value)
 
 
@@ -150,17 +160,7 @@ def is_explicit_memory_recall_query(text: str) -> bool:
         "on a dit", "tu sais ce que", "t'en souviens",
     )):
         return True
-    asks_prior_user_content = bool(re.search(
-        r"\b(?:ai-je|est-ce\s+que\s+j['’]ai)\s+"
-        r"(?:demand[ée]s?|dit|formul[ée]s?|pos[ée]s?)\b|"
-        r"\bdid\s+i\s+(?:ask|request|say|tell\s+you)\b",
-        value,
-    ))
-    return asks_prior_user_content and bool(re.search(
-        r"\b(?:quel(?:le)?s?|what|which|r[ée]sultat|objectif|point|"
-        r"asked|requested|said)\b",
-        value,
-    ))
+    return _historical_request_match(value) is not None
 
 
 def filter_recall_query_records(

@@ -221,6 +221,22 @@ class MemorySystemFallbackTests(unittest.TestCase):
         self.assertIn("résultat final", topic)
         self.assertNotIn("échange antérieur", topic)
 
+    def test_historical_request_router_handles_tense_variants(self):
+        queries = (
+            "Pour l audit du harnais, quel resultat final avais-je demande ?",
+            "Pour l’audit, quel résultat ai-je demandé ?",
+            "For the audit, what final outcome had I asked you to provide?",
+            "For the audit, what final outcome did I ask you to provide?",
+        )
+        for query in queries:
+            with self.subTest(query=query):
+                self.assertTrue(is_explicit_memory_recall_query(query))
+                topic = extract_explicit_recall_topic(query).casefold()
+                self.assertTrue(
+                    any(term in topic for term in ("final", "résultat", "resultat", "outcome")),
+                    topic,
+                )
+
     def test_explicit_recall_discards_prior_recall_prompt_self_matches(self):
         repeated_recall = {
             "memory_type": "user_message",
