@@ -1501,6 +1501,24 @@ class PersonaBridge:
                    "emotion": "neutral", "intensity": 0.3}
             return
 
+        if not isinstance(response, str) or not response.strip():
+            # An empty provider result is not a successful answer. Previously
+            # it flowed through output safety and finalization as "completed",
+            # leaving clients with a blank response while telemetry looked green.
+            self._record_turn_stage(
+                "fallback_generation", "failed", "empty fallback response",
+                error_type="EmptyFallbackResponse", output=response,
+            )
+            self._finish_turn_trace("failed", audit_turn_id)
+            err = "I'm having trouble responding right now. The response provider returned no content."
+            yield err
+            yield {
+                "__meta__": True, "raw": err, "speech": err,
+                "emotion": "neutral", "intensity": 0.3,
+                "error": "empty_fallback_response",
+            }
+            return
+
         # The blocking compatibility path must preserve the same grounded
         # quantitative constraints as the preferred streaming path. Without
         # this guard, any streaming exception silently restores the old

@@ -61,3 +61,17 @@ def test_contextless_fallback_records_failure_and_explicit_terminal_error():
     assert "_finish_turn_trace('failed', audit_turn_id)" in branch_source
     assert "contextual_fallback_blocked" in branch_source
     assert "response_finalization" in branch_source and "completed" in branch_source
+
+
+def test_empty_blocking_fallback_is_failed_before_any_success_finalization():
+    method = _persona_stream_method()
+    empty_guard = next(
+        node for node in method.body
+        if isinstance(node, ast.If)
+        and "not response.strip()" in ast.unparse(node.test)
+    )
+    guard_source = ast.unparse(empty_guard)
+    assert "fallback_generation" in guard_source and "failed" in guard_source
+    assert "EmptyFallbackResponse" in guard_source
+    assert "empty_fallback_response" in guard_source
+    assert "_finish_turn_trace('failed', audit_turn_id)" in guard_source
