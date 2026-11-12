@@ -99,6 +99,7 @@ class Plan:
     decision_revision:    int = 0
     decision_updated_at:  float = 0.0
     last_outcome:         Dict[str, Any] = field(default_factory=dict)
+    unverified_legacy_claims: List[Dict[str, Any]] = field(default_factory=list)
 
 
 class LongHorizonPlanner:
@@ -336,9 +337,50 @@ class LongHorizonPlanner:
         if not step or step.operation != action_type:
             return
 
+        result_text = str(result or "").strip()[:240]
+        execution_ref = str(execution_id or "").strip()
+        if success and (not execution_ref or not result_text):
+            step.attempts += 1
+            step.status = "unverified"
+            step.result = result_text
+            step.execution_id = execution_ref
+            step.cycle_id = cycle_id
+            step.observed_at = time.time()
+            step.effect_measured = False
+            plan.last_outcome = {
+                "operation": action_type,
+                "success": None,
+                "status": "unverified",
+                "result": result_text,
+                "result_provided": bool(result_text),
+                "effect_measured": False,
+                "observed_at": step.observed_at,
+                "execution_id": execution_ref or None,
+                "cycle_id": cycle_id,
+                "missing_evidence": [
+                    field for field, present in (
+                        ("execution_id", bool(execution_ref)),
+                        ("result", bool(result_text)),
+                    ) if not present
+                ],
+            }
+            plan.current_decision = (
+                f"{action_type} was not advanced: execution receipt and non-empty "
+                "result are required; this attempt remains unverified."
+            )
+            plan.decision_updated_at = step.observed_at
+            self._save()
+            self._broadcast(
+                "long_horizon_planner.unverified",
+                f"[PlanStepUnverified] goal='{plan.objective[:60]}'; "
+                f"operation={action_type}; progress={plan.steps_completed}/{len(plan.steps)}",
+                0.58,
+            )
+            return
+
         step.attempts += 1
-        step.result = str(result)[:240]
-        step.execution_id = str(execution_id or "")
+        step.result = result_text
+        step.execution_id = execution_ref
         step.cycle_id = cycle_id
         step.observed_at = time.time()
         step.effect_measured = False
@@ -513,11 +555,12 @@ class LongHorizonPlanner:
         execution_id: str = "",
         cycle_id: Optional[int] = None,
     ) -> None:
-        """Complete a step and persist its execution receipt atomically.
+        """Complete a step only when its execution and result are attributable.
 
-        An empty result remains explicit as missing evidence; it is never
-        reconstructed from the plan's previous global ``last_outcome``.
-        Measured effects are recorded only when both cost and gain are given.
+        A missing execution ID or empty result remains explicit as missing
+        evidence and cannot advance progress. Results are never reconstructed
+        from the plan's previous global ``last_outcome``. Measured effects are
+        recorded only when both cost and gain are given.
         """
         plan = self._plans.get(aspiration_domain)
         if not plan: return
@@ -526,6 +569,45 @@ class LongHorizonPlanner:
         step = plan.steps[idx]
         observed_at = time.time()
         result_text = str(result or "").strip()[:240]
+        execution_ref = str(execution_id or "").strip()
+        if not execution_ref or not result_text:
+            step.attempts += 1
+            step.status = "unverified"
+            step.result = result_text
+            step.execution_id = execution_ref
+            step.cycle_id = cycle_id
+            step.observed_at = observed_at
+            step.effect_measured = False
+            plan.last_outcome = {
+                "operation": step.operation,
+                "success": None,
+                "status": "unverified",
+                "result": result_text,
+                "result_provided": bool(result_text),
+                "effect_measured": False,
+                "observed_at": observed_at,
+                "execution_id": execution_ref or None,
+                "cycle_id": cycle_id,
+                "missing_evidence": [
+                    field for field, present in (
+                        ("execution_id", bool(execution_ref)),
+                        ("result", bool(result_text)),
+                    ) if not present
+                ],
+            }
+            plan.current_decision = (
+                f"{step.operation} was not advanced: execution receipt and non-empty "
+                "result are required; this attempt remains unverified."
+            )
+            plan.decision_updated_at = observed_at
+            self._save()
+            self._broadcast(
+                "long_horizon_planner.unverified",
+                f"[PlanStepUnverified] domain={aspiration_domain}; "
+                f"operation={step.operation}; progress={plan.steps_completed}/{len(plan.steps)}",
+                0.58,
+            )
+            return
         deviation = None
         if actual_cost is not None and actual_gain is not None:
             deviation = abs(actual_cost - step.expected_cost) + abs(actual_gain - step.expected_gain)
@@ -533,7 +615,7 @@ class LongHorizonPlanner:
         step.status = "completed"
         step.attempts += 1
         step.result = result_text
-        step.execution_id = str(execution_id or "")
+        step.execution_id = execution_ref
         step.cycle_id = cycle_id
         step.observed_at = observed_at
         step.effect_measured = deviation is not None
@@ -546,7 +628,7 @@ class LongHorizonPlanner:
             "result_provided": bool(result_text),
             "effect_measured": deviation is not None,
             "observed_at": observed_at,
-            "execution_id": str(execution_id or "") or None,
+            "execution_id": execution_ref,
             "cycle_id": cycle_id,
         }
         plan.decision_updated_at = observed_at
@@ -1187,6 +1269,7 @@ class LongHorizonPlanner:
             if not self._path.exists(): return
             data = json.loads(self._path.read_text())
             migrated_recovery_steps = False
+            migrated_unverified_progress = False
             for d, p in data.items():
                 if d.startswith("_"): continue
                 try:
@@ -1226,13 +1309,113 @@ class LongHorizonPlanner:
                             "decision_updated_at", p.get("created_at", time.time())
                         ),
                         last_outcome=p.get("last_outcome", {}),
+                        unverified_legacy_claims=p.get("unverified_legacy_claims", []),
                     )
+                    plan = self._plans[d]
+                    plan_migrated_unverified = False
+                    # Older versions advanced counters and wrote a plan-level
+                    # success summary without a per-step execution receipt.
+                    # Keep those claims for audit, but do not present or skip
+                    # them as completed work.
+                    first_unverified = len(plan.steps)
+                    for index, step in enumerate(plan.steps):
+                        if step.status != "completed":
+                            first_unverified = min(first_unverified, index)
+                            continue
+                        has_receipt = bool(
+                            str(step.result or "").strip()
+                            and str(step.execution_id or "").strip()
+                            and float(step.observed_at or 0.0) > 0.0
+                        )
+                        if not has_receipt:
+                            plan.unverified_legacy_claims.append({
+                                "sequence": step.sequence,
+                                "operation": step.operation,
+                                "result": step.result,
+                                "execution_id": step.execution_id or None,
+                                "cycle_id": step.cycle_id,
+                                "observed_at": step.observed_at or None,
+                            })
+                            step.status = "unverified"
+                            first_unverified = min(first_unverified, index)
+                            plan_migrated_unverified = True
+                            migrated_unverified_progress = True
+                        elif first_unverified < index:
+                            # Completed steps after an unverified gap cannot
+                            # make a later prefix look contiguous.
+                            plan.unverified_legacy_claims.append({
+                                "sequence": step.sequence,
+                                "operation": step.operation,
+                                "result": step.result,
+                                "execution_id": step.execution_id or None,
+                                "cycle_id": step.cycle_id,
+                                "observed_at": step.observed_at or None,
+                            })
+                            step.status = "unverified"
+                            plan_migrated_unverified = True
+                            migrated_unverified_progress = True
+                    verified_prefix = 0
+                    for step in plan.steps:
+                        if step.status != "completed":
+                            break
+                        verified_prefix += 1
+                    if plan.steps_completed != verified_prefix:
+                        plan.steps_completed = verified_prefix
+                        plan_migrated_unverified = True
+                        migrated_unverified_progress = True
+                    if plan.status == "completed" and verified_prefix < len(plan.steps):
+                        plan.status = "active"
+                        plan_migrated_unverified = True
+                        migrated_unverified_progress = True
+                    last = plan.last_outcome if isinstance(plan.last_outcome, dict) else {}
+                    has_matching_last_receipt = any(
+                        step.status == "completed"
+                        and step.operation == str(last.get("operation") or "")
+                        and str(step.execution_id or "").strip()
+                        and str(step.execution_id or "").strip()
+                        == str(last.get("execution_id") or "").strip()
+                        and bool(str(step.result or "").strip())
+                        and bool(str(last.get("result") or "").strip())
+                        for step in plan.steps
+                    )
+                    if (
+                        last.get("success") is True
+                        and not has_matching_last_receipt
+                        and plan_migrated_unverified
+                    ):
+                        plan.unverified_legacy_claims.append({
+                            "kind": "plan_level_last_outcome",
+                            **dict(last),
+                        })
+                        plan.last_outcome = {
+                            **dict(last),
+                            "success": None,
+                            "status": "unverified",
+                            "missing_evidence": ["execution_id", "step_receipt"],
+                        }
+                        plan.current_decision = (
+                            "Legacy plan-level success lacked a matching step execution receipt; "
+                            "progress is retained as unverified and the step must be retried."
+                        )
+                        plan_migrated_unverified = True
+                        migrated_unverified_progress = True
+                    if plan_migrated_unverified and not plan.current_decision:
+                        plan.current_decision = (
+                            "Legacy completed steps without per-step execution receipts are "
+                            "unverified and must be retried."
+                        )
                 except Exception: pass
-            if migrated_recovery_steps:
+            if migrated_recovery_steps or migrated_unverified_progress:
                 self._save()
-                logger.info(
-                    "[LongHorizonPlanner] migrated legacy aspiration recovery steps "
-                    "from user_question to social_probe"
-                )
+                if migrated_recovery_steps:
+                    logger.info(
+                        "[LongHorizonPlanner] migrated legacy aspiration recovery steps "
+                        "from user_question to social_probe"
+                    )
+                if migrated_unverified_progress:
+                    logger.warning(
+                        "[LongHorizonPlanner] demoted legacy plan progress without per-step "
+                        "execution evidence; prior claims retained for audit"
+                    )
         except Exception as e:
             logger.warning(f"[LongHorizonPlanner] load error: {e}")

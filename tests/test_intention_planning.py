@@ -179,7 +179,8 @@ class IntentionPlanningTests(unittest.TestCase):
             self.assertNotEqual(plan.reasoning_confidence, initial_confidence)
 
             planner.record_goal_action_outcome(
-                goal.id, "memory_recall", True, "recalled evidence"
+                goal.id, "memory_recall", True, "recalled evidence",
+                execution_id="exec-g-1",
             )
             self.assertEqual(plan.steps_completed, 1)
             self.assertEqual(planner.next_action_for_goal(goal), "self_question")
@@ -209,6 +210,22 @@ class IntentionPlanningTests(unittest.TestCase):
             self.assertEqual(plan.last_outcome["execution_id"], "act-cycle-31-1")
             self.assertEqual(plan.last_outcome["cycle_id"], 31)
             self.assertEqual(plan.last_outcome["operation"], "memory_recall")
+
+    def test_goal_success_without_execution_receipt_is_not_progress(self):
+        with tempfile.TemporaryDirectory() as folder:
+            planner, _, _ = self._planner(folder)
+            goal = NS(id="g-unverified", topic="learn receipt discipline", origin="resolve_uncertainty")
+            plan = planner.ensure_goal_plan(goal)
+
+            planner.record_goal_action_outcome(
+                goal.id, "memory_recall", True, "claimed recall without execution id"
+            )
+
+            self.assertEqual(plan.steps_completed, 0)
+            self.assertEqual(plan.steps[0].status, "unverified")
+            self.assertIsNone(plan.last_outcome["success"])
+            self.assertEqual(plan.last_outcome["status"], "unverified")
+            self.assertIn("execution receipt", plan.current_decision)
 
     def test_failed_autonomous_action_does_not_complete_aspiration_step(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -452,11 +469,62 @@ class IntentionPlanningTests(unittest.TestCase):
 
             planner.record_step_outcome("epistemic")
 
-            self.assertEqual(plan.steps_completed, 1)
+            self.assertEqual(plan.steps_completed, 0)
+            self.assertEqual(plan.steps[0].status, "unverified")
             self.assertEqual(plan.outcome_deviations, [])
             self.assertFalse(plan.last_outcome["result_provided"])
+            self.assertIsNone(plan.last_outcome["success"])
             self.assertFalse(plan.last_outcome["effect_measured"])
-            self.assertIn("no result detail", plan.current_decision)
+            self.assertIn("execution receipt", plan.current_decision)
+
+    def test_legacy_plan_progress_without_step_receipts_is_preserved_as_unverified(self):
+        with tempfile.TemporaryDirectory() as folder:
+            planner, _, _ = self._planner(folder)
+            payload = {
+                "cognitive": {
+                    "aspiration_domain": "cognitive",
+                    "steps": [
+                        {
+                            "sequence": 0, "action_type": "analytical",
+                            "expected_cost": 0.05, "expected_gain": 0.01,
+                            "operation": "memory_recall", "status": "completed",
+                            "attempts": 0, "result": "", "execution_id": "",
+                            "cycle_id": None, "observed_at": 0.0,
+                            "effect_measured": False,
+                        },
+                        {
+                            "sequence": 1, "action_type": "analytical",
+                            "expected_cost": 0.05, "expected_gain": 0.01,
+                            "operation": "memory_recall", "status": "completed",
+                            "attempts": 0, "result": "", "execution_id": "",
+                            "cycle_id": None, "observed_at": 0.0,
+                            "effect_measured": False,
+                        },
+                    ],
+                    "resource_reserve": 0.22, "revision_trigger": 0.25,
+                    "horizon": 2, "steps_completed": 2, "source": "aspiration",
+                    "status": "active", "last_outcome": {
+                        "operation": "memory_recall", "success": True,
+                        "result": "recalled (1 sources)", "observed_at": 123.0,
+                    },
+                    "current_decision": "memory_recall succeeded; aspiration step advanced.",
+                }
+            }
+            planner._path.write_text(json.dumps(payload), encoding="utf-8")
+            planner._plans.clear()
+
+            planner._load()
+
+            plan = planner._plans["cognitive"]
+            self.assertEqual(plan.steps_completed, 0)
+            self.assertEqual([step.status for step in plan.steps], ["unverified", "unverified"])
+            self.assertEqual(plan.last_outcome["status"], "unverified")
+            self.assertIsNone(plan.last_outcome["success"])
+            self.assertEqual(len(plan.unverified_legacy_claims), 3)
+            persisted = json.loads(planner._path.read_text(encoding="utf-8"))["cognitive"]
+            self.assertEqual(persisted["steps_completed"], 0)
+            self.assertEqual(persisted["steps"][0]["status"], "unverified")
+            self.assertEqual(len(persisted["unverified_legacy_claims"]), 3)
 
     def test_goal_action_outcome_is_not_reassigned_to_an_aspiration(self):
         calls = []
@@ -626,7 +694,8 @@ class IntentionPlanningTests(unittest.TestCase):
             goal = NS(id="g-3", topic="understand persistence", origin="resolve_uncertainty")
             planner.ensure_goal_plan(goal)
             planner.record_goal_action_outcome(
-                goal.id, "memory_recall", True, "persistent evidence"
+                goal.id, "memory_recall", True, "persistent evidence",
+                execution_id="exec-g-3",
             )
 
             reloaded, _, _ = self._planner(folder)
@@ -651,7 +720,8 @@ class IntentionPlanningTests(unittest.TestCase):
 
             self.assertEqual(executor._planned_action(goal), "memory_recall")
             executor._finalize_async_action(
-                goal, "memory_recall", True, "recalled evidence"
+                goal, "memory_recall", True, "recalled evidence",
+                execution_id="exec-g-4",
             )
 
             self.assertEqual(marked, [(goal.id, "memory_recall")])
@@ -669,7 +739,8 @@ class IntentionPlanningTests(unittest.TestCase):
             )
             plan = planner.ensure_goal_plan(goal)
             planner.record_goal_action_outcome(
-                goal.id, "memory_recall", True, "recalled evidence"
+                goal.id, "memory_recall", True, "recalled evidence",
+                execution_id="exec-g-factual",
             )
 
             fragment = planner.prompt_fragment_for(
