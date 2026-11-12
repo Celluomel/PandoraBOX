@@ -300,3 +300,73 @@ def test_rejected_proposal_stays_in_cycle_evidence_but_not_consumer_focus():
         SimpleNamespace(_v32_workspace_winner=published)
     ) == ""
     assert InternalThoughtLoop._workspace_focus_for_consumers(candidate, admitted=True) is candidate
+
+
+def test_explicit_empty_workspace_decision_replaces_stale_focus_and_is_not_promptable():
+    organism = SimpleNamespace(
+        _v32_workspace_winner={
+            "type": "goal", "name": "old objective", "topic": "old objective", "score": 0.91,
+        },
+    )
+    evidence = []
+    loop = InternalThoughtLoop.__new__(InternalThoughtLoop)
+    loop._slow_cycle_count = 12
+    loop._record_cycle_stage = lambda stage, status, **kwargs: (
+        evidence.append((stage, status, kwargs)) or "evidence-ref"
+    )
+
+    loop._publish_empty_workspace_focus(
+        organism, reason="no_candidate", status="no_winner",
+    )
+
+    assert organism._v32_workspace_winner["type"] == "no_winner"
+    assert organism._v32_workspace_winner["name"] == ""
+    assert organism._v32_workspace_winner_cycle == 12
+    assert organism._v32_workspace_winner_evidence_ref == "evidence-ref"
+    assert organism._v32_workspace_winner_evidence_cycle == 12
+    assert CognitivePreProcessor._workspace_winner_block(organism) == ""
+    assert evidence[0][0:2] == ("winner_published_to_workspace_state", "no_winner")
+
+
+def test_phase1_error_publishes_fresh_empty_focus_to_block_old_goal_fallback():
+    organism = SimpleNamespace(_v32_workspace_winner={
+        "type": "goal", "id": "old-goal", "name": "old objective", "score": 0.9,
+    })
+    loop = InternalThoughtLoop.__new__(InternalThoughtLoop)
+    loop._slow_cycle_count = 13
+    loop._record_cycle_stage = lambda *_args, **_kwargs: "failure-clear-ref"
+
+    loop._publish_empty_workspace_focus(
+        organism, reason="phase1_failed", status="cleared_after_error",
+    )
+
+    assert organism._v32_workspace_winner["type"] == "no_winner"
+    assert organism._v32_workspace_winner_cycle == 13
+
+    class _GoalEngine:
+        def get_active_goals(self, min_activation):
+            return [SimpleNamespace(id="old-goal", topic="stale objective")]
+
+    executor = GoalActionExecutor.__new__(GoalActionExecutor)
+    executor._get_goal_engine = lambda: _GoalEngine()
+    executor._select_eligible_goal = lambda _active: (_ for _ in ()).throw(
+        AssertionError("a cleared focus must not fall back to an older goal")
+    )
+    result = executor.run_tick(
+        selection_is_authoritative=True,
+        cycle_id=organism._v32_workspace_winner_cycle,
+    )
+
+    assert result is None
+
+
+def test_failed_workspace_cycle_publishes_an_explicit_empty_focus():
+    empty_focus = InternalThoughtLoop._empty_workspace_focus("phase1_failed")
+
+    assert empty_focus == {
+        "type": "no_winner",
+        "proposal_admission": "phase1_failed",
+        "name": "",
+        "topic": "",
+        "score": 0.0,
+    }

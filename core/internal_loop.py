@@ -619,6 +619,34 @@ class InternalThoughtLoop:
             }
         return winner
 
+    @staticmethod
+    def _empty_workspace_focus(reason: str) -> dict[str, Any]:
+        """Represent an explicit absence of focus without leaving stale state."""
+        return {
+            "type": "no_winner",
+            "proposal_admission": str(reason)[:48],
+            "name": "",
+            "topic": "",
+            "score": 0.0,
+        }
+
+    def _publish_empty_workspace_focus(
+        self, organism: Any, *, reason: str, status: str,
+        inputs: dict[str, Any] | None = None,
+    ) -> str | None:
+        """Replace prior focus and bind the explicit empty result to this cycle."""
+        empty_focus = self._empty_workspace_focus(reason)
+        organism._v32_workspace_winner = empty_focus
+        organism._v32_workspace_winner_cycle = self._slow_cycle_count
+        evidence_ref = self._record_cycle_stage(
+            "winner_published_to_workspace_state", status,
+            inputs=inputs,
+            output={"published_winner": empty_focus},
+        )
+        organism._v32_workspace_winner_evidence_ref = evidence_ref
+        organism._v32_workspace_winner_evidence_cycle = self._slow_cycle_count
+        return evidence_ref
+
     def _begin_cycle_evidence(self, cycle_id: int) -> None:
         with self._cycle_evidence_lock:
             self._active_cycle_evidence = {
@@ -1720,12 +1748,16 @@ class InternalThoughtLoop:
                         "executive_arbitration", "skipped_no_winner",
                         inputs={"competition_output_ref": _phase1_evidence_ref},
                     )
+                    # An explicit empty arbitration result supersedes the last
+                    # focus. Leaving the previous object in shared organism
+                    # state lets prompt consumers keep presenting it forever
+                    # and can make the action executor treat it as current.
                     self._record_cycle_stage(
                         "selected_proposal_commit", "no_winner",
                         inputs={"arbitrated_winner_ref": _no_winner_ref},
                     )
-                    self._record_cycle_stage(
-                        "winner_published_to_workspace_state", "no_winner",
+                    self._publish_empty_workspace_focus(
+                        o, reason="no_candidate", status="no_winner",
                         inputs={"competition_output_ref": _phase1_evidence_ref},
                     )
 
@@ -1741,6 +1773,11 @@ class InternalThoughtLoop:
 
             except Exception as _p1e:
                 self._record_cycle_stage("phase1_competition", "failed", metrics={"error_type": type(_p1e).__name__})
+                # A failed arbitration cannot authorize stale attention or
+                # allow an unrelated old goal to be selected downstream.
+                self._publish_empty_workspace_focus(
+                    o, reason="phase1_failed", status="cleared_after_error",
+                )
                 logger.debug(f"[InternalLoop] Phase 1 pressure/workspace error: {_p1e}")
         elif self._phase1:
             self._record_cycle_stage(
