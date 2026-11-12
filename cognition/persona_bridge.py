@@ -36,6 +36,7 @@ from cognition.body_runtime.robot_capabilities import robot_capability_report, r
 from cognition.memory_retrieval import (
     extract_explicit_recall_topic,
     filter_memories_by_modality,
+    is_explicit_memory_recall_query,
     is_visual_memory_query,
     merge_user_authored_memories,
 )
@@ -2597,6 +2598,13 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         token for token in _provider_tokens if isinstance(token, str)
                     )
                     _visible_candidate = self._strip_think(_candidate)
+                    self._record_turn_stage(
+                        "generation_candidate",
+                        "completed" if _visible_candidate else "empty",
+                        output=_visible_candidate,
+                        consumes=("primary_generation_input",),
+                        turn_id=_audit_turn_id,
+                    )
                     if _cognitive_trace_query:
                         from cognition.self_description import trace_grounded_architecture_answer
                         _llm_manager = getattr(self._llm_stream_fn, "__self__", None)
@@ -2613,13 +2621,6 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                             "unlinked" if _prior_summary["available"] else "not_found",
                             detail=_prior_assistant_evidence_detail(_prior_summary),
                             output=_prior_summary,
-                            turn_id=_audit_turn_id,
-                        )
-                        self._record_turn_stage(
-                            "generation_candidate",
-                            "completed" if _visible_candidate else "empty",
-                            output=_visible_candidate,
-                            consumes=("primary_generation_input",),
                             turn_id=_audit_turn_id,
                         )
                         _guarded = trace_grounded_architecture_answer(
@@ -3432,12 +3433,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             _recall_query_source = "user_input"
             # ── Detect explicit memory/recall requests ─────────────────
             # When user asks "do you remember X?", extract X and search directly.
-            _RECALL_TRIGGERS = (
-                "rappelle", "souvien", "remember", "recall", "tu te rappelles",
-                "te souviens", "talked about", "on a parlé", "we discussed",
-                "on a dit", "tu sais ce que", "t'en souviens",
-            )
-            _is_recall_request = any(t in user_input.lower() for t in _RECALL_TRIGGERS)
+            _is_recall_request = is_explicit_memory_recall_query(user_input)
             if _is_recall_request:
                 # Search for the requested remembered topic, not the request's
                 # current-turn framing (which otherwise self-matches on retries).
@@ -3796,13 +3792,31 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         _module_tick_snapshot if _module_entries else None
                     ),
                 )
-                self._record_turn_stage("self_description_context", "injected")
+                self._record_turn_stage(
+                    "self_description_context", "injected",
+                    output={
+                        "context_sha256": hashlib.sha256(
+                            _architecture_block.encode("utf-8", errors="replace")
+                        ).hexdigest(),
+                        "context_chars": len(_architecture_block),
+                    },
+                    turn_id=audit_turn_id,
+                )
             except Exception as _sde:
                 _architecture_block = (
                     "VERIFIED ARCHITECTURE: registry unavailable; do not infer "
                     "specific internal mechanisms from memory or metaphor."
                 )
-                self._record_turn_stage("self_description_context", "unavailable", str(_sde))
+                self._record_turn_stage(
+                    "self_description_context", "unavailable", str(_sde),
+                    output={
+                        "context_sha256": hashlib.sha256(
+                            _architecture_block.encode("utf-8", errors="replace")
+                        ).hexdigest(),
+                        "context_chars": len(_architecture_block),
+                    },
+                    turn_id=audit_turn_id,
+                )
 
             # ── Aspirational Self — injected directly, no FAISS ─────────
             _asp_self = getattr(self._organism, 'aspirational_self', None)

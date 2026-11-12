@@ -50,6 +50,31 @@ def extract_explicit_recall_topic(text: str) -> str:
     remembered, rather than the current instruction about remembering it.
     """
     value = str(text or "").strip()
+    # Historical-request questions are recall requests even without the
+    # literal verbs "remember" or "recall". Keep only their subject clause.
+    french_asked = re.search(
+        r"\bquel(?:le)?s?\s+(?P<topic>[^?!.]{1,100}?)\s+"
+        r"(?:ai-je|est-ce\s+que\s+j['’]ai)\s+"
+        r"(?:demand[ée]s?|dit|formul[ée]s?|pos[ée]s?)\b",
+        value,
+        flags=re.IGNORECASE,
+    )
+    english_asked = re.search(
+        r"\bwhat\s+(?P<topic>[^?!.]{1,100}?)\s+did\s+i\s+"
+        r"(?:ask|request|say|tell\s+you)\b",
+        value,
+        flags=re.IGNORECASE,
+    )
+    asked_match = french_asked or english_asked
+    if asked_match:
+        leading_context = value[:asked_match.start()]
+        leading_context = re.sub(
+            r"^\s*(?:pour|for)\s+|[,;:]\s*$", "", leading_context,
+            flags=re.IGNORECASE,
+        )
+        topic = asked_match.group("topic").strip(" \t\r\n,;:«»\"'")
+        extracted = " ".join(part for part in (leading_context, topic) if part)
+        return extracted[:180].strip() or value
     prefixes = (
         r"^what\s+do\s+you\s+remember\s+about\s+",
         r"^what\s+have\s+we\s+discussed\s+about\s+",
@@ -86,6 +111,28 @@ def extract_explicit_recall_topic(text: str) -> str:
     value = re.sub(r"^(?:à\s+propos\s+(?:de|du|des|d['’])|au\s+sujet\s+(?:de|du|des|d['’])|concernant|sur|about|regarding)\s+", "", value, flags=re.IGNORECASE)
     value = re.sub(r"^(?:uniquement|seulement)\s+", "", value, flags=re.IGNORECASE)
     return value.strip(" \t\r\n?.,:;\"'«»") or str(text or "").strip()
+
+
+def is_explicit_memory_recall_query(text: str) -> bool:
+    """Recognize explicit requests to retrieve earlier conversational facts."""
+    value = " ".join(str(text or "").casefold().split())
+    if any(term in value for term in (
+        "rappelle", "souvien", "remember", "recall", "tu te rappelles",
+        "te souviens", "talked about", "on a parlé", "we discussed",
+        "on a dit", "tu sais ce que", "t'en souviens",
+    )):
+        return True
+    asks_prior_user_content = bool(re.search(
+        r"\b(?:ai-je|est-ce\s+que\s+j['’]ai)\s+"
+        r"(?:demand[ée]s?|dit|formul[ée]s?|pos[ée]s?)\b|"
+        r"\bdid\s+i\s+(?:ask|request|say|tell\s+you)\b",
+        value,
+    ))
+    return asks_prior_user_content and bool(re.search(
+        r"\b(?:quel(?:le)?s?|what|which|r[ée]sultat|objectif|point|"
+        r"asked|requested|said)\b",
+        value,
+    ))
 
 
 def tokenize(text: str) -> List[str]:

@@ -18,6 +18,7 @@ from cognition.ai_system import EnhancedMemorySystem
 from cognition.memory_retrieval import (
     extract_explicit_recall_topic,
     filter_memories_by_modality,
+    is_explicit_memory_recall_query,
     is_visual_memory_query,
     merge_user_authored_memories,
 )
@@ -207,6 +208,24 @@ class MemorySystemFallbackTests(unittest.TestCase):
     def test_visual_tier_is_not_implied_by_recall_language(self):
         query = "Rappelle ce que je t’ai demandé concernant la manière de conduire l’audit"
         self.assertNotIn("image", extract_explicit_recall_topic(query).casefold())
+
+    def test_prior_request_question_routes_to_explicit_recall(self):
+        query = (
+            "Pour l’audit du harnais, quel résultat final ai-je demandé ? "
+            "Réponds depuis un échange antérieur retrouvé, sinon dis que tu ne retrouves pas de source."
+        )
+        self.assertTrue(is_explicit_memory_recall_query(query))
+        topic = extract_explicit_recall_topic(query).casefold()
+        self.assertIn("audit du harnais", topic)
+        self.assertIn("résultat final", topic)
+        self.assertNotIn("échange antérieur", topic)
+
+    def test_prior_request_question_english_routes_to_explicit_recall(self):
+        query = "For the audit, what final outcome did I ask you to provide?"
+        self.assertTrue(is_explicit_memory_recall_query(query))
+        topic = extract_explicit_recall_topic(query).casefold()
+        self.assertIn("audit", topic)
+        self.assertIn("final outcome", topic)
 
     def test_text_recall_excludes_visual_results_from_mixed_retrieval_pool(self):
         records = [
