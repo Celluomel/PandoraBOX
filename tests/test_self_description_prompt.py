@@ -28,6 +28,61 @@ class SelfDescriptionPromptTests(unittest.TestCase):
         ))
         self.assertFalse(is_architecture_query("What does the body camera see?"))
 
+    def test_general_harness_question_is_not_a_trace_snapshot_question(self):
+        question = (
+            "In the cognitive harness audit, explain how the Global Workspace "
+            "merges context from independent modules and influences the next decision."
+        )
+        self.assertTrue(is_architecture_query(question))
+        self.assertFalse(is_cognitive_trace_query(question))
+
+    def test_trace_snapshot_guard_does_not_replace_general_architecture_answers(self):
+        from cognition.persona_bridge import PersonaBridge
+
+        source_path = Path(inspect.getfile(PersonaBridge))
+        tree = ast.parse(source_path.read_text(encoding="utf-8"))
+        bridge_class = next(
+            node for node in tree.body
+            if isinstance(node, ast.ClassDef) and node.name == "PersonaBridge"
+        )
+        lifecycle = next(
+            node for node in bridge_class.body
+            if isinstance(node, ast.AsyncFunctionDef)
+            and node.name == "_stream_with_full_lifecycle"
+        )
+        parent = {
+            child: node for node in ast.walk(lifecycle)
+            for child in ast.iter_child_nodes(node)
+        }
+        trace_calls = [
+            node for node in ast.walk(lifecycle)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "trace_grounded_architecture_answer"
+        ]
+        self.assertEqual(len(trace_calls), 2)
+        for call in trace_calls:
+            branch = parent.get(call)
+            while branch is not None and not isinstance(branch, ast.If):
+                branch = parent.get(branch)
+            self.assertIsNotNone(branch)
+            self.assertIsInstance(branch.test, ast.Name)
+            self.assertEqual(branch.test.id, "_cognitive_trace_query")
+
+        fast_direct = next(
+            node for node in ast.walk(lifecycle)
+            if isinstance(node, ast.If)
+            and isinstance(node.test, ast.BoolOp)
+            and any(
+                isinstance(child, ast.UnaryOp)
+                and isinstance(child.op, ast.Not)
+                and isinstance(child.operand, ast.Name)
+                and child.operand.id == "_architecture_query"
+                for child in node.test.values
+            )
+        )
+        self.assertIsNotNone(fast_direct)
+
     def test_internal_behavior_cause_is_closed_world_without_changing_camera_queries(self):
         self.assertTrue(is_internal_cognitive_query(
             "Pourquoi une réflexion spontanée sur une ancienne question de caméra pouvait apparaître, "

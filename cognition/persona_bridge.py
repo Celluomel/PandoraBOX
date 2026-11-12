@@ -2300,7 +2300,10 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     _repeats_recent_answer = repeats_recent_assistant_reply(
                         _quick_answer, _recent_history
                     )
-                    if _route == "direct" and _quick_answer and len(_quick_answer) <= 1200 and not _repeats_recent_answer:
+                    if (
+                        _route == "direct" and _quick_answer and len(_quick_answer) <= 1200
+                        and not _repeats_recent_answer and not _architecture_query
+                    ):
                         _deterministic_response = _quick_answer
                         _fast_round_used = True
                         logger.info("[FastRound] direct response via %s in %dms", _fast_model, _fast_latency_ms)
@@ -2360,7 +2363,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             )
             try:
                 if _deterministic_response:
-                    if _architecture_query:
+                    if _cognitive_trace_query:
                         from cognition.self_description import trace_grounded_architecture_answer
                         _llm_manager = getattr(self._llm_stream_fn, "__self__", None)
                         _prior_exchange = _prior_assistant_trace_evidence(
@@ -2510,7 +2513,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         token for token in _provider_tokens if isinstance(token, str)
                     )
                     _visible_candidate = self._strip_think(_candidate)
-                    if _architecture_query:
+                    if _cognitive_trace_query:
                         from cognition.self_description import trace_grounded_architecture_answer
                         _llm_manager = getattr(self._llm_stream_fn, "__self__", None)
                         _prior_exchange = _prior_assistant_trace_evidence(
@@ -2544,6 +2547,24 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                             output=_guarded,
                             consumes=("generation_candidate", "prior_assistant_evidence", "turn_input"),
                         )
+                    elif _architecture_query:
+                        # General architecture questions receive the partial,
+                        # closed-world registry and runtime manifest in the
+                        # prompt, but a trace summary cannot validate their
+                        # semantic answer. Preserve the primary model's answer
+                        # and report this limit honestly instead of replacing
+                        # it with unrelated current-turn tick evidence.
+                        _guarded, _was_replaced = _visible_candidate, False
+                        self._record_turn_stage(
+                            "architecture_claim_validation",
+                            "not_independently_verified" if _visible_candidate else "empty",
+                            detail="Partial self-description and runtime evidence were supplied; no independent semantic claim validator is available.",
+                            output={
+                                "candidate_chars": len(_visible_candidate),
+                                "evidence": "partial_self_description_and_runtime_manifest",
+                            },
+                            consumes=("generation_candidate", "self_description_context", "turn_input"),
+                        )
                     elif _quantitative_analysis is not None:
                         from cognition.quantitative_reasoning import guard_quantitative_response
                         _guarded, _was_replaced = guard_quantitative_response(
@@ -2563,7 +2584,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         for token in _reasoning_tokens:
                             asyncio.run_coroutine_threadsafe(token_q.put(token), loop)
                     if _was_replaced:
-                        if _architecture_query:
+                        if _cognitive_trace_query:
                             logger.warning(
                                 "[ArchitectureGuard] replaced generated architecture claims "
                                 "with the current turn's trace-grounded evidence"
