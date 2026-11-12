@@ -1201,4 +1201,24 @@ Le graphe d'appels a révélé une différence de contrat : les étapes de trace
 
 Correction : `_start_turn_trace()` renvoie maintenant l'identifiant créé sous le verrou; le pipeline conserve cet ID local et l'utilise au lieu de relire le « dernier tour ». `_record_turn_context_source()` et `_finish_turn_trace()` acceptent le même ID et écrivent dans le tour actif correspondant ou dans son entrée historique, comme le journal des étapes. Les métadonnées restent filtrées et n'enregistrent pas le contenu brut des observations.
 
-Test d'entrelacement : démarrer le tour B avant d'enregistrer une source tardive et de finaliser A; A passe à `completed`, tandis que B reste `running` et conserve sa source caméra. `tests/test_contextual_fallback_guard.py`, `test_brain_workflow_status.py`, `test_turn_execution_evidence.py` — **33 tests passés**, 3 sous-tests, 9 avertissements de dépendances. Un premier passage a révélé une assertion de test qui attendait l'ancien appel sans `turn_id`; son contrat a été mis à jour. Le lot plus large incluant `test_lumina_network_peer_turns.py` a été interrompu après avoir semblé bloqué; je n'en compte pas le résultat. Cette correction fiabilise l'attribution de provenance, pas le lien attention du modèle→réponse. Le prochain contrôle live doit confirmer que les sources et étapes d'une même requête partagent l'ID dans la Cognitive Trace. Le processus actif ne contient pas encore ces changements; aucun redémarrage supplémentaire n'est demandé à ce stade.
+
+## Audit live poursuivi — échec de flux et réponse de repli vide (12 novembre 2026)
+
+### Preuve via l'API locale, pas uniquement l'interface
+
+Lecture directe des endpoints de l'application complète sur `http://127.0.0.1:8080` : `/api/interface/status` et `/api/interface/telemetry`. Le tour `c81d75af-12f3-4d9d-8cda-f7c18d5ed6ab` était terminé avec `completed_with_stage_failures`. Son `streaming_lifecycle` a échoué; le repli a produit une sortie texte vide (longueur 0), puis la sécurité de sortie et la finalisation ont été inscrites comme terminées. C'est un faux succès de chaîne : le statut final disait terminé malgré l'absence de réponse utile. Cela concorde avec le « Thinking… » observé dans la page, mais l'API seule ne prouve pas pourquoi le client est resté dans cet état.
+
+Le même relevé montrait le loop interne actif sans erreur instrumentée, 39 modules observés sur 43 et 206 ticks; 4 modules étaient initialisés sans tick observé. Le snapshot ne permet pas de conclure à la justesse sémantique. Le manifeste de sources du tour était vide : cela signifie qu'aucune source n'a été enregistrée dans ce champ, pas que le rappel mémoire n'a certainement pas été fourni au prompt. Le plan long-terme persistant indiquait 4 étapes achevées sans reçu d'exécution, toutes `memory_recall`; cette progression historique n'est pas une preuve d'exécution de ce tour.
+
+### Corrections poussées
+
+- `78817f3`: le stage `streaming_lifecycle` conserve maintenant une classe d'exception bornée (`error_type`) dans la trace exposée à l'API, tout en continuant à expurger le texte brut de l'exception.
+- `9fc1abe`: une réponse de repli non textuelle ou vide échoue désormais explicitement avec `EmptyFallbackResponse`; Lumina renvoie un message explicite au lieu de marquer une réponse vide comme achevée.
+- Vérification locale ciblée : `venv\\Scripts\\python.exe -m pytest tests/test_turn_execution_evidence.py tests/test_contextual_fallback_guard.py -q` — **25 tests passés**, 9 avertissements historiques; `git diff --check` passe. Les deux commits sont poussés sur `origin/main`.
+
+### À confirmer après le prochain redémarrage groupé
+
+1. Sur le tour suivant, l'API doit exposer `streaming_lifecycle.error_type` sans détail sensible. Cela permettra d'identifier la classe exacte de panne du provider/stream.
+2. Simuler ou provoquer une sortie vide et confirmer que l'API enregistre `fallback_generation=failed`, `error_type=EmptyFallbackResponse`, et que l'interface reçoit le message d'erreur visible.
+3. Rejouer un test mémoire inédit en paraphrase et relier, par le même `turn_id`, retrieval, sélection des sources, injection au prompt et réponse. `context_sources={}` ne suffit pas à trancher cette chaîne.
+4. La qualité sémantique finale reste non évaluée par l'instrumentation actuelle; le chemin `semantic_answer_validation` demeure `not_performed`.
