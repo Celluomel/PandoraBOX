@@ -668,6 +668,7 @@ class PersonaBridge:
                     if failed_stages or integrity.get("missing_core_stages")
                     or integrity.get("malformed_stages")
                     or integrity.get("stage_order_violations")
+                    or integrity.get("data_flow_issues")
                     or integrity.get("peer_scope_violations")
                     or incomplete_outputs
                     else "consistent"

@@ -594,6 +594,35 @@ def test_turn_integrity_detects_stale_upstream_output_fingerprint():
     ]
 
 
+def test_post_turn_stage_cannot_erase_data_flow_integrity_failure():
+    bridge = _bridge()
+    bridge._record_turn_stage("prompt", "completed", output="first prompt")
+    bridge._record_turn_stage(
+        "generation", "completed", output="answer", consumes=("prompt",)
+    )
+    bridge._record_turn_stage("prompt", "completed", output="different prompt")
+    bridge._last_turn_trace["stages"].update({
+        "readiness": {"status": "passed"},
+        "input_safety": {"status": "passed"},
+        "prompt_assembly": {
+            **bridge._last_turn_trace["stages"]["prompt"], "status": "completed"
+        },
+        "primary_generation": {
+            **bridge._last_turn_trace["stages"]["generation"], "status": "completed"
+        },
+        "output_safety": {"status": "passed"},
+        "response_finalization": {"status": "completed"},
+        "response": {"status": "completed"},
+    })
+
+    bridge._finish_turn_trace("completed")
+    assert bridge._last_turn_trace["pipeline_integrity"]["status"] == "incomplete_evidence"
+
+    bridge._record_turn_stage("post_turn_effect", "completed", turn_id="turn-evidence-1")
+
+    assert bridge._last_turn_trace["pipeline_integrity"]["status"] == "incomplete_evidence"
+
+
 def test_turn_integrity_labels_deterministic_self_report_path():
     bridge = _bridge()
     bridge._last_turn_trace["stages"].update({
