@@ -139,15 +139,18 @@ def _explicit_recall_focus(text: str) -> str:
     return extract_explicit_recall_topic(str(text or "").strip())
 
 
-def _memory_user_text(memory: dict) -> str:
+def extract_user_authored_text(memory: dict) -> str:
     """Extract user-authored text from an episodic record when available."""
     text = str(memory.get("text", ""))
+    if str(memory.get("memory_type", "")).casefold() == "user_message":
+        return re.sub(r"^User message:\s*", "", text, flags=re.IGNORECASE).strip()
     match = re.search(
         r"\buser\s*:\s*(.*?)(?=\s*[|\n]\s*(?:lumina|assistant)\s*:|$)",
         text,
         flags=re.IGNORECASE | re.DOTALL,
     )
-    return match.group(1).strip() if match else text
+    value = match.group(1).strip() if match else text
+    return re.sub(r"\s*\(felt\s+[^)]*\)\s*$", "", value, flags=re.IGNORECASE).strip()
 
 
 def is_explicit_memory_recall_query(text: str) -> bool:
@@ -178,7 +181,7 @@ def filter_recall_query_records(
     filtered = []
     for memory in memories:
         kind = str(memory.get("memory_type", "")).casefold()
-        source_text = _memory_user_text(memory)
+        source_text = extract_user_authored_text(memory)
         if kind in {"user_message", "episodic"} and is_explicit_memory_recall_query(source_text):
             continue
         # A neighboring status question can share the broad subject words
@@ -262,7 +265,10 @@ def merge_user_authored_memories(
         merged.append(memory)
 
     for memory in user_authored:
-        if memory.get("memory_type") == "user_message":
+        if (
+            memory.get("memory_type") == "user_message"
+            or memory.get("source") == "legacy_episodic_user_source"
+        ):
             add(memory)
             break
     for memory in primary:

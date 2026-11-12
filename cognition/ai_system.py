@@ -58,7 +58,8 @@ from cognition.behavioral_conditioning import BehavioralConditioningSystem
 from cognition.life_stage_prompting import build_stage_system_block, get_stage_profile
 from cognition.relational_knowledge_graph import RelationalKnowledgeGraph
 from cognition.memory_retrieval import (
-    faiss_l2_relevance, filter_recall_query_records, rank_documents,
+    extract_user_authored_text, faiss_l2_relevance,
+    filter_recall_query_records, rank_documents,
 )
 from cognition.turn_context_evidence import memory_embedding_text
 
@@ -659,6 +660,25 @@ class EnhancedPersistence:
             logger.error(f"get_all_memories failed: {e}")
             return []
 
+    def get_conversation_source_memories(self) -> List[Dict[str, Any]]:
+        """Return only user messages and dialogues that contain user turns."""
+        try:
+            with self.get_connection() as conn:
+                rows = conn.execute(
+                    "SELECT id, faiss_id, text, timestamp, impact_score, "
+                    "emotional_valence, arousal_level, memory_type, memory_tier, access_count "
+                    "FROM memories WHERE memory_type IN ('user_message', 'episodic') "
+                    "ORDER BY id DESC"
+                ).fetchall()
+            columns = [
+                "id", "faiss_id", "text", "timestamp", "impact_score",
+                "emotional_valence", "arousal_level", "memory_type", "memory_tier", "access_count",
+            ]
+            return [dict(zip(columns, row)) for row in rows]
+        except Exception as e:
+            logger.error("get_conversation_source_memories failed: %s", e)
+            return []
+
     def log_personality_change(self, trait: str, old: float, new: float, reason: str):
         try:
             with self.get_connection() as conn:
@@ -1101,7 +1121,11 @@ class EnhancedMemorySystem:
             # recall, filter its bounded neighbor window before deciding it is
             # sufficient; if it is not, the lexical pass below searches the
             # full user-message archive to avoid recent-prompt starvation.
-            if self.embedding_model is not None and self.faiss_index is not None:
+            if (
+                not explicit_recall
+                and self.embedding_model is not None
+                and self.faiss_index is not None
+            ):
                 total = int(getattr(self.faiss_index, "ntotal", 0) or 0)
                 if total > 0:
                     try:
@@ -1145,29 +1169,62 @@ class EnhancedMemorySystem:
                     except Exception as error:
                         logger.debug("Semantic user-message recall unavailable: %s", error)
 
-            try:
-                memories = self.persistence.get_all_memories(
-                    memory_type="user_message",
-                    limit=None if explicit_recall else 2000,
-                )
-            except TypeError:
-                # Keep lightweight persistence adapters used by integrations
-                # and tests compatible while retaining the type boundary.
-                all_user_messages = [
-                    memory for memory in self.persistence.get_all_memories()
-                    if memory.get("memory_type") == "user_message"
-                ]
-                memories = all_user_messages if explicit_recall else all_user_messages[:2000]
             if explicit_recall:
+                # Older turns predate the separately indexed user_message
+                # lane and exist only inside episodic dialogue rows. Search
+                # those rows by their USER segment alone; never rank or inject
+                # the assistant's reply as user-authored evidence.
+                source_reader = getattr(
+                    self.persistence, "get_conversation_source_memories", None
+                )
+                if callable(source_reader):
+                    memories = source_reader()
+                else:
+                    memories = self.persistence.get_all_memories()
+                memories = [
+                    memory for memory in memories
+                    if memory.get("memory_type") in {"user_message", "episodic"}
+                ]
                 memories = filter_recall_query_records(memories, query=query)
+                # New turns are persisted both as a dedicated user_message
+                # and inside an episodic exchange. Keep one source candidate
+                # per normalized user utterance, preferring the dedicated row.
+                unique_sources = {}
+                for memory in memories:
+                    user_text = extract_user_authored_text(memory)
+                    source_key = " ".join(user_text.casefold().split())
+                    if not source_key:
+                        continue
+                    current = unique_sources.get(source_key)
+                    if (
+                        current is None
+                        or memory.get("memory_type") == "user_message"
+                    ):
+                        unique_sources[source_key] = memory
+                memories = list(unique_sources.values())
+            else:
+                try:
+                    memories = self.persistence.get_all_memories(
+                        memory_type="user_message", limit=2000
+                    )
+                except TypeError:
+                    # Keep lightweight persistence adapters used by integrations
+                    # and tests compatible while retaining the type boundary.
+                    memories = [
+                        memory for memory in self.persistence.get_all_memories()
+                        if memory.get("memory_type") == "user_message"
+                    ][:2000]
             ranked = rank_documents(query, [
-                memory_embedding_text(memory.get("text", ""), "user_message")
+                extract_user_authored_text(memory)
                 for memory in memories
             ], limit=limit)
             results = []
             for index, relevance in ranked:
                 memory = dict(memories[index])
                 memory["relevance"] = relevance
+                if memory.get("memory_type") == "episodic":
+                    memory["source"] = "legacy_episodic_user_source"
+                    memory["user_authored_text"] = extract_user_authored_text(memory)
                 results.append(memory)
             return results
         except Exception as error:

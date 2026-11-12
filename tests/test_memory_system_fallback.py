@@ -46,6 +46,12 @@ class _Persistence:
     def get_memories_by_ids(self, ids):
         return [row for row in self.rows if row.get("faiss_id") in ids]
 
+    def get_conversation_source_memories(self):
+        return [
+            row for row in self.rows
+            if row.get("memory_type") in {"user_message", "episodic"}
+        ]
+
     def add_memory(self, memory):
         next_id = max((int(row.get("id", 0)) for row in self.rows), default=0) + 1
         row = dict(memory, id=next_id, faiss_id=next_id)
@@ -102,17 +108,13 @@ class _StaleIndex:
         return np.array([[0.1]], dtype="float32"), np.array([[999]], dtype="int64")
 
 
-class _CrowdedRecallIndex:
-    # The index contains a long conversation history, but its nearest
-    # neighbors are only repeated recall questions from the recent test loop.
+class _UnexpectedExplicitRecallSearchIndex:
+    # Explicit recall should use the source archive, not let a recent
+    # nearest-neighbor window determine which historical user turns exist.
     ntotal = 240
 
-    def search(self, _query, count):
-        assert count == 120
-        return (
-            np.array([[0.01, 0.02]], dtype="float32"),
-            np.array([[2, 3]], dtype="int64"),
-        )
+    def search(self, *_args):
+        raise AssertionError("explicit recall must search source conversation records")
 
 
 class _Embedder:
@@ -412,7 +414,7 @@ class MemorySystemFallbackTests(unittest.TestCase):
 
         self.assertEqual(result[0]["id"], 2)
 
-    def test_explicit_recall_falls_back_when_faiss_neighbors_are_only_recall_prompts(self):
+    def test_explicit_recall_does_not_depend_on_recent_faiss_prompt_neighbors(self):
         query = (
             "For the cognitive harness audit, what did I ask you to verify "
             "about module outputs?"
@@ -443,7 +445,9 @@ class MemorySystemFallbackTests(unittest.TestCase):
                 "emotional_valence": "Neutral", "access_count": 0,
             },
         ]
-        system = self._system(embedder=_Embedder(), index=_CrowdedRecallIndex())
+        system = self._system(
+            embedder=_Embedder(), index=_UnexpectedExplicitRecallSearchIndex(),
+        )
 
         recalled = system.retrieve_user_authored_memories(
             query, limit=1, explicit_recall=True,
@@ -451,9 +455,75 @@ class MemorySystemFallbackTests(unittest.TestCase):
 
         self.assertEqual([memory["id"] for memory in recalled], [1])
         self.assertTrue(
-            any(query_row[2] is None for query_row in system.persistence.all_memory_queries),
-            "explicit recall must search beyond the bounded recent archive window",
+            not system.persistence.all_memory_queries,
+            "explicit recall must use the dedicated source archive query",
         )
+
+    def test_explicit_recall_recovers_user_segment_from_legacy_episodic_dialogue(self):
+        query = "For the cognitive harness audit, what did I say about module outputs?"
+        assistant_reply = "Lumina invented a long answer about quantum cognition."
+        self.rows = [{
+            "id": 7, "faiss_id": 7,
+            "text": (
+                "Conversation — User: For the cognitive harness audit, "
+                "verify each module's outputs and downstream effects. "
+                "(felt neutral) | Lumina: " + assistant_reply
+            ),
+            "timestamp": datetime.now().isoformat(), "impact_score": 0.5,
+            "memory_type": "episodic", "memory_tier": "interaction",
+            "emotional_valence": "Neutral", "access_count": 0,
+        }]
+        system = self._system(embedder=_Embedder(), index=_UnexpectedExplicitRecallSearchIndex())
+
+        recalled = system.retrieve_user_authored_memories(
+            query, limit=1, explicit_recall=True,
+        )
+        rendered = format_memory_for_prompt(recalled[0])
+
+        self.assertEqual(len(recalled), 1)
+        self.assertEqual(recalled[0]["source"], "legacy_episodic_user_source")
+        self.assertIn("verify each module's outputs", rendered)
+        self.assertIn("assistant reply omitted", rendered)
+        self.assertNotIn(assistant_reply, rendered)
+        merged = merge_user_authored_memories(
+            [{"id": 99, "memory_type": "episodic", "text": "unrelated"}],
+            recalled,
+            limit=2,
+        )
+        self.assertEqual(merged[0]["id"], 7)
+
+    def test_explicit_recall_deduplicates_user_message_and_episodic_copy(self):
+        query = "For the cognitive harness audit, what did I ask about module outputs?"
+        user_text = (
+            "For the cognitive harness audit, verify module outputs and downstream effects."
+        )
+        self.rows = [
+            {
+                "id": 8, "faiss_id": 8,
+                "text": "User message: " + user_text,
+                "timestamp": datetime.now().isoformat(), "impact_score": 0.5,
+                "memory_type": "user_message", "memory_tier": "interaction",
+                "emotional_valence": "Neutral", "access_count": 0,
+            },
+            {
+                "id": 7, "faiss_id": 7,
+                "text": (
+                    "Conversation — User: " + user_text + " (felt neutral) "
+                    "| Lumina: A duplicate assistant response."
+                ),
+                "timestamp": datetime.now().isoformat(), "impact_score": 0.5,
+                "memory_type": "episodic", "memory_tier": "interaction",
+                "emotional_valence": "Neutral", "access_count": 0,
+            },
+        ]
+
+        recalled = self._system().retrieve_user_authored_memories(
+            query, limit=6, explicit_recall=True,
+        )
+
+        self.assertEqual(len(recalled), 1)
+        self.assertEqual(recalled[0]["id"], 8)
+        self.assertEqual(recalled[0]["memory_type"], "user_message")
 
     def test_encoder_failure_disables_broken_vector_path_and_falls_back(self):
         system = self._system(embedder=_BrokenEmbedder(), index=_Index())

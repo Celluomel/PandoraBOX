@@ -16,6 +16,15 @@ def format_memory_for_prompt(memory: Mapping[str, Any], max_chars: int = 720) ->
     text = str(memory.get("text", "")).strip()
     limit = max(160, min(1200, int(max_chars)))
     memory_type = str(memory.get("memory_type", "memory"))[:40]
+    if memory.get("source") == "legacy_episodic_user_source":
+        user_text = str(memory.get("user_authored_text", "")).strip()
+        return (
+            "- [user-authored segment extracted from a legacy dialogue; "
+            "assistant reply omitted]\n"
+            "  USER MESSAGE (evidence of what the user asked or stated; "
+            "a question alone does not establish its answer): "
+            + user_text[:min(900, limit)]
+        )[:limit]
     if memory_type == "user_message":
         user_text = re.sub(r"^User message:\s*", "", text, flags=re.IGNORECASE).strip()
         return (
