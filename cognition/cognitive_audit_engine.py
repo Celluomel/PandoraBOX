@@ -115,6 +115,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 import threading
 import time
 from dataclasses import dataclass, field, asdict
@@ -905,9 +906,14 @@ Respond ONLY in JSON (no markdown, no preamble):
     # ── Current parameter snapshot ────────────────────────────────────────────
 
     def _current_params(self) -> Dict[str, Any]:
-        """Read the current live values of all tunable parameters."""
+        """Read loaded live parameter values without importing subsystems.
+
+        Importing a ``cognition.*`` submodule can execute the package
+        ``__init__`` and initialize the full AI/memory stack. Parameters for
+        modules not loaded in this process are still at their declared
+        defaults; a committed override is handled above.
+        """
         result = {}
-        import importlib
         for pname, (default, pmin, pmax, ptype) in PARAM_SPACE.items():
             # First, use committed value if present
             if pname in self._state.committed_params:
@@ -916,12 +922,10 @@ Respond ONLY in JSON (no markdown, no preamble):
             # Otherwise read from module
             if pname in PARAM_MODULE_MAP:
                 mod_path, global_name = PARAM_MODULE_MAP[pname]
-                try:
-                    mod = importlib.import_module(mod_path)
+                mod = sys.modules.get(mod_path)
+                if mod is not None:
                     result[pname] = getattr(mod, global_name, default)
                     continue
-                except Exception:
-                    pass
             result[pname] = default
         return result
 

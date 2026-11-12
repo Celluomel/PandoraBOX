@@ -227,6 +227,21 @@ class HealthDataTests(unittest.TestCase):
         self.assertEqual(snapshot.mean_skill_depth, 2)
         self.assertAlmostEqual(snapshot.belief_confidence_mean, 0.7)
 
+    def test_current_params_reads_loaded_modules_without_importing_unloaded_subsystems(self):
+        audit = CognitiveAuditEngine.__new__(CognitiveAuditEngine)
+        audit._state = AuditState()
+        epistemic_module = ModuleType('cognition.epistemic_integrity_engine')
+        epistemic_module.GROUNDING_BOOST = 0.045
+
+        with patch.dict(sys.modules, {
+            'cognition.epistemic_integrity_engine': epistemic_module,
+        }):
+            values = audit._current_params()
+
+        self.assertEqual(values['grounding_boost'], 0.045)
+        self.assertEqual(values['decay_rate_base'], 0.008)
+        self.assertEqual(values['generate_every_n'], 25)
+
     def test_audit_marks_empty_denominators_unmeasured(self):
         audit = CognitiveAuditEngine.__new__(CognitiveAuditEngine)
         audit._organism = NS(
