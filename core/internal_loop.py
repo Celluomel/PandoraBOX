@@ -1417,8 +1417,13 @@ class InternalThoughtLoop:
         if (self._phase1 and self._slow_cycle_count % 2 == 0
                 and (not self._governor or self._governor.may_run('Phase1Pressure'))):
             try:
-                # Run full enhanced_cycle (pressure + workspace competition)
-                _cycle_result = self._phase1.enhanced_cycle(None)
+                # This loop consumes Phase 1 pressure/competition only. The
+                # lightweight Phase 1 plan has no downstream consumer; action
+                # execution is owned by GoalActionExecutor and its persistent
+                # LongHorizonPlanner plan, so do not generate a duplicate.
+                _cycle_result = self._phase1.enhanced_cycle(
+                    None, include_advisory_plan=False,
+                )
                 pressure_result = _cycle_result.get('pressure', {})
                 total_pressure  = pressure_result.get('total', 0.5)
                 _phase1_competition_output = _cycle_result.get("competition", {})
@@ -1438,9 +1443,11 @@ class InternalThoughtLoop:
                         "candidate_count": int(_phase1_competition_metrics.get("total_candidates", 0) or 0),
                     },
                 )
-                # Retain the ordered Phase 1 proposal for observability and
-                # downstream deliberation. It was previously computed and lost.
-                o._v32_action_plan = _cycle_result.get('plan', [])
+                self._record_cycle_stage(
+                    "phase1_advisory_plan", "skipped_by_design",
+                    inputs={"competition_output_ref": _phase1_evidence_ref},
+                    output={"reason": "actions are planned by GoalActionExecutor/LongHorizonPlanner"},
+                )
 
                 # Log workspace winner — the dominant cognitive focus
                 _winner = _cycle_result.get('winner')

@@ -128,6 +128,34 @@ def test_enhanced_cycle_competes_only_admissible_goal_proposals():
     assert result["rejected_goal_suggestions"][0]["reason"] == "low_quality_topic"
 
 
+def test_enhanced_cycle_can_skip_unconsumed_advisory_plan():
+    class _Workspace:
+        def compete(self, **_kwargs):
+            return {"winner": {"name": "focused thought", "type": "thought", "score": 0.7}}
+
+    phase1 = Phase1Orchestrator.__new__(Phase1Orchestrator)
+    phase1._global_workspace = None
+    phase1.components = {"workspace": _Workspace()}
+    phase1.cycle_count = 0
+    phase1.gather_perception = lambda _input: {}
+    phase1.get_decision_pressure = lambda: {"total": 0.2}
+    phase1._load_goals = lambda: []
+    phase1._load_recent_thoughts = lambda: []
+    phase1._load_tensions = lambda: {}
+    phase1._plan_for_winner = lambda *_args: (_ for _ in ()).throw(
+        AssertionError("internal-loop mode must not build an unconsumed plan")
+    )
+    phase1._recommend_from_winner = lambda *_args: (_ for _ in ()).throw(
+        AssertionError("internal-loop mode must not build an unconsumed recommendation")
+    )
+
+    result = phase1.enhanced_cycle(include_advisory_plan=False)
+
+    assert result["winner"]["name"] == "focused thought"
+    assert result["plan"] == []
+    assert result["recommendation"] is None
+
+
 def test_high_priority_tension_defers_llm_synthesis_until_selected(tmp_path):
     evaluator = SimpleThoughtEvaluator(tmp_path)
     evaluator._classify_thought = lambda _text, _thought: "tension"
@@ -272,9 +300,22 @@ def test_internal_loop_uses_one_proposal_evaluation_path_and_authoritative_winne
             for keyword in node.keywords
         )
     ]
+    enhanced_cycle_calls = [
+        node for node in ast.walk(slow_cycle)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "enhanced_cycle"
+    ]
 
     assert evaluator_calls == [], "Phase1 owns proposal evaluation; no second independent loop may consume thoughts"
     assert len(executor_calls) == 1, "the executor must receive arbitration authority explicitly"
+    assert len(enhanced_cycle_calls) == 1
+    assert any(
+        keyword.arg == "include_advisory_plan"
+        and isinstance(keyword.value, ast.Constant)
+        and keyword.value.value is False
+        for keyword in enhanced_cycle_calls[0].keywords
+    ), "the internal loop must not generate the advisory plan it never consumes"
 
 
 def test_rejected_proposal_stays_in_cycle_evidence_but_not_consumer_focus():

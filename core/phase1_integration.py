@@ -204,7 +204,10 @@ class Phase1Orchestrator:
                 'timestamp': datetime.now().isoformat()
             }
     
-    def enhanced_cycle(self, external_input: Optional[Dict] = None) -> Dict:
+    def enhanced_cycle(
+        self, external_input: Optional[Dict] = None, *,
+        include_advisory_plan: bool = True,
+    ) -> Dict:
         """
         Run enhanced cognitive cycle with Phase 1 components.
         
@@ -304,16 +307,20 @@ class Phase1Orchestrator:
             
             print(f"   🏆 Attention focus: {winner['name']} ({winner['type']}, score: {winner['score']:.2f})")
             
-            # Generate plan BASED ON WINNER (not averaged inputs)
-            plan = self._plan_for_winner(winner, pressure)
+            # The internal loop uses the committed GoalEngine/LongHorizonPlanner
+            # path for actions. Its lightweight Phase 1 plan is advisory only,
+            # so callers can skip generating a second, unconsumed plan.
+            plan = self._plan_for_winner(winner, pressure) if include_advisory_plan else []
         else:
             # Fallback: Generate action plan (old way)
-            plan = self.generate_action_plan(pressure, goals)
+            plan = self.generate_action_plan(pressure, goals) if include_advisory_plan else []
         
         # ═══════════════════════════════════════════════════════════════
         
         # Step 6: Make recommendation BASED ON WINNER
-        if winner:
+        if not include_advisory_plan:
+            recommendation = None
+        elif winner:
             recommendation = self._recommend_from_winner(winner, pressure, plan)
         else:
             recommendation = self._make_recommendation(pressure, plan)
