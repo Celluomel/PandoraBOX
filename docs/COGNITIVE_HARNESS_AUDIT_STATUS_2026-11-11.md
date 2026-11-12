@@ -1090,3 +1090,11 @@ Limite de preuve : les tests prouvent le contrat de sortie du module, pas la ré
 - PCM/attention : provenance et déduplication des votes — **poussé dans `631950b`; live non encore validé**.
 - Rappel vectoriel : conversion L2 vers pertinence cosinus — **poussé dans `5dbd0b7`; corpus live représentatif et abstention toujours à évaluer**.
 - Audit global : **en cours**. Le tick des modules n'est pas une preuve de qualité; restent à mesurer les effets aval et la cohérence des sorties sur scénarios représentatifs. Les journaux précédents établissent certains défauts concrets, mais pas une validation exhaustive de chaque fichier Python.
+
+### PresenceEngine — workspace structuré injecté comme texte opaque
+
+Le même journal de présence indiquait `workspace="{'type': 'thought', "`. La cause est vérifiable : `_snapshot_cognitive_state()` appliquait `str()` à `_v32_workspace_winner`, qui est un dictionnaire; le résultat, ensuite tronqué à 40 caractères, était présenté au modèle comme son focus actuel. Le prompt recevait donc un fragment de représentation Python, pas le label sémantique du focus. Les propositions explicitement rejetées ne doivent pas davantage devenir un état mental actif.
+
+Correction locale : un dictionnaire de workspace n'alimente le snapshot qu'avec un champ lisible `label`, `name` ou `topic`; une admission rejetée ou un objet sans label produit un focus vide. Les chaînes qui ressemblent à une représentation sérialisée de structure sont aussi exclues. Les autres consommateurs et l'arbitrage du workspace ne changent pas.
+
+Test ajouté pour un focus admis, normalisation d'espaces, proposition rejetée, dictionnaire sans label et ancienne représentation opaque. Vérification après ce changement : PresenceEngine + régressions cognitives — **42 tests passés et 4 sous-tests**, 9 avertissements historiques; `py_compile` et `git diff --check` passent. FAISS a émis l'exception native Windows `0xc0000008` pendant la collecte; Pytest a terminé avec le code 0 et le résumé ci-dessus. L'hypothèse que le fragment de workspace a contribué au propos sur l'identité de la caméra est plausible et concorde avec le journal, mais le journal ne contient pas le prompt complet de cette émission; je ne la présente donc pas comme une attribution certaine du sujet exact.

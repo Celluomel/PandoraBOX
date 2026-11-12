@@ -704,7 +704,9 @@ class PresenceEngine:
 
         # Workspace winner
         try:
-            snap.workspace_winner = str(getattr(org, "_v32_workspace_winner", "") or "")
+            snap.workspace_winner = self._workspace_focus_label(
+                getattr(org, "_v32_workspace_winner", "")
+            )
         except Exception:
             pass
 
@@ -766,6 +768,26 @@ class PresenceEngine:
         snap.recent_utterances = [t for _, t in self._recent_utterances[-3:]]
 
         return snap
+
+    @staticmethod
+    def _workspace_focus_label(value: Any) -> str:
+        """Extract only an admitted, human-readable workspace focus for prompts."""
+        if isinstance(value, dict):
+            if value.get("proposal_admission") == "rejected":
+                return ""
+            for key in ("label", "name", "topic"):
+                candidate = value.get(key)
+                if isinstance(candidate, str) and candidate.strip():
+                    return " ".join(candidate.split())[:120]
+            return ""
+        if not isinstance(value, str):
+            return ""
+        text = " ".join(value.split())
+        # A serialized object is not a focus label. Passing its repr was the
+        # source of prompts such as "{'type': 'thought', ...".
+        if text.startswith("{") or text.startswith("["):
+            return ""
+        return text[:120]
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     #  Utterance generation

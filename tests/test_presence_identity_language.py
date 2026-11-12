@@ -311,6 +311,14 @@ class PresenceIdentityLanguageTests(unittest.TestCase):
         self.assertEqual(result, presence.PresenceEngine._fallback("Fred", "SILENCE", "neutral", "fr"))
         self.assertLessEqual(len(engine._llm.prompts), 1)
 
+    def test_presence_workspace_prompt_uses_admitted_focus_label_only(self):
+        extract = presence.PresenceEngine._workspace_focus_label
+        self.assertEqual(extract({"type": "goal", "name": "audit memory recall"}), "audit memory recall")
+        self.assertEqual(extract({"label": "  Review   attention feedback "}), "Review attention feedback")
+        self.assertEqual(extract({"proposal_admission": "rejected", "name": "noise topic"}), "")
+        self.assertEqual(extract("{'type': 'thought', 'name': 'noise topic'}"), "")
+        self.assertEqual(extract({"type": "thought"}), "")
+
 
 if __name__ == "__main__":
     unittest.main()
