@@ -1381,7 +1381,6 @@ class LongHorizonPlanner:
                     if (
                         last.get("success") is True
                         and not has_matching_last_receipt
-                        and plan_migrated_unverified
                     ):
                         plan.unverified_legacy_claims.append({
                             "kind": "plan_level_last_outcome",
