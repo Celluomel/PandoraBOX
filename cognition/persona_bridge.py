@@ -3668,6 +3668,16 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         _seen_texts.add(_sv['text'])
                 memories = memories[:_pool_cap]
 
+            # Retrieval is assembled from several independent lanes above
+            # (primary, user-authored, personal, event, and explicit-recall
+            # secondary). Filtering only the first two lanes is insufficient:
+            # a later lane can reintroduce the current recall question or a
+            # previous answer to that same question. Enforce the recall
+            # evidence boundary once, after every lane has been merged and
+            # before any memory is serialized into the prompt.
+            if not peer_name and _is_recall_request:
+                memories = filter_recall_query_records(memories, query=user_input)
+
             self._record_turn_stage(
                 "memory_retrieval",
                 "skipped_by_scope" if peer_name else "completed",

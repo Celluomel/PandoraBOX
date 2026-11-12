@@ -132,12 +132,11 @@ def extract_explicit_recall_topic(text: str) -> str:
 
 
 def _explicit_recall_focus(text: str) -> str:
-    """Return the requested historical subject, excluding conversation framing."""
-    value = str(text or "").strip()
-    match = _historical_request_match(value)
-    if match:
-        return match.group("topic").strip(" \t\r\n,;:«»\"'")
-    return extract_explicit_recall_topic(value)
+    """Return the historical subject plus short context identifying its source."""
+    # Include the short leading subject (e.g. "for the harness audit") as
+    # well as the interrogative topic. Retrieval uses this context too, so
+    # filtering only on the final phrase could discard the source statement.
+    return extract_explicit_recall_topic(str(text or "").strip())
 
 
 def _memory_user_text(memory: dict) -> str:
@@ -181,6 +180,13 @@ def filter_recall_query_records(
         kind = str(memory.get("memory_type", "")).casefold()
         source_text = _memory_user_text(memory)
         if kind in {"user_message", "episodic"} and is_explicit_memory_recall_query(source_text):
+            continue
+        # A neighboring status question can share the broad subject words
+        # (e.g. "audit" and "harness") without stating the historical result
+        # being requested. For explicit historical recall, interrogative user
+        # turns are prompts, not source evidence; prefer declarative requests
+        # or statements that can actually substantiate the answer.
+        if kind in {"user_message", "episodic"} and re.search(r"[?？]", source_text):
             continue
         if focus and kind in {"user_message", "episodic"}:
             source_terms = set(tokenize(source_text))

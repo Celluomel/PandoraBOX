@@ -302,6 +302,50 @@ class MemorySystemFallbackTests(unittest.TestCase):
             [],
         )
 
+    def test_explicit_recall_filter_is_reapplied_after_event_and_secondary_lanes(self):
+        query = (
+            "Pour l’audit du harnais, quel résultat final avais-je demandé ? "
+            "Réponds seulement si un souvenir utilisateur pertinent le confirme."
+        )
+        current_question = {
+            "memory_type": "user_message",
+            "text": query,
+            "source": "faiss_primary",
+        }
+        prior_answer_episode = {
+            "memory_type": "episodic",
+            "text": (
+                "User: Pour l’audit du harnais, quel résultat final avais-je demandé ? "
+                "| Lumina: Je ne retrouve pas la source."
+            ),
+            "source": "event_tier",
+        }
+        prior_recall_question = {
+            "memory_type": "user_message",
+            "text": "Pour l’audit, quel résultat final avais-je demandé auparavant ?",
+            "source": "explicit_recall_secondary",
+        }
+        source_statement = {
+            "memory_type": "user_message",
+            "text": (
+                "Pour l’audit du harnais, la preuve utile est de définir les "
+                "modules requis par scénario, puis de vérifier leurs sorties "
+                "et effets en aval."
+            ),
+            "source": "primary",
+        }
+
+        # The primary and user-authored pools are filtered first. The event
+        # and explicit-recall secondary lanes are appended later in
+        # persona_bridge; the final assembly boundary must filter them too.
+        primary = filter_recall_query_records(
+            [current_question, source_statement], query=query,
+        )
+        assembled = [*primary, prior_answer_episode, prior_recall_question]
+        final_pool = filter_recall_query_records(assembled, query=query)
+
+        self.assertEqual(final_pool, [source_statement])
+
     def test_explicit_recall_focus_keeps_english_source_and_rejects_unrelated(self):
         query = "For the audit, what final outcome did I ask you to provide?"
         source = {
