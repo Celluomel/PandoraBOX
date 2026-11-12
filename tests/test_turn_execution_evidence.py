@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from cognition.ai_system import EnhancedAISystem
+from cognition.ai_system import generate_semantic_hash
 from cognition.persona_bridge import (
     PersonaBridge,
     _prior_assistant_evidence_detail,
@@ -206,6 +207,53 @@ def test_post_response_processing_reports_actual_memory_write_results():
     assert receipt["failed_operations"] == ["user_authored_message"]
     assert "ordinary user message" not in repr(receipt)
     assert "ordinary reply" not in repr(receipt)
+
+
+def test_post_response_processing_treats_existing_identical_user_memory_as_deduplicated():
+    duplicate_hash = generate_semantic_hash("User message: ordinary user message")
+
+    class Persistence:
+        def has_memory_hash(self, semantic_hash):
+            return semantic_hash == duplicate_hash
+
+    class Memory:
+        persistence = Persistence()
+
+        def analyze_emotional_context(self, _text):
+            return {"valence": "Neutral", "arousal": "Low"}
+
+        def add_memory(self, text, _impact, memory_type, *_args, **_kwargs):
+            return memory_type != "user_message"
+
+    instance = SimpleNamespace(
+        self_concept=SimpleNamespace(update_from_response=lambda *_args: None),
+        memory_system=Memory(),
+        relational_memory=SimpleNamespace(record_exchange=lambda *_args, **_kwargs: None),
+        _quick_topic=lambda _text: "topic",
+        _extract_and_store_personal_facts=lambda _text: {
+            "attempted_count": 0, "persisted_count": 0, "failed_count": 0,
+        },
+        relational_graph=SimpleNamespace(extract_and_store=lambda _text: []),
+        conditioning=SimpleNamespace(record_outcome=lambda *_args, **_kwargs: None),
+        evolution_engine=SimpleNamespace(
+            queue_experience=lambda *_args, **_kwargs: None,
+            evolve=lambda *_args, **_kwargs: None,
+        ),
+        personality=object(),
+        _decision_policy=None,
+        _last_responses=[],
+        _last_user_input="",
+    )
+
+    receipt = EnhancedAISystem._post_response_processing(
+        instance, "user-a", "ordinary user message", "ordinary reply",
+        {"valence": "Neutral", "arousal": "Low"}, {},
+    )
+
+    assert receipt["status"] == "completed"
+    assert receipt["memory_persisted_count"] == 2
+    assert receipt["memory_deduplicated_count"] == 1
+    assert receipt["failed_operations"] == []
 
 
 def test_cognitive_context_is_linked_to_prompt_assembly_on_its_own_turn():

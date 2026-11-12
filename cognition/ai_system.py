@@ -583,6 +583,23 @@ class EnhancedPersistence:
                 logger.error(f"add_memory failed: {e}")
                 return None
 
+    def has_memory_hash(self, semantic_hash: str) -> bool:
+        """Return whether an identical semantic record is already persisted.
+
+        A duplicate is a successful idempotent outcome for callers that retry
+        post-turn persistence; it must not be confused with a storage failure.
+        """
+        try:
+            with self.get_connection() as conn:
+                row = conn.execute(
+                    "SELECT 1 FROM memories WHERE semantic_hash = ? LIMIT 1",
+                    (semantic_hash,),
+                ).fetchone()
+            return row is not None
+        except Exception as e:
+            logger.error(f"has_memory_hash failed: {e}")
+            return False
+
     def get_memories_by_ids(self, ids: List[int]) -> List[Dict[str, Any]]:
         if not ids: return []
         try:
@@ -2453,7 +2470,17 @@ Every response must feel genuinely new — avoid repeating phrases, sentences, o
 
         def _store_memory(kind: str, *args, **kwargs) -> bool:
             persisted = bool(self.memory_system.add_memory(*args, **kwargs))
-            memory_writes.append({"kind": kind, "persisted": persisted})
+            deduplicated = False
+            if not persisted and args:
+                persistence = getattr(self.memory_system, "persistence", None)
+                has_hash = getattr(persistence, "has_memory_hash", None)
+                if callable(has_hash):
+                    deduplicated = bool(has_hash(generate_semantic_hash(str(args[0]))))
+            memory_writes.append({
+                "kind": kind,
+                "persisted": persisted or deduplicated,
+                "deduplicated": deduplicated,
+            })
             return persisted
 
         try:
@@ -2665,6 +2692,7 @@ Every response must feel genuinely new — avoid repeating phrases, sentences, o
                 "memory_write_count": len(memory_writes),
                 "memory_write_kinds": [item["kind"] for item in memory_writes[:8]],
                 "memory_persisted_count": sum(1 for item in memory_writes if item["persisted"]),
+                "memory_deduplicated_count": sum(1 for item in memory_writes if item.get("deduplicated")),
                 "personal_fact_attempted_count": personal_fact_receipt.get("attempted_count", 0),
                 "personal_fact_persisted_count": personal_fact_receipt.get("persisted_count", 0),
                 "failed_operations": failed_writes[:8],
