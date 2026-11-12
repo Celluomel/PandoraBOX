@@ -1295,21 +1295,17 @@ class CognitiveOrganism:
         except Exception as _wb_re:
             logger.debug(f"[CogOrganism] workspace-bias response check error: {_wb_re}")
 
-        # v56: record outcome in WorldSelfDynamicsModel with response text
-        # for engagement signal computation (runs before energy drain so
-        # deltas reflect the true cost of this interaction)
+        # Record the observed state transition before energy drain. User affect
+        # is not a rating of the assistant response, and response wording is
+        # not evidence of user engagement, so this turn remains explicitly
+        # unrated in WSDM.
         try:
             loop  = getattr(self, '_loop', None)
             wsdm  = getattr(loop, '_world_self_dynamics', None) if loop else None
             if wsdm and wsdm._pending is not None:
                 _uid  = getattr(self, '_current_user_id', 'default')
-                _emo  = getattr(self.ai_system, 'emotional_state', None)
-                _val  = "neutral"
-                if _emo:
-                    ev = getattr(_emo, 'overall_valence', 0.0)
-                    _val = "positive" if ev > 0.2 else "negative" if ev < -0.2 else "neutral"
                 wsdm.record_outcome(
-                    outcome       = _val,
+                    outcome       = "unrated",
                     user_id       = _uid,
                     response_text = response or "",
                     user_input    = user_input or "",

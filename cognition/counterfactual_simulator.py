@@ -308,9 +308,8 @@ class CounterfactualSimulator:
             if wsdm_ready:
                 wsdm_pred = wsdm._predict(action_type, ctx_before)
                 if wsdm_pred is not None:
-                    wsdm_engage   = round(
-                        float(wsdm_pred.world_deltas.get("engagement_signal", 0.0)), 4
-                    )
+                    engagement = wsdm_pred.world_deltas.get("engagement_signal")
+                    wsdm_engage = round(float(engagement), 4) if engagement is not None else None
                     wsdm_conf_raw = round(float(wsdm_pred.confidence), 4)
                     if self._calibration_engine:
                         cal_val, is_cal = self._calibration_engine.calibrated_confidence(

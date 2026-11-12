@@ -15,7 +15,7 @@ I engage in this type of action?"
 v56 adds the world dimension:
     action_type X + context C → Δ cognitive_energy (self)
                                 + Δ trust (world)
-                                + Δ user_engagement (world)
+                                + measured user engagement when available
                                 + Δ skill_depth (self, domain-specific)
                                 + Δ belief_confidence (self)
 
@@ -41,8 +41,8 @@ Three components:
        context_state     — 8-dim vector (self + world context at action time)
        self_delta        — changes in cognitive_energy, social_energy, attention,
                            self_model_confidence
-       world_delta       — changes in trust, engagement_signal, topic_persistence,
-                           skill_depth_change
+       world_delta       — measured trust change, optional measured engagement,
+                           and measured skill-depth change
 
    context_state extends v53's 5-dim vector with 3 world-side dimensions:
        [cog_energy, social_energy, attention, sm_confidence, novelty_drive,
@@ -134,7 +134,7 @@ class DynamicsRecord:
     action_type:    str
     context_before: List[float]   # 8-dim vector
     self_delta:     List[float]   # 4-dim: cog, soc, att, conf
-    world_delta:    List[float]   # 3-dim: trust, engagement, skill_gain
+    world_delta:    List[Optional[float]]   # trust, unavailable engagement, skill_gain
     outcome:        str
     user_id:        str           = "default"
     recorded_at:    float         = field(default_factory=time.time)
@@ -147,7 +147,7 @@ class DynamicsPrediction:
     action_type:       str
     context:           List[float]
     self_deltas:       Dict[str, float]   # dim → predicted delta
-    world_deltas:      Dict[str, float]   # dim → predicted delta
+    world_deltas:      Dict[str, Optional[float]]  # dim → predicted delta, None if unmeasured
     confidence:        float
     similar_cases:     int
     narrative:         str                # human-readable summary
@@ -223,7 +223,7 @@ class WorldSelfDynamicsModel:
 
     def record_outcome(
         self,
-        outcome:        str = "neutral",
+        outcome:        str = "unrated",
         user_id:        str = "default",
         response_text:  str = "",
         user_input:     str = "",
@@ -249,7 +249,7 @@ class WorldSelfDynamicsModel:
         context_after: List[float],
         *,
         interaction_n: int = 0,
-        outcome: str = "neutral",
+        outcome: str = "unrated",
         response_text: str = "",
         user_input: str = "",
         resolve_calibration: bool = False,
@@ -264,26 +264,18 @@ class WorldSelfDynamicsModel:
             for i in range(len(SELF_DELTA_DIMS))
         ]
 
-        # World-delta: trust change, engagement signal, skill gain
+        # World-delta: measured trust change, unavailable engagement, skill gain.
         trust_before = ctx_before[5]
         trust_after  = ctx_after[5]
         trust_delta  = round(trust_after - trust_before, 4)
 
-        # Engagement signal: proxy from response/input ratio and presence of questions
-        engagement = 0.0
-        if response_text and user_input:
-            # Longer response relative to input = higher engagement
-            ratio = len(response_text) / max(1, len(user_input))
-            engagement = min(1.0, ratio / 3.0) * 0.5
-            # Questions in response signal active engagement
-            q_count = response_text.count("?")
-            engagement += min(0.5, q_count * 0.10)
-        engagement = round(engagement, 4)
-
         # Skill gain: detect if any skill depth changed
         skill_gain = self._measure_skill_gain()
 
-        world_delta = [trust_delta, engagement, skill_gain]
+        # Engagement cannot be inferred from assistant verbosity or punctuation.
+        # Keep it explicitly unavailable until an independent user-side signal
+        # (for example explicit feedback) is wired into this model.
+        world_delta = [trust_delta, None, skill_gain]
 
         record = DynamicsRecord(
             action_type    = action_type,
@@ -304,7 +296,7 @@ class WorldSelfDynamicsModel:
         logger.debug(
             f"[WorldSelfDynamics] Recorded: {action_type} | "
             f"self: cog{self_delta[0]:+.3f} soc{self_delta[1]:+.3f} | "
-            f"world: trust{trust_delta:+.3f} eng={engagement:.2f} skill+{skill_gain:.3f}"
+            f"world: trust{trust_delta:+.3f} eng=unavailable skill+{skill_gain:.3f}"
         )
 
         # Do not resolve an unrelated human prediction from a concurrent peer
@@ -468,7 +460,7 @@ class WorldSelfDynamicsModel:
         action_type:   str,
         user_id:       str,
         horizon:       int = 20,
-    ) -> Optional[Dict[str, float]]:
+    ) -> Optional[Dict[str, Optional[float]]]:
         """
         Returns projected cumulative deltas over 'horizon' interactions.
         Used by TemporalProjection to upgrade its cost function.
@@ -483,7 +475,10 @@ class WorldSelfDynamicsModel:
             "cog_energy_total":    round(pred.self_deltas.get("cognitive_energy", 0) * horizon, 3),
             "social_energy_total": round(pred.self_deltas.get("social_energy", 0) * horizon, 3),
             "trust_total":         round(pred.world_deltas.get("user_trust", 0) * horizon, 3),
-            "engagement_mean":     round(pred.world_deltas.get("engagement_signal", 0), 3),
+            "engagement_mean":     (
+                round(pred.world_deltas["engagement_signal"], 3)
+                if pred.world_deltas.get("engagement_signal") is not None else None
+            ),
             "skill_gain_total":    round(pred.world_deltas.get("skill_depth_gain", 0) * horizon, 3),
             "confidence":          pred.confidence,
         }
@@ -633,7 +628,13 @@ class WorldSelfDynamicsModel:
             return None
 
         # Weighted averages
-        def wavg(field_idx: str, delta_list: str) -> float:
+        def wavg(field_idx: str, delta_list: str) -> Optional[float]:
+            # This dimension used to be fabricated from assistant response
+            # length/question marks. Never learn or predict it from legacy
+            # persisted proxy values; no valid user-engagement observation is
+            # currently recorded by WSDM.
+            if delta_list == "world_delta" and field_idx == "engagement_signal":
+                return None
             vals = []
             for _, rw, rec in k_near:
                 dlist = getattr(rec, delta_list, [])
@@ -645,8 +646,12 @@ class WorldSelfDynamicsModel:
                     vals.append((rw, 0.0))
             return sum(rw * v for rw, v in vals) / total_w
 
-        self_deltas = {d: round(wavg(d, "self_delta"), 4)  for d in SELF_DELTA_DIMS}
-        world_deltas= {d: round(wavg(d, "world_delta"), 4) for d in WORLD_DELTA_DIMS}
+        self_deltas = {d: round(wavg(d, "self_delta") or 0.0, 4) for d in SELF_DELTA_DIMS}
+        world_deltas = {
+            d: (round(value, 4) if value is not None else None)
+            for d in WORLD_DELTA_DIMS
+            for value in [wavg(d, "world_delta")]
+        }
 
         mean_dist  = sum(d for d, _, _ in k_near) / len(k_near)
         confidence = max(0.0, min(1.0, 1.0 / (1.0 + mean_dist * 2.5)))
@@ -670,7 +675,7 @@ class WorldSelfDynamicsModel:
         action_type:  str,
         context:      List[float],
         self_deltas:  Dict[str, float],
-        world_deltas: Dict[str, float],
+        world_deltas: Dict[str, Optional[float]],
         confidence:   float,
         n_cases:      int,
     ) -> str:
@@ -691,7 +696,7 @@ class WorldSelfDynamicsModel:
             parts.append(f"skill gain +{skill_d:.3f}")
 
         eng = world_deltas.get("engagement_signal", 0)
-        if eng > 0.15:
+        if eng is not None and eng > 0.15:
             parts.append(f"engagement {eng:.2f}")
 
         if not parts:

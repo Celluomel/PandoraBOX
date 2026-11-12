@@ -68,6 +68,8 @@ class PeerPredictiveOutcomeIsolationTests(unittest.TestCase):
         self.assertEqual(len(model._records), 1)
         self.assertEqual(model._records[0].user_id, "lumina_child_flux")
         self.assertEqual(model._records[0].self_delta, [-0.1, 0.1, 0.0, 0.0])
+        self.assertEqual(model._records[0].world_delta, [0.05, None, 0.05])
+        self.assertEqual(model._records[0].outcome, "neutral")
         model._calibration_engine.resolve_prediction.assert_not_called()
 
     def test_wsdm_calibration_uses_measured_energy_delta_not_valence_label(self):

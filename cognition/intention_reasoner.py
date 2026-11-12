@@ -289,11 +289,13 @@ class IntentionReasoner:
             prediction = model.predict_from_context(style, context) if model and context else None
             if prediction is not None:
                 cost = abs(float(prediction.self_deltas.get("cognitive_energy", cost)))
+                observed_gain_components = (
+                    prediction.world_deltas.get("user_trust"),
+                    prediction.world_deltas.get("skill_depth_gain"),
+                )
                 gain = max(
                     0.0,
-                    float(prediction.world_deltas.get("user_trust", 0.0))
-                    + float(prediction.world_deltas.get("engagement_signal", 0.0))
-                    + float(prediction.world_deltas.get("skill_depth_gain", 0.0)),
+                    sum(float(value) for value in observed_gain_components if value is not None),
                 )
                 confidence = float(prediction.confidence)
                 source = "world_self_dynamics"
