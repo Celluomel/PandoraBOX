@@ -3544,7 +3544,9 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     # high-similarity FAISS result, not evidence of the answer.
                     # Remove that self-match from both retrieval lanes before
                     # reserving a user-authored source in the prompt pool.
-                    _interaction_mems = filter_recall_query_records(_interaction_mems)
+                    _interaction_mems = filter_recall_query_records(
+                        _interaction_mems, query=user_input,
+                    )
                 # Cross-source retrieval can rank a fluent, high-impact past
                 # Lumina reply above the user's source statement. Retrieve the
                 # user's own messages through a separate lexical lane and
@@ -3553,7 +3555,9 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     _recall_query, limit=6 if _is_recall_request else 2
                 )
                 if _is_recall_request:
-                    _user_authored_mems = filter_recall_query_records(_user_authored_mems)
+                    _user_authored_mems = filter_recall_query_records(
+                        _user_authored_mems, query=user_input,
+                    )
                 memories = merge_user_authored_memories(
                     _interaction_mems, _user_authored_mems, _recall_limit
                 )

@@ -240,7 +240,63 @@ class MemorySystemFallbackTests(unittest.TestCase):
 
         self.assertEqual(
             filter_recall_query_records([repeated_recall, factual_source, historical_exchange]),
-            [factual_source, historical_exchange],
+            [factual_source],
+        )
+
+    def test_explicit_recall_filters_neighboring_status_and_prior_recall_episodes(self):
+        query = (
+            "Pour l’audit du harnais, quel résultat final ai-je demandé ? "
+            "Réponds depuis un échange antérieur retrouvé."
+        )
+        neighboring_status = {
+            "memory_type": "user_message",
+            "text": (
+                "Reprenons l’audit du harnais après ce redémarrage. Quel est le dernier "
+                "point vérifié avec preuve, quelle prochaine étape reste à examiner ?"
+            ),
+        }
+        previous_recall = {
+            "memory_type": "episodic",
+            "text": (
+                "Conversation — User: Pour l’audit du harnais, quel résultat final ai-je "
+                "demandé ? | Lumina: Je ne retrouve pas la source demandée."
+            ),
+        }
+        relevant_source = {
+            "memory_type": "user_message",
+            "text": (
+                "Pour le résultat final de l’audit du harnais, j’ai demandé d’évaluer "
+                "les sorties et effets aval sur des scénarios représentatifs, puis "
+                "de classer les modules."
+            ),
+        }
+
+        selected = filter_recall_query_records(
+            [neighboring_status, previous_recall, relevant_source], query=query,
+        )
+
+        self.assertEqual(selected, [relevant_source])
+        # This reproduces the live turn's actual retrieval failure: when only
+        # neighboring audit-status prompts and earlier retries are available,
+        # none may be passed to generation as evidence for the requested result.
+        self.assertEqual(
+            filter_recall_query_records(
+                [neighboring_status, previous_recall], query=query,
+            ),
+            [],
+        )
+
+    def test_explicit_recall_focus_keeps_english_source_and_rejects_unrelated(self):
+        query = "For the audit, what final outcome did I ask you to provide?"
+        source = {
+            "memory_type": "user_message",
+            "text": "The final outcome I asked for was a conclusive audit of the cognitive harness modules and their outputs.",
+        }
+        unrelated = {"memory_type": "user_message", "text": "What color is the camera status LED?"}
+
+        self.assertEqual(
+            filter_recall_query_records([unrelated, source], query=query),
+            [source],
         )
 
     def test_prior_request_question_english_routes_to_explicit_recall(self):

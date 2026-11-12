@@ -113,6 +113,34 @@ def extract_explicit_recall_topic(text: str) -> str:
     return value.strip(" \t\r\n?.,:;\"'«»") or str(text or "").strip()
 
 
+def _explicit_recall_focus(text: str) -> str:
+    """Return the requested historical subject, excluding conversation framing."""
+    value = str(text or "").strip()
+    patterns = (
+        r"\bquel(?:le)?s?\s+(?P<topic>[^?!.]{1,100}?)\s+"
+        r"(?:ai-je|est-ce\s+que\s+j['’]ai)\s+"
+        r"(?:demand[ée]s?|dit|formul[ée]s?|pos[ée]s?)\b",
+        r"\bwhat\s+(?P<topic>[^?!.]{1,100}?)\s+did\s+i\s+"
+        r"(?:ask|request|say|tell\s+you)\b",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, value, flags=re.IGNORECASE)
+        if match:
+            return match.group("topic").strip(" \t\r\n,;:«»\"'")
+    return extract_explicit_recall_topic(value)
+
+
+def _memory_user_text(memory: dict) -> str:
+    """Extract user-authored text from an episodic record when available."""
+    text = str(memory.get("text", ""))
+    match = re.search(
+        r"\buser\s*:\s*(.*?)(?=\s*[|\n]\s*(?:lumina|assistant)\s*:|$)",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    return match.group(1).strip() if match else text
+
+
 def is_explicit_memory_recall_query(text: str) -> bool:
     """Recognize explicit requests to retrieve earlier conversational facts."""
     value = " ".join(str(text or "").casefold().split())
@@ -135,22 +163,31 @@ def is_explicit_memory_recall_query(text: str) -> bool:
     ))
 
 
-def filter_recall_query_records(memories: Sequence[dict]) -> List[dict]:
-    """Drop stored user utterances that are themselves recall questions.
+def filter_recall_query_records(
+    memories: Sequence[dict], query: str | None = None,
+) -> List[dict]:
+    """Remove recall self-matches and sources unrelated to the requested focus.
 
-    Such records are common self-matches (especially after retrying a recall
-    request). They prove that the earlier question was asked, but they are not
-    source material for the answer being recalled. Keep episodic exchanges so
-    their user-authored content and assistant reply can still be evaluated
-    separately by the prompt's provenance rules.
+    Historical recall questions are not evidence for the answer to a later
+    recall question. Episodic records are evaluated using their user-authored
+    segment, never the assistant's often fluent but potentially incorrect
+    reply. When a query is supplied, unrelated source utterances are excluded
+    before prompt injection; an empty result is preferable to a plausible
+    answer assembled from a neighboring conversation topic.
     """
-    return [
-        memory for memory in memories
-        if not (
-            str(memory.get("memory_type", "")).casefold() == "user_message"
-            and is_explicit_memory_recall_query(str(memory.get("text", "")))
-        )
-    ]
+    focus = set(tokenize(_explicit_recall_focus(query))) if query else set()
+    filtered = []
+    for memory in memories:
+        kind = str(memory.get("memory_type", "")).casefold()
+        source_text = _memory_user_text(memory)
+        if kind in {"user_message", "episodic"} and is_explicit_memory_recall_query(source_text):
+            continue
+        if focus and kind in {"user_message", "episodic"}:
+            source_terms = set(tokenize(source_text))
+            if not (focus & source_terms):
+                continue
+        filtered.append(memory)
+    return filtered
 
 
 def tokenize(text: str) -> List[str]:
