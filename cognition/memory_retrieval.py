@@ -9,6 +9,11 @@ from collections import Counter
 from typing import List, Sequence, Tuple
 
 _TOKEN_RE = re.compile(r"[^\W_]+", re.UNICODE)
+_VISUAL_INTENT_TERMS = frozenset((
+    "photo", "picture", "image", "see", "saw", "seeing", "room", "face",
+    "camera", "vision", "visual", "see", "voir", "vois", "voit", "vu",
+    "regarde", "regarder", "visage", "image", "photo", "caméra",
+))
 _STOPWORDS = frozenset(("""
 a about after again all also am an and any are as at be been before but by can could did do does doing down during each
 few for from further had has have having he her here hers herself him himself his how i if in into is it its itself
@@ -174,3 +179,14 @@ def filter_memories_by_modality(
         if str(memory.get("memory_tier", "")).casefold() != "visual"
         and str(memory.get("memory_type", "")).casefold() != "visual_perception"
     ]
+
+
+def is_visual_memory_query(query: str) -> bool:
+    """Return whether the current utterance explicitly requests visual context.
+
+    Learned vocabulary may help rank memories, but must not override the
+    current utterance's modality and inject visual records into unrelated text
+    recall. This is deliberately a routing signal, not a semantic classifier.
+    """
+    tokens = {token.casefold() for token in _TOKEN_RE.findall(str(query or ""))}
+    return bool(tokens & _VISUAL_INTENT_TERMS)

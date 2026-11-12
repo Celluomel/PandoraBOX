@@ -18,6 +18,7 @@ from cognition.ai_system import EnhancedMemorySystem
 from cognition.memory_retrieval import (
     extract_explicit_recall_topic,
     filter_memories_by_modality,
+    is_visual_memory_query,
     merge_user_authored_memories,
 )
 from cognition.turn_context_evidence import format_memory_for_prompt
@@ -220,6 +221,11 @@ class MemorySystemFallbackTests(unittest.TestCase):
             filter_memories_by_modality(records, include_visual=True),
             records,
         )
+
+    def test_visual_memory_routing_uses_current_utterance_not_learned_topic(self):
+        self.assertFalse(is_visual_memory_query("Quel correctif récent est chargé ?"))
+        self.assertTrue(is_visual_memory_query("Que vois-tu dans cette image ?"))
+        self.assertTrue(is_visual_memory_query("What does the camera see?"))
 
     def test_empty_vector_index_does_not_hide_database_memories(self):
         system = self._system(embedder=object(), index=SimpleNamespace(ntotal=0))

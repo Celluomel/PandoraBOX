@@ -707,6 +707,47 @@ def test_delegated_fast_route_does_not_count_as_primary_generation():
     assert "generation" in integrity["missing_core_stages"]
 
 
+def test_completed_final_answer_recovery_counts_as_generation_evidence():
+    bridge = _bridge()
+    bridge._last_turn_trace["stages"].update({
+        "readiness": {"status": "passed"},
+        "input_safety": {"status": "passed"},
+        "prompt_assembly": {"status": "completed"},
+        "primary_generation": {"status": "empty"},
+        "final_answer_recovery": {"status": "completed"},
+        "output_safety": {"status": "passed"},
+        "response_finalization": {"status": "completed"},
+        "response": {"status": "completed"},
+    })
+
+    bridge._finish_turn_trace("completed")
+    integrity = bridge._last_turn_trace["pipeline_integrity"]
+
+    assert integrity["status"] == "consistent"
+    assert integrity["execution_path"] == "recovered_generation"
+    assert integrity["missing_core_stages"] == []
+
+
+def test_recovery_generation_must_precede_output_safety():
+    bridge = _bridge()
+    bridge._last_turn_trace["stages"].update({
+        "readiness": {"status": "passed"},
+        "input_safety": {"status": "passed"},
+        "prompt_assembly": {"status": "completed"},
+        "primary_generation": {"status": "empty"},
+        "final_answer_recovery": {"status": "completed", "at": 20},
+        "output_safety": {"status": "passed", "at": 10},
+        "response_finalization": {"status": "completed"},
+        "response": {"status": "completed"},
+    })
+
+    bridge._finish_turn_trace("completed")
+
+    assert "output_safety_before_final_answer_recovery" in bridge._last_turn_trace[
+        "pipeline_integrity"
+    ]["stage_order_violations"]
+
+
 def test_streamed_answer_is_not_released_before_output_safety_gate():
     tree = ast.parse(Path(inspect.getfile(PersonaBridge)).read_text(encoding="utf-8"))
     bridge_class = next(

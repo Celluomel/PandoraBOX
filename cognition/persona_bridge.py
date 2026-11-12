@@ -36,6 +36,7 @@ from cognition.body_runtime.robot_capabilities import robot_capability_report, r
 from cognition.memory_retrieval import (
     extract_explicit_recall_topic,
     filter_memories_by_modality,
+    is_visual_memory_query,
     merge_user_authored_memories,
 )
 from cognition.turn_context_evidence import (
@@ -870,6 +871,12 @@ class PersonaBridge:
                     or deterministic_goal_path
                     or deterministic_reasoning_path
                     or fast_direct_path
+                    # A provider may finish without visible answer text and
+                    # PersonaBridge can then make a second, explicit final
+                    # answer recovery call. That call is generation work and
+                    # must count as such, while its separate status keeps the
+                    # failed/empty primary attempt visible in the receipt.
+                    or stage_status.get("final_answer_recovery") == "completed"
                     or any(
                         isinstance(stage_status.get(name), str)
                         and stage_status.get(name) in accepted
@@ -914,6 +921,7 @@ class PersonaBridge:
                 for earlier, later in (
                     ("prompt_assembly", "primary_generation"),
                     ("primary_generation", "output_safety"),
+                    ("final_answer_recovery", "output_safety"),
                     ("fallback_generation", "output_safety"),
                     ("goal_write_gate", "output_safety"),
                     ("body_action_resolution", "output_safety"),
@@ -1005,6 +1013,8 @@ class PersonaBridge:
                         else "blocking_fallback" if blocking_fallback_path
                         else "deterministic_reasoning" if deterministic_reasoning_path
                         else "fast_direct_response" if fast_direct_path
+                        else "recovered_generation"
+                        if stage_status.get("final_answer_recovery") == "completed"
                         else "generative_chat"
                     ),
                     "missing_core_stages": missing_core,
@@ -3458,14 +3468,17 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             # Universal seeds — only active until learned vocab takes over
             # These bootstrap the very first interactions per user.
             # Once vocab_map has weight ≥ 0.4 for a tier, learned_tier wins.
-            _SEED_VISUAL   = ("photo","picture","image","see","saw","room",
-                              "face","camera","vision","what you see")
             _SEED_EVENT    = ("dream","life event","milestone","what happened",
                               "when did","t'en souviens","souviens")
-            _seed_visual   = any(k in _query_lower for k in _SEED_VISUAL)
+            _seed_visual   = is_visual_memory_query(user_input)
             _seed_event    = any(k in _query_lower for k in _SEED_EVENT)
 
-            _is_visual  = (_learned_tier == "visual")   or (_learned_tier is None and _seed_visual)
+            # Learned vocabulary is useful for ranking within a modality, but
+            # it cannot override the current turn's intent and pull visual
+            # memories into an unrelated text recall. The live execution audit
+            # caught a visual session record injected into a question about a
+            # code fix because the learned tier alone classified it as visual.
+            _is_visual  = _seed_visual
             _is_event   = (_learned_tier == "event")    or (_learned_tier is None and _seed_event)
 
             memories = []
