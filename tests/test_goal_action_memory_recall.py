@@ -31,6 +31,7 @@ def test_memory_recall_is_not_success_when_no_consumer_admits_thought():
     assert result["memory_retrieved"] is True
     assert result["thought_published"] is False
     assert result["success"] is False
+    assert result["reason_code"] == "memory_result_not_admitted"
     assert "not admitted" in result["result"]
 
 
@@ -47,3 +48,18 @@ def test_memory_recall_success_requires_a_confirmed_consumer_admission():
     assert result["memory_retrieved"] is True
     assert result["thought_published"] is True
     assert result["success"] is True
+    assert result["outcome_status"] == "succeeded"
+
+
+def test_empty_memory_recall_has_machine_readable_failure_reason():
+    executor = GoalActionExecutor.__new__(GoalActionExecutor)
+    executor._o = SimpleNamespace(semantic_memory=None, ai_system=None)
+    executor._add_thought = lambda *args, **kwargs: {}
+
+    result = executor._try_memory_recall(SimpleNamespace(
+        topic="audit cognitive memory retrieval"
+    ))
+
+    assert result["success"] is False
+    assert result["outcome_status"] == "failed"
+    assert result["reason_code"] == "no_relevant_memories"

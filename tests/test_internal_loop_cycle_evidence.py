@@ -249,6 +249,72 @@ def test_cycle_summary_exposes_only_allowlisted_cognitive_outcome_counts():
     assert "do not expose this" not in repr(summary)
 
 
+def test_cycle_summary_exposes_safe_executor_outcome_and_hashed_execution_ref():
+    loop = make_loop()
+    loop._begin_cycle_evidence(17)
+    loop._record_cycle_stage(
+        "goal_action_executor", "failed",
+        output={
+            "action": "memory_recall",
+            "outcome_status": "failed",
+            "reason_code": "no_relevant_memories",
+            "success": False,
+            "execution_id": "act_private_identifier",
+            "goal_topic": "private topic must remain hidden",
+            "result": "private retrieved text must remain hidden",
+        },
+    )
+
+    summary = loop.cycle_evidence_snapshot()["cycles"][0]["stages"][0]["output_summary"]
+    assert summary["action"] == "memory_recall"
+    assert summary["outcome_status"] == "failed"
+    assert summary["reason_code"] == "no_relevant_memories"
+    assert summary["success"] is False
+    assert summary["execution_ref"]
+    assert "goal_topic" not in repr(summary)
+    assert "private retrieved text" not in repr(summary)
+
+
+def test_async_goal_action_outcome_is_attached_to_its_origin_cycle():
+    from cognition.goal_action_executor import GoalActionExecutor
+
+    loop = make_loop()
+    loop._begin_cycle_evidence(23)
+    loop._record_cycle_stage(
+        "goal_action_executor", "dispatched",
+        output={
+            "action": "web_search", "outcome_status": "dispatched",
+            "success": False, "execution_id": "act_async_23",
+        },
+    )
+    loop._finish_cycle_evidence("completed")
+
+    executor = GoalActionExecutor.__new__(GoalActionExecutor)
+    executor._o = SimpleNamespace(_loop=loop)
+    executor._pending_predictions = {}
+    executor._get_goal_engine = lambda: None
+    executor._persist_goal_action_receipt = lambda *args: False
+    executor._broadcast = lambda *args: None
+    executor._record_plan_outcome = lambda *args, **kwargs: None
+    goal = SimpleNamespace(id="goal-23", topic="private goal topic")
+    receipt = executor._finalize_async_action(
+        goal, "web_search", False, "private search result text",
+        execution_id="act_async_23", cycle_id=23,
+    )
+
+    assert receipt["success"] is False
+    cycles = loop.cycle_evidence_snapshot(limit=10)["cycles"]
+    origin = next(cycle for cycle in cycles if cycle["cycle_id"] == 23)
+    async_stage = origin["stages"][-1]
+    assert async_stage["stage"] == "goal_action_executor.web_search"
+    assert async_stage["status"] == "failed"
+    assert async_stage["async_completion"] is True
+    assert async_stage["metrics"]["success"] is False
+    assert async_stage["metrics"]["execution_ref"]
+    assert "private search result text" not in repr(origin)
+    assert "private goal topic" not in repr(origin)
+
+
 def test_goal_broadcast_receipt_counts_only_admissions_and_reports_failures():
     class _Workspace:
         def broadcast(self, source, content, priority):

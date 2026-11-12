@@ -533,13 +533,30 @@ class InternalThoughtLoop:
         if isinstance(value, dict):
             summary: dict[str, Any] = {"kind": "mapping", "field_count": len(value)}
             for key in (
-                "type", "status", "success", "created", "verified", "action",
+                "type", "status", "success", "created", "verified",
+                "outcome_status", "reason_code", "skipped",
                 "source_thought_source", "source_thought_type", "source_concept_method",
                 "drive_update", "need_scan",
             ):
                 item = value.get(key)
-                if isinstance(item, (str, bool, int, float)) and key != "action":
+                if isinstance(item, (str, bool, int, float)):
+                    if key == "reason_code" and isinstance(item, str) and not (
+                        item.isascii() and item.replace("_", "").isalnum() and len(item) <= 64
+                    ):
+                        continue
                     summary[key] = item if not isinstance(item, str) else item[:48]
+            allowed_actions = {
+                "memory_recall", "self_question", "bisociative_hypothesis",
+                "web_search", "user_question",
+            }
+            action = value.get("action")
+            if isinstance(action, str) and action in allowed_actions:
+                summary["action"] = action
+            execution_id = value.get("execution_id")
+            if isinstance(execution_id, str) and execution_id:
+                summary["execution_ref"] = hashlib.sha256(
+                    execution_id.encode("utf-8")
+                ).hexdigest()[:20]
             safe_numeric_fields = {
                 "active_goal_count", "total_goal_count", "goal_thought_count",
                 "candidate_count", "accepted_candidate_count", "motivation_count",
@@ -1819,8 +1836,12 @@ class InternalThoughtLoop:
                     cycle_id=self._slow_cycle_count,
                 )
                 _previous_winner_ref = getattr(o, "_v32_workspace_winner_evidence_ref", None)
+                _action_stage_status = (
+                    str(_action_report.get("outcome_status", "completed"))
+                    if isinstance(_action_report, dict) else "no_action_report"
+                )
                 self._record_cycle_stage(
-                    "goal_action_executor", "completed" if _action_report is not None else "no_action_report",
+                    "goal_action_executor", _action_stage_status,
                     inputs={
                         "winner_output_ref": _previous_winner_ref if decision_is_fresh else None,
                         "decision_fresh": decision_is_fresh,

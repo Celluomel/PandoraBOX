@@ -48,6 +48,7 @@ Fixes applied vs previous version:
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
@@ -66,6 +67,10 @@ ACTION_USER_QUESTION = "user_question"
 ACTION_MEMORY_RECALL = "memory_recall"
 ACTION_SELF_QUESTION = "self_question"
 ACTION_BISOCIATIVE   = "bisociative_hypothesis"   # FIX 6: collision engine
+_SAFE_ACTION_TYPES = frozenset({
+    ACTION_WEB_SEARCH, ACTION_USER_QUESTION, ACTION_MEMORY_RECALL,
+    ACTION_SELF_QUESTION, ACTION_BISOCIATIVE,
+})
 
 # Rotation order per goal — ensures all types get exercised.
 # ORDER MATTERS:
@@ -310,6 +315,8 @@ class GoalActionExecutor:
                 "goal_topic": goal.topic,
                 "action": None,
                 "success": False,
+                "outcome_status": "skipped",
+                "reason_code": "planned_operation_unavailable",
                 "result": "planned operation unavailable; fallback suppressed",
                 "skipped": True,
             }
@@ -332,6 +339,8 @@ class GoalActionExecutor:
                     "goal_topic": goal.topic,
                     "action": action_type,
                     "success": False,
+                    "outcome_status": "skipped",
+                    "reason_code": "duplicate_async_inflight",
                     "result": "duplicate async action suppressed; existing execution still running",
                     "skipped": True,
                 }
@@ -398,6 +407,7 @@ class GoalActionExecutor:
             'execution_id': execution_id,
             'cycle_id': cycle_id,
             'success':    False,
+            'outcome_status': 'failed',
             'result':     '',
         }
         async_dispatched = False
@@ -439,11 +449,20 @@ class GoalActionExecutor:
                 # Dispatch is not an outcome. The coroutine records the plan
                 # result only after it has produced usable cognitive output.
                 report['success'] = False
+                report['outcome_status'] = 'dispatched'
                 report['result']  = f"{action_type} dispatched (async)"
 
         except Exception as e:
             logger.warning(f"[GoalActionExecutor] Action failed: {e}", exc_info=True)
             report['result'] = str(e)
+            report['reason_code'] = 'action_exception'
+            report['error_type'] = type(e).__name__
+
+        if report['success']:
+            report['outcome_status'] = 'succeeded'
+        elif not async_dispatched and not report.get('skipped'):
+            report.setdefault('outcome_status', 'failed')
+            report.setdefault('reason_code', 'action_failed')
 
         if async_key is not None and not async_dispatched:
             self._release_async_action(async_key)
@@ -745,6 +764,8 @@ class GoalActionExecutor:
             )
             return {
                 'success': published,
+                'outcome_status': 'succeeded' if published else 'failed',
+                'reason_code': '' if published else 'memory_result_not_admitted',
                 'memory_retrieved': True,
                 'thought_published': published,
                 'result': (
@@ -755,7 +776,12 @@ class GoalActionExecutor:
                 **publication,
             }
 
-        return {'success': False, 'result': "no relevant memories found"}
+        return {
+            'success': False,
+            'outcome_status': 'failed',
+            'reason_code': 'no_relevant_memories',
+            'result': "no relevant memories found",
+        }
 
     def _action_user_question(self, goal) -> Dict:
         """
@@ -795,7 +821,13 @@ class GoalActionExecutor:
                 f"[GoalActionExecutor] User question skipped — topic '{topic[:25]}' "
                 f"asked {int((time.time()-last_asked)/60)} min ago"
             )
-            return {'success': False, 'result': 'topic on cooldown'}
+            return {
+                'success': False,
+                'outcome_status': 'skipped',
+                'reason_code': 'topic_cooldown',
+                'skipped': True,
+                'result': 'topic on cooldown',
+            }
 
         # Try to generate a contextual question using recent insight
         recent_insight = ""
@@ -2315,6 +2347,36 @@ class GoalActionExecutor:
                 logger.debug(
                     "[GoalActionExecutor] async consequence resolution error: %s", e
                 )
+        # Async actions outlive run_tick(). Attach their terminal outcome to
+        # the originating slow cycle, rather than letting the dispatch receipt
+        # be mistaken for action success or attributing it to a later cycle.
+        if cycle_id is not None:
+            try:
+                loop = getattr(self._o, "_loop", None)
+                record_async = getattr(loop, "record_async_cycle_stage", None)
+                if callable(record_async):
+                    safe_action = action_type if action_type in _SAFE_ACTION_TYPES else "unknown"
+                    reason_code = ""
+                    if isinstance(evidence, dict):
+                        candidate = evidence.get("reason_code")
+                        if isinstance(candidate, str) and re.fullmatch(r"[a-z0-9_]{1,64}", candidate):
+                            reason_code = candidate
+                    record_async(
+                        int(cycle_id),
+                        f"goal_action_executor.{safe_action}",
+                        "succeeded" if success else "failed",
+                        metrics={
+                            "action": safe_action,
+                            "success": bool(success),
+                            "execution_ref": hashlib.sha256(
+                                str(execution_id).encode("utf-8")
+                            ).hexdigest()[:20] if execution_id else "",
+                            "reason_code": reason_code,
+                            "goal_state_persisted": bool(goal_state_persisted),
+                        },
+                    )
+            except Exception as e:
+                logger.debug("[GoalActionExecutor] async cycle evidence error: %s", e)
         return receipt
 
     def _has_semantic_memory(self) -> bool:
