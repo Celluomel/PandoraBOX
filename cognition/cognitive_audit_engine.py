@@ -185,6 +185,7 @@ class SignalSnapshot:
     slow_cycle:                    int
     timestamp:                     float
     signal_status:                 Dict[str, str] = field(default_factory=dict)
+    signal_sample_count:           Dict[str, int] = field(default_factory=dict)
     epistemic_grounding_rate:      Optional[float] = None
     experiment_confirmation_rate:  Optional[float] = None
     question_resolution_rate:     Optional[float] = None
@@ -379,6 +380,9 @@ class CognitiveAuditEngine:
             "measured_signal_count": len(measured),
             "unavailable_signals": sorted(set(SIGNAL_TARGETS) - set(measured)),
             "signal_measurement_status": self._snapshot_signal_status(snap),
+            "signal_sample_count": (
+                dict(snap.get("signal_sample_count", {})) if isinstance(snap, dict) else {}
+            ),
             "active_trial": trial,
             "proposal_attempt_count": int(self._state.proposal_attempt_total),
             "last_proposal_attempt": dict(self._state.last_proposal_attempt or {}),
@@ -551,7 +555,16 @@ class CognitiveAuditEngine:
             ar = getattr(self._organism, '_loop', None)
             ar = getattr(ar, '_autonomous_reflection', None) if ar else None
             if ar and hasattr(ar, '_epistemic'):
-                snap.epistemic_grounding_rate = ar._epistemic._recent_grounding_rate()
+                epistemic = ar._epistemic
+                snap.epistemic_grounding_rate = epistemic._recent_grounding_rate()
+                grounding_log = getattr(getattr(epistemic, "_state", None), "grounding_log", [])
+                grounding_samples = [
+                    record for record in grounding_log
+                    if record.get("measurement_status") == "measured"
+                    and record.get("measurement_source")
+                    and record.get("grounded") is not None
+                ][-10:]
+                snap.signal_sample_count["epistemic_grounding_rate"] = len(grounding_samples)
                 status["epistemic_grounding_rate"] = (
                     "measured" if snap.epistemic_grounding_rate is not None else "no_observations"
                 )
@@ -565,11 +578,15 @@ class CognitiveAuditEngine:
             loop = getattr(self._organism, '_loop', None)
             ae = getattr(loop, '_auto_experiment', None) if loop else None
             if ae and hasattr(ae, '_state'):
-                total = ae._state.total_experiments
-                if total > 0:
-                    snap.experiment_confirmation_rate = (
-                        ae._state.total_confirmed / total
-                    )
+                completed = [
+                    item for item in getattr(ae._state, "experiment_log", [])
+                    if item.get("outcome") in {"confirmed", "disconfirmed", "inconclusive"}
+                ][-10:]
+                snap.signal_sample_count["experiment_confirmation_rate"] = len(completed)
+                if completed:
+                    snap.experiment_confirmation_rate = sum(
+                        1 for item in completed if item.get("outcome") == "confirmed"
+                    ) / len(completed)
                     status["experiment_confirmation_rate"] = "measured"
                 else:
                     status["experiment_confirmation_rate"] = "no_observations"
@@ -583,11 +600,15 @@ class CognitiveAuditEngine:
             loop = getattr(self._organism, '_loop', None)
             re = getattr(loop, '_resolution_engine', None) if loop else None
             if re and hasattr(re, '_state'):
-                resolved     = re._state.total_resolved
-                unresolvable = re._state.total_unresolvable
-                total = resolved + unresolvable
-                if total > 0:
-                    snap.question_resolution_rate = resolved / total
+                conclusive = [
+                    item for item in getattr(re._state, "resolution_log", [])
+                    if item.get("outcome") in {"resolved", "unresolvable"}
+                ][-10:]
+                snap.signal_sample_count["question_resolution_rate"] = len(conclusive)
+                if conclusive:
+                    snap.question_resolution_rate = sum(
+                        1 for item in conclusive if item.get("outcome") == "resolved"
+                    ) / len(conclusive)
                     status["question_resolution_rate"] = "measured"
                 else:
                     status["question_resolution_rate"] = "no_observations"
@@ -603,6 +624,7 @@ class CognitiveAuditEngine:
             if skills:
                 depths = [s.get('depth', 0) for s in skills.values()]
                 snap.mean_skill_depth = sum(depths) / len(depths)
+                snap.signal_sample_count["mean_skill_depth"] = len(depths)
                 status["mean_skill_depth"] = "measured"
             elif sr is not None:
                 status["mean_skill_depth"] = "no_observations"
@@ -621,6 +643,7 @@ class CognitiveAuditEngine:
             if sc and hasattr(sc, '_beliefs') and sc._beliefs:
                 confs = [b.confidence for b in sc._beliefs.values()]
                 snap.belief_confidence_mean = sum(confs) / len(confs)
+                snap.signal_sample_count["belief_confidence_mean"] = len(confs)
                 status["belief_confidence_mean"] = "measured"
             elif sc is not None:
                 status["belief_confidence_mean"] = "no_observations"

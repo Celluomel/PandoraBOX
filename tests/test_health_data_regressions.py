@@ -232,11 +232,18 @@ class HealthDataTests(unittest.TestCase):
         audit._organism = NS(
             _loop=NS(
                 _autonomous_reflection=NS(
-                    _epistemic=NS(_recent_grounding_rate=lambda: 0.8)),
+                    _epistemic=NS(
+                        _recent_grounding_rate=lambda: 0.8,
+                        _state=NS(grounding_log=[{
+                            'measurement_status': 'measured',
+                            'measurement_source': 'test',
+                            'grounded': True,
+                        }]),
+                    )),
                 _auto_experiment=NS(_state=NS(
-                    total_experiments=0, total_confirmed=0)),
+                    total_experiments=0, total_confirmed=0, experiment_log=[])),
                 _resolution_engine=NS(_state=NS(
-                    total_resolved=0, total_unresolvable=0)),
+                    total_resolved=0, total_unresolvable=0, resolution_log=[])),
             ),
             skill_registry=NS(_state=NS(skills={})),
         )
@@ -258,6 +265,40 @@ class HealthDataTests(unittest.TestCase):
             'epistemic_grounding_rate': 0.8 - 0.6,
         })
         self.assertIsNone(snapshot.worst_signal())
+
+    def test_audit_uses_recent_conclusive_outcomes_and_excludes_pending_experiments(self):
+        audit = CognitiveAuditEngine.__new__(CognitiveAuditEngine)
+        audit._organism = NS(
+            _loop=NS(
+                _auto_experiment=NS(_state=NS(
+                    total_experiments=30,
+                    total_confirmed=20,
+                    experiment_log=[
+                        {'outcome': 'confirmed'},
+                        {'outcome': 'disconfirmed'},
+                        {'outcome': 'pending'},
+                        {'outcome': 'inconclusive'},
+                    ])),
+                _resolution_engine=NS(_state=NS(
+                    total_resolved=40,
+                    total_unresolvable=10,
+                    resolution_log=[
+                        {'outcome': 'resolved'},
+                        {'outcome': 'tentative'},
+                        {'outcome': 'unresolvable'},
+                        {'outcome': 'insufficient'},
+                    ])),
+            ),
+            skill_registry=None,
+        )
+        audit._ai = NS(self_concept=None)
+
+        snapshot = audit._read_signals(80)
+
+        self.assertAlmostEqual(snapshot.experiment_confirmation_rate, 1 / 3)
+        self.assertAlmostEqual(snapshot.question_resolution_rate, 1 / 2)
+        self.assertEqual(snapshot.signal_sample_count['experiment_confirmation_rate'], 3)
+        self.assertEqual(snapshot.signal_sample_count['question_resolution_rate'], 2)
 
     def test_audit_summary_distinguishes_missing_diagnostics_in_legacy_snapshots(self):
         audit = CognitiveAuditEngine.__new__(CognitiveAuditEngine)
