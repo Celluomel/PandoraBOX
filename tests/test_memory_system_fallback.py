@@ -525,6 +525,33 @@ class MemorySystemFallbackTests(unittest.TestCase):
         self.assertEqual(recalled[0]["id"], 8)
         self.assertEqual(recalled[0]["memory_type"], "user_message")
 
+    def test_cross_pool_merge_deduplicates_same_user_turn(self):
+        user_message = {
+            "id": 8,
+            "memory_type": "user_message",
+            "text": "User message: Keep the audit focused on causal module execution.",
+        }
+        episodic_copy = {
+            "id": 7,
+            "memory_type": "episodic",
+            "text": (
+                "Conversation — User: Keep the audit focused on causal module execution. "
+                "(felt neutral) | Lumina: Historical assistant text."
+            ),
+        }
+        distinct_episode = {
+            "id": 6,
+            "memory_type": "episodic",
+            "text": "Conversation — User: Check memory recall next. | Lumina: Done.",
+        }
+
+        merged = merge_user_authored_memories(
+            [episodic_copy, distinct_episode], [user_message], limit=5,
+        )
+
+        self.assertEqual([memory["id"] for memory in merged], [8, 6])
+        self.assertEqual(merged[0]["memory_type"], "user_message")
+
     def test_encoder_failure_disables_broken_vector_path_and_falls_back(self):
         system = self._system(embedder=_BrokenEmbedder(), index=_Index())
 

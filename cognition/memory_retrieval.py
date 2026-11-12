@@ -256,11 +256,19 @@ def merge_user_authored_memories(
         return []
     merged: List[dict] = []
     seen = set()
+    seen_user_texts = set()
 
     def add(memory: dict) -> None:
         key = memory.get("id") or memory.get("faiss_id") or memory.get("text")
         if key in seen:
             return
+        memory_type = str(memory.get("memory_type", "")).casefold()
+        if memory_type in {"user_message", "episodic"} or memory.get("source") == "legacy_episodic_user_source":
+            user_text = " ".join(extract_user_authored_text(memory).casefold().split())
+            if user_text and user_text in seen_user_texts:
+                return
+            if user_text:
+                seen_user_texts.add(user_text)
         seen.add(key)
         merged.append(memory)
 
