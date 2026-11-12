@@ -126,3 +126,16 @@ def merge_user_authored_memories(
         if len(merged) >= limit:
             break
     return merged[:limit]
+
+
+def filter_memories_by_modality(
+    memories: Sequence[dict], *, include_visual: bool
+) -> List[dict]:
+    """Exclude visual records from text-only recall unless the query asks for vision."""
+    if include_visual:
+        return list(memories)
+    return [
+        memory for memory in memories
+        if str(memory.get("memory_tier", "")).casefold() != "visual"
+        and str(memory.get("memory_type", "")).casefold() != "visual_perception"
+    ]

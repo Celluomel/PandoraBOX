@@ -35,6 +35,7 @@ from cognition.identity_boundary import prompt_block as _identity_boundary_block
 from cognition.body_runtime.robot_capabilities import robot_capability_report, robot_inventory_observation
 from cognition.memory_retrieval import (
     extract_explicit_recall_topic,
+    filter_memories_by_modality,
     merge_user_authored_memories,
 )
 from cognition.turn_context_evidence import (
@@ -3534,14 +3535,20 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                 except Exception:
                     pass
 
-            # Explicit recall: also search raw input across all tiers
+            # Explicit recall: use the normalized topic for the secondary lane
+            # too; searching the full instruction reintroduces current-turn
+            # wording and can retrieve records about the request itself.
             if not peer_name and _is_recall_request:
                 try:
-                    _secondary = s.memory_system.retrieve_memories(user_input, limit=4)
+                    _secondary = s.memory_system.retrieve_memories(_recall_query, limit=4)
                     _seen = {m.get('text','') for m in memories}
                     memories.extend(m for m in _secondary if m.get('text','') not in _seen)
                 except Exception:
                     pass
+
+            # Keep modality consistent across every retrieval lane, including
+            # the mixed FAISS pool and explicit-recall secondary search.
+            memories = filter_memories_by_modality(memories, include_visual=_is_visual)
 
             # Widened pool when a recent exchange was surprising (see
             # _recall_limit above) — otherwise a wider fetch upstream would
@@ -3551,7 +3558,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
 
             # ── Session visual buffer — always checked on recall/visual queries ──
             # These are guaranteed fresh (written before FAISS async write completes)
-            if not peer_name and (_is_visual or _is_recall_request) and self._session_visuals:
+            if not peer_name and _is_visual and self._session_visuals:
                 import time as _tsv
                 _seen_texts = {m.get('text','') for m in memories}
                 for _sv in reversed(self._session_visuals):  # most recent first

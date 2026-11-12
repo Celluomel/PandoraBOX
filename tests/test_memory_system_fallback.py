@@ -14,6 +14,7 @@ sys.modules.setdefault("cognition", package)
 from cognition.ai_system import EnhancedMemorySystem
 from cognition.memory_retrieval import (
     extract_explicit_recall_topic,
+    filter_memories_by_modality,
     merge_user_authored_memories,
 )
 from cognition.turn_context_evidence import format_memory_for_prompt
@@ -130,6 +131,20 @@ class MemorySystemFallbackTests(unittest.TestCase):
     def test_visual_tier_is_not_implied_by_recall_language(self):
         query = "Rappelle ce que je t’ai demandé concernant la manière de conduire l’audit"
         self.assertNotIn("image", extract_explicit_recall_topic(query).casefold())
+
+    def test_text_recall_excludes_visual_results_from_mixed_retrieval_pool(self):
+        records = [
+            {"memory_tier": "interaction", "memory_type": "user_message", "text": "audit priority"},
+            {"memory_tier": "visual", "memory_type": "visual_perception", "text": "camera scene"},
+        ]
+        self.assertEqual(
+            filter_memories_by_modality(records, include_visual=False),
+            [records[0]],
+        )
+        self.assertEqual(
+            filter_memories_by_modality(records, include_visual=True),
+            records,
+        )
 
     def test_empty_vector_index_does_not_hide_database_memories(self):
         system = self._system(embedder=object(), index=SimpleNamespace(ntotal=0))
