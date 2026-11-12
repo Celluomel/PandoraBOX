@@ -1554,12 +1554,6 @@ class GoalActionExecutor:
                 pass
 
             # ── Self-modification feedback ─────────────────────────────────
-            # If this goal was a hypothesis test, record the outcome so
-            # SelfModificationAuthority can adjust evaluator weights over time.
-            goal_type = getattr(goal, 'origin', '')
-            if 'test_hypothesis' in goal_type or 'resolve_tension' in goal_type:
-                self._record_resolution_outcome(goal, insight)
-
             self._finalize_async_action(
                 goal, ACTION_SELF_QUESTION, True, insight,
                 evidence={
@@ -1917,57 +1911,19 @@ class GoalActionExecutor:
         except Exception as e:
             logger.debug(f"[GoalActionExecutor] semantic memory write error: {e}")
 
-    def _record_resolution_outcome(self, goal, insight: str) -> None:
+    def _record_resolution_outcome(self, goal, insight: str) -> bool:
         """
-        Feed hypothesis resolution outcome into SelfModificationAuthority.
-        Success signals (concrete, specific insights) increase tension priority weight.
-        Vague outputs decrease it — making the evaluator self-calibrate over time.
+        Deprecated safety boundary: generated wording is not outcome evidence.
+
+        Kept as a no-op so stale/private callers cannot turn lexical style into
+        a persistent change to thought-evaluator weights. A future updater must
+        consume an independently measured, execution-linked outcome instead.
         """
-        try:
-            ai_sys = getattr(self._o, 'ai_system', None)
-            sma = getattr(ai_sys, 'liberty_self_mod', None)
-            if not sma or not hasattr(sma, 'propose_change'):
-                return
-
-            # Heuristic: vague insights contain "understand", "explore", "think"
-            # Concrete insights contain "if", "because", "when", specific nouns
-            vague_markers = {'understand', 'explore', 'think', 'feel', 'perhaps',
-                             'maybe', 'might', 'could', 'general'}
-            words = set(insight.lower().split())
-            vagueness = len(words & vague_markers) / max(1, len(words))
-
-            # A concrete insight (low vagueness) = tension resolution succeeded
-            success_signal = 1.0 - (vagueness * 2)  # -1 to 1 range
-            current = getattr(sma, '_tension_priority', 0.65)
-            adjustment = max(0.45, min(0.85, current + success_signal * 0.03))
-
-            if abs(adjustment - current) > 0.01:
-                sma._tension_priority = adjustment
-                logger.info(
-                    f"[GoalActionExecutor] 🔧 Self-mod: tension priority "
-                    f"{current:.2f} → {adjustment:.2f} "
-                    f"(vagueness={vagueness:.2f})"
-                )
-                # Persist to sidecar so STE reads it after restart
-                try:
-                    import json as _j
-                    from pathlib import Path as _P
-                    data_dir = getattr(self._o, '_data_dir', 'data/persona')
-                    wp = _P(data_dir) / 'evaluator_weights.json'
-                    existing = _j.loads(wp.read_text()) if wp.exists() else {}
-                    existing['tension_priority'] = round(adjustment, 4)
-                    existing['last_updated'] = time.time()
-                    wp.write_text(_j.dumps(existing, indent=2))
-                    try:
-                        from cognition.emergence_metrics import get_collector
-                        c = get_collector()
-                        if c: c.record_weight_update(adjustment)
-                    except Exception:
-                        pass
-                except Exception:
-                    pass
-        except Exception as e:
-            logger.debug(f"[GoalActionExecutor] self-mod feedback error: {e}")
+        logger.info(
+            "[GoalActionExecutor] skipped self-modification: generated insight "
+            "has no independent outcome measurement"
+        )
+        return False
 
     # Words too generic to seed a new curiosity on their own — introspection
     # and meta-cognition vocabulary. Stimulating curiosity with these is what

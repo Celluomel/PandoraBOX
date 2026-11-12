@@ -120,7 +120,7 @@ class EmergenceMetricsCollector:
             pass
 
     def record_weight_update(self, weight: float) -> None:
-        """Called by GAE _record_resolution_outcome on each self-mod update."""
+        """Record an externally validated evaluator-weight update, if provided."""
         try:
             self._weight_history.append({'ts': time.time(), 'w': weight})
         except Exception:

@@ -308,9 +308,8 @@ class SimpleThoughtEvaluator:
         Priority based on type + keyword density.
         
         The 'tension' base priority is READ from sma._tension_priority if available,
-        so that _record_resolution_outcome() feedback in GAE actually affects
-        how aggressively new tensions get prioritized. Also loads from the
-        sidecar JSON so weight survives restarts.
+        and otherwise uses the configured sidecar/default. Generated reflection
+        text is not treated as validated feedback for changing this weight.
         """
         tension_base = self._load_tension_priority()
         base = {
@@ -327,8 +326,8 @@ class SimpleThoughtEvaluator:
 
     def _load_tension_priority(self) -> float:
         """
-        Load tension priority weight from SelfModificationAuthority or sidecar JSON.
-        Sidecar at data/persona/evaluator_weights.json survives restarts.
+        Load the existing tension priority from SelfModificationAuthority or a
+        legacy sidecar. No validated online update path currently writes it.
         """
         # Try live sma reference first
         try:
