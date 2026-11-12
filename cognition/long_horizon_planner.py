@@ -492,29 +492,62 @@ class LongHorizonPlanner:
         aspiration_domain: str,
         actual_cost: Optional[float] = None,
         actual_gain: Optional[float] = None,
+        *,
+        result: str = "",
+        execution_id: str = "",
+        cycle_id: Optional[int] = None,
     ) -> None:
-        """Complete a step; compare effects only when both are measured."""
+        """Complete a step and persist its execution receipt atomically.
+
+        An empty result remains explicit as missing evidence; it is never
+        reconstructed from the plan's previous global ``last_outcome``.
+        Measured effects are recorded only when both cost and gain are given.
+        """
         plan = self._plans.get(aspiration_domain)
         if not plan: return
         idx = plan.steps_completed
         if idx >= len(plan.steps): return
         step = plan.steps[idx]
+        observed_at = time.time()
+        result_text = str(result or "").strip()[:240]
         deviation = None
         if actual_cost is not None and actual_gain is not None:
             deviation = abs(actual_cost - step.expected_cost) + abs(actual_gain - step.expected_gain)
             plan.outcome_deviations.append(deviation)
         step.status = "completed"
+        step.attempts += 1
+        step.result = result_text
         plan.steps_completed += 1
+        plan.last_outcome = {
+            "operation": step.operation,
+            "success": True,
+            "status": "completed",
+            "result": result_text,
+            "result_provided": bool(result_text),
+            "effect_measured": deviation is not None,
+            "observed_at": observed_at,
+            "execution_id": str(execution_id or "") or None,
+            "cycle_id": cycle_id,
+        }
+        plan.decision_updated_at = observed_at
+        plan.current_decision = (
+            f"{step.operation} completed with recorded result."
+            if result_text else
+            f"{step.operation} completed, but no result detail was provided; "
+            "its effect remains unmeasured."
+        )
         # A terminal outcome is a completion, not a reason to replan.  The
         # previous code advanced the counter but left the plan active forever,
         # which made the UI remain at 14/15 (or show an active 15/15 plan).
         if plan.steps_completed >= len(plan.steps):
             plan.status = "completed"
             plan.current_decision = (
-                f"{step.operation} completed; the planned causal investigation "
-                "reached its final step."
+                f"{step.operation} completed; "
+                + (f"result: {result_text}. " if result_text else
+                   "no result detail was provided; effect remains unmeasured. ")
+                + "the planned sequence reached its final step."
             )
-            plan.decision_updated_at = time.time()
+            plan.decision_updated_at = observed_at
             self._broadcast(
                 "long_horizon_planner.completed",
                 f"[PlanCompleted] domain={aspiration_domain}; "
@@ -552,6 +585,8 @@ class LongHorizonPlanner:
         result: str = "",
         *,
         aspiration_domain: Optional[str] = None,
+        execution_id: str = "",
+        cycle_id: Optional[int] = None,
     ) -> None:
         """Resolve the current aspiration step from a completed autonomous action.
 
@@ -571,7 +606,12 @@ class LongHorizonPlanner:
         if success:
             # Only a completed operation can advance the plan. The former
             # failure path advanced it too, despite having no success evidence.
-            self.record_step_outcome(aspiration_domain)
+            self.record_step_outcome(
+                aspiration_domain,
+                result=result,
+                execution_id=execution_id,
+                cycle_id=cycle_id,
+            )
         else:
             # A failed operation is an attempt, not completed progress.
             step.attempts += 1
@@ -581,8 +621,13 @@ class LongHorizonPlanner:
             plan.last_outcome = {
                 "operation": operation,
                 "success": False,
+                "status": "failed",
                 "result": str(result)[:240],
+                "result_provided": bool(str(result or "").strip()),
+                "effect_measured": False,
                 "observed_at": plan.last_revised,
+                "execution_id": str(execution_id or "") or None,
+                "cycle_id": cycle_id,
             }
             plan.current_decision = (
                 f"{operation} failed; aspiration step remains pending; "
@@ -591,15 +636,8 @@ class LongHorizonPlanner:
             plan.decision_updated_at = plan.last_revised
             self._save()
             return
-        plan.last_outcome = {
-            "operation": operation,
-            "success": True,
-            "result": str(result)[:240],
-            "observed_at": time.time(),
-        }
-        plan.current_decision = f"{operation} succeeded; aspiration step advanced."
-        plan.decision_updated_at = time.time()
-        self._save()
+        # record_step_outcome() persisted step detail and plan-level receipt in
+        # one save. Do not rewrite the receipt here with a second timestamp.
 
     def preferred_next_action(self) -> Optional[str]:
         """Action type the planner most wants to execute next."""

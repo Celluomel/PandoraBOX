@@ -267,6 +267,41 @@ class IntentionPlanningTests(unittest.TestCase):
             self.assertEqual(plan.steps_completed, 0)
             self.assertEqual(plan.last_outcome, {})
 
+    def test_successful_aspiration_step_persists_its_own_result_and_execution_link(self):
+        with tempfile.TemporaryDirectory() as folder:
+            planner, _, _ = self._planner(folder)
+            plan = Plan(
+                aspiration_domain="epistemic",
+                steps=[PlanStep(
+                    sequence=0, action_type="analytical", operation="memory_recall",
+                    expected_cost=0.05, expected_gain=0.05,
+                )],
+                resource_reserve=0.2,
+                revision_trigger=0.25,
+                horizon=1,
+                source="aspiration",
+                status="active",
+            )
+            planner._plans["epistemic"] = plan
+
+            planner.record_autonomous_action_outcome(
+                "memory_recall", True, "recalled one relevant user-authored record",
+                aspiration_domain="epistemic", execution_id="turn-abc", cycle_id=42,
+            )
+
+            self.assertEqual(plan.steps_completed, 1)
+            self.assertEqual(plan.steps[0].status, "completed")
+            self.assertEqual(plan.steps[0].result, "recalled one relevant user-authored record")
+            self.assertEqual(plan.last_outcome["result"], plan.steps[0].result)
+            self.assertEqual(plan.last_outcome["execution_id"], "turn-abc")
+            self.assertEqual(plan.last_outcome["cycle_id"], 42)
+            self.assertTrue(plan.last_outcome["result_provided"])
+            self.assertFalse(plan.last_outcome["effect_measured"])
+
+            persisted = json.loads(planner._path.read_text(encoding="utf-8"))["epistemic"]
+            self.assertEqual(persisted["steps"][0]["result"], plan.last_outcome["result"])
+            self.assertEqual(persisted["last_outcome"]["execution_id"], "turn-abc")
+
     def test_autonomous_probe_does_not_claim_a_user_question_was_answered(self):
         with tempfile.TemporaryDirectory() as folder:
             planner, _, _ = self._planner(folder)
@@ -381,6 +416,9 @@ class IntentionPlanningTests(unittest.TestCase):
 
             self.assertEqual(plan.steps_completed, 1)
             self.assertEqual(plan.outcome_deviations, [])
+            self.assertFalse(plan.last_outcome["result_provided"])
+            self.assertFalse(plan.last_outcome["effect_measured"])
+            self.assertIn("no result detail", plan.current_decision)
 
     def test_goal_action_outcome_is_not_reassigned_to_an_aspiration(self):
         calls = []
