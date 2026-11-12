@@ -49,6 +49,8 @@ def extract_explicit_recall_topic(text: str) -> str:
         r"^what\s+do\s+you\s+remember\s+about\s+",
         r"^what\s+have\s+we\s+discussed\s+about\s+",
         r"^(?:do\s+you\s+remember|can\s+you\s+recall)\s+",
+        r"^tu\s+te\s+rappelles(?:\s+de)?\s+",
+        r"^tu\s+te\s+souviens(?:-tu)?(?:\s+de)?\s+",
         r"^(?:rappelle(?:-moi)?|souviens-toi|te\s+souviens-tu)\s+",
         r"^(?:remember|recall)\s+",
     )
@@ -58,9 +60,25 @@ def extract_explicit_recall_topic(text: str) -> str:
             value = value[match.end():]
             break
     value = re.sub(r"^(?:(?:uniquement|seulement|just|only)\s+)*", "", value, flags=re.IGNORECASE)
+    value = re.sub(
+        r"^(?:what\s+(?:we\s+)?(?:discussed|talked\s+about|said)|"
+        r"ce\s+qu['’]?(?:on|nous)\s+(?:a|avons)\s+"
+        r"(?:discuté|parlé|dit))\s+",
+        "",
+        value,
+        flags=re.IGNORECASE,
+    )
+    value = re.sub(
+        r"^(?:(?:on|nous)\s+(?:a|avons)\s+(?:discuté|parlé|dit)|"
+        r"we\s+(?:have\s+)?(?:discussed|talked\s+about|said))\s+",
+        "",
+        value,
+        flags=re.IGNORECASE,
+    )
+    value = re.sub(r"^(?:de|du|des|d['’]|about)\s+", "", value, flags=re.IGNORECASE)
     value = re.sub(r"^(?:ce\s+que|what\s+(?:i|we)\s+(?:asked|said|told\s+you))\s+", "", value, flags=re.IGNORECASE)
     value = re.sub(r"^(?:je\s+t['’]ai\s+(?:demandé|dit)|i\s+(?:asked|told\s+you))\s+", "", value, flags=re.IGNORECASE)
-    value = re.sub(r"^(?:à\s+propos\s+de|au\s+sujet\s+de|concernant|sur|about|regarding)\s+", "", value, flags=re.IGNORECASE)
+    value = re.sub(r"^(?:à\s+propos\s+(?:de|du|des|d['’])|au\s+sujet\s+(?:de|du|des|d['’])|concernant|sur|about|regarding)\s+", "", value, flags=re.IGNORECASE)
     value = re.sub(r"^(?:uniquement|seulement)\s+", "", value, flags=re.IGNORECASE)
     return value.strip(" \t\r\n?.,:;\"'«»") or str(text or "").strip()
 

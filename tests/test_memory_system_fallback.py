@@ -127,6 +127,20 @@ class MemorySystemFallbackTests(unittest.TestCase):
             extract_explicit_recall_topic("What do you remember about my audit priorities?"),
             "my audit priorities",
         )
+        self.assertEqual(
+            extract_explicit_recall_topic(
+                "Tu te rappelles ce qu'on a dit à propos du format des données du Body ?"
+            ),
+            "format des données du Body",
+        )
+        self.assertEqual(
+            extract_explicit_recall_topic("On a parlé de la pondération de l'attention ?"),
+            "la pondération de l'attention",
+        )
+        self.assertEqual(
+            extract_explicit_recall_topic("Do you remember what we discussed about memory recall?"),
+            "memory recall",
+        )
 
     def test_visual_tier_is_not_implied_by_recall_language(self):
         query = "Rappelle ce que je t’ai demandé concernant la manière de conduire l’audit"
