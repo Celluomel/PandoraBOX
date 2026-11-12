@@ -2896,12 +2896,36 @@ Every response must feel genuinely new — avoid repeating phrases, sentences, o
 
             # Only this explicit user rating is evidence about the response.
             # User-message affect and assistant wording are not outcome labels.
-            feedback_learning = {"self_model": False, "decision_policy": False}
+            feedback_learning = {
+                "self_model": False,
+                "decision_policy": False,
+                "predictive_consequence_model": False,
+                "attention": False,
+                "contextual_attention": False,
+            }
             organism = getattr(self, "_organism_ref", None)
             self_model = getattr(organism, "self_model", None)
             if self_model and callable(getattr(self_model, "record_outcome", None)):
                 self_model.record_outcome(bool(positive), domain="conversation")
                 feedback_learning["self_model"] = True
+            feedback_context = None
+            attention_feedback_context = None
+            pcm = None
+            if organism is not None:
+                loop = getattr(organism, "_loop", None)
+                pcm = getattr(loop, "_consequence_model", None) if loop else None
+            if pcm and callable(getattr(pcm, "record_explicit_feedback", None)):
+                try:
+                    feedback_context = pcm.record_explicit_feedback(last_response, bool(positive))
+                    feedback_learning["predictive_consequence_model"] = bool(
+                        feedback_context and feedback_context.get("matched")
+                    )
+                    if feedback_context and feedback_context.get("matched"):
+                        attention_feedback_context = pcm.claim_attention_feedback(
+                            feedback_context.get("response_hash", "")
+                        )
+                except Exception as pcm_error:
+                    logger.debug("PCM explicit feedback association failed: %s", pcm_error)
             try:
                 policy = getattr(self, "_decision_policy", None)
                 update_policy = getattr(policy, "update_from_interaction", None)
@@ -2962,39 +2986,33 @@ Every response must feel genuinely new — avoid repeating phrases, sentences, o
             # Trigger evolution immediately (feedback is time-sensitive)
             self.background_worker.submit("learning_cycle")
 
-            # Phase 2.9.1: update attention bias from feedback signal.
-            # This is the first genuine learning loop in the attention system:
-            # the distribution that was active DURING this response gets credit
-            # (positive) or blame (negative) proportional to its weight above
-            # the uniform baseline. Signal ±1.0 scaled by feedback intensity.
+            # Attention learns only from weights/context captured for this exact
+            # response. Current live weights may belong to a later turn.
             try:
-                from cognition.cognitive_attention_engine import CognitiveAttentionEngine
-                import json as _jfb
-                from pathlib import Path as _Pfb
-
-                _ae_path = _Pfb("data/persona/cognitive_attention.json")
-                _weights_now = {}
-                if _ae_path.exists():
-                    _weights_now = _jfb.loads(
-                        _ae_path.read_text()
-                    ).get("attention_weights", {})
-
-                # Resolve the engine from the internal loop if available
-                _org  = getattr(self, '_organism_ref', None)
-                _loop = getattr(_org, '_loop', None) if _org else None
-                _ae   = getattr(_loop, '_attention_engine', None) if _loop else None
-
-                if _ae is None:
-                    # Fallback: construct a lightweight instance just for the update
-                    _ae = CognitiveAttentionEngine(_org or self)
-
-                _signal = (1.0 if positive else -1.0) * intensity
-                _ae.update_from_feedback(_signal, weights_at_feedback=_weights_now)
-
-                # Phase 3.0: also record under the active context.
-                # This is what lets the system learn "X is useful WHEN Y"
-                # rather than only "X is often useful."
-                _ae.update_from_context_feedback(_signal, weights_at_feedback=_weights_now)
+                _weights_at_turn = (
+                    attention_feedback_context.get("attention_weights_at_turn")
+                    if attention_feedback_context else None
+                )
+                _context_key_at_turn = (
+                    attention_feedback_context.get("attention_context_key_at_turn", "")
+                    if attention_feedback_context else ""
+                )
+                _ae = getattr(getattr(organism, "_loop", None), "_attention_engine", None) if organism else None
+                if _ae is not None and _weights_at_turn:
+                    _signal = (1.0 if positive else -1.0) * max(0.0, min(1.0, float(intensity)))
+                    _ae.update_from_feedback(_signal, weights_at_feedback=_weights_at_turn)
+                    feedback_learning["attention"] = True
+                    if _context_key_at_turn and callable(getattr(_ae, "update_from_context_feedback", None)):
+                        _ae.update_from_context_feedback(
+                            _signal,
+                            weights_at_feedback=_weights_at_turn,
+                            context_key=_context_key_at_turn,
+                        )
+                        feedback_learning["contextual_attention"] = True
+                    if pcm and callable(getattr(pcm, "mark_attention_feedback_applied", None)):
+                        pcm.mark_attention_feedback_applied(
+                            attention_feedback_context.get("response_hash", "")
+                        )
 
             except Exception as _ae_e:
                 logger.debug(f"[EnhancedAISystem] Attention feedback update: {_ae_e}")

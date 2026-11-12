@@ -370,6 +370,19 @@ class CognitiveOrganism:
         # 4. Build augmented prompt context
         prompt_additions = self._build_prompt_additions(cycle_data, decision, user_input)
 
+        # Keep the exact attention state that influenced this reply. Feedback
+        # may arrive after subsequent cycles have changed the live weights.
+        attention_feedback_context = None
+        try:
+            attention_engine = getattr(self._loop, "_attention_engine", None)
+            if attention_engine is not None:
+                attention_feedback_context = {
+                    "weights": dict(attention_engine.load_weights() or {}),
+                    "context_key": str(getattr(attention_engine, "_last_context_key", "") or ""),
+                }
+        except Exception as exc:
+            logger.debug("[CognitiveOrganism] attention snapshot unavailable: %s", exc)
+
         # 5. Call LuminaCore with augmented context
         response = self._call_ai_system(
             user_input=user_input,
@@ -379,7 +392,10 @@ class CognitiveOrganism:
             **kwargs,
         )
         # 6. Post-interaction processing
-        self._post_interaction(user_input, response, cycle_data, decision)
+        self._post_interaction(
+            user_input, response, cycle_data, decision,
+            attention_feedback_context=attention_feedback_context,
+        )
 
         return response
 
@@ -1272,6 +1288,7 @@ class CognitiveOrganism:
         cycle_data: Dict,
         decision: Any,
         human_interaction: bool = True,
+        attention_feedback_context: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Post-response processing: evaluate, learn, update state."""
         self._last_interaction_ts = time.time()
@@ -1323,13 +1340,21 @@ class CognitiveOrganism:
         try:
             pcm = getattr(getattr(self, '_loop', None), '_consequence_model', None)
             if pcm and pcm._pending is not None:
-                _emo_pcm  = getattr(self.ai_system, 'emotional_state', None)
-                _val_pcm  = "neutral"
-                if _emo_pcm:
-                    ev = getattr(_emo_pcm, 'overall_valence', 0.0)
-                    _val_pcm = "positive" if ev > 0.2 else "negative" if ev < -0.2 else "neutral"
                 _state_after = pcm.read_state()
-                pcm.record_outcome(_state_after, _val_pcm)
+                pcm.record_outcome(
+                    _state_after,
+                    outcome="unrated",
+                    outcome_source="unattributed",
+                    response_text=response or "",
+                    attention_weights_at_turn=(
+                        attention_feedback_context.get("weights")
+                        if attention_feedback_context else None
+                    ),
+                    attention_context_key_at_turn=(
+                        attention_feedback_context.get("context_key", "")
+                        if attention_feedback_context else ""
+                    ),
+                )
         except Exception:
             pass
 

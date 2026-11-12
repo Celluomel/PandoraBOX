@@ -431,7 +431,8 @@ class CognitiveAttentionEngine:
                 logger.debug(f"[CognitiveAttentionEngine] context decay error: {e}")
 
     def update_from_context_feedback(self, signal: float,
-                                      weights_at_feedback: Optional[Dict[str, float]] = None
+                                      weights_at_feedback: Optional[Dict[str, float]] = None,
+                                      context_key: Optional[str] = None,
                                       ) -> None:
         """
         Phase 3.0: record feedback under the context active when it occurred.
@@ -441,23 +442,16 @@ class CognitiveAttentionEngine:
         """
         if self._context_memory is None:
             return
-        # Explicit feedback can arrive between slow-cycle computations. Always
-        # derive the key from the current live state so feedback is attributed
-        # to this response, not to an older background-cycle context.
-        try:
-            state = self._read_state()
-            ai = getattr(self._o, "ai_system", None)
-            emb = getattr(ai, "embedding_model", None) if ai else None
-            self._last_context_key, _ = self._context_memory.extract_context(state, emb)
-        except Exception as e:
-            logger.debug(f"[CognitiveAttentionEngine] feedback context extraction: {e}")
-        if not self._last_context_key:
+        # Response feedback should carry the context captured for that exact
+        # turn; recomputing it at click time attributes the vote to later state.
+        feedback_key = str(context_key or "")
+        if not feedback_key:
             return
         if weights_at_feedback is None:
             weights_at_feedback = self.load_weights()
         try:
             self._context_memory.update(
-                self._last_context_key, signal, weights_at_feedback
+                feedback_key, signal, weights_at_feedback
             )
         except Exception as e:
             logger.debug(f"[CognitiveAttentionEngine] context feedback error: {e}")

@@ -309,21 +309,15 @@ class IntrospectiveObserver:
              below TRUST_ECE_THRESHOLD. If the system's own predictions
              aren't currently reliable, a trend observed during that period
              isn't trustworthy evidence of anything either.
-          2. OUTCOME GATE — recent PCM ConsequenceRecord outcomes in the
-             SAME window used for the attention-drift comparison must be
-             net-positive or net-negative by a clear margin (not roughly
-             50/50, which carries no signal). This is the actual "was the
-             trend good or bad" evidence — grounded in real recorded
-             outcomes, not in attention's own movement being used as its
-             own justification.
+          2. OUTCOME GATE — only explicit user feedback linked to a recorded
+             response and its attention snapshot may contribute. User-message
+             affect and validated action probes are not response ratings.
 
         When both gates pass, reuses CognitiveAttentionEngine's EXISTING
         update_from_feedback() — the same Phase 2.9.1 REINFORCE-style
-        credit assignment already used for per-interaction feedback — but
-        called with the HISTORICAL weights snapshot from the start of the
-        observation window, crediting or blaming whatever was elevated
-        back then. This is a second, longer-window feedback pass layered
-        on the same mechanism, not a new mutation pathway into learned_bias.
+        credit assignment already used for per-interaction feedback — with
+        historical weights saved on each rated response, never weights loaded
+        at the current time or inferred from an adjacent history entry.
         """
         TRUST_ECE_THRESHOLD = 0.20
         OUTCOME_MARGIN      = 0.20   # required |positive - negative| fraction
@@ -369,6 +363,11 @@ class IntrospectiveObserver:
             records = [
                 r for r in getattr(pcm, "_records", [])
                 if window_start_ts <= getattr(r, "recorded_at", 0) <= window_end_ts
+                and getattr(r, "outcome_source", "legacy_unattributed")
+                    == "explicit_user_feedback"
+                and bool(getattr(r, "attention_weights_at_turn", None))
+                and not getattr(r, "attention_feedback_claimed", False)
+                and not getattr(r, "attention_feedback_applied", False)
             ]
             if len(records) < MIN_RECORDS:
                 return None
@@ -380,15 +379,41 @@ class IntrospectiveObserver:
             if abs(margin) < OUTCOME_MARGIN:
                 return None  # not a clear enough signal either way
 
+            claims = pcm.claim_attention_feedback_batch(
+                [r.response_hash for r in records]
+            ) if callable(getattr(pcm, "claim_attention_feedback_batch", None)) else []
+            if len(claims) < MIN_RECORDS:
+                return None
+
             signal = META_SIGNAL_SCALE if margin > 0 else -META_SIGNAL_SCALE
 
-            # ── Apply: credit/blame whatever was elevated at window start ──
+            # Aggregate only the exact per-response snapshots associated with
+            # these explicit ratings. The window-start weights are unrelated
+            # once later turns have changed the attention distribution.
+            module_names = set().union(*(
+                set(claim["attention_weights_at_turn"] or {}) for claim in claims
+            ))
+            feedback_weights = {
+                name: sum(
+                    float((claim["attention_weights_at_turn"] or {}).get(name, 0.0))
+                    for claim in claims
+                ) / len(claims)
+                for name in module_names
+            }
+            if not feedback_weights:
+                return None
+
+            # ── Apply once, using the response-linked historical snapshots ──
             attention_engine.update_from_feedback(
-                signal=signal, weights_at_feedback=past_weights
+                signal=signal, weights_at_feedback=feedback_weights
             )
+            for claim in claims:
+                pcm.mark_attention_feedback_applied(claim["response_hash"])
+            if hasattr(pcm, "_save"):
+                pcm._save()
 
             direction = "reinforced" if signal > 0 else "dampened"
-            top_module = max(past_weights, key=past_weights.get)
+            top_module = max(feedback_weights, key=feedback_weights.get)
             return MetaObservation(
                 category     = "attention",
                 observation  = (

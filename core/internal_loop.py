@@ -2637,29 +2637,34 @@ class InternalThoughtLoop:
                     _recent_pcm = [
                         r for r in list(_pcm_eng._records)[-10:]
                         if not getattr(r, 'synthetic', False)
-                        and getattr(r, 'outcome', 'neutral') != 'neutral'
+                        and getattr(r, 'outcome_source', '') == 'explicit_user_feedback'
+                        and not getattr(r, 'attention_feedback_applied', False)
+                        and bool(getattr(r, 'attention_weights_at_turn', None))
                     ]
                     for _rec in _recent_pcm:
                         _out    = getattr(_rec, 'outcome', 'neutral')
                         _sig    = 0.4 if _out == 'positive' else -0.4
-                        _attn_w = {}
-                        try:
-                            import json as _jpcm
-                            from pathlib import Path as _Ppcm
-                            _ap_pcm = _Ppcm("data/persona/cognitive_attention.json")
-                            if _ap_pcm.exists():
-                                _attn_w = _jpcm.loads(_ap_pcm.read_text()).get(
-                                    "attention_weights", {}
-                                )
-                        except Exception:
-                            pass
+                        _claim = _pcm_eng.claim_attention_feedback(
+                            getattr(_rec, 'response_hash', '')
+                        )
+                        if not _claim:
+                            continue
+                        _attn_w = dict(_claim['attention_weights_at_turn'])
                         self._attention_engine.update_from_feedback(
                             _sig, weights_at_feedback=_attn_w
                         )
-                        # Phase 3.0: PCM outcomes also feed contextual memory
+                        # Contextual credit uses the context captured for the
+                        # rated response, never the later consolidation state.
                         self._attention_engine.update_from_context_feedback(
-                            _sig, weights_at_feedback=_attn_w
+                            _sig,
+                            weights_at_feedback=_attn_w,
+                            context_key=_claim.get('attention_context_key_at_turn', ''),
                         )
+                        _pcm_eng.mark_attention_feedback_applied(
+                            _claim['response_hash']
+                        )
+                    if _recent_pcm:
+                        _pcm_eng._save()
 
                 # Decay learned bias each consolidation to prevent lock-in
                 self._attention_engine.decay_bias()

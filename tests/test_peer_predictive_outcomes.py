@@ -1,5 +1,6 @@
 import threading
 import unittest
+import threading
 from unittest.mock import Mock
 
 from cognition.predictive_consequence_model import PredictiveConsequenceModel
@@ -9,6 +10,7 @@ from cognition.world_self_dynamics_model import WorldSelfDynamicsModel
 class PeerPredictiveOutcomeIsolationTests(unittest.TestCase):
     def test_pcm_peer_transition_does_not_consume_human_pending_prediction(self):
         model = PredictiveConsequenceModel.__new__(PredictiveConsequenceModel)
+        model._records_lock = threading.RLock()
         model._records = []
         model._pending = ("human-action", [0.1, 0.2, 0.3, 0.4, 0.5], 7)
         model._save = Mock()
@@ -30,6 +32,7 @@ class PeerPredictiveOutcomeIsolationTests(unittest.TestCase):
 
     def test_pcm_calibration_uses_measured_energy_delta_not_valence_label(self):
         model = PredictiveConsequenceModel.__new__(PredictiveConsequenceModel)
+        model._records_lock = threading.RLock()
         model._records = []
         model._pending = None
         model._save = Mock()

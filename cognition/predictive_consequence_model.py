@@ -101,9 +101,11 @@ from experience, not have it hardcoded.
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import math
 import re
+import threading
 import time
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
@@ -172,9 +174,15 @@ class ConsequenceRecord:
     state_before: List[float]   # 5-dim vector
     state_after:  List[float]   # 5-dim vector (recorded at next slow cycle)
     delta:        List[float]   # state_after - state_before
-    outcome:      str           # "positive"|"negative"|"neutral"
+    outcome:      str           # rated/observed result, or "unrated"
+    outcome_source: str = "unattributed"
     recorded_at:  float         = field(default_factory=time.time)
     interaction_n: int          = 0
+    response_hash: str = ""
+    attention_weights_at_turn: Optional[Dict[str, float]] = None
+    attention_context_key_at_turn: str = ""
+    attention_feedback_claimed: bool = False
+    attention_feedback_applied: bool = False
 
 
 @dataclass
@@ -209,6 +217,7 @@ class PredictiveConsequenceModel:
     def __init__(self, organism: Any, path: str = SAVE_PATH) -> None:
         self._organism    = organism
         self._path        = Path(path)
+        self._records_lock = threading.RLock()
         self._records:    List[ConsequenceRecord] = []
         self._pending:    Optional[Tuple[str, List[float], int]] = None
         self._interaction_count = 0
@@ -245,7 +254,11 @@ class PredictiveConsequenceModel:
     def record_outcome(
         self,
         state_after: List[float],
-        outcome: str = "neutral",
+        outcome: str = "unrated",
+        outcome_source: str = "unattributed",
+        response_text: str = "",
+        attention_weights_at_turn: Optional[Dict[str, float]] = None,
+        attention_context_key_at_turn: str = "",
     ) -> None:
         """Record the state after action completion and store the record."""
         if self._pending is None:
@@ -256,6 +269,10 @@ class PredictiveConsequenceModel:
         self.record_observed_transition(
             action_type, state_before, state_after,
             interaction_n=interaction_n, outcome=outcome,
+            outcome_source=outcome_source,
+            response_text=response_text,
+            attention_weights_at_turn=attention_weights_at_turn,
+            attention_context_key_at_turn=attention_context_key_at_turn,
             resolve_calibration=True,
         )
 
@@ -266,7 +283,11 @@ class PredictiveConsequenceModel:
         state_after: List[float],
         *,
         interaction_n: int = 0,
-        outcome: str = "neutral",
+        outcome: str = "unrated",
+        outcome_source: str = "unattributed",
+        response_text: str = "",
+        attention_weights_at_turn: Optional[Dict[str, float]] = None,
+        attention_context_key_at_turn: str = "",
         resolve_calibration: bool = False,
     ) -> None:
         """Persist one explicit transition without using shared pending state.
@@ -276,6 +297,10 @@ class PredictiveConsequenceModel:
         default deliberately does not resolve a global calibration forecast;
         callers with a matching prediction can opt in explicitly.
         """
+        if outcome_source not in {"explicit_user_feedback", "validated_action_probe"}:
+            outcome = "unrated"
+            outcome_source = "unattributed"
+
         state_before = [float(value) for value in state_before]
         state_after = [float(value) for value in state_after]
 
@@ -289,13 +314,23 @@ class PredictiveConsequenceModel:
             state_after    = state_after,
             delta          = delta,
             outcome        = outcome,
+            outcome_source = outcome_source,
             interaction_n  = interaction_n,
+            response_hash  = (
+                hashlib.sha256(response_text.strip().encode("utf-8")).hexdigest()
+                if response_text and response_text.strip() else ""
+            ),
+            attention_weights_at_turn=(
+                {str(k): float(v) for k, v in attention_weights_at_turn.items()}
+                if attention_weights_at_turn else None
+            ),
+            attention_context_key_at_turn=str(attention_context_key_at_turn or ""),
         )
-        self._records.append(record)
-        if len(self._records) > MAX_RECORDS:
-            self._records = self._records[-MAX_RECORDS:]
-
-        self._save()
+        with self._records_lock:
+            self._records.append(record)
+            if len(self._records) > MAX_RECORDS:
+                self._records = self._records[-MAX_RECORDS:]
+            self._save()
         logger.debug(
             f"[ConsequenceModel] Recorded: {action_type} → "
             f"energy Δ{delta[0]:+.3f} social Δ{delta[1]:+.3f} "
@@ -322,6 +357,93 @@ class PredictiveConsequenceModel:
                 )
         except Exception as _cal_e:
             logger.debug(f"[ConsequenceModel] Calibration resolve error: {_cal_e}")
+
+    @staticmethod
+    def _response_hash(response_text: str) -> str:
+        text = str(response_text or "").strip()
+        return hashlib.sha256(text.encode("utf-8")).hexdigest() if text else ""
+
+    def record_explicit_feedback(self, response_text: str, positive: bool) -> Optional[Dict[str, Any]]:
+        """Attach a user's explicit rating to the exact previously recorded reply."""
+        response_hash = self._response_hash(response_text)
+        if not response_hash:
+            return None
+        with self._records_lock:
+            for record in reversed(self._records):
+                if record.response_hash != response_hash:
+                    continue
+                if record.outcome_source == "explicit_user_feedback":
+                    return None  # one learning update per recorded answer
+                previous_outcome = record.outcome
+                previous_source = record.outcome_source
+                record.outcome = "positive" if positive else "negative"
+                record.outcome_source = "explicit_user_feedback"
+                if not self._save():
+                    record.outcome = previous_outcome
+                    record.outcome_source = previous_source
+                    return None
+                return {
+                    "matched": True,
+                    "response_hash": response_hash,
+                    "attention_weights_at_turn": dict(record.attention_weights_at_turn or {}),
+                    "attention_context_key_at_turn": record.attention_context_key_at_turn,
+                    "attention_feedback_applied": record.attention_feedback_applied,
+                }
+        return None
+
+    def claim_attention_feedback(self, response_hash: str) -> Optional[Dict[str, Any]]:
+        """Atomically claim one response-linked attention update across consumers."""
+        claimed = self.claim_attention_feedback_batch([response_hash])
+        return claimed[0] if claimed else None
+
+    def claim_attention_feedback_batch(self, response_hashes: List[str]) -> List[Dict[str, Any]]:
+        """Atomically claim a set of ratings, or claim none if any is unavailable."""
+        wanted = list(dict.fromkeys(str(value or "") for value in response_hashes))
+        if not wanted or any(not value for value in wanted):
+            return []
+        with self._records_lock:
+            by_hash = {
+                record.response_hash: record
+                for record in self._records
+                if record.response_hash in wanted
+                and record.outcome_source == "explicit_user_feedback"
+                and record.attention_weights_at_turn
+                and not record.attention_feedback_claimed
+                and not record.attention_feedback_applied
+            }
+            if len(by_hash) != len(wanted):
+                return []
+            claimed = []
+            for response_hash in wanted:
+                record = by_hash[response_hash]
+                record.attention_feedback_claimed = True
+                claimed.append({
+                    "response_hash": response_hash,
+                    "attention_weights_at_turn": dict(record.attention_weights_at_turn),
+                    "attention_context_key_at_turn": record.attention_context_key_at_turn,
+                })
+            if not self._save():
+                for response_hash in wanted:
+                    by_hash[response_hash].attention_feedback_claimed = False
+                return []
+            return claimed
+
+    def mark_attention_feedback_applied(self, response_hash: str) -> bool:
+        """Finalize a claimed attention update after its consumers return."""
+        response_hash = str(response_hash or "")
+        if not response_hash:
+            return False
+        with self._records_lock:
+            for record in reversed(self._records):
+                if (record.response_hash == response_hash
+                        and record.outcome_source == "explicit_user_feedback"
+                        and record.attention_feedback_claimed):
+                    record.attention_feedback_applied = True
+                    if not self._save():
+                        record.attention_feedback_applied = False
+                        return False
+                    return True
+        return False
 
     def predict_and_advise(
         self,
@@ -578,23 +700,26 @@ class PredictiveConsequenceModel:
 
     # ── Persistence ───────────────────────────────────────────────────────────
 
-    def _save(self) -> None:
+    def _save(self) -> bool:
         try:
-            self._path.parent.mkdir(parents=True, exist_ok=True)
-            data = {
-                "records": [asdict(r) for r in self._records[-MAX_RECORDS:]],
-                "_meta":   {"version": "v53", "ts": time.time()},
-            }
-            # Atomic write — dashboard reads this file from a background
-            # thread on every refresh cycle; a non-atomic write here can be
-            # caught mid-truncation, producing a JSONDecodeError that blanks
-            # the entire dashboard render (render() has no per-panel recovery).
-            _tmp = self._path.with_suffix('.json.tmp')
-            with open(_tmp, "w") as f:
-                json.dump(data, f, indent=2)
-            _tmp.replace(self._path)
+            with self._records_lock:
+                self._path.parent.mkdir(parents=True, exist_ok=True)
+                data = {
+                    "records": [asdict(r) for r in self._records[-MAX_RECORDS:]],
+                    "_meta":   {"version": "v53", "ts": time.time()},
+                }
+                # Atomic write — dashboard reads this file from a background
+                # thread on every refresh cycle; a non-atomic write here can be
+                # caught mid-truncation, producing a JSONDecodeError that blanks
+                # the entire dashboard render (render() has no per-panel recovery).
+                _tmp = self._path.with_suffix('.json.tmp')
+                with open(_tmp, "w") as f:
+                    json.dump(data, f, indent=2)
+                _tmp.replace(self._path)
+            return True
         except Exception as e:
             logger.debug(f"[ConsequenceModel] Save failed: {e}")
+            return False
 
     def _load(self) -> None:
         try:
@@ -602,12 +727,19 @@ class PredictiveConsequenceModel:
                 return
             data    = json.loads(self._path.read_text())
             records = data.get("records", [])
-            self._records = [
-                ConsequenceRecord(**{
-                    k: v for k, v in r.items()
+            loaded = []
+            for row in records:
+                values = {
+                    k: v for k, v in row.items()
                     if k in ConsequenceRecord.__dataclass_fields__
-                })
-                for r in records
-            ]
+                }
+                if "outcome_source" not in values:
+                    # Legacy labels were often inferred from user affect.
+                    # Their provenance cannot be recovered, so do not expose
+                    # them as validated outcomes to counterfactual consumers.
+                    values["outcome"] = "unrated"
+                    values["outcome_source"] = "legacy_unattributed"
+                loaded.append(ConsequenceRecord(**values))
+            self._records = loaded
         except Exception as e:
             logger.warning(f"[ConsequenceModel] Load failed (empty): {e}")
