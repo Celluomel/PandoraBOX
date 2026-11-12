@@ -58,6 +58,6 @@ def test_contextless_fallback_records_failure_and_explicit_terminal_error():
     )
     branch_source = ast.unparse(fallback_guard)
     assert "fallback_generation" in branch_source and "blocked_context" in branch_source
-    assert "_finish_turn_trace('failed')" in branch_source
+    assert "_finish_turn_trace('failed', audit_turn_id)" in branch_source
     assert "contextual_fallback_blocked" in branch_source
     assert "response_finalization" in branch_source and "completed" in branch_source

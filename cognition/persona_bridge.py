@@ -495,7 +495,7 @@ class PersonaBridge:
     def _start_turn_trace(
         self, user_id: str, peer_name: str = "", cognitive_scope_id: str = "",
         turn_id: str = "",
-    ) -> None:
+    ) -> str:
         with self._turn_trace_lock:
             previous = getattr(self, "_last_turn_trace", {})
             if isinstance(previous, dict) and previous.get("turn_id"):
@@ -520,8 +520,9 @@ class PersonaBridge:
                 history.append(snapshot)
                 del history[:-24]
             self._turn_sequence += 1
+            trace_id = str(turn_id or f"lumina-{time.time_ns()}-{self._turn_sequence}")[:120]
             self._last_turn_trace = {
-                "turn_id": str(turn_id or f"lumina-{time.time_ns()}-{self._turn_sequence}")[:120],
+                "turn_id": trace_id,
                 "scope": "peer" if peer_name else "human",
                 "peer_name": peer_name or None,
                 "user_id": user_id,
@@ -532,9 +533,10 @@ class PersonaBridge:
                 "context_sources": {},
                 "stage_events": [],
             }
+            return trace_id
 
     def _record_turn_context_source(
-        self, name: str, status: str, **metadata: Any,
+        self, name: str, status: str, *, turn_id: str = "", **metadata: Any,
     ) -> None:
         """Record source/freshness metadata without retaining evidence payloads."""
         allowed = {
@@ -558,6 +560,11 @@ class PersonaBridge:
                 safe_metadata[key] = None
         with self._turn_trace_lock:
             trace = getattr(self, "_last_turn_trace", None)
+            if turn_id and (not trace or trace.get("turn_id") != turn_id):
+                trace = next((
+                    item for item in reversed(getattr(self, "_turn_trace_history", []))
+                    if item.get("turn_id") == turn_id
+                ), None)
             if not isinstance(trace, dict) or not trace:
                 return
             trace.setdefault("context_sources", {})[name] = {
@@ -736,17 +743,23 @@ class PersonaBridge:
         )
         return response
 
-    def _finish_turn_trace(self, status: str) -> None:
+    def _finish_turn_trace(self, status: str, turn_id: str = "") -> None:
         with self._turn_trace_lock:
-            if self._last_turn_trace:
-                stages = self._last_turn_trace.get("stages", {})
+            trace = getattr(self, "_last_turn_trace", None)
+            if turn_id and (not trace or trace.get("turn_id") != turn_id):
+                trace = next((
+                    item for item in reversed(getattr(self, "_turn_trace_history", []))
+                    if item.get("turn_id") == turn_id
+                ), None)
+            if isinstance(trace, dict) and trace:
+                stages = trace.get("stages", {})
                 has_stage_failure = any(
                     isinstance(stage, dict)
                     and isinstance(stage.get("status"), str)
                     and stage.get("status") in {"failed", "invalid_output"}
                     for stage in stages.values()
                 )
-                self._last_turn_trace["status"] = (
+                trace["status"] = (
                     "completed_with_stage_failures"
                     if status == "completed" and has_stage_failure
                     else status
@@ -869,7 +882,7 @@ class PersonaBridge:
                 if not has_generation:
                     missing_core.append("generation")
                 peer_scope_violations = []
-                if self._last_turn_trace.get("scope") == "peer":
+                if trace.get("scope") == "peer":
                     for stage_name in (
                         "memory_retrieval", "brain_pc_camera_context",
                         "body_observation_context", "empathy_read",
@@ -964,7 +977,7 @@ class PersonaBridge:
                 integrity_issues.extend(
                     f"incomplete_output:{name}" for name in incomplete_outputs
                 )
-                self._last_turn_trace["pipeline_integrity"] = {
+                trace["pipeline_integrity"] = {
                     "status": "consistent" if not integrity_issues else "incomplete_evidence",
                     # This verdict is intentionally scoped to execution evidence.
                     # A complete, correctly ordered pipeline can still produce
@@ -1008,7 +1021,7 @@ class PersonaBridge:
                 architecture_check = stages.get("architecture_claim_validation")
                 if isinstance(architecture_check, dict):
                     validation_status = str(architecture_check.get("status") or "unknown")
-                    self._last_turn_trace["semantic_answer_validation"] = {
+                    trace["semantic_answer_validation"] = {
                         "status": (
                             "scoped_check_performed"
                             if validation_status in {"passed", "replaced_unverified_claims"}
@@ -1018,12 +1031,12 @@ class PersonaBridge:
                         "stage_status": validation_status,
                     }
                 else:
-                    self._last_turn_trace["semantic_answer_validation"] = {
+                    trace["semantic_answer_validation"] = {
                         "status": "not_performed",
                         "scope": "none",
                         "reason": "No general factual-answer validator is wired to the final response.",
                     }
-                self._last_turn_trace["completed_at"] = time.time()
+                trace["completed_at"] = time.time()
 
     def get_last_turn_trace(self) -> dict:
         with self._turn_trace_lock:
@@ -1098,9 +1111,11 @@ class PersonaBridge:
         Yields individual string tokens, then a final meta dict.
         All of PandoraBOX's automatic cycles run correctly regardless of path.
         """
-        self._start_turn_trace(user_id, peer_name, cognitive_scope_id, turn_id)
+        audit_turn_id = self._start_turn_trace(
+            user_id, peer_name, cognitive_scope_id, turn_id
+        )
         if not self._ready or self._system is None:
-            self._finish_turn_trace("not_ready")
+            self._finish_turn_trace("not_ready", audit_turn_id)
             self._record_turn_stage("readiness", "failed", "PersonaBridge not ready")
             msg = "I'm not fully awake yet — give me a moment."
             yield msg
@@ -1175,7 +1190,8 @@ class PersonaBridge:
                 consumes=("response_finalization",),
             )
             self._finish_turn_trace(
-                "failed" if _safety_failure is not None else "blocked_by_input_safety"
+                "failed" if _safety_failure is not None else "blocked_by_input_safety",
+                audit_turn_id,
             )
             yield _input_response
             yield {
@@ -1204,6 +1220,7 @@ class PersonaBridge:
                 self._record_turn_context_source(
                     "displayed_cognitive_trace",
                     "injected" if _displayed_trace is not None else "unavailable",
+                    turn_id=audit_turn_id,
                     captured_at=(_displayed_trace or {}).get("captured_at"),
                     plan_present=bool(plan),
                     steps_completed=plan.get("steps_completed"),
@@ -1262,7 +1279,7 @@ class PersonaBridge:
                 consumes=("response_finalization",),
             )
             self._record_turn_stage("deterministic_goal_response", "completed")
-            self._finish_turn_trace("completed")
+            self._finish_turn_trace("completed", audit_turn_id)
             yield {
                 "__meta__": True,
                 "raw": _goal_response,
@@ -1323,7 +1340,7 @@ class PersonaBridge:
                 consumes=("response_finalization",),
             )
             self._record_turn_stage("deterministic_body_response", "completed")
-            self._finish_turn_trace("completed")
+            self._finish_turn_trace("completed", audit_turn_id)
             yield {
                 "__meta__": True,
                 "raw": _body_response,
@@ -1370,7 +1387,7 @@ class PersonaBridge:
                         # may stop iteration as soon as they receive metadata.
                         _stream_terminal_seen = True
                         self._record_turn_stage("streaming_lifecycle", "completed")
-                        self._finish_turn_trace("completed")
+                        self._finish_turn_trace("completed", audit_turn_id)
                     yield chunk
                 if not _stream_terminal_seen:
                     raise RuntimeError("stream lifecycle ended without terminal metadata")
@@ -1384,7 +1401,7 @@ class PersonaBridge:
         # leave the peer transcript isolated.
         if not record_history:
             err = "Peer dialogue is unavailable because the scoped cognitive stream failed."
-            self._finish_turn_trace("failed")
+            self._finish_turn_trace("failed", audit_turn_id)
             yield err
             yield {"__meta__": True, "raw": err, "speech": err,
                    "emotion": "neutral", "intensity": 0.2, "error": "scoped_peer_stream_failed"}
@@ -1446,7 +1463,7 @@ class PersonaBridge:
                 output={"raw": response, "speech": speech},
                 consumes=("response_finalization",),
             )
-            self._finish_turn_trace("failed")
+            self._finish_turn_trace("failed", audit_turn_id)
             yield response
             yield {
                 "__meta__": True, "raw": response, "speech": speech,
@@ -1470,7 +1487,7 @@ class PersonaBridge:
             )
         except Exception as e:
             logger.error(f"PandoraBOX get_response failed: {e}")
-            self._finish_turn_trace("failed")
+            self._finish_turn_trace("failed", audit_turn_id)
             err = "I'm having trouble responding right now."
             yield err
             yield {"__meta__": True, "raw": err, "speech": err,
@@ -1558,7 +1575,7 @@ class PersonaBridge:
             "response", "completed", output={"raw": response, "speech": self._sanitize(response)},
             consumes=("response_finalization",),
         )
-        self._finish_turn_trace("completed")
+        self._finish_turn_trace("completed", audit_turn_id)
         yield {
             "__meta__":  True,
             "raw":       response,
@@ -1784,7 +1801,7 @@ Write at most 70 words, in the user's language, only if a concise carry-forward 
                 raise
             if _sr.triggered:
                 self._record_turn_stage("input_safety", "blocked", "policy")
-                self._finish_turn_trace("blocked_by_input_safety")
+                self._finish_turn_trace("blocked_by_input_safety", audit_turn_id)
                 forced = _sr.forced_response or "I can't help with that."
                 yield forced
                 yield {"__meta__": True, "raw": forced, "speech": forced,
@@ -1910,7 +1927,7 @@ Write at most 70 words, in the user's language, only if a concise carry-forward 
                 and _goal_means_analysis.unique_feasible_option() is not None
             )
         )
-        _audit_turn_id = str(self.get_last_turn_trace().get("turn_id") or "")
+        _audit_turn_id = audit_turn_id
         system_prompt, emo_dict, cond_dict, arb_temperature = await asyncio.to_thread(
             self._build_prompt_and_cache,
             effective_input,
@@ -2485,7 +2502,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                 _stream_kwargs = {
                     "max_tokens": _max_tokens,
                     "temperature": _temperature,
-                    "audit_turn_id": str(self.get_last_turn_trace().get("turn_id") or ""),
+                    "audit_turn_id": _audit_turn_id,
                 }
                 if not record_history:
                     _stream_kwargs.update(
@@ -3672,6 +3689,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     self._record_turn_context_source(
                         "module_tick_manifest",
                         _manifest_status,
+                        turn_id=audit_turn_id,
                         module_count=len(_module_entries),
                         observed_count=sum(
                             int(_safe_nonnegative_int(item.get("tick_count")) > 0)
@@ -4408,12 +4426,15 @@ Memory honesty — two distinct cases:
             )
             self._record_turn_context_source(
                 "brain_pc_camera", _camera_status,
+                turn_id=audit_turn_id,
                 active=_camera_active,
                 frame_age_seconds=_frame_age,
                 face_age_seconds=_face_age,
             )
         except Exception:
-            self._record_turn_context_source("brain_pc_camera", "status_unavailable")
+            self._record_turn_context_source(
+                "brain_pc_camera", "status_unavailable", turn_id=audit_turn_id
+            )
 
         vision_context = getattr(self, "_pending_vision_context", None)
         if vision_context:
@@ -4479,7 +4500,9 @@ Memory honesty — two distinct cases:
                 except Exception:
                     observations = []
                     body_metadata_available = False
-                    self._record_turn_context_source("body_runtime", "metadata_unavailable")
+                    self._record_turn_context_source(
+                        "body_runtime", "metadata_unavailable", turn_id=audit_turn_id
+                    )
                 now = time.time()
                 ages: list[float] = []
                 stale_count = 0
@@ -4510,6 +4533,7 @@ Memory honesty — two distinct cases:
                     )
                     self._record_turn_context_source(
                         "body_runtime", "injected" if len(observations) > stale_count else "no_current_evidence",
+                        turn_id=audit_turn_id,
                         observation_count=len(observations),
                         fresh_count=max(0, len(observations) - stale_count),
                         stale_count=stale_count,
@@ -4545,6 +4569,7 @@ Memory honesty — two distinct cases:
                 self._record_turn_context_source(
                     "global_workspace_body_cache",
                     "injected" if cached_items else "empty",
+                    turn_id=audit_turn_id,
                     record_count=len(cached_items) if isinstance(cached_items, list) else 0,
                     fresh_count=max(0, len(cached_items) - cache_stale) if isinstance(cached_items, list) else 0,
                     stale_count=cache_stale,
@@ -4571,6 +4596,7 @@ Memory honesty — two distinct cases:
                 self._record_turn_context_source(
                     "global_workspace_brain_pc_camera",
                     "injected" if isinstance(local_camera, dict) or isinstance(local_faces, dict) else "empty",
+                    turn_id=audit_turn_id,
                     active=bool(local_camera.get("active")) if isinstance(local_camera, dict) else False,
                     scene_age_seconds=scene_age,
                     face_age_seconds=face_age,
@@ -4578,7 +4604,9 @@ Memory honesty — two distinct cases:
                 )
             else:
                 self._record_turn_stage("body_observation_context", "unavailable")
-                self._record_turn_context_source("body_runtime", "unavailable")
+                self._record_turn_context_source(
+                    "body_runtime", "unavailable", turn_id=audit_turn_id
+                )
         except Exception as exc:
             current_trace = getattr(self, "_last_turn_trace", {})
             current_stage = (
@@ -4587,7 +4615,9 @@ Memory honesty — two distinct cases:
             )
             if current_stage.get("status") not in {"injected", "unavailable"}:
                 self._record_turn_stage("body_observation_context", "failed", str(exc))
-            self._record_turn_context_source("body_runtime", "metadata_unavailable")
+            self._record_turn_context_source(
+                "body_runtime", "metadata_unavailable", turn_id=audit_turn_id
+            )
             logger.debug("[BodyRuntime] prompt context unavailable", exc_info=True)
         return system_prompt, body_context, camera_context
 

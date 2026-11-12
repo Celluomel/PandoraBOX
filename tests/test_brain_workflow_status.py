@@ -268,19 +268,18 @@ class BrainWorkflowStatusTests(unittest.TestCase):
         bridge._turn_trace_history = []
         bridge._turn_stage_health = {}
 
-        bridge._start_turn_trace("fred")
-        original_turn_id = bridge.get_last_turn_trace()["turn_id"]
+        original_turn_id = bridge._start_turn_trace("fred")
         bridge._record_turn_context_source(
             "body_runtime", "injected", observation_count=3, fresh_count=2,
             stale_count=1, oldest_age_seconds=16.25,
+            turn_id=original_turn_id,
             raw_observation={"secret": "must not be retained"},
         )
         bridge._record_turn_stage(
             "provider", "failed", "provider exception echoed confidential prompt text",
         )
         bridge._finish_turn_trace("completed")
-        bridge._start_turn_trace("fred")
-        current_turn_id = bridge.get_last_turn_trace()["turn_id"]
+        current_turn_id = bridge._start_turn_trace("fred")
 
         bridge.record_deferred_turn_stage(
             original_turn_id, "continuity_analysis_post_response", "completed",
@@ -296,6 +295,36 @@ class BrainWorkflowStatusTests(unittest.TestCase):
         self.assertEqual(prior["context_sources"]["body_runtime"]["observation_count"], 3)
         self.assertNotIn("raw_observation", prior["context_sources"]["body_runtime"])
         self.assertNotIn("detail", prior["stages"]["provider"])
+
+    def test_context_source_is_attributed_to_its_turn_when_turns_overlap(self):
+        bridge = PersonaBridge.__new__(PersonaBridge)
+        bridge._turn_trace_lock = threading.Lock()
+        bridge._turn_sequence = 0
+        bridge._last_turn_trace = {}
+        bridge._turn_trace_history = []
+        bridge._turn_stage_health = {}
+
+        first_turn_id = bridge._start_turn_trace("fred")
+        second_turn_id = bridge._start_turn_trace("fred")
+        bridge._record_turn_context_source(
+            "memory", "injected", turn_id=first_turn_id, record_count=2,
+        )
+        bridge._record_turn_context_source(
+            "brain_pc_camera", "fresh", turn_id=second_turn_id, active=True,
+        )
+        bridge._finish_turn_trace("completed", first_turn_id)
+
+        trace = bridge.get_last_turn_trace()
+        prior = next(
+            item for item in trace["recent_turns"]
+            if item["turn_id"] == first_turn_id
+        )
+        self.assertEqual(trace["turn_id"], second_turn_id)
+        self.assertEqual(prior["context_sources"]["memory"]["record_count"], 2)
+        self.assertNotIn("brain_pc_camera", prior["context_sources"])
+        self.assertEqual(prior["status"], "completed")
+        self.assertEqual(trace["status"], "running")
+        self.assertTrue(trace["context_sources"]["brain_pc_camera"]["active"])
 
 
 if __name__ == "__main__":
