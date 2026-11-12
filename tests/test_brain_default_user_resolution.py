@@ -95,3 +95,32 @@ def test_brain_chat_route_uses_the_resolved_identity_for_both_stream_modes():
         )
         for call in calls
     )
+
+
+def test_state_reports_prompt_budget_admission_without_claiming_model_attention():
+    source = Path(__file__).parents[1] / "brain.py"
+    tree = ast.parse(source.read_text(encoding="utf-8"))
+    route = next(
+        node for node in tree.body
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "organism_state"
+    )
+    assignment = next(
+        node for node in ast.walk(route)
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Subscript)
+            and isinstance(target.slice, ast.Constant)
+            and target.slice.value == "prompt_context_admission"
+            for target in node.targets
+        )
+    )
+    payload = assignment.value
+    assert isinstance(payload, ast.Dict)
+    fields = {
+        key.value: value.value
+        for key, value in zip(payload.keys, payload.values)
+        if isinstance(key, ast.Constant) and isinstance(value, ast.Constant)
+    }
+    assert fields["metric_scope"] == "prompt_budget_admission"
+    assert fields["model_attention_measured"] is False
+    assert fields["response_effect_measured"] is False

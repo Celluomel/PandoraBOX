@@ -229,26 +229,40 @@ async def organism_state():
         except Exception:
             pass
 
-        # ── Prompt influence dashboard (behavioral consequence observability) ──
-        # Shows which cognitive modules actually contributed to recent prompts,
-        # their selection rates, and mean token spend — surfaces "technically
-        # injected but practically ignored" issues.
+        # ── Prompt section admission telemetry ──────────────────────────────
+        # This records budget admission into the assembled prompt. It does not
+        # measure whether the LLM attended to a section or whether it changed
+        # the response. Keep the historical alias below for API compatibility.
         try:
             from cognition.prompt_context_budget import PromptContextBudget
             _pcb = PromptContextBudget()
             _summary = _pcb.contribution_summary()
             if _summary:
-                out["prompt_influence"] = {
+                _sources = {
                     src: {
-                        "selection_rate": s["selection_rate"],
-                        "mean_tokens":    s["mean_tokens"],
-                        "appearances":    s["appearances"],
+                        "admission_rate": s["selection_rate"],
+                        "mean_tokens": s["mean_tokens"],
+                        "appearances": s["appearances"],
                     }
                     for src, s in sorted(
                         _summary.items(),
                         key=lambda x: x[1]["selection_rate"],
                         reverse=True,
                     )
+                }
+                out["prompt_context_admission"] = {
+                    "metric_scope": "prompt_budget_admission",
+                    "model_attention_measured": False,
+                    "response_effect_measured": False,
+                    "sources": _sources,
+                }
+                out["prompt_influence"] = {
+                    src: {
+                        "selection_rate": s["selection_rate"],
+                        "mean_tokens":    s["mean_tokens"],
+                        "appearances":    s["appearances"],
+                    }
+                    for src, s in _summary.items()
                 }
         except Exception:
             pass
