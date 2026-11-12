@@ -861,6 +861,7 @@ class LLMManager:
         *,
         history_override: Optional[List[Dict]] = None,
         record_history: bool = True,
+        history_user_input: Optional[str] = None,
         **kwargs
     ) -> Iterator[str]:
         """Stream response tokens.  Accumulates them for history on completion.
@@ -907,7 +908,14 @@ class LLMManager:
         ).strip()
         if record_history:
             self.history.extend([
-                {"role": "user",      "content": prompt},
+                # The generation prompt may include private response contracts
+                # appended by PersonaBridge. Persist the user's actual turn,
+                # not those internal instructions, so later recall and session
+                # summaries retain a faithful dialogue record.
+                {
+                    "role": "user",
+                    "content": prompt if history_user_input is None else str(history_user_input),
+                },
                 {"role": "assistant", "content": full_response},
             ])
             self._persist_completed_history()

@@ -2553,6 +2553,9 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     "max_tokens": _max_tokens,
                     "temperature": _temperature,
                     "audit_turn_id": _audit_turn_id,
+                    # _generation_input can carry private contracts appended
+                    # below. Keep the durable conversation history canonical.
+                    "history_user_input": effective_input,
                 }
                 if not record_history:
                     _stream_kwargs.update(

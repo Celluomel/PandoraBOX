@@ -48,6 +48,29 @@ class SessionContinuityCheckpointTests(unittest.TestCase):
             {"role": "assistant", "content": "completed answer"},
         ])
 
+    def test_stream_persists_canonical_user_turn_when_generation_prompt_is_enriched(self):
+        session = Mock()
+        manager = self._manager(session)
+        model_prompt = (
+            "What is the latest audit result?\n\n"
+            "Silently follow the private factual self-report contract."
+        )
+
+        self.assertEqual(
+            list(manager.generate_stream(
+                model_prompt,
+                history_user_input="What is the latest audit result?",
+            )),
+            ["completed answer"],
+        )
+
+        saved_history = session.on_exchange_complete.call_args.args[0]
+        self.assertEqual(saved_history[-2:], [
+            {"role": "user", "content": "What is the latest audit result?"},
+            {"role": "assistant", "content": "completed answer"},
+        ])
+        self.assertNotIn("private factual", saved_history[-2]["content"])
+
     def test_nonstream_exchange_is_checkpointed_after_assistant_reply(self):
         session = Mock()
         manager = self._manager(session)
