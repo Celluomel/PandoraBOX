@@ -57,7 +57,7 @@ from cognition.self_concept import SelfConceptSystem
 from cognition.behavioral_conditioning import BehavioralConditioningSystem
 from cognition.life_stage_prompting import build_stage_system_block, get_stage_profile
 from cognition.relational_knowledge_graph import RelationalKnowledgeGraph
-from cognition.memory_retrieval import rank_documents
+from cognition.memory_retrieval import faiss_l2_relevance, rank_documents
 from cognition.turn_context_evidence import memory_embedding_text
 
 # ── Liberty Components (NEW) ────────────────────────────────────────
@@ -955,7 +955,7 @@ class EnhancedMemorySystem:
             scored = []
             for m in memories:
                 d = dist_map.get(m["faiss_id"], float("inf"))
-                sim     = 1.0 / (1.0 + d) if d >= 0 else 0.0
+                sim     = faiss_l2_relevance(d)
                 recency = self._recency_score(m["timestamp"])
                 mood_boost = 0.0
                 if current_valence is not None:
@@ -968,9 +968,8 @@ class EnhancedMemorySystem:
                 scored.append((score, m))
             scored.sort(key=lambda x: x[0], reverse=True)
             return [
-                dict(m, relevance=(
-                    1.0 / (1.0 + dist_map.get(m["faiss_id"], float("inf")))
-                    if dist_map.get(m["faiss_id"], float("inf")) >= 0 else 0.0
+                dict(m, relevance=faiss_l2_relevance(
+                    dist_map.get(m["faiss_id"], float("inf"))
                 ))
                 for _, m in scored[:limit]
             ]
@@ -1052,11 +1051,11 @@ class EnhancedMemorySystem:
                             ))
                             if sourced:
                                 return [
-                                    dict(memory, relevance=1.0 / (1.0 + max(
-                                        0.0, distance_by_id.get(
+                                    dict(memory, relevance=faiss_l2_relevance(
+                                        distance_by_id.get(
                                             int(memory.get("faiss_id", -1)), float("inf")
                                         )
-                                    )))
+                                    ))
                                     for memory in sourced[:limit]
                                 ]
                     except Exception as error:
@@ -1131,14 +1130,14 @@ class EnhancedMemorySystem:
             for row in rows:
                 fid = row[7]
                 d   = dist_map.get(fid, float("inf"))
-                sim     = 1.0 / (1.0 + d) if d >= 0 else 0.0
+                sim     = faiss_l2_relevance(d)
                 recency = self._recency_score(row[2])
                 score   = sim * 0.6 + row[3] * boost_impact * 0.3 + recency * 0.1
                 scored.append((score, {
                     "id": row[0], "text": row[1], "timestamp": row[2],
                     "impact_score": row[3], "memory_type": row[4],
                     "memory_tier": row[5], "emotional_valence": row[6],
-                    "faiss_id": fid,
+                    "faiss_id": fid, "relevance": sim,
                 }))
             scored.sort(key=lambda x: x[0], reverse=True)
             return [m for _, m in scored[:limit]]

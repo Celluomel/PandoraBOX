@@ -8,7 +8,7 @@ package = ModuleType("cognition")
 package.__path__ = [str(ROOT / "cognition")]
 sys.modules.setdefault("cognition", package)
 
-from cognition.memory_retrieval import rank_documents, tokenize
+from cognition.memory_retrieval import faiss_l2_relevance, rank_documents, tokenize
 
 
 class MemoryRetrievalQualityTests(unittest.TestCase):
@@ -56,6 +56,15 @@ class MemoryRetrievalQualityTests(unittest.TestCase):
     def test_french_accents_are_normalized_and_empty_queries_return_nothing(self):
         self.assertEqual(tokenize("Épuisé, déjà, à côté"), ["epuise", "deja", "cote"])
         self.assertEqual(rank_documents("le et ou", self.DOCUMENTS), [])
+
+    def test_normalized_faiss_squared_l2_maps_to_cosine_relevance(self):
+        # For unit vectors, d² = 2 - 2*cosine. These values are the exact
+        # geometric mapping, not an arbitrary threshold for accepting recall.
+        self.assertEqual(faiss_l2_relevance(0.0), 1.0)
+        self.assertEqual(faiss_l2_relevance(1.0), 0.5)
+        self.assertEqual(faiss_l2_relevance(2.0), 0.0)
+        self.assertEqual(faiss_l2_relevance(3.0), 0.0)
+        self.assertEqual(faiss_l2_relevance(float("inf")), 0.0)
 
 
 if __name__ == "__main__":

@@ -21,6 +21,23 @@ votre vous y etre avoir faire suis sont doit dois
 """).split())
 
 
+def faiss_l2_relevance(distance: float) -> float:
+    """Map squared-L2 distance between unit vectors to non-negative cosine relevance.
+
+    SentenceTransformer's configured all-MiniLM-L6-v2 pipeline includes a
+    Normalize module, so FAISS IndexFlatL2 returns d² = 2 - 2*cosine.
+    The old 1/(1+d²) transform was monotonic but not a similarity measure and
+    gave unrelated candidates misleadingly positive scores.
+    """
+    try:
+        squared_distance = float(distance)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    if not math.isfinite(squared_distance):
+        return 0.0
+    return max(0.0, min(1.0, 1.0 - max(0.0, squared_distance) / 2.0))
+
+
 def extract_explicit_recall_topic(text: str) -> str:
     """Remove the request framing from a memory question before retrieval.
 
