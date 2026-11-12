@@ -35,6 +35,7 @@ from cognition.identity_boundary import prompt_block as _identity_boundary_block
 from cognition.body_runtime.robot_capabilities import robot_capability_report, robot_inventory_observation
 from cognition.memory_retrieval import (
     extract_explicit_recall_topic,
+    filter_recall_query_records,
     filter_memories_by_modality,
     is_explicit_memory_recall_query,
     is_visual_memory_query,
@@ -3501,7 +3502,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             # yet — evaluate() runs in _post_interaction, after retrieval).
             # A recent surprise plausibly widens what's worth recalling
             # right now, same as it would for a person mid-conversation.
-            _recall_limit = 6
+            _recall_limit = 12 if _is_recall_request else 6
             _surprised = False
             _pm = None
             try:
@@ -3509,7 +3510,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                 if _pm and hasattr(_pm, "recent_error_level"):
                     _recent_error = _pm.recent_error_level()
                     if _recent_error is not None and _recent_error > 0.5:
-                        _recall_limit = 10
+                        _recall_limit = max(_recall_limit, 10)
                         _surprised = True
             except Exception:
                 pass
@@ -3538,13 +3539,21 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     _interaction_mems = s.memory_system.retrieve_memories(
                         _recall_query, limit=_recall_limit, current_valence=_cur_valence
                     )
+                if _is_recall_request:
+                    # A prior copy of the same "what did I ask?" prompt is a
+                    # high-similarity FAISS result, not evidence of the answer.
+                    # Remove that self-match from both retrieval lanes before
+                    # reserving a user-authored source in the prompt pool.
+                    _interaction_mems = filter_recall_query_records(_interaction_mems)
                 # Cross-source retrieval can rank a fluent, high-impact past
                 # Lumina reply above the user's source statement. Retrieve the
                 # user's own messages through a separate lexical lane and
                 # reserve one relevant source record in the bounded prompt pool.
                 _user_authored_mems = s.memory_system.retrieve_user_authored_memories(
-                    _recall_query, limit=2
+                    _recall_query, limit=6 if _is_recall_request else 2
                 )
+                if _is_recall_request:
+                    _user_authored_mems = filter_recall_query_records(_user_authored_mems)
                 memories = merge_user_authored_memories(
                     _interaction_mems, _user_authored_mems, _recall_limit
                 )

@@ -17,6 +17,7 @@ import cognition.ai_system as ai_system_module
 from cognition.ai_system import EnhancedMemorySystem
 from cognition.memory_retrieval import (
     extract_explicit_recall_topic,
+    filter_recall_query_records,
     filter_memories_by_modality,
     is_explicit_memory_recall_query,
     is_visual_memory_query,
@@ -219,6 +220,28 @@ class MemorySystemFallbackTests(unittest.TestCase):
         self.assertIn("audit du harnais", topic)
         self.assertIn("résultat final", topic)
         self.assertNotIn("échange antérieur", topic)
+
+    def test_explicit_recall_discards_prior_recall_prompt_self_matches(self):
+        repeated_recall = {
+            "memory_type": "user_message",
+            "text": (
+                "Pour l’audit du harnais, quel résultat final ai-je demandé ? "
+                "Réponds depuis un échange antérieur retrouvé."
+            ),
+        }
+        factual_source = {
+            "memory_type": "user_message",
+            "text": "La preuve utile est de définir les modules requis par scénario, puis vérifier sorties et effets en aval.",
+        }
+        historical_exchange = {
+            "memory_type": "episodic",
+            "text": "User: Pour l'audit, quel résultat final ai-je demandé? | Lumina: Je ne retrouve pas la source.",
+        }
+
+        self.assertEqual(
+            filter_recall_query_records([repeated_recall, factual_source, historical_exchange]),
+            [factual_source, historical_exchange],
+        )
 
     def test_prior_request_question_english_routes_to_explicit_recall(self):
         query = "For the audit, what final outcome did I ask you to provide?"

@@ -135,6 +135,24 @@ def is_explicit_memory_recall_query(text: str) -> bool:
     ))
 
 
+def filter_recall_query_records(memories: Sequence[dict]) -> List[dict]:
+    """Drop stored user utterances that are themselves recall questions.
+
+    Such records are common self-matches (especially after retrying a recall
+    request). They prove that the earlier question was asked, but they are not
+    source material for the answer being recalled. Keep episodic exchanges so
+    their user-authored content and assistant reply can still be evaluated
+    separately by the prompt's provenance rules.
+    """
+    return [
+        memory for memory in memories
+        if not (
+            str(memory.get("memory_type", "")).casefold() == "user_message"
+            and is_explicit_memory_recall_query(str(memory.get("text", "")))
+        )
+    ]
+
+
 def tokenize(text: str) -> List[str]:
     """Normalize accents and remove common English/French function words."""
     folded = unicodedata.normalize("NFKD", str(text or "").casefold())
