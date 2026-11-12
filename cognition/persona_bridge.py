@@ -975,7 +975,8 @@ class PersonaBridge:
                 incomplete_outputs = sorted(
                     name for name, value in stages.items()
                     if isinstance(value, dict)
-                    and value.get("status") in {
+                and isinstance(value.get("status"), str)
+                and value.get("status") in {
                         "truncated_by_token_limit", "completion_metadata_missing",
                     }
                 )
@@ -4178,7 +4179,7 @@ Memory honesty — two distinct cases:
             # dialogue uses its pair transcript and shared cognition, never the
             # operator's camera/face data or private Body telemetry.
             system_prompt, _body_context, _local_camera_grounding = self._append_live_evidence_context(
-                system_prompt, peer_name,
+                system_prompt, peer_name, audit_turn_id=audit_turn_id,
             )
 
             system_prompt = self._append_cognitive_prompt_context(
@@ -4450,7 +4451,7 @@ Memory honesty — two distinct cases:
         return system_prompt
 
     def _append_live_evidence_context(
-        self, system_prompt: str, peer_name: str = "",
+        self, system_prompt: str, peer_name: str = "", *, audit_turn_id: str = "",
     ) -> tuple[str, str, str]:
         """Add live camera/Body evidence only to the human-facing turn scope.
 

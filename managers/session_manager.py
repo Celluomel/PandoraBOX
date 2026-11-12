@@ -42,14 +42,19 @@ MAX_RAW_TURNS    = 20   # hard cap after compression
 
 _COMPRESS_SYSTEM = """You are a conversation summarizer for an AI assistant named PandoraBOX.
 Given a list of conversation turns, write a dense factual summary that preserves:
-- What the user was working on or asking about
-- Key decisions, facts, or conclusions reached
+- The user's active task or objective and any later change to it
+- Decisions and constraints stated by the user, attributed to the user
+- Work actually completed, results, and evidence; distinguish these from assistant claims
+- The current state, unresolved issues, and next requested step
+- Corrections or disagreements that invalidate an earlier assistant claim
 - User's name if mentioned, their preferences, context
 - Any technical details (file paths, config values, code structures) that were discussed
 
-Write in third person past tense. Be dense and specific — this replaces the actual messages.
-Start with: "[CONTEXT FROM EARLIER IN THIS CONVERSATION]"
-Max 400 words. No markdown headers.
+Keep the source distinction clear: a user request is not proof that an action happened, and an
+assistant statement is not proof that its claim was true. Preserve uncertainty instead of
+resolving it by inference. Write in third person past tense. Be dense and specific — this
+replaces the actual messages. Start with: "[CONTEXT FROM EARLIER IN THIS CONVERSATION]".
+Maximum 600 words. No markdown headers.
 """
 
 
@@ -79,16 +84,26 @@ class SessionManager:
     # ── After every exchange ──────────────────────────────────────────────────
     def on_exchange_complete(self, history: List[Dict]):
         """
-        Called by LLMManager after each user/assistant exchange.
-        Saves history to disk immediately (non-blocking via thread).
-        Triggers compression if history is getting long.
+        Persist each completed exchange before returning, then compress long
+        histories in the background. A process restart must not depend on a
+        later user turn or a graceful shutdown to save the latest answer.
         """
-        self._dirty = True
-        threading.Thread(
-            target=self._save_and_maybe_compress,
-            args=(list(history),),    # snapshot to avoid race
-            daemon=True,
-        ).start()
+        snapshot = list(history)
+        with self._lock:
+            self._save_raw(snapshot)
+            self._dirty = False
+        if len(snapshot) >= COMPRESS_TRIGGER:
+            threading.Thread(
+                target=self._compress_latest,
+                daemon=True,
+            ).start()
+
+    def _compress_latest(self):
+        """Compress the latest persisted history, never a stale turn snapshot."""
+        with self._lock:
+            latest = self._load_raw()
+            if len(latest) >= COMPRESS_TRIGGER:
+                self._compress(latest)
 
     def _save_and_maybe_compress(self, history: List[Dict]):
         with self._lock:
@@ -261,18 +276,33 @@ class SessionManager:
             except Exception as e:
                 logger.warning(f"SessionManager compression LLM failed: {e}")
 
-        # Fallback: extract user messages from the text string
-        lines = []
+        # Fallback keeps bounded, paired source excerpts. The old fallback
+        # retained only user questions, discarding the answers and outcomes
+        # needed to resume a task after a restart.
+        exchanges = []
+        current_user = None
         for chunk in turns_text.split("\n\n"):
             if chunk.startswith("USER:"):
-                snippet = chunk[5:].strip()[:200]
-                if snippet:
-                    lines.append(f"User said: {snippet}")
-        return (
-            "[CONTEXT FROM EARLIER IN THIS CONVERSATION]\n"
-            + "Earlier topics covered: "
-            + "; ".join(lines[:5])
-        ) if lines else "[CONTEXT FROM EARLIER IN THIS CONVERSATION]\nPrevious conversation existed."
+                current_user = chunk[5:].strip()
+            elif chunk.startswith("ASSISTANT:"):
+                assistant = chunk[10:].strip()
+                if current_user or assistant:
+                    exchanges.append((current_user or "", assistant))
+                current_user = None
+        if current_user:
+            exchanges.append((current_user, ""))
+
+        lines = [
+            "[CONTEXT FROM EARLIER IN THIS CONVERSATION]",
+            "Historical excerpts below preserve what was asked and what the assistant claimed;",
+            "assistant claims are not independently verified facts.",
+        ]
+        for user_text, assistant_text in exchanges[-5:]:
+            if user_text:
+                lines.append(f"User asked/stated: {user_text[:500]}")
+            if assistant_text:
+                lines.append(f"Assistant replied/claimed: {assistant_text[:700]}")
+        return "\n".join(lines)
 
     # ── I/O ───────────────────────────────────────────────────────────────────
     def _save_raw(self, history: List[Dict]):

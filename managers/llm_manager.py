@@ -596,6 +596,13 @@ class LLMManager:
         if len(self.history) > _HISTORY_MAX:
             self.history = self.history[-_HISTORY_MAX:]
 
+    def _persist_completed_history(self) -> None:
+        """Durably checkpoint a completed exchange when a session store exists."""
+        session = getattr(self, "_session", None)
+        persist = getattr(session, "on_exchange_complete", None)
+        if callable(persist):
+            persist(self.history)
+
     def record_exchange(self, prompt: str, response: str) -> None:
         """Record a locally resolved turn without invoking the provider."""
         self.history.extend([
@@ -843,6 +850,7 @@ class LLMManager:
             {"role": "user",      "content": prompt},
             {"role": "assistant", "content": response},
         ])
+        self._persist_completed_history()
         return response
 
     def generate_stream(
@@ -902,6 +910,7 @@ class LLMManager:
                 {"role": "user",      "content": prompt},
                 {"role": "assistant", "content": full_response},
             ])
+            self._persist_completed_history()
 
     def generate_with_vision(
         self,
