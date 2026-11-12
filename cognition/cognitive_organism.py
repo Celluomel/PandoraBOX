@@ -1455,18 +1455,10 @@ class CognitiveOrganism:
         except Exception:
             pass
 
-        # Record drive satisfaction based on response quality
-        if human_interaction and decision.dominant_drive == "help_user":
-            # Heuristic: longer, structured responses likely more helpful
-            word_count = len(response.split())
-            satisfaction = min(0.9, 0.5 + word_count / 1000.0)
-            self.goal_ecology.record_satisfaction("help_user", satisfaction)
-
-        # Curiosity satisfied if research was done or question was answered
-        if human_interaction and "?" in response and self.curiosity.global_level() > 0.5:
-            top = self.curiosity.top_topic()
-            if top:
-                self.curiosity.stimulate(top, amount=0.05, source="user_signal")
+        # Do not score drive outcomes from the assistant's own prose. Response
+        # length and punctuation are not evidence that the user was helped or
+        # that curiosity was satisfied; explicit user feedback and measured
+        # downstream outcomes are handled by their own evidence paths.
 
         _report = self.homeostasis.last_report()
         logger.debug(
@@ -1504,12 +1496,11 @@ class CognitiveOrganism:
         except Exception:
             pass
 
-        # ── PressureSystem: satiation after interaction ─────────────────────
+        # ── PressureSystem: interaction event, not assumed insight ─────────
         try:
-            # Every user interaction satiates social + expression to some degree
-            self.pressure.record_successful_interaction()
-            # Successful interaction also reduces uncertainty — understanding achieved
-            self.pressure.satiate("uncertainty", amount=0.25)
+            # Contact can satisfy some social/expression pressure. A completed
+            # answer alone does not prove that uncertainty was resolved.
+            self.pressure.record_interaction()
             # Prediction error → epistemic pressure
             if 'prediction_error' in locals() and prediction_error is not None:
                 if hasattr(prediction_error, 'get'):

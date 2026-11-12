@@ -2943,17 +2943,14 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             yield raw_response
 
         # ── Phase C: full post-turn lifecycle (non-blocking thread) ─
-        # This heuristic is meant to infer impact on the human interlocutor.
-        # Applying it to FLUX's generated prose would mutate global emotional
-        # state from style (length/punctuation), not from a human affect read.
-        if peer_name:
-            self._record_turn_stage("response_emotion_update", "skipped_by_scope")
-        else:
-            try:
-                self._infer_emotion_from_response(raw_response)
-                self._record_turn_stage("response_emotion_update", "completed")
-            except Exception as exc:
-                self._record_turn_stage("response_emotion_update", "failed", str(exc))
+        # Generated prose is not an independent appraisal of user affect or
+        # response quality. Only observed user feedback/sentiment may update
+        # those states; do not derive emotion from the assistant's own length,
+        # hedging, or punctuation.
+        self._record_turn_stage(
+            "response_emotion_update",
+            "skipped_by_scope" if peer_name else "skipped_no_independent_appraisal",
+        )
 
         # Determine the ArbitrationDecision from the cycle data stored on organism
         # (needed for post_interaction drive satisfaction scoring)
@@ -3146,37 +3143,6 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             "emotion":   emotion,
             "intensity": intensity,
         }
-
-    def _infer_emotion_from_response(self, response: str) -> None:
-        """
-        Lightweight local inference: update emotional state based on what
-        PandoraBOX actually said (no LLM call — pure heuristics on response text).
-        Hedging → anxiety nudge.  Questions → curiosity nudge.
-        Short terse reply → frustration nudge.  Long engaged reply → enthusiasm nudge.
-        """
-        if not self._system:
-            return
-        ems = self._system.emotional_state
-        r   = response.lower()
-        words = response.split()
-        length = len(words)
-
-        hedge_count = sum(r.count(h) for h in
-                         ["maybe", "perhaps", "i suppose", "not sure", "i think",
-                          "i'm not", "i don't know", "it depends", "possibly"])
-        question_count = r.count("?")
-        exclaim_count  = r.count("!")
-
-        if hedge_count >= 3:
-            ems._nudge("anxiety",   +0.015)
-        if question_count >= 3:
-            ems._nudge("curiosity", +0.020)
-        if exclaim_count >= 2:
-            ems._nudge("enthusiasm",+0.015)
-        if length < 25:
-            ems._nudge("frustration", +0.008)   # unusually terse
-        elif length > 120:
-            ems._nudge("enthusiasm",  +0.012)   # expansive, engaged
 
     def _build_prompt_and_cache(
         self,
@@ -4906,15 +4872,14 @@ Memory honesty — two distinct cases:
                             "WorldModel profile update was not persisted for turn %s",
                             audit_turn_id,
                         )
-                    # Update additional drive satisfaction based on response quality
-                    word_count = len(response.split())
-                    has_question = "?" in response
-                    if word_count > 80:
-                        organism.goal_ecology.record_satisfaction("understand", 0.75)
-                    if word_count > 30 and has_question:
-                        organism.goal_ecology.record_satisfaction("connect", 0.7)
-                    if has_question:
-                        organism.goal_ecology.record_satisfaction("be_understood", 0.65)
+                    # The output text alone cannot verify understanding,
+                    # connection, or helpfulness. Leave drive satisfaction
+                    # unchanged until an independent outcome is available.
+                    self._record_turn_stage(
+                        "drive_satisfaction_update",
+                        "skipped_no_independent_outcome",
+                        turn_id=audit_turn_id,
+                    )
                     self._record_turn_stage(
                         "organism_post_interaction", "completed", turn_id=audit_turn_id,
                     )

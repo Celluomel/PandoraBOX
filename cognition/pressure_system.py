@@ -357,10 +357,14 @@ class PressureSystem:
         self.boost("coherence", 0.15)
         self.boost("identity",  0.08)
 
-    def record_successful_interaction(self) -> None:
-        """After a good exchange — satiate social and expression."""
+    def record_interaction(self) -> None:
+        """Record social contact without claiming the answer was successful."""
         self.satiate("social",     0.35)
         self.satiate("expression", 0.30)
+
+    def record_successful_interaction(self) -> None:
+        """Backward-compatible alias; success must not be inferred from contact."""
+        self.record_interaction()
 
     def record_insight(self) -> None:
         """After resolving a curiosity or learning something meaningful."""
