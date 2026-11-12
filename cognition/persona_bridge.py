@@ -1813,6 +1813,7 @@ Write at most 70 words, in the user's language, only if a concise carry-forward 
         s = self._system
         _audit_turn_id = audit_turn_id
         _cognitive_scope = str(cognitive_scope_id or user_id)
+        _explicit_memory_recall = is_explicit_memory_recall_query(effective_input)
         # This flag is consumed later inside the streaming worker below. It
         # must live in this method's scope; the prompt builder runs in a
         # separate worker thread and its local variables are not shared.
@@ -1823,9 +1824,13 @@ Write at most 70 words, in the user's language, only if a concise carry-forward 
             )
             _cognitive_trace_query = is_cognitive_trace_query(effective_input)
             _architecture_query = (
-                is_architecture_query(effective_input) or _cognitive_trace_query
+                (is_architecture_query(effective_input) or _cognitive_trace_query)
+                and not _explicit_memory_recall
             )
-            _internal_cognitive_query = is_internal_cognitive_query(effective_input)
+            _internal_cognitive_query = (
+                is_internal_cognitive_query(effective_input)
+                or _explicit_memory_recall
+            )
         except Exception as _architecture_query_error:
             _architecture_query = False
             _cognitive_trace_query = False
@@ -1970,6 +1975,7 @@ Write at most 70 words, in the user's language, only if a concise carry-forward 
         _suppress_external_search = bool(
             voice_mode
             or bool(peer_name)
+            or _explicit_memory_recall
             # Architecture/self-audit answers are closed-world: they must be
             # grounded in this process's own trace, not supplemented by web
             # snippets that cannot prove what Lumina executed.
@@ -3742,13 +3748,22 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     is_cognitive_trace_query,
                 )
                 _trace_only_query = is_cognitive_trace_query(user_input)
+                _explicit_recall_query = is_explicit_memory_recall_query(user_input)
                 _architecture_query = (
-                    is_architecture_query(user_input) or _trace_only_query
+                    (is_architecture_query(user_input) or _trace_only_query)
+                    and not _explicit_recall_query
                 )
-                _internal_cognitive_query = is_internal_cognitive_query(user_input)
+                _internal_cognitive_query = (
+                    is_internal_cognitive_query(user_input)
+                    or _explicit_recall_query
+                )
                 _module_tick_snapshot = None
                 _module_entries = []
-                if _internal_cognitive_query and not _trace_only_query:
+                if (
+                    _internal_cognitive_query
+                    and not _trace_only_query
+                    and not _explicit_recall_query
+                ):
                     _loop = getattr(self._organism, "_loop", None)
                     _snapshot_fn = getattr(_loop, "module_tick_snapshot", None)
                     if callable(_snapshot_fn):
