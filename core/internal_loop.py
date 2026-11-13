@@ -183,6 +183,11 @@ class InternalThoughtLoop:
         from core.module_tick_log import ModuleTickLog
         self._module_tick_log = ModuleTickLog()
         self._module_tick_wrapped: set[tuple[int, str]] = set()
+        # Human turns can arrive before the first slow-cycle tick. Create the
+        # resource ledger now so CognitiveOrganism can charge that first turn;
+        # slow-cycle initialization remains as a retry if startup fails.
+        self._resource_economy = None
+        self._ensure_resource_economy()
         # Per-cycle causal evidence complements the long-lived aggregate tick
         # counters. Keep only bounded, content-free hashes and stage metadata.
         self._cycle_evidence_lock = threading.RLock()
@@ -374,6 +379,21 @@ class InternalThoughtLoop:
         # ── AutonomousCuriosityResolver — Phase 5.0, promotes curiosity into goals
         self._autonomous_curiosity_resolver: Optional["AutonomousCuriosityResolver"] = None
         self._refresh_module_tick_probes()
+
+    def _ensure_resource_economy(self):
+        """Resolve the interaction-cost ledger before either turn or slow tick."""
+        if self._resource_economy is not None:
+            return self._resource_economy
+        try:
+            from cognition.cognitive_resource_economy import CognitiveResourceEconomy
+            self._resource_economy = CognitiveResourceEconomy()
+            if getattr(self, "_module_tick_log", None) is not None:
+                self._refresh_module_tick_probes(only_attr="_resource_economy")
+            logger.info("[InternalLoop] CognitiveResourceEconomy ready ✅")
+        except Exception as error:
+            logger.warning("[InternalLoop] CognitiveResourceEconomy init failed: %s", type(error).__name__)
+            self._resource_economy = None
+        return self._resource_economy
 
     def _refresh_module_tick_probes(self, only_attr: str | None = None) -> None:
         """Attach bounded probes to known module entrypoints, without logging each tick."""
@@ -1107,13 +1127,9 @@ class InternalThoughtLoop:
         # Applies time-based recovery to cognitive_energy, social_energy,
         # attention.  Must run first so gate reads current values this cycle.
         try:
-            if not hasattr(self, '_resource_economy'):
-                self._resource_economy = None
-            if self._resource_economy is None:
-                from cognition.cognitive_resource_economy import CognitiveResourceEconomy
-                self._resource_economy = CognitiveResourceEconomy()
-                logger.info("[InternalLoop] CognitiveResourceEconomy ready ✅")
-            self._resource_economy.tick()
+            _resource_economy = self._ensure_resource_economy()
+            if _resource_economy is not None:
+                _resource_economy.tick()
         except Exception as _re:
             logger.debug(f"[InternalLoop] ResourceEconomy error (non-fatal): {_re}")
 
