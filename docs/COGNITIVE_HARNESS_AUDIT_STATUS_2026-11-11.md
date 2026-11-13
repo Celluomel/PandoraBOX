@@ -1715,3 +1715,15 @@ Un tour d’audit complexe a donné une réponse de relance car `primary_generat
 **Vérification :** `tests/test_brain_api_lifecycle.py` et `tests/test_brain_workflow_status.py` — **15 tests réussis**, 3 sous-tests, 9 avertissements de dépendances déjà connus. Le test de cycle de vie vérifie explicitement que le statut ne dépend pas d’un attribut prématuré.
 
 **État Git/live :** à commit/push et à revalider avec un redémarrage groupé audit; l’instance gérée s’est terminée avant que les endpoints puissent être interrogés, donc aucune disponibilité live n’est revendiquée pour ce lancement.
+
+**Reprise gérée, après correctif :** le premier contrôle de santé a effectivement reproduit l’exception ci-dessus; après correction et redémarrage, le processus est `ready=true`, avec Gemma, FAISS, persona et orchestrateur prêts (`cycle_count=4` puis 57), et les ports 8080, 8765 et 8786 à l’écoute. Le contrôle ultérieur de `/status` n’a plus produit cette exception.
+
+### Exposition des reçus d’exécution du cycle interne — 13 novembre 2026
+
+**Lacune de l’audit :** le runtime possédait déjà `module_tick_analysis()`, `module_tick_snapshot()` et `cycle_evidence_snapshot()`, mais aucune route de l’API Brain/UI ne les exposait. Le compteur de fichiers Python appelés ne permettait pas de distinguer un import, un tick réel, la qualité de forme de la sortie et le lien entre étapes d’un même cycle.
+
+**Correction locale :** route passive `GET /api/interface/cognitive-execution`, qui retourne l’état du loop, les compteurs, les sorties résumées des modules et jusqu’à trois reçus causaux récents. L’appel ne déclenche aucun tick ni tour; les résumés du tick ne conservent pas la prose des sorties. La réponse précise explicitement que forme et intégrité numérique ne valident pas la justesse sémantique.
+
+**Vérification locale :** endpoint contractuel, cycle de vie Brain, reçus du loop et journal de ticks : **36 tests réussis**, 9 avertissements connus. L’exécution de ces tests a nécessité l’autorisation réseau locale Windows, car le sandbox bloquait `asyncio` lors de la création du `socketpair`.
+
+**État live :** la session audit actuelle reste prête; la nouvelle route sera vérifiée après le prochain redémarrage groupé. Une lecture live actuelle de `cognitive-health` montre toujours `focus=null`, `intention=null`, et `arbitration.runs=0`; sans reçu de cycle interne cette observation ne permet pas de conclure que le publish-focus a échoué. Le nouvel endpoint doit établir si l’arbitrage a tourné et si la sortie a été publiée.

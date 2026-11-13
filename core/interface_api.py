@@ -211,6 +211,38 @@ def _orchestrator_snapshot():
         return {'available': False, 'running': False}
 
 
+def _internal_loop_execution_snapshot():
+    """Expose passive tick/output receipts for the live internal thought loop."""
+    state = _runtime()
+    organism = getattr(getattr(state, 'persona', None), '_organism', None)
+    loop = getattr(organism, '_loop', None) if organism is not None else None
+    if loop is None:
+        return {'available': False, 'reason': 'internal_loop_unavailable'}
+
+    try:
+        tick_snapshot = loop.module_tick_snapshot()
+        tick_analysis = loop.module_tick_analysis()
+        cycle_evidence = loop.cycle_evidence_snapshot(limit=3)
+    except Exception as exc:
+        logger.debug('Internal loop execution evidence unavailable: %s', exc)
+        return {'available': False, 'reason': 'execution_evidence_unavailable'}
+
+    return _json_safe({
+        'available': True,
+        'loop_running': bool(getattr(loop, '_running', False)),
+        'slow_cycle_count': int(getattr(loop, '_slow_cycle_count', 0) or 0),
+        'last_fast_cycle_at': getattr(loop, '_last_fast_cycle_at', None),
+        'last_slow_cycle_at': getattr(loop, '_last_slow_cycle_at', None),
+        'module_tick_analysis': tick_analysis,
+        'modules': tick_snapshot,
+        'recent_cycle_evidence': cycle_evidence,
+        'interpretation_limit': (
+            'Ticks and shape/numeric output checks prove execution and basic integrity; '
+            'they do not establish semantic correctness or cognitive usefulness.'
+        ),
+    })
+
+
 @router.get('/status')
 async def status():
     state = _runtime()
@@ -810,6 +842,12 @@ async def cognitive_health():
     except Exception as exc:
         logger.warning('Cognitive health read failed: %s', exc)
         raise HTTPException(503, 'Cognitive dashboard is unavailable.')
+
+
+@router.get('/cognitive-execution')
+async def cognitive_execution():
+    """Read execution receipts without triggering a cognitive module or a turn."""
+    return _internal_loop_execution_snapshot()
 
 
 @router.get('/self-awareness/evidence')

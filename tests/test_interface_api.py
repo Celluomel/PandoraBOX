@@ -87,6 +87,40 @@ class InterfaceTests(unittest.IsolatedAsyncioTestCase):
     def test_missing_orchestrator_is_unavailable_not_active(self):
         self.assertEqual(api._orchestrator_snapshot(), {'available': False, 'running': False})
 
+    async def test_cognitive_execution_exposes_passive_tick_and_cycle_receipts(self):
+        calls = []
+        loop = SimpleNamespace(
+            _running=True,
+            _slow_cycle_count=8,
+            _last_fast_cycle_at=10.0,
+            _last_slow_cycle_at=9.0,
+            module_tick_snapshot=lambda: calls.append('ticks') or {
+                'goal_engine': {'initialized': True, 'tick_count': 2,
+                                'state': 'healthy', 'last_output': {'quality': 'present'}},
+            },
+            module_tick_analysis=lambda: calls.append('analysis') or {
+                'module_count': 1, 'executed_module_count': 1,
+                'total_ticks': 2, 'total_errors': 0,
+            },
+            cycle_evidence_snapshot=lambda limit=5: calls.append(('cycles', limit)) or {
+                'retained': 1, 'cycles': [{'cycle_id': 8, 'status': 'completed', 'stages': []}],
+            },
+        )
+        self.runtime.persona._organism._loop = loop
+
+        async with self.client() as client:
+            response = await client.get('/api/interface/cognitive-execution')
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload['available'])
+        self.assertTrue(payload['loop_running'])
+        self.assertEqual(payload['slow_cycle_count'], 8)
+        self.assertEqual(payload['module_tick_analysis']['executed_module_count'], 1)
+        self.assertEqual(payload['modules']['goal_engine']['tick_count'], 2)
+        self.assertEqual(payload['recent_cycle_evidence']['cycles'][0]['cycle_id'], 8)
+        self.assertEqual(calls, ['ticks', 'analysis', ('cycles', 3)])
+
     async def test_chat_notifies_presence_engine_of_recent_user_activity(self):
         calls = []
         self.runtime.vision = SimpleNamespace(
