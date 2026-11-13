@@ -126,6 +126,8 @@ def test_periodic_module_not_due_is_explicit_without_counting_a_fake_tick():
 
     snapshot = loop.module_tick_snapshot()
     assert snapshot["goal_quality_filter"]["tick_count"] == 0
+    assert snapshot["goal_quality_filter"]["skip_count"] == 1
+    assert snapshot["goal_quality_filter"]["state"] == "skipped_by_policy"
     stage = loop.cycle_evidence_snapshot()["cycles"][0]["stages"][0]
     assert stage["stage"] == "goal_quality_filter"
     assert stage["status"] == "skipped_cadence"
@@ -148,6 +150,27 @@ def test_periodic_module_governor_skip_is_distinct_from_cadence_skip():
     stage = loop.cycle_evidence_snapshot()["cycles"][0]["stages"][0]
     assert stage["status"] == "skipped_governor"
     assert stage["metrics"] == {"cycle": 20, "interval_cycles": 20}
+    module = loop.module_tick_snapshot()["goal_quality_filter"]
+    assert module["tick_count"] == 0
+    assert module["skip_count"] == 1
+    assert module["last_skip_status"] == "skipped_governor"
+
+
+def test_phase2_cadence_receipt_maps_to_orchestrator_without_fake_tick():
+    loop = make_loop()
+    loop._module_tick_log = ModuleTickLog()
+    loop._module_tick_log.register("phase2_orchestrator", initialized=True)
+    loop._phase2 = object()
+    loop._begin_cycle_evidence(9)
+
+    loop._record_cycle_stage("phase2_narrative_synthesis", "skipped_cadence",
+                             metrics={"cycle": 9})
+
+    module = loop.module_tick_snapshot()["phase2_orchestrator"]
+    assert module["tick_count"] == 0
+    assert module["skip_count"] == 1
+    assert module["last_skip_status"] == "skipped_cadence"
+    assert module["state"] == "skipped_by_policy"
 
 
 def test_thread_lifecycle_and_persistent_executive_record_cadence_skips():

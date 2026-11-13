@@ -87,6 +87,35 @@ class ModuleTickLogTests(unittest.TestCase):
         self.assertEqual(analysis["executed_module_count"], 0)
         self.assertEqual(analysis["states"]["unavailable"], 1)
 
+    def test_policy_skip_is_visible_but_never_counted_as_execution(self):
+        ticks = ModuleTickLog()
+        ticks.register("periodic", initialized=True, cadence="every 20 cycles")
+        ticks.record_skip("periodic", "skipped_cadence", metrics={"cycle": 7})
+
+        state = ticks.snapshot()["periodic"]
+        analysis = ticks.analysis()
+        self.assertEqual(state["state"], "skipped_by_policy")
+        self.assertEqual(state["tick_count"], 0)
+        self.assertEqual(state["skip_count"], 1)
+        self.assertEqual(state["last_skip_status"], "skipped_cadence")
+        self.assertEqual(state["last_skip_metrics"], {"cycle": 7})
+        self.assertEqual(analysis["executed_module_count"], 0)
+        self.assertEqual(analysis["total_ticks"], 0)
+        self.assertEqual(analysis["total_skips"], 1)
+        self.assertEqual(analysis["modules_with_skips"], 1)
+
+    def test_execution_state_survives_a_later_policy_skip(self):
+        ticks = ModuleTickLog()
+        ticks.register("periodic", initialized=True)
+        ticks.record("periodic", "run", started_at=1.0, duration_ms=1.0,
+                     output={"ok": True})
+        ticks.record_skip("periodic", "skipped_governor")
+
+        state = ticks.snapshot()["periodic"]
+        self.assertEqual(state["tick_count"], 1)
+        self.assertEqual(state["skip_count"], 1)
+        self.assertEqual(state["state"], "healthy")
+
     def test_internal_loop_probe_records_real_call_and_output_quality(self):
         loop = InternalThoughtLoop.__new__(InternalThoughtLoop)
         loop._module_tick_log = ModuleTickLog()

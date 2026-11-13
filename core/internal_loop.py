@@ -631,7 +631,10 @@ class InternalThoughtLoop:
                     else "unavailable"
                 )
             elif entry.get("tick_count", 0) == 0:
-                entry["state"] = "initialized_unobserved"
+                entry["state"] = (
+                    "skipped_by_policy" if entry.get("skip_count", 0)
+                    else "initialized_unobserved"
+                )
             elif entry.get("last_status") == "failed":
                 entry["state"] = "error"
             else:
@@ -874,6 +877,19 @@ class InternalThoughtLoop:
                     str(key): value for key, value in metrics.items()
                     if isinstance(value, (str, bool, int, float))
                 }
+            if status in {"skipped_cadence", "skipped_governor", "skipped_motivational_scan_running"}:
+                tick_log = getattr(self, "_module_tick_log", None)
+                if tick_log is not None:
+                    probe_names = {value[0] for value in _TICK_PROBES.values()}
+                    module_name = str(stage)
+                    if module_name in {
+                        "phase2_advanced_evaluation",
+                        "phase2_narrative_synthesis",
+                        "phase2_thread_identity_link",
+                    }:
+                        module_name = "phase2_orchestrator"
+                    if module_name in probe_names:
+                        tick_log.record_skip(module_name, status, metrics=metrics)
             receipt["stages"].append(entry)
             return output_ref
 

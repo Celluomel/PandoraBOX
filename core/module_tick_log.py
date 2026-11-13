@@ -93,6 +93,10 @@ class ModuleTickLog:
         with self._lock:
             item = self._modules.setdefault(name, {
                 "tick_count": 0,
+                "skip_count": 0,
+                "last_skip_at": None,
+                "last_skip_status": None,
+                "last_skip_metrics": None,
                 "error_count": 0,
                 "last_tick_at": None,
                 "last_success_at": None,
@@ -110,6 +114,7 @@ class ModuleTickLog:
                 _state_for_output(item.get("last_output"))
                 if item["last_status"] == "completed" else
                 "error" if item["last_status"] == "failed" else
+                "skipped_by_policy" if item.get("skip_count", 0) else
                 "initialized_unobserved"
             )
 
@@ -122,6 +127,10 @@ class ModuleTickLog:
                 "initialized": True,
                 "cadence": "conditional",
                 "tick_count": 0,
+                "skip_count": 0,
+                "last_skip_at": None,
+                "last_skip_status": None,
+                "last_skip_metrics": None,
                 "error_count": 0,
                 "last_tick_at": None,
                 "last_success_at": None,
@@ -161,6 +170,25 @@ class ModuleTickLog:
                 item["last_output"] = None
                 item["state"] = "error"
 
+    def record_skip(self, name: str, status: str, *,
+                    metrics: dict[str, Any] | None = None) -> None:
+        """Record a policy/cadence skip without counting it as an execution tick."""
+        now = time.time()
+        with self._lock:
+            item = self._modules.get(name)
+            if item is None:
+                return
+            item["skip_count"] = int(item.get("skip_count", 0) or 0) + 1
+            item["last_skip_at"] = now
+            item["last_skip_status"] = str(status)[:48]
+            item["last_skip_metrics"] = {
+                str(key)[:48]: value
+                for key, value in (metrics or {}).items()
+                if isinstance(value, (str, bool, int, float))
+            }
+            if int(item.get("tick_count", 0) or 0) == 0 and item.get("initialized"):
+                item["state"] = "skipped_by_policy"
+
     def snapshot(self) -> dict[str, dict[str, Any]]:
         with self._lock:
             return {name: dict(item) for name, item in self._modules.items()}
@@ -172,6 +200,7 @@ class ModuleTickLog:
         output_qualities: dict[str, int] = {}
         executed = 0
         total_ticks = total_errors = 0
+        total_skips = modules_with_skips = 0
         modules_with_errors = 0
         for item in modules.values():
             state = str(item.get("state", "unknown"))
@@ -181,6 +210,9 @@ class ModuleTickLog:
             errors = int(item.get("error_count", 0) or 0)
             total_errors += errors
             modules_with_errors += errors > 0
+            skips = int(item.get("skip_count", 0) or 0)
+            total_skips += skips
+            modules_with_skips += skips > 0
             executed += ticks > 0
             output = item.get("last_output")
             if isinstance(output, dict):
@@ -191,6 +223,8 @@ class ModuleTickLog:
             "executed_module_count": executed,
             "total_ticks": total_ticks,
             "total_errors": total_errors,
+            "total_skips": total_skips,
+            "modules_with_skips": modules_with_skips,
             "modules_with_errors": modules_with_errors,
             "states": states,
             "last_output_qualities": output_qualities,

@@ -1,7 +1,7 @@
 # Audit du harnais cognitif — état et prochaines étapes
 
 **Date de mise à jour :** 13 novembre 2026
-**Statut :** audit en cours — conclusion globale non établie. PC et `origin/main` sont alignés au commit `f7931a6`; les changements Body/UI préexistants restent hors lot. La réponse d’audit sur les reçus est validée en direct. Un nouveau défaut de rappel exact est en correction : la source utilisateur retrouvée contient le bon chemin, mais la génération a affirmé un nom de fichier inventé. Le correctif local dérive le nom depuis la source utilisateur ou s’abstient; il doit être chargé dans Lumina et vérifié en direct. Les tests de composants seuls ne démontrent toujours pas la qualité cognitive globale.
+**Statut :** audit en cours — conclusion globale non établie. PC et `origin/main` sont alignés après le commit `1e68c91`; les changements Body/UI préexistants restent hors lot. La correction de causalité est poussée et sa suite locale passe; le processus Lumina actuel a été redémarré avec le mode audit et a exécuté un cycle lent. Une correction locale complémentaire distingue désormais les skips de politique des appels réels dans le manifeste des modules; elle attend commit/push puis un redémarrage groupé pour sa validation live. Les tests de composants et les ticks ne démontrent pas à eux seuls la qualité cognitive globale.
 
 ## Reprise live après redémarrage — 12 novembre 2026
 
@@ -1895,6 +1895,18 @@ Un tour d’audit complexe a donné une réponse de relance car `primary_generat
 **Vérification locale :** nouvelles régressions couvrant la cooccurrence, le contrat d’intervention, la compatibilité des anciens enregistrements, leurs exclusions dans les consommateurs CDE et le générateur proactif de sujets, ainsi que l’absence de promotion d’une analogie ARE. Suites WorldModel, profils, reçus d’effets, raisonnement abstrait et régressions cognitives : **77 réussis**, avertissements connus de Pydantic/dépendances seulement; imports, `py_compile` et `git diff --check` passent. `rg` ne trouve plus d’appel de production à `learn_causal()` sans l’API d’évidence explicite.
 
 **Limite de preuve :** les champs d’intervention sont des données rapportées par le producteur; le harnais ne vérifie pas le protocole expérimental ni sa validité statistique. Il n’y a actuellement aucun producteur de causalité étayée par une intervention dans le code courant. Le comportement correct est donc de n’avoir aucune croyance causale active tant qu’un tel reçu n’est pas fourni. Le processus live actuel charge encore l’ancienne version; le correctif nécessite le prochain redémarrage groupé après commit, puis une vérification du registre et du filtre CDE.
+
+### Manifeste module par module — preuve de cycle lent et skips — 13 novembre 2026
+
+**Mesure live après le redémarrage audit :** le premier cycle lent post-démarrage (cycle `10895`, durée `755.15 ms`) a terminé sans erreur instrumentée. Le snapshot comptait **33/43 modules avec appel observé, 58 appels, 0 erreur**. Les compteurs étaient cumulatifs/restaurés; le cycle et ses reçus, et non le delta historique, constituent la preuve de cette exécution. La cadence rapide avait déjà tourné avant ce cycle.
+
+**Cause de la zone grise :** le reçu de cycle enregistrait `skipped_cadence` et `skipped_governor`, mais le journal des modules ne consommait pas ces reçus. Ainsi un module initialisé sans tick pouvait être affiché `initialized_unobserved` même lorsque le même cycle prouvait qu’il avait été intentionnellement sauté. Les skips n’étaient ni distingués des absences d’observation, ni comptés dans l’agrégat.
+
+**Correction locale :** les skips sont maintenant conservés par module (`skip_count`, dernier motif et métriques), sans incrémenter `tick_count` ni le nombre de modules exécutés. Le manifeste affiche `skipped_by_policy` pour un module initialisé sans appel, mais garde séparément le dernier tick réussi si le module a déjà été exécuté. Les modules lazy non construits gardent `not_initialized_conditional`; un skip n’est pas interprété comme une initialisation ou une exécution. Les trois sous-étapes Phase 2 se rattachent à `phase2_orchestrator`.
+
+**Vérification locale :** `venv\\Scripts\\python.exe -m pytest -q tests/test_module_tick_log.py tests/test_internal_loop_cycle_evidence.py` — **38 réussis**, 9 avertissements historiques Pydantic/dépendances. Tests ajoutés : skip sans faux tick, conservation de l’état après un skip ultérieur, rattachement des skips Phase 2. Le premier essai via Python global a échoué parce que pytest n’y est pas installé; le venv du dépôt a passé la suite. Le correctif de journalisation est local et n’est pas encore chargé par le processus live.
+
+**Prochaine validation groupée :** pousser ce changement, redémarrer Lumina une seule fois en mode audit, attendre au moins un cycle lent et vérifier que les reçus de cycle et les compteurs par module concordent. Le critère est que chaque état sans tick dispose d’un motif lorsqu’il a été sauté; les skips restent à zéro tick. Les deux modules restants sans tick ni skip explicite doivent rester présentés comme non observés/conditionnels, pas déclarés défaillants. La qualité sémantique des sorties et leurs effets en aval restent à auditer séparément.
 
 ### Empreinte du prompt final — validation live — 13 novembre 2026
 
