@@ -516,6 +516,17 @@ class CognitiveLogRegressionTests(unittest.TestCase):
         value = CoreValues(value_name="honesty", importance=0.8)
         self.assertIsNone(analyzer._calc_coherence([], [value]))
 
+    def test_self_awareness_requires_reflection_records_and_is_labeled_proxy(self):
+        analyzer = IdentityAnalyzer.__new__(IdentityAnalyzer)
+        self.assertIsNone(analyzer._calc_self_awareness([]))
+        self.assertIsNone(analyzer._calc_self_awareness([
+            {"memory_type": "interaction", "text": "I think about this."}
+        ]))
+        proxy = analyzer._calc_self_awareness([
+            {"memory_type": "reflection", "text": "I think about my own reasoning."}
+        ])
+        self.assertEqual(proxy, 1.0)
+
     def test_self_concept_persists_legacy_metric_migration_on_load(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory, "self_concept.json")

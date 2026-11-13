@@ -1750,7 +1750,7 @@ Respond ONLY with valid JSON:
             coherence_needs_work = (
                 i.identity_coherence is not None and i.identity_coherence < 0.6
             )
-            return coherence_needs_work or i.self_awareness_level < 0.5
+            return coherence_needs_work
         except: return False
     def _emotional_intensity(self, ms):
         if not ms: return 0.0
@@ -3617,6 +3617,9 @@ Write a first-person journal reflection (2-4 sentences)."""},
                 "coherence":      identity.identity_coherence,
                 "coherence_status": identity.identity_coherence_status,
                 "self_awareness": identity.self_awareness_level,
+                "self_awareness_status": identity.self_awareness_status,
+                "self_reflection_text_proxy": identity.self_reflection_text_proxy,
+                "self_reflection_text_proxy_status": identity.self_reflection_text_proxy_status,
                 "life_phase":     identity.self_narrative.life_phase,
                 "growth":         identity.growth_trajectory,
                 "top_traits":  [{"name": t.name, "confidence": t.confidence} for t in top_traits],

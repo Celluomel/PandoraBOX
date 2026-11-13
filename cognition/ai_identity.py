@@ -66,7 +66,10 @@ class AIIdentity:
     emotional_tendencies: Dict[str, float] = field(default_factory=dict)
     relationship_patterns: Dict[str, Any] = field(default_factory=dict)
     social_preferences: Dict[str, float] = field(default_factory=dict)
-    self_awareness_level: float = 0.5
+    self_awareness_level: Optional[float] = None
+    self_awareness_status: str = "unmeasured"
+    self_reflection_text_proxy: Optional[float] = None
+    self_reflection_text_proxy_status: str = "unmeasured"
     identity_coherence: Optional[float] = None
     identity_coherence_status: str = "unmeasured"
     growth_trajectory: str = "exploring"
@@ -372,7 +375,7 @@ class IdentityAnalyzer:
             comm_style     = self._analyze_comm_style(memories)
             emo_tendencies = self._analyze_emotions(memories)
             rel_patterns   = self._analyze_relationships(memories)
-            self_awareness = self._calc_self_awareness(memories)
+            self_reflection_proxy = self._calc_self_awareness(memories)
             coherence      = self._calc_coherence(core_traits, values_system)
             growth         = self._determine_growth(memories)
 
@@ -383,7 +386,13 @@ class IdentityAnalyzer:
                 communication_style=comm_style,
                 emotional_tendencies=emo_tendencies,
                 relationship_patterns=rel_patterns,
-                self_awareness_level=self_awareness,
+                self_awareness_level=None,
+                self_awareness_status="unmeasured",
+                self_reflection_text_proxy=self_reflection_proxy,
+                self_reflection_text_proxy_status=(
+                    "estimated_from_reflection_text_frequency"
+                    if self_reflection_proxy is not None else "insufficient_reflection_records"
+                ),
                 identity_coherence=coherence,
                 identity_coherence_status=(
                     "estimated_proxy" if coherence is not None else "unmeasured"
@@ -564,10 +573,10 @@ class IdentityAnalyzer:
             "positive_interaction_ratio": sum(1 for m in ints if m["emotional_valence"]=="Positive") / n,
         }
 
-    def _calc_self_awareness(self, memories: List[Dict]) -> float:
-        if not memories:
-            return 0.0
+    def _calc_self_awareness(self, memories: List[Dict]) -> Optional[float]:
         refs = [m for m in memories if m["memory_type"] in ("reflection","evaluation","insight")]
+        if not refs:
+            return None
         pats = [
             r"\bi\s+(?:am|feel|think|believe|realize|understand)\b",
             r"\bmy\s+(?:perspective|view|opinion|feeling|thought)\b",
@@ -742,7 +751,12 @@ class IdentitySystem:
             parts.append("**Core Values:** " + ", ".join(f"{v.value_name} ({v.importance:.2f})" for v in top))
         parts.append(f"**Life Phase:** {identity.self_narrative.life_phase}")
         parts.append(f"**Growth Trajectory:** {identity.growth_trajectory}")
-        parts.append(f"**Self-Awareness:** {identity.self_awareness_level:.2f}")
+        parts.append("**Self-awareness:** unmeasured")
+        if identity.self_reflection_text_proxy is not None:
+            parts.append(
+                f"**Self-reflection text proxy:** {identity.self_reflection_text_proxy:.2f} "
+                f"({identity.self_reflection_text_proxy_status})"
+            )
         if identity.identity_coherence is None:
             parts.append("**Identity coherence:** unmeasured")
         else:
@@ -802,8 +816,8 @@ class IdentitySystem:
     def suggest_identity_development(self) -> List[str]:
         identity = self.get_identity()
         sugg = []
-        if identity.self_awareness_level < 0.5:
-            sugg.append("Engage in more self-reflection to increase self-awareness.")
+        if identity.self_reflection_text_proxy is None:
+            sugg.append("Collect reflective records before assessing self-awareness.")
         if len(identity.core_traits) < 3:
             sugg.append("Explore diverse interactions to develop more distinct personality traits.")
         if len(identity.values_system) < 2:
