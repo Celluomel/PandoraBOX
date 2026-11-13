@@ -464,3 +464,32 @@ def test_phase2_recognizes_completed_tte_threads_and_retries_failed_link():
     assert len(calls) == 3
     assert saved == [True]
     assert loop._link_phase2_thread(thread) is None
+
+
+def test_phase2_governor_denial_receipt_explains_structured_mode_and_budget():
+    loop = make_loop()
+    loop._governor = SimpleNamespace(status=lambda: SimpleNamespace(
+        mode="structured",
+        total_pressure=0.68,
+        budget_remaining=2,
+        blocked_systems=["Phase2Narrative(structured_mode)"],
+    ))
+
+    metrics = loop._phase2_governor_skip_metrics("Phase2Narrative")
+
+    assert metrics == {
+        "governor_subsystem": "Phase2Narrative",
+        "governor_mode": "structured",
+        "governor_pressure": 0.68,
+        "governor_budget_remaining": 2,
+        "governor_block_reason": "structured_mode",
+    }
+
+
+def test_phase2_governor_skip_receipt_remains_safe_without_status_api():
+    loop = make_loop()
+    loop._governor = SimpleNamespace(may_run=lambda _name: False)
+
+    assert loop._phase2_governor_skip_metrics("Phase2ThreadIdentity") == {
+        "governor_subsystem": "Phase2ThreadIdentity",
+    }

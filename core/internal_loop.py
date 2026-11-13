@@ -191,6 +191,37 @@ class InternalThoughtLoop:
             for key in ("beliefs_changed", "traits_changed", "confidence_updates", "narrative_updates")
         )
 
+    def _phase2_governor_skip_metrics(self, subsystem: str) -> dict[str, Any]:
+        """Capture why the governor denied a Phase 2 enrichment stage."""
+        evidence: dict[str, Any] = {"governor_subsystem": subsystem}
+        governor = getattr(self, "_governor", None)
+        status_fn = getattr(governor, "status", None)
+        if not callable(status_fn):
+            return evidence
+        try:
+            status = status_fn()
+        except Exception:
+            return evidence
+        mode = getattr(status, "mode", None)
+        pressure = getattr(status, "total_pressure", None)
+        budget_remaining = getattr(status, "budget_remaining", None)
+        if isinstance(mode, str):
+            evidence["governor_mode"] = mode
+        if isinstance(pressure, (int, float)):
+            evidence["governor_pressure"] = round(float(pressure), 4)
+        if isinstance(budget_remaining, int):
+            evidence["governor_budget_remaining"] = budget_remaining
+        blocked = getattr(status, "blocked_systems", ())
+        prefix = f"{subsystem}("
+        reason = next(
+            (item[len(prefix):-1] for item in reversed(blocked)
+             if isinstance(item, str) and item.startswith(prefix) and item.endswith(")")),
+            None,
+        )
+        if reason:
+            evidence["governor_block_reason"] = reason
+        return evidence
+
     def _link_phase2_thread(self, thread: Any) -> dict[str, Any] | None:
         """Link one terminal thread and persist its marker only after a valid result."""
         if (
@@ -2082,7 +2113,10 @@ class InternalThoughtLoop:
                 metrics={"cycle": self._slow_cycle_count, "interval_cycles": 7},
             )
         elif not _phase2_eval_allowed:
-            self._record_cycle_stage("phase2_advanced_evaluation", "skipped_governor")
+            self._record_cycle_stage(
+                "phase2_advanced_evaluation", "skipped_governor",
+                metrics=self._phase2_governor_skip_metrics("Phase2ThoughtEval"),
+            )
         else:
             try:
                 evaluated_thoughts = self._phase2.evaluate_thoughts_advanced()
@@ -2681,12 +2715,22 @@ class InternalThoughtLoop:
                 # ── V33: Phase 2 Narrative Synthesis ──────────────────────────
                 # Every 8 slow cycles (~16 minutes), synthesize coherent narrative
                 _phase2_narrative_due = self._slow_cycle_count % 8 == 0
+                _phase2_narrative_allowed = (
+                    self._phase2 is not None
+                    and _phase2_narrative_due
+                    and (not self._governor or self._governor.may_run("Phase2Narrative"))
+                )
                 if self._phase2 is None:
                     self._record_cycle_stage("phase2_narrative_synthesis", "unavailable")
                 elif not _phase2_narrative_due:
                     self._record_cycle_stage(
                         "phase2_narrative_synthesis", "skipped_cadence",
                         metrics={"cycle": self._slow_cycle_count, "interval_cycles": 8},
+                    )
+                elif not _phase2_narrative_allowed:
+                    self._record_cycle_stage(
+                        "phase2_narrative_synthesis", "skipped_governor",
+                        metrics=self._phase2_governor_skip_metrics("Phase2Narrative"),
                     )
                 else:
                     try:
@@ -2738,12 +2782,22 @@ class InternalThoughtLoop:
                 # ── V33: Phase 2 Thread→Identity Linking ──────────────────────
                 # Every 12 slow cycles (~24 minutes), link resolved threads to identity
                 _phase2_link_due = self._slow_cycle_count % 12 == 0
+                _phase2_link_allowed = (
+                    self._phase2 is not None
+                    and _phase2_link_due
+                    and (not self._governor or self._governor.may_run("Phase2ThreadIdentity"))
+                )
                 if self._phase2 is None:
                     self._record_cycle_stage("phase2_thread_identity_link", "unavailable")
                 elif not _phase2_link_due:
                     self._record_cycle_stage(
                         "phase2_thread_identity_link", "skipped_cadence",
                         metrics={"cycle": self._slow_cycle_count, "interval_cycles": 12},
+                    )
+                elif not _phase2_link_allowed:
+                    self._record_cycle_stage(
+                        "phase2_thread_identity_link", "skipped_governor",
+                        metrics=self._phase2_governor_skip_metrics("Phase2ThreadIdentity"),
                     )
                 else:
                     try:
