@@ -87,6 +87,11 @@ if sys.platform == "win32":
 logger = logging.getLogger("brain")
 
 
+def _get_orchestrator():
+    """Return the orchestrator safely while AppState is still initializing."""
+    return getattr(state, "orchestrator", None)
+
+
 # ══════════════════════════════════════════════════════════════════════
 #  3.  BRAIN BOOT
 # ══════════════════════════════════════════════════════════════════════
@@ -131,8 +136,9 @@ async def _boot() -> bool:
     logger.info(f"✅ Memory ready      — {config.MEMORY_BACKEND}")
     logger.info(f"✅ Persona ready     — {getattr(state.persona, 'is_ready', False)}")
 
-    if state.orchestrator:
-        await state.orchestrator.start()
+    orchestrator = _get_orchestrator()
+    if orchestrator:
+        await orchestrator.start()
         logger.info("✅ Orchestrator running")
     else:
         logger.warning("⚠️  Orchestrator not available")
@@ -176,7 +182,8 @@ _messaging = None
 # ── GET /status ───────────────────────────────────────────────────────
 @api.get("/status")
 async def status():
-    orch_status = state.orchestrator.status() if state.orchestrator else {}
+    orchestrator = _get_orchestrator()
+    orch_status = orchestrator.status() if orchestrator else {}
     uptime = time.time() - getattr(state, "start_time", time.time())
     return {
         "ready":        state.ready,
@@ -201,9 +208,10 @@ async def organism_state():
             out["emotion"] = org._read_emotion_state()
         except Exception:
             out["emotion"] = "unknown"
-        if state.orchestrator:
+        orchestrator = _get_orchestrator()
+        if orchestrator:
             try:
-                s = state.orchestrator.status()
+                s = orchestrator.status()
                 out["drives"]    = s.get("drives", {})
                 out["workspace"] = s.get("workspace", {})
                 out["clock"]     = s.get("clock", {})
@@ -410,7 +418,7 @@ class InjectRequest(BaseModel):
 
 @api.post("/inject")
 async def inject(req: InjectRequest):
-    if not state.orchestrator:
+    if not _get_orchestrator():
         raise HTTPException(503, "Orchestrator not running")
     org = getattr(getattr(state, "persona", None), "_organism", None)
     if org is None:
@@ -604,12 +612,13 @@ async def _repl():
 #  6.  MESSAGING CONNECTORS
 # ══════════════════════════════════════════════════════════════════════
 async def _start_messaging():
-    if not state.orchestrator:
+    orchestrator = _get_orchestrator()
+    if not orchestrator:
         logger.warning("Messaging: orchestrator not available — skipping")
         return None
     try:
         from managers.messaging_manager import MessagingManager
-        mm = MessagingManager(state.orchestrator, config)
+        mm = MessagingManager(orchestrator, config)
         await mm.start()
         return mm
     except Exception as e:
@@ -682,7 +691,8 @@ async def _main():
             while True:
                 await asyncio.sleep(60)
                 uptime = round(time.time() - getattr(state, "start_time", time.time()))
-                cycles = state.orchestrator.status().get("cycle_count", "—") if state.orchestrator else "—"
+                orchestrator = _get_orchestrator()
+                cycles = orchestrator.status().get("cycle_count", "—") if orchestrator else "—"
                 logger.info(f"💓 uptime={uptime}s  orch_cycles={cycles}")
     except KeyboardInterrupt:
         pass
@@ -698,8 +708,9 @@ async def _main():
             await get_universal_connector(organism).stop_home_assistant_monitor()
     except Exception:
         logger.debug("Home Assistant monitor shutdown failed", exc_info=True)
-    if state.orchestrator:
-        await state.orchestrator.stop()
+    orchestrator = _get_orchestrator()
+    if orchestrator:
+        await orchestrator.stop()
     try:
         from managers.session_manager import get_session_manager
         sess = get_session_manager()

@@ -51,6 +51,39 @@ class BrainApiLifecycleTests(unittest.TestCase):
         self.assertIn("stop_brain_api_server", calls)
         self.assertIn("parse_args([])", source)
 
+    def test_status_routes_tolerate_state_before_orchestrator_is_created(self):
+        tree = ast.parse((ROOT / "brain.py").read_text(encoding="utf-8"))
+        helper = next(
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and node.name == "_get_orchestrator"
+        )
+        self.assertTrue(any(
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "getattr"
+            and len(node.args) >= 2
+            and isinstance(node.args[1], ast.Constant)
+            and node.args[1].value == "orchestrator"
+            for node in ast.walk(helper)
+        ))
+        status = next(
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.AsyncFunctionDef) and node.name == "status"
+        )
+        self.assertTrue(any(
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "_get_orchestrator"
+            for node in ast.walk(status)
+        ))
+        self.assertFalse(any(
+            isinstance(node, ast.Attribute)
+            and node.attr == "orchestrator"
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "state"
+            for node in ast.walk(status)
+        ))
+
     def test_shared_brain_api_contains_health_chat_and_flux_peer_routes(self):
         # Avoid importing brain.py here: it initializes the full cognitive
         # runtime as an import side effect. Verify both launchers mount the

@@ -1705,3 +1705,13 @@ Un tour d’audit complexe a donné une réponse de relance car `primary_generat
 **Vérification locale :** tests du focus, de l’intention reliée à un plan existant et de l’effacement après rejet; suites cycle interne, proposition sélectionnée et contrefactuel : **41 réussis**, 9 avertissements connus de dépendances. Compilation et git diff --check passent.
 
 **État live :** correction locale, à commit/push et à charger au prochain redémarrage groupé. Vérifier ensuite que le endpoint cognitive-health expose un focus/intention cohérent avec la trace arbitrée et que le rejet remet les deux à null.
+
+### `/status` pendant l’initialisation de l’orchestrateur — 13 novembre 2026
+
+**Défaut reproduit au redémarrage audit :** le endpoint Brain `GET /status` accédait directement à `state.orchestrator`. `AppState` ne crée ce champ qu’au milieu de `initialize()`. Un contrôle de santé reçu pendant cette fenêtre répondait `AttributeError: 'AppState' object has no attribute 'orchestrator'`, au lieu de renvoyer un état d’initialisation valide. La trace a été produite par le processus Lumina lancé sous `LUMINA_MODULE_EXECUTION_AUDIT=1`.
+
+**Correction :** accès défensif centralisé via `getattr` dans le runner Brain, y compris les chemins de statut, injection, messagerie, heartbeat et arrêt; `/status` rend un état sans orchestrateur tant qu’il n’est pas créé.
+
+**Vérification :** `tests/test_brain_api_lifecycle.py` et `tests/test_brain_workflow_status.py` — **15 tests réussis**, 3 sous-tests, 9 avertissements de dépendances déjà connus. Le test de cycle de vie vérifie explicitement que le statut ne dépend pas d’un attribut prématuré.
+
+**État Git/live :** à commit/push et à revalider avec un redémarrage groupé audit; l’instance gérée s’est terminée avant que les endpoints puissent être interrogés, donc aucune disponibilité live n’est revendiquée pour ce lancement.
