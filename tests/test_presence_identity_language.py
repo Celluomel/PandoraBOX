@@ -234,6 +234,69 @@ class PresenceIdentityLanguageTests(unittest.TestCase):
         self.assertEqual(explicit["categories_updated"], ["preference"])
         self.assertTrue(explicit["changed"])
 
+    def test_profile_learning_rejects_quoted_reported_and_hypothetical_preferences(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = users.UserManager(Path(directory) / "users.json")
+            profile = manager.create("Fred")
+            settings = SimpleNamespace(get_persona_name=lambda: "Lumina")
+            boundary = SimpleNamespace(claims_persona_identity=lambda *_: False)
+            with patch.dict(sys.modules, {
+                "managers.settings_manager": settings,
+                "cognition.identity_boundary": boundary,
+            }):
+                quoted = manager.learn_from_message(
+                    profile.id,
+                    'Lumina said "I prefer concise technical answers."',
+                    return_receipt=True,
+                    source_turn_id="quoted-pref",
+                )
+                reported = manager.learn_from_message(
+                    profile.id,
+                    "Tu as dit que je préfère les réponses courtes.",
+                    return_receipt=True,
+                    source_turn_id="reported-pref",
+                )
+                hypothetical = manager.learn_from_message(
+                    profile.id,
+                    "If I prefer concise answers, would that help?",
+                    return_receipt=True,
+                    source_turn_id="hypothetical-pref",
+                )
+                negative_english = manager.learn_from_message(
+                    profile.id,
+                    "I don't like long answers.",
+                    return_receipt=True,
+                    source_turn_id="negative-pref-en",
+                )
+                negative_french = manager.learn_from_message(
+                    profile.id,
+                    "Je n’aime pas les réponses longues.",
+                    return_receipt=True,
+                    source_turn_id="negative-pref-fr",
+                )
+                direct = manager.learn_from_message(
+                    profile.id,
+                    "Au fait, I prefer concise technical answers.",
+                    return_receipt=True,
+                    source_turn_id="direct-pref",
+                )
+            reloaded = users.UserManager(Path(directory) / "users.json")
+            persisted_profile = reloaded.get(profile.id)
+            persisted_prompt = reloaded.prompt_context_for(profile.id)
+
+        self.assertEqual(quoted["status"], "no_explicit_profile_fact")
+        self.assertEqual(reported["status"], "no_explicit_profile_fact")
+        self.assertEqual(hypothetical["status"], "no_explicit_profile_fact")
+        self.assertEqual(negative_english["status"], "updated")
+        self.assertEqual(negative_french["status"], "updated")
+        self.assertEqual(direct["status"], "updated")
+        self.assertEqual(profile.preferences, ["concise technical answers"])
+        self.assertEqual(profile.dislikes, ["long answers", "les réponses longues"])
+        self.assertEqual(persisted_profile.dislikes, profile.dislikes)
+        self.assertIn("dislike", persisted_profile.profile_fact_provenance)
+        self.assertIn("User-stated dislikes: long answers", persisted_prompt)
+        self.assertNotIn("User-stated preferences: long answers", persisted_prompt)
+
     def test_profile_does_not_promote_bare_copula_state_to_durable_characteristic(self):
         with tempfile.TemporaryDirectory() as directory:
             manager = users.UserManager(Path(directory) / "users.json")

@@ -60,6 +60,7 @@ class UserProfile:
     face_ids:     List[str]  = field(default_factory=list)
     notes:        str        = ""          # free-text, injected into system prompt
     preferences:  List[str]  = field(default_factory=list)
+    dislikes:     List[str]  = field(default_factory=list)
     interests:    List[str]  = field(default_factory=list)
     characteristics: List[str] = field(default_factory=list)
     profile_fact_provenance: Dict[str, Dict[str, List[Dict]]] = field(default_factory=dict)
@@ -85,6 +86,8 @@ class UserProfile:
             parts.append(self.notes.strip())
         if self.preferences:
             parts.append("Preferences: " + "; ".join(self.preferences[:4]) + ".")
+        if self.dislikes:
+            parts.append("Dislikes: " + "; ".join(self.dislikes[:4]) + ".")
         if self.interests:
             parts.append("Interests: " + ", ".join(self.interests[:5]) + ".")
         if self.characteristics:
@@ -409,10 +412,17 @@ class UserManager:
                     )
                 for kind, label in (
                     ("preference", "preferences"),
+                    ("dislike", "dislikes"),
                     ("interest", "interests"),
                     ("characteristic", "characteristics"),
                 ):
-                    values = getattr(profile, kind + "s")
+                    field_name = {
+                        "preference": "preferences",
+                        "dislike": "dislikes",
+                        "interest": "interests",
+                        "characteristic": "characteristics",
+                    }[kind]
+                    values = getattr(profile, field_name)
                     provenanced = []
                     legacy = []
                     for value in values:
@@ -481,6 +491,68 @@ class UserManager:
             self._prompt_cache.pop(profile.id, None)
         return moved
 
+    @staticmethod
+    def _is_direct_user_assertion(text: str, start: int, end: int) -> bool:
+        """Reject profile-shaped phrases that are quoted, reported, or hypothetical.
+
+        The fact patterns below are intentionally lexical and only useful for
+        direct first-person assertions. Without this context check, a sentence
+        such as `Lumina said "I prefer X"` or `If I prefer X, would that help?`
+        is incorrectly persisted as a durable user preference.
+        """
+        value = str(text or "")
+        start = max(0, min(len(value), int(start)))
+        end = max(start, min(len(value), int(end)))
+
+        for pattern in (
+            r'"[^"\r\n]*"',
+            r"“[^”\r\n]*”",
+            r"‘[^’\r\n]*’",
+            r"«[^»\r\n]*»",
+            r"(?<!\w)'[^'\r\n]+'(?!\w)",
+        ):
+            if any(match.start() <= start and end <= match.end()
+                   for match in re.finditer(pattern, value)):
+                return False
+
+        left = max(value.rfind(mark, 0, start) for mark in (".", "!", "?", ";", "\n"))
+        right_candidates = [value.find(mark, end) for mark in (".", "!", "?", ";", "\n")]
+        right_candidates = [position for position in right_candidates if position >= 0]
+        right = min(right_candidates) if right_candidates else len(value)
+        clause = value[left + 1:right].strip()
+        relative_start = max(0, start - left - 1)
+        prefix = clause[:relative_start].strip()
+
+        # A question or a conditional/hedged premise does not assert a settled
+        # personal fact, even when it contains a first-person verb pattern.
+        if "?" in clause or "？" in clause:
+            return False
+        if re.match(
+            r"^(?:(?:what\s+)?if|unless|assuming|provided\s+that|whether|"
+            r"si|dans\s+le\s+cas\s+où|à\s+condition\s+que|"
+            r"maybe|perhaps|possibly|peut[- ]être|peut etre|je\s+pense\s+que|"
+            r"je\s+crois\s+que|i\s+think\s+that|i\s+think|i\s+believe\s+that)\b",
+            prefix,
+            flags=re.IGNORECASE,
+        ):
+            return False
+
+        # Do not turn someone else's claim about the user into the user's own
+        # assertion. Handle English and French reported-speech frames.
+        if re.search(
+            r"\b(?:you|lumina|he|she|they|someone|the\s+assistant|"
+            r"tu|il|elle|on|quelqu['’]un|l['’]assistant)\s+"
+            r"(?:(?:have|has)\s+)?(?:said|say|claimed|claim|stated|mentioned|"
+            r"wrote|replied|told\s+me|as\s+dit|a\s+dit|dit|as\s+répondu|"
+            r"a\s+répondu|répondu|prétend|prétendu|affirmé|affirme|"
+            r"penses|pense|crois|croit)"
+            r"(?:\s+(?:that|que))?\s*$",
+            prefix,
+            flags=re.IGNORECASE,
+        ):
+            return False
+        return True
+
     def learn_from_message(
         self,
         user_id: str,
@@ -521,7 +593,10 @@ class UserManager:
             claims_persona_name = False
         learned: List[tuple[str, str]] = []
         patterns = (
-            ("preference", r"(?:i prefer|i like|i love|i don't like|i dislike|je préfère|j'aime|je n'aime pas)\s+([^.!?]{3,100})"),
+            # Keep polarity explicit. A negative statement cannot be stored
+            # under the positive preference label without reversing its meaning.
+            ("dislike", r"(?:i do not like|i don't like|i dislike|je n'aime pas|je n’aime pas)\s+([^.!?]{3,100})"),
+            ("preference", r"(?:i prefer|i like|i love|je préfère|j'aime|j’aime)\s+([^.!?]{3,100})"),
             ("interest", r"(?:i am interested in|i'm interested in|i enjoy|je m'intéresse à|je m'interesse a)\s+([^.!?]{3,100})"),
             # A bare copula predicate ("I am curious", "je suis fatigué")
             # is ambiguous between a durable trait and the current turn's
@@ -536,6 +611,10 @@ class UserManager:
                 continue
             for match in re.finditer(pattern, text, flags=re.IGNORECASE):
                 value = match.group(1).strip(" ,;:")
+                if not self._is_direct_user_assertion(
+                    text, match.start(), match.end(),
+                ):
+                    continue
                 if kind == "characteristic" and re.search(
                     r"\b(?:curieux|curieuse|curious)\s+(?:"
                     r"(?:de\s+|d['’])(?:savoir|comprendre|connaitre|connaître|voir)|"
@@ -564,15 +643,21 @@ class UserManager:
         provenance_records_added = 0
         source_sha256 = hashlib.sha256(text.encode("utf-8")).hexdigest()
         recorded_at = datetime.now().isoformat()
+        profile_fields = {
+            "preference": "preferences",
+            "dislike": "dislikes",
+            "interest": "interests",
+            "characteristic": "characteristics",
+        }
         with self._lock:
             previous_values = {
-                kind: list(getattr(profile, kind + "s"))
+                kind: list(getattr(profile, profile_fields[kind]))
                 for kind, _value in learned[:3]
             }
             previous_last_seen = profile.last_seen
             previous_provenance = json.loads(json.dumps(profile.profile_fact_provenance))
             for kind, value in learned[:3]:
-                target = getattr(profile, kind + "s")
+                target = getattr(profile, profile_fields[kind])
                 fact_key = hashlib.sha256(value.casefold().encode("utf-8")).hexdigest()
                 category_provenance = profile.profile_fact_provenance.setdefault(kind, {})
                 sources = category_provenance.setdefault(fact_key, [])
@@ -613,7 +698,7 @@ class UserManager:
                     persistence_verified = False
                 if not persistence_verified:
                     for kind, values in previous_values.items():
-                        setattr(profile, kind + "s", values)
+                        setattr(profile, profile_fields[kind], values)
                     profile.profile_fact_provenance = previous_provenance
                     profile.last_seen = previous_last_seen
                     self._prompt_cache.pop(profile.id, None)
