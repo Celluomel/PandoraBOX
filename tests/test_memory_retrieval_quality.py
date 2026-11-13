@@ -146,6 +146,21 @@ class MemoryRetrievalQualityTests(unittest.TestCase):
     def test_filename_lookup_phrase_is_not_inferred_from_bare_filename_reference(self):
         self.assertFalse(is_explicit_memory_recall_query("What filename is this?"))
 
+    def test_markdown_filename_question_is_routed_to_grounded_recall(self):
+        query = (
+            "What is the Markdown filename containing the cognitive audit status? "
+            "Answer only with the filename."
+        )
+        self.assertTrue(is_explicit_memory_recall_query(query))
+        result = exact_filename_recall_result(query, [{
+            "id": 25,
+            "memory_type": "user_message",
+            "text": "User message: docs/COGNITIVE_HARNESS_AUDIT_STATUS_2026-11-11.md",
+            "relevance": 0.89,
+        }])
+        self.assertEqual(result["status"], "supported")
+        self.assertEqual(result["answer"], "`COGNITIVE_HARNESS_AUDIT_STATUS_2026-11-11.md`")
+
 
 if __name__ == "__main__":
     unittest.main()

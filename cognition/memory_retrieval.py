@@ -71,7 +71,7 @@ _DIRECT_RECALL_PATTERNS = (
     # "what is the filename/name of the file" question through source-backed
     # recall so generation cannot substitute a plausible-looking name.
     re.compile(
-        r"\bwhat\s+is\s+the\s+(?:exact\s+)?(?:filename|file\s*name|"
+        r"\bwhat\s+is\s+the\s+(?:exact\s+)?(?:(?:markdown|text)\s+)?(?:filename|file\s*name|"
         r"name\s+of\s+(?:the\s+)?(?:markdown\s+)?file)\b",
         re.IGNORECASE,
     ),
