@@ -96,12 +96,7 @@ def is_internal_cognitive_query(user_input: str) -> bool:
     # must use the live emotional channels/appraisal receipt, not the generic
     # web-search judge (which can mistake French question words such as
     # "quelles" for a request about grammar).
-    asks_about_self_affect = bool(
-        re.search(r"\b(?:what|which|how|quelles?|quels?|comment|que)\b", text)
-        and re.search(r"\b(?:emotions?|émotions?|feelings?|sentiments?|affect|feel|feeling|sens)\b", text)
-        and re.search(r"\b(?:you|your|toi|tu|ton|ta|tes|lumina|me|moi)\b", text)
-    )
-    if asks_about_self_affect:
+    if is_self_affect_query(text):
         return True
     asks_cause_or_mechanism = bool(re.search(
         r"\b(?:why|pourquoi|how|comment|what changed|what caused|"
@@ -118,6 +113,78 @@ def is_internal_cognitive_query(user_input: str) -> bool:
         text,
     ))
     return asks_cause_or_mechanism and refers_to_internal_behavior
+
+
+def is_self_affect_query(user_input: str) -> bool:
+    """Identify a request to report Lumina's own modeled affect state.
+
+    Audit prompts are often imperative ("report your current affect signal")
+    rather than interrogative, so requiring a question word misses them.
+    This only selects closed-world affect evidence; it does not prescribe an
+    answer or classify general questions about emotion.
+    """
+    text = " ".join(str(user_input or "").casefold().split())
+    mentions_affect = bool(re.search(
+        r"\b(?:emotions?|émotions?|feelings?|sentiments?|affect|feel|feeling|sens)\b",
+        text,
+    ))
+    refers_to_self = bool(re.search(
+        r"\b(?:you|your|yourself|toi|tu|ton|ta|tes|lumina|me|moi|mon|ma|mes)\b",
+        text,
+    ))
+    return mentions_affect and refers_to_self
+
+
+def affect_self_report_context(
+    profile: Any,
+    description: str = "",
+    latest_event: Any = None,
+) -> str:
+    """Format the live affect snapshot with source and similarly named-drive limits."""
+    allowed_channels = (
+        "curiosity", "warmth", "anxiety", "satisfaction", "frustration",
+        "enthusiasm", "surprise", "sadness", "relief", "disappointment",
+        "anticipation",
+    )
+    values = profile if isinstance(profile, dict) else {}
+    rows = []
+    for name in allowed_channels:
+        try:
+            value = float(values[name])
+        except (KeyError, TypeError, ValueError, OverflowError):
+            continue
+        if value != value or value in (float("inf"), float("-inf")):
+            continue
+        rows.append(f"{name}={max(0.0, min(1.0, value)):.3f}")
+    channel_text = ", ".join(rows) if rows else "unavailable"
+    state_text = str(description or "unavailable").replace("\n", " ").strip()[:500]
+    event = latest_event if isinstance(latest_event, dict) else {}
+    event_type = str(event.get("event_type") or "").strip()[:80]
+    event_source = str(event.get("source") or "").strip()[:80]
+    event_age = event.get("age_seconds")
+    if event_type or event_source:
+        latest_text = f"{event_type or 'event'} from {event_source or 'unspecified source'}"
+        try:
+            latest_text += f", {max(0.0, float(event_age)):.1f}s ago"
+        except (TypeError, ValueError, OverflowError):
+            pass
+    else:
+        latest_text = "none recorded"
+    return (
+        "━━ AFFECT SELF-REPORT EVIDENCE ━━\n"
+        "Source: EmotionalStateManager.get_response_modifiers().affective_profile; "
+        "these are live modeled affect channels, each on a 0–1 scale.\n"
+        f"Affect channels: {channel_text}\n"
+        f"State description: {state_text}\n"
+        f"Latest recorded affect-changing appraisal: {latest_text}.\n"
+        "For this self-report, use only these affect-channel values. In particular, "
+        "the CuriosityEngine/DecisionPressure `Curiosity Drive` elsewhere in cognitive "
+        "telemetry is a separate motivation signal; do not substitute it for the "
+        "EmotionalStateManager `curiosity` channel. Identify the source when giving "
+        "numbers. The appraisal is the latest logged event, not necessarily the sole "
+        "cause of the whole state. These computational signals do not establish human-like "
+        "subjective experience. If the relevant value is unavailable here, say so."
+    )
 
 
 def _is_audit_trace_followup(normalized_text: str) -> bool:

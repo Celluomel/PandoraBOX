@@ -7,10 +7,12 @@ from pathlib import Path
 from cognition.self_description import (
     ComponentDesc,
     SelfDescription,
+    affect_self_report_context,
     is_architecture_query,
     is_cognitive_trace_query,
     is_internal_cognitive_query,
     is_runtime_execution_evidence_query,
+    is_self_affect_query,
     sanitize_displayed_cognitive_trace,
     trace_grounded_architecture_answer,
 )
@@ -153,9 +155,31 @@ class SelfDescriptionPromptTests(unittest.TestCase):
             "What feelings are active in Lumina right now?"
         ))
         self.assertTrue(is_internal_cognitive_query("Comment te sens-tu?"))
+        audit_instruction = (
+            "Audit check: using only the operational affect signal available in your current state, "
+            "state what signal is present and where it comes from."
+        )
+        self.assertTrue(is_self_affect_query(audit_instruction))
+        self.assertTrue(is_internal_cognitive_query(audit_instruction))
         self.assertFalse(is_internal_cognitive_query(
             "What emotions are commonly associated with curiosity?"
         ))
+
+    def test_affect_self_report_separates_emotion_curiosity_from_curiosity_drive(self):
+        context = affect_self_report_context(
+            {"curiosity": 0.785, "warmth": 0.864, "unknown": 0.99},
+            "I feel curious",
+            {"event_type": "drive_satisfied", "source": "goal_engine", "age_seconds": 3.2},
+        )
+
+        self.assertIn("EmotionalStateManager.get_response_modifiers().affective_profile", context)
+        self.assertIn("curiosity=0.785", context)
+        self.assertIn("warmth=0.864", context)
+        self.assertNotIn("unknown=", context)
+        self.assertIn("CuriosityEngine/DecisionPressure `Curiosity Drive`", context)
+        self.assertIn("do not substitute it", context)
+        self.assertIn("Latest recorded affect-changing appraisal: drive_satisfied from goal_engine, 3.2s ago", context)
+        self.assertIn("do not establish human-like subjective experience", context)
 
     def test_runtime_manifest_distinguishes_observation_from_semantic_validation(self):
         description = SelfDescription.__new__(SelfDescription)
@@ -493,6 +517,26 @@ class SelfDescriptionPromptTests(unittest.TestCase):
         self.assertEqual(manifest["tick_count"], 20)
         self.assertEqual(manifest["initialized_unobserved_count"], 31)
         self.assertEqual(manifest["unavailable_count"], 1)
+
+    def test_turn_trace_records_only_allowlisted_affect_snapshot_fields(self):
+        from cognition.persona_bridge import PersonaBridge
+
+        bridge = PersonaBridge.__new__(PersonaBridge)
+        bridge._turn_trace_lock = threading.Lock()
+        bridge._last_turn_trace = {"context_sources": {}}
+        bridge._record_turn_context_source(
+            "affective_state", "injected",
+            affect_source="EmotionalStateManager.get_response_modifiers().affective_profile",
+            affect_profile={"curiosity": 0.785, "warmth": 0.864, "injected_secret": 1.0},
+            affect_description="I feel curious",
+            raw_prompt="must not persist",
+        )
+
+        snapshot = bridge._last_turn_trace["context_sources"]["affective_state"]
+        self.assertEqual(snapshot["affect_profile"], {"curiosity": 0.785, "warmth": 0.864})
+        self.assertEqual(snapshot["affect_source"], "EmotionalStateManager.get_response_modifiers().affective_profile")
+        self.assertEqual(snapshot["affect_description"], "I feel curious")
+        self.assertNotIn("raw_prompt", snapshot)
 
 
 if __name__ == "__main__":

@@ -548,7 +548,9 @@ class PersonaBridge:
             "observation_count", "fresh_count", "stale_count", "oldest_age_seconds",
             "source_kinds", "record_count", "module_count", "observed_count",
             "tick_count", "error_count", "initialized_unobserved_count",
-            "unavailable_count",
+            "unavailable_count", "affect_source", "affect_profile",
+            "affect_description", "affect_event_type", "affect_event_source",
+            "affect_event_age_seconds",
         }
         safe_metadata: dict[str, Any] = {}
         for key, value in metadata.items():
@@ -556,6 +558,23 @@ class PersonaBridge:
                 continue
             if key == "source_kinds":
                 safe_metadata[key] = sorted({str(item)[:48] for item in value if item})[:16]
+            elif key == "affect_profile" and isinstance(value, dict):
+                safe_metadata[key] = {}
+                for channel, raw_value in value.items():
+                    if str(channel) not in {
+                        "curiosity", "warmth", "anxiety", "satisfaction", "frustration",
+                        "enthusiasm", "surprise", "sadness", "relief", "disappointment",
+                        "anticipation",
+                    }:
+                        continue
+                    try:
+                        number = float(raw_value)
+                    except (TypeError, ValueError, OverflowError):
+                        continue
+                    if math.isfinite(number):
+                        safe_metadata[key][str(channel)] = round(max(0.0, min(1.0, number)), 3)
+            elif key in {"affect_source", "affect_description", "affect_event_type", "affect_event_source"}:
+                safe_metadata[key] = str(value or "")[:500]
             elif isinstance(value, bool):
                 safe_metadata[key] = value
             elif isinstance(value, (int, float)) and math.isfinite(float(value)):
@@ -3913,6 +3932,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
 
             mods        = s.emotional_state.get_response_modifiers()
             _affect_profile = mods.get("affective_profile", {})
+            _affect_self_report = False
             _affect_profile_text = ", ".join(
                 f"{name}={float(value):.2f}"
                 for name, value in sorted(_affect_profile.items())
@@ -3988,6 +4008,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     get_self_description, is_architecture_query,
                     is_internal_cognitive_query,
                     is_cognitive_trace_query,
+                    is_self_affect_query,
                 )
                 _trace_only_query = is_cognitive_trace_query(user_input)
                 _explicit_recall_query = is_explicit_memory_recall_query(user_input)
@@ -3999,6 +4020,21 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     is_internal_cognitive_query(user_input)
                     or _explicit_recall_query
                 )
+                _affect_self_report = bool(
+                    not peer_name and is_self_affect_query(user_input)
+                )
+                if _affect_self_report:
+                    self._record_turn_context_source(
+                        "affective_state",
+                        "injected",
+                        turn_id=audit_turn_id,
+                        affect_source="EmotionalStateManager.get_response_modifiers().affective_profile",
+                        affect_profile=_affect_profile,
+                        affect_description=mods.get("state_description", ""),
+                        affect_event_type=_latest_affect.get("event_type", "") if _latest_affect else "",
+                        affect_event_source=_latest_affect.get("source", "") if _latest_affect else "",
+                        affect_event_age_seconds=_latest_affect.get("age_seconds") if _latest_affect else None,
+                    )
                 _module_tick_snapshot = None
                 _module_entries = []
                 if (
@@ -4625,6 +4661,13 @@ Memory honesty — two distinct cases:
                 "A Body camera source such as `remote:body:body_camera_yolox_midas` is exclusively Body evidence. "
                 "It cannot establish what the Brain-PC camera sees. If the Brain-PC status above is disabled, inactive, or stale, answer that its current view is unavailable; do not substitute the Body feed."
             )
+            if _affect_self_report:
+                from cognition.self_description import affect_self_report_context
+                system_prompt += "\n\n" + affect_self_report_context(
+                    _affect_profile,
+                    mods.get("state_description", ""),
+                    _latest_affect,
+                )
 
             return (
                 system_prompt, emo_dict, cond_dict, arb_temperature,
