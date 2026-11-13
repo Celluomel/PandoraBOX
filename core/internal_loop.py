@@ -507,7 +507,19 @@ class InternalThoughtLoop:
             entry = snapshot.setdefault(module_name, {})
             entry["initialized"] = module is not None
             if module is None:
-                entry["state"] = "unavailable"
+                # Every probe in this manifest is conditional/lazy. A None
+                # reference before its cadence or feature gate runs means it
+                # has not been constructed yet, not that the module failed.
+                # Keep truly unavailable execution distinguishable through
+                # failed stage receipts and import/init diagnostics.
+                cadence = str(
+                    entry.get("cadence") or "conditional slow-cycle / threshold gate"
+                )
+                entry["state"] = (
+                    "not_initialized_conditional"
+                    if "conditional" in cadence.casefold()
+                    else "unavailable"
+                )
             elif entry.get("tick_count", 0) == 0:
                 entry["state"] = "initialized_unobserved"
             elif entry.get("last_status") == "failed":

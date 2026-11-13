@@ -165,7 +165,21 @@ class ModuleTickLogTests(unittest.TestCase):
 
         self.assertEqual(analysis["module_count"], 43)
         self.assertEqual(analysis["states"]["initialized_unobserved"], 1)
-        self.assertEqual(analysis["states"]["unavailable"], 42)
+        self.assertEqual(analysis["states"]["not_initialized_conditional"], 42)
+
+    def test_lazy_module_before_its_cadence_is_not_reported_unavailable(self):
+        loop = InternalThoughtLoop.__new__(InternalThoughtLoop)
+        loop._module_tick_log = ModuleTickLog()
+        loop._module_tick_wrapped = set()
+        loop._goal_action_executor = None
+        loop._refresh_module_tick_probes()
+
+        snapshot = loop.module_tick_snapshot()
+        analysis = loop.module_tick_analysis()
+
+        self.assertFalse(snapshot["goal_action_executor"]["initialized"])
+        self.assertEqual(snapshot["goal_action_executor"]["state"], "not_initialized_conditional")
+        self.assertEqual(analysis["states"].get("unavailable", 0), 0)
 
     def test_probe_attaches_before_first_call_of_lazily_assigned_module(self):
         loop = InternalThoughtLoop.__new__(InternalThoughtLoop)
