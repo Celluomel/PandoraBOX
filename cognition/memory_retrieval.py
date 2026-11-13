@@ -47,6 +47,27 @@ _HISTORICAL_REQUEST_PATTERNS = (
     ),
 )
 
+_MEMORY_STORE_INSTRUCTION_PATTERNS = (
+    re.compile(
+        r"\bremember\s+(?:that|this|the|a|an|my|our)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:keep|store)\s+(?:this|that|the|a|an|my|our)\b.{0,40}\b(?:memory|mind|remember)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\b(?:mémorise|memorize|enregistre)\b", re.IGNORECASE),
+    re.compile(r"\bgarde\s+(?:cela|ça|ceci)\s+en\s+mémoire\b", re.IGNORECASE),
+    re.compile(r"\bsouviens-toi\s+que\b", re.IGNORECASE),
+)
+
+_DIRECT_RECALL_PATTERNS = (
+    re.compile(r"\b(?:do|did|can|could|will|would)\s+you\s+(?:remember|recall)\b", re.IGNORECASE),
+    re.compile(r"\bwhat\s+(?:do|did|have|has|can)\s+you\s+(?:remember|recall)\b", re.IGNORECASE),
+    re.compile(r"\b(?:tu\s+te\s+rappelles|tu\s+te\s+souviens)\b", re.IGNORECASE),
+    re.compile(r"\b(?:do\s+you\s+remember|can\s+you\s+recall)\b", re.IGNORECASE),
+)
+
 
 def _historical_request_match(text: str):
     value = str(text or "")
@@ -90,8 +111,29 @@ def extract_explicit_recall_topic(text: str) -> str:
             r"^\s*(?:pour|for)\s+|[,;:]\s*$", "", leading_context,
             flags=re.IGNORECASE,
         )
+        leading_context = re.sub(
+            r"\b(?:what|which|quel(?:le)?s?)\s*$", "", leading_context,
+            flags=re.IGNORECASE,
+        )
         topic = asked_match.group("topic").strip(" \t\r\n,;:«»\"'")
-        extracted = " ".join(part for part in (leading_context, topic) if part)
+        # Keep short identifying context after the historical clause too.
+        # E.g. "What phrase did I ask you to remember for this audit?" must
+        # retrieve by both "phrase" and "audit"; dropping the suffix made
+        # generic topics collide with unrelated memories.
+        trailing_context = value[asked_match.end():]
+        trailing_context = re.split(
+            r"\b(?:answer|respond|reply|réponds?|répondre)\b",
+            trailing_context, maxsplit=1, flags=re.IGNORECASE,
+        )[0]
+        trailing_context = re.sub(
+            r"^\s*(?:(?:you|me)\s+)?(?:to\s+)?(?:remember|recall|provide|give|tell|rappeler|fournir|dire)\b",
+            "", trailing_context, flags=re.IGNORECASE,
+        )
+        extracted = " ".join(
+            part.strip(" \t\r\n,;:«»\"'")
+            for part in (leading_context, topic, trailing_context)
+            if part.strip(" \t\r\n,;:«»\"'")
+        )
         return extracted[:180].strip() or value
     prefixes = (
         r"^what\s+do\s+you\s+remember\s+about\s+",
@@ -156,13 +198,20 @@ def extract_user_authored_text(memory: dict) -> str:
 def is_explicit_memory_recall_query(text: str) -> bool:
     """Recognize explicit requests to retrieve earlier conversational facts."""
     value = " ".join(str(text or "").casefold().split())
-    if any(term in value for term in (
-        "rappelle", "souvien", "remember", "recall", "tu te rappelles",
-        "te souviens", "talked about", "on a parlé", "we discussed",
-        "on a dit", "tu sais ce que", "t'en souviens",
-    )):
+    if _historical_request_match(value) or any(
+        pattern.search(value) for pattern in _DIRECT_RECALL_PATTERNS
+    ):
         return True
-    return _historical_request_match(value) is not None
+    # Memory-writing instructions often contain "remember"/"souviens" too.
+    # Treating them as recall questions sends the source utterance through the
+    # self-match filter, making the very fact the user asked us to retain
+    # impossible to retrieve later.
+    if any(pattern.search(value) for pattern in _MEMORY_STORE_INSTRUCTION_PATTERNS):
+        return False
+    return any(term in value for term in (
+        "talked about", "on a parlé", "we discussed", "on a dit",
+        "tu sais ce que", "t'en souviens",
+    ))
 
 
 def filter_recall_query_records(

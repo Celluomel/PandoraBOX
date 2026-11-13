@@ -221,6 +221,48 @@ class MemorySystemFallbackTests(unittest.TestCase):
             "memory recall",
         )
 
+    def test_memory_write_instruction_is_not_misclassified_as_recall(self):
+        instruction = (
+            "For this audit only, remember the test phrase amber kite 731 "
+            "so I can ask for it in my next message."
+        )
+        historical_question = (
+            "What exact test phrase did I ask you to remember for this audit?"
+        )
+
+        self.assertFalse(is_explicit_memory_recall_query(instruction))
+        self.assertTrue(is_explicit_memory_recall_query(historical_question))
+        self.assertEqual(
+            filter_recall_query_records(
+                [{"memory_type": "user_message", "text": instruction}],
+                query=historical_question,
+            ),
+            [{"memory_type": "user_message", "text": instruction}],
+        )
+        topic = extract_explicit_recall_topic(historical_question).casefold()
+        self.assertIn("test phrase", topic)
+        self.assertIn("audit", topic)
+
+    def test_explicit_recall_can_retrieve_a_remember_instruction_as_source(self):
+        self.rows = [{
+            "id": 73, "faiss_id": 73,
+            "text": (
+                "User message: For this audit only, remember the test phrase "
+                "amber kite 731 so I can ask for it in my next message."
+            ),
+            "timestamp": datetime.now().isoformat(), "impact_score": 0.5,
+            "memory_type": "user_message", "memory_tier": "interaction",
+            "emotional_valence": "Neutral", "access_count": 0,
+        }]
+
+        recalled = self._system().retrieve_user_authored_memories(
+            "Conversation exact test phrase for this audit",
+            limit=6, explicit_recall=True,
+        )
+
+        self.assertEqual([memory["id"] for memory in recalled], [73])
+        self.assertIn("amber kite 731", recalled[0]["text"])
+
     def test_visual_tier_is_not_implied_by_recall_language(self):
         query = "Rappelle ce que je t’ai demandé concernant la manière de conduire l’audit"
         self.assertNotIn("image", extract_explicit_recall_topic(query).casefold())
