@@ -8,7 +8,12 @@ package = ModuleType("cognition")
 package.__path__ = [str(ROOT / "cognition")]
 sys.modules.setdefault("cognition", package)
 
-from cognition.memory_retrieval import faiss_l2_relevance, rank_documents, tokenize
+from cognition.memory_retrieval import (
+    exact_filename_recall_result,
+    faiss_l2_relevance,
+    rank_documents,
+    tokenize,
+)
 
 
 class MemoryRetrievalQualityTests(unittest.TestCase):
@@ -65,6 +70,62 @@ class MemoryRetrievalQualityTests(unittest.TestCase):
         self.assertEqual(faiss_l2_relevance(2.0), 0.0)
         self.assertEqual(faiss_l2_relevance(3.0), 0.0)
         self.assertEqual(faiss_l2_relevance(float("inf")), 0.0)
+
+    def test_exact_filename_recall_extracts_user_authored_source_not_answer_guess(self):
+        result = exact_filename_recall_result(
+            "What do you remember about the markdown status file I asked you to create "
+            "for the cognitive harness audit? Give only its filename.",
+            [
+                {
+                    "id": 21,
+                    "memory_type": "episodic",
+                    "text": (
+                        "Conversation — User: /C:/work/docs/COGNITIVE_HARNESS_AUDIT_STATUS_2026-11-11.md "
+                        "| Lumina: I think the file was markdown_status_audit.md"
+                    ),
+                    "relevance": 0.88,
+                },
+            ],
+        )
+
+        self.assertEqual(result["status"], "supported")
+        self.assertEqual(result["answer"], "`COGNITIVE_HARNESS_AUDIT_STATUS_2026-11-11.md`")
+        self.assertEqual(result["source_type"], "episodic")
+
+    def test_exact_filename_recall_abstains_when_only_assistant_claim_has_filename(self):
+        result = exact_filename_recall_result(
+            "What do you remember about the markdown status file I asked you to create "
+            "for the cognitive harness audit? Give only its filename.",
+            [
+                {
+                    "id": 22,
+                    "memory_type": "episodic",
+                    "text": (
+                        "Conversation — User: Did we discuss the cognitive harness audit? "
+                        "| Lumina: The file was markdown_status_audit.md"
+                    ),
+                    "relevance": 0.99,
+                },
+            ],
+        )
+
+        self.assertEqual(result["status"], "abstained_no_source")
+        self.assertIsNone(result["source_ref"])
+
+    def test_exact_filename_recall_supports_french_request_and_ignores_non_recall(self):
+        source = {
+            "id": 23,
+            "memory_type": "user_message",
+            "text": "User message: /C:/work/docs/rapport-audit.md",
+            "relevance": 0.91,
+        }
+        result = exact_filename_recall_result(
+            "Tu te rappelles du nom du fichier demandé pour l'audit ?", [source],
+        )
+
+        self.assertEqual(result["status"], "supported")
+        self.assertEqual(result["answer"], "`rapport-audit.md`")
+        self.assertIsNone(exact_filename_recall_result("What filename is this?", [source]))
 
 
 if __name__ == "__main__":

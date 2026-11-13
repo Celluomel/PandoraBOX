@@ -1,7 +1,7 @@
 # Audit du harnais cognitif — état et prochaines étapes
 
-**Date de mise à jour :** 12 novembre 2026
-**Statut :** audit en cours — conclusion globale non établie. PC et `origin/main` sont alignés sur `2316869`; le lot de récupération des dialogues historiques est en cours localement. Le correctif de fusion des pools a été exercé après redémarrage : les auto-correspondances de rappel sont exclues, mais aucune source historique pertinente n’a été retrouvée et Lumina s’est abstenue. La capacité de rappel reste donc non démontrée. L’endpoint n’expose toujours pas l’identifiant de build. Les changements Body/UI préexistants restent hors lot. Les tests de composants seuls ne démontrent pas la qualité cognitive globale.
+**Date de mise à jour :** 13 novembre 2026
+**Statut :** audit en cours — conclusion globale non établie. PC et `origin/main` sont alignés au commit `f7931a6`; les changements Body/UI préexistants restent hors lot. La réponse d’audit sur les reçus est validée en direct. Un nouveau défaut de rappel exact est en correction : la source utilisateur retrouvée contient le bon chemin, mais la génération a affirmé un nom de fichier inventé. Le correctif local dérive le nom depuis la source utilisateur ou s’abstient; il doit être chargé dans Lumina et vérifié en direct. Les tests de composants seuls ne démontrent toujours pas la qualité cognitive globale.
 
 ## Reprise live après redémarrage — 12 novembre 2026
 
@@ -1785,3 +1785,15 @@ Un tour d’audit complexe a donné une réponse de relance car `primary_generat
 **Preuve runtime avant redémarrage :** l’instance répondait (`ready=true`, boucle interne vivante), cycle lent 10832; 41/43 modules enregistrés avec tick, 761 ticks et 0 erreur instrumentée. Ce sont des compteurs d’instrumentation, pas un score cognitif. Trois requêtes identiques ont été soumises pendant que je corrigeais le décodage NDJSON de l’API; la première réponse a donc été générée plusieurs fois. Cette répétition est une pollution évitable du journal d’audit et ne sera pas utilisée comme trois scénarios distincts.
 
 **Changements locaux non encore chargés dans le processus :** les deux corrections Phase 2 (`6ef3581`) et GoalActionExecutor (`8dc9f0c`) ainsi que le nouveau routage d’audit attendent une validation live après le redémarrage groupé. L’instance examinée ici tournait encore sur un code antérieur à ces changements. Les derniers changements de routage n’ont pas encore été commités/poussés.
+
+### Rappel exact du nom d’un fichier — génération non ancrée malgré la bonne source — 13 novembre 2026
+
+**Échec utilisateur observé :** à la question demandant le nom du fichier Markdown créé pour l’audit, Lumina a répondu `markdown_status_audit.md`. Le tour a injecté des souvenirs FAISS, mais la trace indique `semantic_answer_validation=not_performed`; aucune étape ne vérifiait que cet identifiant venait d’une source. L’historique SQLite confirme que cette réponse erronée a été mémorisée comme un échange, ce qui aurait pu la renforcer lors de rappels ultérieurs.
+
+**Cause isolée :** la recherche lexicale reproductible sur la base locale retrouve au premier rang le message utilisateur contenant `/docs/COGNITIVE_HARNESS_AUDIT_STATUS_2026-11-11.md` (score BM25 normalisé 0,8854). Le problème observé n’est donc pas l’absence de cette source dans la mémoire; c’est la génération libre qui ne respecte pas la source exacte malgré son injection. L’instruction du prompt de ne pas deviner est consultative et n’est pas un contrôle de sortie.
+
+**Correction locale :** pour une demande explicite de nom de fichier, la réponse est désormais extraite structurellement d’un message utilisateur retrouvé ou du segment utilisateur d’un ancien échange. Un nom cité uniquement dans une ancienne réponse de Lumina est rejeté comme preuve; si aucune source utilisateur ne contient de nom, la voie déterministe s’abstient. Le reçu de tour ajoute `memory_recall_answer` avec statut, type de source, référence hachée et pertinence, sans copier le contenu privé de la source dans la trace. Ce chemin traite les identifiants exacts demandés et ne prétend pas valider sémantiquement toutes les réponses mémoire.
+
+**Vérification locale :** la fonction a été rejouée sur les vraies lignes utilisateur persistées et retourne `COGNITIVE_HARNESS_AUDIT_STATUS_2026-11-11.md`; un échange synthétique où seul Lumina cite un nom provoque l’abstention. Les tests de rappel et de reçus de tour passent : **36 réussis**, 9 avertissements connus (Pydantic, `pkg_resources`, multipart); `py_compile` et `git diff --check` passent.
+
+**État live et suite :** le processus Lumina actuel n’a pas encore chargé ce changement. Après commit/push, je ferai un redémarrage groupé géré en mode audit et vérifierai une nouvelle demande de nom, son reçu `memory_recall_answer`, ainsi que la conservation de la réponse déterministe. Ce correctif ne clôt pas l’audit mémoire : il reste à évaluer la pertinence et la fidélité des rappels paraphrasés, puis la cohérence des effets aval du profil et du Global Workspace.

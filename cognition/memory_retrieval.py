@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
 import re
 import unicodedata
@@ -246,6 +247,67 @@ def filter_recall_query_records(
                 continue
         filtered.append(memory)
     return filtered
+
+
+def exact_filename_recall_result(
+    query: str, memories: Sequence[dict],
+) -> dict | None:
+    """Answer an explicit filename-recall request only from user-authored evidence.
+
+    This is a structural extraction, not a filename or answer dictionary: the
+    value must occur in a retrieved user message (or the user segment of an
+    older episodic record). Earlier assistant replies are never evidence.
+    Returning an explicit abstention prevents the LLM from completing a missing
+    exact identifier with a plausible-looking guess.
+    """
+    value = str(query or "")
+    if not is_explicit_memory_recall_query(value):
+        return None
+    asks_filename = re.search(
+        r"\b(?:file\s*name|filename|name\s+of\s+(?:the\s+)?file|"
+        r"nom\s+(?:du\s+|de\s+(?:ce\s+)?)fichier|nom\s+du\s+document)\b",
+        value,
+        re.IGNORECASE,
+    )
+    if not asks_filename:
+        return None
+
+    evidence = filter_recall_query_records(memories, query=value)
+    file_pattern = re.compile(
+        r"(?<![\w.-])(?:[A-Za-z0-9_.:-]+[/\\])*"
+        r"([A-Za-z0-9][A-Za-z0-9_.-]*\.[A-Za-z0-9]{1,12})\b"
+    )
+    for memory in evidence:
+        kind = str(memory.get("memory_type", "")).casefold()
+        if kind not in {"user_message", "episodic"} and memory.get("source") != "legacy_episodic_user_source":
+            continue
+        source_text = extract_user_authored_text(memory)
+        match = file_pattern.search(source_text)
+        if not match:
+            continue
+        filename = match.group(1).replace("\\", "/").rsplit("/", 1)[-1]
+        try:
+            relevance = max(0.0, min(1.0, float(memory.get("relevance", 0.0))))
+        except (TypeError, ValueError, OverflowError):
+            relevance = 0.0
+        stable_key = str(memory.get("id") or memory.get("faiss_id") or source_text)
+        return {
+            "answer": f"`{filename}`",
+            "status": "supported",
+            "source_ref": hashlib.sha256(stable_key.encode("utf-8", errors="replace")).hexdigest()[:20],
+            "source_type": kind or "legacy_episodic_user_source",
+            "relevance": round(relevance, 4),
+        }
+
+    is_french = bool(re.search(r"\b(?:quel|quelle|rappelle|souviens|fichier|document)\b", value, re.IGNORECASE))
+    return {
+        "answer": "Je n’ai pas retrouvé de source utilisateur confirmant le nom du fichier." if is_french
+        else "I couldn't retrieve a user-authored source confirming the filename.",
+        "status": "abstained_no_source",
+        "source_ref": None,
+        "source_type": None,
+        "relevance": None,
+    }
 
 
 def tokenize(text: str) -> List[str]:

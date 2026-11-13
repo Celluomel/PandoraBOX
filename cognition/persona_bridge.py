@@ -34,6 +34,7 @@ from managers.settings_manager import get_persona_name as _gpn
 from cognition.identity_boundary import prompt_block as _identity_boundary_block
 from cognition.body_runtime.robot_capabilities import robot_capability_report, robot_inventory_observation
 from cognition.memory_retrieval import (
+    exact_filename_recall_result,
     extract_explicit_recall_topic,
     filter_recall_query_records,
     filter_memories_by_modality,
@@ -2388,6 +2389,25 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             )
             else ""
         )
+        if _explicit_memory_recall:
+            _filename_recall = exact_filename_recall_result(user_input, memories)
+            if _filename_recall is not None:
+                _deterministic_response = str(_filename_recall.get("answer") or "")
+                self._record_turn_stage(
+                    "memory_recall_answer", str(_filename_recall.get("status") or "unverified"),
+                    "Exact filename answer derived from a retrieved user-authored source; "
+                    "assistant-authored memory text is not accepted as evidence.",
+                    output={
+                        "source_ref": _filename_recall.get("source_ref"),
+                        "source_type": _filename_recall.get("source_type"),
+                        "relevance": _filename_recall.get("relevance"),
+                        "answer_sha256": hashlib.sha256(
+                            _deterministic_response.encode("utf-8", errors="replace")
+                        ).hexdigest()[:20],
+                    },
+                    consumes=("memory_retrieval", "turn_input"),
+                    turn_id=_audit_turn_id,
+                )
         if _runtime_execution_query and not _explicit_memory_recall:
             from cognition.self_description import trace_grounded_architecture_answer
             _deterministic_response = trace_grounded_architecture_answer(
