@@ -650,6 +650,48 @@ class InternalThoughtLoop:
             "score": 0.0,
         }
 
+    @staticmethod
+    def _publish_global_workspace_focus(
+        organism: Any, winner: Any, planner: Any = None,
+    ) -> dict[str, Any] | None:
+        """Publish the post-arbitration focus and its existing plan to shared state."""
+        workspace = getattr(organism, "workspace", None)
+        update_state = getattr(workspace, "update_state", None)
+        if not callable(update_state):
+            return None
+
+        winner = winner if isinstance(winner, dict) else {}
+        kind = str(winner.get("type") or "")
+        focus_value = winner.get("topic") or winner.get("name")
+        focus = str(focus_value).strip()[:240] if focus_value else None
+        intention = None
+
+        # Only expose an intention when the selected persistent goal already
+        # has an active planner record. Do not invent a plan as a telemetry side effect.
+        goal_id = str(winner.get("id") or "") if kind == "goal" else ""
+        if goal_id and planner is not None and callable(getattr(planner, "status", None)):
+            try:
+                plans = planner.status().get("plans", [])
+                plan = next((item for item in plans if (
+                    item.get("domain") == f"goal:{goal_id}"
+                    and item.get("status") == "active"
+                )), None)
+                if plan:
+                    objective = str(plan.get("objective") or focus or "").strip()
+                    next_step = str(plan.get("next") or "").strip()
+                    if objective:
+                        intention = f"{objective} — next: {next_step}" if next_step and next_step != "done" else objective
+            except Exception as exc:
+                logger.debug("[InternalLoop] shared intention read failed: %s", exc)
+
+        update_state(
+            "workspace_competition",
+            focus=focus,
+            intention=intention,
+        )
+        getter = getattr(workspace, "get_state", None)
+        return getter().to_dict() if callable(getter) else None
+
     def _publish_empty_workspace_focus(
         self, organism: Any, *, reason: str, status: str,
         inputs: dict[str, Any] | None = None,
@@ -658,6 +700,7 @@ class InternalThoughtLoop:
         empty_focus = self._empty_workspace_focus(reason)
         organism._v32_workspace_winner = empty_focus
         organism._v32_workspace_winner_cycle = self._slow_cycle_count
+        self._publish_global_workspace_focus(organism, empty_focus)
         evidence_ref = self._record_cycle_stage(
             "winner_published_to_workspace_state", status,
             inputs=inputs,
@@ -1681,6 +1724,10 @@ class InternalThoughtLoop:
                     )
                     o._v32_workspace_winner = _published_workspace_winner
                     o._v32_workspace_winner_cycle = self._slow_cycle_count
+                    _ws_state = self._publish_global_workspace_focus(
+                        o, _published_workspace_winner,
+                        getattr(self, "_long_horizon_planner", None),
+                    ) or _ws_state
                     _winner_evidence_ref = self._record_cycle_stage(
                         "winner_published_to_workspace_state", "completed",
                         inputs={

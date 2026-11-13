@@ -1695,3 +1695,13 @@ Un tour d’audit complexe a donné une réponse de relance car `primary_generat
 **État de déploiement :** cette correction doit encore être commitée/poussée, puis chargée par le prochain redémarrage groupé en mode audit. Après redémarrage, vérifier que `source_ref` reste unique dans le journal et que les derniers `predicted_futures` n’ajoutent pas une deuxième analyse du même enregistrement PCM. Les entrées historiques sans `source_ref` sont conservées; ce correctif prévient leur répétition future, sans réécrire les preuves historiques.
 
 **Validation croisee ajoutee :** tests d’evidence cycle interne + pipeline de proposition selectionnee avec la suite counterfactual : 39 passes, 9 warnings connus.
+
+### Publication de l’arbitrage dans l’espace de travail partagé — 13 novembre 2026
+
+**Preuve live :** le snapshot /api/interface/cognitive-health montrait global_workspace.focus=null et intention=null, alors que, dans le même instantané, l’orchestrateur était actif et exposait un plan hypothesis unresolved remember avec prochaine étape memory_recall. La trace interne stockait le gagnant dans _v32_workspace_winner, mais sync_workspace_state() ne publiait pas ces deux champs structurés; le snapshot partagé pouvait donc être vide ou périmé tandis que les consommateurs privés voyaient une décision.
+
+**Correction locale :** après arbitrage, le gagnant admis alimente maintenant GlobalWorkspace.focus; si le gagnant est un objectif persistant et que le planificateur possède déjà un plan actif correspondant, intention rapporte l’objectif et son étape suivante. Aucun plan n’est créé pour produire la télémétrie. Un gagnant rejeté ou absent efface focus et intention, évitant de laisser l’ancienne décision active. L’état partagé rafraîchi est réutilisé comme snapshot du cycle.
+
+**Vérification locale :** tests du focus, de l’intention reliée à un plan existant et de l’effacement après rejet; suites cycle interne, proposition sélectionnée et contrefactuel : **41 réussis**, 9 avertissements connus de dépendances. Compilation et git diff --check passent.
+
+**État live :** correction locale, à commit/push et à charger au prochain redémarrage groupé. Vérifier ensuite que le endpoint cognitive-health expose un focus/intention cohérent avec la trace arbitrée et que le rejet remet les deux à null.

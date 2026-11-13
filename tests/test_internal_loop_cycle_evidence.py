@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 from core.module_tick_log import ModuleTickLog
 from core.internal_loop import InternalThoughtLoop
+from cognition.global_workspace import GlobalWorkspace
 
 
 def make_loop():
@@ -369,3 +370,34 @@ def test_rejected_thought_proposal_cannot_become_durable_workspace_focus():
     assert InternalThoughtLoop._selected_proposal_commit_admitted(
         {"type": "thought", "source_data": {}}, None,
     )
+
+
+def test_post_arbitration_focus_and_existing_plan_reach_shared_workspace_state():
+    organism = SimpleNamespace(workspace=GlobalWorkspace())
+    planner = SimpleNamespace(status=lambda: {"plans": [{
+        "domain": "goal:goal-7", "status": "active",
+        "objective": "Resolve the evidence gap", "next": "memory_recall",
+    }]})
+
+    state = InternalThoughtLoop._publish_global_workspace_focus(
+        organism,
+        {"type": "goal", "id": "goal-7", "topic": "evidence gap"},
+        planner,
+    )
+
+    assert state["focus"] == "evidence gap"
+    assert state["intention"] == "Resolve the evidence gap — next: memory_recall"
+    assert state["updated_by"][-1]["source"] == "workspace_competition"
+
+
+def test_rejected_proposal_clears_shared_workspace_focus_and_intention():
+    organism = SimpleNamespace(workspace=GlobalWorkspace())
+    organism.workspace.update_state("previous", focus="old focus", intention="old plan")
+
+    state = InternalThoughtLoop._publish_global_workspace_focus(
+        organism,
+        {"type": "rejected_proposal", "name": "", "topic": ""},
+    )
+
+    assert state["focus"] is None
+    assert state["intention"] is None
