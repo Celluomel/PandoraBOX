@@ -401,7 +401,12 @@ class UserManager:
         if not profile or profile.id == self.GUEST_ID:
             return ""
         with self._lock:
-            self._quarantine_ephemeral_characteristics(profile)
+            quarantined = self._quarantine_ephemeral_characteristics(profile)
+            if quarantined:
+                # This accessor performs a legacy-data migration as well as
+                # formatting prompt context. Persist it here so a restart
+                # cannot resurrect the quarantined traits on the next read.
+                self._save()
             cached = self._prompt_cache.get(profile.id)
             if cached is None:
                 parts = [f"User's name: {profile.display_name}."]

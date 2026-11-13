@@ -209,6 +209,25 @@ class PresenceIdentityLanguageTests(unittest.TestCase):
         self.assertNotIn("curieux de savoir", prompt)
         self.assertEqual(len(persisted["users"]["fred"]["profile_provenance_quarantine"]), len(transient))
 
+    def test_prompt_read_persists_ephemeral_profile_quarantine(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "users.json"
+            manager = users.UserManager(path)
+            profile = manager.create("Fred")
+            profile.characteristics.append("curious to know whether audit is live")
+            manager._save()
+
+            prompt = manager.prompt_context_for(profile.id)
+            reloaded = users.UserManager(path)
+            persisted_profile = reloaded.get(profile.id)
+
+            self.assertNotIn("curious to know", prompt)
+            self.assertEqual(persisted_profile.characteristics, [])
+            self.assertEqual(
+                persisted_profile.profile_provenance_quarantine[0]["value"],
+                "curious to know whether audit is live",
+            )
+
     def test_profile_learning_receipt_distinguishes_update_from_ephemeral_chat(self):
         with tempfile.TemporaryDirectory() as directory:
             manager = users.UserManager(Path(directory) / "users.json")
