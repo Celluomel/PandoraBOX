@@ -26,6 +26,17 @@ ne nos notre nous on ou par pas pour qu que quel quelle qui sa sans se ses son s
 votre vous y etre avoir faire suis sont doit dois
 """).split())
 
+# Bare basenames need a recognizable extension. Arbitrary extensions remain
+# valid when the user-authored source includes an explicit path; this prevents
+# prose such as "answer.my" from being promoted to a recalled filename.
+_COMMON_FILENAME_EXTENSIONS = frozenset(("""
+7z aac ai apk avi bat bin bmp bz2 c cc cfg cjs class cmd conf cpp cs css csv cxx dat db diff dll doc docx dwg
+email epub exe flac gif go gz h hpp htm html ico ini ino ipynb jar java jpeg jpg js json jsonl jsx kt log lua m4a
+markdown md mdx mjs mkv mov mp3 mp4 mpeg mpg msi msp npy npz odp ods odt onnx otf patch pdf pem pfx php pkl png ppt
+pptx ps1 py pyc pyd pyw r rar rb rs sass scss sh so sqlite sql svg swf tar tex tif tiff toml ts tsx ttf txt wav webp
+whl woff woff2 xls xlsx xml yaml yml zip zipx zst
+""").split())
+
 
 _HISTORICAL_REQUEST_PATTERNS = (
     re.compile(
@@ -286,8 +297,9 @@ def exact_filename_recall_result(
 
     evidence = filter_recall_query_records(memories, query=value)
     file_pattern = re.compile(
-        r"(?<![\w.-])(?:[A-Za-z0-9_.:-]+[/\\])*"
-        r"([A-Za-z0-9][A-Za-z0-9_.-]*\.[A-Za-z0-9]{1,12})\b"
+        r"(?<![\w.-])(?P<path>(?:[A-Za-z0-9_.:-]+[/\\])+)?"
+        r"(?P<filename>[A-Za-z0-9][A-Za-z0-9_.-]*\."
+        r"(?P<extension>[A-Za-z0-9]{1,12}))\b"
     )
     for memory in evidence:
         kind = str(memory.get("memory_type", "")).casefold()
@@ -297,7 +309,10 @@ def exact_filename_recall_result(
         match = file_pattern.search(source_text)
         if not match:
             continue
-        filename = match.group(1).replace("\\", "/").rsplit("/", 1)[-1]
+        extension = match.group("extension").casefold()
+        if not match.group("path") and extension not in _COMMON_FILENAME_EXTENSIONS:
+            continue
+        filename = match.group("filename").replace("\\", "/").rsplit("/", 1)[-1]
         try:
             relevance = max(0.0, min(1.0, float(memory.get("relevance", 0.0))))
         except (TypeError, ValueError, OverflowError):

@@ -161,6 +161,17 @@ class MemoryRetrievalQualityTests(unittest.TestCase):
         self.assertEqual(result["status"], "supported")
         self.assertEqual(result["answer"], "`COGNITIVE_HARNESS_AUDIT_STATUS_2026-11-11.md`")
 
+    def test_filename_recall_does_not_promote_prose_fragment_to_filename(self):
+        query = "What is the filename containing the answer.my phrase in my note?"
+        result = exact_filename_recall_result(query, [{
+            "id": 26,
+            "memory_type": "user_message",
+            "text": "User message: In my note, the phrase answer.my is prose, not a file.",
+            "relevance": 0.86,
+        }])
+        self.assertEqual(result["status"], "abstained_no_source")
+        self.assertIsNone(result["source_ref"])
+
 
 if __name__ == "__main__":
     unittest.main()

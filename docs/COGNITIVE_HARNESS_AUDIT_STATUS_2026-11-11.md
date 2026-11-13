@@ -1851,3 +1851,15 @@ Un tour d’audit complexe a donné une réponse de relance car `primary_generat
 **Reçu du tour `lumina-1794596794551222300-1` :** FAISS a retourné 36 candidats vectoriels, dont 8 dans le pool final, en 55,79 ms. `memory_recall_answer=abstained_no_source`; `deterministic_reasoning=selected_direct`; la génération primaire est `skipped_deterministic`; la réponse finale est l’abstention « Je n’ai pas retrouvé de source utilisateur confirmant le nom du fichier. » Le pipeline est `consistent`, le tour est terminé, et aucun nom de fichier non étayé n’a été présenté. C’est une validation positive du comportement de sûreté face à une source utilisateur absente, mais **pas** une validation de rappel positif du nom du rapport.
 
 **Suite :** les commits `ad80e64` et `37d043c` sont poussés. Le rappel exact est vérifié sur son chemin d’abstention; le test de récupération positive restera à faire avec un fait réellement présent dans un message utilisateur rappelable, sans inventer une source ni contaminer le profil réel. L’audit continue sur les effets mémoire en aval et sur les scénarios de profil/contextualisation.
+
+### Test live positif du rappel exact — faux positif d’extraction — 13 novembre 2026
+
+**Reçu du tour `lumina-1794596904514321700-2` :** la requête de rappel explicite a bien suivi `memory_retrieval` (`query_source=explicit_recall`, 7 candidats finaux, FAISS en 12,52 ms), puis `memory_recall_answer=supported` et `deterministic_reasoning=selected_direct`. Le pipeline était cohérent, mais Lumina a renvoyé `answer.my`, qui n’est pas le nom de l’archive demandée. Le routage et la preuve causale fonctionnent; la validation du contenu extrait échouait.
+
+**Cause :** le motif acceptait arbitrairement tout suffixe alphanumérique de 1 à 12 caractères, donc un fragment de prose `answer.my` devenait un faux nom de fichier. Le fait que le fragment soit présent dans un segment utilisateur ne suffit pas à prouver qu’il désigne un fichier.
+
+**Correction locale :** un nom sans chemin doit maintenant avoir une extension de fichier reconnue; un suffixe inhabituel n’est accepté que lorsqu’un chemin explicite l’ancre. Les noms de fichier ne sont pas codés en dur : l’extracteur reste fondé sur les textes retrouvés et sur une validation syntaxique minimale. Un nouveau test reproduit `answer.my` dans une phrase utilisateur et exige l’abstention.
+
+**Vérification locale :** mémoire, reçus de tours et profil — **57 tests réussis**, 9 avertissements connus; `py_compile` et `git diff --check` passent. Le test live de rejet du faux positif reste requis après chargement du correctif. Il faut également réussir un rappel positif à partir d’un nom de fichier clairement fourni par l’utilisateur avant de conclure que la récupération positive fonctionne.
+
+**État :** correction et rapport à committer/pousser, puis à charger par un redémarrage géré. Le rappel positif n’est pas validé tant que la nouvelle instance n’a pas rejeté ce fragment et qu’un nom réellement sourcé n’a pas été récupéré sans confusion.
