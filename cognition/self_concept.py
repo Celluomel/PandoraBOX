@@ -46,8 +46,17 @@ class SelfBelief:
 @dataclass
 class SelfConceptState:
     beliefs:           List[Dict]  = field(default_factory=list)
-    coherence:         float       = 0.5   # how consistent the beliefs are with each other
-    stability:         float       = 0.5   # how stable the concept is over time
+    # Coherence and temporal stability require evidence this subsystem does not
+    # currently compute. Keep them explicitly unavailable instead of reusing
+    # confidence averages as if they measured either property.
+    coherence:         Optional[float] = None
+    coherence_status:  str           = "unmeasured"
+    stability:         Optional[float] = None
+    stability_status:  str           = "unmeasured"
+    belief_confidence_proxy: Optional[float] = None
+    belief_confidence_status: str    = "unmeasured"
+    legacy_coherence_proxy: Optional[float] = None
+    legacy_stability_proxy: Optional[float] = None
     last_updated:      float       = field(default_factory=time.time)
     expressed_values:  List[str]   = field(default_factory=list)   # values PandoraBOX has stated
     known_tensions:    List[str]   = field(default_factory=list)   # self-identified contradictions
@@ -116,7 +125,7 @@ class SelfConceptSystem:
                     else:
                         # Update confidence if trait changed
                         self._beliefs[name].confidence = min(0.9, (val-self.TRAIT_THRESHOLD)*4)
-            self._update_coherence()
+            self._update_belief_confidence_proxy()
             self._save()
 
     def update_from_response(self, response_text: str, emo_valence: str) -> Optional[str]:
@@ -278,6 +287,9 @@ class SelfConceptSystem:
             return {
                 "active_beliefs":  [b.statement for b in top],
                 "coherence":       self._state.coherence,
+                "coherence_status": self._state.coherence_status,
+                "belief_confidence_proxy": self._state.belief_confidence_proxy,
+                "belief_confidence_status": self._state.belief_confidence_status,
                 "aspired_self":    self._state.aspired_self[:2],
                 "known_tensions":  self._state.known_tensions[:2],
             }
@@ -367,7 +379,15 @@ class SelfConceptSystem:
         top = sorted(self._beliefs.values(), key=lambda b: b.confidence, reverse=True)[:5]
         if not top:
             return "Self-concept still forming."
-        lines = [f"**Self-Concept** (coherence: {self._state.coherence:.2f})"]
+        confidence = self._state.belief_confidence_proxy
+        confidence_text = (
+            f"belief-confidence proxy: {confidence:.2f}"
+            if confidence is not None else "belief-confidence proxy: unavailable"
+        )
+        lines = [
+            "**Self-Concept** (coherence: unmeasured; "
+            f"temporal stability: {self._state.stability_status}; {confidence_text})"
+        ]
         for b in top:
             aff_str = f" ✓{b.affirmations}" if b.affirmations else ""
             vio_str = f" ✗{b.violations}"   if b.violations  else ""
@@ -484,30 +504,43 @@ class SelfConceptSystem:
 
         return None
 
-    def _update_coherence(self):
+    def _update_belief_confidence_proxy(self):
+        """Update a confidence/violation summary without calling it coherence."""
         if not self._beliefs:
-            self._state.coherence = 0.5; return
-        # Skip if SelfConceptSynchronizer set coherence recently (< 4 min ago).
-        # SCS computes a richer multi-category weighted score; this method
-        # uses simpler avg_confidence. Running it over an SCS result would
-        # overwrite improvements and cause the persistent 0.658 → 0.5xx drop.
-        import time as _t
-        scs_age = _t.time() - getattr(self, '_scs_coherence_set_at', 0.0)
-        if scs_age < 240:
-            return  # SCS set coherence within last 4 min — don't touch it
+            self._state.belief_confidence_proxy = None
+            self._state.belief_confidence_status = "no_beliefs"
+            return
         confidences = [b.confidence for b in self._beliefs.values()]
         avg_conf    = sum(confidences) / len(confidences)
         total_aff   = sum(b.affirmations for b in self._beliefs.values())
         total_vio   = sum(b.violations   for b in self._beliefs.values())
         vio_ratio   = total_vio / max(total_aff + total_vio, 1)
-        self._state.coherence = max(0.0, min(1.0, avg_conf * (1 - vio_ratio * 0.5)))
+        self._state.belief_confidence_proxy = max(
+            0.0, min(1.0, avg_conf * (1 - vio_ratio * 0.5))
+        )
+        self._state.belief_confidence_status = "estimated_from_belief_confidence_and_violations"
 
-    def mark_scs_coherence(self, coherence: float) -> None:
-        """Called by SelfConceptSynchronizer after setting coherence on disk.
-        Prevents _update_coherence() from overwriting the SCS value for 4 min."""
-        import time as _t
-        self._scs_coherence_set_at = _t.time()
-        self._state.coherence = coherence
+    def mark_scs_belief_confidence_proxy(self, value: float | None) -> None:
+        """Accept the synchronizer's confidence proxy without claiming coherence."""
+        self._state.belief_confidence_proxy = value
+        self._state.belief_confidence_status = (
+            "estimated_from_category_weighted_belief_confidence"
+            if value is not None else "insufficient_category_evidence"
+        )
+
+    @staticmethod
+    def _migrate_unvalidated_metrics(state: SelfConceptState) -> None:
+        """Preserve legacy proxy values while retiring unsupported metric labels."""
+        if state.coherence_status != "measured":
+            if state.coherence is not None and state.legacy_coherence_proxy is None:
+                state.legacy_coherence_proxy = state.coherence
+            state.coherence = None
+            state.coherence_status = "unmeasured"
+        if state.stability_status != "measured":
+            if state.stability is not None and state.legacy_stability_proxy is None:
+                state.legacy_stability_proxy = state.stability
+            state.stability = None
+            state.stability_status = "unmeasured"
 
     def reload_from_disk(self) -> int:
         """
@@ -539,10 +572,13 @@ class SelfConceptSystem:
                 for k, v in sd.items():
                     if hasattr(self._state, k):
                         setattr(self._state, k, v)
+                self._migrate_unvalidated_metrics(self._state)
+                self._update_belief_confidence_proxy()
                 logger.debug(
                     f"[SelfConcept] reloaded from disk: "
                     f"{len(self._beliefs)} beliefs, "
-                    f"coherence={self._state.coherence:.3f}"
+                    f"coherence_status={self._state.coherence_status}, "
+                    f"belief_confidence={self._state.belief_confidence_proxy}"
                 )
                 return len(self._beliefs)
             except Exception as e:
@@ -551,7 +587,7 @@ class SelfConceptSystem:
 
     def _save(self):
         try:
-            self._update_coherence()
+            self._update_belief_confidence_proxy()
             self._state.last_updated = time.time()
             data = {
                 "beliefs": {n: asdict(b) for n, b in self._beliefs.items()},
@@ -583,6 +619,8 @@ class SelfConceptSystem:
                 if k in _valid_state_fields:
                     setattr(self._state, k, v)
                 # silently drop: "confidence", "milestones", and any future orphans
+            self._migrate_unvalidated_metrics(self._state)
+            self._update_belief_confidence_proxy()
             logger.info(f"SelfConcept: {len(self._beliefs)} beliefs loaded")
         except Exception as e:
             logger.error(f"SelfConcept load: {e}")

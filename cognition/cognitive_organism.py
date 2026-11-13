@@ -1472,21 +1472,20 @@ class CognitiveOrganism:
             sc = getattr(self.ai_system, 'self_concept', None)
             if sc:
                 state = getattr(sc, '_state', None)
-                if state:
-                    coherence = float(getattr(state, 'coherence', 1.0))
-                    violations = float(getattr(state, 'violation_ratio', 0.0))
-                    if violations > 0.3 or coherence < 0.5:
+                if state and getattr(state, 'coherence_status', None) == 'measured':
+                    coherence = getattr(state, 'coherence', None)
+                    if isinstance(coherence, (int, float)) and coherence < 0.5:
                         # Rate-limit: emit at most once every 5 minutes
                         import time as _t
                         _now = _t.time()
                         _last = getattr(self, '_last_identity_threatened_emit', 0.0)
                         if _now - _last >= 300:
                             self.event_bus.emit(IDENTITY_THREATENED, {
-                                "belief":   "identity coherence",
+                                "belief":   "measured identity coherence",
                                 "severity": 1.0 - coherence,
                             }, source="self_concept")
                             self._last_identity_threatened_emit = _now
-                    elif coherence > 0.8:
+                    elif isinstance(coherence, (int, float)) and coherence > 0.8:
                         self.event_bus.emit(IDENTITY_AFFIRMED, {
                             "coherence": coherence,
                         }, source="self_concept")
@@ -1840,22 +1839,18 @@ class CognitiveOrganism:
         return {}
 
     def _get_identity_stability(self) -> float:
-        """
-        Extract identity stability from SelfConceptSystem.
-        SelfConceptState.stability is never updated by the existing code,
-        so we use .coherence as the live proxy — it IS updated each turn
-        by _update_coherence() based on belief confidence and violation ratio.
-        """
+        """Return measured temporal stability, or neutral when unmeasured."""
         try:
             sc = self.ai_system.self_concept
             # ._state is the correct attr (SelfConceptSystem stores as self._state)
             state = getattr(sc, "_state", None) or getattr(sc, "state", None)
-            if state is not None:
-                # coherence [0,1] maps directly to identity stability
-                return float(state.coherence)
+            if state is not None and getattr(state, "stability_status", None) == "measured":
+                value = getattr(state, "stability", None)
+                if isinstance(value, (int, float)) and 0.0 <= value <= 1.0:
+                    return float(value)
         except Exception:
             pass
-        return 0.75
+        return 0.5
 
     def _get_contradiction_count(self) -> int:
         """Count unresolved contradictions."""

@@ -32,6 +32,8 @@ from cognition.grounded_introspection import GroundedIntrospectionGenerator
 from cognition.semantic_extractor import SemanticExtractor
 from cognition.semantic_memory import SemanticMemory
 from cognition.self_concept_synchronizer import SelfConceptSynchronizer
+from cognition.cognitive_attention_engine import CognitiveAttentionEngine
+from cognition.decision_commitment import Commitment, DecisionCommitmentLayer
 from cognition.self_description import SelfDescription
 from cognition.simple_thought_evaluator import SimpleThoughtEvaluator
 from cognition.turn_context_evidence import (
@@ -378,9 +380,9 @@ class CognitiveLogRegressionTests(unittest.TestCase):
         self.assertNotIn("'other'", question)
         self.assertNotIn("tendency toward", question)
 
-    def test_unknown_belief_categories_do_not_inflate_coherence(self):
+    def test_unknown_belief_categories_do_not_inflate_confidence_proxy(self):
         synchronizer = SelfConceptSynchronizer.__new__(SelfConceptSynchronizer)
-        score = synchronizer._compute_coherence({"beliefs": {
+        score = synchronizer._compute_belief_confidence_proxy({"beliefs": {
             "known": {"category": "expressed_belief", "confidence": 0.6},
             "unknown-a": {"category": "noise_a", "confidence": 1.0},
             "unknown-b": {"category": "noise_b", "confidence": 1.0},
@@ -389,18 +391,19 @@ class CognitiveLogRegressionTests(unittest.TestCase):
         }})
         self.assertEqual(score, 0.6)
 
-    def test_unclassified_beliefs_produce_no_coherence_measurement(self):
+    def test_unclassified_beliefs_produce_no_confidence_proxy_or_coherence_measurement(self):
         synchronizer = SelfConceptSynchronizer.__new__(SelfConceptSynchronizer)
-        score = synchronizer._compute_coherence({"beliefs": {
+        beliefs = {"beliefs": {
             f"belief-{index}": {
                 "category": "",
                 "confidence": 0.57,
             }
             for index in range(40)
-        }})
-        self.assertIsNone(score)
+        }}
+        self.assertIsNone(synchronizer._compute_belief_confidence_proxy(beliefs))
+        self.assertIsNone(synchronizer._compute_coherence(beliefs))
 
-    def test_sync_preserves_self_state_when_coherence_evidence_is_unclassified(self):
+    def test_sync_retires_unvalidated_coherence_and_stability_proxies(self):
         with tempfile.TemporaryDirectory() as directory:
             state_path = Path(directory, "self_concept.json")
             state_path.write_text(json.dumps({
@@ -424,12 +427,61 @@ class CognitiveLogRegressionTests(unittest.TestCase):
             report = synchronizer.run()
             saved = json.loads(state_path.read_text(encoding="utf-8"))
 
-        self.assertEqual(report["coherence_status"], "insufficient_category_evidence")
-        self.assertEqual(report["coherence_after"], 0.2946)
-        self.assertEqual(report["stability_after"], 0.4321)
-        self.assertEqual(saved["state"]["confidence"], 0.61)
-        self.assertEqual(saved["state"]["coherence"], 0.2946)
-        self.assertEqual(saved["state"]["stability"], 0.4321)
+        self.assertEqual(report["coherence_status"], "unmeasured")
+        self.assertIsNone(report["coherence_after"])
+        self.assertIsNone(report["stability_after"])
+        self.assertIsNone(saved["state"]["coherence"])
+        self.assertIsNone(saved["state"]["stability"])
+        self.assertEqual(saved["state"]["legacy_coherence_proxy"], 0.2946)
+        self.assertEqual(saved["state"]["legacy_stability_proxy"], 0.4321)
+        self.assertEqual(saved["state"]["coherence_status"], "unmeasured")
+        self.assertEqual(saved["state"]["stability_status"], "unmeasured")
+
+    def test_attention_does_not_use_legacy_coherence_as_identity_drive(self):
+        engine = CognitiveAttentionEngine.__new__(CognitiveAttentionEngine)
+        engine._o = SimpleNamespace(ai_system=SimpleNamespace(
+            self_concept=SimpleNamespace(_state=SimpleNamespace(
+                coherence=0.99, coherence_status="unmeasured",
+                stability=None, stability_status="unmeasured",
+            ))
+        ))
+        state = engine._read_state()
+        self.assertNotIn("identity", state)
+
+    def test_attention_accepts_only_explicitly_measured_stability(self):
+        engine = CognitiveAttentionEngine.__new__(CognitiveAttentionEngine)
+        engine._o = SimpleNamespace(ai_system=SimpleNamespace(
+            self_concept=SimpleNamespace(_state=SimpleNamespace(
+                coherence=0.2, coherence_status="unmeasured",
+                stability=0.73, stability_status="measured",
+            ))
+        ))
+        state = engine._read_state()
+        self.assertEqual(state["identity"], 0.73)
+
+    def test_decision_contradiction_does_not_mutate_unmeasured_coherence(self):
+        pressure = SimpleNamespace(calls=0, record_contradiction=lambda: setattr(
+            pressure, "calls", pressure.calls + 1
+        ))
+        self_concept = SimpleNamespace(coherence=0.61)
+        ai_system = SimpleNamespace(
+            pressure_system=pressure,
+            self_concept=self_concept,
+            liberty_contradiction=SimpleNamespace(contradictions=[]),
+        )
+        layer = DecisionCommitmentLayer.__new__(DecisionCommitmentLayer)
+        layer._o = SimpleNamespace(ai_system=ai_system)
+        layer._cycle = 4
+        commitment = Commitment(
+            timestamp=1.0, topic="new goal", win_type="goal", score=0.3,
+            orientation="exploration", energy=0.5, cycle=4,
+        )
+
+        layer._fire_penalty(commitment, "stability", 0.2)
+
+        self.assertEqual(pressure.calls, 1)
+        self.assertEqual(self_concept.coherence, 0.61)
+        self.assertEqual(len(ai_system.liberty_contradiction.contradictions), 1)
 
     def test_self_concept_cap_is_stable_and_does_not_report_transient_churn(self):
         synchronizer = SelfConceptSynchronizer.__new__(SelfConceptSynchronizer)

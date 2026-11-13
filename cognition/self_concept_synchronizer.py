@@ -1,14 +1,7 @@
-"""
-PANDORABOX V32 — Phase 5.1 : Self-Concept Synchronizer
-====================================================
-Bridges the gap between:
-  - identity.json  (beliefs accumulated by Phase 4)
-  - self_concept.json (the self-model PandoraBOX uses in responses)
+"""Synchronize evidence-backed beliefs into the live self-concept.
 
-Self-concept coherence is currently 0.286 because the two stores
-are disconnected. This module syncs them and rebuilds coherence.
-
-Also extracts milestones from life_story (currently 50 entries, 0 milestones).
+This module does not measure pairwise belief coherence or temporal identity
+stability. It reports a separate, explicitly named belief-confidence proxy.
 """
 
 import json
@@ -55,16 +48,36 @@ class SelfConceptSynchronizer:
             'identity_records_quarantined_by_provenance': 0,
             'beliefs_total_after_sync': 0,
             'milestones_found': 0,
-            'coherence_before': 0.0,
-            'coherence_after':  0.0,
+            'coherence_before': None,
+            'coherence_after': None,
+            'coherence_status': 'unmeasured',
+            'legacy_coherence_proxy': None,
+            'legacy_stability_proxy': None,
+            'belief_confidence_proxy': None,
+            'belief_confidence_status': 'unmeasured',
+            'stability_status': 'unmeasured',
         }
 
         sc = self._load_json('self_concept.json')
-        # coherence_before: use the actual saved state from disk.
-        # The old cache restoration (cached > current+0.05) caused a misleading
-        # 'before' reading every session when the cache held a past better value.
-        # The live computation is ground truth — don't override it with stale cache.
-        report['coherence_before'] = sc.get('state', {}).get('coherence', 0.0)
+        state = sc.setdefault('state', {})
+        report['legacy_coherence_proxy'] = state.get(
+            'legacy_coherence_proxy', state.get('coherence')
+        )
+        # Preserve old confidence proxies under explicit legacy names, but do
+        # not keep treating them as measured consistency or temporal stability.
+        if state.get('coherence_status') != 'measured':
+            if state.get('coherence') is not None and state.get('legacy_coherence_proxy') is None:
+                state['legacy_coherence_proxy'] = state.get('coherence')
+            state['coherence'] = None
+            state['coherence_status'] = 'unmeasured'
+        if state.get('stability_status') != 'measured':
+            report['legacy_stability_proxy'] = state.get(
+                'legacy_stability_proxy', state.get('stability')
+            )
+            if state.get('stability') is not None and state.get('legacy_stability_proxy') is None:
+                state['legacy_stability_proxy'] = state.get('stability')
+            state['stability'] = None
+            state['stability_status'] = 'unmeasured'
 
         # Move legacy graph-statistic beliefs and insights derived from them
         # out of the active identity store before syncing its remaining beliefs.
@@ -86,22 +99,22 @@ class SelfConceptSynchronizer:
             isinstance(value, dict) for value in sc.get('beliefs', {}).values()
         ) if isinstance(sc.get('beliefs', {}), dict) else len(sc.get('beliefs', []))
 
-        # 2. Recompute coherence
-        new_coherence = self._compute_coherence(sc)
-        report['coherence_status'] = (
-            'computed' if new_coherence is not None else 'insufficient_category_evidence'
+        # 2. Compute evidence confidence separately. Mean confidence does not
+        # measure consistency between beliefs or stability across time.
+        belief_confidence = self._compute_belief_confidence_proxy(sc)
+        report['belief_confidence_status'] = (
+            'computed' if belief_confidence is not None else 'insufficient_category_evidence'
         )
-        if new_coherence is not None:
-            sc.setdefault('state', {})['coherence'] = new_coherence
-            sc['state']['last_updated'] = _now()
-            sc['state']['confidence'] = min(0.85, new_coherence + 0.1)
-            report['coherence_after'] = new_coherence
+        report['belief_confidence_proxy'] = belief_confidence
+        if belief_confidence is not None:
+            state['belief_confidence_proxy'] = belief_confidence
+            state['belief_confidence_status'] = 'estimated_from_category_weighted_belief_confidence'
+            state['last_updated'] = _now()
         else:
-            # Missing recognized evidence is not evidence of incoherence.
-            # Preserve the last measured value and do not feed a fabricated
-            # low score into identity stability or future decision pressure.
-            new_coherence = report['coherence_before']
-            report['coherence_after'] = new_coherence
+            state['belief_confidence_status'] = 'insufficient_category_evidence'
+        report['coherence_status'] = 'unmeasured'
+        report['coherence_after'] = None
+        report['stability_status'] = 'unmeasured'
 
         # 3. Extract milestones from life_story
         milestones = self._extract_milestones()
@@ -114,45 +127,13 @@ class SelfConceptSynchronizer:
         if expressed_values:
             sc['state']['expressed_values'] = expressed_values
 
-        # 5. Feed coherence back into stability — this directly reduces identity_stress
-        # tension_engine uses: raw_identity = (1 - identity_stability)*0.7 + contradiction*0.3
-        # So raising stability from 0.5 → 0.7 drops identity_stress from ~0.84 → ~0.70
-        old_stability = sc.get('state', {}).get('stability', 0.5)
-        # Stability converges toward a measured coherence slowly (smoothing
-        # factor 0.85). Do not update it when the evidence is unclassifiable.
-        new_stability = (
-            round(0.85 * old_stability + 0.15 * new_coherence, 4)
-            if report['coherence_status'] == 'computed' else old_stability
-        )
-        if report['coherence_status'] == 'computed':
-            sc['state']['stability'] = new_stability
-        report['stability_before'] = old_stability
-        report['stability_after']  = new_stability
-        # Cache coherence so it survives restarts (SelfConcept resets it on load)
-        if report['coherence_status'] == 'computed':
-            sc['_scs_coherence_cache'] = new_coherence
+        # A stability score requires longitudinal snapshots. Do not feed a
+        # confidence proxy into stability or identity_stress.
+        report['stability_before'] = state.get('stability')
+        report['stability_after'] = None
 
         self._save_json('self_concept.json', sc)
         
-        # Also write stability into tensions.json so tension_engine sees it immediately
-        if new_stability != old_stability:
-            try:
-                tensions_path = self.persona_dir / 'tensions.json'
-                if tensions_path.exists():
-                    import json as _j
-                    with open(tensions_path) as f:
-                        t_data = _j.load(f)
-                    # Recompute identity_stress from new stability
-                    contradiction = t_data.get('current', {}).get('contradiction_pressure', 0.1)
-                    new_id_stress = round((1.0 - new_stability) * 0.7 + contradiction * 0.3, 4)
-                    t_data.setdefault('current', {})['identity_stress'] = new_id_stress
-                    import os
-                    tmp = tensions_path.with_suffix('.tmp')
-                    with open(tmp, 'w') as f:
-                        _j.dump(t_data, f, indent=2)
-                    os.replace(tmp, tensions_path)
-            except Exception as _e:
-                pass
         # ── Reload the live in-memory SelfConceptSystem ──────────────────────
         # SCS previously only wrote to disk. The in-memory object that drives
         # get_inner_voice() and check_response_alignment() never saw the updates,
@@ -168,10 +149,8 @@ class SelfConceptSynchronizer:
             for _inst in list(_registry):
                 try:
                     n = _inst.reload_from_disk()
-                    # Tell the live instance that SCS just set coherence so
-                    # _update_coherence() won't overwrite it for 4 minutes
-                    if hasattr(_inst, 'mark_scs_coherence'):
-                        _inst.mark_scs_coherence(new_coherence)
+                    if hasattr(_inst, 'mark_scs_belief_confidence_proxy'):
+                        _inst.mark_scs_belief_confidence_proxy(belief_confidence)
                     logger.debug(f"[SCS] Reloaded live SCS instance: {n} beliefs")
                     reloaded = True
                 except Exception:
@@ -184,7 +163,8 @@ class SelfConceptSynchronizer:
         pruned_count = len([b for b in sc.get('beliefs', {}).values()
                             if isinstance(b, dict)])
         logger.info(
-            f"[SCS] Coherence: {report['coherence_before']:.3f} → {new_coherence:.3f} "
+            f"[SCS] Belief-confidence proxy: {belief_confidence}; "
+            "coherence and temporal stability unmeasured "
             f"({synced} beliefs synced, {pruned_count} total, "
             f"{len(milestones)} milestones)"
         )
@@ -421,14 +401,8 @@ class SelfConceptSynchronizer:
 
     # ── Coherence ─────────────────────────────────────────────────────────────
 
-    def _compute_coherence(self, sc: Dict) -> Optional[float]:
-        """Compute confidence coherence from recognized evidence categories.
-
-        Category count is not evidence of consistency. The former diversity
-        bonus let metadata/unknown categories raise coherence independently
-        of belief quality, so unknown categories are excluded and no diversity
-        bonus is applied.
-        """
+    def _compute_belief_confidence_proxy(self, sc: Dict) -> Optional[float]:
+        """Compute weighted mean confidence; do not interpret it as coherence."""
         beliefs = sc.get('beliefs', {})
         if isinstance(beliefs, dict):
             # self_concept.json has metadata keys at the top level
@@ -466,6 +440,10 @@ class SelfConceptSynchronizer:
         base = total_score / total_weight if total_weight > 0 else 0.3
 
         return round(max(0.0, min(1.0, base)), 4)
+
+    def _compute_coherence(self, _sc: Dict) -> Optional[float]:
+        """Compatibility shim: this module has no validated coherence measure."""
+        return None
 
     # ── Milestones ────────────────────────────────────────────────────────────
 
@@ -564,4 +542,5 @@ if __name__ == '__main__':
     print(f"\nSelf-concept sync:")
     print(f"  Beliefs synced   : {r['beliefs_synced']}")
     print(f"  Milestones found : {r['milestones_found']}")
-    print(f"  Coherence        : {r['coherence_before']:.3f} → {r['coherence_after']:.3f}")
+    print("  Coherence        : unmeasured (no validated pairwise consistency measure)")
+    print("  Belief confidence: " + str(r.get('belief_confidence_proxy')))

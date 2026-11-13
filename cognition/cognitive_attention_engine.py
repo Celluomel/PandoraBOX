@@ -175,8 +175,8 @@ class CognitiveAttentionEngine:
         attention weights permanently stuck near 0.10. Now explicitly
         reads:
           - curiosity → CuriosityEngine.global_level()
-          - identity  → SelfConcept._state.coherence (best proxy:
-                        how consistent/stable PandoraBOX's self-model is)
+          - identity  → measured SelfConcept stability, or neutral 0.5 when
+                        temporal identity stability has not been measured
         """
         state: Dict = {}
         o  = self._o
@@ -230,16 +230,18 @@ class CognitiveAttentionEngine:
         except Exception:
             pass
 
-        # FIX: identity — drives narrative_identity (0.40), self_model (0.50),
-        # relational_memory (0.25), decision_policy (0.35). Use SelfConcept
-        # coherence as the proxy: high coherence = stable identity = high
-        # identity drive. Without this, 4 modules were stuck at 0.3 fallback.
+        # Use only a measured temporal-stability value. Until that measure
+        # exists, retain the neutral fallback rather than relabeling belief
+        # confidence as identity stability.
         try:
             sc = getattr(ai, "self_concept", None) if ai else None
             if sc:
-                coherence = getattr(getattr(sc, "_state", None), "coherence", None)
-                if coherence is not None:
-                    state["identity"] = float(coherence)
+                self_state = getattr(sc, "_state", None)
+                stability = getattr(self_state, "stability", None)
+                if (getattr(self_state, "stability_status", None) == "measured"
+                        and isinstance(stability, (int, float))
+                        and 0.0 <= stability <= 1.0):
+                    state["identity"] = float(stability)
         except Exception:
             pass
 

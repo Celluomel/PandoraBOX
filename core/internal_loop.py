@@ -2959,7 +2959,8 @@ class InternalThoughtLoop:
                     self._governor.record('SCS', report.get('beliefs_synced', 0))
                 logger.info(
                     f"[InternalLoop] V35 Self-concept: "
-                    f"coherence={report['coherence_after']:.3f} "
+                    f"coherence={report.get('coherence_after')} "
+                    f"({report.get('coherence_status', 'unknown')}) "
                     f"(+{report['beliefs_synced']} beliefs, "
                     f"{report['milestones_found']} milestones)"
                 )
@@ -3035,13 +3036,19 @@ class InternalThoughtLoop:
         o = self._organism
         reflection_fragments: list[str] = []
 
-        # Check self-concept coherence
+        # Only emit coherence reflections when a validated measurement exists.
         if hasattr(o, "ai_system") and hasattr(o.ai_system, "self_concept"):
             try:
                 sc = o.ai_system.self_concept
                 if hasattr(sc, "state"):
-                    coherence = round(sc.state.coherence, 2)
-                    if coherence < 0.5:
+                    state = sc.state
+                    coherence = getattr(state, "coherence", None)
+                    if (getattr(state, "coherence_status", None) == "measured"
+                            and isinstance(coherence, (int, float))):
+                        coherence = round(coherence, 2)
+                    else:
+                        coherence = None
+                    if coherence is not None and coherence < 0.5:
                         reflection_fragments.append(
                             f"Identity coherence is low ({coherence}) — internal tension noted."
                         )
@@ -3055,7 +3062,7 @@ class InternalThoughtLoop:
                                 )
                             except Exception:
                                 pass
-                    else:
+                    elif coherence is not None:
                         reflection_fragments.append(
                             f"Identity coherence stable ({coherence})."
                         )

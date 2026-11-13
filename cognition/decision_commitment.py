@@ -10,7 +10,7 @@ module closes that loop.
 Architecture:
   1. RECORD    — workspace winner → commitment entry with orientation type
   2. COMPARE   — new commitment vs recent history → detect inconsistency
-  3. PENALISE  — inconsistency → pressure.record_contradiction() + coherence hit
+  3. PENALISE  — inconsistency → pressure.record_contradiction() + contradiction record
   4. CONTROL   — IDX feeds back into goal weights (high drift → dampen novelty)
 
 This does NOT suppress LLM output — it changes the INPUTS (pressures, goal
@@ -228,12 +228,10 @@ class DecisionCommitmentLayer:
             self._fire_penalty(new_commit, dominant, score)
 
     def _fire_penalty(self, commit: Commitment, dominant: str, score: float) -> None:
-        """
-        Apply consistency penalty to the pressure system and coherence.
-        Uses existing infrastructure — no new moving parts.
-        """
+        """Record a contradiction signal without fabricating a coherence score."""
         try:
-            # 1. Boost coherence + identity pressure (existing method)
+            # Contradictions are valid evidence for the pressure system. They
+            # are not, by themselves, a measurement of self-concept coherence.
             ai_sys = getattr(self._o, 'ai_system', None)
             pressure = getattr(ai_sys, 'pressure_system', None)
             if pressure and hasattr(pressure, 'record_contradiction'):
@@ -241,19 +239,10 @@ class DecisionCommitmentLayer:
                 logger.info(
                     f"[CommitmentLayer] ⚠️  Consistency penalty: "
                     f"'{commit.orientation}' vs dominant '{dominant}' "
-                    f"(score={score:.2f}) → coherence+identity pressure boosted"
+                    f"(score={score:.2f}) → contradiction pressure recorded"
                 )
 
-            # 2. Reduce self-concept coherence slightly (using existing mark_scs)
-            organism = self._o
-            sc = None
-            if ai_sys:
-                sc = getattr(ai_sys, 'self_concept', None)
-            if sc and hasattr(sc, 'mark_scs_coherence'):
-                current = getattr(sc, 'coherence', 0.6)
-                sc.mark_scs_coherence(max(0.1, current - 0.04))
-
-            # 3. Log to contradiction handler so it's visible in the audit trail
+            # Log to contradiction handler so the evidence remains auditable.
             ch = getattr(ai_sys, 'liberty_contradiction', None)
             if ch and hasattr(ch, 'contradictions'):
                 from cognition.contradiction_handler import Contradiction
