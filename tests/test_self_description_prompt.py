@@ -10,12 +10,62 @@ from cognition.self_description import (
     is_architecture_query,
     is_cognitive_trace_query,
     is_internal_cognitive_query,
+    is_runtime_execution_evidence_query,
     sanitize_displayed_cognitive_trace,
     trace_grounded_architecture_answer,
 )
 
 
 class SelfDescriptionPromptTests(unittest.TestCase):
+    def test_runtime_execution_evidence_query_is_closed_world(self):
+        question = (
+            "For the audit, what does the current cognitive execution trace prove? "
+            "What can it not prove?"
+        )
+        self.assertTrue(is_runtime_execution_evidence_query(question))
+        self.assertTrue(is_architecture_query(question))
+        self.assertTrue(is_internal_cognitive_query(question))
+        self.assertFalse(is_cognitive_trace_query(question))
+        french_question = "Que prouve la trace d'exécution cognitive du tour courant ?"
+        self.assertTrue(is_runtime_execution_evidence_query(french_question))
+        self.assertTrue(is_architecture_query(french_question))
+        french_answer = trace_grounded_architecture_answer(french_question, {
+            "stages": {"turn_input": {"status": "received"}},
+            "context_sources": {},
+        })
+        self.assertIn("Reçu du tour courant", french_answer)
+        self.assertIn("ne prouve ni la justesse", french_answer)
+
+    def test_runtime_execution_answer_uses_current_receipts_and_states_limits(self):
+        question = "What does the current cognitive execution trace prove?"
+        answer = trace_grounded_architecture_answer(question, {
+            "stages": {
+                "turn_input": {"status": "received"},
+                "input_safety": {"status": "passed"},
+                "primary_generation": {"status": "completed"},
+            },
+            "context_sources": {
+                "module_tick_manifest": {
+                    "status": "injected", "module_count": 43,
+                    "observed_count": 41, "tick_count": 761,
+                    "error_count": 0,
+                },
+            },
+        })
+        self.assertIn("turn_input=received", answer)
+        self.assertIn("41 of 43", answer)
+        self.assertIn("761 ticks", answer)
+        self.assertIn("does not prove semantic answer accuracy", answer)
+        self.assertNotIn("identity", answer.casefold())
+
+    def test_runtime_execution_answer_discloses_missing_manifest(self):
+        answer = trace_grounded_architecture_answer(
+            "What does the current cognitive execution trace prove?",
+            {"stages": {"turn_input": {"status": "received"}}, "context_sources": {}},
+        )
+        self.assertIn("No usable module-tick manifest", answer)
+        self.assertIn("does not prove semantic answer accuracy", answer)
+
     def test_architecture_query_detection_routes_english_and_french_requests(self):
         self.assertTrue(is_architecture_query("How does your cognitive harness work?"))
         self.assertTrue(is_architecture_query("Quels modules du harnais cognitif sont actifs ?"))
@@ -60,14 +110,16 @@ class SelfDescriptionPromptTests(unittest.TestCase):
             and isinstance(node.func, ast.Name)
             and node.func.id == "trace_grounded_architecture_answer"
         ]
-        self.assertEqual(len(trace_calls), 2)
+        self.assertEqual(len(trace_calls), 3)
+        guarded_by = []
         for call in trace_calls:
             branch = parent.get(call)
             while branch is not None and not isinstance(branch, ast.If):
                 branch = parent.get(branch)
             self.assertIsNotNone(branch)
-            self.assertIsInstance(branch.test, ast.Name)
-            self.assertEqual(branch.test.id, "_cognitive_trace_query")
+            guarded_by.append(ast.unparse(branch.test))
+        self.assertEqual(sum("_cognitive_trace_query" in item for item in guarded_by), 2)
+        self.assertEqual(sum("_runtime_execution_query" in item for item in guarded_by), 1)
 
         fast_direct = next(
             node for node in ast.walk(lifecycle)

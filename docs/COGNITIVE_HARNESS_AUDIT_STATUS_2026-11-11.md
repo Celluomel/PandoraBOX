@@ -1771,3 +1771,17 @@ Un tour d’audit complexe a donné une réponse de relance car `primary_generat
 **Vérification locale :** boucle interne, Phase 2, pipeline de sélection, intention/planning et retours d’exécution — **83 tests réussis**, 9 avertissements existants. `py_compile` et `git diff --check` à exécuter avant commit.
 
 **État live :** Lumina demeure actif sur le code antérieur à ce changement; aucun redémarrage isolé. Le motif structuré sera vérifié après le prochain redémarrage groupé. L’ancienne preuve live « No eligible goals » confirme l’événement, mais pas encore le nouveau format de reçu.
+
+### Routage des questions d’audit vers les reçus d’exécution — 13 novembre 2026
+
+**Échec live reproduit :** une question demandant ce que prouve la « current cognitive execution trace » n’était classée ni comme question d’architecture ni comme question sur la trace Cognitive Trace de l’interface. Le LLM a répondu par des affirmations hors sujet sur l’identité, la curiosité et les capacités robotiques, sans rapport avec les reçus. Le même tour était `completed`, mais `semantic_answer_validation=not_performed`; son chemin était `recovered_generation`, avec `primary_generation=empty` et `final_answer_recovery=completed`. Cela prouve l’achèvement du pipeline, pas la qualité de la réponse.
+
+**Cause dans le code :** le détecteur de trace ne reconnaissait que le panneau UI « Cognitive Trace » et quelques formulations de ticks. Une « cognitive execution trace » serveur passait donc au LLM général. Le garde d’architecture préservait alors la réponse libre et marquait justement l’absence de validation indépendante, sans empêcher l’affirmation non fondée.
+
+**Correction locale :** les demandes explicites sur ce que prouvent les reçus d’exécution sont maintenant reconnues comme questions internes. Avant l’inférence, Lumina construit une réponse déterministe depuis les statuts du tour courant et son manifeste de ticks, avec les limites explicites : exécution observée ne signifie ni exactitude sémantique ni effet aval correct. La nouvelle voie marque un contrôle borné comme réussi; elle n’intercepte pas les questions générales sur l’architecture ni le snapshot UI séparé.
+
+**Vérification locale :** `tests/test_self_description_prompt.py` — **21 tests réussis**, 7 avertissements Pydantic existants. Le test vérifie le routage, l’usage des étapes/compteurs du reçu, le comportement lorsque le manifeste manque et l’absence de substitution avec une affirmation d’identité. Vérification live de cette nouvelle voie en attente du redémarrage groupé requis.
+
+**Preuve runtime avant redémarrage :** l’instance répondait (`ready=true`, boucle interne vivante), cycle lent 10832; 41/43 modules enregistrés avec tick, 761 ticks et 0 erreur instrumentée. Ce sont des compteurs d’instrumentation, pas un score cognitif. Trois requêtes identiques ont été soumises pendant que je corrigeais le décodage NDJSON de l’API; la première réponse a donc été générée plusieurs fois. Cette répétition est une pollution évitable du journal d’audit et ne sera pas utilisée comme trois scénarios distincts.
+
+**Changements locaux non encore chargés dans le processus :** les deux corrections Phase 2 (`6ef3581`) et GoalActionExecutor (`8dc9f0c`) ainsi que le nouveau routage d’audit attendent une validation live après le redémarrage groupé. L’instance examinée ici tournait encore sur un code antérieur à ces changements. Les derniers changements de routage n’ont pas encore été commités/poussés.

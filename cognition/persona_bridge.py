@@ -1892,9 +1892,11 @@ Write at most 70 words, in the user's language, only if a concise carry-forward 
         try:
             from cognition.self_description import (
                 is_architecture_query, is_cognitive_trace_query,
+                is_runtime_execution_evidence_query,
                 is_internal_cognitive_query,
             )
             _cognitive_trace_query = is_cognitive_trace_query(effective_input)
+            _runtime_execution_query = is_runtime_execution_evidence_query(effective_input)
             _architecture_query = (
                 (is_architecture_query(effective_input) or _cognitive_trace_query)
                 and not _explicit_memory_recall
@@ -1906,6 +1908,7 @@ Write at most 70 words, in the user's language, only if a concise carry-forward 
         except Exception as _architecture_query_error:
             _architecture_query = False
             _cognitive_trace_query = False
+            _runtime_execution_query = False
             _internal_cognitive_query = False
             logger.debug("Architecture query detection unavailable: %s", _architecture_query_error)
         _dialogue_continuity = self._recent_dialogue_continuity(
@@ -2385,12 +2388,24 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             )
             else ""
         )
+        if _runtime_execution_query and not _explicit_memory_recall:
+            from cognition.self_description import trace_grounded_architecture_answer
+            _deterministic_response = trace_grounded_architecture_answer(
+                effective_input, self.get_last_turn_trace(),
+            )
+            self._record_turn_stage(
+                "architecture_claim_validation", "passed",
+                "Answer rendered from the current turn receipt and module manifest; no LLM claim inference used.",
+                output={"source": "current_turn_execution_receipt"},
+                consumes=("turn_input", "self_description_context"),
+                turn_id=_audit_turn_id,
+            )
         self._record_turn_stage(
             "deterministic_reasoning",
             "selected" if _deterministic_response else "not_selected",
             turn_id=_audit_turn_id,
         )
-        if _factual_self_report:
+        if _factual_self_report and not _runtime_execution_query:
             try:
                 _loop = getattr(self._organism, "_loop", None) if self._organism else None
                 _planner = getattr(_loop, "_long_horizon_planner", None)

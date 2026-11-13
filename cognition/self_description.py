@@ -35,6 +35,8 @@ def is_architecture_query(user_input: str) -> bool:
     live module-tick manifest to be added to the model's evidence context.
     """
     text = " ".join(str(user_input or "").casefold().split())
+    if is_runtime_execution_evidence_query(text):
+        return True
     if re.search(r"\b(?:architecture|harness|harnais)\b", text):
         return True
     # A natural-language follow-up can refer to a prior audit result without
@@ -54,6 +56,30 @@ def is_architecture_query(user_input: str) -> bool:
             text,
         )
     )
+
+
+def is_runtime_execution_evidence_query(user_input: str) -> bool:
+    """Identify questions asking what current runtime receipts establish.
+
+    Keep this separate from displayed UI Cognitive Trace questions: runtime
+    evidence comes from the current server-side turn receipt and module
+    manifest, while the UI trace is a different, client-supplied snapshot.
+    """
+    text = " ".join(str(user_input or "").casefold().split())
+    refers_to_receipt = bool(re.search(
+        r"\b(?:cognitive\s+(?:execution|exécution)\s+trace|"
+        r"trace\s+(?:(?:of\s+)|(?:d['’]))?(?:cognitive\s+)?(?:execution|exécution)|"
+        r"runtime\s+(?:execution\s+)?trace|module\s+(?:execution\s+)?trace|"
+        r"execution\s+receipt|reçu\s+d['’]exécution|module\s+tick\s+manifest)\b",
+        text,
+    ))
+    asks_about_evidence = bool(re.search(
+        r"\b(?:what\s+(?:does|can|do)\s+.{0,50}?(?:prove|show|record|establish)|"
+        r"que\s+(?:prouve|montre|confirme)\w*|quelles?\s+preuves?|"
+        r"(?:prove|show|record|establish|evidence|audit|analy[sz]e?)\w*)\b",
+        text,
+    ))
+    return refers_to_receipt and asks_about_evidence
 
 
 def is_internal_cognitive_query(user_input: str) -> bool:
@@ -213,6 +239,48 @@ def trace_grounded_architecture_answer(
     context_sources = trace.get("context_sources", {}) if isinstance(trace, dict) else {}
     normalized = " ".join(str(user_input or "").casefold().split())
     manifest = context_sources.get("module_tick_manifest", {}) if isinstance(context_sources, dict) else {}
+    if is_runtime_execution_evidence_query(user_input):
+        selected_stages = (
+            "turn_input", "input_safety", "self_description_context",
+            "memory_retrieval", "cognitive_prompt_context", "prompt_assembly",
+            "primary_generation", "provider_completion", "response_finalization",
+            "response_learning_and_memory", "organism_post_interaction",
+        )
+        observed_stages = []
+        if isinstance(stages, dict):
+            for name in selected_stages:
+                value = stages.get(name)
+                status = value.get("status") if isinstance(value, dict) else None
+                if status:
+                    observed_stages.append(f"{name}={status}")
+        french = bool(re.search(
+            r"\b(?:quels?|quelle|que|prouve|prouver|montre|montrer|enregistr|exécution|ce tour|le manifeste)\b",
+            normalized,
+        ))
+        manifest_text = ""
+        if isinstance(manifest, dict) and manifest.get("status") == "injected":
+            manifest_text = (
+                f" Module manifest: {int(manifest.get('observed_count', 0) or 0)} of "
+                f"{int(manifest.get('module_count', 0) or 0)} registered modules had observed ticks, "
+                f"{int(manifest.get('tick_count', 0) or 0)} ticks, "
+                f"{int(manifest.get('error_count', 0) or 0)} instrumented errors."
+            )
+        else:
+            manifest_text = " No usable module-tick manifest was recorded for this turn."
+        stage_text = ", ".join(observed_stages) if observed_stages else "no selected stage receipt"
+        if french:
+            return (
+                f"Reçu du tour courant : étapes explicitement enregistrées — {stage_text}.{manifest_text} "
+                "Cela prouve seulement que l’instrumentation a observé ces passages. Cela ne prouve ni la justesse "
+                "sémantique de la réponse, ni la qualité cognitive des modules, ni un effet aval correct. "
+                "Un module initialisé sans tick observé n’est pas la preuve qu’aucun de son code n’a tourné."
+            )
+        return (
+            f"Current-turn receipt: explicitly recorded stages — {stage_text}.{manifest_text} "
+            "This proves only that instrumentation observed those paths. It does not prove semantic answer accuracy, "
+            "cognitive quality, or a correct downstream effect. A module initialized without an observed tick is not "
+            "proof that none of its code ran."
+        )
     if is_cognitive_trace_query(user_input):
         snapshot = displayed_cognitive_trace if isinstance(displayed_cognitive_trace, dict) else None
         plan = snapshot.get("dominant_plan") if snapshot else None
