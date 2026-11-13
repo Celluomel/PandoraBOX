@@ -48,7 +48,10 @@ try:
 except ImportError:
     ollama = None
 
-from cognition.ai_identity import IdentitySystem, AIIdentity, IdentityComponent, CoreValues, SelfNarrative
+from cognition.ai_identity import (
+    IdentitySystem, AIIdentity, IdentityComponent, CoreValues, SelfNarrative,
+    measured_identity_coherence_below,
+)
 from cognition.goal_engine import GoalEngine, Goal, Motivation
 from cognition.personality_evolution import PersonalityEvolutionEngine
 from cognition.emotional_state import EmotionalStateManager
@@ -1747,10 +1750,7 @@ Respond ONLY with valid JSON:
     def _needs_identity_dev(self):
         try:
             i = self.ai_system.identity_system.get_identity()
-            coherence_needs_work = (
-                i.identity_coherence is not None and i.identity_coherence < 0.6
-            )
-            return coherence_needs_work
+            return measured_identity_coherence_below(i, 0.6)
         except: return False
     def _emotional_intensity(self, ms):
         if not ms: return 0.0

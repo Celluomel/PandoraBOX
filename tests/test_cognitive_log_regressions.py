@@ -35,7 +35,10 @@ from cognition.self_concept_synchronizer import SelfConceptSynchronizer
 from cognition.self_concept import SelfConceptSystem
 from cognition.cognitive_attention_engine import CognitiveAttentionEngine
 from cognition.decision_commitment import Commitment, DecisionCommitmentLayer
-from cognition.ai_identity import AIIdentity, CoreValues, IdentityAnalyzer, IdentityComponent
+from cognition.ai_identity import (
+    AIIdentity, CoreValues, IdentityAnalyzer, IdentityComponent, IdentitySystem,
+    measured_identity_coherence_below,
+)
 from cognition.self_description import SelfDescription
 from cognition.simple_thought_evaluator import SimpleThoughtEvaluator
 from cognition.turn_context_evidence import (
@@ -515,6 +518,31 @@ class CognitiveLogRegressionTests(unittest.TestCase):
         analyzer = IdentityAnalyzer.__new__(IdentityAnalyzer)
         value = CoreValues(value_name="honesty", importance=0.8)
         self.assertIsNone(analyzer._calc_coherence([], [value]))
+
+    def test_estimated_identity_coherence_proxy_does_not_create_conflict_or_development_action(self):
+        proxy_identity = AIIdentity(
+            identity_coherence=0.38,
+            identity_coherence_status="estimated_proxy",
+        )
+        system = IdentitySystem.__new__(IdentitySystem)
+        system.get_identity = lambda: proxy_identity
+
+        self.assertEqual(system.analyze_identity_conflicts(), [])
+        self.assertFalse(any("coherent identity" in item for item in system.suggest_identity_development()))
+
+        self.assertFalse(measured_identity_coherence_below(proxy_identity, 0.6))
+
+    def test_measured_low_identity_coherence_remains_actionable(self):
+        measured_identity = AIIdentity(
+            identity_coherence=0.38,
+            identity_coherence_status="measured",
+        )
+        system = IdentitySystem.__new__(IdentitySystem)
+        system.get_identity = lambda: measured_identity
+
+        self.assertEqual(system.analyze_identity_conflicts()[0]["type"], "low_coherence")
+        self.assertTrue(any("coherent identity" in item for item in system.suggest_identity_development()))
+        self.assertTrue(measured_identity_coherence_below(measured_identity, 0.6))
 
     def test_self_awareness_requires_reflection_records_and_is_labeled_proxy(self):
         analyzer = IdentityAnalyzer.__new__(IdentityAnalyzer)

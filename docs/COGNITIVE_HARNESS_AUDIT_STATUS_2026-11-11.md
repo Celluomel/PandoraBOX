@@ -1673,3 +1673,13 @@ Un tour d’audit complexe a donné une réponse de relance car `primary_generat
 **Vérification locale :** panne simulée du remplacement, conservation octet par octet de l'ancien JSON, nettoyage du temporaire et résultat de non-persistance; suites profil explicite, présence, WorldModel, trace de tour et régressions cognitives — **96 tests réussis, 4 sous-tests**, 9 avertissements connus.
 
 **État live :** ce correctif est local et sera vérifié après le prochain redémarrage groupé avec les correctifs d'identité. Aucun tour utilisateur n'a été créé pour produire artificiellement une preuve de profil.
+
+### Proxy de cohérence utilisé comme cause cognitive — 13 novembre 2026
+
+**Fuite aval identifiée :** malgré son statut `estimated_proxy`, le score de cohérence AIIdentity servait encore à deux décisions : `IdentitySystem.analyze_identity_conflicts()` créait un conflit « low_coherence » sous 0,4 et `suggest_identity_development()` recommandait de résoudre des contradictions sous 0,6; `LifeEventDreamSystem._needs_identity_dev()` déclenchait une consolidation sous 0,6. Le score live 0,383 observé suffisait donc à influencer les objectifs de développement et les rêves comme s'il s'agissait d'une mesure.
+
+**Correction :** ajout d'un prédicat central qui ne considère le score actionnable que si son statut est `measured`; les trois consommateurs passent par cette règle. Les conflits soutenus par des exemples restent évalués séparément. Le proxy reste affichable et étiqueté, mais ne pilote pas le harnais.
+
+**Vérification :** cas proxy (aucun conflit ni suggestion cohérence et aucun rêve de consolidation), cas mesuré (les décisions restent actives) et régressions identité — **56 tests réussis, 4 sous-tests**, 9 avertissements connus; compilation et diff-check à consigner avant commit.
+
+**État live :** Lumina n'a pas encore chargé ce lot; le redémarrage audit sera regroupé avec les correctifs postérieurs à `dd54eac`. Après le chargement, vérifier que le proxy exposé reste visible mais que `identity_conflicts` ne renvoie plus `low_coherence` et que `_needs_identity_dev()` reste faux sans une mesure réelle.

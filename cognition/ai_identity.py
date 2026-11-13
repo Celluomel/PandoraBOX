@@ -78,6 +78,17 @@ class AIIdentity:
     version: int = 1
 
 
+def measured_identity_coherence_below(identity: AIIdentity, threshold: float) -> bool:
+    """Return true only when a measured coherence value crosses a threshold."""
+    value = getattr(identity, "identity_coherence", None)
+    return (
+        getattr(identity, "identity_coherence_status", "unmeasured") == "measured"
+        and isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and value < threshold
+    )
+
+
 # ── Incremental Analyzer ───────────────────────────────────────────────────
 
 class IdentityAnalyzer:
@@ -822,7 +833,7 @@ class IdentitySystem:
                     "severity": 1.0 - t.stability_score,
                     "examples": [],
                 })
-        if identity.identity_coherence is not None and identity.identity_coherence < 0.4:
+        if measured_identity_coherence_below(identity, 0.4):
             conflicts.append({
                 "type": "low_coherence",
                 "element": "overall_identity",
@@ -841,7 +852,7 @@ class IdentitySystem:
             sugg.append("Explore diverse interactions to develop more distinct personality traits.")
         if len(identity.values_system) < 2:
             sugg.append("Engage with value-based decisions to clarify core values.")
-        if identity.identity_coherence is not None and identity.identity_coherence < 0.6:
+        if measured_identity_coherence_below(identity, 0.6):
             sugg.append("Work on resolving internal contradictions for a more coherent identity.")
         if identity.growth_trajectory == "stabilizing":
             sugg.append("Consider expanding into new areas to maintain growth.")
