@@ -11,6 +11,7 @@ from cognition.empathy_engine import (
     SIGNAL_EXPLORING,
     UserAffectModel,
 )
+from cognition.turn_context_evidence import audit_safe_turn_summary
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -113,3 +114,45 @@ def test_post_turn_reducer_handles_effect_receipts_before_generic_completed_bran
     assert '"skipped_no_independent_outcome_evidence"' in body
     assert "invalid or unreported effect receipt" in body
     assert body.index("elif stage_name in {\"empathy_outcome\", \"abstract_reasoning_outcome\"}") < body.rindex("else:\n                    self._record_turn_stage(")
+
+
+def test_abstract_reasoning_is_run_before_prompt_build_and_peer_scoped_out():
+    source = ROOT / "cognition" / "persona_bridge.py"
+    tree = ast.parse(source.read_text(encoding="utf-8"))
+    bridge = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "PersonaBridge")
+    method = next(
+        node for node in bridge.body
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_stream_with_full_lifecycle"
+    )
+    calls = [node for node in ast.walk(method) if isinstance(node, ast.Call)]
+    are_call = next(
+        node for node in calls
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "to_thread"
+        and any(isinstance(arg, ast.Attribute) and arg.attr == "reason" for arg in node.args)
+    )
+    prompt_call = next(
+        node for node in calls
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "to_thread"
+        and any(isinstance(arg, ast.Attribute) and arg.attr == "_build_prompt_and_cache" for arg in node.args)
+    )
+    assert are_call.lineno < prompt_call.lineno
+    assert "if peer_name" in ast.get_source_segment(source.read_text(encoding="utf-8"), method)
+
+
+def test_effect_receipt_summary_preserves_only_bounded_non_text_evidence():
+    summary = audit_safe_turn_summary({
+        "type": "cognitive_effect_receipt",
+        "status": "updated",
+        "relational_interaction_increment": 1,
+        "attractor_traits_changed": 2,
+        "persistence": "attempted_unverified",
+        "private_text": "must not appear",
+    })
+    assert summary == {
+        "type": "cognitive_effect_receipt",
+        "quality": "present",
+        "status": "updated",
+        "relational_interaction_increment": 1,
+        "attractor_traits_changed": 2,
+        "persistence": "attempted_unverified",
+    }

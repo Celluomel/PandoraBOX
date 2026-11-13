@@ -198,6 +198,28 @@ def audit_safe_turn_summary(value: Any) -> dict[str, Any] | None:
     if not isinstance(value, Mapping):
         return None
 
+    if value.get("type") == "cognitive_effect_receipt":
+        receipt: dict[str, Any] = {"type": "cognitive_effect_receipt", "quality": "present"}
+        status = str(value.get("status") or "")[:48]
+        if status:
+            receipt["status"] = status
+        for key in (
+            "relational_interaction_increment", "attractor_traits_changed",
+            "beliefs_updated",
+        ):
+            number = value.get(key)
+            if isinstance(number, int) and not isinstance(number, bool):
+                receipt[key] = max(0, min(1_000_000, number))
+        if isinstance(value.get("causal_pair_available"), bool):
+            receipt["causal_pair_available"] = value["causal_pair_available"]
+        persistence = value.get("persistence")
+        if persistence in {
+            "not_attempted", "attempted_unverified",
+            "operation_returned_effect_unverified",
+        }:
+            receipt["persistence"] = persistence
+        return receipt
+
     if value.get("type") == "response_learning_receipt":
         return response_learning_evidence(value)
 

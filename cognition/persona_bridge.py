@@ -1897,6 +1897,42 @@ Write at most 70 words, in the user's language, only if a concise carry-forward 
         _goal_means_followup = False
         _temporal_analysis = None
         _temporal_frame = None
+        _are_turn_status = "unavailable"
+        try:
+            from core.state import state as _state_are
+            if peer_name:
+                _are_turn_status = "skipped_by_scope"
+                self._record_turn_stage(
+                    "abstract_reasoning", "skipped_by_scope", turn_id=_audit_turn_id,
+                )
+            elif _state_are.are:
+                _are_result = await asyncio.to_thread(
+                    _state_are.are.reason, user_id, effective_input,
+                )
+                _are_turn_status = "completed" if _are_result is not None else "not_applicable"
+                _are_pair = getattr(_are_result, "causal_pair", ("", "")) if _are_result else ("", "")
+                self._record_turn_stage(
+                    "abstract_reasoning", _are_turn_status,
+                    output={
+                        "result_available": _are_result is not None,
+                        "method": getattr(_are_result, "method", None),
+                        "abstract_score": getattr(_are_result, "abstract_score", None),
+                        "causal_pair_available": bool(_are_pair and _are_pair[0] and _are_pair[1]),
+                    },
+                    consumes=("turn_input",), turn_id=_audit_turn_id,
+                )
+            else:
+                _are_turn_status = "skipped_unavailable"
+                self._record_turn_stage(
+                    "abstract_reasoning", _are_turn_status, turn_id=_audit_turn_id,
+                )
+        except Exception as _are_error:
+            _are_turn_status = "failed"
+            self._record_turn_stage(
+                "abstract_reasoning", "failed",
+                error_type=type(_are_error).__name__, turn_id=_audit_turn_id,
+            )
+            logger.debug("Abstract reasoning pre-response stage failed: %s", type(_are_error).__name__)
         try:
             from cognition.temporal_reasoning import build_temporal_frame
             _temporal_frame = build_temporal_frame(effective_input)
@@ -3137,12 +3173,17 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     "abstract_reasoning_outcome", "skipped_generation_failed",
                     turn_id=_audit_turn_id,
                 )
-            elif _state.are and raw_response:
+            elif _state.are and raw_response and _are_turn_status == "completed":
                 post_tasks.append(("abstract_reasoning_outcome", loop.run_in_executor(
                     None,
                     _state.are.record_outcome,
                     user_id, raw_response,
                 )))
+            elif _are_turn_status == "not_applicable":
+                self._record_turn_stage(
+                    "abstract_reasoning_outcome", "skipped_not_applicable",
+                    turn_id=_audit_turn_id,
+                )
             else:
                 self._record_turn_stage("abstract_reasoning_outcome", "skipped_unavailable_or_empty", turn_id=_audit_turn_id)
         except Exception as _reasoning_error:
@@ -3256,16 +3297,19 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     outcome_status = str(result.get("status") or "") if isinstance(result, dict) else ""
                     if outcome_status == "updated":
                         self._record_turn_stage(
-                            stage_name, "completed", output=result,
+                            stage_name, "completed",
+                            output={"type": "cognitive_effect_receipt", **result},
                             consumes=("output_safety",), turn_id=_audit_turn_id,
                         )
                     elif outcome_status in {
                         "no_effect", "skipped_no_prior_affect_read",
                         "skipped_no_current_result", "skipped_no_causal_pair",
                         "skipped_no_independent_outcome_evidence",
+                        "skipped_not_applicable",
                     }:
                         self._record_turn_stage(
-                            stage_name, outcome_status, output=result,
+                            stage_name, outcome_status,
+                            output={"type": "cognitive_effect_receipt", **result},
                             consumes=("output_safety",), turn_id=_audit_turn_id,
                         )
                     else:
@@ -3275,7 +3319,10 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         self._record_turn_stage(
                             stage_name, "failed",
                             "invalid or unreported effect receipt",
-                            output=result, consumes=("output_safety",),
+                            output=(
+                                {"type": "cognitive_effect_receipt", **result}
+                                if isinstance(result, dict) else result
+                            ), consumes=("output_safety",),
                             turn_id=_audit_turn_id,
                         )
                 elif stage_name == "cognitive_post_turn" and result is False:
