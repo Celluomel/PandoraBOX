@@ -1953,3 +1953,11 @@ Après redémarrage géré en mode audit, un tour généré (`lumina-17945981270
 ### Reçu live d’ArbitrationLearning après `0e9f7c9` — 13 novembre 2026
 
 Après le redémarrage sur `0e9f7c9`, le cycle lent `10922` porte `arbitration_learning: skipped_cadence`, métriques `{cycle: 10922, interval_cycles: 8}`. Le compteur est `tick_count=0`, `skip_count=1`, état `skipped_by_policy`; aucune erreur et aucun faux tick. Le processus à 135 s d’uptime avait 32/43 modules exécutés, 55 ticks, 13 skips, zéro erreur; 32 états `healthy`, 10 `skipped_by_policy`, 1 `not_initialized_conditional`. La revue réelle reste due à une cadence de 8 cycles; le reçu de skip valide seulement le cas hors cadence.
+
+### Arbitrage appris — état du tracker partagé — 13 novembre 2026
+
+**Défaut de flux découvert :** `InternalThoughtLoop` construisait son propre `ArbitrationLearningTracker`, tandis que `executive_arbitration._get_base_weights()` lit le singleton obtenu par `get_learned_weights()`. Les décisions initialisaient donc un singleton en mémoire; les revues périodiques mettaient à jour et persistaient le delta de l’autre instance. Le singleton consommé par les décisions pouvait garder des poids obsolètes jusqu’au redémarrage, même si le fichier avait été mis à jour. Le code prétendait ainsi apprendre en ligne sans garantir que l’effet revienne à la décision suivante.
+
+**Correction :** `InternalThoughtLoop` récupère maintenant `get_tracker()` et utilise la même instance que le lecteur des poids. Une revue met donc à jour la valeur consultée par l’arbitrage dans le processus courant; aucune écriture de fichier supplémentaire à chaque décision n’est introduite.
+
+**Vérification locale :** nouveau test du flux complet : une décision enregistrée, suivie d’une action observée sur le but après le délai de revue, augmente le delta `predicted` et le poids renvoyé par `get_learned_weights()` sur la même instance. Avec `tests/test_internal_loop_cycle_evidence.py` : **27 tests passés**, 9 avertissements de dépendances existants. Cette version est en attente du chargement groupé au prochain redémarrage d’audit; la preuve live devra confirmer une revue réellement due et un delta consommé. Le processus actif a démontré les reçus de skip, pas encore l’application live de ce correctif.

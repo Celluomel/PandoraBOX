@@ -448,10 +448,14 @@ class InternalThoughtLoop:
         try:
             from cognition.self_concept_synchronizer import SelfConceptSynchronizer
             from cognition.persistent_executive_loop  import PersistentExecutiveLoop
-            from cognition.arbitration_learning       import ArbitrationLearningTracker
+            from cognition.arbitration_learning       import get_tracker
             self._self_concept_sync   = SelfConceptSynchronizer()
             self._persistent_exec_loop = PersistentExecutiveLoop()
-            self._arbitration_learning = ArbitrationLearningTracker()
+            # Share the exact tracker used by executive_arbitration's
+            # get_learned_weights(). A separate instance would persist review
+            # deltas to disk while the arbitration singleton kept stale weights
+            # in memory until the next process restart.
+            self._arbitration_learning = get_tracker()
             logger.info("[InternalLoop] V35 Phase 5 components ready ✅")
         except Exception as _e:
             self._self_concept_sync   = None
