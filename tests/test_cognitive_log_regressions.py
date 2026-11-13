@@ -35,7 +35,7 @@ from cognition.self_concept_synchronizer import SelfConceptSynchronizer
 from cognition.self_concept import SelfConceptSystem
 from cognition.cognitive_attention_engine import CognitiveAttentionEngine
 from cognition.decision_commitment import Commitment, DecisionCommitmentLayer
-from cognition.ai_identity import AIIdentity, IdentityAnalyzer, IdentityComponent
+from cognition.ai_identity import AIIdentity, CoreValues, IdentityAnalyzer, IdentityComponent
 from cognition.self_description import SelfDescription
 from cognition.simple_thought_evaluator import SimpleThoughtEvaluator
 from cognition.turn_context_evidence import (
@@ -502,6 +502,19 @@ class CognitiveLogRegressionTests(unittest.TestCase):
             identity_coherence_status="estimated_proxy",
         )
         self.assertEqual(identity.identity_coherence_status, "estimated_proxy")
+
+    def test_identity_proxy_uses_available_values_without_missing_trait_penalty(self):
+        analyzer = IdentityAnalyzer.__new__(IdentityAnalyzer)
+        value = CoreValues(
+            value_name="honesty", importance=0.8,
+            examples=["evidence-backed example"], contradictions=[],
+        )
+        self.assertEqual(analyzer._calc_coherence([], [value]), 1.0)
+
+    def test_identity_proxy_is_unmeasured_when_value_has_no_examples(self):
+        analyzer = IdentityAnalyzer.__new__(IdentityAnalyzer)
+        value = CoreValues(value_name="honesty", importance=0.8)
+        self.assertIsNone(analyzer._calc_coherence([], [value]))
 
     def test_self_concept_persists_legacy_metric_migration_on_load(self):
         with tempfile.TemporaryDirectory() as directory:

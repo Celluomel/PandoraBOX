@@ -579,15 +579,21 @@ class IdentityAnalyzer:
     def _calc_coherence(
         self, traits: List[IdentityComponent], values: List[CoreValues]
     ) -> Optional[float]:
-        if not traits and not values:
+        evidence_scores: List[float] = []
+        if traits:
+            evidence_scores.append(
+                sum(t.stability_score * t.confidence for t in traits) / len(traits)
+            )
+        if values:
+            total_examples = sum(len(value.examples) for value in values)
+            total_contradictions = sum(len(value.contradictions) for value in values)
+            if total_examples > 0:
+                evidence_scores.append(
+                    max(0.0, 1.0 - total_contradictions / total_examples)
+                )
+        if not evidence_scores:
             return None
-        trait_coh = sum(t.stability_score * t.confidence for t in traits) / max(len(traits), 1)
-        if not values:
-            return trait_coh
-        total_ex  = sum(len(v.examples) for v in values)
-        total_con = sum(len(v.contradictions) for v in values)
-        val_coh   = 1.0 - (total_con / total_ex) if total_ex > 0 else 0.5
-        return (trait_coh + val_coh) / 2
+        return sum(evidence_scores) / len(evidence_scores)
 
     def _determine_growth(self, memories: List[Dict]) -> str:
         recent = sorted(memories, key=lambda x: x["timestamp"], reverse=True)[:50]
