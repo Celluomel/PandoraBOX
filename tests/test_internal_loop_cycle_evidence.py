@@ -173,6 +173,27 @@ def test_phase2_cadence_receipt_maps_to_orchestrator_without_fake_tick():
     assert module["state"] == "skipped_by_policy"
 
 
+def test_arbitration_learning_maintenance_skip_is_recorded_without_fake_tick():
+    loop = make_loop()
+    loop._arbitration_learning = object()
+    loop._module_tick_log = ModuleTickLog()
+    loop._module_tick_log.register("arbitration_learning", initialized=True)
+    loop._slow_cycle_count = 10919
+    loop._begin_cycle_evidence(10919)
+
+    assert not loop._periodic_module_due(
+        "_arbitration_learning", "arbitration_learning", 8, "ARB_LEARN",
+    )
+    module = loop.module_tick_snapshot()["arbitration_learning"]
+    stage = loop.cycle_evidence_snapshot()["cycles"][0]["stages"][0]
+    assert module["tick_count"] == 0
+    assert module["skip_count"] == 1
+    assert module["state"] == "skipped_by_policy"
+    assert stage["stage"] == "arbitration_learning"
+    assert stage["status"] == "skipped_cadence"
+    assert stage["metrics"] == {"cycle": 10919, "interval_cycles": 8}
+
+
 def test_consolidation_and_self_concept_skips_are_attributed_without_fake_ticks():
     loop = make_loop()
     loop._module_tick_log = ModuleTickLog()

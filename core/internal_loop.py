@@ -3331,9 +3331,9 @@ class InternalThoughtLoop:
         # ── Phase 5.4: Arbitration Learning review ──────────────────────────
         # Every 8 slow cycles (~16 min) — cheap dict scan, no reason to wait
         # as long as GQF's 20-cycle semantic-drift cadence.
-        if (self._arbitration_learning
-                and self._slow_cycle_count % 8 == 0
-                and (not self._governor or self._governor.may_run('ARB_LEARN'))):
+        if self._periodic_module_due(
+            "_arbitration_learning", "arbitration_learning", 8, "ARB_LEARN",
+        ):
             try:
                 _ge = getattr(getattr(self._organism, 'ai_system', None), 'goal_engine', None)
                 report = self._arbitration_learning.review(_ge, self._slow_cycle_count)
