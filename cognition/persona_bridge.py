@@ -2108,15 +2108,6 @@ Write at most 70 words, in the user's language, only if a concise carry-forward 
             _audit_turn_id,
             _are_turn_status == "completed",
         )
-        self._record_turn_stage(
-            "prompt_assembly", "completed", f"{len(system_prompt)} chars",
-            output=system_prompt,
-            consumes=(
-                "turn_input", "memory_prompt_context", "user_profile_context",
-                "cognitive_prompt_context",
-            ),
-            turn_id=_audit_turn_id,
-        )
         if peer_name:
             system_prompt += (
                 f"\n\nINTERLOCUTOR: You are speaking in a private cognitive dialogue with "
@@ -2437,6 +2428,20 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         _deterministic_response = _goal_report
             except Exception as _report_error:
                 logger.debug("Factual goal report fallback unavailable: %s", _report_error)
+
+        # Capture prompt assembly only after every context and route-specific
+        # contract has been applied. Recording it immediately after the base
+        # builder produced a partial fingerprint that omitted later additions
+        # (epistemic, relational, temporal, location, and voice contracts).
+        self._record_turn_stage(
+            "prompt_assembly", "completed", f"{len(system_prompt)} chars",
+            output=system_prompt,
+            consumes=(
+                "turn_input", "memory_prompt_context", "user_profile_context",
+                "cognitive_prompt_context",
+            ),
+            turn_id=_audit_turn_id,
+        )
 
         # This is the exact prompt pair available to the selected inference
         # route after all context, contracts and routing-specific additions.

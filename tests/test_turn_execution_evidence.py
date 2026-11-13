@@ -454,6 +454,18 @@ def test_prompt_assembly_declares_cognitive_context_as_an_input():
         element.value for element in consumes.elts
         if isinstance(element, ast.Constant)
     }
+    system_prompt_mutations = [
+        node.lineno for node in ast.walk(stream)
+        if isinstance(node, (ast.Assign, ast.AugAssign))
+        and (
+            any(isinstance(target, ast.Name) and target.id == "system_prompt"
+                for target in node.targets)
+            if isinstance(node, ast.Assign)
+            else isinstance(node.target, ast.Name) and node.target.id == "system_prompt"
+        )
+    ]
+    assert system_prompt_mutations
+    assert prompt_calls[0].lineno > max(system_prompt_mutations)
     for stage_name in ("generation_request", "primary_generation_input"):
         stage_call = next(
             node for node in ast.walk(stream)
