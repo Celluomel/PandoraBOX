@@ -4,10 +4,10 @@ WorldModel — Extended World Representation
 Extensions over the minimal version:
   1. Topic extraction : TF-IDF over real interaction history + bigrams
   2. Expertise scoring: evolving score with decay and confirmation
-  3. Auto-learned causal beliefs from temporal co-occurrence
+  3. Topic co-occurrence graph (not treated as causal evidence)
   4. Temporal patterns: active hours, rhythm, silence gaps
   5. Relational dynamics: engagement trajectory
-  6. predict_from_context: lexical similarity scoring
+  6. predict_from_context: only intervention-recorded causal links
   7. Enriched prompt_fragment
 
 Persists to: data/world_model.json
@@ -25,7 +25,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from threading import Lock
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -184,6 +184,14 @@ class CausalBelief:
     count:        int   = 1
     last_seen:    float = field(default_factory=time.time)
     auto_learned: bool  = False
+    evidence_status: str = "unverified"
+    evidence_method: str = ""
+    evidence_source: str = ""
+    evidence_ref: str = ""
+    evidence_intervention: str = ""
+    evidence_comparison: str = ""
+    evidence_outcome: str = ""
+    evidence_comparison_outcome: str = ""
 
     def strengthen(self, amount: float = 0.06) -> None:
         self.confidence = min(0.95, self.confidence + amount * (1.0 - self.confidence))
@@ -192,6 +200,23 @@ class CausalBelief:
 
     def weaken(self, amount: float = 0.04) -> None:
         self.confidence = max(0.05, self.confidence - amount)
+
+
+def causal_belief_has_intervention_evidence(belief: Any) -> bool:
+    """True only when a causal record carries a reported intervention comparison."""
+    def value(name: str, default: str = "") -> str:
+        raw = belief.get(name, default) if isinstance(belief, dict) else getattr(belief, name, default)
+        return str(raw).strip()
+
+    required = (
+        "evidence_source", "evidence_ref", "evidence_intervention",
+        "evidence_comparison", "evidence_outcome", "evidence_comparison_outcome",
+    )
+    return (
+        value("evidence_status") == "intervention_reported"
+        and value("evidence_method") == "controlled_intervention"
+        and all(value(name) for name in required)
+    )
 
 
 @dataclass
@@ -284,7 +309,6 @@ class WorldModel:
     MAX_CAUSAL_BELIEFS = 200
     TOPIC_MAX_PER_USER = 80
     TFIDF_UPDATE_EVERY = 5
-    CAUSAL_MIN_COUNT   = 3
 
     _DOMAIN_VOCAB: Dict[str, List[str]] = {
         "programming":    ["function","class","method","variable","loop","array","algorithm",
@@ -324,7 +348,9 @@ class WorldModel:
         self._load()
         logger.info(
             f"[WorldModel] loaded: {len(self.user_profiles)} users, "
-            f"{len(self.causal_beliefs)} causal beliefs"
+            f"{len(self.causal_beliefs)} causal records "
+            f"({sum(1 for b in self.causal_beliefs if causal_belief_has_intervention_evidence(b))} "
+            "with reported intervention records)"
         )
 
     # ── Public API ────────────────────────────────────────────────────────────
@@ -365,7 +391,8 @@ class WorldModel:
 
             profile._recent_topic_windows.append(user_topics)
             profile._recent_topic_windows = profile._recent_topic_windows[-10:]
-            self._auto_learn_causal(profile)
+            # Topic adjacency is already retained in topic_graph above. It is
+            # association evidence only; it must never manufacture causality.
 
             if len(self.user_profiles) > self.MAX_USERS:
                 oldest = min(self.user_profiles.items(), key=lambda kv: kv[1].last_seen)
@@ -450,6 +477,8 @@ class WorldModel:
             return []
         matches = []
         for belief in self.causal_beliefs:
+            if not causal_belief_has_intervention_evidence(belief):
+                continue
             ant_tokens = set(self._tokenize(belief.antecedent))
             if not ant_tokens:
                 continue
@@ -463,15 +492,85 @@ class WorldModel:
             return []
         return [t for t, _ in self.topic_graph[topic].most_common(n)]
 
-    def learn_causal(self, antecedent: str, consequent: str, confidence: float = 0.5) -> None:
+    def learn_causal(
+        self,
+        antecedent: str,
+        consequent: str,
+        confidence: float = 0.5,
+        *,
+        evidence: Optional[Mapping[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Store a causal claim only with a traceable reported intervention comparison.
+
+        Conversation co-occurrence, analogy, and belief/evidence pairing do
+        not satisfy this contract. This records evidence supplied by the
+        caller; it does not independently verify that experiment or establish
+        causation. Existing records are retained but treated as unverified.
+        """
+        if not antecedent.strip() or not consequent.strip():
+            return {"status": "rejected_empty_claim", "persisted": False}
+        evidence = evidence or {}
+        required = ("source", "evidence_ref", "intervention", "comparison",
+                    "outcome", "comparison_outcome")
+        if evidence.get("method") != "controlled_intervention" or any(
+            not str(evidence.get(key, "")).strip() for key in required
+        ):
+            return {
+                "status": "rejected_missing_intervention_evidence",
+                "persisted": False,
+            }
+        try:
+            confidence = float(confidence)
+            if not math.isfinite(confidence):
+                raise ValueError("confidence must be finite")
+        except (TypeError, ValueError):
+            return {"status": "rejected_invalid_confidence", "persisted": False}
+
         with self._lock:
             for b in self.causal_beliefs:
-                if b.antecedent.lower() == antecedent.lower() and b.consequent.lower() == consequent.lower():
+                if (causal_belief_has_intervention_evidence(b)
+                        and b.antecedent.lower() == antecedent.lower()
+                        and b.consequent.lower() == consequent.lower()):
+                    previous = (
+                        b.confidence, b.count, b.last_seen, b.evidence_ref,
+                        b.evidence_source, b.evidence_intervention,
+                        b.evidence_comparison, b.evidence_outcome,
+                        b.evidence_comparison_outcome,
+                    )
                     b.strengthen()
-                    return
+                    b.evidence_ref = str(evidence["evidence_ref"])
+                    b.evidence_source = str(evidence["source"])
+                    b.evidence_intervention = str(evidence["intervention"])
+                    b.evidence_comparison = str(evidence["comparison"])
+                    b.evidence_outcome = str(evidence["outcome"])
+                    b.evidence_comparison_outcome = str(evidence["comparison_outcome"])
+                    if not self._save():
+                        (b.confidence, b.count, b.last_seen, b.evidence_ref,
+                         b.evidence_source, b.evidence_intervention,
+                         b.evidence_comparison, b.evidence_outcome,
+                         b.evidence_comparison_outcome) = previous
+                        return {"status": "persistence_failed", "persisted": False}
+                    return {"status": "strengthened", "persisted": True}
             if len(self.causal_beliefs) < self.MAX_CAUSAL_BELIEFS:
-                self.causal_beliefs.append(CausalBelief(antecedent=antecedent, consequent=consequent, confidence=confidence))
-                self._save()
+                self.causal_beliefs.append(CausalBelief(
+                    antecedent=antecedent,
+                    consequent=consequent,
+                    confidence=max(0.0, min(0.95, confidence)),
+                    evidence_status="intervention_reported",
+                    evidence_method="controlled_intervention",
+                    evidence_source=str(evidence["source"]),
+                    evidence_ref=str(evidence["evidence_ref"]),
+                    evidence_intervention=str(evidence["intervention"]),
+                    evidence_comparison=str(evidence["comparison"]),
+                    evidence_outcome=str(evidence["outcome"]),
+                    evidence_comparison_outcome=str(evidence["comparison_outcome"]),
+                ))
+                persisted = self._save()
+                if not persisted:
+                    self.causal_beliefs.pop()
+                    return {"status": "persistence_failed", "persisted": False}
+                return {"status": "stored_with_intervention_evidence", "persisted": True}
+            return {"status": "capacity_reached", "persisted": False}
 
     def has_contradiction(self, goal_or_topic: str, confidence_threshold: float = 0.4) -> bool:
         """
@@ -492,6 +591,8 @@ class WorldModel:
 
         with self._lock:
             for belief in self.causal_beliefs:
+                if not causal_belief_has_intervention_evidence(belief):
+                    continue
                 ant_tokens = set(belief.antecedent.lower().split())
                 overlap = goal_tokens & ant_tokens
 
@@ -509,10 +610,14 @@ class WorldModel:
         return False
 
     def summary(self) -> Dict:
+        intervention_records = sum(
+            1 for b in self.causal_beliefs if causal_belief_has_intervention_evidence(b)
+        )
         return {
             "users":           len(self.user_profiles),
-            "causal_beliefs":  len(self.causal_beliefs),
-            "auto_causal":     sum(1 for b in self.causal_beliefs if b.auto_learned),
+            "causal_beliefs":  intervention_records,
+            "causal_records_total": len(self.causal_beliefs),
+            "causal_unverified": len(self.causal_beliefs) - intervention_records,
             "topic_nodes":     len(self.topic_graph),
             "total_docs_seen": self._total_docs,
         }
@@ -634,31 +739,6 @@ class WorldModel:
         if profile.relational:
             fs = profile.relational.formality_score
             profile.formality = "formal" if fs > 0.6 else "casual" if fs < 0.35 else "neutral"
-
-    def _auto_learn_causal(self, profile: UserProfile) -> None:
-        windows = profile._recent_topic_windows
-        if len(windows) < self.CAUSAL_MIN_COUNT + 1:
-            return
-        transitions: Counter = Counter()
-        for i in range(len(windows) - 1):
-            for a in windows[i]:
-                for b in windows[i+1]:
-                    if a != b and len(a) > 3 and len(b) > 3:
-                        transitions[(a, b)] += 1
-        for (a, b), count in transitions.items():
-            if count >= self.CAUSAL_MIN_COUNT:
-                exists = any(bl.antecedent == a and bl.consequent == b for bl in self.causal_beliefs)
-                if exists:
-                    for bl in self.causal_beliefs:
-                        if bl.antecedent == a and bl.consequent == b:
-                            bl.strengthen(0.03)
-                elif len(self.causal_beliefs) < self.MAX_CAUSAL_BELIEFS:
-                    self.causal_beliefs.append(CausalBelief(
-                        antecedent=a, consequent=b,
-                        confidence=min(0.70, 0.35 + count * 0.05),
-                        count=count, auto_learned=True,
-                    ))
-                    logger.debug(f"[WorldModel] auto-causal: {a!r} -> {b!r} (count={count})")
 
     # ── Persistence ───────────────────────────────────────────────────────────
 
@@ -787,6 +867,9 @@ class WorldModel:
                 p._recent_topic_windows = pd.get("_recent_topic_windows", [])
                 self.user_profiles[uid] = p
             for bd in data.get("causal_beliefs", []):
+                # Historical records lacked an evidence contract. Preserve
+                # them for audit/inspection, but never treat them as verified.
+                bd.setdefault("evidence_status", "legacy_unverified")
                 self.causal_beliefs.append(CausalBelief(**bd))
             for topic, links in data.get("topic_graph", {}).items():
                 self.topic_graph[topic] = Counter(links)

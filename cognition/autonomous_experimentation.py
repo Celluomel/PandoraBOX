@@ -78,6 +78,8 @@ import json
 import logging
 import random
 import threading
+
+from cognition.world_model import causal_belief_has_intervention_evidence
 import time
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
@@ -735,6 +737,8 @@ class AutonomousExperimentationEngine:
             if wm is not None:
                 hypothesis_text = data.get("hypothesis", "").lower()
                 for belief in getattr(wm, "causal_beliefs", []):
+                    if not causal_belief_has_intervention_evidence(belief):
+                        continue
                     if getattr(belief, "confidence", 0) < 0.85:
                         continue
                     antecedent = getattr(belief, "antecedent", "").lower()

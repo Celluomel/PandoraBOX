@@ -30,6 +30,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
+from cognition.world_model import causal_belief_has_intervention_evidence
+
 if TYPE_CHECKING:
     from cognition.thought_thread_engine import ThoughtThread, ThoughtThreadEngine, TTEContext
 
@@ -240,20 +242,8 @@ class CognitiveDissonanceEngine:
                 except Exception as e:
                     logger.debug(f"[CDE] Personality evolution update failed: {e}")
 
-                # Add causal link to world model
-                try:
-                    ai_sys = getattr(organism, "ai_system", None) or getattr(organism, "_system", None)
-                    wm = getattr(ai_sys, "world_model", None) if ai_sys else None
-                    if wm is None:
-                        wm = getattr(organism, "world_model", None)
-                    if wm and ev.belief_ref and ev.evidence_ref:
-                        wm.learn_causal(
-                            antecedent=ev.belief_ref,
-                            consequent=ev.evidence_ref,
-                            confidence=min(0.6, ev.intensity),
-                        )
-                except Exception as e:
-                    logger.debug(f"[CDE] World model causal update failed: {e}")
+                # A belief/evidence pair that resolves dissonance is not an
+                # intervention comparison and must not become a causal claim.
 
             ev.resolved = True
 
@@ -347,9 +337,16 @@ class CognitiveDissonanceEngine:
         recent = ctx.recent_actions
 
         for belief in causal[:15]:
-            ant = getattr(belief, "antecedent", None) or belief.get("antecedent", "")
-            con = getattr(belief, "consequent", None) or belief.get("consequent", "")
-            conf= getattr(belief, "confidence", 0.5) or belief.get("confidence", 0.5)
+            if not causal_belief_has_intervention_evidence(belief):
+                continue
+            if isinstance(belief, dict):
+                ant = belief.get("antecedent", "")
+                con = belief.get("consequent", "")
+                conf = belief.get("confidence", 0.5)
+            else:
+                ant = getattr(belief, "antecedent", "")
+                con = getattr(belief, "consequent", "")
+                conf = getattr(belief, "confidence", 0.5)
 
             if not ant or not con:
                 continue
@@ -448,6 +445,8 @@ class CognitiveDissonanceEngine:
                 # causal_beliefs is a List[CausalBelief] with antecedent/consequent,
                 # not a dict and not a `.cause` field — v87 had both wrong.
                 for cb in list(getattr(wm, "causal_beliefs", []))[:20]:
+                    if not causal_belief_has_intervention_evidence(cb):
+                        continue
                     antecedent = str(getattr(cb, "antecedent", ""))
                     if topic and topic.lower() in antecedent.lower():
                         hyps.append(f"Perhaps this connects to what I already believe about '{antecedent}' — that belief may itself be outdated.")

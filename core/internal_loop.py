@@ -2571,7 +2571,17 @@ class InternalThoughtLoop:
                             "causal_beliefs": [
                                 {"antecedent": b.antecedent,
                                  "consequent": b.consequent,
-                                 "confidence": b.confidence}
+                                 "confidence": b.confidence,
+                                 "evidence_status": getattr(b, "evidence_status", "legacy_unverified"),
+                                 "evidence_method": getattr(b, "evidence_method", ""),
+                                 "evidence_source": getattr(b, "evidence_source", ""),
+                                 "evidence_ref": getattr(b, "evidence_ref", ""),
+                                 "evidence_intervention": getattr(b, "evidence_intervention", ""),
+                                 "evidence_comparison": getattr(b, "evidence_comparison", ""),
+                                 "evidence_outcome": getattr(b, "evidence_outcome", ""),
+                                 "evidence_comparison_outcome": getattr(
+                                     b, "evidence_comparison_outcome", ""
+                                 )}
                                 for b in wm.causal_beliefs[:20]
                             ]
                         }

@@ -39,6 +39,8 @@ from __future__ import annotations
 
 import json
 import random
+
+from cognition.world_model import causal_belief_has_intervention_evidence
 import time
 from pathlib import Path
 from cognition.belief_provenance import is_semantic_provenance_contamination
@@ -181,7 +183,9 @@ def generate_uncertainty_topic(persona_dir: Path) -> str:
             beliefs = data.get('causal_beliefs', [])
             low_conf = [
                 b for b in beliefs
-                if b.get('confidence', 1.0) < 0.4 and b.get('antecedent') and b.get('consequent')
+                if causal_belief_has_intervention_evidence(b)
+                and b.get('confidence', 1.0) < 0.4
+                and b.get('antecedent') and b.get('consequent')
             ]
             if low_conf:
                 b = min(low_conf, key=lambda x: x.get('confidence', 1.0))

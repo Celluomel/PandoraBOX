@@ -12,7 +12,6 @@ What it does per conversation turn:
   Pass 3 — Synthesize  : derive something not explicitly stated
 
 Side effects:
-  → new CausalBelief   fed into WorldModel automatically
   → open_question      planted as curiosity seed in CuriosityEngine
   → analogy chain      stored in SemanticMemory as new concept
 
@@ -95,7 +94,9 @@ class ReasoningResult:
     # Pass 3 — Synthesis
     derived_insight: str      = ""
     open_question:   str      = ""
-    causal_pair:     Tuple[str, str] = ("", "")  # (antecedent, consequent)
+    # Historical name retained for compatibility; these are analogy/source
+    # strings, not a causal assertion. ARE never persists them as causality.
+    causal_pair:     Tuple[str, str] = ("", "")
 
     # Meta
     method:         str       = "heuristic"    # "heuristic" | "llm"
@@ -107,7 +108,7 @@ class AbstractReasoningEngine:
     """
     Structured abstract reasoning: Decompose → Map → Synthesize.
 
-    Feeds new insights into WorldModel, CuriosityEngine, SemanticMemory.
+    Feeds open questions into CuriosityEngine and analogies into SemanticMemory.
     Injects a concise reasoning fragment into the system prompt.
     """
 
@@ -505,19 +506,9 @@ Respond ONLY with JSON:
         Feed reasoning results back into the cognitive architecture.
         All calls are best-effort — never raise.
         """
-        # ── WorldModel: new causal belief ─────────────────────────────────
-        try:
-            wm = getattr(self._org, "world_model", None)
-            ant, con = result.causal_pair
-            if wm and hasattr(wm, "learn_causal") and ant and con:
-                wm.learn_causal(
-                    antecedent  = ant,
-                    consequent  = con,
-                    confidence  = 0.4 + result.analogy_confidence * 0.3,
-                )
-                logger.debug(f"🧠 ARE → WorldModel: {ant!r} → {con!r}")
-        except Exception:
-            pass
+        # An analogy pair is a conceptual link, not evidence that one item
+        # causes the other. The analogy is persisted below in SemanticMemory;
+        # do not promote it into the WorldModel's causal store.
 
         # ── CuriosityEngine: plant open question as curiosity seed ─────────
         try:
