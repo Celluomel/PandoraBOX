@@ -18,10 +18,10 @@ spec.loader.exec_module(api)
 
 class Persona:
     is_ready = True
-    _organism = SimpleNamespace(_loop=SimpleNamespace(_slow_cycle_count=9))
 
     def __init__(self):
         self.stream_kwargs = None
+        self._organism = SimpleNamespace(_loop=SimpleNamespace(_slow_cycle_count=9))
 
     async def get_response_stream(self, text, **kwargs):
         self.stream_kwargs = kwargs
@@ -86,6 +86,22 @@ class InterfaceTests(unittest.IsolatedAsyncioTestCase):
 
     def test_missing_orchestrator_is_unavailable_not_active(self):
         self.assertEqual(api._orchestrator_snapshot(), {'available': False, 'running': False})
+
+    async def test_status_exposes_lightweight_affect_summary(self):
+        calls = []
+        self.runtime.persona._organism = SimpleNamespace(
+            _loop=SimpleNamespace(_slow_cycle_count=9),
+            ai_system=SimpleNamespace(
+                emotional_state=SimpleNamespace(
+                    get_state_description=lambda: calls.append('read') or 'curiosity is elevated'
+                )
+            ),
+        )
+
+        result = await api.status()
+
+        self.assertEqual(result['emotional_state'], 'curiosity is elevated')
+        self.assertEqual(calls, ['read'])
 
     async def test_cognitive_execution_exposes_passive_tick_and_cycle_receipts(self):
         calls = []

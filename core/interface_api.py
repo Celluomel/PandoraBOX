@@ -258,6 +258,16 @@ async def status():
     # briefly block while a chat turn is active and make the UI appear offline.
     context = {}
     system = getattr(persona, '_system', None)
+    emotional_state = ''
+    affect = getattr(
+        getattr(getattr(org, 'ai_system', None), 'emotional_state', None),
+        'get_state_description', None,
+    )
+    if callable(affect):
+        try:
+            emotional_state = str(affect() or '')
+        except Exception as exc:
+            logger.debug('Lightweight affect status unavailable: %s', type(exc).__name__)
     body = getattr(org, '_body_runtime', None) if org is not None else getattr(state, 'body_runtime', None)
     vision = getattr(state, 'vision', None)
     presence_engine = getattr(vision, 'presence_engine', None) if vision is not None else None
@@ -288,7 +298,7 @@ async def status():
         'response_language': getattr(config, 'RESPONSE_LANGUAGE', 'auto'),
         'web_search_mode': getattr(config, 'WEB_SEARCH_MODE', 'off'),
         'response_verbosity': getattr(config, 'RESPONSE_VERBOSITY', 'concise'),
-        'emotional_state': context.get('emotional_state', ''),
+        'emotional_state': emotional_state,
         'life_stage': context.get('life_stage', ''),
         'current_age': getattr(system, 'current_age', None),
         'timings': dict(_timings),
