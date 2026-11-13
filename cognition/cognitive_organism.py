@@ -328,6 +328,12 @@ class CognitiveOrganism:
         except Exception:
             pass
         self._loop.shutdown()
+        try:
+            flush_memory_index = getattr(self.ai_system, "flush_memory_index", None)
+            if callable(flush_memory_index) and not flush_memory_index():
+                logger.warning("[CognitiveOrganism] FAISS index flush was not confirmed")
+        except Exception as exc:
+            logger.warning("[CognitiveOrganism] FAISS index flush failed: %s", exc)
 
     # ── Primary interface ─────────────────────────────────────────────────────
 

@@ -926,11 +926,28 @@ class EnhancedMemorySystem:
         return index
 
     def _save_index(self, idx=None):
+        if faiss is None:
+            return False
+        target = Path(self.config.faiss.index_path)
+        temporary = target.with_name(
+            f"{target.name}.{threading.get_ident()}.tmp"
+        )
         try:
-            if faiss is not None:
-                faiss.write_index(idx or self.faiss_index, self.config.faiss.index_path)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with self._lock:
+                index = idx if idx is not None else self.faiss_index
+                if index is None:
+                    return False
+                faiss.write_index(index, str(temporary))
+                temporary.replace(target)
+            return True
         except Exception as e:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
             logger.error(f"FAISS save failed: {e}")
+            return False
 
     def add_memory(self, text: str, impact_score: float = 0.5, memory_type: str = "general",
                    emotional_valence: str = "Neutral", arousal_level: str = "Medium",
@@ -2195,6 +2212,13 @@ class EnhancedAISystem:
             return 0.0
         elapsed_days = (datetime.datetime.now() - self._birth_date).total_seconds() / 86400.0
         return max(0.0, elapsed_days * self.config.age_units_per_day)
+
+    def flush_memory_index(self) -> bool:
+        """Persist the in-memory FAISS delta before a graceful process exit."""
+        memory = getattr(self, "memory_system", None)
+        if memory is None:
+            return False
+        return bool(memory._save_index())
 
     @property
     def life_stage(self) -> str:
