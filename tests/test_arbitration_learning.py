@@ -16,6 +16,9 @@ def test_reviewed_arbitration_outcome_changes_weights_read_by_live_arbitration(
     # cached instance for review updates to affect decisions without a restart.
     assert learning.get_tracker() is tracker
     before = learning.get_learned_weights()
+    from cognition.executive_arbitration import _get_base_weights
+
+    assert _get_base_weights() == before
 
     goal = {"id": "goal-1", "type": "goal"}
     candidate = SimpleNamespace(candidate=goal, utility_terms={"predicted": 1.0})
@@ -32,3 +35,4 @@ def test_reviewed_arbitration_outcome_changes_weights_read_by_live_arbitration(
     assert report["good"] == 1
     assert tracker.learned_delta()["predicted"] > 0
     assert after["predicted"] > before["predicted"]
+    assert _get_base_weights()["predicted"] == after["predicted"]
