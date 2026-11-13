@@ -1761,3 +1761,13 @@ Un tour d’audit complexe a donné une réponse de relance car `primary_generat
 **Vérification locale :** `tests/test_internal_loop_cycle_evidence.py` et `tests/test_phase2_integration.py` — **25 réussis**, 9 avertissements de dépendances existants. `py_compile` et `git diff --check` passent.
 
 **Déploiement live :** ce nouveau garde-gouverneur est à pousser et sera chargé au prochain redémarrage groupé audit. L’instance actuelle continue sans interruption et tourne encore avec le code du commit `bea8aca`; les reçus live ne valident donc pas encore cette correction. Prochaine preuve attendue après chargement : un refus Phase 2 causé par le gouverneur porte son motif exact; une voie ne ticke que si cadence due et gouverneur autorise. L’évaluation sémantique des sorties reste distincte et non résolue.
+
+### Motifs de non-action du GoalActionExecutor absents des reçus — 13 novembre 2026
+
+**Constat live :** sur le processus en mode audit, le `GoalActionExecutor` a été construit et appelé deux fois; ses logs indiquent « No eligible goals » et les compteurs de tick sont sans erreur. Le reçu de cycle ne conservait cependant que `no_action_report`, et le résumé du module voyait `None` comme sortie vide. Il était impossible de distinguer une absence normale de but admissible d’un autre arrêt anticipé. Ce cas n’est pas en soi une panne de l’exécuteur : c’est une lacune de preuve sur la décision et son effet aval.
+
+**Correction locale :** `run_tick()` garde son API historique (`None` quand aucune action n’est exécutée), mais expose un résultat interne borné avec un `reason_code` (aucun but éligible, décision workspace sans but exécutable, but inactif, cooldown, moteur absent). Le cycle réutilise ce résultat seulement lorsqu’il n’existe pas de rapport d’action, et garde les IDs de but sous forme de référence hachée. Cela relie l’appel planifié à son motif de non-action sans transformer un skip en succès ni modifier l’arbitrage.
+
+**Vérification locale :** boucle interne, Phase 2, pipeline de sélection, intention/planning et retours d’exécution — **83 tests réussis**, 9 avertissements existants. `py_compile` et `git diff --check` à exécuter avant commit.
+
+**État live :** Lumina demeure actif sur le code antérieur à ce changement; aucun redémarrage isolé. Le motif structuré sera vérifié après le prochain redémarrage groupé. L’ancienne preuve live « No eligible goals » confirme l’événement, mais pas encore le nouveau format de reçu.

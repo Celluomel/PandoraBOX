@@ -187,7 +187,20 @@ class GoalActionExecutor:
         self._pending_predictions: Dict[Tuple[str, str], Any] = {}
         self._async_actions_in_flight: set[Tuple[str, str]] = set()
         self._async_actions_lock = threading.Lock()
+        self._last_tick_outcome: Optional[Dict[str, Any]] = None
         logger.info("[GoalActionExecutor] Initialised")
+
+    def _record_tick_skip(self, reason_code: str, *, goal_id: str | None = None) -> None:
+        """Keep a structured, non-prose reason when a scheduled tick does no action."""
+        outcome: Dict[str, Any] = {
+            "outcome_status": "skipped",
+            "reason_code": str(reason_code),
+        }
+        if goal_id:
+            outcome["goal_id_ref"] = hashlib.sha256(
+                str(goal_id).encode("utf-8", errors="replace")
+            ).hexdigest()[:20]
+        self._last_tick_outcome = outcome
 
     def _load_insight_counts(self) -> None:
         """Load persisted goal_insight_counts from disk (non-fatal if missing)."""
@@ -256,9 +269,11 @@ class GoalActionExecutor:
         FIX 3: async actions (self_question, web_search) now spawn a daemon
         thread with asyncio.run() so the coroutine is guaranteed to execute.
         """
+        self._last_tick_outcome = None
         goal_engine = self._get_goal_engine()
         if not goal_engine:
             logger.debug("[GoalActionExecutor] No GoalEngine found — skipping tick")
+            self._record_tick_skip("goal_engine_unavailable")
             return None
 
         # Use a lower activation threshold than GoalEngine's default (0.30)
@@ -267,6 +282,7 @@ class GoalActionExecutor:
         active = goal_engine.get_active_goals(min_activation=0.10)
         if not active:
             logger.info("[GoalActionExecutor] No eligible goals (all below min_activation=0.10 or none active)")
+            self._record_tick_skip("no_eligible_goals")
             return None
 
         if selection_is_authoritative:
@@ -275,6 +291,7 @@ class GoalActionExecutor:
                     "[GoalActionExecutor] Fresh workspace decision selected no executable goal; "
                     "skipping unrelated-goal fallback"
                 )
+                self._record_tick_skip("workspace_selected_no_executable_goal")
                 return None
             goal = next(
                 (candidate for candidate in active if str(getattr(candidate, "id", "")) == preferred_goal_id),
@@ -285,17 +302,20 @@ class GoalActionExecutor:
                     "[GoalActionExecutor] Workspace-selected goal %s is not active; skipping action",
                     preferred_goal_id,
                 )
+                self._record_tick_skip("workspace_goal_not_active", goal_id=preferred_goal_id)
                 return None
             if time.time() - self._last_action_time.get(goal.id, 0) <= GOAL_ACTION_COOLDOWN:
                 logger.info(
                     "[GoalActionExecutor] Workspace-selected goal %s is on action cooldown",
                     preferred_goal_id,
                 )
+                self._record_tick_skip("goal_action_cooldown", goal_id=preferred_goal_id)
                 return None
         else:
             goal = self._select_eligible_goal(active)
         if not goal:
             logger.info(f"[GoalActionExecutor] All {len(active)} eligible goals on {GOAL_ACTION_COOLDOWN}s cooldown — next action in ~{GOAL_ACTION_COOLDOWN//60}min")
+            self._record_tick_skip("all_eligible_goals_on_cooldown")
             return None
 
         # Prefer the persistent intention plan. Rotation is a fallback only

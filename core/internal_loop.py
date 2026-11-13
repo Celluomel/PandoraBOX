@@ -222,6 +222,14 @@ class InternalThoughtLoop:
             evidence["governor_block_reason"] = reason
         return evidence
 
+    @staticmethod
+    def _goal_action_receipt(report: Any, executor: Any) -> dict[str, Any] | None:
+        """Use the action report, or its explicit no-action reason, in cycle evidence."""
+        if isinstance(report, dict):
+            return report
+        outcome = getattr(executor, "_last_tick_outcome", None)
+        return outcome if isinstance(outcome, dict) else None
+
     def _link_phase2_thread(self, thread: Any) -> dict[str, Any] | None:
         """Link one terminal thread and persist its marker only after a valid result."""
         if (
@@ -2056,10 +2064,13 @@ class InternalThoughtLoop:
                     selection_is_authoritative=decision_is_fresh,
                     cycle_id=self._slow_cycle_count,
                 )
+                _action_receipt = self._goal_action_receipt(
+                    _action_report, self._goal_action_executor,
+                )
                 _previous_winner_ref = getattr(o, "_v32_workspace_winner_evidence_ref", None)
                 _action_stage_status = (
-                    str(_action_report.get("outcome_status", "completed"))
-                    if isinstance(_action_report, dict) else "no_action_report"
+                    str(_action_receipt.get("outcome_status", "completed"))
+                    if isinstance(_action_receipt, dict) else "no_action_report"
                 )
                 self._record_cycle_stage(
                     "goal_action_executor", _action_stage_status,
@@ -2069,7 +2080,7 @@ class InternalThoughtLoop:
                         "winner_age_cycles": winner_age,
                         "preferred_goal_id_ref": self._evidence_fingerprint(preferred_goal_id) if preferred_goal_id else None,
                     },
-                    output=_action_report,
+                    output=_action_receipt,
                 )
                 if _action_report and _action_report.get("success"):
                     logger.info(

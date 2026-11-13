@@ -270,6 +270,10 @@ def test_authoritative_non_goal_decision_does_not_fall_back_to_old_goal():
     result = executor.run_tick(selection_is_authoritative=True)
 
     assert result is None
+    assert executor._last_tick_outcome == {
+        "outcome_status": "skipped",
+        "reason_code": "workspace_selected_no_executable_goal",
+    }
 
 
 def test_internal_loop_uses_one_proposal_evaluation_path_and_authoritative_winner():

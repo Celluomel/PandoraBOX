@@ -493,3 +493,17 @@ def test_phase2_governor_skip_receipt_remains_safe_without_status_api():
     assert loop._phase2_governor_skip_metrics("Phase2ThreadIdentity") == {
         "governor_subsystem": "Phase2ThreadIdentity",
     }
+
+
+def test_cycle_receipt_uses_explicit_no_action_reason_when_executor_returns_none():
+    executor = SimpleNamespace(_last_tick_outcome={
+        "outcome_status": "skipped",
+        "reason_code": "no_eligible_goals",
+    })
+
+    assert InternalThoughtLoop._goal_action_receipt(None, executor) == {
+        "outcome_status": "skipped",
+        "reason_code": "no_eligible_goals",
+    }
+    completed = {"outcome_status": "dispatched", "execution_id": "act_ref"}
+    assert InternalThoughtLoop._goal_action_receipt(completed, executor) is completed
