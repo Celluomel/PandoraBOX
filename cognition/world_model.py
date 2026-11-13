@@ -266,7 +266,11 @@ class UserProfile:
     def prompt_fragment(self) -> str:
         parts = []
         name = self.display_name or self.user_id
-        parts.append(f"User model based on {self.interaction_count} observed exchanges (patterns are tentative).")
+        parts.append(
+            "INFERRED BEHAVIORAL INTERACTION MODEL — based on observed exchanges; "
+            "its estimates are not explicit user statements or named-profile facts."
+        )
+        parts.append(f"Interaction sample: {self.interaction_count} observed exchanges.")
         if name and name not in ("default", "guest"):
             parts.append(f"User: {name}")
 
@@ -285,19 +289,33 @@ class UserProfile:
         style = []
         if self.preferred_depth != "medium": style.append(self.preferred_depth)
         if self.formality != "neutral":      style.append(self.formality)
-        if style: parts.append("Style: " + ", ".join(style))
+        if style:
+            parts.append(
+                "Possible response-style estimates (inferred from interaction; "
+                "not explicit preferences): " + ", ".join(style)
+            )
 
         if self.relational and self.interaction_count >= 3:
             lbl   = self.relational.relationship_label()
             trend = self.relational.engagement_trend()
-            if lbl in ("close", "distant"):     parts.append(f"Rel: {lbl}")
-            if trend in ("rising", "declining"): parts.append(f"Trend: {trend}")
+            relation_estimates = []
+            if lbl in ("close", "distant"):
+                relation_estimates.append(f"relationship={lbl}")
+            if trend in ("rising", "declining"):
+                relation_estimates.append(f"engagement_trend={trend}")
+            if relation_estimates:
+                parts.append(
+                    "Relational estimates (inferred, not user-stated facts): "
+                    + ", ".join(relation_estimates)
+                )
 
         if self.temporal:
             ph = self.temporal.peak_hour()
             if ph is not None:
                 session = "morning" if 5<=ph<12 else "afternoon" if 12<=ph<18 else "evening" if 18<=ph<23 else "night"
-                parts.append(f"Active: {session}")
+                parts.append(
+                    f"Estimated active-time pattern (inferred, not a user-stated schedule): {session}"
+                )
 
         parts.append(f"{self.interaction_count} interactions")
         return " | ".join(parts)

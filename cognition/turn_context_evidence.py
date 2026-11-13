@@ -7,6 +7,19 @@ import re
 from typing import Any, Iterable, Mapping
 
 
+USER_PROFILE_PROVENANCE_POLICY = (
+    "User-profile evidence policy: the named UserManager profile is the source for "
+    "explicitly recorded user facts. Treat only entries labeled 'User-stated' with a "
+    "source receipt as explicit user statements; entries labeled legacy/unverified are "
+    "not confirmed facts. The WorldModel behavioral interaction model, communication "
+    "style estimates, inferred familiarity, relationship estimates, time-pattern estimates, "
+    "conversation topics, and retrieved memories are separate evidence sources. Never "
+    "present any of those estimates or memories as explicit facts stored in the named "
+    "profile. When asked what is explicitly recorded, list only provenance-backed entries; "
+    "if there are none, say so. Keep historical recall separate from profile facts."
+)
+
+
 def _sha256(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8", errors="replace")).hexdigest()
 

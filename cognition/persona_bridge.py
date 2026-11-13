@@ -49,6 +49,7 @@ from cognition.turn_context_evidence import (
     memory_prompt_injection_evidence,
     profile_context_evidence,
     response_learning_evidence,
+    USER_PROFILE_PROVENANCE_POLICY,
 )
 
 from pathlib import Path
@@ -4514,6 +4515,7 @@ Memory honesty — two distinct cases:
 
             system_prompt += (
                 "\n\n━━ EVIDENCE-GROUNDED RESPONSE POLICY ━━\n"
+                + USER_PROFILE_PROVENANCE_POLICY + "\n"
                 "For every answer, determine what evidence it depends on and use the authoritative "
                 "source actually available in this turn: the user's message, relevant conversation "
                 "history, retrieved memory, current cognitive telemetry, live Body observations, or "

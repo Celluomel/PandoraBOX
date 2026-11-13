@@ -42,6 +42,7 @@ from cognition.ai_identity import (
 from cognition.self_description import SelfDescription
 from cognition.simple_thought_evaluator import SimpleThoughtEvaluator
 from cognition.turn_context_evidence import (
+    USER_PROFILE_PROVENANCE_POLICY,
     audit_safe_turn_summary,
     format_memory_for_prompt,
     memory_embedding_text,
@@ -63,6 +64,11 @@ for _name in list(sys.modules):
 
 
 class CognitiveLogRegressionTests(unittest.TestCase):
+    def test_user_profile_sources_are_kept_epistemically_separate(self):
+        self.assertIn("named UserManager profile", USER_PROFILE_PROVENANCE_POLICY)
+        self.assertIn("WorldModel behavioral interaction model", USER_PROFILE_PROVENANCE_POLICY)
+        self.assertIn("if there are none, say so", USER_PROFILE_PROVENANCE_POLICY)
+
     def test_behavioral_profile_updates_only_on_human_turns_and_returns_receipt(self):
         calls = []
 
