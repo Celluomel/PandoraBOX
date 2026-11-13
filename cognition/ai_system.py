@@ -65,6 +65,7 @@ from cognition.memory_retrieval import (
     filter_recall_query_records, rank_documents,
 )
 from cognition.turn_context_evidence import memory_embedding_text
+from cognition.emotional_text_appraisal import appraise_emotional_text
 
 # ── Liberty Components (NEW) ────────────────────────────────────────
 from cognition.self_modification import SelfModificationAuthority
@@ -1317,52 +1318,16 @@ class EnhancedMemorySystem:
         except Exception:
             return 0.0
 
-    # ── Expanded local lexicons for zero-cost emotion classification ──────
-    _LEX_POS = {
-        "happy","happiness","glad","joy","joyful","love","loving","wonderful","great",
-        "amazing","fantastic","excellent","thank","thanks","grateful","gratitude",
-        "beautiful","good","nice","pleased","pleasing","delight","delightful",
-        "excited","exciting","awesome","brilliant","perfect","superb","enjoy",
-        "enjoying","enjoyed","helpful","useful","interesting","fascinating","wow",
-        "yes","agree","sure","absolutely","definitely","correct","right","exactly",
-        "understood","clear","clever","smart","insightful","appreciate","appreciated",
-        "warm","warmth","connected","satisfied","satisfaction","content","peaceful",
-    }
-    _LEX_NEG = {
-        "sad","sadness","bad","terrible","awful","horrible","hate","anger","angry",
-        "pain","hurt","broken","fail","failed","failure","error","wrong","mistake",
-        "frustrated","frustration","worried","worry","anxious","anxiety","scared",
-        "confused","confusing","useless","pointless","boring","disappointed",
-        "disappointment","lost","stuck","problem","issue","cannot","unable","no",
-        "not","never","stop","please","help","wrong","incorrect","missing","broken",
-        "crash","bug","error","exception","doesn't work","isn't working",
-    }
-    _LEX_HI = {
-        "thrilled","ecstatic","furious","terrified","shocked","amazed","urgent",
-        "incredible","unbelievable","extraordinary","panic","crisis","emergency",
-        "love","hate","wow","oh my","oh no","what the","how could","please please",
-    }
-
     def analyze_emotional_context(self, text: str) -> Dict[str, str]:
         """
-        Local lexicon-based emotion analysis — replaces the per-turn LLM call.
-        Removes ~200ms synchronous overhead from every chat turn while maintaining
-        adequate classification accuracy for the 3×3 valence/arousal grid.
+        Fast multilingual text appraisal used as one input to persistent affect.
+        Cognitive event appraisals remain the primary source of Lumina's affect.
         """
-        return self._keyword_emotion_fallback(text)
+        return appraise_emotional_text(text)
 
     def _keyword_emotion_fallback(self, text: str) -> Dict[str, str]:
-        t   = text.lower()
-        pos = sum(1 for w in self._LEX_POS if w in t)
-        neg = sum(1 for w in self._LEX_NEG if w in t)
-        hi  = sum(1 for w in self._LEX_HI  if w in t)
-        # Question marks raise arousal (curiosity/urgency)
-        hi += t.count("?") // 2
-        # Exclamation marks raise arousal
-        hi += t.count("!") // 2
-        v = "Positive" if pos > neg else ("Negative" if neg > pos else "Neutral")
-        a = "High" if hi > 0 or pos + neg > 3 else ("Medium" if pos + neg > 0 else "Low")
-        return {"valence": v, "arousal": a}
+        # Retained as a compatibility alias for older callers.
+        return appraise_emotional_text(text)
 
     # ── Chaos Fetcher ─────────────────────────────────────────────────────────
     # Required by GoalActionExecutor._action_bisociative_hypothesis().
