@@ -76,6 +76,7 @@ class CounterfactualQuery:
     best_alternative: Optional[str]      # highest joint_score non-actual branch
     actual_rank:      int                # rank of actual action among all branches (1=best)
     worst_actual:     bool               # True if actual was lowest-scoring branch
+    source_ref:       str = ""            # stable, content-free PCM record identity
     computed_at:      float = field(default_factory=time.time)
 
 
@@ -88,6 +89,7 @@ class CounterfactualSimulator:
     def __init__(self, organism: Any) -> None:
         self._organism = organism
         self._lock     = threading.Lock()
+        self._run_guard = threading.Lock()
         self._log:     List[Dict] = []
         self._path     = Path(SAVE_PATH)
         self._last_run_cycle: int = -CF_INTERVAL_CYCLES  # fire on first eligible cycle
@@ -164,6 +166,11 @@ class CounterfactualSimulator:
     # ── Core analysis ─────────────────────────────────────────────────────────
 
     def _run(self, slow_cycle: int) -> None:
+        # A slow cycle can request another run before a previous background
+        # analysis finishes. Serialize runs so they cannot append the same
+        # PCM window concurrently.
+        if not self._run_guard.acquire(blocking=False):
+            return
         try:
             loop = getattr(self._organism, "_loop", None)
             if loop is None:
@@ -181,6 +188,13 @@ class CounterfactualSimulator:
             pcm_records = list(pcm._records)[-MAX_RECENT_INTERACTIONS:]
             wsdm_records = list(getattr(wsdm, "_records", []))
 
+            with self._lock:
+                processed_refs = {
+                    str(item.get("source_ref") or "")
+                    for item in self._log
+                    if isinstance(item, dict) and item.get("source_ref")
+                }
+
             # Build a lookup of WSDM records by interaction_n for fast pairing
             wsdm_by_n: Dict[int, Any] = {}
             for r in wsdm_records:
@@ -190,9 +204,14 @@ class CounterfactualSimulator:
 
             new_queries: List[CounterfactualQuery] = []
             for pcm_rec in pcm_records:
+                source_ref = self._source_record_ref(pcm_rec)
+                if source_ref in processed_refs:
+                    continue
                 query = self._analyse_interaction(pcm, wsdm, pcm_rec, wsdm_by_n)
                 if query is not None:
+                    query.source_ref = source_ref
                     new_queries.append(query)
+                    processed_refs.add(source_ref)
 
             if new_queries:
                 with self._lock:
@@ -213,6 +232,25 @@ class CounterfactualSimulator:
 
         except Exception as e:
             logger.debug(f"[CounterfactualSim] _run error: {e}")
+        finally:
+            self._run_guard.release()
+
+    @staticmethod
+    def _source_record_ref(record: Any) -> str:
+        """Stable hash for one persisted PCM interaction, without exposing text."""
+        import hashlib
+        import json
+
+        payload = {
+            "interaction_n": getattr(record, "interaction_n", 0),
+            "recorded_at": getattr(record, "recorded_at", None),
+            "response_hash": getattr(record, "response_hash", ""),
+            "action_type": getattr(record, "action_type", ""),
+            "state_before": getattr(record, "state_before", []),
+            "outcome": getattr(record, "outcome", "unrated"),
+        }
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:24]
 
     def _analyse_interaction(
         self,
@@ -264,6 +302,7 @@ class CounterfactualSimulator:
                 best_alternative = best_alternative,
                 actual_rank      = actual_rank,
                 worst_actual     = worst_actual,
+                source_ref       = self._source_record_ref(pcm_rec),
             )
 
         except Exception as e:

@@ -3,7 +3,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-from cognition.counterfactual_simulator import CounterfactualSimulator
+from cognition.counterfactual_simulator import CounterfactualQuery, CounterfactualSimulator
 from cognition.intention_reasoner import IntentionReasoner
 from cognition.prospective_deliberation import _score_candidate
 from cognition.world_self_dynamics_model import DynamicsRecord, WorldSelfDynamicsModel
@@ -73,6 +73,82 @@ class WSDMEngagementEvidenceTests(unittest.TestCase):
 
         self.assertIsNone(branch.wsdm_engagement)
         self.assertEqual(branch.joint_score, 0.0)
+
+    def test_counterfactual_analysis_is_idempotent_for_same_pcm_window(self):
+        simulator = CounterfactualSimulator.__new__(CounterfactualSimulator)
+        pcm_record = SimpleNamespace(
+            interaction_n=7, recorded_at=123.5, response_hash="abc",
+            action_type="social", state_before=[0.0] * 5,
+            outcome="unrated",
+        )
+        simulator._organism = SimpleNamespace(_loop=SimpleNamespace(
+            _consequence_model=SimpleNamespace(_records=[pcm_record] * 15),
+            _world_self_dynamics=None,
+        ))
+        simulator._lock = threading.Lock()
+        simulator._run_guard = threading.Lock()
+        simulator._log = []
+        simulator._last_run_cycle = 0
+        simulator._save = Mock()
+        calls = []
+
+        def analyse(_pcm, _wsdm, _record, _wsdm_by_n):
+            calls.append(1)
+            return CounterfactualQuery(
+                interaction_n=7, actual_action="social", actual_outcome="unrated",
+                branches={}, best_alternative="creative", actual_rank=2,
+                worst_actual=False,
+            )
+
+        simulator._analyse_interaction = analyse
+        simulator._run(10)
+        simulator._run(15)
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(simulator._log), 1)
+        self.assertTrue(simulator._log[0]["source_ref"])
+        simulator._save.assert_called_once()
+
+    def test_counterfactual_runs_do_not_overlap(self):
+        simulator = CounterfactualSimulator.__new__(CounterfactualSimulator)
+        pcm_record = SimpleNamespace(
+            interaction_n=8, recorded_at=124.5, response_hash="def",
+            action_type="technical", state_before=[0.0] * 5,
+            outcome="unrated",
+        )
+        simulator._organism = SimpleNamespace(_loop=SimpleNamespace(
+            _consequence_model=SimpleNamespace(_records=[pcm_record] * 15),
+            _world_self_dynamics=None,
+        ))
+        simulator._lock = threading.Lock()
+        simulator._run_guard = threading.Lock()
+        simulator._log = []
+        simulator._last_run_cycle = 0
+        simulator._save = Mock()
+        calls = []
+        started = threading.Event()
+        release_analysis = threading.Event()
+
+        def analyse(_pcm, _wsdm, _record, _wsdm_by_n):
+            calls.append(1)
+            started.set()
+            release_analysis.wait(timeout=1.0)
+            return CounterfactualQuery(
+                interaction_n=8, actual_action="technical", actual_outcome="unrated",
+                branches={}, best_alternative="creative", actual_rank=2,
+                worst_actual=False,
+            )
+
+        simulator._analyse_interaction = analyse
+        first = threading.Thread(target=simulator._run, args=(10,))
+        first.start()
+        self.assertTrue(started.wait(timeout=1.0))
+        simulator._run(15)
+        release_analysis.set()
+        first.join(timeout=1.0)
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(simulator._log), 1)
 
     def test_prospective_score_keeps_missing_engagement_unavailable(self):
         pcm = SimpleNamespace(_predict=Mock(return_value=None))

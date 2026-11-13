@@ -1683,3 +1683,15 @@ Un tour d’audit complexe a donné une réponse de relance car `primary_generat
 **Vérification :** cas proxy (aucun conflit ni suggestion cohérence et aucun rêve de consolidation), cas mesuré (les décisions restent actives) et régressions identité — **56 tests réussis, 4 sous-tests**, 9 avertissements connus; compilation et diff-check à consigner avant commit.
 
 **État live :** Lumina n'a pas encore chargé ce lot; le redémarrage audit sera regroupé avec les correctifs postérieurs à `dd54eac`. Après le chargement, vérifier que le proxy exposé reste visible mais que `identity_conflicts` ne renvoie plus `low_coherence` et que `_needs_identity_dev()` reste faux sans une mesure réelle.
+
+### Idempotence des analyses contrefactuelles — 13 novembre 2026
+
+**Preuve live et défaut causal :** le endpoint `/api/interface/cognitive-health` (port 8080) montrait, dans `global_workspace.predicted_futures`, plusieurs entrées avec les mêmes `interaction_n` (0 et 1), même `actual_action` et même `actual_outcome`, mais des `computed_at` différents de quelques millisecondes. Dans `CounterfactualSimulator._run`, chaque consolidation reprenait les dix derniers enregistrements PCM et ajoutait de nouveau chaque analyse au journal, sans référence à la source déjà traitée. En plus, deux ticks rapprochés pouvaient lancer des threads d’analyse qui se chevauchent. Les répétitions pouvaient donc gonfler les fréquences et biaiser les recommandations/introspections dérivées.
+
+**Correction locale :** chaque enregistrement PCM reçoit maintenant une référence SHA-256 stable, limitée à 24 caractères, calculée depuis ses champs structurels (numéro, timestamp d’enregistrement, hash de réponse, type d’action, état initial et résultat). Le simulateur ignore une interaction dont cette référence est déjà dans son journal et sérialise les exécutions avec un verrou non bloquant. Aucun texte de conversation n’est inclus dans la référence.
+
+**Vérification locale :** tests de régression pour le rejeu de la même fenêtre et pour deux appels concurrents; suite `test_wsdm_engagement_evidence.py` : **7 réussis**, 7 avertissements de dépréciation Pydantic existants. Compilation Python et `git diff --check` passent.
+
+**État de déploiement :** cette correction doit encore être commitée/poussée, puis chargée par le prochain redémarrage groupé en mode audit. Après redémarrage, vérifier que `source_ref` reste unique dans le journal et que les derniers `predicted_futures` n’ajoutent pas une deuxième analyse du même enregistrement PCM. Les entrées historiques sans `source_ref` sont conservées; ce correctif prévient leur répétition future, sans réécrire les preuves historiques.
+
+**Validation croisee ajoutee :** tests d’evidence cycle interne + pipeline de proposition selectionnee avec la suite counterfactual : 39 passes, 9 warnings connus.
