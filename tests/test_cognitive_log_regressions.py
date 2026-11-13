@@ -389,6 +389,48 @@ class CognitiveLogRegressionTests(unittest.TestCase):
         }})
         self.assertEqual(score, 0.6)
 
+    def test_unclassified_beliefs_produce_no_coherence_measurement(self):
+        synchronizer = SelfConceptSynchronizer.__new__(SelfConceptSynchronizer)
+        score = synchronizer._compute_coherence({"beliefs": {
+            f"belief-{index}": {
+                "category": "",
+                "confidence": 0.57,
+            }
+            for index in range(40)
+        }})
+        self.assertIsNone(score)
+
+    def test_sync_preserves_self_state_when_coherence_evidence_is_unclassified(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state_path = Path(directory, "self_concept.json")
+            state_path.write_text(json.dumps({
+                "state": {
+                    "coherence": 0.2946,
+                    "confidence": 0.61,
+                    "stability": 0.4321,
+                },
+                "beliefs": {
+                    f"belief-{index}": {
+                        "name": f"belief-{index}",
+                        "category": "",
+                        "confidence": 0.57,
+                    }
+                    for index in range(40)
+                },
+            }), encoding="utf-8")
+            synchronizer = SelfConceptSynchronizer(directory)
+            synchronizer.dal = SimpleNamespace(get_beliefs=lambda: [])
+
+            report = synchronizer.run()
+            saved = json.loads(state_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(report["coherence_status"], "insufficient_category_evidence")
+        self.assertEqual(report["coherence_after"], 0.2946)
+        self.assertEqual(report["stability_after"], 0.4321)
+        self.assertEqual(saved["state"]["confidence"], 0.61)
+        self.assertEqual(saved["state"]["coherence"], 0.2946)
+        self.assertEqual(saved["state"]["stability"], 0.4321)
+
     def test_self_concept_cap_is_stable_and_does_not_report_transient_churn(self):
         synchronizer = SelfConceptSynchronizer.__new__(SelfConceptSynchronizer)
         synchronizer.dal = SimpleNamespace(get_beliefs=lambda: [

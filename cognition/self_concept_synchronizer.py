@@ -88,10 +88,20 @@ class SelfConceptSynchronizer:
 
         # 2. Recompute coherence
         new_coherence = self._compute_coherence(sc)
-        sc.setdefault('state', {})['coherence'] = new_coherence
-        sc['state']['last_updated'] = _now()
-        sc['state']['confidence'] = min(0.85, new_coherence + 0.1)
-        report['coherence_after'] = new_coherence
+        report['coherence_status'] = (
+            'computed' if new_coherence is not None else 'insufficient_category_evidence'
+        )
+        if new_coherence is not None:
+            sc.setdefault('state', {})['coherence'] = new_coherence
+            sc['state']['last_updated'] = _now()
+            sc['state']['confidence'] = min(0.85, new_coherence + 0.1)
+            report['coherence_after'] = new_coherence
+        else:
+            # Missing recognized evidence is not evidence of incoherence.
+            # Preserve the last measured value and do not feed a fabricated
+            # low score into identity stability or future decision pressure.
+            new_coherence = report['coherence_before']
+            report['coherence_after'] = new_coherence
 
         # 3. Extract milestones from life_story
         milestones = self._extract_milestones()
@@ -108,13 +118,19 @@ class SelfConceptSynchronizer:
         # tension_engine uses: raw_identity = (1 - identity_stability)*0.7 + contradiction*0.3
         # So raising stability from 0.5 → 0.7 drops identity_stress from ~0.84 → ~0.70
         old_stability = sc.get('state', {}).get('stability', 0.5)
-        # Stability converges toward coherence slowly (smoothing factor 0.85)
-        new_stability = round(0.85 * old_stability + 0.15 * new_coherence, 4)
-        sc['state']['stability'] = new_stability
+        # Stability converges toward a measured coherence slowly (smoothing
+        # factor 0.85). Do not update it when the evidence is unclassifiable.
+        new_stability = (
+            round(0.85 * old_stability + 0.15 * new_coherence, 4)
+            if report['coherence_status'] == 'computed' else old_stability
+        )
+        if report['coherence_status'] == 'computed':
+            sc['state']['stability'] = new_stability
         report['stability_before'] = old_stability
         report['stability_after']  = new_stability
         # Cache coherence so it survives restarts (SelfConcept resets it on load)
-        sc['_scs_coherence_cache'] = new_coherence
+        if report['coherence_status'] == 'computed':
+            sc['_scs_coherence_cache'] = new_coherence
 
         self._save_json('self_concept.json', sc)
         
@@ -405,7 +421,7 @@ class SelfConceptSynchronizer:
 
     # ── Coherence ─────────────────────────────────────────────────────────────
 
-    def _compute_coherence(self, sc: Dict) -> float:
+    def _compute_coherence(self, sc: Dict) -> Optional[float]:
         """Compute confidence coherence from recognized evidence categories.
 
         Category count is not evidence of consistency. The former diversity
@@ -422,7 +438,7 @@ class SelfConceptSynchronizer:
             belief_list = [b for b in beliefs if isinstance(b, dict)]
 
         if not belief_list:
-            return 0.1
+            return None
 
         # Group by category
         by_cat: Dict[str, List[float]] = {}
@@ -436,7 +452,7 @@ class SelfConceptSynchronizer:
             by_cat.setdefault(cat, []).append(conf)
 
         if not by_cat:
-            return 0.1
+            return None
 
         # Weighted score
         total_weight = 0.0
