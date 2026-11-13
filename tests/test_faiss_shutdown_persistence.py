@@ -63,14 +63,14 @@ def test_organism_shutdown_flushes_index_after_stopping_internal_loop():
     organism._loop = SimpleNamespace(shutdown=lambda: events.append("loop"))
     organism.ai_system = SimpleNamespace(
         background_worker=SimpleNamespace(
-            shutdown=lambda: events.append("background_worker") or True
+            shutdown=lambda timeout=10.0: events.append(("background_worker", timeout)) or True
         ),
         flush_memory_index=lambda: events.append("flush_index") or True,
     )
 
     organism.shutdown()
 
-    assert events == ["loop", "background_worker", "flush_index"]
+    assert events == ["loop", ("background_worker", 60.0), "flush_index"]
 
 
 def test_organism_skips_index_flush_if_background_worker_did_not_stop():
@@ -85,7 +85,7 @@ def test_organism_skips_index_flush_if_background_worker_did_not_stop():
 
     organism.shutdown()
 
-    organism.ai_system.background_worker.shutdown.assert_called_once_with()
+    organism.ai_system.background_worker.shutdown.assert_called_once_with(timeout=60.0)
     flush.assert_not_called()
 
 

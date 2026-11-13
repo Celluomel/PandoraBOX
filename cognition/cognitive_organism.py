@@ -333,7 +333,7 @@ class CognitiveOrganism:
         worker_stopped = True
         if callable(stop_background_worker):
             try:
-                worker_stopped = bool(stop_background_worker())
+                worker_stopped = bool(stop_background_worker(timeout=60.0))
             except Exception as exc:
                 worker_stopped = False
                 logger.warning("[CognitiveOrganism] Background worker shutdown failed: %s", exc)

@@ -35,6 +35,7 @@ import sys
 import os
 import logging
 import threading
+import atexit
 
 logging.basicConfig(
     level=logging.INFO,
@@ -318,7 +319,14 @@ if __name__ in {'__main__', '__mp_main__'}:
     app.on_startup(_on_startup)
 
     # ── Graceful shutdown ─────────────────────────────────────────────
+    _shutdown_lock = threading.Lock()
+    _shutdown_state = {'complete': False}
+
     def _on_shutdown():
+        with _shutdown_lock:
+            if _shutdown_state['complete']:
+                return
+            _shutdown_state['complete'] = True
         logger.info('App shutting down — saving session...')
         try:
             from core.body_bridge_server import stop_body_bridge_server
@@ -353,6 +361,10 @@ if __name__ in {'__main__', '__mp_main__'}:
         logger.info('Shutdown complete.')
 
     app.on_shutdown(_on_shutdown)
+    # NiceGUI normally invokes on_shutdown, but Ctrl+C/launcher exits can
+    # bypass its ASGI lifespan callback. Keep the cognitive store flush on
+    # Python's normal process-exit path as an idempotent fallback.
+    atexit.register(_on_shutdown)
 
     # ── Init search backend with saved config keys ────────────────────
     def _init_search_backend():
