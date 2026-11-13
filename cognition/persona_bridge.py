@@ -3252,6 +3252,32 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                             turn_id=_audit_turn_id,
                         )
                         failures.append(RuntimeError("unknown goal/means stage status"))
+                elif stage_name in {"empathy_outcome", "abstract_reasoning_outcome"}:
+                    outcome_status = str(result.get("status") or "") if isinstance(result, dict) else ""
+                    if outcome_status == "updated":
+                        self._record_turn_stage(
+                            stage_name, "completed", output=result,
+                            consumes=("output_safety",), turn_id=_audit_turn_id,
+                        )
+                    elif outcome_status in {
+                        "no_effect", "skipped_no_prior_affect_read",
+                        "skipped_no_current_result", "skipped_no_causal_pair",
+                        "skipped_no_independent_outcome_evidence",
+                    }:
+                        self._record_turn_stage(
+                            stage_name, outcome_status, output=result,
+                            consumes=("output_safety",), turn_id=_audit_turn_id,
+                        )
+                    else:
+                        failures.append(RuntimeError(
+                            f"{stage_name} returned an invalid effect receipt"
+                        ))
+                        self._record_turn_stage(
+                            stage_name, "failed",
+                            "invalid or unreported effect receipt",
+                            output=result, consumes=("output_safety",),
+                            turn_id=_audit_turn_id,
+                        )
                 elif stage_name == "cognitive_post_turn" and result is False:
                     failures.append(RuntimeError("post-turn lifecycle reported failure"))
                     self._record_turn_stage(

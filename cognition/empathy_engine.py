@@ -318,7 +318,7 @@ class EmpathyEngine:
         user_id:     str,
         user_text:   str,
         ai_response: str,
-    ) -> None:
+    ) -> Dict[str, Any]:
         """
         Post-turn feedback. Updates RelationalMemory and attractor nudges.
         Call AFTER PandoraBOX's response has been generated.
@@ -328,9 +328,16 @@ class EmpathyEngine:
             model = self._models.get(user_id)
 
         if not read or not model:
-            return
+            return {
+                "status": "skipped_no_prior_affect_read",
+                "relational_interaction_increment": 0,
+                "attractor_traits_changed": 0,
+                "persistence": "not_attempted",
+            }
 
         # ── Update RelationalMemory ────────────────────────────────────────
+        interaction_increment = 0
+        persistence = "not_attempted"
         if self._rm and hasattr(self._rm, "record_exchange"):
             try:
                 # Convert our valence/arousal to RelationalMemory's format
@@ -347,7 +354,10 @@ class EmpathyEngine:
                 }.get(read.arousal, "Medium")
 
                 impact = 0.5 + (0.3 if SIGNAL_DISTRESSED in read.signals else 0.0)
-                self._rm.record_exchange(
+                before = None
+                if hasattr(self._rm, "get_or_create"):
+                    before = int(self._rm.get_or_create(user_id).interaction_count)
+                relationship = self._rm.record_exchange(
                     user_id     = user_id,
                     user_text   = user_text,
                     ai_response = ai_response,
@@ -355,11 +365,29 @@ class EmpathyEngine:
                     arousal     = rm_arousal,
                     impact      = impact,
                 )
+                after = getattr(relationship, "interaction_count", None)
+                if before is not None and isinstance(after, int):
+                    interaction_increment = int(after > before)
+                else:
+                    # The operation returned, but this adapter exposes no
+                    # counter with which to verify the in-memory mutation.
+                    persistence = "operation_returned_effect_unverified"
+                if interaction_increment:
+                    # RelationalMemory currently swallows its own save errors;
+                    # do not claim durable persistence from this return value.
+                    persistence = "attempted_unverified"
             except Exception as e:
                 logger.debug(f"EmpathyEngine → RelationalMemory: {e}")
 
         # ── Attractor nudges ───────────────────────────────────────────────
-        self._apply_attractor_nudges(read, model)
+        traits_changed = self._apply_attractor_nudges(read, model)
+        effects = interaction_increment + traits_changed
+        return {
+            "status": "updated" if effects else "no_effect",
+            "relational_interaction_increment": interaction_increment,
+            "attractor_traits_changed": traits_changed,
+            "persistence": persistence,
+        }
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     #  Detection — heuristic pass
@@ -609,7 +637,7 @@ class EmpathyEngine:
     #  Attractor nudges
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-    def _apply_attractor_nudges(self, read: AffectRead, model: UserAffectModel) -> None:
+    def _apply_attractor_nudges(self, read: AffectRead, model: UserAffectModel) -> int:
         """Apply small shifts to PandoraBOX's attractor traits based on who she's with."""
         try:
             att = (
@@ -617,25 +645,38 @@ class EmpathyEngine:
                 getattr(self._org, "attractors", None)
             )
             if att is None or not hasattr(att, "nudge"):
-                return
+                return 0
+
+            changed = 0
+
+            def nudge_if_changed(trait: str, delta: float) -> None:
+                nonlocal changed
+                before = att.get(trait) if hasattr(att, "get") else None
+                att.nudge(trait, delta)
+                after = att.get(trait) if hasattr(att, "get") else None
+                if before is not None and after is not None and after != before:
+                    changed += 1
 
             if SIGNAL_EXPLORING in read.signals or SIGNAL_CHALLENGING in read.signals:
-                att.nudge("curiosity", +0.004)
-                att.nudge("analytical_depth", +0.002)
+                nudge_if_changed("curiosity", +0.004)
+                nudge_if_changed("analytical_depth", +0.002)
 
             if SIGNAL_DISTRESSED in read.signals or SIGNAL_VENTING in read.signals:
-                att.nudge("empathy", +0.006)
-                att.nudge("playfulness", -0.003)
+                nudge_if_changed("empathy", +0.006)
+                nudge_if_changed("playfulness", -0.003)
 
             if SIGNAL_PLAYFUL in read.signals:
-                att.nudge("playfulness", +0.004)
-                att.nudge("empathy", +0.002)
+                nudge_if_changed("playfulness", +0.004)
+                nudge_if_changed("empathy", +0.002)
 
             if read.valence == "positive" and read.arousal == "high":
-                att.nudge("empathy", +0.003)
+                nudge_if_changed("empathy", +0.003)
+
+            return changed
 
         except Exception as e:
             logger.debug(f"EmpathyEngine attractor nudge: {e}")
+            return 0
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     #  Helpers

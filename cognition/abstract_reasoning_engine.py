@@ -242,33 +242,26 @@ class AbstractReasoningEngine:
             )
         return "\n".join(parts)
 
-    def record_outcome(self, user_id: str, ai_response: str) -> None:
+    def record_outcome(self, user_id: str, ai_response: str) -> Dict[str, Any]:
         """
         Post-turn feedback. Check if the response actually used the insight.
         Strengthens or weakens the causal belief accordingly.
         """
         with self._lock:
             result = self._cache.get(user_id)
-        if not result or not result.causal_pair[0]:
-            return
-
-        antecedent, consequent = result.causal_pair
-        # Simple heuristic: if the derived insight appeared in the response, strengthen
-        if result.derived_insight and result.derived_insight[:30].lower() in ai_response.lower():
-            confidence_boost = 0.05
-        else:
-            confidence_boost = 0.01
-
-        try:
-            wm = getattr(self._org, "world_model", None)
-            if wm and hasattr(wm, "learn_causal"):
-                # Retrieve existing belief and boost
-                for belief in getattr(wm, "causal_beliefs", []):
-                    if belief.antecedent == antecedent and belief.consequent == consequent:
-                        belief.confidence = min(0.95, belief.confidence + confidence_boost)
-                        break
-        except Exception:
-            pass
+        if not result:
+            return {"status": "skipped_no_current_result", "beliefs_updated": 0}
+        if not result.causal_pair or not result.causal_pair[0] or not result.causal_pair[1]:
+            return {"status": "skipped_no_causal_pair", "beliefs_updated": 0}
+        # Repetition in the generated answer is not independent evidence for
+        # the causal claim. Do not reinforce a belief from the LLM echoing its
+        # own insight; keep the causal record unchanged until an external or
+        # otherwise independent outcome signal is available.
+        return {
+            "status": "skipped_no_independent_outcome_evidence",
+            "beliefs_updated": 0,
+            "causal_pair_available": True,
+        }
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     #  Abstractness scoring
