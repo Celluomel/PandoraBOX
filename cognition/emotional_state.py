@@ -7,7 +7,7 @@ not interaction count. A difficult conversation colors the next one.
 A long silence creates a different kind of arrival than jumping straight back in.
 
 Architecture:
-  - Six primary emotions, each with a current value, a personality-derived
+  - Eleven emotion channels, each with a current value, a personality-derived
     baseline, and a half-life in real hours
   - Decay is computed from actual clock time, so 10 minutes of silence
     produces less decay than 8 hours
@@ -88,9 +88,9 @@ EMOTION_LANGUAGE = {
 # a rolling background average of the overall valence/arousal mix, distinct
 # from moment-to-moment reactions. A person can be in a good mood underneath
 # a single annoying moment, or a low mood underneath one nice exchange;
-# with only the six fast/medium emotions above, PandoraBOX couldn't have that —
-# every emotional read collapsed to "how do I feel about the last thing
-# that happened", never "how have I generally been, independent of right now".
+# A separate slow mood track prevents the persistent channels from collapsing
+# every emotional read into "how do I feel about the last thing that happened"
+# instead of the longer-term direction.
 MOOD_HALFLIFE_HOURS = 96.0   # ~4 days — mood catches up to reality slowly
 
 # Personality trait → emotion baseline contribution weights

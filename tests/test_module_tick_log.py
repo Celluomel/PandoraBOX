@@ -151,6 +151,34 @@ class ModuleTickLogTests(unittest.TestCase):
         self.assertTrue(module.did_run)
         self.assertEqual(output["quality"], "side_effect_only")
 
+    def test_internal_loop_probe_uses_structured_no_action_receipt(self):
+        class GoalActionModule:
+            _last_tick_outcome = None
+
+            def run_tick(self):
+                self._last_tick_outcome = {
+                    "outcome_status": "skipped",
+                    "reason_code": "no_eligible_goals",
+                }
+                return None
+
+        module = GoalActionModule()
+        loop = InternalThoughtLoop.__new__(InternalThoughtLoop)
+        loop._module_tick_log = ModuleTickLog()
+        loop._module_tick_wrapped = set()
+        loop._goal_action_executor = module
+
+        loop._refresh_module_tick_probes()
+        result = module.run_tick()
+
+        tick = loop.module_tick_snapshot()["goal_action_executor"]
+        self.assertIsNone(result)
+        self.assertEqual(tick["tick_count"], 1)
+        self.assertEqual(tick["last_status"], "completed")
+        self.assertEqual(tick["state"], "healthy")
+        self.assertEqual(tick["last_output"]["quality"], "present")
+        self.assertNotIn("no_eligible_goals", repr(tick["last_output"]))
+
     def test_probe_targets_match_live_internal_loop_entrypoints(self):
         calls = []
         loop = InternalThoughtLoop.__new__(InternalThoughtLoop)

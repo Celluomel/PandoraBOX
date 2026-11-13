@@ -537,6 +537,7 @@ class InternalThoughtLoop:
 
                 @wraps(bound_method)
                 def observed(*args, __bound=bound_method, __module=module_name,
+                             __module_instance=module,
                              __method=method_name, __side_effect_only=side_effect_only,
                              **kwargs):
                     started = time.perf_counter()
@@ -559,19 +560,36 @@ class InternalThoughtLoop:
                             pass
                         raise
                     duration_ms = (time.perf_counter() - started) * 1000
+                    # Some entrypoints intentionally return None while keeping
+                    # an explicit structured outcome on the module (for
+                    # example GoalActionExecutor records why it did not act).
+                    # Attribute that receipt to the tick instead of reporting
+                    # an empty, unverified output. Preserve the public return
+                    # value for the caller.
+                    observed_output = output
+                    if observed_output is None:
+                        outcome_receipt = getattr(
+                            __module_instance, "_last_tick_outcome", None
+                        )
+                        if isinstance(outcome_receipt, dict):
+                            observed_output = outcome_receipt
                     self._module_tick_log.record(
                         __module, __method, started_at=started,
                         duration_ms=duration_ms,
-                        output=output,
-                        side_effect_only=__side_effect_only,
+                        output=observed_output,
+                        side_effect_only=(
+                            __side_effect_only and observed_output is None
+                        ),
                     )
                     try:
                         self._record_cycle_stage(
                             f"module_tick:{__module}.{__method}", "completed",
                             inputs=self._cycle_input_evidence(args, kwargs),
-                            output=output,
+                            output=observed_output,
                             metrics={"duration_ms": round(duration_ms, 2)},
-                            side_effect_only=__side_effect_only,
+                            side_effect_only=(
+                                __side_effect_only and observed_output is None
+                            ),
                         )
                     except Exception:
                         pass
