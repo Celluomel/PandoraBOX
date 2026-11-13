@@ -67,6 +67,18 @@ _DIRECT_RECALL_PATTERNS = (
     re.compile(r"\bwhat\s+(?:do|did|have|has|can)\s+you\s+(?:remember|recall)\b", re.IGNORECASE),
     re.compile(r"\b(?:tu\s+te\s+rappelles|tu\s+te\s+souviens)\b", re.IGNORECASE),
     re.compile(r"\b(?:do\s+you\s+remember|can\s+you\s+recall)\b", re.IGNORECASE),
+    # Exact filenames are historical identifiers in chat: route a direct
+    # "what is the filename/name of the file" question through source-backed
+    # recall so generation cannot substitute a plausible-looking name.
+    re.compile(
+        r"\bwhat\s+is\s+the\s+(?:exact\s+)?(?:filename|file\s*name|"
+        r"name\s+of\s+(?:the\s+)?(?:markdown\s+)?file)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bquel(?:le)?\s+est\s+le\s+nom\s+du\s+(?:fichier|document)\b",
+        re.IGNORECASE,
+    ),
 )
 
 

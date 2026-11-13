@@ -11,6 +11,7 @@ sys.modules.setdefault("cognition", package)
 from cognition.memory_retrieval import (
     exact_filename_recall_result,
     faiss_l2_relevance,
+    is_explicit_memory_recall_query,
     rank_documents,
     tokenize,
 )
@@ -126,6 +127,24 @@ class MemoryRetrievalQualityTests(unittest.TestCase):
         self.assertEqual(result["status"], "supported")
         self.assertEqual(result["answer"], "`rapport-audit.md`")
         self.assertIsNone(exact_filename_recall_result("What filename is this?", [source]))
+
+    def test_direct_filename_lookup_uses_grounded_recall_without_remember_wording(self):
+        query = (
+            "Quel est le nom du fichier Markdown qui contient le statut de l’audit cognitif ? "
+            "Réponds uniquement par le nom du fichier."
+        )
+        self.assertTrue(is_explicit_memory_recall_query(query))
+        result = exact_filename_recall_result(query, [{
+            "id": 24,
+            "memory_type": "user_message",
+            "text": "User message: /docs/COGNITIVE_HARNESS_AUDIT_STATUS_2026-11-11.md",
+            "relevance": 0.89,
+        }])
+        self.assertEqual(result["status"], "supported")
+        self.assertEqual(result["answer"], "`COGNITIVE_HARNESS_AUDIT_STATUS_2026-11-11.md`")
+
+    def test_filename_lookup_phrase_is_not_inferred_from_bare_filename_reference(self):
+        self.assertFalse(is_explicit_memory_recall_query("What filename is this?"))
 
 
 if __name__ == "__main__":
