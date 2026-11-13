@@ -125,6 +125,8 @@ class Phase1Orchestrator:
                 'curiosity_drive': 0.5,
                 'identity_stress': 0.3,
                 'emotional_valence': 0.0,
+                'emotional_arousal': 0.0,
+                'emotional_pressure': 0.0,
                 'energy_level': 0.5,
                 'relational_pressure': 0.3,
                 'interpretation': 'MODERATE (fallback)'

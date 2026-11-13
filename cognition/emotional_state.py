@@ -523,28 +523,65 @@ class EmotionalStateManager:
         from the current emotion mix.
         """
         vals = self.get_current_values()
+        baselines = {name: emo.baseline for name, emo in self.emotions.items()}
+        return self.calculate_valence_arousal(vals, baselines)
+
+    @staticmethod
+    def calculate_valence_arousal(
+        values: Dict[str, float], baselines: Optional[Dict[str, float]] = None,
+    ) -> Tuple[float, float]:
+        """Canonical, side-effect-free valence/arousal calculation for consumers."""
+        baselines = baselines or EMOTION_DEFAULT_BASELINES
         valence = (
-            vals.get("satisfaction", 0.3) * 0.35 +
-            vals.get("warmth",       0.3) * 0.30 +
-            vals.get("enthusiasm",   0.3) * 0.20 -
-            vals.get("relief",       0.24) * 0.20 +
-            vals.get("frustration",  0.1) * 0.30 -
-            vals.get("anxiety",      0.2) * 0.25 -
-            vals.get("sadness",      0.08) * 0.28 -
-            vals.get("disappointment", 0.08) * 0.26
+            (values.get("satisfaction", baselines.get("satisfaction", 0.3)) - baselines.get("satisfaction", 0.3)) * 0.35 +
+            (values.get("warmth",       baselines.get("warmth", 0.3)) - baselines.get("warmth", 0.3)) * 0.30 +
+            (values.get("enthusiasm",   baselines.get("enthusiasm", 0.3)) - baselines.get("enthusiasm", 0.3)) * 0.20 -
+            (values.get("relief",       baselines.get("relief", 0.24)) - baselines.get("relief", 0.24)) * 0.20 +
+            (values.get("frustration",  baselines.get("frustration", 0.3)) - baselines.get("frustration", 0.3)) * 0.30 -
+            (values.get("anxiety",      baselines.get("anxiety", 0.3)) - baselines.get("anxiety", 0.3)) * 0.25 -
+            (values.get("sadness",      baselines.get("sadness", 0.2)) - baselines.get("sadness", 0.2)) * 0.28 -
+            (values.get("disappointment", baselines.get("disappointment", 0.2)) - baselines.get("disappointment", 0.2)) * 0.26
         )
-        valence = max(-1.0, min(1.0, (valence - 0.3) * 3))
+        valence = max(-1.0, min(1.0, valence * 3))
 
         arousal = (
-            vals.get("enthusiasm",   0.3) * 0.40 +
-            vals.get("curiosity",    0.3) * 0.30 +
-            vals.get("anxiety",      0.2) * 0.20 +
-            vals.get("frustration",  0.1) * 0.10 +
-            vals.get("surprise",     0.20) * 0.25 +
-            vals.get("anticipation", 0.24) * 0.12
+            values.get("enthusiasm",   0.3) * 0.40 +
+            values.get("curiosity",    0.3) * 0.30 +
+            values.get("anxiety",      0.2) * 0.20 +
+            values.get("frustration",  0.1) * 0.10 +
+            values.get("surprise",     0.20) * 0.25 +
+            values.get("anticipation", 0.24) * 0.12
         )
         arousal = max(0.0, min(1.0, arousal))
         return round(valence, 3), round(arousal, 3)
+
+    @staticmethod
+    def calculate_valence_arousal_from_snapshot(
+        emotion_records: Dict[str, Any], now_ts: Optional[float] = None,
+    ) -> Tuple[float, float]:
+        """Read a persisted emotion snapshot using the manager's decay model."""
+        now = time.time() if now_ts is None else float(now_ts)
+        values: Dict[str, float] = dict(EMOTION_DEFAULT_BASELINES)
+        baselines: Dict[str, float] = dict(EMOTION_DEFAULT_BASELINES)
+        for name, record in (emotion_records or {}).items():
+            if isinstance(record, dict):
+                default_baseline = EMOTION_DEFAULT_BASELINES.get(name, 0.3)
+                value = float(record.get("value", record.get("baseline", default_baseline)))
+                baseline = float(record.get("baseline", default_baseline))
+                updated = float(record.get("last_updated_ts", now))
+                half_life = EMOTION_HALFLIFE_HOURS.get(name)
+                if half_life and now > updated:
+                    elapsed_hours = (now - updated) / 3600.0
+                    decay = 0.5 ** (elapsed_hours / half_life)
+                    value = baseline + (value - baseline) * decay
+                values[name] = max(0.0, min(1.0, value))
+                baselines[name] = baseline
+            elif isinstance(record, (int, float)):
+                values[name] = max(0.0, min(1.0, float(record)))
+                baselines[name] = EMOTION_DEFAULT_BASELINES.get(name, 0.3)
+        if not emotion_records:
+            return 0.0, 0.0
+        return EmotionalStateManager.calculate_valence_arousal(values, baselines)
 
     def get_state_description(self) -> str:
         """

@@ -27,7 +27,7 @@ class DecisionPressureCalculator:
             'goal_pressure': 0.30,      # Primary driver
             'curiosity_drive': 0.20,    # Exploration
             'identity_stress': 0.20,    # Self-coherence
-            'emotional_valence': 0.10,  # Emotional state
+            'emotional_pressure': 0.10, # Affect-derived action pressure
             'energy_deficit': 0.10,     # Resource constraint
             'relational_pressure': 0.10 # Social context
         }
@@ -50,6 +50,7 @@ class DecisionPressureCalculator:
             tensions = self._load_json('tensions.json')
             goals = self._load_json('goals.json')
         emotional = self._load_json('emotional_state.json')
+        emotional_signals = self._compute_emotional_signals(emotional)
         curiosity = self._load_json('curiosity.json')
         energy = self._load_json('energy.json')
         relational = self._load_json('relational_memory.json')
@@ -59,7 +60,7 @@ class DecisionPressureCalculator:
             'goal_pressure': self._compute_goal_pressure(goals),
             'curiosity_drive': self._compute_curiosity(curiosity),
             'identity_stress': self._compute_identity_stress(tensions),
-            'emotional_valence': self._compute_emotional_valence(emotional),
+            **emotional_signals,
             'energy_level': self._compute_energy(energy),
             'relational_pressure': self._compute_relational_pressure(relational),
             'timestamp': datetime.now().isoformat()
@@ -193,64 +194,26 @@ class DecisionPressureCalculator:
         print(f"   🎭 Identity Stress: {stress:.2f}")
         return stress
     
-    def _compute_emotional_valence(self, emotional_data: Dict) -> float:
-        """
-        Compute emotional valence (-1 to 1, but we use absolute for pressure).
-        Positive emotions = low pressure, negative = high pressure.
-        """
-        if not emotional_data:
-            return 0.0
-        
-        emotions = emotional_data.get('emotions', {})
-        
-        if not emotions:
-            return 0.0
-        
-        # Support both flat {name: value} and nested {name: {value: float}} formats
-        def _eval(v):
-            if isinstance(v, dict): return v.get('value', 0.0)
-            return float(v) if isinstance(v, (int, float)) else 0.0
-        flat = {k: _eval(v) for k, v in emotions.items()}
-
-        # Identify positive and negative emotions (expanded to actual names used)
-        positive_emotions = ['joy', 'contentment', 'satisfaction', 'peace', 'love',
-                             'enthusiasm', 'warmth', 'curiosity', 'delight', 'calm']
-        negative_emotions = ['frustration', 'anxiety', 'fear', 'sadness', 'anger',
-                             'distress', 'guilt', 'shame', 'boredom']
-
-        positive = sum(
-            flat.get(e, 0) for e in positive_emotions
-            if flat.get(e, 0) > 0
+    def _compute_emotional_signals(self, emotional_data: Dict) -> Dict[str, float]:
+        """Return canonical valence/arousal and a separate policy pressure."""
+        from cognition.emotional_state import EmotionalStateManager
+        valence, arousal = EmotionalStateManager.calculate_valence_arousal_from_snapshot(
+            (emotional_data or {}).get('emotions', {})
         )
-        
-        negative = sum(
-            flat.get(e, 0) for e in negative_emotions
-            if flat.get(e, 0) > 0
-        )
-        
-        total = positive + negative
 
-        if total == 0:
-            valence = 0.0
-            arousal = 0.0
-        else:
-            # Valence: -1 (all negative) to +1 (all positive)
-            valence = (positive - negative) / total
-            # Arousal: how emotionally activated overall (0 = flat, 1 = intense)
-            # High arousal in any direction creates cognitive pressure
-            n_emotions = len(flat)
-            arousal = min(1.0, total / max(1, n_emotions))
-
-        # Pressure model: arousal-based
-        # - High negative valence → high pressure (distress)
-        # - Very high positive valence → moderate pressure (enthusiasm drives action)
-        # - Emotional flatness → low pressure
-        neg_pressure  = max(0.0, -valence)            # 0–1: distress pressure
-        pos_pressure  = max(0.0, valence - 0.3) * 0.4 # 0–0.28: enthusiasm pressure
+        # Pressure is a policy input, not another name for emotional valence.
+        neg_pressure = max(0.0, -valence)
+        pos_pressure = max(0.0, valence - 0.3) * 0.4
         pressure = min(1.0, neg_pressure + pos_pressure + arousal * 0.1)
-
-        print(f"   ❤️  Emotional Valence: {valence:.2f} arousal={arousal:.2f} (pressure: {pressure:.2f})")
-        return pressure
+        print(
+            f"   ❤️  Emotional Valence: {valence:.2f} arousal={arousal:.2f} "
+            f"(pressure: {pressure:.2f})"
+        )
+        return {
+            'emotional_valence': valence,
+            'emotional_arousal': arousal,
+            'emotional_pressure': pressure,
+        }
     
     def _compute_energy(self, energy_data: Dict) -> float:
         """
@@ -348,9 +311,7 @@ class DecisionPressureCalculator:
         print("-"*60)
         
         for key in self.weights.keys():
-            value = pressure.get(key.replace('_deficit', '_level'), 0.0)
-            if key == 'energy_deficit':
-                value = pressure.get('energy_deficit', 0.0)
+            value = pressure.get(key, 0.0)
             weight = self.weights[key]
             contribution = value * weight
             
