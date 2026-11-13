@@ -32,6 +32,7 @@ from cognition.grounded_introspection import GroundedIntrospectionGenerator
 from cognition.semantic_extractor import SemanticExtractor
 from cognition.semantic_memory import SemanticMemory
 from cognition.self_concept_synchronizer import SelfConceptSynchronizer
+from cognition.self_concept import SelfConceptSystem
 from cognition.cognitive_attention_engine import CognitiveAttentionEngine
 from cognition.decision_commitment import Commitment, DecisionCommitmentLayer
 from cognition.ai_identity import AIIdentity, IdentityAnalyzer, IdentityComponent
@@ -501,6 +502,25 @@ class CognitiveLogRegressionTests(unittest.TestCase):
             identity_coherence_status="estimated_proxy",
         )
         self.assertEqual(identity.identity_coherence_status, "estimated_proxy")
+
+    def test_self_concept_persists_legacy_metric_migration_on_load(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory, "self_concept.json")
+            path.write_text(json.dumps({
+                "beliefs": {},
+                "state": {"coherence": 0.32, "stability": 0.41},
+            }), encoding="utf-8")
+
+            instance = SelfConceptSystem(str(path))
+            saved = json.loads(path.read_text(encoding="utf-8"))["state"]
+            SelfConceptSystem._live_instances.remove(instance)
+
+        self.assertIsNone(saved["coherence"])
+        self.assertIsNone(saved["stability"])
+        self.assertEqual(saved["legacy_coherence_proxy"], 0.32)
+        self.assertEqual(saved["legacy_stability_proxy"], 0.41)
+        self.assertEqual(saved["coherence_status"], "unmeasured")
+        self.assertEqual(saved["stability_status"], "unmeasured")
 
     def test_self_concept_cap_is_stable_and_does_not_report_transient_churn(self):
         synchronizer = SelfConceptSynchronizer.__new__(SelfConceptSynchronizer)

@@ -529,18 +529,26 @@ class SelfConceptSystem:
         )
 
     @staticmethod
-    def _migrate_unvalidated_metrics(state: SelfConceptState) -> None:
+    def _migrate_unvalidated_metrics(state: SelfConceptState) -> bool:
         """Preserve legacy proxy values while retiring unsupported metric labels."""
+        migrated = False
         if state.coherence_status != "measured":
             if state.coherence is not None and state.legacy_coherence_proxy is None:
                 state.legacy_coherence_proxy = state.coherence
+                migrated = True
+            if state.coherence is not None or state.coherence_status != "unmeasured":
+                migrated = True
             state.coherence = None
             state.coherence_status = "unmeasured"
         if state.stability_status != "measured":
             if state.stability is not None and state.legacy_stability_proxy is None:
                 state.legacy_stability_proxy = state.stability
+                migrated = True
+            if state.stability is not None or state.stability_status != "unmeasured":
+                migrated = True
             state.stability = None
             state.stability_status = "unmeasured"
+        return migrated
 
     def reload_from_disk(self) -> int:
         """
@@ -572,8 +580,10 @@ class SelfConceptSystem:
                 for k, v in sd.items():
                     if hasattr(self._state, k):
                         setattr(self._state, k, v)
-                self._migrate_unvalidated_metrics(self._state)
+                migrated = self._migrate_unvalidated_metrics(self._state)
                 self._update_belief_confidence_proxy()
+                if migrated:
+                    self._save()
                 logger.debug(
                     f"[SelfConcept] reloaded from disk: "
                     f"{len(self._beliefs)} beliefs, "
@@ -619,8 +629,10 @@ class SelfConceptSystem:
                 if k in _valid_state_fields:
                     setattr(self._state, k, v)
                 # silently drop: "confidence", "milestones", and any future orphans
-            self._migrate_unvalidated_metrics(self._state)
+            migrated = self._migrate_unvalidated_metrics(self._state)
             self._update_belief_confidence_proxy()
+            if migrated:
+                self._save()
             logger.info(f"SelfConcept: {len(self._beliefs)} beliefs loaded")
         except Exception as e:
             logger.error(f"SelfConcept load: {e}")
