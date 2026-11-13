@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from core.module_tick_log import ModuleTickLog
 from core.internal_loop import InternalThoughtLoop
 from cognition.global_workspace import GlobalWorkspace
+from cognition.thought_thread_engine import ThoughtThreadStatus
 
 
 def make_loop():
@@ -401,3 +402,65 @@ def test_rejected_proposal_clears_shared_workspace_focus_and_intention():
 
     assert state["focus"] is None
     assert state["intention"] is None
+
+
+def test_phase2_recognizes_completed_tte_threads_and_retries_failed_link():
+    loop = make_loop()
+    calls = []
+    saved = []
+    thread = SimpleNamespace(
+        id="thread-1",
+        topic="resolved hypothesis",
+        type="reflection",
+        conclusion="evidence reviewed",
+        status=ThoughtThreadStatus.COMPLETED,
+        current_state={},
+    )
+
+    class Phase2:
+        result = []
+
+        def link_resolved_threads(self, payloads):
+            calls.append(payloads)
+            return self.result
+
+    class Threads:
+        def _save(self):
+            saved.append(True)
+
+    loop._phase2 = Phase2()
+    loop._tte = Threads()
+
+    assert loop._phase2_thread_is_resolved(thread)
+    assert loop._link_phase2_thread(thread) is None
+    assert not thread.current_state.get("identity_linked")
+    assert saved == []
+
+    loop._phase2.result = [{
+        "beliefs_changed": [],
+        "traits_changed": [],
+        "confidence_updates": [],
+        "narrative_updates": [],
+    }]
+    class FailingThreads:
+        def _save(self):
+            raise RuntimeError("persistence unavailable")
+
+    loop._tte = FailingThreads()
+    try:
+        loop._link_phase2_thread(thread)
+        raise AssertionError("persistence failure should propagate")
+    except RuntimeError as error:
+        assert str(error) == "persistence unavailable"
+    assert not thread.current_state.get("identity_linked")
+    assert not getattr(thread, "_identity_linked", False)
+
+    loop._tte = Threads()
+    result = loop._link_phase2_thread(thread)
+
+    assert result is loop._phase2.result[0]
+    assert thread.current_state["identity_linked"] is True
+    assert loop._phase2_thread_identity_linked(thread)
+    assert len(calls) == 3
+    assert saved == [True]
+    assert loop._link_phase2_thread(thread) is None

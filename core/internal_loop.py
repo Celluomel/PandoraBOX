@@ -168,6 +168,77 @@ class InternalThoughtLoop:
         if name in _TICK_PROBES and getattr(self, "_module_tick_log", None) is not None:
             self._refresh_module_tick_probes(name)
 
+    @staticmethod
+    def _phase2_thread_is_resolved(thread: Any) -> bool:
+        """Accept the TTE's actual terminal enum value as well as legacy labels."""
+        status = getattr(thread, "status", None)
+        status_value = getattr(status, "value", status)
+        return str(status_value or "").strip().casefold() in {"completed", "resolved"}
+
+    @staticmethod
+    def _phase2_thread_identity_linked(thread: Any) -> bool:
+        state = getattr(thread, "current_state", None)
+        return bool(
+            getattr(thread, "_identity_linked", False)
+            or (isinstance(state, dict) and state.get("identity_linked"))
+        )
+
+    @staticmethod
+    def _phase2_identity_link_result_succeeded(result: Any) -> bool:
+        """A linker result is usable only when it has the documented result shape."""
+        return isinstance(result, dict) and all(
+            isinstance(result.get(key), list)
+            for key in ("beliefs_changed", "traits_changed", "confidence_updates", "narrative_updates")
+        )
+
+    def _link_phase2_thread(self, thread: Any) -> dict[str, Any] | None:
+        """Link one terminal thread and persist its marker only after a valid result."""
+        if (
+            self._phase2 is None
+            or not self._phase2_thread_is_resolved(thread)
+            or self._phase2_thread_identity_linked(thread)
+        ):
+            return None
+        payload = {
+            "id": getattr(thread, "id", ""),
+            "name": getattr(thread, "topic", ""),
+            "type": getattr(thread, "type", "unknown"),
+            "status": "resolved",
+            "resolution": {"conclusion": getattr(thread, "conclusion", "")},
+            "resolved_at": datetime.now().isoformat(),
+        }
+        results = self._phase2.link_resolved_threads([payload])
+        result = results[0] if isinstance(results, list) and results else None
+        if not self._phase2_identity_link_result_succeeded(result):
+            return None
+
+        state = getattr(thread, "current_state", None)
+        if not isinstance(state, dict):
+            state = {}
+            thread.current_state = state
+        marker_was_present = "identity_linked" in state
+        previous_marker = state.get("identity_linked")
+        previous_attribute = getattr(thread, "_identity_linked", None)
+        state["identity_linked"] = True
+        thread._identity_linked = True
+        try:
+            if self._tte and callable(getattr(self._tte, "_save", None)):
+                self._tte._save()
+        except Exception:
+            if marker_was_present:
+                state["identity_linked"] = previous_marker
+            else:
+                state.pop("identity_linked", None)
+            if previous_attribute is None:
+                try:
+                    delattr(thread, "_identity_linked")
+                except AttributeError:
+                    pass
+            else:
+                thread._identity_linked = previous_attribute
+            raise
+        return result
+
     def __init__(self, organism: "CognitiveOrganism"):
         self._organism = organism
         self._running = False
@@ -1997,10 +2068,29 @@ class InternalThoughtLoop:
 
         # ── V33: Phase 2 Advanced Thought Evaluation (semantic) ───────────
         # Every 7 slow cycles (~14 minutes), evaluate thoughts with semantic analysis
-        if (self._phase2 and self._slow_cycle_count % 7 == 0
-                and (not self._governor or self._governor.may_run('Phase2ThoughtEval'))):
+        _phase2_eval_due = self._slow_cycle_count % 7 == 0
+        _phase2_eval_allowed = (
+            self._phase2 is not None
+            and _phase2_eval_due
+            and (not self._governor or self._governor.may_run('Phase2ThoughtEval'))
+        )
+        if self._phase2 is None:
+            self._record_cycle_stage("phase2_advanced_evaluation", "unavailable")
+        elif not _phase2_eval_due:
+            self._record_cycle_stage(
+                "phase2_advanced_evaluation", "skipped_cadence",
+                metrics={"cycle": self._slow_cycle_count, "interval_cycles": 7},
+            )
+        elif not _phase2_eval_allowed:
+            self._record_cycle_stage("phase2_advanced_evaluation", "skipped_governor")
+        else:
             try:
                 evaluated_thoughts = self._phase2.evaluate_thoughts_advanced()
+                _phase2_eval_ref = self._record_cycle_stage(
+                    "phase2_advanced_evaluation",
+                    "completed" if evaluated_thoughts else "no_candidates",
+                    output={"evaluated_count": len(evaluated_thoughts or [])},
+                )
                 if evaluated_thoughts:
                     logger.info(
                         f"[InternalLoop] V33 Advanced evaluation: {len(evaluated_thoughts)} thoughts "
@@ -2030,7 +2120,20 @@ class InternalThoughtLoop:
                             f"[InternalLoop] V33 Goal mutations: "
                             f"{created} created, {updated} updated, {merged} merged"
                         )
+                    self._record_cycle_stage(
+                        "phase2_goal_mutation", "completed",
+                        inputs={"evaluation_output_ref": _phase2_eval_ref},
+                        output={
+                            "created_count": created,
+                            "updated_count": updated,
+                            "merged_count": merged,
+                        },
+                    )
             except Exception as _ate:
+                self._record_cycle_stage(
+                    "phase2_advanced_evaluation", "failed",
+                    metrics={"error_type": type(_ate).__name__},
+                )
                 logger.debug(f"[InternalLoop] Advanced thought evaluation error: {_ate}")
 
         # ── EventBus heartbeat: emit dominant drive state every slow cycle ─
@@ -2577,7 +2680,15 @@ class InternalThoughtLoop:
 
                 # ── V33: Phase 2 Narrative Synthesis ──────────────────────────
                 # Every 8 slow cycles (~16 minutes), synthesize coherent narrative
-                if self._phase2 and self._slow_cycle_count % 8 == 0:
+                _phase2_narrative_due = self._slow_cycle_count % 8 == 0
+                if self._phase2 is None:
+                    self._record_cycle_stage("phase2_narrative_synthesis", "unavailable")
+                elif not _phase2_narrative_due:
+                    self._record_cycle_stage(
+                        "phase2_narrative_synthesis", "skipped_cadence",
+                        metrics={"cycle": self._slow_cycle_count, "interval_cycles": 8},
+                    )
+                else:
                     try:
                         # Build cycle data for narrative synthesis
                         cycle_data = {
@@ -2601,6 +2712,11 @@ class InternalThoughtLoop:
                         }
                         
                         narrative = self._phase2.synthesize_narrative(cycle_data)
+                        self._record_cycle_stage(
+                            "phase2_narrative_synthesis",
+                            "completed" if narrative else "no_narrative",
+                            output={"narrative_present": bool(narrative)},
+                        )
                         
                         if narrative:
                             logger.info(f"[InternalLoop] V33 Narrative: {narrative[:80]}...")
@@ -2613,37 +2729,48 @@ class InternalThoughtLoop:
                                     priority=0.65
                                 )
                     except Exception as _ns:
+                        self._record_cycle_stage(
+                            "phase2_narrative_synthesis", "failed",
+                            metrics={"error_type": type(_ns).__name__},
+                        )
                         logger.debug(f"[InternalLoop] Narrative synthesis error: {_ns}")
 
                 # ── V33: Phase 2 Thread→Identity Linking ──────────────────────
                 # Every 12 slow cycles (~24 minutes), link resolved threads to identity
-                if self._phase2 and self._slow_cycle_count % 12 == 0:
+                _phase2_link_due = self._slow_cycle_count % 12 == 0
+                if self._phase2 is None:
+                    self._record_cycle_stage("phase2_thread_identity_link", "unavailable")
+                elif not _phase2_link_due:
+                    self._record_cycle_stage(
+                        "phase2_thread_identity_link", "skipped_cadence",
+                        metrics={"cycle": self._slow_cycle_count, "interval_cycles": 12},
+                    )
+                else:
                     try:
                         # Find recently resolved threads
                         resolved_threads = []
                         if self._tte:
                             for thread in self._tte.all_threads():
-                                if (hasattr(thread, 'status') and 
-                                    thread.status == 'resolved' and
-                                    not getattr(thread, '_identity_linked', False)):
+                                if (
+                                    self._phase2_thread_is_resolved(thread)
+                                    and not self._phase2_thread_identity_linked(thread)
+                                ):
                                     
-                                    thread_dict = {
-                                        'id': getattr(thread, 'id', ''),
-                                        'name': getattr(thread, 'topic', ''),
-                                        'type': getattr(thread, 'type', 'unknown'),
-                                        'status': 'resolved',
-                                        'resolution': {
-                                            'conclusion': getattr(thread, 'conclusion', '')
-                                        },
-                                        'resolved_at': datetime.now().isoformat()
-                                    }
+                                    resolved_threads.append(thread)
                                     
-                                    resolved_threads.append(thread_dict)
-                                    thread._identity_linked = True  # Mark as processed
-                        
                         if resolved_threads:
-                            identity_updates = self._phase2.link_resolved_threads(resolved_threads)
-                            
+                            identity_updates = []
+                            linked_count = 0
+                            for thread in resolved_threads:
+                                try:
+                                    result = self._link_phase2_thread(thread)
+                                except Exception:
+                                    continue
+                                if result is None:
+                                    continue
+                                identity_updates.append(result)
+                                linked_count += 1
+
                             total_beliefs = sum(len(u.get('beliefs_changed', [])) for u in identity_updates)
                             total_traits = sum(len(u.get('traits_changed', [])) for u in identity_updates)
                             
@@ -2653,7 +2780,27 @@ class InternalThoughtLoop:
                                     f"{total_beliefs} beliefs, {total_traits} traits updated "
                                     f"from {len(resolved_threads)} threads"
                                 )
+                            self._record_cycle_stage(
+                                "phase2_thread_identity_link",
+                                "completed" if linked_count == len(resolved_threads) else "partial_or_unavailable",
+                                output={
+                                    "candidate_count": len(resolved_threads),
+                                    "linked_count": linked_count,
+                                    "failed_count": len(resolved_threads) - linked_count,
+                                    "belief_updates": total_beliefs,
+                                    "trait_updates": total_traits,
+                                },
+                            )
+                        else:
+                            self._record_cycle_stage(
+                                "phase2_thread_identity_link", "no_resolved_threads",
+                                output={"candidate_count": 0, "linked_count": 0},
+                            )
                     except Exception as _til:
+                        self._record_cycle_stage(
+                            "phase2_thread_identity_link", "failed",
+                            metrics={"error_type": type(_til).__name__},
+                        )
                         logger.debug(f"[InternalLoop] Thread→Identity linking error: {_til}")
 
 
