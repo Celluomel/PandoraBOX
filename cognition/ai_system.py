@@ -1747,7 +1747,10 @@ Respond ONLY with valid JSON:
     def _needs_identity_dev(self):
         try:
             i = self.ai_system.identity_system.get_identity()
-            return i.identity_coherence < 0.6 or i.self_awareness_level < 0.5
+            coherence_needs_work = (
+                i.identity_coherence is not None and i.identity_coherence < 0.6
+            )
+            return coherence_needs_work or i.self_awareness_level < 0.5
         except: return False
     def _emotional_intensity(self, ms):
         if not ms: return 0.0
@@ -3612,6 +3615,7 @@ Write a first-person journal reflection (2-4 sentences)."""},
             top_values  = sorted(identity.values_system, key=lambda x: x.importance, reverse=True)[:3]
             status["identity"] = {
                 "coherence":      identity.identity_coherence,
+                "coherence_status": identity.identity_coherence_status,
                 "self_awareness": identity.self_awareness_level,
                 "life_phase":     identity.self_narrative.life_phase,
                 "growth":         identity.growth_trajectory,

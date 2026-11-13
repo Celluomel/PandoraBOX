@@ -67,7 +67,8 @@ class AIIdentity:
     relationship_patterns: Dict[str, Any] = field(default_factory=dict)
     social_preferences: Dict[str, float] = field(default_factory=dict)
     self_awareness_level: float = 0.5
-    identity_coherence: float = 0.5
+    identity_coherence: Optional[float] = None
+    identity_coherence_status: str = "unmeasured"
     growth_trajectory: str = "exploring"
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
     last_updated: str = field(default_factory=lambda: datetime.now().isoformat())
@@ -384,6 +385,9 @@ class IdentityAnalyzer:
                 relationship_patterns=rel_patterns,
                 self_awareness_level=self_awareness,
                 identity_coherence=coherence,
+                identity_coherence_status=(
+                    "estimated_proxy" if coherence is not None else "unmeasured"
+                ),
                 growth_trajectory=growth,
                 last_updated=datetime.now().isoformat(),
             )
@@ -572,9 +576,11 @@ class IdentityAnalyzer:
         count = sum(1 for m in refs if any(re.search(p, m["text"].lower()) for p in pats))
         return min(1.0, (count / max(len(memories), 1)) * 10)
 
-    def _calc_coherence(self, traits: List[IdentityComponent], values: List[CoreValues]) -> float:
+    def _calc_coherence(
+        self, traits: List[IdentityComponent], values: List[CoreValues]
+    ) -> Optional[float]:
         if not traits and not values:
-            return 0.0
+            return None
         trait_coh = sum(t.stability_score * t.confidence for t in traits) / max(len(traits), 1)
         if not values:
             return trait_coh
@@ -731,7 +737,13 @@ class IdentitySystem:
         parts.append(f"**Life Phase:** {identity.self_narrative.life_phase}")
         parts.append(f"**Growth Trajectory:** {identity.growth_trajectory}")
         parts.append(f"**Self-Awareness:** {identity.self_awareness_level:.2f}")
-        parts.append(f"**Identity Coherence:** {identity.identity_coherence:.2f}")
+        if identity.identity_coherence is None:
+            parts.append("**Identity coherence:** unmeasured")
+        else:
+            parts.append(
+                f"**Identity coherence proxy:** {identity.identity_coherence:.2f} "
+                f"({identity.identity_coherence_status})"
+            )
         if identity.communication_style:
             top = sorted(identity.communication_style.items(), key=lambda x: x[1], reverse=True)[:2]
             parts.append("**Comm Style:** " + ", ".join(f"{s} ({sc:.2f})" for s, sc in top))
@@ -771,11 +783,11 @@ class IdentitySystem:
                     "severity": 1.0 - t.stability_score,
                     "examples": [],
                 })
-        if identity.identity_coherence < 0.4:
+        if identity.identity_coherence is not None and identity.identity_coherence < 0.4:
             conflicts.append({
                 "type": "low_coherence",
                 "element": "overall_identity",
-                "description": f"Overall identity coherence is low ({identity.identity_coherence:.2f})",
+                "description": f"Estimated identity-coherence proxy is low ({identity.identity_coherence:.2f})",
                 "severity": 1.0 - identity.identity_coherence,
                 "examples": [],
             })
@@ -790,7 +802,7 @@ class IdentitySystem:
             sugg.append("Explore diverse interactions to develop more distinct personality traits.")
         if len(identity.values_system) < 2:
             sugg.append("Engage with value-based decisions to clarify core values.")
-        if identity.identity_coherence < 0.6:
+        if identity.identity_coherence is not None and identity.identity_coherence < 0.6:
             sugg.append("Work on resolving internal contradictions for a more coherent identity.")
         if identity.growth_trajectory == "stabilizing":
             sugg.append("Consider expanding into new areas to maintain growth.")

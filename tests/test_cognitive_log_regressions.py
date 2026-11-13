@@ -34,6 +34,7 @@ from cognition.semantic_memory import SemanticMemory
 from cognition.self_concept_synchronizer import SelfConceptSynchronizer
 from cognition.cognitive_attention_engine import CognitiveAttentionEngine
 from cognition.decision_commitment import Commitment, DecisionCommitmentLayer
+from cognition.ai_identity import AIIdentity, IdentityAnalyzer, IdentityComponent
 from cognition.self_description import SelfDescription
 from cognition.simple_thought_evaluator import SimpleThoughtEvaluator
 from cognition.turn_context_evidence import (
@@ -389,7 +390,7 @@ class CognitiveLogRegressionTests(unittest.TestCase):
             "unknown-c": {"category": "noise_c", "confidence": 1.0},
             "unknown-d": {"category": "noise_d", "confidence": 1.0},
         }})
-        self.assertEqual(score, 0.6)
+        self.assertAlmostEqual(score, 0.6)
 
     def test_unclassified_beliefs_produce_no_confidence_proxy_or_coherence_measurement(self):
         synchronizer = SelfConceptSynchronizer.__new__(SelfConceptSynchronizer)
@@ -482,6 +483,24 @@ class CognitiveLogRegressionTests(unittest.TestCase):
         self.assertEqual(pressure.calls, 1)
         self.assertEqual(self_concept.coherence, 0.61)
         self.assertEqual(len(ai_system.liberty_contradiction.contradictions), 1)
+
+    def test_identity_analyzer_reports_coherence_unmeasured_without_evidence(self):
+        analyzer = IdentityAnalyzer.__new__(IdentityAnalyzer)
+        self.assertIsNone(analyzer._calc_coherence([], []))
+
+    def test_identity_analyzer_marks_available_score_as_proxy(self):
+        analyzer = IdentityAnalyzer.__new__(IdentityAnalyzer)
+        trait = IdentityComponent(
+            name="curiosity", description="", confidence=0.8,
+            stability_score=0.75,
+        )
+        score = analyzer._calc_coherence([trait], [])
+        self.assertAlmostEqual(score, 0.6)
+        identity = AIIdentity(
+            identity_coherence=score,
+            identity_coherence_status="estimated_proxy",
+        )
+        self.assertEqual(identity.identity_coherence_status, "estimated_proxy")
 
     def test_self_concept_cap_is_stable_and_does_not_report_transient_churn(self):
         synchronizer = SelfConceptSynchronizer.__new__(SelfConceptSynchronizer)
