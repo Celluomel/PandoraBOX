@@ -41,6 +41,14 @@ def _cfg():
     """Always return the live config object (updated after every save)."""
     return _settings_mod.config
 
+
+def _persona_relational_memory(persona, organism):
+    """Resolve the relationship store from the component that owns it."""
+    memory = getattr(organism, "relational_memory", None) if organism is not None else None
+    if memory is None and persona is not None:
+        memory = getattr(persona, "relational_memory", None)
+    return memory
+
 class AppState:
     def __init__(self):
         self.llm        = None
@@ -225,7 +233,7 @@ class AppState:
         try:
             from cognition.empathy_engine import EmpathyEngine
             organism_ref = getattr(self.persona, '_organism', None) if self.persona else None
-            rm_ref = getattr(organism_ref, 'relational_memory', None) if organism_ref else None
+            rm_ref = _persona_relational_memory(self.persona, organism_ref)
             if organism_ref:
                 self.empathy_engine = EmpathyEngine(
                     organism          = organism_ref,

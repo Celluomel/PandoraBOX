@@ -12,6 +12,7 @@ from cognition.empathy_engine import (
     UserAffectModel,
 )
 from cognition.turn_context_evidence import audit_safe_turn_summary
+from core.state import _persona_relational_memory
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -156,3 +157,17 @@ def test_effect_receipt_summary_preserves_only_bounded_non_text_evidence():
         "attractor_traits_changed": 2,
         "persistence": "attempted_unverified",
     }
+
+
+def test_app_state_resolves_relational_memory_from_its_actual_owner():
+    relationship_store = object()
+    persona = SimpleNamespace(relational_memory=relationship_store)
+    organism = SimpleNamespace()
+    assert _persona_relational_memory(persona, organism) is relationship_store
+
+
+def test_organism_relational_memory_takes_precedence_when_present():
+    organism_store = object()
+    persona = SimpleNamespace(relational_memory=object())
+    organism = SimpleNamespace(relational_memory=organism_store)
+    assert _persona_relational_memory(persona, organism) is organism_store
