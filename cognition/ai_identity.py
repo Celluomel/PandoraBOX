@@ -214,7 +214,9 @@ class IdentityAnalyzer:
             while consumed < raw_budget:
                 new_memories = self._get_new_memories_since(self._last_processed_id)
                 if not new_memories:
-                    self._rebuild_required = False
+                    if self._rebuild_required:
+                        self._rebuild_required = False
+                        self._save_evidence_state()
                     break
                 # Cursor advancement covers a contiguous raw ID range. Every
                 # row in this prefix is either accumulated or deliberately

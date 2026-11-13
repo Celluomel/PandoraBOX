@@ -85,6 +85,7 @@ class IdentityEvidenceCheckpointTests(unittest.TestCase):
         resumed.analyze_identity()
         self.assertEqual(resumed._last_processed_id, 3)
         self.assertEqual(resumed._trait_evidence["curiosity"]["count"], 3)
+        self.assertFalse(self.analyzer()._rebuild_required)
 
     def test_filtered_records_advance_cursor_and_do_not_block_later_evidence(self):
         with self.store.get_connection() as connection:
