@@ -503,7 +503,7 @@ def test_memory_and_profile_context_stages_are_bound_to_prompt_turn():
     assert observed == expected
 
 
-def test_exact_filename_recall_uses_the_stream_worker_input_parameter():
+def test_exact_filename_recall_result_crosses_prompt_worker_boundary():
     source = Path(__file__).resolve().parents[1] / "cognition" / "persona_bridge.py"
     tree = ast.parse(source.read_text(encoding="utf-8"))
     bridge_class = next(
@@ -515,15 +515,55 @@ def test_exact_filename_recall_uses_the_stream_worker_input_parameter():
         if isinstance(node, ast.AsyncFunctionDef)
         and node.name == "_stream_with_full_lifecycle"
     )
-    calls = [
-        node for node in ast.walk(stream)
+    build_prompt = next(
+        node for node in bridge_class.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "_build_prompt_and_cache"
+    )
+    retrieval_calls = [
+        node for node in ast.walk(build_prompt)
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Name)
         and node.func.id == "exact_filename_recall_result"
     ]
-    assert len(calls) == 1
-    assert isinstance(calls[0].args[0], ast.Name)
-    assert calls[0].args[0].id == "effective_input"
+    assert len(retrieval_calls) == 1
+    assert [argument.id for argument in retrieval_calls[0].args[:2]] == [
+        "user_input", "memories",
+    ]
+    returned = [
+        node for node in ast.walk(build_prompt)
+        if isinstance(node, ast.Return)
+        and isinstance(node.value, ast.Tuple)
+        and any(
+            isinstance(item, ast.Name) and item.id == "_filename_recall_result"
+            for item in node.value.elts
+        )
+    ]
+    assert returned
+    assert not any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "exact_filename_recall_result"
+        for node in ast.walk(stream)
+    )
+    worker_assignments = [
+        node for node in ast.walk(stream)
+        if isinstance(node, ast.Assign)
+        and isinstance(node.value, ast.Await)
+        and isinstance(node.value.value, ast.Call)
+        and isinstance(node.value.value.func, ast.Attribute)
+        and node.value.value.func.attr == "to_thread"
+        and any(
+            isinstance(argument, ast.Attribute)
+            and argument.attr == "_build_prompt_and_cache"
+            for argument in node.value.value.args
+        )
+    ]
+    assert len(worker_assignments) == 1
+    target = worker_assignments[0].targets[0]
+    assert isinstance(target, ast.Tuple)
+    assert isinstance(target.elts[-1], ast.Name)
+    assert target.elts[-1].id == "_filename_recall_result"
 
 
 def test_deferred_profile_and_post_turn_stages_keep_originating_turn_id():

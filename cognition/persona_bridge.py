@@ -2098,7 +2098,7 @@ Write at most 70 words, in the user's language, only if a concise carry-forward 
                 and _goal_means_analysis.unique_feasible_option() is not None
             )
         )
-        system_prompt, emo_dict, cond_dict, arb_temperature = await asyncio.to_thread(
+        system_prompt, emo_dict, cond_dict, arb_temperature, _filename_recall_result = await asyncio.to_thread(
             self._build_prompt_and_cache,
             effective_input,
             user_id,
@@ -2389,25 +2389,23 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             )
             else ""
         )
-        if _explicit_memory_recall:
-            _filename_recall = exact_filename_recall_result(effective_input, memories)
-            if _filename_recall is not None:
-                _deterministic_response = str(_filename_recall.get("answer") or "")
-                self._record_turn_stage(
-                    "memory_recall_answer", str(_filename_recall.get("status") or "unverified"),
-                    "Exact filename answer derived from a retrieved user-authored source; "
-                    "assistant-authored memory text is not accepted as evidence.",
-                    output={
-                        "source_ref": _filename_recall.get("source_ref"),
-                        "source_type": _filename_recall.get("source_type"),
-                        "relevance": _filename_recall.get("relevance"),
-                        "answer_sha256": hashlib.sha256(
-                            _deterministic_response.encode("utf-8", errors="replace")
-                        ).hexdigest()[:20],
-                    },
-                    consumes=("memory_retrieval", "turn_input"),
-                    turn_id=_audit_turn_id,
-                )
+        if _explicit_memory_recall and _filename_recall_result is not None:
+            _deterministic_response = str(_filename_recall_result.get("answer") or "")
+            self._record_turn_stage(
+                "memory_recall_answer", str(_filename_recall_result.get("status") or "unverified"),
+                "Exact filename answer derived from a retrieved user-authored source; "
+                "assistant-authored memory text is not accepted as evidence.",
+                output={
+                    "source_ref": _filename_recall_result.get("source_ref"),
+                    "source_type": _filename_recall_result.get("source_type"),
+                    "relevance": _filename_recall_result.get("relevance"),
+                    "answer_sha256": hashlib.sha256(
+                        _deterministic_response.encode("utf-8", errors="replace")
+                    ).hexdigest()[:20],
+                },
+                consumes=("memory_retrieval", "turn_input"),
+                turn_id=_audit_turn_id,
+            )
         if _runtime_execution_query and not _explicit_memory_recall:
             from cognition.self_description import trace_grounded_architecture_answer
             _deterministic_response = trace_grounded_architecture_answer(
@@ -3469,14 +3467,16 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
         peer_name: str = "",
         audit_turn_id: str = "",
         include_are_context: bool = True,
-    ) -> tuple[str, dict, dict, float | None]:
+    ) -> tuple[str, dict, dict, float | None, dict | None]:
         """
         Run PandoraBOX's pre-LLM context pipeline and return:
           - system_prompt     (str)
           - emo_dict          (real emotion analysis dict)
           - cond_dict         (real conditioning dict)
           - arb_temperature   (float from CognitiveOrganism arbitration, or None)
-        All four are needed for the post-turn lifecycle.
+          - exact filename recall result from user-authored retrieved evidence, or None
+        The last value crosses the prompt-worker boundary without exposing memory
+        text to the streaming worker.
         """
         s = self._system
         self._last_web_sources = []
@@ -3695,6 +3695,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             _is_event   = (_learned_tier == "event")    or (_learned_tier is None and _seed_event)
 
             memories = []
+            _filename_recall_result = None
             # v78: mood-congruent recall — current valence colors which
             # memories surface, same as it does for a person.
             _cur_valence = None
@@ -3889,6 +3890,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             # before any memory is serialized into the prompt.
             if not peer_name and _is_recall_request:
                 memories = filter_recall_query_records(memories, query=user_input)
+                _filename_recall_result = exact_filename_recall_result(user_input, memories)
 
             self._record_turn_stage(
                 "memory_retrieval",
@@ -4619,7 +4621,10 @@ Memory honesty — two distinct cases:
                 "It cannot establish what the Brain-PC camera sees. If the Brain-PC status above is disabled, inactive, or stale, answer that its current view is unavailable; do not substitute the Body feed."
             )
 
-            return system_prompt, emo_dict, cond_dict, arb_temperature
+            return (
+                system_prompt, emo_dict, cond_dict, arb_temperature,
+                _filename_recall_result,
+            )
 
         except Exception as e:
             logger.warning(f"Prompt build failed, using fallback: {e}")
@@ -4627,6 +4632,7 @@ Memory honesty — two distinct cases:
                 f"You are {_gpn()}, still forming — one moment of an ongoing process. No role to play; be what this moment actually is.",
                 {"valence": "Neutral", "arousal": "Medium"},
                 {},
+                None,
                 None,
             )
 
