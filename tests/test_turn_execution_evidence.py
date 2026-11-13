@@ -74,6 +74,44 @@ def test_turn_trace_exposes_safe_stream_failure_type_but_redacts_exception_text(
     assert secret_detail not in repr(trace)
 
 
+def test_exact_turn_trace_is_retrievable_without_prompt_or_user_content():
+    bridge = _bridge()
+    bridge._last_turn_trace = {
+        "turn_id": "turn-current",
+        "scope": "human",
+        "status": "completed",
+        "started_at": 1.0,
+        "completed_at": 2.0,
+        "user_id": "private-user-id",
+        "stages": {
+            "memory_retrieval": {
+                "status": "completed",
+                "detail": "private recalled memory text",
+                "output_fingerprint": "sha256:receipt",
+                "output_summary": {"candidate_count": 2, "quality": "present_redacted"},
+            },
+        },
+        "stage_events": [{
+            "stage": "memory_retrieval", "status": "completed", "at": 1.5,
+            "detail": "private recalled memory text",
+            "output_fingerprint": "sha256:receipt", "consumes": [],
+        }],
+        "context_sources": {},
+        "pipeline_integrity": {"status": "consistent"},
+        "semantic_answer_validation": {"status": "not_performed", "scope": "none", "reason": "private"},
+    }
+
+    trace = bridge.get_turn_trace("turn-current")
+
+    assert trace["turn_id"] == "turn-current"
+    assert trace["stages"]["memory_retrieval"]["output_fingerprint"] == "sha256:receipt"
+    assert "detail" not in trace["stages"]["memory_retrieval"]
+    assert "private-user-id" not in repr(trace)
+    assert "private recalled memory text" not in repr(trace)
+    assert "reason" not in trace["semantic_answer_validation"]
+    assert bridge.get_turn_trace("unknown-turn") is None
+
+
 def test_stream_lifecycle_receives_originating_audit_turn_id():
     source = Path(__file__).resolve().parents[1] / "cognition" / "persona_bridge.py"
     tree = ast.parse(source.read_text(encoding="utf-8"))

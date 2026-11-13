@@ -1107,6 +1107,70 @@ class PersonaBridge:
             ]
             return trace
 
+    def get_turn_trace(self, turn_id: str) -> dict | None:
+        """Return one exact, content-redacted turn receipt for audit clients."""
+        requested_id = str(turn_id or "")
+        if not requested_id:
+            return None
+        with self._turn_trace_lock:
+            current = getattr(self, "_last_turn_trace", {})
+            source = current if current.get("turn_id") == requested_id else next((
+                item for item in reversed(getattr(self, "_turn_trace_history", []))
+                if item.get("turn_id") == requested_id
+            ), None)
+            if not isinstance(source, dict):
+                return None
+
+            safe_stages = {}
+            for name, stage in source.get("stages", {}).items():
+                if not isinstance(stage, dict):
+                    continue
+                safe_stages[str(name)] = {
+                    key: value for key, value in stage.items()
+                    if key in {
+                        "status", "at", "error_type", "output_fingerprint",
+                        "output_summary", "output_quality", "consumes",
+                    }
+                }
+            safe_events = []
+            for event in source.get("stage_events", []):
+                if isinstance(event, dict):
+                    safe_events.append({
+                        key: event[key] for key in (
+                            "stage", "status", "at", "output_fingerprint", "consumes",
+                        ) if key in event
+                    })
+            safe_sources = {}
+            for name, value in source.get("context_sources", {}).items():
+                if isinstance(value, dict):
+                    safe_sources[str(name)] = {
+                        key: item for key, item in value.items()
+                        if key in {
+                            "status", "at", "active", "frame_age_seconds",
+                            "face_age_seconds", "scene_age_seconds", "observation_count",
+                            "fresh_count", "stale_count", "oldest_age_seconds",
+                            "source_kinds", "record_count", "module_count", "observed_count",
+                            "tick_count", "error_count", "initialized_unobserved_count",
+                            "unavailable_count",
+                        }
+                    }
+            return {
+                "turn_id": requested_id,
+                "scope": source.get("scope"),
+                "status": source.get("status"),
+                "started_at": source.get("started_at"),
+                "completed_at": source.get("completed_at"),
+                "stages": safe_stages,
+                "context_sources": safe_sources,
+                "stage_events": safe_events[-160:],
+                "pipeline_integrity": dict(source.get("pipeline_integrity") or {}),
+                "semantic_answer_validation": {
+                    key: value for key, value in (
+                        source.get("semantic_answer_validation") or {}
+                    ).items() if key in {"status", "scope"}
+                },
+            }
+
     async def _get_response_stream_impl(
         self,
         user_text: str,

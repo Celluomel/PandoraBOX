@@ -314,6 +314,17 @@ async def thoughts(n: int = 10):
         raise HTTPException(500, str(e))
 
 
+@api.get("/audit/turn/{turn_id}")
+async def audit_turn(turn_id: str):
+    """Fetch a content-redacted execution receipt for one exact chat turn."""
+    persona = getattr(state, "persona", None)
+    getter = getattr(persona, "get_turn_trace", None)
+    trace = getter(turn_id) if callable(getter) else None
+    if not isinstance(trace, dict):
+        raise HTTPException(404, "Turn trace not found or no longer retained")
+    return trace
+
+
 # ── POST /chat ────────────────────────────────────────────────────────
 class ChatRequest(BaseModel):
     text:    str
@@ -388,6 +399,7 @@ async def chat(req: ChatRequest):
         "user_id":  resolved_user_id,
         "sources":  sources,
         "body_plan": body_plan,
+        "turn_id": completed_turn_id or None,
     }
 
 
