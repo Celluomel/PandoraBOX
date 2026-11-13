@@ -1844,4 +1844,10 @@ Un tour d’audit complexe a donné une réponse de relance car `primary_generat
 
 **Vérification locale :** `tests/test_memory_retrieval_quality.py`, `tests/test_turn_execution_evidence.py` et `tests/test_presence_identity_language.py` passent : **56 tests**, 9 avertissements connus. `py_compile` et `git diff --check` passent. Une première exécution sans `PYTHONUTF8=1` a échoué sur une comparaison Unicode Windows; la suite relancée avec l’encodage UTF-8 du mode d’audit passe.
 
-**Suite :** cette correction de classification et le présent constat doivent être commités/poussés, puis chargés ensemble au prochain redémarrage géré. Une requête live sera suffisante pour ce tour : vérifier le reçu de rappel exact et la réponse source-ancrée ou l’abstention. Ne pas confondre le nom halluciné de ce test avec une observation mémoire fiable.
+### Validation live après `37d043c` — abstention source-ancrée — 13 novembre 2026
+
+**Correction chargée :** l’instance gérée a redémarré sur `37d043c`, avec `ready=true`, FAISS actif et les trois ports habituels sur le même PID. La formulation anglaise qualifiée est maintenant routée comme `query_source=explicit_recall`.
+
+**Reçu du tour `lumina-1794596794551222300-1` :** FAISS a retourné 36 candidats vectoriels, dont 8 dans le pool final, en 55,79 ms. `memory_recall_answer=abstained_no_source`; `deterministic_reasoning=selected_direct`; la génération primaire est `skipped_deterministic`; la réponse finale est l’abstention « Je n’ai pas retrouvé de source utilisateur confirmant le nom du fichier. » Le pipeline est `consistent`, le tour est terminé, et aucun nom de fichier non étayé n’a été présenté. C’est une validation positive du comportement de sûreté face à une source utilisateur absente, mais **pas** une validation de rappel positif du nom du rapport.
+
+**Suite :** les commits `ad80e64` et `37d043c` sont poussés. Le rappel exact est vérifié sur son chemin d’abstention; le test de récupération positive restera à faire avec un fait réellement présent dans un message utilisateur rappelable, sans inventer une source ni contaminer le profil réel. L’audit continue sur les effets mémoire en aval et sur les scénarios de profil/contextualisation.
