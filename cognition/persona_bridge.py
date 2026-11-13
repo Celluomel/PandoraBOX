@@ -1405,12 +1405,19 @@ class PersonaBridge:
                         # Finalize before the terminal event: stream clients
                         # may stop iteration as soon as they receive metadata.
                         _stream_terminal_seen = True
+                        _stream_error = str(chunk.get("error") or "")
                         self._record_turn_stage(
-                            "streaming_lifecycle", "completed",
-                            output={"terminal_event": "response_meta_received"},
+                            "streaming_lifecycle",
+                            "failed" if _stream_error else "completed",
+                            output={
+                                "terminal_event": "response_meta_received",
+                                "error": _stream_error or None,
+                            },
                             consumes=("response",), turn_id=audit_turn_id,
                         )
-                        self._finish_turn_trace("completed", audit_turn_id)
+                        self._finish_turn_trace(
+                            "failed" if _stream_error else "completed", audit_turn_id,
+                        )
                     yield chunk
                 if not _stream_terminal_seen:
                     raise RuntimeError("stream lifecycle ended without terminal metadata")
@@ -2950,7 +2957,8 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
         else:
             self._record_turn_stage("final_answer_recovery", "not_needed", turn_id=_audit_turn_id)
 
-        if not raw_response.strip():
+        _generation_failed = not bool(raw_response.strip())
+        if _generation_failed:
             logger.warning("[Chat stream] provider completed without visible response text")
             raw_response = (
                 "I received your message, but the local model returned no visible "
@@ -2958,7 +2966,9 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             )
             accumulated.append(raw_response)
             self._record_turn_stage(
-                "empty_generation_fallback", "completed", output=raw_response,
+                "empty_generation_fallback", "failed",
+                "The provider returned no visible assistant content; a retry notice was delivered.",
+                error_type="EmptyProviderOutput", output=raw_response,
                 turn_id=_audit_turn_id,
             )
             _answer_origin_stage = "empty_generation_fallback"
@@ -3069,34 +3079,44 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
 
         # Practical peer turns use the same structured goal/means stage as
         # human turns, but store follow-up state under a per-conversation key.
-        try:
-            from cognition.goal_means_reasoning import is_practical_decision
-            if is_practical_decision(effective_input):
-                if peer_name:
-                    post_tasks.append(("goal_means_post_response", loop.run_in_executor(
-                        None,
-                        self.run_deferred_goal_means_analysis,
-                        effective_input,
-                        user_id,
-                        peer_name,
-                        _cognitive_scope,
-                    )))
+        if _generation_failed:
+            self._record_turn_stage(
+                "goal_means_post_response", "skipped_generation_failed",
+                turn_id=_audit_turn_id,
+            )
+        else:
+            try:
+                from cognition.goal_means_reasoning import is_practical_decision
+                if is_practical_decision(effective_input):
+                    if peer_name:
+                        post_tasks.append(("goal_means_post_response", loop.run_in_executor(
+                            None,
+                            self.run_deferred_goal_means_analysis,
+                            effective_input,
+                            user_id,
+                            peer_name,
+                            _cognitive_scope,
+                        )))
+                    else:
+                        # Human entrypoints schedule this stage after consuming the
+                        # visible answer via AppState.schedule_deferred_cognitive_stages.
+                        self._record_turn_stage(
+                            "goal_means_post_response", "scheduled_by_entrypoint",
+                            turn_id=_audit_turn_id,
+                        )
                 else:
-                    # Human entrypoints schedule this stage after consuming the
-                    # visible answer via AppState.schedule_deferred_cognitive_stages.
-                    self._record_turn_stage(
-                        "goal_means_post_response", "scheduled_by_entrypoint",
-                        turn_id=_audit_turn_id,
-                    )
-            else:
-                self._record_turn_stage("goal_means_post_response", "not_applicable", turn_id=_audit_turn_id)
-        except Exception as _goal_means_error:
-            self._record_turn_stage("goal_means_post_response", "failed", str(_goal_means_error), turn_id=_audit_turn_id)
+                    self._record_turn_stage("goal_means_post_response", "not_applicable", turn_id=_audit_turn_id)
+            except Exception as _goal_means_error:
+                self._record_turn_stage("goal_means_post_response", "failed", str(_goal_means_error), turn_id=_audit_turn_id)
 
         # Empathy Engine: record outcome
         try:
             from core.state import state as _state
-            if peer_name:
+            if _generation_failed:
+                self._record_turn_stage(
+                    "empathy_outcome", "skipped_generation_failed", turn_id=_audit_turn_id,
+                )
+            elif peer_name:
                 self._record_turn_stage("empathy_outcome", "skipped_by_scope", turn_id=_audit_turn_id)
             elif _state.empathy_engine and raw_response:
                 post_tasks.append(("empathy_outcome", loop.run_in_executor(
@@ -3112,7 +3132,12 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
         # Abstract Reasoning Engine: record outcome (non-blocking)
         try:
             from core.state import state as _state
-            if _state.are and raw_response:
+            if _generation_failed:
+                self._record_turn_stage(
+                    "abstract_reasoning_outcome", "skipped_generation_failed",
+                    turn_id=_audit_turn_id,
+                )
+            elif _state.are and raw_response:
                 post_tasks.append(("abstract_reasoning_outcome", loop.run_in_executor(
                     None,
                     _state.are.record_outcome,
@@ -3130,19 +3155,27 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
         try:
             from core.state import state as _state
             _active_context_task = self._schedule_active_context_update(
-                loop, _state.acc, effective_input, raw_response, user_id, peer_name,
+                loop, _state.acc, effective_input,
+                "" if _generation_failed else raw_response,
+                user_id, peer_name,
             )
             if _active_context_task is not None:
                 post_tasks.append(("active_context_update", _active_context_task))
         except Exception as _context_error:
             self._record_turn_stage("active_context_update", "failed", str(_context_error), turn_id=_audit_turn_id)
 
-        post_tasks.append(("cognitive_post_turn", loop.run_in_executor(
-            None,
-            self._run_full_post_turn_lifecycle,
-            effective_input, user_id, raw_response,
-            emo_dict, cond_dict, _organism, not bool(peer_name), _audit_turn_id,
-        )))
+        if _generation_failed:
+            self._record_turn_stage(
+                "cognitive_post_turn", "skipped_generation_failed",
+                turn_id=_audit_turn_id,
+            )
+        else:
+            post_tasks.append(("cognitive_post_turn", loop.run_in_executor(
+                None,
+                self._run_full_post_turn_lifecycle,
+                effective_input, user_id, raw_response,
+                emo_dict, cond_dict, _organism, not bool(peer_name), _audit_turn_id,
+            )))
 
         # Learn explicit profile statements after the visible response. This
         # is local and bounded, so it adds no latency or extra model call.
@@ -3239,7 +3272,9 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
         speech = self._sanitize(raw_response)
         emotion, intensity = self._infer_emotion(effective_input)
         self._record_turn_stage(
-            "response", "completed", output={"raw": raw_response, "speech": speech},
+            "response",
+            "fallback_delivered" if _generation_failed else "completed",
+            output={"raw": raw_response, "speech": speech},
             consumes=("response_finalization",),
             turn_id=_audit_turn_id,
         )
@@ -3249,6 +3284,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             "speech":    speech,
             "emotion":   emotion,
             "intensity": intensity,
+            **({"error": "provider_empty_output"} if _generation_failed else {}),
         }
 
     def _build_prompt_and_cache(
