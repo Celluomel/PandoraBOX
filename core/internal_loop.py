@@ -2951,6 +2951,11 @@ class InternalThoughtLoop:
                             _cd.inject_to_threads(o, _ws_topic)
                 except Exception as _cd_e:
                     logger.debug(f"[InternalLoop] Creative injection error (non-fatal): {_cd_e}")
+            elif self._flux_engine is not None:
+                self._record_cycle_stage(
+                    "cognitive_flux_engine", "skipped_cadence",
+                    metrics={"cycle": int(self._slow_cycle_count), "interval_cycles": 5},
+                )
         except Exception as _fe:
             logger.debug(f"[InternalLoop] FluxEngine error (non-fatal): {_fe}")
 
@@ -2988,6 +2993,11 @@ class InternalThoughtLoop:
                             ),
                             priority = 0.60,
                         )
+            elif self._attention_engine is not None:
+                self._record_cycle_stage(
+                    "cognitive_attention_engine", "skipped_cadence",
+                    metrics={"cycle": int(self._slow_cycle_count), "interval_cycles": 5},
+                )
         except Exception as _ae:
             logger.debug(f"[InternalLoop] AttentionEngine error (non-fatal): {_ae}")
 
@@ -3247,22 +3257,38 @@ class InternalThoughtLoop:
                 logger.debug(f"[InternalLoop] Phase 6 goal consolidator failed: {_e6}")
 
         # ── V35: Phase 5 Self-concept sync ────────────────────────────────────
-        if (self._self_concept_sync
-                and (self._slow_cycle_count % 5 == 0 or self._slow_cycle_count == 1)
-                and (not self._governor or self._governor.may_run('SCS'))):
-            try:
-                report = self._self_concept_sync.run()
-                if self._governor:
-                    self._governor.record('SCS', report.get('beliefs_synced', 0))
-                logger.info(
-                    f"[InternalLoop] V35 Self-concept: "
-                    f"coherence={report.get('coherence_after')} "
-                    f"({report.get('coherence_status', 'unknown')}) "
-                    f"(+{report['beliefs_synced']} beliefs, "
-                    f"{report['milestones_found']} milestones)"
+        if self._self_concept_sync:
+            _scs_cycle = int(self._slow_cycle_count)
+            _scs_due = _scs_cycle == 1 or (_scs_cycle > 0 and _scs_cycle % 5 == 0)
+            if not _scs_due:
+                self._record_cycle_stage(
+                    "self_concept_synchronizer", "skipped_cadence",
+                    metrics={"cycle": _scs_cycle, "interval_cycles": 5,
+                             "initial_cycle": 1},
                 )
-            except Exception as _e5:
-                logger.debug(f"[InternalLoop] Phase 5 self-concept sync failed: {_e5}")
+            elif self._governor and not self._governor.may_run('SCS'):
+                self._record_cycle_stage(
+                    "self_concept_synchronizer", "skipped_governor",
+                    metrics={"cycle": _scs_cycle, "interval_cycles": 5},
+                )
+            else:
+                try:
+                    report = self._self_concept_sync.run()
+                    if self._governor:
+                        self._governor.record('SCS', report.get('beliefs_synced', 0))
+                    logger.info(
+                        f"[InternalLoop] V35 Self-concept: "
+                        f"coherence={report.get('coherence_after')} "
+                        f"({report.get('coherence_status', 'unknown')}) "
+                        f"(+{report['beliefs_synced']} beliefs, "
+                        f"{report['milestones_found']} milestones)"
+                    )
+                except Exception as _e5:
+                    self._record_cycle_stage(
+                        "self_concept_synchronizer", "failed",
+                        metrics={"error_type": type(_e5).__name__},
+                    )
+                    logger.debug(f"[InternalLoop] Phase 5 self-concept sync failed: {_e5}")
 
         # ── Phase 5.1: Persistent Executive Loop ────────────────────────────
         # Every 10 slow cycles (~20 min) — more frequent than GQF (20 cycles)

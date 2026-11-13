@@ -173,6 +173,36 @@ def test_phase2_cadence_receipt_maps_to_orchestrator_without_fake_tick():
     assert module["state"] == "skipped_by_policy"
 
 
+def test_consolidation_and_self_concept_skips_are_attributed_without_fake_ticks():
+    loop = make_loop()
+    loop._module_tick_log = ModuleTickLog()
+    loop._module_tick_log.register("cognitive_flux_engine", initialized=True)
+    loop._module_tick_log.register("cognitive_attention_engine", initialized=True)
+    loop._module_tick_log.register("self_concept_synchronizer", initialized=True)
+    loop._flux_engine = object()
+    loop._attention_engine = object()
+    loop._self_concept_sync = object()
+    loop._begin_cycle_evidence(10902)
+
+    for name in (
+        "cognitive_flux_engine",
+        "cognitive_attention_engine",
+        "self_concept_synchronizer",
+    ):
+        loop._record_cycle_stage(name, "skipped_cadence",
+                                 metrics={"cycle": 10902, "interval_cycles": 5})
+
+    snapshot = loop.module_tick_snapshot()
+    for name in (
+        "cognitive_flux_engine",
+        "cognitive_attention_engine",
+        "self_concept_synchronizer",
+    ):
+        assert snapshot[name]["tick_count"] == 0
+        assert snapshot[name]["skip_count"] == 1
+        assert snapshot[name]["state"] == "skipped_by_policy"
+
+
 def test_thread_lifecycle_and_persistent_executive_record_cadence_skips():
     loop = make_loop()
     loop._slow_cycle_count = 10144
