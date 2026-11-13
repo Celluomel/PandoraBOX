@@ -2038,6 +2038,7 @@ Write at most 70 words, in the user's language, only if a concise carry-forward 
             not bool(peer_name),
             peer_name,
             _audit_turn_id,
+            _are_turn_status == "completed",
         )
         self._record_turn_stage(
             "prompt_assembly", "completed", f"{len(system_prompt)} chars",
@@ -3368,6 +3369,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
         mark_user_active: bool = True,
         peer_name: str = "",
         audit_turn_id: str = "",
+        include_are_context: bool = True,
     ) -> tuple[str, dict, dict, float | None]:
         """
         Run PandoraBOX's pre-LLM context pipeline and return:
@@ -4364,6 +4366,8 @@ Memory honesty — two distinct cases:
 
             system_prompt = self._append_cognitive_prompt_context(
                 system_prompt, user_id=user_id, peer_name=peer_name,
+                include_are_context=include_are_context,
+                audit_turn_id=audit_turn_id,
             )
 
             system_prompt += (
@@ -4529,6 +4533,7 @@ Memory honesty — two distinct cases:
 
     def _append_cognitive_prompt_context(
         self, system_prompt: str, *, user_id: str, peer_name: str = "",
+        include_are_context: bool = True, audit_turn_id: str = "",
     ) -> str:
         """Inject cognitive modules with interlocutor-appropriate scope.
 
@@ -4617,17 +4622,34 @@ Memory honesty — two distinct cases:
             self._record_turn_stage("empathy_context", "skipped_unavailable")
 
         try:
-            if _state.are:
+            if peer_name:
+                self._record_turn_stage(
+                    "abstract_reasoning_context", "skipped_by_scope",
+                    turn_id=audit_turn_id,
+                )
+            elif not include_are_context:
+                self._record_turn_stage(
+                    "abstract_reasoning_context", "skipped_not_applicable",
+                    turn_id=audit_turn_id,
+                )
+            elif _state.are:
                 are_frag = _state.are.get_reasoning_fragment(user_id)
                 if are_frag:
                     system_prompt += f"\n{are_frag}"
                 self._record_turn_stage(
                     "abstract_reasoning_context", "injected" if are_frag else "empty",
+                    turn_id=audit_turn_id,
                 )
             else:
-                self._record_turn_stage("abstract_reasoning_context", "skipped_unavailable")
+                self._record_turn_stage(
+                    "abstract_reasoning_context", "skipped_unavailable",
+                    turn_id=audit_turn_id,
+                )
         except Exception as exc:
-            self._record_turn_stage("abstract_reasoning_context", "failed", str(exc))
+            self._record_turn_stage(
+                "abstract_reasoning_context", "failed", str(exc),
+                turn_id=audit_turn_id,
+            )
         return system_prompt
 
     def _append_live_evidence_context(

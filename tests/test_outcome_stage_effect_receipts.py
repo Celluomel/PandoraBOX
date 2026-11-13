@@ -137,7 +137,22 @@ def test_abstract_reasoning_is_run_before_prompt_build_and_peer_scoped_out():
         and any(isinstance(arg, ast.Attribute) and arg.attr == "_build_prompt_and_cache" for arg in node.args)
     )
     assert are_call.lineno < prompt_call.lineno
-    assert "if peer_name" in ast.get_source_segment(source.read_text(encoding="utf-8"), method)
+    method_source = ast.get_source_segment(source.read_text(encoding="utf-8"), method)
+    assert "if peer_name" in method_source
+    assert "_are_turn_status == \"completed\"" in method_source
+    builder = next(
+        node for node in bridge.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_build_prompt_and_cache"
+    )
+    builder_source = ast.get_source_segment(source.read_text(encoding="utf-8"), builder)
+    assert "include_are_context" in builder_source
+    append_context = next(
+        node for node in bridge.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_append_cognitive_prompt_context"
+    )
+    append_source = ast.get_source_segment(source.read_text(encoding="utf-8"), append_context)
+    assert '"skipped_not_applicable"' in append_source
+    assert '"skipped_by_scope"' in append_source
 
 
 def test_effect_receipt_summary_preserves_only_bounded_non_text_evidence():
