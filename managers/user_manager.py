@@ -22,7 +22,9 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
+import tempfile
 import threading
 import time
 from dataclasses import dataclass, field, asdict
@@ -640,15 +642,30 @@ class UserManager:
     # ── Persistence ──────────────────────────────────────────────────────────
 
     def _save(self):
+        temporary_path = None
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             data = {
                 "active_id": self._active_id,
                 "users":     {uid: p.to_dict() for uid, p in self._users.items()},
             }
-            self._path.write_text(json.dumps(data, indent=2))
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=str(self._path.parent),
+                prefix=self._path.name + ".", suffix=".tmp", delete=False,
+            ) as temporary:
+                temporary_path = Path(temporary.name)
+                temporary.write(json.dumps(data, indent=2, ensure_ascii=False))
+                temporary.flush()
+                os.fsync(temporary.fileno())
+            os.replace(temporary_path, self._path)
         except Exception as e:
             logger.error(f"UserManager save error: {e}")
+        finally:
+            if temporary_path is not None:
+                try:
+                    temporary_path.unlink(missing_ok=True)
+                except OSError:
+                    logger.warning("Could not remove temporary user profile file")
 
     def _load(self):
         try:

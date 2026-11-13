@@ -1,4 +1,5 @@
 from pathlib import Path
+from unittest.mock import patch
 import ast
 
 from managers.user_manager import UserManager
@@ -102,6 +103,26 @@ def test_profile_learning_does_not_claim_update_when_persistence_fails(tmp_path)
     assert receipt["changed"] is False
     assert profile.preferences == []
     assert profile.last_seen == before_last_seen
+
+
+def test_profile_atomic_replace_failure_preserves_previous_file_and_cleans_temp(tmp_path):
+    users_path = Path(tmp_path) / "users.json"
+    manager = UserManager(path=users_path)
+    profile = manager.create("Fred")
+    before = users_path.read_bytes()
+
+    with patch("managers.user_manager.os.replace", side_effect=OSError("simulated replace failure")):
+        receipt = manager.learn_from_message(
+            profile.id,
+            "I prefer concise technical answers.",
+            return_receipt=True,
+            source_turn_id="atomic-write-test",
+        )
+
+    assert receipt["status"] == "persistence_failed"
+    assert receipt["persisted"] is False
+    assert users_path.read_bytes() == before
+    assert list(tmp_path.glob("users.json.*.tmp")) == []
 
 
 def test_brain_chat_route_uses_the_resolved_identity_for_both_stream_modes():
