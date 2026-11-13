@@ -114,7 +114,8 @@ class IdentityAnalyzer:
     IMPACT_THRESHOLD = 0.55
     # Batch size per sleep tick (pure regex, no LLM)
     BATCH_SIZE   = 75     # memories processed per get_identity() call (was 25)
-    MAX_PENDING  = 300    # cap queue — oldest dropped when exceeded
+    REBUILD_PAGE_SIZE = 500
+    MAX_REBUILD_PER_REFRESH = 10000
     # LLM calls allowed per full refresh
     LLM_BUDGET = 2
 
@@ -124,132 +125,121 @@ class IdentityAnalyzer:
         self.persistence = persistence
         self._lock = threading.RLock()
 
-        # Incremental state with disk persistence
-        self._cursor_file = "data/identity_cursor.json"
-        self._last_processed_id: int = self._load_cursor()
+        # Cursor and derived evidence must be persisted as one checkpoint.
+        # A cursor by itself can silently discard all evidence after restart.
+        self._state_file = "data/identity_evidence_state.json"
+        self._state_version = 1
+        self._last_processed_id: int = 0
         self._trait_evidence: Dict[str, Dict] = {}
         self._value_evidence: Dict[str, Dict] = {}
-
-        # Batch processing queue: memories waiting to be accumulated
-        self._pending_batch: List[Dict] = []
+        self._rebuild_required = True
+        self._load_evidence_state()
 
         # Trait description cache: {trait: (description, evidence_count)}
         # Invalidated when count changes by >3
         self._trait_desc_cache: Dict[str, Tuple[str, int]] = {}
         
-    def _load_cursor(self) -> int:
-        """Load last processed ID from disk, or return 0 if file doesn't exist."""
+    def _load_evidence_state(self) -> None:
+        """Load a versioned checkpoint; rebuild if only a legacy cursor exists."""
         try:
-            if os.path.exists(self._cursor_file):
-                with open(self._cursor_file, 'r') as f:
-                    data = json.load(f)
-                    cursor = data.get('last_processed_id', 0)
-                    logger.info(f"💾 LOADED cursor from disk: {cursor}")
-                    return cursor
+            if not os.path.exists(self._state_file):
+                if os.path.exists("data/identity_cursor.json"):
+                    logger.warning(
+                        "Identity cursor has no matching evidence checkpoint; rebuilding from memories"
+                    )
+                return
+            with open(self._state_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if data.get("version") != self._state_version:
+                logger.warning("Identity evidence checkpoint version mismatch; rebuilding")
+                return
+            traits = data.get("trait_evidence", {})
+            values = data.get("value_evidence", {})
+            if not isinstance(traits, dict) or not isinstance(values, dict):
+                raise ValueError("invalid identity evidence aggregates")
+            self._last_processed_id = max(0, int(data.get("last_processed_id", 0)))
+            self._trait_evidence = traits
+            self._value_evidence = values
+            self._rebuild_required = bool(data.get("rebuild_required", False))
+            logger.info(
+                "Loaded identity evidence checkpoint through memory %s (%s traits, %s values)",
+                self._last_processed_id, len(traits), len(values),
+            )
         except Exception as e:
-            logger.warning(f"Failed to load cursor from disk: {e}")
-        return 0
-    
-    def _save_cursor(self):
-        """Save last processed ID to disk for persistence across restarts."""
+            logger.warning("Failed to load identity evidence checkpoint; rebuilding: %s", e)
+            self._last_processed_id = 0
+            self._trait_evidence = {}
+            self._value_evidence = {}
+            self._rebuild_required = True
+
+    def _save_evidence_state(self) -> None:
+        """Atomically persist aggregates and the cursor that covers them."""
         try:
-            os.makedirs(os.path.dirname(self._cursor_file), exist_ok=True)
-            with open(self._cursor_file, 'w') as f:
-                json.dump({'last_processed_id': self._last_processed_id}, f)
-            logger.debug(f"💾 Saved cursor to disk: {self._last_processed_id}")
+            directory = os.path.dirname(self._state_file) or "."
+            os.makedirs(directory, exist_ok=True)
+            payload = {
+                "version": self._state_version,
+                "last_processed_id": self._last_processed_id,
+                "rebuild_required": self._rebuild_required,
+                "trait_evidence": self._trait_evidence,
+                "value_evidence": self._value_evidence,
+            }
+            temporary = self._state_file + ".tmp"
+            with open(temporary, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, separators=(",", ":"))
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temporary, self._state_file)
         except Exception as e:
-            logger.error(f"Failed to save cursor to disk: {e}")
+            logger.error("Failed to save identity evidence checkpoint: %s", e)
 
     # ── Public ─────────────────────────────────────────────────────────────
 
     def analyze_identity(self, force_rebuild: bool = False) -> AIIdentity:
-        """
-        Build/update identity.
-        - force_rebuild=True  : full reset + requeue everything
-        - force_rebuild=False : fetch NEW memories, enqueue them, process one BATCH
-        """
+        """Update identity from one contiguous, ID-ordered memory window."""
         with self._lock:
             if force_rebuild:
                 self._last_processed_id = 0
-                self._pending_batch     = []
-                self._trait_evidence    = {}
-                self._value_evidence    = {}
-                self._trait_desc_cache  = {}
+                self._trait_evidence = {}
+                self._value_evidence = {}
+                self._trait_desc_cache = {}
+                self._rebuild_required = True
 
-            # ── 1. Fetch new memories into queue (no processing yet) ──────
-            # FIX: Use _last_processed_id instead of _batch_cursor to prevent cursor racing ahead
-            logger.info(f"🔍 CURSOR STATE: _last_processed_id = {self._last_processed_id}")
-            # BACKPRESSURE: Skip fetching if queue is too large
-            if len(self._pending_batch) > self.MAX_PENDING * 0.9:
-                logger.warning(f"⏸️ BACKPRESSURE: queue too large ({len(self._pending_batch)}), skipping fetch")
-                new_mems = []
-            else:
-                new_mems = self._get_new_memories_since(self._last_processed_id)
-            if new_mems:
-                min_id = min(m['id'] for m in new_mems)
-                max_id = max(m['id'] for m in new_mems)
-                logger.info(f"📥 FETCHED: IDs range {min_id}-{max_id} ({len(new_mems)} memories)")
-                filtered = self._filter_relevant(new_mems)
-
-                # DEDUP FIX: Avoid re-enqueuing memories already in pending batch
-                existing_ids = {m["id"] for m in self._pending_batch}
-                filtered = [m for m in filtered if m["id"] not in existing_ids]
-
-                self._pending_batch.extend(filtered)
-                # Cap queue to prevent unbounded growth
-                if len(self._pending_batch) > self.MAX_PENDING:
-                    excess = len(self._pending_batch) - self.MAX_PENDING
-                    self._pending_batch = self._pending_batch[excess:]
-                    logger.debug(f"Identity: queue capped, dropped {excess} old entries")
-                # REMOVED BUG: Don't advance cursor here - only after processing
-                skipped = len(new_mems) - len(filtered)
+            logger.info("Identity cursor: %s", self._last_processed_id)
+            raw_budget = (
+                self.MAX_REBUILD_PER_REFRESH if self._rebuild_required else self.BATCH_SIZE
+            )
+            page_size = self.REBUILD_PAGE_SIZE if self._rebuild_required else self.BATCH_SIZE
+            consumed = 0
+            while consumed < raw_budget:
+                new_memories = self._get_new_memories_since(self._last_processed_id)
+                if not new_memories:
+                    self._rebuild_required = False
+                    break
+                # Cursor advancement covers a contiguous raw ID range. Every
+                # row in this prefix is either accumulated or deliberately
+                # filtered before its cursor is committed.
+                batch = new_memories[:min(page_size, raw_budget - consumed)]
+                relevant = self._filter_relevant(batch)
+                self._update_accumulators(relevant)
+                old_cursor = self._last_processed_id
+                self._last_processed_id = int(batch[-1]["id"])
+                self._save_evidence_state()
+                consumed += len(batch)
                 logger.info(
-                    f"Identity: fetched {len(new_mems)} new memories, "                    f"{len(filtered)} relevant queued ({skipped} skipped), "                    f"{len(self._pending_batch)} total pending"
+                    "Identity checkpoint: cursor %s -> %s; %s raw / %s relevant memories%s",
+                    old_cursor, self._last_processed_id, len(batch), len(relevant),
+                    " (rebuild)" if self._rebuild_required else "",
                 )
-
-            # ── 2. Process one batch from the queue ───────────────────────
-            if self._pending_batch:
-                # ADAPTIVE BATCH SIZE based on queue pressure
-                dynamic_batch_size = min(
-                    self.BATCH_SIZE * 2 if len(self._pending_batch) > self.MAX_PENDING * 0.7 else self.BATCH_SIZE,
-                    len(self._pending_batch)
-                )
-                # PRIORITY PROCESSING: highest impact_score first
-                self._pending_batch.sort(key=lambda m: m.get("impact_score", 0), reverse=True)
-                batch = self._pending_batch[:dynamic_batch_size]
-                self._pending_batch = self._pending_batch[self.BATCH_SIZE:]
-                self._update_accumulators(batch)
-                
-                # Ultra-defensive cursor update with explicit error handling
-                if batch:
-                    try:
-                        # Extract IDs explicitly - will error if any memory lacks "id"
-                        batch_ids = [m["id"] for m in batch if "id" in m]
-                        
-                        if not batch_ids:
-                            logger.error(f"❌ CRITICAL BUG: Batch of {len(batch)} memories has NO IDs! Sample: {batch[0]}")
-                        else:
-                            max_id = max(batch_ids)
-                            old_cursor = self._last_processed_id
-                            self._last_processed_id = max(self._last_processed_id, max_id)
-                            self._save_cursor()  # Persist to disk immediately
-                            logger.info(
-                                f"✅ CURSOR: {old_cursor} → {self._last_processed_id} "
-                                f"(processed IDs {min(batch_ids)}-{max_id})"
-                            )
-                    except Exception as e:
-                        logger.error(f"❌ CURSOR UPDATE CRASHED: {e}. Batch sample: {batch[0]}")
-                        
-                remaining = len(self._pending_batch)
-                logger.debug(
-                    f"Identity: processed batch of {len(batch)}, "                    f"{remaining} still pending"
-                )
+                if not self._rebuild_required:
+                    break
             else:
-                logger.debug("Identity: no pending memories, using cached accumulators")
+                # A capped historical rebuild continues at the next refresh.
+                logger.info("Identity historical evidence rebuild continues from cursor %s", self._last_processed_id)
+            if consumed == 0 and not self._rebuild_required:
+                logger.debug("Identity: no new memories; using cached evidence aggregates")
 
-            # ── 3. Build identity from accumulators (cheap pattern ops) ───
-            # Only fetch all_recent if we actually processed something this cycle
-            all_recent = self._get_all_memories(limit=200)  # reduced from 500
+            all_recent = self._get_all_memories(limit=200)
             return self._build_identity_from_accumulators(all_recent)
 
     # ── Incremental helpers ────────────────────────────────────────────────
@@ -340,6 +330,7 @@ class IdentityAnalyzer:
                     ev = self._trait_evidence.setdefault(trait, {"count": 0, "memories": [], "strength": 0.0})
                     ev["count"]    += 1
                     ev["memories"].append(mid)
+                    ev["memories"] = ev["memories"][-100:]
                     ev["strength"] += strength * impact
 
             # Values
@@ -350,16 +341,22 @@ class IdentityAnalyzer:
                 )
                 if strength > 0:
                     ev = self._value_evidence.setdefault(value, {
-                        "positive": [], "negative": [], "strength": 0.0, "examples": []
+                        "positive": [], "negative": [], "positive_count": 0,
+                        "negative_count": 0, "strength": 0.0, "example_ids": [],
                     })
                     if valence == "Positive":
                         ev["positive"].append(mid)
+                        ev["positive_count"] = ev.get("positive_count", 0) + 1
                         ev["strength"] += strength * impact
                     elif valence == "Negative":
                         ev["negative"].append(mid)
+                        ev["negative_count"] = ev.get("negative_count", 0) + 1
                         ev["strength"] += strength * impact * 0.8
+                    ev["positive"] = ev["positive"][-100:]
+                    ev["negative"] = ev["negative"][-100:]
                     if len(mem["text"]) < 200:
-                        ev["examples"].append(mem["text"])
+                        ev["example_ids"].append(mid)
+                        ev["example_ids"] = ev["example_ids"][-10:]
 
     # ── Identity construction (from cached accumulators) ──────────────────
 
@@ -425,21 +422,41 @@ class IdentityAnalyzer:
     def _build_values(self, memories: List[Dict]) -> List[CoreValues]:
         values = []
         for value, ev in self._value_evidence.items():
-            total = len(ev["positive"]) + len(ev["negative"])
+            positive_count = int(ev.get("positive_count", len(ev.get("positive", []))))
+            negative_count = int(ev.get("negative_count", len(ev.get("negative", []))))
+            total = positive_count + negative_count
             if total < 2:
                 continue
             importance   = min(1.0, ev["strength"] / max(total, 1))
             contradictions = []
-            if len(ev["negative"]) > len(ev["positive"]) * 0.5:
-                contradictions = ev["examples"][-2:]
+            examples = self._memory_texts_by_ids(ev.get("example_ids", []))
+            if negative_count > positive_count * 0.5:
+                contradictions = examples[-2:]
             values.append(CoreValues(
                 value_name=value,
                 importance=importance,
-                examples=ev["examples"][:5],
+                examples=examples[:5],
                 contradictions=contradictions,
                 evolution=self._track_value_evolution(value, memories),
             ))
         return sorted(values, key=lambda x: x.importance, reverse=True)
+
+    def _memory_texts_by_ids(self, memory_ids: List[int]) -> List[str]:
+        """Read example text from the canonical memory store, not the checkpoint."""
+        if not memory_ids:
+            return []
+        try:
+            placeholders = ",".join("?" for _ in memory_ids)
+            with self.persistence.get_connection() as conn:
+                rows = conn.execute(
+                    f"SELECT id, text FROM memories WHERE id IN ({placeholders})",
+                    tuple(memory_ids),
+                ).fetchall()
+            text_by_id = {int(row[0]): str(row[1]) for row in rows}
+            return [text_by_id[mid] for mid in memory_ids if mid in text_by_id]
+        except Exception as exc:
+            logger.warning("Could not load identity example text from memory store: %s", exc)
+            return []
 
     def _describe_trait(self, trait: str, evidence: Dict) -> str:
         """
@@ -832,8 +849,11 @@ class IdentitySystem:
 
     @property
     def pending_memory_count(self) -> int:
-        """How many memories are still queued for processing."""
-        return len(self.analyzer._pending_batch)
+        """How many raw memories remain after the durable processing cursor."""
+        try:
+            return len(self.analyzer._get_new_memories_since(self.analyzer._last_processed_id))
+        except Exception:
+            return 0
 
     def export_identity_report(self) -> Dict[str, Any]:
         identity = self.get_identity()
