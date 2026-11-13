@@ -2390,7 +2390,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             else ""
         )
         if _explicit_memory_recall:
-            _filename_recall = exact_filename_recall_result(user_input, memories)
+            _filename_recall = exact_filename_recall_result(effective_input, memories)
             if _filename_recall is not None:
                 _deterministic_response = str(_filename_recall.get("answer") or "")
                 self._record_turn_stage(

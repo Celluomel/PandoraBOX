@@ -503,6 +503,29 @@ def test_memory_and_profile_context_stages_are_bound_to_prompt_turn():
     assert observed == expected
 
 
+def test_exact_filename_recall_uses_the_stream_worker_input_parameter():
+    source = Path(__file__).resolve().parents[1] / "cognition" / "persona_bridge.py"
+    tree = ast.parse(source.read_text(encoding="utf-8"))
+    bridge_class = next(
+        node for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "PersonaBridge"
+    )
+    stream = next(
+        node for node in bridge_class.body
+        if isinstance(node, ast.AsyncFunctionDef)
+        and node.name == "_stream_with_full_lifecycle"
+    )
+    calls = [
+        node for node in ast.walk(stream)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "exact_filename_recall_result"
+    ]
+    assert len(calls) == 1
+    assert isinstance(calls[0].args[0], ast.Name)
+    assert calls[0].args[0].id == "effective_input"
+
+
 def test_deferred_profile_and_post_turn_stages_keep_originating_turn_id():
     source = Path(__file__).resolve().parents[1] / "cognition" / "persona_bridge.py"
     tree = ast.parse(source.read_text(encoding="utf-8"))
