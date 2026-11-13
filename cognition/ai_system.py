@@ -1903,18 +1903,39 @@ Return ONLY valid JSON:
 class BackgroundWorker:
     """Daemon thread that processes all heavy background tasks."""
 
+    _STOP = object()
+
     def __init__(self, ai_system):
         self.ai_system = ai_system
         self._queue    = queue.Queue()
+        self._state_lock = threading.Lock()
+        self._stopping = False
         self._thread   = threading.Thread(target=self._run, daemon=True, name="ai-bg")
         self._thread.start()
         logger.info("Background worker started")
 
     def submit(self, task: str):
-        try:
-            self._queue.put_nowait(task)
-        except queue.Full:
-            logger.warning(f"BG queue full, dropping: {task}")
+        with self._state_lock:
+            if self._stopping:
+                return False
+            try:
+                self._queue.put_nowait(task)
+                return True
+            except queue.Full:
+                logger.warning(f"BG queue full, dropping: {task}")
+                return False
+
+    def shutdown(self, timeout: float = 10.0) -> bool:
+        """Drain accepted tasks and stop before the owner flushes persistence."""
+        with self._state_lock:
+            if not self._stopping:
+                self._stopping = True
+                self._queue.put_nowait(self._STOP)
+        self._thread.join(timeout=max(0.0, float(timeout)))
+        stopped = not self._thread.is_alive()
+        if not stopped:
+            logger.warning("Background worker did not stop within %.1f seconds", timeout)
+        return stopped
 
     def _run_task(self, task: str):
         """Alias for submit() — called from SleepCycle scheduled lambdas."""
@@ -1924,6 +1945,9 @@ class BackgroundWorker:
         while True:
             try:
                 task = self._queue.get(timeout=1.0)
+                if task is self._STOP:
+                    self._queue.task_done()
+                    return
                 self._execute(task)
                 self._queue.task_done()
             except queue.Empty:

@@ -328,6 +328,20 @@ class CognitiveOrganism:
         except Exception:
             pass
         self._loop.shutdown()
+        background_worker = getattr(self.ai_system, "background_worker", None)
+        stop_background_worker = getattr(background_worker, "shutdown", None)
+        worker_stopped = True
+        if callable(stop_background_worker):
+            try:
+                worker_stopped = bool(stop_background_worker())
+            except Exception as exc:
+                worker_stopped = False
+                logger.warning("[CognitiveOrganism] Background worker shutdown failed: %s", exc)
+        if not worker_stopped:
+            logger.warning(
+                "[CognitiveOrganism] FAISS flush skipped because background work may still mutate memory"
+            )
+            return
         try:
             flush_memory_index = getattr(self.ai_system, "flush_memory_index", None)
             if callable(flush_memory_index) and not flush_memory_index():
