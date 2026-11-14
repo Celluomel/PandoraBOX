@@ -171,67 +171,6 @@ async def llm_page():
 
         ui.separator().classes('my-5 opacity-10')
 
-        with ui.element('div').classes('settings-card w-full p-5'):
-            ui.label('WEB SEARCH').classes('section-label')
-            ui.label('Choose when chat turns may use external web results. This is separate from the provider/backend selected below.').classes('text-slate-400 text-sm mb-3')
-
-            web_search_mode = ui.select(
-                {
-                    'off': 'Off — never search automatically',
-                    'auto': 'Auto — let Lumina decide per turn',
-                    'always': 'Always — search eligible new topics',
-                },
-                value=getattr(config, 'WEB_SEARCH_MODE', 'off'),
-                label='Automatic search mode',
-            ).props('outlined dense').classes('w-full dark-input')
-
-            ui.label('Off is closed-world. Auto can still trigger a search when Lumina judges outside information is needed.').classes('text-slate-500 text-xs mt-2')
-
-            ui.separator().classes('my-4 opacity-10')
-            ui.label('RESEARCH SEARCH BACKEND').classes('section-label')
-            ui.label('Select which providers are used when a search is triggered.').classes('text-slate-400 text-sm mb-3')
-
-            research_backend = ui.select(
-                {
-                    'auto':    '🔄 AUTO — tries all sources (recommended)',
-                    'brave':   '🦁 Brave Search API (free 2k/month)',
-                    'claude':  '⚡ Claude Web Search (Anthropic API)',
-                    'rss':     '📰 RSS Feeds only (news headlines)',
-                    'stealth': '🕶️ Stealth Browser only (DDG/Bing scrape)',
-                },
-                value=getattr(config, 'RESEARCH_SEARCH_BACKEND', 'auto'),
-                label='Search Backend'
-            ).props('outlined dense').classes('w-full dark-input')
-
-            anthropic_key = ui.input(
-                'Anthropic API Key (for Claude search)',
-                value=getattr(config, 'ANTHROPIC_API_KEY', ''),
-                password=True
-            ).props('outlined dense').classes('w-full dark-input mt-3')
-
-            brave_key = ui.input(
-                'Brave Search API Key (free at api.search.brave.com)',
-                value=getattr(config, 'BRAVE_SEARCH_KEY', ''),
-                password=True
-            ).props('outlined dense').classes('w-full dark-input mt-2')
-
-            serpapi_key = ui.input(
-                'SerpAPI Key (optional)',
-                value=getattr(config, 'SERPAPI_KEY', ''),
-                password=True
-            ).props('outlined dense').classes('w-full dark-input mt-2')
-
-            with ui.element('div').classes('info-card mt-3').style('padding:10px 14px;border-color:#1e3a5f;background:#080f1a'):
-                ui.markdown(
-                    '**AUTO (recommended)** — tries Brave → Claude → SerpAPI → RSS feeds → Stealth browser in order.\n\n'
-                    '**Brave API** — free 2 000 searches/month. Sign up at `api.search.brave.com` (2 min). Most reliable.\n\n'
-                    '**Claude** — Anthropic built-in web search. Fast, no browser. Needs `pip install anthropic`.\n\n'
-                    '**RSS** — Direct news feeds (BBC/Reuters/AP/Guardian). Zero bot risk, great for news.\n\n'
-                    '**Stealth** — Headless Chromium with anti-detection. Last resort, may still get blocked.'
-                ).style('font-size:0.78rem;color:#475569;line-height:1.6')
-
-        ui.separator().classes('my-5 opacity-10')
-
         # ── Response verbosity ────────────────────────────────────────────
         with ui.element('div').classes('settings-card w-full p-5'):
             ui.label('RESPONSE LENGTH').classes('section-label')
@@ -314,28 +253,12 @@ async def llm_page():
             config.OPENAI_API_KEY = openai_key.value
             if hasattr(config, 'TEXT_MODEL'):
                 config.TEXT_MODEL = text_model.value
-            config.ANTHROPIC_API_KEY       = anthropic_key.value
-            config.BRAVE_SEARCH_KEY         = brave_key.value
-            config.SERPAPI_KEY              = serpapi_key.value
-            config.RESEARCH_SEARCH_BACKEND  = research_backend.value
-            config.WEB_SEARCH_MODE          = web_search_mode.value
             # ── Verbosity + custom prompt ─────────────────────────────────
             config.RESPONSE_VERBOSITY        = verbosity_select.value
             config.RESPONSE_TOKENS_CONCISE   = int(tokens_concise.value or 300)
             config.RESPONSE_TOKENS_VERBOSE   = int(tokens_verbose.value or 1200)
             config.CUSTOM_SYSTEM_PROMPT  = (custom_prompt_area.value or '').strip()
             # Sync chat toolbar toggle to match saved value
-            # Apply immediately to running web_agent (no restart needed)
-            try:
-                from cognition.research_mcp.web_agent import set_search_backend
-                set_search_backend(
-                    backend       = research_backend.value,
-                    anthropic_key = anthropic_key.value,
-                    brave_key     = brave_key.value,
-                    serpapi_key   = serpapi_key.value,
-                )
-            except Exception:
-                pass
             save_settings(config, silent=True)
             ui.notify('Applying LLM settings...', type='info', position='bottom-right')
             loop = asyncio.get_running_loop()

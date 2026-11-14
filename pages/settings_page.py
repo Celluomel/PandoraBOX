@@ -116,6 +116,7 @@ async def settings_page(tab: str = 'llm'):
         with ui.element('div').classes('settings-card w-full'):
             with ui.tabs().props('dense align=left scrollable').classes('settings-tabs') as tabs:
                 tab_llm    = ui.tab('llm',    label='🧠 LLM')
+                tab_websearch = ui.tab('websearch', label='🔎 Web Search')
                 tab_memory = ui.tab('memory', label='💾 Memory')
                 tab_voice  = ui.tab('voice',  label='🎙️ Voice')
                 tab_vision = ui.tab('vision', label='👁️ Vision')
@@ -182,6 +183,72 @@ async def settings_page(tab: str = 'llm'):
                             "- **openai** → requires API key above\n"
                             "- **codex** → uses the local Codex CLI sign-in and app-server; no API key"
                         ).style('font-size:0.82rem;color:#94a3b8;line-height:1.7')
+
+                # ── Web Search tab ─────────────────────────────────────
+                with ui.tab_panel('websearch'):
+                    ui.label('AUTOMATIC WEB SEARCH').classes('section-label')
+                    ui.label(
+                        'Controls whether chat turns may use external web results; this is independent of the search provider.'
+                    ).classes('text-slate-400 text-sm mb-3')
+                    web_search_mode = ui.select(
+                        {
+                            'off': 'Off — never search automatically',
+                            'auto': 'Auto — let Lumina decide per turn',
+                            'always': 'Always — search eligible new topics',
+                        }, value=getattr(config, 'WEB_SEARCH_MODE', 'off'),
+                        label='Automatic search mode',
+                    ).props('outlined dense').classes('w-full dark-input')
+                    ui.label(
+                        'Off is closed-world. Auto can still trigger a search when Lumina judges outside information is needed.'
+                    ).classes('text-slate-500 text-xs mt-2')
+                    ui.separator().classes('my-4 opacity-10')
+                    ui.label('SEARCH PROVIDER').classes('section-label')
+                    research_backend = ui.select(
+                        {
+                            'auto': '🔄 AUTO — tries configured sources (recommended)',
+                            'brave': '🦁 Brave Search API',
+                            'claude': '⚡ Claude Web Search (Anthropic API)',
+                            'rss': '📰 RSS Feeds only',
+                            'stealth': '🕶️ Stealth Browser only (DDG/Bing scrape)',
+                        }, value=getattr(config, 'RESEARCH_SEARCH_BACKEND', 'auto'),
+                        label='Search backend',
+                    ).props('outlined dense').classes('w-full dark-input')
+                    with ui.grid(columns=2).classes('w-full gap-4 mt-3'):
+                        anthropic_key = ui.input(
+                            'Anthropic API Key', value=getattr(config, 'ANTHROPIC_API_KEY', ''), password=True,
+                        ).props('outlined dense').classes('dark-input')
+                        brave_key = ui.input(
+                            'Brave Search API Key', value=getattr(config, 'BRAVE_SEARCH_KEY', ''), password=True,
+                        ).props('outlined dense').classes('dark-input')
+                        serpapi_key = ui.input(
+                            'SerpAPI Key (optional)', value=getattr(config, 'SERPAPI_KEY', ''), password=True,
+                        ).props('outlined dense').classes('dark-input')
+                    with ui.element('div').classes('info-card mt-3').style('padding:10px 14px'):
+                        ui.markdown(
+                            '**AUTO** tries configured providers, RSS feeds, then the stealth browser. '
+                            'Search mode and provider are configured here, separately from LLM selection.'
+                        ).style('font-size:0.78rem;color:#94a3b8;line-height:1.6')
+
+                    async def save_web_search():
+                        config.WEB_SEARCH_MODE = web_search_mode.value
+                        config.RESEARCH_SEARCH_BACKEND = research_backend.value
+                        config.ANTHROPIC_API_KEY = anthropic_key.value
+                        config.BRAVE_SEARCH_KEY = brave_key.value
+                        config.SERPAPI_KEY = serpapi_key.value
+                        save_settings(config, silent=True)
+                        try:
+                            from cognition.research_mcp.web_agent import set_search_backend
+                            set_search_backend(
+                                backend=research_backend.value,
+                                anthropic_key=anthropic_key.value,
+                                brave_key=brave_key.value,
+                                serpapi_key=serpapi_key.value,
+                            )
+                        except Exception as exc:
+                            logger.warning('Could not apply search backend live: %s', exc)
+                        ui.notify('Web Search settings saved and applied.', type='positive', position='bottom-right')
+
+                    ui.button('💾 Save Web Search settings', on_click=save_web_search)
 
                 # ── Memory tab ────────────────────────────────────────
                 with ui.tab_panel('memory'):
