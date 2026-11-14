@@ -59,13 +59,15 @@ _HISTORICAL_REQUEST_PATTERNS = (
     re.compile(
         r"\bquel(?:le)?s?\s+(?P<topic>[^?!.]{1,100}?)\s+"
         r"(?:ai|avais|aurais)-je\s+"
-        r"(?:explicitement\s+)?(?:demand[ée]s?|dit|formul[ée]s?|pos[ée]s?)\b",
+        r"(?:explicitement\s+)?(?:demand[ée](?:e|s|es)?|dit(?:e|es)?|"
+        r"formul[ée](?:e|s|es)?|pos[ée](?:e|s|es)?)\b",
         re.IGNORECASE,
     ),
     re.compile(
         r"\bquel(?:le)?s?\s+(?P<topic>[^?!.]{1,100}?)\s+"
         r"est-ce\s+que\s+j['’](?:ai|avais|aurais)\s+"
-        r"(?:demand[ée]s?|dit|formul[ée]s?|pos[ée]s?)\b",
+        r"(?:demand[ée](?:e|s|es)?|dit(?:e|es)?|"
+        r"formul[ée](?:e|s|es)?|pos[ée](?:e|s|es)?)\b",
         re.IGNORECASE,
     ),
     re.compile(

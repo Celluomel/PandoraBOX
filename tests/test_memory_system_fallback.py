@@ -312,6 +312,13 @@ class MemorySystemFallbackTests(unittest.TestCase):
                     topic,
                 )
 
+    def test_feminine_french_historical_participle_routes_to_explicit_recall(self):
+        query = "Dans nos échanges, quelle règle ai-je posée pour les informations des capteurs ?"
+        self.assertTrue(is_explicit_memory_recall_query(query))
+        topic = extract_explicit_recall_topic(query).casefold()
+        self.assertIn("règle", topic)
+        self.assertIn("capteurs", topic)
+
     def test_object_of_what_did_i_ask_you_to_is_routed_as_explicit_recall(self):
         queries = (
             "From my historical exchanges stored in memory, what did I ask you to fix "
