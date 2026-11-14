@@ -84,6 +84,8 @@ def memory_retrieval_evidence(
     query_source: str = "user_input",
     attention_mode: str | None = None,
     retrieval_receipt: Mapping[str, Any] | None = None,
+    explicit_recall: bool = False,
+    candidate_count_before_recall_filter: int | None = None,
 ) -> dict:
     """Describe recalled candidates without copying their private text to traces."""
     candidates = []
@@ -115,9 +117,17 @@ def memory_retrieval_evidence(
         "query_sha256": _sha256(str(query)),
         "query_source": str(query_source)[:32],
         "attention_mode": str(attention_mode or "unavailable")[:24],
+        "explicit_recall": bool(explicit_recall),
         "candidate_count": len(candidates),
         "candidates": candidates,
     }
+    if candidate_count_before_recall_filter is not None:
+        try:
+            evidence["candidate_count_before_recall_filter"] = max(
+                0, min(1000, int(candidate_count_before_recall_filter))
+            )
+        except (TypeError, ValueError, OverflowError):
+            evidence["candidate_count_before_recall_filter"] = len(candidates)
     if isinstance(retrieval_receipt, Mapping):
         try:
             elapsed_ms = max(0.0, min(600000.0, float(retrieval_receipt.get("elapsed_ms", 0))))
@@ -298,10 +308,18 @@ def audit_safe_turn_summary(value: Any) -> dict[str, Any] | None:
             "query_sha256": str(value.get("query_sha256", ""))[:64],
             "query_source": str(value.get("query_source", "unknown"))[:32],
             "attention_mode": str(value.get("attention_mode", "unavailable"))[:24],
+            "explicit_recall": bool(value.get("explicit_recall", False)),
             "candidate_count": candidate_count,
             "candidates": candidates,
             "quality": "present" if candidate_count else "empty",
         }
+        if "candidate_count_before_recall_filter" in value:
+            try:
+                summary["candidate_count_before_recall_filter"] = max(
+                    0, min(1000, int(value.get("candidate_count_before_recall_filter", candidate_count)))
+                )
+            except (TypeError, ValueError, OverflowError):
+                summary["candidate_count_before_recall_filter"] = candidate_count
         retrieval = value.get("retrieval")
         if isinstance(retrieval, Mapping):
             try:

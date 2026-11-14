@@ -17,6 +17,8 @@ import cognition.ai_system as ai_system_module
 from cognition.ai_system import EnhancedMemorySystem
 from cognition.memory_retrieval import (
     extract_explicit_recall_topic,
+    explicit_recall_source_result,
+    explicit_recall_abstention_result,
     filter_recall_query_records,
     filter_memories_by_modality,
     is_explicit_memory_recall_query,
@@ -293,6 +295,122 @@ class MemorySystemFallbackTests(unittest.TestCase):
                     any(term in topic for term in ("final", "résultat", "resultat", "outcome")),
                     topic,
                 )
+
+    def test_object_of_what_did_i_ask_you_to_is_routed_as_explicit_recall(self):
+        queries = (
+            "From my historical exchanges stored in memory, what did I ask you to fix "
+            "about the UnboundLocalError involving _deterministic_response?",
+            "What did I ask you to fix about the UnboundLocalError involving _deterministic_response?",
+            "Qu’est-ce que je t’ai demandé de corriger à propos de l’erreur UnboundLocalError ?",
+        )
+        for query in queries:
+            with self.subTest(query=query):
+                self.assertTrue(is_explicit_memory_recall_query(query))
+                topic = extract_explicit_recall_topic(query).casefold()
+                self.assertTrue(
+                    any(term in topic for term in ("unboundlocalerror", "corriger")),
+                    topic,
+                )
+                self.assertNotIn("historical exchanges", topic)
+
+    def test_explicit_recall_does_not_accept_neighboring_audit_records_on_one_word(self):
+        query = (
+            "From my historical exchanges stored in memory, what did I ask you to fix "
+            "about the UnboundLocalError involving _deterministic_response?"
+        )
+        neighbors = [
+            {
+                "memory_type": "user_message",
+                "text": (
+                    "User message: For this audit only, remember the test phrase "
+                    "amber kite 731 so I can ask for it in my next message."
+                ),
+            },
+            {
+                "memory_type": "episodic",
+                "text": (
+                    "Conversation — User: For this audit, report the cognitive "
+                    "module counts. | Lumina: I will check the audit status."
+                ),
+            },
+        ]
+        source = {
+            "memory_type": "user_message",
+            "text": (
+                "User message: Please fix the UnboundLocalError involving "
+                "_deterministic_response in the response stream."
+            ),
+        }
+
+        self.assertEqual(filter_recall_query_records(neighbors, query=query), [])
+        self.assertEqual(filter_recall_query_records([*neighbors, source], query=query), [source])
+
+    def test_explicit_recall_abstains_instead_of_completing_from_question_when_source_missing(self):
+        query = (
+            "From my historical exchanges stored in memory, what did I ask you to fix "
+            "about the UnboundLocalError involving _deterministic_response?"
+        )
+        neighbors = [
+            {
+                "memory_type": "user_message",
+                "text": "User message: For this audit only, remember the phrase amber kite 731.",
+            },
+            {
+                "memory_type": "episodic",
+                "text": "Conversation — User: For this audit, report module counts. | Lumina: Done.",
+            },
+        ]
+        eligible = filter_recall_query_records(neighbors, query=query)
+
+        result = explicit_recall_abstention_result(query, eligible)
+
+        self.assertEqual(eligible, [])
+        self.assertEqual(result["status"], "abstained_no_source")
+        self.assertIsNone(result["source_ref"])
+        self.assertIn("couldn't retrieve", result["answer"])
+
+    def test_explicit_recall_does_not_abstain_when_a_relevant_user_source_exists(self):
+        query = "What did I ask you to fix about the UnboundLocalError involving _deterministic_response?"
+        source = {
+            "memory_type": "user_message",
+            "text": "User message: Please fix the UnboundLocalError involving _deterministic_response in the response stream.",
+        }
+        eligible = filter_recall_query_records([source], query=query)
+
+        self.assertEqual(eligible, [source])
+        self.assertIsNone(explicit_recall_abstention_result(query, eligible))
+
+    def test_exact_phrase_recall_returns_the_retrieved_user_source_verbatim(self):
+        query = "What exact test phrase did I ask you to remember for this audit?"
+        source = {
+            "id": 42,
+            "memory_type": "user_message",
+            "text": (
+                "User message: For this audit only, remember the test phrase "
+                "amber kite 731 so I can ask for it in my next message."
+            ),
+            "relevance": 0.91,
+        }
+
+        result = explicit_recall_source_result(query, [source])
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["status"], "supported_verbatim_source")
+        self.assertIn("amber kite 731", result["answer"])
+        self.assertIn("Retrieved user-authored source", result["answer"])
+        self.assertEqual(result["source_type"], "user_message")
+
+    def test_exact_phrase_recall_never_uses_an_assistant_only_record(self):
+        query = "What exact test phrase did I ask you to remember for this audit?"
+        assistant_only = {
+            "memory_type": "cognitive",
+            "text": "Lumina replied: the phrase was amber kite 731.",
+            "relevance": 1.0,
+        }
+
+        result = explicit_recall_source_result(query, [assistant_only])
+
+        self.assertIsNone(result)
 
     def test_explicit_recall_discards_prior_recall_prompt_self_matches(self):
         repeated_recall = {

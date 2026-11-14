@@ -35,6 +35,8 @@ from cognition.identity_boundary import prompt_block as _identity_boundary_block
 from cognition.body_runtime.robot_capabilities import robot_capability_report, robot_inventory_observation
 from cognition.memory_retrieval import (
     exact_filename_recall_result,
+    explicit_recall_source_result,
+    explicit_recall_abstention_result,
     extract_explicit_recall_topic,
     filter_recall_query_records,
     filter_memories_by_modality,
@@ -2118,7 +2120,7 @@ Write at most 70 words, in the user's language, only if a concise carry-forward 
                 and _goal_means_analysis.unique_feasible_option() is not None
             )
         )
-        system_prompt, emo_dict, cond_dict, arb_temperature, _filename_recall_result = await asyncio.to_thread(
+        system_prompt, emo_dict, cond_dict, arb_temperature, _memory_recall_result = await asyncio.to_thread(
             self._build_prompt_and_cache,
             effective_input,
             user_id,
@@ -2400,16 +2402,17 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             )
             else ""
         )
-        if _explicit_memory_recall and _filename_recall_result is not None:
-            _deterministic_response = str(_filename_recall_result.get("answer") or "")
+        if _explicit_memory_recall and _memory_recall_result is not None:
+            _deterministic_response = str(_memory_recall_result.get("answer") or "")
             self._record_turn_stage(
-                "memory_recall_answer", str(_filename_recall_result.get("status") or "unverified"),
-                "Exact filename answer derived from a retrieved user-authored source; "
-                "assistant-authored memory text is not accepted as evidence.",
+                "memory_recall_answer", str(_memory_recall_result.get("status") or "unverified"),
+                "Historical recall response is source-backed, or abstains when no relevant "
+                "user-authored source survived retrieval filtering.",
                 output={
-                    "source_ref": _filename_recall_result.get("source_ref"),
-                    "source_type": _filename_recall_result.get("source_type"),
-                    "relevance": _filename_recall_result.get("relevance"),
+                    "source_ref": _memory_recall_result.get("source_ref"),
+                    "source_type": _memory_recall_result.get("source_type"),
+                    "relevance": _memory_recall_result.get("relevance"),
+                    "status": _memory_recall_result.get("status"),
                     "answer_sha256": hashlib.sha256(
                         _deterministic_response.encode("utf-8", errors="replace")
                     ).hexdigest()[:20],
@@ -3723,7 +3726,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             _is_event   = (_learned_tier == "event")    or (_learned_tier is None and _seed_event)
 
             memories = []
-            _filename_recall_result = None
+            _memory_recall_result = None
             # v78: mood-congruent recall — current valence colors which
             # memories surface, same as it does for a person.
             _cur_valence = None
@@ -3916,9 +3919,14 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             # previous answer to that same question. Enforce the recall
             # evidence boundary once, after every lane has been merged and
             # before any memory is serialized into the prompt.
+            _recall_candidate_count_before_filter = len(memories)
             if not peer_name and _is_recall_request:
                 memories = filter_recall_query_records(memories, query=user_input)
-                _filename_recall_result = exact_filename_recall_result(user_input, memories)
+                _memory_recall_result = exact_filename_recall_result(user_input, memories)
+                if _memory_recall_result is None:
+                    _memory_recall_result = explicit_recall_source_result(user_input, memories)
+                if _memory_recall_result is None:
+                    _memory_recall_result = explicit_recall_abstention_result(user_input, memories)
 
             self._record_turn_stage(
                 "memory_retrieval",
@@ -3930,6 +3938,8 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     query_source=_recall_query_source,
                     attention_mode=_recall_attention_mode,
                     retrieval_receipt=_primary_memory_retrieval,
+                    explicit_recall=_is_recall_request,
+                    candidate_count_before_recall_filter=_recall_candidate_count_before_filter,
                 ),
                 turn_id=audit_turn_id,
             )
@@ -4676,7 +4686,7 @@ Memory honesty — two distinct cases:
 
             return (
                 system_prompt, emo_dict, cond_dict, arb_temperature,
-                _filename_recall_result,
+                _memory_recall_result,
             )
 
         except Exception as e:

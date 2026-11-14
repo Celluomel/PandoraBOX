@@ -39,10 +39,27 @@ whl woff woff2 xls xlsx xml yaml yml zip zipx zst
 
 
 _HISTORICAL_REQUEST_PATTERNS = (
+    # Questions whose grammatical subject is "I" followed by an object of
+    # ask/request. Unlike the older "what outcome did I ask for" form, the
+    # object follows the verb here: "what did I ask you to fix about X?".
+    # Recognize the whole source topic so it is routed through explicit recall
+    # and cannot fall back to a generic semantic-memory answer.
+    re.compile(
+        r"\bwhat\s+(?:exactly\s+)?(?:did|have|had)\s+i\s+"
+        r"(?:ask(?:ed)?|request(?:ed)?)\s+(?:you\s+)?(?:to\s+)?"
+        r"(?P<topic>[^?!.]{1,100})",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bqu['’]est-ce\s+que\s+je\s+t['’]ai\s+"
+        r"(?:demand[ée]|dit|formul[ée])\s+(?:de\s+)?"
+        r"(?P<topic>[^?!.]{1,100})",
+        re.IGNORECASE,
+    ),
     re.compile(
         r"\bquel(?:le)?s?\s+(?P<topic>[^?!.]{1,100}?)\s+"
         r"(?:ai|avais|aurais)-je\s+"
-        r"(?:demand[ée]s?|dit|formul[ée]s?|pos[ée]s?)\b",
+        r"(?:explicitement\s+)?(?:demand[ée]s?|dit|formul[ée]s?|pos[ée]s?)\b",
         re.IGNORECASE,
     ),
     re.compile(
@@ -131,10 +148,16 @@ def extract_explicit_recall_topic(text: str) -> str:
     asked_match = _historical_request_match(value)
     if asked_match:
         leading_context = value[:asked_match.start()]
-        leading_context = re.sub(
-            r"^\s*(?:pour|for)\s+|[,;:]\s*$", "", leading_context,
+        # Keep a short explicit scope ("For the audit, ...") but discard
+        # narrative framing such as "from my historical exchanges" or
+        # "dans l’échange historique". The latter is not the memory topic and
+        # must not make any nearby record containing only "audit" eligible.
+        scope = re.search(
+            r"\b(?:for|pour)\s+([^,;:]{1,60})\s*[,;:]\s*$",
+            leading_context,
             flags=re.IGNORECASE,
         )
+        leading_context = scope.group(1).strip() if scope else ""
         leading_context = re.sub(
             r"\b(?:what|which|quel(?:le)?s?)\s*$", "", leading_context,
             flags=re.IGNORECASE,
@@ -154,9 +177,9 @@ def extract_explicit_recall_topic(text: str) -> str:
             "", trailing_context, flags=re.IGNORECASE,
         )
         extracted = " ".join(
-            part.strip(" \t\r\n,;:«»\"'")
+            part.strip(" \t\r\n,;:?!«»\"'")
             for part in (leading_context, topic, trailing_context)
-            if part.strip(" \t\r\n,;:«»\"'")
+            if part.strip(" \t\r\n,;:?!«»\"'")
         )
         return extracted[:180].strip() or value
     prefixes = (
@@ -251,6 +274,11 @@ def filter_recall_query_records(
     answer assembled from a neighboring conversation topic.
     """
     focus = set(tokenize(_explicit_recall_focus(query))) if query else set()
+    filename_lookup = bool(re.search(
+        r"\b(?:filename|file\s*name|nom\s+du\s+fichier|nom\s+du\s+document)\b",
+        str(query or ""),
+        flags=re.IGNORECASE,
+    ))
     filtered = []
     for memory in memories:
         kind = str(memory.get("memory_type", "")).casefold()
@@ -266,7 +294,14 @@ def filter_recall_query_records(
             continue
         if focus and kind in {"user_message", "episodic"}:
             source_terms = set(tokenize(source_text))
-            if not (focus & source_terms):
+            overlap = focus & source_terms
+            # A single broad shared word (for example "audit") is not enough
+            # to treat a neighboring conversation as evidence for a specific
+            # historical request. Require both multiple matching terms and a
+            # minimum fraction of the identifying topic for longer queries.
+            minimum_overlap = 1 if filename_lookup or len(focus) <= 2 else 2
+            minimum_ratio = 0.05 if filename_lookup else 0.2
+            if len(overlap) < minimum_overlap or len(overlap) / max(1, len(focus)) < minimum_ratio:
                 continue
         filtered.append(memory)
     return filtered
@@ -330,6 +365,105 @@ def exact_filename_recall_result(
     return {
         "answer": "Je n’ai pas retrouvé de source utilisateur confirmant le nom du fichier." if is_french
         else "I couldn't retrieve a user-authored source confirming the filename.",
+        "status": "abstained_no_source",
+        "source_ref": None,
+        "source_type": None,
+        "relevance": None,
+    }
+
+
+def explicit_recall_source_result(
+    query: str, memories: Sequence[dict],
+) -> dict | None:
+    """Return retrieved user text verbatim for exact-quote recall questions.
+
+    This is intentionally extractive: the model must not paraphrase a phrase,
+    quote, wording, or other exact textual value and accidentally alter it.
+    It returns only a relevant user-authored source, never an assistant claim.
+    """
+    value = str(query or "")
+    if not is_explicit_memory_recall_query(value):
+        return None
+    asks_exact_text = bool(re.search(
+        r"\b(?:exact(?:ly)?\s+)?(?:phrase|wording|quote|quotation|text|word|phrase exacte|"
+        r"formulation exacte|citation|texte exact|mot exact)\b",
+        value, re.IGNORECASE,
+    )) and bool(re.search(
+        r"\b(?:exact|exactly|phrase|wording|quote|quotation|text|word|exacte|citation|texte|mot)\b",
+        value, re.IGNORECASE,
+    ))
+    if not asks_exact_text:
+        return None
+
+    evidence = filter_recall_query_records(memories, query=value)
+    focus = set(tokenize(_explicit_recall_focus(value)))
+    candidates = []
+    for memory in evidence:
+        kind = str(memory.get("memory_type", "")).casefold()
+        if kind not in {"user_message", "episodic"} and memory.get("source") != "legacy_episodic_user_source":
+            continue
+        source_text = extract_user_authored_text(memory)
+        source_terms = set(tokenize(source_text))
+        overlap = len(focus & source_terms)
+        if overlap < 2:
+            continue
+        try:
+            relevance = max(0.0, min(1.0, float(memory.get("relevance", 0.0))))
+        except (TypeError, ValueError, OverflowError):
+            relevance = 0.0
+        candidates.append((overlap, relevance, memory, source_text))
+    if not candidates:
+        return None
+
+    _, relevance, memory, source_text = max(candidates, key=lambda item: (item[0], item[1]))
+    excerpt = re.sub(r"\s+", " ", source_text).strip()[:800]
+    stable_key = str(memory.get("id") or memory.get("faiss_id") or source_text)
+    is_french = bool(re.search(
+        r"\b(?:quel(?:le)?s?|formulation|citation|texte|mot|demand[ée]s?|rappelle|"
+        r"qu['’]est-ce|ai-je|dans\s+l['’]échange)\b",
+        value, re.IGNORECASE,
+    ))
+    return {
+        "answer": (
+            f'Source utilisateur retrouvée (extrait exact) : « {excerpt} »'
+            if is_french else
+            f'Retrieved user-authored source (verbatim): “{excerpt}”'
+        ),
+        "status": "supported_verbatim_source",
+        "source_ref": hashlib.sha256(stable_key.encode("utf-8", errors="replace")).hexdigest()[:20],
+        "source_type": str(memory.get("memory_type") or "legacy_episodic_user_source"),
+        "relevance": round(relevance, 4),
+    }
+
+
+def explicit_recall_abstention_result(
+    query: str, memories: Sequence[dict],
+) -> dict | None:
+    """Fail closed when an explicit historical query has no source record.
+
+    The LLM can interpret retrieved records, but must not invent a past user
+    request from the error/topic named in the current question. This guard is
+    based on source eligibility, not a dictionary of remembered answers.
+    """
+    if not is_explicit_memory_recall_query(query):
+        return None
+    eligible = [
+        item for item in memories
+        if str(item.get("memory_type", "")).casefold() in {"user_message", "episodic"}
+    ]
+    if eligible:
+        return None
+    is_french = bool(re.search(
+        r"\b(?:quel(?:le)?s?|qu['’]est-ce|ai-je|avais-je|demand[ée]s?|"
+        r"rappelle|souviens|échange|historique)\b",
+        str(query or ""), re.IGNORECASE,
+    ))
+    return {
+        "answer": (
+            "Je n’ai pas retrouvé de source utilisateur pertinente pour vérifier ce détail historique."
+            if is_french else
+            "I couldn't retrieve a relevant user-authored source to verify that historical detail."
+        ),
         "status": "abstained_no_source",
         "source_ref": None,
         "source_type": None,
