@@ -395,6 +395,52 @@ class UserManager:
             return ""
         return self.prompt_context_for(profile.id)
 
+    @staticmethod
+    def _has_explicit_profile_provenance(sources) -> bool:
+        """Accept only a user-origin receipt with a turn or source digest."""
+        if not isinstance(sources, list):
+            return False
+        return any(
+            isinstance(source, dict)
+            and source.get("source_role") == "user"
+            and bool(source.get("turn_id") or source.get("source_sha256"))
+            for source in sources
+        )
+
+    def profile_provenance_summary_for(self, user_id: str) -> dict:
+        """Return counts only; values remain private in the prompt block."""
+        profile = self.get(user_id)
+        kinds = {
+            "preference": "preferences",
+            "dislike": "dislikes",
+            "interest": "interests",
+            "characteristic": "characteristics",
+        }
+        summary = {
+            "explicit_user_stated_entries": 0,
+            "legacy_unverified_entries": 0,
+            "categories": {
+                field_name: {"explicit_user_stated": 0, "legacy_unverified": 0}
+                for field_name in kinds.values()
+            },
+        }
+        if profile is None or profile.id == self.GUEST_ID:
+            return summary
+        with self._lock:
+            for kind, field_name in kinds.items():
+                category = profile.profile_fact_provenance.get(kind, {})
+                values = getattr(profile, field_name, [])
+                for value in values:
+                    fact_key = hashlib.sha256(value.casefold().encode("utf-8")).hexdigest()
+                    sources = category.get(fact_key, []) if isinstance(category, dict) else []
+                    if self._has_explicit_profile_provenance(sources):
+                        summary["explicit_user_stated_entries"] += 1
+                        summary["categories"][field_name]["explicit_user_stated"] += 1
+                    else:
+                        summary["legacy_unverified_entries"] += 1
+                        summary["categories"][field_name]["legacy_unverified"] += 1
+        return summary
+
     def prompt_context_for(self, user_id: str) -> str:
         """Return a small cached profile block for the critical chat path."""
         profile = self.get(user_id)
@@ -407,9 +453,22 @@ class UserManager:
                 # formatting prompt context. Persist it here so a restart
                 # cannot resurrect the quarantined traits on the next read.
                 self._save()
+            provenance_summary = self.profile_provenance_summary_for(profile.id)
             cached = self._prompt_cache.get(profile.id)
             if cached is None:
-                parts = [f"User's name: {profile.display_name}."]
+                category_counts = provenance_summary["categories"]
+                counts_text = ", ".join(
+                    f"{field_name}: {counts['explicit_user_stated']} provenance-backed, "
+                    f"{counts['legacy_unverified']} legacy-unverified"
+                    for field_name, counts in category_counts.items()
+                )
+                parts = [
+                    f"User's name: {profile.display_name}.",
+                    "AUTHORITATIVE NAMED-PROFILE PROVENANCE COUNTS: "
+                    f"explicit_user_stated_entries={provenance_summary['explicit_user_stated_entries']}; "
+                    f"legacy_unverified_entries={provenance_summary['legacy_unverified_entries']} "
+                    f"({counts_text}). These counts describe this UserManager profile only.",
+                ]
                 if profile.notes.strip():
                     parts.append(
                         "Legacy profile notes (source turn not recorded; treat as unverified): "
@@ -435,8 +494,14 @@ class UserManager:
                         provenance = profile.profile_fact_provenance
                         category = provenance.get(kind, {}) if isinstance(provenance, dict) else {}
                         sources = category.get(fact_key, []) if isinstance(category, dict) else []
-                        if isinstance(sources, list) and sources and isinstance(sources[-1], dict):
-                            source = sources[-1]
+                        valid_sources = [
+                            source for source in sources
+                            if isinstance(source, dict)
+                            and source.get("source_role") == "user"
+                            and (source.get("turn_id") or source.get("source_sha256"))
+                        ] if isinstance(sources, list) else []
+                        if self._has_explicit_profile_provenance(sources):
+                            source = valid_sources[-1]
                             turn_id = str(source.get("turn_id") or "")
                             source_hash = str(source.get("source_sha256") or "")[:12]
                             source_ref = ", ".join(

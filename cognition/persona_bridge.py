@@ -3606,6 +3606,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             # Falls back gracefully if the profile store is unavailable.
             _user_identity_line = ""
             _profile_context = ""
+            _profile_provenance_summary = None
             if peer_name:
                 _user_identity_line = (
                     f"The current interlocutor is another AI system named {peer_name}, "
@@ -3615,6 +3616,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                 try:
                     from managers.user_manager import user_manager
                     _profile_context = user_manager.prompt_context_for(user_id)
+                    _profile_provenance_summary = user_manager.profile_provenance_summary_for(user_id)
                     if _profile_context:
                         _user_identity_line = _profile_context
                     elif user_id not in ("default", "guest", ""):
@@ -3639,6 +3641,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                 output={
                     **profile_context_evidence(
                         _profile_status, _profile_source, _user_identity_line,
+                        _profile_provenance_summary,
                     ),
                 },
                 turn_id=audit_turn_id,

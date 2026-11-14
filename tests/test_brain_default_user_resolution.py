@@ -1,3 +1,5 @@
+import hashlib
+
 from pathlib import Path
 from unittest.mock import patch
 import ast
@@ -73,6 +75,7 @@ def test_profile_fact_provenance_is_persisted_and_rendered_as_source_link(tmp_pa
     assert receipt["status"] == "updated"
     assert receipt["provenance_records"] == 1
     assert "explicit user statement: turn turn-123" in prompt_context
+    assert "explicit_user_stated_entries=1" in prompt_context
     assert persisted_profile.profile_fact_provenance["preference"]
 
 
@@ -84,7 +87,24 @@ def test_legacy_profile_facts_are_labeled_unverified_until_reasserted(tmp_path):
     manager._save()
 
     assert "Legacy preferences without source receipt (unverified)" in manager.prompt_context_for(profile.id)
+    assert "explicit_user_stated_entries=0" in manager.prompt_context_for(profile.id)
+    assert "legacy_unverified_entries=1" in manager.prompt_context_for(profile.id)
     assert "Legacy preferences without source receipt (unverified)" in manager.active_context_for_prompt()
+
+
+def test_profile_provenance_requires_a_user_source_receipt(tmp_path):
+    manager = UserManager(path=Path(tmp_path) / "users.json")
+    profile = manager.create("Fred")
+    profile.preferences.append("concise answers")
+    key = hashlib.sha256(b"concise answers").hexdigest()
+    profile.profile_fact_provenance = {"preference": {key: [{"recorded_at": "today"}]}}
+
+    summary = manager.profile_provenance_summary_for(profile.id)
+    prompt_context = manager.prompt_context_for(profile.id)
+
+    assert summary["explicit_user_stated_entries"] == 0
+    assert summary["legacy_unverified_entries"] == 1
+    assert "Legacy preferences without source receipt (unverified)" in prompt_context
 
 
 def test_profile_learning_does_not_claim_update_when_persistence_fails(tmp_path):

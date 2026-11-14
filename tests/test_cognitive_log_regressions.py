@@ -67,7 +67,7 @@ class CognitiveLogRegressionTests(unittest.TestCase):
     def test_user_profile_sources_are_kept_epistemically_separate(self):
         self.assertIn("named UserManager profile", USER_PROFILE_PROVENANCE_POLICY)
         self.assertIn("WorldModel behavioral interaction model", USER_PROFILE_PROVENANCE_POLICY)
-        self.assertIn("if there are none, say so", USER_PROFILE_PROVENANCE_POLICY)
+        self.assertIn("if the count is zero, say there are none", USER_PROFILE_PROVENANCE_POLICY)
 
     def test_behavioral_profile_updates_only_on_human_turns_and_returns_receipt(self):
         calls = []
@@ -113,6 +113,17 @@ class CognitiveLogRegressionTests(unittest.TestCase):
         self.assertNotIn("private preference", str(profile))
         self.assertEqual(profile["status"], "injected")
         self.assertEqual(profile["quality"], "present")
+
+        counted_profile = profile_context_evidence(
+            "injected", "named_profile", "hashed context", {
+                "explicit_user_stated_entries": 0,
+                "legacy_unverified_entries": 1,
+                "categories": {"preferences": {"explicit_user_stated": 0, "legacy_unverified": 1}},
+            },
+        )
+        counted = audit_safe_turn_summary(counted_profile)
+        self.assertEqual(counted["provenance_summary"]["explicit_user_stated_entries"], 0)
+        self.assertEqual(counted["provenance_summary"]["categories"]["preferences"]["legacy_unverified"], 1)
         empty_profile = profile_context_evidence("empty", "no_named_profile", "")
         self.assertEqual(empty_profile["quality"], "empty")
         self.assertEqual(audit_safe_turn_summary(empty_profile)["quality"], "empty")

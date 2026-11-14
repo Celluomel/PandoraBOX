@@ -15,8 +15,11 @@ USER_PROFILE_PROVENANCE_POLICY = (
     "style estimates, inferred familiarity, relationship estimates, time-pattern estimates, "
     "conversation topics, and retrieved memories are separate evidence sources. Never "
     "present any of those estimates or memories as explicit facts stored in the named "
-    "profile. When asked what is explicitly recorded, list only provenance-backed entries; "
-    "if there are none, say so. Keep historical recall separate from profile facts."
+    "profile. When asked what is explicitly recorded, the authoritative named-profile "
+    "provenance counts control: never infer an entry or its count from memories or another "
+    "model. List only provenance-backed entries; if the count is zero, say there are none. "
+    "Do not pad empty categories with generic legacy labels. Keep historical recall separate "
+    "from profile facts."
 )
 
 
@@ -187,7 +190,9 @@ def response_learning_evidence(receipt: Mapping[str, Any]) -> dict:
     }
 
 
-def profile_context_evidence(status: str, source: str, context: str) -> dict:
+def profile_context_evidence(
+    status: str, source: str, context: str, provenance_summary: Mapping[str, Any] | None = None,
+) -> dict:
     """Fingerprint profile prompt material without exposing its contents."""
     status = str(status)
     quality_by_status = {
@@ -198,12 +203,39 @@ def profile_context_evidence(status: str, source: str, context: str) -> dict:
         "unavailable": "unavailable",
         "failed": "failed",
     }
-    return {
+    result = {
         "status": status,
         "source": str(source),
         "context_sha256": _sha256(str(context)),
         "quality": quality_by_status.get(status, "unverified"),
     }
+    if isinstance(provenance_summary, Mapping):
+        def safe_count(value: Any) -> int:
+            try:
+                return max(0, min(100000, int(value)))
+            except (TypeError, ValueError, OverflowError):
+                return 0
+
+        categories = {}
+        raw_categories = provenance_summary.get("categories")
+        if isinstance(raw_categories, Mapping):
+            for category in ("preferences", "dislikes", "interests", "characteristics"):
+                counts = raw_categories.get(category)
+                if isinstance(counts, Mapping):
+                    categories[category] = {
+                        "explicit_user_stated": safe_count(counts.get("explicit_user_stated", 0)),
+                        "legacy_unverified": safe_count(counts.get("legacy_unverified", 0)),
+                    }
+        result["provenance_summary"] = {
+            "explicit_user_stated_entries": safe_count(
+                provenance_summary.get("explicit_user_stated_entries", 0)
+            ),
+            "legacy_unverified_entries": safe_count(
+                provenance_summary.get("legacy_unverified_entries", 0)
+            ),
+            "categories": categories,
+        }
+    return result
 
 
 def audit_safe_turn_summary(value: Any) -> dict[str, Any] | None:
@@ -344,6 +376,7 @@ def audit_safe_turn_summary(value: Any) -> dict[str, Any] | None:
             "status": status,
             "source": str(value.get("source", ""))[:40],
             "context_sha256": str(value.get("context_sha256", ""))[:64],
+            "provenance_summary": value.get("provenance_summary", {}),
             "quality": quality_by_status.get(status, "unverified"),
         }
 
