@@ -280,6 +280,7 @@ class CognitiveAuditEngine:
         self._path      = Path(path)
         self._state     = AuditState()
         self._lock      = threading.Lock()
+        self._trial_evaluation_in_progress = False
         self._process_started_at = time.time()
         self._proposal_attempt_status = "not_started"
         self._proposal_attempt_detail = ""
@@ -298,16 +299,33 @@ class CognitiveAuditEngine:
         """Called every slow cycle from InternalThoughtLoop."""
         try:
             # 1. Evaluate any active trial first
-            if self._state.active_trial:
-                trial = DevelopmentProposal(**self._state.active_trial)
-                if slow_cycle - trial.proposed_at_cycle >= TRIAL_DURATION_CYCLES:
+            trial_to_evaluate = None
+            with self._lock:
+                raw_trial = self._state.active_trial
+                if raw_trial:
+                    trial = DevelopmentProposal(**raw_trial)
+                    if slow_cycle - trial.proposed_at_cycle >= TRIAL_DURATION_CYCLES:
+                        if not self._trial_evaluation_in_progress:
+                            self._trial_evaluation_in_progress = True
+                            trial_to_evaluate = trial
+                        else:
+                            return
+                elif self._trial_evaluation_in_progress:
+                    return
+
+            if trial_to_evaluate is not None:
+                try:
                     threading.Thread(
-                        target=self._evaluate_trial,
-                        args=(trial, slow_cycle),
+                        target=self._evaluate_trial_once,
+                        args=(trial_to_evaluate, slow_cycle),
                         daemon=True,
                         name="cae-evaluate",
                     ).start()
-                    return
+                except Exception:
+                    with self._lock:
+                        self._trial_evaluation_in_progress = False
+                    raise
+                return
 
             # 2. Run audit on schedule
             if slow_cycle % AUDIT_EVERY_N != 0 or slow_cycle == 0:
@@ -385,6 +403,7 @@ class CognitiveAuditEngine:
                 dict(snap.get("signal_sample_count", {})) if isinstance(snap, dict) else {}
             ),
             "active_trial": trial,
+            "trial_evaluation_in_progress": getattr(self, "_trial_evaluation_in_progress", False),
             "proposal_attempt_count": int(self._state.proposal_attempt_total),
             "last_proposal_attempt": dict(self._state.last_proposal_attempt or {}),
             "committed_params": dict(self._state.committed_params),
@@ -868,6 +887,14 @@ Respond ONLY in JSON (no markdown, no preamble):
                 self._state.active_trial = None
             self._revert_trial(trial)
             self._save()
+
+    def _evaluate_trial_once(self, trial: DevelopmentProposal, slow_cycle: int) -> None:
+        """Run one trial evaluation and always release the single-flight guard."""
+        try:
+            self._evaluate_trial(trial, slow_cycle)
+        finally:
+            with self._lock:
+                self._trial_evaluation_in_progress = False
 
     def _commit_trial(self, trial: DevelopmentProposal) -> None:
         """Persist confirmed parameter change to committed_params."""
