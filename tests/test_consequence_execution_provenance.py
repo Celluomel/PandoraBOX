@@ -48,6 +48,47 @@ class ConsequenceExecutionProvenanceTests(unittest.TestCase):
                 "url": "file:///private/path",
             }))
 
+    def test_web_search_success_requires_explicit_queued_item_evidence(self):
+        with tempfile.TemporaryDirectory() as folder:
+            tracker = ConsequenceTracker(persona_dir=folder)
+            prediction = tracker.predict("g", "research", "web_search")
+
+            self.assertEqual(tracker._observe(prediction, {
+                "success": True, "result": "search returned text, not queued",
+            }), 0.0)
+            self.assertEqual(tracker._observe(prediction, {
+                "success": True, "research_item_queued": True,
+            }), 1.0)
+
+    def test_memory_recall_uses_structured_retrieval_and_publication_evidence(self):
+        with tempfile.TemporaryDirectory() as folder:
+            tracker = ConsequenceTracker(persona_dir=folder)
+            prediction = tracker.predict("g", "recall", "memory_recall")
+
+            self.assertEqual(tracker._observe(prediction, {
+                "success": True,
+                "result": "No relevant memories were found; this is a long diagnostic.",
+            }), 0.0)
+            self.assertEqual(tracker._observe(prediction, {
+                "success": True, "memory_retrieved": True,
+            }), 0.5)
+            self.assertEqual(tracker._observe(prediction, {
+                "success": True, "memory_retrieved": True,
+                "thought_published": True,
+            }), 1.0)
+
+    def test_bisociative_success_requires_hypothesis_evidence(self):
+        with tempfile.TemporaryDirectory() as folder:
+            tracker = ConsequenceTracker(persona_dir=folder)
+            prediction = tracker.predict("g", "generate hypothesis", "bisociative")
+
+            self.assertEqual(tracker._observe(prediction, {
+                "success": True, "result": "completed",
+            }), 0.0)
+            self.assertEqual(tracker._observe(prediction, {
+                "success": True, "hypothesis_generated": True,
+            }), 1.0)
+
     def test_deferred_prediction_is_closed_without_becoming_a_failure(self):
         with tempfile.TemporaryDirectory() as folder:
             ledger = CausalLedger(folder)

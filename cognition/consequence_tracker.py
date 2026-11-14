@@ -68,10 +68,10 @@ except Exception:  # pragma: no cover
 #                expected effect label). The probe is evaluated in _observe().
 ACTION_MODEL: Dict[str, Dict[str, str]] = {
     "memory_recall":  {"module": "semantic_memory", "effect": "memory_items_retrieved", "probe": "recall_nonempty"},
-    "web_search":     {"module": "goal_ecology", "effect": "research_item_queued", "probe": "success"},
+    "web_search":     {"module": "goal_ecology", "effect": "research_item_queued", "probe": "research_item_queued"},
     "self_question":  {"module": "self_model", "effect": "candidate_insight_persisted", "probe": "insight_persisted"},
     "user_question":  {"module": "goal_action_executor", "effect": "question_queued", "probe": "question_queued"},
-    "bisociative":    {"module": "creative_divergence", "effect": "hypothesis_generated", "probe": "success"},
+    "bisociative":    {"module": "creative_divergence", "effect": "hypothesis_generated", "probe": "hypothesis_generated"},
 }
 DEFAULT_MODULE = "decision_policy"
 
@@ -418,13 +418,20 @@ class ConsequenceTracker:
         if probe == "insight_persisted":
             return 1.0 if success and report.get("belief_persisted") is True else 0.0
 
+        if probe == "research_item_queued":
+            return 1.0 if success and report.get("research_item_queued") is True else 0.0
+
+        if probe == "hypothesis_generated":
+            return 1.0 if success and report.get("hypothesis_generated") is True else 0.0
+
         if probe == "recall_nonempty":
-            # memory_recall is a real success only if it returned content
             if not success:
                 return 0.0
-            if result and ("no" not in result[:12] or "recalled" in result or "found" in result or len(result) > 25):
+            if report.get("memory_retrieved") is True and report.get("thought_published") is True:
                 return 1.0
-            return 0.5
+            if report.get("memory_retrieved") is True:
+                return 0.5
+            return 0.0
         # probe == "success"
         if not success:
             return 0.0
