@@ -976,7 +976,8 @@ class InternalThoughtLoop:
 
     def record_async_cycle_stage(
         self, cycle_id: int, stage: str, status: str, *,
-        metrics: dict[str, Any] | None = None, error_type: str | None = None,
+        output: Any = None, metrics: dict[str, Any] | None = None,
+        error_type: str | None = None,
     ) -> bool:
         """Attach a worker-thread result to its originating retained cycle."""
         lock = getattr(self, "_cycle_evidence_lock", None)
@@ -1000,8 +1001,12 @@ class InternalThoughtLoop:
                 "status": str(status),
                 "async_completion": True,
                 "inputs": {"origin_cycle_id": int(cycle_id)},
-                "output_ref": None,
-                "output_summary": None,
+                "output_ref": (
+                    self._evidence_fingerprint(output) if output is not None else None
+                ),
+                "output_summary": (
+                    self._evidence_summary(output) if output is not None else None
+                ),
             }
             if metrics:
                 entry["metrics"] = {

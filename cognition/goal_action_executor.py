@@ -2377,6 +2377,7 @@ class GoalActionExecutor:
                         int(cycle_id),
                         f"goal_action_executor.{safe_action}",
                         "succeeded" if success else "failed",
+                        output=receipt,
                         metrics={
                             "action": safe_action,
                             "success": bool(success),

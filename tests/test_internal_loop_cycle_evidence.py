@@ -364,6 +364,36 @@ def test_async_worker_result_is_attached_to_its_origin_cycle_not_current_cycle()
     assert current["stages"] == []
 
 
+def test_async_action_receipt_exposes_effect_flags_without_result_text():
+    loop = make_loop()
+    loop._begin_cycle_evidence(41)
+    loop._finish_cycle_evidence("completed")
+
+    assert loop.record_async_cycle_stage(
+        41,
+        "goal_action_executor.web_search",
+        "succeeded",
+        output={
+            "action": "web_search",
+            "success": True,
+            "goal_state_persisted": True,
+            "thought_stream_recorded": True,
+            "workspace_broadcast": True,
+            "research_item_queued": True,
+            "result": "private research summary",
+        },
+    )
+    stage = loop.cycle_evidence_snapshot()["cycles"][0]["stages"][0]
+
+    assert stage["output_ref"]
+    assert stage["output_summary"]["success"] is True
+    assert stage["output_summary"]["goal_state_persisted"] is True
+    assert stage["output_summary"]["thought_stream_recorded"] is True
+    assert stage["output_summary"]["workspace_broadcast"] is True
+    assert stage["output_summary"]["research_item_queued"] is True
+    assert "private research summary" not in repr(stage)
+
+
 def test_cycle_summary_exposes_only_allowlisted_cognitive_outcome_counts():
     loop = make_loop()
     loop._begin_cycle_evidence(6)
