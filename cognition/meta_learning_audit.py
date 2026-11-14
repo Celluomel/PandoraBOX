@@ -61,6 +61,7 @@ class ParameterEffectiveness:
     verdict:      str          # "effective"|"transient"|"ineffective"
     commit_cycle: int
     evaluated_at: float = field(default_factory=time.time)
+    baseline_source: str = "commit_snapshot"
 
 
 class MetaLearningAudit:
@@ -136,7 +137,24 @@ class MetaLearningAudit:
         for trial in cae._state.trial_log:
             if trial.get("outcome") != "confirmed": continue
             if trial.get("committed") is not True: continue
-            commit_cycle = trial.get("proposed_at_cycle", 0)
+            # Measure the long-term effect from the point the trial was
+            # actually confirmed and committed. Starting at proposal time
+            # mixes the temporary trial period into the post-commit window.
+            commit_cycle = trial.get("evaluated_at_cycle") or trial.get("proposed_at_cycle", 0)
+            baseline = trial.get("signal_at_eval")
+            if baseline is None:
+                # Older persisted trials predate signal_at_eval on commit.
+                # Keep them auditable, but mark their baseline provenance.
+                baseline = trial.get("signal_at_proposal")
+                baseline_source = "legacy_proposal_baseline"
+            else:
+                baseline_source = "commit_snapshot"
+            if baseline is None:
+                logger.warning(
+                    "[MetaLearningAudit] Skipping committed trial without a baseline: %s",
+                    trial.get("parameter"),
+                )
+                continue
             # Already registered?
             already = any(
                 p["parameter"] == trial.get("parameter") and
@@ -147,7 +165,8 @@ class MetaLearningAudit:
             self._pending.append({
                 "parameter":    trial.get("parameter", ""),
                 "signal":       trial.get("dimension", ""),
-                "before":       trial.get("signal_at_proposal", 0.0),
+                "before":       float(baseline),
+                "baseline_source": baseline_source,
                 "commit_cycle": commit_cycle,
                 "eval_at":      commit_cycle + META_WINDOW,
             })
@@ -168,21 +187,32 @@ class MetaLearningAudit:
                 remaining.append(pending)
                 continue
 
-            # Read current signal value
+            # Evaluate only measured snapshots captured after commit and
+            # inside this trial's declared follow-up window. Never turn a
+            # missing signal into a plausible-looking numeric default.
             signal = pending["signal"]
-            current_val = self._read_signal(signal, cae)
             before      = pending["before"]
-
-            # Find peak signal in snapshots since commit
             commit_cycle = pending["commit_cycle"]
+            eval_at = pending["eval_at"]
             snapshots = [
                 s for s in cae._state.snapshot_log
-                if s.get("slow_cycle", 0) >= commit_cycle
+                if commit_cycle < s.get("slow_cycle", 0) <= eval_at
+                and s.get(signal) is not None
+                and (s.get("signal_status") or {}).get(signal) in {"measured", "measured_legacy_snapshot"}
             ]
-            if snapshots:
-                peak = max(s.get(signal, before) for s in snapshots)
-            else:
-                peak = current_val
+            # At least two post-commit samples are required to assess a
+            # sustained effect. Keep the pending item until evidence exists.
+            if len(snapshots) < 2:
+                remaining.append(pending)
+                logger.info(
+                    "[MetaLearningAudit] Deferring %s: %d measured post-commit samples, need 2",
+                    pending["parameter"], len(snapshots),
+                )
+                continue
+
+            values = [float(s[signal]) for s in snapshots]
+            peak = max(values)
+            current_val = sum(values[-2:]) / 2.0
 
             # Verdict
             improvement = current_val - before
@@ -213,6 +243,7 @@ class MetaLearningAudit:
                 after_stable = round(current_val, 4),
                 verdict      = verdict,
                 commit_cycle = commit_cycle,
+                baseline_source = pending.get("baseline_source", "legacy_unknown"),
             )
             with self._lock:
                 self._records.append(rec)
