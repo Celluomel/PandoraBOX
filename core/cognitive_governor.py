@@ -183,6 +183,7 @@ class CognitiveGovernor:
         goal_count: int,
         cycle_number: int,
         pressure_source: str = "provided",
+        goal_status_counts: Dict[str, int] | None = None,
     ) -> dict[str, Any]:
         """
         Called at the START of every slow cycle.
@@ -232,7 +233,7 @@ class CognitiveGovernor:
         )
         # Return a bounded, non-prose snapshot so the execution receipt can
         # verify the exact inputs and policy decision used for this cycle.
-        return {
+        snapshot = {
             "mode": self.mode,
             "total_pressure": self._pressure,
             "goal_count": self._goal_count,
@@ -241,6 +242,16 @@ class CognitiveGovernor:
             "cycle": self._cycle,
             "pressure_source": self._pressure_source,
         }
+        if isinstance(goal_status_counts, dict):
+            for key in ("active", "dormant", "other", "total"):
+                value = goal_status_counts.get(key)
+                if isinstance(value, int) and value >= 0:
+                    field = (
+                        "goal_records_seen" if key == "total"
+                        else f"{key}_goal_count"
+                    )
+                    snapshot[field] = value
+        return snapshot
 
     def may_run(self, subsystem: str) -> bool:
         """

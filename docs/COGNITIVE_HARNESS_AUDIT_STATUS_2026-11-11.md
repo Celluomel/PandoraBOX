@@ -1,7 +1,7 @@
 # Audit du harnais cognitif — état et prochaines étapes
 
 **Date de mise à jour :** 14 novembre 2026
-**Statut :** audit du harnais cognitif en cours; aucune conclusion globale de qualité n’est établie. Dernier code chargé dans Lumina : `89b6507`; le reçu de pression courante et ses effets aval sont confirmés jusqu’au cycle 11208. Les modifications Body/UI préexistantes restent hors lot.
+**Statut :** audit du harnais cognitif en cours; aucune conclusion globale de qualité n’est établie. Dernier code chargé dans Lumina : `5b766e5`; la réception workspace de Phase 2 est confirmée au cycle 11232. Le relevé détaillé des statuts de buts est le prochain correctif local à charger. Les modifications Body/UI préexistantes restent hors lot.
 
 ## Plan d’audit piloté par les preuves — mesure de progression
 
@@ -10,7 +10,7 @@
 | # | Piste et critère de clôture | État au 14 nov. 2026 |
 |---|---|---|
 | 1 | Inventaire des modules Python classés par rôle, dépendance, déclencheur et scénario attendu; distinguer service, événement, cadence, optionnel et test-only. | **Partiel** — le registre live compte 43 modules; la matrice fichier/scénario reste à produire. |
-| 2 | Exécution et disponibilité : pour chaque module attendu, prouver tick ou raison de skip/indisponibilité et vérifier les erreurs sur des cycles représentatifs. | **Partiel** — après `89b6507`, cycles 11205–11208 : 39/43 modules vus, 292 ticks cumulés, 55 skips cumulés et 0 erreur instrumentée; 4 modules restent `skipped_by_policy`. Au cycle 11208, le gouverneur et Phase 1 utilisent exactement la même pression courante (0,24437), Phase 2 narration complète et le lien d’identité répond `no_resolved_threads`. La matrice module/scénario et la validation sémantique restent à faire. |
+| 2 | Exécution et disponibilité : pour chaque module attendu, prouver tick ou raison de skip/indisponibilité et vérifier les erreurs sur des cycles représentatifs. | **Partiel** — cycles 11229–11233 : 40/43 modules observés, 292 ticks, 0 erreur instrumentée. Au cycle 11232, le broadcast narratif a le reçu explicite `admitted`. Un écart de buts (4→0) est observé entre les cycles 11231 et 11232 et attend un relevé d’états actifs/dormants/terminaux du registre mémoire du gouverneur; les quatre buts dormants restent dans le JSON local. |
 | 3 | Causalité d’un tour : identifiant stable, ordre des étapes, liens consommateur→producteur, génération/clôture et intégrité du reçu. | **Close pour le chemin testé** — reçus live déterministe et génératif; le rappel positif relie retrieval→injection→réponse. Cela ne certifie pas tous les types de tours. |
 | 4 | Mémoire conversationnelle : source utilisateur écrite, persistée, retrouvée par paraphrase, provenance conservée et réponse fidèle; refus si source absente. | **Close pour le scénario de rappel testé** — cas source absente = abstention; cas source présente = source ID 9074 récupérée et injectée. La persistance après redémarrage reste dans la piste 10. |
 | 5 | Profil utilisateur : fait explicitement déclaré → provenance → écriture confirmée → récupération cohérente, sans inférence transformée en fait. | **Partiel** — corrections et tests antérieurs consignés; parcours live complet à refaire. |
@@ -2328,3 +2328,13 @@ La trace live du cycle 11208 disait `phase2_narrative_synthesis=completed`, mais
 **Tests locaux :** `tests/test_internal_loop_cycle_evidence.py` + `tests/test_selected_thought_goal_pipeline.py` — **56 réussis**, 9 avertissements connus; `py_compile` et `git diff --check` réussis. Les reçus couvrent admission, rejet et absence du workspace; les erreurs du broadcast sont capturées séparément. Le nouveau code attend son chargement live; validation runtime à faire après le redémarrage groupé et le prochain cycle narratif dû.
 
 **Progression globale : 2/10 = 20 %.** La correction rendra l’effet aval mesurable; elle ne prouvera pas à elle seule que la narration est pertinente ni qu’elle influence les réponses suivantes.
+
+### Cohérence du registre de buts — écart live à expliquer
+
+Les reçus montrent 4 buts actifs+dormants au cycle 11231 puis 0 au cycle 11232. Le relevé local de `data/persona/goals.json` contient alors 4 buts dormants sur 29; le tick GoalEngine rapporte 16 enregistrements dans son pool live et 0 actif. Les preuves disponibles ne suffisent pas à conclure à une corruption : le compteur du gouverneur lit `_goals` en mémoire, alors que le JSON est un autre registre observable. Aucun reçu ne donne encore la répartition de statuts du pool mémoire au même instant.
+
+**Instrumentation locale ajoutée :** le snapshot du gouverneur comprend maintenant `active_goal_count`, `dormant_goal_count`, `other_goal_count` et `goal_records_seen`, en plus du total réellement utilisé pour la décision. Cela permet de distinguer une mutation de statuts d’une divergence de source ou d’un registre vide. La politique reste active+dormant; aucun seuil n’a été changé.
+
+**Tests locaux :** `tests/test_internal_loop_cycle_evidence.py` + `tests/test_selected_thought_goal_pipeline.py` — **57 réussis**, 9 avertissements connus; compilation et `git diff --check` réussis. Le détail n’est pas encore chargé dans le runtime; le prochain cycle live après commit/redémarrage permettra de poursuivre la cause de l’écart.
+
+**Progression globale inchangée : 2/10 = 20 %.** Le reçu de diffusion est prouvé live, mais la cohérence du registre de buts reste ouverte jusqu’à comparaison des statuts mémoire avec la source persistée et aux effets des mainteneurs.

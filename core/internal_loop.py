@@ -806,6 +806,7 @@ class InternalThoughtLoop:
                 "user_topic_count", "filtered_topic_count", "active_thread_count",
                 "broadcast_count", "requested_count", "total_pressure",
                 "goal_count", "budget_total", "budget_remaining",
+                "dormant_goal_count", "other_goal_count", "goal_records_seen",
                 "winning_margin", "score", "confidence", "priority", "override",
                 "generation_blocked", "decision_fresh", "winner_age_cycles",
                 "cycle", "previous_scan_cycle", "drive_count",
@@ -1762,13 +1763,17 @@ class InternalThoughtLoop:
         _gov_pressure = float(_gov_pressure_result["total"])
         _ai_sys_g = getattr(o, "ai_system", None)
         _ge_g = getattr(_ai_sys_g, "goal_engine", None)
-        _gov_goal_count = self._governor_goal_count(_ge_g)
+        _gov_goal_status_counts = self._governor_goal_status_counts(_ge_g)
+        _gov_goal_count = (
+            _gov_goal_status_counts["active"] + _gov_goal_status_counts["dormant"]
+        )
         if self._governor:
             self._governor.begin_cycle(
                 total_pressure=_gov_pressure,
                 goal_count=_gov_goal_count,
                 cycle_number=self._slow_cycle_count,
                 pressure_source=_gov_pressure_source,
+                goal_status_counts=_gov_goal_status_counts,
             )
 
         # ── V32: Phase 1 Decision Pressure + Workspace Competition ─────────
@@ -3294,8 +3299,8 @@ class InternalThoughtLoop:
         self._phase4_maintenance()
 
     @staticmethod
-    def _governor_goal_count(goal_engine: Any) -> int:
-        """Count only goals that currently participate in cognitive pressure.
+    def _governor_goal_status_counts(goal_engine: Any) -> dict[str, int]:
+        """Summarize the live registry states consumed by governor policy.
 
         Completed, archived, abandoned, and low-quality records remain in the
         persistence pool for history, but must not keep the governor in
@@ -3304,10 +3309,21 @@ class InternalThoughtLoop:
         """
         goals = getattr(goal_engine, "_goals", {}) if goal_engine is not None else {}
         values = goals.values() if hasattr(goals, "values") else goals
-        return sum(
-            1 for goal in values
-            if getattr(goal, "status", None) in {"active", "dormant"}
-        )
+        counts = {"active": 0, "dormant": 0, "other": 0, "total": 0}
+        for goal in values:
+            counts["total"] += 1
+            status = getattr(goal, "status", None)
+            if status in {"active", "dormant"}:
+                counts[status] += 1
+            else:
+                counts["other"] += 1
+        return counts
+
+    @staticmethod
+    def _governor_goal_count(goal_engine: Any) -> int:
+        """Count the active+dormant subset consumed by governor policy."""
+        counts = InternalThoughtLoop._governor_goal_status_counts(goal_engine)
+        return counts["active"] + counts["dormant"]
 
     def _periodic_module_due(
         self, attr_name: str, module_name: str, interval: int,

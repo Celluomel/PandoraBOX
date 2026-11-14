@@ -761,6 +761,12 @@ def test_governor_goal_count_excludes_retained_terminal_goal_records():
     goal_engine = SimpleNamespace(_goals=goals)
 
     assert InternalThoughtLoop._governor_goal_count(goal_engine) == 2
+    assert InternalThoughtLoop._governor_goal_status_counts(goal_engine) == {
+        "active": 1,
+        "dormant": 1,
+        "other": 4,
+        "total": 6,
+    }
     assert InternalThoughtLoop._governor_goal_count(None) == 0
 
 
@@ -819,6 +825,25 @@ def test_governor_cycle_snapshot_is_auditable_without_prose_or_private_state():
         "budget_remaining": governor.BUDGET_MED_PRESSURE,
         "cycle": 12,
     }
+
+
+def test_governor_snapshot_includes_the_goal_state_counts_it_saw():
+    governor = CognitiveGovernor()
+    snapshot = governor.begin_cycle(
+        total_pressure=0.2,
+        goal_count=4,
+        cycle_number=13,
+        goal_status_counts={"active": 0, "dormant": 4, "other": 12, "total": 16},
+    )
+
+    assert snapshot["goal_count"] == 4
+    assert snapshot["active_goal_count"] == 0
+    assert snapshot["dormant_goal_count"] == 4
+    assert snapshot["other_goal_count"] == 12
+    assert snapshot["goal_records_seen"] == 16
+    summary = InternalThoughtLoop._evidence_summary(snapshot)
+    assert summary["numeric_metrics"]["dormant_goal_count"] == 4
+    assert summary["numeric_metrics"]["goal_records_seen"] == 16
 
 
 def test_cycle_receipt_uses_explicit_no_action_reason_when_executor_returns_none():
