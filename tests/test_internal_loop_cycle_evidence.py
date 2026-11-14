@@ -40,6 +40,36 @@ def test_cycle_receipt_links_outputs_to_actual_consumer_inputs_without_text():
     assert receipt["stages"][0]["output_summary"] == {"kind": "mapping", "field_count": 1}
 
 
+def test_cycle_receipt_keeps_boolean_action_effect_evidence_without_user_text():
+    summary = InternalThoughtLoop._evidence_summary({
+        "action": "memory_recall",
+        "goal_state_persisted": True,
+        "memory_retrieved": True,
+        "thought_published": False,
+        "thought_stream_recorded": False,
+        "workspace_broadcast": False,
+        "result": "private recalled text",
+    })
+
+    assert summary["goal_state_persisted"] is True
+    assert summary["memory_retrieved"] is True
+    assert summary["thought_published"] is False
+    assert summary["thought_stream_recorded"] is False
+    assert summary["workspace_broadcast"] is False
+    assert summary["action"] == "memory_recall"
+    assert "private recalled text" not in repr(summary)
+
+
+def test_workspace_decision_age_does_not_encode_missing_winner_as_giant_stale_age():
+    assert InternalThoughtLoop._workspace_decision_age_cycles(11085, None, None) is None
+    assert InternalThoughtLoop._workspace_decision_age_cycles(
+        11085, {"type": "thought"}, -10**9,
+    ) is None
+    assert InternalThoughtLoop._workspace_decision_age_cycles(
+        11085, {"type": "goal"}, 11080,
+    ) == 5
+
+
 def test_executive_arbitration_skip_reason_distinguishes_non_goal_winner():
     result = {
         "winner": {"type": "thought", "name": "internal reflection"},

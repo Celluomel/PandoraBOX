@@ -729,6 +729,9 @@ class InternalThoughtLoop:
             for key in (
                 "type", "status", "success", "created", "verified",
                 "outcome_status", "reason_code", "skipped",
+                "goal_state_persisted", "memory_retrieved", "thought_published",
+                "thought_stream_recorded", "workspace_broadcast",
+                "research_item_queued", "hypothesis_generated",
                 "source_thought_source", "source_thought_type", "source_concept_method",
                 "drive_update", "need_scan",
             ):
@@ -776,6 +779,21 @@ class InternalThoughtLoop:
         if value is None:
             return {"kind": "none"}
         return {"kind": type(value).__name__}
+
+    @staticmethod
+    def _workspace_decision_age_cycles(
+        current_cycle: int, winner: Any, winner_cycle: Any,
+    ) -> int | None:
+        """Return a meaningful age only for a real, cycle-stamped winner."""
+        if not isinstance(winner, dict):
+            return None
+        try:
+            source_cycle = int(winner_cycle)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if source_cycle < 0 or source_cycle > int(current_cycle):
+            return None
+        return int(current_cycle) - source_cycle
 
     @staticmethod
     def _selected_proposal_commit_admitted(
@@ -2135,10 +2153,13 @@ class InternalThoughtLoop:
                     logger.info("[InternalLoop] GoalActionExecutor ready ✅")
 
                 _winner = getattr(o, "_v32_workspace_winner", None)
-                winner_cycle = int(getattr(o, "_v32_workspace_winner_cycle", -10**9))
-                winner_age = self._slow_cycle_count - winner_cycle
+                winner_cycle = getattr(o, "_v32_workspace_winner_cycle", None)
+                winner_age = self._workspace_decision_age_cycles(
+                    self._slow_cycle_count, _winner, winner_cycle,
+                )
                 decision_is_fresh = (
                     isinstance(_winner, dict)
+                    and winner_age is not None
                     and 0 <= winner_age <= 2
                 )
                 preferred_goal_id = (
