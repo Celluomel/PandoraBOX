@@ -435,6 +435,32 @@ class MemorySystemFallbackTests(unittest.TestCase):
 
         self.assertIsNone(result)
 
+    def test_one_phrase_response_format_does_not_request_verbatim_recall(self):
+        query = (
+            "Quelle règle ai-je formulée pour les informations des capteurs ? "
+            "Réponds en une phrase, sans exemple."
+        )
+        source = {
+            "memory_type": "user_message",
+            "text": "User message: Le Body doit interpréter les données brutes de chaque capteur avant de les transmettre au Brain.",
+            "relevance": 0.9,
+        }
+
+        self.assertIsNone(explicit_recall_source_result(query, [source]))
+
+    def test_imperative_historical_recall_prompt_is_not_a_source(self):
+        prompt = {
+            "memory_type": "user_message",
+            "text": (
+                "Rappelle la règle que je t’ai donnée sur la responsabilité du Body "
+                "et du Brain quand les capteurs envoient leurs mesures. Explique ce "
+                "que le Body doit transmettre et ce que le Brain doit en faire."
+            ),
+        }
+
+        self.assertTrue(is_explicit_memory_recall_query(prompt["text"]))
+        self.assertEqual(filter_recall_query_records([prompt]), [])
+
     def test_explicit_recall_discards_prior_recall_prompt_self_matches(self):
         repeated_recall = {
             "memory_type": "user_message",

@@ -96,6 +96,15 @@ _DIRECT_RECALL_PATTERNS = (
     re.compile(r"\b(?:do|did|can|could|will|would)\s+you\s+(?:remember|recall)\b", re.IGNORECASE),
     re.compile(r"\bwhat\s+(?:do|did|have|has|can)\s+you\s+(?:remember|recall)\b", re.IGNORECASE),
     re.compile(r"\b(?:tu\s+te\s+rappelles|tu\s+te\s+souviens)\b", re.IGNORECASE),
+    # Imperative requests to recall an earlier user instruction are themselves
+    # recall prompts, not evidence for the historical instruction being asked
+    # about. Exclude them from source retrieval to prevent prompt self-matches.
+    re.compile(
+        r"\b(?:rappelle(?:-moi)?|rappeler)\s+(?:la|le|les|ce|cette|ces)\s+"
+        r"(?:r[eè]gle|consigne|demande|instruction|formulation)\b.{0,120}\b"
+        r"(?:donn[ée]e?|formul[ée]e?|demand[ée]e?|pos[ée]e?)\b",
+        re.IGNORECASE,
+    ),
     re.compile(r"\b(?:do\s+you\s+remember|can\s+you\s+recall)\b", re.IGNORECASE),
     # Exact filenames are historical identifiers in chat: route a direct
     # "what is the filename/name of the file" question through source-backed
@@ -386,13 +395,20 @@ def explicit_recall_source_result(
     value = str(query or "")
     if not is_explicit_memory_recall_query(value):
         return None
+    # Formatting instructions such as "answer in one phrase/sentence" do not
+    # request a verbatim quote. Only inspect the historical-question clause,
+    # before response-format instructions, for exact-text intent.
+    recall_clause = re.split(
+        r"\b(?:answer|respond|reply|r[eé]ponds?|r[eé]pondre)\b",
+        value, maxsplit=1, flags=re.IGNORECASE,
+    )[0]
     asks_exact_text = bool(re.search(
         r"\b(?:exact(?:ly)?\s+)?(?:phrase|wording|quote|quotation|text|word|phrase exacte|"
         r"formulation exacte|citation|texte exact|mot exact)\b",
-        value, re.IGNORECASE,
+        recall_clause, re.IGNORECASE,
     )) and bool(re.search(
         r"\b(?:exact|exactly|phrase|wording|quote|quotation|text|word|exacte|citation|texte|mot)\b",
-        value, re.IGNORECASE,
+        recall_clause, re.IGNORECASE,
     ))
     if not asks_exact_text:
         return None
