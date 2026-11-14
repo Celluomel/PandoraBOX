@@ -646,7 +646,9 @@ class UserManager:
         text = " ".join(str(message).strip().split())
         try:
             from managers.settings_manager import get_persona_name
-            from cognition.identity_boundary import claims_persona_identity
+            # Keep profile learning independent of cognition/__init__.py, which
+            # imports the full AI system (including native FAISS bindings).
+            from identity_boundary import claims_persona_identity
             persona_name = get_persona_name()
             claims_persona_name = claims_persona_identity(text, persona_name)
             # Keep the safety boundary intact even when a plugin or test
@@ -826,7 +828,7 @@ class UserManager:
         try:
             if not self._path.exists():
                 return
-            data = json.loads(self._path.read_text())
+            data = json.loads(self._path.read_text(encoding="utf-8"))
             migrated_profiles = False
             for uid, pd in data.get("users", {}).items():
                 profile = UserProfile.from_dict(pd)

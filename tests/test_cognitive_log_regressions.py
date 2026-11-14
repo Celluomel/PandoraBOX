@@ -837,7 +837,7 @@ class CognitiveLogRegressionTests(unittest.TestCase):
                 boundary = SimpleNamespace(claims_persona_identity=lambda *_: False)
                 with patch.dict(sys.modules, {
                     "managers.settings_manager": settings,
-                    "cognition.identity_boundary": boundary,
+                    "identity_boundary": boundary,
                 }):
                     changed = manager.learn_from_message(profile.id, message)
                 self.assertFalse(changed)

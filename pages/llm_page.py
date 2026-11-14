@@ -172,8 +172,24 @@ async def llm_page():
         ui.separator().classes('my-5 opacity-10')
 
         with ui.element('div').classes('settings-card w-full p-5'):
-            ui.label('RESEARCH WEB SEARCH BACKEND').classes('section-label')
-            ui.label('How the Research Cortex searches the web. AUTO tries all sources in order.').classes('text-slate-400 text-sm mb-3')
+            ui.label('WEB SEARCH').classes('section-label')
+            ui.label('Choose when chat turns may use external web results. This is separate from the provider/backend selected below.').classes('text-slate-400 text-sm mb-3')
+
+            web_search_mode = ui.select(
+                {
+                    'off': 'Off — never search automatically',
+                    'auto': 'Auto — let Lumina decide per turn',
+                    'always': 'Always — search eligible new topics',
+                },
+                value=getattr(config, 'WEB_SEARCH_MODE', 'off'),
+                label='Automatic search mode',
+            ).props('outlined dense').classes('w-full dark-input')
+
+            ui.label('Off is closed-world. Auto can still trigger a search when Lumina judges outside information is needed.').classes('text-slate-500 text-xs mt-2')
+
+            ui.separator().classes('my-4 opacity-10')
+            ui.label('RESEARCH SEARCH BACKEND').classes('section-label')
+            ui.label('Select which providers are used when a search is triggered.').classes('text-slate-400 text-sm mb-3')
 
             research_backend = ui.select(
                 {
@@ -302,6 +318,7 @@ async def llm_page():
             config.BRAVE_SEARCH_KEY         = brave_key.value
             config.SERPAPI_KEY              = serpapi_key.value
             config.RESEARCH_SEARCH_BACKEND  = research_backend.value
+            config.WEB_SEARCH_MODE          = web_search_mode.value
             # ── Verbosity + custom prompt ─────────────────────────────────
             config.RESPONSE_VERBOSITY        = verbosity_select.value
             config.RESPONSE_TOKENS_CONCISE   = int(tokens_concise.value or 300)

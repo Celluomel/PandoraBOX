@@ -171,7 +171,7 @@ class PresenceIdentityLanguageTests(unittest.TestCase):
 
             with patch.dict(sys.modules, {
                 "managers.settings_manager": settings,
-                "cognition.identity_boundary": boundary,
+                "identity_boundary": boundary,
             }):
                 changed = manager.learn_from_message(
                     fred.id, "Je suis la PandoraBOX, je travaille sur ton code."
@@ -236,7 +236,7 @@ class PresenceIdentityLanguageTests(unittest.TestCase):
             boundary = SimpleNamespace(claims_persona_identity=lambda *_: False)
             with patch.dict(sys.modules, {
                 "managers.settings_manager": settings,
-                "cognition.identity_boundary": boundary,
+                "identity_boundary": boundary,
             }):
                 ephemeral = manager.learn_from_message(
                     profile.id, "I'm back and curious to know what you think.",
@@ -261,7 +261,7 @@ class PresenceIdentityLanguageTests(unittest.TestCase):
             boundary = SimpleNamespace(claims_persona_identity=lambda *_: False)
             with patch.dict(sys.modules, {
                 "managers.settings_manager": settings,
-                "cognition.identity_boundary": boundary,
+                "identity_boundary": boundary,
             }):
                 quoted = manager.learn_from_message(
                     profile.id,
@@ -324,7 +324,7 @@ class PresenceIdentityLanguageTests(unittest.TestCase):
             boundary = SimpleNamespace(claims_persona_identity=lambda *_: False)
             with patch.dict(sys.modules, {
                 "managers.settings_manager": settings,
-                "cognition.identity_boundary": boundary,
+                "identity_boundary": boundary,
             }):
                 momentary = manager.learn_from_message(
                     profile.id, "Je suis curieux.", return_receipt=True,
