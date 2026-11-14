@@ -3,8 +3,10 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock
 
+from cognition.cognitive_organism import CognitiveOrganism
 from cognition.predictive_consequence_model import PredictiveConsequenceModel
 from cognition.cognitive_attention_engine import CognitiveAttentionEngine
 
@@ -57,6 +59,70 @@ class PCMOutcomeProvenanceTests(unittest.TestCase):
         self.assertFalse(persisted)
         self.assertEqual(model._records, [])
         model._calibration_engine.resolve_prediction.assert_not_called()
+
+    def test_organism_captures_pcm_after_turn_costs_are_applied(self):
+        events = []
+
+        class PCM:
+            _pending = ("technical", [0.8] * 5, 2)
+
+            def read_state(self):
+                events.append("read_after")
+                return [0.7, 0.75, 0.7, 0.6, 0.4]
+
+            def record_outcome(self, state_after, **kwargs):
+                events.append("record_outcome")
+                self.state_after = list(state_after)
+                self.kwargs = kwargs
+                self._pending = None
+
+        pcm = PCM()
+        economy = Mock()
+        economy.cognitive_energy = 0.7
+        economy.social_energy = 0.75
+        economy.record_interaction.side_effect = lambda **_: events.append("economy_interaction")
+        economy.record_llm_call.side_effect = lambda **_: events.append("economy_llm")
+
+        class Stub:
+            def __getattr__(self, name):
+                value = Mock()
+                setattr(self, name, value)
+                return value
+
+        organism = Stub()
+        organism._loop = SimpleNamespace(
+            _consequence_model=pcm,
+            _resource_economy=economy,
+            _auto_experiment=None,
+        )
+        organism.energy.mode.return_value = "normal"
+        organism.energy.drain.side_effect = lambda *_: events.append("energy_drain")
+        organism.energy.level.return_value = 0.7
+        organism.ai_system = SimpleNamespace(
+            emotional_state=SimpleNamespace(overall_arousal=0.4),
+            _interaction_count=2,
+        )
+        organism.meta_cognition.post_response_eval.return_value = SimpleNamespace(
+            suggested_improvement="",
+        )
+        organism.homeostasis.last_report.return_value = None
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        organism._data_dir = temp_dir.name
+
+        CognitiveOrganism._post_interaction(
+            organism,
+            user_input="Explain a technical audit result.",
+            response="A concise explanation.",
+            cycle_data={"emo_values": {}},
+            decision=None,
+        )
+
+        self.assertLess(events.index("energy_drain"), events.index("read_after"))
+        self.assertLess(events.index("economy_interaction"), events.index("read_after"))
+        self.assertLess(events.index("economy_llm"), events.index("read_after"))
+        self.assertEqual(pcm.state_after, [0.7, 0.75, 0.7, 0.6, 0.4])
+        self.assertEqual(pcm.kwargs["outcome"], "unrated")
 
     def test_explicit_rating_attaches_to_exact_response_and_attention_snapshot_once(self):
         model = self._model()

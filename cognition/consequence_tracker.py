@@ -238,6 +238,7 @@ class ConsequenceTracker:
                         for key in (
                             "belief_persisted", "thought_stream_recorded",
                             "workspace_broadcast", "reused_existing_insight",
+                            "memory_retrieved", "thought_published",
                             "research_item_queued", "research_sources",
                             "hypothesis_generated",
                         )

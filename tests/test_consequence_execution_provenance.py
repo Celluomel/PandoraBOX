@@ -77,6 +77,17 @@ class ConsequenceExecutionProvenanceTests(unittest.TestCase):
                 "thought_published": True,
             }), 1.0)
 
+            ledger = CausalLedger(folder)
+            tracker_with_ledger = ConsequenceTracker(persona_dir=folder, ledger=ledger)
+            prediction = tracker_with_ledger.predict("g2", "recall", "memory_recall")
+            tracker_with_ledger.resolve(prediction, {
+                "success": True, "memory_retrieved": True,
+                "thought_published": True,
+            })
+            outcome = next(event for event in ledger.recent(10) if event["kind"] == "outcome")
+            self.assertTrue(outcome["output_state"]["memory_retrieved"])
+            self.assertTrue(outcome["output_state"]["thought_published"])
+
     def test_bisociative_success_requires_hypothesis_evidence(self):
         with tempfile.TemporaryDirectory() as folder:
             tracker = ConsequenceTracker(persona_dir=folder)

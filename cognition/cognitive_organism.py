@@ -1347,34 +1347,6 @@ class CognitiveOrganism:
         except Exception:
             pass
 
-        # Calibration fix: PCM record_outcome moved here (per-response) from
-        # the slow cycle in internal_loop.py. Previously record_action() fired
-        # per user message but record_outcome() fired per slow cycle (~2 min),
-        # meaning only the LAST message per slow cycle resolved — all others
-        # expired from pending (PENDING_TTL_SECS=600) without resolving.
-        # Now PCM pairs correctly: record_action() → response → record_outcome()
-        # within the same message turn, so every prediction resolves.
-        try:
-            pcm = getattr(getattr(self, '_loop', None), '_consequence_model', None)
-            if pcm and pcm._pending is not None:
-                _state_after = pcm.read_state()
-                pcm.record_outcome(
-                    _state_after,
-                    outcome="unrated",
-                    outcome_source="unattributed",
-                    response_text=response or "",
-                    attention_weights_at_turn=(
-                        attention_feedback_context.get("weights")
-                        if attention_feedback_context else None
-                    ),
-                    attention_context_key_at_turn=(
-                        attention_feedback_context.get("context_key", "")
-                        if attention_feedback_context else ""
-                    ),
-                )
-        except Exception:
-            pass
-
         # Drain energy for the activity
         energy_activity = {
             "deep":   "deep_reasoning",
@@ -1804,6 +1776,30 @@ class CognitiveOrganism:
                 )
         except Exception:
             pass
+
+        # Resolve the PCM snapshot after post-turn costs and state updates.
+        # Capturing earlier (before energy/economy accounting) paired the turn
+        # with its pre-cost state, yielding identical before/after vectors and
+        # teaching the model a zero-delta consequence for every response.
+        try:
+            pcm = getattr(getattr(self, '_loop', None), '_consequence_model', None)
+            if pcm and pcm._pending is not None:
+                pcm.record_outcome(
+                    pcm.read_state(),
+                    outcome="unrated",
+                    outcome_source="unattributed",
+                    response_text=response or "",
+                    attention_weights_at_turn=(
+                        attention_feedback_context.get("weights")
+                        if attention_feedback_context else None
+                    ),
+                    attention_context_key_at_turn=(
+                        attention_feedback_context.get("context_key", "")
+                        if attention_feedback_context else ""
+                    ),
+                )
+        except Exception as exc:
+            logger.warning("[CognitiveOrganism] PCM post-turn outcome capture failed: %s", exc)
 
         return {"world_model_profile_update": world_profile_update}
 
