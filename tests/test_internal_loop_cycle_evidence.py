@@ -751,6 +751,7 @@ def test_governor_cycle_snapshot_is_auditable_without_prose_or_private_state():
         "budget_total": governor.BUDGET_MED_PRESSURE,
         "budget_remaining": governor.BUDGET_MED_PRESSURE,
         "cycle": 12,
+        "pressure_source": "provided",
     }
     summary = InternalThoughtLoop._evidence_summary(snapshot)
     assert summary["mode"] == "structured"

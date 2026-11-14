@@ -138,7 +138,9 @@ def test_enhanced_cycle_can_skip_unconsumed_advisory_plan():
     phase1.components = {"workspace": _Workspace()}
     phase1.cycle_count = 0
     phase1.gather_perception = lambda _input: {}
-    phase1.get_decision_pressure = lambda: {"total": 0.2}
+    phase1.get_decision_pressure = lambda: (_ for _ in ()).throw(
+        AssertionError("use the current-cycle pressure already read by the governor")
+    )
     phase1._load_goals = lambda: []
     phase1._load_recent_thoughts = lambda: []
     phase1._load_tensions = lambda: {}
@@ -149,11 +151,16 @@ def test_enhanced_cycle_can_skip_unconsumed_advisory_plan():
         AssertionError("internal-loop mode must not build an unconsumed recommendation")
     )
 
-    result = phase1.enhanced_cycle(include_advisory_plan=False)
+    current_pressure = {"total": 0.27, "interpretation": "LOW"}
+    result = phase1.enhanced_cycle(
+        include_advisory_plan=False,
+        decision_pressure=current_pressure,
+    )
 
     assert result["winner"]["name"] == "focused thought"
     assert result["plan"] == []
     assert result["recommendation"] is None
+    assert result["pressure"] is current_pressure
 
 
 def test_high_priority_tension_defers_llm_synthesis_until_selected(tmp_path):

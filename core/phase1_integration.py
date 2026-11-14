@@ -209,6 +209,7 @@ class Phase1Orchestrator:
     def enhanced_cycle(
         self, external_input: Optional[Dict] = None, *,
         include_advisory_plan: bool = True,
+        decision_pressure: Optional[Dict[str, float]] = None,
     ) -> Dict:
         """
         Run enhanced cognitive cycle with Phase 1 components.
@@ -231,7 +232,11 @@ class Phase1Orchestrator:
         perception = self.gather_perception(external_input)
         
         # Step 2: Compute decision pressure
-        pressure = self.get_decision_pressure()
+        pressure = (
+            decision_pressure
+            if isinstance(decision_pressure, dict)
+            else self.get_decision_pressure()
+        )
         
         # Step 3: Resolve threads (periodically)
         if self.cycle_count % 10 == 0:

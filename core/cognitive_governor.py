@@ -182,6 +182,7 @@ class CognitiveGovernor:
         total_pressure: float,
         goal_count: int,
         cycle_number: int,
+        pressure_source: str = "provided",
     ) -> dict[str, Any]:
         """
         Called at the START of every slow cycle.
@@ -196,6 +197,7 @@ class CognitiveGovernor:
         self._pressure   = max(0.0, min(1.0, total_pressure))
         self._goal_count = goal_count
         self._cycle      = cycle_number
+        self._pressure_source = str(pressure_source or "provided")[:40]
         self._this_cycle_run.clear()
         self._this_cycle_blocked.clear()
         self._cycles_in_current_mode += 1
@@ -237,6 +239,7 @@ class CognitiveGovernor:
             "budget_total": self._budget_total,
             "budget_remaining": self._budget_remaining,
             "cycle": self._cycle,
+            "pressure_source": self._pressure_source,
         }
 
     def may_run(self, subsystem: str) -> bool:

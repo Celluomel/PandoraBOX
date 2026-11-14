@@ -1,7 +1,7 @@
 # Audit du harnais cognitif — état et prochaines étapes
 
 **Date de mise à jour :** 14 novembre 2026
-**Statut :** audit du harnais cognitif en cours; aucune conclusion globale de qualité n’est établie. Dernier commit d’audit poussé : `6489b55`. Le processus Lumina a été redémarré après ce lot; les deux correctifs du gouverneur sont donc chargés. Les modifications Body/UI préexistantes restent hors lot.
+**Statut :** audit du harnais cognitif en cours; aucune conclusion globale de qualité n’est établie. Dernier code chargé dans Lumina : `9356a3b`; le correctif local de pression de gouvernance décrit à la fin attend validation live. Les modifications Body/UI préexistantes restent hors lot.
 
 ## Plan d’audit piloté par les preuves — mesure de progression
 
@@ -10,7 +10,7 @@
 | # | Piste et critère de clôture | État au 14 nov. 2026 |
 |---|---|---|
 | 1 | Inventaire des modules Python classés par rôle, dépendance, déclencheur et scénario attendu; distinguer service, événement, cadence, optionnel et test-only. | **Partiel** — le registre live compte 43 modules; la matrice fichier/scénario reste à produire. |
-| 2 | Exécution et disponibilité : pour chaque module attendu, prouver tick ou raison de skip/indisponibilité et vérifier les erreurs sur des cycles représentatifs. | **Partiel** — après redémarrage, cycles 11192–11194 : 34/43 modules tickés, 226 ticks, 50 skips et 0 erreur instrumentée. Les conditions de mode structuré et le nettoyeur hors cadence restent à observer. |
+| 2 | Exécution et disponibilité : pour chaque module attendu, prouver tick ou raison de skip/indisponibilité et vérifier les erreurs sur des cycles représentatifs. | **Partiel** — cycles live 11197–11200 : 38/43 modules tickés, 66 ticks au cycle 11200, 7 skips et 0 erreur instrumentée; les cinq autres sont bloqués par politique. Le cycle 11200 révèle que le gouverneur prenait une pression périmée/de repli avant la mesure Phase 1 du même cycle. Correctif local en attente d’un reçu post-redémarrage. |
 | 3 | Causalité d’un tour : identifiant stable, ordre des étapes, liens consommateur→producteur, génération/clôture et intégrité du reçu. | **Close pour le chemin testé** — reçus live déterministe et génératif; le rappel positif relie retrieval→injection→réponse. Cela ne certifie pas tous les types de tours. |
 | 4 | Mémoire conversationnelle : source utilisateur écrite, persistée, retrouvée par paraphrase, provenance conservée et réponse fidèle; refus si source absente. | **Close pour le scénario de rappel testé** — cas source absente = abstention; cas source présente = source ID 9074 récupérée et injectée. La persistance après redémarrage reste dans la piste 10. |
 | 5 | Profil utilisateur : fait explicitement déclaré → provenance → écriture confirmée → récupération cohérente, sans inférence transformée en fait. | **Partiel** — corrections et tests antérieurs consignés; parcours live complet à refaire. |
@@ -2306,3 +2306,13 @@ Le reçu `module_tick:cognitive_governor.begin_cycle` était `side_effect_only`;
 **Tests après cette instrumentation :** `tests/test_internal_loop_cycle_evidence.py` + `tests/test_phase2_integration.py` — **41 tests passés**, 9 avertissements de dépendances connus. Les tests vérifient le snapshot et son résumé sans prose, ainsi que la sortie exploratoire après cooldown pour 4 buts vivants sous 0,30 de pression. `py_compile` et `git diff --check` passent. Cette dernière instrumentation n’est pas encore chargée dans le processus; elle sera vérifiée après commit et un redémarrage groupé.
 
 **Progression globale inchangée : 2/10 = 20 %.** Ce changement améliore la preuve de la piste 2; il ne la clôt pas avant un reçu live qui montre les valeurs réelles, une transition de mode, l’admission des modules et les effets aval.
+
+### Audit causal du gouverneur — cycle live 11200 et correction du séquencement
+
+Après redémarrage sur `9356a3b`, le cycle 11200 a fourni le premier reçu complet : `goal_count=4`, `total_pressure=0.50`, mode `structured`, budget 5. Dans le même cycle, Phase 1 a ensuite mesuré `total_pressure=0.2851`; une étape Phase 2 due (`phase2_narrative_synthesis`) a été refusée par `structured_mode`. Le gouverneur lisait donc la valeur conservée du cycle précédent — ou le repli 0.5 après démarrage — avant que la pression fraîche de Phase 1 soit calculée. La trace donne un lien causal, pas seulement une corrélation : le refus contient explicitement le mode, la pression et le budget du gouverneur.
+
+**Correction locale :** calculer la pression courante juste avant `begin_cycle()`, après le tick du PressureSystem, puis passer exactement cette mesure à `Phase1Orchestrator.enhanced_cycle()` pour éviter une seconde lecture différente. Si le calcul actuel échoue, le reçu distingue `previous_sample` et `safe_default`. Le snapshot du gouverneur expose désormais `pressure_source`; cela rend les démarrages et replis visibles au lieu de confondre le 0.5 par défaut avec une mesure courante.
+
+**Vérifications locales :** `tests/test_internal_loop_cycle_evidence.py` et `tests/test_selected_thought_goal_pipeline.py` — **53 réussis**, 9 avertissements connus de dépendances. `py_compile` et `git diff --check` réussis. Cette correction locale doit encore être chargée dans Lumina et confirmée par un reçu live où `pressure_source=phase1_current` et la valeur Phase 1 correspond à celle du gouverneur. Les effets d’un changement de mode et l’admission d’une étape exploratoire restent à vérifier après l’hystérésis de trois cycles.
+
+**Progression globale inchangée : 2/10 = 20 %.** Le défaut est corrigé dans le code local; il ne clôt pas la piste tant que le reçu live et les effets aval après redémarrage ne le confirment pas.

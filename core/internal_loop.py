@@ -733,7 +733,7 @@ class InternalThoughtLoop:
                 "thought_stream_recorded", "workspace_broadcast",
                 "research_item_queued", "hypothesis_generated",
                 "source_thought_source", "source_thought_type", "source_concept_method",
-                "drive_update", "need_scan",
+                "drive_update", "need_scan", "pressure_source",
             ):
                 item = value.get(key)
                 if isinstance(item, (str, bool, int, float)):
@@ -1603,18 +1603,6 @@ class InternalThoughtLoop:
 
         logger.debug(f"[InternalLoop] Slow cycle #{self._slow_cycle_count}")
 
-        # ── Governor: begin cycle — sets mode, budget, pressure snapshot ─────
-        _gov_pressure  = getattr(o, '_v32_decision_pressure', {}).get('total', 0.5)
-        _ai_sys_g      = getattr(o, 'ai_system', None)
-        _ge_g          = getattr(_ai_sys_g, 'goal_engine', None)
-        _gov_goal_count = self._governor_goal_count(_ge_g)
-        if self._governor:
-            self._governor.begin_cycle(
-                total_pressure = _gov_pressure,
-                goal_count     = _gov_goal_count,
-                cycle_number   = self._slow_cycle_count,
-            )
-
         # 1. Recompute tensions from current state
         tensions = None
         if hasattr(o, "tension_engine") and hasattr(o, "_collect_tension_inputs"):
@@ -1695,6 +1683,48 @@ class InternalThoughtLoop:
             except Exception as _pe:
                 logger.debug(f"[InternalLoop] Pressure tick error: {_pe}")
 
+        # The governor must use a current pressure sample. Previously it read
+        # organism._v32_decision_pressure before Phase 1 refreshed that value,
+        # so a restart silently supplied the 0.5 fallback and gated downstream
+        # stages using stale pressure. Phase 1's pressure calculation is safe
+        # to run before workspace competition and is reused below.
+        _gov_pressure_result = None
+        _gov_pressure_source = "fallback"
+        if self._phase1 is not None:
+            try:
+                _candidate_pressure = self._phase1.get_decision_pressure()
+                if isinstance(_candidate_pressure, dict) and isinstance(
+                    _candidate_pressure.get("total"), (int, float)
+                ):
+                    _gov_pressure_result = _candidate_pressure
+                    _gov_pressure_source = "phase1_current"
+            except Exception as _pressure_error:
+                logger.debug(
+                    "[InternalLoop] Current decision pressure unavailable: %s",
+                    type(_pressure_error).__name__,
+                )
+        if _gov_pressure_result is None:
+            _previous_pressure = getattr(o, "_v32_decision_pressure", {})
+            if isinstance(_previous_pressure, dict) and isinstance(
+                _previous_pressure.get("total"), (int, float)
+            ):
+                _gov_pressure_result = _previous_pressure
+                _gov_pressure_source = "previous_sample"
+            else:
+                _gov_pressure_result = {"total": 0.5}
+                _gov_pressure_source = "safe_default"
+        _gov_pressure = float(_gov_pressure_result["total"])
+        _ai_sys_g = getattr(o, "ai_system", None)
+        _ge_g = getattr(_ai_sys_g, "goal_engine", None)
+        _gov_goal_count = self._governor_goal_count(_ge_g)
+        if self._governor:
+            self._governor.begin_cycle(
+                total_pressure=_gov_pressure,
+                goal_count=_gov_goal_count,
+                cycle_number=self._slow_cycle_count,
+                pressure_source=_gov_pressure_source,
+            )
+
         # ── V32: Phase 1 Decision Pressure + Workspace Competition ─────────
         # Every 2 slow cycles: compute pressure AND run workspace competition
         # to select the dominant cognitive focus (winner).
@@ -1707,6 +1737,7 @@ class InternalThoughtLoop:
                 # LongHorizonPlanner plan, so do not generate a duplicate.
                 _cycle_result = self._phase1.enhanced_cycle(
                     None, include_advisory_plan=False,
+                    decision_pressure=_gov_pressure_result,
                 )
                 pressure_result = _cycle_result.get('pressure', {})
                 total_pressure  = pressure_result.get('total', 0.5)
