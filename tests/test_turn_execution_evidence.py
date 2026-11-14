@@ -547,7 +547,7 @@ def test_exact_filename_recall_result_crosses_prompt_worker_boundary():
         if isinstance(node, ast.Return)
         and isinstance(node.value, ast.Tuple)
         and any(
-            isinstance(item, ast.Name) and item.id == "_filename_recall_result"
+            isinstance(item, ast.Name) and item.id == "_memory_recall_result"
             for item in node.value.elts
         )
     ]
@@ -575,7 +575,7 @@ def test_exact_filename_recall_result_crosses_prompt_worker_boundary():
     target = worker_assignments[0].targets[0]
     assert isinstance(target, ast.Tuple)
     assert isinstance(target.elts[-1], ast.Name)
-    assert target.elts[-1].id == "_filename_recall_result"
+    assert target.elts[-1].id == "_memory_recall_result"
 
 
 def test_deferred_profile_and_post_turn_stages_keep_originating_turn_id():

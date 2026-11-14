@@ -119,6 +119,22 @@ class _UnexpectedExplicitRecallSearchIndex:
         raise AssertionError("explicit recall must search source conversation records")
 
 
+class _SemanticExplicitRecallSearchIndex:
+    ntotal = 240
+
+    def __init__(self, faiss_id):
+        self.faiss_id = faiss_id
+        self.calls = 0
+
+    def search(self, _query, count):
+        self.calls += 1
+        distances = np.full((1, count), np.float32(2.0), dtype="float32")
+        indices = np.full((1, count), -1, dtype="int64")
+        distances[0, 0] = np.float32(0.2)
+        indices[0, 0] = self.faiss_id
+        return distances, indices
+
+
 class _Embedder:
     def encode(self, _text):
         return np.ones(3, dtype="float32")
@@ -651,6 +667,33 @@ class MemorySystemFallbackTests(unittest.TestCase):
             limit=2,
         )
         self.assertEqual(merged[0]["id"], 7)
+
+    def test_explicit_recall_uses_semantic_source_fallback_for_paraphrase(self):
+        query = (
+            "Quel principe général avais-je demandé pour le parcours des mesures, "
+            "du capteur jusqu’à l’analyse cognitive ?"
+        )
+        self.rows = [{
+            "id": 31, "faiss_id": 31,
+            "text": (
+                "User message: un capteur renvoie une donnée brute; le Body doit "
+                "renvoyer une interprétation claire pour tous les capteurs."
+            ),
+            "timestamp": datetime.now().isoformat(), "impact_score": 0.5,
+            "memory_type": "user_message", "memory_tier": "interaction",
+            "emotional_valence": "Neutral", "access_count": 0,
+        }]
+        index = _SemanticExplicitRecallSearchIndex(faiss_id=31)
+        system = self._system(embedder=_Embedder(), index=index)
+
+        recalled = system.retrieve_user_authored_memories(
+            query, limit=6, explicit_recall=True,
+        )
+
+        self.assertEqual(index.calls, 1)
+        self.assertEqual([memory["id"] for memory in recalled], [31])
+        self.assertEqual(recalled[0]["memory_type"], "user_message")
+        self.assertIn("interprétation claire", recalled[0]["text"])
 
     def test_explicit_recall_deduplicates_user_message_and_episodic_copy(self):
         query = "For the cognitive harness audit, what did I ask about module outputs?"

@@ -1247,6 +1247,58 @@ class EnhancedMemorySystem:
                     memory["source"] = "legacy_episodic_user_source"
                     memory["user_authored_text"] = extract_user_authored_text(memory)
                 results.append(memory)
+            if results or not explicit_recall:
+                return results
+
+            # A paraphrased historical question may have no lexical overlap
+            # with the original user statement. The full source archive above
+            # remains authoritative for exact lexical matches, but rejecting
+            # every zero-overlap query here caused explicit recall to fall
+            # through to unrelated episodic context and let generation invent
+            # a plausible history. Use the existing semantic index only as a
+            # fallback, and only return user-authored text (including the user
+            # segment of legacy episodic records). Never use an assistant reply
+            # as evidence for what the user previously asked.
+            if self.embedding_model is not None and self.faiss_index is not None:
+                total = int(getattr(self.faiss_index, "ntotal", 0) or 0)
+                if total > 0:
+                    try:
+                        query_vector = self._embed(query)
+                        candidate_count = min(total, max(120, limit * 24))
+                        distances, indices = self.faiss_index.search(
+                            query_vector, candidate_count
+                        )
+                        valid_ids = [int(value) for value in indices[0] if value != -1]
+                        if valid_ids:
+                            candidates = self.persistence.get_memories_by_ids(valid_ids)
+                            distance_by_id = {
+                                int(indices[0][position]): float(distances[0][position])
+                                for position in range(len(indices[0]))
+                                if int(indices[0][position]) != -1
+                            }
+                            sourced = [
+                                memory for memory in candidates
+                                if memory.get("memory_type") in {"user_message", "episodic"}
+                            ]
+                            # Exclude recalled prompts and question-shaped
+                            # records, but do not reapply lexical-overlap
+                            # filtering: this lane exists for paraphrases.
+                            sourced = filter_recall_query_records(sourced)
+                            sourced.sort(key=lambda memory: distance_by_id.get(
+                                int(memory.get("faiss_id", -1)), float("inf")
+                            ))
+                            for memory in sourced[:limit]:
+                                item = dict(memory, relevance=faiss_l2_relevance(
+                                    distance_by_id.get(
+                                        int(memory.get("faiss_id", -1)), float("inf")
+                                    )
+                                ))
+                                if item.get("memory_type") == "episodic":
+                                    item["source"] = "legacy_episodic_user_source"
+                                    item["user_authored_text"] = extract_user_authored_text(item)
+                                results.append(item)
+                    except Exception as error:
+                        logger.debug("Semantic explicit source recall unavailable: %s", error)
             return results
         except Exception as error:
             logger.debug("User-authored memory recall unavailable: %s", error)
