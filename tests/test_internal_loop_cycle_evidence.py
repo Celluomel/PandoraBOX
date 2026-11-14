@@ -721,7 +721,7 @@ def test_low_pressure_and_four_live_goals_allow_governor_to_leave_structured_mod
     ))
 
     for cycle in range(1, 4):
-        governor.begin_cycle(
+        snapshot = governor.begin_cycle(
             total_pressure=0.2453,
             goal_count=live_goal_count,
             cycle_number=cycle,
@@ -729,7 +729,38 @@ def test_low_pressure_and_four_live_goals_allow_governor_to_leave_structured_mod
 
     assert live_goal_count == 4
     assert governor.mode == CognitiveGovernor.MODE_EXPLORATORY
+    assert snapshot["mode"] == CognitiveGovernor.MODE_EXPLORATORY
+    assert snapshot["goal_count"] == 4
+    assert snapshot["total_pressure"] == 0.2453
+    assert snapshot["cycle"] == 3
     assert governor.may_run("Phase2Narrative") is True
+
+
+def test_governor_cycle_snapshot_is_auditable_without_prose_or_private_state():
+    governor = CognitiveGovernor()
+    snapshot = governor.begin_cycle(
+        total_pressure=0.42,
+        goal_count=4,
+        cycle_number=12,
+    )
+
+    assert snapshot == {
+        "mode": "structured",
+        "total_pressure": 0.42,
+        "goal_count": 4,
+        "budget_total": governor.BUDGET_MED_PRESSURE,
+        "budget_remaining": governor.BUDGET_MED_PRESSURE,
+        "cycle": 12,
+    }
+    summary = InternalThoughtLoop._evidence_summary(snapshot)
+    assert summary["mode"] == "structured"
+    assert summary["numeric_metrics"] == {
+        "total_pressure": 0.42,
+        "goal_count": 4,
+        "budget_total": governor.BUDGET_MED_PRESSURE,
+        "budget_remaining": governor.BUDGET_MED_PRESSURE,
+        "cycle": 12,
+    }
 
 
 def test_cycle_receipt_uses_explicit_no_action_reason_when_executor_returns_none():

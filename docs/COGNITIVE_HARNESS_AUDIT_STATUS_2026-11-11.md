@@ -1,7 +1,7 @@
 # Audit du harnais cognitif — état et prochaines étapes
 
 **Date de mise à jour :** 14 novembre 2026
-**Statut :** audit du harnais cognitif en cours; aucune conclusion globale de qualité n’est établie. Dernier commit d’audit poussé avant ce lot : `63d84b4`. Les changements du 14 novembre décrits en fin de document sont locaux et pas encore chargés dans Lumina. Les modifications Body/UI préexistantes restent hors lot.
+**Statut :** audit du harnais cognitif en cours; aucune conclusion globale de qualité n’est établie. Dernier commit d’audit poussé : `6489b55`. Le processus Lumina a été redémarré après ce lot; les deux correctifs du gouverneur sont donc chargés. Les modifications Body/UI préexistantes restent hors lot.
 
 ## Plan d’audit piloté par les preuves — mesure de progression
 
@@ -9,8 +9,8 @@
 
 | # | Piste et critère de clôture | État au 14 nov. 2026 |
 |---|---|---|
-| 1 | Inventaire des modules Python classés par rôle, dépendance, déclencheur et scénario attendu; distinguer service, événement, cadence, optionnel et test-only. | **Partiel** — le registre live compte 43 modules, dont 37 exécutés; la matrice fichier/scénario reste à produire. |
-| 2 | Exécution et disponibilité : pour chaque module attendu, prouver tick ou raison de skip/indisponibilité et vérifier les erreurs sur des cycles représentatifs. | **Partiel** — dernier relevé live : 37/43 exécutés, 6/43 `skipped_by_policy` avec motif `skipped_cadence`, 0 erreur instrumentée; l’activation aux échéances reste à confirmer. |
+| 1 | Inventaire des modules Python classés par rôle, dépendance, déclencheur et scénario attendu; distinguer service, événement, cadence, optionnel et test-only. | **Partiel** — le registre live compte 43 modules; la matrice fichier/scénario reste à produire. |
+| 2 | Exécution et disponibilité : pour chaque module attendu, prouver tick ou raison de skip/indisponibilité et vérifier les erreurs sur des cycles représentatifs. | **Partiel** — après redémarrage, cycles 11192–11194 : 34/43 modules tickés, 226 ticks, 50 skips et 0 erreur instrumentée. Les conditions de mode structuré et le nettoyeur hors cadence restent à observer. |
 | 3 | Causalité d’un tour : identifiant stable, ordre des étapes, liens consommateur→producteur, génération/clôture et intégrité du reçu. | **Close pour le chemin testé** — reçus live déterministe et génératif; le rappel positif relie retrieval→injection→réponse. Cela ne certifie pas tous les types de tours. |
 | 4 | Mémoire conversationnelle : source utilisateur écrite, persistée, retrouvée par paraphrase, provenance conservée et réponse fidèle; refus si source absente. | **Close pour le scénario de rappel testé** — cas source absente = abstention; cas source présente = source ID 9074 récupérée et injectée. La persistance après redémarrage reste dans la piste 10. |
 | 5 | Profil utilisateur : fait explicitement déclaré → provenance → écriture confirmée → récupération cohérente, sans inférence transformée en fait. | **Partiel** — corrections et tests antérieurs consignés; parcours live complet à refaire. |
@@ -2286,3 +2286,23 @@ Le snapshot `CognitiveAuditEngine` le plus récent reste au cycle **11160** (âg
 **Vérification cumulée du lot gouverneur :** `tests/test_internal_loop_cycle_evidence.py` + `tests/test_phase2_integration.py` — **40 tests passés**, 9 avertissements de dépendances préexistants; `py_compile` et `git diff --check` passent. Cette correction peut réactiver au prochain démarrage les chemins exploratoires autorisés par le budget; elle ne prouve pas que Lumina les a exécutés. Un reçu live après redémarrage doit confirmer le mode, les modules admis et leurs effets.
 
 **Progression globale : 2/10 = 20 %.** Le défaut de calcul de pression de buts est corrigé en local, mais la piste « modes et gouvernance » ne sera close qu’après observation live du mode recalculé, des admissions/refus, et des sorties aval cohérentes. La voie d’identité Phase 2 corrigée dans la section précédente attend également cette preuve live.
+
+### Vérification live après redémarrage groupé — cycles 11192–11194
+
+Lumina est `ready=true`; la boucle rapide est vivante, et le cycle lent a repris sans erreur. Au cycle 11194, le registre compte **34/43 modules tickés, 226 ticks, 50 skips et 0 erreur instrumentée** (34 `healthy`, 9 `skipped_by_policy`). Le premier relevé à zéro tick, pris avant le premier cycle lent, était un état de démarrage transitoire, pas une panne.
+
+**Résultat de la correction du compteur :** l’audit live a capturé les cycles 11192–11194. Au cycle 11193, la pression était **0,3107**, donc supérieure au seuil de sortie exploratoire **0,30**. `Phase2ThoughtEval` est alors resté bloqué en `structured_mode`; ce résultat est conforme à l’hystérésis codée et ne réfute pas le nouveau comptage des buts. Le premier cycle avait encore la valeur de pression de démarrage 0,5. La sortie du mode structuré n’est donc **pas encore prouvée**; il faut un cycle où pression ≤0,30 et buts actifs+dormants ≤6, puis constater la transition après le cooldown de trois cycles.
+
+**État Phase 2 :** l’évaluation de pensées était due au cycle 11193 et a un reçu explicite de refus par gouverneur. Narration et lien d’identité n’étaient pas dus dans ces cycles; la voie identité devient due à 11196. Le `semantic_graph_cleaner` reste dû au cycle 11200 (intervalle 50), sans prétendre à son exécution ou à ses mutations avant ce seuil.
+
+**Limite de l’observation :** le fichier persistant de buts observé avant redémarrage contient 4 objectifs actifs+dormants parmi 29 enregistrements. Le processus redémarré a chargé ce dépôt de données par le chemin par défaut de `GoalEngine`, mais l’état du gouverneur n’expose pas encore `goal_count` dans son reçu live; le champ a été corrigé dans le code d’entrée, mais cette valeur ne peut pas être lue directement dans le manifeste actuel. Le mode seul ne permet donc pas de vérifier le nombre transmis. Le prochain durcissement utile est d’inclure un snapshot borné du gouverneur dans le reçu de `begin_cycle`, puis de confirmer la transition avec un compteur live explicite.
+
+Les suites gouverneur/Phase 2 restent à **40 tests passés**, avec compilation et `git diff --check` réussis. **Progression globale inchangée : 2/10 = 20 %**; les voies d’exécution et de gouvernance restent partielles jusqu’à la preuve de transition, d’admission Phase 2 et d’effets aval.
+
+### Reçu de décision du gouverneur — instrumentation vérifiable
+
+Le reçu `module_tick:cognitive_governor.begin_cycle` était `side_effect_only`; il prouvait l’appel, mais ne révélait pas le mode et les données réellement envoyées. Le snapshot persistant des buts ne suffisait pas à prouver `goal_count` dans le processus live. `begin_cycle()` retourne maintenant un objet borné (`mode`, `total_pressure`, `goal_count`, `budget_total`, `budget_remaining`, `cycle`), et le reçu de cycle conserve les valeurs numériques autorisées. Aucun texte de but ni contenu privé n’est inclus. Cela permet de vérifier l’entrée du gouverneur et le résultat de sa décision au même cycle.
+
+**Tests après cette instrumentation :** `tests/test_internal_loop_cycle_evidence.py` + `tests/test_phase2_integration.py` — **41 tests passés**, 9 avertissements de dépendances connus. Les tests vérifient le snapshot et son résumé sans prose, ainsi que la sortie exploratoire après cooldown pour 4 buts vivants sous 0,30 de pression. `py_compile` et `git diff --check` passent. Cette dernière instrumentation n’est pas encore chargée dans le processus; elle sera vérifiée après commit et un redémarrage groupé.
+
+**Progression globale inchangée : 2/10 = 20 %.** Ce changement améliore la preuve de la piste 2; il ne la clôt pas avant un reçu live qui montre les valeurs réelles, une transition de mode, l’admission des modules et les effets aval.

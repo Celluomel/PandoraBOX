@@ -59,7 +59,7 @@ Usage (InternalThoughtLoop)
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -182,7 +182,7 @@ class CognitiveGovernor:
         total_pressure: float,
         goal_count: int,
         cycle_number: int,
-    ) -> None:
+    ) -> dict[str, Any]:
         """
         Called at the START of every slow cycle.
         Sets mode, budget, and resets per-cycle tracking.
@@ -228,6 +228,16 @@ class CognitiveGovernor:
             f"pressure={self._pressure:.2f} goals={self._goal_count} "
             f"budget={budget}"
         )
+        # Return a bounded, non-prose snapshot so the execution receipt can
+        # verify the exact inputs and policy decision used for this cycle.
+        return {
+            "mode": self.mode,
+            "total_pressure": self._pressure,
+            "goal_count": self._goal_count,
+            "budget_total": self._budget_total,
+            "budget_remaining": self._budget_remaining,
+            "cycle": self._cycle,
+        }
 
     def may_run(self, subsystem: str) -> bool:
         """

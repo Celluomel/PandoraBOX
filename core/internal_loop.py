@@ -727,7 +727,7 @@ class InternalThoughtLoop:
         if isinstance(value, dict):
             summary: dict[str, Any] = {"kind": "mapping", "field_count": len(value)}
             for key in (
-                "type", "status", "success", "created", "verified",
+                "type", "status", "mode", "success", "created", "verified",
                 "outcome_status", "reason_code", "skipped",
                 "goal_state_persisted", "memory_retrieved", "thought_published",
                 "thought_stream_recorded", "workspace_broadcast",
@@ -759,6 +759,7 @@ class InternalThoughtLoop:
                 "candidate_count", "accepted_candidate_count", "motivation_count",
                 "user_topic_count", "filtered_topic_count", "active_thread_count",
                 "broadcast_count", "requested_count", "total_pressure",
+                "goal_count", "budget_total", "budget_remaining",
                 "winning_margin", "score", "confidence", "priority", "override",
                 "generation_blocked", "decision_fresh", "winner_age_cycles",
                 "cycle", "previous_scan_cycle", "drive_count",
