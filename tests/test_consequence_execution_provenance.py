@@ -140,6 +140,7 @@ class ConsequenceExecutionProvenanceTests(unittest.TestCase):
     def test_pcm_receives_only_the_reported_before_after_state(self):
         with tempfile.TemporaryDirectory() as folder:
             pcm = Mock()
+            pcm.record_observed_transition.return_value = True
             tracker = ConsequenceTracker(persona_dir=folder, consequence_model=pcm)
             prediction = tracker.predict(
                 "goal-self", "verify an insight", "self_question",
@@ -161,6 +162,29 @@ class ConsequenceExecutionProvenanceTests(unittest.TestCase):
                 outcome_source="validated_action_probe",
                 resolve_calibration=True,
             )
+
+    def test_pcm_resolution_requires_durable_transition_receipt(self):
+        with tempfile.TemporaryDirectory() as folder:
+            pcm = Mock()
+            pcm.record_observed_transition.return_value = False
+            ledger = CausalLedger(folder)
+            tracker = ConsequenceTracker(
+                persona_dir=folder, consequence_model=pcm, ledger=ledger,
+            )
+            prediction = tracker.predict(
+                "goal-self", "verify an insight", "self_question",
+                cycle_id=33, execution_id="act-self-33",
+            )
+
+            result = tracker.resolve(prediction, {
+                "success": True,
+                "cognitive_state_before": [0.2, 0.3],
+                "cognitive_state_after": [0.2, 0.4],
+            })
+
+            self.assertFalse(result["pcm_resolved"])
+            outcome = next(event for event in ledger.recent(10) if event["kind"] == "outcome")
+            self.assertFalse(outcome["output_state"]["predictive_model_resolved"])
 
     def test_prediction_outcome_and_updates_share_exact_execution_chain(self):
         with tempfile.TemporaryDirectory() as folder:

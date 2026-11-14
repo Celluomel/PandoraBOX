@@ -508,13 +508,15 @@ class ConsequenceTracker:
             record_transition = getattr(pcm, "record_observed_transition", None)
             if not callable(record_transition):
                 return False
-            record_transition(
+            persisted = record_transition(
                 pred["action_type"], before, after,
                 interaction_n=int(pred.get("cycle_id") or 0),
                 outcome=outcome,
                 outcome_source="validated_action_probe",
                 resolve_calibration=True,
             )
+            if persisted is not True:
+                return False
             with self._lock:
                 self.metrics["pcm_resolutions"] += 1
             return True

@@ -2065,3 +2065,15 @@ Les suites `tests/test_memory_system_fallback.py` et `tests/test_memory_retrieva
 **Tests locaux :** `tests/test_consequence_execution_provenance.py`, `tests/test_pcm_outcome_provenance.py`, `tests/test_peer_predictive_outcomes.py` : **18 passés**; `py_compile` et `git diff --check` réussis.
 
 **À vérifier après redémarrage :** une action sans vecteurs d’état doit terminer avec `pcm_resolved=false` et ne créer aucun enregistrement PCM; un reçu comportant deux vecteurs mesurés doit enregistrer exactement ceux-ci. Les résultats opérationnels de `ConsequenceTracker` (succès d’une action, p. ex. belief persistée) restent séparés de la validation de son bénéfice cognitif; l’audit devra encore mesurer si les mises à jour d’efficacité et d’attention sont correctement interprétées en aval.
+
+### PCM — échec de persistance annoncé comme résolution réussie — 14 novembre 2026
+
+**Preuve runtime du processus chargé de `0eee74e` :** l’InternalThoughtLoop est actif sur le port d’interface `8080`; les cycles `11074` et `11075` sont complets (80 étapes/500,55 ms puis 75 étapes/897,58 ms). Ils montrent une compétition sans candidat prédictible, aucune proposition sélectionnée et aucun appel du GoalActionExecutor (skip de cadence). Le nouveau code de persistance PCM n’a donc pas encore été exercé par une action live; ces reçus ne sont pas présentés comme preuve de cet effet.
+
+**Défaut supplémentaire découvert dans le chemin préparé pour les transitions mesurées :** `PredictiveConsequenceModel.record_observed_transition()` ajoutait une transition en mémoire, ignorait le booléen de `_save()` puis retournait implicitement `None`. `ConsequenceTracker._feed_pcm()` traitait toute absence d’exception comme une résolution réussie. Un disque plein ou une erreur d’écriture pouvait ainsi produire `predictive_model_resolved=true` sans transition durable; la calibration pouvait également être résolue malgré l’échec de sauvegarde.
+
+**Correction :** `record_observed_transition()` renvoie maintenant `True` uniquement après sauvegarde réussie. En cas d’échec, il retire l’ajout mémoire, renvoie `False` et n’applique pas la calibration. `_feed_pcm()` ne marque la résolution PCM que si la méthode retourne explicitement `True`.
+
+**Vérification locale :** les trois suites `test_consequence_execution_provenance.py`, `test_pcm_outcome_provenance.py`, `test_peer_predictive_outcomes.py` passent (**20 tests**); compilation Python et `git diff --check` passent. Un test force l’échec de persistance et vérifie le rollback ainsi que l’absence de résolution de calibration; un autre garantit que le reçu causal reste à `predictive_model_resolved=false`.
+
+**À faire après chargement :** redémarrer le processus en mode audit et vérifier le reçu de la voie PCM mesurée si une action de cette famille se produit naturellement. En l’absence d’une action et de vecteurs mesurés, le résultat correct est l’absence de résolution PCM; aucun état cognitif ne doit être synthétisé pour fabriquer ce test live. L’audit continue ensuite sur la chaîne persistante goal → progrès vérifiable → revue, car les derniers cycles n’ont pas sélectionné de proposition exécutable.

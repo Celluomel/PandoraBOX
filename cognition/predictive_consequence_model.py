@@ -289,7 +289,7 @@ class PredictiveConsequenceModel:
         attention_weights_at_turn: Optional[Dict[str, float]] = None,
         attention_context_key_at_turn: str = "",
         resolve_calibration: bool = False,
-    ) -> None:
+    ) -> bool:
         """Persist one explicit transition without using shared pending state.
 
         Concurrent sources (for example, a slow FLUX HTTP exchange and a
@@ -327,10 +327,14 @@ class PredictiveConsequenceModel:
             attention_context_key_at_turn=str(attention_context_key_at_turn or ""),
         )
         with self._records_lock:
-            self._records.append(record)
-            if len(self._records) > MAX_RECORDS:
-                self._records = self._records[-MAX_RECORDS:]
-            self._save()
+            previous_records = self._records
+            self._records = (previous_records + [record])[-MAX_RECORDS:]
+            if not self._save():
+                # A transition is evidence only after it is durable. Roll back
+                # the in-memory append as well, so callers cannot report a
+                # successful PCM resolution that disappears on restart.
+                self._records = previous_records
+                return False
         logger.debug(
             f"[ConsequenceModel] Recorded: {action_type} → "
             f"energy Δ{delta[0]:+.3f} social Δ{delta[1]:+.3f} "
@@ -357,6 +361,7 @@ class PredictiveConsequenceModel:
                 )
         except Exception as _cal_e:
             logger.debug(f"[ConsequenceModel] Calibration resolve error: {_cal_e}")
+        return True
 
     @staticmethod
     def _response_hash(response_text: str) -> str:

@@ -43,6 +43,21 @@ class PCMOutcomeProvenanceTests(unittest.TestCase):
         self.assertEqual(record.outcome, "positive")
         self.assertEqual(record.outcome_source, "validated_action_probe")
 
+    def test_failed_persistence_rolls_back_transition_and_reports_failure(self):
+        model = self._model()
+        model._save.return_value = False
+        model._calibration_engine = Mock()
+
+        persisted = model.record_observed_transition(
+            "memory_recall", [0.5] * 3, [0.5, 0.6, 0.7],
+            outcome="positive", outcome_source="validated_action_probe",
+            resolve_calibration=True,
+        )
+
+        self.assertFalse(persisted)
+        self.assertEqual(model._records, [])
+        model._calibration_engine.resolve_prediction.assert_not_called()
+
     def test_explicit_rating_attaches_to_exact_response_and_attention_snapshot_once(self):
         model = self._model()
         model.record_observed_transition(
