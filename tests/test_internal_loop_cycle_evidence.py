@@ -692,6 +692,46 @@ def test_resolved_thread_identity_linking_remains_eligible_in_structured_mode():
     assert governor.may_run("Phase2Narrative") is False
 
 
+def test_governor_goal_count_excludes_retained_terminal_goal_records():
+    goals = {
+        "active": SimpleNamespace(status="active"),
+        "dormant": SimpleNamespace(status="dormant"),
+        "completed": SimpleNamespace(status="completed"),
+        "archived": SimpleNamespace(status="archived"),
+        "low_quality": SimpleNamespace(status="low_quality"),
+        "abandoned": SimpleNamespace(status="abandoned"),
+    }
+    goal_engine = SimpleNamespace(_goals=goals)
+
+    assert InternalThoughtLoop._governor_goal_count(goal_engine) == 2
+    assert InternalThoughtLoop._governor_goal_count(None) == 0
+
+
+def test_low_pressure_and_four_live_goals_allow_governor_to_leave_structured_mode():
+    governor = CognitiveGovernor()
+    live_goal_count = InternalThoughtLoop._governor_goal_count(SimpleNamespace(
+        _goals={
+            "active_1": SimpleNamespace(status="active"),
+            "active_2": SimpleNamespace(status="active"),
+            "dormant_1": SimpleNamespace(status="dormant"),
+            "dormant_2": SimpleNamespace(status="dormant"),
+            "archived": SimpleNamespace(status="archived"),
+            "completed": SimpleNamespace(status="completed"),
+        }
+    ))
+
+    for cycle in range(1, 4):
+        governor.begin_cycle(
+            total_pressure=0.2453,
+            goal_count=live_goal_count,
+            cycle_number=cycle,
+        )
+
+    assert live_goal_count == 4
+    assert governor.mode == CognitiveGovernor.MODE_EXPLORATORY
+    assert governor.may_run("Phase2Narrative") is True
+
+
 def test_cycle_receipt_uses_explicit_no_action_reason_when_executor_returns_none():
     executor = SimpleNamespace(_last_tick_outcome={
         "outcome_status": "skipped",

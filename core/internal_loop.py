@@ -1606,7 +1606,7 @@ class InternalThoughtLoop:
         _gov_pressure  = getattr(o, '_v32_decision_pressure', {}).get('total', 0.5)
         _ai_sys_g      = getattr(o, 'ai_system', None)
         _ge_g          = getattr(_ai_sys_g, 'goal_engine', None)
-        _gov_goal_count = len(getattr(_ge_g, '_goals', {})) if _ge_g else 0
+        _gov_goal_count = self._governor_goal_count(_ge_g)
         if self._governor:
             self._governor.begin_cycle(
                 total_pressure = _gov_pressure,
@@ -3215,6 +3215,22 @@ class InternalThoughtLoop:
 
         # ── V34: Phase 4 maintenance ──────────────────────────────────────────
         self._phase4_maintenance()
+
+    @staticmethod
+    def _governor_goal_count(goal_engine: Any) -> int:
+        """Count only goals that currently participate in cognitive pressure.
+
+        Completed, archived, abandoned, and low-quality records remain in the
+        persistence pool for history, but must not keep the governor in
+        structured mode. The governor's thresholds are defined over active
+        plus dormant goals.
+        """
+        goals = getattr(goal_engine, "_goals", {}) if goal_engine is not None else {}
+        values = goals.values() if hasattr(goals, "values") else goals
+        return sum(
+            1 for goal in values
+            if getattr(goal, "status", None) in {"active", "dormant"}
+        )
 
     def _periodic_module_due(
         self, attr_name: str, module_name: str, interval: int,
