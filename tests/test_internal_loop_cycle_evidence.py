@@ -61,6 +61,63 @@ def test_cycle_receipt_keeps_boolean_action_effect_evidence_without_user_text():
     assert "private recalled text" not in repr(summary)
 
 
+def test_phase2_narrative_delivery_receipt_links_synthesis_to_workspace_admission():
+    loop = make_loop()
+    loop._begin_cycle_evidence(24)
+    narrative_ref = loop._record_cycle_stage(
+        "phase2_narrative_synthesis", "completed",
+        output={"narrative_present": True},
+    )
+
+    class _Workspace:
+        def broadcast(self, **_kwargs):
+            return True
+
+    loop._publish_phase2_narrative(
+        "private narrative text", _Workspace(), narrative_ref,
+    )
+    loop._finish_cycle_evidence("completed")
+
+    receipt = loop.cycle_evidence_snapshot()["cycles"][0]
+    delivery = next(
+        stage for stage in receipt["stages"]
+        if stage["stage"] == "phase2_narrative_workspace_broadcast"
+    )
+    assert delivery["status"] == "admitted"
+    assert delivery["inputs"]["narrative_output_ref"] == narrative_ref
+    assert delivery["output_summary"]["workspace_broadcast"] is True
+    assert "private narrative text" not in repr(receipt)
+
+
+def test_phase2_narrative_delivery_receipt_reports_workspace_rejection():
+    loop = make_loop()
+    loop._begin_cycle_evidence(25)
+
+    class _Workspace:
+        def broadcast(self, **_kwargs):
+            return False
+
+    loop._publish_phase2_narrative("narrative", _Workspace(), "narrative-ref")
+
+    receipt = loop.cycle_evidence_snapshot()["cycles"][0]
+    delivery = receipt["stages"][0]
+    assert delivery["stage"] == "phase2_narrative_workspace_broadcast"
+    assert delivery["status"] == "rejected"
+    assert delivery["output_summary"]["workspace_broadcast"] is False
+
+
+def test_phase2_narrative_delivery_receipt_distinguishes_missing_workspace():
+    loop = make_loop()
+    loop._begin_cycle_evidence(26)
+
+    loop._publish_phase2_narrative("narrative", None, "narrative-ref")
+
+    receipt = loop.cycle_evidence_snapshot()["cycles"][0]
+    delivery = receipt["stages"][0]
+    assert delivery["status"] == "unavailable"
+    assert delivery["output_summary"]["delivery_status"] == "workspace_unavailable"
+
+
 def test_workspace_decision_age_does_not_encode_missing_winner_as_giant_stale_age():
     assert InternalThoughtLoop._workspace_decision_age_cycles(11085, None, None) is None
     assert InternalThoughtLoop._workspace_decision_age_cycles(

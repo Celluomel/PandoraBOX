@@ -2318,3 +2318,13 @@ Après redémarrage sur `9356a3b`, le cycle 11200 a fourni le premier reçu comp
 **Vérifications locales :** `tests/test_internal_loop_cycle_evidence.py` + `tests/test_selected_thought_goal_pipeline.py` — **53 réussis**, 9 avertissements connus de dépendances; `py_compile` et `git diff --check` réussis. Commit `89b6507` poussé sur `main` et chargé dans Lumina. Cette preuve valide la chaîne gouverneur→cadence/politique→Phase 1/Phase 2 pour ce cas; elle ne valide pas la qualité sémantique du contenu de narration, les autres scénarios, ni l’ensemble des 43 modules.
 
 **Progression globale inchangée : 2/10 = 20 %.** La piste 2 reste partielle jusqu’à l’inventaire module/scénario et l’évaluation des sorties; la piste 6 reste partielle jusqu’à une boucle chercheur→hypothèse→essai→résultat vérifié.
+
+### Phase 2 narrative — distinguer génération et admission workspace
+
+La trace live du cycle 11208 disait `phase2_narrative_synthesis=completed`, mais le code ne journalisait pas le retour de `workspace.broadcast()`. « Completed » prouvait donc qu’une chaîne narrative avait été générée; cela ne prouvait pas qu’elle avait été admise dans le workspace. Une exception pendant le broadcast pouvait même transformer à tort l’étape de génération en échec.
+
+**Correction locale :** génération et livraison sont maintenant deux étapes causales distinctes. `phase2_narrative_synthesis` représente uniquement la génération; `phase2_narrative_workspace_broadcast` enregistre `admitted`, `rejected`, `unavailable` ou `failed`, le booléen d’admission et une référence vers la sortie de synthèse. Le texte de la narration ne figure pas dans le reçu.
+
+**Tests locaux :** `tests/test_internal_loop_cycle_evidence.py` + `tests/test_selected_thought_goal_pipeline.py` — **56 réussis**, 9 avertissements connus; `py_compile` et `git diff --check` réussis. Les reçus couvrent admission, rejet et absence du workspace; les erreurs du broadcast sont capturées séparément. Le nouveau code attend son chargement live; validation runtime à faire après le redémarrage groupé et le prochain cycle narratif dû.
+
+**Progression globale : 2/10 = 20 %.** La correction rendra l’effet aval mesurable; elle ne prouvera pas à elle seule que la narration est pertinente ni qu’elle influence les réponses suivantes.

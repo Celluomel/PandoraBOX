@@ -249,6 +249,51 @@ class InternalThoughtLoop:
             evidence["governor_block_reason"] = reason
         return evidence
 
+    def _publish_phase2_narrative(
+        self, narrative: str, workspace: Any, narrative_output_ref: str | None,
+    ) -> None:
+        """Record delivery separately from synthesis, using workspace admission result."""
+        broadcast = getattr(workspace, "broadcast", None)
+        if not callable(broadcast):
+            self._record_cycle_stage(
+                "phase2_narrative_workspace_broadcast", "unavailable",
+                inputs={"narrative_output_ref": narrative_output_ref},
+                output={
+                    "narrative_present": True,
+                    "workspace_broadcast": False,
+                    "delivery_status": "workspace_unavailable",
+                },
+            )
+            return
+        try:
+            admitted = broadcast(
+                source="v33.narrative_synthesizer",
+                content=narrative,
+                priority=0.65,
+            ) is True
+        except Exception as exc:
+            self._record_cycle_stage(
+                "phase2_narrative_workspace_broadcast", "failed",
+                inputs={"narrative_output_ref": narrative_output_ref},
+                output={
+                    "narrative_present": True,
+                    "workspace_broadcast": False,
+                    "delivery_status": "broadcast_error",
+                },
+                metrics={"error_type": type(exc).__name__},
+            )
+            return
+        self._record_cycle_stage(
+            "phase2_narrative_workspace_broadcast",
+            "admitted" if admitted else "rejected",
+            inputs={"narrative_output_ref": narrative_output_ref},
+            output={
+                "narrative_present": True,
+                "workspace_broadcast": admitted,
+                "delivery_status": "admitted" if admitted else "rejected",
+            },
+        )
+
     @staticmethod
     def _goal_action_receipt(report: Any, executor: Any) -> dict[str, Any] | None:
         """Use the action report, or its explicit no-action reason, in cycle evidence."""
@@ -734,6 +779,7 @@ class InternalThoughtLoop:
                 "research_item_queued", "hypothesis_generated",
                 "source_thought_source", "source_thought_type", "source_concept_method",
                 "drive_update", "need_scan", "pressure_source",
+                "narrative_present", "delivery_status",
             ):
                 item = value.get(key)
                 if isinstance(item, (str, bool, int, float)):
@@ -2925,7 +2971,7 @@ class InternalThoughtLoop:
                         }
                         
                         narrative = self._phase2.synthesize_narrative(cycle_data)
-                        self._record_cycle_stage(
+                        _narrative_ref = self._record_cycle_stage(
                             "phase2_narrative_synthesis",
                             "completed" if narrative else "no_narrative",
                             output={"narrative_present": bool(narrative)},
@@ -2934,13 +2980,12 @@ class InternalThoughtLoop:
                         if narrative:
                             logger.info(f"[InternalLoop] V33 Narrative: {narrative[:80]}...")
                             
-                            # Broadcast to workspace
-                            if hasattr(o, 'workspace'):
-                                o.workspace.broadcast(
-                                    source="v33.narrative_synthesizer",
-                                    content=narrative,
-                                    priority=0.65
-                                )
+                            # Generation and workspace admission are separate effects.
+                            self._publish_phase2_narrative(
+                                narrative,
+                                getattr(o, "workspace", None),
+                                _narrative_ref,
+                            )
                     except Exception as _ns:
                         self._record_cycle_stage(
                             "phase2_narrative_synthesis", "failed",
