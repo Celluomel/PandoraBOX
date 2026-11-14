@@ -200,7 +200,7 @@ class ConsequenceTracker:
         # 5c. PCM (feed a real record + calibration resolution)
         pcm_ok = (
             False if pred.get("probe") == "question_queued"
-            else self._feed_pcm(pred, report, observed, outcome)
+            else self._feed_pcm(pred, report, outcome)
         )
 
         # metrics
@@ -228,6 +228,11 @@ class ConsequenceTracker:
                 output_state={
                     "observed": observed,
                     "outcome": outcome,
+                    "predictive_model_resolved": pcm_ok,
+                    "predictive_model_resolution": (
+                        "measured_state_transition" if pcm_ok
+                        else "no_measured_state_transition"
+                    ),
                     **{
                         key: report[key]
                         for key in (
@@ -481,22 +486,35 @@ class ConsequenceTracker:
             return None
 
     def _feed_pcm(self, pred: Dict[str, Any], report: Dict[str, Any],
-                  observed: float, outcome: str) -> bool:
-        """Push a real ConsequenceRecord + calibration resolution into the PCM."""
+                  outcome: str) -> bool:
+        """Feed PCM only when the action report contains an observed state delta."""
         pcm = self._consequence_model
         if pcm is None:
             return False
         try:
-            energy = float(pred.get("goal_energy_before", 1.0))
-            social = 1.0 if pred["action_type"] == "user_question" else 0.3
-            focus = 0.10
-            state_before = [energy, social, focus]
-            # state_after: energy unchanged, social up if engaged, focus per observed
-            state_after = [energy, (1.0 if outcome == "positive" else social),
-                           round(0.05 + observed * 0.10, 4)]
-            pcm.record_action(pred["action_type"], state_before,
-                              interaction_n=int(pred.get("cycle_id") or 0))
-            pcm.record_outcome(state_after, outcome=outcome)
+            state_before = report.get("cognitive_state_before")
+            state_after = report.get("cognitive_state_after")
+            if (
+                not isinstance(state_before, (list, tuple))
+                or not isinstance(state_after, (list, tuple))
+                or not state_before
+                or len(state_before) != len(state_after)
+            ):
+                return False
+            before = [float(value) for value in state_before]
+            after = [float(value) for value in state_after]
+            if not all(math.isfinite(value) for value in before + after):
+                return False
+            record_transition = getattr(pcm, "record_observed_transition", None)
+            if not callable(record_transition):
+                return False
+            record_transition(
+                pred["action_type"], before, after,
+                interaction_n=int(pred.get("cycle_id") or 0),
+                outcome=outcome,
+                outcome_source="validated_action_probe",
+                resolve_calibration=True,
+            )
             with self._lock:
                 self.metrics["pcm_resolutions"] += 1
             return True

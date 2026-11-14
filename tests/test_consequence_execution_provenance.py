@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from unittest.mock import Mock
 
 from cognition.causal_ledger import CausalLedger
 from cognition.consequence_tracker import ACTION_MODEL, ConsequenceTracker
@@ -108,6 +109,58 @@ class ConsequenceExecutionProvenanceTests(unittest.TestCase):
                 "success": True, "result": "A long plausible reflection",
                 "belief_persisted": True,
             }), 1.0)
+
+    def test_pcm_is_not_fed_synthetic_state_when_action_has_no_measurement(self):
+        with tempfile.TemporaryDirectory() as folder:
+            ledger = CausalLedger(folder)
+            pcm = Mock()
+            tracker = ConsequenceTracker(
+                persona_dir=folder, consequence_model=pcm, ledger=ledger,
+            )
+            prediction = tracker.predict(
+                "goal-self", "verify an insight", "self_question",
+                cycle_id=31, execution_id="act-self-31",
+            )
+
+            result = tracker.resolve(prediction, {
+                "success": True,
+                "result": "generated reflective text",
+                "belief_persisted": True,
+            })
+
+            self.assertFalse(result["pcm_resolved"])
+            pcm.record_observed_transition.assert_not_called()
+            outcome = next(e for e in ledger.recent(10) if e["kind"] == "outcome")
+            self.assertFalse(outcome["output_state"]["predictive_model_resolved"])
+            self.assertEqual(
+                outcome["output_state"]["predictive_model_resolution"],
+                "no_measured_state_transition",
+            )
+
+    def test_pcm_receives_only_the_reported_before_after_state(self):
+        with tempfile.TemporaryDirectory() as folder:
+            pcm = Mock()
+            tracker = ConsequenceTracker(persona_dir=folder, consequence_model=pcm)
+            prediction = tracker.predict(
+                "goal-self", "verify an insight", "self_question",
+                cycle_id=32, execution_id="act-self-32",
+            )
+
+            result = tracker.resolve(prediction, {
+                "success": True,
+                "result": "generated reflective text",
+                "belief_persisted": True,
+                "cognitive_state_before": [0.2, 0.3, 0.4],
+                "cognitive_state_after": [0.2, 0.35, 0.42],
+            })
+
+            self.assertTrue(result["pcm_resolved"])
+            pcm.record_observed_transition.assert_called_once_with(
+                "self_question", [0.2, 0.3, 0.4], [0.2, 0.35, 0.42],
+                interaction_n=32, outcome="positive",
+                outcome_source="validated_action_probe",
+                resolve_calibration=True,
+            )
 
     def test_prediction_outcome_and_updates_share_exact_execution_chain(self):
         with tempfile.TemporaryDirectory() as folder:
