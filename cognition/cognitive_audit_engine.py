@@ -236,6 +236,7 @@ class DevelopmentProposal:
     proposed_at_time:    float  = field(default_factory=time.time)
     outcome:             str    = "pending"   # "confirmed"|"disconfirmed"|"inconclusive"|"pending"
     signal_at_eval:      Optional[float] = None
+    signal_sample_count_at_eval: int = 0
     evaluated_at_cycle:  int    = 0
     committed:           bool   = False
 
@@ -305,10 +306,17 @@ class CognitiveAuditEngine:
                 if raw_trial:
                     trial = DevelopmentProposal(**raw_trial)
                     if slow_cycle - trial.proposed_at_cycle >= TRIAL_DURATION_CYCLES:
-                        if not self._trial_evaluation_in_progress:
+                        post_trial_samples = [
+                            item for item in self._state.snapshot_log
+                            if item.get("slow_cycle", 0) > trial.proposed_at_cycle
+                            and item.get(trial.dimension) is not None
+                            and (item.get("signal_status") or {}).get(trial.dimension)
+                            in {"measured", "measured_legacy_snapshot"}
+                        ]
+                        if len(post_trial_samples) >= 2 and not self._trial_evaluation_in_progress:
                             self._trial_evaluation_in_progress = True
                             trial_to_evaluate = trial
-                        else:
+                        elif self._trial_evaluation_in_progress:
                             return
                 elif self._trial_evaluation_in_progress:
                     return
@@ -833,7 +841,25 @@ Respond ONLY in JSON (no markdown, no preamble):
         """Re-read the signal and determine whether the trial improved it."""
         try:
             snapshot = self._read_signals(slow_cycle)
-            signal_now = snapshot.as_dict().get(trial.dimension)
+            with self._lock:
+                self._state.snapshot_log.append(asdict(snapshot))
+                if len(self._state.snapshot_log) > MAX_AUDIT_LOG:
+                    self._state.snapshot_log = self._state.snapshot_log[-MAX_AUDIT_LOG:]
+                trial_snapshots = [
+                    item for item in self._state.snapshot_log
+                    if item.get("slow_cycle", 0) > trial.proposed_at_cycle
+                    and item.get(trial.dimension) is not None
+                    and (item.get("signal_status") or {}).get(trial.dimension)
+                    in {"measured", "measured_legacy_snapshot"}
+                ]
+            trial.signal_sample_count_at_eval = len(trial_snapshots)
+            signal_values = [float(item[trial.dimension]) for item in trial_snapshots]
+            # Require two distinct post-proposal audit snapshots and evaluate
+            # their mean; a single lucky/noisy reading cannot commit a change.
+            signal_now = (
+                sum(signal_values[-2:]) / 2.0
+                if len(signal_values) >= 2 else None
+            )
             target     = trial.signal_target
             prior      = trial.signal_at_proposal
 
