@@ -9,8 +9,8 @@
 
 | # | Piste et critère de clôture | État au 14 nov. 2026 |
 |---|---|---|
-| 1 | Inventaire des modules Python classés par rôle, dépendance, déclencheur et scénario attendu; distinguer service, événement, cadence, optionnel et test-only. | **Partiel** — le registre live compte 43 modules; la matrice fichier/scénario reste à produire. |
-| 2 | Exécution et disponibilité : pour chaque module attendu, prouver tick ou raison de skip/indisponibilité et vérifier les erreurs sur des cycles représentatifs. | **Partiel** — relevé live : 34/43 exécutés, 9/43 `skipped_by_policy`/`skipped_cadence`, 0 erreur instrumentée; la pertinence du skip reste à valider par module. |
+| 1 | Inventaire des modules Python classés par rôle, dépendance, déclencheur et scénario attendu; distinguer service, événement, cadence, optionnel et test-only. | **Partiel** — le registre live compte 43 modules, dont 37 exécutés; la matrice fichier/scénario reste à produire. |
+| 2 | Exécution et disponibilité : pour chaque module attendu, prouver tick ou raison de skip/indisponibilité et vérifier les erreurs sur des cycles représentatifs. | **Partiel** — dernier relevé live : 37/43 exécutés, 6/43 `skipped_by_policy` avec motif `skipped_cadence`, 0 erreur instrumentée; l’activation aux échéances reste à confirmer. |
 | 3 | Causalité d’un tour : identifiant stable, ordre des étapes, liens consommateur→producteur, génération/clôture et intégrité du reçu. | **Close pour le chemin testé** — reçus live déterministe et génératif; le rappel positif relie retrieval→injection→réponse. Cela ne certifie pas tous les types de tours. |
 | 4 | Mémoire conversationnelle : source utilisateur écrite, persistée, retrouvée par paraphrase, provenance conservée et réponse fidèle; refus si source absente. | **Close pour le scénario de rappel testé** — cas source absente = abstention; cas source présente = source ID 9074 récupérée et injectée. La persistance après redémarrage reste dans la piste 10. |
 | 5 | Profil utilisateur : fait explicitement déclaré → provenance → écriture confirmée → récupération cohérente, sans inférence transformée en fait. | **Partiel** — corrections et tests antérieurs consignés; parcours live complet à refaire. |
@@ -2204,3 +2204,23 @@ La trace a mis en évidence un second défaut causal : le détecteur reconnaissa
 **Limite sémantique restante :** le reçu marque `semantic_answer_validation=not_performed`; la qualité a été vérifiée en comparant la sortie au texte source de ce scénario, pas par un validateur automatisé. La source de test est maintenant persistée dans la mémoire de Lumina; elle ne doit pas être confondue avec une consigne antérieure qui n’avait pas été stockée.
 
 **Conclusion ciblée :** le défaut de citation erronée est corrigé et testé; le rappel explicite fonctionne lorsque la source utilisateur est réellement présente et s’abstient quand elle manque. La prochaine vérification utile est d’auditer la création et la récupération de souvenirs d’échanges naturels, puis la construction du profil utilisateur et leur provenance. Aucune conclusion globale sur la qualité cognitive du harnais n’est tirée de ce seul scénario.
+
+
+### Audit du registre live — modules sans tick classés par déclencheur — 14 novembre 2026
+
+Le statut initial `34/43` provenait du relevé du cycle `11154`. Le cycle `11155` a ensuite exécuté le `CognitiveFluxEngine`, le `CognitiveAttentionEngine` et le `SelfConceptSynchronizer`; le registre courant est donc **37/43 modules exécutés, 289 ticks, 0 erreur instrumentée, 59 skips**. La hausse 34→37 est une observation liée à l’échéance de consolidation, pas une correction de code.
+
+Les six modules encore sans tick portent tous `initialized=true`, `state=skipped_by_policy` et un reçu `skipped_cadence`; ce n’est pas un statut `unavailable` ni `failed`. Leur cadence source indique :
+
+| Module sans tick | Déclencheur observé dans le code | Prochaine échéance calculée depuis 11155 | État de la preuve |
+|---|---|---:|---|
+| `phase2_orchestrator` | évaluation tous les 7 cycles, synthèse tous les 8; liaison identité seulement quand un thread est résolu | 11158 / 11160; événement résolu non observé | **Partiel** — raison connue, exécution au prochain seuil/event pas encore capturée |
+| `goal_quality_filter` | tous les 20 cycles, puis peut attendre la fin d’un motivational scan | 11160 | **Partiel** — skip cadence prouvé; scan et sortie de maintenance non vérifiés live |
+| `thread_lifecycle_manager` | tous les 15 cycles | 11160 | **Partiel** — skip cadence prouvé; effets de maintenance non vérifiés live |
+| `goal_consolidator` | tous les 18 cycles | 11160 | **Partiel** — skip cadence prouvé; mutations et relecture persistée non vérifiées live |
+| `semantic_graph_cleaner` | tous les 50 cycles | 11200 | **Partiel** — cadence longue, donc absence de tick dans cette fenêtre attendue; effet de nettoyage non vérifié live |
+| `persistent_executive_loop` | tous les 10 cycles | 11160 | **Partiel** — skip cadence prouvé; revue de buts et effets aval non vérifiés live |
+
+`CognitiveFluxEngine`, `CognitiveAttentionEngine` et `SelfConceptSynchronizer` ont maintenant un tick live lors du cycle de consolidation. Le reçu de cycle montre des sorties structurées pour Flux (10 champs), Attention (12 champs) et SelfConcept (17 champs), avec durées respectives de 1,29 ms, 26,62 ms et 26,24 ms. Cela prouve leur invocation et la forme de sortie, pas la qualité de leurs mises à jour, ni que les consommateurs aval ont utilisé les valeurs. L’Attention a aussi exécuté `decay_bias` (4,68 ms) et `decay_context` (1,35 ms).
+
+**Conclusion de cette passe :** l’ancien « 9 modules sans tick » était un instantané avant le seuil de consolidation; trois modules ont tourné au cycle 11155. Les six restants ont des raisons de cadence identifiables dans le code. Je ne les classe pas encore « fonctionnels » : il faut observer les échéances 11158/11160, vérifier leurs reçus et effets, et attendre 11200 pour le nettoyeur sémantique ou le couvrir par un test déterministe de cadence et de mutation. Le manifeste des 43 modules reste distinct de l’inventaire de tous les fichiers `.py`; la preuve d’exécution de chaque fichier n’est pas acquise.
