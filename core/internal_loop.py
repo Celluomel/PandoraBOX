@@ -794,6 +794,20 @@ class InternalThoughtLoop:
         )
 
     @staticmethod
+    def _proposal_focus_admission_evidence(
+        winner: Any, admitted: bool,
+    ) -> tuple[str, dict[str, Any]]:
+        """Report proposal admission only when the winner actually had a proposal."""
+        source_data = winner.get("source_data", {}) if isinstance(winner, dict) else {}
+        proposal = source_data.get("_goal_proposal") if isinstance(source_data, dict) else None
+        if not isinstance(proposal, dict):
+            return "not_applicable", {"applicable": False}
+        return (
+            "admitted" if admitted else "rejected",
+            {"applicable": True, "admitted": bool(admitted)},
+        )
+
+    @staticmethod
     def _workspace_focus_for_consumers(winner: Any, admitted: bool) -> Any:
         """Do not expose a rejected goal proposal as an active cognitive focus."""
         source_data = winner.get("source_data", {}) if isinstance(winner, dict) else {}
@@ -1884,11 +1898,16 @@ class InternalThoughtLoop:
                     _proposal_focus_admitted = self._selected_proposal_commit_admitted(
                         _winner, _commit_result,
                     )
+                    _proposal_admission_status, _proposal_admission_output = (
+                        self._proposal_focus_admission_evidence(
+                            _winner, _proposal_focus_admitted,
+                        )
+                    )
                     _proposal_focus_ref = self._record_cycle_stage(
                         "proposal_durable_focus_admission",
-                        "admitted" if _proposal_focus_admitted else "rejected",
+                        _proposal_admission_status,
                         inputs={"selected_proposal_commit_ref": _commit_evidence_ref},
-                        output={"admitted": _proposal_focus_admitted},
+                        output=_proposal_admission_output,
                     )
                     if isinstance(_selected_proposal, dict) and not _proposal_focus_admitted:
                         _winner = dict(_winner)

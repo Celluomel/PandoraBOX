@@ -478,6 +478,26 @@ def test_rejected_thought_proposal_cannot_become_durable_workspace_focus():
     )
 
 
+def test_proposal_admission_receipt_is_not_applicable_for_ordinary_winner():
+    status, output = InternalThoughtLoop._proposal_focus_admission_evidence(
+        {"type": "goal", "id": "existing-goal", "source_data": {}}, True,
+    )
+
+    assert status == "not_applicable"
+    assert output == {"applicable": False}
+
+
+def test_proposal_admission_receipt_reports_actual_proposal_result():
+    winner = {"type": "thought", "source_data": {"_goal_proposal": {"concept": "x"}}}
+
+    assert InternalThoughtLoop._proposal_focus_admission_evidence(winner, True) == (
+        "admitted", {"applicable": True, "admitted": True},
+    )
+    assert InternalThoughtLoop._proposal_focus_admission_evidence(winner, False) == (
+        "rejected", {"applicable": True, "admitted": False},
+    )
+
+
 def test_post_arbitration_focus_and_existing_plan_reach_shared_workspace_state():
     organism = SimpleNamespace(workspace=GlobalWorkspace())
     planner = SimpleNamespace(status=lambda: {"plans": [{

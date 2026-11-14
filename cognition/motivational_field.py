@@ -182,8 +182,8 @@ class FieldState:
     last_need_cycle:    int             = 0
     drive_vector:       Dict[str, float] = field(default_factory=dict)
     need_log:           List[Dict]      = field(default_factory=list)
-    # Track skill practice counts to detect stagnation
-    skill_practice_snapshot: Dict[str, int] = field(default_factory=dict)
+    # Track verified skill outcomes; ordinary exposure is not proof of skill practice.
+    skill_verified_practice_snapshot: Dict[str, int] = field(default_factory=dict)
     skill_snapshot_cycle:    int             = 0
     # Track last outreach cycle for expression window
     last_outreach_cycle:     int             = 0
@@ -562,8 +562,9 @@ class MotivationalField:
         self, slow_cycle: int
     ) -> List[MotivationalNeed]:
         """
-        Detects when a skill's practice_count has not increased between
-        two scan windows — the skill is not being exercised or deepened.
+        Detects when verified skill outcomes have not increased between
+        scan windows. Conversation exposure alone is not evidence that a
+        competency was exercised or assessed.
         """
         needs = []
         try:
@@ -573,17 +574,17 @@ class MotivationalField:
 
             # Take a snapshot on first scan
             with self._lock:
-                prev_snapshot   = dict(self._state.skill_practice_snapshot)
+                prev_snapshot   = dict(self._state.skill_verified_practice_snapshot)
                 snapshot_cycle  = self._state.skill_snapshot_cycle
 
             if not prev_snapshot:
                 # First run — just take snapshot
                 new_snap = {
-                    name: getattr(sk, 'practice_count', 0)
+                    name: getattr(sk, 'verified_practices', 0)
                     for name, sk in sr._skills.items()
                 }
                 with self._lock:
-                    self._state.skill_practice_snapshot = new_snap
+                    self._state.skill_verified_practice_snapshot = new_snap
                     self._state.skill_snapshot_cycle    = slow_cycle
                 return needs
 
@@ -592,8 +593,12 @@ class MotivationalField:
                 return needs
 
             for name, skill in sr._skills.items():
-                prev_count = prev_snapshot.get(name, 0)
-                curr_count = getattr(skill, 'practice_count', 0)
+                curr_count = int(getattr(skill, 'verified_practices', 0) or 0)
+                # A seeded, imported, or merely discussed topic has no
+                # evidence of demonstrated competence to become "stagnant".
+                if curr_count <= 0:
+                    continue
+                prev_count = prev_snapshot.get(name, curr_count)
                 depth      = getattr(skill, 'depth', 0)
 
                 if curr_count == prev_count and depth < 2:
@@ -614,11 +619,11 @@ class MotivationalField:
 
             # Refresh snapshot
             new_snap = {
-                name: getattr(sk, 'practice_count', 0)
+                name: getattr(sk, 'verified_practices', 0)
                 for name, sk in sr._skills.items()
             }
             with self._lock:
-                self._state.skill_practice_snapshot = new_snap
+                self._state.skill_verified_practice_snapshot = new_snap
                 self._state.skill_snapshot_cycle    = slow_cycle
 
         except Exception as e:
@@ -963,10 +968,12 @@ class MotivationalField:
                         "last_need_cycle":         self._state.last_need_cycle,
                         "drive_vector":            dict(self.drive_vector),
                         "need_log":                list(self._state.need_log[-MAX_NEED_LOG:]),
-                        "skill_practice_snapshot": dict(self._state.skill_practice_snapshot),
+                        "skill_verified_practice_snapshot": dict(
+                            self._state.skill_verified_practice_snapshot
+                        ),
                         "skill_snapshot_cycle":    self._state.skill_snapshot_cycle,
                         "last_outreach_cycle":     self._state.last_outreach_cycle,
-                        "_meta": {"version": "v51", "ts": time.time()},
+                        "_meta": {"version": "v52", "ts": time.time()},
                     }
                 temp_path = self._path.with_name(
                     f"{self._path.name}.{threading.get_ident()}.tmp"
@@ -994,7 +1001,11 @@ class MotivationalField:
                 self._state.last_field_cycle        = data.get("last_field_cycle", 0)
                 self._state.last_need_cycle         = data.get("last_need_cycle", 0)
                 self._state.need_log                = data.get("need_log", [])
-                self._state.skill_practice_snapshot = data.get("skill_practice_snapshot", {})
+                # Legacy snapshots counted unverified exposure and are not
+                # comparable to verified outcomes. Start a fresh baseline.
+                self._state.skill_verified_practice_snapshot = data.get(
+                    "skill_verified_practice_snapshot", {}
+                )
                 self._state.skill_snapshot_cycle    = data.get("skill_snapshot_cycle", 0)
                 self._state.last_outreach_cycle     = data.get("last_outreach_cycle", 0)
             loaded_vector = data.get("drive_vector", {})

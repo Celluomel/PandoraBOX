@@ -120,3 +120,42 @@ def test_motivational_field_save_is_atomic_and_serialized(tmp_path):
     assert failures == []
     assert persisted["drive_vector"]["epistemic"] in {0.2, 0.8}
     assert list(tmp_path.glob("*.tmp")) == []
+
+
+def _skill_stagnation_field(skill):
+    field = MotivationalField.__new__(MotivationalField)
+    field._lock = threading.Lock()
+    field._state = FieldState()
+    field._organism = SimpleNamespace(skill_registry=SimpleNamespace(_skills={
+        skill.domain: skill,
+    }))
+    return field
+
+
+def test_unverified_skill_exposures_do_not_create_stagnation_need():
+    skill = SimpleNamespace(
+        domain="quantum_mechanics_analogy", practice_count=12,
+        verified_practices=0, depth=1,
+    )
+    field = _skill_stagnation_field(skill)
+
+    assert field._detect_skill_stagnation(1) == []  # baseline
+    assert field._detect_skill_stagnation(31) == []
+    assert field._state.skill_verified_practice_snapshot == {
+        "quantum_mechanics_analogy": 0,
+    }
+
+
+def test_verified_skill_can_create_stagnation_need_after_baseline():
+    skill = SimpleNamespace(
+        domain="technical_reasoning", practice_count=12,
+        verified_practices=2, depth=1,
+    )
+    field = _skill_stagnation_field(skill)
+
+    assert field._detect_skill_stagnation(1) == []  # baseline
+    needs = field._detect_skill_stagnation(31)
+
+    assert len(needs) == 1
+    assert needs[0].need_type == "skill_stagnation"
+    assert needs[0].target == "technical_reasoning"
