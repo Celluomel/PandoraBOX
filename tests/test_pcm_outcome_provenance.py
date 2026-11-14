@@ -27,11 +27,13 @@ class PCMOutcomeProvenanceTests(unittest.TestCase):
         model.record_observed_transition(
             "social", [0.5] * 5, [0.4, 0.5, 0.5, 0.5, 0.5],
             outcome="positive",
+            turn_id="turn-a",
         )
 
         record = model._records[0]
         self.assertEqual(record.outcome, "unrated")
         self.assertEqual(record.outcome_source, "unattributed")
+        self.assertEqual(record.turn_id, "turn-a")
 
     def test_validated_action_probe_keeps_its_observed_outcome(self):
         model = self._model()
@@ -44,6 +46,23 @@ class PCMOutcomeProvenanceTests(unittest.TestCase):
         record = model._records[0]
         self.assertEqual(record.outcome, "positive")
         self.assertEqual(record.outcome_source, "validated_action_probe")
+
+    def test_record_outcome_persists_turn_correlation_and_reports_save(self):
+        model = self._model()
+        model._pending = ("technical", [0.8] * 5, 3)
+
+        persisted = model.record_outcome(
+            [0.7, 0.75, 0.8, 0.8, 0.7],
+            response_text="turn-correlated response",
+            turn_id="turn-pcm-42",
+        )
+
+        self.assertTrue(persisted)
+        self.assertEqual(model._records[0].turn_id, "turn-pcm-42")
+        self.assertEqual(
+            model._records[0].response_hash,
+            model._response_hash("turn-correlated response"),
+        )
 
     def test_failed_persistence_rolls_back_transition_and_reports_failure(self):
         model = self._model()
@@ -65,6 +84,7 @@ class PCMOutcomeProvenanceTests(unittest.TestCase):
 
         class PCM:
             _pending = ("technical", [0.8] * 5, 2)
+            _response_hash = staticmethod(PredictiveConsequenceModel._response_hash)
 
             def read_state(self):
                 events.append("read_after")
@@ -75,6 +95,7 @@ class PCMOutcomeProvenanceTests(unittest.TestCase):
                 self.state_after = list(state_after)
                 self.kwargs = kwargs
                 self._pending = None
+                return True
 
         pcm = PCM()
         economy = Mock()
@@ -110,12 +131,13 @@ class PCMOutcomeProvenanceTests(unittest.TestCase):
         self.addCleanup(temp_dir.cleanup)
         organism._data_dir = temp_dir.name
 
-        CognitiveOrganism._post_interaction(
+        receipt = CognitiveOrganism._post_interaction(
             organism,
             user_input="Explain a technical audit result.",
             response="A concise explanation.",
             cycle_data={"emo_values": {}},
             decision=None,
+            turn_id="turn-pcm-test",
         )
 
         self.assertLess(events.index("energy_drain"), events.index("read_after"))
@@ -123,6 +145,9 @@ class PCMOutcomeProvenanceTests(unittest.TestCase):
         self.assertLess(events.index("economy_llm"), events.index("read_after"))
         self.assertEqual(pcm.state_after, [0.7, 0.75, 0.7, 0.6, 0.4])
         self.assertEqual(pcm.kwargs["outcome"], "unrated")
+        self.assertEqual(pcm.kwargs["turn_id"], "turn-pcm-test")
+        self.assertEqual(receipt["pcm_outcome"]["status"], "persisted")
+        self.assertEqual(receipt["pcm_outcome"]["turn_id"], "turn-pcm-test")
 
     def test_explicit_rating_attaches_to_exact_response_and_attention_snapshot_once(self):
         model = self._model()

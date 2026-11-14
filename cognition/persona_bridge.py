@@ -5088,6 +5088,13 @@ Memory honesty — two distinct cases:
                 value for value in (
                     str(predictive.get("pcm_advisory") or "").strip(),
                     str(predictive.get("wsdm_narrative") or "").strip(),
+                    (
+                        "[Cognitive outcome timing] The consequence model above is prospective. "
+                        "The observed post-turn state is captured only after response generation. "
+                        "Do not claim that this current response already changed a measured state, "
+                        "and do not invent before/after values. If asked for the current turn's "
+                        "observed outcome, say it is not yet available at response-generation time."
+                    ),
                 ) if value
             )
         except Exception as exc:
@@ -5144,6 +5151,13 @@ Memory honesty — two distinct cases:
                         {"emo_values": emo_dict},
                         _decision,
                         human_interaction=False,
+                        turn_id=audit_turn_id,
+                    )
+                    self._record_turn_stage(
+                        "pcm_post_turn_outcome",
+                        str((_post_receipt.get("pcm_outcome") or {}).get("status", "unavailable")),
+                        output=_post_receipt.get("pcm_outcome"),
+                        turn_id=audit_turn_id,
                     )
                     _profile_receipt = (
                         _post_receipt.get("world_model_profile_update", {})
@@ -5338,6 +5352,13 @@ Memory honesty — two distinct cases:
                     # Pass real emo_dict so meta_cognition evaluation is grounded
                     _post_receipt = organism._post_interaction(
                         user_input, response, {"emo_values": emo_dict}, _decision,
+                        turn_id=audit_turn_id,
+                    )
+                    self._record_turn_stage(
+                        "pcm_post_turn_outcome",
+                        str((_post_receipt.get("pcm_outcome") or {}).get("status", "unavailable")),
+                        output=_post_receipt.get("pcm_outcome"),
+                        turn_id=audit_turn_id,
                     )
                     _profile_receipt = (
                         _post_receipt.get("world_model_profile_update", {})

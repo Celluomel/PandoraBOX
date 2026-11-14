@@ -415,6 +415,7 @@ class CognitiveOrganism:
         self._post_interaction(
             user_input, response, cycle_data, decision,
             attention_feedback_context=attention_feedback_context,
+            turn_id=str(kwargs.get("turn_id") or ""),
         )
 
         return response
@@ -1306,6 +1307,7 @@ class CognitiveOrganism:
         decision: Any,
         human_interaction: bool = True,
         attention_feedback_context: Optional[Dict[str, Any]] = None,
+        turn_id: str = "",
     ) -> None:
         """Post-response processing: evaluate, learn, update state."""
         self._last_interaction_ts = time.time()
@@ -1781,14 +1783,21 @@ class CognitiveOrganism:
         # Capturing earlier (before energy/economy accounting) paired the turn
         # with its pre-cost state, yielding identical before/after vectors and
         # teaching the model a zero-delta consequence for every response.
+        pcm_outcome_receipt = {
+            "status": "not_recorded",
+            "turn_id": str(turn_id or ""),
+        }
         try:
             pcm = getattr(getattr(self, '_loop', None), '_consequence_model', None)
             if pcm and pcm._pending is not None:
-                pcm.record_outcome(
-                    pcm.read_state(),
+                action_type, state_before, _interaction_n = pcm._pending
+                state_after = pcm.read_state()
+                persisted = pcm.record_outcome(
+                    state_after,
                     outcome="unrated",
                     outcome_source="unattributed",
                     response_text=response or "",
+                    turn_id=turn_id,
                     attention_weights_at_turn=(
                         attention_feedback_context.get("weights")
                         if attention_feedback_context else None
@@ -1798,10 +1807,29 @@ class CognitiveOrganism:
                         if attention_feedback_context else ""
                     ),
                 )
+                pcm_outcome_receipt = {
+                    "status": "persisted" if persisted else "persistence_failed",
+                    "turn_id": str(turn_id or ""),
+                    "action_type": str(action_type),
+                    "state_before": list(state_before),
+                    "state_after": list(state_after),
+                    "delta": [round(float(after) - float(before), 4)
+                              for before, after in zip(state_before, state_after)],
+                    "response_hash": pcm._response_hash(response or ""),
+                }
+            elif pcm is None:
+                pcm_outcome_receipt["status"] = "unavailable"
+            else:
+                pcm_outcome_receipt["status"] = "no_pending_transition"
         except Exception as exc:
+            pcm_outcome_receipt["status"] = "capture_failed"
+            pcm_outcome_receipt["error_type"] = type(exc).__name__
             logger.warning("[CognitiveOrganism] PCM post-turn outcome capture failed: %s", exc)
 
-        return {"world_model_profile_update": world_profile_update}
+        return {
+            "world_model_profile_update": world_profile_update,
+            "pcm_outcome": pcm_outcome_receipt,
+        }
 
     def _read_emotion_state(self) -> str:
         """Return a simple emotion label for predictive_mind / narrative_identity."""

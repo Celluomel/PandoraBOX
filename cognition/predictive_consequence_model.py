@@ -179,6 +179,7 @@ class ConsequenceRecord:
     recorded_at:  float         = field(default_factory=time.time)
     interaction_n: int          = 0
     response_hash: str = ""
+    turn_id: str = ""
     attention_weights_at_turn: Optional[Dict[str, float]] = None
     attention_context_key_at_turn: str = ""
     attention_feedback_claimed: bool = False
@@ -259,20 +260,22 @@ class PredictiveConsequenceModel:
         response_text: str = "",
         attention_weights_at_turn: Optional[Dict[str, float]] = None,
         attention_context_key_at_turn: str = "",
-    ) -> None:
+        turn_id: str = "",
+    ) -> bool:
         """Record the state after action completion and store the record."""
         if self._pending is None:
-            return
+            return False
         action_type, state_before, interaction_n = self._pending
         self._pending = None
 
-        self.record_observed_transition(
+        return self.record_observed_transition(
             action_type, state_before, state_after,
             interaction_n=interaction_n, outcome=outcome,
             outcome_source=outcome_source,
             response_text=response_text,
             attention_weights_at_turn=attention_weights_at_turn,
             attention_context_key_at_turn=attention_context_key_at_turn,
+            turn_id=turn_id,
             resolve_calibration=True,
         )
 
@@ -288,6 +291,7 @@ class PredictiveConsequenceModel:
         response_text: str = "",
         attention_weights_at_turn: Optional[Dict[str, float]] = None,
         attention_context_key_at_turn: str = "",
+        turn_id: str = "",
         resolve_calibration: bool = False,
     ) -> bool:
         """Persist one explicit transition without using shared pending state.
@@ -320,6 +324,7 @@ class PredictiveConsequenceModel:
                 hashlib.sha256(response_text.strip().encode("utf-8")).hexdigest()
                 if response_text and response_text.strip() else ""
             ),
+            turn_id=str(turn_id or ""),
             attention_weights_at_turn=(
                 {str(k): float(v) for k, v in attention_weights_at_turn.items()}
                 if attention_weights_at_turn else None
