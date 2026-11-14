@@ -3,6 +3,7 @@ import threading
 from types import SimpleNamespace
 
 from core.module_tick_log import ModuleTickLog
+from core.cognitive_governor import CognitiveGovernor
 from core.internal_loop import InternalThoughtLoop, _executive_arbitration_skip_reason
 from cognition.global_workspace import GlobalWorkspace
 from cognition.thought_thread_engine import ThoughtThreadStatus
@@ -678,6 +679,17 @@ def test_phase2_governor_skip_receipt_remains_safe_without_status_api():
     assert loop._phase2_governor_skip_metrics("Phase2ThreadIdentity") == {
         "governor_subsystem": "Phase2ThreadIdentity",
     }
+
+
+def test_resolved_thread_identity_linking_remains_eligible_in_structured_mode():
+    governor = CognitiveGovernor()
+    governor.begin_cycle(total_pressure=0.2453, goal_count=15, cycle_number=11184)
+
+    assert governor.mode == CognitiveGovernor.MODE_STRUCTURED
+    assert governor.may_run("Phase2ThreadIdentity") is True
+    # Operations that can generate goals or unconstrained narrative remain gated.
+    assert governor.may_run("Phase2ThoughtEval") is False
+    assert governor.may_run("Phase2Narrative") is False
 
 
 def test_cycle_receipt_uses_explicit_no_action_reason_when_executor_returns_none():

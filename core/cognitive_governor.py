@@ -102,7 +102,10 @@ SUBSYSTEM_TIERS: Dict[str, str] = {
     "SemanticGraphCleaner": TIER_ENRICHMENT,
     "BeliefBootstrapper":   TIER_ENRICHMENT,
     "Phase2Narrative":      TIER_ENRICHMENT,
-    "Phase2ThreadIdentity": TIER_ENRICHMENT,
+    # Thread→identity linking only consumes already-resolved threads. It is
+    # maintenance of existing identity state, not exploratory goal generation;
+    # keep it eligible in structured mode like IdentityBatch.
+    "Phase2ThreadIdentity": TIER_CORE,
     "Phase2ThoughtEval":    TIER_ENRICHMENT,
 
     # Goal generation — blocked by pressure ceiling
