@@ -3,7 +3,7 @@ import threading
 from types import SimpleNamespace
 
 from core.module_tick_log import ModuleTickLog
-from core.internal_loop import InternalThoughtLoop
+from core.internal_loop import InternalThoughtLoop, _executive_arbitration_skip_reason
 from cognition.global_workspace import GlobalWorkspace
 from cognition.thought_thread_engine import ThoughtThreadStatus
 
@@ -38,6 +38,37 @@ def test_cycle_receipt_links_outputs_to_actual_consumer_inputs_without_text():
     assert receipt["stages"][1]["inputs"]["competition_output_ref"] == winner_ref
     assert "private user topic" not in repr(receipt)
     assert receipt["stages"][0]["output_summary"] == {"kind": "mapping", "field_count": 1}
+
+
+def test_executive_arbitration_skip_reason_distinguishes_non_goal_winner():
+    result = {
+        "winner": {"type": "thought", "name": "internal reflection"},
+        "competition": {"all_candidates": [
+            {"type": "thought", "score": 0.8},
+            {"type": "thought", "score": 0.7},
+        ]},
+    }
+
+    assert _executive_arbitration_skip_reason(result, object()) == "no_goal_candidates"
+
+
+def test_executive_arbitration_skip_reason_identifies_missing_predictor():
+    result = {
+        "winner": {"type": "goal", "name": "audit memory recall"},
+        "competition": {"all_candidates": [{"type": "goal", "score": 0.8}]},
+    }
+
+    assert _executive_arbitration_skip_reason(result, None) == "prediction_model_unavailable"
+
+
+def test_executive_arbitration_skip_reason_does_not_claim_a_result_when_prediction_is_empty():
+    result = {
+        "winner": {"type": "goal", "name": "audit memory recall"},
+        "competition": {"all_candidates": [{"type": "goal", "score": 0.8}]},
+    }
+    predictor = SimpleNamespace(read_state=lambda: None)
+
+    assert _executive_arbitration_skip_reason(result, predictor) == "no_predictable_candidate"
 
 
 def test_cycle_receipts_are_bounded_and_failed_cycles_are_retained():

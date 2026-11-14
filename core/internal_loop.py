@@ -61,6 +61,33 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+def _executive_arbitration_skip_reason(
+    competition_result: Any, predictive_model: Any,
+) -> str:
+    """Explain why prospective arbitration cannot produce a decision.
+
+    Keep this aligned with the public preconditions in
+    ``cognition.executive_arbitration.arbitrate``. The final fallback means
+    goal candidates existed, but arbitration returned no prediction; that is
+    distinct from successfully confirming the workspace winner.
+    """
+    if not isinstance(competition_result, dict):
+        return "no_competition_result"
+    competition = competition_result.get("competition")
+    candidates = competition.get("all_candidates") if isinstance(competition, dict) else None
+    if not candidates or not competition_result.get("winner"):
+        return "no_candidates"
+    if not any(
+        isinstance(candidate, dict) and candidate.get("type") == "goal"
+        for candidate in candidates
+    ):
+        return "no_goal_candidates"
+    if predictive_model is None or not callable(getattr(predictive_model, "read_state", None)):
+        return "prediction_model_unavailable"
+    return "no_predictable_candidate"
+
+
 _TICK_PROBES = {
     "_tte": ("thought_thread_engine", ("step",)),
     "_cde": ("cognitive_dissonance_engine", ("step",)),
@@ -1672,7 +1699,7 @@ class InternalThoughtLoop:
                 _winner = _cycle_result.get('winner')
                 if _winner:
                     _arbitration_status = "no_candidate"
-                    _arbitration_output = _winner
+                    _arbitration_output = None
                     # Phase 4.1/4.2: Executive Arbitration — re-score top
                     # candidates via prospective prediction; override the
                     # raw-score winner if a runner-up predicts a
@@ -1728,13 +1755,19 @@ class InternalThoughtLoop:
                         # making it look like arbitration wasn't running at
                         # all. It now logs (and counts) every run.
                         if _arb is None:
-                            _arbitration_status = "no_arbitration_result"
+                            _arbitration_skip_reason = _executive_arbitration_skip_reason(
+                                _raw_competition, self._consequence_model,
+                            )
+                            _arbitration_status = f"skipped_{_arbitration_skip_reason}"
                             self._arbitration_skipped += 1
                             logger.debug(
-                                "[InternalLoop] ⚖️ Executive arbitration: "
-                                "skipped (no candidates / no PCM data / "
-                                "winner not goal-type)"
+                                "[InternalLoop] ⚖️ Executive arbitration skipped: %s",
+                                _arbitration_skip_reason,
                             )
+                            _arbitration_output = {
+                                "result": None,
+                                "skip_reason": _arbitration_skip_reason,
+                            }
                         else:
                             _arbitration_status = "completed"
                             self._arbitration_runs += 1
