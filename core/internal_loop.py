@@ -605,20 +605,10 @@ class InternalThoughtLoop:
                 bound_method = getattr(module, method_name, None)
                 if not callable(bound_method):
                     continue
-                try:
-                    return_annotation = inspect.signature(bound_method).return_annotation
-                    side_effect_only = (
-                        return_annotation is None
-                        or return_annotation is type(None)
-                        or str(return_annotation) in {"None", "NoneType"}
-                    )
-                except (TypeError, ValueError):
-                    side_effect_only = False
-
                 @wraps(bound_method)
                 def observed(*args, __bound=bound_method, __module=module_name,
                              __module_instance=module,
-                             __method=method_name, __side_effect_only=side_effect_only,
+                             __method=method_name,
                              **kwargs):
                     started = time.perf_counter()
                     try:
@@ -661,9 +651,6 @@ class InternalThoughtLoop:
                         __module, __method, started_at=started,
                         duration_ms=duration_ms,
                         output=observed_output,
-                        side_effect_only=(
-                            __side_effect_only and observed_output is None
-                        ),
                     )
                     try:
                         self._record_cycle_stage(
@@ -671,9 +658,6 @@ class InternalThoughtLoop:
                             inputs=self._cycle_input_evidence(args, kwargs),
                             output=observed_output,
                             metrics={"duration_ms": round(duration_ms, 2)},
-                            side_effect_only=(
-                                __side_effect_only and observed_output is None
-                            ),
                         )
                     except Exception:
                         pass
@@ -743,7 +727,9 @@ class InternalThoughtLoop:
                 quality = entry.get("last_output", {}).get("quality")
                 entry["state"] = (
                     "degraded" if quality == "invalid_numeric" else
-                    "output_unverified" if quality in {"empty", "shape_only", "unknown"} else
+                    "output_unverified" if quality in {
+                        "empty", "no_return_unverified", "shape_only", "unknown"
+                    } else
                     "healthy"
                 )
         return snapshot
@@ -1012,7 +998,6 @@ class InternalThoughtLoop:
     def _record_cycle_stage(
         self, stage: str, status: str, *, inputs: dict[str, Any] | None = None,
         output: Any = None, metrics: dict[str, Any] | None = None,
-        side_effect_only: bool = False,
     ) -> str | None:
         """Record a stage and explicit consumer references in the active slow cycle."""
         lock = getattr(self, "_cycle_evidence_lock", None)
@@ -1033,7 +1018,7 @@ class InternalThoughtLoop:
                 "output_ref": output_ref,
                 "output_summary": (
                     self._evidence_summary(output) if output is not None else
-                    {"kind": "none", "quality": "side_effect_only" if side_effect_only else "empty"}
+                    {"kind": "none", "quality": "no_return_unverified"}
                 ),
             }
             if metrics:

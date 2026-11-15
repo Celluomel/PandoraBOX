@@ -9,7 +9,7 @@ import traceback
 from typing import Any
 
 
-def summarize_output(value: Any, *, side_effect_only: bool = False) -> dict[str, Any]:
+def summarize_output(value: Any) -> dict[str, Any]:
     """Describe result shape and numeric validity without retaining prose."""
     result: dict[str, Any] = {"type": type(value).__name__}
     if value is None or isinstance(value, (bool, int, float)):
@@ -23,8 +23,7 @@ def summarize_output(value: Any, *, side_effect_only: bool = False) -> dict[str,
             if result["finite"]:
                 result["value"] = value
         result["quality"] = (
-            "side_effect_only" if value is None and side_effect_only else
-            "empty" if value is None else
+            "no_return_unverified" if value is None else
             "invalid_numeric" if result.get("finite") is False else
             "present"
         )
@@ -77,7 +76,7 @@ def _state_for_output(output: dict[str, Any] | None) -> str:
     quality = str((output or {}).get("quality", "unknown"))
     if quality == "invalid_numeric":
         return "degraded"
-    if quality in {"empty", "shape_only", "unknown"}:
+    if quality in {"empty", "no_return_unverified", "shape_only", "unknown"}:
         return "output_unverified"
     return "healthy"
 
@@ -119,8 +118,7 @@ class ModuleTickLog:
             )
 
     def record(self, name: str, method: str, *, started_at: float,
-               duration_ms: float, output: Any = None, error: BaseException | None = None,
-               side_effect_only: bool = False) -> None:
+               duration_ms: float, output: Any = None, error: BaseException | None = None) -> None:
         now = time.time()
         with self._lock:
             item = self._modules.setdefault(name, {
@@ -149,7 +147,7 @@ class ModuleTickLog:
             if error is None:
                 item["last_status"] = "completed"
                 item["last_success_at"] = now
-                item["last_output"] = summarize_output(output, side_effect_only=side_effect_only)
+                item["last_output"] = summarize_output(output)
                 item["state"] = _state_for_output(item["last_output"])
             else:
                 item["error_count"] += 1

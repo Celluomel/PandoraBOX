@@ -224,7 +224,7 @@ def test_module_probe_emits_per_cycle_execution_receipt():
     assert stage["output_summary"]["field_count"] == 1
 
 
-def test_module_probe_records_hashed_inputs_and_marks_side_effect_only_output():
+def test_module_probe_records_hashed_inputs_without_claiming_unobserved_effects():
     loop = make_loop()
     loop._module_tick_log = ModuleTickLog()
 
@@ -247,7 +247,7 @@ def test_module_probe_records_hashed_inputs_and_marks_side_effect_only_output():
     stage = loop.cycle_evidence_snapshot()["cycles"][0]["stages"][0]
     assert stage["inputs"]["args"][0]["ref"]
     assert stage["inputs"]["args"][0]["summary"]["field_count"] == 1
-    assert stage["output_summary"] == {"kind": "none", "quality": "side_effect_only"}
+    assert stage["output_summary"] == {"kind": "none", "quality": "no_return_unverified"}
     assert "do not retain" not in repr(stage)
 
 

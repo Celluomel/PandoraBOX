@@ -18,15 +18,15 @@ class ModuleTickLogTests(unittest.TestCase):
         self.assertEqual(summary["non_finite_fields"], ["bad"])
         self.assertNotIn("private generated text", repr(summary))
 
-    def test_declared_side_effect_only_none_is_not_reported_as_empty_output(self):
+    def test_none_output_is_unverified_not_a_claimed_side_effect(self):
         ticks = ModuleTickLog()
         ticks.register("side_effect", initialized=True)
-        ticks.record("side_effect", "tick", started_at=1.0, duration_ms=1.0,
-                     output=None, side_effect_only=True)
+        ticks.record("side_effect", "tick", started_at=1.0, duration_ms=1.0, output=None)
 
         state = ticks.snapshot()["side_effect"]
-        self.assertEqual(state["last_output"]["quality"], "side_effect_only")
-        self.assertEqual(ticks.analysis()["last_output_qualities"], {"side_effect_only": 1})
+        self.assertEqual(state["last_output"]["quality"], "no_return_unverified")
+        self.assertEqual(state["state"], "output_unverified")
+        self.assertEqual(ticks.analysis()["last_output_qualities"], {"no_return_unverified": 1})
 
     def test_empty_and_uninspectable_outputs_are_not_marked_healthy(self):
         ticks = ModuleTickLog()
@@ -133,7 +133,7 @@ class ModuleTickLogTests(unittest.TestCase):
         self.assertFalse(tick["last_output"]["numeric_fields"]["score"]["finite"])
         self.assertEqual(loop.module_tick_analysis()["executed_module_count"], 1)
 
-    def test_internal_loop_probe_uses_declared_none_return_contract(self):
+    def test_internal_loop_probe_does_not_infer_side_effect_from_none_annotation(self):
         class SideEffectModule:
             def tick(self) -> None:
                 self.did_run = True
@@ -149,7 +149,9 @@ class ModuleTickLogTests(unittest.TestCase):
 
         output = loop.module_tick_snapshot()["cognitive_resource_economy"]["last_output"]
         self.assertTrue(module.did_run)
-        self.assertEqual(output["quality"], "side_effect_only")
+        self.assertEqual(output["quality"], "no_return_unverified")
+        self.assertEqual(loop.module_tick_snapshot()["cognitive_resource_economy"]["state"],
+                         "output_unverified")
 
     def test_internal_loop_probe_uses_structured_no_action_receipt(self):
         class GoalActionModule:
