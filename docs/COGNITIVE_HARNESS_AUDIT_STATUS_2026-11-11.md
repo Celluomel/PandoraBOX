@@ -34,6 +34,16 @@
 
 **Progression d’audit inchangée : 2/10 pistes closes = 20 %.** Ce changement améliore la capacité à diagnostiquer et corriger les erreurs; il ne clôt aucune piste, faute de validation live.
 
+### Reprise avec Lumina active — validation d’une étape de plan
+
+**Preuve live, port UI/API 8080 :** `cognitive-execution` répond `available=true`, `loop_running=true`, cycle lent `11652`; le dernier cycle s’est terminé en `completed` en 1,072 ms. Le registre signalait 38/43 modules observés, 284 ticks, 45 skips explicites et zéro erreur instrumentée sur ce relevé. Cette absence d’erreurs ne prouve pas la qualité sémantique.
+
+**Étape cognitive effectivement close :** le plan `knowledge integration` est passé de 1/4 à **2/4**. Deux reçus sont persistés : `memory_recall` au cycle 11649 (`act_d18b4bbaa3ab4727a9e06d8fc1ec133a`) puis `self_question` au cycle 11652 (`act_4c4757dd90254ff5baa970b87e97a450`). Le reçu async de `goal_action_executor.self_question` indique `success=true`, `goal_state_persisted=true`, `thought_stream_recorded=true`, `workspace_broadcast=true`; `dominant_plan` sélectionne correctement `knowledge integration` selon `latest_terminal_execution_receipt`. L’action suivante est maintenant `bisociative_hypothesis`, en attente.
+
+**Limite de qualité encore ouverte :** le texte résumé de la réponse `self_question` s’arrête au milieu d’une phrase, mais la trace expose un résumé et non le texte intégral; il est donc impossible de conclure ici si seule l’interface tronque l’extrait ou si la génération elle-même est incomplète. Les reçus indiquent aussi `effect_measured=false` et `success_criteria_status=unverified`. La progression 2/4 est une étape d’exécution persistée, pas une preuve que l’insight est valide ni que l’objectif est atteint. La prochaine vérification doit comparer le texte complet produit, son enregistrement, son admission workspace et l’effet sur l’étape suivante.
+
+**Clôture de plan :** le sous-objectif « exécuter et attribuer un reçu GoalActionExecutor à un plan actif, puis persister sa progression » est validé live pour ce scénario. La piste d’audit 7 reste partielle jusqu’à mesurer la qualité et l’effet cognitif; le score global reste **2/10 = 20 %**.
+
 ### Relevé du 14 novembre — profil utilisateur, chercheur cognitif synthétique et réglage Web Search
 
 **Mesure globale inchangée : 2/10 pistes closes = 20 %.** Les correctifs locaux ci-dessous n’ont pas encore reçu de vérification live après chargement. La piste profil reste partielle tant que la persistance et la réinjection ne sont pas observées dans un nouveau processus; la piste 6 reste partielle tant que le chercheur cognitif ne relie pas ses diagnostics à des mesures valides et à des résultats d’essai.
