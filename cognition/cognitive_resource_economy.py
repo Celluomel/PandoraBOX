@@ -149,7 +149,7 @@ class CognitiveResourceEconomy:
 
     def __init__(self, path: str = SAVE_PATH) -> None:
         self._path             = Path(path)
-        self._lock             = threading.Lock()
+        self._lock             = threading.RLock()
         self.cognitive_energy  = 1.0
         self.social_energy     = 1.0
         self.attention         = 1.0
@@ -167,14 +167,19 @@ class CognitiveResourceEconomy:
 
     # ── Tick — call every slow cycle ──────────────────────────────────────────
 
-    def tick(self, elapsed_secs: Optional[float] = None) -> None:
-        """Apply time-based recovery.  Called from InternalThoughtLoop."""
+    def tick(self, elapsed_secs: Optional[float] = None) -> dict[str, Any]:
+        """Apply recovery and return evidence for the state/persistence effect."""
         now = time.time()
         if elapsed_secs is None:
             elapsed_secs = now - self._last_tick_time
-        self._last_tick_time = now
-
+        elapsed_secs = max(0.0, float(elapsed_secs))
         with self._lock:
+            before = {
+                "cognitive_energy": float(self.cognitive_energy),
+                "social_energy": float(self.social_energy),
+                "attention": float(self.attention),
+            }
+            self._last_tick_time = now
             # cognitive_energy recovery
             cog_rate = COGNITIVE_RECOVERY_RATE
             # v57: CrossLayerFeedback writes _recovery_multiplier based on
@@ -199,9 +204,25 @@ class CognitiveResourceEconomy:
             # (handled by record_goal_closed)
             # but floor it from going negative via float drift
             self.attention = max(0.0, min(1.0, self.attention))
-
-        self._snapshot()
-        self._save()
+            self._snapshot()
+            persisted = self._save()
+            after = {
+                "cognitive_energy": float(self.cognitive_energy),
+                "social_energy": float(self.social_energy),
+                "attention": float(self.attention),
+            }
+        return {
+            "outcome_status": "completed" if persisted else "persistence_failed",
+            "effect_status": "state_updated",
+            "persisted": bool(persisted),
+            "elapsed_seconds": round(elapsed_secs, 3),
+            "before": {key: round(value, 6) for key, value in before.items()},
+            "after": {key: round(value, 6) for key, value in after.items()},
+            "delta": {
+                key: round(after[key] - before[key], 6) for key in after
+            },
+            "saved_at": now,
+        }
 
     # ── Depletion events ──────────────────────────────────────────────────────
 
@@ -309,7 +330,9 @@ class CognitiveResourceEconomy:
         if len(self._history) > 200:
             self._history = self._history[-200:]
 
-    def _save(self) -> None:
+    def _save(self) -> bool:
+        """Atomically persist resource state and confirm the written values."""
+        tmp_path = self._path.with_suffix(self._path.suffix + ".tmp")
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             with self._lock:
@@ -321,10 +344,20 @@ class CognitiveResourceEconomy:
                     "history":          self._history[-50:],
                     "_meta":            {"version": "v50", "ts": time.time()},
                 }
-            with open(self._path, "w") as f:
-                json.dump(data, f, indent=2)
+            tmp_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            tmp_path.replace(self._path)
+            persisted = json.loads(self._path.read_text(encoding="utf-8"))
+            for key in ("cognitive_energy", "social_energy", "attention", "last_tick"):
+                if float(persisted[key]) != float(data[key]):
+                    return False
+            return True
         except Exception as e:
-            logger.debug(f"[ResourceEconomy] Save failed: {e}")
+            logger.warning("[ResourceEconomy] Save failed: %s", type(e).__name__)
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return False
 
     def _load(self) -> None:
         try:
