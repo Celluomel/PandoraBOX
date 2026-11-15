@@ -104,6 +104,9 @@ class CognitiveDissonanceEngine:
             "detected_event_count": 0,
             "meta_threads_spawned": 0,
             "auto_resolved_event_count": 0,
+            "reobserved_event_count": 0,
+            "deferred_low_intensity_count": 0,
+            "verified_resolved_event_count": 0,
             "event_refs": [],
         }
         logger.info("[CDE] CognitiveDissonanceEngine initialised")
@@ -225,12 +228,21 @@ class CognitiveDissonanceEngine:
                 f"Reflect on dissonance: {ev.type.value}. "
                 f"Belief={ev.belief_ref or 'unknown'}, Action={ev.action_ref or 'unknown'}."
             )
+            if ev.self_question:
+                goal += f" Inquiry: {ev.self_question}"
+            if ev.hypotheses:
+                goal += " Candidate explanations: " + " | ".join(ev.hypotheses[:3])
             mt = tte.spawn_thread(ctx, {
                 "topic":           f"dissonance:{ev.id[:8]}",
                 "goal":            goal,
                 "source":          "dissonance",
                 "curiosity":       0.1,
                 "energy_cost":     8.0,
+                "current_state":   {
+                    "cde_event_id": ev.id,
+                    "inquiry_question": ev.self_question or "",
+                    "candidate_explanations": list(ev.hypotheses[:3]),
+                },
                 "planned_actions": [
                     "identify root cause",
                     "revise belief or behavior",
@@ -247,27 +259,48 @@ class CognitiveDissonanceEngine:
         ctx: CDEContext,
         organism: Any = None,
         *,
-        resolution_receipts: Dict[str, Dict[str, Any]] | None = None,
+        outcome_threads: List[Any] | None = None,
     ) -> None:
         """
-        Close only events backed by a verified downstream result receipt.
+        Close only events backed by a successful TTE inquiry thread carrying a
+        structured verified outcome tied to that event's stable ID.
 
         A generated question, hypothesis, or elapsed cycle is not evidence that
         the underlying conflict was resolved and must not train personality.
         """
-        receipts = resolution_receipts if isinstance(resolution_receipts, dict) else {}
+        receipts: Dict[str, Dict[str, str]] = {}
+        for thread in outcome_threads or []:
+            state = getattr(thread, "current_state", None)
+            outcome = state.get("verified_outcome") if isinstance(state, dict) else None
+            event_id = str(state.get("cde_event_id") or "").strip() if isinstance(state, dict) else ""
+            if (
+                getattr(thread, "source", "") != "dissonance"
+                or not event_id
+                or not isinstance(outcome, dict)
+                or outcome.get("status") != "success"
+            ):
+                continue
+            evidence_ref = str(outcome.get("evidence_ref") or "").strip()
+            resolution = str(outcome.get("belief_statement") or "").strip()
+            confidence = outcome.get("confidence")
+            if (
+                evidence_ref and resolution
+                and isinstance(confidence, (int, float))
+                and not isinstance(confidence, bool)
+                and 0.0 <= float(confidence) <= 1.0
+            ):
+                receipts[event_id] = {
+                    "evidence_ref": evidence_ref,
+                    "resolution": resolution,
+                }
         for ev in events:
             if ev.resolved:
                 continue
 
             receipt = receipts.get(ev.id)
-            evidence_ref = str(receipt.get("evidence_ref") or "").strip() if isinstance(receipt, dict) else ""
-            outcome = str(receipt.get("resolution") or "").strip() if isinstance(receipt, dict) else ""
-            if not (
-                isinstance(receipt, dict)
-                and receipt.get("status") == "verified"
-                and evidence_ref and outcome
-            ):
+            evidence_ref = str(receipt.get("evidence_ref") or "").strip() if receipt else ""
+            outcome = str(receipt.get("resolution") or "").strip() if receipt else ""
+            if not (evidence_ref and outcome):
                 ev.resolution_status = "unverified_no_resolution_receipt"
                 continue
 
@@ -317,7 +350,25 @@ class CognitiveDissonanceEngine:
         """
         events = self.detect(ctx)
         threads = self.apply_to_threads(events, threads)
+        for event in events:
+            if event.intensity < DISSONANCE_THRESHOLD + 0.15:
+                continue
+            self._generate_self_question(event)
+            if organism is not None:
+                self._generate_competing_hypotheses(event, organism)
         meta_threads = self.spawn_meta_threads(events, tte, tte_ctx)
+
+        # Resolution is tied to a successful CDE inquiry thread, not a
+        # generated hypothesis or an arbitrary caller-supplied dictionary.
+        all_threads = []
+        if tte is not None and hasattr(tte, "all_threads"):
+            try:
+                all_threads = list(tte.all_threads())
+            except Exception as exc:
+                logger.debug("[CDE] Could not read TTE outcome receipts: %s", exc)
+        self.resolve(self._events, ctx, organism, outcome_threads=all_threads)
+        report_events = {event.id: event for event in self._events}
+        report_events.update({event.id: event for event in events})
 
         # Low-intensity events are deferred, not declared resolved. A future
         # stronger observation can reactivate the same event without creating
@@ -341,7 +392,7 @@ class CognitiveDissonanceEngine:
             "meta_threads_spawned": len(meta_threads),
             "auto_resolved_event_count": 0,
             "deferred_low_intensity_count": len(deferred),
-            "verified_resolved_event_count": sum(1 for event in events if event.resolved),
+            "verified_resolved_event_count": sum(1 for event in report_events.values() if event.resolved),
             "event_refs": [
                 {"id": str(event.id), "type": event.type.value,
                  "intensity": round(float(event.intensity), 3),
@@ -349,7 +400,7 @@ class CognitiveDissonanceEngine:
                  "resolution_status": str(event.resolution_status),
                  "observation_count": int(event.observation_count),
                  "resolution_evidence_ref": str(event.resolution_evidence_ref or "")[:48]}
-                for event in events[-20:]
+                for event in list(report_events.values())[-20:]
             ],
         }
         return result
@@ -500,7 +551,9 @@ class CognitiveDissonanceEngine:
         if t == DissonanceEventType.PREDICTION_VS_REALITY:
             pc = (event.predicted or {}).get("confidence")
             ac = (event.actual or {}).get("confidence")
-            event.owner_statement = f"I expected to be confident here (~{pc:.2f}), but it didn't hold up (~{ac:.2f})."
+            pc_text = f"{pc:.2f}" if isinstance(pc, (int, float)) else "unknown"
+            ac_text = f"{ac:.2f}" if isinstance(ac, (int, float)) else "unknown"
+            event.owner_statement = f"I expected to be confident here (~{pc_text}), but it didn't hold up (~{ac_text})."
             event.self_question = "Why did my confidence fall short here — what did I misjudge?"
         elif t == DissonanceEventType.BELIEF_VS_EVIDENCE:
             event.owner_statement = f"I believed '{event.belief_ref}', but recent evidence didn't back it up."

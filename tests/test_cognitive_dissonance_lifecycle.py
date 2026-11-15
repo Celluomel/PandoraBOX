@@ -89,15 +89,57 @@ def test_resolution_requires_verified_outcome_receipt_before_personality_update(
     assert event.resolution_status == "unverified_no_resolution_receipt"
     assert queued == []
 
-    engine.resolve([event], CDEContext(), organism, resolution_receipts={
-        event.id: {
-            "status": "verified",
+    unlinked = SimpleNamespace(source="dissonance", current_state={
+        "cde_event_id": "different-event",
+        "verified_outcome": {
+            "status": "success",
             "evidence_ref": "turn-12:outcome-3",
-            "resolution": "The expected action was observed in the following turn.",
-        }
+            "belief_statement": "The expected action was observed in the following turn.",
+            "confidence": 0.9,
+        },
     })
+    engine.resolve([event], CDEContext(), organism, outcome_threads=[unlinked])
+    assert event.resolved is False
+    assert queued == []
+
+    linked = SimpleNamespace(source="dissonance", current_state={
+        "cde_event_id": event.id,
+        "verified_outcome": {
+            "status": "success",
+            "evidence_ref": "turn-12:outcome-3",
+            "belief_statement": "The expected action was observed in the following turn.",
+            "confidence": 0.9,
+        },
+    })
+    engine.resolve([event], CDEContext(), organism, outcome_threads=[linked])
 
     assert event.resolved is True
     assert event.resolution_status == "verified_resolved"
     assert event.resolution_evidence_ref == "turn-12:outcome-3"
     assert len(queued) == 2  # primary dissonance plus identity-specific update
+
+
+def test_step_consumes_only_successful_tte_outcome_linked_to_event():
+    engine = CognitiveDissonanceEngine()
+    event = _event(intensity=0.8)
+    engine._events.append(event)
+    engine._detect_identity_vs_action = lambda _ctx: []
+    engine._detect_goal_vs_outcome = lambda _ctx: []
+    engine._detect_belief_vs_evidence = lambda _ctx: []
+    engine._detect_prediction_vs_reality = lambda _ctx: []
+    outcome_thread = SimpleNamespace(source="dissonance", current_state={
+        "cde_event_id": event.id,
+        "verified_outcome": {
+            "status": "success",
+            "evidence_ref": "cycle-9:outcome-2",
+            "belief_statement": "The inquiry established the cause.",
+            "confidence": 0.85,
+        },
+    })
+    tte = SimpleNamespace(all_threads=lambda: [outcome_thread], spawn_thread=lambda *_: None)
+
+    engine.step([], tte, CDEContext(), None)
+
+    assert event.resolved is True
+    assert event.resolution_status == "verified_resolved"
+    assert event.resolution_evidence_ref == "cycle-9:outcome-2"

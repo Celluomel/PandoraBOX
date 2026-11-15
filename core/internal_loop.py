@@ -2848,8 +2848,11 @@ class InternalThoughtLoop:
                     metrics={
                         "active_thread_count": len(active_threads) if hasattr(active_threads, "__len__") else -1,
                         "detected_event_count": int(_cde_report.get("detected_event_count", 0)),
+                        "reobserved_event_count": int(_cde_report.get("reobserved_event_count", 0)),
                         "meta_threads_spawned": int(_cde_report.get("meta_threads_spawned", 0)),
                         "auto_resolved_event_count": int(_cde_report.get("auto_resolved_event_count", 0)),
+                        "deferred_low_intensity_count": int(_cde_report.get("deferred_low_intensity_count", 0)),
+                        "verified_resolved_event_count": int(_cde_report.get("verified_resolved_event_count", 0)),
                         "event_ids": ",".join(str(item.get("id", "")) for item in _cde_event_refs
                                               if isinstance(item, dict) and item.get("id")),
                         "event_types": ",".join(str(item.get("type", "")) for item in _cde_event_refs
