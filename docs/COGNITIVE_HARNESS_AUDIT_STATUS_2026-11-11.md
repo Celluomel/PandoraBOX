@@ -2422,3 +2422,13 @@ Le snapshot du LongHorizonPlanner réduisait chaque objectif actif à son sujet,
 **Validation locale :** tests d’intention et d’auto-description — **64 réussis**, 7 avertissements Pydantic existants; compilation Python et `git diff --check` réussis. Le snapshot est maintenant plus informatif en sortie, mais le cas « postal » de la trace ne peut pas être attribué rétroactivement sans son enregistrement runtime correspondant. Pour les nouveaux buts générés, l’identifiant précis de l’observation source choisie par un générateur de tension reste à ajouter; `tension_source` et `created_cycle` bornent le contexte, ils ne prouvent pas le texte d’entrée précis.
 
 **Progression globale inchangée : 2/10 = 20 %.** Cette correction améliore l’inspectabilité et l’attribution des buts; elle ne démontre pas encore que les tensions produisent des objectifs utiles, ni que ces objectifs améliorent les réponses ou les décisions en aval.
+
+### État de dispatch du plan dans Cognitive Trace — 15 novembre 2026
+
+La trace montrait `memory_recall · unverified` comme prochaine étape sans préciser si cette opération était routable. Pour un plan d’aspiration, le champ est seulement une proposition analytique; le GoalActionExecutor n’a pas de chemin de dispatch depuis ce type de plan. L’état d’étape seul pouvait donc être pris pour une action en attente d’exécution.
+
+**Correction locale :** le snapshot annonce désormais la source du plan et un champ `next_operation_dispatch_path` : `none_advisory_aspiration` pour une aspiration, `goal_action_executor_candidate` pour un plan attaché à un GoalEngine goal. L’auto-rapport inclut la même distinction. Le mot « candidate » est intentionnel : il décrit le chemin de code, pas une exécution garantie.
+
+**Validation locale :** les 64 tests intention/auto-description passent; le test de bootstrap vérifie qu’un plan d’aspiration est explicitement non dispatchable. Cela corrige l’interprétation de la trace, pas le manque d’exécution autonome des aspirations.
+
+**Progression globale inchangée : 2/10 = 20 %.** L’étape suivante reste un audit d’efficacité cognitive : vérifier par scénario que les signaux internes sélectionnés conduisent à des sorties proportionnées, pertinentes et révisables, avec un identifiant reliant tour, cycle, décision et effet observé.

@@ -956,6 +956,15 @@ class LongHorizonPlanner:
             plan_data = {
                 "objective": plan.objective[:160],
                 "status": plan.status,
+                "source": str(plan.source or "unknown"),
+                "source_id": str(plan.source_id or "") or None,
+                "next_operation_dispatch_path": (
+                    "none_advisory_aspiration"
+                    if plan.source == "aspiration"
+                    else "goal_action_executor_candidate"
+                    if plan.source == "goal"
+                    else "unknown"
+                ),
                 "success_criteria_status": criteria_status,
                 "steps_completed": plan.steps_completed,
                 "steps_total": len(plan.steps),
@@ -1082,7 +1091,10 @@ class LongHorizonPlanner:
             completed = plan["completed_operations"]
             lines.append(
                 f"Dominant active internal plan (it may be independent of the current "
-                f"conversation): objective={plan['objective'][:100]!r}; progress "
+                f"conversation): objective={plan['objective'][:100]!r}; "
+                f"source={plan.get('source', 'unknown')}; "
+                f"next-operation dispatch path="
+                f"{plan.get('next_operation_dispatch_path', 'unknown')}; progress "
                 f"{plan['steps_completed']}/{plan['steps_total']}; "
                 f"{plan.get('steps_with_execution_evidence', 0)} with execution evidence, "
                 f"{plan.get('completed_steps_without_execution_evidence', 0)} without; "

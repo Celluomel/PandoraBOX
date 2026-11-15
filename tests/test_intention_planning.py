@@ -147,6 +147,11 @@ class IntentionPlanningTests(unittest.TestCase):
             self.assertEqual(planner.status()["active_plans"], 1)
             self.assertTrue((Path(folder) / "plans.json").exists())
             snapshot = planner.factual_self_report_snapshot()
+            self.assertEqual(snapshot["dominant_plan"]["source"], "aspiration")
+            self.assertEqual(
+                snapshot["dominant_plan"]["next_operation_dispatch_path"],
+                "none_advisory_aspiration",
+            )
             self.assertIsNone(snapshot["dominant_plan"]["last_outcome"])
             self.assertIn(
                 planner.preferred_next_action(),
