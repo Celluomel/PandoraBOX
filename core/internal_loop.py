@@ -281,7 +281,10 @@ class InternalThoughtLoop:
                     "workspace_broadcast": False,
                     "delivery_status": "broadcast_error",
                 },
-                metrics={"error_type": type(exc).__name__},
+                metrics={
+                    "error_type": type(exc).__name__,
+                    "error_summary": self._exception_summary(exc),
+                },
             )
             return
         self._record_cycle_stage(
@@ -631,7 +634,11 @@ class InternalThoughtLoop:
                             self._record_cycle_stage(
                                 f"module_tick:{__module}.{__method}", "failed",
                                 inputs=self._cycle_input_evidence(args, kwargs),
-                                metrics={"duration_ms": round(duration_ms, 2), "error_type": type(exc).__name__},
+                                metrics={
+                                    "duration_ms": round(duration_ms, 2),
+                                    "error_type": type(exc).__name__,
+                                    "error_summary": self._exception_summary(exc),
+                                },
                             )
                         except Exception:
                             pass
@@ -2195,7 +2202,13 @@ class InternalThoughtLoop:
                 o._v32_decision_pressure = pressure_result
 
             except Exception as _p1e:
-                self._record_cycle_stage("phase1_competition", "failed", metrics={"error_type": type(_p1e).__name__})
+                self._record_cycle_stage(
+                    "phase1_competition", "failed",
+                    metrics={
+                        "error_type": type(_p1e).__name__,
+                        "error_summary": self._exception_summary(_p1e),
+                    },
+                )
                 # A failed arbitration cannot authorize stale attention or
                 # allow an unrelated old goal to be selected downstream.
                 self._publish_empty_workspace_focus(
@@ -2447,7 +2460,10 @@ class InternalThoughtLoop:
             except Exception as _ate:
                 self._record_cycle_stage(
                     "phase2_advanced_evaluation", "failed",
-                    metrics={"error_type": type(_ate).__name__},
+                    metrics={
+                        "error_type": type(_ate).__name__,
+                        "error_summary": self._exception_summary(_ate),
+                    },
                 )
                 logger.debug(f"[InternalLoop] Advanced thought evaluation error: {_ate}")
 
@@ -3103,7 +3119,10 @@ class InternalThoughtLoop:
                     except Exception as _ns:
                         self._record_cycle_stage(
                             "phase2_narrative_synthesis", "failed",
-                            metrics={"error_type": type(_ns).__name__},
+                            metrics={
+                                "error_type": type(_ns).__name__,
+                                "error_summary": self._exception_summary(_ns),
+                            },
                         )
                         logger.debug(f"[InternalLoop] Narrative synthesis error: {_ns}")
 
@@ -3181,13 +3200,22 @@ class InternalThoughtLoop:
                     except Exception as _til:
                         self._record_cycle_stage(
                             "phase2_thread_identity_link", "failed",
-                            metrics={"error_type": type(_til).__name__},
+                            metrics={
+                                "error_type": type(_til).__name__,
+                                "error_summary": self._exception_summary(_til),
+                            },
                         )
                         logger.debug(f"[InternalLoop] Thread→Identity linking error: {_til}")
 
 
             except Exception as _tte_e:
-                self._record_cycle_stage("thought_thread_cde_dts_chain", "failed", metrics={"error_type": type(_tte_e).__name__})
+                self._record_cycle_stage(
+                    "thought_thread_cde_dts_chain", "failed",
+                    metrics={
+                        "error_type": type(_tte_e).__name__,
+                        "error_summary": self._exception_summary(_tte_e),
+                    },
+                )
                 logger.debug(f"[InternalLoop] TTE/CDE/DTS tick error (non-fatal): {_tte_e}")
         else:
             self._record_cycle_stage("thought_thread_cde_dts_chain", "unavailable")
@@ -3493,7 +3521,10 @@ class InternalThoughtLoop:
                 except Exception as _e4:
                     self._record_cycle_stage(
                         "goal_quality_filter", "failed",
-                        metrics={"error_type": type(_e4).__name__},
+                        metrics={
+                            "error_type": type(_e4).__name__,
+                            "error_summary": self._exception_summary(_e4),
+                        },
                     )
                     logger.debug(f"[InternalLoop] Phase 4 goal quality failed: {_e4}")
 
@@ -3608,7 +3639,10 @@ class InternalThoughtLoop:
                 except Exception as _e5:
                     self._record_cycle_stage(
                         "self_concept_synchronizer", "failed",
-                        metrics={"error_type": type(_e5).__name__},
+                        metrics={
+                            "error_type": type(_e5).__name__,
+                            "error_summary": self._exception_summary(_e5),
+                        },
                     )
                     logger.debug(f"[InternalLoop] Phase 5 self-concept sync failed: {_e5}")
 
