@@ -939,6 +939,28 @@ class LongHorizonPlanner:
             goal_id = str(getattr(goal, "id", ""))
             goal_plan = plans_by_goal.get(goal_id)
             if goal_plan is None:
+                # Keep an admitted active goal visible even before the
+                # planner has generated its first sequence. A missing plan is
+                # meaningful state, not a reason to omit the goal from trace.
+                goal_topic = str(getattr(goal, "topic", "")).strip()[:120]
+                active_goal_plans_data.append({
+                    "goal_topic": goal_topic,
+                    "objective": str(
+                        getattr(goal, "desired_effect", "") or goal_topic
+                    ).strip()[:160],
+                    "status": "not_planned",
+                    "source": "goal",
+                    "source_id": goal_id or None,
+                    "steps_completed": 0,
+                    "steps_total": 0,
+                    "next_operation": None,
+                    "next_operation_status": "not_planned",
+                    "next_operation_result": None,
+                    "decision_summary": (
+                        "No long-horizon plan has been created for this active goal yet."
+                    ),
+                    "last_outcome": None,
+                })
                 continue
             goal_step = self.current_step(goal_plan.aspiration_domain)
             active_goal_plans_data.append({

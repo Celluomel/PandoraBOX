@@ -164,9 +164,17 @@ class IntentionPlanningTests(unittest.TestCase):
             planner, _, _ = self._planner(folder)
             goal = NS(id="g-1", topic="current cognitive goal", status="active")
             second_goal = NS(id="g-2", topic="second active goal", status="active")
+            unplanned_goal = NS(
+                id="g-3", topic="active goal without a plan", status="active",
+                desired_effect="Create a grounded understanding",
+            )
             planner._ai = NS(goal_engine=NS(
-                get_active_goals=lambda min_activation=0.10: [goal, second_goal],
-                get_goal_by_id=lambda goal_id: {goal.id: goal, second_goal.id: second_goal}.get(goal_id),
+                get_active_goals=lambda min_activation=0.10: [goal, second_goal, unplanned_goal],
+                get_goal_by_id=lambda goal_id: {
+                    goal.id: goal,
+                    second_goal.id: second_goal,
+                    unplanned_goal.id: unplanned_goal,
+                }.get(goal_id),
             ))
             aspiration_plan = Plan(
                 aspiration_domain="epistemic",
@@ -204,8 +212,13 @@ class IntentionPlanningTests(unittest.TestCase):
         self.assertEqual(snapshot["active_goal_plan"]["next_operation"], "self_question")
         self.assertEqual(
             [item["source_id"] for item in snapshot["active_goal_plans"]],
-            ["g-1", "g-2"],
+            ["g-1", "g-2", "g-3"],
         )
+        unplanned = snapshot["active_goal_plans"][2]
+        self.assertEqual(unplanned["status"], "not_planned")
+        self.assertEqual(unplanned["steps_total"], 0)
+        self.assertEqual(unplanned["next_operation_status"], "not_planned")
+        self.assertIsNone(unplanned["last_outcome"])
 
     def test_goal_intention_advances_only_on_verified_success(self):
         with tempfile.TemporaryDirectory() as folder:
