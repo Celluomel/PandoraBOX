@@ -985,13 +985,21 @@ class GoalEngine:
                 t: ts for t, ts in self._recently_abandoned.items()
                 if ts > _stale_cutoff
             }
-            self._goals = {
-                gid: g for gid, g in self._goals.items()
-                if g.status != "abandoned"
-            }
-            
-            # Save state
-            self._save_goals()
+            # Persist terminal status before removing abandoned goals from the
+            # live pool. _save_goals preserves records owned by other writers;
+            # pruning first would therefore leave their old persisted status
+            # (usually dormant), and reload_from_disk could resurrect them.
+            # Keep them in memory and retry on a later tick if the write fails.
+            if self._save_goals():
+                self._goals = {
+                    gid: g for gid, g in self._goals.items()
+                    if g.status != "abandoned"
+                }
+            elif any(g.status == "abandoned" for g in self._goals.values()):
+                logger.warning(
+                    "GoalEngine retained abandoned goals in the live pool "
+                    "because persistence failed"
+                )
             
             active = len([g for g in self._goals.values() if g.status == "active"])
             logger.debug(f"Goal update: {active} active, {len(self._goals)} total")

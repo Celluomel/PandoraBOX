@@ -78,3 +78,44 @@ def test_startup_migration_retires_interaction_echo_social_goals():
     assert engine._goals["other-origin"].status == "active"
     assert saves == [True]
     assert engine._recently_abandoned[engine._goals["echo"].topic.casefold()] <= time.time()
+
+
+def test_abandoned_goal_status_is_persisted_before_live_pool_prunes_it(tmp_path):
+    import json
+
+    path = tmp_path / "goals.json"
+    engine = GoalEngine(None, persistence_file=str(path))
+    goal = Goal(
+        id="dormant-old", topic="understand persistent goal lifecycle",
+        origin="autonomous", priority=0.4, energy=0.1,
+        created_cycle=1, last_active=1, status="dormant",
+    )
+    engine._goals[goal.id] = goal
+    engine._cycle_counter = GoalEngine.ABANDONMENT_CYCLES + 1
+    assert engine._save_goals()
+
+    engine.update_goals()
+
+    persisted = json.loads(path.read_text(encoding="utf-8"))
+    assert persisted["goals"][goal.id]["status"] == "abandoned"
+    assert goal.id not in engine._goals
+    reloaded = GoalEngine(None, persistence_file=str(path))
+    assert reloaded._goals[goal.id].status == "abandoned"
+    assert reloaded._goals[goal.id].status not in {"active", "dormant"}
+
+
+def test_failed_abandonment_write_keeps_goal_for_retry(tmp_path):
+    engine = GoalEngine(None, persistence_file=str(tmp_path / "goals.json"))
+    goal = Goal(
+        id="dormant-write-failure", topic="understand retryable goal persistence",
+        origin="autonomous", priority=0.4, energy=0.1,
+        created_cycle=1, last_active=1, status="dormant",
+    )
+    engine._goals[goal.id] = goal
+    engine._cycle_counter = GoalEngine.ABANDONMENT_CYCLES + 1
+    engine._save_goals = lambda: False
+
+    engine.update_goals()
+
+    assert goal.status == "abandoned"
+    assert engine._goals[goal.id] is goal
