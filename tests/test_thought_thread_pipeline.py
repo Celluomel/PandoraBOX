@@ -231,3 +231,33 @@ def test_lifecycle_manager_requires_verified_outcome_statement_and_reference():
     assert belief["evidence_ref"] == "cycle-45:stage-7"
     assert belief["confidence"] == 0.8
     assert belief["value"] == 1.0
+
+
+def test_goal_action_receipt_arriving_before_thread_seed_is_persisted_and_relinked(tmp_path):
+    store = tmp_path / "thought_threads.json"
+    engine = ThoughtThreadEngine(str(store))
+
+    assert engine.record_action_receipt(
+        "goal-before-seed",
+        action="memory_recall",
+        success=True,
+        execution_id="exec-before-seed",
+        cycle_id=41,
+        result="recalled one source",
+        evidence_ref="execution:exec-before-seed",
+    ) == 0
+    assert (tmp_path / "thought_threads_action_receipts.json").exists()
+
+    restored = ThoughtThreadEngine(str(store))
+    thread = restored.spawn_thread(TTEContext(), {
+        "topic": "knowledge integration",
+        "goal": "integrate evidence",
+        "source": "goal_engine",
+        "source_ref": "goal-before-seed",
+    })
+
+    receipts = thread.current_state["action_receipts"]
+    assert len(receipts) == 1
+    assert receipts[0]["execution_id"] == "exec-before-seed"
+    assert receipts[0]["cycle_id"] == 41
+    assert thread.current_state["last_action_receipt"] == receipts[0]

@@ -4,10 +4,16 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from cognition.goal_action_executor import GoalActionExecutor
+from cognition.goal_action_executor import GoalActionExecutor, _retain_generated_text
 
 
 class GoalActionResolutionFeedbackTests(unittest.TestCase):
+    def test_generated_text_is_never_silently_truncated(self):
+        complete = "A hypothesis that is longer than the old 180-character cutoff " + "x" * 150
+
+        self.assertEqual(_retain_generated_text(complete, max_chars=800), complete)
+        self.assertIsNone(_retain_generated_text(complete + "x" * 700, max_chars=800))
+
     def test_terminal_plan_outcome_is_forwarded_to_tte_with_goal_provenance(self):
         recorded = []
         planner = SimpleNamespace(

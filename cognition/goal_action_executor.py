@@ -72,6 +72,14 @@ _SAFE_ACTION_TYPES = frozenset({
     ACTION_SELF_QUESTION, ACTION_BISOCIATIVE,
 })
 
+
+def _retain_generated_text(value: Any, *, max_chars: int) -> Optional[str]:
+    """Keep complete model output; reject oversize text instead of clipping it."""
+    text = str(value or "").strip()
+    if not text or len(text) > max(0, int(max_chars)):
+        return None
+    return text
+
 # Rotation order per goal — ensures all types get exercised.
 # ORDER MATTERS:
 #   BISOCIATIVE precedes WEB_SEARCH so the hypothesis it generates seeds
@@ -1349,6 +1357,20 @@ class GoalActionExecutor:
                 )
                 response = generation["text"]
 
+            if generation.get("status") == "truncated":
+                self._finalize_async_action(
+                    goal, ACTION_SELF_QUESTION, False,
+                    "provider stopped at its output limit; insight is incomplete",
+                    evidence={
+                        "reason_code": "provider_output_truncated",
+                        "completion_reason": generation.get("completion_reason", "length"),
+                        "output_tokens": generation.get("output_tokens"),
+                        "max_output_tokens": generation.get("max_output_tokens"),
+                    },
+                    execution_id=execution_id, cycle_id=cycle_id,
+                )
+                return
+
             _resp_stripped = (response or "").strip()
             _is_error = (
                 not _resp_stripped or len(_resp_stripped) < 10
@@ -1370,7 +1392,21 @@ class GoalActionExecutor:
                 )
                 return
 
-            insight = response.strip()[:150]
+            insight = _retain_generated_text(response, max_chars=2400)
+            if insight is None:
+                self._finalize_async_action(
+                    goal,
+                    ACTION_SELF_QUESTION,
+                    False,
+                    "insight output was empty or exceeded the safe size limit",
+                    evidence={
+                        "reason_code": "insight_output_invalid_size",
+                        "generated_chars": len(str(response or "")),
+                    },
+                    execution_id=execution_id,
+                    cycle_id=cycle_id,
+                )
+                return
             logger.info(
                 f"[GoalActionExecutor] ✅ Insight for '{topic[:30]}': "
                 f"'{insight[:80]}'"
@@ -1580,6 +1616,12 @@ class GoalActionExecutor:
                     "belief_persisted": True,
                     "thought_stream_recorded": publication["thought_stream_recorded"],
                     "workspace_broadcast": publication["workspace_broadcast"],
+                    "generated_chars": len(insight),
+                    "output_clipped": False,
+                    "completion_reason": generation.get("completion_reason", "unknown"),
+                    "completion_verified": generation.get("completion_verified"),
+                    "output_tokens": generation.get("output_tokens"),
+                    "max_output_tokens": generation.get("max_output_tokens"),
                 },
                 execution_id=execution_id, cycle_id=cycle_id,
             )
@@ -1721,6 +1763,20 @@ class GoalActionExecutor:
                 )
                 response = generation["text"]
 
+            if generation.get("status") == "truncated":
+                self._finalize_async_action(
+                    goal, ACTION_BISOCIATIVE, False,
+                    "provider stopped at its output limit; hypothesis is incomplete",
+                    evidence={
+                        "reason_code": "provider_output_truncated",
+                        "completion_reason": generation.get("completion_reason", "length"),
+                        "output_tokens": generation.get("output_tokens"),
+                        "max_output_tokens": generation.get("max_output_tokens"),
+                    },
+                    execution_id=execution_id, cycle_id=cycle_id,
+                )
+                return
+
             _resp_s = (response or "").strip()
             _is_err = (not _resp_s or len(_resp_s) < 10
                        or _resp_s.startswith("Error:") or _resp_s.startswith("error"))
@@ -1737,7 +1793,21 @@ class GoalActionExecutor:
                     "final content; used grounded local hypothesis"
                 )
 
-            hypothesis = response.strip()[:180]
+            hypothesis = _retain_generated_text(response, max_chars=800)
+            if hypothesis is None:
+                self._finalize_async_action(
+                    goal,
+                    ACTION_BISOCIATIVE,
+                    False,
+                    "hypothesis output was empty or exceeded the safe size limit",
+                    evidence={
+                        "reason_code": "hypothesis_output_invalid_size",
+                        "generated_chars": len(str(response or "")),
+                    },
+                    execution_id=execution_id,
+                    cycle_id=cycle_id,
+                )
+                return
             logger.info(
                 f"[GoalActionExecutor] 💡 Bisociative hypothesis "
                 f"'{topic[:30]}': '{hypothesis[:80]}'"
@@ -1807,6 +1877,12 @@ class GoalActionExecutor:
                 evidence={
                     **publication,
                     "hypothesis_generated": bool(hypothesis),
+                    "generated_chars": len(hypothesis),
+                    "output_clipped": False,
+                    "completion_reason": generation.get("completion_reason", "unknown"),
+                    "completion_verified": generation.get("completion_verified"),
+                    "output_tokens": generation.get("output_tokens"),
+                    "max_output_tokens": generation.get("max_output_tokens"),
                 },
                 execution_id=execution_id, cycle_id=cycle_id,
             )
@@ -2256,11 +2332,18 @@ class GoalActionExecutor:
             if result.get("status") != "deferred" or attempt == 1:
                 break
             await asyncio.sleep(3.0)
-        return {
+        normalized = {
             "text": str(result.get("text", "")),
             "status": str(result.get("status", "empty")),
             "reason": str(result.get("reason", "")),
         }
+        for key in (
+            "completion_reason", "completion_verified", "output_tokens",
+            "max_output_tokens",
+        ):
+            if key in result:
+                normalized[key] = result[key]
+        return normalized
 
     def _defer_async_action(self, goal, action_type: str, reason: str) -> None:
         """Close an unexecuted prediction as deferred, never as an action failure."""

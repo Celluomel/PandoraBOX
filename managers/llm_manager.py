@@ -4,7 +4,7 @@ import json
 import requests
 import threading
 import time
-from typing import Optional, List, Dict, Iterator
+from typing import Optional, List, Dict, Iterator, Any
 from abc import ABC, abstractmethod
 from managers.codex_app_server_provider import CodexAppServerProvider
 
@@ -287,6 +287,17 @@ class LMStudioProvider(BaseLLMProvider):
         explicit ``reasoning: off`` control, which prevents short background
         tasks from exhausting their output budget before producing visible text.
         """
+        return str(self.generate_background_result(messages, **kwargs).get("text") or "")
+
+    def generate_background_result(self, messages: List[Dict], **kwargs) -> Dict[str, Any]:
+        """Return native background text together with completion evidence.
+
+        LM Studio's native response is a completed turn rather than a stream.
+        Preserve its stop reason/token count when available, and conservatively
+        classify a response that consumes the full requested output budget as
+        truncated. This prevents autonomous cognitive actions from treating a
+        length-capped fragment as a completed hypothesis.
+        """
         native_base = self.base_url[:-3] if self.base_url.endswith("/v1") else self.base_url
         system_parts = []
         input_messages = []
@@ -326,11 +337,35 @@ class LMStudioProvider(BaseLLMProvider):
         if response.status_code != 200:
             raise RuntimeError(f"LM Studio native chat status {response.status_code}")
         result = response.json()
-        return "".join(
+        text = "".join(
             str(item.get("content") or "")
             for item in result.get("output", [])
             if isinstance(item, dict) and item.get("type") == "message"
         )
+        stats = result.get("stats") if isinstance(result.get("stats"), dict) else {}
+        token_count = stats.get("total_output_tokens", stats.get("output_tokens"))
+        try:
+            token_count = int(token_count) if token_count is not None else None
+        except (TypeError, ValueError):
+            token_count = None
+        max_output_tokens = int(payload["max_output_tokens"])
+        stop_reason = str(
+            result.get("stop_reason") or result.get("finish_reason")
+            or stats.get("stop_reason") or stats.get("finish_reason") or ""
+        ).strip().lower()
+        truncated = stop_reason in {"length", "max_tokens", "max_output_tokens"}
+        if token_count is not None and token_count >= max_output_tokens:
+            truncated = True
+            stop_reason = stop_reason or "output_token_limit_reached"
+        return {
+            "text": text,
+            "status": "truncated" if truncated else ("ok" if text.strip() else "empty"),
+            "reason": stop_reason if truncated else "",
+            "completion_reason": stop_reason or "completed_response",
+            "completion_verified": not truncated,
+            "output_tokens": token_count,
+            "max_output_tokens": max_output_tokens,
+        }
 
     def _generate_messages_stream(self, messages: List[Dict], **kwargs) -> Iterator[str]:
         try:
@@ -711,12 +746,16 @@ class LLMManager:
                     "status": "deferred",
                     "reason": "interactive turn started",
                 }
-            background_generate = getattr(
-                self.provider, "generate_background_messages", None,
+            background_result = getattr(
+                self.provider, "generate_background_result", None,
             )
-            if callable(background_generate):
+            completion = None
+            if callable(background_result):
                 try:
-                    text = background_generate(messages, **kwargs) or ""
+                    completion = background_result(messages, **kwargs)
+                    if not isinstance(completion, dict):
+                        completion = {"text": str(completion or ""), "status": "unverified"}
+                    text = completion.get("text", "") or ""
                 except Exception as native_error:
                     logger.warning(
                         "LM Studio native background call unavailable (%s); "
@@ -725,7 +764,21 @@ class LLMManager:
                     )
                     text = self.provider._generate_messages(messages, **kwargs) or ""
             else:
-                text = self.provider._generate_messages(messages, **kwargs) or ""
+                background_generate = getattr(
+                    self.provider, "generate_background_messages", None,
+                )
+                if callable(background_generate):
+                    try:
+                        text = background_generate(messages, **kwargs) or ""
+                    except Exception as native_error:
+                        logger.warning(
+                            "Provider native background call unavailable (%s); "
+                            "falling back to chat completions",
+                            type(native_error).__name__,
+                        )
+                        text = self.provider._generate_messages(messages, **kwargs) or ""
+                else:
+                    text = self.provider._generate_messages(messages, **kwargs) or ""
             stripped = str(text).strip()
             if not stripped:
                 # A few local OpenAI-compatible servers/models return an empty
@@ -746,7 +799,12 @@ class LLMManager:
                         streamed_stripped = streamed.strip()
                         if streamed_stripped and not streamed_stripped.lower().startswith("error:"):
                             logger.warning("Recovered empty background completion from provider content stream")
-                            return {"text": streamed, "status": "ok", "reason": "stream_fallback"}
+                            return {
+                                "text": streamed, "status": "ok",
+                                "reason": "stream_fallback",
+                                "completion_reason": "unknown",
+                                "completion_verified": False,
+                            }
                         if streamed_stripped.lower().startswith("error:"):
                             return {"text": streamed, "status": "error", "reason": "provider stream error"}
                     except Exception as stream_error:
@@ -766,7 +824,16 @@ class LLMManager:
                     "status": "error",
                     "reason": stripped[:160],
                 }
-            return {"text": str(text), "status": "ok", "reason": ""}
+            if completion is not None:
+                completion["text"] = str(text)
+                completion.setdefault("status", "ok")
+                completion.setdefault("reason", "")
+                return completion
+            return {
+                "text": str(text), "status": "ok", "reason": "",
+                "completion_reason": "unknown",
+                "completion_verified": False,
+            }
         finally:
             self._provider_lock.release()
 

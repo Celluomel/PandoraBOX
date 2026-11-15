@@ -44,6 +44,18 @@
 
 **Clôture de plan :** le sous-objectif « exécuter et attribuer un reçu GoalActionExecutor à un plan actif, puis persister sa progression » est validé live pour ce scénario. La piste d’audit 7 reste partielle jusqu’à mesurer la qualité et l’effet cognitif; le score global reste **2/10 = 20 %**.
 
+### Sortie générée tronquée avant persistance — constat et correction locale
+
+**Constat live au cycle 11655 :** `bisociative_hypothesis` a été marqué réussi et a fait passer `knowledge integration` à **3/4**. Le résultat persisté fait exactement **180 caractères** et se termine au milieu du mot « the ». La cause est directement visible dans `GoalActionExecutor` : `response.strip()[:180]` coupait le texte avant publication et enregistrement comme succès. Une troncature analogue à 150 caractères existait pour `self_question`.
+
+**Correction locale :** les deux chemins conservent maintenant la sortie complète jusqu’à une limite de taille explicite; une sortie vide ou dépassant cette limite échoue avec un `reason_code`, au lieu d’être tronquée puis comptée comme réussie. Les reçus réussis consignent `generated_chars` et `output_clipped=false`, afin de distinguer la longueur originale du résumé de plan limité à 240 caractères. Cette correction retire la troncature logicielle prouvée; elle ne prouve pas que le modèle fournit toujours une hypothèse sémantiquement correcte ni complète.
+
+**Vérification hors ligne :** 88 tests ciblés passent (`test_goal_action_resolution_feedback`, `test_internal_loop_cycle_evidence`, `test_intention_planning`); `py_compile` et `git diff --check` passent. Une tentative de test d’intégration directe de la coroutine a bloqué sur des dépendances d’initialisation; elle a été interrompue et retirée. Le comportement est donc couvert par le test du contrat de conservation de texte et les tests d’exécution/planner existants, mais le chemin coroutine complet reste à couvrir. Le processus live conserve l’ancien code jusqu’au prochain redémarrage planifié.
+
+**Prochaine opération live :** le plan `knowledge integration` est à 3/4; `web_search` est en attente. Le résultat de cette recherche et sa consommation (requête, sources, intégration au raisonnement et effet sur le plan) restent à vérifier avant de considérer l’action utile.
+
+**Piste d’audit 7 toujours partielle :** l’exécution et la progression sont prouvées, mais `effect_measured=false`; l’effet sémantique du rappel, de l’introspection et de l’hypothèse n’a pas été mesuré. La progression globale reste **2/10 = 20 %**.
+
 ### Relevé du 14 novembre — profil utilisateur, chercheur cognitif synthétique et réglage Web Search
 
 **Mesure globale inchangée : 2/10 pistes closes = 20 %.** Les correctifs locaux ci-dessous n’ont pas encore reçu de vérification live après chargement. La piste profil reste partielle tant que la persistance et la réinjection ne sont pas observées dans un nouveau processus; la piste 6 reste partielle tant que le chercheur cognitif ne relie pas ses diagnostics à des mesures valides et à des résultats d’essai.
@@ -2600,6 +2612,20 @@ La cause est le contrat de présentation, pas un rafraîchissement React figé :
 **Vérification locale du complément :** `tests/test_intention_planning.py` et `tests/test_self_description_prompt.py` — **65 réussis**, 7 avertissements Pydantic préexistants; `frontend npm run build` réussit avec l’avertissement préexistant de chunk >500 kB; `git diff --check` réussit. Le complément n’est pas encore chargé dans le processus Lumina actif. Il sera inclus dans la prochaine validation groupée; aucun second redémarrage n’a été lancé.
 
 **Progression globale inchangée : 2/10 = 20 %.** Le contrat de trace est maintenant plus complet localement, mais cette extension n’augmente pas le nombre de pistes cognitives évaluées. Le prochain audit causal reste le lien TTE→CDE→DTS→commit d’objectif et la preuve d’effet aval : l’agent indépendant confirme que `resolve_thread()` demeure le seul producteur de `verified_outcome`, sans appel de production démontré, et que l’action de GoalActionExecutor n’est pas jointe au thread/CDE source.
+
+### Suite du contrôle causal — fin de génération et reçu TTE précoce — 15 novembre 2026
+
+**Nouvelle preuve live :** Lumina fonctionne toujours sur `127.0.0.1:8080`, boucle active, cycle `11666`. Le plan actif `knowledge integration` reste à `3/4`; `bisociative_hypothesis` a été enregistré comme succès au cycle `11655`, mais son résultat stocké faisait exactement **180 caractères** et finissait au milieu de `...finalized as so`. La capture live est antérieure au correctif local : elle confirme le défaut initial de coupe, pas le comportement corrigé. Un second plan `cognitive capability development` avait lui aussi avancé à `2/4` après `self_question`; les deux doivent encore être retestés avec le code chargé.
+
+**Correction locale — contrat de génération :** le fournisseur LM Studio expose maintenant un résultat structuré en plus de sa méthode texte compatible. La couche native conserve le compte de tokens et le motif de fin quand présents; une réponse qui atteint `max_output_tokens`, ou porte un motif `length`, est `truncated`. `LLMManager` et GoalActionExecutor transmettent ces champs au reçu. `self_question` et `bisociative_hypothesis` échouent explicitement sur une sortie tronquée : le plan n’avance pas et le générateur bisociatif ne remplace plus ce fragment par une hypothèse locale présentée comme issue du modèle. Les sorties n’ont plus de coupe silencieuse locale; les tailles excessives sont rejetées.
+
+**Correction locale — ordre GoalActionExecutor/TTE :** dans une même itération, GoalActionExecutor s’exécute avant `ThoughtThreadEngine.step()` qui peut créer le fil du but. Un reçu asynchrone pouvait donc arriver avant le thread puis être abandonné. TTE conserve désormais ces reçus sans correspondance dans un sidecar borné (500 buts, 20 reçus par but, TTL 24 h), puis les rattache au fil lors de sa création; les reçus restent des preuves d’action et ne deviennent pas artificiellement des `verified_outcome` ni des preuves de résolution CDE.
+
+**Tests locaux :** `test_intention_planning.py`, `test_goal_action_resolution_feedback.py`, `test_thought_thread_pipeline.py`, `test_cognitive_dissonance_lifecycle.py` et `test_internal_loop_cycle_evidence.py` — **105 réussis**, avertissements de dépréciation préexistants. `py_compile` pour les trois modules modifiés et `git diff --check` réussissent. Les nouveaux tests couvrent la limite de sortie LM Studio et le reçu arrivé avant le thread, y compris le rechargement du sidecar après redémarrage.
+
+**Validation live non encore faite :** le processus actuellement lancé ne charge pas ces changements. Il reste à faire un seul redémarrage groupé après les corrections restantes, puis vérifier un résultat provider non tronqué, un reçu qui traverse bien le TTE, le prochain effet aval, et la non-avancée d’une action tronquée. L’API live actuelle montre des plans qui progressent, mais le live ne permet pas encore de conclure à la qualité sémantique de leurs résultats. `CDE.resolve()` exige toujours une preuve structurée issue d’un fil dissonance; l’action de GoalActionExecutor ne résout pas ce fil, ce qui demeure une lacune d’architecture à traiter avant de prétendre que le cycle TTE→CDE→révision est complet.
+
+**Git/progression :** changements locaux non commités à ce stade; aucune piste globale n’est close par ces tests seuls. La mesure fixe reste **2/10 = 20 %** jusqu’à preuve live et validation des effets aval. Le prochain travail est de concevoir l’exécution d’une enquête CDE attribuable à son `cde_event_id`, puis d’ajouter une validation sémantique fondée sur critères avant création d’un `verified_outcome`.
 
 ### Entrées causales du CDE — 15 novembre 2026
 

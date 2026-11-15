@@ -1099,6 +1099,55 @@ class IntentionPlanningTests(unittest.TestCase):
         self.assertEqual(kwargs["json"]["system_prompt"], "Keep it concise.")
         self.assertEqual(kwargs["json"]["input"], "Review this exchange.")
 
+    def test_lmstudio_background_result_marks_output_limit_as_truncated(self):
+        provider = LMStudioProvider(
+            model="test-model", base_url="http://127.0.0.1:1234/v1",
+        )
+        response = NS(
+            status_code=200,
+            json=lambda: {
+                "output": [{"type": "message", "content": "unfinished hypothesis"}],
+                "stats": {"total_output_tokens": 120},
+            },
+        )
+        with patch("managers.llm_manager.requests.post", return_value=response):
+            result = provider.generate_background_result(
+                [{"role": "user", "content": "Write a hypothesis."}],
+                max_tokens=120,
+            )
+
+        self.assertEqual(result["status"], "truncated")
+        self.assertEqual(result["reason"], "output_token_limit_reached")
+        self.assertFalse(result["completion_verified"])
+        self.assertEqual(result["output_tokens"], 120)
+
+    def test_background_manager_preserves_native_completion_metadata(self):
+        class _Provider:
+            model = "test-model"
+
+            def generate_background_result(self, messages, **kwargs):
+                return {
+                    "text": "unfinished hypothesis",
+                    "status": "truncated",
+                    "reason": "length",
+                    "completion_reason": "length",
+                    "completion_verified": False,
+                    "output_tokens": 100,
+                    "max_output_tokens": 100,
+                }
+
+        manager = LLMManager.__new__(LLMManager)
+        manager.provider = _Provider()
+        manager.text_model = "test-model"
+        manager._provider_lock = threading.Lock()
+        manager._chat_active = threading.Event()
+
+        result = manager.generate_bare_result("write a hypothesis")
+
+        self.assertEqual(result["status"], "truncated")
+        self.assertEqual(result["completion_reason"], "length")
+        self.assertEqual(result["output_tokens"], 100)
+
     def test_background_llm_prefers_provider_native_background_method(self):
         class _Provider:
             model = "test-model"

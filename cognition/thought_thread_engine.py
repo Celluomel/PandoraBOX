@@ -47,6 +47,8 @@ MAX_ACTIVE_THREADS  = 12   # cap to avoid cognitive overload
 MAX_HISTORY_ENTRIES = 20   # per thread
 THREAD_IDLE_HOURS   = 2.0  # defer threads inactive for this long
 MIN_CONFIDENCE      = 0.05 # below this → thread is failed/archived
+ACTION_RECEIPT_TTL_SECONDS = 24 * 60 * 60
+MAX_PENDING_ACTION_RECEIPTS = 500
 PERSISTENCE_PATH    = "data/persona/thought_threads.json"
 
 
@@ -129,8 +131,13 @@ class ThoughtThreadEngine:
 
     def __init__(self, persistence_path: str = PERSISTENCE_PATH) -> None:
         self._path     = Path(persistence_path)
+        self._receipt_path = self._path.with_name(
+            f"{self._path.stem}_action_receipts.json"
+        )
         self._threads: Dict[str, ThoughtThread] = {}
+        self._pending_action_receipts: Dict[str, List[Dict[str, Any]]] = {}
         self._lock     = threading.RLock()
+        self._load_pending_action_receipts()
         self._load()
         logger.info(f"[TTE] Initialised — {len(self._threads)} threads loaded")
 
@@ -181,6 +188,15 @@ class ThoughtThreadEngine:
                 source          = seed.get("source", "internal"),
                 source_ref      = source_ref,
             )
+            # GoalActionExecutor runs before TTE seeds goal threads in the
+            # internal cycle. Fast async actions can therefore finish first.
+            # Reattach durable receipts by stable source_ref when the thread
+            # appears instead of silently losing their causal evidence.
+            pending = self._pending_action_receipts.pop(source_ref, []) if source_ref else []
+            if pending:
+                thread.current_state["action_receipts"] = pending[-20:]
+                thread.current_state["last_action_receipt"] = pending[-1]
+                thread.current_state["action_receipt_count"] = len(pending[-20:])
             try:
                 thread.confidence = max(0.0, min(1.0, float(seed.get("confidence", 0.5))))
             except (TypeError, ValueError):
@@ -188,6 +204,8 @@ class ThoughtThreadEngine:
             thread.uncertainty = 1.0 - thread.confidence
 
             self._threads[thread.id] = thread
+            if pending:
+                self._save_pending_action_receipts()
             self._save()
             logger.debug(f"[TTE] Spawned thread {thread.id[:8]}: {topic!r} from {thread.source}")
             return thread
@@ -304,6 +322,7 @@ class ThoughtThreadEngine:
         }
         matched = 0
         with self._lock:
+            self._prune_pending_action_receipts_locked()
             for thread in self._threads.values():
                 if thread.source_ref != source_ref:
                     continue
@@ -323,7 +342,65 @@ class ThoughtThreadEngine:
                 thread.current_state["action_receipt_count"] = len(receipts[-20:])
                 self._save()
                 matched += 1
+            if not matched:
+                pending = self._pending_action_receipts.setdefault(source_ref, [])
+                if not any(item.get("execution_id") == execution_ref for item in pending):
+                    pending.append(receipt)
+                    self._pending_action_receipts[source_ref] = pending[-20:]
+                    # Keep the global cache bounded; recently updated source
+                    # refs are retained first.
+                    while len(self._pending_action_receipts) > MAX_PENDING_ACTION_RECEIPTS:
+                        self._pending_action_receipts.pop(next(iter(self._pending_action_receipts)))
+                    self._save_pending_action_receipts()
         return matched
+
+    def _prune_pending_action_receipts_locked(self) -> None:
+        cutoff = time.time() - ACTION_RECEIPT_TTL_SECONDS
+        stale_sources = []
+        for source_ref, receipts in self._pending_action_receipts.items():
+            fresh = [
+                item for item in receipts
+                if isinstance(item, dict)
+                and float(item.get("recorded_at", 0.0) or 0.0) >= cutoff
+            ]
+            if fresh:
+                self._pending_action_receipts[source_ref] = fresh[-20:]
+            else:
+                stale_sources.append(source_ref)
+        for source_ref in stale_sources:
+            self._pending_action_receipts.pop(source_ref, None)
+
+    def _save_pending_action_receipts(self) -> None:
+        try:
+            self._receipt_path.parent.mkdir(parents=True, exist_ok=True)
+            self._receipt_path.write_text(
+                json.dumps(self._pending_action_receipts, indent=2),
+                encoding="utf-8",
+            )
+        except Exception as exc:
+            logger.warning("[TTE] Pending action receipt save failed: %s", type(exc).__name__)
+
+    def _load_pending_action_receipts(self) -> None:
+        if not self._receipt_path.exists():
+            return
+        try:
+            raw = json.loads(self._receipt_path.read_text(encoding="utf-8"))
+            if not isinstance(raw, dict):
+                return
+            cutoff = time.time() - ACTION_RECEIPT_TTL_SECONDS
+            for source_ref, receipts in raw.items():
+                if not isinstance(source_ref, str) or not isinstance(receipts, list):
+                    continue
+                fresh = [
+                    item for item in receipts
+                    if isinstance(item, dict)
+                    and float(item.get("recorded_at", 0.0) or 0.0) >= cutoff
+                ][-20:]
+                if fresh:
+                    self._pending_action_receipts[source_ref[:80]] = fresh
+            self._prune_pending_action_receipts_locked()
+        except Exception as exc:
+            logger.warning("[TTE] Pending action receipt load failed: %s", type(exc).__name__)
 
     def step(self, ctx: TTEContext) -> List[ThoughtThread]:
         """
