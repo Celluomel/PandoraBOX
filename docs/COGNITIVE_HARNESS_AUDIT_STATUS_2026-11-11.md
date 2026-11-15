@@ -24,6 +24,16 @@
 
 **Ordre d’exécution :** (1) terminer la matrice des modules à partir du registre et des appels réels; (2) fermer le parcours profil utilisateur; (3) rejouer boucle pensée/objectif et planner/action avec leurs reçus; (4) bâtir les scénarios qualité/routage; (5) profiler robustesse et coût; (6) refaire une synthèse globale en séparant défauts corrigés, défauts ouverts et limites de preuve. Aucun score sémantique ne sera déduit des compteurs d’exécution.
 
+### Préparer le traçage des erreurs — 15 novembre
+
+**Défaut vérifié dans le code :** les reçus de cycle marquaient certaines défaillances du cycle, de `GoalEngine` et de `GoalActionExecutor` avec le seul type d’exception. Le message causal n’était conservé qu’au niveau `DEBUG` pour plusieurs erreurs d’étape; un reçu exploitable pour l’audit pouvait donc dire « échec » sans permettre d’en diagnostiquer la cause lorsque le niveau de log normal était actif.
+
+**Correction locale :** les reçus de cycle en échec et les étapes `goal_engine_tick` / `goal_action_executor` enregistrent désormais un résumé d’erreur nettoyé, limité à 240 caractères. Les motifs usuels `password`, `token`, `api_key`, `secret`, `Bearer` et identifiants intégrés aux URL sont masqués. Le résultat cognitif et le statut d’exécution restent des champs distincts; un message d’erreur n’est jamais interprété comme une preuve de réussite.
+
+**Vérification hors ligne :** `tests/test_internal_loop_cycle_evidence.py` et `tests/test_intention_planning.py` : **85 tests réussis**; `py_compile` et `git diff --check` réussis. Un test injecte des valeurs sentinelles de secret et confirme qu’elles ne figurent pas dans le reçu. La correction n’est pas encore chargée dans le processus Lumina courant; la socket locale a refusé l’accès depuis cette session, donc la validation live et l’inspection de nouveaux reçus restent à faire au prochain redémarrage planifié.
+
+**Progression d’audit inchangée : 2/10 pistes closes = 20 %.** Ce changement améliore la capacité à diagnostiquer et corriger les erreurs; il ne clôt aucune piste, faute de validation live.
+
 ### Relevé du 14 novembre — profil utilisateur, chercheur cognitif synthétique et réglage Web Search
 
 **Mesure globale inchangée : 2/10 pistes closes = 20 %.** Les correctifs locaux ci-dessous n’ont pas encore reçu de vérification live après chargement. La piste profil reste partielle tant que la persistance et la réinjection ne sont pas observées dans un nouveau processus; la piste 6 reste partielle tant que le chercheur cognitif ne relie pas ses diagnostics à des mesures valides et à des résultats d’essai.

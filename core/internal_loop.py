@@ -48,6 +48,7 @@ import json
 import hashlib
 import inspect
 import logging
+import re
 import threading
 import time
 from collections import deque
@@ -984,6 +985,23 @@ class InternalThoughtLoop:
             }
             self._active_cycle_thread_id = threading.get_ident()
 
+    @staticmethod
+    def _exception_summary(exc: BaseException, limit: int = 240) -> str:
+        """Return bounded diagnostic text without common credential forms."""
+        message = " ".join(str(exc).replace("\r", " ").replace("\n", " ").split())
+        message = re.sub(
+            r"(?i)\b(password|passwd|token|api[_-]?key|secret)\b\s*[:=]\s*[^\s,;]+",
+            r"\1=[REDACTED]",
+            message,
+        )
+        message = re.sub(
+            r"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]+", r"\1[REDACTED]", message,
+        )
+        message = re.sub(
+            r"(?i)(https?://)[^/@\s]+:[^/@\s]+@", r"\1[REDACTED]@", message,
+        )
+        return message[:max(0, int(limit))]
+
     def _record_cycle_stage(
         self, stage: str, status: str, *, inputs: dict[str, Any] | None = None,
         output: Any = None, metrics: dict[str, Any] | None = None,
@@ -1108,7 +1126,10 @@ class InternalThoughtLoop:
             "error_count": errors,
         }
 
-    def _finish_cycle_evidence(self, status: str, error_type: str | None = None) -> None:
+    def _finish_cycle_evidence(
+        self, status: str, error_type: str | None = None,
+        error_summary: str | None = None,
+    ) -> None:
         lock = getattr(self, "_cycle_evidence_lock", None)
         if lock is None:
             return
@@ -1121,6 +1142,8 @@ class InternalThoughtLoop:
             receipt["duration_ms"] = round((receipt["finished_at"] - receipt["started_at"]) * 1000, 2)
             if error_type:
                 receipt["error_type"] = str(error_type)
+            if error_summary:
+                receipt["error_summary"] = str(error_summary)[:240]
             self._cycle_evidence.append(receipt)
             self._active_cycle_evidence = None
             self._active_cycle_thread_id = None
@@ -1435,7 +1458,9 @@ class InternalThoughtLoop:
         except Exception as exc:
             self._slow_cycle_error_count += 1
             self._last_slow_cycle_error_type = type(exc).__name__
-            self._finish_cycle_evidence("failed", type(exc).__name__)
+            self._finish_cycle_evidence(
+                "failed", type(exc).__name__, self._exception_summary(exc),
+            )
             raise
         finally:
             self._lock.release()
@@ -2255,7 +2280,13 @@ class InternalThoughtLoop:
                         inputs={"goal_engine_output_ref": _goal_engine_evidence_ref},
                     )
             except Exception as _ge_e:
-                self._record_cycle_stage("goal_engine_tick", "failed", metrics={"error_type": type(_ge_e).__name__})
+                self._record_cycle_stage(
+                    "goal_engine_tick", "failed",
+                    metrics={
+                        "error_type": type(_ge_e).__name__,
+                        "error_summary": self._exception_summary(_ge_e),
+                    },
+                )
                 logger.debug(f"[InternalLoop] Goal engine tick error: {_ge_e}")
         elif _ge is not None:
             self._record_cycle_stage("goal_engine_tick", "skipped_governor")
@@ -2323,7 +2354,13 @@ class InternalThoughtLoop:
                         f"{_action_report['result'][:60]}"
                     )
             except Exception as _ae:
-                self._record_cycle_stage("goal_action_executor", "failed", metrics={"error_type": type(_ae).__name__})
+                self._record_cycle_stage(
+                    "goal_action_executor", "failed",
+                    metrics={
+                        "error_type": type(_ae).__name__,
+                        "error_summary": self._exception_summary(_ae),
+                    },
+                )
                 logger.debug(f"[InternalLoop] GoalActionExecutor error: {_ae}")
         else:
             self._record_cycle_stage("goal_action_executor", "skipped_cadence")

@@ -41,6 +41,26 @@ def test_cycle_receipt_links_outputs_to_actual_consumer_inputs_without_text():
     assert receipt["stages"][0]["output_summary"] == {"kind": "mapping", "field_count": 1}
 
 
+def test_failure_cycle_receipt_keeps_bounded_redacted_diagnostic():
+    loop = make_loop()
+    loop._begin_cycle_evidence(13)
+    error = RuntimeError(
+        "provider failed password=hunter2 api_key=sk-test Bearer abc123"
+    )
+
+    loop._finish_cycle_evidence(
+        "failed", type(error).__name__, loop._exception_summary(error),
+    )
+    receipt = loop.cycle_evidence_snapshot()["cycles"][0]
+
+    assert receipt["error_type"] == "RuntimeError"
+    assert "provider failed" in receipt["error_summary"]
+    assert "hunter2" not in repr(receipt)
+    assert "sk-test" not in repr(receipt)
+    assert "abc123" not in repr(receipt)
+    assert len(receipt["error_summary"]) <= 240
+
+
 def test_cycle_receipt_keeps_boolean_action_effect_evidence_without_user_text():
     summary = InternalThoughtLoop._evidence_summary({
         "action": "memory_recall",
