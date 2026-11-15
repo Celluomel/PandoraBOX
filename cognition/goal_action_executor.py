@@ -2192,6 +2192,25 @@ class GoalActionExecutor:
                 )
         except Exception as e:
             logger.debug("[GoalActionExecutor] plan outcome error: %s", e)
+        # Keep the persistent thought thread informed about the terminal
+        # operation result. This records action evidence only; it must not
+        # resolve the broader thread or imply its success criterion was met.
+        try:
+            loop = getattr(self._o, "_loop", None)
+            tte = getattr(loop, "_tte", None) if loop else None
+            record_receipt = getattr(tte, "record_action_receipt", None)
+            if callable(record_receipt) and execution_id:
+                record_receipt(
+                    str(goal.id),
+                    action=action_type,
+                    success=bool(success),
+                    execution_id=execution_id,
+                    cycle_id=cycle_id,
+                    result=result,
+                    evidence_ref=f"execution:{execution_id}",
+                )
+        except Exception as e:
+            logger.debug("[GoalActionExecutor] thought-thread receipt error: %s", e)
 
     async def _generate_background_llm(
         self,

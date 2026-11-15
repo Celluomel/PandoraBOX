@@ -156,6 +156,46 @@ def test_thread_resolution_requires_explicit_evidence_receipt(tmp_path):
     assert thread.current_state["verified_outcome"]["confidence"] == 0.85
 
 
+def test_goal_action_receipt_updates_linked_thread_without_resolving_or_inflating_confidence(tmp_path):
+    engine = ThoughtThreadEngine(str(tmp_path / "threads.json"))
+    context = TTEContext()
+    thread = engine.spawn_thread(context, {
+        "topic": "knowledge integration",
+        "goal": "Integrate relevant evidence",
+        "source": "goal_engine",
+        "source_ref": "goal-22",
+    })
+    initial_confidence = thread.confidence
+
+    assert engine.record_action_receipt(
+        "goal-22",
+        action="memory_recall",
+        success=True,
+        execution_id="execution-1",
+        cycle_id=82,
+        result="recalled one relevant source",
+    ) == 1
+    # Replaying the same terminal receipt is idempotent.
+    assert engine.record_action_receipt(
+        "goal-22",
+        action="memory_recall",
+        success=True,
+        execution_id="execution-1",
+        cycle_id=82,
+        result="recalled one relevant source",
+    ) == 1
+
+    assert thread.status.value == "active"
+    assert thread.confidence == initial_confidence
+    assert thread.current_state["action_receipt_count"] == 1
+    assert thread.current_state["last_action_receipt"]["cycle_id"] == 82
+    assert thread.current_state["last_action_receipt"]["success"] is True
+
+    restored = ThoughtThreadEngine(str(tmp_path / "threads.json"))
+    restored_thread = restored.get_thread(thread.id)
+    assert restored_thread.current_state["action_receipt_count"] == 1
+
+
 def test_lifecycle_manager_does_not_mint_belief_from_iteration_count_alone():
     manager = ThreadLifecycleManager.__new__(ThreadLifecycleManager)
     thread = {

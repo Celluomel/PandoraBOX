@@ -276,6 +276,55 @@ class ThoughtThreadEngine:
         logger.debug(f"[TTE] Resolved {thread.id[:8]}: {thread.status.value}")
         return thread
 
+    def record_action_receipt(
+        self, goal_id: str, *, action: str, success: bool,
+        execution_id: str = "", cycle_id: Optional[int] = None,
+        result: str = "", evidence_ref: str = "",
+    ) -> int:
+        """Attach a completed goal action to its thread without resolving it.
+
+        An action receipt proves that an operation returned a terminal result;
+        it does not prove that the thread's broader success criterion was met.
+        Keep that distinction explicit and leave confidence/status untouched.
+        Returns the number of matched threads (normally zero or one).
+        """
+        source_ref = str(goal_id or "").strip()[:80]
+        action_name = str(action or "").strip()[:48]
+        execution_ref = str(execution_id or "").strip()[:100]
+        if not source_ref or not action_name or not execution_ref:
+            return 0
+        receipt = {
+            "execution_id": execution_ref,
+            "cycle_id": cycle_id if isinstance(cycle_id, int) else None,
+            "action": action_name,
+            "success": bool(success),
+            "result": str(result or "").strip()[:200],
+            "evidence_ref": str(evidence_ref or "").strip()[:160],
+            "recorded_at": time.time(),
+        }
+        matched = 0
+        with self._lock:
+            for thread in self._threads.values():
+                if thread.source_ref != source_ref:
+                    continue
+                receipts = thread.current_state.get("action_receipts")
+                if not isinstance(receipts, list):
+                    receipts = []
+                if any(
+                    isinstance(item, dict)
+                    and item.get("execution_id") == execution_ref
+                    for item in receipts
+                ):
+                    matched += 1
+                    continue
+                receipts.append(receipt)
+                thread.current_state["action_receipts"] = receipts[-20:]
+                thread.current_state["last_action_receipt"] = receipt
+                thread.current_state["action_receipt_count"] = len(receipts[-20:])
+                self._save()
+                matched += 1
+        return matched
+
     def step(self, ctx: TTEContext) -> List[ThoughtThread]:
         """
         Main tick — called each slow cycle.
