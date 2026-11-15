@@ -4790,12 +4790,10 @@ Memory honesty — two distinct cases:
             self._record_turn_stage("empathy_context", "skipped_unavailable")
 
         try:
-            if peer_name:
-                self._record_turn_stage(
-                    "abstract_reasoning_context", "skipped_by_scope",
-                    turn_id=audit_turn_id,
-                )
-            elif not include_are_context:
+            # ARE stores its current/continuity fragments by user_id. Peer
+            # turns therefore receive only the fragment keyed to that peer,
+            # while human-only ACC/empathy/camera/Body context stays excluded.
+            if not include_are_context:
                 self._record_turn_stage(
                     "abstract_reasoning_context", "skipped_not_applicable",
                     turn_id=audit_turn_id,
