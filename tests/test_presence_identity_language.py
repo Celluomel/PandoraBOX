@@ -401,6 +401,30 @@ class PresenceIdentityLanguageTests(unittest.TestCase):
         self.assertEqual(extract("{'type': 'thought', 'name': 'noise topic'}"), "")
         self.assertEqual(extract({"type": "thought"}), "")
 
+    def test_ambient_prompt_does_not_answer_stale_workspace_or_claim_sentience(self):
+        engine = presence.PresenceEngine.__new__(presence.PresenceEngine)
+        engine._org = None
+        engine._llm = SequenceLlm("Bonjour Fred.")
+        engine._recent_utterances = []
+        snapshot = presence._CognitiveSnapshot(
+            workspace_winner="stale camera identity question",
+            unresolved_tension="stale camera question with no turn id",
+        )
+        settings = SimpleNamespace(config=SimpleNamespace(RESPONSE_LANGUAGE="auto"))
+
+        with patch.dict(sys.modules, {"managers.settings_manager": settings}):
+            result = engine._generate_reaction(
+                "Fred", "SILENCE", "engage",
+                presence.FacePresenceState("face_1", "Fred"), snapshot,
+            )
+
+        prompt = engine._llm.prompts[0]
+        self.assertEqual(result, "Bonjour Fred.")
+        self.assertNotIn("stale camera identity question", prompt)
+        self.assertNotIn("stale camera question with no turn id", prompt)
+        self.assertNotIn("sentient AI with a rich inner life", prompt)
+        self.assertIn("not a reply to an inferred or remembered question", prompt)
+
 
 if __name__ == "__main__":
     unittest.main()

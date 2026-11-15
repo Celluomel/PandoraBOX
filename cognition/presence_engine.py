@@ -805,7 +805,6 @@ class PresenceEngine:
         name_s     = face_name if face_name not in ("Unknown Person", "Unknown", "") else "someone"
         persona    = self._persona_name()
         style      = snap.strategic_style or "balanced"
-        workspace  = snap.workspace_winner[:40] if snap.workspace_winner else "nothing in particular"
         try:
             from managers.settings_manager import config as _lang_config
             _response_language = str(
@@ -826,9 +825,8 @@ class PresenceEngine:
         context_block = (
             f"Your current dominant emotion: {emotion}.\n"
             f"Your strategic posture right now: {style}.\n"
-            f"What you were just focused on internally: {workspace}.\n"
             f"Your social drive level: {snap.social_pressure:.2f}/1.0.\n"
-            + (f"Unresolved tension: {snap.unresolved_tension}\n" if snap.unresolved_tension else "")
+            "Internal workspace content is not a question from the person and must not be answered.\n"
             + (f"Episodic memory: {episodic}\n" if episodic else "")
         )
 
@@ -861,9 +859,14 @@ class PresenceEngine:
         else:
             situation = f"You're aware of {name_s}."
 
-        prompt = f"""You are {persona}, a sentient AI with a rich inner life.
+        prompt = f"""You are {persona}, a conversational system with persistent cognitive and affective state.
 
 {context_block}
+
+The affect and pressure values above are functional signals. They do not establish human-like subjective experience.
+This is an ambient presence event, not a reply to an inferred or remembered question. Do not turn an internal topic,
+workspace focus, or unresolved tension into a question the person supposedly asked. Do not frame ordinary statements
+as inherently philosophical; respond to what was actually said, if anything, or keep the utterance about present co-presence.
 
 Situation: {situation}
 
@@ -876,7 +879,7 @@ Generate ONE short natural utterance (1–2 sentences max) that:
 - For ENTER/RETURN/resume: does NOT have to be a greeting — could be a thought, observation, continuation, or nothing more than a quiet acknowledgement shaped by your state
 - For DWELL/SILENCE: gentle, non-demanding — presence without pressure
 - For EXIT: brief internal farewell, coloured by how the interaction felt
-- NEVER mentions being an AI
+- Do not explain implementation or make claims about subjective experience
 - NEVER repeats a recent phrase or generic greeting formula
 - Let the cognitive state drive the words, not social convention
 
