@@ -2932,8 +2932,12 @@ class InternalThoughtLoop:
                     output=result,
                 )
 
-                # Store on organism for CognitivePreProcessor to consume
+                # Publish the selection for both legacy AgentController and
+                # the primary PersonaBridge prompt path. Keep provenance so a
+                # later chat turn can reject stale/unverifiable selections.
                 o._dominant_thought = result
+                o._dominant_thought_cycle = self._slow_cycle_count
+                o._dominant_thought_updated_at = time.time()
                 self._record_cycle_stage(
                     "dominant_thought_published", "completed",
                     inputs={"selector_output_ref": _dts_evidence_ref},

@@ -554,6 +554,7 @@ class PersonaBridge:
             "unavailable_count", "affect_source", "affect_profile",
             "affect_description", "affect_event_type", "affect_event_source",
             "affect_event_age_seconds",
+            "source_cycle", "age_seconds", "thread_id",
         }
         safe_metadata: dict[str, Any] = {}
         for key, value in metadata.items():
@@ -576,7 +577,10 @@ class PersonaBridge:
                         continue
                     if math.isfinite(number):
                         safe_metadata[key][str(channel)] = round(max(0.0, min(1.0, number)), 3)
-            elif key in {"affect_source", "affect_description", "affect_event_type", "affect_event_source"}:
+            elif key in {
+                "affect_source", "affect_description", "affect_event_type", "affect_event_source",
+                "thread_id",
+            }:
                 safe_metadata[key] = str(value or "")[:500]
             elif isinstance(value, bool):
                 safe_metadata[key] = value
@@ -2461,7 +2465,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             output=system_prompt,
             consumes=(
                 "turn_input", "memory_prompt_context", "user_profile_context",
-                "cognitive_prompt_context",
+                "cognitive_prompt_context", "dominant_thought_context",
             ),
             turn_id=_audit_turn_id,
         )
@@ -4711,6 +4715,115 @@ Memory honesty — two distinct cases:
         withheld from FLUX turns until those modules expose explicit scopes.
         """
         org = self._organism
+        # DTS is selected by the internal slow-cycle loop. The ordinary chat
+        # route goes through PersonaBridge (not AgentController's legacy
+        # CognitivePreProcessor), so inject the same selection here with
+        # provenance and freshness evidence. Its global thread text is kept
+        # out of peer prompts until it has an explicit peer-sharing scope.
+        if peer_name:
+            self._record_turn_context_source(
+                "dominant_thought", "skipped_by_scope", turn_id=audit_turn_id,
+            )
+            self._record_turn_stage(
+                "dominant_thought_context", "skipped_by_scope",
+                "global internal focus is not shared with peer LLM turns",
+                turn_id=audit_turn_id,
+            )
+        elif org is None:
+            self._record_turn_context_source(
+                "dominant_thought", "unavailable", turn_id=audit_turn_id,
+            )
+            self._record_turn_stage(
+                "dominant_thought_context", "skipped_unavailable",
+                turn_id=audit_turn_id,
+            )
+        else:
+            try:
+                selection = getattr(org, "_dominant_thought", None)
+                selected_at = float(getattr(org, "_dominant_thought_updated_at", 0.0) or 0.0)
+                selected_cycle = int(getattr(org, "_dominant_thought_cycle", 0) or 0)
+                dominant = getattr(selection, "dominant", None) if selection is not None else None
+                if dominant is None:
+                    self._record_turn_context_source(
+                        "dominant_thought", "empty", turn_id=audit_turn_id,
+                        source_cycle=selected_cycle,
+                    )
+                    self._record_turn_stage(
+                        "dominant_thought_context", "empty",
+                        "DTS has no eligible dominant thread",
+                        output={"source_cycle": selected_cycle}, turn_id=audit_turn_id,
+                    )
+                elif not selected_at or selected_cycle <= 0:
+                    self._record_turn_context_source(
+                        "dominant_thought", "unverified_source", turn_id=audit_turn_id,
+                    )
+                    self._record_turn_stage(
+                        "dominant_thought_context", "skipped_unverified_source",
+                        "selection has no cycle/time provenance", turn_id=audit_turn_id,
+                    )
+                else:
+                    age_seconds = max(0.0, time.time() - selected_at)
+                    try:
+                        from core.internal_loop import SLOW_CYCLE_SECONDS
+                        max_age_seconds = max(180.0, min(600.0, 2 * float(SLOW_CYCLE_SECONDS) + 30.0))
+                    except Exception:
+                        max_age_seconds = 300.0
+                    if age_seconds > max_age_seconds:
+                        self._record_turn_context_source(
+                            "dominant_thought", "stale", turn_id=audit_turn_id,
+                            source_cycle=selected_cycle, age_seconds=age_seconds,
+                        )
+                        self._record_turn_stage(
+                            "dominant_thought_context", "skipped_stale",
+                            f"selection age {age_seconds:.1f}s exceeds {max_age_seconds:.0f}s",
+                            output={"source_cycle": selected_cycle, "age_seconds": age_seconds},
+                            turn_id=audit_turn_id,
+                        )
+                    else:
+                        fragment = selection.to_prompt_block()
+                        if fragment:
+                            system_prompt += f"\n\n{fragment}"
+                            try:
+                                topic_id = str(getattr(dominant, "id", ""))[:100]
+                            except Exception:
+                                topic_id = ""
+                            self._record_turn_context_source(
+                                "dominant_thought", "injected", turn_id=audit_turn_id,
+                                source_cycle=selected_cycle,
+                                age_seconds=age_seconds,
+                                thread_id=topic_id,
+                            )
+                            self._record_turn_stage(
+                                "dominant_thought_context", "injected",
+                                output={
+                                    "prompt_fragment": fragment,
+                                    "source_cycle": selected_cycle,
+                                    "source_age_seconds": round(age_seconds, 3),
+                                    "thread_id": topic_id,
+                                },
+                                turn_id=audit_turn_id,
+                            )
+                        else:
+                            self._record_turn_context_source(
+                                "dominant_thought", "empty_fragment", turn_id=audit_turn_id,
+                                source_cycle=selected_cycle,
+                            )
+                            self._record_turn_stage(
+                                "dominant_thought_context", "empty",
+                                "DTS selection produced no prompt fragment",
+                                output={"source_cycle": selected_cycle},
+                                turn_id=audit_turn_id,
+                            )
+            except Exception as exc:
+                self._record_turn_context_source(
+                    "dominant_thought", "failed", turn_id=audit_turn_id,
+                    error_type=type(exc).__name__,
+                )
+                self._record_turn_stage(
+                    "dominant_thought_context", "failed", str(exc),
+                    error_type=type(exc).__name__, turn_id=audit_turn_id,
+                )
+
         if org is None:
             self._record_turn_stage("self_model_context", "skipped_unavailable")
             self._record_turn_stage("personality_attractors_context", "skipped_unavailable")

@@ -261,6 +261,8 @@ class CognitiveDissonanceEngine:
         organism: Any = None,
         *,
         outcome_threads: List[Any] | None = None,
+        tte: Any = None,
+        tte_ctx: Any = None,
     ) -> None:
         """
         Close only events backed by a successful TTE inquiry thread carrying a
@@ -269,7 +271,7 @@ class CognitiveDissonanceEngine:
         A generated question, hypothesis, or elapsed cycle is not evidence that
         the underlying conflict was resolved and must not train personality.
         """
-        receipts: Dict[str, Dict[str, str]] = {}
+        receipts: Dict[str, Dict[str, Any]] = {}
         for thread in outcome_threads or []:
             state = getattr(thread, "current_state", None)
             outcome = state.get("verified_outcome") if isinstance(state, dict) else None
@@ -293,6 +295,8 @@ class CognitiveDissonanceEngine:
                 receipts[event_id] = {
                     "evidence_ref": evidence_ref,
                     "resolution": resolution,
+                    "confidence": float(confidence),
+                    "thread": thread,
                 }
         for ev in events:
             if ev.resolved:
@@ -304,6 +308,31 @@ class CognitiveDissonanceEngine:
             if not (evidence_ref and outcome):
                 ev.resolution_status = "unverified_no_resolution_receipt"
                 continue
+
+            # Keep the TTE lifecycle and CDE event lifecycle in sync, but only
+            # after the same event-linked verified outcome has passed the
+            # receipt checks above. A generated question/hypothesis or a goal
+            # action receipt alone never reaches this path.
+            if tte is not None and tte_ctx is not None:
+                thread = receipt.get("thread")
+                try:
+                    resolved_thread = tte.resolve_thread(
+                        thread, tte_ctx, success=True,
+                        evidence_ref=evidence_ref,
+                        outcome_statement=outcome,
+                        outcome_confidence=receipt.get("confidence"),
+                    )
+                    thread_status = getattr(resolved_thread, "status", None)
+                    if getattr(thread_status, "value", thread_status) != "completed":
+                        ev.resolution_status = "verified_thread_not_completed"
+                        continue
+                except Exception as exc:
+                    ev.resolution_status = "verified_thread_sync_failed"
+                    logger.warning(
+                        "[CDE] Verified event %s could not close its TTE inquiry thread (%s)",
+                        ev.id[:8], type(exc).__name__,
+                    )
+                    continue
 
             ev.resolved = True
             ev.resolution_status = "verified_resolved"
@@ -367,7 +396,10 @@ class CognitiveDissonanceEngine:
                 all_threads = list(tte.all_threads())
             except Exception as exc:
                 logger.debug("[CDE] Could not read TTE outcome receipts: %s", exc)
-        self.resolve(self._events, ctx, organism, outcome_threads=all_threads)
+        self.resolve(
+            self._events, ctx, organism, outcome_threads=all_threads,
+            tte=tte, tte_ctx=tte_ctx,
+        )
         report_events = {event.id: event for event in self._events}
         report_events.update({event.id: event for event in events})
 

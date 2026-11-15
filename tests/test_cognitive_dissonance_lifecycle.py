@@ -145,6 +145,45 @@ def test_step_consumes_only_successful_tte_outcome_linked_to_event():
     assert event.resolution_evidence_ref == "cycle-9:outcome-2"
 
 
+def test_verified_cde_outcome_also_completes_its_tte_inquiry_thread(tmp_path):
+    from cognition.thought_thread_engine import (
+        ThoughtThread,
+        ThoughtThreadEngine,
+        ThoughtThreadStatus,
+        TTEContext,
+    )
+
+    event = _event(intensity=0.8)
+    thread = ThoughtThread(
+        id="inquiry-17",
+        topic="dissonance inquiry",
+        goal="investigate the recorded mismatch",
+        source="dissonance",
+        current_state={
+            "cde_event_id": event.id,
+            "verified_outcome": {
+                "status": "success",
+                "evidence_ref": "cycle-22:verified-outcome",
+                "belief_statement": "The expected cause was checked against the recorded evidence.",
+                "confidence": 0.88,
+            },
+        },
+    )
+    tte = ThoughtThreadEngine(str(tmp_path / "threads.json"))
+    tte._threads[thread.id] = thread
+    engine = CognitiveDissonanceEngine()
+    engine.resolve(
+        [event], CDEContext(), outcome_threads=[thread],
+        tte=tte, tte_ctx=TTEContext(),
+    )
+
+    assert event.resolved is True
+    assert event.resolution_status == "verified_resolved"
+    assert thread.status is ThoughtThreadStatus.COMPLETED
+    assert thread.current_state["resolution_evidence_ref"] == "cycle-22:verified-outcome"
+    assert thread.current_state["verified_outcome"]["confidence"] == 0.88
+
+
 def test_identity_action_detector_consumes_typed_action_receipts():
     engine = CognitiveDissonanceEngine()
     context = CDEContext(
