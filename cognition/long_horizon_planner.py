@@ -839,12 +839,17 @@ class LongHorizonPlanner:
         return False
 
     def prompt_fragment_for(self, user_input: str) -> str:
-        """Return ordinary plan guidance or strict telemetry for self-reports."""
+        """Return strict plan telemetry only for explicit self-report queries.
+
+        Aspiration steps currently have no autonomous executor route. Injecting
+        their next operation into every chat turn made advisory plan state look
+        like an instruction to perform or report that action, without creating
+        an execution receipt. Keep it out of ordinary user conversations until
+        a dispatcher can execute the step and report its outcome with evidence.
+        """
         if self.should_ground_self_report(user_input):
             return self.factual_self_report_fragment(user_input)
-        action = self.preferred_next_action()
-        if not action: return ""
-        return f"[Plan] Next planned action type: {action}."
+        return ""
 
     def factual_self_report_snapshot(self) -> Dict[str, Any]:
         """Return inspectable state facts without prompt instructions or hidden reasoning."""
@@ -1394,14 +1399,15 @@ class LongHorizonPlanner:
                         }
                         plan.current_decision = (
                             "Legacy plan-level success lacked a matching step execution receipt; "
-                            "progress is retained as unverified and the step must be retried."
+                            "progress is retained as unverified; this migration does not record "
+                            "or schedule a retry."
                         )
                         plan_migrated_unverified = True
                         migrated_unverified_progress = True
                     if plan_migrated_unverified and not plan.current_decision:
                         plan.current_decision = (
                             "Legacy completed steps without per-step execution receipts are "
-                            "unverified and must be retried."
+                            "unverified; no retry is recorded or scheduled by this migration."
                         )
                 except Exception: pass
             if migrated_recovery_steps or migrated_unverified_progress:

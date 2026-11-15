@@ -521,6 +521,7 @@ class IntentionPlanningTests(unittest.TestCase):
             self.assertEqual(plan.last_outcome["status"], "unverified")
             self.assertIsNone(plan.last_outcome["success"])
             self.assertEqual(len(plan.unverified_legacy_claims), 3)
+            self.assertIn("does not record or schedule a retry", plan.current_decision)
             persisted = json.loads(planner._path.read_text(encoding="utf-8"))["cognitive"]
             self.assertEqual(persisted["steps_completed"], 0)
             self.assertEqual(persisted["steps"][0]["status"], "unverified")
@@ -755,6 +756,11 @@ class IntentionPlanningTests(unittest.TestCase):
             self.assertIn(f"confidence={plan.reasoning_confidence:.3f}", fragment)
             self.assertIn("aspirations are desired directions, not active goals", fragment)
             self.assertIn("Do not invent steps", fragment)
+
+            ordinary = planner.prompt_fragment_for(
+                "Je ne suis pas convaincu que toute conversation soit philosophique."
+            )
+            self.assertEqual(ordinary, "")
 
             budget = PromptContextBudget(str(Path(folder) / "prompt_contributions.json"))
             budget.add("factual_telemetry", "live_plan", fragment)
