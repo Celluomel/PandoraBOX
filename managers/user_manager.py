@@ -467,12 +467,13 @@ class UserManager:
                     "AUTHORITATIVE NAMED-PROFILE PROVENANCE COUNTS: "
                     f"explicit_user_stated_entries={provenance_summary['explicit_user_stated_entries']}; "
                     f"legacy_unverified_entries={provenance_summary['legacy_unverified_entries']} "
-                    f"({counts_text}). These counts describe this UserManager profile only.",
+                    f"({counts_text}). These counts describe this UserManager profile only. "
+                    "Only provenance-backed user statements below are usable as profile facts; "
+                    "legacy entries without a user source receipt are excluded.",
                 ]
                 if profile.notes.strip():
                     parts.append(
-                        "Legacy profile notes (source turn not recorded; treat as unverified): "
-                        + profile.notes.strip()
+                        "Legacy profile notes exist but have no source receipt and are excluded from this context."
                     )
                 for kind, label in (
                     ("preference", "preferences"),
@@ -488,7 +489,6 @@ class UserManager:
                     }[kind]
                     values = getattr(profile, field_name)
                     provenanced = []
-                    legacy = []
                     for value in values:
                         fact_key = hashlib.sha256(value.casefold().encode("utf-8")).hexdigest()
                         provenance = profile.profile_fact_provenance
@@ -514,15 +514,8 @@ class UserManager:
                                 f"{value} [explicit user statement"
                                 f"{': ' + source_ref if source_ref else ''}]"
                             )
-                        else:
-                            legacy.append(value)
                     if provenanced:
                         parts.append(f"User-stated {label}: " + "; ".join(provenanced[:4]) + ".")
-                    if legacy:
-                        parts.append(
-                            f"Legacy {label} without source receipt (unverified): "
-                            + "; ".join(legacy[:4]) + "."
-                        )
                 cached = " ".join(parts)[:1200]
                 self._prompt_cache[profile.id] = cached
             return cached

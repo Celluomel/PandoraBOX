@@ -79,17 +79,19 @@ def test_profile_fact_provenance_is_persisted_and_rendered_as_source_link(tmp_pa
     assert persisted_profile.profile_fact_provenance["preference"]
 
 
-def test_legacy_profile_facts_are_labeled_unverified_until_reasserted(tmp_path):
+def test_legacy_profile_facts_are_excluded_until_reasserted(tmp_path):
     manager = UserManager(path=Path(tmp_path) / "users.json")
     profile = manager.create("Fred")
     manager.set_active(profile.id)
     profile.preferences.append("concise technical answers")
     manager._save()
 
-    assert "Legacy preferences without source receipt (unverified)" in manager.prompt_context_for(profile.id)
-    assert "explicit_user_stated_entries=0" in manager.prompt_context_for(profile.id)
-    assert "legacy_unverified_entries=1" in manager.prompt_context_for(profile.id)
-    assert "Legacy preferences without source receipt (unverified)" in manager.active_context_for_prompt()
+    prompt_context = manager.prompt_context_for(profile.id)
+    assert "explicit_user_stated_entries=0" in prompt_context
+    assert "legacy_unverified_entries=1" in prompt_context
+    assert "legacy entries without a user source receipt are excluded" in prompt_context
+    assert "concise technical answers" not in prompt_context
+    assert "concise technical answers" not in manager.active_context_for_prompt()
 
 
 def test_profile_provenance_requires_a_user_source_receipt(tmp_path):
@@ -104,7 +106,20 @@ def test_profile_provenance_requires_a_user_source_receipt(tmp_path):
 
     assert summary["explicit_user_stated_entries"] == 0
     assert summary["legacy_unverified_entries"] == 1
-    assert "Legacy preferences without source receipt (unverified)" in prompt_context
+    assert "legacy_unverified_entries=1" in prompt_context
+    assert "concise answers" not in prompt_context
+
+
+def test_legacy_profile_notes_are_not_injected_into_chat_prompt(tmp_path):
+    manager = UserManager(path=Path(tmp_path) / "users.json")
+    profile = manager.create("Fred")
+    profile.notes = "Unverified old note with private preference detail."
+    manager._save()
+
+    prompt_context = manager.prompt_context_for(profile.id)
+
+    assert "Legacy profile notes exist" in prompt_context
+    assert "Unverified old note with private preference detail" not in prompt_context
 
 
 def test_profile_learning_does_not_claim_update_when_persistence_fails(tmp_path):
