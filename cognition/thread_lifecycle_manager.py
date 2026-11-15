@@ -34,7 +34,6 @@ class ThreadLifecycleManager:
     """
 
     MAX_ITER_THRESHOLD = 15    # threads at or above this are "stuck"
-    CONFIDENCE_BASE    = 0.55  # belief confidence for extracted insights
 
     def __init__(self, persona_dir: str = "data/persona"):
         self.persona_dir = Path(persona_dir)
@@ -48,6 +47,7 @@ class ThreadLifecycleManager:
             'threads_processed': 0,
             'beliefs_extracted': [],
             'threads_retired':   [],
+            'unverified_threads_retired': [],
             'links_repaired':    0,
         }
 
@@ -65,6 +65,8 @@ class ThreadLifecycleManager:
                     # Link thread to the belief
                     thread['identity_link']  = belief['name']
                     thread['learning_at']    = _now()
+                else:
+                    report['unverified_threads_retired'].append(thread['id'][:8])
 
                 thread['status']      = 'retired'
                 thread['retired_at']  = _now()
@@ -82,72 +84,43 @@ class ThreadLifecycleManager:
 
     def _extract_belief(self, thread: Dict) -> Optional[Dict]:
         """
-        Extract a belief from a stuck thread based on its topic,
-        history, and goal.
+        Persist only an explicit outcome statement with a verified
+        evidence reference; age, iterations and the topic are not evidence.
         """
         topic   = thread.get('topic', '').strip()
-        goal    = thread.get('goal', '').strip()
-        history = thread.get('history', [])
-        state   = str(thread.get('current_state', '') or '').strip()
+        state = thread.get('current_state', {})
         tid     = thread.get('id', '')
-
-        if not topic:
+        outcome = state.get('verified_outcome') if isinstance(state, dict) else None
+        if not topic or not isinstance(outcome, dict):
             return None
-
-        # Build a meaningful belief statement from thread context
-        statement = self._build_belief_statement(topic, goal, state, history)
-        if not statement:
+        if outcome.get('status') not in {'success', 'failure'}:
+            return None
+        evidence_ref = str(outcome.get('evidence_ref') or '').strip()
+        statement = str(outcome.get('belief_statement') or '').strip()
+        confidence = outcome.get('confidence')
+        if (not evidence_ref or not statement
+                or not isinstance(confidence, (int, float))
+                or isinstance(confidence, bool)
+                or not 0.0 <= float(confidence) <= 1.0):
             return None
 
         belief_name = f"thread_learning_{tid[:8]}"
-
-        # Confidence based on how much work was done
-        iters      = thread.get('iteration_count', 0)
-        confidence = min(0.85, self.CONFIDENCE_BASE + iters * 0.01)
-
         bel = make_belief(
             name=belief_name,
-            value=0.6,
-            confidence=round(confidence, 3),
+            value=1.0 if outcome['status'] == 'success' else 0.0,
+            confidence=round(float(confidence), 3),
             source_thread=tid,
         )
         bel['category']      = 'thread_learning'
         bel['thread_id']     = tid
         bel['topic']         = topic
         bel['statement']     = statement
-        bel['description']   = f"Learned from {iters}-iteration thread on '{topic}'"
-        bel['iterations']    = iters
+        bel['description']   = f"Verified {outcome['status']} outcome for thread on '{topic}'"
+        bel['evidence_ref']  = evidence_ref[:200]
+        bel['outcome_status'] = outcome['status']
+        bel['iterations']    = int(thread.get('iteration_count', 0) or 0)
 
         return bel
-
-    def _build_belief_statement(
-        self,
-        topic: str,
-        goal: str,
-        state: str,
-        history: list,
-    ) -> str:
-        """Build a natural-language belief from thread data."""
-        # Try to get the most recent history entry with meaningful content
-        last_insight = ""
-        for h in reversed(history[-5:] if history else []):
-            if isinstance(h, dict):
-                text = h.get('insight', h.get('result', h.get('content', '')))
-                if text and len(str(text)) > 10:
-                    last_insight = str(text)[:80]
-                    break
-            elif isinstance(h, str) and len(h) > 10:
-                last_insight = h[:80]
-                break
-
-        if last_insight:
-            return f"After extensive exploration of '{topic}': {last_insight}"
-        elif state and len(state) > 10:
-            return f"Regarding '{topic}': {state[:80]}"
-        elif goal:
-            return f"Explored '{topic}' extensively without full resolution — it remains an open question"
-        else:
-            return f"Extended engagement with '{topic}' deepened understanding without closure"
 
     # ── Thought↔Goal link repair ──────────────────────────────────────────────
 

@@ -2782,7 +2782,12 @@ class InternalThoughtLoop:
                 active_threads = self._tte.step(tte_ctx)
                 _tte_evidence_ref = self._record_cycle_stage(
                     "thought_thread_engine", "completed", output=active_threads,
-                    metrics={"active_thread_count": len(active_threads) if hasattr(active_threads, "__len__") else -1},
+                    metrics={
+                        "active_thread_count": len(active_threads) if hasattr(active_threads, "__len__") else -1,
+                        "active_goal_seed_count": len(tte_ctx.world_state.get("goal_threads", [])),
+                        "curiosity_seed_present": bool(tte_ctx.world_state.get("top_curiosity_topic")),
+                        "vision_surprise_present": bool(tte_ctx.world_state.get("vision_surprise")),
+                    },
                 )
 
                 # 2. CDE step — detect dissonance, spawn meta-threads
@@ -2834,11 +2839,22 @@ class InternalThoughtLoop:
                     tte_ctx  = tte_ctx,
                     organism = o,
                 )
+                _cde_report = dict(getattr(self._cde, "last_step_report", {}) or {})
+                _cde_event_refs = _cde_report.get("event_refs", [])
                 _cde_evidence_ref = self._record_cycle_stage(
                     "cognitive_dissonance_engine", "completed",
                     inputs={"thread_state_ref": _tte_evidence_ref},
                     output=active_threads,
-                    metrics={"active_thread_count": len(active_threads) if hasattr(active_threads, "__len__") else -1},
+                    metrics={
+                        "active_thread_count": len(active_threads) if hasattr(active_threads, "__len__") else -1,
+                        "detected_event_count": int(_cde_report.get("detected_event_count", 0)),
+                        "meta_threads_spawned": int(_cde_report.get("meta_threads_spawned", 0)),
+                        "auto_resolved_event_count": int(_cde_report.get("auto_resolved_event_count", 0)),
+                        "event_ids": ",".join(str(item.get("id", "")) for item in _cde_event_refs
+                                              if isinstance(item, dict) and item.get("id")),
+                        "event_types": ",".join(str(item.get("type", "")) for item in _cde_event_refs
+                                                if isinstance(item, dict) and item.get("type")),
+                    },
                 )
 
                 # 3. DTS — select dominant thought

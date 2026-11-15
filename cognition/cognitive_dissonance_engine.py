@@ -96,6 +96,12 @@ class CognitiveDissonanceEngine:
 
     def __init__(self) -> None:
         self._events: List[DissonanceEvent] = []
+        self.last_step_report: Dict[str, Any] = {
+            "detected_event_count": 0,
+            "meta_threads_spawned": 0,
+            "auto_resolved_event_count": 0,
+            "event_refs": [],
+        }
         logger.info("[CDE] CognitiveDissonanceEngine initialised")
 
     # ── Detection ─────────────────────────────────────────────────────────────
@@ -263,13 +269,32 @@ class CognitiveDissonanceEngine:
         """
         events = self.detect(ctx)
         threads = self.apply_to_threads(events, threads)
-        self.spawn_meta_threads(events, tte, tte_ctx)
+        meta_threads = self.spawn_meta_threads(events, tte, tte_ctx)
 
         # Auto-resolve low-intensity events immediately
         auto_resolve = [e for e in events if e.intensity < DISSONANCE_THRESHOLD + 0.1]
         self.resolve(auto_resolve, ctx, organism)
 
-        return threads
+        # New meta-threads are already persisted by the TTE, but returning
+        # only the input list delayed their first DTS selection until the
+        # next slow cycle. Include them now so detection → reflection →
+        # selection is one observable cycle.
+        result = list(threads)
+        known_ids = {getattr(thread, "id", None) for thread in result}
+        result.extend(thread for thread in meta_threads
+                      if getattr(thread, "id", None) not in known_ids)
+        self.last_step_report = {
+            "detected_event_count": len(events),
+            "meta_threads_spawned": len(meta_threads),
+            "auto_resolved_event_count": sum(1 for event in auto_resolve if event.resolved),
+            "event_refs": [
+                {"id": str(event.id), "type": event.type.value,
+                 "intensity": round(float(event.intensity), 3),
+                 "resolved": bool(event.resolved)}
+                for event in events[-20:]
+            ],
+        }
+        return result
 
     # ── Private detection helpers ─────────────────────────────────────────────
 

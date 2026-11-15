@@ -23,9 +23,9 @@ Thread lifecycle:
   spawn → advance → [branch] → resolve → archive → [reactivate]
 
 Thread sources:
+  - admitted active GoalEngine goals (including user/pressure-derived goals)
   - curiosity signal (passive curiosity → active inquiry)
-  - user input (extracted topic from conversation)
-  - pressure buildup (identity / epistemic / expression)
+  - salient vision surprise
   - dissonance detection (CDE injects meta-threads)
 """
 from __future__ import annotations
@@ -47,7 +47,6 @@ MAX_ACTIVE_THREADS  = 12   # cap to avoid cognitive overload
 MAX_HISTORY_ENTRIES = 20   # per thread
 THREAD_IDLE_HOURS   = 2.0  # defer threads inactive for this long
 MIN_CONFIDENCE      = 0.05 # below this → thread is failed/archived
-ADVANCE_CONFIDENCE_GAIN = 0.05
 PERSISTENCE_PATH    = "data/persona/thought_threads.json"
 
 
@@ -73,8 +72,8 @@ class ThoughtThread:
     history:         List[Dict[str, Any]]  = field(default_factory=list)
     planned_actions: List[str]             = field(default_factory=list)
     memory_refs:     List[str]             = field(default_factory=list)
-    confidence:      float                 = 0.60
-    uncertainty:     float                 = 0.40
+    confidence:      float                 = 0.50  # neutral prior until outcome evidence arrives
+    uncertainty:     float                 = 0.50
     pressure:        Dict[str, float]      = field(default_factory=dict)
     curiosity:       float                 = 0.30
     dissonance:      float                 = 0.0
@@ -85,9 +84,10 @@ class ThoughtThread:
     status:          ThoughtThreadStatus   = ThoughtThreadStatus.ACTIVE
     created_at:      float                 = field(default_factory=time.time)
     last_advanced:   float                 = field(default_factory=time.time)
-    source:          str                   = "internal"  # curiosity / user / pressure / dissonance
+    source:          str                   = "internal"  # goal_engine / curiosity / vision / dissonance
     # Retained for compatibility with persisted TTE and lifecycle helpers.
     iteration_count: int                   = 0
+    source_ref:      str                   = ""          # originating persistent goal, when present
 
     def age_hours(self) -> float:
         return (time.time() - self.created_at) / 3600.0
@@ -144,27 +144,48 @@ class ThoughtThreadEngine:
         with self._lock:
             # Deduplicate: don't spawn if same topic is already ACTIVE/ENGAGED
             topic = seed.get("topic", "unknown").lower()[:80]
+            source_ref = str(seed.get("source_ref") or "")
             for t in self._threads.values():
+                if source_ref and t.source_ref == source_ref:
+                    return t
                 if t.topic.lower() == topic and t.status in (
                     ThoughtThreadStatus.ACTIVE, ThoughtThreadStatus.ENGAGED
                 ):
-                    t.confidence = min(1.0, t.confidence + 0.05)
-                    t.last_advanced = time.time()
-                    logger.debug(f"[TTE] Reinforced existing thread: {topic!r}")
+                    if source_ref and not t.source_ref:
+                        # Upgrade an existing same-topic thread with the
+                        # admitted goal's stable provenance instead of
+                        # silently returning an unlinked curiosity thread.
+                        t.source_ref = source_ref
+                        t.source = seed.get("source", t.source)
+                        t.goal = seed.get("goal", t.goal)
+                        t.current_state.update(seed.get("current_state", {}))
+                        t.last_advanced = time.time()
+                        self._save()
+                        return t
+                    if source_ref and t.source_ref != source_ref:
+                        # Two persistent goals may share a topic; their IDs
+                        # remain distinct thread sources.
+                        continue
+                    logger.debug(f"[TTE] Reused existing thread without changing evidence state: {topic!r}")
                     return t
 
             thread = ThoughtThread(
                 id              = uuid.uuid4().hex[:12],
                 topic           = topic,
                 goal            = seed.get("goal", f"explore {topic}"),
+                current_state   = seed.get("current_state", {}),
                 curiosity       = seed.get("curiosity", ctx.curiosity_level),
                 pressure        = seed.get("pressure", {}),
                 energy_cost     = seed.get("energy_cost", 10.0),
                 planned_actions = seed.get("planned_actions", ["gather information"]),
                 source          = seed.get("source", "internal"),
+                source_ref      = source_ref,
             )
-            # Energy scales confidence cap
-            thread.confidence = min(0.70, 0.40 + ctx.energy / 200.0)
+            try:
+                thread.confidence = max(0.0, min(1.0, float(seed.get("confidence", 0.5))))
+            except (TypeError, ValueError):
+                thread.confidence = 0.5
+            thread.uncertainty = 1.0 - thread.confidence
 
             self._threads[thread.id] = thread
             self._save()
@@ -185,31 +206,19 @@ class ThoughtThreadEngine:
                 "ts":           time.time(),
                 "current_state": dict(thread.current_state),
                 "confidence":   thread.confidence,
-                "action":       thread.planned_actions[0] if thread.planned_actions else None,
+                "planned_action": thread.planned_actions[0] if thread.planned_actions else None,
+                "action_status": "planned_not_executed",
             }
             thread.history.append(snapshot)
             thread.iteration_count = max(thread.iteration_count + 1, len(thread.history))
             if len(thread.history) > MAX_HISTORY_ENTRIES:
                 thread.history = thread.history[-MAX_HISTORY_ENTRIES:]
 
-            # Rotate planned actions
-            if len(thread.planned_actions) > 1:
-                thread.planned_actions = thread.planned_actions[1:]
-
-            # Confidence grows slightly each advance if energy available
-            energy_mod = max(0.5, ctx.energy / 100.0)
-            thread.confidence = min(
-                0.95,
-                thread.confidence + ADVANCE_CONFIDENCE_GAIN * energy_mod
-            )
-            thread.uncertainty = max(0.0, 1.0 - thread.confidence - 0.1)
+            # A scheduler tick is not evidence that a planned action ran or
+            # that the goal advanced. Keep both the plan and confidence
+            # unchanged until a caller records an evidenced outcome.
+            thread.uncertainty = max(0.0, min(1.0, 1.0 - thread.confidence))
             thread.last_advanced = time.time()
-
-            # Auto-complete when goal is satisfied (confidence high, no actions left)
-            if thread.confidence >= 0.90 and not thread.planned_actions:
-                thread.status = ThoughtThreadStatus.COMPLETED
-                thread.current_state["resolution"] = "goal_reached"
-                logger.debug(f"[TTE] Thread {thread.id[:8]} auto-completed: {thread.topic!r}")
 
             self._save()
             return thread
@@ -234,13 +243,34 @@ class ThoughtThreadEngine:
         logger.debug(f"[TTE] Branched {thread.id[:8]} → child {child.id[:8]}: {sub_goal!r}")
         return child
 
-    def resolve_thread(self, thread: ThoughtThread, ctx: TTEContext) -> ThoughtThread:
-        """Mark thread completed/failed and prepare it for archiving."""
+    def resolve_thread(self, thread: ThoughtThread, ctx: TTEContext, *,
+                       success: Optional[bool] = None,
+                       evidence_ref: Optional[str] = None,
+                       outcome_statement: Optional[str] = None,
+                       outcome_confidence: Optional[float] = None) -> ThoughtThread:
+        """Resolve only from an explicit outcome receipt; otherwise defer unverified."""
         with self._lock:
-            if thread.confidence >= 0.50:
+            if success is None or not str(evidence_ref or "").strip():
+                thread.status = ThoughtThreadStatus.DEFERRED
+                thread.current_state["resolution"] = "unverified_no_outcome_receipt"
+            elif success:
                 thread.status = ThoughtThreadStatus.COMPLETED
+                thread.current_state["resolution"] = "verified_success"
             else:
                 thread.status = ThoughtThreadStatus.FAILED
+                thread.current_state["resolution"] = "verified_failure"
+            if evidence_ref:
+                thread.current_state["resolution_evidence_ref"] = str(evidence_ref)[:200]
+            if (success is not None and evidence_ref and outcome_statement
+                    and isinstance(outcome_confidence, (int, float))
+                    and not isinstance(outcome_confidence, bool)
+                    and 0.0 <= float(outcome_confidence) <= 1.0):
+                thread.current_state["verified_outcome"] = {
+                    "status": "success" if success else "failure",
+                    "belief_statement": str(outcome_statement)[:500],
+                    "evidence_ref": str(evidence_ref)[:200],
+                    "confidence": float(outcome_confidence),
+                }
             thread.current_state["resolved_at"] = time.time()
             self._save()
         logger.debug(f"[TTE] Resolved {thread.id[:8]}: {thread.status.value}")
@@ -277,6 +307,41 @@ class ThoughtThreadEngine:
             thread.energy_cost = thread.energy_cost * cost_mod
 
             self.advance_thread(thread, ctx)
+
+        # ── Seed threads from admitted persistent goals ────────────────────
+        # Persistent GoalEngine goals are already admitted, typed, and
+        # provenance-bearing cognitive commitments. Feed their active
+        # state into the thread/DTS path instead of requiring a separate
+        # high-curiosity topic threshold before the executive pipeline can
+        # represent any current goal.
+        for goal_seed in ctx.world_state.get("goal_threads", []):
+            if not isinstance(goal_seed, dict):
+                continue
+            topic = str(goal_seed.get("topic") or "").strip()
+            source_ref = str(goal_seed.get("source_ref") or "").strip()
+            if not topic or not source_ref:
+                continue
+            self.spawn_thread(ctx, {
+                "topic": topic,
+                "goal": str(goal_seed.get("goal") or topic),
+                "source": "goal_engine",
+                "source_ref": source_ref,
+                "curiosity": float(goal_seed.get("priority", 0.5) or 0.0),
+                "pressure": dict(ctx.pressures),
+                "energy_cost": 8.0,
+                "planned_actions": [
+                    "gather evidence relevant to the goal",
+                    "evaluate its stated success criteria",
+                    "update goal progress from observed results",
+                ],
+                "current_state": {
+                    "goal_priority": float(goal_seed.get("priority", 0.5) or 0.0),
+                    "goal_intent_kind": str(goal_seed.get("intent_kind") or "learn"),
+                    "success_criteria": str(goal_seed.get("success_criteria") or ""),
+                    "source_turn_id": str(goal_seed.get("source_turn_id") or ""),
+                    "source_thought_id": str(goal_seed.get("source_thought_id") or ""),
+                },
+            })
 
         # ── Spawn from curiosity with Goal Fitness scoring ─────────────────
         # Gemini insight: goal spawning should be weighted by drive alignment
@@ -412,6 +477,32 @@ class ThoughtThreadEngine:
                     ctx.world_state["top_curiosity_topic"] = top
         except Exception:
             pass
+
+        # GoalEngine is the canonical source of persistent active goals.
+        # Keep the bridge read-only and carry existing IDs/provenance; the
+        # TTE consumes only goals that have already passed GoalEngine's own
+        # admission and activation rules.
+        try:
+            ai_system = getattr(organism, "ai_system", None)
+            goal_engine = getattr(ai_system, "goal_engine", None)
+            if goal_engine and hasattr(goal_engine, "get_active_goals"):
+                active_goals = goal_engine.get_active_goals() or []
+                ctx.world_state["goal_threads"] = [
+                    {
+                        "source_ref": str(getattr(goal, "id", "") or ""),
+                        "topic": str(getattr(goal, "topic", "") or ""),
+                        "goal": str(getattr(goal, "desired_effect", "") or getattr(goal, "topic", "") or ""),
+                        "priority": float(getattr(goal, "priority", 0.5) or 0.0),
+                        "intent_kind": str(getattr(goal, "intent_kind", "learn") or "learn"),
+                        "success_criteria": str(getattr(goal, "success_criteria", "") or ""),
+                        "source_turn_id": str(getattr(goal, "source_turn_id", "") or ""),
+                        "source_thought_id": str(getattr(goal, "source_thought_id", "") or ""),
+                    }
+                    for goal in active_goals
+                    if getattr(goal, "id", None) and getattr(goal, "topic", None)
+                ]
+        except Exception as e:
+            logger.debug("[TTE] Active GoalEngine context unavailable: %s", e)
 
         # ── Vision surprise → sensory bridge signal ──────────────────────────
         # If the GW has a recent high-priority ambient_vision item that is novel,
