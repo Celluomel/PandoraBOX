@@ -65,6 +65,10 @@ class DissonanceEvent:
     actual:       Optional[Dict]  = None
     intensity:    float           = 0.5
     resolved:     bool            = False
+    resolution_status: str        = "pending"
+    resolution_evidence_ref: str  = ""
+    observation_count: int         = 1
+    last_observed_at: float        = field(default_factory=time.time)
     created_at:   float           = field(default_factory=time.time)
     # Phase 5.3 — Recursive Self-Inquiry: the mismatch, made examinable.
     # owner_statement binds the prediction to the persistent self ("I
@@ -110,21 +114,63 @@ class CognitiveDissonanceEngine:
         """
         Scan for all three dissonance types. Returns new events only.
         """
-        new_events: List[DissonanceEvent] = []
+        candidates: List[DissonanceEvent] = []
 
         # 1. IDENTITY_VS_ACTION: check each thread's actual behaviour
-        new_events.extend(self._detect_identity_vs_action(ctx))
+        candidates.extend(self._detect_identity_vs_action(ctx))
 
         # 2. GOAL_VS_OUTCOME: check thread predictions vs current_state outcomes
-        new_events.extend(self._detect_goal_vs_outcome(ctx))
+        candidates.extend(self._detect_goal_vs_outcome(ctx))
 
         # 3. BELIEF_VS_EVIDENCE: world model causal beliefs vs recent events
-        new_events.extend(self._detect_belief_vs_evidence(ctx))
+        candidates.extend(self._detect_belief_vs_evidence(ctx))
 
         # 4. PREDICTION_VS_REALITY (Phase 5.3): predicted vs actual confidence
-        new_events.extend(self._detect_prediction_vs_reality(ctx))
+        candidates.extend(self._detect_prediction_vs_reality(ctx))
 
-        self._events.extend(new_events)
+        # Detectors are sampled repeatedly. Preserve an unresolved event's ID
+        # across cycles so repeated observation is not mistaken for new
+        # evidence, repeated confidence penalties, or repeated learning.
+        def signature(event: DissonanceEvent) -> tuple:
+            def stable(value: Any) -> str:
+                if value is None:
+                    return ""
+                if isinstance(value, dict):
+                    return repr(sorted((str(k), stable(v)) for k, v in value.items()))
+                if isinstance(value, (list, tuple)):
+                    return repr(tuple(stable(item) for item in value))
+                return str(value).strip().casefold()
+
+            return (
+                event.type.value,
+                stable(event.thread_id), stable(event.belief_ref),
+                stable(event.evidence_ref), stable(event.action_ref),
+                stable(event.predicted), stable(event.actual),
+            )
+
+        unresolved_by_signature = {
+            signature(event): event for event in self._events if not event.resolved
+        }
+        new_events: List[DissonanceEvent] = []
+        self._last_reobserved_count = 0
+        for candidate in candidates:
+            prior = unresolved_by_signature.get(signature(candidate))
+            if prior is None:
+                self._events.append(candidate)
+                unresolved_by_signature[signature(candidate)] = candidate
+                new_events.append(candidate)
+                continue
+            prior.observation_count += 1
+            prior.last_observed_at = candidate.last_observed_at
+            prior.intensity = max(prior.intensity, candidate.intensity)
+            self._last_reobserved_count += 1
+            if (
+                prior.resolution_status == "deferred_low_intensity"
+                and prior.intensity >= DISSONANCE_THRESHOLD + 0.1
+            ):
+                prior.resolution_status = "pending"
+                new_events.append(prior)
+
         if len(self._events) > MAX_DISSONANCE_EVENTS:
             self._events = self._events[-MAX_DISSONANCE_EVENTS:]
 
@@ -195,35 +241,39 @@ class CognitiveDissonanceEngine:
             logger.debug(f"[CDE] Meta-thread spawned for event {ev.id[:8]}: {ev.type.value}")
         return meta_threads
 
-    def resolve(self, events: List[DissonanceEvent], ctx: CDEContext, organism: Any = None) -> None:
+    def resolve(
+        self,
+        events: List[DissonanceEvent],
+        ctx: CDEContext,
+        organism: Any = None,
+        *,
+        resolution_receipts: Dict[str, Dict[str, Any]] | None = None,
+    ) -> None:
         """
-        Apply resolution effects:
-        - trigger personality evolution queue_experience
-        - update world model causal beliefs (cause → effect)
-        - mark events resolved
+        Close only events backed by a verified downstream result receipt.
+
+        A generated question, hypothesis, or elapsed cycle is not evidence that
+        the underlying conflict was resolved and must not train personality.
         """
+        receipts = resolution_receipts if isinstance(resolution_receipts, dict) else {}
         for ev in events:
             if ev.resolved:
                 continue
 
-            # Phase 5.3: genuine self-question + hypotheses, bound to the self
-            self._generate_self_question(ev)
-            if organism is not None:
-                self._generate_competing_hypotheses(ev, organism)
-                try:
-                    exp_engine = getattr(organism, "_loop", None)
-                    exp_engine = getattr(exp_engine, "_auto_experiment", None)
-                    if exp_engine and ev.self_question and hasattr(exp_engine, "state"):
-                        exp_engine.state.pending_dissonance_questions = getattr(
-                            exp_engine.state, "pending_dissonance_questions", []
-                        )
-                        exp_engine.state.pending_dissonance_questions.append({
-                            "question": ev.self_question,
-                            "hypotheses": ev.hypotheses,
-                            "type": ev.type.value,
-                        })
-                except Exception as e:
-                    logger.debug(f"[CDE] experiment handoff skipped (non-fatal): {e}")
+            receipt = receipts.get(ev.id)
+            evidence_ref = str(receipt.get("evidence_ref") or "").strip() if isinstance(receipt, dict) else ""
+            outcome = str(receipt.get("resolution") or "").strip() if isinstance(receipt, dict) else ""
+            if not (
+                isinstance(receipt, dict)
+                and receipt.get("status") == "verified"
+                and evidence_ref and outcome
+            ):
+                ev.resolution_status = "unverified_no_resolution_receipt"
+                continue
+
+            ev.resolved = True
+            ev.resolution_status = "verified_resolved"
+            ev.resolution_evidence_ref = evidence_ref
 
             # Trigger personality evolution — dissonance is a learning signal.
             # Keys must match exactly the entries in EXPERIENCE_PRESSURE dict.
@@ -251,9 +301,7 @@ class CognitiveDissonanceEngine:
                 # A belief/evidence pair that resolves dissonance is not an
                 # intervention comparison and must not become a causal claim.
 
-            ev.resolved = True
-
-        logger.debug(f"[CDE] Resolved {sum(1 for e in events if e.resolved)} events")
+        logger.debug(f"[CDE] Verified resolutions: {sum(1 for e in events if e.resolved)}")
 
     def step(
         self,
@@ -271,9 +319,13 @@ class CognitiveDissonanceEngine:
         threads = self.apply_to_threads(events, threads)
         meta_threads = self.spawn_meta_threads(events, tte, tte_ctx)
 
-        # Auto-resolve low-intensity events immediately
-        auto_resolve = [e for e in events if e.intensity < DISSONANCE_THRESHOLD + 0.1]
-        self.resolve(auto_resolve, ctx, organism)
+        # Low-intensity events are deferred, not declared resolved. A future
+        # stronger observation can reactivate the same event without creating
+        # another penalty or treating scheduler time as evidence.
+        deferred = [e for e in events if e.intensity < DISSONANCE_THRESHOLD + 0.1]
+        for event in deferred:
+            if not event.resolved:
+                event.resolution_status = "deferred_low_intensity"
 
         # New meta-threads are already persisted by the TTE, but returning
         # only the input list delayed their first DTS selection until the
@@ -285,12 +337,18 @@ class CognitiveDissonanceEngine:
                       if getattr(thread, "id", None) not in known_ids)
         self.last_step_report = {
             "detected_event_count": len(events),
+            "reobserved_event_count": int(getattr(self, "_last_reobserved_count", 0)),
             "meta_threads_spawned": len(meta_threads),
-            "auto_resolved_event_count": sum(1 for event in auto_resolve if event.resolved),
+            "auto_resolved_event_count": 0,
+            "deferred_low_intensity_count": len(deferred),
+            "verified_resolved_event_count": sum(1 for event in events if event.resolved),
             "event_refs": [
                 {"id": str(event.id), "type": event.type.value,
                  "intensity": round(float(event.intensity), 3),
-                 "resolved": bool(event.resolved)}
+                 "resolved": bool(event.resolved),
+                 "resolution_status": str(event.resolution_status),
+                 "observation_count": int(event.observation_count),
+                 "resolution_evidence_ref": str(event.resolution_evidence_ref or "")[:48]}
                 for event in events[-20:]
             ],
         }
