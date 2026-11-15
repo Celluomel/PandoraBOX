@@ -244,7 +244,8 @@ class SemanticGraphCleaner:
         enriched = 0
 
         cur.execute("""
-            SELECT r.id, c1.name as src_name, c2.name as tgt_name
+            SELECT r.id, r.source_id, r.target_id, r.weight, r.last_used,
+                   c1.name as src_name, c2.name as tgt_name
             FROM relations r
             JOIN concepts c1 ON r.source_id = c1.id
             JOIN concepts c2 ON r.target_id = c2.id
@@ -262,8 +263,27 @@ class SemanticGraphCleaner:
                     break
 
             if new_type and new_type != 'related_to':
-                cur.execute("UPDATE relations SET rel_type=? WHERE id=?",
-                            (new_type, rel['id']))
+                cur.execute(
+                    """SELECT id, weight, last_used FROM relations
+                       WHERE source_id=? AND target_id=? AND rel_type=?
+                       LIMIT 1""",
+                    (rel['source_id'], rel['target_id'], new_type),
+                )
+                existing = cur.fetchone()
+                if existing:
+                    # The target semantic edge may already exist. Merge the
+                    # generic edge into it instead of violating the unique
+                    # (source_id, target_id, rel_type) constraint.
+                    cur.execute(
+                        """UPDATE relations
+                           SET weight=MAX(weight, ?), last_used=MAX(last_used, ?)
+                           WHERE id=?""",
+                        (rel['weight'], rel['last_used'], existing['id']),
+                    )
+                    cur.execute("DELETE FROM relations WHERE id=?", (rel['id'],))
+                else:
+                    cur.execute("UPDATE relations SET rel_type=? WHERE id=?",
+                                (new_type, rel['id']))
                 enriched += 1
 
         return enriched
