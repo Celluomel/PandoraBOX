@@ -2637,6 +2637,14 @@ La relecture du même chemin a trouvé un second faux succès : après deux gén
 
 **État :** ce dernier petit changement n’est pas encore commit/poussé et le processus live n’a pas été redémarré. Le lot précédent `d5cc0a3` est bien aligné PC/GitHub. Le compteur d’audit reste **2/10 = 20 %** : aucune nouvelle piste n’est close, car le correctif n’a pas été chargé en live et la qualité sémantique des étapes n’a pas encore de critère indépendant vérifié.
 
+### CDE : échec d’action pris pour une preuve d’identité — 15 novembre
+
+Le détecteur `identity_vs_action` parcourait les reçus typed en lisant seulement le type d’action. Un reçu `web_search, success=false` pouvait suffire à conclure que la curiosité avait produit une exploration. Il ne validait donc pas l’effet, seulement la tentative.
+
+**Correction locale :** les actions ne comptent désormais comme comportement observé que si le reçu contient explicitement `success is True`. Les reçus d’échec restent présents dans le contexte, mais ne prouvent ni exploration ni expression. Test de régression ajouté avec croyance curieuse + recherche échouée; les cas de succès restent couverts.
+
+**Vérification locale :** cinq suites ciblées — **107 réussis**, `py_compile` et `git diff --check` réussis. Les avertissements incluent Pydantic et dépendances Windows préexistants. Cette correction n’est pas encore commitée/poussée ni chargée dans le service live. Le score global reste **2/10 = 20 %**; la validation finale exige d’observer le nouveau comportement dans un cycle chargé et d’examiner une sortie sémantique réelle.
+
 ### Entrées causales du CDE — 15 novembre 2026
 
 Le premier cycle après redémarrage a montré TTE et CDE avec chacun une liste de 7 threads, puis une `SelectionResult` publiée par DTS; les trois sorties avaient donc un flux de données visible dans ce cycle. En revanche, la relecture de l’appel de production a révélé que `CDEContext.recent_actions` n’était jamais fourni et restait toujours `[]`. Le CDE était exécuté sans entrée d’actions terminées, ce qui neutralisait ses chemins d’analyse identité/action; un reçu GoalActionExecutor n’était pas équivalent à une réussite de thread et ne doit pas servir à marquer l’objectif terminé.

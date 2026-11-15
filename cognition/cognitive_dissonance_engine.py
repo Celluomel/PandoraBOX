@@ -419,6 +419,12 @@ class CognitiveDissonanceEngine:
                 return str(item.get("action") or item.get("action_type") or "").casefold()
             return str(item).casefold()
 
+        def action_succeeded(item: Any) -> bool:
+            # Typed execution receipts distinguish dispatched/failed actions
+            # from completed behavior. Do not use an attempted operation as
+            # evidence that an identity claim was enacted.
+            return isinstance(item, dict) and item.get("success") is True
+
         exploration_actions = {
             "memory_recall", "web_search", "self_question",
             "bisociative_hypothesis", "explore", "research",
@@ -431,9 +437,12 @@ class CognitiveDissonanceEngine:
             if "curious" in bl:
                 # Curiosity claim: check if exploration actions happened
                 explored = any(
-                    action_kind(action) in exploration_actions
-                    or "explore" in action_kind(action)
-                    or "research" in action_kind(action)
+                    action_succeeded(action)
+                    and (
+                        action_kind(action) in exploration_actions
+                        or "explore" in action_kind(action)
+                        or "research" in action_kind(action)
+                    )
                     for action in recent[-5:]
                 )
                 if not explored and recent:
@@ -447,9 +456,12 @@ class CognitiveDissonanceEngine:
 
             elif "expressive" in bl or "expressive" in bl:
                 communicated = any(
-                    action_kind(action) in expression_actions
-                    or "express" in action_kind(action)
-                    or "respond" in action_kind(action)
+                    action_succeeded(action)
+                    and (
+                        action_kind(action) in expression_actions
+                        or "express" in action_kind(action)
+                        or "respond" in action_kind(action)
+                    )
                     for action in recent[-5:]
                 )
                 if not communicated and recent:

@@ -158,6 +158,19 @@ def test_identity_action_detector_consumes_typed_action_receipts():
     assert engine._detect_identity_vs_action(context) == []
 
 
+def test_identity_action_detector_does_not_treat_failed_action_as_behavior():
+    engine = CognitiveDissonanceEngine()
+    context = CDEContext(
+        beliefs=["I am curious"],
+        action_receipts=[{"action": "web_search", "success": False}],
+    )
+
+    events = engine._detect_identity_vs_action(context)
+
+    assert len(events) == 1
+    assert events[0].action_ref == "no exploration action taken"
+
+
 def test_identity_action_detector_does_not_count_internal_question_as_expression():
     engine = CognitiveDissonanceEngine()
     context = CDEContext(
