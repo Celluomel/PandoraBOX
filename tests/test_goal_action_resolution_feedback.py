@@ -15,6 +15,7 @@ sys.modules.setdefault("cognition", cognition_package)
 
 from cognition.goal_action_executor import (
     GoalActionExecutor,
+    _generation_completion_problem,
     _retain_generated_text,
     _usable_model_text,
 )
@@ -32,6 +33,20 @@ class GoalActionResolutionFeedbackTests(unittest.TestCase):
         self.assertFalse(_usable_model_text("Error: provider offline"))
         self.assertFalse(_usable_model_text("too short"))
         self.assertTrue(_usable_model_text("A complete hypothesis grounded in evidence."))
+
+    def test_cognitive_llm_action_requires_verified_provider_completion(self):
+        self.assertEqual(
+            _generation_completion_problem({"status": "truncated", "completion_verified": False}),
+            "provider_output_truncated",
+        )
+        self.assertEqual(
+            _generation_completion_problem({"status": "ok", "completion_verified": False}),
+            "provider_completion_unverified",
+        )
+        self.assertEqual(
+            _generation_completion_problem({"status": "ok", "completion_verified": True}),
+            "",
+        )
 
     def test_terminal_plan_outcome_is_forwarded_to_tte_with_goal_provenance(self):
         recorded = []

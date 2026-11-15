@@ -2645,6 +2645,16 @@ Le détecteur `identity_vs_action` parcourait les reçus typed en lisant seuleme
 
 **Vérification locale :** cinq suites ciblées — **107 réussis**, `py_compile` et `git diff --check` réussis. Les avertissements incluent Pydantic et dépendances Windows préexistants. Cette correction n’est pas encore commitée/poussée ni chargée dans le service live. Le score global reste **2/10 = 20 %**; la validation finale exige d’observer le nouveau comportement dans un cycle chargé et d’examiner une sortie sémantique réelle.
 
+### Fin fournisseur non certifiée — refus d’avancer le plan — 15 novembre
+
+La revue du contrat de génération montre que les fournisseurs autres que le chemin natif LM Studio peuvent encore renvoyer `status=ok` sans motif de fin attesté. Le texte peut sembler complet, mais la trace ne permet pas de distinguer un arrêt normal d’une coupure fournisseur. Laisser `self_question` ou `bisociative_hypothesis` avancer dans cet état conserverait un succès non prouvé.
+
+**Correction locale :** ces deux actions exigent maintenant `completion_verified is True`. Une réponse `length` échoue avec `provider_output_truncated`; tout autre retour sans preuve de fin échoue avec `provider_completion_unverified`. Le texte n’est alors pas publié et le plan reste à l’étape; une recherche de secours séparée reste attribuée à sa propre exécution. Le chemin natif LM Studio atteste une réponse terminée si elle ne consomme pas toute la limite de tokens; le cas à la limite est refusé conservativement.
+
+**Vérification locale :** cinq suites — **108 réussis**; compilation et `git diff --check` réussis. Un test vérifie le refus distinct des fins tronquées et des fins non attestées. Les autres fournisseurs nécessiteront un adaptateur de completion attesté avant que leurs actions de réflexion puissent progresser; le comportement est fermé par défaut.
+
+**État :** le lot CDE `65a4b3a` est poussé; cette dernière exigence de fin fournisseur reste locale, non chargée dans Lumina. La progression globale est toujours **2/10 = 20 %**, sans piste supplémentaire close.
+
 ### Entrées causales du CDE — 15 novembre 2026
 
 Le premier cycle après redémarrage a montré TTE et CDE avec chacun une liste de 7 threads, puis une `SelectionResult` publiée par DTS; les trois sorties avaient donc un flux de données visible dans ce cycle. En revanche, la relecture de l’appel de production a révélé que `CDEContext.recent_actions` n’était jamais fourni et restait toujours `[]`. Le CDE était exécuté sans entrée d’actions terminées, ce qui neutralisait ses chemins d’analyse identité/action; un reçu GoalActionExecutor n’était pas équivalent à une réussite de thread et ne doit pas servir à marquer l’objectif terminé.

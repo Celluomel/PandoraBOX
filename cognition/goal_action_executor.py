@@ -89,6 +89,15 @@ def _usable_model_text(value: Any) -> bool:
         and not text.lower().startswith(("error:", "error "))
     )
 
+
+def _generation_completion_problem(generation: Dict[str, Any]) -> str:
+    """Return a reason when the provider cannot certify a complete response."""
+    if str(generation.get("status", "")).casefold() == "truncated":
+        return "provider_output_truncated"
+    if generation.get("completion_verified") is not True:
+        return "provider_completion_unverified"
+    return ""
+
 # Rotation order per goal — ensures all types get exercised.
 # ORDER MATTERS:
 #   BISOCIATIVE precedes WEB_SEARCH so the hypothesis it generates seeds
@@ -1366,13 +1375,15 @@ class GoalActionExecutor:
                 )
                 response = generation["text"]
 
-            if generation.get("status") == "truncated":
+            _completion_problem = _generation_completion_problem(generation)
+            if _completion_problem:
                 self._finalize_async_action(
                     goal, ACTION_SELF_QUESTION, False,
-                    "provider stopped at its output limit; insight is incomplete",
+                    "provider completion could not be verified; insight is not committed",
                     evidence={
-                        "reason_code": "provider_output_truncated",
+                        "reason_code": _completion_problem,
                         "completion_reason": generation.get("completion_reason", "length"),
+                        "completion_verified": generation.get("completion_verified"),
                         "output_tokens": generation.get("output_tokens"),
                         "max_output_tokens": generation.get("max_output_tokens"),
                     },
@@ -1772,13 +1783,15 @@ class GoalActionExecutor:
                 )
                 response = generation["text"]
 
-            if generation.get("status") == "truncated":
+            _completion_problem = _generation_completion_problem(generation)
+            if _completion_problem:
                 self._finalize_async_action(
                     goal, ACTION_BISOCIATIVE, False,
-                    "provider stopped at its output limit; hypothesis is incomplete",
+                    "provider completion could not be verified; hypothesis is not committed",
                     evidence={
-                        "reason_code": "provider_output_truncated",
+                        "reason_code": _completion_problem,
                         "completion_reason": generation.get("completion_reason", "length"),
+                        "completion_verified": generation.get("completion_verified"),
                         "output_tokens": generation.get("output_tokens"),
                         "max_output_tokens": generation.get("max_output_tokens"),
                     },
