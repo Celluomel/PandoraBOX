@@ -290,6 +290,35 @@ def sanitize_displayed_cognitive_trace(value: Any) -> Dict[str, Any] | None:
         if sanitized["active_goal_plans"] else None
     )
 
+    aspiration = value.get("background_aspiration")
+    if isinstance(aspiration, dict):
+        outcome = aspiration.get("last_outcome")
+        outcome = outcome if isinstance(outcome, dict) else {}
+        completed = aspiration.get("completed_operations")
+        sanitized["background_aspiration"] = {
+            "objective": text(aspiration.get("objective"), 160),
+            "status": text(aspiration.get("status"), 24),
+            "steps_completed": number(aspiration.get("steps_completed"), integer=True),
+            "steps_total": number(aspiration.get("steps_total"), integer=True),
+            "completed_operations": [
+                text(item, 80) for item in completed[:8]
+            ] if isinstance(completed, list) else [],
+            "next_operation": text(aspiration.get("next_operation"), 80),
+            "next_operation_status": text(aspiration.get("next_operation_status"), 24),
+            "reasoning_confidence": number(aspiration.get("reasoning_confidence")),
+            "decision_summary": text(aspiration.get("decision_summary"), 300),
+            "decision_updated_at": number(aspiration.get("decision_updated_at")),
+            "last_outcome": {
+                "operation": text(outcome.get("operation"), 80),
+                "success": outcome.get("success") if isinstance(outcome.get("success"), bool) else None,
+                "status": text(outcome.get("status"), 24),
+                "result": text(outcome.get("result"), 200),
+                "observed_at": number(outcome.get("observed_at")),
+            } if outcome else None,
+        }
+    else:
+        sanitized["background_aspiration"] = None
+
     plan = value.get("dominant_plan")
     if not isinstance(plan, dict):
         sanitized["dominant_plan"] = None

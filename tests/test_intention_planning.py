@@ -205,11 +205,12 @@ class IntentionPlanningTests(unittest.TestCase):
 
             snapshot = planner.factual_self_report_snapshot()
 
-        self.assertEqual(snapshot["dominant_plan"]["source"], "aspiration")
-        self.assertEqual(snapshot["dominant_plan"]["objective"], "Persistent background aspiration")
+        self.assertEqual(snapshot["dominant_plan"]["source"], "goal")
+        self.assertEqual(snapshot["dominant_plan"]["objective"], "Plan for current cognitive goal")
         self.assertEqual(snapshot["active_goal_plan"]["source_id"], "g-1")
         self.assertEqual(snapshot["active_goal_plan"]["objective"], "Plan for current cognitive goal")
         self.assertEqual(snapshot["active_goal_plan"]["next_operation"], "self_question")
+        self.assertEqual(snapshot["background_aspiration"]["objective"], "Persistent background aspiration")
         self.assertEqual(
             [item["source_id"] for item in snapshot["active_goal_plans"]],
             ["g-1", "g-2", "g-3"],

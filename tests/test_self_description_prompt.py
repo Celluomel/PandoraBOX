@@ -478,8 +478,8 @@ class SelfDescriptionPromptTests(unittest.TestCase):
             }],
             "dominant_plan": {
                 "objective": "plan",
-                "source": "aspiration",
-                "next_operation_dispatch_path": "none_advisory_aspiration",
+                "source": "goal",
+                "next_operation_dispatch_path": "goal_action_executor_candidate",
                 "steps_completed": "0",
                 "steps_total": 15,
                 "completed_operations": [],
@@ -491,6 +491,18 @@ class SelfDescriptionPromptTests(unittest.TestCase):
                 "next_operation_status": "unavailable",
                 "next_operation_result": "No executor",
             },
+            "background_aspiration": {
+                "objective": "persistent direction",
+                "steps_completed": 0,
+                "steps_total": 15,
+                "next_operation": "memory_recall",
+                "next_operation_status": "unverified",
+                "last_outcome": {
+                    "operation": "memory_recall", "status": "unverified",
+                    "result": "recalled (1 sources)", "observed_at": 900,
+                    "private_blob": "discard",
+                },
+            },
         })
         self.assertNotIn("unexpected", snapshot)
         self.assertNotIn("private_blob", snapshot["active_goals"][0])
@@ -498,14 +510,16 @@ class SelfDescriptionPromptTests(unittest.TestCase):
         self.assertEqual(snapshot["dominant_plan"]["last_outcome"]["status"], "unavailable")
         self.assertFalse(snapshot["dominant_plan"]["last_outcome"]["effect_measured"])
         self.assertEqual(snapshot["dominant_plan"]["next_operation_status"], "unavailable")
-        self.assertEqual(snapshot["dominant_plan"]["source"], "aspiration")
-        self.assertEqual(snapshot["dominant_plan"]["next_operation_dispatch_path"], "none_advisory_aspiration")
+        self.assertEqual(snapshot["dominant_plan"]["source"], "goal")
+        self.assertEqual(snapshot["dominant_plan"]["next_operation_dispatch_path"], "goal_action_executor_candidate")
         self.assertEqual(snapshot["active_goal_plan"]["objective"], "active objective")
         self.assertNotIn("private_blob", snapshot["active_goal_plan"])
         self.assertEqual(len(snapshot["active_goal_plans"]), 2)
         self.assertEqual(snapshot["active_goal_plans"][1]["source_id"], "goal-2")
         self.assertNotIn("private_blob", snapshot["active_goal_plans"][0])
         self.assertEqual(snapshot["dominant_plan"]["steps_completed"], 0)
+        self.assertEqual(snapshot["background_aspiration"]["objective"], "persistent direction")
+        self.assertNotIn("private_blob", snapshot["background_aspiration"]["last_outcome"])
 
     def test_stream_lifecycle_classifies_architecture_query_in_closure_scope(self):
         from cognition.persona_bridge import PersonaBridge

@@ -879,15 +879,22 @@ class LongHorizonPlanner:
             if plan.source == "aspiration" and plan.status == "active"
         ]
         plans_by_goal = {plan.source_id: plan for plan in goal_plans}
-        plan = max(aspiration_plans, key=lambda item: item.last_revised or item.created_at, default=None)
+        # The dominant plan should follow the currently active goals. The
+        # persistent aspiration is background context and must not occupy the
+        # primary slot whenever a goal-backed plan exists.
+        plan = next(
+            (
+                plans_by_goal[str(getattr(goal, "id", ""))]
+                for goal in active_goals
+                if str(getattr(goal, "id", "")) in plans_by_goal
+            ),
+            None,
+        )
         if plan is None:
-            plan = next(
-                (
-                    plans_by_goal[str(getattr(goal, "id", ""))]
-                    for goal in active_goals
-                    if str(getattr(goal, "id", "")) in plans_by_goal
-                ),
-                None,
+            plan = max(
+                aspiration_plans,
+                key=lambda item: item.last_revised or item.created_at,
+                default=None,
             )
         if plan is None and goal_plans:
             plan = max(goal_plans, key=lambda item: item.created_at)
@@ -1053,6 +1060,31 @@ class LongHorizonPlanner:
                 "decision_updated_at": plan.decision_updated_at or plan.created_at,
                 "last_outcome": dict(plan.last_outcome) if plan.last_outcome else None,
             }
+        aspiration_data = None
+        if background := max(
+            aspiration_plans,
+            key=lambda item: item.last_revised or item.created_at,
+            default=None,
+        ):
+            aspiration_step = self.current_step(background.aspiration_domain)
+            aspiration_data = {
+                "objective": background.objective[:160],
+                "status": background.status,
+                "source": "aspiration",
+                "steps_completed": background.steps_completed,
+                "steps_total": len(background.steps),
+                "completed_operations": [
+                    step.operation for step in background.steps if step.status == "completed"
+                ],
+                "next_operation": aspiration_step.operation if aspiration_step else None,
+                "next_operation_status": aspiration_step.status if aspiration_step else None,
+                "reasoning_confidence": round(background.reasoning_confidence, 3),
+                "decision_summary": (
+                    background.current_decision or background.decision_rationale or ""
+                )[:300],
+                "decision_updated_at": background.decision_updated_at or background.created_at,
+                "last_outcome": dict(background.last_outcome) if background.last_outcome else None,
+            }
         return {
             "captured_at": time.time(),
             "active_goals": goals,
@@ -1060,6 +1092,7 @@ class LongHorizonPlanner:
             "active_goal_plan": active_goal_plan_data,
             "active_goal_plans": active_goal_plans_data,
             "dominant_plan": plan_data,
+            "background_aspiration": aspiration_data,
         }
 
     def _goal_engine(self) -> Any:
