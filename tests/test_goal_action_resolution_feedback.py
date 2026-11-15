@@ -1,10 +1,23 @@
 import json
 import tempfile
 import unittest
+from types import ModuleType
 from pathlib import Path
 from types import SimpleNamespace
 
-from cognition.goal_action_executor import GoalActionExecutor, _retain_generated_text
+# Import the executor without triggering cognition.__init__'s optional FAISS
+# native loader; this suite exercises planner/receipt behavior only.
+ROOT = Path(__file__).resolve().parents[1]
+cognition_package = ModuleType("cognition")
+cognition_package.__path__ = [str(ROOT / "cognition")]
+import sys
+sys.modules.setdefault("cognition", cognition_package)
+
+from cognition.goal_action_executor import (
+    GoalActionExecutor,
+    _retain_generated_text,
+    _usable_model_text,
+)
 
 
 class GoalActionResolutionFeedbackTests(unittest.TestCase):
@@ -13,6 +26,12 @@ class GoalActionResolutionFeedbackTests(unittest.TestCase):
 
         self.assertEqual(_retain_generated_text(complete, max_chars=800), complete)
         self.assertIsNone(_retain_generated_text(complete + "x" * 700, max_chars=800))
+
+    def test_empty_or_error_model_text_is_not_usable_cognitive_output(self):
+        self.assertFalse(_usable_model_text(""))
+        self.assertFalse(_usable_model_text("Error: provider offline"))
+        self.assertFalse(_usable_model_text("too short"))
+        self.assertTrue(_usable_model_text("A complete hypothesis grounded in evidence."))
 
     def test_terminal_plan_outcome_is_forwarded_to_tte_with_goal_provenance(self):
         recorded = []

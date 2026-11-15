@@ -80,6 +80,15 @@ def _retain_generated_text(value: Any, *, max_chars: int) -> Optional[str]:
         return None
     return text
 
+
+def _usable_model_text(value: Any) -> bool:
+    """Reject empty/error fragments before they can become cognitive output."""
+    text = str(value or "").strip()
+    return bool(
+        len(text) >= 10
+        and not text.lower().startswith(("error:", "error "))
+    )
+
 # Rotation order per goal — ensures all types get exercised.
 # ORDER MATTERS:
 #   BISOCIATIVE precedes WEB_SEARCH so the hypothesis it generates seeds
@@ -1777,21 +1786,32 @@ class GoalActionExecutor:
                 )
                 return
 
-            _resp_s = (response or "").strip()
-            _is_err = (not _resp_s or len(_resp_s) < 10
-                       or _resp_s.startswith("Error:") or _resp_s.startswith("error"))
-            if _is_err:
-                # Some local chat templates emit only a reasoning channel for
-                # short background prompts. Do not leak that channel into the
-                # user-facing stream and do not let it deadlock the goal plan.
-                # Preserve the operation with a bounded, evidence-linked local
-                # hypothesis instead.
-                response = self._local_bisociative_fallback(topic, anchor_text)
-                _resp_s = response.strip()
-                logger.info(
-                    "[GoalActionExecutor] bisociative: provider returned no "
-                    "final content; used grounded local hypothesis"
+            if not _usable_model_text(response):
+                # A template-built sentence is not a model-generated
+                # bisociation. Record the failed attempt and leave this plan
+                # step retryable instead of publishing the fallback as a
+                # successful cognitive result.
+                self._finalize_async_action(
+                    goal,
+                    ACTION_BISOCIATIVE,
+                    False,
+                    generation.get("reason") or "provider returned no usable hypothesis",
+                    evidence={
+                        "reason_code": "provider_no_usable_hypothesis",
+                        "completion_reason": generation.get("completion_reason", "unknown"),
+                        "completion_verified": generation.get("completion_verified"),
+                        "generation_status": generation.get("status", "unknown"),
+                    },
+                    execution_id=execution_id,
+                    cycle_id=cycle_id,
                 )
+                await self._fallback_self_question(
+                    goal,
+                    parent_action=ACTION_BISOCIATIVE,
+                    parent_execution_id=execution_id,
+                    cycle_id=cycle_id,
+                )
+                return
 
             hypothesis = _retain_generated_text(response, max_chars=800)
             if hypothesis is None:
@@ -1900,21 +1920,6 @@ class GoalActionExecutor:
                 goal, parent_action=ACTION_BISOCIATIVE,
                 parent_execution_id=execution_id, cycle_id=cycle_id,
             )
-
-    @staticmethod
-    def _local_bisociative_fallback(topic: str, anchor: str) -> str:
-        """Produce one bounded hypothesis when a local model returns no text."""
-        clean_anchor = " ".join(str(anchor or "").split())[:120]
-        clean_topic = " ".join(str(topic or "").split())[:80]
-        if not clean_anchor:
-            return (
-                f"The unresolved tension around {clean_topic} may be revealing "
-                "a distinction that the current framing has not yet made explicit."
-            )
-        return (
-            f"The unresolved tension around {clean_topic} may be shaped by the "
-            f"same contrast visible in this memory: {clean_anchor}."
-        )
 
     def _build_tension_text(self, goal, topic: str) -> str:
         """
