@@ -251,6 +251,32 @@ def sanitize_displayed_cognitive_trace(value: Any) -> Dict[str, Any] | None:
                 "energy": number(goal.get("energy")),
             })
 
+    active_goal_plan = value.get("active_goal_plan")
+    if isinstance(active_goal_plan, dict):
+        active_outcome = active_goal_plan.get("last_outcome")
+        active_outcome = active_outcome if isinstance(active_outcome, dict) else {}
+        sanitized["active_goal_plan"] = {
+            "objective": text(active_goal_plan.get("objective"), 160),
+            "status": text(active_goal_plan.get("status"), 24),
+            "source_id": text(active_goal_plan.get("source_id"), 80),
+            "steps_completed": number(active_goal_plan.get("steps_completed"), integer=True),
+            "steps_total": number(active_goal_plan.get("steps_total"), integer=True),
+            "next_operation": text(active_goal_plan.get("next_operation"), 80),
+            "next_operation_status": text(active_goal_plan.get("next_operation_status"), 24),
+            "next_operation_result": text(active_goal_plan.get("next_operation_result"), 200),
+            "decision_summary": text(active_goal_plan.get("decision_summary"), 300),
+            "last_outcome": {
+                "operation": text(active_outcome.get("operation"), 80),
+                "success": active_outcome.get("success") if isinstance(active_outcome.get("success"), bool) else None,
+                "status": text(active_outcome.get("status"), 24),
+                "result": text(active_outcome.get("result"), 200),
+                "observed_at": number(active_outcome.get("observed_at")),
+                "effect_measured": active_outcome.get("effect_measured") if isinstance(active_outcome.get("effect_measured"), bool) else None,
+            } if active_outcome else None,
+        }
+    else:
+        sanitized["active_goal_plan"] = None
+
     plan = value.get("dominant_plan")
     if not isinstance(plan, dict):
         sanitized["dominant_plan"] = None
@@ -265,6 +291,8 @@ def sanitize_displayed_cognitive_trace(value: Any) -> Dict[str, Any] | None:
     sanitized["dominant_plan"] = {
         "objective": text(plan.get("objective"), 160),
         "status": text(plan.get("status"), 24),
+        "source": text(plan.get("source"), 24),
+        "next_operation_dispatch_path": text(plan.get("next_operation_dispatch_path"), 48),
         "steps_completed": number(plan.get("steps_completed"), integer=True),
         "steps_total": number(plan.get("steps_total"), integer=True),
         "completed_operations": completed,
@@ -351,6 +379,7 @@ def trace_grounded_architecture_answer(
     if is_cognitive_trace_query(user_input):
         snapshot = displayed_cognitive_trace if isinstance(displayed_cognitive_trace, dict) else None
         plan = snapshot.get("dominant_plan") if snapshot else None
+        active_goal_plan = snapshot.get("active_goal_plan") if snapshot else None
         goals = snapshot.get("active_goals") if snapshot else None
         french = bool(re.search(r"\b(?:quels?|quelle|affichée?|preuve|tour|échec|étapes?)\b", normalized))
         if not snapshot:
@@ -359,6 +388,23 @@ def trace_grounded_architecture_answer(
                 "Je ne peux donc pas en déduire les étapes terminées, le dernier résultat ni leur lien avec ce tour."
                 if french else
                 "I did not receive the Cognitive Trace snapshot shown by the interface, so I cannot report its completed steps, last outcome, or link to this turn."
+            )
+        if not isinstance(plan, dict) and isinstance(active_goal_plan, dict):
+            active_objective = str(active_goal_plan.get("objective") or "(objectif absent)")[:160]
+            active_next = str(active_goal_plan.get("next_operation") or "aucune")[:80]
+            active_status = str(active_goal_plan.get("next_operation_status") or "inconnu")[:24]
+            if french:
+                return (
+                    f"Faits du snapshot UI transmis : aucun plan d’aspiration enregistré; plan lié à un objectif actif « {active_objective} », "
+                    f"progression {_safe_int(active_goal_plan.get('steps_completed'))}/{_safe_int(active_goal_plan.get('steps_total'))}, "
+                    f"prochaine opération {active_next} (état : {active_status}). "
+                    "Le panneau ne fournit ni identifiant de tour lié à cette étape, ni journal par module; il ne prouve donc pas son exécution pendant le tour affiché."
+                )
+            return (
+                f"Displayed snapshot facts: no persistent aspiration plan; active-goal plan '{active_objective}', "
+                f"progress {_safe_int(active_goal_plan.get('steps_completed'))}/{_safe_int(active_goal_plan.get('steps_total'))}, "
+                f"next operation {active_next} (status: {active_status}). The panel has no turn-linked step ID or per-module journal, "
+                "so it does not prove execution during the displayed turn."
             )
         if not isinstance(plan, dict):
             return (
@@ -384,6 +430,31 @@ def trace_grounded_architecture_answer(
             else "succès" if outcome.get("success") is True
             else "statut absent"
         ))[:24]
+        persistent_plan_note = (
+            (
+                " Le plan affiché est une aspiration persistante de fond, pas la preuve d’un travail effectué pendant ce tour."
+                if french else
+                " The displayed plan is a persistent background aspiration, not evidence of work on this chat turn."
+            ) if plan.get("source") == "aspiration" else ""
+        )
+        if isinstance(active_goal_plan, dict):
+            if french:
+                active_plan_note = (
+                    f" Plan lié à un objectif actif : {str(active_goal_plan.get('objective') or 'objectif absent')[:120]} "
+                    f"({_safe_int(active_goal_plan.get('steps_completed'))}/{_safe_int(active_goal_plan.get('steps_total'))}; "
+                    f"prochaine étape {str(active_goal_plan.get('next_operation') or 'aucune')[:80]})."
+                )
+            else:
+                active_plan_note = (
+                    f" Active-goal plan: {str(active_goal_plan.get('objective') or 'objective absent')[:120]} "
+                    f"({_safe_int(active_goal_plan.get('steps_completed'))}/{_safe_int(active_goal_plan.get('steps_total'))}; "
+                    f"next step {str(active_goal_plan.get('next_operation') or 'none')[:80]})."
+                )
+        else:
+            active_plan_note = (
+                " Aucun plan n’est actuellement lié à un objectif actif."
+                if french else " No plan is currently linked to an active goal."
+            )
         effect_note = (
             " effet mesuré" if outcome.get("effect_measured") is True
             else " effet non mesuré" if outcome.get("effect_measured") is False
@@ -411,7 +482,7 @@ def trace_grounded_architecture_answer(
                 f"prochaine opération : {next_operation} (état : {next_operation_status}). "
                 f"Dernier résultat enregistré : {outcome_operation} — {outcome_status}{effect_note} — {outcome_result}{time_note}.{capture_note} "
                 "Cela décrit l’état affiché du plan; « aucune » signifie qu’aucune étape n’est marquée terminée. "
-                "Aucun composant ne peut être confirmé comme exécuté pendant le tour à partir de ce panneau seul. "
+                f"{active_plan_note}{persistent_plan_note} Aucun composant ne peut être confirmé comme exécuté pendant le tour à partir de ce panneau seul. "
                 "Le snapshot ne fournit pas d’identifiant reliant ce résultat au message analysé, ni de journal par module : "
                 "je ne peux donc pas établir que l’échec a été causé par ce tour ou vérifier indépendamment l’effet de l’opération."
             )
@@ -426,7 +497,7 @@ def trace_grounded_architecture_answer(
             f"completed steps: {complete_text}, next operation: {next_operation} "
             f"(status: {next_operation_status}). "
             f"Last recorded outcome: {outcome_operation} — {outcome_status}{effect_note} — {outcome_result}.{capture_note} "
-            "This is displayed planner state; 'none' means no step is marked completed. The snapshot has no identifier "
+            f"This is displayed planner state; 'none' means no step is marked completed.{active_plan_note}{persistent_plan_note} The snapshot has no identifier "
             "linking that outcome to the message being analyzed and no per-module execution journal, so no component execution "
             "can be confirmed for this turn from this panel alone, and I cannot attribute the failure to this turn or independently verify the operation's effect."
         )

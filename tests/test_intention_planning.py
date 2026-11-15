@@ -159,6 +159,38 @@ class IntentionPlanningTests(unittest.TestCase):
                  "creative", "technical", "emotional"},
             )
 
+    def test_trace_reports_active_goal_plan_separately_from_persistent_aspiration(self):
+        with tempfile.TemporaryDirectory() as folder:
+            planner, _, _ = self._planner(folder)
+            goal = NS(id="g-1", topic="current cognitive goal", status="active")
+            planner._ai = NS(goal_engine=NS(
+                get_active_goals=lambda min_activation=0.10: [goal],
+                get_goal_by_id=lambda goal_id: goal if goal_id == goal.id else None,
+            ))
+            aspiration_plan = Plan(
+                aspiration_domain="epistemic",
+                steps=[PlanStep(sequence=0, action_type="analytical", operation="memory_recall",
+                                expected_cost=0.03, expected_gain=0.02)],
+                resource_reserve=0.22, revision_trigger=0.25, horizon=1,
+                source="aspiration", objective="Persistent background aspiration",
+            )
+            goal_plan = Plan(
+                aspiration_domain="goal:g-1",
+                steps=[PlanStep(sequence=0, action_type="analytical", operation="self_question",
+                                expected_cost=0.03, expected_gain=0.02)],
+                resource_reserve=0.22, revision_trigger=0.25, horizon=1,
+                source="goal", source_id="g-1", objective="Plan for current cognitive goal",
+            )
+            planner._plans = {"epistemic": aspiration_plan, "goal:g-1": goal_plan}
+
+            snapshot = planner.factual_self_report_snapshot()
+
+        self.assertEqual(snapshot["dominant_plan"]["source"], "aspiration")
+        self.assertEqual(snapshot["dominant_plan"]["objective"], "Persistent background aspiration")
+        self.assertEqual(snapshot["active_goal_plan"]["source_id"], "g-1")
+        self.assertEqual(snapshot["active_goal_plan"]["objective"], "Plan for current cognitive goal")
+        self.assertEqual(snapshot["active_goal_plan"]["next_operation"], "self_question")
+
     def test_goal_intention_advances_only_on_verified_success(self):
         with tempfile.TemporaryDirectory() as folder:
             planner, _, _ = self._planner(folder)

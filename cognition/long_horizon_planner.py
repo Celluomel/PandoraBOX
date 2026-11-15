@@ -929,6 +929,41 @@ class LongHorizonPlanner:
             }
             for goal in eligible_active_goals[:4]
         ]
+        # Keep the current goal-backed plan separate from the long-running
+        # aspiration below. The latter is intentionally persistent and can
+        # remain unchanged across many chat turns; presenting it as the only
+        # "dominant plan" made the chat trace look frozen even while the active
+        # goal list changed.
+        active_goal_plan = next(
+            (
+                plans_by_goal[str(getattr(goal, "id", ""))]
+                for goal in eligible_active_goals
+                if str(getattr(goal, "id", "")) in plans_by_goal
+            ),
+            None,
+        )
+        active_goal_plan_data = None
+        if active_goal_plan is not None:
+            goal_step = self.current_step(active_goal_plan.aspiration_domain)
+            active_goal_plan_data = {
+                "objective": active_goal_plan.objective[:160],
+                "status": active_goal_plan.status,
+                "source": "goal",
+                "source_id": active_goal_plan.source_id or None,
+                "steps_completed": active_goal_plan.steps_completed,
+                "steps_total": len(active_goal_plan.steps),
+                "next_operation": goal_step.operation if goal_step else None,
+                "next_operation_status": goal_step.status if goal_step else None,
+                "next_operation_result": goal_step.result[:200] if goal_step else None,
+                "decision_summary": (
+                    active_goal_plan.current_decision
+                    or active_goal_plan.decision_rationale or ""
+                )[:300],
+                "last_outcome": (
+                    dict(active_goal_plan.last_outcome)
+                    if active_goal_plan.last_outcome else None
+                ),
+            }
         plan_data = None
         if plan is not None:
             completed = [step.operation for step in plan.steps if step.status == "completed"]
@@ -1001,6 +1036,7 @@ class LongHorizonPlanner:
             "captured_at": time.time(),
             "active_goals": goals,
             "active_goal_count": len(eligible_active_goals),
+            "active_goal_plan": active_goal_plan_data,
             "dominant_plan": plan_data,
         }
 
