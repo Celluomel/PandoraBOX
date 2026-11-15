@@ -58,6 +58,10 @@ class PendingPrediction:
     predicted_drop: float
     pressure_before: float
     made_at: float
+    prediction_id: str
+    source_cycle_id: str
+    confidence_before: float
+    competition_application: Optional[Dict[str, Any]] = None
 
 
 class EpistemicEfficacyModel:
@@ -74,6 +78,7 @@ class EpistemicEfficacyModel:
         self._sc = self_concept
         self._pending: Optional[PendingPrediction] = None
         self.history: list[Dict[str, Any]] = []
+        self.last_application: Optional[Dict[str, Any]] = None
         self._ensure_belief_seeded()
 
     def _ensure_belief_seeded(self) -> None:
@@ -94,7 +99,8 @@ class EpistemicEfficacyModel:
         except Exception:
             return 0.5
 
-    def observe_if_pending(self, current_pressure: float) -> Optional[float]:
+    def observe_if_pending(self, current_pressure: float,
+                           observation_cycle_id: Optional[str] = None) -> Optional[float]:
         """
         Call once per cycle, BEFORE this cycle's own prediction/scoring.
         If a prediction from a previous resolve_uncertainty win is
@@ -116,16 +122,24 @@ class EpistemicEfficacyModel:
             logger.debug(f"[EpistemicEfficacyModel] belief update failed (non-fatal): {e}")
 
         self.history.append({
-            "t": time.time(), "predicted_drop": self._pending.predicted_drop,
+            "t": time.time(), "prediction_id": self._pending.prediction_id,
+            "source_cycle_id": self._pending.source_cycle_id,
+            "observation_cycle_id": observation_cycle_id,
+            "pressure_before": self._pending.pressure_before,
+            "pressure_after": current_pressure,
+            "confidence_before": self._pending.confidence_before,
+            "predicted_drop": self._pending.predicted_drop,
             "actual_drop": actual_drop, "meta_error": meta_error,
             "confidence_after": self._confidence(),
+            "competition_application": self._pending.competition_application,
         })
         self.history = self.history[-500:]
         self._pending = None
         return meta_error
 
     def record_prediction_if_winner(self, winner_name: str, winner_topic: str,
-                                     current_pressure: float) -> None:
+                                     current_pressure: float,
+                                     source_cycle_id: Optional[str] = None) -> None:
         """Call once per cycle, AFTER the competition winner is known. If
         resolve_uncertainty won, the self-model makes ITS OWN falsifiable
         prediction about how effective that choice will be — genuinely
@@ -138,11 +152,54 @@ class EpistemicEfficacyModel:
         text = f"{winner_name or ''} {winner_topic or ''}".lower().replace(" ", "_")
         if "resolve_uncertainty" not in text:
             return
+        if not (self.last_application
+                and self.last_application.get("applied_to_final_focus") is True):
+            # A prediction about efficacy is only justified when the
+            # learned multiplier was actually applied to the selected goal.
+            return
         predicted_drop = self._confidence() * PREDICTION_SCALE
+        prediction_id = f"epistemic-{time.time_ns()}"
         self._pending = PendingPrediction(
             predicted_drop=predicted_drop, pressure_before=current_pressure,
-            made_at=time.time(),
+            made_at=time.time(), prediction_id=prediction_id,
+            source_cycle_id=str(source_cycle_id or prediction_id),
+            confidence_before=self._confidence(),
+            competition_application=(dict(self.last_application)
+                                     if self.last_application else None),
         )
+
+    def record_competition_application(self, *, cycle_id: str,
+                                       candidate: Optional[Dict[str, Any]],
+                                       final_focus: Optional[str]) -> None:
+        """Record whether the learned multiplier reached the selected focus."""
+        if candidate is None:
+            self.last_application = {
+                "cycle_id": str(cycle_id), "eligible_candidate_present": False,
+                "applied_to_final_focus": False, "final_focus": final_focus,
+            }
+            return
+        name = str(candidate.get("name") or "")
+        final_focus_key = str(final_focus or "").lower().replace(" ", "_")
+        candidate_name_key = name.lower().replace(" ", "_")
+        selected = (candidate_name_key == final_focus_key
+                    and candidate.get("efficacy_multiplier_applied") is not None)
+        self.last_application = {
+            "cycle_id": str(cycle_id), "eligible_candidate_present": True,
+            "candidate_id": str(candidate.get("id") or "")[:120],
+            "candidate_score": candidate.get("score"),
+            "candidate_score_without_efficacy": candidate.get("score_without_efficacy"),
+            "score_delta_from_efficacy": (
+                candidate.get("score", 0.0) - candidate.get("score_without_efficacy", 0.0)
+                if isinstance(candidate.get("score"), (int, float))
+                and isinstance(candidate.get("score_without_efficacy"), (int, float))
+                else None
+            ),
+            "multiplier": candidate.get("efficacy_multiplier_applied"),
+            "internal_alignment_baseline": candidate.get("internal_alignment_baseline"),
+            "internal_alignment_actual": candidate.get("internal_bias"),
+            "final_focus": str(final_focus or "")[:160],
+            "applied_to_final_focus": selected,
+        }
 
     def effectiveness_multiplier(self) -> float:
         """

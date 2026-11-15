@@ -563,10 +563,27 @@ def _fetch_all() -> Dict[str, Any]:
                     'confidence': eff._confidence(),
                     'multiplier': eff.effectiveness_multiplier(),
                     'pending_prediction': eff._pending is not None,
+                    'pending_receipt': ({
+                        'prediction_id': eff._pending.prediction_id,
+                        'source_cycle_id': eff._pending.source_cycle_id,
+                        'pressure_before': round(eff._pending.pressure_before, 4),
+                        'predicted_drop': round(eff._pending.predicted_drop, 4),
+                        'confidence_before': round(eff._pending.confidence_before, 4),
+                        'competition_application': eff._pending.competition_application,
+                    } if eff._pending is not None else None),
+                    'last_competition_application': eff.last_application,
                     'recent_predictions': [
-                        {'predicted': round(h['predicted_drop'], 3),
+                        {'prediction_id': h.get('prediction_id'),
+                         'source_cycle_id': h.get('source_cycle_id'),
+                         'observation_cycle_id': h.get('observation_cycle_id'),
+                         'pressure_before': round(h.get('pressure_before', 0.0), 4),
+                         'pressure_after': round(h.get('pressure_after', 0.0), 4),
+                         'confidence_before': round(h.get('confidence_before', 0.0), 4),
+                         'confidence_after': round(h.get('confidence_after', 0.0), 4),
+                         'predicted': round(h['predicted_drop'], 3),
                          'actual': round(h['actual_drop'], 3),
-                         'meta_error': round(h['meta_error'], 3)}
+                         'meta_error': round(h['meta_error'], 3),
+                         'competition_application': h.get('competition_application')}
                         for h in recent
                     ],
                     'total_observations': len(eff.history),

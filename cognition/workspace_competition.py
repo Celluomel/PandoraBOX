@@ -179,24 +179,44 @@ class WorkspaceCompetition:
                 # reproduces prior behavior exactly — the ablation OFF
                 # condition.
                 internal_alignment = 0.0
+                internal_alignment_baseline = 0.0
+                efficacy_multiplier_applied = None
                 if internal_state is not None:
                     try:
                         _eff_mult = 1.0
                         _goal_name_lc = (goal.get('name', '') or '').lower().replace(' ', '_')
-                        if efficacy_model is not None and 'resolve_uncertainty' in _goal_name_lc:
+                        _uses_efficacy = (
+                            efficacy_model is not None
+                            and 'resolve_uncertainty' in _goal_name_lc
+                        )
+                        if _uses_efficacy:
                             _eff_mult = efficacy_model.effectiveness_multiplier()
+                            internal_alignment_baseline = internal_state.internal_alignment(
+                                goal.get('name', ''), goal.get('topic', ''),
+                                efficacy_multiplier=1.0,
+                            )
                         internal_alignment = internal_state.internal_alignment(
                             goal.get('name', ''), goal.get('topic', ''),
                             efficacy_multiplier=_eff_mult,
                         )
+                        if _uses_efficacy:
+                            efficacy_multiplier_applied = _eff_mult
                     except Exception:
                         internal_alignment = 0.0
+                        internal_alignment_baseline = 0.0
+                        efficacy_multiplier_applied = None
+                if efficacy_multiplier_applied is None:
+                    internal_alignment_baseline = internal_alignment
 
                 # Phase 2.9: attention bias — goals in high-attention modules score higher
                 _goal_attn  = _attn.get("goal_ecology", 0.10)
                 _attn_boost = _goal_attn * _ATTN_SCALE
-                raw_score   = (base_score + pressure_boost + (urgency * 0.2)
-                               + quality_bonus + _attn_boost + internal_alignment)
+                raw_score_without_efficacy = (
+                    base_score + pressure_boost + (urgency * 0.2)
+                    + quality_bonus + _attn_boost + internal_alignment_baseline
+                )
+                raw_score = (base_score + pressure_boost + (urgency * 0.2)
+                             + quality_bonus + _attn_boost + internal_alignment)
 
                 # Stagnation penalty: goals that win consecutively are penalised
                 # so other goals get a chance. Counter resets to 0 when goal loses.
@@ -213,6 +233,9 @@ class WorkspaceCompetition:
                 noise = _random.uniform(-0.025, 0.025)
 
                 final_score = raw_score - penalty + noise
+                score_without_efficacy = min(
+                    2.0, raw_score_without_efficacy - penalty + noise
+                )
 
                 _goal_name = goal.get('name', 'unknown_goal')
                 _goal_topic = goal.get('topic', '') or _goal_name.replace('_', ' ')
@@ -228,6 +251,7 @@ class WorkspaceCompetition:
                     'label': f"Goal: {_goal_topic} (p={priority:.2f})",
                     'topic': _goal_topic,
                     'score': min(2.0, final_score),
+                    'score_without_efficacy': score_without_efficacy,
                     'source_data': goal,
                     # Phase 6.10 — instrumentation for CSR (Cognitive
                     # Self-Reference Index, see internal_cognitive_state.py)
@@ -235,6 +259,8 @@ class WorkspaceCompetition:
                     # THIS candidate's score came from internal-state
                     # alignment, kept separate from the opaque total.
                     'internal_bias': internal_alignment,
+                    'internal_alignment_baseline': internal_alignment_baseline,
+                    'efficacy_multiplier_applied': efficacy_multiplier_applied,
                     'reason': (
                         f"Goal p={priority:.2f}×e={energy:.2f} "
                         f"+ pressure {pressure_boost:.2f}"

@@ -52,6 +52,7 @@ Bounded by design:
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -310,6 +311,7 @@ def deliberate(
     organism: Any,
     user_input: str,
     max_cycles: int = MAX_CYCLES,
+    cycle_id: Optional[str] = None,
 ) -> Optional[Dict]:
     """
     Run a bounded (1-3 cycle) synchronous parallel-deliberation pass:
@@ -330,6 +332,10 @@ def deliberate(
     gw = getattr(organism, "workspace", None)
     if gw is None:
         return None
+    if cycle_id is None:
+        interaction_n = getattr(getattr(organism, "ai_system", None), "_interaction_count", None)
+        cycle_id = (f"interaction-{interaction_n}" if interaction_n is not None
+                    else f"deliberation-{time.time_ns()}")
 
     goals = _gather_live_goals(organism)
     percepts = _gather_live_percepts(organism)
@@ -372,7 +378,7 @@ def deliberate(
         from cognition.epistemic_efficacy_model import get_epistemic_efficacy_model
         efficacy_model = get_epistemic_efficacy_model(organism)
         if efficacy_model is not None:
-            efficacy_model.observe_if_pending(_epi)
+            efficacy_model.observe_if_pending(_epi, observation_cycle_id=f"{cycle_id}:observe")
     except Exception as e:
         logger.debug(f"[RecursiveDeliberation] epistemic_efficacy_model observe failed (non-fatal): {e}")
 
@@ -397,6 +403,7 @@ def deliberate(
     cycles_run = 0
     final_ranked: List[Tuple[float, Dict]] = []
     synthesis_used: Optional[Dict] = None
+    last_competition_result: Optional[Dict] = None
 
     for cycle in range(1, effective_max_cycles + 1):
         cycles_run = cycle
@@ -406,6 +413,7 @@ def deliberate(
                 pressure=pressure, context={"user_input": user_input},
                 internal_state=internal_state, efficacy_model=efficacy_model,
             )
+            last_competition_result = result
         except Exception as e:
             logger.debug(f"[RecursiveDeliberation] compete() failed cycle {cycle} (non-fatal): {e}")
             break
@@ -481,9 +489,20 @@ def deliberate(
     # it has to follow the choice being finalized.
     if efficacy_model is not None:
         try:
+            competition_candidates = (
+                (last_competition_result or {}).get("competition", {}).get("all_candidates", [])
+            )
+            efficacy_candidate = next((candidate for candidate in competition_candidates
+                                       if "resolve_uncertainty" in (
+                                           f"{candidate.get('name', '')} {candidate.get('topic', '')}"
+                                           .lower().replace(" ", "_"))), None)
+            efficacy_model.record_competition_application(
+                cycle_id=str(cycle_id), candidate=efficacy_candidate,
+                final_focus=winner.get("name") or winner.get("label"),
+            )
             efficacy_model.record_prediction_if_winner(
                 winner.get("name", ""), winner.get("topic", ""),
-                pressure.get("epistemic", 0.0),
+                pressure.get("epistemic", 0.0), source_cycle_id=str(cycle_id),
             )
         except Exception as e:
             logger.debug(f"[RecursiveDeliberation] efficacy prediction record failed (non-fatal): {e}")
