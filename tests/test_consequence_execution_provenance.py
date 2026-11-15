@@ -9,6 +9,34 @@ from cognition.goal_action_executor import GoalActionExecutor
 
 
 class ConsequenceExecutionProvenanceTests(unittest.TestCase):
+    def test_recent_action_receipts_expose_completed_outcomes_without_free_text(self):
+        with tempfile.TemporaryDirectory() as folder:
+            ledger = CausalLedger(folder)
+            tracker = ConsequenceTracker(persona_dir=folder, ledger=ledger)
+            ledger.record(
+                kind="prediction", cause="action planned",
+                refs={"goal_id": "g1", "action": "web_search"},
+            )
+            ledger.record(
+                kind="outcome", cause="completed search",
+                cycle_id=12,
+                input_state={"success": True, "goal_state_persisted": True},
+                output_state={"outcome": "positive", "observed": 1.0,
+                              "result": "private free-form text"},
+                refs={"goal_id": "g1", "goal_source_turn_id": "turn-2",
+                      "action": "web_search"},
+            )
+
+            receipts = tracker.recent_action_receipts()
+
+        self.assertEqual(len(receipts), 1)
+        self.assertEqual(receipts[0]["action"], "web_search")
+        self.assertEqual(receipts[0]["goal_id"], "g1")
+        self.assertEqual(receipts[0]["cycle_id"], 12)
+        self.assertTrue(receipts[0]["success"])
+        self.assertEqual(receipts[0]["observed"], 1.0)
+        self.assertNotIn("result", receipts[0])
+
     def test_web_search_source_citations_survive_in_causal_outcome(self):
         with tempfile.TemporaryDirectory() as folder:
             ledger = CausalLedger(folder)

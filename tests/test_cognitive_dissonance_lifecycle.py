@@ -143,3 +143,29 @@ def test_step_consumes_only_successful_tte_outcome_linked_to_event():
     assert event.resolved is True
     assert event.resolution_status == "verified_resolved"
     assert event.resolution_evidence_ref == "cycle-9:outcome-2"
+
+
+def test_identity_action_detector_consumes_typed_action_receipts():
+    engine = CognitiveDissonanceEngine()
+    context = CDEContext(
+        beliefs=["I am curious", "I am expressive"],
+        action_receipts=[
+            {"action": "web_search", "success": True},
+            {"action": "user_question", "success": True},
+        ],
+    )
+
+    assert engine._detect_identity_vs_action(context) == []
+
+
+def test_identity_action_detector_does_not_count_internal_question_as_expression():
+    engine = CognitiveDissonanceEngine()
+    context = CDEContext(
+        beliefs=["I am expressive"],
+        action_receipts=[{"action": "self_question", "success": True}],
+    )
+
+    events = engine._detect_identity_vs_action(context)
+
+    assert len(events) == 1
+    assert events[0].action_ref == "no expression action taken"

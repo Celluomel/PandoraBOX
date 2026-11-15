@@ -85,6 +85,7 @@ class CDEContext:
     world_model:    Dict[str, Any]  = field(default_factory=dict)
     identity_state: Dict[str, Any]  = field(default_factory=dict)
     recent_actions: List[Dict]      = field(default_factory=list)
+    action_receipts: List[Dict]     = field(default_factory=list)
     metrics:        Dict[str, float] = field(default_factory=dict)
     beliefs:        List[str]       = field(default_factory=list)
     predictive_mind: Any            = None   # Phase 5.3 — for PREDICTION_VS_REALITY
@@ -411,7 +412,18 @@ class CognitiveDissonanceEngine:
         """Check if any belief in identity_state is contradicted by recent actions."""
         events = []
         beliefs = ctx.beliefs or ctx.identity_state.get("beliefs", [])
-        recent  = ctx.recent_actions
+        recent = ctx.action_receipts or ctx.recent_actions
+
+        def action_kind(item: Any) -> str:
+            if isinstance(item, dict):
+                return str(item.get("action") or item.get("action_type") or "").casefold()
+            return str(item).casefold()
+
+        exploration_actions = {
+            "memory_recall", "web_search", "self_question",
+            "bisociative_hypothesis", "explore", "research",
+        }
+        expression_actions = {"user_question", "express", "respond"}
 
         for belief in beliefs[:10]:
             bl = belief.lower()
@@ -419,8 +431,10 @@ class CognitiveDissonanceEngine:
             if "curious" in bl:
                 # Curiosity claim: check if exploration actions happened
                 explored = any(
-                    "explore" in str(a).lower() or "research" in str(a).lower()
-                    for a in recent[-5:]
+                    action_kind(action) in exploration_actions
+                    or "explore" in action_kind(action)
+                    or "research" in action_kind(action)
+                    for action in recent[-5:]
                 )
                 if not explored and recent:
                     events.append(DissonanceEvent(
@@ -433,8 +447,10 @@ class CognitiveDissonanceEngine:
 
             elif "expressive" in bl or "expressive" in bl:
                 communicated = any(
-                    "express" in str(a).lower() or "respond" in str(a).lower()
-                    for a in recent[-5:]
+                    action_kind(action) in expression_actions
+                    or "express" in action_kind(action)
+                    or "respond" in action_kind(action)
+                    for action in recent[-5:]
                 )
                 if not communicated and recent:
                     events.append(DissonanceEvent(

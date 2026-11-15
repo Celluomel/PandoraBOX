@@ -405,6 +405,55 @@ class ConsequenceTracker:
             m["ledger"] = self.ledger.stats()
         return m
 
+    def recent_action_receipts(self, limit: int = 20) -> List[Dict[str, Any]]:
+        """Return bounded, redacted terminal action outcomes for downstream cognition.
+
+        Predictions and dispatches are excluded: only causal-ledger outcome
+        events represent a completed action. Free-form result text is omitted;
+        CDE receives stable action/provenance fields and measured outcome labels.
+        """
+        if not self.ledger:
+            return []
+        try:
+            cap = max(1, min(int(limit), 40))
+            events = self.ledger.recent(max(40, cap * 4))
+        except (TypeError, ValueError, OverflowError):
+            return []
+        receipts: List[Dict[str, Any]] = []
+        for event in events:
+            if not isinstance(event, dict) or event.get("kind") != "outcome":
+                continue
+            refs = event.get("refs") if isinstance(event.get("refs"), dict) else {}
+            inputs = event.get("input_state") if isinstance(event.get("input_state"), dict) else {}
+            output = event.get("output_state") if isinstance(event.get("output_state"), dict) else {}
+            action = refs.get("action")
+            if not isinstance(action, str) or not action.strip():
+                continue
+            success = inputs.get("success")
+            observed = output.get("observed")
+            try:
+                observed = float(observed)
+                if not math.isfinite(observed):
+                    observed = None
+            except (TypeError, ValueError, OverflowError):
+                observed = None
+            receipts.append({
+                "event_id": str(event.get("event_id") or "")[:40],
+                "cycle_id": event.get("cycle_id"),
+                "timestamp": str(event.get("ts") or "")[:40],
+                "goal_id": str(refs.get("goal_id") or "")[:80],
+                "goal_source_turn_id": str(refs.get("goal_source_turn_id") or "")[:80],
+                "action": action[:48],
+                "success": success if isinstance(success, bool) else None,
+                "outcome": str(output.get("outcome") or "")[:32],
+                "observed": observed,
+                "goal_state_persisted": (
+                    inputs.get("goal_state_persisted")
+                    if isinstance(inputs.get("goal_state_persisted"), bool) else None
+                ),
+            })
+        return receipts[-cap:]
+
     # ────────────────────────────────────────────────────────────────────────
     # internals
     # ────────────────────────────────────────────────────────────────────────

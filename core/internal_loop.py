@@ -2825,10 +2825,25 @@ class InternalThoughtLoop:
                         }
                 except Exception:
                     pass
+                recent_action_receipts = []
+                try:
+                    from cognition.consequence_tracker import get_consequence_tracker
+                    _consequence_tracker = get_consequence_tracker(o)
+                    _receipt_reader = getattr(
+                        _consequence_tracker, "recent_action_receipts", None
+                    )
+                    if callable(_receipt_reader):
+                        recent_action_receipts = _receipt_reader(limit=20)
+                except Exception as _receipt_error:
+                    logger.debug(
+                        "[InternalLoop] CDE action receipts unavailable: %s",
+                        type(_receipt_error).__name__,
+                    )
                 cde_ctx = CDEContext(
                     threads        = active_threads,
                     world_model    = wm_data,
                     beliefs        = beliefs,
+                    action_receipts = recent_action_receipts,
                     metrics        = tte_ctx.metrics,
                     predictive_mind = getattr(o, "predictive_mind", None),
                 )
@@ -2843,10 +2858,14 @@ class InternalThoughtLoop:
                 _cde_event_refs = _cde_report.get("event_refs", [])
                 _cde_evidence_ref = self._record_cycle_stage(
                     "cognitive_dissonance_engine", "completed",
-                    inputs={"thread_state_ref": _tte_evidence_ref},
+                    inputs={
+                        "thread_state_ref": _tte_evidence_ref,
+                        "action_receipt_count": len(recent_action_receipts),
+                    },
                     output=active_threads,
                     metrics={
                         "active_thread_count": len(active_threads) if hasattr(active_threads, "__len__") else -1,
+                        "action_receipt_count": len(recent_action_receipts),
                         "detected_event_count": int(_cde_report.get("detected_event_count", 0)),
                         "reobserved_event_count": int(_cde_report.get("reobserved_event_count", 0)),
                         "meta_threads_spawned": int(_cde_report.get("meta_threads_spawned", 0)),
