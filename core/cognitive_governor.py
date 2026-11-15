@@ -243,7 +243,10 @@ class CognitiveGovernor:
             "pressure_source": self._pressure_source,
         }
         if isinstance(goal_status_counts, dict):
-            for key in ("active", "dormant", "other", "total"):
+            for key in (
+                "active", "dormant", "completed", "archived",
+                "abandoned", "low_quality", "other", "total",
+            ):
                 value = goal_status_counts.get(key)
                 if isinstance(value, int) and value >= 0:
                     field = (

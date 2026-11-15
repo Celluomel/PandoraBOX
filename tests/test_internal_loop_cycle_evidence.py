@@ -764,7 +764,11 @@ def test_governor_goal_count_excludes_retained_terminal_goal_records():
     assert InternalThoughtLoop._governor_goal_status_counts(goal_engine) == {
         "active": 1,
         "dormant": 1,
-        "other": 4,
+        "completed": 1,
+        "archived": 1,
+        "abandoned": 1,
+        "low_quality": 1,
+        "other": 0,
         "total": 6,
     }
     assert InternalThoughtLoop._governor_goal_count(None) == 0
@@ -833,13 +837,20 @@ def test_governor_snapshot_includes_the_goal_state_counts_it_saw():
         total_pressure=0.2,
         goal_count=4,
         cycle_number=13,
-        goal_status_counts={"active": 0, "dormant": 4, "other": 12, "total": 16},
+        goal_status_counts={
+            "active": 0, "dormant": 4, "completed": 2, "archived": 5,
+            "abandoned": 3, "low_quality": 2, "other": 0, "total": 16,
+        },
     )
 
     assert snapshot["goal_count"] == 4
     assert snapshot["active_goal_count"] == 0
     assert snapshot["dormant_goal_count"] == 4
-    assert snapshot["other_goal_count"] == 12
+    assert snapshot["completed_goal_count"] == 2
+    assert snapshot["archived_goal_count"] == 5
+    assert snapshot["abandoned_goal_count"] == 3
+    assert snapshot["low_quality_goal_count"] == 2
+    assert snapshot["other_goal_count"] == 0
     assert snapshot["goal_records_seen"] == 16
     summary = InternalThoughtLoop._evidence_summary(snapshot)
     assert summary["numeric_metrics"]["dormant_goal_count"] == 4

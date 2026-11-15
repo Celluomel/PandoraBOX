@@ -806,7 +806,9 @@ class InternalThoughtLoop:
                 "user_topic_count", "filtered_topic_count", "active_thread_count",
                 "broadcast_count", "requested_count", "total_pressure",
                 "goal_count", "budget_total", "budget_remaining",
-                "dormant_goal_count", "other_goal_count", "goal_records_seen",
+                "dormant_goal_count", "completed_goal_count", "archived_goal_count",
+                "abandoned_goal_count", "low_quality_goal_count", "other_goal_count",
+                "goal_records_seen",
                 "winning_margin", "score", "confidence", "priority", "override",
                 "generation_blocked", "decision_fresh", "winner_age_cycles",
                 "cycle", "previous_scan_cycle", "drive_count",
@@ -3309,11 +3311,15 @@ class InternalThoughtLoop:
         """
         goals = getattr(goal_engine, "_goals", {}) if goal_engine is not None else {}
         values = goals.values() if hasattr(goals, "values") else goals
-        counts = {"active": 0, "dormant": 0, "other": 0, "total": 0}
+        tracked_statuses = {
+            "active", "dormant", "completed", "archived", "abandoned", "low_quality",
+        }
+        counts = {status: 0 for status in tracked_statuses}
+        counts.update({"other": 0, "total": 0})
         for goal in values:
             counts["total"] += 1
             status = getattr(goal, "status", None)
-            if status in {"active", "dormant"}:
+            if status in tracked_statuses:
                 counts[status] += 1
             else:
                 counts["other"] += 1
