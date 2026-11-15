@@ -1,7 +1,7 @@
 # Audit du harnais cognitif — état et prochaines étapes
 
 **Date de mise à jour :** 15 novembre 2026
-**Statut :** audit du harnais cognitif en cours; aucune conclusion globale de qualité n’est établie. Le correctif `3feddbc` est chargé dans Lumina après redémarrage audit; vérification live au cycle `11639`. Les modifications Body/UI préexistantes restent hors lot.
+**Statut :** audit du harnais cognitif en cours; aucune conclusion globale de qualité n’est établie. Le correctif `3feddbc` est chargé dans Lumina après redémarrage audit; validation de trace de conversation au cycle `11643`. Les modifications Body/UI préexistantes restent hors lot.
 
 ## Plan d’audit piloté par les preuves — mesure de progression
 
@@ -2626,3 +2626,5 @@ Un tour de chat de test a été envoyé à Lumina par `POST /api/interface/chat`
 **Vérification :** test isolé du véritable `LongHorizonPlanner` : avec un plan actif à 1/4 et une aspiration à 0/15, le snapshot choisit le plan actif et conserve l’aspiration séparément. Après redémarrage unique en mode audit, `/api/interface/telemetry` confirme en live `identity coherence`, source `goal`, **2/4**, prochaine étape `self_question`, dernier reçu réussi au cycle `11637`; le champ `background_aspiration` contient séparément l’aspiration **0/15** et son ancien résultat non vérifié. Le frontend servi pointe vers le nouveau bundle et `npm run build`, `py_compile`, `git diff --check` réussissent. Avec le venv de `start.bat`, `tests/test_intention_planning.py` et `tests/test_self_description_prompt.py` passent **65 tests**, 7 avertissements Pydantic historiques. Les cartes affichées sur les anciens messages restent des snapshots historiques; actualiser `/next/` et générer un nouveau message pour voir une capture fraîche.
 
 **Progression :** toujours **2/10 = 20 %**. Le défaut de sélection/présentation du plan répétitif est corrigé et validé live; il ne clôt pas à lui seul une piste entière. L’audit continue sur la causalité et les effets aval du harnais; aucune conclusion de qualité globale n’est tirée de cette correction.
+
+**Contrôle conversationnel après actualisation :** le tour `1b4df714-09a4-4cef-9cc8-22225c21de72` s’est clôturé avec les reçus `turn_input=received`, `prompt_assembly=completed`, `primary_generation=completed`, `response_finalization=completed`. L’événement `telemetry` attaché au tour contenait le plan GoalEngine `What can I learn about cognitive capability development?`, source `goal`, **0/4**, prochaine étape `memory_recall`, ainsi que l’aspiration persistante distincte à **0/15**. Le tour conversationnel consomme donc aussi la capture courante. La réponse en prose a cependant présenté une autre aspiration (« stabiliser ma perception identitaire… ») qui n’était pas celle du snapshot; ce débordement est une observation de fidélité à vérifier dans la piste 8, séparément du défaut de trace corrigé.
