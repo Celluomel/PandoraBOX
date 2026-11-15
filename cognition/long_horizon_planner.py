@@ -901,6 +901,21 @@ class LongHorizonPlanner:
                 "id": str(getattr(goal, "id", "")),
                 "topic": str(getattr(goal, "topic", "")).strip()[:120],
                 "origin": str(getattr(goal, "origin", "unknown")),
+                "created_cycle": getattr(goal, "created_cycle", None),
+                "created_at": str(getattr(goal, "created_at", "") or "")[:80],
+                "source_turn_id": str(getattr(goal, "source_turn_id", "") or "")[:80] or None,
+                "source_thought_id": str(getattr(goal, "source_thought_id", "") or "")[:80] or None,
+                "source_thought_source": str(
+                    getattr(goal, "source_thought_source", "") or ""
+                )[:80] or None,
+                "source_thought_type": str(
+                    getattr(goal, "source_thought_type", "") or ""
+                )[:80] or None,
+                "source_concept_method": str(
+                    getattr(goal, "source_concept_method", "") or ""
+                )[:80] or None,
+                "tension_source": str(getattr(goal, "tension_source", "") or "")[:80] or None,
+                "tension_level": round(float(getattr(goal, "tension_level", 0.0) or 0.0), 3),
                 "intent_kind": str(getattr(goal, "intent_kind", "learn")),
                 "temporal_scope": str(getattr(goal, "temporal_scope", "ongoing")),
                 "desired_effect": str(getattr(goal, "desired_effect", ""))[:180],
@@ -1033,11 +1048,33 @@ class LongHorizonPlanner:
         goal_count = int(snapshot.get("active_goal_count", len(goals)))
         plan = snapshot["dominant_plan"]
         goal_topics = [str(goal["topic"]) for goal in goals]
+        goal_provenance = []
+        for goal in goals:
+            provenance = [f"origin={goal.get('origin') or 'unknown'}"]
+            if goal.get("source_turn_id"):
+                provenance.append(f"turn={goal['source_turn_id']}")
+            if goal.get("source_thought_id"):
+                provenance.append(f"thought={goal['source_thought_id']}")
+            if goal.get("source_thought_source"):
+                provenance.append(f"thought_source={goal['source_thought_source']}")
+            if goal.get("source_concept_method"):
+                provenance.append(f"concept_method={goal['source_concept_method']}")
+            if goal.get("tension_source"):
+                provenance.append(
+                    f"tension={goal['tension_source']}@{goal.get('tension_level', 0.0):.3f}"
+                )
+            if goal.get("created_cycle") is not None:
+                provenance.append(f"created_cycle={goal['created_cycle']}")
+            goal_provenance.append(f"{goal['topic']}: " + ", ".join(provenance))
 
         lines = ["[Cognitive telemetry - factual self-report]"]
         lines.append(
             f"Recorded active goal count: {goal_count}. Listed goal topics are a maximum of four: "
             + ("; ".join(goal_topics[:4]) if goal_topics else "none")
+        )
+        lines.append(
+            "Recorded goal provenance (missing fields mean no provenance is stored): "
+            + ("; ".join(goal_provenance[:4]) if goal_provenance else "none")
         )
         if not plan:
             lines.append("Operational plan: none recorded for an active goal.")

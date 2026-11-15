@@ -734,6 +734,11 @@ class IntentionPlanningTests(unittest.TestCase):
             goal = NS(
                 id="g-factual", topic="checking capability",
                 origin="resolve_uncertainty", priority=0.78,
+                created_cycle=42, created_at="2026-11-15T10:00:00+00:00",
+                tension_source="curiosity_drive", tension_level=0.71,
+                source_turn_id="", source_thought_id="",
+                source_thought_source="", source_thought_type="",
+                source_concept_method="",
             )
             planner._organism.ai_system = NS(
                 goal_engine=NS(get_active_goals=lambda min_activation=0.1: [goal])
@@ -749,6 +754,11 @@ class IntentionPlanningTests(unittest.TestCase):
             )
             self.assertIn("Recorded active goal count: 1", fragment)
             self.assertIn("maximum of four: checking capability", fragment)
+            self.assertIn(
+                "checking capability: origin=resolve_uncertainty, "
+                "tension=curiosity_drive@0.710, created_cycle=42",
+                fragment,
+            )
             self.assertIn("progress 1/4", fragment)
             self.assertIn("completed=memory_recall", fragment)
             self.assertIn("next pending=self_question", fragment)
