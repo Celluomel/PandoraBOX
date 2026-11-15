@@ -348,11 +348,14 @@ def deliberate(
     # and updating it multiple times would corrupt the pressure_delta/
     # meta_error trend calculation, which is meant to track cognitive
     # cycles, not competition-loop iterations).
+    try:
+        _epi = float(pressure.get("epistemic", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        _epi = 0.0
     internal_state = None
     try:
         from cognition.internal_cognitive_state import get_internal_cognitive_state
         internal_state = get_internal_cognitive_state(organism)
-        _epi = pressure.get("epistemic", 0.0)
         internal_state.update(_epi)
     except Exception as e:
         logger.debug(f"[RecursiveDeliberation] internal_cognitive_state update failed (non-fatal): {e}")
@@ -386,7 +389,6 @@ def deliberate(
         except Exception as e:
             logger.debug(f"[RecursiveDeliberation] reflection_controller failed (non-fatal): {e}")
             effective_max_cycles = max_cycles
-        efficacy_model = None
 
     ws_state = gw.get_state()
     prev_focus = ws_state.focus
