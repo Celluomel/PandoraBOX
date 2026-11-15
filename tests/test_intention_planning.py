@@ -163,9 +163,10 @@ class IntentionPlanningTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             planner, _, _ = self._planner(folder)
             goal = NS(id="g-1", topic="current cognitive goal", status="active")
+            second_goal = NS(id="g-2", topic="second active goal", status="active")
             planner._ai = NS(goal_engine=NS(
-                get_active_goals=lambda min_activation=0.10: [goal],
-                get_goal_by_id=lambda goal_id: goal if goal_id == goal.id else None,
+                get_active_goals=lambda min_activation=0.10: [goal, second_goal],
+                get_goal_by_id=lambda goal_id: {goal.id: goal, second_goal.id: second_goal}.get(goal_id),
             ))
             aspiration_plan = Plan(
                 aspiration_domain="epistemic",
@@ -181,7 +182,18 @@ class IntentionPlanningTests(unittest.TestCase):
                 resource_reserve=0.22, revision_trigger=0.25, horizon=1,
                 source="goal", source_id="g-1", objective="Plan for current cognitive goal",
             )
-            planner._plans = {"epistemic": aspiration_plan, "goal:g-1": goal_plan}
+            second_goal_plan = Plan(
+                aspiration_domain="goal:g-2",
+                steps=[PlanStep(sequence=0, action_type="analytical", operation="web_search",
+                                expected_cost=0.03, expected_gain=0.02)],
+                resource_reserve=0.22, revision_trigger=0.25, horizon=1,
+                source="goal", source_id="g-2", objective="Plan for second active goal",
+            )
+            planner._plans = {
+                "epistemic": aspiration_plan,
+                "goal:g-1": goal_plan,
+                "goal:g-2": second_goal_plan,
+            }
 
             snapshot = planner.factual_self_report_snapshot()
 
@@ -190,6 +202,10 @@ class IntentionPlanningTests(unittest.TestCase):
         self.assertEqual(snapshot["active_goal_plan"]["source_id"], "g-1")
         self.assertEqual(snapshot["active_goal_plan"]["objective"], "Plan for current cognitive goal")
         self.assertEqual(snapshot["active_goal_plan"]["next_operation"], "self_question")
+        self.assertEqual(
+            [item["source_id"] for item in snapshot["active_goal_plans"]],
+            ["g-1", "g-2"],
+        )
 
     def test_goal_intention_advances_only_on_verified_success(self):
         with tempfile.TemporaryDirectory() as folder:

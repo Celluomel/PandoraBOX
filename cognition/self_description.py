@@ -251,31 +251,44 @@ def sanitize_displayed_cognitive_trace(value: Any) -> Dict[str, Any] | None:
                 "energy": number(goal.get("energy")),
             })
 
-    active_goal_plan = value.get("active_goal_plan")
-    if isinstance(active_goal_plan, dict):
-        active_outcome = active_goal_plan.get("last_outcome")
-        active_outcome = active_outcome if isinstance(active_outcome, dict) else {}
-        sanitized["active_goal_plan"] = {
-            "objective": text(active_goal_plan.get("objective"), 160),
-            "status": text(active_goal_plan.get("status"), 24),
-            "source_id": text(active_goal_plan.get("source_id"), 80),
-            "steps_completed": number(active_goal_plan.get("steps_completed"), integer=True),
-            "steps_total": number(active_goal_plan.get("steps_total"), integer=True),
-            "next_operation": text(active_goal_plan.get("next_operation"), 80),
-            "next_operation_status": text(active_goal_plan.get("next_operation_status"), 24),
-            "next_operation_result": text(active_goal_plan.get("next_operation_result"), 200),
-            "decision_summary": text(active_goal_plan.get("decision_summary"), 300),
+    def sanitize_goal_plan(item: Any) -> Dict[str, Any] | None:
+        if not isinstance(item, dict):
+            return None
+        outcome = item.get("last_outcome")
+        outcome = outcome if isinstance(outcome, dict) else {}
+        return {
+            "goal_topic": text(item.get("goal_topic"), 120),
+            "objective": text(item.get("objective"), 160),
+            "status": text(item.get("status"), 24),
+            "source_id": text(item.get("source_id"), 80),
+            "steps_completed": number(item.get("steps_completed"), integer=True),
+            "steps_total": number(item.get("steps_total"), integer=True),
+            "next_operation": text(item.get("next_operation"), 80),
+            "next_operation_status": text(item.get("next_operation_status"), 24),
+            "next_operation_result": text(item.get("next_operation_result"), 200),
+            "decision_summary": text(item.get("decision_summary"), 300),
             "last_outcome": {
-                "operation": text(active_outcome.get("operation"), 80),
-                "success": active_outcome.get("success") if isinstance(active_outcome.get("success"), bool) else None,
-                "status": text(active_outcome.get("status"), 24),
-                "result": text(active_outcome.get("result"), 200),
-                "observed_at": number(active_outcome.get("observed_at")),
-                "effect_measured": active_outcome.get("effect_measured") if isinstance(active_outcome.get("effect_measured"), bool) else None,
-            } if active_outcome else None,
+                "operation": text(outcome.get("operation"), 80),
+                "success": outcome.get("success") if isinstance(outcome.get("success"), bool) else None,
+                "status": text(outcome.get("status"), 24),
+                "result": text(outcome.get("result"), 200),
+                "observed_at": number(outcome.get("observed_at")),
+                "effect_measured": outcome.get("effect_measured") if isinstance(outcome.get("effect_measured"), bool) else None,
+            } if outcome else None,
         }
-    else:
-        sanitized["active_goal_plan"] = None
+
+    raw_goal_plans = value.get("active_goal_plans")
+    if not isinstance(raw_goal_plans, list):
+        legacy_plan = value.get("active_goal_plan")
+        raw_goal_plans = [legacy_plan] if isinstance(legacy_plan, dict) else []
+    sanitized["active_goal_plans"] = [
+        goal_plan for item in raw_goal_plans[:4]
+        if (goal_plan := sanitize_goal_plan(item)) is not None
+    ]
+    sanitized["active_goal_plan"] = (
+        sanitized["active_goal_plans"][0]
+        if sanitized["active_goal_plans"] else None
+    )
 
     plan = value.get("dominant_plan")
     if not isinstance(plan, dict):
@@ -379,7 +392,11 @@ def trace_grounded_architecture_answer(
     if is_cognitive_trace_query(user_input):
         snapshot = displayed_cognitive_trace if isinstance(displayed_cognitive_trace, dict) else None
         plan = snapshot.get("dominant_plan") if snapshot else None
-        active_goal_plan = snapshot.get("active_goal_plan") if snapshot else None
+        active_goal_plans = snapshot.get("active_goal_plans") if snapshot else None
+        if not isinstance(active_goal_plans, list):
+            legacy_goal_plan = snapshot.get("active_goal_plan") if snapshot else None
+            active_goal_plans = [legacy_goal_plan] if isinstance(legacy_goal_plan, dict) else []
+        active_goal_plan = active_goal_plans[0] if active_goal_plans else None
         goals = snapshot.get("active_goals") if snapshot else None
         french = bool(re.search(r"\b(?:quels?|quelle|affichée?|preuve|tour|échec|étapes?)\b", normalized))
         if not snapshot:
@@ -390,20 +407,23 @@ def trace_grounded_architecture_answer(
                 "I did not receive the Cognitive Trace snapshot shown by the interface, so I cannot report its completed steps, last outcome, or link to this turn."
             )
         if not isinstance(plan, dict) and isinstance(active_goal_plan, dict):
-            active_objective = str(active_goal_plan.get("objective") or "(objectif absent)")[:160]
-            active_next = str(active_goal_plan.get("next_operation") or "aucune")[:80]
-            active_status = str(active_goal_plan.get("next_operation_status") or "inconnu")[:24]
+            active_summaries = []
+            for goal_plan in active_goal_plans[:4]:
+                if not isinstance(goal_plan, dict):
+                    continue
+                objective = str(goal_plan.get("objective") or "objectif absent")[:100]
+                progress = f"{_safe_int(goal_plan.get('steps_completed'))}/{_safe_int(goal_plan.get('steps_total'))}"
+                next_operation = str(goal_plan.get("next_operation") or "aucune")[:60]
+                next_status = str(goal_plan.get("next_operation_status") or "inconnu")[:20]
+                active_summaries.append(f"{objective} {progress}, prochaine étape {next_operation} ({next_status})")
+            active_summary = "; ".join(active_summaries)
             if french:
                 return (
-                    f"Faits du snapshot UI transmis : aucun plan d’aspiration enregistré; plan lié à un objectif actif « {active_objective} », "
-                    f"progression {_safe_int(active_goal_plan.get('steps_completed'))}/{_safe_int(active_goal_plan.get('steps_total'))}, "
-                    f"prochaine opération {active_next} (état : {active_status}). "
+                    f"Faits du snapshot UI transmis : aucun plan d’aspiration enregistré; plans liés aux objectifs actifs : {active_summary}. "
                     "Le panneau ne fournit ni identifiant de tour lié à cette étape, ni journal par module; il ne prouve donc pas son exécution pendant le tour affiché."
                 )
             return (
-                f"Displayed snapshot facts: no persistent aspiration plan; active-goal plan '{active_objective}', "
-                f"progress {_safe_int(active_goal_plan.get('steps_completed'))}/{_safe_int(active_goal_plan.get('steps_total'))}, "
-                f"next operation {active_next} (status: {active_status}). The panel has no turn-linked step ID or per-module journal, "
+                f"Displayed snapshot facts: no persistent aspiration plan; active-goal plans: {active_summary}. The panel has no turn-linked step ID or per-module journal, "
                 "so it does not prove execution during the displayed turn."
             )
         if not isinstance(plan, dict):
@@ -437,19 +457,20 @@ def trace_grounded_architecture_answer(
                 " The displayed plan is a persistent background aspiration, not evidence of work on this chat turn."
             ) if plan.get("source") == "aspiration" else ""
         )
-        if isinstance(active_goal_plan, dict):
-            if french:
-                active_plan_note = (
-                    f" Plan lié à un objectif actif : {str(active_goal_plan.get('objective') or 'objectif absent')[:120]} "
-                    f"({_safe_int(active_goal_plan.get('steps_completed'))}/{_safe_int(active_goal_plan.get('steps_total'))}; "
-                    f"prochaine étape {str(active_goal_plan.get('next_operation') or 'aucune')[:80]})."
-                )
-            else:
-                active_plan_note = (
-                    f" Active-goal plan: {str(active_goal_plan.get('objective') or 'objective absent')[:120]} "
-                    f"({_safe_int(active_goal_plan.get('steps_completed'))}/{_safe_int(active_goal_plan.get('steps_total'))}; "
-                    f"next step {str(active_goal_plan.get('next_operation') or 'none')[:80]})."
-                )
+        if active_goal_plans:
+            plan_summaries = []
+            for goal_plan in active_goal_plans[:4]:
+                if not isinstance(goal_plan, dict):
+                    continue
+                objective = str(goal_plan.get("objective") or "objective absent")[:100]
+                progress = f"{_safe_int(goal_plan.get('steps_completed'))}/{_safe_int(goal_plan.get('steps_total'))}"
+                next_action = str(goal_plan.get("next_operation") or "none")[:60]
+                plan_summaries.append(f"{objective} ({progress}; {next_action})")
+            joined_plans = "; ".join(plan_summaries)
+            active_plan_note = (
+                f" Plans liés aux objectifs actifs : {joined_plans}."
+                if french else f" Active-goal plans: {joined_plans}."
+            )
         else:
             active_plan_note = (
                 " Aucun plan n’est actuellement lié à un objectif actif."

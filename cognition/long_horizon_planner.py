@@ -934,36 +934,35 @@ class LongHorizonPlanner:
         # remain unchanged across many chat turns; presenting it as the only
         # "dominant plan" made the chat trace look frozen even while the active
         # goal list changed.
-        active_goal_plan = next(
-            (
-                plans_by_goal[str(getattr(goal, "id", ""))]
-                for goal in eligible_active_goals
-                if str(getattr(goal, "id", "")) in plans_by_goal
-            ),
-            None,
-        )
-        active_goal_plan_data = None
-        if active_goal_plan is not None:
-            goal_step = self.current_step(active_goal_plan.aspiration_domain)
-            active_goal_plan_data = {
-                "objective": active_goal_plan.objective[:160],
-                "status": active_goal_plan.status,
+        active_goal_plans_data = []
+        for goal in eligible_active_goals:
+            goal_id = str(getattr(goal, "id", ""))
+            goal_plan = plans_by_goal.get(goal_id)
+            if goal_plan is None:
+                continue
+            goal_step = self.current_step(goal_plan.aspiration_domain)
+            active_goal_plans_data.append({
+                "goal_topic": str(getattr(goal, "topic", "")).strip()[:120],
+                "objective": goal_plan.objective[:160],
+                "status": goal_plan.status,
                 "source": "goal",
-                "source_id": active_goal_plan.source_id or None,
-                "steps_completed": active_goal_plan.steps_completed,
-                "steps_total": len(active_goal_plan.steps),
+                "source_id": goal_plan.source_id or None,
+                "steps_completed": goal_plan.steps_completed,
+                "steps_total": len(goal_plan.steps),
                 "next_operation": goal_step.operation if goal_step else None,
                 "next_operation_status": goal_step.status if goal_step else None,
                 "next_operation_result": goal_step.result[:200] if goal_step else None,
                 "decision_summary": (
-                    active_goal_plan.current_decision
-                    or active_goal_plan.decision_rationale or ""
+                    goal_plan.current_decision
+                    or goal_plan.decision_rationale or ""
                 )[:300],
                 "last_outcome": (
-                    dict(active_goal_plan.last_outcome)
-                    if active_goal_plan.last_outcome else None
+                    dict(goal_plan.last_outcome) if goal_plan.last_outcome else None
                 ),
-            }
+            })
+        # Keep the singular alias during the UI/API transition; callers that
+        # need a complete view should consume active_goal_plans.
+        active_goal_plan_data = active_goal_plans_data[0] if active_goal_plans_data else None
         plan_data = None
         if plan is not None:
             completed = [step.operation for step in plan.steps if step.status == "completed"]
@@ -1037,6 +1036,7 @@ class LongHorizonPlanner:
             "active_goals": goals,
             "active_goal_count": len(eligible_active_goals),
             "active_goal_plan": active_goal_plan_data,
+            "active_goal_plans": active_goal_plans_data,
             "dominant_plan": plan_data,
         }
 

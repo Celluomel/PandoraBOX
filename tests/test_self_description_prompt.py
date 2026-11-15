@@ -413,6 +413,22 @@ class SelfDescriptionPromptTests(unittest.TestCase):
                     "next_operation": "self_question",
                     "next_operation_status": "pending",
                 },
+                "active_goal_plans": [
+                    {
+                        "goal_topic": "Current goal",
+                        "objective": "Current goal plan",
+                        "steps_completed": 1,
+                        "steps_total": 3,
+                        "next_operation": "self_question",
+                    },
+                    {
+                        "goal_topic": "Second goal",
+                        "objective": "Second goal plan",
+                        "steps_completed": 2,
+                        "steps_total": 4,
+                        "next_operation": "web_search",
+                    },
+                ],
             },
         )
         self.assertIn("progress 0/15", answer)
@@ -423,6 +439,7 @@ class SelfDescriptionPromptTests(unittest.TestCase):
         self.assertIn("no component execution can be confirmed", answer)
         self.assertIn("persistent background aspiration", answer)
         self.assertIn("Active-goal plan", answer)
+        self.assertIn("Second goal plan (2/4; web_search)", answer)
         self.assertNotIn("43 modules", answer)
         self.assertNotIn("238 ticks", answer)
 
@@ -443,6 +460,22 @@ class SelfDescriptionPromptTests(unittest.TestCase):
                 "steps_completed": 1, "steps_total": 4,
                 "next_operation": "self_question", "private_blob": "discard",
             },
+            "active_goal_plans": [{
+                "goal_topic": "active goal",
+                "objective": "active objective",
+                "source_id": "goal-1",
+                "steps_completed": 1,
+                "steps_total": 4,
+                "next_operation": "self_question",
+                "private_blob": "discard",
+            }, {
+                "goal_topic": "another goal",
+                "objective": "another objective",
+                "source_id": "goal-2",
+                "steps_completed": 2,
+                "steps_total": 4,
+                "next_operation": "web_search",
+            }],
             "dominant_plan": {
                 "objective": "plan",
                 "source": "aspiration",
@@ -469,6 +502,9 @@ class SelfDescriptionPromptTests(unittest.TestCase):
         self.assertEqual(snapshot["dominant_plan"]["next_operation_dispatch_path"], "none_advisory_aspiration")
         self.assertEqual(snapshot["active_goal_plan"]["objective"], "active objective")
         self.assertNotIn("private_blob", snapshot["active_goal_plan"])
+        self.assertEqual(len(snapshot["active_goal_plans"]), 2)
+        self.assertEqual(snapshot["active_goal_plans"][1]["source_id"], "goal-2")
+        self.assertNotIn("private_blob", snapshot["active_goal_plans"][0])
         self.assertEqual(snapshot["dominant_plan"]["steps_completed"], 0)
 
     def test_stream_lifecycle_classifies_architecture_query_in_closure_scope(self):
