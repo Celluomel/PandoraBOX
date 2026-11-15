@@ -139,16 +139,22 @@ def interactive_turn_active() -> bool:
     return _turn_lock.locked()
 
 
-def _json_safe(value, depth=0):
+def _json_safe(value, depth=0, *, max_depth=5):
     """Keep diagnostic endpoints serializable without leaking engine objects."""
-    if depth > 5:
+    if depth > max_depth:
         return str(value)
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
     if isinstance(value, dict):
-        return {str(key): _json_safe(item, depth + 1) for key, item in value.items()}
+        return {
+            str(key): _json_safe(item, depth + 1, max_depth=max_depth)
+            for key, item in value.items()
+        }
     if isinstance(value, (list, tuple, set)):
-        return [_json_safe(item, depth + 1) for item in list(value)[:100]]
+        return [
+            _json_safe(item, depth + 1, max_depth=max_depth)
+            for item in list(value)[:100]
+        ]
     return str(value)
 
 
@@ -240,7 +246,7 @@ def _internal_loop_execution_snapshot():
             'Ticks and shape/numeric output checks prove execution and basic integrity; '
             'they do not establish semantic correctness or cognitive usefulness.'
         ),
-    })
+    }, max_depth=10)
 
 
 @router.get('/status')

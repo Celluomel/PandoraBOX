@@ -119,7 +119,13 @@ class InterfaceTests(unittest.IsolatedAsyncioTestCase):
                 'total_ticks': 2, 'total_errors': 0,
             },
             cycle_evidence_snapshot=lambda limit=5: calls.append(('cycles', limit)) or {
-                'retained': 1, 'cycles': [{'cycle_id': 8, 'status': 'completed', 'stages': []}],
+                'retained': 1, 'cycles': [{
+                    'cycle_id': 8, 'status': 'completed', 'stages': [{
+                        'stage': 'goal_engine_tick',
+                        'inputs': {'args': [{'ref': 'input-ref', 'summary': {'kind': 'mapping'}}]},
+                        'output_summary': {'kind': 'mapping', 'field_count': 2},
+                    }],
+                }],
             },
         )
         self.runtime.persona._organism._loop = loop
@@ -135,6 +141,10 @@ class InterfaceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload['module_tick_analysis']['executed_module_count'], 1)
         self.assertEqual(payload['modules']['goal_engine']['tick_count'], 2)
         self.assertEqual(payload['recent_cycle_evidence']['cycles'][0]['cycle_id'], 8)
+        stage = payload['recent_cycle_evidence']['cycles'][0]['stages'][0]
+        self.assertIsInstance(stage['inputs'], dict)
+        self.assertEqual(stage['inputs']['args'][0]['summary']['kind'], 'mapping')
+        self.assertEqual(stage['output_summary']['field_count'], 2)
         self.assertEqual(calls, ['ticks', 'analysis', ('cycles', 3)])
 
     async def test_chat_notifies_presence_engine_of_recent_user_activity(self):
