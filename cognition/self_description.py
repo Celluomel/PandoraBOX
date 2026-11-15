@@ -334,6 +334,7 @@ def sanitize_displayed_cognitive_trace(value: Any) -> Dict[str, Any] | None:
         "objective": text(plan.get("objective"), 160),
         "status": text(plan.get("status"), 24),
         "source": text(plan.get("source"), 24),
+        "selection_basis": text(plan.get("selection_basis"), 64),
         "next_operation_dispatch_path": text(plan.get("next_operation_dispatch_path"), 48),
         "steps_completed": number(plan.get("steps_completed"), integer=True),
         "steps_total": number(plan.get("steps_total"), integer=True),

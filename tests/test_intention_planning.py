@@ -196,6 +196,12 @@ class IntentionPlanningTests(unittest.TestCase):
                                 expected_cost=0.03, expected_gain=0.02)],
                 resource_reserve=0.22, revision_trigger=0.25, horizon=1,
                 source="goal", source_id="g-2", objective="Plan for second active goal",
+                steps_completed=1,
+                last_outcome={
+                    "operation": "memory_recall", "success": True,
+                    "result": "recalled grounded source", "execution_id": "act-latest",
+                    "observed_at": 1234.0, "cycle_id": 31,
+                },
             )
             planner._plans = {
                 "epistemic": aspiration_plan,
@@ -206,7 +212,9 @@ class IntentionPlanningTests(unittest.TestCase):
             snapshot = planner.factual_self_report_snapshot()
 
         self.assertEqual(snapshot["dominant_plan"]["source"], "goal")
-        self.assertEqual(snapshot["dominant_plan"]["objective"], "Plan for current cognitive goal")
+        self.assertEqual(snapshot["dominant_plan"]["objective"], "Plan for second active goal")
+        self.assertEqual(snapshot["dominant_plan"]["source_id"], "g-2")
+        self.assertEqual(snapshot["dominant_plan"]["selection_basis"], "latest_terminal_execution_receipt")
         self.assertEqual(snapshot["active_goal_plan"]["source_id"], "g-1")
         self.assertEqual(snapshot["active_goal_plan"]["objective"], "Plan for current cognitive goal")
         self.assertEqual(snapshot["active_goal_plan"]["next_operation"], "self_question")

@@ -479,6 +479,7 @@ class SelfDescriptionPromptTests(unittest.TestCase):
             "dominant_plan": {
                 "objective": "plan",
                 "source": "goal",
+                "selection_basis": "latest_terminal_execution_receipt",
                 "next_operation_dispatch_path": "goal_action_executor_candidate",
                 "steps_completed": "0",
                 "steps_total": 15,
@@ -511,6 +512,7 @@ class SelfDescriptionPromptTests(unittest.TestCase):
         self.assertFalse(snapshot["dominant_plan"]["last_outcome"]["effect_measured"])
         self.assertEqual(snapshot["dominant_plan"]["next_operation_status"], "unavailable")
         self.assertEqual(snapshot["dominant_plan"]["source"], "goal")
+        self.assertEqual(snapshot["dominant_plan"]["selection_basis"], "latest_terminal_execution_receipt")
         self.assertEqual(snapshot["dominant_plan"]["next_operation_dispatch_path"], "goal_action_executor_candidate")
         self.assertEqual(snapshot["active_goal_plan"]["objective"], "active objective")
         self.assertNotIn("private_blob", snapshot["active_goal_plan"])

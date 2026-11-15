@@ -879,17 +879,37 @@ class LongHorizonPlanner:
             if plan.source == "aspiration" and plan.status == "active"
         ]
         plans_by_goal = {plan.source_id: plan for plan in goal_plans}
-        # The dominant plan should follow the currently active goals. The
-        # persistent aspiration is background context and must not occupy the
-        # primary slot whenever a goal-backed plan exists.
-        plan = next(
-            (
-                plans_by_goal[str(getattr(goal, "id", ""))]
-                for goal in active_goals
-                if str(getattr(goal, "id", "")) in plans_by_goal
-            ),
-            None,
+        # Prefer the active goal plan with the newest terminal execution
+        # receipt. Goal activation order can change every cycle and is not
+        # evidence that its plan is the one actually making progress.
+        goal_plans_with_receipts = []
+        for goal_plan in goal_plans:
+            outcome = goal_plan.last_outcome if isinstance(goal_plan.last_outcome, dict) else {}
+            observed_at = outcome.get("observed_at")
+            execution_id = str(outcome.get("execution_id") or "").strip()
+            try:
+                observed_at = float(observed_at)
+            except (TypeError, ValueError):
+                observed_at = 0.0
+            if execution_id and observed_at > 0:
+                goal_plans_with_receipts.append((observed_at, goal_plan))
+        plan = (
+            max(goal_plans_with_receipts, key=lambda item: item[0])[1]
+            if goal_plans_with_receipts else None
         )
+        plan_selection_basis = (
+            "latest_terminal_execution_receipt"
+            if plan is not None else "highest_activation_without_execution_receipt"
+        )
+        if plan is None:
+            plan = next(
+                (
+                    plans_by_goal[str(getattr(goal, "id", ""))]
+                    for goal in active_goals
+                    if str(getattr(goal, "id", "")) in plans_by_goal
+                ),
+                None,
+            )
         if plan is None:
             plan = max(
                 aspiration_plans,
@@ -898,6 +918,8 @@ class LongHorizonPlanner:
             )
         if plan is None and goal_plans:
             plan = max(goal_plans, key=lambda item: item.created_at)
+        if plan is not None and plan.source == "aspiration":
+            plan_selection_basis = "background_aspiration_fallback"
 
         eligible_active_goals = [
             goal for goal in active_goals
@@ -1020,6 +1042,7 @@ class LongHorizonPlanner:
                 "objective": plan.objective[:160],
                 "status": plan.status,
                 "source": str(plan.source or "unknown"),
+                "selection_basis": plan_selection_basis,
                 "source_id": str(plan.source_id or "") or None,
                 "next_operation_dispatch_path": (
                     "none_advisory_aspiration"
