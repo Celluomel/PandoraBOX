@@ -461,6 +461,13 @@ def test_cycle_summary_exposes_only_allowlisted_cognitive_outcome_counts():
             "status": "completed",
             "active_goal_count": 3,
             "accepted_candidate_count": 1,
+            "created_count": 2,
+            "updated_count": 1,
+            "merged_count": 0,
+            "pre_goal_records_seen": 23,
+            "post_goal_records_seen": 18,
+            "pre_dormant_goal_count": 5,
+            "post_dormant_goal_count": 0,
             "private_topic": "do not expose this",
         },
     )
@@ -469,6 +476,13 @@ def test_cycle_summary_exposes_only_allowlisted_cognitive_outcome_counts():
     assert summary["numeric_metrics"] == {
         "active_goal_count": 3,
         "accepted_candidate_count": 1,
+        "created_count": 2,
+        "updated_count": 1,
+        "merged_count": 0,
+        "pre_goal_records_seen": 23,
+        "post_goal_records_seen": 18,
+        "pre_dormant_goal_count": 5,
+        "post_dormant_goal_count": 0,
     }
     assert "private_topic" not in repr(summary)
     assert "do not expose this" not in repr(summary)

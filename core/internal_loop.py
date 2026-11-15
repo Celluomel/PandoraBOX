@@ -808,7 +808,15 @@ class InternalThoughtLoop:
                 "goal_count", "budget_total", "budget_remaining",
                 "dormant_goal_count", "completed_goal_count", "archived_goal_count",
                 "abandoned_goal_count", "low_quality_goal_count", "other_goal_count",
-                "goal_records_seen",
+                "goal_records_seen", "created_count", "updated_count", "merged_count",
+                "pre_active_goal_count", "pre_dormant_goal_count",
+                "pre_completed_goal_count", "pre_archived_goal_count",
+                "pre_abandoned_goal_count", "pre_low_quality_goal_count",
+                "pre_other_goal_count", "pre_goal_records_seen",
+                "post_active_goal_count", "post_dormant_goal_count",
+                "post_completed_goal_count", "post_archived_goal_count",
+                "post_abandoned_goal_count", "post_low_quality_goal_count",
+                "post_other_goal_count", "post_goal_records_seen",
                 "winning_margin", "score", "confidence", "priority", "override",
                 "generation_blocked", "decision_fresh", "winner_age_cycles",
                 "cycle", "previous_scan_cycle", "drive_count",
@@ -2196,6 +2204,30 @@ class InternalThoughtLoop:
                 _goal_engine_evidence_ref = self._record_cycle_stage(
                     "goal_engine_tick", _goal_engine_status,
                     output=_goal_engine_report or {"active_goal_count": _ge_active},
+                )
+                _post_goal_status_counts = self._governor_goal_status_counts(_ge)
+                _registry_transition = {
+                    **{
+                        f"pre_{key}_goal_count": int(_gov_goal_status_counts.get(key, 0))
+                        for key in (
+                            "active", "dormant", "completed", "archived",
+                            "abandoned", "low_quality", "other",
+                        )
+                    },
+                    "pre_goal_records_seen": int(_gov_goal_status_counts.get("total", 0)),
+                    **{
+                        f"post_{key}_goal_count": int(_post_goal_status_counts.get(key, 0))
+                        for key in (
+                            "active", "dormant", "completed", "archived",
+                            "abandoned", "low_quality", "other",
+                        )
+                    },
+                    "post_goal_records_seen": int(_post_goal_status_counts.get("total", 0)),
+                }
+                self._record_cycle_stage(
+                    "goal_engine_registry_transition", _goal_engine_status,
+                    inputs={"goal_engine_output_ref": _goal_engine_evidence_ref},
+                    output=_registry_transition,
                 )
                 if self._governor:
                     self._governor.record('GoalEngine', _ge_active)
