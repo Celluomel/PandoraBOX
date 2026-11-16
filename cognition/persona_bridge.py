@@ -726,6 +726,26 @@ class PersonaBridge:
         )
         return failed
 
+    def _record_world_self_dynamics_outcome(self, receipt: Any, turn_id: str) -> bool:
+        """Attach the exact persisted WSDM transition receipt to its chat turn."""
+        if not isinstance(receipt, dict):
+            receipt = {"status": "unreported", "persisted": False}
+        status = str(receipt.get("status") or "unreported")
+        stage_status = (
+            "completed" if status == "persisted" else
+            "failed" if status in {"failed", "no_matching_pending_turn"} else
+            "skipped_unavailable"
+        )
+        self._record_turn_stage(
+            "world_self_dynamics_outcome",
+            stage_status,
+            status if stage_status == "failed" else "",
+            output={"type": "wsdm_transition_receipt", **receipt},
+            consumes=("world_self_dynamics_model",),
+            turn_id=turn_id,
+        )
+        return stage_status == "failed"
+
     def record_deferred_turn_stage(
         self, turn_id: str, name: str, status: str, detail: str = "",
         error_type: str = "",
@@ -5444,6 +5464,13 @@ Memory honesty — two distinct cases:
                         output=_post_receipt.get("pcm_outcome"),
                         turn_id=audit_turn_id,
                     )
+                    if self._record_world_self_dynamics_outcome(
+                        _post_receipt.get("world_self_dynamics_outcome"), audit_turn_id
+                    ):
+                        logger.warning(
+                            "WSDM transition receipt was not persisted for turn %s",
+                            audit_turn_id,
+                        )
                     _profile_receipt = (
                         _post_receipt.get("world_model_profile_update", {})
                         if isinstance(_post_receipt, dict) else {}
@@ -5645,6 +5672,13 @@ Memory honesty — two distinct cases:
                         output=_post_receipt.get("pcm_outcome"),
                         turn_id=audit_turn_id,
                     )
+                    if self._record_world_self_dynamics_outcome(
+                        _post_receipt.get("world_self_dynamics_outcome"), audit_turn_id
+                    ):
+                        logger.warning(
+                            "WSDM transition receipt was not persisted for turn %s",
+                            audit_turn_id,
+                        )
                     _profile_receipt = (
                         _post_receipt.get("world_model_profile_update", {})
                         if isinstance(_post_receipt, dict) else {}

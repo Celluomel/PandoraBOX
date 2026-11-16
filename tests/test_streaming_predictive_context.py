@@ -141,6 +141,27 @@ class StreamingPredictiveContextTests(unittest.TestCase):
             "not_applicable",
         )
 
+    def test_persona_bridge_links_persisted_wsdm_outcome_to_same_turn(self):
+        from cognition.persona_bridge import PersonaBridge
+
+        bridge = PersonaBridge.__new__(PersonaBridge)
+        bridge._turn_trace_lock = threading.Lock()
+        bridge._last_turn_trace = {"turn_id": "turn-wsdm", "stages": {
+            "world_self_dynamics_model": {
+                "status": "prepared", "output_fingerprint": "wsdm-input-ref",
+            },
+        }}
+
+        failed = bridge._record_world_self_dynamics_outcome({
+            "status": "persisted", "persisted": True, "turn_id": "turn-wsdm",
+        }, "turn-wsdm")
+
+        self.assertFalse(failed)
+        stage = bridge._last_turn_trace["stages"]["world_self_dynamics_outcome"]
+        self.assertEqual(stage["status"], "completed")
+        self.assertEqual(stage["consumes"][0]["stage"], "world_self_dynamics_model")
+        self.assertEqual(stage["consumes"][0]["fingerprint"], "wsdm-input-ref")
+
     def test_missing_predictive_modules_are_traced_as_skipped(self):
         from cognition.persona_bridge import PersonaBridge
 
