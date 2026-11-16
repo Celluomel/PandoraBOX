@@ -258,6 +258,8 @@ class CognitiveImmuneSystem:
         self._path      = Path(path)
         self._state     = ImmuneState()
         self._lock      = threading.Lock()
+        self._check_pending = False
+        self._transition_pending = False
         self._process_started_at = time.time()
         self._load()
         logger.info(
@@ -268,34 +270,118 @@ class CognitiveImmuneSystem:
 
     # ── Public API ────────────────────────────────────────────────────────────
 
-    def tick(self, slow_cycle: int) -> None:
+    def tick(self, slow_cycle: int) -> Dict[str, Any]:
         """Called every slow cycle from InternalThoughtLoop."""
         try:
             # Exit any active counterfactual mode that has run its course
-            if self._state.counterfactual_active and self._state.active_event:
-                ev = CounterfactualEvent(**self._state.active_event)
+            with self._lock:
+                if self._transition_pending:
+                    return {"outcome_status": "skipped", "reason_code": "counterfactual_transition_running", "cycle": slow_cycle}
+                active_event = dict(self._state.active_event or {})
+                counterfactual_active = self._state.counterfactual_active
+                check_pending = self._check_pending
+            if counterfactual_active and active_event:
+                ev = CounterfactualEvent(**active_event)
                 if slow_cycle - ev.started_at_cycle >= COUNTERFACTUAL_DURATION_CYCLES:
-                    threading.Thread(
-                        target=self._exit_counterfactual,
-                        args=(ev, slow_cycle),
-                        daemon=True,
-                        name="cis-exit",
-                    ).start()
-                    return
+                    return self._schedule_transition(
+                        "exit", self._exit_counterfactual, (ev, slow_cycle), slow_cycle,
+                    )
 
             # Run immune check on schedule
             if slow_cycle % IMMUNE_EVERY_N != 0 or slow_cycle == 0:
-                return
+                return {"outcome_status": "skipped", "reason_code": "immune_cadence_not_due", "cycle": slow_cycle}
+            if check_pending:
+                return {"outcome_status": "skipped", "reason_code": "immune_check_already_running", "cycle": slow_cycle}
 
-            threading.Thread(
-                target=self._run_check,
-                args=(slow_cycle,),
-                daemon=True,
-                name="cis-check",
-            ).start()
+            with self._lock:
+                if self._check_pending:
+                    return {"outcome_status": "skipped", "reason_code": "immune_check_already_running", "cycle": slow_cycle}
+                self._check_pending = True
+            try:
+                worker = threading.Thread(
+                    target=self._run_check_guarded, args=(slow_cycle,),
+                    daemon=True, name="cis-check",
+                )
+                worker.start()
+            except Exception:
+                with self._lock:
+                    self._check_pending = False
+                logger.exception("[CognitiveImmune] check worker start failed")
+                return {"outcome_status": "failed", "reason_code": "worker_start_failed", "cycle": slow_cycle}
+            return {"outcome_status": "scheduled", "reason_code": "immune_check_started", "cycle": slow_cycle}
 
         except Exception as e:
             logger.debug(f"[CognitiveImmune] tick error (non-fatal): {e}")
+            return {"outcome_status": "failed", "reason_code": "immune_tick_error", "cycle": slow_cycle}
+
+    def _record_async_completion(self, cycle: int, stage: str, status: str,
+                                 output: Dict[str, Any], error_type: Optional[str] = None) -> None:
+        loop = getattr(self._organism, "_loop", None)
+        recorder = getattr(loop, "record_async_cycle_stage", None)
+        if callable(recorder):
+            recorder(cycle, stage, status, output=output, error_type=error_type)
+
+    def _run_check_guarded(self, slow_cycle: int) -> None:
+        try:
+            outcome = self._run_check(slow_cycle)
+            status = str(outcome.get("outcome_status", "completed"))
+            self._record_async_completion(
+                slow_cycle, "cognitive_immune.check", status, outcome,
+            )
+        finally:
+            with self._lock:
+                self._check_pending = False
+
+    def _schedule_transition(self, kind: str, target: Any, args: tuple,
+                             slow_cycle: int) -> Dict[str, Any]:
+        with self._lock:
+            if self._transition_pending:
+                return {"outcome_status": "skipped", "reason_code": "counterfactual_transition_running", "cycle": slow_cycle}
+            self._transition_pending = True
+        try:
+            worker = threading.Thread(
+                target=self._run_transition_guarded,
+                args=(kind, target, args, slow_cycle),
+                daemon=True, name=f"cis-{kind}",
+            )
+            worker.start()
+        except Exception:
+            with self._lock:
+                self._transition_pending = False
+            logger.exception("[CognitiveImmune] transition worker start failed")
+            return {"outcome_status": "failed", "reason_code": "worker_start_failed", "cycle": slow_cycle}
+        return {"outcome_status": "scheduled", "reason_code": f"counterfactual_{kind}_started", "cycle": slow_cycle}
+
+    def _run_transition_guarded(self, kind: str, target: Any, args: tuple,
+                                slow_cycle: int) -> None:
+        try:
+            result = target(*args)
+            with self._lock:
+                active = bool(self._state.counterfactual_active)
+            if isinstance(result, dict) and isinstance(result.get("outcome_status"), str):
+                outcome = dict(result)
+                outcome["counterfactual_active"] = active
+            else:
+                succeeded = active if kind == "enter" else not active
+                outcome = {
+                    "outcome_status": "completed" if succeeded else "failed",
+                    "reason_code": "counterfactual_state_changed" if succeeded else "counterfactual_state_not_changed",
+                    "counterfactual_active": active,
+                }
+            self._record_async_completion(
+                slow_cycle, f"cognitive_immune.counterfactual_{kind}",
+                outcome["outcome_status"], outcome,
+            )
+        except Exception as exc:
+            self._record_async_completion(
+                slow_cycle, f"cognitive_immune.counterfactual_{kind}", "failed",
+                {"outcome_status": "failed", "reason_code": "transition_exception"},
+                type(exc).__name__,
+            )
+            raise
+        finally:
+            with self._lock:
+                self._transition_pending = False
 
     def is_counterfactual_active(self) -> bool:
         return self._state.counterfactual_active
@@ -339,7 +425,7 @@ class CognitiveImmuneSystem:
 
     # ── Immune check ──────────────────────────────────────────────────────────
 
-    def _run_check(self, slow_cycle: int) -> None:
+    def _run_check(self, slow_cycle: int) -> Dict[str, Any]:
         try:
             snap = self._read_signals(slow_cycle)
             score = snap.compute_score()
@@ -349,39 +435,55 @@ class CognitiveImmuneSystem:
                 if len(self._state.snapshot_log) > MAX_SNAPSHOT_LOG:
                     self._state.snapshot_log = self._state.snapshot_log[-MAX_SNAPSHOT_LOG:]
                 self._state.last_check_cycle = slow_cycle
+                if score > ALERT_THRESHOLD:
+                    self._state.consecutive_alerts += 1
+                else:
+                    self._state.consecutive_alerts = 0
+                consecutive_alerts = self._state.consecutive_alerts
+                counterfactual_active = self._state.counterfactual_active
 
             if score > ALERT_THRESHOLD:
-                self._state.consecutive_alerts += 1
                 logger.info(
-                    f"[CognitiveImmune] ⚠ Alert #{self._state.consecutive_alerts}: "
+                    f"[CognitiveImmune] ⚠ Alert #{consecutive_alerts}: "
                     f"immune_score={score:.3f} "
                     f"(pressure={snap.confirmation_pressure:.2f}, "
                     f"self_ref={snap.self_reference_density:.2f}, "
                     f"novelty={snap.novelty_ratio:.2f})"
                 )
             else:
-                self._state.consecutive_alerts = 0
                 logger.debug(f"[CognitiveImmune] ✅ Healthy — immune_score={score:.3f}")
 
             # Trigger counterfactual after consecutive alerts
             # but not if audit engine has an active trial (they shouldn't overlap)
             audit_trial_active = self._audit_trial_active()
             if (
-                self._state.consecutive_alerts >= ALERT_CONSECUTIVE_NEEDED
-                and not self._state.counterfactual_active
+                consecutive_alerts >= ALERT_CONSECUTIVE_NEEDED
+                and not counterfactual_active
                 and not audit_trial_active
             ):
-                threading.Thread(
-                    target=self._enter_counterfactual,
-                    args=(snap, slow_cycle),
-                    daemon=True,
-                    name="cis-enter",
-                ).start()
+                transition = self._schedule_transition(
+                    "enter", self._enter_counterfactual, (snap, slow_cycle), slow_cycle,
+                )
+                return {
+                    "outcome_status": "completed" if transition["outcome_status"] == "scheduled" else transition["outcome_status"],
+                    "reason_code": "counterfactual_transition_scheduled" if transition["outcome_status"] == "scheduled" else transition["reason_code"],
+                    "cycle": slow_cycle,
+                    "immune_score": round(score, 4),
+                    "consecutive_alerts": consecutive_alerts,
+                }
             else:
                 self._save()
+            return {
+                "outcome_status": "completed",
+                "reason_code": "immune_snapshot_recorded",
+                "cycle": slow_cycle,
+                "immune_score": round(score, 4),
+                "consecutive_alerts": consecutive_alerts,
+            }
 
         except Exception as e:
             logger.debug(f"[CognitiveImmune] _run_check error (non-fatal): {e}")
+            return {"outcome_status": "failed", "reason_code": "immune_check_error", "cycle": slow_cycle}
 
     # ── Signal reading ────────────────────────────────────────────────────────
 
@@ -568,7 +670,7 @@ class CognitiveImmuneSystem:
 
     # ── Counterfactual mode ───────────────────────────────────────────────────
 
-    def _enter_counterfactual(self, snap: ImmuneSnapshot, slow_cycle: int) -> None:
+    def _enter_counterfactual(self, snap: ImmuneSnapshot, slow_cycle: int) -> Dict[str, Any]:
         try:
             logger.info(
                 f"[CognitiveImmune] 🛡 Entering counterfactual mode "
@@ -623,11 +725,19 @@ class CognitiveImmuneSystem:
                 f"topics injected: {topics}, "
                 f"belief challenged: '{challenged}'"
             )
+            return {
+                "outcome_status": "completed",
+                "reason_code": "counterfactual_mode_activated",
+                "topic_count": len(topics),
+                "belief_challenge_applied": bool(challenged),
+                "activation_count": self._state.total_activations,
+            }
 
         except Exception as e:
             logger.debug(f"[CognitiveImmune] _enter_counterfactual error (non-fatal): {e}")
+            return {"outcome_status": "failed", "reason_code": "counterfactual_enter_error"}
 
-    def _exit_counterfactual(self, event: CounterfactualEvent, slow_cycle: int) -> None:
+    def _exit_counterfactual(self, event: CounterfactualEvent, slow_cycle: int) -> Dict[str, Any]:
         try:
             # Read current immune score
             snap = self._read_signals(slow_cycle)
@@ -665,6 +775,13 @@ class CognitiveImmuneSystem:
                 f"[CognitiveImmune] ✅ Counterfactual concluded — "
                 f"score: {event.trigger_score:.3f} → {score:.3f} ({direction})"
             )
+            return {
+                "outcome_status": "completed",
+                "reason_code": "counterfactual_mode_closed",
+                "trigger_score": round(event.trigger_score, 4),
+                "outcome_score": round(score, 4),
+                "score_delta": round(event.trigger_score - score, 4),
+            }
 
         except Exception as e:
             logger.debug(f"[CognitiveImmune] _exit_counterfactual error (non-fatal): {e}")
@@ -672,6 +789,7 @@ class CognitiveImmuneSystem:
                 self._state.counterfactual_active = False
                 self._state.active_event          = None
             self._save()
+            return {"outcome_status": "failed", "reason_code": "counterfactual_exit_error"}
 
     def _generate_opposing_topics(self, dominant_topics: List[str]) -> List[str]:
         """Ask the LLM for concepts that oppose or complement the dominant themes."""

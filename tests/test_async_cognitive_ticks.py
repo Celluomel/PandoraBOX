@@ -23,6 +23,7 @@ from cognition.temporal_self_projection import PROJECT_EVERY_N, TemporalSelfProj
 from cognition.structural_coupling import COUPLING_EVERY_N, StructuralCoupling
 from cognition.meta_learning_audit import META_EVERY_N, MetaLearningAudit
 from cognition.narrative_compression import COMPRESS_EVERY_N, NarrativeCompression
+from cognition.cognitive_immune_system import IMMUNE_EVERY_N, CognitiveImmuneSystem
 
 
 class _DeferredThread:
@@ -348,6 +349,55 @@ class AsyncCognitiveTickTests(unittest.TestCase):
         self.assertEqual(outcome["outcome_status"], "failed")
         self.assertEqual(len(identity.life_story), len(chapters))
         self.assertEqual(identity._current_arc, "")
+
+    def test_cognitive_immune_check_tick_is_single_flight_and_receipted(self):
+        immune = CognitiveImmuneSystem.__new__(CognitiveImmuneSystem)
+        immune._lock = threading.Lock()
+        immune._check_pending = False
+        immune._transition_pending = False
+        immune._state = SimpleNamespace(counterfactual_active=False, active_event=None)
+        completions = []
+        recorder = lambda *args, **kwargs: completions.append((args, kwargs))
+        immune._organism = SimpleNamespace(_loop=SimpleNamespace(record_async_cycle_stage=recorder))
+        immune._run_check = lambda cycle: {
+            "outcome_status": "completed", "reason_code": "immune_snapshot_recorded", "cycle": cycle,
+        }
+
+        with patch("cognition.cognitive_immune_system.threading.Thread", _DeferredThread):
+            off_cycle = immune.tick(1)
+            first = immune.tick(IMMUNE_EVERY_N)
+            second = immune.tick(IMMUNE_EVERY_N * 2)
+
+        self.assertEqual(off_cycle["reason_code"], "immune_cadence_not_due")
+        self.assertEqual(first["outcome_status"], "scheduled")
+        self.assertEqual(second["reason_code"], "immune_check_already_running")
+        _DeferredThread.workers[0].target(*_DeferredThread.workers[0].args)
+        self.assertFalse(immune._check_pending)
+        self.assertEqual(completions[0][0][:3], (IMMUNE_EVERY_N, "cognitive_immune.check", "completed"))
+
+    def test_cognitive_immune_counterfactual_transition_is_single_flight(self):
+        immune = CognitiveImmuneSystem.__new__(CognitiveImmuneSystem)
+        immune._lock = threading.Lock()
+        immune._transition_pending = False
+        immune._state = SimpleNamespace(counterfactual_active=False)
+        completions = []
+        recorder = lambda *args, **kwargs: completions.append((args, kwargs))
+        immune._organism = SimpleNamespace(_loop=SimpleNamespace(record_async_cycle_stage=recorder))
+
+        def enter():
+            immune._state.counterfactual_active = True
+            return {"outcome_status": "completed", "reason_code": "counterfactual_mode_activated", "topic_count": 2}
+
+        with patch("cognition.cognitive_immune_system.threading.Thread", _DeferredThread):
+            first = immune._schedule_transition("enter", enter, (), 50)
+            second = immune._schedule_transition("enter", enter, (), 60)
+
+        self.assertEqual(first["outcome_status"], "scheduled")
+        self.assertEqual(second["reason_code"], "counterfactual_transition_running")
+        _DeferredThread.workers[0].target(*_DeferredThread.workers[0].args)
+        self.assertFalse(immune._transition_pending)
+        self.assertEqual(completions[0][0][:3], (50, "cognitive_immune.counterfactual_enter", "completed"))
+        self.assertEqual(completions[0][1]["output"]["topic_count"], 2)
 
 
 if __name__ == "__main__":

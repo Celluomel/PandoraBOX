@@ -2899,3 +2899,13 @@ La revue des ticks asynchrones a trouvé deux défauts de cause : `MetaLearningA
 **Validation locale :** le lot cognitif ciblé passe **161 tests**, 9 avertissements de dépendances existants; compilation ciblée et `git diff --check` passent. Les reçus attestent l’exécution et les compteurs d’effets; ils ne jugent pas la qualité sémantique des thèmes ni la validité des conclusions de méta-apprentissage.
 
 Ces modifications nécessitent le même redémarrage groupé pour le contrôle live. La progression de clôture demeure **2/10 = 20 %** jusqu’à l’inspection des reçus chargés et aux essais sémantiques aval.
+
+### CognitiveImmuneSystem — contrôle et transitions contre-factuelles single-flight — 16 novembre 2026
+
+Le module immunitaire lançait périodiquement un contrôle à chaque tick dû, même si l’analyse précédente tournait encore. Une alerte persistante pouvait aussi créer plusieurs workers d’entrée/sortie du mode contre-factuel. Les erreurs internes étaient absorbées et le tick renvoyait `None`, empêchant de distinguer mesure, activation, sortie et échec.
+
+**Correction locale :** un verrou réserve séparément le contrôle périodique et la transition de mode; les ticks indiquent les raisons de report ou de programmation. La mesure et les transitions publient un reçu asynchrone associé au cycle d’origine. Les résultats incluent le score immunitaire, le nombre d’alertes, les topics injectés, l’application du défi de croyance et les scores avant/après la période contre-factuelle. Les erreurs d’entrée/sortie ne sont plus déduites du seul indicateur de mode.
+
+**Validation locale :** les six suites ciblées passent **163 tests**, 9 avertissements historiques; compilation et `git diff --check` passent. Les tests retiennent les threads et vérifient l’absence de doublons, la libération des réservations et l’attribution des reçus.
+
+Le score d’audit reste **2/10 = 20 %**. La correction de l’ordonnancement et des reçus ne valide pas encore la pertinence des seuils immunitaires, des contre-hypothèses ni leur effet sur les réponses et les plans.
