@@ -3160,6 +3160,12 @@ L'instance actuelle est le listener 8080 PID **6816**, audit actif (`runtime_pyt
 
 **Prochaine vérification maintenue ouverte :** le cycle 12039 a relié le winner GWS au dispatch `bisociative_hypothesis`; les logs montrent une hypothèse générée et une stimulation de curiosité, mais le reçu conservé expose encore `outcome_status=dispatched`, sans stage terminal async visible. Vérifier si le worker finalise réellement son plan et son ThoughtStream/GWS, puis corriger la capture de l'effet si ce lien reste absent. En parallèle, le tour hors-sujet Body malgré injection GWS demeure une défaillance de qualité à reproduire et à attribuer; les traces seules ne justifient pas encore d'accuser GWS ou FAISS.
 
+### Reprise après clarification sur l'observateur — 16 novembre 2026
+
+L'observateur reste actif, mais il ne contrôle pas la durée des tours de l'assistant : il collecte des snapshots de l'application et ne peut ni relancer ni contraindre le raisonnement de l'auditeur. L'instance Lumina PID **6816** et le watcher sont vivants. Le cycle live **12044** est terminé; `goal_action_executor` y est `skipped_cadence`, et il n'existe pas encore de reçu d'action dans cette session.
+
+Le profileur Python du processus 6816 compte **289 fichiers exécutés sur 558** (269 sans appel observé à cet instant). Ce décompte est une preuve d'exécution de fichiers uniquement; les fichiers absents peuvent être conditionnels ou hors scénario. `cognition/goal_action_executor.py` n'a pas encore été importé dans ce processus, donc l'action asynchrone du cycle 12039 appartient au processus précédent. Son hypothèse produite dans les logs n'établit toujours ni finalisation du plan, ni effet persistant dans cette session. Aucun redémarrage supplémentaire n'est nécessaire pour ce constat; la prochaine preuve doit venir d'un tick dû et de son résultat terminal.
+
 ### Test live du retry de continuité après le commit `28d039e` — 16 novembre 2026
 
 Lumina est redémarrée et active en audit mode (listener localhost vérifié; profiler Python actif). Le tour `bf299803-5bc2-4b91-b0aa-b137ac4f344c` s'est terminé `completed`; son étape `continuity_analysis_post_response` est `completed`, sans erreur, et `goal_means_post_response=not_applicable`. Le correctif de retry court réussit donc en live sur ce scénario après troncature de la première note, sans laisser de stage d'échec. Le précédent signal `ProviderTruncatedOutput` était visible sur le tour `56dd168d-8433-4593-894a-08e5166eea56`; la réponse principale de ce tour avait terminé normalement.
