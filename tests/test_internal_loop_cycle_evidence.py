@@ -903,3 +903,17 @@ def test_cycle_receipt_uses_explicit_no_action_reason_when_executor_returns_none
     }
     completed = {"outcome_status": "dispatched", "execution_id": "act_ref"}
     assert InternalThoughtLoop._goal_action_receipt(completed, executor) is completed
+
+
+def test_goal_action_receipt_identifies_fallback_selection_without_goal_text():
+    loop = object.__new__(InternalThoughtLoop)
+
+    evidence = loop._goal_action_selection_evidence(
+        {"goal_id": "private-goal-id", "goal_topic": "private goal text"},
+        decision_is_fresh=False,
+    )
+
+    assert evidence["selection_source"] == "active_goal_fallback"
+    assert evidence["selected_goal_id_ref"] == loop._evidence_fingerprint("private-goal-id")
+    assert "private-goal-id" not in str(evidence)
+    assert "private goal text" not in str(evidence)

@@ -306,6 +306,18 @@ class InternalThoughtLoop:
         outcome = getattr(executor, "_last_tick_outcome", None)
         return outcome if isinstance(outcome, dict) else None
 
+    def _goal_action_selection_evidence(
+        self, report: Any, *, decision_is_fresh: bool,
+    ) -> dict[str, Any]:
+        """Expose which selection path chose an action, without goal text/IDs."""
+        goal_id = report.get("goal_id") if isinstance(report, dict) else None
+        return {
+            "selection_source": (
+                "workspace_winner" if decision_is_fresh else "active_goal_fallback"
+            ),
+            "selected_goal_id_ref": self._evidence_fingerprint(goal_id) if goal_id else None,
+        }
+
     def _link_phase2_thread(self, thread: Any) -> dict[str, Any] | None:
         """Link one terminal thread and persist its marker only after a valid result."""
         if (
@@ -2329,6 +2341,9 @@ class InternalThoughtLoop:
                 _action_receipt = self._goal_action_receipt(
                     _action_report, self._goal_action_executor,
                 )
+                _selection_evidence = self._goal_action_selection_evidence(
+                    _action_receipt, decision_is_fresh=decision_is_fresh,
+                )
                 _previous_winner_ref = getattr(o, "_v32_workspace_winner_evidence_ref", None)
                 _action_stage_status = (
                     str(_action_receipt.get("outcome_status", "completed"))
@@ -2337,6 +2352,7 @@ class InternalThoughtLoop:
                 self._record_cycle_stage(
                     "goal_action_executor", _action_stage_status,
                     inputs={
+                        **_selection_evidence,
                         "winner_output_ref": _previous_winner_ref if decision_is_fresh else None,
                         "decision_fresh": decision_is_fresh,
                         "winner_age_cycles": winner_age,
