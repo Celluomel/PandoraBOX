@@ -1,6 +1,7 @@
 """Evidence and single-flight behavior for asynchronous cognitive ticks."""
 import threading
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from cognition.introspective_observer import IntrospectiveObserver
@@ -210,7 +211,12 @@ class AsyncCognitiveTickTests(unittest.TestCase):
         engine._lock = threading.Lock()
         engine._worker_pending = False
         engine._last_worker_cycle = None
-        engine._run_projections = lambda cycle: None
+        completions = []
+        recorder = lambda *args, **kwargs: completions.append((args, kwargs))
+        engine._organism = SimpleNamespace(_loop=SimpleNamespace(record_async_cycle_stage=recorder))
+        engine._run_projections = lambda cycle: {
+            "outcome_status": "completed", "reason_code": "projections_updated", "projection_count": 1,
+        }
 
         with patch("cognition.temporal_projection.threading.Thread", _DeferredThread):
             off_cycle = engine.tick(1)
@@ -223,6 +229,7 @@ class AsyncCognitiveTickTests(unittest.TestCase):
         self.assertEqual(len(_DeferredThread.workers), 1)
         _DeferredThread.workers[0].target(*_DeferredThread.workers[0].args)
         self.assertFalse(engine._worker_pending)
+        self.assertEqual(completions[0][0][:3], (PROJECTION_EVERY_N, "temporal_projection.worker", "completed"))
 
     def test_temporal_self_projection_tick_is_single_flight_and_receipted(self):
         engine = TemporalSelfProjection.__new__(TemporalSelfProjection)
@@ -230,7 +237,12 @@ class AsyncCognitiveTickTests(unittest.TestCase):
         engine._worker_pending = False
         engine._last_worker_cycle = None
         engine._record_snapshot = lambda cycle: None
-        engine._project = lambda cycle: None
+        completions = []
+        recorder = lambda *args, **kwargs: completions.append((args, kwargs))
+        engine._organism = SimpleNamespace(_loop=SimpleNamespace(record_async_cycle_stage=recorder))
+        engine._project = lambda cycle: {
+            "outcome_status": "completed", "reason_code": "trajectory_updated", "dimension_count": 2,
+        }
 
         with patch("cognition.temporal_self_projection.threading.Thread", _DeferredThread):
             first = engine.tick(PROJECT_EVERY_N)
@@ -241,13 +253,19 @@ class AsyncCognitiveTickTests(unittest.TestCase):
         self.assertEqual(len(_DeferredThread.workers), 1)
         _DeferredThread.workers[0].target(*_DeferredThread.workers[0].args)
         self.assertFalse(engine._worker_pending)
+        self.assertEqual(completions[0][0][:3], (PROJECT_EVERY_N, "temporal_self_projection.worker", "completed"))
 
     def test_structural_coupling_tick_is_single_flight_and_receipted(self):
         coupling = StructuralCoupling.__new__(StructuralCoupling)
         coupling._lock = threading.Lock()
         coupling._worker_pending = False
         coupling._last_worker_cycle = None
-        coupling._push = lambda: None
+        completions = []
+        recorder = lambda *args, **kwargs: completions.append((args, kwargs))
+        coupling._organism = SimpleNamespace(_loop=SimpleNamespace(record_async_cycle_stage=recorder))
+        coupling._push = lambda: {
+            "outcome_status": "completed", "reason_code": "peer_updates_sent", "sent_count": 1,
+        }
 
         with patch("cognition.structural_coupling.threading.Thread", _DeferredThread):
             off_cycle = coupling.tick(1)
@@ -260,6 +278,7 @@ class AsyncCognitiveTickTests(unittest.TestCase):
         self.assertEqual(len(_DeferredThread.workers), 1)
         _DeferredThread.workers[0].target(*_DeferredThread.workers[0].args)
         self.assertFalse(coupling._worker_pending)
+        self.assertEqual(completions[0][0][:3], (COUPLING_EVERY_N, "structural_coupling.worker", "completed"))
 
 
 if __name__ == "__main__":

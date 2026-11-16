@@ -84,7 +84,22 @@ class StructuralCoupling:
 
     def _push_guarded(self, slow_cycle: int) -> None:
         try:
-            self._push()
+            outcome = self._push()
+            status = str(outcome.get("outcome_status", "completed"))
+            loop = getattr(self._organism, "_loop", None)
+            recorder = getattr(loop, "record_async_cycle_stage", None)
+            if callable(recorder):
+                recorder(slow_cycle, "structural_coupling.worker", status, output=outcome)
+        except Exception as exc:
+            loop = getattr(self._organism, "_loop", None)
+            recorder = getattr(loop, "record_async_cycle_stage", None)
+            if callable(recorder):
+                recorder(
+                    slow_cycle, "structural_coupling.worker", "failed",
+                    output={"outcome_status": "failed", "reason_code": "worker_exception"},
+                    error_type=type(exc).__name__,
+                )
+            raise
         finally:
             with self._lock:
                 self._worker_pending = False
@@ -155,7 +170,7 @@ class StructuralCoupling:
             "received": len(self._received),
         }
 
-    def _push(self) -> None:
+    def _push(self) -> Dict[str, Any]:
         try:
             from core.state import state as _st
             persona = getattr(_st, 'persona', None)
@@ -167,12 +182,15 @@ class StructuralCoupling:
                 ai_system = getattr(persona, '_system', None)
             net = getattr(ai_system, 'lumina_network', None) if ai_system else None
             if not net or not net._children:
-                return
+                return {"outcome_status": "skipped", "reason_code": "no_child_peers", "peer_count": 0, "sent_count": 0}
 
             update = self._build_update()
-            if not update: return
+            if not update:
+                return {"outcome_status": "skipped", "reason_code": "no_epistemic_update", "peer_count": len(net._children), "sent_count": 0}
 
             # Push to each child
+            sent_count = 0
+            failed_count = 0
             for child_id, child in net._children.items():
                 try:
                     import urllib.request
@@ -194,6 +212,7 @@ class StructuralCoupling:
                     with urllib.request.urlopen(req, timeout=5) as resp:
                         status = resp.status
                     if status == 200:
+                        sent_count += 1
                         with self._lock:
                             self._sent.append({
                                 "child_id": child_id,
@@ -205,12 +224,23 @@ class StructuralCoupling:
                             f"[StructuralCoupling] Pushed to {child_id}: "
                             f"{len(update.resolved_concepts)} concepts"
                         )
+                    else:
+                        failed_count += 1
                 except Exception as e:
+                    failed_count += 1
                     logger.debug(f"[StructuralCoupling] push to {child_id} failed: {e}")
 
             self._save()
+            return {
+                "outcome_status": "completed" if sent_count and not failed_count else "partial" if sent_count else "failed",
+                "reason_code": "peer_updates_sent" if sent_count else "peer_updates_failed",
+                "peer_count": len(net._children),
+                "sent_count": sent_count,
+                "failed_count": failed_count,
+            }
         except Exception as e:
             logger.debug(f"[StructuralCoupling] _push error: {e}")
+            return {"outcome_status": "failed", "reason_code": "push_error", "peer_count": 0, "sent_count": 0}
 
     def _build_update(self) -> Optional[EpistemicUpdate]:
         """Collect epistemic resources to share."""

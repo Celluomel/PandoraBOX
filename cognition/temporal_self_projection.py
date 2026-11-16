@@ -108,7 +108,20 @@ class TemporalSelfProjection:
 
     def _project_guarded(self, slow_cycle: int) -> None:
         try:
-            self._project(slow_cycle)
+            outcome = self._project(slow_cycle)
+            status = str(outcome.get("outcome_status", "completed"))
+            loop = getattr(getattr(self._organism, "_loop", None), "record_async_cycle_stage", None)
+            if callable(loop):
+                loop(slow_cycle, "temporal_self_projection.worker", status, output=outcome)
+        except Exception as exc:
+            loop = getattr(getattr(self._organism, "_loop", None), "record_async_cycle_stage", None)
+            if callable(loop):
+                loop(
+                    slow_cycle, "temporal_self_projection.worker", "failed",
+                    output={"outcome_status": "failed", "reason_code": "worker_exception"},
+                    error_type=type(exc).__name__,
+                )
+            raise
         finally:
             with self._lock:
                 self._worker_pending = False
@@ -154,7 +167,7 @@ class TemporalSelfProjection:
         except Exception:
             pass
 
-    def _project(self, slow_cycle: int) -> None:
+    def _project(self, slow_cycle: int) -> Dict[str, Any]:
         """Full projection: analyse trajectories and generate narrative."""
         try:
             signatures = []
@@ -164,7 +177,8 @@ class TemporalSelfProjection:
                 sig = self._analyse(dim, recent)
                 if sig: signatures.append(sig)
 
-            if not signatures: return
+            if not signatures:
+                return {"outcome_status": "skipped", "reason_code": "insufficient_history", "dimension_count": 0}
 
             narrative = self._generate_narrative(signatures, slow_cycle)
 
@@ -182,8 +196,14 @@ class TemporalSelfProjection:
                 f"[TemporalSelfProjection] {len(signatures)} dimensions tracked. "
                 f"Rising: {[s.dimension for s in signatures if s.trend=='rising']}"
             )
+            return {
+                "outcome_status": "completed",
+                "reason_code": "trajectory_updated",
+                "dimension_count": len(signatures),
+            }
         except Exception as e:
             logger.debug(f"[TemporalSelfProjection] _project error: {e}")
+            return {"outcome_status": "failed", "reason_code": "projection_error", "dimension_count": 0}
 
     def _analyse(self, dim: str, history: List[Tuple[int,float]]) -> Optional[TrajectorySignature]:
         if len(history) < 2: return None

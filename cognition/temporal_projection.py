@@ -211,11 +211,32 @@ class TemporalProjection:
         return {"outcome_status": "scheduled", "reason_code": "projection_worker_started", "cycle": slow_cycle}
 
     def _run_projections_guarded(self, slow_cycle: int) -> None:
+        outcome: Dict[str, Any]
         try:
-            self._run_projections(slow_cycle)
+            outcome = self._run_projections(slow_cycle)
+            status = str(outcome.get("outcome_status", "completed"))
+            self._record_async_completion(slow_cycle, status, outcome)
+        except Exception as exc:
+            self._record_async_completion(
+                slow_cycle, "failed", {"outcome_status": "failed", "reason_code": "worker_exception"},
+                error_type=type(exc).__name__,
+            )
+            raise
         finally:
             with self._lock:
                 self._worker_pending = False
+
+    def _record_async_completion(
+        self, slow_cycle: int, status: str, output: Dict[str, Any],
+        *, error_type: Optional[str] = None,
+    ) -> None:
+        loop = getattr(self._organism, "_loop", None)
+        recorder = getattr(loop, "record_async_cycle_stage", None)
+        if callable(recorder):
+            recorder(
+                slow_cycle, "temporal_projection.worker", status,
+                output=output, error_type=error_type,
+            )
 
     def preferred_action_type(self) -> Optional[str]:
         """
@@ -313,11 +334,11 @@ class TemporalProjection:
 
     # ── Projection pipeline ───────────────────────────────────────────────────
 
-    def _run_projections(self, slow_cycle: int) -> None:
+    def _run_projections(self, slow_cycle: int) -> Dict[str, Any]:
         try:
             asp = getattr(self._organism, 'aspirational_self', None)
             if not asp or not asp.aspirations:
-                return
+                return {"outcome_status": "skipped", "reason_code": "no_active_aspirations", "projection_count": 0}
 
             # Project top 3 aspirations by tension
             top_aspirations = sorted(
@@ -347,9 +368,15 @@ class TemporalProjection:
                     f"[TemporalProjection] {len(new_active)} projections updated. "
                     f"Preferred action: {preferred_action}"
                 )
+            return {
+                "outcome_status": "completed",
+                "reason_code": "projections_updated" if new_active else "no_projection_result",
+                "projection_count": len(new_active),
+            }
 
         except Exception as e:
             logger.debug(f"[TemporalProjection] _run_projections error: {e}")
+            return {"outcome_status": "failed", "reason_code": "projection_error", "projection_count": 0}
 
     def _project_aspiration(
         self, aspiration: Any, slow_cycle: int
