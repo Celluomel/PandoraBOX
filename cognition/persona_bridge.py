@@ -4130,6 +4130,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     explicit_recall=_is_recall_request,
                     candidate_count_before_recall_filter=_recall_candidate_count_before_filter,
                 ),
+                consumes=("turn_input",),
                 turn_id=audit_turn_id,
             )
 

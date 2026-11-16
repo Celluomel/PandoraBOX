@@ -1,7 +1,7 @@
 # Audit du harnais cognitif — état et prochaines étapes
 
-**Date de mise à jour :** 16 novembre 2026
-**Statut :** audit du harnais cognitif en cours; aucune conclusion globale de qualité n’est établie. Le processus actif a précédemment chargé `68285a5` en mode audit (preuve historique au cycle `11648`); les correctifs locaux plus récents décrits ci-dessous ne sont pas encore chargés. Les modifications Body/UI préexistantes restent hors lot.
+**Date de mise à jour :** 17 novembre 2026
+**Statut :** audit du harnais cognitif en cours; aucune conclusion globale de qualité n’est établie. Le processus live répond sur `127.0.0.1:8765/status`, `ready=true`, avec boucle interne active. Il a chargé `a396f32`; les correctifs de provenance mémoire et de reçu du gouverneur ajoutés le 17 novembre sont locaux et nécessiteront un redémarrage groupé pour la validation live. Les modifications Body/UI préexistantes restent hors lot.
 
 ## Plan d’audit piloté par les preuves — mesure de progression
 
@@ -3283,3 +3283,15 @@ La correction helper passe avec **142 tests** ciblés (8 avertissements préexis
 Le commit `a64aa21` a été poussé puis chargé par un redémarrage audit. Le Brain a répondu au tour `lumina-1794869458585780800-1`; la trace confirme `world_self_dynamics_outcome.status=persisted` avec le même identifiant de tour. Elle échoue toutefois encore au contrôle de flux : le résultat consomme une empreinte `null`, car `world_self_dynamics_model` était enregistré avec le seul statut `prepared` et sans sortie. `pipeline_integrity` signale `missing_source_output:world_self_dynamics_model->world_self_dynamics_outcome`; `provider_completion` est aussi incomplet. Le résultat `persisted` prouve que l’appel de persistance a réussi, mais l’inspection du fichier de stockage n’a pas encore été répétée dans ce replay.
 
 Cause suivante corrigée localement : les préparations PCM/WSDM enregistrent désormais statut, action et advisory/narrative comme sorties fingerprintées; elles consomment toutes deux `turn_input`. La délibération prospective garde son advisory distinct et consomme les sorties PCM et WSDM. La chaîne visée est donc entrée → modèles → résultat post-tour, sans assimiler une empreinte à un bénéfice cognitif mesuré. Les tests ciblés passent : **142 réussis**, 8 avertissements préexistants, 4 sous-tests; `py_compile` et `git diff --check` passent. Ce correctif n’est pas encore commité ni chargé. Prochain contrôle : vérifier, sur un tour après redémarrage groupé, que les empreintes sources ne sont pas nulles, contrôler l’enregistrement WSDM sur disque et traiter séparément l’étape `provider_completion`. La sémantique du conseil reste à évaluer sur des scénarios représentatifs.
+
+### Poursuite de l’audit sans redémarrage — 17 novembre 2026
+
+**État live avant ce lot :** `GET http://127.0.0.1:8765/status` répond `ready=true`, uptime 348 s, modèle `lmstudio/gemma-4-e4b-uncensored-hauhaucs-aggressive`; le compteur de cycles internes est actif. `8080/status` répond 404 pour cette route précise; ce résultat ne contredit pas le statut Brain sur 8765. Le processus live est encore sur `a396f32`.
+
+**Provenance du rappel mémoire :** le reçu `memory_retrieval` contenait le hash de la requête et le backend FAISS, mais ne déclarait pas qu’il consommait `turn_input`. Ajout de cette arête causale et d’un test qui vérifie que son empreinte correspond au reçu d’entrée du même tour. Cela rend la provenance vérifiable, sans prétendre que les souvenirs récupérés sont sémantiquement pertinents.
+
+**Sortie du gouverneur :** `CognitiveGovernor.begin_cycle()` renvoyait un snapshot structuré; `summary_log()` était la dernière méthode observée du cycle et retournait `None`. Le manifeste marquait donc le module `output_unverified`, alors que la méthode renvoyait bien une décision en amont. `summary_log()` retourne maintenant un reçu compact du cycle (mode, pression, buts, budget, systèmes exécutés et bloqués); les tests vérifient son contenu et sa capture par la sonde du module. Cela prouve une décision observable, pas que le choix de politique est optimal.
+
+**Vérification locale :** suites de contexte streaming/WSDM, planification et reçus, auto-description, santé/fraîcheur, mémoire, cycle interne et ticks : **257 tests réussis**, 8 avertissements de dépendances préexistants, 11 sous-tests; `py_compile` et `git diff --check` passent. Le premier lancement a révélé un assert mal placé dans le nouveau test; il a été corrigé avant le rerun, qui a réussi. Les changements sont documentés ici; ils ne sont pas encore chargés dans le processus live.
+
+**Étape suivante :** après le prochain redémarrage groupé, vérifier sur un tour que `memory_retrieval` consomme l’empreinte de `turn_input` et que `cognitive_governor.summary_log` fournit le reçu du cycle courant. Poursuivre ensuite l’analyse des effets de la boucle interne sur des scénarios représentatifs et de la qualité des sorties. Progression inchangée : **2/10 pistes closes = 20 %**; ces changements ne clôturent pas à eux seuls une piste.

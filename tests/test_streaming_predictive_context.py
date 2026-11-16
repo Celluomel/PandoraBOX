@@ -21,6 +21,28 @@ class StreamingPredictiveContextTests(unittest.TestCase):
 
         self.assertEqual(events, [{"type": "finish", "reason": "stop"}])
 
+    def test_memory_retrieval_trace_can_link_query_to_turn_input(self):
+        from cognition.persona_bridge import PersonaBridge
+
+        bridge = PersonaBridge.__new__(PersonaBridge)
+        bridge._turn_trace_lock = threading.Lock()
+        bridge._last_turn_trace = {"turn_id": "turn-memory", "stages": {
+            "turn_input": {
+                "status": "received", "output_fingerprint": "user-query-ref",
+            },
+        }}
+
+        bridge._record_turn_stage(
+            "memory_retrieval", "completed", output={"backend": "faiss"},
+            consumes=("turn_input",), turn_id="turn-memory",
+        )
+
+        stage = bridge._last_turn_trace["stages"]["memory_retrieval"]
+        self.assertEqual(
+            stage["consumes"],
+            [{"stage": "turn_input", "fingerprint": "user-query-ref"}],
+        )
+
     def test_first_streaming_turn_initializes_models_before_slow_cycle_threshold(self):
         from cognition.cognitive_organism import CognitiveOrganism
         from core.internal_loop import InternalThoughtLoop

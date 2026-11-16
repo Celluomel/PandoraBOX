@@ -891,6 +891,37 @@ def test_governor_snapshot_includes_the_goal_state_counts_it_saw():
     assert summary["numeric_metrics"]["goal_records_seen"] == 16
 
 
+def test_governor_summary_returns_policy_outcome_for_tick_audit():
+    governor = CognitiveGovernor()
+    governor.begin_cycle(total_pressure=0.42, goal_count=3, cycle_number=117)
+    assert governor.may_run("Phase1Threads") is True
+    assert governor.may_run("Phase2Narrative") is False
+
+    summary = governor.summary_log()
+
+    assert summary["cycle"] == 117
+    assert summary["mode"] == governor.MODE_STRUCTURED
+    assert summary["goal_count"] == 3
+    assert summary["run_count"] == 1
+    assert summary["blocked_count"] == 1
+    assert summary["run_systems"] == ["Phase1Threads"]
+    assert summary["blocked_systems"] == ["Phase2Narrative(structured_mode)"]
+
+
+def test_governor_summary_receipt_is_visible_to_module_tick_probe():
+    loop = make_loop()
+    loop._module_tick_log = ModuleTickLog()
+    loop._governor = CognitiveGovernor()
+    loop._governor.begin_cycle(0.42, 3, 118)
+    loop._refresh_module_tick_probes(only_attr="_governor")
+
+    loop._governor.summary_log()
+
+    module = loop.module_tick_snapshot()["cognitive_governor"]
+    assert module["state"] == "output_present_unvalidated"
+    assert module["method_results"]["summary_log"]["last_output"]["quality"] == "present"
+
+
 def test_cycle_receipt_uses_explicit_no_action_reason_when_executor_returns_none():
     executor = SimpleNamespace(_last_tick_outcome={
         "outcome_status": "skipped",

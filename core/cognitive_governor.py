@@ -357,8 +357,26 @@ class CognitiveGovernor:
             run_systems=list(self._this_cycle_run),
         )
 
-    def summary_log(self) -> None:
-        """Emit a one-line summary log for this cycle (call at end of _slow_cycle)."""
+    def summary_log(self) -> dict[str, Any]:
+        """Emit and return this cycle's bounded policy outcome.
+
+        Internal-loop telemetry observes this module boundary. Returning the
+        policy state lets the audit distinguish a recorded governor decision
+        from a call that returned no evidence. The receipt contains no goal or
+        thought text.
+        """
+        summary = {
+            "cycle": self._cycle,
+            "mode": self.mode,
+            "total_pressure": round(self._pressure, 6),
+            "goal_count": self._goal_count,
+            "budget_total": self._budget_total,
+            "budget_remaining": self._budget_remaining,
+            "run_count": len(self._this_cycle_run),
+            "blocked_count": len(self._this_cycle_blocked),
+            "run_systems": list(self._this_cycle_run),
+            "blocked_systems": list(self._this_cycle_blocked),
+        }
         if self._this_cycle_blocked:
             logger.debug(
                 f"[Governor] Cycle #{self._cycle} summary: "
@@ -366,6 +384,7 @@ class CognitiveGovernor:
                 f"blocked={self._this_cycle_blocked} "
                 f"budget_used={self._budget_total - self._budget_remaining}/{self._budget_total}"
             )
+        return summary
 
     # ── Internals ──────────────────────────────────────────────────────────────
 
