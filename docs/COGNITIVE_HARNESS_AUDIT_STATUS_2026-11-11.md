@@ -44,6 +44,16 @@
 
 **Clôture de plan :** le sous-objectif « exécuter et attribuer un reçu GoalActionExecutor à un plan actif, puis persister sa progression » est validé live pour ce scénario. La piste d’audit 7 reste partielle jusqu’à mesurer la qualité et l’effet cognitif; le score global reste **2/10 = 20 %**.
 
+### Auto-description factuelle : priorité du plan et contamination par l’historique — 16 novembre 2026
+
+Le scénario live précédent a isolé deux défauts successifs. D’abord, le contexte factuel du plan (347 tokens) était exclu du prompt par un budget de 320; le plafond a été porté à 420. Ensuite, le tour `e3d1bc1c-fecf-401a-b6aa-dca959e7ae0f` a confirmé que le fragment était bien injecté (`planner_self_report_context=injected`, 347 tokens retenus), mais que la réponse reprenait encore **0,96** alors que la télémétrie du même état donnait **0,436**. Le chemin d’exécution est donc prouvé, mais la fidélité sémantique échoue toujours.
+
+**Cause supplémentaire et correction locale :** les réponses assistant antérieures étaient envoyées une seconde fois comme historique au fournisseur et recopiées dans le bloc de continuité. Un ancien chiffre pouvait ainsi rivaliser avec le snapshot courant, malgré la consigne factuelle du système. Pour les seuls tours marqués `Cognitive telemetry - factual self-report`, le nouveau helper conserve les messages utilisateur (sujet et corrections) et retire les affirmations assistant précédentes du contexte fournisseur; le bloc de continuité narratif est omis pour les requêtes d’architecture. Un reçu `historical_assistant_context=filtered` compte les messages conservés/écartés sans enregistrer leur texte. L’historique durable reste intact et le tour courant y est enregistré normalement.
+
+**Validation locale :** 72 tests passent dans le venv du projet (`test_factual_self_report_context`, `test_prompt_context_influence`, `test_health_data_regressions`, `test_intention_planning`); 7 avertissements Pydantic existants. Les tests vérifient que les corrections utilisateur sont gardées, que les réponses assistant antérieures sont exclues et que l’entrée d’origine n’est pas mutée. Cette version n’est pas encore chargée dans le processus live; l’endpoint local a confirmé Lumina active et l’ancien reçu, mais le contrôle par socket depuis PowerShell est refusé par l’environnement. Il faut charger cette version, rejouer le même scénario et confirmer que la réponse cite **0,436**, avec le nouveau reçu et sans l’ancien **0,96** dans l’historique de génération.
+
+**État d’audit :** toujours **2/10 = 20 %** de pistes closes. La correction améliore l’isolation des sources factuelles, mais ne clôt pas le critère de qualité avant un résultat live correct; elle n’établit pas non plus à elle seule la qualité générale des réponses ou des autres chemins cognitifs.
+
 ### Sortie générée tronquée avant persistance — constat et correction locale
 
 **Constat live au cycle 11655 :** `bisociative_hypothesis` a été marqué réussi et a fait passer `knowledge integration` à **3/4**. Le résultat persisté fait exactement **180 caractères** et se termine au milieu du mot « the ». La cause est directement visible dans `GoalActionExecutor` : `response.strip()[:180]` coupait le texte avant publication et enregistrement comme succès. Une troncature analogue à 150 caractères existait pour `self_question`.

@@ -53,6 +53,7 @@ from cognition.turn_context_evidence import (
     response_learning_evidence,
     USER_PROFILE_PROVENANCE_POLICY,
 )
+from cognition.factual_self_report_context import history_without_assistant_claims
 
 from pathlib import Path
 
@@ -1938,7 +1939,10 @@ Write at most 70 words, in the user's language, only if a concise carry-forward 
             _runtime_execution_query = False
             _internal_cognitive_query = False
             logger.debug("Architecture query detection unavailable: %s", _architecture_query_error)
-        _dialogue_continuity = self._recent_dialogue_continuity(
+        # A factual self-report will receive a current telemetry snapshot later
+        # in prompt construction. Do not copy prior assistant prose into a
+        # continuity block where stale/invented values could compete with it.
+        _dialogue_continuity = "" if _architecture_query else self._recent_dialogue_continuity(
             effective_input,
             history_override=conversation_history if not record_history else None,
         )
@@ -2748,7 +2752,24 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     # below. Keep the durable conversation history canonical.
                     "history_user_input": effective_input,
                 }
-                if not record_history:
+                if _factual_self_report:
+                    _manager = getattr(self._llm_stream_fn, "__self__", None)
+                    _history_source = (
+                        conversation_history if conversation_history is not None
+                        else getattr(_manager, "history", None)
+                    )
+                    _filtered_history, _history_counts = history_without_assistant_claims(
+                        _history_source
+                    )
+                    _stream_kwargs["history_override"] = _filtered_history
+                    self._record_turn_stage(
+                        "historical_assistant_context", "filtered",
+                        output=_history_counts,
+                        turn_id=_audit_turn_id,
+                    )
+                    if not record_history:
+                        _stream_kwargs["record_history"] = False
+                elif not record_history:
                     _stream_kwargs.update(
                         history_override=conversation_history or [],
                         record_history=False,
