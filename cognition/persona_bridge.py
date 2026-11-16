@@ -3885,6 +3885,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         _profile_provenance_summary,
                     ),
                 },
+                consumes=("turn_input",),
                 turn_id=audit_turn_id,
             )
 

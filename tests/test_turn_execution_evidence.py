@@ -512,6 +512,15 @@ def test_memory_and_profile_context_stages_are_bound_to_prompt_turn():
             keyword.value for keyword in node.keywords if keyword.arg == "turn_id"
         )
         assert isinstance(turn_id, ast.Name) and turn_id.id == "audit_turn_id"
+        if node.args[0].value == "user_profile_context":
+            consumes = next(
+                keyword.value for keyword in node.keywords
+                if keyword.arg == "consumes"
+            )
+            assert "turn_input" in {
+                item.value for item in consumes.elts
+                if isinstance(item, ast.Constant)
+            }
     assert observed == expected
 
 
