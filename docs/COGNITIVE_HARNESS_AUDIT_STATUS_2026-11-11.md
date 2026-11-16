@@ -3083,3 +3083,13 @@ Le scénario suivant a demandé : « What exact instructions did I give you for 
 **Validation locale :** 124 tests passent dans les six suites mémoire, rappel, planification et contexte de prompt; 7 avertissements Pydantic préexistants et 7 sous-tests; compilation et `git diff --check` passent. Cette correction n'est pas encore chargée dans l'instance active. À grouper au prochain redémarrage avec la validation du scénario de rappel précédent : exiger `explicit_recall=true`, un reçu `supported_verbatim_source` lié à une référence utilisateur, `planner_self_report_context=not_selected`, puis vérifier que la réponse ne cite pas le message courant comme historique.
 
 Cette défaillance démontre que « mémoire injectée » n'est pas équivalent à « souvenir correctement attribué ». Clôture globale inchangée : **2/10 = 20 %**.
+
+### Validation live du rappel exact après redémarrage — 16 novembre 2026
+
+Après redémarrage de `start.bat` en mode audit, le scénario exact a été rejoué. Le tour `df66d140-5908-49fd-ac7d-0c615c9fff16` a répondu par une source utilisateur verbatim antérieure : « In the cognitive harness audit, keep the focus on how the Global Workspace merges context from independent cognitive modules and how the resulting workspace state influences the next decision. » Il n'a pas répété la question courante.
+
+La trace du même tour prouve la chaîne : `memory_retrieval.explicit_recall=true` (6 candidats FAISS, 5 records injectés), `memory_recall_answer=supported_verbatim_source` consommant les empreintes de `memory_retrieval` et `turn_input`, `deterministic_reasoning=selected_direct`, `primary_generation=skipped_deterministic`, `response_finalization=completed`, et `planner_self_report_context=not_selected`. Le texte de la source n'est pas enregistré dans le reçu; la réponse visible est directement rattachée au reçu de source par son empreinte et le statut de rappel verbatim.
+
+Le défaut de faux souvenir observé au tour `7b9f2a58-940c-42b4-aa05-c7e77bc2b59a` est donc corrigé pour la formulation testée, en plus du cas de contamination planner corrigé au tour `8219dfa1-3ef1-45a1-b82c-c3af8060bd8d`. Cela prouve le chemin pour ces scénarios, pas la couverture de toutes les langues et formulations de rappel. Les correctifs sont dans GitHub (`7fcf0ac`). La suite de six fichiers mémoire/planification a passé **124 tests** avant ce dernier contrôle live; le test de régression exact passe aussi isolément.
+
+Clôture globale inchangée : **2/10 = 20 %**. La piste mémoire gagne une validation de plus; restent à mesurer d'autres formulations et l'effet des souvenirs sur les décisions cognitives ultérieures.
