@@ -972,7 +972,11 @@ class CognitiveOrganism:
             lhp  = getattr(loop, '_long_horizon_planner', None) if loop else None
             if lhp is None and loop is not None:
                 from cognition.long_horizon_planner import LongHorizonPlanner
-                if LongHorizonPlanner.is_self_report_query(user_input):
+                from cognition.self_description import is_architecture_query
+                if (
+                    LongHorizonPlanner.is_self_report_query(user_input)
+                    or is_architecture_query(user_input)
+                ):
                     lhp = LongHorizonPlanner(self, self.ai_system)
                     loop._long_horizon_planner = lhp
                     logger.info(

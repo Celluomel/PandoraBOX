@@ -936,6 +936,21 @@ class IntentionPlanningTests(unittest.TestCase):
         self.assertTrue(LongHorizonPlanner.is_goal_plan_query(question))
         self.assertTrue(LongHorizonPlanner.is_self_report_query("Combien d'objectifs actifs as-tu ?"))
 
+    def test_architecture_audit_question_receives_live_plan_evidence(self):
+        planner = LongHorizonPlanner.__new__(LongHorizonPlanner)
+        planner._self_report_grounding_until = 0.0
+        planner.factual_self_report_fragment = lambda _text: (
+            "[Cognitive telemetry - factual self-report] progress 2/4; confidence=0.461"
+        )
+
+        fragment = planner.prompt_fragment_for(
+            "For the audit, explain the objective of your cognitive harness and what evidence is missing."
+        )
+
+        self.assertIn("factual self-report", fragment)
+        self.assertIn("progress 2/4", fragment)
+        self.assertGreater(planner._self_report_grounding_until, 0.0)
+
     def test_goal_count_response_uses_snapshot_count(self):
         planner = LongHorizonPlanner.__new__(LongHorizonPlanner)
         planner.factual_self_report_snapshot = lambda: {

@@ -917,7 +917,7 @@ class LongHorizonPlanner:
         return False
 
     def prompt_fragment_for(self, user_input: str) -> str:
-        """Return strict plan telemetry only for explicit self-report queries.
+        """Return strict plan telemetry for self-reports and architecture queries.
 
         Aspiration steps currently have no autonomous executor route. Injecting
         their next operation into every chat turn made advisory plan state look
@@ -927,6 +927,19 @@ class LongHorizonPlanner:
         """
         if self.should_ground_self_report(user_input):
             return self.factual_self_report_fragment(user_input)
+        # Architecture and harness questions are also about Lumina's own
+        # operational state, even when phrased as "the audit's objective"
+        # instead of "your goal". The turn already routes these questions
+        # through closed-world self-description; provide the current planner
+        # facts there so the model cannot fill an evidence gap from stale chat
+        # memory. This injects evidence, not a canned answer.
+        try:
+            from cognition.self_description import is_architecture_query
+            if is_architecture_query(user_input):
+                self._self_report_grounding_until = time.time() + 300.0
+                return self.factual_self_report_fragment(user_input)
+        except Exception:
+            logger.debug("Architecture self-report telemetry unavailable", exc_info=True)
         return ""
 
     def factual_self_report_snapshot(self) -> Dict[str, Any]:

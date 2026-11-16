@@ -392,6 +392,7 @@ class HealthDataTests(unittest.TestCase):
     def test_self_report_can_initialise_planner_without_background_cycle(self):
         source = (ROOT / 'cognition/cognitive_organism.py').read_text(encoding='utf-8')
         self.assertIn('LongHorizonPlanner.is_self_report_query(user_input)', source)
+        self.assertIn('or is_architecture_query(user_input)', source)
         self.assertIn('loop._long_horizon_planner = lhp', source)
         self.assertIn('factual planning telemetry unavailable', source)
 
