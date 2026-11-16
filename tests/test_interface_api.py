@@ -161,8 +161,28 @@ class InterfaceTests(unittest.IsolatedAsyncioTestCase):
                     'status': 'completed', 'output_fingerprint': 'prompt-hash',
                     'consumes': [{'stage': 'memory_recall', 'fingerprint': 'memory-hash'}],
                 },
+                'global_workspace_prompt_source': {
+                    'status': 'injected', 'output_fingerprint': 'gw-source-hash',
+                    'output_summary': {'type': 'dict', 'keys': ['source_cycle', 'focus_ref']},
+                },
+                'cognitive_prompt_context': {
+                    'status': 'completed', 'output_fingerprint': 'cognitive-prompt-hash',
+                    'consumes': [{
+                        'stage': 'global_workspace_prompt_source',
+                        'fingerprint': 'gw-source-hash',
+                    }],
+                },
             },
-            'context_sources': {'profile': {'status': 'injected', 'record_count': 2}},
+            'context_sources': {
+                'profile': {'status': 'injected', 'record_count': 2},
+                'global_workspace_state': {
+                    'status': 'injected', 'source_cycle': 12016,
+                    'age_cycles': 0, 'source_evidence_ref': 'cycle-winner-ref',
+                    'focus_type': 'goal', 'focus_score': 0.63,
+                    'focus_ref': 'opaque-focus-ref', 'context_included': True,
+                    'focus_text': 'private raw workspace topic',
+                },
+            },
             'stage_events': [], 'recent_turns': [],
         }
 
@@ -174,8 +194,17 @@ class InterfaceTests(unittest.IsolatedAsyncioTestCase):
             turn['stages']['prompt_assembly']['consumes'][0]['fingerprint'],
             'memory-hash',
         )
+        self.assertEqual(
+            turn['stages']['cognitive_prompt_context']['consumes'][0]['fingerprint'],
+            'gw-source-hash',
+        )
         self.assertNotIn('user_id', turn)
         self.assertNotIn('detail', turn['stages']['memory_recall'])
+        workspace_source = turn['context_sources']['global_workspace_state']
+        self.assertEqual(workspace_source['source_evidence_ref'], 'cycle-winner-ref')
+        self.assertEqual(workspace_source['source_cycle'], 12016)
+        self.assertTrue(workspace_source['context_included'])
+        self.assertNotIn('focus_text', workspace_source)
         self.assertNotIn('private memory text', repr(payload))
 
     async def test_chat_notifies_presence_engine_of_recent_user_activity(self):

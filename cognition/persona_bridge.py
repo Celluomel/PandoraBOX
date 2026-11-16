@@ -555,7 +555,9 @@ class PersonaBridge:
             "unavailable_count", "affect_source", "affect_profile",
             "affect_description", "affect_event_type", "affect_event_source",
             "affect_event_age_seconds",
-            "source_cycle", "age_seconds", "thread_id",
+            "source_cycle", "age_seconds", "age_cycles", "thread_id",
+            "source_evidence_ref", "focus_type", "focus_score", "focus_ref",
+            "context_included",
         }
         safe_metadata: dict[str, Any] = {}
         for key, value in metadata.items():
@@ -580,9 +582,9 @@ class PersonaBridge:
                         safe_metadata[key][str(channel)] = round(max(0.0, min(1.0, number)), 3)
             elif key in {
                 "affect_source", "affect_description", "affect_event_type", "affect_event_source",
-                "thread_id",
+                "thread_id", "source_evidence_ref", "focus_type", "focus_ref",
             }:
-                safe_metadata[key] = str(value or "")[:500]
+                safe_metadata[key] = str(value or "")[:80]
             elif isinstance(value, bool):
                 safe_metadata[key] = value
             elif isinstance(value, (int, float)) and math.isfinite(float(value)):
@@ -3596,9 +3598,83 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         turn_id=audit_turn_id,
                     )
                     arb_temperature = decision.temperature
+                    _workspace_winner = getattr(
+                        self._organism, "_v32_workspace_winner", None
+                    )
+                    _workspace_included = any(
+                        marker in organism_block
+                        for marker in ("[Global workspace]", "[DOMINANT FOCUS]")
+                    )
+                    _workspace_type = ""
+                    _workspace_score = None
+                    _workspace_focus_ref = ""
+                    if isinstance(_workspace_winner, dict):
+                        _workspace_type = str(_workspace_winner.get("type") or "")[:40]
+                        try:
+                            _score = float(_workspace_winner.get("score"))
+                            if math.isfinite(_score):
+                                _workspace_score = max(0.0, min(1.0, _score))
+                        except (TypeError, ValueError, OverflowError):
+                            pass
+                        _focus_text = str(
+                            _workspace_winner.get("topic") or _workspace_winner.get("name") or ""
+                        ).strip()
+                        if _focus_text:
+                            _workspace_focus_ref = hashlib.sha256(
+                                _focus_text.encode("utf-8", errors="replace")
+                            ).hexdigest()[:20]
+                    _workspace_loop = getattr(self._organism, "_loop", None)
+                    _workspace_source_cycle = getattr(
+                        self._organism, "_v32_workspace_winner_cycle", None
+                    )
+                    _workspace_current_cycle = getattr(
+                        _workspace_loop, "_slow_cycle_count", None
+                    )
+                    try:
+                        _workspace_source_cycle = int(_workspace_source_cycle)
+                    except (TypeError, ValueError, OverflowError):
+                        _workspace_source_cycle = None
+                    try:
+                        _workspace_current_cycle = int(_workspace_current_cycle)
+                    except (TypeError, ValueError, OverflowError):
+                        _workspace_current_cycle = None
+                    _workspace_age_cycles = (
+                        max(0, _workspace_current_cycle - _workspace_source_cycle)
+                        if _workspace_current_cycle is not None
+                        and _workspace_source_cycle is not None else None
+                    )
+                    _workspace_source_ref = str(getattr(
+                        self._organism, "_v32_workspace_winner_evidence_ref", ""
+                    ) or "")[:64]
+                    _workspace_status = (
+                        "injected" if _workspace_included and _workspace_source_ref
+                        else "injected_unattributed" if _workspace_included
+                        else "not_selected" if _workspace_winner is not None
+                        else "empty"
+                    )
+                    _workspace_receipt = {
+                        "source_cycle": _workspace_source_cycle,
+                        "age_cycles": _workspace_age_cycles,
+                        "source_evidence_ref": _workspace_source_ref,
+                        "focus_type": _workspace_type,
+                        "focus_score": _workspace_score,
+                        "focus_ref": _workspace_focus_ref,
+                        "context_included": _workspace_included,
+                    }
+                    self._record_turn_context_source(
+                        "global_workspace_state", _workspace_status,
+                        turn_id=audit_turn_id,
+                        **_workspace_receipt,
+                    )
+                    self._record_turn_stage(
+                        "global_workspace_prompt_source", _workspace_status,
+                        output=_workspace_receipt, turn_id=audit_turn_id,
+                    )
                     self._record_turn_stage(
                         "cognitive_prompt_context", "completed",
-                        output=organism_block, turn_id=audit_turn_id,
+                        output=organism_block,
+                        consumes=("global_workspace_prompt_source",),
+                        turn_id=audit_turn_id,
                     )
                     has_factual_plan_context = (
                         "[Cognitive telemetry - factual self-report]" in organism_block

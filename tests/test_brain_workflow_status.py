@@ -326,6 +326,31 @@ class BrainWorkflowStatusTests(unittest.TestCase):
         self.assertEqual(trace["status"], "running")
         self.assertTrue(trace["context_sources"]["brain_pc_camera"]["active"])
 
+    def test_global_workspace_turn_source_keeps_only_causal_metadata(self):
+        bridge = PersonaBridge.__new__(PersonaBridge)
+        bridge._turn_trace_lock = threading.Lock()
+        bridge._turn_sequence = 0
+        bridge._last_turn_trace = {}
+        bridge._turn_trace_history = []
+        bridge._turn_stage_health = {}
+        turn_id = bridge._start_turn_trace("fred")
+
+        bridge._record_turn_context_source(
+            "global_workspace_state", "injected", turn_id=turn_id,
+            source_cycle=12016, age_cycles=0,
+            source_evidence_ref="cycle-winner-ref", focus_type="goal",
+            focus_score=0.63, focus_ref="opaque-focus-ref",
+            context_included=True, focus_text="private topic must be dropped",
+        )
+
+        evidence = bridge.get_last_turn_trace()["context_sources"]["global_workspace_state"]
+        self.assertEqual(evidence["source_cycle"], 12016)
+        self.assertEqual(evidence["source_evidence_ref"], "cycle-winner-ref")
+        self.assertEqual(evidence["focus_type"], "goal")
+        self.assertEqual(evidence["focus_score"], 0.63)
+        self.assertTrue(evidence["context_included"])
+        self.assertNotIn("focus_text", evidence)
+
 
 if __name__ == "__main__":
     unittest.main()
