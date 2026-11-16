@@ -1,6 +1,6 @@
 # Audit du harnais cognitif — état et prochaines étapes
 
-**Date de mise à jour :** 15 novembre 2026
+**Date de mise à jour :** 16 novembre 2026
 **Statut :** audit du harnais cognitif en cours; aucune conclusion globale de qualité n’est établie. Le processus actif a précédemment chargé `68285a5` en mode audit (preuve historique au cycle `11648`); les correctifs locaux plus récents décrits ci-dessous ne sont pas encore chargés. Les modifications Body/UI préexistantes restent hors lot.
 
 ## Plan d’audit piloté par les preuves — mesure de progression
@@ -3239,3 +3239,15 @@ Validation locale : **52 tests passés** (métriques du moteur, audit causal, es
 C’est une correction de validité de mesure, pas une preuve que le chercheur cognitif fonctionne désormais au niveau attendu. Le chercheur collecte encore des diagnostics et gère l’historique, mais l’optimisation autonome reste désactivée jusqu’à la mise en place d’une mesure externe reproductible de qualité de réponse, avec baseline, volume, critères préenregistrés et évaluation comparable avant/après. Le score global reste **2/10 = 20 %**; aucune piste n’est clôturée par la seule suppression d’un indicateur trompeur.
 
 Affichage du statut : le changement local du panneau Cognitive Audit indique « No validated performance targets; diagnostics only » au lieu d’afficher à tort que tous les signaux sont sur cible. La page compile. Son fichier contient d’autres modifications locales non isolées; le contrôle automatique a refusé de pousser ce fichier complet. Cette partie reste non commitée et n’est pas dans GitHub. Le statut API et le moteur, couverts par les 52 tests, sont commités/poussés séparément.
+
+### Raisonner sur un objectif sans transférer des corrélations de chat — 16 novembre 2026
+
+L’audit du chemin `GoalEngine → IntentionReasoner → LongHorizonPlanner → GoalActionExecutor` a isolé un défaut de validité causale. `IntentionReasoner` convertissait les opérations de plan (`memory_recall`, `self_question`, etc.) en catégories globales de conversation (`analytical`, `philosophical`, …), puis réutilisait les deltas WSDM de confiance relationnelle et de profondeur de compétence pour calculer leur gain attendu. Or WSDM observe des transitions après des tours conversationnels entiers; il ne mesure pas l’effet d’une opération de plan individuelle. Sa « confidence » est une similarité de contexte k-NN, pas une probabilité calibrée. Ces sorties ne justifiaient donc ni le classement des opérations, ni l’affichage d’une confiance probabiliste.
+
+Corrections locales : le raisonneur conserve maintenant l’ordre d’opérations déclaré par le plan (avec `memory_recall` comme prérequis lorsqu’il est présent), sans reclasser les étapes à partir de ces deltas indirects. Les hypothèses gardent leurs valeurs de repli pour inspection mais portent `unvalidated_operation_prior`, et leur texte dit explicitement que l’effet sur l’objectif n’a pas été mesuré. Les snapshots et auto-rapports nomment la valeur du plan « score indicatif non calibré, pas une probabilité »; l’interface de trace emploie « support score · uncalibrated ». Une incertitude précise indique l’absence de résultats mesurés par opération.
+
+La correction précédente du même chemin est également couverte ici : un reçu d’exécution sans mesure d’effet n’est pas un succès du raisonnement. Les nouveaux reçus stockent `execution_success` séparément de `success`/effet mesuré; les anciennes entrées `verified_outcome` sont migrées en `action_execution_receipt`, leur confiance est plafonnée, et l’état « validated » est révoqué au profit de `outcome_unverified`. Les étapes du plan représentent les opérations effectivement exécutées; `objective_success` reste nul tant que l’effet n’est pas mesuré.
+
+Vérification locale combinée : **135 tests passent** dans les suites planification/intention, preuves WSDM, reçus de tours, auto-description, données de santé et fraîcheur des snapshots; 8 avertissements de dépendances préexistants, 4 sous-tests. `py_compile` et `git diff --check` passent. Le processus Lumina actif n’a pas chargé ces changements. Le redémarrage reste groupé après les corrections offline de ce lot; aucune preuve live n’est revendiquée.
+
+Progression globale inchangée : **2/10 = 20 %** de pistes closes. Le correctif retire une inférence non fondée et rend le contrat de plan plus honnête; il ne démontre pas encore que les opérations cognitives produisent des effets utiles. Pour apprendre une efficacité par opération, il faut maintenant des résultats objectifs, associés à un `execution_id`, un critère préétabli et un résultat mesuré indépendamment.

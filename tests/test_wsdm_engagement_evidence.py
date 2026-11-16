@@ -164,24 +164,17 @@ class WSDMEngagementEvidenceTests(unittest.TestCase):
         self.assertIsNone(candidate.wsdm_engagement)
         self.assertEqual(candidate.joint_score, 0.0)
 
-    def test_intention_gain_does_not_include_unmeasured_engagement(self):
-        model = SimpleNamespace(predict_from_context=Mock(return_value=SimpleNamespace(
-            self_deltas={"cognitive_energy": 0.1},
-            world_deltas={
-                "user_trust": 0.1,
-                "engagement_signal": 0.9,
-                "skill_depth_gain": 0.05,
-            },
-            confidence=0.8,
-        )))
+    def test_intention_reasoner_does_not_transfer_chat_class_outcomes_to_plan_steps(self):
+        model = SimpleNamespace(predict_from_context=Mock())
         organism = SimpleNamespace(_loop=SimpleNamespace(_world_self_dynamics=model))
         reasoner = IntentionReasoner.__new__(IntentionReasoner)
         reasoner._organism = organism
 
         hypothesis = reasoner._evaluate("memory_recall", [0.5] * 8)
 
-        self.assertAlmostEqual(hypothesis.expected_gain, 0.15)
-        self.assertEqual(hypothesis.evidence_source, "world_self_dynamics")
+        model.predict_from_context.assert_not_called()
+        self.assertEqual(hypothesis.evidence_source, "unvalidated_operation_prior")
+        self.assertIn("effect on the intention has not been measured", hypothesis.statement)
 
 
 if __name__ == "__main__":

@@ -386,7 +386,7 @@ class LongHorizonPlanner:
         self._broadcast(
             "long_horizon_planner",
             f"[PlanCommitted] goal='{topic[:60]}'; steps={' -> '.join(operations)}; "
-            f"confidence={plan.reasoning_confidence:.2f}",
+            f"support_score_uncalibrated={plan.reasoning_confidence:.2f}",
             0.60,
         )
         return plan
@@ -467,7 +467,11 @@ class LongHorizonPlanner:
             reasoner = self._get_reasoner()
             if reasoner is not None:
                 episode = reasoner.record_outcome(
-                    plan.reasoning_episode_id, action_type, success, result
+                    plan.reasoning_episode_id,
+                    action_type,
+                    success,
+                    result,
+                    effect_measured=step.effect_measured,
                 )
         revised = False
         if success:
@@ -538,6 +542,14 @@ class LongHorizonPlanner:
         plan.last_outcome = {
             "operation": action_type,
             "success": bool(success),
+            "execution_success": bool(success),
+            "effect_measured": bool(step.effect_measured),
+            "objective_success": bool(success) if step.effect_measured else None,
+            "status": (
+                "measured_outcome" if step.effect_measured
+                else "execution_completed_effect_unverified" if success
+                else "execution_failed_effect_unverified"
+            ),
             "result": result_summary,
             "observed_at": plan.decision_updated_at,
             "execution_id": str(execution_id or "") or None,
@@ -550,7 +562,9 @@ class LongHorizonPlanner:
                 plan.reasoning_episode_id,
                 current_decision,
                 uncertainties,
-                "validated" if success else ("revised" if revised else "revision_needed"),
+                (
+                    "validated" if success else "revision_needed"
+                ) if step.effect_measured else "outcome_unverified",
             )
         else:
             plan.uncertainties = uncertainties
@@ -1184,6 +1198,7 @@ class LongHorizonPlanner:
                     else "unknown"
                 ),
                 "success_criteria_status": criteria_status,
+                "progress_semantics": "execution_receipts_only; objective effect is tracked separately",
                 "steps_completed": plan.steps_completed,
                 "steps_total": len(plan.steps),
                 "steps_with_execution_evidence": len(evidenced_steps),
@@ -1206,6 +1221,9 @@ class LongHorizonPlanner:
                 "next_operation_status": next_step.status if next_step else None,
                 "next_operation_result": next_step.result[:200] if next_step else None,
                 "reasoning_confidence": round(plan.reasoning_confidence, 3),
+                "reasoning_confidence_semantics": (
+                    "uncalibrated decision-support score from operation priors; not probability"
+                ),
                 "uncertainties": list(plan.uncertainties[:3]),
                 "initial_decision": (plan.decision_rationale or "")[:240],
                 "decision_summary": (
@@ -1351,7 +1369,8 @@ class LongHorizonPlanner:
             )
             uncertainty = plan["uncertainties"][0] if plan["uncertainties"] else "none recorded"
             lines.append(
-                f"Reasoning: confidence={plan['reasoning_confidence']:.3f}; "
+                f"Reasoning support score (uncalibrated)={plan['reasoning_confidence']:.3f}; "
+                "this is an uncalibrated decision-support score, not a probability; "
                 f"rationale={(plan['decision_summary'] or 'none recorded')[:180]}; "
                 f"uncertainty={uncertainty[:100]}."
             )
@@ -1405,6 +1424,10 @@ class LongHorizonPlanner:
             advanced = success is True and bool(execution_id) and receipt_matches
             if str(language or "").casefold().startswith("fr"):
                 outcome_text = (
+                    "action exécutée, effet sur l’objectif non mesuré"
+                    if success is True and outcome.get("effect_measured") is False else
+                    "échec d’exécution, effet sur l’objectif non mesuré"
+                    if success is False and outcome.get("effect_measured") is False else
                     "réussi" if success is True else
                     "échoué" if success is False else
                     str(outcome.get("status") or "non vérifié")
@@ -1421,6 +1444,10 @@ class LongHorizonPlanner:
                     f"Résultat enregistré : {str(outcome.get('result') or 'absent')[:200]}"
                 )
             outcome_text = (
+                "action executed; objective effect not measured"
+                if success is True and outcome.get("effect_measured") is False else
+                "execution failed; objective effect not measured"
+                if success is False and outcome.get("effect_measured") is False else
                 "succeeded" if success is True else "failed" if success is False
                 else str(outcome.get("status") or "unverified")
             )
@@ -1467,9 +1494,9 @@ class LongHorizonPlanner:
                     confidence_recorded = False
                 french_confidence = f"{confidence:.3f}".replace(".", ",") if confidence_recorded else None
                 lines.append(
-                    f"Confiance du planificateur enregistrée : {french_confidence}."
+                    f"Score indicatif non calibré du planificateur (pas une probabilité) : {french_confidence}."
                     if confidence_recorded else
-                    "Confiance du planificateur : non enregistrée."
+                    "Score indicatif du planificateur : non enregistré."
                 )
                 uncertainties = [
                     str(item).strip() for item in (plan.get("uncertainties") or [])
@@ -1511,8 +1538,8 @@ class LongHorizonPlanner:
                 except (TypeError, ValueError, OverflowError):
                     confidence_recorded = False
                 lines.append(
-                    f"Recorded planner confidence: {confidence:.3f}."
-                    if confidence_recorded else "Planner confidence: not recorded."
+                    f"Recorded planner support score (uncalibrated; not a probability): {confidence:.3f}."
+                    if confidence_recorded else "Planner support score: not recorded."
                 )
                 uncertainties = [
                     str(item).strip() for item in (plan.get("uncertainties") or [])

@@ -310,7 +310,7 @@ class IntentionPlanningTests(unittest.TestCase):
             )
             self.assertTrue(plan.reasoning_episode_id)
             self.assertGreater(plan.reasoning_confidence, 0.0)
-            self.assertIn("expected gain", plan.decision_rationale)
+            self.assertIn("declared operation order", plan.decision_rationale)
             initial_decision = plan.decision_rationale
             initial_confidence = plan.reasoning_confidence
             planner.record_goal_action_outcome(
@@ -320,7 +320,7 @@ class IntentionPlanningTests(unittest.TestCase):
             self.assertEqual(planner.next_action_for_goal(goal), "memory_recall")
             self.assertIn("retry it once", plan.current_decision)
             self.assertEqual(plan.decision_revision, 1)
-            self.assertNotEqual(plan.reasoning_confidence, initial_confidence)
+            self.assertEqual(plan.reasoning_confidence, initial_confidence)
 
             planner.record_goal_action_outcome(
                 goal.id, "memory_recall", True, "recalled evidence",
@@ -329,8 +329,11 @@ class IntentionPlanningTests(unittest.TestCase):
             self.assertEqual(plan.steps_completed, 1)
             self.assertEqual(planner.next_action_for_goal(goal), "self_question")
             episode = planner._get_reasoner().get(plan.reasoning_episode_id)
-            self.assertEqual(episode.status, "validated")
+            self.assertEqual(episode.status, "outcome_unverified")
             self.assertEqual(episode.outcomes[-1]["operation"], "memory_recall")
+            self.assertIsNone(episode.outcomes[-1]["success"])
+            self.assertTrue(episode.outcomes[-1]["execution_success"])
+            self.assertFalse(episode.outcomes[-1]["effect_measured"])
             self.assertIn("proceed with self_question", plan.current_decision)
             self.assertEqual(plan.decision_revision, 2)
             self.assertEqual(plan.decision_rationale, initial_decision)
@@ -752,8 +755,9 @@ class IntentionPlanningTests(unittest.TestCase):
             outcomes = planner._organism.workspace.events
             self.assertEqual(plan.steps_completed, 0)
             self.assertTrue(any(
-                event["source"] == "intention_reasoner.outcome"
-                and "result=failure" in event["content"]
+                event["source"] == "intention_reasoner.execution_receipt"
+                and "execution=failure" in event["content"]
+                and "effect=unverified" in event["content"]
                 for event in outcomes
             ))
             self.assertTrue(any(
@@ -799,11 +803,68 @@ class IntentionPlanningTests(unittest.TestCase):
                 planner._organism, path=str(Path(folder) / "reasoning.json")
             )
             restored = reloaded.get(episode.id)
-            self.assertEqual(restored.status, "revision_needed")
-            self.assertEqual(restored.outcomes[-1]["success"], False)
+            self.assertEqual(restored.status, "outcome_unverified")
+            self.assertIsNone(restored.outcomes[-1]["success"])
+            self.assertFalse(restored.outcomes[-1]["execution_success"])
+            self.assertFalse(restored.outcomes[-1]["effect_measured"])
             self.assertTrue(any(
-                item.source == "verified_outcome" for item in restored.evidence
+                item.source == "action_execution_receipt" for item in restored.evidence
             ))
+            prior_confidence = restored.confidence
+            reloaded.record_outcome(
+                episode.id, "memory_recall", True, "independently measured effect",
+                effect_measured=True,
+            )
+            measured = reloaded.get(episode.id)
+            self.assertEqual(measured.status, "validated")
+            self.assertTrue(measured.outcomes[-1]["effect_measured"])
+            self.assertTrue(measured.outcomes[-1]["success"])
+            self.assertNotEqual(measured.confidence, prior_confidence)
+            self.assertTrue(any(
+                item.source == "measured_outcome" for item in measured.evidence
+            ))
+
+    def test_legacy_reasoning_success_is_migrated_to_unverified_receipt(self):
+        with tempfile.TemporaryDirectory() as folder:
+            planner, _, _ = self._planner(folder)
+            path = Path(folder) / "reasoning.json"
+            reasoner = IntentionReasoner(planner._organism, path=str(path))
+            goal = NS(id="legacy", topic="legacy action", origin="test", priority=0.8)
+            episode = reasoner.deliberate(goal, ["memory_recall"])
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            legacy = payload["episodes"][episode.id]
+            legacy["confidence"] = 0.95
+            legacy["initial_confidence"] = 0.6
+            legacy["status"] = "validated"
+            legacy["outcomes"] = [{
+                "operation": "memory_recall",
+                "success": True,
+                "result": "legacy success without an effect measurement",
+            }]
+            legacy["evidence"].append({
+                "source": "verified_outcome",
+                "claim": "memory_recall succeeded",
+                "confidence": 1.0,
+            })
+            path.write_text(json.dumps(payload), encoding="utf-8")
+
+            migrated = IntentionReasoner(planner._organism, path=str(path)).get(episode.id)
+
+            self.assertEqual(migrated.status, "outcome_unverified")
+            self.assertEqual(migrated.confidence, 0.6)
+            self.assertIsNone(migrated.outcomes[0]["success"])
+            self.assertTrue(migrated.outcomes[0]["execution_success"])
+            self.assertFalse(migrated.outcomes[0]["effect_measured"])
+            receipt = next(
+                item for item in migrated.evidence
+                if item.source == "action_execution_receipt"
+            )
+            self.assertLessEqual(receipt.confidence, 0.5)
+            self.assertIn("effect was not measured", receipt.claim)
+            persisted = json.loads(path.read_text(encoding="utf-8"))
+            self.assertFalse(
+                persisted["episodes"][episode.id]["outcomes"][0]["effect_measured"]
+            )
 
     def test_repeated_failure_repairs_remaining_plan(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -907,7 +968,10 @@ class IntentionPlanningTests(unittest.TestCase):
             self.assertIn("completed=memory_recall", fragment)
             self.assertIn("next pending=self_question", fragment)
             self.assertIn("not currently executing", fragment)
-            self.assertIn(f"confidence={plan.reasoning_confidence:.3f}", fragment)
+            self.assertIn(
+                f"Reasoning support score (uncalibrated)={plan.reasoning_confidence:.3f}",
+                fragment,
+            )
             self.assertIn("aspirations are desired directions, not active goals", fragment)
             self.assertIn("Do not invent steps", fragment)
 
@@ -960,6 +1024,7 @@ class IntentionPlanningTests(unittest.TestCase):
             "dominant_plan": {
                 "last_outcome": {
                     "operation": "memory_recall", "success": True,
+                    "effect_measured": False,
                     "execution_id": "act-123", "cycle_id": 12045,
                     "result": "recalled and published",
                 },
@@ -970,7 +1035,7 @@ class IntentionPlanningTests(unittest.TestCase):
             },
         }
         report = planner.factual_goal_plan_response(question, "en")
-        self.assertIn("memory_recall, succeeded", report)
+        self.assertIn("memory_recall, action executed; objective effect not measured", report)
         self.assertIn("cycle=12045", report)
         self.assertIn("receipt=act-123", report)
         self.assertIn("yes; a matching completed-step receipt", report)
@@ -1054,17 +1119,17 @@ class IntentionPlanningTests(unittest.TestCase):
                 "next_operation": "bisociative_hypothesis",
                 "next_operation_status": "pending",
                 "reasoning_confidence": 0.413,
-                "uncertainties": ["Predictive confidence is low"],
+                "uncertainties": ["Decision-support score is uncalibrated"],
             },
         }
 
         english = planner.factual_goal_plan_response("what is your active plan?", "en")
         french = planner.factual_goal_plan_response("quel est ton plan actif ?", "fr")
 
-        self.assertIn("Recorded planner confidence: 0.413", english)
-        self.assertIn("Recorded uncertainties: Predictive confidence is low", english)
-        self.assertIn("Confiance du planificateur enregistrée : 0,413", french)
-        self.assertIn("Incertitudes enregistrées : Predictive confidence is low", french)
+        self.assertIn("Recorded planner support score (uncalibrated; not a probability): 0.413", english)
+        self.assertIn("Recorded uncertainties: Decision-support score is uncalibrated", english)
+        self.assertIn("Score indicatif non calibré du planificateur (pas une probabilité) : 0,413", french)
+        self.assertIn("Incertitudes enregistrées : Decision-support score is uncalibrated", french)
 
     def test_user_practical_task_cannot_become_autonomous_goal(self):
         with tempfile.TemporaryDirectory() as folder:

@@ -1,9 +1,10 @@
 """Structured, inspectable reasoning for committed cognitive intentions.
 
 This module records concise deliberation summaries, not hidden token-level
-model reasoning. It compares executable hypotheses against PandoraBOX's learned
-world/self dynamics and preserves the evidence, uncertainty and decision that
-the planner actually used.
+model reasoning. It records available operation hypotheses and preserves the
+evidence, uncertainty and sequence the planner actually used. Until outcomes
+are independently measured per planner operation, it does not transfer broad
+conversation-class dynamics into operation-specific predictions.
 """
 from __future__ import annotations
 
@@ -21,16 +22,10 @@ logger = logging.getLogger(__name__)
 SAVE_PATH = "data/persona/reasoning_episodes.json"
 MAX_EPISODES = 200
 
-OPERATION_STYLE = {
-    "memory_recall": "analytical",
-    "self_question": "philosophical",
-    "bisociative_hypothesis": "creative",
-    "web_search": "technical",
-    "user_question": "social",
-}
-
-# Conservative priors are used only when WSDM has insufficient comparable
-# experience. Their low confidence makes that limitation explicit.
+# These are transparent fallback heuristics, not learned performance data.
+# WSDM records interaction-level conversational classes and broad state deltas;
+# it does not contain matched outcomes for these planner operations. Mapping
+# e.g. ``memory_recall`` to ``analytical`` would transfer unrelated evidence.
 OPERATION_PRIORS = {
     "memory_recall": (0.02, 0.025, 0.38),
     "self_question": (0.05, 0.040, 0.34),
@@ -71,6 +66,9 @@ class ReasoningEpisode:
     decision_rationale: str
     confidence: float
     uncertainties: List[str]
+    confidence_semantics: str = (
+        "uncalibrated decision-support score from operation priors; not probability"
+    )
     status: str = "decided"
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
@@ -79,7 +77,7 @@ class ReasoningEpisode:
 
 
 class IntentionReasoner:
-    """Compare action hypotheses for one goal and learn from their outcomes."""
+    """Record candidate operations and learn only from measured effects."""
 
     def __init__(self, organism: Any, path: str = SAVE_PATH):
         self._organism = organism
@@ -116,16 +114,13 @@ class IntentionReasoner:
             ])
 
         hypotheses = [self._evaluate(operation, context) for operation in operations]
-        ranked = sorted(hypotheses, key=lambda item: item.score, reverse=True)
 
         # Recall is an evidential prerequisite, not merely another competing
-        # tactic. Keep it first when available, then rank the true alternatives.
+        # tactic. Keep it first; preserve the caller's declared order otherwise.
         sequence: List[str] = []
         if "memory_recall" in operations:
             sequence.append("memory_recall")
-        sequence.extend(
-            item.operation for item in ranked if item.operation not in sequence
-        )
+        sequence.extend(operation for operation in operations if operation not in sequence)
 
         selected = sequence[0] if sequence else operations[0]
         selected_hypothesis = next(
@@ -133,18 +128,19 @@ class IntentionReasoner:
         )
         mean_confidence = sum(item.confidence for item in hypotheses) / max(1, len(hypotheses))
         uncertainties: List[str] = []
-        if any(item.evidence_source == "prior" for item in hypotheses):
-            uncertainties.append("Some alternatives lack enough comparable WSDM outcomes")
-        if len(ranked) > 1 and abs(ranked[0].score - ranked[1].score) < 0.08:
-            uncertainties.append("The two strongest alternatives have similar expected utility")
+        uncertainties.append(
+            "No independently measured outcomes are matched to these planner operations; declared operation order is used"
+        )
+        uncertainties.append(
+            "Decision-support scores use unvalidated operation priors; they are not calibrated probabilities"
+        )
         if mean_confidence < 0.5:
-            uncertainties.append("The decision is provisional because predictive confidence is low")
+            uncertainties.append("The decision-support score is low and is not a calibrated probability")
 
         rationale = (
-            f"Begin with {selected} as the evidential prerequisite; then prefer "
-            f"{ranked[0].operation} among the remaining alternatives "
-            f"(expected gain {ranked[0].expected_gain:.3f}, cost "
-            f"{ranked[0].expected_cost:.3f}, confidence {ranked[0].confidence:.2f})."
+            f"Begin with {selected} as the evidential prerequisite; then retain the "
+            "planner's declared operation order because matched, independently measured "
+            "outcomes are not available for ranking alternatives."
         )
         episode = ReasoningEpisode(
             id=f"reason-{uuid.uuid4().hex[:12]}",
@@ -165,13 +161,13 @@ class IntentionReasoner:
             self._prune()
             self._save_locked()
         logger.info(
-            "[IntentionReasoner] %s | confidence=%.2f | %s",
+            "[IntentionReasoner] %s | support_score_uncalibrated=%.2f | %s",
             episode.intention_id, episode.confidence, episode.conclusion,
         )
         self._broadcast(
             "intention_reasoner",
             f"[IntentionDecision] goal='{topic[:60]}'; selected={selected}; "
-            f"sequence={' -> '.join(sequence)}; confidence={episode.confidence:.2f}",
+            f"sequence={' -> '.join(sequence)}; support_score_uncalibrated={episode.confidence:.2f}",
             0.58,
         )
         if uncertainties:
@@ -183,43 +179,60 @@ class IntentionReasoner:
         return episode
 
     def record_outcome(
-        self, episode_id: str, operation: str, success: bool, result: str
+        self, episode_id: str, operation: str, success: bool, result: str,
+        *, effect_measured: bool = False,
     ) -> Optional[ReasoningEpisode]:
+        """Record an action receipt; validate the reasoning only with a measured effect."""
         with self._lock:
             episode = self._episodes.get(episode_id)
             if episode is None:
                 return None
-            if episode.initial_confidence <= 0.0:
+            if effect_measured and episode.initial_confidence <= 0.0:
                 episode.initial_confidence = episode.confidence
             episode.outcomes.append({
                 "operation": operation,
-                "success": bool(success),
+                "success": bool(success) if effect_measured else None,
+                "execution_success": bool(success),
+                "effect_measured": bool(effect_measured),
                 "result": str(result)[:240],
                 "observed_at": time.time(),
             })
             episode.updated_at = time.time()
-            episode.status = "validated" if success else "revision_needed"
-            episode.evidence.append(ReasoningEvidence(
-                source="verified_outcome",
-                claim=(f"{operation} succeeded: " if success else f"{operation} failed: ")
-                      + str(result)[:180],
-                confidence=1.0,
-            ))
-            successes = sum(1 for item in episode.outcomes if item.get("success"))
-            total = len(episode.outcomes)
-            observed_reliability = (successes + 1.0) / (total + 2.0)
-            episode.confidence = round(
-                max(0.1, min(0.95,
-                    episode.initial_confidence * 0.65 + observed_reliability * 0.35
-                )),
-                3,
+            episode.status = (
+                ("validated" if success else "revision_needed")
+                if effect_measured else "outcome_unverified"
             )
+            episode.evidence.append(ReasoningEvidence(
+                source="measured_outcome" if effect_measured else "action_execution_receipt",
+                claim=(
+                    (f"Measured effect: {operation} succeeded: " if success else f"Measured effect: {operation} failed: ")
+                    if effect_measured else
+                    (f"Execution receipt: {operation} completed; target effect was not measured: "
+                     if success else
+                     f"Execution receipt: {operation} failed; target effect was not measured: ")
+                ) + str(result)[:150],
+                confidence=1.0 if effect_measured else 0.5,
+            ))
+            measured_outcomes = [
+                item for item in episode.outcomes if item.get("effect_measured") is True
+            ]
+            if measured_outcomes:
+                successes = sum(1 for item in measured_outcomes if item.get("success"))
+                total = len(measured_outcomes)
+                observed_reliability = (successes + 1.0) / (total + 2.0)
+                episode.confidence = round(
+                    max(0.1, min(0.95,
+                        episode.initial_confidence * 0.65 + observed_reliability * 0.35
+                    )),
+                    3,
+                )
             self._save_locked()
         self._broadcast(
-            "intention_reasoner.outcome",
+            "intention_reasoner.outcome" if effect_measured else "intention_reasoner.execution_receipt",
             f"[ReasoningOutcome] intention={episode.intention_id}; "
-            f"operation={operation}; result={'success' if success else 'failure'}",
-            0.54 if success else 0.67,
+            f"operation={operation}; execution={'success' if success else 'failure'}; "
+            f"effect={'measured' if effect_measured else 'unverified'}",
+            0.54 if success and effect_measured else 0.62,
         )
         return episode
 
@@ -281,31 +294,15 @@ class IntentionReasoner:
         self, operation: str, context: Optional[List[float]]
     ) -> ReasoningHypothesis:
         cost, gain, confidence = OPERATION_PRIORS.get(operation, (0.06, 0.03, 0.25))
-        source = "prior"
-        try:
-            loop = getattr(self._organism, "_loop", None)
-            model = getattr(loop, "_world_self_dynamics", None) if loop else None
-            style = OPERATION_STYLE.get(operation, "analytical")
-            prediction = model.predict_from_context(style, context) if model and context else None
-            if prediction is not None:
-                cost = abs(float(prediction.self_deltas.get("cognitive_energy", cost)))
-                observed_gain_components = (
-                    prediction.world_deltas.get("user_trust"),
-                    prediction.world_deltas.get("skill_depth_gain"),
-                )
-                gain = max(
-                    0.0,
-                    sum(float(value) for value in observed_gain_components if value is not None),
-                )
-                confidence = float(prediction.confidence)
-                source = "world_self_dynamics"
-        except Exception as exc:
-            logger.debug("[IntentionReasoner] hypothesis prediction failed: %s", exc)
+        source = "unvalidated_operation_prior"
 
         score = ((gain + 0.02) * confidence) / max(cost, 0.01)
         return ReasoningHypothesis(
             operation=operation,
-            statement=f"Using {operation} will produce grounded progress on the intention",
+            statement=(
+                f"Heuristic prior only: {operation} is an available step; "
+                "its effect on the intention has not been measured"
+            ),
             expected_cost=round(cost, 4),
             expected_gain=round(gain, 4),
             confidence=round(confidence, 3),
@@ -335,12 +332,42 @@ class IntentionReasoner:
             return
         try:
             raw = json.loads(self._path.read_text(encoding="utf-8"))
+            migrated = False
             for key, value in raw.get("episodes", {}).items():
                 value["evidence"] = [ReasoningEvidence(**item) for item in value.get("evidence", [])]
                 value["hypotheses"] = [
                     ReasoningHypothesis(**item) for item in value.get("hypotheses", [])
                 ]
                 value.setdefault("initial_confidence", value.get("confidence", 0.0))
+                outcomes = value.get("outcomes", [])
+                legacy_outcomes = [
+                    item for item in outcomes
+                    if isinstance(item, dict) and "effect_measured" not in item
+                ]
+                if legacy_outcomes:
+                    for item in legacy_outcomes:
+                        item["execution_success"] = item.get("success")
+                        item["success"] = None
+                        item["effect_measured"] = False
+                    for evidence in value["evidence"]:
+                        if evidence.source == "verified_outcome":
+                            evidence.source = "action_execution_receipt"
+                            evidence.confidence = min(float(evidence.confidence), 0.5)
+                            evidence.claim = (
+                                "Legacy action execution receipt; effect was not measured: "
+                                + str(evidence.claim)[:150]
+                            )
+                    value["status"] = "outcome_unverified"
+                    initial = float(value.get("initial_confidence", 0.0) or 0.0)
+                    if initial > 0.0:
+                        value["confidence"] = initial
+                    migrated = True
                 self._episodes[key] = ReasoningEpisode(**value)
+            if migrated:
+                with self._lock:
+                    self._save_locked()
+                logger.info(
+                    "[IntentionReasoner] Migrated legacy action outcomes to unverified execution receipts"
+                )
         except Exception as exc:
             logger.warning("[IntentionReasoner] load failed: %s", exc)
