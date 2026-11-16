@@ -19,6 +19,7 @@ from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_URL = "http://127.0.0.1:8080/api/interface/cognitive-execution"
+DEFAULT_TURN_URL = "http://127.0.0.1:8080/api/interface/cognitive-turns"
 DEFAULT_OUTPUT = ROOT / "logs" / "cognitive_harness_audit.jsonl"
 
 
@@ -89,6 +90,61 @@ def compact_snapshot(payload: dict[str, Any], endpoint: str) -> dict[str, Any]:
     }
 
 
+def compact_turn_snapshot(payload: dict[str, Any], endpoint: str) -> dict[str, Any]:
+    """Retain only redacted turn receipts and causal links from Lumina's chat path."""
+    turns = []
+    raw_turns = payload.get("turns")
+    if isinstance(raw_turns, list):
+        for raw in raw_turns[-12:]:
+            turn = _mapping(raw)
+            stage_fields = {
+                "status", "at", "error_type", "output_fingerprint",
+                "output_summary", "output_quality", "consumes",
+            }
+            stages = {
+                str(name)[:100]: {
+                    key: value[key] for key in stage_fields if key in value
+                }
+                for name, raw_stage in _mapping(turn.get("stages")).items()
+                if isinstance(raw_stage, dict)
+                for value in [raw_stage]
+            }
+            context_field_names = {
+                "status", "at", "active", "frame_age_seconds", "face_age_seconds",
+                "scene_age_seconds", "observation_count", "fresh_count", "stale_count",
+                "oldest_age_seconds", "source_kinds", "record_count", "module_count",
+                "observed_count", "tick_count", "error_count", "initialized_unobserved_count",
+                "unavailable_count", "affect_source", "affect_profile", "affect_event_type",
+                "affect_event_age_seconds", "source_cycle", "age_seconds",
+            }
+            sources = {
+                str(name)[:100]: {
+                    key: value[key] for key in context_field_names if key in value
+                }
+                for name, value in _mapping(turn.get("context_sources")).items()
+                if isinstance(value, dict)
+            }
+            events = [
+                {key: event[key] for key in (
+                    "stage", "status", "at", "output_fingerprint", "consumes"
+                ) if key in event}
+                for event in turn.get("stage_events", [])[-160:]
+                if isinstance(event, dict)
+            ]
+            turns.append({
+                key: turn.get(key) for key in (
+                    "turn_id", "scope", "status", "started_at", "completed_at",
+                ) if key in turn
+            } | {"stages": stages, "context_sources": sources, "stage_events": events})
+    return {
+        "available": bool(payload.get("available")),
+        "reason": payload.get("reason"),
+        "current_turn_id": payload.get("current_turn_id"),
+        "turns": turns,
+        "endpoint": endpoint,
+    }
+
+
 def compare_snapshots(previous: dict[str, Any] | None,
                       current: dict[str, Any]) -> dict[str, Any]:
     """Report observed counter/output deltas, without inferring semantic quality."""
@@ -154,6 +210,36 @@ def select_new_cycles(cycles: list[dict[str, Any]],
     return selected, max(ids)
 
 
+def load_seen_state(output: Path) -> tuple[int | None, list[str]]:
+    """Resume cycle and turn deduplication after a manual watcher restart."""
+    last_cycle_id: int | None = None
+    seen_turn_ids: list[str] = []
+    if not output.is_file():
+        return last_cycle_id, seen_turn_ids
+    with output.open("r", encoding="utf-8") as stream:
+        for line in stream:
+            try:
+                record = json.loads(line)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if not isinstance(record, dict):
+                continue
+            snapshot = _mapping(record.get("snapshot"))
+            for cycle in _mapping(snapshot.get("recent_cycle_evidence")).get("cycles", []):
+                cycle_id = _mapping(cycle).get("cycle_id")
+                if isinstance(cycle_id, int):
+                    last_cycle_id = cycle_id
+            turn_evidence = _mapping(record.get("turn_evidence"))
+            for turn in turn_evidence.get("turns", []):
+                turn_id = _mapping(turn).get("turn_id")
+                if turn_id:
+                    value = str(turn_id)
+                    if value not in seen_turn_ids:
+                        seen_turn_ids.append(value)
+                        seen_turn_ids = seen_turn_ids[-256:]
+    return last_cycle_id, seen_turn_ids
+
+
 def fetch_snapshot(url: str, timeout: float) -> dict[str, Any]:
     request = Request(url, headers={"Accept": "application/json"})
     with urlopen(request, timeout=timeout) as response:
@@ -165,15 +251,45 @@ def fetch_snapshot(url: str, timeout: float) -> dict[str, Any]:
     return compact_snapshot(payload, url)
 
 
-def run(url: str, output: Path, interval: float, timeout: float,
+def fetch_turn_snapshot(url: str, timeout: float) -> dict[str, Any]:
+    request = Request(url, headers={"Accept": "application/json"})
+    with urlopen(request, timeout=timeout) as response:
+        if response.status != 200:
+            raise RuntimeError(f"turn audit endpoint returned HTTP {response.status}")
+        payload = json.loads(response.read().decode("utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("turn audit endpoint returned a non-object JSON payload")
+    return compact_turn_snapshot(payload, url)
+
+
+def run(url: str, turn_url: str, output: Path, interval: float, timeout: float,
         once: bool = False) -> int:
     previous = None
-    last_cycle_id: int | None = None
+    last_cycle_id, seen_turn_ids = load_seen_state(output)
     output.parent.mkdir(parents=True, exist_ok=True)
     print(f"[cognitive-audit-watch] endpoint={url} output={output}", flush=True)
     while True:
         try:
             current = fetch_snapshot(url, timeout)
+            try:
+                turn_snapshot = fetch_turn_snapshot(turn_url, timeout)
+            except (HTTPError, URLError, TimeoutError, OSError, ValueError, RuntimeError) as exc:
+                # Keep collecting internal-loop evidence while a deployment
+                # has not yet loaded the dedicated turn-audit route.
+                turn_snapshot = {
+                    "available": False,
+                    "reason": type(exc).__name__,
+                    "turns": [],
+                    "endpoint": turn_url,
+                }
+            fresh_turns = [
+                turn for turn in turn_snapshot["turns"]
+                if turn.get("turn_id") and turn["turn_id"] not in seen_turn_ids
+            ]
+            for turn in fresh_turns:
+                seen_turn_ids.append(str(turn["turn_id"]))
+            seen_turn_ids = seen_turn_ids[-256:]
+            turn_snapshot["turns"] = fresh_turns
             delta = compare_snapshots(previous, current)
             cycles = current["recent_cycle_evidence"]["cycles"]
             new_cycles, newest_cycle_id = select_new_cycles(cycles, last_cycle_id)
@@ -187,7 +303,9 @@ def run(url: str, output: Path, interval: float, timeout: float,
             delta["cycle_receipt_gap"] = max(
                 0, (delta.get("cycle_delta") or 0) - len(new_cycles)
             )
+            delta["new_turn_receipts"] = len(fresh_turns)
             record = {"snapshot": current, "delta": delta}
+            record["turn_evidence"] = turn_snapshot
             with output.open("a", encoding="utf-8") as stream:
                 stream.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
             analysis = current["module_tick_analysis"]
@@ -198,6 +316,7 @@ def run(url: str, output: Path, interval: float, timeout: float,
                 f"ticks={analysis.get('total_ticks')} errors={analysis.get('total_errors')} "
                 f"cycle_delta={delta['cycle_delta']} receipts={len(new_cycles)} "
                 f"receipt_gap={delta['cycle_receipt_gap']} "
+                f"new_turns={len(fresh_turns)} "
                 f"changed_modules={len(delta['module_deltas'])}",
                 flush=True,
             )
@@ -212,6 +331,7 @@ def run(url: str, output: Path, interval: float, timeout: float,
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", default=DEFAULT_URL)
+    parser.add_argument("--turn-url", default=DEFAULT_TURN_URL)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--interval", type=float, default=30.0)
     parser.add_argument("--timeout", type=float, default=5.0)
@@ -220,7 +340,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.interval <= 0 or args.timeout <= 0:
         parser.error("--interval and --timeout must be positive")
     try:
-        return run(args.url, args.output, args.interval, args.timeout, args.once)
+        return run(args.url, args.turn_url, args.output, args.interval, args.timeout, args.once)
     except KeyboardInterrupt:
         print("\n[cognitive-audit-watch] stopped by operator", flush=True)
         return 130

@@ -9,6 +9,7 @@ import tempfile
 import time
 import uuid
 import ipaddress
+from typing import Any
 from urllib.parse import urlparse, urlunparse
 from urllib.request import Request as UrlRequest, urlopen
 
@@ -247,6 +248,78 @@ def _internal_loop_execution_snapshot():
             'they do not establish semantic correctness or cognitive usefulness.'
         ),
     }, max_depth=10)
+
+
+def _compact_turn_audit_record(raw: Any) -> dict[str, Any]:
+    """Keep turn identifiers, causal refs, and redacted outcomes; drop chat text and user IDs."""
+    if not isinstance(raw, dict):
+        return {}
+    stages: dict[str, Any] = {}
+    for name, value in (raw.get('stages') or {}).items():
+        if not isinstance(value, dict):
+            continue
+        stages[str(name)[:100]] = {
+            key: value[key] for key in (
+                'status', 'at', 'error_type', 'output_fingerprint',
+                'output_summary', 'output_quality', 'consumes',
+            ) if key in value
+        }
+    context_sources: dict[str, Any] = {}
+    source_fields = {
+        'status', 'at', 'active', 'frame_age_seconds', 'face_age_seconds',
+        'scene_age_seconds', 'observation_count', 'fresh_count', 'stale_count',
+        'oldest_age_seconds', 'source_kinds', 'record_count', 'module_count',
+        'observed_count', 'tick_count', 'error_count', 'initialized_unobserved_count',
+        'unavailable_count', 'affect_source', 'affect_profile', 'affect_event_type',
+        'affect_event_age_seconds', 'source_cycle', 'age_seconds',
+    }
+    for name, value in (raw.get('context_sources') or {}).items():
+        if isinstance(value, dict):
+            context_sources[str(name)[:100]] = {
+                key: value[key] for key in source_fields if key in value
+            }
+    events = []
+    for event in raw.get('stage_events', [])[-160:]:
+        if not isinstance(event, dict):
+            continue
+        events.append({key: event[key] for key in (
+            'stage', 'status', 'at', 'output_fingerprint', 'consumes'
+        ) if key in event})
+    return {
+        key: raw.get(key) for key in (
+            'turn_id', 'scope', 'status', 'started_at', 'completed_at'
+        ) if key in raw
+    } | {
+        'stages': stages,
+        'context_sources': context_sources,
+        'stage_events': events,
+    }
+
+
+def _cognitive_turn_audit_snapshot() -> dict[str, Any]:
+    state = _runtime()
+    persona = getattr(state, 'persona', None)
+    getter = getattr(persona, 'get_last_turn_trace', None)
+    if not callable(getter):
+        return {'available': False, 'reason': 'turn_trace_unavailable', 'turns': []}
+    try:
+        raw = getter()
+        recent = raw.get('recent_turns', []) if isinstance(raw, dict) else []
+        current = _compact_turn_audit_record(raw)
+        turns = [_compact_turn_audit_record(turn) for turn in recent if isinstance(turn, dict)]
+        if current.get('turn_id') and all(
+            turn.get('turn_id') != current['turn_id'] for turn in turns
+        ):
+            turns.append(current)
+        return {
+            'available': True,
+            'current_turn_id': current.get('turn_id'),
+            'turns': turns[-12:],
+            'privacy_note': 'Conversation content, user identifiers, and free-text stage details are omitted.',
+        }
+    except Exception as exc:
+        logger.debug('Cognitive turn audit unavailable: %s', type(exc).__name__)
+        return {'available': False, 'reason': 'turn_trace_read_failed', 'turns': []}
 
 
 @router.get('/status')
@@ -864,6 +937,12 @@ async def cognitive_health():
 async def cognitive_execution():
     """Read execution receipts without triggering a cognitive module or a turn."""
     return _internal_loop_execution_snapshot()
+
+
+@router.get('/cognitive-turns')
+async def cognitive_turns():
+    """Read redacted turn-stage receipts to audit prompt/generation causal links."""
+    return _cognitive_turn_audit_snapshot()
 
 
 @router.get('/self-awareness/evidence')

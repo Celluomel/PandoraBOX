@@ -147,6 +147,37 @@ class InterfaceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stage['output_summary']['field_count'], 2)
         self.assertEqual(calls, ['ticks', 'analysis', ('cycles', 3)])
 
+    async def test_cognitive_turns_exposes_redacted_causal_stage_links(self):
+        self.runtime.persona.get_last_turn_trace = lambda: {
+            'turn_id': 'turn-audit-1', 'scope': 'human', 'user_id': 'private-user',
+            'status': 'completed', 'started_at': 1.0, 'completed_at': 2.0,
+            'stages': {
+                'memory_recall': {
+                    'status': 'completed', 'output_fingerprint': 'memory-hash',
+                    'output_summary': {'kind': 'mapping', 'field_count': 2},
+                    'detail': 'private memory text',
+                },
+                'prompt_assembly': {
+                    'status': 'completed', 'output_fingerprint': 'prompt-hash',
+                    'consumes': [{'stage': 'memory_recall', 'fingerprint': 'memory-hash'}],
+                },
+            },
+            'context_sources': {'profile': {'status': 'injected', 'record_count': 2}},
+            'stage_events': [], 'recent_turns': [],
+        }
+
+        payload = api._cognitive_turn_audit_snapshot()
+        self.assertTrue(payload['available'])
+        turn = payload['turns'][0]
+        self.assertEqual(turn['turn_id'], 'turn-audit-1')
+        self.assertEqual(
+            turn['stages']['prompt_assembly']['consumes'][0]['fingerprint'],
+            'memory-hash',
+        )
+        self.assertNotIn('user_id', turn)
+        self.assertNotIn('detail', turn['stages']['memory_recall'])
+        self.assertNotIn('private memory text', repr(payload))
+
     async def test_chat_notifies_presence_engine_of_recent_user_activity(self):
         calls = []
         self.runtime.vision = SimpleNamespace(

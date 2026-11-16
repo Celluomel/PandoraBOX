@@ -1,5 +1,8 @@
+import json
+
 from scripts.watch_cognitive_harness_audit import (
-    compact_snapshot, compare_snapshots, select_new_cycles,
+    compact_snapshot, compact_turn_snapshot, compare_snapshots, load_seen_state,
+    select_new_cycles,
 )
 
 
@@ -75,3 +78,40 @@ def test_select_new_cycles_deduplicates_and_handles_lumina_restart():
     restarted, reset_id = select_new_cycles([{"cycle_id": 2}, {"cycle_id": 3}], 23)
     assert [item["cycle_id"] for item in restarted] == [2, 3]
     assert reset_id == 3
+
+
+def test_compact_turn_snapshot_keeps_causality_without_user_text_or_identity():
+    payload = {
+        "available": True,
+        "current_turn_id": "turn-9",
+        "turns": [{
+            "turn_id": "turn-9", "scope": "human", "status": "completed",
+            "user_id": "private-user", "started_at": 1.0,
+            "stages": {
+                "memory_recall": {"output_fingerprint": "m1", "detail": "private"},
+                "prompt_assembly": {"consumes": [{"stage": "memory_recall", "fingerprint": "m1"}]},
+            },
+        }],
+    }
+    compact = compact_turn_snapshot(payload, "http://localhost/turns")
+    turn = compact["turns"][0]
+    assert turn["stages"]["prompt_assembly"]["consumes"][0]["fingerprint"] == "m1"
+    assert "user_id" not in turn
+    assert "detail" not in turn["stages"]["memory_recall"]
+    assert "private" not in repr(compact)
+
+
+def test_load_seen_state_resumes_deduplication_from_jsonl(tmp_path):
+    output = tmp_path / "audit.jsonl"
+    records = [
+        {"snapshot": {"recent_cycle_evidence": {"cycles": [{"cycle_id": 40}]}},
+         "turn_evidence": {"turns": [{"turn_id": "t-1"}]}},
+        {"snapshot": {"recent_cycle_evidence": {"cycles": [{"cycle_id": 41}]}},
+         "turn_evidence": {"turns": [{"turn_id": "t-2"}]}},
+    ]
+    output.write_text("not-json\n" + "\n".join(json.dumps(item) for item in records), encoding="utf-8")
+
+    cycle_id, turn_ids = load_seen_state(output)
+
+    assert cycle_id == 41
+    assert turn_ids == ["t-1", "t-2"]
