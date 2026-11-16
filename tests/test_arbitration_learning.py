@@ -36,3 +36,25 @@ def test_reviewed_arbitration_outcome_changes_weights_read_by_live_arbitration(
     assert tracker.learned_delta()["predicted"] > 0
     assert after["predicted"] > before["predicted"]
     assert _get_base_weights()["predicted"] == after["predicted"]
+
+
+def test_record_persists_pending_example_and_returns_receipt(tmp_path):
+    path = tmp_path / "arbitration_learning.json"
+    tracker = learning.ArbitrationLearningTracker(str(path))
+    goal = {"id": "goal-persist", "type": "goal"}
+    candidate = SimpleNamespace(candidate=goal, utility_terms={"predicted": 1.0})
+    result = SimpleNamespace(arbitrated_winner=goal, candidates=[candidate])
+    goal_engine = SimpleNamespace(
+        get_goal_by_id=lambda _goal_id: SimpleNamespace(actions_taken=0)
+    )
+
+    receipt = tracker.record(result, cycle=44, goal_engine=goal_engine)
+
+    assert receipt == {
+        "outcome_status": "recorded",
+        "reason_code": "pending_decision_saved",
+        "pending_count": 1,
+        "persistence_status": "saved",
+    }
+    restored = learning.ArbitrationLearningTracker(str(path))
+    assert restored.status()["pending"] == 1

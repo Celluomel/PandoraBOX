@@ -24,27 +24,48 @@ class CognitiveRestructuringEngine:
         }
         self._load()
 
-    def tick(self, cycle_id: int) -> None:
+    def tick(self, cycle_id: int) -> Dict[str, Any]:
         """Run infrequently in the background; no LLM call is made here."""
         if cycle_id <= 0 or cycle_id % 5:
-            return
+            return {
+                "outcome_status": "skipped",
+                "reason_code": "cadence_not_due",
+                "cycle": int(cycle_id),
+            }
         with self._lock:
             signals = self._collect_signals()
             if len(signals) < 2:
-                return
+                return {
+                    "outcome_status": "skipped",
+                    "reason_code": "insufficient_signals",
+                    "cycle": int(cycle_id),
+                    "signal_count": len(signals),
+                }
             clusters = self._cluster(signals)
             self._state["clusters"] = clusters[-12:]
             plan = self._state.get("active_plan")
+            plan_created = False
             if plan is None:
                 candidate = max(clusters, key=lambda c: (len(c["signals"]), c["strength"]))
                 if len(candidate["signals"]) >= 2:
                     self._state["active_plan"] = self._make_plan(candidate, cycle_id)
+                    plan_created = True
                     logger.info(
                         "[CognitiveRestructuring] plan created for %s with %d signals",
                         candidate["label"], len(candidate["signals"]),
                     )
                     self._broadcast(self._state["active_plan"])
-            self._save()
+            persisted = self._save()
+            return {
+                "outcome_status": "completed" if persisted else "failed",
+                "reason_code": "plan_created" if plan_created else "signals_clustered",
+                "cycle": int(cycle_id),
+                "signal_count": len(signals),
+                "cluster_count": len(clusters),
+                "plan_created": plan_created,
+                "active_plan_exists": self._state.get("active_plan") is not None,
+                "persisted": persisted,
+            }
 
     def observe_turn(self, correction: Optional[Dict[str, Any]], score: Optional[float]) -> None:
         """Advance a trial only on explicit feedback or an independent score."""
@@ -246,12 +267,14 @@ class CognitiveRestructuringEngine:
         except Exception as exc:
             logger.debug("[CognitiveRestructuring] load failed: %s", exc)
 
-    def _save(self) -> None:
+    def _save(self) -> bool:
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             data = dict(self._state)
             data["clusters"] = data.get("clusters", [])[-12:]
             data["history"] = data.get("history", [])[-12:]
             self._path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            return True
         except Exception as exc:
             logger.debug("[CognitiveRestructuring] save failed: %s", exc)
+            return False

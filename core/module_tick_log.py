@@ -41,11 +41,12 @@ def summarize_output(value: Any) -> dict[str, Any]:
         receipt_fields: dict[str, Any] = {}
         receipt_enum_fields = {
             "outcome_status", "status", "reason_code", "effect_status",
-            "aspiration_planning", "goal_plan_schedule_status",
+            "aspiration_planning", "goal_plan_schedule_status", "persistence_status",
         }
         receipt_numeric_fields = {
             "cycle", "goal_plans_synchronized", "goal_plans_scheduled",
-            "goal_plans_pending",
+            "goal_plans_pending", "pending_count", "history_count",
+            "signal_count", "cluster_count",
         }
         for key in receipt_enum_fields:
             item = value.get(key)

@@ -96,19 +96,19 @@ class ArbitrationLearningTracker:
 
     # ── Recording ────────────────────────────────────────────────────────
 
-    def record(self, arb_result: Any, cycle: int, goal_engine: Any = None) -> None:
+    def record(self, arb_result: Any, cycle: int, goal_engine: Any = None) -> Dict[str, Any]:
         try:
             winner = arb_result.arbitrated_winner
             if not winner or winner.get("type") != "goal":
-                return
+                return {"outcome_status": "skipped", "reason_code": "winner_not_goal"}
             goal_id = winner.get("id")
             if not goal_id:
-                return
+                return {"outcome_status": "skipped", "reason_code": "goal_id_missing"}
             winner_arb = next(
                 (c for c in arb_result.candidates if c.candidate is winner), None
             )
             if winner_arb is None or not winner_arb.utility_terms:
-                return
+                return {"outcome_status": "skipped", "reason_code": "utility_terms_missing"}
 
             weights = get_learned_weights()
             contrib = {
@@ -116,7 +116,7 @@ class ArbitrationLearningTracker:
                 for k, v in winner_arb.utility_terms.items()
             }
             if not contrib:
-                return
+                return {"outcome_status": "skipped", "reason_code": "no_weighted_contribution"}
             dominant_term = max(contrib, key=contrib.get)
 
             # Snapshot actions_taken NOW so review() can compare a delta,
@@ -141,8 +141,17 @@ class ArbitrationLearningTracker:
                 })
                 if len(self._pending) > MAX_PENDING:
                     self._pending = self._pending[-MAX_PENDING:]
+                pending_count = len(self._pending)
+            persisted = self._save()
+            return {
+                "outcome_status": "recorded" if persisted else "failed",
+                "reason_code": "pending_decision_saved" if persisted else "pending_decision_save_failed",
+                "pending_count": pending_count,
+                "persistence_status": "saved" if persisted else "failed",
+            }
         except Exception as e:
             logger.debug(f"[ArbitrationLearningTracker] record failed (non-fatal): {e}")
+            return {"outcome_status": "failed", "reason_code": "record_exception"}
 
     # ── Review ───────────────────────────────────────────────────────────
 
@@ -205,7 +214,7 @@ class ArbitrationLearningTracker:
 
     # ── Persistence ──────────────────────────────────────────────────────
 
-    def _save(self) -> None:
+    def _save(self) -> bool:
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             with self._lock:
@@ -218,8 +227,10 @@ class ArbitrationLearningTracker:
                 }
             with open(self._path, "w") as f:
                 json.dump(data, f, indent=2)
+            return True
         except Exception as e:
             logger.debug(f"[ArbitrationLearningTracker] save failed (non-fatal): {e}")
+            return False
 
     def _load(self) -> None:
         try:

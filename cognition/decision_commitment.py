@@ -99,13 +99,17 @@ class DecisionCommitmentLayer:
 
     # ── Public API ────────────────────────────────────────────────────────────
 
-    def tick(self, winner: Dict, cycle: int) -> None:
+    def tick(self, winner: Dict, cycle: int) -> Dict[str, Any]:
         """
         Called after each workspace competition.
         winner: dict with keys 'name', 'type', 'score'
         """
         if not winner:
-            return
+            return {
+                "outcome_status": "skipped",
+                "reason_code": "winner_missing",
+                "cycle": int(cycle),
+            }
 
         self._cycle = cycle
         # Fix: 'name' is a slug (needed by _classify_orientation's keyword
@@ -156,8 +160,17 @@ class DecisionCommitmentLayer:
         self._apply_idx_feedback()
 
         # Persist every 5 cycles (was 10) — halves data-loss window on restart.
-        if cycle % 5 == 0:
-            self._save()
+        persisted = self._save() if cycle % 5 == 0 else None
+        return {
+            "outcome_status": "committed",
+            "reason_code": "commitment_added",
+            "cycle": int(cycle),
+            "history_count": len(self._history),
+            "orientation": orient,
+            "persistence_status": (
+                "saved" if persisted else "failed"
+            ) if persisted is not None else "deferred_by_checkpoint",
+        }
 
     def get_dominant_orientation(self, window: int = 20) -> str:
         """Return the most common orientation in the last N commitments."""
@@ -322,7 +335,7 @@ class DecisionCommitmentLayer:
             logger.debug(f"[CommitmentLayer] load error: {e}")
             self._history = []
 
-    def _save(self) -> None:
+    def _save(self) -> bool:
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             with self._lock:
@@ -334,5 +347,7 @@ class DecisionCommitmentLayer:
                 json.dump(payload, f, indent=2)
             import os
             os.replace(tmp, self._path)
+            return True
         except Exception as e:
             logger.debug(f"[CommitmentLayer] save error: {e}")
+            return False
