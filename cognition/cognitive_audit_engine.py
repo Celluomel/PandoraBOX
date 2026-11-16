@@ -5,48 +5,40 @@ CognitiveAuditEngine (v48) — self-directed development.
 
 The gap this closes
 ────────────────────
-v47 (AutonomousExperimentationEngine) tests behavioural hypotheses:
-  "shorter responses → more engagement"
-  → run 8 interactions → measure → confirm/disconfirm
+v47 (AutonomousExperimentationEngine) tests behavioural hypotheses against
+interaction outcomes.
 
 That's learning from interactions.  What v47 cannot do is look at the
 cognitive architecture itself and ask:
 
-  "The experiment confirmation rate has been 0.18 for three audits.
-   That means hypotheses are failing at twice the expected rate.
-   Why?  Possibly experiments run too infrequently — stale open
-   questions produce poor hypotheses.  Reduce GENERATE_EVERY_N from 25
-   to 18, trial it for 60 slow cycles, measure whether confirmation
-   rate recovers."
+  "A measured outcome is below its target across repeated audits.
+   Is there a parameter with a validated causal link to that outcome?"
 
 That is self-directed development: observe self → find weakness →
 propose change → experiment → measure → retain.
 
 Architecture
 ────────────
-  CognitiveAuditEngine reads five performance signals every AUDIT_EVERY_N
+  CognitiveAuditEngine reads three candidate performance signals every AUDIT_EVERY_N
   slow cycles (~80 min):
 
     1. epistemic_grounding_rate  — ratio of evidence-grounded belief updates
        Source: AutonomousReflectionEngine._epistemic._recent_grounding_rate()
        Target: ≥ 0.60.  Low → beliefs form faster than evidence can support.
 
-    2. experiment_resolution_rate — confirmed or disconfirmed / finalized
-       experiments. An inconclusive result is unresolved; a disconfirmation
-       is still a successful research outcome. The separate confirmation
-       fraction is descriptive and has no performance target.
-
-    3. question_resolution_rate — resolved / (resolved + unresolvable)
+    2. question_resolution_rate — resolved / (resolved + unresolvable)
        Source: ResolutionEngine._state
        Target: ≥ 0.50.  Low → questions accumulate without closure.
 
-    4. mean_skill_depth — average depth score across known skills
+    3. mean_skill_depth — average depth score across known skills
        Source: SkillRegistry._skills
        Target: ≥ 1.0.  Low → competencies stay surface-level.
 
-    5. belief_confidence_mean — mean confidence across SelfBelief entries
-       Source: SelfConceptSystem._beliefs
-       Target: ≥ 0.50.  Low → self-model is structurally uncertain.
+  Mean belief confidence is retained as a descriptive diagnostic only. Without
+  matching confidence values to independently verified correctness, raising
+  average confidence is not evidence of better calibration or reasoning.
+  Experiment confirmation and resolution rates are also descriptive; neither
+  establishes the cognitive quality of the underlying hypotheses.
 
   When a signal falls below its target for TWO consecutive audits
   (not just one — transient dips are expected), the engine flags it as
@@ -140,7 +132,6 @@ SIGNAL_TARGETS = {
     "epistemic_grounding_rate":     0.60,
     "question_resolution_rate":     0.50,
     "mean_skill_depth":             1.00,
-    "belief_confidence_mean":       0.50,
 }
 
 # ── Cognitive parameter space (name → (default, min, max, type)) ──────────────
@@ -167,11 +158,11 @@ PARAM_MODULE_MAP: Dict[str, Tuple[str, str]] = {
 # A parameter may only be trialed against a signal it can directly affect.
 # Frequency knobs can alter sample volume, but do not establish a causal
 # improvement in confirmation/resolution rates or verified skill depth.
-# The two confidence parameters directly affect the measured mean belief
-# confidence; other pairings remain disabled until their causal path is tested.
-SIGNAL_PARAMETER_MAP: Dict[str, Tuple[str, ...]] = {
-    "belief_confidence_mean": ("grounding_boost", "decay_rate_base"),
-}
+# No parameter is currently safe to tune against these aggregate metrics.
+# In particular, changing confidence weights to raise mean belief confidence
+# would optimize confidence, not correctness. Add a mapping only after a
+# predeclared outcome measure establishes the causal link.
+SIGNAL_PARAMETER_MAP: Dict[str, Tuple[str, ...]] = {}
 
 MAX_AUDIT_LOG   = 50
 MAX_TRIAL_LOG   = 30
@@ -499,7 +490,11 @@ class CognitiveAuditEngine:
                     "status": (snap.get("signal_status") or {}).get(name, "unavailable")
                     if isinstance(snap, dict) else "unavailable",
                 }
-                for name in ("experiment_confirmation_rate", "experiment_resolution_rate")
+                for name in (
+                    "experiment_confirmation_rate",
+                    "experiment_resolution_rate",
+                    "belief_confidence_mean",
+                )
             },
             "active_trial": trial,
             "trial_evaluation_in_progress": getattr(self, "_trial_evaluation_in_progress", False),
@@ -662,10 +657,10 @@ class CognitiveAuditEngine:
                     )
                 else:
                     self._state.consecutive_under[name] = 0
-            # This legacy counter represented support rate, not research
-            # quality. It is descriptive now and must never accumulate a
-            # performance deficit that can trigger a tuning proposal.
+            # These legacy counters represented unvalidated proxy targets.
+            # They are descriptive now and must not trigger parameter tuning.
             self._state.consecutive_under.pop("experiment_confirmation_rate", None)
+            self._state.consecutive_under.pop("belief_confidence_mean", None)
 
     # ── Signal reading ────────────────────────────────────────────────────────
 
@@ -1186,6 +1181,7 @@ Respond ONLY in JSON (no markdown, no preamble):
                 # Keep its historical measurements, but discard the stale
                 # underperformance streak because that metric is descriptive.
                 self._state.consecutive_under.pop("experiment_confirmation_rate", None)
+                self._state.consecutive_under.pop("belief_confidence_mean", None)
         except Exception as e:
             logger.warning(f"[CognitiveAudit] Load failed (using defaults): {e}")
 

@@ -42,6 +42,7 @@ class HealthDataTests(unittest.TestCase):
         self.assertEqual(audit._state.consecutive_under['mean_skill_depth'], 9)
         self.assertEqual(audit._state.consecutive_under['question_resolution_rate'], 0)
         self.assertNotIn('experiment_confirmation_rate', audit._state.consecutive_under)
+        self.assertNotIn('belief_confidence_mean', audit._state.consecutive_under)
 
     def test_cognitive_audit_waits_briefly_for_llm_slot_and_exposes_skip_reason(self):
         audit = CognitiveAuditEngine.__new__(CognitiveAuditEngine)
@@ -66,46 +67,17 @@ class HealthDataTests(unittest.TestCase):
             self.assertIsNone(audit._llm_call('bounded proposal prompt'))
         self.assertEqual(audit._proposal_attempt_status, 'llm_error')
 
-    def test_cognitive_audit_uses_low_level_adapter_with_mapped_parameter(self):
+    def test_cognitive_audit_does_not_optimize_unvalidated_confidence_proxy(self):
         audit = CognitiveAuditEngine.__new__(CognitiveAuditEngine)
-        audit._state = AuditState()
-        audit._organism = NS(_loop=None)
-        response = json.dumps({
-            'parameter': 'grounding_boost',
-            'proposed_value': 0.039,
-            'rationale': 'A modest change affects belief confidence directly. '
-                         'The trial will be evaluated against the same signal.',
-        })
-        adapter = NS(get_response=Mock(return_value=response))
-        facade_call = Mock(
-            side_effect=AssertionError('chat facade must not handle internal proposal')
-        )
-        audit._ai = NS(llm=adapter, get_response=facade_call)
+        adapter = NS(get_response=Mock())
+        audit._ai = NS(llm=adapter)
 
-        scheduler = ModuleType('core.llm_scheduler')
-        scheduler.llm_scheduler = NS(sync_slot=Mock(return_value=nullcontext(True)))
-        with patch.dict(sys.modules, {'core.llm_scheduler': scheduler}):
-            proposal = audit._generate_proposal(
-                'belief_confidence_mean', 0.3, 0.5, 120,
-            )
+        self.assertNotIn('belief_confidence_mean', SIGNAL_TARGETS)
+        proposal = audit._generate_proposal('belief_confidence_mean', 0.3, 0.5, 120)
 
-        self.assertIsNotNone(proposal)
-        self.assertEqual(proposal.parameter, 'grounding_boost')
-        self.assertEqual(proposal.prior_value, 0.03)
-        self.assertEqual(proposal.proposed_value, 0.039)
-        adapter.get_response.assert_called_once()
-        call = adapter.get_response.call_args.kwargs
-        self.assertEqual(call['max_tokens'], 200)
-        self.assertEqual(call['temperature'], 0.50)
-        self.assertEqual(call['messages'][0]['role'], 'user')
-        self.assertIn(
-            'belief_confidence_mean',
-            call['messages'][0]['content'],
-        )
-        self.assertIn('grounding_boost', call['messages'][0]['content'])
-        self.assertNotIn('generate_every_n', call['messages'][0]['content'])
-        facade_call.assert_not_called()
-        self.assertEqual(audit._proposal_attempt_status, 'proposal_created')
+        self.assertIsNone(proposal)
+        adapter.get_response.assert_not_called()
+        self.assertEqual(audit._proposal_attempt_status, 'no_causally_mapped_parameter')
 
     def test_cognitive_audit_refuses_unmapped_signal_without_calling_llm(self):
         audit = CognitiveAuditEngine.__new__(CognitiveAuditEngine)
@@ -141,8 +113,9 @@ class HealthDataTests(unittest.TestCase):
 
         self.assertIsNone(proposal)
         self.assertEqual(
-            audit._proposal_attempt_status, 'parameter_signal_mismatch',
+            audit._proposal_attempt_status, 'no_causally_mapped_parameter',
         )
+        adapter.get_response.assert_not_called()
 
     def test_cognitive_audit_does_not_tune_unmapped_worst_signal(self):
         audit = CognitiveAuditEngine.__new__(CognitiveAuditEngine)
@@ -319,6 +292,8 @@ class HealthDataTests(unittest.TestCase):
         self.assertEqual(snapshot.signal_sample_count['question_resolution_rate'], 2)
         self.assertNotIn('experiment_confirmation_rate', snapshot.deficit())
         self.assertNotIn('experiment_confirmation_rate', SIGNAL_TARGETS)
+        self.assertNotIn('belief_confidence_mean', snapshot.deficit())
+        self.assertNotIn('belief_confidence_mean', SIGNAL_TARGETS)
 
     def test_audit_summary_distinguishes_missing_diagnostics_in_legacy_snapshots(self):
         audit = CognitiveAuditEngine.__new__(CognitiveAuditEngine)
@@ -351,15 +326,18 @@ class HealthDataTests(unittest.TestCase):
                 'experiment_confirmation_rate': 'measured',
                 'experiment_resolution_rate': 'measured',
                 'mean_skill_depth': 'measured',
+                'belief_confidence_mean': 'measured',
             },
             'signal_sample_count': {
                 'experiment_confirmation_rate': 3,
                 'experiment_resolution_rate': 3,
                 'mean_skill_depth': 60,
+                'belief_confidence_mean': 41,
             },
             'experiment_confirmation_rate': 0.0,
             'experiment_resolution_rate': 2 / 3,
             'mean_skill_depth': 0.3,
+            'belief_confidence_mean': 0.72,
         }])
         audit._process_started_at = 900.0
         audit._trial_evaluation_in_progress = False
@@ -377,6 +355,9 @@ class HealthDataTests(unittest.TestCase):
         )
         self.assertEqual(
             status['descriptive_metrics']['experiment_resolution_rate']['sample_count'], 3,
+        )
+        self.assertEqual(
+            status['descriptive_metrics']['belief_confidence_mean']['value'], 0.72,
         )
 
     def test_projection_restores_nested_paths_and_skips_bad_entry(self):
