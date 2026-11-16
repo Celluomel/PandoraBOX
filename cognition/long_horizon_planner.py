@@ -41,7 +41,7 @@ This is the architectural feature that TemporalProjection lacks.
 """
 
 from __future__ import annotations
-import json, logging, re, threading, time
+import json, logging, math, re, threading, time
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -1364,6 +1364,26 @@ class LongHorizonPlanner:
                     )
                     if plan.get("next_operation_result"):
                         lines.append(f"Détail : {plan['next_operation_result']}")
+                confidence = plan.get("reasoning_confidence")
+                try:
+                    confidence = float(confidence)
+                    confidence_recorded = math.isfinite(confidence)
+                except (TypeError, ValueError, OverflowError):
+                    confidence_recorded = False
+                french_confidence = f"{confidence:.3f}".replace(".", ",") if confidence_recorded else None
+                lines.append(
+                    f"Confiance du planificateur enregistrée : {french_confidence}."
+                    if confidence_recorded else
+                    "Confiance du planificateur : non enregistrée."
+                )
+                uncertainties = [
+                    str(item).strip() for item in (plan.get("uncertainties") or [])
+                    if str(item).strip()
+                ]
+                lines.append(
+                    "Incertitudes enregistrées : " + "; ".join(uncertainties) + "."
+                    if uncertainties else "Incertitudes enregistrées : aucune."
+                )
             else:
                 lines.append("Aucun plan opérationnel actif n’est enregistré.")
             lines.append("Ce compte rendu reflète l’état enregistré du système.")
@@ -1389,6 +1409,24 @@ class LongHorizonPlanner:
                     )
                     if plan.get("next_operation_result"):
                         lines.append(f"Detail: {plan['next_operation_result']}")
+                confidence = plan.get("reasoning_confidence")
+                try:
+                    confidence = float(confidence)
+                    confidence_recorded = math.isfinite(confidence)
+                except (TypeError, ValueError, OverflowError):
+                    confidence_recorded = False
+                lines.append(
+                    f"Recorded planner confidence: {confidence:.3f}."
+                    if confidence_recorded else "Planner confidence: not recorded."
+                )
+                uncertainties = [
+                    str(item).strip() for item in (plan.get("uncertainties") or [])
+                    if str(item).strip()
+                ]
+                lines.append(
+                    "Recorded uncertainties: " + "; ".join(uncertainties) + "."
+                    if uncertainties else "Recorded uncertainties: none recorded."
+                )
             else:
                 lines.append("No active operational plan is recorded.")
             lines.append("This report reflects the system’s recorded state.")

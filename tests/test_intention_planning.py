@@ -971,6 +971,33 @@ class IntentionPlanningTests(unittest.TestCase):
         self.assertIn("grounded topic", english)
         self.assertIn("second topic", english)
 
+    def test_factual_goal_report_includes_only_recorded_confidence_and_uncertainties(self):
+        planner = LongHorizonPlanner.__new__(LongHorizonPlanner)
+        planner.factual_self_report_snapshot = lambda: {
+            "active_goals": [{"topic": "memory about knowledge"}],
+            "active_goal_count": 1,
+            "dominant_plan": {
+                "objective": "memory about knowledge",
+                "steps_completed": 2,
+                "steps_total": 4,
+                "steps_with_execution_evidence": 2,
+                "completed_steps_without_execution_evidence": 0,
+                "success_criteria_status": "unverified",
+                "next_operation": "bisociative_hypothesis",
+                "next_operation_status": "pending",
+                "reasoning_confidence": 0.413,
+                "uncertainties": ["Predictive confidence is low"],
+            },
+        }
+
+        english = planner.factual_goal_plan_response("what is your active plan?", "en")
+        french = planner.factual_goal_plan_response("quel est ton plan actif ?", "fr")
+
+        self.assertIn("Recorded planner confidence: 0.413", english)
+        self.assertIn("Recorded uncertainties: Predictive confidence is low", english)
+        self.assertIn("Confiance du planificateur enregistrée : 0,413", french)
+        self.assertIn("Incertitudes enregistrées : Predictive confidence is low", french)
+
     def test_user_practical_task_cannot_become_autonomous_goal(self):
         with tempfile.TemporaryDirectory() as folder:
             engine = GoalEngine(
