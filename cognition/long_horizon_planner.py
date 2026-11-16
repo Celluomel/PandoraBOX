@@ -925,6 +925,16 @@ class LongHorizonPlanner:
         an execution receipt. Keep it out of ordinary user conversations until
         a dispatcher can execute the step and report its outcome with evidence.
         """
+        # Historical recall is a different evidence task from reporting the
+        # planner's current state. Architecture wording inside a recall query
+        # must not inject today's plan and let the model present it as a
+        # remembered user preference or past decision.
+        try:
+            from cognition.memory_retrieval import is_explicit_memory_recall_query
+            if is_explicit_memory_recall_query(user_input):
+                return ""
+        except Exception:
+            logger.debug("Memory recall intent check unavailable", exc_info=True)
         if self.should_ground_self_report(user_input):
             return self.factual_self_report_fragment(user_input)
         # Architecture and harness questions are also about Lumina's own

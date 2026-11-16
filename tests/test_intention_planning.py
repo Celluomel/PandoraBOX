@@ -951,6 +951,22 @@ class IntentionPlanningTests(unittest.TestCase):
         self.assertIn("progress 2/4", fragment)
         self.assertGreater(planner._self_report_grounding_until, 0.0)
 
+    def test_historical_recall_does_not_inject_current_planner_state(self):
+        planner = LongHorizonPlanner.__new__(LongHorizonPlanner)
+        planner._self_report_grounding_until = 0.0
+        planner.factual_self_report_fragment = lambda _text: "current planner state"
+
+        with patch(
+            "cognition.memory_retrieval.is_explicit_memory_recall_query",
+            return_value=True,
+        ):
+            fragment = planner.prompt_fragment_for(
+                "What do you remember about how I want the cognitive harness audit conducted?"
+            )
+
+        self.assertEqual(fragment, "")
+        self.assertEqual(planner._self_report_grounding_until, 0.0)
+
     def test_goal_count_response_uses_snapshot_count(self):
         planner = LongHorizonPlanner.__new__(LongHorizonPlanner)
         planner.factual_self_report_snapshot = lambda: {
