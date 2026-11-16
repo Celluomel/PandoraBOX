@@ -1774,13 +1774,25 @@ ASSISTANT RESPONSE:
 Write at most 70 words, in the user's language, only if a concise carry-forward note would materially help answer a likely follow-up. Preserve explicit user corrections, constraints, unresolved requests, or commitments. Do not infer personal facts or emotions, invent missing details, praise the exchange, answer the user, or repeat the response. If nothing merits carrying forward, return exactly NONE."""
             result = generate_result(
                 prompt,
-                # 70 words in French can exceed 120 model tokens. Keep enough
-                # room for a complete carry-forward note; truncated output is
-                # still rejected below rather than stored as memory.
+                # French carry-forward notes can exceed 120 tokens.
                 max_tokens=192,
                 temperature=0.1,
             )
             provider_status = str(result.get("status") or "")
+            if provider_status == "truncated":
+                # The model sometimes ignores the initial 70-word ceiling.
+                # Retry once with a much shorter task and output budget; never
+                # save the truncated first response as continuity memory.
+                retry_prompt = f"""Review this completed exchange only for a concrete user correction, constraint, unresolved request, or commitment likely to matter on the next turn.
+
+USER: {str(user_text or '')[:1800]}
+ASSISTANT: {str(assistant_text or '')[:1800]}
+
+Return exactly NONE if nothing should carry forward. Otherwise return one plain sentence of at most 18 words, without explanation."""
+                result = generate_result(
+                    retry_prompt, max_tokens=96, temperature=0.0,
+                )
+                provider_status = str(result.get("status") or "")
             if provider_status == "deferred":
                 return "deferred"
             if provider_status != "ok":

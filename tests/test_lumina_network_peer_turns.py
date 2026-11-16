@@ -667,10 +667,10 @@ class PeerHistoryIsolationTests(unittest.TestCase):
         from cognition.persona_bridge import PersonaBridge
 
         class _Provider:
-            kwargs = None
+            calls = []
 
             def generate_bare_result(self, *args, **kwargs):
-                self.kwargs = kwargs
+                self.calls.append((args, kwargs))
                 return {"status": "truncated", "text": "partial note"}
 
         provider = _Provider()
@@ -685,7 +685,38 @@ class PeerHistoryIsolationTests(unittest.TestCase):
         self.assertEqual(
             result, {"status": "failed", "error_type": "ProviderTruncatedOutput"}
         )
-        self.assertEqual(provider.kwargs["max_tokens"], 192)
+        self.assertEqual(len(provider.calls), 2)
+        self.assertEqual(provider.calls[0][1]["max_tokens"], 192)
+        self.assertEqual(provider.calls[1][1]["max_tokens"], 96)
+        self.assertIn("at most 18 words", provider.calls[1][0][0])
+
+    def test_deferred_continuity_uses_short_retry_after_truncation(self):
+        from cognition.persona_bridge import PersonaBridge
+
+        class _Provider:
+            def __init__(self):
+                self.results = iter((
+                    {"status": "truncated", "text": "partial"},
+                    {"status": "ok", "text": "Keep the audit focused on causal module effects."},
+                ))
+
+            def generate_bare_result(self, *args, **kwargs):
+                return next(self.results)
+
+        bridge = PersonaBridge.__new__(PersonaBridge)
+        bridge._system = object()
+        bridge._external_llm_fn = _Provider().generate_bare_result
+        bridge._reflection_lock = threading.Lock()
+        bridge._reflection_epochs = {"fred": 0}
+        bridge._reflection_results = {}
+
+        result = bridge.run_deferred_analysis("question", "answer", "fred", 0)
+
+        self.assertEqual(result, "completed")
+        self.assertEqual(
+            bridge._reflection_results["fred"][1],
+            "Keep the audit focused on causal module effects.",
+        )
 
 
 class _FakePersona:
