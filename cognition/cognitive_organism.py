@@ -118,6 +118,46 @@ from cognition.preference_engine import PreferenceEngine
 logger = logging.getLogger(__name__)
 
 
+def _global_workspace_prompt_fragment(workspace_state: Any) -> str:
+    """Render the current Global Workspace focus and supporting context.
+
+    The selected focus is meaningful on its own. Requiring hypotheses or an
+    executive policy here silently dropped a valid winner from chat prompts.
+    """
+    if workspace_state is None:
+        return ""
+    hypotheses = getattr(workspace_state, "active_hypotheses", None) or []
+    policy = getattr(workspace_state, "executive_policy", None) or {}
+    focus = getattr(workspace_state, "focus", None)
+    if not (hypotheses or policy or focus):
+        return ""
+
+    fragment = f"[Global workspace] focus: {focus or 'unset'}"
+    alternatives = ", ".join(
+        item.get("label", item.get("name", "?"))
+        for item in hypotheses[1:3]
+        if isinstance(item, dict)
+    )
+    if alternatives:
+        fragment += f" | alternative hypotheses: {alternatives}"
+    policy_bits = ", ".join(
+        f"{key}{'+' if value >= 0 else ''}{value:.2f}"
+        for key, value in policy.items()
+        if isinstance(value, (int, float)) and abs(value) > 0.05
+    )
+    if policy_bits:
+        fragment += f" | executive policy: {policy_bits}"
+    try:
+        winner = hypotheses[0] if hypotheses else None
+        hint = (winner or {}).get("prompt_hint") if isinstance(winner, dict) else None
+        winner_name = ((winner or {}).get("name") or (winner or {}).get("label")) if isinstance(winner, dict) else None
+        if hint and winner_name == focus:
+            fragment += f"\n[What this means right now] {hint}"
+    except Exception:
+        pass
+    return fragment
+
+
 class CognitiveOrganism:
     """
     Integrates all new cognitive subsystems around an existing LuminaCore instance.
@@ -698,33 +738,8 @@ class CognitiveOrganism:
             if _ws_state is None and getattr(self, "workspace", None) is not None:
                 _ws_state = self.workspace.get_state()
             if _ws_state is not None:
-                _hyps = getattr(_ws_state, "active_hypotheses", None) or []
-                _policy = getattr(_ws_state, "executive_policy", None) or {}
-                if _hyps or _policy:
-                    _alt = ", ".join(
-                        h.get("label", h.get("name", "?")) for h in _hyps[1:3]
-                    )
-                    _policy_bits = ", ".join(
-                        f"{k}{'+' if v >= 0 else ''}{v:.2f}" for k, v in _policy.items() if abs(v) > 0.05
-                    )
-                    _gw_frag = f"[Global workspace] focus: {getattr(_ws_state, 'focus', None) or 'unset'}"
-                    if _alt:
-                        _gw_frag += f" | alternative hypotheses: {_alt}"
-                    if _policy_bits:
-                        _gw_frag += f" | executive policy: {_policy_bits}"
-                    # A synthesized focus (v84) carries a prompt_hint —
-                    # explicit natural-language guidance for holding two
-                    # foci at once, rather than counting on the model to
-                    # infer that from the bare "X — while also Y" label
-                    # (see recursive_deliberation.py::_synthesize()).
-                    try:
-                        _winner_dict = _hyps[0] if _hyps else None
-                        _hint = (_winner_dict or {}).get("prompt_hint")
-                        _winner_name = (_winner_dict or {}).get("name") or (_winner_dict or {}).get("label")
-                        if _hint and _winner_name == getattr(_ws_state, "focus", None):
-                            _gw_frag += f"\n[What this means right now] {_hint}"
-                    except Exception:
-                        pass
+                _gw_frag = _global_workspace_prompt_fragment(_ws_state)
+                if _gw_frag:
                     budget.add("cognitive_pressure", "global_workspace", _gw_frag)
         except Exception as _gw_err:
             import logging as _log
