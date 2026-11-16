@@ -39,3 +39,14 @@ def test_classifier_failure_does_not_treat_generic_body_question_as_web_search()
     bridge = _bridge(unavailable)
 
     assert bridge._llm_should_search("what is the body battery") is False
+
+
+def test_explicit_per_turn_search_opt_out_overrides_always_mode_instruction():
+    opt_out = PersonaBridge._explicit_search_opt_out
+
+    assert opt_out("Do not use web search for this answer.") is True
+    assert opt_out("Don't search the web; answer from our conversation.") is True
+    assert opt_out("Ne fais pas de recherche sur le web.") is True
+    assert opt_out("Sans recherche en ligne, réponds avec les faits connus.") is True
+    assert opt_out("Use web search to find current papers.") is False
+    assert opt_out("What is the next unverified audit step?") is False

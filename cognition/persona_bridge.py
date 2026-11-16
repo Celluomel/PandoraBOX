@@ -4704,6 +4704,15 @@ Memory honesty — two distinct cases:
                 if suppress_external_search:
                     self._record_turn_stage("external_research", "skipped_by_policy")
                     logger.debug("Web search suppressed for latency-safe or closed-world turn.")
+                elif self._explicit_search_opt_out(user_input):
+                    # A per-turn user instruction takes precedence over the
+                    # persistent "always" preference.  The mode controls the
+                    # default; it must not override an explicit refusal to use
+                    # external research for this answer.
+                    self._record_turn_stage(
+                        "external_research", "skipped_explicit_user_opt_out",
+                    )
+                    logger.info("Web search suppressed by explicit user instruction.")
                 elif "[Cognitive telemetry - factual self-report]" in system_prompt:
                     self._record_turn_stage("external_research", "skipped_factual_self_report")
                     logger.debug("Web search suppressed for factual cognitive self-report.")
@@ -7716,6 +7725,23 @@ Memory honesty — two distinct cases:
             }
         except Exception as exc:
             return {"available": False, "error": str(exc)}
+
+    @staticmethod
+    def _explicit_search_opt_out(user_input: str) -> bool:
+        """Recognize a direct per-turn request not to use external search.
+
+        This is an instruction-priority check, not a topic classifier: it only
+        suppresses search when the user explicitly negates web/online lookup.
+        """
+        text = str(user_input or "").casefold()
+        patterns = (
+            r"\b(?:do\s+not|don't|dont|never)\s+(?:(?:use|run|perform|do)\s+)?(?:a\s+)?(?:web|online|internet)\s+search\b",
+            r"\b(?:don't|dont|do\s+not|never)\s+search\s+(?:the\s+)?(?:web|internet|online)\b",
+            r"\b(?:no|without)\s+(?:web|online|internet)\s+search\b",
+            r"\bne\s+(?:fais|faites|lance|lancer|effectue|effectuer)\s+pas\s+(?:de\s+)?recherche\s+(?:sur\s+)?(?:le\s+)?(?:web|internet|en\s+ligne)\b",
+            r"\bsans\s+(?:faire\s+de\s+)?recherche\s+(?:web|internet|en\s+ligne)\b",
+        )
+        return any(re.search(pattern, text) for pattern in patterns)
 
     def _llm_should_search(self, user_input: str) -> bool:
         """
