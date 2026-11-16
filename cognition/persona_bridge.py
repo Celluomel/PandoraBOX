@@ -7614,6 +7614,22 @@ Memory honesty — two distinct cases:
             logger.info(f"_llm_should_search: fast-YES (keyword) for '{user_input[:50]}'")
             return True
 
+        # Short acknowledgement/status fragments are commonly misclassified
+        # by the lightweight YES/NO model as research requests. They have no
+        # standalone information need unless the user marks a question or an
+        # explicit source/search request. This gate prevents an ambient goal
+        # or classifier bias from turning a resume signal into web retrieval.
+        _explicit_research = (
+            "search ", "look up ", "find sources", "find papers", "cite ",
+            "references for", "recherche ", "cherche ", "trouve des sources",
+            "trouve des articles", "cite des sources",
+        )
+        if len(text.split()) <= 2 and "?" not in text and not any(
+            marker in text for marker in _explicit_research
+        ):
+            logger.info("_llm_should_search: fast-NO (short status/continuation)")
+            return False
+
         # Layer 3 — LLM judgment for ambiguous cases
         llm_fn = self._external_llm_fn
         if not llm_fn and self._system and hasattr(self._system, 'llm'):
@@ -7627,8 +7643,11 @@ Memory honesty — two distinct cases:
 
         try:
             system = (
-                "You decide if a web search is needed. "
-                "Reply with exactly one word: YES or NO.\n"
+                "Classify only the user's current message; do not infer a search request "
+                "from goals, prior assistant text, or general conversation context. "
+                "Reply with exactly one word: YES or NO. "
+                "A short acknowledgement, greeting, status update, or continuation is NO "
+                "unless it explicitly asks for current information or external sources. "
                 "YES if: live data, recent events, current prices/news/scores, "
                 "facts that may have changed since 2024, or the user asks to "
                 "inspect, compare or cite external sources such as papers or a "
@@ -7643,7 +7662,11 @@ Memory honesty — two distinct cases:
             return result
         except Exception as e:
             logger.warning(f"_llm_should_search LLM call failed: {e} — keyword fallback")
-            _fallback = ['news', 'today', 'current', 'latest', 'who is', 'what is the']
+            _fallback = [
+                'news', 'today', 'tonight', 'right now', 'latest', 'current',
+                'price of', 'weather in', 'score', 'what happened',
+                'search ', 'look up ', 'find sources', 'cherche ', 'recherche ',
+            ]
         return any(kw in text for kw in _fallback)
 
     @staticmethod
