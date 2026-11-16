@@ -86,6 +86,17 @@ def is_cognitive_audit_status_query(user_input: str) -> bool:
     return refers_to_audit and refers_to_self and asks_for_recorded_state
 
 
+def is_closed_world_cognitive_report_query(user_input: str) -> bool:
+    """Whether a turn asks for a report answerable only from local records."""
+    text = " ".join(str(user_input or "").casefold().split())
+    return bool(
+        is_cognitive_audit_status_query(text)
+        or is_runtime_execution_evidence_query(text)
+        or is_cognitive_trace_query(text)
+        or is_architecture_query(text)
+    )
+
+
 def is_runtime_execution_evidence_query(user_input: str) -> bool:
     """Identify questions asking what current runtime receipts establish.
 

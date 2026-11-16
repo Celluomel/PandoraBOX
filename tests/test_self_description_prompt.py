@@ -10,6 +10,7 @@ from cognition.self_description import (
     affect_self_report_context,
     is_architecture_query,
     is_cognitive_audit_status_query,
+    is_closed_world_cognitive_report_query,
     is_cognitive_trace_query,
     is_internal_cognitive_query,
     is_runtime_execution_evidence_query,
@@ -27,7 +28,11 @@ class SelfDescriptionPromptTests(unittest.TestCase):
         )
         self.assertTrue(is_cognitive_audit_status_query(question))
         self.assertTrue(is_internal_cognitive_query(question))
+        self.assertTrue(is_closed_world_cognitive_report_query(question))
         self.assertFalse(is_cognitive_audit_status_query("Explain what a cognitive audit is."))
+        self.assertFalse(is_closed_world_cognitive_report_query(
+            "Can you explore the idea of how memory shapes a person's identity?"
+        ))
 
     def test_runtime_execution_evidence_query_is_closed_world(self):
         question = (

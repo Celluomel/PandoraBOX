@@ -1974,11 +1974,17 @@ Return exactly NONE if nothing should carry forward. Otherwise return one plain 
                 is_architecture_query, is_cognitive_trace_query,
                 is_runtime_execution_evidence_query,
                 is_internal_cognitive_query, is_cognitive_audit_status_query,
+                is_closed_world_cognitive_report_query,
             )
             from cognition.long_horizon_planner import LongHorizonPlanner
             _cognitive_trace_query = is_cognitive_trace_query(effective_input)
             _runtime_execution_query = is_runtime_execution_evidence_query(effective_input)
             _cognitive_audit_status_query = is_cognitive_audit_status_query(effective_input)
+            _closed_world_cognitive_report_query = (
+                is_closed_world_cognitive_report_query(effective_input)
+                or _factual_plan_query
+                or _explicit_memory_recall
+            )
             _factual_plan_query = LongHorizonPlanner.is_goal_plan_query(effective_input)
             _architecture_query = (
                 (is_architecture_query(effective_input) or _cognitive_trace_query)
@@ -1993,6 +1999,7 @@ Return exactly NONE if nothing should carry forward. Otherwise return one plain 
             _cognitive_trace_query = False
             _runtime_execution_query = False
             _cognitive_audit_status_query = False
+            _closed_world_cognitive_report_query = False
             _factual_plan_query = False
             _internal_cognitive_query = False
             logger.debug("Architecture query detection unavailable: %s", _architecture_query_error)
@@ -2059,6 +2066,13 @@ Return exactly NONE if nothing should carry forward. Otherwise return one plain 
                 _are_turn_status = "skipped_by_scope"
                 self._record_turn_stage(
                     "abstract_reasoning", "skipped_by_scope", turn_id=_audit_turn_id,
+                )
+            elif _closed_world_cognitive_report_query:
+                _are_turn_status = "skipped_closed_world_report"
+                self._record_turn_stage(
+                    "abstract_reasoning", _are_turn_status,
+                    output={"reason_code": "closed_world_report_uses_recorded_evidence"},
+                    consumes=("turn_input",), turn_id=_audit_turn_id,
                 )
             elif _state_are.are:
                 _are_result = await asyncio.to_thread(
