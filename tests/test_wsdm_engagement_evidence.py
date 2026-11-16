@@ -1,5 +1,8 @@
+import json
 import threading
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -31,6 +34,28 @@ class WSDMEngagementEvidenceTests(unittest.TestCase):
         self.assertEqual(calls[1].args[:3], ("analytical", "fred", [1.0] * 8))
         self.assertEqual(calls[1].args[3], [10.0] * 8)
         self.assertEqual(model._pending_by_turn, {})
+
+    def test_turn_id_is_persisted_with_observed_transition_receipt(self):
+        with tempfile.TemporaryDirectory() as folder:
+            model = WorldSelfDynamicsModel.__new__(WorldSelfDynamicsModel)
+            model._lock = threading.Lock()
+            model._records = []
+            model._pending = None
+            model._pending_by_turn = {}
+            model._path = Path(folder) / "wsdm.json"
+            model._calibration_engine = None
+            model._measure_skill_gain = lambda: 0.0
+            model.capture_context = Mock(side_effect=[[0.1] * 8, [0.2] * 8])
+
+            model.record_context("analytical", "fred", 7, turn_id="trace-77")
+            persisted = model.record_outcome(
+                user_id="fred", user_input="question", turn_id="trace-77"
+            )
+
+            self.assertTrue(persisted)
+            saved = json.loads(model._path.read_text(encoding="utf-8"))
+            self.assertEqual(saved["records"][0]["turn_id"], "trace-77")
+            self.assertEqual(saved["records"][0]["action_type"], "analytical")
 
     def _historical_model(self):
         model = WorldSelfDynamicsModel.__new__(WorldSelfDynamicsModel)

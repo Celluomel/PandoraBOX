@@ -3261,3 +3261,11 @@ Correction locale : les tours qui possèdent un `turn_id` stockent leur contexte
 Vérification locale combinée : **140 tests passent** dans les suites de contexte prédictif streaming, WSDM, planification, reçus de tour, auto-description, santé et fraîcheur; 8 avertissements de dépendances préexistants, 4 sous-tests. Compilation Python et `git diff --check` passent. Ce correctif n’est pas encore chargé dans Lumina; pas de validation live revendiquée. Le redémarrage restera groupé après le prochain lot d’analyses offline.
 
 La piste 2/10 n’est pas close par un test concurrent isolé; il faut encore observer deux tours live corrélés, deux reçus WSDM distincts et vérifier les transitions persistées. Progression globale inchangée : **2/10 = 20 %**.
+
+### Reçu WSDM durable, attribué au tour, et visible dans la trace — 16 novembre 2026
+
+Le reçu apparié par tour n’était pas encore auditable après redémarrage : `DynamicsRecord` ne persistait pas l’identifiant de tour et l’API WSDM ne signalait pas l’échec d’écriture. Les erreurs de sauvegarde étaient seulement consignées au niveau DEBUG; le post-tour pouvait donc sembler terminé sans preuve que la transition était durable.
+
+Correction locale : chaque transition porte maintenant `turn_id`; WSDM écrit les enregistrements avec remplacement atomique du fichier et renvoie le résultat de persistance. Les erreurs sont visibles et un échec de sauvegarde ne résout pas la calibration. Le post-tour de `CognitiveOrganism` retourne un reçu `persisted` / `no_matching_pending_turn` / `failed`; `PersonaBridge` l’enregistre comme étape `world_self_dynamics_outcome` liée au même tour et à l’étape prédictive amont. Les anciens enregistrements restent chargeables grâce au champ `turn_id` optionnel.
+
+Vérification locale : **141 tests passent** dans les mêmes suites ciblées, avec un test qui relit le fichier WSDM et vérifie `turn_id`, plus le test de complétion concurrente en ordre inverse; 8 avertissements préexistants, 4 sous-tests. `py_compile` et `git diff --check` à repasser avant commit. Ces changements attendent leur commit et leur push; aucune validation live n’est revendiquée.

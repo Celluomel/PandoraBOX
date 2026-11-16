@@ -1367,20 +1367,30 @@ class CognitiveOrganism:
         # is not a rating of the assistant response, and response wording is
         # not evidence of user engagement, so this turn remains explicitly
         # unrated in WSDM.
+        wsdm_outcome_receipt = {
+            "status": "unavailable",
+            "turn_id": str(turn_id or "") or None,
+        }
         try:
             loop  = getattr(self, '_loop', None)
             wsdm  = getattr(loop, '_world_self_dynamics', None) if loop else None
-            if wsdm and wsdm._pending is not None:
+            if wsdm:
                 _uid  = getattr(self, '_current_user_id', 'default')
-                wsdm.record_outcome(
+                persisted = wsdm.record_outcome(
                     outcome       = "unrated",
                     user_id       = _uid,
                     response_text = response or "",
                     user_input    = user_input or "",
                     turn_id       = turn_id,
                 )
-        except Exception:
-            pass
+                wsdm_outcome_receipt["status"] = (
+                    "persisted" if persisted else "no_matching_pending_turn"
+                )
+                wsdm_outcome_receipt["persisted"] = bool(persisted)
+        except Exception as exc:
+            wsdm_outcome_receipt.update({
+                "status": "failed", "error_type": type(exc).__name__,
+            })
 
         # Drain energy for the activity
         energy_activity = {
@@ -1861,6 +1871,7 @@ class CognitiveOrganism:
 
         return {
             "world_model_profile_update": world_profile_update,
+            "world_self_dynamics_outcome": wsdm_outcome_receipt,
             "pcm_outcome": pcm_outcome_receipt,
         }
 

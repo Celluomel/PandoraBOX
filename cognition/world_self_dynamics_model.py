@@ -103,6 +103,8 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
+import tempfile
 import threading
 import time
 from dataclasses import dataclass, field, asdict
@@ -139,6 +141,7 @@ class DynamicsRecord:
     user_id:        str           = "default"
     recorded_at:    float         = field(default_factory=time.time)
     interaction_n:  int           = 0
+    turn_id:        str           = ""
 
 
 @dataclass
@@ -240,7 +243,7 @@ class WorldSelfDynamicsModel:
         response_text:  str = "",
         user_input:     str = "",
         turn_id:        str = "",
-    ) -> None:
+    ) -> bool:
         """Record consequences after interaction completion."""
         with self._lock:
             pending = (
@@ -250,14 +253,15 @@ class WorldSelfDynamicsModel:
             if not turn_id:
                 self._pending = None
         if pending is None:
-            return
+            return False
         action_type, pending_uid, ctx_before, interaction_n = pending
 
-        self.record_observed_transition(
+        return self.record_observed_transition(
             action_type, pending_uid, ctx_before, self.capture_context(user_id),
             interaction_n=interaction_n, outcome=outcome,
             response_text=response_text, user_input=user_input,
             resolve_calibration=True,
+            turn_id=turn_id,
         )
 
     def record_observed_transition(
@@ -272,7 +276,8 @@ class WorldSelfDynamicsModel:
         response_text: str = "",
         user_input: str = "",
         resolve_calibration: bool = False,
-    ) -> None:
+        turn_id: str = "",
+    ) -> bool:
         """Persist an explicit transition without touching shared pending state."""
         ctx_before = [float(value) for value in context_before]
         ctx_after = [float(value) for value in context_after]
@@ -304,6 +309,7 @@ class WorldSelfDynamicsModel:
             outcome        = outcome,
             user_id        = user_id,
             interaction_n  = interaction_n,
+            turn_id        = str(turn_id or ""),
         )
 
         with self._lock:
@@ -311,7 +317,7 @@ class WorldSelfDynamicsModel:
             if len(self._records) > MAX_RECORDS:
                 self._records = self._records[-MAX_RECORDS:]
 
-        self._save()
+        persisted = self._save()
         logger.debug(
             f"[WorldSelfDynamics] Recorded: {action_type} | "
             f"self: cog{self_delta[0]:+.3f} soc{self_delta[1]:+.3f} | "
@@ -321,7 +327,7 @@ class WorldSelfDynamicsModel:
         # Do not resolve an unrelated human prediction from a concurrent peer
         # exchange unless its caller explicitly owns that prediction.
         try:
-            if resolve_calibration and self._calibration_engine is not None:
+            if persisted and resolve_calibration and self._calibration_engine is not None:
                 energy_delta = (
                     ctx_after[0] - ctx_before[0]
                     if ctx_before and ctx_after else 0.0
@@ -338,6 +344,7 @@ class WorldSelfDynamicsModel:
                 )
         except Exception as _cal_e:
             logger.debug(f"[WorldSelfDynamics] Calibration resolve error: {_cal_e}")
+        return persisted
 
     def predict(
         self,
@@ -739,7 +746,8 @@ class WorldSelfDynamicsModel:
 
     # ── Persistence ───────────────────────────────────────────────────────────
 
-    def _save(self) -> None:
+    def _save(self) -> bool:
+        temporary_path: Optional[Path] = None
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             with self._lock:
@@ -747,10 +755,25 @@ class WorldSelfDynamicsModel:
                     "records": [asdict(r) for r in self._records[-MAX_RECORDS:]],
                     "_meta":   {"version": "v56", "ts": time.time()},
                 }
-            with open(self._path, "w") as f:
-                json.dump(data, f, indent=2)
+                with tempfile.NamedTemporaryFile(
+                    mode="w", encoding="utf-8", dir=str(self._path.parent),
+                    prefix=self._path.name + ".", suffix=".tmp", delete=False,
+                ) as handle:
+                    temporary_path = Path(handle.name)
+                    json.dump(data, handle, indent=2)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(temporary_path, self._path)
+            return True
         except Exception as e:
-            logger.debug(f"[WorldSelfDynamics] Save failed: {e}")
+            logger.warning(f"[WorldSelfDynamics] Save failed: {e}")
+            return False
+        finally:
+            if temporary_path is not None:
+                try:
+                    temporary_path.unlink(missing_ok=True)
+                except OSError:
+                    logger.debug("[WorldSelfDynamics] Could not remove temporary save")
 
     def _load(self) -> None:
         try:

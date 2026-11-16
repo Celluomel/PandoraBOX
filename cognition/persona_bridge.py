@@ -3504,6 +3504,28 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         output=result, consumes=("output_safety",),
                         turn_id=_audit_turn_id,
                     )
+                elif stage_name == "cognitive_post_turn" and isinstance(result, dict):
+                    wsdm_receipt = result.get("world_self_dynamics_outcome")
+                    if isinstance(wsdm_receipt, dict):
+                        wsdm_status = str(wsdm_receipt.get("status") or "unreported")
+                        self._record_turn_stage(
+                            "world_self_dynamics_outcome",
+                            "completed" if wsdm_status == "persisted" else
+                            "failed" if wsdm_status == "failed" else
+                            "skipped_no_matching_pending_turn" if wsdm_status == "no_matching_pending_turn" else
+                            "skipped_unavailable",
+                            output={"type": "wsdm_transition_receipt", **wsdm_receipt},
+                            consumes=("world_self_dynamics_model",),
+                            turn_id=_audit_turn_id,
+                        )
+                        if wsdm_status in {"failed", "no_matching_pending_turn"}:
+                            failures.append(RuntimeError(
+                                f"world/self transition receipt {wsdm_status}"
+                            ))
+                    self._record_turn_stage(
+                        stage_name, "completed", output=result,
+                        consumes=("output_safety",), turn_id=_audit_turn_id,
+                    )
                 else:
                     self._record_turn_stage(
                         stage_name, "completed", output=result,
