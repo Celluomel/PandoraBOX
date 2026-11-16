@@ -936,6 +936,58 @@ class IntentionPlanningTests(unittest.TestCase):
         self.assertTrue(LongHorizonPlanner.is_goal_plan_query(question))
         self.assertTrue(LongHorizonPlanner.is_self_report_query("Combien d'objectifs actifs as-tu ?"))
 
+    def test_goal_action_receipt_question_routes_by_outcome_to_step_relation(self):
+        question = (
+            "What is the latest recorded GoalActionExecutor outcome in your current audit state, "
+            "and did it advance the matching long-horizon plan step?"
+        )
+        self.assertTrue(LongHorizonPlanner.is_self_report_query(question))
+        self.assertTrue(LongHorizonPlanner.is_goal_plan_query(question))
+        self.assertTrue(LongHorizonPlanner.is_goal_execution_report_query(question))
+        self.assertFalse(LongHorizonPlanner.is_self_report_query(
+            "What was the latest execution outcome in the CI pipeline, and did it advance a plan step?"
+        ))
+
+    def test_goal_action_receipt_report_requires_matching_completed_step_receipt(self):
+        planner = LongHorizonPlanner.__new__(LongHorizonPlanner)
+        question = (
+            "What is the latest recorded GoalActionExecutor outcome in your current audit state, "
+            "and did it advance the matching long-horizon plan step?"
+        )
+        planner.factual_self_report_snapshot = lambda: {
+            "active_goals": [],
+            "active_goal_count": 0,
+            "dominant_plan": {
+                "last_outcome": {
+                    "operation": "memory_recall", "success": True,
+                    "execution_id": "act-123", "cycle_id": 12045,
+                    "result": "recalled and published",
+                },
+                "completed_step_receipts": [{
+                    "operation": "memory_recall", "execution_id": "act-123",
+                    "result_recorded": True,
+                }],
+            },
+        }
+        report = planner.factual_goal_plan_response(question, "en")
+        self.assertIn("memory_recall, succeeded", report)
+        self.assertIn("cycle=12045", report)
+        self.assertIn("receipt=act-123", report)
+        self.assertIn("yes; a matching completed-step receipt", report)
+
+        planner.factual_self_report_snapshot = lambda: {
+            "active_goals": [], "active_goal_count": 0,
+            "dominant_plan": {
+                "last_outcome": {
+                    "operation": "memory_recall", "success": True,
+                    "execution_id": "act-123", "cycle_id": 12045,
+                },
+                "completed_step_receipts": [],
+            },
+        }
+        report = planner.factual_goal_plan_response(question, "en")
+        self.assertIn("unconfirmed", report)
+
     def test_architecture_audit_question_receives_live_plan_evidence(self):
         planner = LongHorizonPlanner.__new__(LongHorizonPlanner)
         planner._self_report_grounding_until = 0.0

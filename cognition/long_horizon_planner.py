@@ -883,6 +883,8 @@ class LongHorizonPlanner:
         text = " ".join(str(user_input or "").lower().split())
         if not text:
             return False
+        if LongHorizonPlanner.is_goal_execution_report_query(text):
+            return True
         ownership_patterns = (
             r"\byour\s+(?:(?:actual|current|real|main|own|active)\s+)?goals?\b",
             r"\byour\s+(?:(?:actual|current|real|main|own|active)\s+)?plans?\b",
@@ -905,6 +907,35 @@ class LongHorizonPlanner:
             "factual elements", "not pure invention", "observable data",
         )
         return any(phrase in text for phrase in phrases)
+
+    @staticmethod
+    def is_goal_execution_report_query(user_input: str) -> bool:
+        """Recognize a self-report joining an execution receipt to plan progress.
+
+        Match the relationship between an owned/current audit record, its
+        outcome, and a plan-step effect. Generic CI or user-task questions do
+        not qualify merely because they mention results and plans.
+        """
+        text = " ".join(str(user_input or "").casefold().split())
+        if not text:
+            return False
+        owned_record = bool(re.search(
+            r"\b(?:your|you|current|this)\b.{0,80}\b(?:audit|cognitive|goal|plan|action|execution)\b"
+            r"|\b(?:ton|ta|tes|votre|vos)\b.{0,80}\b(?:audit|cognitif|but|objectif|plan|action|exécution|execution)\b",
+            text,
+        ))
+        outcome_relation = bool(re.search(
+            r"\b(?:latest|last|recorded|persisted|recent)\b.{0,80}\b(?:outcome|result|receipt|execution)\b"
+            r"|\b(?:dernier|dernière|récent|recente|enregistré|enregistrée|persisté|persistée)\b"
+            r".{0,80}\b(?:résultat|resultat|issue|reçu|recu|exécution|execution|action)\b",
+            text,
+        ))
+        plan_effect = bool(re.search(
+            r"\b(?:advance|advanced|advances|complete|completed|change|update)\b.{0,80}\b(?:matching\s+)?(?:long[- ]horizon\s+)?(?:goal\s+)?(?:plan\s+)?steps?\b"
+            r"|\b(?:étape|etape|plan)\b.{0,80}\b(?:avancé|avance|terminé|termine|mis à jour|mis a jour|progressé|progresse)\b",
+            text,
+        ))
+        return owned_record and outcome_relation and plan_effect
 
     def should_ground_self_report(self, user_input: str) -> bool:
         text = " ".join(str(user_input or "").lower().split())
@@ -1337,6 +1368,8 @@ class LongHorizonPlanner:
     def is_goal_plan_query(user_input: str) -> bool:
         """Identify a direct self-report request about goals or planning."""
         text = " ".join(str(user_input or "").casefold().split())
+        if LongHorizonPlanner.is_goal_execution_report_query(text):
+            return True
         return bool(re.search(
             r"\b(?:goals?|plans?|planning|objectifs?|planifications?|buts?)\b",
             text,
@@ -1350,6 +1383,58 @@ class LongHorizonPlanner:
         goals = [str(item["topic"]) for item in snapshot["active_goals"] if item.get("topic")]
         goal_count = int(snapshot.get("active_goal_count", len(goals)))
         plan = snapshot.get("dominant_plan")
+        if self.is_goal_execution_report_query(user_input):
+            outcome = plan.get("last_outcome") if isinstance(plan, dict) else None
+            outcome = outcome if isinstance(outcome, dict) else None
+            if not outcome:
+                return (
+                    "Aucun reçu d’exécution GoalActionExecutor n’est enregistré dans le plan actif."
+                    if str(language or "").casefold().startswith("fr") else
+                    "No GoalActionExecutor execution receipt is recorded in the active plan."
+                )
+            execution_id = str(outcome.get("execution_id") or "").strip()
+            operation = str(outcome.get("operation") or "unknown")
+            success = outcome.get("success")
+            receipt_matches = any(
+                item.get("execution_id") == execution_id
+                and item.get("operation") == operation
+                and item.get("result_recorded") is True
+                for item in (plan.get("completed_step_receipts") or [])
+                if isinstance(item, dict)
+            ) if plan else False
+            advanced = success is True and bool(execution_id) and receipt_matches
+            if str(language or "").casefold().startswith("fr"):
+                outcome_text = (
+                    "réussi" if success is True else
+                    "échoué" if success is False else
+                    str(outcome.get("status") or "non vérifié")
+                )
+                effect_text = (
+                    "oui, le reçu correspondant confirme une étape terminée"
+                    if advanced else
+                    "non confirmé : aucun reçu d’étape correspondant ne prouve l’avancement"
+                )
+                return (
+                    f"Dernier résultat enregistré dans le plan actif : {operation}, {outcome_text}; "
+                    f"cycle={outcome.get('cycle_id') if outcome.get('cycle_id') is not None else 'inconnu'}; "
+                    f"reçu={execution_id or 'absent'}. Avancement de l’étape : {effect_text}. "
+                    f"Résultat enregistré : {str(outcome.get('result') or 'absent')[:200]}"
+                )
+            outcome_text = (
+                "succeeded" if success is True else "failed" if success is False
+                else str(outcome.get("status") or "unverified")
+            )
+            effect_text = (
+                "yes; a matching completed-step receipt confirms advancement"
+                if advanced else
+                "unconfirmed; no matching step receipt proves advancement"
+            )
+            return (
+                f"Latest outcome recorded in the active plan: {operation}, {outcome_text}; "
+                f"cycle={outcome.get('cycle_id') if outcome.get('cycle_id') is not None else 'unknown'}; "
+                f"receipt={execution_id or 'missing'}. Plan-step advancement: {effect_text}. "
+                f"Recorded result: {str(outcome.get('result') or 'missing')[:200]}"
+            )
         lang = str(language or "auto").casefold().replace("_", "-")
         if lang.startswith("fr"):
             lines = [
