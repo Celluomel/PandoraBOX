@@ -35,6 +35,31 @@ def summarize_output(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         result["keys"] = sorted(str(key)[:64] for key in list(value)[:24])
         result["item_count"] = len(value)
+        # Tick receipts may contain compact control-flow facts. Preserve only
+        # allowlisted enum/numeric fields so the audit can tell "scheduled"
+        # from "deferred" without retaining prompts, prose, or arbitrary data.
+        receipt_fields: dict[str, Any] = {}
+        receipt_enum_fields = {
+            "outcome_status", "status", "reason_code", "effect_status",
+            "aspiration_planning", "goal_plan_schedule_status",
+        }
+        receipt_numeric_fields = {
+            "cycle", "goal_plans_synchronized", "goal_plans_scheduled",
+            "goal_plans_pending",
+        }
+        for key in receipt_enum_fields:
+            item = value.get(key)
+            if isinstance(item, str) and item.isascii() and len(item) <= 64 \
+                    and item.replace("_", "").replace("-", "").isalnum():
+                receipt_fields[key] = item
+        for key in receipt_numeric_fields:
+            item = value.get(key)
+            if isinstance(item, int) and not isinstance(item, bool):
+                receipt_fields[key] = item
+        if isinstance(value.get("aspiration_plan_exists"), bool):
+            receipt_fields["aspiration_plan_exists"] = value["aspiration_plan_exists"]
+        if receipt_fields:
+            result["receipt_fields"] = receipt_fields
         numeric = {}
         non_finite = []
         for key, item in list(value.items())[:64]:

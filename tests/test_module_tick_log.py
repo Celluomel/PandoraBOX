@@ -18,6 +18,27 @@ class ModuleTickLogTests(unittest.TestCase):
         self.assertEqual(summary["non_finite_fields"], ["bad"])
         self.assertNotIn("private generated text", repr(summary))
 
+    def test_output_summary_retains_only_allowlisted_tick_receipt_facts(self):
+        summary = summarize_output({
+            "outcome_status": "completed",
+            "reason_code": "cadence_deferred",
+            "cycle": 23,
+            "goal_plans_pending": 2,
+            "aspiration_plan_exists": False,
+            "query": "private user text",
+            "custom_status": "arbitrary",
+        })
+
+        self.assertEqual(summary["receipt_fields"], {
+            "outcome_status": "completed",
+            "reason_code": "cadence_deferred",
+            "cycle": 23,
+            "goal_plans_pending": 2,
+            "aspiration_plan_exists": False,
+        })
+        self.assertNotIn("private user text", repr(summary))
+        self.assertNotIn("custom_status", summary["receipt_fields"])
+
     def test_none_output_is_unverified_not_a_claimed_side_effect(self):
         ticks = ModuleTickLog()
         ticks.register("side_effect", initialized=True)
@@ -179,7 +200,10 @@ class ModuleTickLogTests(unittest.TestCase):
         self.assertEqual(tick["last_status"], "completed")
         self.assertEqual(tick["state"], "output_present_unvalidated")
         self.assertEqual(tick["last_output"]["quality"], "present")
-        self.assertNotIn("no_eligible_goals", repr(tick["last_output"]))
+        self.assertEqual(
+            tick["last_output"]["receipt_fields"]["reason_code"],
+            "no_eligible_goals",
+        )
 
     def test_probe_targets_match_live_internal_loop_entrypoints(self):
         calls = []
