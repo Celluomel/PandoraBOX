@@ -372,11 +372,62 @@ class CognitiveAuditEngine:
         }
 
     def _run_audit_scheduled(self, slow_cycle: int) -> None:
+        with self._lock:
+            snapshots_before = len(self._state.snapshot_log)
+            attempts_before = self._state.proposal_attempt_total
+            trials_before = len(self._state.trial_log)
         try:
             self._run_audit(slow_cycle)
+            with self._lock:
+                snapshot_delta = len(self._state.snapshot_log) - snapshots_before
+                attempt_delta = self._state.proposal_attempt_total - attempts_before
+                trial_delta = len(self._state.trial_log) - trials_before
+                last_cycle = int(self._state.last_audit_cycle)
+                active_trial = bool(self._state.active_trial)
+                proposal_status = str(
+                    (self._state.last_proposal_attempt or {}).get("status", "none")
+                )
+            status = "completed" if last_cycle == int(slow_cycle) and snapshot_delta else "no_output"
+            self._record_async_completion(
+                slow_cycle,
+                status,
+                {
+                    "snapshot_delta": snapshot_delta,
+                    "proposal_attempt_delta": attempt_delta,
+                    "trial_delta": trial_delta,
+                    "active_trial": active_trial,
+                    "proposal_status": proposal_status,
+                    "last_audit_cycle": last_cycle,
+                },
+            )
+        except Exception as exc:
+            self._record_async_completion(
+                slow_cycle, "failed", {"snapshot_delta": 0}, type(exc).__name__
+            )
+            logger.exception("[CognitiveAudit] scheduled worker failed")
         finally:
             with self._lock:
                 self._audit_in_progress = False
+
+    def _record_async_completion(
+        self, slow_cycle: int, status: str, metrics: Dict[str, Any],
+        error_type: Optional[str] = None,
+    ) -> None:
+        organism = getattr(self, "_organism", None)
+        loop = getattr(organism, "_loop", None)
+        recorder = getattr(loop, "record_async_cycle_stage", None)
+        if callable(recorder):
+            try:
+                recorder(
+                    slow_cycle,
+                    "cognitive_audit_worker",
+                    status,
+                    output=metrics,
+                    metrics=metrics,
+                    error_type=error_type,
+                )
+            except Exception as exc:
+                logger.debug("[CognitiveAudit] completion receipt unavailable: %s", exc)
 
     def status_summary(self) -> Dict[str, Any]:
         """Returns a human-readable status snapshot for UI/logging."""

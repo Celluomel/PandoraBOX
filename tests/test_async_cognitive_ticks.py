@@ -116,6 +116,36 @@ class AsyncCognitiveTickTests(unittest.TestCase):
         worker.target(*worker.args)
         self.assertFalse(engine._audit_in_progress)
 
+    def test_cognitive_audit_worker_records_origin_cycle_and_effect_deltas(self):
+        engine = CognitiveAuditEngine.__new__(CognitiveAuditEngine)
+        engine._lock = threading.Lock()
+        engine._state = AuditState()
+        engine._state.proposal_attempt_total = 2
+        engine._audit_in_progress = True
+        receipts = []
+        engine._organism = SimpleNamespace(
+            _loop=SimpleNamespace(
+                record_async_cycle_stage=lambda *args, **kwargs: receipts.append((args, kwargs))
+            )
+        )
+
+        def run_audit(cycle):
+            engine._state.snapshot_log.append({"slow_cycle": cycle})
+            engine._state.last_audit_cycle = cycle
+            engine._state.proposal_attempt_total += 1
+            engine._state.last_proposal_attempt = {"status": "no_causally_mapped_parameter"}
+
+        engine._run_audit = run_audit
+        engine._run_audit_scheduled(42)
+
+        self.assertFalse(engine._audit_in_progress)
+        self.assertEqual(len(receipts), 1)
+        args, kwargs = receipts[0]
+        self.assertEqual(args, (42, "cognitive_audit_worker", "completed"))
+        self.assertEqual(kwargs["metrics"]["snapshot_delta"], 1)
+        self.assertEqual(kwargs["metrics"]["proposal_attempt_delta"], 1)
+        self.assertEqual(kwargs["metrics"]["proposal_status"], "no_causally_mapped_parameter")
+
     def test_causal_mechanism_tick_is_single_flight_and_receipted(self):
         model = CausalMechanismModel.__new__(CausalMechanismModel)
         model._lock = threading.Lock()

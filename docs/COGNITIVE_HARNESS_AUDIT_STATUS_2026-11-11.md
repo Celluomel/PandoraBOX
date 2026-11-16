@@ -2939,3 +2939,13 @@ Cela corrige un blocage du cycle interne, mais pas la qualité des réflexions :
 **Validation locale :** les huit suites ciblées passent **171 tests**, 9 avertissements historiques; compilation et vérification de diff passent. Ces tests valident l’ordonnancement et les reçus, pas la qualité des hypothèses générées ni la causalité des résultats d’expérience.
 
 La progression globale demeure **2/10 = 20 %** jusqu’au redémarrage groupé, puis jusqu’à l’analyse live des effets sur les objectifs, croyances, identité et réponses.
+
+### CognitiveAuditEngine — résultat asynchrone rattaché au cycle — 16 novembre 2026
+
+Le worker du `CognitiveAuditEngine` enregistrait ses snapshots et essais, mais le cycle interne ne recevait pas de reçu de fin. La trace pouvait donc prouver « worker programmé » sans dire si l’audit avait ajouté un snapshot, créé une tentative de proposition, activé un essai, ou terminé sans sortie. C’était un trou d’attribution pour le module qui évalue justement le harnais.
+
+**Correction locale :** à la fin du worker, il ajoute maintenant `cognitive_audit_worker` au reçu du cycle d’origine. Le résultat distingue `completed`, `no_output` et `failed` et inclut les deltas de snapshots, tentatives et essais, l’état d’un essai actif, le statut de proposition et le dernier cycle d’audit. L’erreur de worker est journalisée avec sa trace; le verrou est libéré dans tous les cas. Un test vérifie l’attribution au cycle source et les deltas observés.
+
+**Validation locale :** les huit suites ciblées passent **172 tests**, 9 avertissements de dépendances existants; compilation ciblée et `git diff --check` passent. Ce reçu prouve qu’un snapshot/tentative a été enregistré, mais ne certifie ni la validité des mesures d’entrée, ni l’effet causal ou la qualité d’une calibration.
+
+La progression de clôture demeure **2/10 = 20 %** : le correctif améliore la preuve d’exécution d’un producteur du harnais; il reste à vérifier après le redémarrage groupé que le nouveau reçu apparaît dans une trace live, puis à évaluer ses décisions et effets sur plusieurs scénarios cognitifs représentatifs.
