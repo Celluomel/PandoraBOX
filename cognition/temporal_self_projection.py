@@ -72,6 +72,8 @@ class TemporalSelfProjection:
         self._ai          = ai_system
         self._path        = Path(path)
         self._lock        = threading.Lock()
+        self._worker_pending = False
+        self._last_worker_cycle: Optional[int] = None
         self._history:    Dict[str, List[Tuple[int,float]]] = {}
         self._trajectory: Optional[SelfTrajectory] = None
         self._load()
@@ -80,15 +82,36 @@ class TemporalSelfProjection:
             f"{len(self._history)} tracked dimensions"
         )
 
-    def tick(self, slow_cycle: int) -> None:
+    def tick(self, slow_cycle: int) -> Dict[str, Any]:
         # Record every cycle (lightweight)
         self._record_snapshot(slow_cycle)
         # Full projection periodically
         if slow_cycle % PROJECT_EVERY_N == 0 and slow_cycle > 0:
-            threading.Thread(
-                target=self._project, args=(slow_cycle,),
-                daemon=True, name="tsp-project"
-            ).start()
+            with self._lock:
+                if self._worker_pending:
+                    return {"outcome_status": "skipped", "reason_code": "projection_already_running", "cycle": slow_cycle}
+                self._worker_pending = True
+                self._last_worker_cycle = slow_cycle
+            try:
+                worker = threading.Thread(
+                    target=self._project_guarded, args=(slow_cycle,),
+                    daemon=True, name="tsp-project"
+                )
+                worker.start()
+            except Exception:
+                with self._lock:
+                    self._worker_pending = False
+                logger.exception("[TemporalSelfProjection] worker start failed")
+                return {"outcome_status": "failed", "reason_code": "worker_start_failed", "cycle": slow_cycle}
+            return {"outcome_status": "scheduled", "reason_code": "projection_worker_started", "cycle": slow_cycle}
+        return {"outcome_status": "completed", "reason_code": "snapshot_recorded", "cycle": slow_cycle}
+
+    def _project_guarded(self, slow_cycle: int) -> None:
+        try:
+            self._project(slow_cycle)
+        finally:
+            with self._lock:
+                self._worker_pending = False
 
     def prompt_fragment(self) -> str:
         if not self._trajectory: return ""

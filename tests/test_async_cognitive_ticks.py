@@ -17,6 +17,9 @@ from cognition.generative_aspiration_engine import (
 from cognition.aspirational_synthesis_engine import (
     SYNTHESIS_EVERY_N, AspirationalSynthesisEngine,
 )
+from cognition.temporal_projection import PROJECTION_EVERY_N, TemporalProjection
+from cognition.temporal_self_projection import PROJECT_EVERY_N, TemporalSelfProjection
+from cognition.structural_coupling import COUPLING_EVERY_N, StructuralCoupling
 
 
 class _DeferredThread:
@@ -201,6 +204,62 @@ class AsyncCognitiveTickTests(unittest.TestCase):
         self.assertEqual(len(_DeferredThread.workers), 1)
         _DeferredThread.workers[0].target(*_DeferredThread.workers[0].args)
         self.assertFalse(engine._worker_pending)
+
+    def test_temporal_projection_tick_is_single_flight_and_receipted(self):
+        engine = TemporalProjection.__new__(TemporalProjection)
+        engine._lock = threading.Lock()
+        engine._worker_pending = False
+        engine._last_worker_cycle = None
+        engine._run_projections = lambda cycle: None
+
+        with patch("cognition.temporal_projection.threading.Thread", _DeferredThread):
+            off_cycle = engine.tick(1)
+            first = engine.tick(PROJECTION_EVERY_N)
+            second = engine.tick(PROJECTION_EVERY_N * 2)
+
+        self.assertEqual(off_cycle["reason_code"], "projection_cadence_not_due")
+        self.assertEqual(first["outcome_status"], "scheduled")
+        self.assertEqual(second["reason_code"], "projection_already_running")
+        self.assertEqual(len(_DeferredThread.workers), 1)
+        _DeferredThread.workers[0].target(*_DeferredThread.workers[0].args)
+        self.assertFalse(engine._worker_pending)
+
+    def test_temporal_self_projection_tick_is_single_flight_and_receipted(self):
+        engine = TemporalSelfProjection.__new__(TemporalSelfProjection)
+        engine._lock = threading.Lock()
+        engine._worker_pending = False
+        engine._last_worker_cycle = None
+        engine._record_snapshot = lambda cycle: None
+        engine._project = lambda cycle: None
+
+        with patch("cognition.temporal_self_projection.threading.Thread", _DeferredThread):
+            first = engine.tick(PROJECT_EVERY_N)
+            second = engine.tick(PROJECT_EVERY_N * 2)
+
+        self.assertEqual(first["outcome_status"], "scheduled")
+        self.assertEqual(second["reason_code"], "projection_already_running")
+        self.assertEqual(len(_DeferredThread.workers), 1)
+        _DeferredThread.workers[0].target(*_DeferredThread.workers[0].args)
+        self.assertFalse(engine._worker_pending)
+
+    def test_structural_coupling_tick_is_single_flight_and_receipted(self):
+        coupling = StructuralCoupling.__new__(StructuralCoupling)
+        coupling._lock = threading.Lock()
+        coupling._worker_pending = False
+        coupling._last_worker_cycle = None
+        coupling._push = lambda: None
+
+        with patch("cognition.structural_coupling.threading.Thread", _DeferredThread):
+            off_cycle = coupling.tick(1)
+            first = coupling.tick(COUPLING_EVERY_N)
+            second = coupling.tick(COUPLING_EVERY_N * 2)
+
+        self.assertEqual(off_cycle["reason_code"], "coupling_cadence_not_due")
+        self.assertEqual(first["outcome_status"], "scheduled")
+        self.assertEqual(second["reason_code"], "coupling_already_running")
+        self.assertEqual(len(_DeferredThread.workers), 1)
+        _DeferredThread.workers[0].target(*_DeferredThread.workers[0].args)
+        self.assertFalse(coupling._worker_pending)
 
 
 if __name__ == "__main__":

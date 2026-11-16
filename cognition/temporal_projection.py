@@ -174,6 +174,8 @@ class TemporalProjection:
         self._ai        = ai_system
         self._path      = Path(path)
         self._lock      = threading.Lock()
+        self._worker_pending = False
+        self._last_worker_cycle: Optional[int] = None
         self._log:      List[Dict] = []
         self._active:   Dict[str, ProjectionResult] = {}
         self._load()
@@ -184,16 +186,36 @@ class TemporalProjection:
 
     # ── Public API ────────────────────────────────────────────────────────────
 
-    def tick(self, slow_cycle: int) -> None:
+    def tick(self, slow_cycle: int) -> Dict[str, Any]:
         """Called every slow cycle from InternalThoughtLoop."""
         if slow_cycle % PROJECTION_EVERY_N != 0 or slow_cycle == 0:
-            return
-        threading.Thread(
-            target=self._run_projections,
-            args=(slow_cycle,),
-            daemon=True,
-            name="tp-project",
-        ).start()
+            return {"outcome_status": "skipped", "reason_code": "projection_cadence_not_due", "cycle": slow_cycle}
+        with self._lock:
+            if self._worker_pending:
+                return {"outcome_status": "skipped", "reason_code": "projection_already_running", "cycle": slow_cycle}
+            self._worker_pending = True
+            self._last_worker_cycle = slow_cycle
+        try:
+            worker = threading.Thread(
+                target=self._run_projections_guarded,
+                args=(slow_cycle,),
+                daemon=True,
+                name="tp-project",
+            )
+            worker.start()
+        except Exception:
+            with self._lock:
+                self._worker_pending = False
+            logger.exception("[TemporalProjection] worker start failed")
+            return {"outcome_status": "failed", "reason_code": "worker_start_failed", "cycle": slow_cycle}
+        return {"outcome_status": "scheduled", "reason_code": "projection_worker_started", "cycle": slow_cycle}
+
+    def _run_projections_guarded(self, slow_cycle: int) -> None:
+        try:
+            self._run_projections(slow_cycle)
+        finally:
+            with self._lock:
+                self._worker_pending = False
 
     def preferred_action_type(self) -> Optional[str]:
         """

@@ -56,15 +56,38 @@ class StructuralCoupling:
         self._ai       = ai_system
         self._path     = Path(path)
         self._lock     = threading.Lock()
+        self._worker_pending = False
+        self._last_worker_cycle: Optional[int] = None
         self._sent:    List[Dict] = []
         self._received: List[Dict] = []
         self._load()
         logger.info(f"[StructuralCoupling] Init — "
                     f"{len(self._sent)} sent, {len(self._received)} received")
 
-    def tick(self, slow_cycle: int) -> None:
-        if slow_cycle % COUPLING_EVERY_N != 0 or slow_cycle == 0: return
-        threading.Thread(target=self._push, daemon=True, name="sc-push").start()
+    def tick(self, slow_cycle: int) -> Dict[str, Any]:
+        if slow_cycle % COUPLING_EVERY_N != 0 or slow_cycle == 0:
+            return {"outcome_status": "skipped", "reason_code": "coupling_cadence_not_due", "cycle": slow_cycle}
+        with self._lock:
+            if self._worker_pending:
+                return {"outcome_status": "skipped", "reason_code": "coupling_already_running", "cycle": slow_cycle}
+            self._worker_pending = True
+            self._last_worker_cycle = slow_cycle
+        try:
+            worker = threading.Thread(target=self._push_guarded, args=(slow_cycle,), daemon=True, name="sc-push")
+            worker.start()
+        except Exception:
+            with self._lock:
+                self._worker_pending = False
+            logger.exception("[StructuralCoupling] worker start failed")
+            return {"outcome_status": "failed", "reason_code": "worker_start_failed", "cycle": slow_cycle}
+        return {"outcome_status": "scheduled", "reason_code": "coupling_worker_started", "cycle": slow_cycle}
+
+    def _push_guarded(self, slow_cycle: int) -> None:
+        try:
+            self._push()
+        finally:
+            with self._lock:
+                self._worker_pending = False
 
     def receive_update(self, update: Dict) -> None:
         """

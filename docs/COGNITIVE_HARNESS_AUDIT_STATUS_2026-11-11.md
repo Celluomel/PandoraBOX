@@ -2879,3 +2879,13 @@ Lecture du port local après le push `000a129` : Lumina répond `ready=true`, in
 La télémétrie de but reste cohérente et distincte du snapshot collé plus tôt : `knowledge integration` à `2/4`, étape suivante `bisociative_hypothesis`, dernier reçu `self_question: success` au cycle `11844`. Il y a donc une progression enregistrée récente; le contenu et la qualité de la prochaine hypothèse ne sont pas encore évalués.
 
 Le commit local et `origin/main` sont identiques : `000a12992648453db2b9963c5bbebc2550c0d0c5`. Des modifications locales préexistantes Body, pages et outils restent hors du commit d’audit; elles n’ont pas été incorporées dans ces commits sélectifs. Les correctifs actuels attendent encore un seul redémarrage groupé pour la preuve live. La progression du plan reste **2/10 = 20 %** jusqu’à validation des reçus chargés, de leurs sauvegardes et de leurs effets aval.
+
+### Projections temporelles et couplage épistémique — single-flight — 16 novembre 2026
+
+Trois autres ticks lançaient des threads à chaque cycle dû sans vérifier si le calcul précédent était encore actif : `TemporalProjection` (toutes les 50 cycles), `TemporalSelfProjection` (100 cycles) et `StructuralCoupling` (90 cycles). Une passe longue pouvait donc chevaucher la suivante. Le tick ne renvoyait aucune preuve distinguant une cadence non due, une réservation déjà occupée, un lancement réussi ou un échec de lancement.
+
+**Correction locale :** chaque producteur réserve un seul worker sous verrou, libère la réservation dans `finally`, renvoie un reçu compact avec cycle et statut, et libère aussi la réservation si la création du thread échoue. Le test garde le worker en attente, vérifie qu’un second worker n’est pas lancé, puis confirme la libération après exécution.
+
+**Validation locale :** les six suites ciblées passent **158 tests**, avec 9 avertissements de dépendances existants. Ce sous-ensemble couvre les ticks asynchrones, le journal, le prompt d’auto-description, les preuves de cycle interne, la planification d’intentions et les régressions santé. Cela valide le comportement de réservation et de reçu, pas la pertinence sémantique des projections ni l’effet d’une mise à jour envoyée à Flux.
+
+Ce lot est local et doit être commité/poussé sélectivement avec le rapport; les autres modifications préexistantes du workspace restent hors stage. Il attend le même redémarrage groupé que les lots précédents. Le score global demeure **2/10 = 20 %** : aucune piste n’est close par la seule preuve de programmation d’un worker.
