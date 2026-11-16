@@ -194,6 +194,7 @@ class CrossLayerFeedback:
         self._ai       = ai_system
         self._path     = Path(path)
         self._lock     = threading.Lock()
+        self._run_pending = False
         self._log:     List[Dict] = []
         # Contextual drive boosts (decayed each feedback cycle)
         self._drive_boosts: Dict[str, float] = {}
@@ -205,16 +206,40 @@ class CrossLayerFeedback:
 
     # ── Public API ────────────────────────────────────────────────────────────
 
-    def tick(self, slow_cycle: int) -> None:
+    def tick(self, slow_cycle: int) -> Dict[str, Any]:
         """Run all feedback channels. Called from InternalThoughtLoop."""
         if slow_cycle % FEEDBACK_EVERY_N != 0 or slow_cycle == 0:
-            return
-        threading.Thread(
-            target=self._run_all,
-            args=(slow_cycle,),
-            daemon=True,
-            name="clf-feedback",
-        ).start()
+            return self._tick_receipt(slow_cycle, "skipped", "feedback_cadence_not_due")
+        with self._lock:
+            if self._run_pending:
+                return self._tick_receipt(slow_cycle, "skipped", "feedback_already_running")
+            self._run_pending = True
+        try:
+            threading.Thread(
+                target=self._run_all_scheduled,
+                args=(slow_cycle,), daemon=True, name="clf-feedback",
+            ).start()
+        except Exception:
+            with self._lock:
+                self._run_pending = False
+            return self._tick_receipt(slow_cycle, "failed", "worker_start_failed")
+        return self._tick_receipt(slow_cycle, "scheduled", "feedback_worker_started")
+
+    @staticmethod
+    def _tick_receipt(cycle: int, status: str, reason: str) -> Dict[str, Any]:
+        return {
+            "cycle": int(cycle),
+            "outcome_status": status,
+            "reason_code": reason,
+            "worker_scheduled": status == "scheduled",
+        }
+
+    def _run_all_scheduled(self, slow_cycle: int) -> None:
+        try:
+            self._run_all(slow_cycle)
+        finally:
+            with self._lock:
+                self._run_pending = False
 
     def status(self) -> Dict:
         return {

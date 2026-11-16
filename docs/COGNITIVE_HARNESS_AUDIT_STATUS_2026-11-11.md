@@ -2850,6 +2850,14 @@ L’audit périodique démarrait un nouveau worker à chaque cycle multiple de 4
 
 **Correction locale :** verrouillage sous `_lock` avant la création du worker, libération dans un wrapper `finally`, remise à zéro si `Thread.start()` échoue, et reçu de tick qui distingue `audit_cadence_not_due`, `audit_already_running` et `audit_worker_started`. Le chemin d’évaluation d’essai retourne lui aussi un reçu de programmation; aucune valeur de signal ni texte de proposition n’est ajoutée au registre.
 
-**Vérification locale mise à jour :** six suites ciblées (ticks async, journal de modules, auto-description, cycle interne, planification, régressions santé) — **150 tests passés**, 9 avertissements connus; compilation Python et `git diff --check` réussissent. Test ajouté : deux cycles dus pendant un worker retenu ne créent qu’un seul worker, et sa fin libère le garde.
+**Vérification locale mise à jour :** six suites ciblées (ticks async, journal de modules, auto-description, cycle interne, planification, régressions santé) — **152 tests passés**, 9 avertissements connus; compilation Python et `git diff --check` réussissent. Test ajouté : deux cycles dus pendant un worker retenu ne créent qu’un seul worker, et sa fin libère le garde.
 
 Ce lot est encore local; il s’ajoute aux corrections précédemment poussées. L’instance active continue de fonctionner avec l’ancien code et n’a pas été redémarrée. Progression globale inchangée : **2/10 = 20 %** jusqu’au chargement groupé et à la vérification des sorties réelles.
+
+### CausalMechanismModel et CrossLayerFeedback — single-flight des producteurs amont — 16 novembre 2026
+
+Les deux producteurs du cycle causal avaient le même mode d’exécution asynchrone sans réservation : le modèle causal recalculait ses signatures à sa cadence, et le feedback inter-couches lançait ses quatre canaux toutes les huit cycles. Si une passe prenait plus longtemps que son intervalle, le cycle en lançait une autre. Les ticks ne disaient pas non plus si le traitement avait été différé ou programmé.
+
+**Correction locale :** les deux ticks retournent maintenant un reçu codé (cycle, statut, raison, worker programmé); un seul worker peut être en vol, et la réservation est libérée dans `finally` ou si le thread ne démarre pas. Les tests maintiennent un worker en attente et vérifient le rejet du lancement suivant.
+
+**Validation :** les six suites cognitives ciblées totalisent maintenant **152 passés**, 9 avertissements historiques; le sous-ensemble async seul passe 5 tests. `py_compile` et `git diff --check` passent. Ces deux derniers fichiers et leur test sont dans le prochain commit local; ils ne sont pas chargés dans l’instance Lumina active. La validation de l’effet des signatures causales sur les plans et des quatre écritures de feedback reste à faire après chargement.

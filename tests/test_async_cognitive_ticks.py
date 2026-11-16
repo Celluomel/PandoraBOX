@@ -6,6 +6,8 @@ from unittest.mock import patch
 from cognition.introspective_observer import IntrospectiveObserver
 from cognition.counterfactual_simulator import CounterfactualSimulator
 from cognition.cognitive_audit_engine import AuditState, CognitiveAuditEngine
+from cognition.causal_mechanism_model import CAUSAL_EVERY_N, CausalMechanismModel
+from cognition.cross_layer_feedback import FEEDBACK_EVERY_N, CrossLayerFeedback
 
 
 class _DeferredThread:
@@ -93,6 +95,44 @@ class AsyncCognitiveTickTests(unittest.TestCase):
         worker = _DeferredThread.workers[0]
         worker.target(*worker.args)
         self.assertFalse(engine._audit_in_progress)
+
+    def test_causal_mechanism_tick_is_single_flight_and_receipted(self):
+        model = CausalMechanismModel.__new__(CausalMechanismModel)
+        model._lock = threading.Lock()
+        model._run_pending = False
+        model._run = lambda: None
+        due = CAUSAL_EVERY_N
+
+        with patch("cognition.causal_mechanism_model.threading.Thread", _DeferredThread):
+            off_cycle = model.tick(1)
+            first = model.tick(due)
+            second = model.tick(due * 2)
+
+        self.assertEqual(off_cycle["reason_code"], "causal_cadence_not_due")
+        self.assertEqual(first["outcome_status"], "scheduled")
+        self.assertEqual(second["reason_code"], "analysis_already_running")
+        self.assertEqual(len(_DeferredThread.workers), 1)
+        _DeferredThread.workers[0].target(*_DeferredThread.workers[0].args)
+        self.assertFalse(model._run_pending)
+
+    def test_cross_layer_feedback_tick_is_single_flight_and_receipted(self):
+        feedback = CrossLayerFeedback.__new__(CrossLayerFeedback)
+        feedback._lock = threading.Lock()
+        feedback._run_pending = False
+        feedback._run_all = lambda cycle: None
+        due = FEEDBACK_EVERY_N
+
+        with patch("cognition.cross_layer_feedback.threading.Thread", _DeferredThread):
+            off_cycle = feedback.tick(1)
+            first = feedback.tick(due)
+            second = feedback.tick(due * 2)
+
+        self.assertEqual(off_cycle["reason_code"], "feedback_cadence_not_due")
+        self.assertEqual(first["outcome_status"], "scheduled")
+        self.assertEqual(second["reason_code"], "feedback_already_running")
+        self.assertEqual(len(_DeferredThread.workers), 1)
+        _DeferredThread.workers[0].target(*_DeferredThread.workers[0].args)
+        self.assertFalse(feedback._run_pending)
 
 
 if __name__ == "__main__":

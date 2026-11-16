@@ -75,13 +75,44 @@ class CausalMechanismModel:
         self._ai       = ai_system
         self._path     = Path(path)
         self._lock     = threading.Lock()
+        self._run_pending = False
         self._sigs:    Dict[str, CausalSignature] = {}
         self._load()
         logger.info(f"[CausalMechanism] Init — {len(self._sigs)} signatures")
 
-    def tick(self, slow_cycle: int) -> None:
-        if slow_cycle % CAUSAL_EVERY_N != 0 or slow_cycle == 0: return
-        threading.Thread(target=self._run, daemon=True, name="cm-run").start()
+    def tick(self, slow_cycle: int) -> Dict[str, Any]:
+        if slow_cycle % CAUSAL_EVERY_N != 0 or slow_cycle == 0:
+            return self._tick_receipt(slow_cycle, "skipped", "causal_cadence_not_due")
+        with self._lock:
+            if self._run_pending:
+                return self._tick_receipt(slow_cycle, "skipped", "analysis_already_running")
+            self._run_pending = True
+        try:
+            threading.Thread(
+                target=self._run_scheduled, args=(slow_cycle,),
+                daemon=True, name="cm-run",
+            ).start()
+        except Exception:
+            with self._lock:
+                self._run_pending = False
+            return self._tick_receipt(slow_cycle, "failed", "worker_start_failed")
+        return self._tick_receipt(slow_cycle, "scheduled", "analysis_worker_started")
+
+    @staticmethod
+    def _tick_receipt(cycle: int, status: str, reason: str) -> Dict[str, Any]:
+        return {
+            "cycle": int(cycle),
+            "outcome_status": status,
+            "reason_code": reason,
+            "worker_scheduled": status == "scheduled",
+        }
+
+    def _run_scheduled(self, slow_cycle: int) -> None:
+        try:
+            self._run()
+        finally:
+            with self._lock:
+                self._run_pending = False
 
     def get_signature(self, action_type: str) -> Optional[CausalSignature]:
         return self._sigs.get(action_type)
