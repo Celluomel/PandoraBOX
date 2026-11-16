@@ -502,11 +502,16 @@ class MemorySystemFallbackTests(unittest.TestCase):
         prior_prompt = {"memory_type": "user_message", "text": query, "relevance": 1.0}
         source = {
             "memory_type": "user_message",
-            "text": "Pour l’audit du harnais cognitif, définis les modules par scénario puis vérifie leurs sorties et effets en aval.",
+            "text": "Pour la manière de conduire l’audit du harnais cognitif, tu m’as demandé de poursuivre, corriger les causes et vérifier les effets en aval.",
             "relevance": 0.82,
         }
+        same_topic_but_wrong_instruction = {
+            "memory_type": "user_message",
+            "text": "Audit technique: donne une phrase sur la fonction du harnais cognitif. Aucune recherche web et aucune action externe.",
+            "relevance": 1.0,
+        }
 
-        result = explicit_recall_source_result(query, [prior_prompt, source])
+        result = explicit_recall_source_result(query, [prior_prompt, same_topic_but_wrong_instruction, source])
 
         self.assertEqual(result["status"], "supported_verbatim_source")
         self.assertIn(source["text"], result["answer"])
@@ -515,11 +520,16 @@ class MemorySystemFallbackTests(unittest.TestCase):
     def test_source_only_french_recall_abstains_when_no_relevant_source_remains(self):
         query = "Rappelle uniquement ce que je t’ai demandé concernant la manière de conduire l’audit du harnais cognitif."
         prior_prompt = {"memory_type": "user_message", "text": query, "relevance": 1.0}
-        filtered = filter_recall_query_records([prior_prompt], query=query)
+        topic_neighbor = {
+            "memory_type": "user_message",
+            "text": "Audit technique: donne une phrase sur la fonction du harnais cognitif.",
+            "relevance": 1.0,
+        }
+        filtered = filter_recall_query_records([prior_prompt, topic_neighbor], query=query)
 
-        self.assertEqual(filtered, [])
+        self.assertEqual(filtered, [topic_neighbor])
         result = explicit_recall_abstention_result(query, filtered)
-        self.assertEqual(result["status"], "abstained_no_source")
+        self.assertEqual(result["status"], "abstained_insufficient_source_match")
 
     def test_explicit_recall_discards_prior_recall_prompt_self_matches(self):
         repeated_recall = {

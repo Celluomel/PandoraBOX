@@ -114,6 +114,13 @@ _MEMORY_STORE_INSTRUCTION_PATTERNS = (
     re.compile(r"\bsouviens-toi\s+que\b", re.IGNORECASE),
 )
 
+_SOURCE_ONLY_RECALL_PATTERN = re.compile(
+    r"\b(?:rappelle(?:-moi)?|rappeler)\s+"
+    r"(?:uniquement|seulement)\s+ce\s+que\s+je\s+t['’]ai\s+"
+    r"(?:demand[ée](?:e|s|es)?|dit(?:e|es)?|formul[ée](?:e|es)?)\b",
+    re.IGNORECASE,
+)
+
 _DIRECT_RECALL_PATTERNS = (
     re.compile(r"\b(?:do|did|can|could|will|would)\s+you\s+(?:remember|recall)\b", re.IGNORECASE),
     re.compile(r"\bwhat\s+(?:do|did|have|has|can)\s+you\s+(?:remember|recall)\b", re.IGNORECASE),
@@ -443,12 +450,7 @@ def explicit_recall_source_result(
     # when the user did not literally ask for an exact quote. Return the
     # retrieved user statement verbatim instead of letting generation invent
     # a polished paraphrase of a historical instruction.
-    asks_source_only_recall = bool(re.search(
-        r"\b(?:rappelle(?:-moi)?|rappeler)\s+"
-        r"(?:uniquement|seulement)\s+ce\s+que\s+je\s+t['’]ai\s+"
-        r"(?:demand[ée](?:e|s|es)?|dit(?:e|es)?|formul[ée](?:e|es)?)\b",
-        recall_clause, re.IGNORECASE,
-    ))
+    asks_source_only_recall = bool(_SOURCE_ONLY_RECALL_PATTERN.search(recall_clause))
     if not asks_exact_text and not asks_source_only_recall:
         return None
 
@@ -464,6 +466,14 @@ def explicit_recall_source_result(
         overlap = len(focus & source_terms)
         if overlap < 2:
             continue
+        if asks_source_only_recall:
+            # Source-only recall needs stronger topic coverage than ordinary
+            # semantic retrieval. A same-topic message that merely mentions
+            # "audit / harness / cognitive" is not proof of the requested
+            # instruction's content.
+            coverage = overlap / max(1, len(focus))
+            if coverage < 0.8:
+                continue
         try:
             relevance = max(0.0, min(1.0, float(memory.get("relevance", 0.0))))
         except (TypeError, ValueError, OverflowError):
@@ -504,6 +514,15 @@ def explicit_recall_abstention_result(
     """
     if not is_explicit_memory_recall_query(query):
         return None
+    if _SOURCE_ONLY_RECALL_PATTERN.search(str(query or "")):
+        if explicit_recall_source_result(query, memories) is None:
+            return {
+                "answer": "Je n’ai pas retrouvé de source utilisateur suffisamment précise pour restituer cette consigne sans la déformer.",
+                "status": "abstained_insufficient_source_match",
+                "source_ref": None,
+                "source_type": None,
+                "relevance": None,
+            }
     eligible = [
         item for item in memories
         if str(item.get("memory_type", "")).casefold() in {"user_message", "episodic"}
