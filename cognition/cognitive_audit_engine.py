@@ -19,20 +19,20 @@ propose change → experiment → measure → retain.
 
 Architecture
 ────────────
-  CognitiveAuditEngine reads three candidate performance signals every AUDIT_EVERY_N
-  slow cycles (~80 min):
+  CognitiveAuditEngine collects diagnostic signals every AUDIT_EVERY_N slow
+  cycles (~80 min). It currently has no validated performance targets:
 
-    1. epistemic_grounding_rate  — ratio of evidence-grounded belief updates
+    1. epistemic_grounding_rate — compatibility screen over reflection outputs;
+       not an independent truth check.
        Source: AutonomousReflectionEngine._epistemic._recent_grounding_rate()
-       Target: ≥ 0.60.  Low → beliefs form faster than evidence can support.
 
-    2. question_resolution_rate — resolved / (resolved + unresolvable)
+    2. question_resolution_rate — resolved / (resolved + unresolvable), where
+       "resolved" is assigned from the answering LLM's self-reported confidence.
        Source: ResolutionEngine._state
-       Target: ≥ 0.50.  Low → questions accumulate without closure.
 
-    3. mean_skill_depth — average depth score across known skills
+    3. mean_skill_depth — average depth score across known skills; depth is
+       derived from practice-count thresholds, not a direct ability test.
        Source: SkillRegistry._skills
-       Target: ≥ 1.0.  Low → competencies stay surface-level.
 
   Mean belief confidence is retained as a descriptive diagnostic only. Without
   matching confidence values to independently verified correctness, raising
@@ -40,9 +40,9 @@ Architecture
   Experiment confirmation and resolution rates are also descriptive; neither
   establishes the cognitive quality of the underlying hypotheses.
 
-  When a signal falls below its target for TWO consecutive audits
-  (not just one — transient dips are expected), the engine flags it as
-  a confirmed underperformance and generates a DevelopmentProposal.
+  These values remain descriptive until independent, predeclared outcome
+  measures are implemented. No deficit or self-tuning proposal is currently
+  authorized from them.
 
 Proposal generation
 ────────────────────
@@ -129,9 +129,8 @@ DISCONFIRM_THRESHOLD    = 0.05  # signal degraded by ≥5% of target to disconfi
 
 # ── Signal targets (the values we are aiming for) ─────────────────────────────
 SIGNAL_TARGETS = {
-    "epistemic_grounding_rate":     0.60,
-    "question_resolution_rate":     0.50,
-    "mean_skill_depth":             1.00,
+    # Intentionally empty: the current observations are diagnostics, not
+    # independently verified measures of cognitive quality.
 }
 
 # ── Cognitive parameter space (name → (default, min, max, type)) ──────────────
@@ -491,11 +490,18 @@ class CognitiveAuditEngine:
                     if isinstance(snap, dict) else "unavailable",
                 }
                 for name in (
+                    "epistemic_grounding_rate",
                     "experiment_confirmation_rate",
                     "experiment_resolution_rate",
+                    "question_resolution_rate",
+                    "mean_skill_depth",
                     "belief_confidence_mean",
                 )
             },
+            "performance_target_count": len(SIGNAL_TARGETS),
+            "performance_target_status": (
+                "none_validated" if not SIGNAL_TARGETS else "active"
+            ),
             "active_trial": trial,
             "trial_evaluation_in_progress": getattr(self, "_trial_evaluation_in_progress", False),
             "proposal_attempt_count": int(self._state.proposal_attempt_total),
@@ -506,10 +512,17 @@ class CognitiveAuditEngine:
 
     @staticmethod
     def _snapshot_signal_status(snapshot: Dict[str, Any]) -> Dict[str, str]:
-        """Explain whether each audit metric was measured or why it was absent."""
+        """Explain whether each diagnostic metric was measured or absent."""
         recorded = snapshot.get("signal_status", {}) if isinstance(snapshot, dict) else {}
         result = {}
-        for name in SIGNAL_TARGETS:
+        for name in (
+            "epistemic_grounding_rate",
+            "experiment_confirmation_rate",
+            "experiment_resolution_rate",
+            "question_resolution_rate",
+            "mean_skill_depth",
+            "belief_confidence_mean",
+        ):
             status = recorded.get(name) if isinstance(recorded, dict) else None
             if status:
                 result[name] = str(status)[:48]
@@ -572,7 +585,10 @@ class CognitiveAuditEngine:
                 elif deficits:
                     logger.info("[CognitiveAudit] ✅ All measurable actionable signals on target")
                 else:
-                    logger.info("[CognitiveAudit] No measurable signals available")
+                    logger.info(
+                        "[CognitiveAudit] No validated performance targets; "
+                        "descriptive diagnostics retained, no tuning permitted"
+                    )
                 self._save()
                 return
 
@@ -642,6 +658,11 @@ class CognitiveAuditEngine:
     def _update_consecutive_underperformance(self, snapshot: SignalSnapshot) -> None:
         deficits = snapshot.deficit()
         with self._lock:
+            # Discard persisted streaks from proxy metrics. They cannot justify
+            # an automatic parameter trial under the current evidence contract.
+            for name in list(self._state.consecutive_under):
+                if name not in SIGNAL_TARGETS:
+                    self._state.consecutive_under.pop(name, None)
             # A missing sample breaks a consecutive run. Keeping the previous
             # count across an unavailable interval lets one old under-target
             # reading combine with a much later reading and falsely satisfy
@@ -657,10 +678,6 @@ class CognitiveAuditEngine:
                     )
                 else:
                     self._state.consecutive_under[name] = 0
-            # These legacy counters represented unvalidated proxy targets.
-            # They are descriptive now and must not trigger parameter tuning.
-            self._state.consecutive_under.pop("experiment_confirmation_rate", None)
-            self._state.consecutive_under.pop("belief_confidence_mean", None)
 
     # ── Signal reading ────────────────────────────────────────────────────────
 
@@ -1177,11 +1194,9 @@ Respond ONLY in JSON (no markdown, no preamble):
                     )),
                     consecutive_under  = data.get("consecutive_under", {}),
                 )
-                # v48 used support/confirmation rate as a deficit signal.
-                # Keep its historical measurements, but discard the stale
-                # underperformance streak because that metric is descriptive.
-                self._state.consecutive_under.pop("experiment_confirmation_rate", None)
-                self._state.consecutive_under.pop("belief_confidence_mean", None)
+                # Historical streaks came from proxy metrics and cannot justify
+                # automatic tuning under the current evidence contract.
+                self._state.consecutive_under = {}
         except Exception as e:
             logger.warning(f"[CognitiveAudit] Load failed (using defaults): {e}")
 
@@ -1211,8 +1226,7 @@ Respond ONLY in JSON (no markdown, no preamble):
             if len(self._state.trial_log) > MAX_TRIAL_LOG:
                 self._state.trial_log = self._state.trial_log[-MAX_TRIAL_LOG:]
             self._state.active_trial = None
-            if dimension in SIGNAL_TARGETS:
-                self._state.consecutive_under[dimension] = 0
+            self._state.consecutive_under[dimension] = 0
             attempt = {
                 "slow_cycle": int(self._state.last_audit_cycle or 0),
                 "timestamp": time.time(),

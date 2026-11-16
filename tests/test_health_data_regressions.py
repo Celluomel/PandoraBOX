@@ -39,10 +39,7 @@ class HealthDataTests(unittest.TestCase):
             experiment_confirmation_rate=None,
         ))
 
-        self.assertEqual(audit._state.consecutive_under['mean_skill_depth'], 9)
-        self.assertEqual(audit._state.consecutive_under['question_resolution_rate'], 0)
-        self.assertNotIn('experiment_confirmation_rate', audit._state.consecutive_under)
-        self.assertNotIn('belief_confidence_mean', audit._state.consecutive_under)
+        self.assertEqual(audit._state.consecutive_under, {})
 
     def test_cognitive_audit_waits_briefly_for_llm_slot_and_exposes_skip_reason(self):
         audit = CognitiveAuditEngine.__new__(CognitiveAuditEngine)
@@ -133,14 +130,8 @@ class HealthDataTests(unittest.TestCase):
             audit._run_audit(200)
 
         self.assertIsNone(audit._state.active_trial)
-        self.assertEqual(audit._state.proposal_attempt_total, 1)
-        self.assertEqual(
-            audit._state.last_proposal_attempt['status'],
-            'no_causally_mapped_parameter',
-        )
-        self.assertEqual(
-            audit._state.last_proposal_attempt['dimension'], 'mean_skill_depth',
-        )
+        self.assertEqual(audit._state.proposal_attempt_total, 0)
+        self.assertEqual(audit._state.consecutive_under, {})
 
     def test_cognitive_audit_counts_active_trial_and_rolls_back_legacy_mismatch(self):
         audit = CognitiveAuditEngine.__new__(CognitiveAuditEngine)
@@ -250,9 +241,7 @@ class HealthDataTests(unittest.TestCase):
             'mean_skill_depth': 'no_observations',
             'belief_confidence_mean': 'no_observations',
         })
-        self.assertEqual(snapshot.deficit(), {
-            'epistemic_grounding_rate': 0.8 - 0.6,
-        })
+        self.assertEqual(snapshot.deficit(), {})
         self.assertIsNone(snapshot.worst_signal())
 
     def test_audit_uses_recent_conclusive_outcomes_and_excludes_pending_experiments(self):
@@ -308,6 +297,9 @@ class HealthDataTests(unittest.TestCase):
 
         status = audit.status_summary()
 
+        self.assertEqual(status['performance_target_count'], 0)
+        self.assertEqual(status['performance_target_status'], 'none_validated')
+
         self.assertEqual(
             status['signal_measurement_status']['mean_skill_depth'],
             'measured_legacy_snapshot',
@@ -345,7 +337,9 @@ class HealthDataTests(unittest.TestCase):
 
         status = audit.status_summary()
 
-        self.assertEqual(status['worst_signal_now'], 'mean_skill_depth')
+        self.assertIsNone(status['worst_signal_now'])
+        self.assertEqual(status['performance_target_count'], 0)
+        self.assertEqual(status['performance_target_status'], 'none_validated')
         self.assertNotIn('experiment_confirmation_rate', status['non_actionable_signals'])
         self.assertEqual(
             status['descriptive_metrics']['experiment_confirmation_rate']['value'], 0.0,
