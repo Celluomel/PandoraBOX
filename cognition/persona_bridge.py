@@ -4701,35 +4701,38 @@ Memory honesty — two distinct cases:
                 if not isinstance(_ws_mode, str):
                     _ws_mode = 'always' if _ws_mode else 'off'
                 _do_search = False
+                _search_skip_status = ""
+                _search_judged = False
                 if suppress_external_search:
-                    self._record_turn_stage("external_research", "skipped_by_policy")
+                    _search_skip_status = "skipped_by_policy"
                     logger.debug("Web search suppressed for latency-safe or closed-world turn.")
                 elif self._explicit_search_opt_out(user_input):
                     # A per-turn user instruction takes precedence over the
                     # persistent "always" preference.  The mode controls the
                     # default; it must not override an explicit refusal to use
                     # external research for this answer.
-                    self._record_turn_stage(
-                        "external_research", "skipped_explicit_user_opt_out",
-                    )
+                    _search_skip_status = "skipped_explicit_user_opt_out"
                     logger.info("Web search suppressed by explicit user instruction.")
                 elif "[Cognitive telemetry - factual self-report]" in system_prompt:
-                    self._record_turn_stage("external_research", "skipped_factual_self_report")
+                    _search_skip_status = "skipped_factual_self_report"
                     logger.debug("Web search suppressed for factual cognitive self-report.")
                 elif not self._research or _ws_mode == 'off':
-                    self._record_turn_stage("external_research", "disabled")
+                    _search_skip_status = "disabled"
                     # Closed-world mode must never call the LLM search
                     # classifier as a side effect of an ordinary chat turn.
                     logger.debug("Web search disabled; skipping search judge.")
                 elif _ws_mode == 'always':
                     # "Always" still avoids unrelated searches on a
                     # conversational continuation.
+                    _is_resume = self._is_conversation_resume(user_input)
+                    _search_judged = _is_resume
                     _do_search = (
                         True
-                        if not self._is_conversation_resume(user_input)
+                        if not _is_resume
                         else self._llm_should_search(user_input)
                     )
                 else:  # auto
+                    _search_judged = True
                     _do_search = self._llm_should_search(user_input)
                 logger.info(f"🔍 web search mode={_ws_mode!r} → do_search={_do_search}")
                 if _do_search:
@@ -4745,8 +4748,12 @@ Memory honesty — two distinct cases:
                         )
                     else:
                         self._record_turn_stage("external_research", "no_results")
-                elif not suppress_external_search and self._research and _ws_mode != 'off':
+                elif _search_skip_status:
+                    self._record_turn_stage("external_research", _search_skip_status)
+                elif _search_judged:
                     self._record_turn_stage("external_research", "judge_skipped_search")
+                elif self._research and _ws_mode != 'off':
+                    self._record_turn_stage("external_research", "policy_skipped_search")
             except Exception as _we:
                 self._record_turn_stage("external_research", "failed", str(_we))
                 logger.warning(f"Web search injection failed: {_we}")
