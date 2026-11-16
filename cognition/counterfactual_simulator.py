@@ -90,6 +90,8 @@ class CounterfactualSimulator:
         self._organism = organism
         self._lock     = threading.Lock()
         self._run_guard = threading.Lock()
+        self._schedule_lock = threading.Lock()
+        self._run_pending = False
         self._log:     List[Dict] = []
         self._path     = Path(SAVE_PATH)
         self._last_run_cycle: int = -CF_INTERVAL_CYCLES  # fire on first eligible cycle
@@ -108,21 +110,47 @@ class CounterfactualSimulator:
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
-    def tick(self, slow_cycle: int) -> None:
+    def tick(self, slow_cycle: int) -> Dict[str, Any]:
         """Called every slow cycle from InternalLoop. Runs analysis on
         consolidation cycles only, gated by interval and data readiness."""
         is_consolidation = (slow_cycle % 5 == 0 and slow_cycle > 0)
         if not is_consolidation:
-            return
+            return self._tick_receipt(slow_cycle, "skipped", "not_consolidation_cycle")
         if slow_cycle - self._last_run_cycle < CF_INTERVAL_CYCLES:
-            return
+            return self._tick_receipt(slow_cycle, "skipped", "interval_not_due")
 
-        threading.Thread(
-            target=self._run,
-            args=(slow_cycle,),
-            daemon=True,
-            name="cf-simulator",
-        ).start()
+        with self._schedule_lock:
+            if self._run_pending:
+                return self._tick_receipt(slow_cycle, "skipped", "analysis_already_running")
+            self._run_pending = True
+        try:
+            threading.Thread(
+                target=self._run_scheduled,
+                args=(slow_cycle,),
+                daemon=True,
+                name="cf-simulator",
+            ).start()
+        except Exception:
+            with self._schedule_lock:
+                self._run_pending = False
+            return self._tick_receipt(slow_cycle, "failed", "worker_start_failed")
+        return self._tick_receipt(slow_cycle, "scheduled", "analysis_worker_started")
+
+    @staticmethod
+    def _tick_receipt(cycle: int, status: str, reason: str) -> Dict[str, Any]:
+        return {
+            "cycle": int(cycle),
+            "outcome_status": status,
+            "reason_code": reason,
+            "worker_scheduled": status == "scheduled",
+        }
+
+    def _run_scheduled(self, slow_cycle: int) -> None:
+        try:
+            self._run(slow_cycle)
+        finally:
+            with self._schedule_lock:
+                self._run_pending = False
 
     def recent_findings(self, n: int = 5) -> List[Dict]:
         """Return n most recent query results for prompt injection / dashboard."""
