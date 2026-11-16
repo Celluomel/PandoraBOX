@@ -108,6 +108,12 @@ class LongHorizonPlanner:
         self._ai       = ai_system
         self._path     = self._resolve_path(path)
         self._lock     = threading.Lock()
+        # Background planning can call the LLM and take longer than one slow
+        # cycle. Keep an explicit reservation so the loop cannot enqueue the
+        # same work on every tick while the first worker is still running.
+        self._jobs_lock = threading.Lock()
+        self._pending_goal_plan_ids: set[str] = set()
+        self._aspiration_plan_pending = False
         self._plans:   Dict[str, Plan] = {}
         self._reasoner = None
         self._self_report_grounding_until = 0.0
@@ -138,8 +144,8 @@ class LongHorizonPlanner:
                 logger.warning("[LongHorizonPlanner] plan store migration failed: %s", exc)
         return scoped
 
-    def tick(self, slow_cycle: int) -> None:
-        self._synchronize_goal_plans()
+    def tick(self, slow_cycle: int) -> Dict[str, Any]:
+        synchronized = self._synchronize_goal_plans()
         # Aspiration plans must remain autonomous.  A recovery step labelled
         # ``social`` is an internal perspective-taking/prosociality probe, not
         # a request to wait indefinitely for a user message.  Execute it from
@@ -152,6 +158,9 @@ class LongHorizonPlanner:
         # highest-priority live goal in the background so the chain is visible
         # and persistent even between user turns.
         goal_engine = self._goal_engine()
+        goal_plans_scheduled = 0
+        goal_plans_pending = 0
+        goal_plan_schedule_status = "not_needed"
         if goal_engine is not None:
             try:
                 active_goals = goal_engine.get_active_goals(min_activation=0.10) or []
@@ -159,24 +168,93 @@ class LongHorizonPlanner:
                     goal for goal in active_goals[:2]
                     if f"goal:{getattr(goal, 'id', '')}" not in self._plans
                 ]
-                if missing:
-                    threading.Thread(
-                        target=self._prepare_goal_plans,
-                        args=(missing,),
-                        daemon=True,
-                        name="lhp-goal-plan",
-                    ).start()
+                reserved: List[Any] = []
+                with self._jobs_lock:
+                    for goal in missing:
+                        goal_id = str(getattr(goal, "id", ""))
+                        if goal_id and goal_id not in self._pending_goal_plan_ids:
+                            self._pending_goal_plan_ids.add(goal_id)
+                            reserved.append(goal)
+                    goal_plans_scheduled = len(reserved)
+                    goal_plans_pending = len(self._pending_goal_plan_ids)
+                if reserved:
+                    goal_plan_schedule_status = "schedule_failed"
+                    worker = threading.Thread(
+                        target=self._prepare_goal_plans_job,
+                        args=(reserved,), daemon=True, name="lhp-goal-plan",
+                    )
+                    try:
+                        worker.start()
+                        goal_plans_scheduled = len(reserved)
+                        goal_plan_schedule_status = "scheduled"
+                    except Exception:
+                        with self._jobs_lock:
+                            self._pending_goal_plan_ids.difference_update(
+                                str(getattr(goal, "id", "")) for goal in reserved
+                            )
+                            goal_plans_pending = len(self._pending_goal_plan_ids)
+                        raise
+                elif missing:
+                    goal_plan_schedule_status = "already_pending"
+                goal_plans_pending = len(self._pending_goal_plan_ids)
             except Exception as exc:
                 logger.debug("[LongHorizonPlanner] goal plan preparation unavailable: %s", exc)
+                goal_plan_schedule_status = f"schedule_failed:{type(exc).__name__}"
         has_aspiration_plan = any(
             plan.source == "aspiration" and plan.status == "active"
             for plan in self._plans.values()
         )
         # Bootstrap an empty/legacy store immediately. Once an aspiration plan
         # exists, retain the deliberately slow long-horizon planning cadence.
-        if slow_cycle == 0 or (has_aspiration_plan and slow_cycle % PLAN_EVERY_N != 0):
-            return
-        threading.Thread(target=self._run, daemon=True, name="lhp-plan").start()
+        cadence_due = not has_aspiration_plan or slow_cycle % PLAN_EVERY_N == 0
+        aspiration_status = "cadence_deferred"
+        if not cadence_due:
+            aspiration_status = "cadence_deferred"
+        else:
+            with self._jobs_lock:
+                already_pending = self._aspiration_plan_pending
+                if not already_pending:
+                    self._aspiration_plan_pending = True
+            if already_pending:
+                aspiration_status = "already_pending"
+            else:
+                worker = threading.Thread(
+                    target=self._run_planning_job,
+                    args=(slow_cycle,), daemon=True, name="lhp-plan",
+                )
+                try:
+                    worker.start()
+                    aspiration_status = "scheduled"
+                except Exception as exc:
+                    with self._jobs_lock:
+                        self._aspiration_plan_pending = False
+                    aspiration_status = f"schedule_failed:{type(exc).__name__}"
+
+        return {
+            "cycle": int(slow_cycle),
+            "outcome_status": "completed",
+            "goal_plans_synchronized": int(synchronized),
+            "goal_plans_scheduled": goal_plans_scheduled,
+            "goal_plans_pending": goal_plans_pending,
+            "goal_plan_schedule_status": goal_plan_schedule_status,
+            "aspiration_planning": aspiration_status,
+            "aspiration_plan_exists": has_aspiration_plan,
+        }
+
+    def _prepare_goal_plans_job(self, goals: List[Any]) -> None:
+        goal_ids = [str(getattr(goal, "id", "")) for goal in goals]
+        try:
+            self._prepare_goal_plans(goals)
+        finally:
+            with self._jobs_lock:
+                self._pending_goal_plan_ids.difference_update(goal_ids)
+
+    def _run_planning_job(self, slow_cycle: int) -> None:
+        try:
+            self._run()
+        finally:
+            with self._jobs_lock:
+                self._aspiration_plan_pending = False
 
     def _execute_autonomous_social_step(self) -> None:
         """Report recovery probes that have no executor without inventing success.

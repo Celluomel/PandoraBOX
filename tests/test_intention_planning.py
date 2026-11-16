@@ -159,6 +159,75 @@ class IntentionPlanningTests(unittest.TestCase):
                  "creative", "technical", "emotional"},
             )
 
+    def test_tick_reserves_goal_plan_work_until_worker_finishes(self):
+        with tempfile.TemporaryDirectory() as folder:
+            planner, _, _ = self._planner(folder)
+            planner._organism.aspirational_self = None
+            planner._plans["existing-aspiration"] = Plan(
+                aspiration_domain="existing-aspiration", steps=[PlanStep(
+                    sequence=0, action_type="analytical", operation="memory_recall",
+                    expected_cost=0.03, expected_gain=0.02,
+                )], resource_reserve=0.22, revision_trigger=0.25, horizon=1,
+                source="aspiration",
+            )
+            goals = [
+                NS(id="goal-a", topic="first", status="active"),
+                NS(id="goal-b", topic="second", status="active"),
+            ]
+            planner._ai = NS(goal_engine=NS(
+                get_active_goals=lambda min_activation=0.10: goals,
+            ))
+            workers = []
+
+            class DeferredThread:
+                def __init__(self, target, args=(), **kwargs):
+                    self.target, self.args = target, args
+                    workers.append(self)
+
+                def start(self):
+                    return None
+
+            with patch("cognition.long_horizon_planner.threading.Thread", DeferredThread):
+                first = planner.tick(21)
+                second = planner.tick(22)
+
+            self.assertEqual(first["goal_plans_scheduled"], 2)
+            self.assertEqual(second["goal_plans_scheduled"], 0)
+            self.assertEqual(second["goal_plans_pending"], 2)
+            self.assertEqual(len(workers), 1)
+
+            workers[0].target(*workers[0].args)
+            third = planner.tick(23)
+            self.assertEqual(third["goal_plans_pending"], 0)
+            self.assertEqual(third["goal_plans_scheduled"], 0)
+
+    def test_tick_bootstraps_aspiration_once_while_worker_is_pending(self):
+        with tempfile.TemporaryDirectory() as folder:
+            planner, _, _ = self._planner(folder)
+            workers = []
+
+            class DeferredThread:
+                def __init__(self, target, args=(), **kwargs):
+                    self.target, self.args = target, args
+                    workers.append(self)
+
+                def start(self):
+                    return None
+
+            with patch("cognition.long_horizon_planner.threading.Thread", DeferredThread):
+                first = planner.tick(21)
+                second = planner.tick(22)
+
+            self.assertEqual(first["aspiration_planning"], "scheduled")
+            self.assertEqual(second["aspiration_planning"], "already_pending")
+            aspiration_workers = [w for w in workers if w.args == (21,)]
+            self.assertEqual(len(aspiration_workers), 1)
+
+            aspiration_workers[0].target(*aspiration_workers[0].args)
+            third = planner.tick(23)
+            self.assertEqual(third["aspiration_planning"], "cadence_deferred")
+            self.assertTrue(third["aspiration_plan_exists"])
+
     def test_trace_reports_active_goal_plan_separately_from_persistent_aspiration(self):
         with tempfile.TemporaryDirectory() as folder:
             planner, _, _ = self._planner(folder)
