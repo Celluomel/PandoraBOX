@@ -3,6 +3,7 @@ import ast
 import json
 import sys
 import tempfile
+import time
 import unittest
 from contextlib import nullcontext
 from pathlib import Path
@@ -353,6 +354,28 @@ class HealthDataTests(unittest.TestCase):
         self.assertEqual(
             status['descriptive_metrics']['belief_confidence_mean']['value'], 0.72,
         )
+
+    def test_audit_summary_marks_old_proposal_attempt_as_historical(self):
+        now = time.time()
+        audit = CognitiveAuditEngine.__new__(CognitiveAuditEngine)
+        audit._state = AuditState(
+            last_audit_cycle=12080,
+            last_proposal_attempt={
+                'slow_cycle': 12040,
+                'timestamp': now - 5400,
+                'status': 'no_causally_mapped_parameter',
+            },
+            proposal_attempt_total=63,
+        )
+        audit._lock = __import__('threading').Lock()
+        audit._process_started_at = now - 500
+        audit._trial_evaluation_in_progress = False
+
+        status = audit.status_summary()
+
+        self.assertEqual(status['last_proposal_attempt_process_scope'], 'persisted_before_process')
+        self.assertEqual(status['last_proposal_attempt_audit_relation'], 'older_than_latest_audit')
+        self.assertGreaterEqual(status['last_proposal_attempt_age_seconds'], 5400)
 
     def test_projection_restores_nested_paths_and_skips_bad_entry(self):
         path = dict(archetype='intensive', cumulative_cost=0.2,

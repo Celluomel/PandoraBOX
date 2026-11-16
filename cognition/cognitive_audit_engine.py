@@ -427,6 +427,8 @@ class CognitiveAuditEngine:
             trial = self._state.active_trial
             total_audits = len(self._state.snapshot_log)
             total_trials = len(self._state.trial_log)
+            last_proposal_attempt = dict(self._state.last_proposal_attempt or {})
+            latest_audit_cycle = int(self._state.last_audit_cycle or 0)
             confirmed_trials = sum(
                 1 for t in self._state.trial_log if t.get("outcome") == "confirmed"
             )
@@ -437,6 +439,31 @@ class CognitiveAuditEngine:
         snapshot_age = (
             max(0.0, time.time() - snapshot_timestamp)
             if snapshot_timestamp is not None else None
+        )
+        try:
+            proposal_timestamp = float(last_proposal_attempt.get("timestamp"))
+        except (TypeError, ValueError, OverflowError):
+            proposal_timestamp = None
+        proposal_age = (
+            max(0.0, time.time() - proposal_timestamp)
+            if proposal_timestamp is not None else None
+        )
+        attempt_cycle = last_proposal_attempt.get("slow_cycle")
+        process_started_at = getattr(self, "_process_started_at", None)
+        attempt_scope = (
+            "unavailable" if not last_proposal_attempt else
+            "persisted_or_unknown" if proposal_timestamp is None else
+            "current_process" if isinstance(process_started_at, (int, float))
+            and proposal_timestamp >= process_started_at else
+            "persisted_or_unknown" if not isinstance(process_started_at, (int, float)) else
+            "persisted_before_process"
+        )
+        attempt_relation = (
+            "no_attempt" if not last_proposal_attempt else
+            "same_as_latest_audit" if attempt_cycle == latest_audit_cycle else
+            "older_than_latest_audit" if isinstance(attempt_cycle, int)
+            and attempt_cycle < latest_audit_cycle else
+            "cycle_unknown"
         )
         worst = None
         worst_actionable = None
@@ -462,7 +489,8 @@ class CognitiveAuditEngine:
             "last_snapshot_age_seconds": round(snapshot_age, 1) if snapshot_age is not None else None,
             "last_snapshot_process_scope": (
                 "current_process" if snapshot_timestamp is not None
-                and snapshot_timestamp >= self._process_started_at
+                and isinstance(process_started_at, (int, float))
+                and snapshot_timestamp >= process_started_at
                 else "persisted_or_unknown" if snap else "unavailable"
             ),
             "last_audit_cycle": self._state.last_audit_cycle,
@@ -505,7 +533,12 @@ class CognitiveAuditEngine:
             "active_trial": trial,
             "trial_evaluation_in_progress": getattr(self, "_trial_evaluation_in_progress", False),
             "proposal_attempt_count": int(self._state.proposal_attempt_total),
-            "last_proposal_attempt": dict(self._state.last_proposal_attempt or {}),
+            "last_proposal_attempt": last_proposal_attempt,
+            "last_proposal_attempt_age_seconds": (
+                round(proposal_age, 1) if proposal_age is not None else None
+            ),
+            "last_proposal_attempt_process_scope": attempt_scope,
+            "last_proposal_attempt_audit_relation": attempt_relation,
             "committed_params": dict(self._state.committed_params),
             "consecutive_under": dict(self._state.consecutive_under),
         }
