@@ -97,7 +97,9 @@ class PromptContextInfluenceTests(unittest.TestCase):
     def test_relevant_self_correction_has_reserved_budget_before_identity_history(self):
         with tempfile.TemporaryDirectory() as directory:
             budget = PromptContextBudget(str(Path(directory) / "contributions.json"))
-            budget.add("factual_telemetry", "long_horizon_plan", "p" * 1280)
+            # The full current planner self-report is ~347 tokens; it must be
+            # retained before lower-priority context consumes the global cap.
+            budget.add("factual_telemetry", "long_horizon_plan", "p" * 1388)
             budget.add("self_evidence", "grounded_identity", "e" * 480)
             budget.add("self_state", "self_model_moment", "s" * 720)
             budget.add("self_correction", "self_correction", "c" * 480)

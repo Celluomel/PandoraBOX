@@ -75,7 +75,10 @@ CHARS_PER_TOKEN = 4
 
 CATEGORY_BUDGETS: Dict[str, Tuple[int, int]] = {
     # category → (token_budget, priority)  lower priority = higher priority number
-    "factual_telemetry":  (320, 0),
+    # The live planner self-report is about 350 tokens. Keep the full
+    # authoritative snapshot instead of silently rejecting it at 320 tokens.
+    # Priority 0 lets it reserve space before lower-priority narrative context.
+    "factual_telemetry":  (420, 0),
     "self_evidence":      (120, 1),
     # Self-model, experiential signals, interrupts, and temporal context are
     # independent producers. Their compact forms need to coexist; the former

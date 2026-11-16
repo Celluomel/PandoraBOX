@@ -3576,6 +3576,19 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         "cognitive_prompt_context", "completed",
                         output=organism_block, turn_id=audit_turn_id,
                     )
+                    has_factual_plan_context = (
+                        "[Cognitive telemetry - factual self-report]" in organism_block
+                    )
+                    self._record_turn_stage(
+                        "planner_self_report_context",
+                        "injected" if has_factual_plan_context else "not_selected",
+                        output={
+                            "factual_plan_context_included": has_factual_plan_context,
+                            "context_chars": len(organism_block),
+                        },
+                        consumes=("cognitive_prompt_context",),
+                        turn_id=audit_turn_id,
+                    )
                 except Exception as exc:
                     self._record_turn_stage(
                         "cognitive_prompt_context", "failed", str(exc),
