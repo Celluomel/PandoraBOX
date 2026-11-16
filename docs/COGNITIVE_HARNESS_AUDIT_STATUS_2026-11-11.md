@@ -2929,3 +2929,13 @@ Les scores lexicaux du modèle Flux et la qualité des révisions LLM ne sont pa
 **Validation locale :** huit suites ciblées, dont grounding de réflexion, tests async, traces de cycle, objectifs et mémoire, passent **170 tests**, 9 avertissements historiques; compilation et `git diff --check` passent. Le test vérifie qu’un worker différé ne bloque pas le tick, qu’un second ne démarre pas et que l’absence d’enregistrement est rapportée comme skip.
 
 Cela corrige un blocage du cycle interne, mais pas la qualité des réflexions : les sorties doivent encore être confrontées à des snapshots représentatifs et à leurs effets réels sur identité, workspace, curiosité et mémoire. Le score de clôture demeure **2/10 = 20 %** jusqu’à validation live groupée et évaluation sémantique.
+
+### AutonomousExperimentationEngine — évaluation et génération hors du slow cycle — 16 novembre 2026
+
+`AutonomousExperimentationEngine.tick()` évaluait l’expérience active et pouvait appeler le LLM pour générer une expérience directement depuis le slow cycle. Comme l’évaluation a elle-même une cadence de cinq cycles, un appel lent ou une génération pouvait retarder d’autres traitements cognitifs, et le tick ne disait pas si une expérience avait effectivement été créée ou évaluée.
+
+**Correction locale :** le tick réserve un unique worker pour l’évaluation/génération et retourne immédiatement; les cycles arrivant pendant le worker sont explicitement différés. La fin enregistre dans le cycle d’origine si l’évaluation a ajouté un résultat, si une expérience a été créée et si une expérience reste active. Le test maintient le worker en attente pour vérifier que le slow tick ne bloque pas et qu’aucun doublon n’est lancé.
+
+**Validation locale :** les huit suites ciblées passent **171 tests**, 9 avertissements historiques; compilation et vérification de diff passent. Ces tests valident l’ordonnancement et les reçus, pas la qualité des hypothèses générées ni la causalité des résultats d’expérience.
+
+La progression globale demeure **2/10 = 20 %** jusqu’au redémarrage groupé, puis jusqu’à l’analyse live des effets sur les objectifs, croyances, identité et réponses.

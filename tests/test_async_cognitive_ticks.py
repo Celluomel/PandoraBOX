@@ -27,6 +27,7 @@ from cognition.cognitive_immune_system import IMMUNE_EVERY_N, CognitiveImmuneSys
 from cognition.flux_mind_model import UPDATE_EVERY_N, FluxMindModel
 from cognition.contradiction_belief_reviser import REVISION_EVERY_N, ContradictionBeliefReviser
 from cognition.autonomous_reflection import EVOLUTION_EVERY_N, AutonomousReflectionEngine
+from cognition.autonomous_experimentation import EVALUATE_EVERY_N, AutonomousExperimentationEngine
 
 
 class _DeferredThread:
@@ -473,6 +474,31 @@ class AsyncCognitiveTickTests(unittest.TestCase):
         _DeferredThread.workers[0].target(*_DeferredThread.workers[0].args)
         self.assertFalse(engine._worker_pending)
         self.assertEqual(completions[0][0][:3], (EVOLUTION_EVERY_N, "autonomous_reflection.worker", "skipped"))
+
+    def test_autonomous_experimentation_dispatch_is_single_flight_and_nonblocking(self):
+        engine = AutonomousExperimentationEngine.__new__(AutonomousExperimentationEngine)
+        engine._lock = threading.RLock()
+        engine._tick_worker_pending = False
+        engine._state = SimpleNamespace(total_experiments=0, experiment_log=[], active_experiment=None)
+        completions = []
+        recorder = lambda *args, **kwargs: completions.append((args, kwargs))
+        engine._o = SimpleNamespace(_loop=SimpleNamespace(record_async_cycle_stage=recorder))
+        engine._run_tick_work = lambda cycle: {
+            "outcome_status": "skipped", "reason_code": "no_experiment_effect",
+            "evaluation_recorded": False, "experiment_created": False,
+        }
+
+        with patch("cognition.autonomous_experimentation.threading.Thread", _DeferredThread):
+            off_cycle = engine.tick(1)
+            first = engine.tick(EVALUATE_EVERY_N)
+            second = engine.tick(EVALUATE_EVERY_N * 2)
+
+        self.assertEqual(off_cycle["reason_code"], "experiment_cadence_not_due")
+        self.assertEqual(first["outcome_status"], "scheduled")
+        self.assertEqual(second["reason_code"], "experiment_worker_running")
+        _DeferredThread.workers[0].target(*_DeferredThread.workers[0].args)
+        self.assertFalse(engine._tick_worker_pending)
+        self.assertEqual(completions[0][0][:3], (EVALUATE_EVERY_N, "autonomous_experimentation.worker", "skipped"))
 
 
 if __name__ == "__main__":

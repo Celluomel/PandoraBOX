@@ -181,6 +181,7 @@ class AutonomousExperimentationEngine:
         self._ai   = ai_system
         self._path = Path(path)
         self._lock = threading.RLock()
+        self._tick_worker_pending = False
         self._state = ExperimentState()
         self._load()
         logger.info(
@@ -191,36 +192,91 @@ class AutonomousExperimentationEngine:
 
     # ── Public API ────────────────────────────────────────────────────────────
 
-    def tick(self, slow_cycle: int) -> None:
-        """Drive experiment lifecycle from slow cycle. Non-fatal."""
+    def tick(self, slow_cycle: int) -> Dict[str, Any]:
+        """Schedule experiment lifecycle work without blocking the slow cycle."""
+        if slow_cycle % EVALUATE_EVERY_N != 0 and not (
+            slow_cycle % GENERATE_EVERY_N == 0 and slow_cycle > 0
+        ):
+            return {"outcome_status": "skipped", "reason_code": "experiment_cadence_not_due", "cycle": slow_cycle}
+        with self._lock:
+            if self._tick_worker_pending:
+                return {"outcome_status": "skipped", "reason_code": "experiment_worker_running", "cycle": slow_cycle}
+            self._tick_worker_pending = True
         try:
-            # Check if active experiment needs evaluation
-            if slow_cycle % EVALUATE_EVERY_N == 0:
-                self._evaluate_active()
+            worker = threading.Thread(
+                target=self._tick_worker_guarded, args=(slow_cycle,),
+                daemon=True, name="auto-experiment-tick",
+            )
+            worker.start()
+        except Exception:
+            with self._lock:
+                self._tick_worker_pending = False
+            logger.exception("[AutoExperiment] worker start failed")
+            return {"outcome_status": "failed", "reason_code": "worker_start_failed", "cycle": slow_cycle}
+        return {"outcome_status": "scheduled", "reason_code": "experiment_work_started", "cycle": slow_cycle}
 
-            # Generate new experiment if none active
-            if slow_cycle % GENERATE_EVERY_N == 0 and slow_cycle > 0:
-                with self._lock:
-                    has_active = (
-                        self._state.active_experiment is not None
-                        and self._state.active_experiment.get("outcome") == "pending"
-                    )
-                if not has_active:
-                    # v50: gate check — experiments cost cognitive_energy;
-                    # don't start one when the system is already depleted.
-                    _gate_ok = True
-                    try:
-                        from core.state import state as _st
-                        _org  = getattr(getattr(_st, 'persona', None), '_organism', None)
-                        _gate = getattr(_org, 'behavior_gate', None) if _org else None
-                        if _gate:
-                            _gate_ok = _gate.may_start_experiment()
-                    except Exception:
-                        pass
-                    if _gate_ok:
-                        self._generate_experiment(slow_cycle)
+    def _tick_worker_guarded(self, slow_cycle: int) -> None:
+        try:
+            outcome = self._run_tick_work(slow_cycle)
+            loop = getattr(self._o, "_loop", None)
+            recorder = getattr(loop, "record_async_cycle_stage", None)
+            if callable(recorder):
+                recorder(slow_cycle, "autonomous_experimentation.worker", outcome["outcome_status"], output=outcome)
         except Exception as e:
-            logger.debug(f"[AutoExperiment] tick error (non-fatal): {e}")
+            logger.debug(f"[AutoExperiment] tick worker error (non-fatal): {e}")
+            loop = getattr(self._o, "_loop", None)
+            recorder = getattr(loop, "record_async_cycle_stage", None)
+            if callable(recorder):
+                recorder(
+                    slow_cycle, "autonomous_experimentation.worker", "failed",
+                    output={"outcome_status": "failed", "reason_code": "experiment_worker_error"},
+                    error_type=type(e).__name__,
+                )
+        finally:
+            with self._lock:
+                self._tick_worker_pending = False
+
+    def _run_tick_work(self, slow_cycle: int) -> Dict[str, Any]:
+        before_total = int(self._state.total_experiments)
+        before_log = len(self._state.experiment_log)
+        evaluated = False
+        if slow_cycle % EVALUATE_EVERY_N == 0:
+            self._evaluate_active()
+            evaluated = len(self._state.experiment_log) > before_log
+
+        if slow_cycle % GENERATE_EVERY_N == 0 and slow_cycle > 0:
+            with self._lock:
+                has_active = (
+                    self._state.active_experiment is not None
+                    and self._state.active_experiment.get("outcome") == "pending"
+                )
+            if not has_active:
+                gate_ok = True
+                try:
+                    from core.state import state as _st
+                    org = getattr(getattr(_st, "persona", None), "_organism", None)
+                    gate = getattr(org, "behavior_gate", None) if org else None
+                    if gate:
+                        gate_ok = gate.may_start_experiment()
+                except Exception:
+                    pass
+                if gate_ok:
+                    self._generate_experiment(slow_cycle)
+
+        with self._lock:
+            after_total = int(self._state.total_experiments)
+            active = self._state.active_experiment
+            active_pending = bool(active and active.get("outcome") == "pending")
+            interactions = int(active.get("interactions_run", 0)) if active else 0
+        generated = after_total > before_total
+        return {
+            "outcome_status": "completed" if evaluated or generated else "skipped",
+            "reason_code": "experiment_evaluated_or_created" if evaluated or generated else "no_experiment_effect",
+            "evaluation_recorded": evaluated,
+            "experiment_created": generated,
+            "active_experiment_pending": active_pending,
+            "interactions_recorded": interactions,
+        }
 
     def record_interaction(
         self,
