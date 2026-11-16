@@ -2979,3 +2979,11 @@ Le diagnostic live `no_return_unverified` était au niveau module, alors que les
 **Validation locale :** `tests/test_module_tick_log.py` passe **18 tests**, dont deux nouveaux cas : une méthode auxiliaire `None` ne masque plus le reçu de `begin_cycle`, et une erreur d’une méthode ne détruit pas la sortie d’une autre. Ce changement n’est pas encore chargé dans le processus Lumina actuellement en marche; le vérifier dans l’API live demandera le prochain redémarrage groupé prévu, pas un redémarrage supplémentaire maintenant.
 
 Le progrès strict de clôture reste **2/10 = 20 %** : la télémétrie permet désormais une attribution correcte par méthode après chargement, mais elle ne prouve toujours pas la qualité cognitive ni les effets en aval. Prochaine étape : exploiter les sorties par méthode pour séparer contrats à retour, appels de mutation sans reçu et vrais défauts d’exécution; puis vérifier l’exposition dans l’API et les traces de cycle après redémarrage groupé.
+
+### Observateur continu de l'audit — 16 novembre 2026
+
+La collecte de preuves ne dépend plus d'une interrogation manuelle après chaque redémarrage. `scripts/watch_cognitive_harness_audit.py` lit périodiquement l'endpoint local en lecture seule, historise les compteurs et résumés de sorties des modules/méthodes ainsi que les reçus récents par cycle, puis calcule les deltas de ticks, erreurs et modules modifiés. Il n'envoie aucun tour de chat et ne change aucun état du harnais. `Watch_Cognitive_Audit.bat` lance l'observateur en continu; Ctrl+C l'arrête.
+
+**Vérification de bout en bout :** le mode `--once` a lu Lumina sur `127.0.0.1:8080`, écrit `logs/cognitive_harness_audit.jsonl` et rapporté le cycle **11974**, **43/43 modules**, **4767 ticks**, **0 erreur**. L'observateur est volontairement distinct du processus Lumina et peut tourner sans le redémarrer. Les nouvelles sorties `method_results` n'apparaîtront dans l'endpoint qu'après le prochain redémarrage groupé, mais l'historisation live peut commencer dès maintenant.
+
+La progression stricte de clôture reste **2/10 = 20 %** : la continuité de collecte et l'attribution par méthode sont maintenant instrumentées et testées, mais il faut encore valider la sortie par scénario et ses effets cognitifs en aval. Le suivi automatique fournit des preuves longitudinales; il ne remplace pas cette évaluation sémantique.
