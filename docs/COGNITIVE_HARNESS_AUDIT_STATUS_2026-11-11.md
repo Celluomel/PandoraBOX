@@ -3205,3 +3205,15 @@ Deux demandes envoyées via `/api/interface/chat` ont vérifié le nouveau routa
 **Limite de la preuve :** `effect_measured=false` et `success_criteria_status=unverified`. Le système a effectivement exécuté et persisté l'opération, puis avancé l'étape; cela ne prouve pas encore que l'insight était exact ou qu'il a amélioré la compréhension. Le résultat enregistré porte sur un possible biais de confirmation; sa pertinence par rapport au but actif « ongoing cognitive » reste à examiner comme prochaine piste de qualité cognitive.
 
 Bilan de cette étape : routage, contexte factuel et réponse concordent dans deux formulations linguistiques; le témoin CI générique est rejeté par les tests. Les 105 tests ciblés passent localement. Le code et ce rapport sont poussés sur GitHub dans `8e77e9c`. La clôture globale reste **2/10 = 20 %**; l'effet utile de l'opération sur le but et les autres scénarios représentatifs restent ouverts.
+
+### Mesure de la boucle de recherche cognitive — 16 novembre 2026
+
+L’inspection live du `CognitiveAuditEngine` a révélé une métrique mal définie : `experiment_confirmation_rate` était comparé à une cible de performance. Cela pénalisait la réfutation d’une hypothèse et confondait confirmation avec qualité de recherche. Les journaux montrent en outre qu’aucun paramètre n’est causalement mappé à cette métrique; les propositions répétées « no_causally_mapped_parameter » ne pouvaient donc pas conduire à une amélioration valide.
+
+Correction locale : le taux de confirmation reste une statistique descriptive; une nouvelle statistique `experiment_resolution_rate` compte les hypothèses confirmées ou réfutées parmi les essais finalisés. Les essais inconclusifs restent non résolus. L’ancien compteur de déficit est supprimé au chargement et au recalcul; aucun paramètre n’est ajusté sans lien causal validé. Les compteurs d’essais sont exposés comme descriptifs, séparés des signaux de performance.
+
+Une erreur de test a également été corrigée : `_evaluate_trial_once` est un worker asynchrone et doit contenir les exceptions, enregistrer l’échec, puis libérer le single-flight guard. Le test attendait à tort une propagation synchrone.
+
+Vérification locale : suites ciblées cognitive audit / essais / ticks asynchrones / causalité : **50 tests passés**; compilation Python et `git diff --check` passent. Le processus Lumina courant n’a pas chargé cette correction; elle sera validée au prochain redémarrage groupé. Aucune modification de paramètre n’est revendiquée.
+
+Clôture globale inchangée : **2/10 = 20 %**. Cette correction rend le chercheur cognitif moins trompeur, mais ne prouve pas encore que ses hypothèses prédisent une amélioration réelle. Prochaine étape : examiner la génération et l’évaluation des hypothèses, vérifier que les essais mesurent un critère pertinent défini avant l’essai, et comparer l’effet à une baseline sans mutation.

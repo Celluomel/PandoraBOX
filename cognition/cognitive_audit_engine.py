@@ -31,10 +31,10 @@ Architecture
        Source: AutonomousReflectionEngine._epistemic._recent_grounding_rate()
        Target: ≥ 0.60.  Low → beliefs form faster than evidence can support.
 
-    2. experiment_confirmation_rate — confirmed / total experiments run
-       Source: AutonomousExperimentationEngine._state
-       Target: ≥ 0.40.  Low → hypotheses are poorly chosen or tests are
-                               too short to resolve.
+    2. experiment_resolution_rate — confirmed or disconfirmed / finalized
+       experiments. An inconclusive result is unresolved; a disconfirmation
+       is still a successful research outcome. The separate confirmation
+       fraction is descriptive and has no performance target.
 
     3. question_resolution_rate — resolved / (resolved + unresolvable)
        Source: ResolutionEngine._state
@@ -138,7 +138,6 @@ DISCONFIRM_THRESHOLD    = 0.05  # signal degraded by ≥5% of target to disconfi
 # ── Signal targets (the values we are aiming for) ─────────────────────────────
 SIGNAL_TARGETS = {
     "epistemic_grounding_rate":     0.60,
-    "experiment_confirmation_rate": 0.40,
     "question_resolution_rate":     0.50,
     "mean_skill_depth":             1.00,
     "belief_confidence_mean":       0.50,
@@ -189,6 +188,7 @@ class SignalSnapshot:
     signal_sample_count:           Dict[str, int] = field(default_factory=dict)
     epistemic_grounding_rate:      Optional[float] = None
     experiment_confirmation_rate:  Optional[float] = None
+    experiment_resolution_rate:    Optional[float] = None
     question_resolution_rate:     Optional[float] = None
     mean_skill_depth:              Optional[float] = None
     belief_confidence_mean:        Optional[float] = None
@@ -197,6 +197,7 @@ class SignalSnapshot:
         return {
             "epistemic_grounding_rate":     self.epistemic_grounding_rate,
             "experiment_confirmation_rate": self.experiment_confirmation_rate,
+            "experiment_resolution_rate":    self.experiment_resolution_rate,
             "question_resolution_rate":     self.question_resolution_rate,
             "mean_skill_depth":             self.mean_skill_depth,
             "belief_confidence_mean":       self.belief_confidence_mean,
@@ -490,6 +491,16 @@ class CognitiveAuditEngine:
             "signal_sample_count": (
                 dict(snap.get("signal_sample_count", {})) if isinstance(snap, dict) else {}
             ),
+            "descriptive_metrics": {
+                name: {
+                    "value": snap.get(name) if isinstance(snap, dict) else None,
+                    "sample_count": (snap.get("signal_sample_count") or {}).get(name, 0)
+                    if isinstance(snap, dict) else 0,
+                    "status": (snap.get("signal_status") or {}).get(name, "unavailable")
+                    if isinstance(snap, dict) else "unavailable",
+                }
+                for name in ("experiment_confirmation_rate", "experiment_resolution_rate")
+            },
             "active_trial": trial,
             "trial_evaluation_in_progress": getattr(self, "_trial_evaluation_in_progress", False),
             "proposal_attempt_count": int(self._state.proposal_attempt_total),
@@ -651,6 +662,10 @@ class CognitiveAuditEngine:
                     )
                 else:
                     self._state.consecutive_under[name] = 0
+            # This legacy counter represented support rate, not research
+            # quality. It is descriptive now and must never accumulate a
+            # performance deficit that can trigger a tuning proposal.
+            self._state.consecutive_under.pop("experiment_confirmation_rate", None)
 
     # ── Signal reading ────────────────────────────────────────────────────────
 
@@ -691,17 +706,26 @@ class CognitiveAuditEngine:
                     if item.get("outcome") in {"confirmed", "disconfirmed", "inconclusive"}
                 ][-10:]
                 snap.signal_sample_count["experiment_confirmation_rate"] = len(completed)
+                snap.signal_sample_count["experiment_resolution_rate"] = len(completed)
                 if completed:
                     snap.experiment_confirmation_rate = sum(
                         1 for item in completed if item.get("outcome") == "confirmed"
                     ) / len(completed)
+                    snap.experiment_resolution_rate = sum(
+                        1 for item in completed
+                        if item.get("outcome") in {"confirmed", "disconfirmed"}
+                    ) / len(completed)
                     status["experiment_confirmation_rate"] = "measured"
+                    status["experiment_resolution_rate"] = "measured"
                 else:
                     status["experiment_confirmation_rate"] = "no_observations"
+                    status["experiment_resolution_rate"] = "no_observations"
             else:
                 status["experiment_confirmation_rate"] = "source_unavailable"
+                status["experiment_resolution_rate"] = "source_unavailable"
         except Exception as exc:
             status["experiment_confirmation_rate"] = f"read_error:{type(exc).__name__}"
+            status["experiment_resolution_rate"] = f"read_error:{type(exc).__name__}"
 
         # 3. Question resolution rate
         try:
@@ -767,6 +791,7 @@ class CognitiveAuditEngine:
             f"[CognitiveAudit] Signals @ cycle {slow_cycle}: "
             f"grounding={_fmt(snap.epistemic_grounding_rate)} "
             f"exp_conf={_fmt(snap.experiment_confirmation_rate)} "
+            f"exp_resolved={_fmt(snap.experiment_resolution_rate)} "
             f"q_res={_fmt(snap.question_resolution_rate)} "
             f"skill_depth={_fmt(snap.mean_skill_depth)} "
             f"belief_conf={_fmt(snap.belief_confidence_mean)}"
@@ -1157,6 +1182,10 @@ Respond ONLY in JSON (no markdown, no preamble):
                     )),
                     consecutive_under  = data.get("consecutive_under", {}),
                 )
+                # v48 used support/confirmation rate as a deficit signal.
+                # Keep its historical measurements, but discard the stale
+                # underperformance streak because that metric is descriptive.
+                self._state.consecutive_under.pop("experiment_confirmation_rate", None)
         except Exception as e:
             logger.warning(f"[CognitiveAudit] Load failed (using defaults): {e}")
 

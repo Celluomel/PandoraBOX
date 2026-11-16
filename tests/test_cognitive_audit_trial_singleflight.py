@@ -102,7 +102,7 @@ def test_trial_verdict_uses_mean_of_two_post_proposal_samples(tmp_path):
     assert engine._state.trial_log[0]["signal_sample_count_at_eval"] == 3
 
 
-def test_singleflight_guard_is_released_even_if_evaluation_raises():
+def test_singleflight_guard_is_released_and_worker_failure_is_contained():
     engine = _engine()
     engine._trial_evaluation_in_progress = True
 
@@ -111,20 +111,15 @@ def test_singleflight_guard_is_released_even_if_evaluation_raises():
 
     engine._evaluate_trial = fail
 
-    try:
-        engine._evaluate_trial_once(DevelopmentProposal(
-            dimension="belief_confidence_mean",
-            signal_at_proposal=0.3,
-            signal_target=0.5,
-            parameter="grounding_boost",
-            prior_value=0.03,
-            proposed_value=0.04,
-            rationale="test trial",
-            proposed_at_cycle=10,
-        ), 70)
-    except RuntimeError:
-        pass
-    else:
-        raise AssertionError("expected the simulated evaluation error")
+    engine._evaluate_trial_once(DevelopmentProposal(
+        dimension="belief_confidence_mean",
+        signal_at_proposal=0.3,
+        signal_target=0.5,
+        parameter="grounding_boost",
+        prior_value=0.03,
+        proposed_value=0.04,
+        rationale="test trial",
+        proposed_at_cycle=10,
+    ), 70)
 
     assert engine._trial_evaluation_in_progress is False

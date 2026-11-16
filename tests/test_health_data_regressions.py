@@ -15,7 +15,7 @@ package = ModuleType('cognition')
 package.__path__ = [str(ROOT / 'cognition')]
 with patch.dict(sys.modules, {'cognition': package}):
     from cognition.cognitive_audit_engine import (
-        AuditState, CognitiveAuditEngine, SignalSnapshot,
+        AuditState, CognitiveAuditEngine, SignalSnapshot, SIGNAL_TARGETS,
     )
     from cognition.narrative_compression import NarrativeCompression
     from cognition.temporal_projection import TemporalProjection, PathProjection
@@ -41,7 +41,7 @@ class HealthDataTests(unittest.TestCase):
 
         self.assertEqual(audit._state.consecutive_under['mean_skill_depth'], 9)
         self.assertEqual(audit._state.consecutive_under['question_resolution_rate'], 0)
-        self.assertEqual(audit._state.consecutive_under['experiment_confirmation_rate'], 0)
+        self.assertNotIn('experiment_confirmation_rate', audit._state.consecutive_under)
 
     def test_cognitive_audit_waits_briefly_for_llm_slot_and_exposes_skip_reason(self):
         audit = CognitiveAuditEngine.__new__(CognitiveAuditEngine)
@@ -272,6 +272,7 @@ class HealthDataTests(unittest.TestCase):
         self.assertEqual(snapshot.signal_status, {
             'epistemic_grounding_rate': 'measured',
             'experiment_confirmation_rate': 'no_observations',
+            'experiment_resolution_rate': 'no_observations',
             'question_resolution_rate': 'no_observations',
             'mean_skill_depth': 'no_observations',
             'belief_confidence_mean': 'no_observations',
@@ -311,9 +312,13 @@ class HealthDataTests(unittest.TestCase):
         snapshot = audit._read_signals(80)
 
         self.assertAlmostEqual(snapshot.experiment_confirmation_rate, 1 / 3)
+        self.assertAlmostEqual(snapshot.experiment_resolution_rate, 2 / 3)
         self.assertAlmostEqual(snapshot.question_resolution_rate, 1 / 2)
         self.assertEqual(snapshot.signal_sample_count['experiment_confirmation_rate'], 3)
+        self.assertEqual(snapshot.signal_sample_count['experiment_resolution_rate'], 3)
         self.assertEqual(snapshot.signal_sample_count['question_resolution_rate'], 2)
+        self.assertNotIn('experiment_confirmation_rate', snapshot.deficit())
+        self.assertNotIn('experiment_confirmation_rate', SIGNAL_TARGETS)
 
     def test_audit_summary_distinguishes_missing_diagnostics_in_legacy_snapshots(self):
         audit = CognitiveAuditEngine.__new__(CognitiveAuditEngine)
@@ -335,6 +340,43 @@ class HealthDataTests(unittest.TestCase):
         self.assertEqual(
             status['signal_measurement_status']['question_resolution_rate'],
             'legacy_snapshot_without_diagnostic',
+        )
+
+    def test_audit_summary_keeps_experiment_support_descriptive_not_underperformance(self):
+        audit = CognitiveAuditEngine.__new__(CognitiveAuditEngine)
+        audit._state = AuditState(snapshot_log=[{
+            'slow_cycle': 80,
+            'timestamp': 1000.0,
+            'signal_status': {
+                'experiment_confirmation_rate': 'measured',
+                'experiment_resolution_rate': 'measured',
+                'mean_skill_depth': 'measured',
+            },
+            'signal_sample_count': {
+                'experiment_confirmation_rate': 3,
+                'experiment_resolution_rate': 3,
+                'mean_skill_depth': 60,
+            },
+            'experiment_confirmation_rate': 0.0,
+            'experiment_resolution_rate': 2 / 3,
+            'mean_skill_depth': 0.3,
+        }])
+        audit._process_started_at = 900.0
+        audit._trial_evaluation_in_progress = False
+        audit._lock = __import__('threading').Lock()
+
+        status = audit.status_summary()
+
+        self.assertEqual(status['worst_signal_now'], 'mean_skill_depth')
+        self.assertNotIn('experiment_confirmation_rate', status['non_actionable_signals'])
+        self.assertEqual(
+            status['descriptive_metrics']['experiment_confirmation_rate']['value'], 0.0,
+        )
+        self.assertAlmostEqual(
+            status['descriptive_metrics']['experiment_resolution_rate']['value'], 2 / 3,
+        )
+        self.assertEqual(
+            status['descriptive_metrics']['experiment_resolution_rate']['sample_count'], 3,
         )
 
     def test_projection_restores_nested_paths_and_skips_bad_entry(self):
