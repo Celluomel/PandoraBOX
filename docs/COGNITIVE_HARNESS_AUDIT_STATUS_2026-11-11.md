@@ -2951,3 +2951,13 @@ L’évaluation d’un essai utilise le même reçu : outcome (`confirmed`, `dis
 **Validation locale :** les huit suites ciblées passent **173 tests**, 9 avertissements de dépendances existants; compilation ciblée et `git diff --check` passent. Les tests couvrent le reçu d’audit périodique et le reçu de fin d’essai. Ces reçus prouvent qu’un snapshot/tentative ou un résultat d’essai a été enregistré, mais ne certifient ni la validité des mesures d’entrée, ni l’effet causal ou la qualité d’une calibration.
 
 La progression de clôture demeure **2/10 = 20 %** : le correctif améliore la preuve d’exécution d’un producteur du harnais; il reste à vérifier après le redémarrage groupé que le nouveau reçu apparaît dans une trace live, puis à évaluer ses décisions et effets sur plusieurs scénarios cognitifs représentatifs.
+
+### ProactiveOutreach — génération hors du slow cycle et livraison retraçable — 16 novembre 2026
+
+`ProactiveOutreach.tick()` appelait synchroniquement `_evaluate()`. Ce chemin peut appeler le LLM pour rédiger un message; un tick toutes les 20 cycles pouvait donc retarder la boucle cognitive. Le tick retournait `None`, et la trace ne séparait ni un contrôle sans opportunité, ni une tentative mise en attente, ni une acceptation du transport.
+
+**Correction locale :** le scan et la génération passent dans un worker single-flight avec reçu de cadence/programmation. Le reçu de fin du cycle source indique le nombre de nouveaux événements et leur état (« pending » reste une tentative). Chaque événement garde le cycle source; le retour asynchrone du gestionnaire de messagerie ajoute ensuite `delivery_accepted` ou `delivery_failed`. « Accepted » signifie uniquement accepté par le fournisseur, pas lu/reçu par l’utilisateur. Les reçus ne contiennent pas le texte privé du message.
+
+**Validation locale :** la suite async vérifie le cycle non dû, l’absence de worker doublon, l’état pending et le reçu ultérieur d’acceptation; les huit suites ciblées passent **174 tests**, 9 avertissements historiques. Compilation et `git diff --check` passent.
+
+Cette correction réduit le risque de blocage du slow cycle et rend la chaîne d’outreach observable; elle ne valide pas la pertinence cognitive d’un message ni l’effet relationnel. L’évaluation multi-scénarios et le statut global **2/10 = 20 %** ne changent pas.

@@ -182,6 +182,7 @@ class OutreachEvent:
     delivery_status: str = "not_sent"  # pending | accepted | failed | not_sent
     delivery_error: str = ""
     platform:     str   = ""
+    source_slow_cycle: int = 0
 
 
 @dataclass
@@ -215,20 +216,93 @@ class ProactiveOutreachEngine:
         self._ai   = ai_system
         self._path = Path(path)
         self._lock = threading.RLock()
+        self._tick_lock = threading.Lock()
+        self._tick_pending = False
         self._state = OutreachState()
         self._load()
         logger.info("[ProactiveOutreach] Initialised")
 
     # ── Public API ────────────────────────────────────────────────────────────
 
-    def tick(self, slow_cycle: int) -> None:
-        """Evaluate outreach opportunities. Non-fatal."""
+    def tick(self, slow_cycle: int) -> Dict[str, Any]:
+        """Schedule bounded outreach evaluation outside the slow-cycle thread."""
         if slow_cycle % self.TICK_EVERY_N != 0 or slow_cycle == 0:
-            return
+            return self._tick_receipt(slow_cycle, "skipped", "outreach_cadence_not_due")
+        with self._tick_lock:
+            if self._tick_pending:
+                return self._tick_receipt(slow_cycle, "skipped", "outreach_evaluation_running")
+            self._tick_pending = True
         try:
-            self._evaluate()
-        except Exception as e:
-            logger.debug(f"[ProactiveOutreach] tick error (non-fatal): {e}")
+            threading.Thread(
+                target=self._evaluate_scheduled,
+                args=(slow_cycle,),
+                daemon=True,
+                name="proactive-outreach",
+            ).start()
+        except Exception as exc:
+            with self._tick_lock:
+                self._tick_pending = False
+            return self._tick_receipt(slow_cycle, "failed", f"worker_start_failed:{type(exc).__name__}")
+        return self._tick_receipt(slow_cycle, "scheduled", "outreach_worker_started")
+
+    @staticmethod
+    def _tick_receipt(slow_cycle: int, status: str, reason: str) -> Dict[str, Any]:
+        return {
+            "cycle": int(slow_cycle),
+            "outcome_status": status,
+            "reason_code": reason,
+            "worker_scheduled": status == "scheduled",
+        }
+
+    def _evaluate_scheduled(self, slow_cycle: int) -> None:
+        with self._lock:
+            prior_ids = {
+                str(item.get("event_id")) for item in self._state.outreach_log
+                if isinstance(item, dict) and item.get("event_id")
+            }
+        try:
+            self._evaluate(slow_cycle)
+            with self._lock:
+                new_events = [
+                    dict(item) for item in self._state.outreach_log
+                    if isinstance(item, dict)
+                    and item.get("event_id")
+                    and str(item.get("event_id")) not in prior_ids
+                ]
+                total_sent = int(self._state.total_sent)
+            statuses = [str(item.get("delivery_status", "unreported")) for item in new_events]
+            status = "completed" if not new_events else (
+                "outreach_pending" if "pending" in statuses else "completed"
+            )
+            metrics = {
+                "new_event_count": len(new_events),
+                "delivery_statuses": statuses[:5],
+                "confirmed_total_sent": total_sent,
+            }
+            self._record_async_completion(slow_cycle, status, metrics)
+        except Exception as exc:
+            logger.exception("[ProactiveOutreach] scheduled evaluation failed")
+            self._record_async_completion(
+                slow_cycle, "failed", {"new_event_count": 0}, type(exc).__name__
+            )
+        finally:
+            with self._tick_lock:
+                self._tick_pending = False
+
+    def _record_async_completion(
+        self, slow_cycle: int, status: str, metrics: Dict[str, Any],
+        error_type: Optional[str] = None,
+    ) -> None:
+        loop = getattr(self._o, "_loop", None)
+        recorder = getattr(loop, "record_async_cycle_stage", None)
+        if callable(recorder):
+            try:
+                recorder(
+                    slow_cycle, "proactive_outreach_evaluation", status,
+                    output=metrics, metrics=metrics, error_type=error_type,
+                )
+            except Exception as exc:
+                logger.debug("[ProactiveOutreach] completion receipt unavailable: %s", exc)
 
     # ── Gate construction ─────────────────────────────────────────────────────
 
@@ -327,7 +401,7 @@ class ProactiveOutreachEngine:
 
     # ── Evaluation ────────────────────────────────────────────────────────────
 
-    def _evaluate(self) -> None:
+    def _evaluate(self, slow_cycle: int = 0) -> None:
         """Scan for outreach opportunities across all known users."""
         rel_mem  = getattr(getattr(self._o, "ai_system", None),
                            "relational_memory", None)
@@ -377,6 +451,7 @@ class ProactiveOutreachEngine:
             )
 
             if event:
+                event.source_slow_cycle = int(slow_cycle)
                 gate = self._build_gate(event, rel)
                 if gate.permit():
                     self._send(event, rel)
@@ -702,6 +777,8 @@ class ProactiveOutreachEngine:
             )
             if event is None:
                 return
+            source_slow_cycle = int(event.get("source_slow_cycle") or 0)
+            delivery_status = "accepted" if sent else "failed"
             event["sent"] = bool(sent)
             # Provider acceptance is the strongest evidence available here;
             # neither Telegram nor Twilio acceptance proves user receipt/read.
@@ -711,6 +788,18 @@ class ProactiveOutreachEngine:
                 self._state.last_outreach_by_user[event["user_id"]] = now
                 self._state.total_sent += 1
         self._save()
+
+        if source_slow_cycle > 0:
+            self._record_async_completion(
+                source_slow_cycle,
+                "delivery_accepted" if sent else "delivery_failed",
+                {
+                    "event_id_ref": str(event_id)[:20],
+                    "delivery_status": delivery_status,
+                    "provider_accepted": bool(sent),
+                },
+                None if sent else "provider_rejected_or_transport_failed",
+            )
 
         if sent:
             # v51: only confirmed platform acceptance resets the expression window.

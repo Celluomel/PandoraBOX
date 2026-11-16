@@ -28,6 +28,7 @@ from cognition.flux_mind_model import UPDATE_EVERY_N, FluxMindModel
 from cognition.contradiction_belief_reviser import REVISION_EVERY_N, ContradictionBeliefReviser
 from cognition.autonomous_reflection import EVOLUTION_EVERY_N, AutonomousReflectionEngine
 from cognition.autonomous_experimentation import EVALUATE_EVERY_N, AutonomousExperimentationEngine
+from cognition.proactive_outreach import ProactiveOutreachEngine
 
 
 class _DeferredThread:
@@ -188,6 +189,48 @@ class AsyncCognitiveTickTests(unittest.TestCase):
         self.assertEqual(args, (42, "cognitive_audit_worker", "completed"))
         self.assertEqual(kwargs["metrics"]["outcome"], "confirmed")
         self.assertTrue(kwargs["metrics"]["committed_parameter_changed"])
+
+    def test_proactive_outreach_runs_single_flight_and_reports_pending_delivery(self):
+        engine = ProactiveOutreachEngine.__new__(ProactiveOutreachEngine)
+        engine._tick_lock = threading.Lock()
+        engine._tick_pending = False
+        engine._lock = threading.RLock()
+        engine._state = SimpleNamespace(
+            outreach_log=[], total_sent=0, last_outreach_by_user={}
+        )
+        receipts = []
+        engine._o = SimpleNamespace(
+            _loop=SimpleNamespace(
+                record_async_cycle_stage=lambda *args, **kwargs: receipts.append((args, kwargs))
+            )
+        )
+        engine._evaluate = lambda cycle: engine._state.outreach_log.append({
+            "event_id": "event-1", "source_slow_cycle": cycle,
+            "user_id": "fred", "delivery_status": "pending", "message_text": "private"
+        })
+        engine._save = lambda: None
+
+        with patch("cognition.proactive_outreach.threading.Thread", _DeferredThread):
+            off_cycle = engine.tick(19)
+            scheduled = engine.tick(20)
+            duplicate = engine.tick(40)
+
+        self.assertEqual(off_cycle["reason_code"], "outreach_cadence_not_due")
+        self.assertEqual(scheduled["outcome_status"], "scheduled")
+        self.assertEqual(duplicate["reason_code"], "outreach_evaluation_running")
+        worker = _DeferredThread.workers[-1]
+        worker.target(*worker.args)
+        self.assertFalse(engine._tick_pending)
+        args, kwargs = receipts[0]
+        self.assertEqual(args, (20, "proactive_outreach_evaluation", "outreach_pending"))
+        self.assertEqual(kwargs["metrics"]["new_event_count"], 1)
+        self.assertEqual(kwargs["metrics"]["delivery_statuses"], ["pending"])
+        self.assertNotIn("private", str(kwargs))
+
+        engine._complete_delivery("event-1", True)
+        delivery_args, delivery_kwargs = receipts[1]
+        self.assertEqual(delivery_args, (20, "proactive_outreach_evaluation", "delivery_accepted"))
+        self.assertTrue(delivery_kwargs["metrics"]["provider_accepted"])
 
     def test_causal_mechanism_tick_is_single_flight_and_receipted(self):
         model = CausalMechanismModel.__new__(CausalMechanismModel)
