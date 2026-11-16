@@ -129,7 +129,8 @@ _DIRECT_RECALL_PATTERNS = (
     # recall prompts, not evidence for the historical instruction being asked
     # about. Exclude them from source retrieval to prevent prompt self-matches.
     re.compile(
-        r"\b(?:rappelle(?:-moi)?|rappeler)\s+(?:la|le|les|ce|cette|ces)\s+"
+        r"\b(?:rappelle(?:-moi)?|rappeler)\s+"
+        r"(?:(?:uniquement|seulement)\s+)?(?:la|le|les|ce|cette|ces)\s+"
         r"(?:r[eè]gle|consigne|demande|instruction|formulation)\b.{0,120}\b"
         r"(?:donn[ée]e?|formul[ée]e?|demand[ée]e?|pos[ée]e?)\b",
         re.IGNORECASE,

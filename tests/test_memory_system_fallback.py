@@ -531,6 +531,29 @@ class MemorySystemFallbackTests(unittest.TestCase):
         result = explicit_recall_abstention_result(query, filtered)
         self.assertEqual(result["status"], "abstained_insufficient_source_match")
 
+    def test_french_recall_of_instruction_with_only_modifier_uses_prior_source(self):
+        query = (
+            "Rappelle uniquement la consigne que je t’ai donnée : poursuivre l’audit "
+            "sans redémarrer Lumina après chaque correctif, puis vérifier en live à la fin."
+        )
+        prior_recall_prompt = {"memory_type": "user_message", "text": query, "relevance": 1.0}
+        historical_source = {
+            "memory_type": "user_message",
+            "text": (
+                "On va procéder autrement : poursuis l’audit, évalue les problèmes et "
+                "corrige-les; commit les fixes, puis ne redémarre Lumina qu’à la fin "
+                "pour vérifier les corrections appliquées."
+            ),
+            "relevance": 0.86,
+        }
+
+        self.assertTrue(is_explicit_memory_recall_query(query))
+        filtered = filter_recall_query_records([prior_recall_prompt, historical_source], query=query)
+        self.assertEqual(filtered, [historical_source])
+        result = explicit_recall_source_result(query, filtered)
+        self.assertEqual(result["status"], "supported_verbatim_source")
+        self.assertIn(historical_source["text"], result["answer"])
+
     def test_explicit_recall_discards_prior_recall_prompt_self_matches(self):
         repeated_recall = {
             "memory_type": "user_message",
