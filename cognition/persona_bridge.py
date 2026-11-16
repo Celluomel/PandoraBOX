@@ -3727,7 +3727,9 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                 turn_id=audit_turn_id,
             )
 
-        predictive_context = self._prepare_predictive_context(user_input, user_id)
+        predictive_context = self._prepare_predictive_context(
+            user_input, user_id, turn_id=audit_turn_id
+        )
 
         # ── Inner Monologue: store context for two-pass use in streaming ─────
         # We cache these on self so _stream_with_full_lifecycle can access them
@@ -5315,7 +5317,9 @@ Memory honesty — two distinct cases:
             logger.debug("[BodyRuntime] prompt context unavailable", exc_info=True)
         return system_prompt, body_context, camera_context
 
-    def _prepare_predictive_context(self, user_input: str, user_id: str) -> str:
+    def _prepare_predictive_context(
+        self, user_input: str, user_id: str, *, turn_id: str = ""
+    ) -> str:
         """Run and trace the pre-LLM predictive models on the active stream path."""
         organism = self._organism
         prepare = getattr(organism, "prepare_response_context", None) if organism else None
@@ -5325,11 +5329,11 @@ Memory honesty — two distinct cases:
                 "world_self_dynamics_model",
                 "prospective_deliberation",
             ):
-                self._record_turn_stage(stage, "skipped_unavailable")
+                self._record_turn_stage(stage, "skipped_unavailable", turn_id=turn_id)
             return ""
 
         try:
-            predictive = prepare(user_input, user_id=user_id) or {}
+            predictive = prepare(user_input, user_id=user_id, turn_id=turn_id) or {}
             for stage, key in (
                 ("predictive_consequence_model", "pcm_status"),
                 ("world_self_dynamics_model", "wsdm_status"),
@@ -5339,6 +5343,7 @@ Memory honesty — two distinct cases:
                     stage,
                     str(predictive.get(key) or "unavailable"),
                     str(predictive.get(key.replace("_status", "_error")) or ""),
+                    turn_id=turn_id,
                 )
             return "\n\n".join(
                 value for value in (
@@ -5354,7 +5359,9 @@ Memory honesty — two distinct cases:
                 ) if value
             )
         except Exception as exc:
-            self._record_turn_stage("streaming_predictive_context", "failed", str(exc))
+            self._record_turn_stage(
+                "streaming_predictive_context", "failed", str(exc), turn_id=turn_id
+            )
             logger.exception("Streaming predictive context preparation failed")
             return ""
 

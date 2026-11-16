@@ -38,6 +38,7 @@ class StreamingPredictiveContextTests(unittest.TestCase):
             ) as make_wsdm:
                 result = CognitiveOrganism.prepare_response_context(
                     organism, "first peer turn", user_id="lumina_peer_master",
+                    turn_id="turn-first",
                 )
         finally:
             if original is None:
@@ -76,6 +77,7 @@ class StreamingPredictiveContextTests(unittest.TestCase):
         try:
             result = organism.prepare_response_context(
                 "Which option is more reliable?", user_id="lumina_peer_flux",
+                turn_id="turn-123",
             )
         finally:
             if original is None:
@@ -90,6 +92,7 @@ class StreamingPredictiveContextTests(unittest.TestCase):
             action_type="reasoning",
             user_id="lumina_peer_flux",
             interaction_n=12,
+            turn_id="turn-123",
         )
         prospective.deliberate.assert_called_once_with(
             pcm, wsdm, "reasoning", [0.7, 0.8, 0.6],
@@ -107,7 +110,7 @@ class StreamingPredictiveContextTests(unittest.TestCase):
 
         bridge = PersonaBridge.__new__(PersonaBridge)
         bridge._turn_trace_lock = threading.Lock()
-        bridge._last_turn_trace = {"stages": {}}
+        bridge._last_turn_trace = {"turn_id": "turn-123", "stages": {}}
         bridge._organism = types.SimpleNamespace(prepare_response_context=Mock(return_value={
             "pcm_status": "prepared",
             "pcm_advisory": "Use cautious inference.",
@@ -116,10 +119,15 @@ class StreamingPredictiveContextTests(unittest.TestCase):
             "prospective_status": "not_applicable",
         }))
 
-        context = bridge._prepare_predictive_context("peer turn", "lumina_peer_flux")
+        context = bridge._prepare_predictive_context(
+            "peer turn", "lumina_peer_flux", turn_id="turn-123"
+        )
 
         self.assertIn("Use cautious inference.", context)
         self.assertIn("Recent outcomes vary.", context)
+        bridge._organism.prepare_response_context.assert_called_once_with(
+            "peer turn", user_id="lumina_peer_flux", turn_id="turn-123"
+        )
         self.assertEqual(
             bridge._last_turn_trace["stages"]["predictive_consequence_model"]["status"],
             "prepared",

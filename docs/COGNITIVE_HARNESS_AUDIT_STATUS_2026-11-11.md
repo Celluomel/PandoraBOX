@@ -3251,3 +3251,13 @@ La correction précédente du même chemin est également couverte ici : un reç
 Vérification locale combinée : **135 tests passent** dans les suites planification/intention, preuves WSDM, reçus de tours, auto-description, données de santé et fraîcheur des snapshots; 8 avertissements de dépendances préexistants, 4 sous-tests. `py_compile` et `git diff --check` passent. Le processus Lumina actif n’a pas chargé ces changements. Le redémarrage reste groupé après les corrections offline de ce lot; aucune preuve live n’est revendiquée.
 
 Progression globale inchangée : **2/10 = 20 %** de pistes closes. Le correctif retire une inférence non fondée et rend le contrat de plan plus honnête; il ne démontre pas encore que les opérations cognitives produisent des effets utiles. Pour apprendre une efficacité par opération, il faut maintenant des résultats objectifs, associés à un `execution_id`, un critère préétabli et un résultat mesuré indépendamment.
+
+### Isoler chaque transition prédictive par identifiant de tour — 16 novembre 2026
+
+Le flux `PersonaBridge → CognitiveOrganism.prepare_response_context → WSDM.record_context → CognitiveOrganism._post_interaction → WSDM.record_outcome` utilisait un unique champ `_pending`. Avec deux générations en parallèle, le second contexte pré-échange remplaçait le premier; chaque post-tour pouvait alors entraîner WSDM sur le mauvais avant/après, une transition causale inventée par concurrence.
+
+Correction locale : les tours qui possèdent un `turn_id` stockent leur contexte WSDM dans un registre borné et indexé par identifiant; le post-tour ne consomme que son propre reçu. Les chemins historiques sans identifiant conservent leur emplacement de compatibilité. Le `turn_id` traverse maintenant la préparation prédictive et les reçus d’étapes d’audit, y compris les statuts d’indisponibilité et d’échec. Un test termine deux tours dans l’ordre inverse et vérifie que chacun conserve son propre contexte.
+
+Vérification locale combinée : **140 tests passent** dans les suites de contexte prédictif streaming, WSDM, planification, reçus de tour, auto-description, santé et fraîcheur; 8 avertissements de dépendances préexistants, 4 sous-tests. Compilation Python et `git diff --check` passent. Ce correctif n’est pas encore chargé dans Lumina; pas de validation live revendiquée. Le redémarrage restera groupé après le prochain lot d’analyses offline.
+
+La piste 2/10 n’est pas close par un test concurrent isolé; il faut encore observer deux tours live corrélés, deux reçus WSDM distincts et vérifier les transitions persistées. Progression globale inchangée : **2/10 = 20 %**.

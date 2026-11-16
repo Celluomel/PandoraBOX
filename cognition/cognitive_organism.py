@@ -1079,7 +1079,7 @@ class CognitiveOrganism:
         return result
 
     def prepare_response_context(
-        self, user_input: str, user_id: str = "default",
+        self, user_input: str, user_id: str = "default", turn_id: str = "",
     ) -> dict[str, Any]:
         """Run pre-generation predictive stages for a streamed chat turn.
 
@@ -1147,6 +1147,7 @@ class CognitiveOrganism:
                     action_type=action,
                     user_id=user_id,
                     interaction_n=interaction_n,
+                    turn_id=turn_id,
                 )
                 result["wsdm_status"] = "prepared"
                 result["wsdm_narrative"] = str(wsdm.narrative_summary(action, user_id) or "")
@@ -1376,6 +1377,7 @@ class CognitiveOrganism:
                     user_id       = _uid,
                     response_text = response or "",
                     user_input    = user_input or "",
+                    turn_id       = turn_id,
                 )
         except Exception:
             pass

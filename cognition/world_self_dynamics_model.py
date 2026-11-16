@@ -182,6 +182,10 @@ class WorldSelfDynamicsModel:
         self._lock     = threading.Lock()
         self._records:  List[DynamicsRecord] = []
         self._pending:  Optional[Tuple[str, str, List[float], int]] = None
+        # The web chat path can have concurrent streams. A single pending slot
+        # lets one turn consume another turn's before-state, so keyed receipts
+        # are used whenever the caller has a stable turn id.
+        self._pending_by_turn: Dict[str, Tuple[str, str, List[float], int]] = {}
         self._load()
 
         # Phase 3.2: calibration engine — same pattern as PCM in Phase 3.1.
@@ -212,10 +216,18 @@ class WorldSelfDynamicsModel:
         action_type:   str,
         user_id:       str = "default",
         interaction_n: int = 0,
+        turn_id:       str = "",
     ) -> None:
         """Record context immediately before an interaction fires."""
         ctx = self.capture_context(user_id)
-        self._pending = (action_type, user_id, ctx, interaction_n)
+        pending = (action_type, user_id, ctx, interaction_n)
+        with self._lock:
+            if turn_id:
+                self._pending_by_turn[str(turn_id)] = pending
+                while len(self._pending_by_turn) > 256:
+                    self._pending_by_turn.pop(next(iter(self._pending_by_turn)))
+            else:
+                self._pending = pending
 
     def capture_context(self, user_id: str = "default") -> List[float]:
         """Return a detached context snapshot for independently tracked turns."""
@@ -227,12 +239,19 @@ class WorldSelfDynamicsModel:
         user_id:        str = "default",
         response_text:  str = "",
         user_input:     str = "",
+        turn_id:        str = "",
     ) -> None:
         """Record consequences after interaction completion."""
-        if self._pending is None:
+        with self._lock:
+            pending = (
+                self._pending_by_turn.pop(str(turn_id), None)
+                if turn_id else self._pending
+            )
+            if not turn_id:
+                self._pending = None
+        if pending is None:
             return
-        action_type, pending_uid, ctx_before, interaction_n = self._pending
-        self._pending = None
+        action_type, pending_uid, ctx_before, interaction_n = pending
 
         self.record_observed_transition(
             action_type, pending_uid, ctx_before, self.capture_context(user_id),

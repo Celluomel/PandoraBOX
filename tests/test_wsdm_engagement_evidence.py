@@ -10,6 +10,28 @@ from cognition.world_self_dynamics_model import DynamicsRecord, WorldSelfDynamic
 
 
 class WSDMEngagementEvidenceTests(unittest.TestCase):
+    def test_concurrent_turn_outcomes_use_their_own_before_state(self):
+        model = WorldSelfDynamicsModel.__new__(WorldSelfDynamicsModel)
+        model._lock = threading.Lock()
+        model._pending = None
+        model._pending_by_turn = {}
+        model.capture_context = Mock(side_effect=[
+            [1.0] * 8, [2.0] * 8, [20.0] * 8, [10.0] * 8,
+        ])
+        model.record_observed_transition = Mock()
+
+        model.record_context("analytical", "fred", 1, turn_id="turn-a")
+        model.record_context("social", "peer", 2, turn_id="turn-b")
+        model.record_outcome(user_id="peer", user_input="b", turn_id="turn-b")
+        model.record_outcome(user_id="fred", user_input="a", turn_id="turn-a")
+
+        calls = model.record_observed_transition.call_args_list
+        self.assertEqual(calls[0].args[:3], ("social", "peer", [2.0] * 8))
+        self.assertEqual(calls[0].args[3], [20.0] * 8)
+        self.assertEqual(calls[1].args[:3], ("analytical", "fred", [1.0] * 8))
+        self.assertEqual(calls[1].args[3], [10.0] * 8)
+        self.assertEqual(model._pending_by_turn, {})
+
     def _historical_model(self):
         model = WorldSelfDynamicsModel.__new__(WorldSelfDynamicsModel)
         model._records = [
