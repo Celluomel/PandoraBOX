@@ -6,6 +6,21 @@ from unittest.mock import Mock, patch
 
 
 class StreamingPredictiveContextTests(unittest.TestCase):
+    def test_buffered_validation_preserves_provider_finish_but_hides_architecture_reasoning(self):
+        from cognition.persona_bridge import PersonaBridge
+
+        tokens = [
+            {"type": "reasoning", "text": "internal chain"},
+            "visible answer",
+            {"type": "finish", "reason": "stop"},
+        ]
+
+        events = PersonaBridge._provider_events_for_turn(
+            tokens, include_reasoning=False,
+        )
+
+        self.assertEqual(events, [{"type": "finish", "reason": "stop"}])
+
     def test_first_streaming_turn_initializes_models_before_slow_cycle_threshold(self):
         from cognition.cognitive_organism import CognitiveOrganism
         from core.internal_loop import InternalThoughtLoop

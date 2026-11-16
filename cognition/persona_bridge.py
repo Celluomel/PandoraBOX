@@ -746,6 +746,20 @@ class PersonaBridge:
         )
         return stage_status == "failed"
 
+    @staticmethod
+    def _provider_events_for_turn(
+        provider_tokens: list[Any], *, include_reasoning: bool,
+    ) -> list[dict[str, Any]]:
+        """Keep finish metadata even when a response is buffered for validation."""
+        events: list[dict[str, Any]] = []
+        for token in provider_tokens:
+            if not isinstance(token, dict):
+                continue
+            event_type = token.get("type")
+            if event_type == "finish" or (include_reasoning and event_type == "reasoning"):
+                events.append(token)
+        return events
+
     def record_deferred_turn_stage(
         self, turn_id: str, name: str, status: str, detail: str = "",
         error_type: str = "",
@@ -2833,9 +2847,6 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     )
 
                 if _validate_before_display:
-                    _reasoning_tokens = [
-                        token for token in _provider_tokens if isinstance(token, dict)
-                    ]
                     _candidate = "".join(
                         token for token in _provider_tokens if isinstance(token, str)
                     )
@@ -2911,9 +2922,10 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         )
                     else:
                         _guarded, _was_replaced = _visible_candidate, False
-                    if not _architecture_query:
-                        for token in _reasoning_tokens:
-                            asyncio.run_coroutine_threadsafe(token_q.put(token), loop)
+                    for token in self._provider_events_for_turn(
+                        _provider_tokens, include_reasoning=not _architecture_query,
+                    ):
+                        asyncio.run_coroutine_threadsafe(token_q.put(token), loop)
                     if _was_replaced:
                         if _cognitive_trace_query:
                             logger.warning(
