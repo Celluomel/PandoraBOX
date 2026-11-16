@@ -132,6 +132,40 @@ def test_tte_ticks_do_not_execute_actions_raise_confidence_or_complete_goal(tmp_
     assert thread.history[-1]["action_status"] == "planned_not_executed"
 
 
+def test_tte_step_batches_thread_mutations_into_one_atomic_persistence(tmp_path):
+    store = tmp_path / "threads.json"
+    engine = ThoughtThreadEngine(str(store))
+    context = TTEContext(energy=100.0)
+    threads = [
+        engine.spawn_thread(context, {
+            "topic": f"audit topic {index}",
+            "goal": "record one scheduled tick",
+            "source_ref": f"goal-{index}",
+        })
+        for index in range(3)
+    ]
+
+    writes = 0
+    original_write = engine._write_snapshot_locked
+
+    def count_write():
+        nonlocal writes
+        writes += 1
+        original_write()
+
+    engine._write_snapshot_locked = count_write
+    result = engine.step(context)
+
+    assert writes == 1
+    assert {thread.id for thread in result} == {thread.id for thread in threads}
+    assert all(thread.history[-1]["action_status"] == "planned_not_executed" for thread in result)
+    assert not store.with_name(f"{store.name}.tmp").exists()
+
+    restored = ThoughtThreadEngine(str(store))
+    assert {thread.id for thread in restored.active_threads()} == {thread.id for thread in threads}
+    assert all(thread.iteration_count == 1 for thread in restored.active_threads())
+
+
 def test_thread_resolution_requires_explicit_evidence_receipt(tmp_path):
     engine = ThoughtThreadEngine(str(tmp_path / "threads.json"))
     context = TTEContext()

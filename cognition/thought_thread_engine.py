@@ -32,9 +32,11 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass, field, asdict, fields
 from enum import Enum
 from pathlib import Path
@@ -137,6 +139,8 @@ class ThoughtThreadEngine:
         self._threads: Dict[str, ThoughtThread] = {}
         self._pending_action_receipts: Dict[str, List[Dict[str, Any]]] = {}
         self._lock     = threading.RLock()
+        self._persistence_batch_depth = 0
+        self._persistence_dirty = False
         self._load_pending_action_receipts()
         self._load()
         logger.info(f"[TTE] Initialised — {len(self._threads)} threads loaded")
@@ -407,6 +411,11 @@ class ThoughtThreadEngine:
         Main tick — called each slow cycle.
         Returns list of currently active threads after update.
         """
+        with self._batched_persistence():
+            return self._run_step(ctx)
+
+    def _run_step(self, ctx: TTEContext) -> List[ThoughtThread]:
+        """Apply one slow-cycle update; persistence is committed by ``step``."""
         with self._lock:
             threads = list(self._threads.values())
 
@@ -656,16 +665,45 @@ class ThoughtThreadEngine:
 
     # ── Persistence ───────────────────────────────────────────────────────────
 
+    @contextmanager
+    def _batched_persistence(self):
+        """Persist the complete step once, after its in-memory updates finish."""
+        with self._lock:
+            self._persistence_batch_depth += 1
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._persistence_batch_depth = max(0, self._persistence_batch_depth - 1)
+                if self._persistence_batch_depth == 0 and self._persistence_dirty:
+                    self._persistence_dirty = False
+                    try:
+                        self._write_snapshot_locked()
+                    except Exception as exc:
+                        self._persistence_dirty = True
+                        logger.debug("[TTE] Batched save error: %s", exc)
+
     def _save(self) -> None:
         try:
-            self._path.parent.mkdir(parents=True, exist_ok=True)
-            data = {
-                tid: {**asdict(t), "status": t.status.value}
-                for tid, t in self._threads.items()
-            }
-            self._path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            with self._lock:
+                if self._persistence_batch_depth:
+                    self._persistence_dirty = True
+                    return
+                self._write_snapshot_locked()
+                self._persistence_dirty = False
         except Exception as e:
             logger.debug(f"[TTE] Save error: {e}")
+
+    def _write_snapshot_locked(self) -> None:
+        """Atomically write a consistent snapshot while the thread lock is held."""
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        data = {
+            tid: {**asdict(t), "status": t.status.value}
+            for tid, t in self._threads.items()
+        }
+        temporary_path = self._path.with_name(f"{self._path.name}.tmp")
+        temporary_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        os.replace(temporary_path, self._path)
 
     def _load(self) -> None:
         if not self._path.exists():
