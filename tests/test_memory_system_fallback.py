@@ -540,9 +540,10 @@ class MemorySystemFallbackTests(unittest.TestCase):
         historical_source = {
             "memory_type": "user_message",
             "text": (
-                "On va procéder autrement : poursuis l’audit, évalue les problèmes et "
-                "corrige-les; commit les fixes, puis ne redémarre Lumina qu’à la fin "
-                "pour vérifier les corrections appliquées."
+                "On va procéder autrement, tu poursuis l’audit, évalues les problèmes "
+                "et les fixes, commit sur git les fix, poursuis l’audit sans redémarrer "
+                "Lumina sans t’arrêter et ainsi de suite; puis en toute fin on redémarre "
+                "Lumina pour vérifier les fixs appliqués."
             ),
             "relevance": 0.86,
         }
@@ -553,6 +554,33 @@ class MemorySystemFallbackTests(unittest.TestCase):
         result = explicit_recall_source_result(query, filtered)
         self.assertEqual(result["status"], "supported_verbatim_source")
         self.assertIn(historical_source["text"], result["answer"])
+
+    def test_source_only_instruction_recall_uses_description_after_colon_as_focus(self):
+        query = (
+            "Rappelle uniquement la consigne que je t’ai donnée : poursuivre l’audit "
+            "sans redémarrer Lumina après chaque correctif, puis vérifier en live à la fin."
+        )
+        prior_prompt = {"memory_type": "user_message", "text": query, "relevance": 1.0}
+        source = {
+            "memory_type": "user_message",
+            "text": (
+                "On va procéder autrement : tu poursuis l’audit, évalue les problèmes et "
+                "les fixes, commit sur git les fix, poursuis l’audit sans redémarrer "
+                "Lumina sans t’arrêter; puis en toute fin on redémarre Lumina pour "
+                "vérifier les fixs appliqués."
+            ),
+            "relevance": 0.86,
+        }
+
+        topic = extract_explicit_recall_topic(query).casefold()
+        self.assertIn("poursuivre l’audit", topic)
+        self.assertNotIn("rappelle", topic)
+        self.assertTrue(is_explicit_memory_recall_query(query))
+        filtered = filter_recall_query_records([prior_prompt, source], query=query)
+        self.assertEqual(filtered, [source])
+        result = explicit_recall_source_result(query, filtered)
+        self.assertEqual(result["status"], "supported_verbatim_source")
+        self.assertIn(source["text"], result["answer"])
 
     def test_explicit_recall_discards_prior_recall_prompt_self_matches(self):
         repeated_recall = {

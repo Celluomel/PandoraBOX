@@ -78,6 +78,18 @@ _HISTORICAL_REQUEST_PATTERNS = (
         r"(?P<topic>[^?!.]{1,100})",
         re.IGNORECASE,
     ),
+    # When the user supplies a short description after a colon, use that
+    # description as the retrieval focus while still excluding this current
+    # recall prompt from the candidate pool.
+    re.compile(
+        r"\b(?:rappelle(?:-moi)?|rappeler)\s+"
+        r"(?:(?:uniquement|seulement)\s+)?(?:la|le|les)\s+"
+        r"(?:r[eè]gle|consigne|demande|instruction|formulation)\b"
+        r".{0,100}?\b(?:donn[ée]e?|formul[ée]e?|demand[ée]e?)\s*"
+        r"(?:[:;—-]\s*|(?:concernant|sur|au\s+sujet\s+de)\s+)"
+        r"(?P<topic>[^?!.]{1,100})",
+        re.IGNORECASE,
+    ),
     re.compile(
         r"\bquel(?:le)?s?\s+(?P<topic>[^?!.]{1,100}?)\s+"
         r"(?:ai|avais|aurais)-je\s+"
@@ -116,8 +128,11 @@ _MEMORY_STORE_INSTRUCTION_PATTERNS = (
 
 _SOURCE_ONLY_RECALL_PATTERN = re.compile(
     r"\b(?:rappelle(?:-moi)?|rappeler)\s+"
-    r"(?:uniquement|seulement)\s+ce\s+que\s+je\s+t['’]ai\s+"
-    r"(?:demand[ée](?:e|s|es)?|dit(?:e|es)?|formul[ée](?:e|es)?)\b",
+    r"(?:uniquement|seulement)\s+(?:"
+    r"ce\s+que\s+je\s+t['’]ai\s+(?:demand[ée](?:e|s|es)?|dit(?:e|es)?|formul[ée](?:e|es)?)\b|"
+    r"(?:la|le|les)\s+(?:r[eè]gle|consigne|demande|instruction|formulation)\b"
+    r".{0,100}?\b(?:donn[ée]e?|formul[ée]e?|demand[ée]e?)\s*"
+    r"(?:[:;—-]|concernant|sur|au\s+sujet\s+de))",
     re.IGNORECASE,
 )
 
@@ -472,8 +487,10 @@ def explicit_recall_source_result(
             # semantic retrieval. A same-topic message that merely mentions
             # "audit / harness / cognitive" is not proof of the requested
             # instruction's content.
-            coverage = overlap / max(1, len(focus))
-            if coverage < 0.8:
+            required_overlap = min(
+                len(focus), max(4, math.ceil(len(focus) * 0.5)),
+            )
+            if overlap < required_overlap:
                 continue
         try:
             relevance = max(0.0, min(1.0, float(memory.get("relevance", 0.0))))
