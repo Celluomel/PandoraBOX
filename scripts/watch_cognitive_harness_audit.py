@@ -137,6 +137,23 @@ def compare_snapshots(previous: dict[str, Any] | None,
     }
 
 
+def select_new_cycles(cycles: list[dict[str, Any]],
+                      last_cycle_id: int | None) -> tuple[list[dict[str, Any]], int | None]:
+    """Deduplicate retained cycle receipts and detect an in-process counter reset."""
+    ids = [item.get("cycle_id") for item in cycles if isinstance(item.get("cycle_id"), int)]
+    if not ids:
+        return [], last_cycle_id
+    if last_cycle_id is not None and max(ids) < last_cycle_id:
+        last_cycle_id = None
+    selected = [
+        item for item in cycles
+        if last_cycle_id is None or (
+            isinstance(item.get("cycle_id"), int) and item["cycle_id"] > last_cycle_id
+        )
+    ]
+    return selected, max(ids)
+
+
 def fetch_snapshot(url: str, timeout: float) -> dict[str, Any]:
     request = Request(url, headers={"Accept": "application/json"})
     with urlopen(request, timeout=timeout) as response:
@@ -151,12 +168,25 @@ def fetch_snapshot(url: str, timeout: float) -> dict[str, Any]:
 def run(url: str, output: Path, interval: float, timeout: float,
         once: bool = False) -> int:
     previous = None
+    last_cycle_id: int | None = None
     output.parent.mkdir(parents=True, exist_ok=True)
     print(f"[cognitive-audit-watch] endpoint={url} output={output}", flush=True)
     while True:
         try:
             current = fetch_snapshot(url, timeout)
             delta = compare_snapshots(previous, current)
+            cycles = current["recent_cycle_evidence"]["cycles"]
+            new_cycles, newest_cycle_id = select_new_cycles(cycles, last_cycle_id)
+            if last_cycle_id is not None and newest_cycle_id is not None and newest_cycle_id < last_cycle_id:
+                # Lumina restarted and its in-memory cycle counter reset.
+                previous = None
+                delta = compare_snapshots(None, current)
+            last_cycle_id = newest_cycle_id if newest_cycle_id is not None else last_cycle_id
+            current["recent_cycle_evidence"]["cycles"] = new_cycles
+            delta["cycle_receipt_count"] = len(new_cycles)
+            delta["cycle_receipt_gap"] = max(
+                0, (delta.get("cycle_delta") or 0) - len(new_cycles)
+            )
             record = {"snapshot": current, "delta": delta}
             with output.open("a", encoding="utf-8") as stream:
                 stream.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
@@ -166,7 +196,9 @@ def run(url: str, output: Path, interval: float, timeout: float,
                 f"cycle={current.get('slow_cycle_count')} "
                 f"modules={analysis.get('executed_module_count')}/{analysis.get('module_count')} "
                 f"ticks={analysis.get('total_ticks')} errors={analysis.get('total_errors')} "
-                f"cycle_delta={delta['cycle_delta']} changed_modules={len(delta['module_deltas'])}",
+                f"cycle_delta={delta['cycle_delta']} receipts={len(new_cycles)} "
+                f"receipt_gap={delta['cycle_receipt_gap']} "
+                f"changed_modules={len(delta['module_deltas'])}",
                 flush=True,
             )
             previous = current

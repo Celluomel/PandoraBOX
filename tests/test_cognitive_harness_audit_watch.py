@@ -1,4 +1,6 @@
-from scripts.watch_cognitive_harness_audit import compact_snapshot, compare_snapshots
+from scripts.watch_cognitive_harness_audit import (
+    compact_snapshot, compare_snapshots, select_new_cycles,
+)
 
 
 def _payload(cycle, module_ticks, method_ticks, errors=0):
@@ -62,3 +64,14 @@ def test_compare_snapshots_reports_only_observed_counter_deltas():
     assert module["methods"]["begin_cycle"]["tick_delta"] == 2
     assert module["methods"]["summary_log"]["error_delta"] == 1
     assert "semantic correctness" in delta["interpretation"]
+
+
+def test_select_new_cycles_deduplicates_and_handles_lumina_restart():
+    cycles = [{"cycle_id": 21}, {"cycle_id": 22}, {"cycle_id": 23}]
+    fresh, newest = select_new_cycles(cycles, 22)
+    assert [item["cycle_id"] for item in fresh] == [23]
+    assert newest == 23
+
+    restarted, reset_id = select_new_cycles([{"cycle_id": 2}, {"cycle_id": 3}], 23)
+    assert [item["cycle_id"] for item in restarted] == [2, 3]
+    assert reset_id == 3

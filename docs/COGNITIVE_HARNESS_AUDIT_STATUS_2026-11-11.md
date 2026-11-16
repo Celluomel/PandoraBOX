@@ -2987,3 +2987,9 @@ La collecte de preuves ne dépend plus d'une interrogation manuelle après chaqu
 **Vérification de bout en bout :** le mode `--once` a lu Lumina sur `127.0.0.1:8080`, écrit `logs/cognitive_harness_audit.jsonl` et rapporté le cycle **11974**, **43/43 modules**, **4767 ticks**, **0 erreur**. L'observateur est volontairement distinct du processus Lumina et peut tourner sans le redémarrer. Les nouvelles sorties `method_results` n'apparaîtront dans l'endpoint qu'après le prochain redémarrage groupé, mais l'historisation live peut commencer dès maintenant.
 
 La progression stricte de clôture reste **2/10 = 20 %** : la continuité de collecte et l'attribution par méthode sont maintenant instrumentées et testées, mais il faut encore valider la sortie par scénario et ses effets cognitifs en aval. Le suivi automatique fournit des preuves longitudinales; il ne remplace pas cette évaluation sémantique.
+
+### Collecteur affiné — stockage dédupliqué et lacunes mesurées — 16 novembre 2026
+
+Une mesure directe a montré que l'API conserve trois reçus complets d'environ 39 Ko chacun. Le watcher déduplique maintenant les cycles déjà écrits et conserve, à chaque relevé, les deltas de compteurs; il signale `cycle_receipt_gap` si le compteur progresse plus vite que les reçus conservés par l'API. Il reconnaît aussi une remise à zéro du compteur lors d'un redémarrage de Lumina. Le watcher a été relancé seul (PID 10112) et collecte en arrière-plan, sans redémarrer Lumina.
+
+**Validation :** 21 tests ciblés passent; compilation Python et `git diff --check` passent. Le premier relevé passif a bien capturé trois cycles et les 43 modules actifs. Le processus doit être relancé au prochain démarrage Windows avec `Watch_Cognitive_Audit.bat`; l'historique reste dans `logs/cognitive_harness_audit.jsonl`.
