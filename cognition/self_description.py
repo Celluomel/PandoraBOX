@@ -58,6 +58,34 @@ def is_architecture_query(user_input: str) -> bool:
     )
 
 
+def is_cognitive_audit_status_query(user_input: str) -> bool:
+    """Recognize a request for Lumina's own recorded cognitive-audit state.
+
+    This is an evidence-routing intent, not a topic lookup: it requires both
+    an owned self-reference and a question about the audit's recorded state.
+    """
+    text = " ".join(str(user_input or "").casefold().split())
+    refers_to_audit = bool(re.search(
+        r"\b(?:cognitive\s+audit|audit\s+cognitif|auto[- ]calibration|"
+        r"self[- ]calibration|chercheur\s+cognitif)\b",
+        text,
+    ))
+    refers_to_self = bool(re.search(
+        r"\b(?:your|you|your own|my|ton|ta|tes|toi|tu|votre|vos|lumina['’]s)\b",
+        text,
+    ))
+    asks_for_recorded_state = bool(re.search(
+        r"\b(?:current|recorded|latest|last|status|state|snapshot|cycle|"
+        r"result|attempt|parameter|target|metric|what|which|did|change|"
+        r"actuel|actuelle|enregistré|enregistrée|dernier|dernière|état|"
+        r"statut|instantané|cycle|résultat|tentative|paramètre|cible|mesure|"
+        r"quelle|quelles|quel|quels|quoi|est-ce|a-t-il|as-tu|"
+        r"âge|age)\b",
+        text,
+    ))
+    return refers_to_audit and refers_to_self and asks_for_recorded_state
+
+
 def is_runtime_execution_evidence_query(user_input: str) -> bool:
     """Identify questions asking what current runtime receipts establish.
 
@@ -91,6 +119,8 @@ def is_internal_cognitive_query(user_input: str) -> bool:
     """
     text = " ".join(str(user_input or "").casefold().split())
     if is_architecture_query(text):
+        return True
+    if is_cognitive_audit_status_query(text):
         return True
     # Self-reports about modeled affect are closed-world questions too. They
     # must use the live emotional channels/appraisal receipt, not the generic

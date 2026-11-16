@@ -377,6 +377,46 @@ class HealthDataTests(unittest.TestCase):
         self.assertEqual(status['last_proposal_attempt_audit_relation'], 'older_than_latest_audit')
         self.assertGreaterEqual(status['last_proposal_attempt_age_seconds'], 5400)
 
+    def test_factual_audit_status_response_does_not_promote_historical_attempt(self):
+        now = time.time()
+        audit = CognitiveAuditEngine.__new__(CognitiveAuditEngine)
+        audit._state = AuditState(
+            last_audit_cycle=12080,
+            snapshot_log=[{
+                'slow_cycle': 12080,
+                'timestamp': now - 60,
+                'signal_status': {
+                    'experiment_confirmation_rate': 'measured',
+                    'experiment_resolution_rate': 'measured',
+                },
+                'signal_sample_count': {
+                    'experiment_confirmation_rate': 3,
+                    'experiment_resolution_rate': 3,
+                },
+                'experiment_confirmation_rate': 0.0,
+                'experiment_resolution_rate': 0.0,
+            }],
+            last_proposal_attempt={
+                'slow_cycle': 12040,
+                'timestamp': now - 5400,
+                'status': 'no_causally_mapped_parameter',
+            },
+            proposal_attempt_total=63,
+        )
+        audit._lock = __import__('threading').Lock()
+        audit._process_started_at = now - 500
+        audit._trial_evaluation_in_progress = False
+
+        answer = audit.factual_status_response(
+            "According to your recorded current cognitive audit state, what was the latest attempt?"
+        )
+
+        self.assertIn("cycle 12080", answer)
+        self.assertIn("cycle 12040", answer)
+        self.assertIn("persisted_before_process", answer)
+        self.assertIn("no parameter change is recorded", answer)
+        self.assertIn("not independent measures of cognitive quality", answer)
+
     def test_projection_restores_nested_paths_and_skips_bad_entry(self):
         path = dict(archetype='intensive', cumulative_cost=0.2,
                     progress_rate=0.1, efficiency=0.5, crosses_critical=False,

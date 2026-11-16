@@ -1973,11 +1973,12 @@ Return exactly NONE if nothing should carry forward. Otherwise return one plain 
             from cognition.self_description import (
                 is_architecture_query, is_cognitive_trace_query,
                 is_runtime_execution_evidence_query,
-                is_internal_cognitive_query,
+                is_internal_cognitive_query, is_cognitive_audit_status_query,
             )
             from cognition.long_horizon_planner import LongHorizonPlanner
             _cognitive_trace_query = is_cognitive_trace_query(effective_input)
             _runtime_execution_query = is_runtime_execution_evidence_query(effective_input)
+            _cognitive_audit_status_query = is_cognitive_audit_status_query(effective_input)
             _factual_plan_query = LongHorizonPlanner.is_goal_plan_query(effective_input)
             _architecture_query = (
                 (is_architecture_query(effective_input) or _cognitive_trace_query)
@@ -1991,6 +1992,7 @@ Return exactly NONE if nothing should carry forward. Otherwise return one plain 
             _architecture_query = False
             _cognitive_trace_query = False
             _runtime_execution_query = False
+            _cognitive_audit_status_query = False
             _factual_plan_query = False
             _internal_cognitive_query = False
             logger.debug("Architecture query detection unavailable: %s", _architecture_query_error)
@@ -2495,9 +2497,42 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                 consumes=("turn_input", "self_description_context"),
                 turn_id=_audit_turn_id,
             )
+        if _cognitive_audit_status_query and not _explicit_memory_recall:
+            try:
+                _loop = getattr(self._organism, "_loop", None) if self._organism else None
+                _audit_engine = getattr(_loop, "_cognitive_audit", None) if _loop else None
+                _reporter = getattr(_audit_engine, "factual_status_response", None)
+                if callable(_reporter):
+                    _deterministic_response = _reporter(effective_input)
+                    evidence_fn = getattr(_audit_engine, "factual_status_evidence", None)
+                    report_evidence = evidence_fn() if callable(evidence_fn) else {
+                        "source": "CognitiveAuditEngine.status_summary",
+                    }
+                    self._record_turn_stage(
+                        "cognitive_audit_status_report", "completed",
+                        output=report_evidence,
+                        consumes=("turn_input",),
+                        turn_id=_audit_turn_id,
+                    )
+                else:
+                    self._record_turn_stage(
+                        "cognitive_audit_status_report", "unavailable",
+                        output={"source": "CognitiveAuditEngine.status_summary"},
+                        consumes=("turn_input",),
+                        turn_id=_audit_turn_id,
+                    )
+            except Exception as _audit_report_error:
+                self._record_turn_stage(
+                    "cognitive_audit_status_report", "failed",
+                    str(_audit_report_error),
+                    consumes=("turn_input",),
+                    turn_id=_audit_turn_id,
+                )
         self._record_turn_stage(
             "deterministic_reasoning",
             "selected" if _deterministic_response else "not_selected",
+            consumes=("cognitive_audit_status_report",)
+            if _cognitive_audit_status_query and _deterministic_response else (),
             turn_id=_audit_turn_id,
         )
         if _factual_self_report and not _runtime_execution_query:

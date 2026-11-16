@@ -107,6 +107,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sys
 import threading
 import time
@@ -542,6 +543,119 @@ class CognitiveAuditEngine:
             "committed_params": dict(self._state.committed_params),
             "consecutive_under": dict(self._state.consecutive_under),
         }
+
+    def factual_status_evidence(self) -> Dict[str, Any]:
+        """Return a bounded receipt for a deterministic cognitive-audit report."""
+        status = self.status_summary()
+        attempt = status.get("last_proposal_attempt") or {}
+        snapshot = status.get("last_snapshot") or {}
+        return {
+            "source": "CognitiveAuditEngine.status_summary",
+            "last_audit_cycle": status.get("last_audit_cycle"),
+            "last_snapshot_age_seconds": status.get("last_snapshot_age_seconds"),
+            "last_snapshot_process_scope": status.get("last_snapshot_process_scope"),
+            "performance_target_status": status.get("performance_target_status"),
+            "active_trial": bool(status.get("active_trial")),
+            "committed_parameter_count": len(status.get("committed_params") or {}),
+            "proposal_attempt_count": status.get("proposal_attempt_count"),
+            "last_attempt_status": attempt.get("status"),
+            "last_attempt_cycle": attempt.get("slow_cycle"),
+            "last_attempt_age_seconds": status.get("last_proposal_attempt_age_seconds"),
+            "last_attempt_process_scope": status.get("last_proposal_attempt_process_scope"),
+            "last_attempt_audit_relation": status.get("last_proposal_attempt_audit_relation"),
+            "measured_metric_count": sum(
+                item.get("status") == "measured"
+                for item in (status.get("descriptive_metrics") or {}).values()
+                if isinstance(item, dict)
+            ),
+            "snapshot_metric_count": len(snapshot),
+        }
+
+    def factual_status_response(self, user_input: str = "") -> str:
+        """Render current audit facts without asking the LLM to infer them."""
+        status = self.status_summary()
+        attempt = status.get("last_proposal_attempt") or {}
+        snapshot = status.get("last_snapshot") or {}
+        attempt_status = str(attempt.get("status") or "none")
+        attempt_cycle = attempt.get("slow_cycle")
+        attempt_age = status.get("last_proposal_attempt_age_seconds")
+        attempt_scope = status.get("last_proposal_attempt_process_scope", "unknown")
+        attempt_relation = status.get("last_proposal_attempt_audit_relation", "unknown")
+        snapshot_age = status.get("last_snapshot_age_seconds")
+        snapshot_scope = status.get("last_snapshot_process_scope", "unknown")
+        active_trial = bool(status.get("active_trial"))
+        committed = status.get("committed_params") or {}
+        metrics = status.get("descriptive_metrics") or {}
+
+        def metric(name: str) -> str:
+            item = metrics.get(name) if isinstance(metrics, dict) else None
+            if not isinstance(item, dict):
+                return f"{name}=unavailable"
+            value = item.get("value")
+            count = item.get("sample_count", 0)
+            state = item.get("status", "unknown")
+            return (
+                f"{name}={float(value):.3f} (n={int(count)})"
+                if isinstance(value, (int, float)) and not isinstance(value, bool)
+                else f"{name}={state} (n={int(count) if isinstance(count, int) else 0})"
+            )
+
+        attempt_time = (
+            f"{attempt_age:.0f}s ago" if isinstance(attempt_age, (int, float))
+            else "age unknown"
+        )
+        attempt_cycle_text = str(attempt_cycle) if attempt_cycle is not None else "unknown"
+        current_cycle = status.get("last_audit_cycle")
+        current_cycle_text = str(current_cycle) if current_cycle is not None else "unknown"
+        committed_text = ", ".join(sorted(str(key) for key in committed)) or "none"
+        metrics_text = "; ".join(
+            metric(name) for name in (
+                "experiment_confirmation_rate",
+                "experiment_resolution_rate",
+                "question_resolution_rate",
+                "mean_skill_depth",
+                "belief_confidence_mean",
+            )
+        )
+        is_french = bool(re.search(
+            r"\b(?:quel|quelle|quels|quelles|état|statut|dernier|dernière|"
+            r"enregistré|enregistrée|paramètre|tentative|mesure|as-tu|"
+            r"est-ce|combien|peux-tu)\b",
+            str(user_input or "").casefold(),
+        ))
+        if is_french:
+            attempt_change = (
+                "aucune modification de paramètre n’est enregistrée"
+                if not active_trial and not committed
+                else "un essai actif ou des paramètres engagés sont enregistrés"
+            )
+            return (
+                f"Dernier audit cognitif enregistré : cycle {current_cycle_text}; snapshot "
+                f"âgé de {snapshot_age if snapshot_age is not None else 'inconnu'} s "
+                f"({snapshot_scope}). Cibles de performance validées : "
+                f"{status.get('performance_target_status', 'unknown')}; essai actif : "
+                f"{'oui' if active_trial else 'non'}; paramètres engagés : {committed_text}. "
+                f"Tentatives historiques enregistrées : {status.get('proposal_attempt_count', 0)}. "
+                f"Dernière tentative : {attempt_status}, cycle {attempt_cycle_text}, "
+                f"{attempt_time}, portée {attempt_scope}, {attempt_relation}; "
+                f"{attempt_change}. Mesures descriptives : {metrics_text}. "
+                "Ces métriques ne sont pas des mesures indépendantes de la qualité cognitive."
+            )
+        attempt_change = (
+            "no parameter change is recorded"
+            if not active_trial and not committed
+            else "an active trial or committed parameters are recorded"
+        )
+        return (
+            f"Latest recorded cognitive audit: cycle {current_cycle_text}; snapshot age "
+            f"{snapshot_age if snapshot_age is not None else 'unknown'} s ({snapshot_scope}). "
+            f"Validated performance targets: {status.get('performance_target_status', 'unknown')}; "
+            f"active trial: {'yes' if active_trial else 'no'}; committed parameters: {committed_text}. "
+            f"Recorded proposal attempts (historical total): {status.get('proposal_attempt_count', 0)}. "
+            f"Latest attempt: {attempt_status}, cycle {attempt_cycle_text}, {attempt_time}, "
+            f"scope {attempt_scope}, {attempt_relation}; {attempt_change}. "
+            f"Descriptive metrics: {metrics_text}. These are not independent measures of cognitive quality."
+        )
 
     @staticmethod
     def _snapshot_signal_status(snapshot: Dict[str, Any]) -> Dict[str, str]:

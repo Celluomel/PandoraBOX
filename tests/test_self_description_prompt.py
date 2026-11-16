@@ -9,6 +9,7 @@ from cognition.self_description import (
     SelfDescription,
     affect_self_report_context,
     is_architecture_query,
+    is_cognitive_audit_status_query,
     is_cognitive_trace_query,
     is_internal_cognitive_query,
     is_runtime_execution_evidence_query,
@@ -19,6 +20,15 @@ from cognition.self_description import (
 
 
 class SelfDescriptionPromptTests(unittest.TestCase):
+    def test_cognitive_audit_status_query_requires_owned_recorded_state(self):
+        question = (
+            "According to your recorded current cognitive audit state, "
+            "what was the latest attempt and did it change a parameter?"
+        )
+        self.assertTrue(is_cognitive_audit_status_query(question))
+        self.assertTrue(is_internal_cognitive_query(question))
+        self.assertFalse(is_cognitive_audit_status_query("Explain what a cognitive audit is."))
+
     def test_runtime_execution_evidence_query_is_closed_world(self):
         question = (
             "For the audit, what does the current cognitive execution trace prove? "
