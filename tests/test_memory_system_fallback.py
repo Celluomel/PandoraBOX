@@ -484,6 +484,19 @@ class MemorySystemFallbackTests(unittest.TestCase):
         self.assertTrue(is_explicit_memory_recall_query(prompt["text"]))
         self.assertEqual(filter_recall_query_records([prompt]), [])
 
+    def test_french_recall_of_what_i_asked_is_source_backed_and_filters_prior_prompt(self):
+        queries = (
+            "Rappelle uniquement ce que je t’ai demandé concernant la manière de conduire l’audit du harnais cognitif.",
+            "Rappelle ce que je t'ai demandé concernant la manière de conduire l'audit du harnais cognitif.",
+        )
+        for query in queries:
+            with self.subTest(query=query):
+                self.assertTrue(is_explicit_memory_recall_query(query))
+                topic = extract_explicit_recall_topic(query).casefold()
+                self.assertIn("audit du harnais cognitif", topic)
+                prior_prompt = {"memory_type": "user_message", "text": query}
+                self.assertEqual(filter_recall_query_records([prior_prompt], query=query), [])
+
     def test_explicit_recall_discards_prior_recall_prompt_self_matches(self):
         repeated_recall = {
             "memory_type": "user_message",

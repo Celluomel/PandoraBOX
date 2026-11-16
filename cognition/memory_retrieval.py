@@ -66,6 +66,18 @@ _HISTORICAL_REQUEST_PATTERNS = (
         r"(?P<topic>[^?!.]{1,100})",
         re.IGNORECASE,
     ),
+    # Imperative recall phrasing is common in French chat. Capture only the
+    # historical subject after its framing so retrieval does not search for,
+    # or later quote, a previous "remind me" request as if it were the answer.
+    re.compile(
+        r"\b(?:rappelle(?:-moi)?|rappeler)\s+"
+        r"(?:(?:uniquement|seulement)\s+)?ce\s+que\s+"
+        r"je\s+t['’]ai\s+(?:demand[ée](?:e|s|es)?|dit(?:e|es)?|"
+        r"formul[ée](?:e|es)?)\s+"
+        r"(?:concernant|sur|au\s+sujet\s+de|à\s+propos\s+de)\s+"
+        r"(?P<topic>[^?!.]{1,100})",
+        re.IGNORECASE,
+    ),
     re.compile(
         r"\bquel(?:le)?s?\s+(?P<topic>[^?!.]{1,100}?)\s+"
         r"(?:ai|avais|aurais)-je\s+"
@@ -204,9 +216,9 @@ def extract_explicit_recall_topic(text: str) -> str:
             "", trailing_context, flags=re.IGNORECASE,
         )
         extracted = " ".join(
-            part.strip(" \t\r\n,;:?!«»\"'")
+            part.strip(" \t\r\n,;:?.!«»\"'")
             for part in (leading_context, topic, trailing_context)
-            if part.strip(" \t\r\n,;:?!«»\"'")
+            if part.strip(" \t\r\n,;:?.!«»\"'")
         )
         return extracted[:180].strip() or value
     prefixes = (
