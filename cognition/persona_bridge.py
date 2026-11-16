@@ -5381,10 +5381,31 @@ Memory honesty — two distinct cases:
                 ("world_self_dynamics_model", "wsdm_status"),
                 ("prospective_deliberation", "prospective_status"),
             ):
+                stage_output = {
+                    "status": str(predictive.get(key) or "unavailable"),
+                    "action_type": predictive.get("action_type"),
+                }
+                if stage == "predictive_consequence_model":
+                    stage_output["advisory"] = str(predictive.get("pcm_advisory") or "")
+                elif stage == "world_self_dynamics_model":
+                    stage_output["narrative"] = str(predictive.get("wsdm_narrative") or "")
+                else:
+                    stage_output["advisory"] = str(
+                        predictive.get("prospective_advisory") or ""
+                    )
+                stage_consumes = {
+                    "predictive_consequence_model": ("turn_input",),
+                    "world_self_dynamics_model": ("turn_input",),
+                    "prospective_deliberation": (
+                        "predictive_consequence_model", "world_self_dynamics_model",
+                    ),
+                }.get(stage, ())
                 self._record_turn_stage(
                     stage,
                     str(predictive.get(key) or "unavailable"),
                     str(predictive.get(key.replace("_status", "_error")) or ""),
+                    output=stage_output,
+                    consumes=stage_consumes,
                     turn_id=turn_id,
                 )
             return "\n\n".join(

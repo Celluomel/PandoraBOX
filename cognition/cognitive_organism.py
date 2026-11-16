@@ -1095,6 +1095,7 @@ class CognitiveOrganism:
             "wsdm_status": "unavailable",
             "wsdm_narrative": "",
             "prospective_status": "not_applicable",
+            "prospective_advisory": "",
         }
         loop = getattr(self, "_loop", None)
         ensure_predictive_models = getattr(loop, "ensure_predictive_models", None) if loop else None
@@ -1125,6 +1126,7 @@ class CognitiveOrganism:
                     pcm, wsdm, action, pcm.read_state(), user_id=user_id,
                 )
                 advisory = str(getattr(deliberation, "advisory", "") or "")
+                result["prospective_advisory"] = advisory
                 if advisory:
                     result["pcm_advisory"] = " ".join(
                         part for part in (result["pcm_advisory"], advisory) if part

@@ -101,6 +101,10 @@ class StreamingPredictiveContextTests(unittest.TestCase):
         self.assertEqual(result["pcm_status"], "prepared")
         self.assertEqual(result["wsdm_status"], "prepared")
         self.assertEqual(result["prospective_status"], "completed")
+        self.assertEqual(
+            result["prospective_advisory"],
+            "Compare alternatives before answering.",
+        )
         self.assertIn("Consider the uncertainty.", result["pcm_advisory"])
         self.assertIn("Compare alternatives", result["pcm_advisory"])
         self.assertEqual(result["wsdm_narrative"], "Prior reasoning outcomes are mixed.")
@@ -110,13 +114,21 @@ class StreamingPredictiveContextTests(unittest.TestCase):
 
         bridge = PersonaBridge.__new__(PersonaBridge)
         bridge._turn_trace_lock = threading.Lock()
-        bridge._last_turn_trace = {"turn_id": "turn-123", "stages": {}}
+        bridge._last_turn_trace = {"turn_id": "turn-123", "stages": {
+            "turn_input": {
+                "status": "received", "output_fingerprint": "turn-input-ref",
+            },
+            "cognitive_prompt_context": {
+                "status": "completed", "output_fingerprint": "prompt-context-ref",
+            },
+        }}
         bridge._organism = types.SimpleNamespace(prepare_response_context=Mock(return_value={
             "pcm_status": "prepared",
             "pcm_advisory": "Use cautious inference.",
             "wsdm_status": "prepared",
             "wsdm_narrative": "Recent outcomes vary.",
             "prospective_status": "not_applicable",
+            "prospective_advisory": "",
         }))
 
         context = bridge._prepare_predictive_context(
@@ -140,6 +152,32 @@ class StreamingPredictiveContextTests(unittest.TestCase):
             bridge._last_turn_trace["stages"]["prospective_deliberation"]["status"],
             "not_applicable",
         )
+        for name in (
+            "predictive_consequence_model",
+            "world_self_dynamics_model",
+            "prospective_deliberation",
+        ):
+            self.assertIsNotNone(
+                bridge._last_turn_trace["stages"][name]["output_fingerprint"]
+            )
+        self.assertEqual(
+            bridge._last_turn_trace["stages"]["prospective_deliberation"]["consumes"],
+            [
+                {
+                    "stage": "predictive_consequence_model",
+                    "fingerprint": bridge._last_turn_trace["stages"]["predictive_consequence_model"]["output_fingerprint"],
+                },
+                {
+                    "stage": "world_self_dynamics_model",
+                    "fingerprint": bridge._last_turn_trace["stages"]["world_self_dynamics_model"]["output_fingerprint"],
+                },
+            ],
+        )
+        for name in ("predictive_consequence_model", "world_self_dynamics_model"):
+            self.assertEqual(
+                bridge._last_turn_trace["stages"][name]["consumes"],
+                [{"stage": "turn_input", "fingerprint": "turn-input-ref"}],
+            )
 
     def test_persona_bridge_links_persisted_wsdm_outcome_to_same_turn(self):
         from cognition.persona_bridge import PersonaBridge
