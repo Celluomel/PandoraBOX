@@ -130,6 +130,7 @@ class ModuleTickLog:
                 "last_error": None,
                 "last_output": None,
                 "observed_methods": [],
+                "method_results": {},
             })
             item["initialized"] = bool(initialized)
             item["cadence"] = cadence
@@ -163,17 +164,33 @@ class ModuleTickLog:
                 "last_error": None,
                 "last_output": None,
                 "observed_methods": [],
+                "method_results": {},
             })
             item["tick_count"] += 1
             item["last_tick_at"] = now
             item["last_duration_ms"] = round(max(0.0, duration_ms), 3)
             if method not in item["observed_methods"]:
                 item["observed_methods"] = (item["observed_methods"] + [method])[-12:]
+            method_result = item.setdefault("method_results", {}).setdefault(method, {
+                "tick_count": 0,
+                "error_count": 0,
+                "last_tick_at": None,
+                "last_duration_ms": None,
+                "last_status": "not_observed",
+                "last_error_type": None,
+                "last_output": None,
+            })
+            method_result["tick_count"] += 1
+            method_result["last_tick_at"] = now
+            method_result["last_duration_ms"] = round(max(0.0, duration_ms), 3)
             if error is None:
                 item["last_status"] = "completed"
                 item["last_success_at"] = now
                 item["last_output"] = summarize_output(output)
                 item["state"] = _state_for_output(item["last_output"])
+                method_result["last_status"] = "completed"
+                method_result["last_error_type"] = None
+                method_result["last_output"] = item["last_output"]
             else:
                 item["error_count"] += 1
                 item["last_status"] = "failed"
@@ -192,6 +209,10 @@ class ModuleTickLog:
                 }
                 item["last_output"] = None
                 item["state"] = "error"
+                method_result["error_count"] += 1
+                method_result["last_status"] = "failed"
+                method_result["last_error_type"] = type(error).__name__
+                method_result["last_output"] = None
 
     def record_skip(self, name: str, status: str, *,
                     metrics: dict[str, Any] | None = None) -> None:
@@ -214,7 +235,17 @@ class ModuleTickLog:
 
     def snapshot(self) -> dict[str, dict[str, Any]]:
         with self._lock:
-            return {name: dict(item) for name, item in self._modules.items()}
+            return {
+                name: {
+                    **item,
+                    "observed_methods": list(item.get("observed_methods", [])),
+                    "method_results": {
+                        method: dict(result)
+                        for method, result in item.get("method_results", {}).items()
+                    },
+                }
+                for name, item in self._modules.items()
+            }
 
     def analysis(self) -> dict[str, Any]:
         """Aggregate execution/output evidence without inferring semantic correctness."""

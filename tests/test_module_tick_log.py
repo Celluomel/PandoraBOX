@@ -49,6 +49,55 @@ class ModuleTickLogTests(unittest.TestCase):
         self.assertEqual(state["state"], "output_unverified")
         self.assertEqual(ticks.analysis()["last_output_qualities"], {"no_return_unverified": 1})
 
+    def test_module_keeps_per_method_outputs_when_auxiliary_method_returns_none(self):
+        ticks = ModuleTickLog()
+        ticks.register("cognitive_governor", initialized=True)
+        ticks.record(
+            "cognitive_governor", "begin_cycle", started_at=1.0,
+            duration_ms=1.0, output={"mode": "structured", "budget_total": 4},
+        )
+        ticks.record(
+            "cognitive_governor", "summary_log", started_at=2.0,
+            duration_ms=1.0, output=None,
+        )
+
+        module = ticks.snapshot()["cognitive_governor"]
+        self.assertEqual(module["last_output"]["quality"], "no_return_unverified")
+        self.assertEqual(
+            module["method_results"]["begin_cycle"]["last_output"]["quality"],
+            "present",
+        )
+        self.assertEqual(
+            module["method_results"]["begin_cycle"]["last_output"]["keys"],
+            ["budget_total", "mode"],
+        )
+        self.assertEqual(
+            module["method_results"]["summary_log"]["last_output"]["quality"],
+            "no_return_unverified",
+        )
+
+    def test_per_method_failure_does_not_overwrite_other_method_receipt(self):
+        ticks = ModuleTickLog()
+        ticks.register("attention", initialized=True)
+        ticks.record(
+            "attention", "compute_and_write", started_at=1.0,
+            duration_ms=1.0, output={"primary_focus": "memory"},
+        )
+        try:
+            raise ValueError("private detail")
+        except ValueError as exc:
+            ticks.record(
+                "attention", "decay_context", started_at=2.0,
+                duration_ms=1.0, error=exc,
+            )
+
+        methods = ticks.snapshot()["attention"]["method_results"]
+        self.assertEqual(methods["compute_and_write"]["last_status"], "completed")
+        self.assertEqual(methods["compute_and_write"]["last_output"]["quality"], "present")
+        self.assertEqual(methods["decay_context"]["last_status"], "failed")
+        self.assertEqual(methods["decay_context"]["last_error_type"], "ValueError")
+        self.assertNotIn("private detail", repr(methods))
+
     def test_empty_and_uninspectable_outputs_are_not_marked_healthy(self):
         ticks = ModuleTickLog()
         ticks.register("empty", initialized=True)
