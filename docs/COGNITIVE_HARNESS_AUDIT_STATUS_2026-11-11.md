@@ -2860,4 +2860,12 @@ Les deux producteurs du cycle causal avaient le même mode d’exécution asynch
 
 **Correction locale :** les deux ticks retournent maintenant un reçu codé (cycle, statut, raison, worker programmé); un seul worker peut être en vol, et la réservation est libérée dans `finally` ou si le thread ne démarre pas. Les tests maintiennent un worker en attente et vérifient le rejet du lancement suivant.
 
-**Validation :** les six suites cognitives ciblées totalisent maintenant **152 passés**, 9 avertissements historiques; le sous-ensemble async seul passe 5 tests. `py_compile` et `git diff --check` passent. Ces deux derniers fichiers et leur test sont dans le prochain commit local; ils ne sont pas chargés dans l’instance Lumina active. La validation de l’effet des signatures causales sur les plans et des quatre écritures de feedback reste à faire après chargement.
+**Validation :** les six suites cognitives ciblées totalisent maintenant **152 passés**, 9 avertissements historiques; le sous-ensemble async seul passe 5 tests. `py_compile` et `git diff --check` passent. Les deux modules et leur test ont été poussés sous `000a129`; ils ne sont pas chargés dans l’instance Lumina active. La validation de l’effet des signatures causales sur les plans et des quatre écritures de feedback reste à faire après chargement.
+
+### Relevé de fin de lot — processus actif et synchronisation Git — 16 novembre 2026
+
+Lecture du port local après le push `000a129` : Lumina répond `ready=true`, internal loop `running=true`, cycle lent **11856**. Le registre annonce 43 modules, 43 exécutés, 2247 ticks, zéro erreur instrumentée; 17 sorties sont classées par l’ancien processus `healthy` et 26 restent `output_unverified`. Ce processus n’a pas chargé les nouveaux noms d’état ni les nouveaux reçus : il faut interpréter `healthy` comme le comportement de l’ancien code, pas comme validation cognitive.
+
+La télémétrie de but reste cohérente et distincte du snapshot collé plus tôt : `knowledge integration` à `2/4`, étape suivante `bisociative_hypothesis`, dernier reçu `self_question: success` au cycle `11844`. Il y a donc une progression enregistrée récente; le contenu et la qualité de la prochaine hypothèse ne sont pas encore évalués.
+
+Le commit local et `origin/main` sont identiques : `000a12992648453db2b9963c5bbebc2550c0d0c5`. Des modifications locales préexistantes Body, pages et outils restent hors du commit d’audit; elles n’ont pas été incorporées dans ces commits sélectifs. Les correctifs actuels attendent encore un seul redémarrage groupé pour la preuve live. La progression du plan reste **2/10 = 20 %** jusqu’à validation des reçus chargés, de leurs sauvegardes et de leurs effets aval.
