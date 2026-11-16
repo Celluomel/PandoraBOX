@@ -2919,3 +2919,13 @@ La revue a trouvé deux autres producteurs actifs sans réservation single-fligh
 **Validation locale :** les suites ciblées passent **168 tests**, 9 avertissements de dépendances; compilation et `git diff --check` passent. Le test existant confirme que les échanges humains ne sont pas utilisés par FluxMindModel; les nouveaux tests vérifient single-flight et attribution des reçus.
 
 Les scores lexicaux du modèle Flux et la qualité des révisions LLM ne sont pas encore validés sur des échanges représentatifs. Progression globale inchangée : **2/10 = 20 %**; ces correctifs rendent l’exécution démontrable mais ne prouvent pas la qualité cognitive.
+
+### AutonomousReflectionEngine — LLM hors du tick de boucle lente — 16 novembre 2026
+
+`AutonomousReflectionEngine.tick()` appelait directement l’un des quatre modes, chacun pouvant réserver puis attendre une génération LLM. Le slow cycle de l’InternalThoughtLoop pouvait donc rester bloqué jusqu’à la fin du modèle, empêchant les modules suivants de tourner à leur cadence et dégradant l’attribution du cycle.
+
+**Correction locale :** le tick choisit le mode et le niveau de réflexion, réserve un seul worker puis retourne immédiatement un reçu. Le worker conserve l’identifiant de cycle, exécute le mode et rattache un reçu de fin indiquant si un ReflectionRecord a réellement été écrit, son statut de grounding et le nombre de cibles de stockage. Le forçage d’une synthèse d’évolution n’est consommé qu’après le lancement réussi du worker.
+
+**Validation locale :** huit suites ciblées, dont grounding de réflexion, tests async, traces de cycle, objectifs et mémoire, passent **170 tests**, 9 avertissements historiques; compilation et `git diff --check` passent. Le test vérifie qu’un worker différé ne bloque pas le tick, qu’un second ne démarre pas et que l’absence d’enregistrement est rapportée comme skip.
+
+Cela corrige un blocage du cycle interne, mais pas la qualité des réflexions : les sorties doivent encore être confrontées à des snapshots représentatifs et à leurs effets réels sur identité, workspace, curiosité et mémoire. Le score de clôture demeure **2/10 = 20 %** jusqu’à validation live groupée et évaluation sémantique.

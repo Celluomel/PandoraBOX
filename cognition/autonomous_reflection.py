@@ -166,6 +166,8 @@ class AutonomousReflectionEngine:
         self._ai   = ai_system
         self._path = Path(path)
         self._lock = threading.RLock()
+        self._worker_pending = False
+        self._last_worker_cycle: Optional[int] = None
         self._state = ReflectionState()
         self._load()
 
@@ -179,20 +181,14 @@ class AutonomousReflectionEngine:
 
     # ── Public API ────────────────────────────────────────────────────────────
 
-    def tick(self, slow_cycle: int) -> None:
+    def tick(self, slow_cycle: int) -> Dict[str, Any]:
         """
         Called once per slow cycle from InternalThoughtLoop.
         Dispatches whichever reflection mode is due, if any.
         Always non-fatal.
         """
         try:
-            # v51: MotivationalField coherence_gap sets this flag when
-            # identity integration is overdue — run evolution synthesis
-            # immediately regardless of normal schedule.
-            if getattr(self, '_force_evolution_synthesis', False):
-                self._force_evolution_synthesis = False
-                self._run_evolution_synthesis(slow_cycle)
-                return
+            forced = bool(getattr(self, "_force_evolution_synthesis", False))
 
             # v50: gate check — reflection always runs but depth varies
             _depth = "deep"
@@ -205,26 +201,94 @@ class AutonomousReflectionEngine:
             except Exception:
                 pass
             # Store depth hint so _llm_call can read it
-            self._reflection_depth = _depth
-
             if _depth == "consolidate_only":
-                # Only run memory consolidation, skip LLM calls
-                return
+                return {"outcome_status": "skipped", "reason_code": "reflection_depth_consolidate_only", "cycle": slow_cycle}
 
-            if slow_cycle % EVOLUTION_EVERY_N == 0 and slow_cycle > 0:
-                self._run_evolution_synthesis(slow_cycle)
+            mode = (
+                "evolution" if forced else
+                "evolution" if slow_cycle % EVOLUTION_EVERY_N == 0 and slow_cycle > 0 else
+                "contradiction" if slow_cycle % CONTRADICTION_EVERY_N == 0 and slow_cycle > 0 else
+                "goal_coherence" if slow_cycle % GOAL_COHERENCE_EVERY_N == 0 and slow_cycle > 0 else
+                "wonder" if slow_cycle % OPEN_WONDER_EVERY_N == 0 and slow_cycle > 0 else
+                None
+            )
+            if mode is None:
+                return {"outcome_status": "skipped", "reason_code": "reflection_cadence_not_due", "cycle": slow_cycle}
 
-            elif slow_cycle % CONTRADICTION_EVERY_N == 0 and slow_cycle > 0:
-                self._run_contradiction_surfacing(slow_cycle)
-
-            elif slow_cycle % GOAL_COHERENCE_EVERY_N == 0 and slow_cycle > 0:
-                self._run_goal_coherence_reasoning(slow_cycle)
-
-            elif slow_cycle % OPEN_WONDER_EVERY_N == 0 and slow_cycle > 0:
-                self._run_open_wondering(slow_cycle)
+            with self._lock:
+                if self._worker_pending:
+                    return {"outcome_status": "skipped", "reason_code": "reflection_already_running", "cycle": slow_cycle}
+                self._worker_pending = True
+                self._last_worker_cycle = slow_cycle
+            try:
+                worker = threading.Thread(
+                    target=self._run_mode_guarded, args=(mode, slow_cycle, _depth),
+                    daemon=True, name=f"reflection-{mode}",
+                )
+                worker.start()
+            except Exception:
+                with self._lock:
+                    self._worker_pending = False
+                logger.exception("[AutonomousReflection] worker start failed")
+                return {"outcome_status": "failed", "reason_code": "worker_start_failed", "cycle": slow_cycle}
+            if forced:
+                self._force_evolution_synthesis = False
+            return {"outcome_status": "scheduled", "reason_code": f"reflection_{mode}_started", "cycle": slow_cycle}
 
         except Exception as e:
             logger.debug(f"[AutonomousReflection] tick error (non-fatal): {e}")
+            return {"outcome_status": "failed", "reason_code": "reflection_tick_error", "cycle": slow_cycle}
+
+    def _run_mode_guarded(self, mode: str, slow_cycle: int, depth: str) -> None:
+        try:
+            with self._lock:
+                before_count = int(self._state.total_reflections)
+            self._reflection_depth = depth
+            runners = {
+                "evolution": self._run_evolution_synthesis,
+                "contradiction": self._run_contradiction_surfacing,
+                "goal_coherence": self._run_goal_coherence_reasoning,
+                "wonder": self._run_open_wondering,
+            }
+            runners[mode](slow_cycle)
+            with self._lock:
+                records = list(self._state.reflection_log)
+                after_count = int(self._state.total_reflections)
+            matching = next(
+                (record for record in reversed(records)
+                 if int(record.get("slow_cycle", -1)) == slow_cycle and record.get("mode") == mode),
+                None,
+            )
+            outcome = {
+                "outcome_status": "completed" if matching else "skipped",
+                "reason_code": "reflection_recorded" if matching else "no_llm_output_or_record",
+                "mode": mode,
+                "reflection_recorded": matching is not None,
+                "reflection_count_delta": max(0, after_count - before_count),
+                "grounding_status": str(matching.get("grounding_status", "unknown")) if matching else "unknown",
+                "stored_target_count": len(matching.get("stored_to", [])) if matching else 0,
+            }
+            self._record_async_completion(slow_cycle, outcome["outcome_status"], outcome)
+        except Exception as exc:
+            self._record_async_completion(
+                slow_cycle, "failed",
+                {"outcome_status": "failed", "reason_code": "reflection_worker_error", "mode": mode},
+                type(exc).__name__,
+            )
+            raise
+        finally:
+            with self._lock:
+                self._worker_pending = False
+
+    def _record_async_completion(
+        self, slow_cycle: int, status: str, output: Dict[str, Any],
+        error_type: Optional[str] = None,
+    ) -> None:
+        loop = getattr(self._o, "_loop", None)
+        recorder = getattr(loop, "record_async_cycle_stage", None)
+        if callable(recorder):
+            recorder(slow_cycle, "autonomous_reflection.worker", status,
+                     output=output, error_type=error_type)
 
     # ── Mode 1: Evolution synthesis ───────────────────────────────────────────
 

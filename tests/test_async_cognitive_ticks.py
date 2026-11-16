@@ -26,6 +26,7 @@ from cognition.narrative_compression import COMPRESS_EVERY_N, NarrativeCompressi
 from cognition.cognitive_immune_system import IMMUNE_EVERY_N, CognitiveImmuneSystem
 from cognition.flux_mind_model import UPDATE_EVERY_N, FluxMindModel
 from cognition.contradiction_belief_reviser import REVISION_EVERY_N, ContradictionBeliefReviser
+from cognition.autonomous_reflection import EVOLUTION_EVERY_N, AutonomousReflectionEngine
 
 
 class _DeferredThread:
@@ -447,6 +448,31 @@ class AsyncCognitiveTickTests(unittest.TestCase):
         _DeferredThread.workers[0].target(*_DeferredThread.workers[0].args)
         self.assertFalse(reviser._worker_pending)
         self.assertEqual(completions[0][0][:3], (REVISION_EVERY_N, "contradiction_belief_reviser.worker", "completed"))
+
+    def test_autonomous_reflection_dispatch_is_single_flight_and_nonblocking(self):
+        engine = AutonomousReflectionEngine.__new__(AutonomousReflectionEngine)
+        engine._lock = threading.RLock()
+        engine._worker_pending = False
+        engine._last_worker_cycle = None
+        engine._force_evolution_synthesis = False
+        engine._state = SimpleNamespace(total_reflections=0, reflection_log=[])
+        engine._o = SimpleNamespace()
+        completions = []
+        recorder = lambda *args, **kwargs: completions.append((args, kwargs))
+        engine._o._loop = SimpleNamespace(record_async_cycle_stage=recorder)
+        engine._run_evolution_synthesis = lambda cycle: None
+
+        with patch("cognition.autonomous_reflection.threading.Thread", _DeferredThread):
+            off_cycle = engine.tick(1)
+            first = engine.tick(EVOLUTION_EVERY_N)
+            second = engine.tick(EVOLUTION_EVERY_N * 2)
+
+        self.assertEqual(off_cycle["reason_code"], "reflection_cadence_not_due")
+        self.assertEqual(first["outcome_status"], "scheduled")
+        self.assertEqual(second["reason_code"], "reflection_already_running")
+        _DeferredThread.workers[0].target(*_DeferredThread.workers[0].args)
+        self.assertFalse(engine._worker_pending)
+        self.assertEqual(completions[0][0][:3], (EVOLUTION_EVERY_N, "autonomous_reflection.worker", "skipped"))
 
 
 if __name__ == "__main__":
