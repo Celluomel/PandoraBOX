@@ -2993,3 +2993,7 @@ La progression stricte de clôture reste **2/10 = 20 %** : la continuité de col
 Une mesure directe a montré que l'API conserve trois reçus complets d'environ 39 Ko chacun. Le watcher déduplique maintenant les cycles déjà écrits et conserve, à chaque relevé, les deltas de compteurs; il signale `cycle_receipt_gap` si le compteur progresse plus vite que les reçus conservés par l'API. Il reconnaît aussi une remise à zéro du compteur lors d'un redémarrage de Lumina. Le watcher a été relancé seul (PID 10112) et collecte en arrière-plan, sans redémarrer Lumina.
 
 **Validation :** 21 tests ciblés passent; compilation Python et `git diff --check` passent. Le premier relevé passif a bien capturé trois cycles et les 43 modules actifs. Le processus doit être relancé au prochain démarrage Windows avec `Watch_Cognitive_Audit.bat`; l'historique reste dans `logs/cognitive_harness_audit.jsonl`.
+
+### Reprise automatique après redémarrage du PC — 16 novembre 2026
+
+La tâche planifiée utilisateur `Lumina Cognitive Harness Audit Watch` est enregistrée (`State=Ready`, déclencheur à l'ouverture de session, droits utilisateur standard, instances multiples ignorées). Elle relance le watcher passif avec un intervalle de 30 secondes et reprend le même journal JSONL. Dans la session actuelle, le watcher reste actif sous PID 10112; aucun redémarrage de Lumina n'a été effectué.
