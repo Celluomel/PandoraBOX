@@ -795,7 +795,8 @@ class SelfDescription:
             lines.extend([
                 "RUNTIME MODULE TICK SNAPSHOT (this process since its latest start; not a full semantic audit):",
                 "A tick proves the instrumented method returned without an observed exception. "
-                "state=healthy does not prove its result is correct; quality=empty means no value was returned. "
+                "state=output_present_unvalidated means output shape was present, not that reasoning is correct; "
+                "quality=empty or no_return_unverified means no usable value was returned. "
                 "initialized_unobserved means no instrumented call was observed in this process window.",
             ])
             for name, entry in sorted(module_tick_snapshot.items()):

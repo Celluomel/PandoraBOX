@@ -114,7 +114,7 @@ class ModuleTickLogTests(unittest.TestCase):
         state = ticks.snapshot()["periodic"]
         self.assertEqual(state["tick_count"], 1)
         self.assertEqual(state["skip_count"], 1)
-        self.assertEqual(state["state"], "healthy")
+        self.assertEqual(state["state"], "output_present_unvalidated")
 
     def test_internal_loop_probe_records_real_call_and_output_quality(self):
         loop = InternalThoughtLoop.__new__(InternalThoughtLoop)
@@ -177,7 +177,7 @@ class ModuleTickLogTests(unittest.TestCase):
         self.assertIsNone(result)
         self.assertEqual(tick["tick_count"], 1)
         self.assertEqual(tick["last_status"], "completed")
-        self.assertEqual(tick["state"], "healthy")
+        self.assertEqual(tick["state"], "output_present_unvalidated")
         self.assertEqual(tick["last_output"]["quality"], "present")
         self.assertNotIn("no_eligible_goals", repr(tick["last_output"]))
 

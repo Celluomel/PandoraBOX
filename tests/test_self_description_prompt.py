@@ -211,7 +211,7 @@ class SelfDescriptionPromptTests(unittest.TestCase):
         self.assertIn("example_module: state=healthy; ticks=2; errors=0", context)
         self.assertIn("last_output_quality=empty", context)
         self.assertIn("conditional_module: state=initialized_unobserved; ticks=0", context)
-        self.assertIn("does not prove its result is correct", context)
+        self.assertIn("not that reasoning is correct", context)
         self.assertIn("trace proves recorded execution and supplied context", context)
         self.assertIn("cause is unverified", context)
 

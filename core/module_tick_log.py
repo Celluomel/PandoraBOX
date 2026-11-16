@@ -72,13 +72,13 @@ def summarize_output(value: Any) -> dict[str, Any]:
 
 
 def _state_for_output(output: dict[str, Any] | None) -> str:
-    """Separate successful execution from outputs that are not inspectable."""
+    """Describe observable output shape without implying semantic correctness."""
     quality = str((output or {}).get("quality", "unknown"))
     if quality == "invalid_numeric":
         return "degraded"
     if quality in {"empty", "no_return_unverified", "shape_only", "unknown"}:
         return "output_unverified"
-    return "healthy"
+    return "output_present_unvalidated"
 
 
 class ModuleTickLog:

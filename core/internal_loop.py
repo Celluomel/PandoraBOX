@@ -730,7 +730,7 @@ class InternalThoughtLoop:
                     "output_unverified" if quality in {
                         "empty", "no_return_unverified", "shape_only", "unknown"
                     } else
-                    "healthy"
+                    "output_present_unvalidated"
                 )
         return snapshot
 
