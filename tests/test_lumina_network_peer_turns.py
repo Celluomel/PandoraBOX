@@ -277,6 +277,33 @@ class PeerHistoryIsolationTests(unittest.TestCase):
             bridge._last_turn_trace["pipeline_integrity"]["status"], "consistent",
         )
 
+    def test_pipeline_integrity_accepts_deterministic_body_action_reply(self):
+        from cognition.persona_bridge import PersonaBridge
+
+        bridge = PersonaBridge.__new__(PersonaBridge)
+        bridge._turn_trace_lock = threading.Lock()
+        bridge._last_turn_trace = {
+            "scope": "human",
+            "stages": {
+                "readiness": {"status": "passed"},
+                "input_safety": {"status": "passed"},
+                "body_action_gate": {"status": "checked"},
+                "body_action_resolution": {"status": "completed"},
+                "output_safety": {"status": "passed"},
+                "response_finalization": {"status": "completed"},
+                "response": {"status": "completed"},
+                "deterministic_body_response": {"status": "completed"},
+            },
+        }
+
+        bridge._finish_turn_trace("completed")
+        integrity = bridge._last_turn_trace["pipeline_integrity"]
+
+        self.assertEqual(integrity["status"], "consistent")
+        self.assertEqual(integrity["execution_path"], "deterministic_body_action")
+        self.assertEqual(integrity["required_core_stages"], 8)
+        self.assertEqual(integrity["missing_core_stages"], [])
+
     def test_pipeline_integrity_flags_out_of_order_stages(self):
         from cognition.persona_bridge import PersonaBridge
 
@@ -467,6 +494,9 @@ class PeerHistoryIsolationTests(unittest.TestCase):
         self.assertIn("PC camera is live", prompt)
         self.assertIn("current PC camera observation", prompt)
         self.assertIn("Body sensor snapshot", prompt)
+        self.assertIn("`sensor.*` is sensor measurement", prompt)
+        self.assertIn("learned capability history is not a sensor reading", prompt)
+        self.assertIn("context injection alone does not prove live telemetry", prompt)
         self.assertEqual(body_context, "Body sensor snapshot")
         self.assertEqual(camera_context, "PC camera is live")
         bridge._local_camera_prompt_context.assert_called_once_with()
@@ -478,7 +508,7 @@ class PeerHistoryIsolationTests(unittest.TestCase):
         )
         self.assertEqual(
             bridge._last_turn_trace["stages"]["body_observation_context"]["status"],
-            "injected",
+            "no_current_evidence",
         )
 
     def test_real_persona_stream_wrapper_runs_peer_scope_and_records_policy_trace(self):
@@ -632,6 +662,30 @@ class PeerHistoryIsolationTests(unittest.TestCase):
 
                 self.assertEqual(result, {"status": "failed", "error_type": expected})
                 self.assertNotIn("private provider detail", str(result))
+
+    def test_deferred_continuity_rejects_truncated_provider_output_explicitly(self):
+        from cognition.persona_bridge import PersonaBridge
+
+        class _Provider:
+            kwargs = None
+
+            def generate_bare_result(self, *args, **kwargs):
+                self.kwargs = kwargs
+                return {"status": "truncated", "text": "partial note"}
+
+        provider = _Provider()
+        bridge = PersonaBridge.__new__(PersonaBridge)
+        bridge._system = object()
+        bridge._external_llm_fn = provider.generate_bare_result
+        bridge._reflection_lock = threading.Lock()
+        bridge._reflection_epochs = {}
+
+        result = bridge.run_deferred_analysis("question", "answer", "fred", 0)
+
+        self.assertEqual(
+            result, {"status": "failed", "error_type": "ProviderTruncatedOutput"}
+        )
+        self.assertEqual(provider.kwargs["max_tokens"], 192)
 
 
 class _FakePersona:

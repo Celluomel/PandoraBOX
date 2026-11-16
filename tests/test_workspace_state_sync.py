@@ -50,3 +50,13 @@ def test_global_workspace_focus_alone_is_included_in_prompt_fragment():
 
 def test_global_workspace_prompt_omits_empty_state():
     assert _global_workspace_prompt_fragment(GlobalWorkspace().get_state()) == ""
+
+
+def test_published_winner_overrides_lagging_workspace_snapshot_focus():
+    state = GlobalWorkspace().get_state()
+
+    fragment = _global_workspace_prompt_fragment(
+        state, published_focus="selected cognitive goal",
+    )
+
+    assert fragment == "[Global workspace] focus: selected cognitive goal"

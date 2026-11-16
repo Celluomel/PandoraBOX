@@ -1774,7 +1774,10 @@ ASSISTANT RESPONSE:
 Write at most 70 words, in the user's language, only if a concise carry-forward note would materially help answer a likely follow-up. Preserve explicit user corrections, constraints, unresolved requests, or commitments. Do not infer personal facts or emotions, invent missing details, praise the exchange, answer the user, or repeat the response. If nothing merits carrying forward, return exactly NONE."""
             result = generate_result(
                 prompt,
-                max_tokens=120,
+                # 70 words in French can exceed 120 model tokens. Keep enough
+                # room for a complete carry-forward note; truncated output is
+                # still rejected below rather than stored as memory.
+                max_tokens=192,
                 temperature=0.1,
             )
             provider_status = str(result.get("status") or "")
@@ -1787,6 +1790,7 @@ Write at most 70 words, in the user's language, only if a concise carry-forward 
                 error_type = {
                     "empty": "EmptyProviderOutput",
                     "error": "ProviderError",
+                    "truncated": "ProviderTruncatedOutput",
                 }.get(provider_status, "UnexpectedProviderStatus")
                 return {"status": "failed", "error_type": error_type}
             note = str(result.get("text") or "").strip()

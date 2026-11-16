@@ -118,7 +118,9 @@ from cognition.preference_engine import PreferenceEngine
 logger = logging.getLogger(__name__)
 
 
-def _global_workspace_prompt_fragment(workspace_state: Any) -> str:
+def _global_workspace_prompt_fragment(
+    workspace_state: Any, *, published_focus: str | None = None,
+) -> str:
     """Render the current Global Workspace focus and supporting context.
 
     The selected focus is meaningful on its own. Requiring hypotheses or an
@@ -128,7 +130,9 @@ def _global_workspace_prompt_fragment(workspace_state: Any) -> str:
         return ""
     hypotheses = getattr(workspace_state, "active_hypotheses", None) or []
     policy = getattr(workspace_state, "executive_policy", None) or {}
-    focus = getattr(workspace_state, "focus", None)
+    # The post-arbitration winner on the organism is the canonical published
+    # focus. The shared WorkspaceState snapshot can lag that publication.
+    focus = published_focus or getattr(workspace_state, "focus", None)
     if not (hypotheses or policy or focus):
         return ""
 
@@ -738,7 +742,15 @@ class CognitiveOrganism:
             if _ws_state is None and getattr(self, "workspace", None) is not None:
                 _ws_state = self.workspace.get_state()
             if _ws_state is not None:
-                _gw_frag = _global_workspace_prompt_fragment(_ws_state)
+                _published_winner = getattr(self, "_v32_workspace_winner", None)
+                _published_focus = None
+                if isinstance(_published_winner, dict) and _published_winner.get("type") != "no_winner":
+                    _published_focus = str(
+                        _published_winner.get("topic") or _published_winner.get("name") or ""
+                    ).strip() or None
+                _gw_frag = _global_workspace_prompt_fragment(
+                    _ws_state, published_focus=_published_focus,
+                )
                 if _gw_frag:
                     budget.add("cognitive_pressure", "global_workspace", _gw_frag)
         except Exception as _gw_err:
