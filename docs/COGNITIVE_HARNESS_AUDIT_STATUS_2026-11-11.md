@@ -2961,3 +2961,11 @@ La progression de clôture demeure **2/10 = 20 %** : le correctif améliore la p
 **Validation locale :** la suite async vérifie le cycle non dû, l’absence de worker doublon, l’état pending et le reçu ultérieur d’acceptation; les huit suites ciblées passent **174 tests**, 9 avertissements historiques. Compilation et `git diff --check` passent.
 
 Cette correction réduit le risque de blocage du slow cycle et rend la chaîne d’outreach observable; elle ne valide pas la pertinence cognitive d’un message ni l’effet relationnel. L’évaluation multi-scénarios et le statut global **2/10 = 20 %** ne changent pas.
+
+### Contrôle live après redémarrage groupé — 16 novembre 2026
+
+Lumina a été redémarrée depuis `start.bat` avec `LUMINA_MODULE_EXECUTION_AUDIT=1`. Le premier cycle lent nouveau, **11922**, est terminé (`status=completed`, **3,526 ms**). Le registre signale **34/43 modules observés**, **90 ticks**, **0 erreur instrumentée**; états : 30 sorties présentes mais non validées sémantiquement, 9 skips par politique, 4 sorties non vérifiées. Le profil Python du processus compte 291 fichiers `.py` exécutés sur 553 fichiers du dépôt; les 262 autres incluent des modules optionnels, conditionnels, tests et utilitaires, et ne sont pas automatiquement des modules manquants.
+
+Les ticks live de `CognitiveAuditEngine`, `ProactiveOutreach`, `AutonomousExperimentation` et `AutonomousReflection` ont tous renvoyé une sortie structurée et une raison précise de cadence non due sur ce cycle. Cela confirme que le nouveau code est chargé et que ces fonctions ne sont pas bloquées à chaque cycle. Aucun travailleur lourd n’était dû; aucun reçu de fin asynchrone n’a encore été observé en live. L’exécution réelle à cadence due et l’effet de ces sorties restent à vérifier.
+
+Le premier cycle ne clôt aucune des dix pistes : la progression reste **2/10 = 20 %**. Les prochaines preuves recherchées sont les reçus async à cadence due, puis des scénarios de tour reliant mémoire/profil/contexte au prompt et à la réponse, ainsi que la décision pensée→objectif→plan. Le serveur reste actif; aucun autre redémarrage n’est nécessaire pour ces analyses hors ligne. Les chemins qui exigent une nouvelle instance n’ont pas encore été revalidés après cette session.
