@@ -21,6 +21,8 @@ from cognition.aspirational_synthesis_engine import (
 from cognition.temporal_projection import PROJECTION_EVERY_N, TemporalProjection
 from cognition.temporal_self_projection import PROJECT_EVERY_N, TemporalSelfProjection
 from cognition.structural_coupling import COUPLING_EVERY_N, StructuralCoupling
+from cognition.meta_learning_audit import META_EVERY_N, MetaLearningAudit
+from cognition.narrative_compression import COMPRESS_EVERY_N, NarrativeCompression
 
 
 class _DeferredThread:
@@ -279,6 +281,73 @@ class AsyncCognitiveTickTests(unittest.TestCase):
         _DeferredThread.workers[0].target(*_DeferredThread.workers[0].args)
         self.assertFalse(coupling._worker_pending)
         self.assertEqual(completions[0][0][:3], (COUPLING_EVERY_N, "structural_coupling.worker", "completed"))
+
+    def test_meta_learning_audit_tick_is_single_flight_and_receipted(self):
+        engine = MetaLearningAudit.__new__(MetaLearningAudit)
+        engine._lock = threading.Lock()
+        engine._worker_pending = False
+        engine._records = []
+        engine._pending = []
+        engine._run = lambda cycle: None
+        completions = []
+        recorder = lambda *args, **kwargs: completions.append((args, kwargs))
+        engine._organism = SimpleNamespace(_loop=SimpleNamespace(record_async_cycle_stage=recorder))
+
+        with patch("cognition.meta_learning_audit.threading.Thread", _DeferredThread):
+            off_cycle = engine.tick(1)
+            first = engine.tick(META_EVERY_N)
+            second = engine.tick(META_EVERY_N * 2)
+
+        self.assertEqual(off_cycle["reason_code"], "meta_audit_cadence_not_due")
+        self.assertEqual(first["outcome_status"], "scheduled")
+        self.assertEqual(second["reason_code"], "meta_audit_already_running")
+        _DeferredThread.workers[0].target(*_DeferredThread.workers[0].args)
+        self.assertFalse(engine._worker_pending)
+        self.assertEqual(completions[0][0][:3], (META_EVERY_N, "meta_learning_audit.worker", "completed"))
+
+    def test_narrative_compression_tick_is_single_flight_and_receipted(self):
+        engine = NarrativeCompression.__new__(NarrativeCompression)
+        engine._lock = threading.Lock()
+        engine._worker_pending = False
+        engine._themes = []
+        engine._last_attempt_cycle = None
+        engine._last_error = ""
+        completions = []
+        recorder = lambda *args, **kwargs: completions.append((args, kwargs))
+        engine._organism = SimpleNamespace(_loop=SimpleNamespace(record_async_cycle_stage=recorder))
+
+        with patch("cognition.narrative_compression.threading.Thread", _DeferredThread):
+            off_cycle = engine.tick(1)
+            first = engine.tick(COMPRESS_EVERY_N)
+            second = engine.tick(COMPRESS_EVERY_N * 2)
+
+        self.assertEqual(off_cycle["reason_code"], "compression_cadence_not_due")
+        self.assertEqual(first["outcome_status"], "scheduled")
+        self.assertEqual(second["reason_code"], "compression_already_running")
+        _DeferredThread.workers[0].target(*_DeferredThread.workers[0].args)
+        self.assertFalse(engine._worker_pending)
+        self.assertEqual(completions[0][0][:3], (COMPRESS_EVERY_N, "narrative_compression.worker", "skipped"))
+
+    def test_narrative_compression_never_prunes_when_arc_persistence_fails(self):
+        engine = NarrativeCompression.__new__(NarrativeCompression)
+        engine._lock = threading.Lock()
+        engine._themes = []
+        engine._last_attempt_cycle = None
+        engine._last_error = ""
+        chapters = [SimpleNamespace(significance=0.2, title=f"chapter {i}", description="identity") for i in range(10)]
+        identity = SimpleNamespace(life_story=chapters, _current_arc="")
+        identity._save = lambda: False
+        engine._organism = SimpleNamespace(narrative_identity=identity)
+        engine._cluster = lambda _: [[0, 1]]
+        engine._synthesise_theme = lambda _: "A coherent identity theme."
+        engine._save = lambda: True
+
+        outcome = engine._run(COMPRESS_EVERY_N)
+
+        self.assertEqual(outcome["reason_code"], "identity_arc_persistence_failed")
+        self.assertEqual(outcome["outcome_status"], "failed")
+        self.assertEqual(len(identity.life_story), len(chapters))
+        self.assertEqual(identity._current_arc, "")
 
 
 if __name__ == "__main__":

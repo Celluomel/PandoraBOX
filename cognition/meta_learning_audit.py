@@ -70,6 +70,7 @@ class MetaLearningAudit:
         self._ai        = ai_system
         self._path      = Path(path)
         self._lock      = threading.Lock()
+        self._worker_pending = False
         self._records:  List[ParameterEffectiveness] = []
         self._pending:  List[Dict] = []   # commits awaiting evaluation
         self._do_not_repeat: List[str] = []
@@ -80,12 +81,25 @@ class MetaLearningAudit:
             f"do_not_repeat={self._do_not_repeat}"
         )
 
-    def tick(self, slow_cycle: int) -> None:
-        if slow_cycle % META_EVERY_N != 0 or slow_cycle == 0: return
-        threading.Thread(
-            target=self._run, args=(slow_cycle,),
-            daemon=True, name="mla-audit"
-        ).start()
+    def tick(self, slow_cycle: int) -> Dict[str, Any]:
+        if slow_cycle % META_EVERY_N != 0 or slow_cycle == 0:
+            return {"outcome_status": "skipped", "reason_code": "meta_audit_cadence_not_due", "cycle": slow_cycle}
+        with self._lock:
+            if self._worker_pending:
+                return {"outcome_status": "skipped", "reason_code": "meta_audit_already_running", "cycle": slow_cycle}
+            self._worker_pending = True
+        try:
+            worker = threading.Thread(
+                target=self._run_guarded, args=(slow_cycle,),
+                daemon=True, name="mla-audit"
+            )
+            worker.start()
+        except Exception:
+            with self._lock:
+                self._worker_pending = False
+            logger.exception("[MetaLearningAudit] worker start failed")
+            return {"outcome_status": "failed", "reason_code": "worker_start_failed", "cycle": slow_cycle}
+        return {"outcome_status": "scheduled", "reason_code": "meta_audit_worker_started", "cycle": slow_cycle}
 
     def parameter_guidance(self) -> Dict[str, float]:
         """
@@ -120,13 +134,43 @@ class MetaLearningAudit:
             "pending_evaluation": len(self._pending),
         }
 
-    def _run(self, slow_cycle: int) -> None:
+    def _run_guarded(self, slow_cycle: int) -> None:
         try:
-            self._register_new_commits(slow_cycle)
-            self._evaluate_matured(slow_cycle)
-            self._save()
-        except Exception as e:
-            logger.debug(f"[MetaLearningAudit] _run error: {e}")
+            before_records = len(self._records)
+            before_pending = len(self._pending)
+            self._run(slow_cycle)
+            outcome = {
+                "outcome_status": "completed",
+                "reason_code": "effect_window_evaluated" if len(self._records) > before_records else "no_mature_effect_window",
+                "evaluations_added": len(self._records) - before_records,
+                "pending_count": len(self._pending),
+                "pending_delta": len(self._pending) - before_pending,
+            }
+            self._record_async_completion(slow_cycle, "completed", outcome)
+        except Exception as exc:
+            logger.debug(f"[MetaLearningAudit] _run error: {exc}")
+            self._record_async_completion(
+                slow_cycle, "failed", {"outcome_status": "failed", "reason_code": "meta_audit_error"},
+                error_type=type(exc).__name__,
+            )
+        finally:
+            with self._lock:
+                self._worker_pending = False
+
+    def _run(self, slow_cycle: int) -> None:
+        self._register_new_commits(slow_cycle)
+        self._evaluate_matured(slow_cycle)
+        self._save()
+
+    def _record_async_completion(
+        self, slow_cycle: int, status: str, output: Dict[str, Any],
+        *, error_type: Optional[str] = None,
+    ) -> None:
+        loop = getattr(self._organism, "_loop", None)
+        recorder = getattr(loop, "record_async_cycle_stage", None)
+        if callable(recorder):
+            recorder(slow_cycle, "meta_learning_audit.worker", status,
+                     output=output, error_type=error_type)
 
     def _register_new_commits(self, slow_cycle: int) -> None:
         """Register newly committed parameter changes for later evaluation."""

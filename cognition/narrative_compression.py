@@ -48,16 +48,32 @@ class NarrativeCompression:
         self._ai       = ai_system
         self._path     = Path(path)
         self._lock     = threading.Lock()
+        self._worker_pending = False
         self._themes:  List[IdentityTheme] = []
         self._last_attempt_cycle: Optional[int] = None
         self._last_error: str = ""
         self._load()
         logger.info(f"[NarrativeCompression] Init — {len(self._themes)} themes")
 
-    def tick(self, slow_cycle: int) -> None:
-        if slow_cycle % COMPRESS_EVERY_N != 0 or slow_cycle == 0: return
-        self._current_cycle = slow_cycle
-        threading.Thread(target=self._run, daemon=True, name="nc-compress").start()
+    def tick(self, slow_cycle: int) -> Dict[str, Any]:
+        if slow_cycle % COMPRESS_EVERY_N != 0 or slow_cycle == 0:
+            return {"outcome_status": "skipped", "reason_code": "compression_cadence_not_due", "cycle": slow_cycle}
+        with self._lock:
+            if self._worker_pending:
+                return {"outcome_status": "skipped", "reason_code": "compression_already_running", "cycle": slow_cycle}
+            self._worker_pending = True
+        try:
+            worker = threading.Thread(
+                target=self._run_guarded, args=(slow_cycle,),
+                daemon=True, name="nc-compress",
+            )
+            worker.start()
+        except Exception:
+            with self._lock:
+                self._worker_pending = False
+            logger.exception("[NarrativeCompression] worker start failed")
+            return {"outcome_status": "failed", "reason_code": "worker_start_failed", "cycle": slow_cycle}
+        return {"outcome_status": "scheduled", "reason_code": "compression_worker_started", "cycle": slow_cycle}
 
     def themes_fragment(self) -> str:
         if not self._themes: return ""
@@ -120,13 +136,43 @@ class NarrativeCompression:
                 "last_attempt_cycle": self._last_attempt_cycle,
                 "last_error": self._last_error or None}
 
-    def _run(self) -> None:
+    def _run_guarded(self, slow_cycle: int) -> None:
         try:
-            self._last_attempt_cycle = int(getattr(self, '_current_cycle', 0) or 0)
+            outcome = self._run(slow_cycle)
+            self._record_async_completion(
+                slow_cycle, outcome["outcome_status"], outcome,
+            )
+        except Exception as exc:
+            self._last_error = type(exc).__name__
+            self._record_async_completion(
+                slow_cycle, "failed",
+                {"outcome_status": "failed", "reason_code": "compression_error"},
+                error_type=type(exc).__name__,
+            )
+            raise
+        finally:
+            with self._lock:
+                self._worker_pending = False
+
+    def _record_async_completion(
+        self, slow_cycle: int, status: str, output: Dict[str, Any],
+        *, error_type: Optional[str] = None,
+    ) -> None:
+        loop = getattr(self._organism, "_loop", None)
+        recorder = getattr(loop, "record_async_cycle_stage", None)
+        if callable(recorder):
+            recorder(slow_cycle, "narrative_compression.worker", status,
+                     output=output, error_type=error_type)
+
+    def _run(self, slow_cycle: int) -> Dict[str, Any]:
+        try:
+            self._last_attempt_cycle = int(slow_cycle)
             ni = getattr(self._organism, 'narrative_identity', None)
-            if not ni or not hasattr(ni, 'life_story'): return
+            if not ni or not hasattr(ni, 'life_story'):
+                return {"outcome_status": "skipped", "reason_code": "identity_unavailable", "chapter_count": 0}
             chapters = list(ni.life_story)
-            if len(chapters) < MIN_CHAPTERS: return
+            if len(chapters) < MIN_CHAPTERS:
+                return {"outcome_status": "skipped", "reason_code": "insufficient_chapters", "chapter_count": len(chapters)}
 
             clusters  = self._cluster(chapters)
             new_themes: List[IdentityTheme] = []
@@ -141,32 +187,76 @@ class NarrativeCompression:
                 ))
 
             if new_themes:
-                # Update NarrativeIdentity arc
+                previous_themes = self._themes
+                with self._lock:
+                    self._themes = new_themes
+                if not self._save():
+                    with self._lock:
+                        self._themes = previous_themes
+                    return {
+                        "outcome_status": "failed",
+                        "reason_code": "theme_persistence_failed",
+                        "theme_count": 0,
+                        "chapter_count": len(chapters),
+                        "pruned_count": 0,
+                    }
+
+                # Persist the arc before pruning any source chapters.
                 arc = " | ".join(t.theme for t in
                                  sorted(new_themes, key=lambda x: x.significance,
                                         reverse=True)[:3])
+                previous_arc = getattr(ni, "_current_arc", "")
                 ni._current_arc = arc[:400]
+                identity_save = getattr(ni, "_save", None)
+                if not callable(identity_save) or identity_save() is not True:
+                    ni._current_arc = previous_arc
+                    with self._lock:
+                        self._themes = previous_themes
+                    self._save()
+                    return {
+                        "outcome_status": "failed",
+                        "reason_code": "identity_arc_persistence_failed",
+                        "theme_count": 0,
+                        "chapter_count": len(chapters),
+                        "pruned_count": 0,
+                    }
 
                 # Prune low-significance chapters covered by themes
                 covered_ids = {i for t in new_themes for i in t.chapter_ids}
                 pruned = [c for j, c in enumerate(chapters)
                           if j in covered_ids and
                           getattr(c,'significance',1.0) < PRUNE_THRESHOLD]
+                previous_story = list(ni.life_story)
                 for c in pruned:
                     if c in ni.life_story:
                         ni.life_story.remove(c)
-
-                with self._lock:
-                    self._themes = new_themes
-
-                self._save()
+                prune_persisted = not pruned or identity_save() is True
+                if not prune_persisted:
+                    ni.life_story[:] = previous_story
+                    identity_save()
                 logger.info(
                     f"[NarrativeCompression] {len(new_themes)} themes, "
-                    f"{len(pruned)} chapters pruned"
+                    f"{len(pruned) if prune_persisted else 0} chapters pruned"
                 )
+                return {
+                    "outcome_status": "completed" if prune_persisted else "partial",
+                    "reason_code": "themes_arc_and_pruning_persisted" if prune_persisted else "pruning_persistence_failed",
+                    "theme_count": len(new_themes),
+                    "chapter_count": len(chapters),
+                    "pruned_count": len(pruned) if prune_persisted else 0,
+                    "persistence_confirmed": prune_persisted,
+                }
+            return {
+                "outcome_status": "skipped",
+                "reason_code": "no_theme_synthesized",
+                "theme_count": 0,
+                "chapter_count": len(chapters),
+                "eligible_cluster_count": len(clusters),
+            }
         except Exception as e:
             self._last_error = str(e)[:180]
             logger.debug(f"[NarrativeCompression] _run error: {e}")
+            return {"outcome_status": "failed", "reason_code": "compression_error", "theme_count": 0}
 
     def _cluster(self, chapters: list) -> List[List[int]]:
         """Simple overlap-based clustering."""
@@ -228,15 +318,17 @@ class NarrativeCompression:
             logger.exception("[NarrativeCompression] Theme synthesis failed")
             return None
 
-    def _save(self) -> None:
+    def _save(self) -> bool:
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             with self._lock:
                 data = {"themes": [asdict(t) for t in self._themes],
                         "_meta": {"version":"v63","ts":time.time()}}
             with open(self._path,"w") as f: json.dump(data,f,indent=2)
+            return True
         except Exception as e:
             logger.debug(f"[NarrativeCompression] save error: {e}")
+            return False
 
     def _load(self) -> None:
         try:

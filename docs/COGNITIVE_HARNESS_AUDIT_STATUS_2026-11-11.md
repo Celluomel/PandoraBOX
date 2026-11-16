@@ -2889,3 +2889,13 @@ Trois autres ticks lançaient des threads à chaque cycle dû sans vérifier si 
 **Validation locale :** les six suites ciblées passent **158 tests**, avec 9 avertissements de dépendances existants. Ce sous-ensemble couvre les ticks asynchrones, le journal, le prompt d’auto-description, les preuves de cycle interne, la planification d’intentions et les régressions santé. Cela valide le comportement de réservation et de reçu, pas la pertinence sémantique des projections ni l’effet d’une mise à jour envoyée à Flux.
 
 Le reçu de fin établit qu’un résultat a été produit ou qu’un transfert HTTP a été accepté; il ne prouve ni la justesse cognitive de la projection ni l’intégration effective chez le pair, et les sauvegardes locales restent à contrôler séparément. Ce lot attend le même redémarrage groupé que les lots précédents. Le score global demeure **2/10 = 20 %** : aucune piste n’est close par la seule preuve d’exécution d’un worker.
+
+### MetaLearningAudit et NarrativeCompression — achèvement attribué et compression sûre — 16 novembre 2026
+
+La revue des ticks asynchrones a trouvé deux défauts de cause : `MetaLearningAudit` et `NarrativeCompression` créaient un thread à chaque tick éligible sans réserver le worker ni rattacher son achèvement au cycle d’origine. Plus grave, NarrativeCompression supprimait les chapitres couverts avant de confirmer l’écriture de l’arc narratif; l’échec de sauvegarde pouvait donc laisser l’état actif incomplet.
+
+**Correction locale :** les deux modules appliquent maintenant single-flight, retournent un reçu de planification, puis ajoutent un reçu de fin au cycle source. `NarrativeIdentity._save()` renvoie maintenant un résultat booléen. La compression persiste d’abord les thèmes puis l’arc; elle ne supprime les chapitres qu’après confirmation de sauvegarde de l’arc et de l’état élagué. Le test force un échec d’écriture de l’arc et confirme que les dix chapitres restent présents et que l’ancien arc est restauré.
+
+**Validation locale :** le lot cognitif ciblé passe **161 tests**, 9 avertissements de dépendances existants; compilation ciblée et `git diff --check` passent. Les reçus attestent l’exécution et les compteurs d’effets; ils ne jugent pas la qualité sémantique des thèmes ni la validité des conclusions de méta-apprentissage.
+
+Ces modifications nécessitent le même redémarrage groupé pour le contrôle live. La progression de clôture demeure **2/10 = 20 %** jusqu’à l’inspection des reçus chargés et aux essais sémantiques aval.

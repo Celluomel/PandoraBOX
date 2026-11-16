@@ -475,7 +475,7 @@ class NarrativeIdentity:
 
     # ── Persistence ───────────────────────────────────────────────────────────
 
-    def _save(self) -> None:
+    def _save(self) -> bool:
         try:
             data = {
                 "birth_time":      self._birth_time,
@@ -488,8 +488,10 @@ class NarrativeIdentity:
                 "last_arc_topic":  getattr(self, "_last_arc_topic", ""),
             }
             self._path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+            return True
         except Exception as e:
             logger.debug(f"[NarrativeIdentity] save error: {e}")
+            return False
 
     def _load(self) -> None:
         if not self._path.exists():
