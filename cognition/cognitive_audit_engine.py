@@ -282,6 +282,7 @@ class CognitiveAuditEngine:
         self._state     = AuditState()
         self._lock      = threading.Lock()
         self._trial_evaluation_in_progress = False
+        self._audit_in_progress = False
         self._process_started_at = time.time()
         self._proposal_attempt_status = "not_started"
         self._proposal_attempt_detail = ""
@@ -296,7 +297,7 @@ class CognitiveAuditEngine:
 
     # ── Public API ────────────────────────────────────────────────────────────
 
-    def tick(self, slow_cycle: int) -> None:
+    def tick(self, slow_cycle: int) -> Dict[str, Any]:
         """Called every slow cycle from InternalThoughtLoop."""
         try:
             # 1. Evaluate any active trial first
@@ -317,9 +318,9 @@ class CognitiveAuditEngine:
                             self._trial_evaluation_in_progress = True
                             trial_to_evaluate = trial
                         elif self._trial_evaluation_in_progress:
-                            return
+                            return self._tick_receipt(slow_cycle, "skipped", "trial_evaluation_running")
                 elif self._trial_evaluation_in_progress:
-                    return
+                    return self._tick_receipt(slow_cycle, "skipped", "trial_evaluation_running")
 
             if trial_to_evaluate is not None:
                 try:
@@ -333,21 +334,49 @@ class CognitiveAuditEngine:
                     with self._lock:
                         self._trial_evaluation_in_progress = False
                     raise
-                return
+                return self._tick_receipt(slow_cycle, "scheduled", "trial_evaluation_started")
 
             # 2. Run audit on schedule
             if slow_cycle % AUDIT_EVERY_N != 0 or slow_cycle == 0:
-                return
+                return self._tick_receipt(slow_cycle, "skipped", "audit_cadence_not_due")
 
-            threading.Thread(
-                target=self._run_audit,
-                args=(slow_cycle,),
-                daemon=True,
-                name="cae-audit",
-            ).start()
+            with self._lock:
+                if self._audit_in_progress:
+                    return self._tick_receipt(slow_cycle, "skipped", "audit_already_running")
+                self._audit_in_progress = True
+
+            try:
+                threading.Thread(
+                    target=self._run_audit_scheduled,
+                    args=(slow_cycle,),
+                    daemon=True,
+                    name="cae-audit",
+                ).start()
+            except Exception:
+                with self._lock:
+                    self._audit_in_progress = False
+                raise
+            return self._tick_receipt(slow_cycle, "scheduled", "audit_worker_started")
 
         except Exception as e:
             logger.debug(f"[CognitiveAudit] tick error (non-fatal): {e}")
+            return self._tick_receipt(slow_cycle, "failed", "worker_start_failed")
+
+    @staticmethod
+    def _tick_receipt(cycle: int, status: str, reason: str) -> Dict[str, Any]:
+        return {
+            "cycle": int(cycle),
+            "outcome_status": status,
+            "reason_code": reason,
+            "worker_scheduled": status == "scheduled",
+        }
+
+    def _run_audit_scheduled(self, slow_cycle: int) -> None:
+        try:
+            self._run_audit(slow_cycle)
+        finally:
+            with self._lock:
+                self._audit_in_progress = False
 
     def status_summary(self) -> Dict[str, Any]:
         """Returns a human-readable status snapshot for UI/logging."""

@@ -2843,3 +2843,13 @@ Le planificateur retourne maintenant un reçu structuré, mais `ModuleTickLog.su
 **Vérification locale :** suites async, tick log, cycle interne, auto-description et planification — **130 tests passés**, 9 avertissements connus; `py_compile` et `git diff --check` réussissent. Les workers sont retenus par des threads différés dans les tests : un deuxième tick ne crée pas de deuxième worker et le verrou est libéré par le wrapper quand le worker finit.
 
 **Limite :** le reçu prouve qu’une tâche a été programmée ou écartée; il ne prouve pas que l’analyse asynchrone a généré des observations utiles ou sauvegardées. L’achèvement et les effets persistés restent à relier par des reçus d’achèvement propres à ces workers. Aucun de ces changements n’est chargé dans Lumina; conserver le prochain redémarrage pour le lot groupé. Progression globale toujours **2/10 = 20 %** tant que l’exécution chargée et les effets sémantiques ne sont pas confirmés.
+
+### CognitiveAuditEngine — single-flight de l’audit et reçu de cadence — 16 novembre 2026
+
+L’audit périodique démarrait un nouveau worker à chaque cycle multiple de 40 sans drapeau `audit_in_progress`. Si une lecture des signaux ou un appel de proposition dépassait la fenêtre, un deuxième audit pouvait se lancer et écrire en parallèle le snapshot, les tentatives ou l’essai actif. Le chemin d’évaluation d’un essai avait déjà son propre verrou; le chemin d’audit régulier ne l’avait pas.
+
+**Correction locale :** verrouillage sous `_lock` avant la création du worker, libération dans un wrapper `finally`, remise à zéro si `Thread.start()` échoue, et reçu de tick qui distingue `audit_cadence_not_due`, `audit_already_running` et `audit_worker_started`. Le chemin d’évaluation d’essai retourne lui aussi un reçu de programmation; aucune valeur de signal ni texte de proposition n’est ajoutée au registre.
+
+**Vérification locale mise à jour :** six suites ciblées (ticks async, journal de modules, auto-description, cycle interne, planification, régressions santé) — **150 tests passés**, 9 avertissements connus; compilation Python et `git diff --check` réussissent. Test ajouté : deux cycles dus pendant un worker retenu ne créent qu’un seul worker, et sa fin libère le garde.
+
+Ce lot est encore local; il s’ajoute aux corrections précédemment poussées. L’instance active continue de fonctionner avec l’ancien code et n’a pas été redémarrée. Progression globale inchangée : **2/10 = 20 %** jusqu’au chargement groupé et à la vérification des sorties réelles.

@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 from cognition.introspective_observer import IntrospectiveObserver
 from cognition.counterfactual_simulator import CounterfactualSimulator
+from cognition.cognitive_audit_engine import AuditState, CognitiveAuditEngine
 
 
 class _DeferredThread:
@@ -71,6 +72,27 @@ class AsyncCognitiveTickTests(unittest.TestCase):
         worker = _DeferredThread.workers[0]
         worker.target(*worker.args)
         self.assertFalse(simulator._run_pending)
+
+    def test_cognitive_audit_tick_reports_cadence_and_prevents_duplicate_workers(self):
+        engine = CognitiveAuditEngine.__new__(CognitiveAuditEngine)
+        engine._lock = threading.Lock()
+        engine._state = AuditState()
+        engine._trial_evaluation_in_progress = False
+        engine._audit_in_progress = False
+        engine._run_audit = lambda cycle: None
+
+        with patch("cognition.cognitive_audit_engine.threading.Thread", _DeferredThread):
+            off_cycle = engine.tick(1)
+            first = engine.tick(40)
+            second = engine.tick(80)
+
+        self.assertEqual(off_cycle["reason_code"], "audit_cadence_not_due")
+        self.assertEqual(first["outcome_status"], "scheduled")
+        self.assertEqual(second["reason_code"], "audit_already_running")
+        self.assertEqual(len(_DeferredThread.workers), 1)
+        worker = _DeferredThread.workers[0]
+        worker.target(*worker.args)
+        self.assertFalse(engine._audit_in_progress)
 
 
 if __name__ == "__main__":
