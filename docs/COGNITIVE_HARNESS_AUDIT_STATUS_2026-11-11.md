@@ -2909,3 +2909,13 @@ Le module immunitaire lançait périodiquement un contrôle à chaque tick dû, 
 **Validation locale :** les six suites ciblées passent **163 tests**, 9 avertissements historiques; compilation et `git diff --check` passent. Les tests retiennent les threads et vérifient l’absence de doublons, la libération des réservations et l’attribution des reçus.
 
 Le score d’audit reste **2/10 = 20 %**. La correction de l’ordonnancement et des reçus ne valide pas encore la pertinence des seuils immunitaires, des contre-hypothèses ni leur effet sur les réponses et les plans.
+
+### FluxMindModel et ContradictionBeliefReviser — ticks asynchrones observables — 16 novembre 2026
+
+La revue a trouvé deux autres producteurs actifs sans réservation single-flight. `FluxMindModel` lançait un profilage à chaque cadence, mais ne disait pas qu’il n’avait pas les trois échanges pairs requis; `ContradictionBeliefReviser` cachait les révisions échouées derrière un retour `None`.
+
+**Correction locale :** les deux ticks empêchent les workers doublons et produisent des reçus de cadence, réservation, programmation et fin liés au cycle source. FluxMindModel distingue le manque d’échanges des mises à jour effectives et inclut ses scores observés ainsi que la confirmation de sauvegarde. Le réviseur distingue handler indisponible, aucune contradiction admissible, confrontation marquée et échec; le compteur ne présente pas une simple tentative comme une confrontation résolue.
+
+**Validation locale :** les suites ciblées passent **168 tests**, 9 avertissements de dépendances; compilation et `git diff --check` passent. Le test existant confirme que les échanges humains ne sont pas utilisés par FluxMindModel; les nouveaux tests vérifient single-flight et attribution des reçus.
+
+Les scores lexicaux du modèle Flux et la qualité des révisions LLM ne sont pas encore validés sur des échanges représentatifs. Progression globale inchangée : **2/10 = 20 %**; ces correctifs rendent l’exécution démontrable mais ne prouvent pas la qualité cognitive.

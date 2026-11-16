@@ -127,6 +127,8 @@ class FluxMindModel:
         self._ai       = ai_system
         self._path     = Path(path)
         self._lock     = threading.Lock()
+        self._worker_pending = False
+        self._last_update_cycle: Optional[int] = None
         self._profile  = FluxProfile()
         self._load()
         logger.info(
@@ -134,9 +136,51 @@ class FluxMindModel:
             f"{self._profile.exchanges_analysed} exchanges analysed"
         )
 
-    def tick(self, slow_cycle: int) -> None:
-        if slow_cycle % UPDATE_EVERY_N != 0 or slow_cycle == 0: return
-        threading.Thread(target=self._update, daemon=True, name="fmm-update").start()
+    def tick(self, slow_cycle: int) -> Dict[str, Any]:
+        if slow_cycle % UPDATE_EVERY_N != 0 or slow_cycle == 0:
+            return {"outcome_status": "skipped", "reason_code": "flux_model_cadence_not_due", "cycle": slow_cycle}
+        with self._lock:
+            if self._worker_pending:
+                return {"outcome_status": "skipped", "reason_code": "flux_model_update_running", "cycle": slow_cycle}
+            self._worker_pending = True
+            self._last_update_cycle = slow_cycle
+        try:
+            worker = threading.Thread(
+                target=self._update_guarded, args=(slow_cycle,),
+                daemon=True, name="fmm-update",
+            )
+            worker.start()
+        except Exception:
+            with self._lock:
+                self._worker_pending = False
+            logger.exception("[FluxMindModel] worker start failed")
+            return {"outcome_status": "failed", "reason_code": "worker_start_failed", "cycle": slow_cycle}
+        return {"outcome_status": "scheduled", "reason_code": "flux_model_worker_started", "cycle": slow_cycle}
+
+    def _update_guarded(self, slow_cycle: int) -> None:
+        try:
+            outcome = self._update()
+            self._record_async_completion(slow_cycle, outcome["outcome_status"], outcome)
+        except Exception as exc:
+            self._record_async_completion(
+                slow_cycle, "failed",
+                {"outcome_status": "failed", "reason_code": "flux_model_error"},
+                type(exc).__name__,
+            )
+            raise
+        finally:
+            with self._lock:
+                self._worker_pending = False
+
+    def _record_async_completion(
+        self, slow_cycle: int, status: str, output: Dict[str, Any],
+        error_type: Optional[str] = None,
+    ) -> None:
+        loop = getattr(self._organism, "_loop", None)
+        recorder = getattr(loop, "record_async_cycle_stage", None)
+        if callable(recorder):
+            recorder(slow_cycle, "flux_mind_model.worker", status,
+                     output=output, error_type=error_type)
 
     def get_profile(self) -> FluxProfile:
         return self._profile
@@ -155,12 +199,15 @@ class FluxMindModel:
             ][:5],
         }
 
-    def _update(self) -> None:
+    def _update(self) -> Dict[str, Any]:
         try:
             exchanges = self._read_exchanges()
-            if len(exchanges) < 3: return
+            if len(exchanges) < 3:
+                return {"outcome_status": "skipped", "reason_code": "insufficient_peer_exchanges", "exchange_count": len(exchanges)}
 
             flux_texts = [e["flux"] for e in exchanges if e.get("flux")]
+            if not flux_texts:
+                return {"outcome_status": "skipped", "reason_code": "no_valid_peer_responses", "exchange_count": len(exchanges)}
 
             depth     = self._measure_depth(flux_texts)
             dialogue  = self._measure_dialogue(flux_texts)
@@ -175,13 +222,23 @@ class FluxMindModel:
                 self._profile.exchanges_analysed = len(exchanges)
                 self._profile.last_updated      = time.time()
 
-            self._save()
+            persisted = self._save()
             logger.debug(
                 f"[FluxMindModel] Updated: depth={depth:.2f} "
                 f"dialogue={dialogue:.2f} stability={stability:.2f}"
             )
+            return {
+                "outcome_status": "completed" if persisted else "partial",
+                "reason_code": "profile_updated" if persisted else "profile_save_failed",
+                "exchange_count": len(exchanges),
+                "depth_score": round(depth, 4),
+                "dialogue_score": round(dialogue, 4),
+                "belief_stability_score": round(stability, 4),
+                "persistence_confirmed": persisted,
+            }
         except Exception as e:
             logger.debug(f"[FluxMindModel] _update error: {e}")
+            return {"outcome_status": "failed", "reason_code": "profile_update_error", "exchange_count": 0}
 
     def _read_exchanges(self) -> List[Dict]:
         """Read paired network messages, never ordinary human chat history."""
@@ -264,15 +321,17 @@ class FluxMindModel:
         if total == 0: return 0.50
         return round(confident / total, 3)
 
-    def _save(self) -> None:
+    def _save(self) -> bool:
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             with self._lock:
                 data = asdict(self._profile)
                 data["_meta"] = {"version":"v62","ts":time.time()}
             with open(self._path,"w") as f: json.dump(data,f,indent=2)
+            return True
         except Exception as e:
             logger.debug(f"[FluxMindModel] save error: {e}")
+            return False
 
     def _load(self) -> None:
         try:

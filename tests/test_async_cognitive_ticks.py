@@ -24,6 +24,8 @@ from cognition.structural_coupling import COUPLING_EVERY_N, StructuralCoupling
 from cognition.meta_learning_audit import META_EVERY_N, MetaLearningAudit
 from cognition.narrative_compression import COMPRESS_EVERY_N, NarrativeCompression
 from cognition.cognitive_immune_system import IMMUNE_EVERY_N, CognitiveImmuneSystem
+from cognition.flux_mind_model import UPDATE_EVERY_N, FluxMindModel
+from cognition.contradiction_belief_reviser import REVISION_EVERY_N, ContradictionBeliefReviser
 
 
 class _DeferredThread:
@@ -398,6 +400,53 @@ class AsyncCognitiveTickTests(unittest.TestCase):
         self.assertFalse(immune._transition_pending)
         self.assertEqual(completions[0][0][:3], (50, "cognitive_immune.counterfactual_enter", "completed"))
         self.assertEqual(completions[0][1]["output"]["topic_count"], 2)
+
+    def test_flux_mind_model_tick_is_single_flight_and_receipted(self):
+        model = FluxMindModel.__new__(FluxMindModel)
+        model._lock = threading.Lock()
+        model._worker_pending = False
+        model._last_update_cycle = None
+        completions = []
+        recorder = lambda *args, **kwargs: completions.append((args, kwargs))
+        model._organism = SimpleNamespace(_loop=SimpleNamespace(record_async_cycle_stage=recorder))
+        model._update = lambda: {
+            "outcome_status": "completed", "reason_code": "profile_updated", "exchange_count": 3,
+        }
+
+        with patch("cognition.flux_mind_model.threading.Thread", _DeferredThread):
+            off_cycle = model.tick(1)
+            first = model.tick(UPDATE_EVERY_N)
+            second = model.tick(UPDATE_EVERY_N * 2)
+
+        self.assertEqual(off_cycle["reason_code"], "flux_model_cadence_not_due")
+        self.assertEqual(first["outcome_status"], "scheduled")
+        self.assertEqual(second["reason_code"], "flux_model_update_running")
+        _DeferredThread.workers[0].target(*_DeferredThread.workers[0].args)
+        self.assertFalse(model._worker_pending)
+        self.assertEqual(completions[0][0][:3], (UPDATE_EVERY_N, "flux_mind_model.worker", "completed"))
+
+    def test_contradiction_reviser_tick_is_single_flight_and_receipted(self):
+        reviser = ContradictionBeliefReviser.__new__(ContradictionBeliefReviser)
+        reviser._lock = threading.Lock()
+        reviser._worker_pending = False
+        completions = []
+        recorder = lambda *args, **kwargs: completions.append((args, kwargs))
+        reviser._organism = SimpleNamespace(_loop=SimpleNamespace(record_async_cycle_stage=recorder))
+        reviser._run_revision = lambda cycle: {
+            "outcome_status": "completed", "reason_code": "confrontations_revised", "confronted_count": 1,
+        }
+
+        with patch("cognition.contradiction_belief_reviser.threading.Thread", _DeferredThread):
+            off_cycle = reviser.tick(1)
+            first = reviser.tick(REVISION_EVERY_N)
+            second = reviser.tick(REVISION_EVERY_N * 2)
+
+        self.assertEqual(off_cycle["reason_code"], "revision_cadence_not_due")
+        self.assertEqual(first["outcome_status"], "scheduled")
+        self.assertEqual(second["reason_code"], "revision_already_running")
+        _DeferredThread.workers[0].target(*_DeferredThread.workers[0].args)
+        self.assertFalse(reviser._worker_pending)
+        self.assertEqual(completions[0][0][:3], (REVISION_EVERY_N, "contradiction_belief_reviser.worker", "completed"))
 
 
 if __name__ == "__main__":

@@ -29,31 +29,77 @@ class ContradictionBeliefReviser:
         self._organism = organism
         self._ai       = ai_system
         self._lock     = threading.Lock()
+        self._worker_pending = False
         self._revisions: List[Dict] = []
         logger.info("[ContradictionReviser] Initialised")
 
-    def tick(self, slow_cycle: int) -> None:
+    def tick(self, slow_cycle: int) -> Dict[str, Any]:
         if slow_cycle % REVISION_EVERY_N != 0 or slow_cycle == 0:
-            return
-        threading.Thread(target=self._run_revision, args=(slow_cycle,),
-                         daemon=True, name="cbr-revision").start()
+            return {"outcome_status": "skipped", "reason_code": "revision_cadence_not_due", "cycle": slow_cycle}
+        with self._lock:
+            if self._worker_pending:
+                return {"outcome_status": "skipped", "reason_code": "revision_already_running", "cycle": slow_cycle}
+            self._worker_pending = True
+        try:
+            worker = threading.Thread(
+                target=self._run_revision_guarded, args=(slow_cycle,),
+                daemon=True, name="cbr-revision",
+            )
+            worker.start()
+        except Exception:
+            with self._lock:
+                self._worker_pending = False
+            logger.exception("[ContradictionReviser] worker start failed")
+            return {"outcome_status": "failed", "reason_code": "worker_start_failed", "cycle": slow_cycle}
+        return {"outcome_status": "scheduled", "reason_code": "revision_worker_started", "cycle": slow_cycle}
 
-    def _run_revision(self, slow_cycle: int) -> None:
+    def _run_revision_guarded(self, slow_cycle: int) -> None:
+        try:
+            outcome = self._run_revision(slow_cycle)
+            self._record_async_completion(slow_cycle, outcome["outcome_status"], outcome)
+        except Exception as exc:
+            self._record_async_completion(
+                slow_cycle, "failed",
+                {"outcome_status": "failed", "reason_code": "revision_worker_error"},
+                type(exc).__name__,
+            )
+            raise
+        finally:
+            with self._lock:
+                self._worker_pending = False
+
+    def _record_async_completion(
+        self, slow_cycle: int, status: str, output: Dict[str, Any],
+        error_type: Optional[str] = None,
+    ) -> None:
+        loop = getattr(self._organism, "_loop", None)
+        recorder = getattr(loop, "record_async_cycle_stage", None)
+        if callable(recorder):
+            recorder(slow_cycle, "contradiction_belief_reviser.worker", status,
+                     output=output, error_type=error_type)
+
+    def _run_revision(self, slow_cycle: int) -> Dict[str, Any]:
         try:
             handler = self._get_handler()
             if not handler:
-                return
+                return {"outcome_status": "skipped", "reason_code": "contradiction_handler_unavailable", "pending_count": 0}
             pending = sorted(
                 [c for c in handler.pending_confrontations
                  if c.discrepancy_score >= REVISION_THRESHOLD],
                 key=lambda c: -c.discrepancy_score
-            )
-            for contradiction in pending[:MAX_PER_CYCLE]:
-                self._revise_one(contradiction, slow_cycle)
+            )[:MAX_PER_CYCLE]
+            completed = sum(1 for contradiction in pending if self._revise_one(contradiction, slow_cycle))
+            return {
+                "outcome_status": "completed" if completed == len(pending) else "partial" if completed else "failed" if pending else "skipped",
+                "reason_code": "confrontations_revised" if completed else "no_qualifying_contradictions" if not pending else "revision_not_confirmed",
+                "pending_count": len(pending),
+                "confronted_count": completed,
+            }
         except Exception as e:
             logger.debug(f"[ContradictionReviser] error: {e}")
+            return {"outcome_status": "failed", "reason_code": "revision_error", "pending_count": 0, "confronted_count": 0}
 
-    def _revise_one(self, contradiction: Any, slow_cycle: int) -> None:
+    def _revise_one(self, contradiction: Any, slow_cycle: int) -> bool:
         try:
             cid, claimed, actual, score = (
                 contradiction.contradiction_id,
@@ -141,8 +187,10 @@ class ContradictionBeliefReviser:
                 self._erode_source_belief(claimed)
             except Exception as _er_e:
                 logger.debug(f"[ContradictionReviser] source erosion: {_er_e}")
+            return True
         except Exception as e:
             logger.debug(f"[ContradictionReviser] _revise_one error: {e}")
+            return False
 
     # ── 2026-09-03: source-store erosion (the actual loop-closure) ─────────
     def _erode_source_belief(self, claimed: str) -> None:
