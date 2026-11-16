@@ -2854,6 +2854,16 @@ L’audit périodique démarrait un nouveau worker à chaque cycle multiple de 4
 
 Ce lot est encore local; il s’ajoute aux corrections précédemment poussées. L’instance active continue de fonctionner avec l’ancien code et n’a pas été redémarrée. Progression globale inchangée : **2/10 = 20 %** jusqu’au chargement groupé et à la vérification des sorties réelles.
 
+### Génération et promotion des objectifs — single-flight des producteurs — 16 novembre 2026
+
+Le même défaut d’ordonnancement apparaissait dans `AutonomousCuriosityResolver`, `GenerativeAspirationEngine` et `AspirationalSynthesisEngine` : chaque tick admissible lançait un thread sans réserver le travail, et les sorties de cadence/gouverneur étaient toutes `None`. Si un calcul ou un appel LLM durait au-delà de l’intervalle, des générations et promotions concurrentes étaient possibles; les journaux ne révélaient pas si le tick avait été refusé, gouverné ou programmé.
+
+**Correction locale :** les trois ticks produisent maintenant un reçu compact avec cycle, statut, motif et indicateur de worker; chacun garde une seule tâche en vol et libère sa réservation en `finally` ou après un échec de lancement. Les décisions du BehaviorGate restent des skips explicitement nommés et ne sont pas présentées comme des générations réalisées.
+
+**Vérification locale mise à jour :** les six suites ciblées passent **155 tests**, 9 avertissements historiques; compilation et `git diff --check` réussissent. Trois tests supplémentaires retiennent les workers et confirment qu’un tick suivant ne lance pas un doublon, puis que le garde se libère à la fin.
+
+Ces modifications restent non chargées dans Lumina; le reste des changements locaux Body/UI demeure hors stage. Les reçus disent qu’une génération ou promotion a été mise en file, pas que le nouvel objectif est pertinent ni qu’il a été persisté — cette vérification aval reste une étape distincte de l’audit.
+
 ### CausalMechanismModel et CrossLayerFeedback — single-flight des producteurs amont — 16 novembre 2026
 
 Les deux producteurs du cycle causal avaient le même mode d’exécution asynchrone sans réservation : le modèle causal recalculait ses signatures à sa cadence, et le feedback inter-couches lançait ses quatre canaux toutes les huit cycles. Si une passe prenait plus longtemps que son intervalle, le cycle en lançait une autre. Les ticks ne disaient pas non plus si le traitement avait été différé ou programmé.

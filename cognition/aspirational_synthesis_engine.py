@@ -163,6 +163,7 @@ class AspirationalSynthesisEngine:
         self._ai        = ai_system
         self._path      = Path(path)
         self._lock      = threading.Lock()
+        self._worker_pending = False
         self._log:      List[Dict] = []
         self._load()
         logger.info(
@@ -172,25 +173,47 @@ class AspirationalSynthesisEngine:
 
     # ── Public API ────────────────────────────────────────────────────────────
 
-    def tick(self, slow_cycle: int) -> None:
+    def tick(self, slow_cycle: int) -> Dict[str, Any]:
         """Called every slow cycle from InternalThoughtLoop."""
         if slow_cycle % SYNTHESIS_EVERY_N != 0 or slow_cycle == 0:
-            return
+            return self._tick_receipt(slow_cycle, "skipped", "synthesis_cadence_not_due")
 
         # Gate check — synthesis is an LLM call
         try:
             gate = getattr(self._organism, 'behavior_gate', None)
             if gate and not gate.may_run_meta_system("synthesis"):
-                return
+                return self._tick_receipt(slow_cycle, "skipped", "behavior_gate_denied")
         except Exception:
             pass
 
-        threading.Thread(
-            target=self._run_synthesis,
-            args=(slow_cycle,),
-            daemon=True,
-            name="ase-synthesis",
-        ).start()
+        with self._lock:
+            if self._worker_pending:
+                return self._tick_receipt(slow_cycle, "skipped", "synthesis_already_running")
+            self._worker_pending = True
+        try:
+            threading.Thread(
+                target=self._run_synthesis_scheduled,
+                args=(slow_cycle,), daemon=True, name="ase-synthesis",
+            ).start()
+        except Exception:
+            with self._lock:
+                self._worker_pending = False
+            return self._tick_receipt(slow_cycle, "failed", "worker_start_failed")
+        return self._tick_receipt(slow_cycle, "scheduled", "synthesis_worker_started")
+
+    @staticmethod
+    def _tick_receipt(cycle: int, status: str, reason: str) -> Dict[str, Any]:
+        return {
+            "cycle": int(cycle), "outcome_status": status,
+            "reason_code": reason, "worker_scheduled": status == "scheduled",
+        }
+
+    def _run_synthesis_scheduled(self, slow_cycle: int) -> None:
+        try:
+            self._run_synthesis(slow_cycle)
+        finally:
+            with self._lock:
+                self._worker_pending = False
 
     # ── Synthesis pipeline ────────────────────────────────────────────────────
 

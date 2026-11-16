@@ -8,6 +8,15 @@ from cognition.counterfactual_simulator import CounterfactualSimulator
 from cognition.cognitive_audit_engine import AuditState, CognitiveAuditEngine
 from cognition.causal_mechanism_model import CAUSAL_EVERY_N, CausalMechanismModel
 from cognition.cross_layer_feedback import FEEDBACK_EVERY_N, CrossLayerFeedback
+from cognition.autonomous_curiosity_resolver import (
+    RESOLVE_CHECK_EVERY_N, AutonomousCuriosityResolver,
+)
+from cognition.generative_aspiration_engine import (
+    GENERATIVE_EVERY_N, GenerativeAspirationEngine,
+)
+from cognition.aspirational_synthesis_engine import (
+    SYNTHESIS_EVERY_N, AspirationalSynthesisEngine,
+)
 
 
 class _DeferredThread:
@@ -133,6 +142,65 @@ class AsyncCognitiveTickTests(unittest.TestCase):
         self.assertEqual(len(_DeferredThread.workers), 1)
         _DeferredThread.workers[0].target(*_DeferredThread.workers[0].args)
         self.assertFalse(feedback._run_pending)
+
+    def test_curiosity_resolver_tick_is_single_flight_and_receipted(self):
+        resolver = AutonomousCuriosityResolver.__new__(AutonomousCuriosityResolver)
+        resolver._worker_lock = threading.Lock()
+        resolver._worker_pending = False
+        resolver._check_and_promote = lambda cycle: None
+        due = RESOLVE_CHECK_EVERY_N
+
+        with patch("cognition.autonomous_curiosity_resolver.threading.Thread", _DeferredThread):
+            off_cycle = resolver.tick(1)
+            first = resolver.tick(due)
+            second = resolver.tick(due * 2)
+
+        self.assertEqual(off_cycle["reason_code"], "curiosity_cadence_not_due")
+        self.assertEqual(first["outcome_status"], "scheduled")
+        self.assertEqual(second["reason_code"], "promotion_already_running")
+        self.assertEqual(len(_DeferredThread.workers), 1)
+        _DeferredThread.workers[0].target(*_DeferredThread.workers[0].args)
+        self.assertFalse(resolver._worker_pending)
+
+    def test_generative_aspiration_tick_is_single_flight_and_receipted(self):
+        engine = GenerativeAspirationEngine.__new__(GenerativeAspirationEngine)
+        engine._organism = object()
+        engine._lock = threading.Lock()
+        engine._worker_pending = False
+        engine._run = lambda cycle: None
+        due = GENERATIVE_EVERY_N
+
+        with patch("cognition.generative_aspiration_engine.threading.Thread", _DeferredThread):
+            off_cycle = engine.tick(1)
+            first = engine.tick(due)
+            second = engine.tick(due * 2)
+
+        self.assertEqual(off_cycle["reason_code"], "generation_cadence_not_due")
+        self.assertEqual(first["outcome_status"], "scheduled")
+        self.assertEqual(second["reason_code"], "generation_already_running")
+        self.assertEqual(len(_DeferredThread.workers), 1)
+        _DeferredThread.workers[0].target(*_DeferredThread.workers[0].args)
+        self.assertFalse(engine._worker_pending)
+
+    def test_aspirational_synthesis_tick_is_single_flight_and_receipted(self):
+        engine = AspirationalSynthesisEngine.__new__(AspirationalSynthesisEngine)
+        engine._organism = object()
+        engine._lock = threading.Lock()
+        engine._worker_pending = False
+        engine._run_synthesis = lambda cycle: None
+        due = SYNTHESIS_EVERY_N
+
+        with patch("cognition.aspirational_synthesis_engine.threading.Thread", _DeferredThread):
+            off_cycle = engine.tick(1)
+            first = engine.tick(due)
+            second = engine.tick(due * 2)
+
+        self.assertEqual(off_cycle["reason_code"], "synthesis_cadence_not_due")
+        self.assertEqual(first["outcome_status"], "scheduled")
+        self.assertEqual(second["reason_code"], "synthesis_already_running")
+        self.assertEqual(len(_DeferredThread.workers), 1)
+        _DeferredThread.workers[0].target(*_DeferredThread.workers[0].args)
+        self.assertFalse(engine._worker_pending)
 
 
 if __name__ == "__main__":

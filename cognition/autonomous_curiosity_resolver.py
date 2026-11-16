@@ -41,14 +41,42 @@ class AutonomousCuriosityResolver:
     def __init__(self, organism: Any) -> None:
         self._organism = organism
         self._lock     = threading.Lock()
+        self._worker_lock = threading.Lock()
+        self._worker_pending = False
         self._promoted: Set[str] = set()
         logger.info("[CuriosityResolver] Initialised")
 
-    def tick(self, slow_cycle: int) -> None:
+    def tick(self, slow_cycle: int) -> dict[str, Any]:
         if slow_cycle % RESOLVE_CHECK_EVERY_N != 0 or slow_cycle == 0:
-            return
-        threading.Thread(target=self._check_and_promote, args=(slow_cycle,),
-                         daemon=True, name="acr-promote").start()
+            return self._tick_receipt(slow_cycle, "skipped", "curiosity_cadence_not_due")
+        with self._worker_lock:
+            if self._worker_pending:
+                return self._tick_receipt(slow_cycle, "skipped", "promotion_already_running")
+            self._worker_pending = True
+        try:
+            threading.Thread(
+                target=self._check_and_promote_scheduled, args=(slow_cycle,),
+                daemon=True, name="acr-promote",
+            ).start()
+        except Exception:
+            with self._worker_lock:
+                self._worker_pending = False
+            return self._tick_receipt(slow_cycle, "failed", "worker_start_failed")
+        return self._tick_receipt(slow_cycle, "scheduled", "promotion_worker_started")
+
+    @staticmethod
+    def _tick_receipt(cycle: int, status: str, reason: str) -> dict[str, Any]:
+        return {
+            "cycle": int(cycle), "outcome_status": status,
+            "reason_code": reason, "worker_scheduled": status == "scheduled",
+        }
+
+    def _check_and_promote_scheduled(self, slow_cycle: int) -> None:
+        try:
+            self._check_and_promote(slow_cycle)
+        finally:
+            with self._worker_lock:
+                self._worker_pending = False
 
     def _check_and_promote(self, slow_cycle: int) -> None:
         try:
