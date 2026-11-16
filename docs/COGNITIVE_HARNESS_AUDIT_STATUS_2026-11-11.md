@@ -3071,3 +3071,15 @@ Le contrôle séparé du profil (`e01d5bdb-73f1-4fb1-b276-62ca998d404f`) a rappo
 **État de la prochaine correction :** le test de rappel historique avait, lui, injecté `planner_self_report_context`, ce qui a causé la confusion observée. La correction de séparation entre rappel historique et état actuel est committée/poussée dans `1666318` et passe 75 tests locaux, mais ce processus a été démarré avant ce commit; elle n'est donc pas encore chargée. Le redémarrage suivant sera groupé avec d'autres vérifications et devra prouver que la requête de rappel laisse `planner_self_report_context=not_selected` tout en conservant mémoire et profil.
 
 Clôture globale inchangée : **2/10 = 20 %**. Deux réponses factuelles précises sont maintenant validées live; le rappel de préférence reste en échec live et attend la vérification du correctif, et la cohérence sémantique multi-scénarios reste ouverte.
+
+### Rappel exact des consignes — intention historique non reconnue — 16 novembre 2026
+
+Le scénario suivant a demandé : « What exact instructions did I give you for the ongoing cognitive harness audit? Quote the exact wording from my message. » Le tour `7b9f2a58-940c-42b4-aa05-c7e77bc2b59a` a échoué nettement : `memory_retrieval.explicit_recall=false`, la génération LLM a été utilisée et `planner_self_report_context=injected`; Lumina a cité la question courante elle-même comme si elle provenait d'un message antérieur. Aucun reçu de source historique n'a été produit.
+
+**Cause dans le routage :** les patrons reconnaissaient « what did I ask you… » mais pas la forme grammaticale « what exact instructions did I give you… ». Le détecteur d'extraction exacte ne classait pas non plus `instructions` comme une demande de citation. L'ensemble des composants mémoire fonctionnait, mais cette forme d'intention contournait le chemin de rappel traçable et permettait un faux souvenir.
+
+**Correction locale :** ajout d'un patron grammatical général pour les instructions/directions/requêtes fournies ou envoyées par l'utilisateur; le vocabulaire de citation exacte reconnaît maintenant `instructions`/`directions`. Les directives de format après le sujet (« quote/repeat… ») sont retirées du sujet de recherche pour éviter les auto-correspondances avec la question actuelle. Un test vérifie la détection, l'extraction du sujet et le retour d'une source utilisateur verbatim.
+
+**Validation locale :** 124 tests passent dans les six suites mémoire, rappel, planification et contexte de prompt; 7 avertissements Pydantic préexistants et 7 sous-tests; compilation et `git diff --check` passent. Cette correction n'est pas encore chargée dans l'instance active. À grouper au prochain redémarrage avec la validation du scénario de rappel précédent : exiger `explicit_recall=true`, un reçu `supported_verbatim_source` lié à une référence utilisateur, `planner_self_report_context=not_selected`, puis vérifier que la réponse ne cite pas le message courant comme historique.
+
+Cette défaillance démontre que « mémoire injectée » n'est pas équivalent à « souvenir correctement attribué ». Clôture globale inchangée : **2/10 = 20 %**.

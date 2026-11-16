@@ -261,6 +261,29 @@ class MemorySystemFallbackTests(unittest.TestCase):
         self.assertIn("test phrase", topic)
         self.assertIn("audit", topic)
 
+    def test_ask_for_exact_instructions_given_routes_to_source_recall(self):
+        query = (
+            "What exact instructions did I give you for the ongoing cognitive harness audit? "
+            "Quote the exact wording from my message."
+        )
+        self.assertTrue(is_explicit_memory_recall_query(query))
+        topic = extract_explicit_recall_topic(query).casefold()
+        self.assertIn("cognitive harness audit", topic)
+        self.assertNotIn("quote", topic)
+
+        source = {
+            "id": 874,
+            "memory_type": "user_message",
+            "text": (
+                "User message: Continue the cognitive harness audit, identify issues, "
+                "fix them and commit the repairs."
+            ),
+            "relevance": 0.91,
+        }
+        recalled = explicit_recall_source_result(query, [source])
+        self.assertEqual(recalled["status"], "supported_verbatim_source")
+        self.assertIn("Continue the cognitive harness audit", recalled["answer"])
+
     def test_explicit_recall_can_retrieve_a_remember_instruction_as_source(self):
         self.rows = [{
             "id": 73, "faiss_id": 73,

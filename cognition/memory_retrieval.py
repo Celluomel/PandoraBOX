@@ -39,6 +39,16 @@ whl woff woff2 xls xlsx xml yaml yml zip zipx zst
 
 
 _HISTORICAL_REQUEST_PATTERNS = (
+    # Historical instructions are often framed as "what did I give you?"
+    # rather than "what did I ask you?". Route that grammatical form through
+    # source-backed recall so the current prompt cannot be quoted as history.
+    re.compile(
+        r"\bwhat\s+(?:(?:exact(?:ly)?|specific)\s+)?"
+        r"(?:instructions?|directions?|guidance|requests?|wording|message|details?)\s+"
+        r"(?:did|have|had)\s+i\s+(?:give|send|provide|tell|state|write)\s+"
+        r"(?:you\s+)?(?P<topic>[^?!.]{1,100})",
+        re.IGNORECASE,
+    ),
     # Questions whose grammatical subject is "I" followed by an object of
     # ask/request. Unlike the older "what outcome did I ask for" form, the
     # object follows the verb here: "what did I ask you to fix about X?".
@@ -174,13 +184,19 @@ def extract_explicit_recall_topic(text: str) -> str:
             flags=re.IGNORECASE,
         )
         topic = asked_match.group("topic").strip(" \t\r\n,;:«»\"'")
+        topic = re.split(
+            r"\b(?:answer|respond|reply|quote|cite|repeat|recite|"
+            r"r[eé]ponds?|r[eé]pondre|cite|r[eé]p[eè]te|recite)\b",
+            topic, maxsplit=1, flags=re.IGNORECASE,
+        )[0].strip(" \t\r\n,;:«»\"'")
         # Keep short identifying context after the historical clause too.
         # E.g. "What phrase did I ask you to remember for this audit?" must
         # retrieve by both "phrase" and "audit"; dropping the suffix made
         # generic topics collide with unrelated memories.
         trailing_context = value[asked_match.end():]
         trailing_context = re.split(
-            r"\b(?:answer|respond|reply|réponds?|répondre)\b",
+            r"\b(?:answer|respond|reply|quote|cite|repeat|recite|"
+            r"réponds?|répondre|cite|répète|recite)\b",
             trailing_context, maxsplit=1, flags=re.IGNORECASE,
         )[0]
         trailing_context = re.sub(
@@ -403,11 +419,12 @@ def explicit_recall_source_result(
         value, maxsplit=1, flags=re.IGNORECASE,
     )[0]
     asks_exact_text = bool(re.search(
-        r"\b(?:exact(?:ly)?\s+)?(?:phrase|wording|quote|quotation|text|word|phrase exacte|"
-        r"formulation exacte|citation|texte exact|mot exact)\b",
+        r"\b(?:exact(?:ly)?\s+)?(?:phrase|wording|quote|quotation|text|word|instructions?|"
+        r"directions?|phrase exacte|formulation exacte|citation|consignes?|texte exact|mot exact)\b",
         recall_clause, re.IGNORECASE,
     )) and bool(re.search(
-        r"\b(?:exact|exactly|phrase|wording|quote|quotation|text|word|exacte|citation|texte|mot)\b",
+        r"\b(?:exact|exactly|phrase|wording|quote|quotation|text|word|instruction|direction|"
+        r"exacte|citation|consigne|texte|mot)\b",
         recall_clause, re.IGNORECASE,
     ))
     if not asks_exact_text:
