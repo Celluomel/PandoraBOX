@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from cognition.introspective_observer import IntrospectiveObserver
 from cognition.counterfactual_simulator import CounterfactualSimulator
-from cognition.cognitive_audit_engine import AuditState, CognitiveAuditEngine
+from cognition.cognitive_audit_engine import AuditState, CognitiveAuditEngine, DevelopmentProposal
 from cognition.causal_mechanism_model import CAUSAL_EVERY_N, CausalMechanismModel
 from cognition.cross_layer_feedback import FEEDBACK_EVERY_N, CrossLayerFeedback
 from cognition.autonomous_curiosity_resolver import (
@@ -145,6 +145,49 @@ class AsyncCognitiveTickTests(unittest.TestCase):
         self.assertEqual(kwargs["metrics"]["snapshot_delta"], 1)
         self.assertEqual(kwargs["metrics"]["proposal_attempt_delta"], 1)
         self.assertEqual(kwargs["metrics"]["proposal_status"], "no_causally_mapped_parameter")
+
+    def test_cognitive_audit_trial_worker_records_outcome_and_commit_effect(self):
+        engine = CognitiveAuditEngine.__new__(CognitiveAuditEngine)
+        engine._lock = threading.Lock()
+        engine._state = AuditState()
+        engine._state.committed_params = {}
+        engine._trial_evaluation_in_progress = True
+        receipts = []
+        engine._organism = SimpleNamespace(
+            _loop=SimpleNamespace(
+                record_async_cycle_stage=lambda *args, **kwargs: receipts.append((args, kwargs))
+            )
+        )
+        trial = DevelopmentProposal(
+            dimension="epistemic_grounding_rate",
+            signal_at_proposal=0.4,
+            signal_target=0.7,
+            parameter="probe",
+            prior_value=1,
+            proposed_value=2,
+            rationale="test",
+            proposed_at_cycle=20,
+        )
+
+        def evaluate(current_trial, cycle):
+            current_trial.outcome = "confirmed"
+            current_trial.committed = True
+            engine._state.trial_log.append({
+                "outcome": current_trial.outcome,
+                "committed": current_trial.committed,
+                "signal_sample_count_at_eval": 2,
+            })
+            engine._state.committed_params["probe"] = 2
+            return True
+
+        engine._evaluate_trial = evaluate
+        engine._evaluate_trial_once(trial, 42)
+
+        self.assertFalse(engine._trial_evaluation_in_progress)
+        args, kwargs = receipts[0]
+        self.assertEqual(args, (42, "cognitive_audit_worker", "completed"))
+        self.assertEqual(kwargs["metrics"]["outcome"], "confirmed")
+        self.assertTrue(kwargs["metrics"]["committed_parameter_changed"])
 
     def test_causal_mechanism_tick_is_single_flight_and_receipted(self):
         model = CausalMechanismModel.__new__(CausalMechanismModel)

@@ -917,7 +917,7 @@ Respond ONLY in JSON (no markdown, no preamble):
             self._state.active_trial = asdict(proposal)
         self._save()
 
-    def _evaluate_trial(self, trial: DevelopmentProposal, slow_cycle: int) -> None:
+    def _evaluate_trial(self, trial: DevelopmentProposal, slow_cycle: int) -> bool:
         """Re-read the signal and determine whether the trial improved it."""
         try:
             snapshot = self._read_signals(slow_cycle)
@@ -986,6 +986,7 @@ Respond ONLY in JSON (no markdown, no preamble):
                 self._state.consecutive_under[trial.dimension] = 0
 
             self._save()
+            return True
 
         except Exception as e:
             logger.debug(f"[CognitiveAudit] _evaluate_trial error (non-fatal): {e}")
@@ -993,11 +994,40 @@ Respond ONLY in JSON (no markdown, no preamble):
                 self._state.active_trial = None
             self._revert_trial(trial)
             self._save()
+            return False
 
     def _evaluate_trial_once(self, trial: DevelopmentProposal, slow_cycle: int) -> None:
         """Run one trial evaluation and always release the single-flight guard."""
+        with self._lock:
+            trials_before = len(self._state.trial_log)
+            committed_before = dict(self._state.committed_params)
         try:
-            self._evaluate_trial(trial, slow_cycle)
+            evaluated = bool(self._evaluate_trial(trial, slow_cycle))
+            with self._lock:
+                trial_delta = len(self._state.trial_log) - trials_before
+                latest = dict(self._state.trial_log[-1]) if trial_delta and self._state.trial_log else {}
+                committed_after = dict(self._state.committed_params)
+            self._record_async_completion(
+                slow_cycle,
+                "completed" if evaluated and trial_delta else "failed",
+                {
+                    "trial_delta": trial_delta,
+                    "dimension": trial.dimension,
+                    "outcome": str(latest.get("outcome", "not_recorded")),
+                    "signal_sample_count": int(latest.get("signal_sample_count_at_eval", 0) or 0),
+                    "committed": bool(latest.get("committed", False)),
+                    "committed_parameter_changed": committed_after != committed_before,
+                },
+                None if evaluated and trial_delta else "trial_result_not_recorded",
+            )
+        except Exception as exc:
+            self._record_async_completion(
+                slow_cycle,
+                "failed",
+                {"trial_delta": 0, "dimension": trial.dimension},
+                type(exc).__name__,
+            )
+            logger.exception("[CognitiveAudit] trial evaluation worker failed")
         finally:
             with self._lock:
                 self._trial_evaluation_in_progress = False
