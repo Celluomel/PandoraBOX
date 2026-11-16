@@ -497,6 +497,30 @@ class MemorySystemFallbackTests(unittest.TestCase):
                 prior_prompt = {"memory_type": "user_message", "text": query}
                 self.assertEqual(filter_recall_query_records([prior_prompt], query=query), [])
 
+    def test_source_only_french_recall_quotes_relevant_statement_and_skips_old_recall_prompt(self):
+        query = "Rappelle uniquement ce que je t’ai demandé concernant la manière de conduire l’audit du harnais cognitif."
+        prior_prompt = {"memory_type": "user_message", "text": query, "relevance": 1.0}
+        source = {
+            "memory_type": "user_message",
+            "text": "Pour l’audit du harnais cognitif, définis les modules par scénario puis vérifie leurs sorties et effets en aval.",
+            "relevance": 0.82,
+        }
+
+        result = explicit_recall_source_result(query, [prior_prompt, source])
+
+        self.assertEqual(result["status"], "supported_verbatim_source")
+        self.assertIn(source["text"], result["answer"])
+        self.assertNotIn(prior_prompt["text"], result["answer"])
+
+    def test_source_only_french_recall_abstains_when_no_relevant_source_remains(self):
+        query = "Rappelle uniquement ce que je t’ai demandé concernant la manière de conduire l’audit du harnais cognitif."
+        prior_prompt = {"memory_type": "user_message", "text": query, "relevance": 1.0}
+        filtered = filter_recall_query_records([prior_prompt], query=query)
+
+        self.assertEqual(filtered, [])
+        result = explicit_recall_abstention_result(query, filtered)
+        self.assertEqual(result["status"], "abstained_no_source")
+
     def test_explicit_recall_discards_prior_recall_prompt_self_matches(self):
         repeated_recall = {
             "memory_type": "user_message",

@@ -439,7 +439,17 @@ def explicit_recall_source_result(
         r"exacte|citation|consigne|texte|mot)\b",
         recall_clause, re.IGNORECASE,
     ))
-    if not asks_exact_text:
+    # "Remind me only what I asked you" requests source-bounded recall even
+    # when the user did not literally ask for an exact quote. Return the
+    # retrieved user statement verbatim instead of letting generation invent
+    # a polished paraphrase of a historical instruction.
+    asks_source_only_recall = bool(re.search(
+        r"\b(?:rappelle(?:-moi)?|rappeler)\s+"
+        r"(?:uniquement|seulement)\s+ce\s+que\s+je\s+t['’]ai\s+"
+        r"(?:demand[ée](?:e|s|es)?|dit(?:e|es)?|formul[ée](?:e|es)?)\b",
+        recall_clause, re.IGNORECASE,
+    ))
+    if not asks_exact_text and not asks_source_only_recall:
         return None
 
     evidence = filter_recall_query_records(memories, query=value)
