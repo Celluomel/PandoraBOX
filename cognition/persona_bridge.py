@@ -1923,8 +1923,10 @@ Write at most 70 words, in the user's language, only if a concise carry-forward 
                 is_runtime_execution_evidence_query,
                 is_internal_cognitive_query,
             )
+            from cognition.long_horizon_planner import LongHorizonPlanner
             _cognitive_trace_query = is_cognitive_trace_query(effective_input)
             _runtime_execution_query = is_runtime_execution_evidence_query(effective_input)
+            _factual_plan_query = LongHorizonPlanner.is_goal_plan_query(effective_input)
             _architecture_query = (
                 (is_architecture_query(effective_input) or _cognitive_trace_query)
                 and not _explicit_memory_recall
@@ -1937,12 +1939,13 @@ Write at most 70 words, in the user's language, only if a concise carry-forward 
             _architecture_query = False
             _cognitive_trace_query = False
             _runtime_execution_query = False
+            _factual_plan_query = False
             _internal_cognitive_query = False
             logger.debug("Architecture query detection unavailable: %s", _architecture_query_error)
         # A factual self-report will receive a current telemetry snapshot later
         # in prompt construction. Do not copy prior assistant prose into a
         # continuity block where stale/invented values could compete with it.
-        _dialogue_continuity = "" if _architecture_query else self._recent_dialogue_continuity(
+        _dialogue_continuity = "" if (_architecture_query or _factual_plan_query) else self._recent_dialogue_continuity(
             effective_input,
             history_override=conversation_history if not record_history else None,
         )
