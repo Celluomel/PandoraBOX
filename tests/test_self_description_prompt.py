@@ -257,6 +257,7 @@ class SelfDescriptionPromptTests(unittest.TestCase):
         self.assertIn("drive_satisfied from pressure_system", answer)
         self.assertIn("ne prouve pas la cause", answer)
         self.assertIn("pas des sensations humaines", answer)
+        self.assertNotIn(".. Elle", answer)
 
     def test_affect_self_report_separates_emotion_curiosity_from_curiosity_drive(self):
         context = affect_self_report_context(

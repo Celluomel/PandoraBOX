@@ -293,8 +293,9 @@ def render_detailed_affect_status(evidence: str, *, language: str = "en") -> str
         r"^Latest recorded affect-changing appraisal:\s*(.+)$",
         evidence, re.MULTILINE,
     )
-    event_text = str(event_match.group(1) if event_match else "none recorded").strip()[:180]
-    no_event = event_text.casefold() == "none recorded"
+    event_text = str(event_match.group(1) if event_match else "none recorded").strip()
+    event_text = event_text.rstrip(" .")[:180]
+    no_event = event_text.casefold() in {"none recorded", "unavailable"}
     if str(language).casefold().startswith("fr"):
         event_report = (
             "Aucun événement affectif récent n’est enregistré."
