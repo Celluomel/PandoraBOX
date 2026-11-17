@@ -273,7 +273,8 @@ def _compact_turn_audit_record(raw: Any) -> dict[str, Any]:
         'unavailable_count', 'affect_source', 'affect_profile', 'affect_event_type',
         'affect_event_age_seconds', 'source_cycle', 'age_seconds',
         'age_cycles', 'source_evidence_ref', 'focus_type', 'focus_score',
-        'focus_ref', 'context_included',
+        'focus_ref', 'context_included', 'state_focus_source',
+        'state_focus_updated_at', 'state_focus_age_seconds',
     }
     for name, value in (raw.get('context_sources') or {}).items():
         if isinstance(value, dict):

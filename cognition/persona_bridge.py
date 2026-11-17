@@ -138,6 +138,49 @@ def _safe_nonnegative_int(value: Any) -> int:
         return 0
 
 
+def _workspace_focus_state_provenance(snapshot: Any, *, now: float | None = None) -> dict[str, Any]:
+    """Return provenance for a snapshot focus when no arbitration receipt exists.
+
+    GlobalWorkspace keeps writer/timestamp records per updated field. This is
+    weaker than a cycle evidence reference, but lets the turn trace distinguish
+    a state snapshot from an unattributed focus without claiming causality.
+    """
+    if not isinstance(snapshot, dict):
+        to_dict = getattr(snapshot, "to_dict", None)
+        snapshot = to_dict() if callable(to_dict) else {}
+    if not isinstance(snapshot, dict) or not str(snapshot.get("focus") or "").strip():
+        return {}
+    updates = snapshot.get("updated_by")
+    if not isinstance(updates, list):
+        return {}
+    for update in reversed(updates):
+        if not isinstance(update, dict):
+            continue
+        fields = update.get("fields")
+        if not isinstance(fields, (list, tuple)) or "focus" not in fields:
+            continue
+        source = re.sub(
+            r"[^A-Za-z0-9_.:-]", "",
+            str(update.get("source") or ""),
+        )[:64]
+        try:
+            updated_at = float(update.get("timestamp"))
+            current_time = float(time.time() if now is None else now)
+            if not math.isfinite(updated_at) or updated_at <= 0:
+                return {}
+            age = max(0.0, current_time - updated_at)
+        except (TypeError, ValueError, OverflowError):
+            return {}
+        if not source:
+            return {}
+        return {
+            "state_focus_source": source,
+            "state_focus_updated_at": round(updated_at, 3),
+            "state_focus_age_seconds": round(age, 3),
+        }
+    return {}
+
+
 def _prior_assistant_trace_evidence(
     manager: Any,
     trace: dict[str, Any],
@@ -3931,8 +3974,24 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     _workspace_source_ref = str(getattr(
                         self._organism, "_v32_workspace_winner_evidence_ref", ""
                     ) or "")[:64]
+                    _workspace_state = getattr(
+                        self._organism, "_v32_workspace_state", None,
+                    )
+                    if _workspace_state is None:
+                        _workspace = getattr(self._organism, "workspace", None)
+                        _get_workspace_state = getattr(_workspace, "get_state", None)
+                        if callable(_get_workspace_state):
+                            try:
+                                _workspace_state = _get_workspace_state()
+                            except Exception:
+                                _workspace_state = None
+                    _workspace_state_provenance = _workspace_focus_state_provenance(
+                        _workspace_state,
+                    )
                     _workspace_status = (
                         "injected" if _workspace_included and _workspace_source_ref
+                        else "injected_snapshot_attributed"
+                        if _workspace_included and _workspace_state_provenance
                         else "injected_unattributed" if _workspace_included
                         else "not_selected" if _workspace_winner is not None
                         else "empty"
@@ -3945,6 +4004,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         "focus_score": _workspace_score,
                         "focus_ref": _workspace_focus_ref,
                         "context_included": _workspace_included,
+                        **_workspace_state_provenance,
                     }
                     self._record_turn_context_source(
                         "global_workspace_state", _workspace_status,

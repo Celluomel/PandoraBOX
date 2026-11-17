@@ -180,6 +180,9 @@ class InterfaceTests(unittest.IsolatedAsyncioTestCase):
                     'age_cycles': 0, 'source_evidence_ref': 'cycle-winner-ref',
                     'focus_type': 'goal', 'focus_score': 0.63,
                     'focus_ref': 'opaque-focus-ref', 'context_included': True,
+                    'state_focus_source': 'workspace_competition',
+                    'state_focus_updated_at': 1234.5,
+                    'state_focus_age_seconds': 2.0,
                     'focus_text': 'private raw workspace topic',
                 },
             },
@@ -203,6 +206,8 @@ class InterfaceTests(unittest.IsolatedAsyncioTestCase):
         workspace_source = turn['context_sources']['global_workspace_state']
         self.assertEqual(workspace_source['source_evidence_ref'], 'cycle-winner-ref')
         self.assertEqual(workspace_source['source_cycle'], 12016)
+        self.assertEqual(workspace_source['state_focus_source'], 'workspace_competition')
+        self.assertEqual(workspace_source['state_focus_age_seconds'], 2.0)
         self.assertTrue(workspace_source['context_included'])
         self.assertNotIn('focus_text', workspace_source)
         self.assertNotIn('private memory text', repr(payload))

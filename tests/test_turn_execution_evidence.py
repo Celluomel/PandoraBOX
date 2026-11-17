@@ -13,6 +13,7 @@ from cognition.persona_bridge import (
     _prior_assistant_trace_evidence,
     _runtime_execution_evidence_snapshot,
     _turn_output_evidence,
+    _workspace_focus_state_provenance,
 )
 from core.module_tick_log import summarize_output
 from cognition.turn_context_evidence import (
@@ -28,6 +29,31 @@ def _bridge():
     bridge._turn_trace_history = []
     bridge._turn_stage_health = {}
     return bridge
+
+
+def test_workspace_snapshot_fallback_reports_latest_focus_writer_without_claiming_cycle():
+    provenance = _workspace_focus_state_provenance({
+        "focus": "private focus text is not returned",
+        "updated_by": [
+            {"source": "workspace_competition", "fields": ["focus"], "timestamp": 95.0},
+            {"source": "world_model", "fields": ["context"], "timestamp": 99.0},
+        ],
+    }, now=100.0)
+
+    assert provenance == {
+        "state_focus_source": "workspace_competition",
+        "state_focus_updated_at": 95.0,
+        "state_focus_age_seconds": 5.0,
+    }
+    assert "private focus text" not in repr(provenance)
+
+
+def test_workspace_snapshot_without_focus_writer_stays_unattributed():
+    assert _workspace_focus_state_provenance({
+        "focus": "focus", "updated_by": [
+            {"source": "world_model", "fields": ["context"], "timestamp": 99.0},
+        ],
+    }, now=100.0) == {}
 
 
 def test_turn_stage_records_redacted_output_and_actual_consumption_link():
