@@ -1,7 +1,7 @@
 # Audit du harnais cognitif — état et prochaines étapes
 
 **Date de mise à jour :** 17 novembre 2026
-**Statut :** audit du harnais cognitif en cours; aucune conclusion globale de qualité n’est établie. Dernier commit partagé : `fc661bb` (PresenceEngine : paroles supprimées exclues des effets mémoire/social). Un correctif au profil interactionnel est maintenant en validation locale; les modifications Body/UI préexistantes restent hors lot. Lumina n’a pas été redémarrée; une validation live groupée sera nécessaire après ce lot.
+**Statut :** audit du harnais cognitif en cours; aucune conclusion globale de qualité n’est établie. Dernier commit partagé : `482006c` (thèmes écrits par l’assistant exclus du profil utilisateur et de son IDF). Les correctifs PresenceEngine et profil interactionnel sont poussés; les modifications Body/UI préexistantes restent hors lot. Lumina n’a pas été redémarrée; une validation live groupée sera nécessaire après ce lot.
 
 ## Plan d’audit piloté par les preuves — mesure de progression
 
@@ -3892,7 +3892,7 @@ Le processus actif fonctionne encore sous l’ancien code. Son dernier relevé l
 
 **Correction :** l’ordre est maintenant génération → tentative de livraison → effets « parole partagée » uniquement si le reçu indique `tts` ou `bubble`. Une tentative supprimée n’entre ni dans les paroles récentes ni dans le percept épisodique, ne soulage pas la faim sociale et reçoit la décision d’audit `utterance_not_delivered`. Les délivrances confirmées reçoivent `utterance_delivered`. Les événements de présence et les coûts de génération restent comptabilisés même si la parole est supprimée.
 
-**Vérification locale :** `test_presence_identity_language.py` couvre la non-réduction de faim sociale sur suppression/log seul et son soulagement après reçu `tts+bubble`; exécuter aussi la compilation, `git diff --check` et la suite ciblée après le réordonnancement. Le processus Lumina courant n’a pas encore chargé ce changement; pas de redémarrage demandé à ce stade.
+**Vérification locale :** `test_presence_identity_language.py` — **19 tests passés**; la suite couvre la non-réduction de faim sociale sur suppression/log seul et son soulagement après reçu `tts+bubble`. `py_compile` et `git diff --check` réussis. Le processus Lumina courant n’a pas encore chargé ce changement; pas de redémarrage demandé à ce stade.
 
 **Portée :** correction de la cohérence causale du chemin de présence; aucune preuve encore que le problème historique soit reproduit avec le processus actuel ni qu’elle améliore la qualité globale des réponses. Le score strict reste **3/10 = 30 %**. Après déploiement au prochain redémarrage groupé, vérifier dans le reçu que toute ligne `utterance_not_delivered` n’a aucun effet mémoire/`recent_utterances`, tandis qu’un reçu `tts` ou `bubble` est conservé une seule fois.
 
@@ -3905,3 +3905,9 @@ Le processus actif fonctionne encore sous l’ancien code. Son dernier relevé l
 **Vérification locale :** le scénario où la demande porte sur un robot et où la réponse parle uniquement de quasars/nébuleuses confirme que seuls les thèmes écrits par l’utilisateur entrent dans son profil et son IDF. Suites WorldModel/profil et régressions de logs : **56 tests passés, 4 sous-tests passés, 9 avertissements historiques**; `py_compile` et `git diff --check` passent. Le processus live n’a pas chargé cette correction.
 
 **Portée :** défaut de frontière de provenance corrigé dans le modèle de profil; la validité d’autres inférences (style, expertise, faits explicites) reste à évaluer séparément. Pas de changement au score strict **3/10 = 30 %** sans validation live après redémarrage groupé et scénario de profil représentatif.
+
+### Lecture live des reçus mémoire/profil — processus encore sur l’ancien code
+
+Le endpoint local `8080/api/interface/cognitive-turns` répond sans passer par l’interface graphique. Le dernier tour déjà terminé (`lumina-1794929947842972200-1`) indique : récupération FAISS, **18** candidats vectoriels, **6** candidats primaires renvoyés, **4** en pool final et **4** injectés; durée **54,98 ms**. Ce reçu prouve l’exécution du chemin FAISS et l’injection, mais ne juge pas la pertinence des textes. Le mode attention `relational` est présent comme donnée de trace; il ne suffit pas à prouver qu’il a modifié le classement.
+
+Pour le même tour, `user_profile_context=fallback_identity_only`, provenance à **0 fait explicite / 0 ancien fait non vérifié**, et `human_profile_learning=skipped_no_named_profile`. `world_model_profile_update=updated` rapporte un compte d’interaction à 2, avec `extracted_count=0` et `categories_updated=[]`: il s’agit d’une mise à jour du modèle interactionnel, pas de l’apprentissage d’un fait personnel. Ces statuts doivent rester distincts dans l’analyse. Cette trace précède le commit `482006c`, ne contient aucun texte privé, et ne valide donc pas les correctifs de profil qui viennent d’être poussés.
