@@ -9,6 +9,30 @@ from fastapi import FastAPI
 from core.lumina_peer_api import router
 
 
+def _run_in_process_asgi(coroutine):
+    """Run ASGI-only tests without opening Windows Proactor self-pipe sockets."""
+    class SocketFreeSelectorLoop(asyncio.SelectorEventLoop):
+        def _make_self_pipe(self):
+            self._ssock = self._csock = None
+
+        def _write_to_self(self):
+            pass
+
+        def _close_self_pipe(self):
+            pass
+
+    loop = SocketFreeSelectorLoop()
+    # ASGITransport dispatches directly in process; no selector-backed socket
+    # is involved, and returning no readiness events keeps the test hermetic.
+    loop._selector.select = lambda timeout=None: []
+    asyncio.set_event_loop(loop)
+    try:
+        return loop.run_until_complete(coroutine)
+    finally:
+        asyncio.set_event_loop(None)
+        loop.close()
+
+
 class LuminaPeerApiTests(unittest.TestCase):
     def setUp(self):
         self.app = FastAPI()
@@ -57,7 +81,7 @@ class LuminaPeerApiTests(unittest.TestCase):
                         "conversation_id": "conversation-1",
                     },
                 )
-        return asyncio.run(send())
+        return _run_in_process_asgi(send())
 
     def test_master_request_returns_peer_scoped_cognitive_trace(self):
         response = self._post()
