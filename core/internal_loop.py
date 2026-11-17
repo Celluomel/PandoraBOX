@@ -3560,7 +3560,29 @@ class InternalThoughtLoop:
             "ThreadLifecycle",
         ):
             try:
-                report = self._thread_lifecycle_mgr.run()
+                active_goal_ids = set()
+                try:
+                    _goal_engine = getattr(
+                        getattr(o, "ai_system", None), "goal_engine", None
+                    )
+                    _active_goals = (
+                        _goal_engine.get_active_goals() or []
+                        if _goal_engine and hasattr(_goal_engine, "get_active_goals")
+                        else []
+                    )
+                    active_goal_ids = {
+                        str(getattr(_goal, "id", "") or "").strip()
+                        for _goal in _active_goals
+                        if str(getattr(_goal, "id", "") or "").strip()
+                    }
+                except Exception as _goal_snapshot_error:
+                    logger.debug(
+                        "[InternalLoop] Active goal snapshot unavailable for thread lifecycle: %s",
+                        type(_goal_snapshot_error).__name__,
+                    )
+                report = self._thread_lifecycle_mgr.run(
+                    active_goal_ids=active_goal_ids
+                )
                 if report.get('threads_processed', 0) > 0:
                     logger.info(
                         f"[InternalLoop] V34 Thread lifecycle: "

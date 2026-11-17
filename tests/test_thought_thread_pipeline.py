@@ -8,6 +8,7 @@ from cognition.cognitive_dissonance_engine import (
 )
 from cognition.thought_thread_engine import TTEContext, ThoughtThreadEngine
 from cognition.thread_lifecycle_manager import ThreadLifecycleManager
+from core.data.schemas import normalize_thread
 
 
 def test_tte_reads_admitted_active_goals_and_creates_one_provenance_linked_thread(tmp_path):
@@ -283,6 +284,60 @@ def test_lifecycle_manager_does_not_mint_belief_from_iteration_count_alone():
     }
 
     assert manager._extract_belief(thread) is None
+
+
+def test_lifecycle_manager_preserves_over_budget_thread_while_goal_is_active():
+    thread = {
+        "id": "thread-active-goal",
+        "topic": "knowledge integration",
+        "goal": "Integrate current evidence",
+        "source_ref": "goal-active-1",
+        "status": "active",
+        "iteration_count": 100,
+        "history": [],
+        "current_state": {"action_receipt_count": 1},
+    }
+    saved = []
+    manager = ThreadLifecycleManager.__new__(ThreadLifecycleManager)
+    manager.dal = SimpleNamespace(
+        get_threads=lambda: [thread],
+        save_thread=lambda value: saved.append(value.copy()),
+    )
+    manager._repair_thought_goal_links = lambda: 0
+
+    active_report = manager.run(active_goal_ids={"goal-active-1"})
+
+    assert thread["status"] == "active"
+    assert active_report["active_goal_threads_preserved"] == ["thread-a"]
+    assert active_report["threads_retired"] == []
+    assert saved == []
+
+    closed_report = manager.run(active_goal_ids=set())
+    assert thread["status"] == "retired"
+    assert closed_report["unverified_threads_retired"] == ["thread-a"]
+
+
+def test_thread_schema_keeps_goal_link_and_tte_lifecycle_fields():
+    raw = {
+        "id": "thread-schema",
+        "topic": "knowledge integration",
+        "status": "active",
+        "source": "goal_engine",
+        "source_ref": "goal-schema-1",
+        "last_advanced": 1234.5,
+        "current_state": {"success_criteria": "verified synthesis"},
+        "iteration_count": 27,
+        "custom_future_field": {"preserve": True},
+    }
+
+    normalized = normalize_thread(raw)
+
+    assert normalized["source_ref"] == "goal-schema-1"
+    assert normalized["source"] == "goal_engine"
+    assert normalized["last_advanced"] == 1234.5
+    assert normalized["current_state"] == raw["current_state"]
+    assert normalized["iteration_count"] == 27
+    assert normalized["custom_future_field"] == {"preserve": True}
 
 
 def test_lifecycle_manager_requires_verified_outcome_statement_and_reference():

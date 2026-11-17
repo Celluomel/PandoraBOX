@@ -41,13 +41,24 @@ class ThreadLifecycleManager:
 
     # ── Public API ────────────────────────────────────────────────────────────
 
-    def run(self) -> Dict[str, Any]:
-        """Run full lifecycle pass. Returns report."""
+    def run(self, active_goal_ids: Optional[set[str]] = None) -> Dict[str, Any]:
+        """Run lifecycle pass without retiring threads for goals still active.
+
+        Iteration count alone is not completion evidence. A linked active goal
+        remains eligible for TTE/DTS even after its thread crosses the legacy
+        stuck-thread threshold; once the GoalEngine closes that goal, normal
+        retirement policy applies again.
+        """
+        active_goal_ids = {
+            str(goal_id).strip() for goal_id in (active_goal_ids or set())
+            if str(goal_id).strip()
+        }
         report = {
             'threads_processed': 0,
             'beliefs_extracted': [],
             'threads_retired':   [],
             'unverified_threads_retired': [],
+            'active_goal_threads_preserved': [],
             'links_repaired':    0,
         }
 
@@ -56,6 +67,11 @@ class ThreadLifecycleManager:
         for thread in threads:
             iters  = thread.get('iteration_count', 0)
             status = thread.get('status', 'active')
+
+            source_ref = str(thread.get('source_ref') or '').strip()
+            if source_ref and source_ref in active_goal_ids:
+                report['active_goal_threads_preserved'].append(thread['id'][:8])
+                continue
 
             if iters >= self.MAX_ITER_THRESHOLD and status not in ('resolved', 'retired'):
                 belief = self._extract_belief(thread)

@@ -130,23 +130,32 @@ def _expiry_ts(ttl_seconds: int) -> float:
 # ── Thread schema ──────────────────────────────────────────────────────────────
 
 def normalize_thread(raw: Dict) -> Dict[str, Any]:
-    """Ensure a thread has all canonical fields."""
-    return {
+    """Ensure canonical thread fields while preserving TTE extensions.
+
+    ThoughtThreadEngine persists additional lifecycle/provenance fields such
+    as ``source_ref`` and ``last_advanced``. DataAccess may normalize and
+    rewrite the same records, so dropping unknown fields here breaks the
+    GoalEngine↔TTE link and can make an active goal reappear as a duplicate.
+    """
+    defaults = {
         "id":               raw.get("id", new_id("thr_")),
         "topic":            raw.get("topic", "unknown"),
         "goal":             raw.get("goal", ""),
-        "current_state":    raw.get("current_state", ""),
+        "current_state":    raw.get("current_state", {}),
         "history":          raw.get("history", []),
         "planned_actions":  raw.get("planned_actions", []),
         "memory_refs":      raw.get("memory_refs", []),
         "confidence":       raw.get("confidence", 0.5),
         "status":           raw.get("status", "active"),
+        "source":           raw.get("source", "internal"),
+        "source_ref":       raw.get("source_ref", ""),
         # Phase 3 new fields
         "iteration_count":  raw.get("iteration_count", len(raw.get("history", []))),
         "identity_link":    raw.get("identity_link", None),  # belief id updated by this thread
         "created_at":       raw.get("created_at", now_iso()),
         "resolved_at":      raw.get("resolved_at", None),
     }
+    return {**defaults, **raw}
 
 
 # ── Belief / Identity schema ───────────────────────────────────────────────────
