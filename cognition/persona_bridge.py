@@ -1093,12 +1093,16 @@ class PersonaBridge:
             if status == "abstained_review_unavailable"
             else "response_replaced_after_review"
             if status.startswith("abstained_")
+            else "deterministic_affect_source_projection"
+            if status == "passed_deterministic_source_projection"
             else "review_incomplete",
             "scope": (
                 "deterministic_response_equals_retrieved_user_source"
                 if status in {"passed_source_grounded", "abstained_source_mismatch"}
                 else "deterministic_recall_gate_abstained"
                 if status == "passed_source_abstention"
+                else "deterministic_projection_of_live_modeled_affect_channels"
+                if status == "passed_deterministic_source_projection"
                 else "request_relevance_context_support_and_explicit_constraints; not proof of truth"
             ),
             "stage_status": str(status)[:48],
@@ -1142,6 +1146,11 @@ class PersonaBridge:
                 summary["source_status"] = str(review["source_status"])[:40]
             summary["exact_result_match"] = bool(review.get("exact_result_match", True))
             summary["abstention_matches_gate"] = summary["exact_result_match"]
+        elif status == "passed_deterministic_source_projection":
+            summary["validation_method"] = str(
+                review.get("validation_method")
+                or "deterministic_template_from_structured_channels"
+            )[:64]
         with self._turn_trace_lock:
             trace = getattr(self, "_last_turn_trace", None)
             if turn_id and (not trace or trace.get("turn_id") != turn_id):
@@ -1498,6 +1507,8 @@ class PersonaBridge:
                             if validation_status == "abstained_review_unavailable"
                             else "response_replaced_after_review"
                             if validation_status.startswith("abstained_")
+                        else "deterministic_affect_source_projection"
+                        if validation_status == "passed_deterministic_source_projection"
                             else "review_incomplete"
                         ),
                         "scope": (
@@ -1507,6 +1518,8 @@ class PersonaBridge:
                             }
                             else "deterministic_recall_gate_abstained"
                             if validation_status == "passed_source_abstention"
+                            else "deterministic_projection_of_live_modeled_affect_channels"
+                            if validation_status == "passed_deterministic_source_projection"
                             else "request_relevance_context_support_and_explicit_constraints; not proof of truth"
                         ),
                         "stage_status": validation_status,
@@ -1535,6 +1548,11 @@ class PersonaBridge:
                         )
                         semantic_summary.setdefault("exact_result_match", True)
                         semantic_summary.setdefault("abstention_matches_gate", True)
+                    elif validation_status == "passed_deterministic_source_projection":
+                        semantic_summary.setdefault(
+                            "validation_method",
+                            "deterministic_template_from_structured_channels",
+                        )
                     trace["semantic_answer_validation"] = semantic_summary
                 else:
                     architecture_check = stages.get("architecture_claim_validation")
@@ -5198,6 +5216,22 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         affect_event_source=_latest_affect.get("source", "") if _latest_affect else "",
                         affect_event_age_seconds=_latest_affect.get("age_seconds") if _latest_affect else None,
                         affect_event_context=_latest_affect.get("cause_context", {}) if _latest_affect else {},
+                    )
+                    self._record_turn_stage(
+                        "affective_state", "captured",
+                        "Current modeled affect channels and latest appraisal metadata captured from the emotional state manager.",
+                        output={
+                            "source": "EmotionalStateManager.get_response_modifiers().affective_profile",
+                            "affect_profile": _affect_profile,
+                            "description": mods.get("state_description", ""),
+                            "latest_event": {
+                                "event_type": _latest_affect.get("event_type", "") if _latest_affect else "",
+                                "source": _latest_affect.get("source", "") if _latest_affect else "",
+                                "age_seconds": _latest_affect.get("age_seconds") if _latest_affect else None,
+                            },
+                        },
+                        consumes=("turn_input",),
+                        turn_id=audit_turn_id,
                     )
                 _module_tick_snapshot = None
                 _module_entries = []

@@ -261,6 +261,47 @@ def test_finished_turn_preserves_deterministic_source_abstention_receipt():
     assert safe_trace["semantic_answer_validation"]["abstention_matches_gate"] is True
 
 
+def test_deterministic_affect_report_has_source_link_and_correct_validation_summary():
+    bridge = _bridge()
+    bridge._record_turn_stage("turn_input", "received", output="how are you doing")
+    bridge._record_turn_stage(
+        "affective_state", "captured",
+        output={"source": "affective_profile", "affect_profile": {"warmth": 0.91}},
+        consumes=("turn_input",),
+    )
+    bridge._record_turn_stage(
+        "affect_status_report", "completed",
+        output={"source": "affective_state", "response": "computed state"},
+        consumes=("affective_state", "turn_input"),
+    )
+    bridge._record_turn_stage(
+        "semantic_answer_validation", "passed_deterministic_source_projection",
+        output={
+            "validation_method": "deterministic_template_from_structured_channels",
+            "no_subjective_sensation_claim": True,
+        },
+        consumes=("affect_status_report", "turn_input"),
+    )
+    bridge._record_semantic_validation_summary(
+        "turn-evidence-1", "passed_deterministic_source_projection", {
+            "relevant": True,
+            "claim_basis": "factual",
+            "evidence_support": "supported",
+            "contract_compliant": True,
+            "validation_method": "deterministic_template_from_structured_channels",
+        },
+    )
+
+    bridge._finish_turn_trace("completed")
+    trace = bridge.get_turn_trace("turn-evidence-1")
+
+    assert trace["pipeline_integrity"]["data_flow_issues"] == []
+    receipt = trace["semantic_answer_validation"]
+    assert receipt["status"] == "deterministic_affect_source_projection"
+    assert receipt["stage_status"] == "passed_deterministic_source_projection"
+    assert receipt["validation_method"] == "deterministic_template_from_structured_channels"
+
+
 def test_repaired_answer_receipt_proves_second_review_without_repair_text():
     bridge = _bridge()
     bridge._record_semantic_validation_summary(
