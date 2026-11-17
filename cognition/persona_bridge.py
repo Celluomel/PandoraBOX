@@ -46,6 +46,7 @@ from cognition.memory_retrieval import (
 )
 from cognition.turn_context_evidence import (
     audit_safe_turn_summary,
+    deterministic_reasoning_dependencies,
     format_memory_for_prompt,
     memory_retrieval_evidence,
     memory_prompt_injection_evidence,
@@ -2587,8 +2588,13 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
         self._record_turn_stage(
             "deterministic_reasoning",
             "selected" if _deterministic_response else "not_selected",
-            consumes=("cognitive_audit_status_report",)
-            if _cognitive_audit_status_query and _deterministic_response else (),
+            consumes=deterministic_reasoning_dependencies(
+                selected=bool(_deterministic_response),
+                memory_recall=bool(_explicit_memory_recall and _memory_recall_result is not None),
+                cognitive_audit_report=bool(
+                    _cognitive_audit_status_query and _deterministic_response
+                ),
+            ),
             turn_id=_audit_turn_id,
         )
         if _factual_self_report and not _runtime_execution_query:
@@ -2864,9 +2870,17 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                             self._record_turn_stage(
                                 "deterministic_reasoning", "selected_direct",
                                 output=_deterministic_response,
-                                consumes=(
-                                    ("turn_input", "planner_factual_snapshot")
-                                    if _factual_plan_query else ("turn_input",)
+                                consumes=deterministic_reasoning_dependencies(
+                                    selected=True,
+                                    memory_recall=bool(
+                                        _explicit_memory_recall
+                                        and _memory_recall_result is not None
+                                    ),
+                                    cognitive_audit_report=bool(
+                                        _cognitive_audit_status_query
+                                        and _deterministic_response
+                                    ),
+                                    planner_snapshot=bool(_factual_plan_query),
                                 ),
                                 turn_id=_audit_turn_id,
                             )

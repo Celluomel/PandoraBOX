@@ -13,7 +13,10 @@ from cognition.persona_bridge import (
     _prior_assistant_trace_evidence,
     _turn_output_evidence,
 )
-from cognition.turn_context_evidence import response_learning_evidence
+from cognition.turn_context_evidence import (
+    deterministic_reasoning_dependencies,
+    response_learning_evidence,
+)
 
 
 def _bridge():
@@ -55,6 +58,19 @@ def test_turn_stage_records_redacted_output_and_actual_consumption_link():
     assert trace["pipeline_integrity"]["scope"] == "execution_order_and_data_flow_only"
     assert trace["pipeline_integrity"]["semantic_correctness"] == "not_assessed"
     assert trace["semantic_answer_validation"]["status"] == "not_performed"
+
+
+def test_deterministic_reasoning_receipt_links_memory_and_planner_inputs():
+    assert deterministic_reasoning_dependencies(
+        selected=True, memory_recall=True,
+    ) == ("turn_input", "memory_recall_answer")
+    assert deterministic_reasoning_dependencies(
+        selected=True, planner_snapshot=True,
+    ) == ("turn_input", "planner_factual_snapshot")
+    assert deterministic_reasoning_dependencies(
+        selected=True, cognitive_audit_report=True,
+    ) == ("turn_input", "cognitive_audit_status_report")
+    assert deterministic_reasoning_dependencies(selected=False, memory_recall=True) == ()
 
 
 def test_turn_trace_exposes_safe_stream_failure_type_but_redacts_exception_text():

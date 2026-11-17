@@ -1055,6 +1055,17 @@ class IntentionPlanningTests(unittest.TestCase):
         self.assertTrue(LongHorizonPlanner.is_self_report_query("quel est ton objectif actuel"))
         self.assertTrue(LongHorizonPlanner.is_self_report_query("votre véritable but"))
 
+    def test_workspace_scoped_goal_report_without_possessive_uses_snapshot(self):
+        question = (
+            "Audit read-only check: report the current active goal and its next "
+            "pending step from the existing workspace state."
+        )
+        self.assertTrue(LongHorizonPlanner.is_self_report_query(question))
+        self.assertTrue(LongHorizonPlanner.is_goal_plan_query(question))
+        self.assertFalse(LongHorizonPlanner.is_self_report_query(
+            "What is the current active goal in the user's project?"
+        ))
+
     def test_count_question_about_owned_goals_routes_to_live_self_report(self):
         question = "For this audit, how many active goals do you currently have?"
         self.assertTrue(LongHorizonPlanner.is_self_report_query(question))

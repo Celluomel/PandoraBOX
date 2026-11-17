@@ -27,6 +27,26 @@ def _sha256(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8", errors="replace")).hexdigest()
 
 
+def deterministic_reasoning_dependencies(
+    *,
+    selected: bool,
+    memory_recall: bool = False,
+    cognitive_audit_report: bool = False,
+    planner_snapshot: bool = False,
+) -> tuple[str, ...]:
+    """Return only the recorded inputs that actually support a direct answer."""
+    if not selected:
+        return ()
+    sources = ["turn_input"]
+    if memory_recall:
+        sources.append("memory_recall_answer")
+    if cognitive_audit_report:
+        sources.append("cognitive_audit_status_report")
+    if planner_snapshot:
+        sources.append("planner_factual_snapshot")
+    return tuple(sources)
+
+
 def format_memory_for_prompt(memory: Mapping[str, Any], max_chars: int = 720) -> str:
     """Render stored conversation turns with explicit speaker provenance."""
     text = str(memory.get("text", "")).strip()

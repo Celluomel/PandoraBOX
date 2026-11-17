@@ -902,6 +902,16 @@ class LongHorizonPlanner:
         ownership_patterns = (
             r"\byour\s+(?:(?:actual|current|real|main|own|active)\s+)?goals?\b",
             r"\byour\s+(?:(?:actual|current|real|main|own|active)\s+)?plans?\b",
+            # A closed-world report can be explicitly scoped to the recorded
+            # planner/workspace without a possessive pronoun (for example,
+            # "report the current active goal from the existing workspace
+            # state"). Route that wording to the factual snapshot instead of
+            # asking the LLM to improvise a self-report from generic context.
+            r"\b(?:(?:current|active|dominant|existing|recorded)\s+){1,3}"
+            r"(?:goals?|plans?)\b.{0,120}\b(?:workspace|planner|recorded state)\b",
+            r"\b(?:workspace|planner|recorded state)\b.{0,120}"
+            r"\b(?:(?:current|active|dominant|existing|recorded)\s+){1,3}"
+            r"(?:goals?|plans?)\b",
             r"\b(?:ton|votre)\s+(?:(?:veritable|véritable|actuel|réel|reel|principal|propre)\s+)?(?:but|objectif|plan)s?\b",
             r"\b(?:quel(?:le)?s?\s+(?:est|sont)\s+)(?:ton|votre|tes|vos)\s+(?:but|objectif|plan)s?\b",
             # Count questions are first-person reports too, even when they use
