@@ -43,6 +43,7 @@ def summarize_output(value: Any) -> dict[str, Any]:
             "outcome_status", "status", "reason_code", "effect_status",
             "aspiration_planning", "goal_plan_schedule_status", "persistence_status",
             "cag_status", "workspace_status",
+            "event_status",
         }
         receipt_numeric_fields = {
             "cycle", "goal_plans_synchronized", "goal_plans_scheduled",
@@ -55,6 +56,7 @@ def summarize_output(value: Any) -> dict[str, Any]:
             "modules_changed", "modules_with_bias", "contexts_before",
             "contexts_after", "signals_before", "signals_after",
             "signals_pruned", "contexts_pruned",
+            "belief_count", "response_characters",
         }
         for key in receipt_enum_fields:
             item = value.get(key)
@@ -69,6 +71,9 @@ def summarize_output(value: Any) -> dict[str, Any]:
             receipt_fields["aspiration_plan_exists"] = value["aspiration_plan_exists"]
         if isinstance(value.get("persisted"), bool):
             receipt_fields["persisted"] = value["persisted"]
+        for key in ("detected", "event_emitted"):
+            if isinstance(value.get(key), bool):
+                receipt_fields[key] = value[key]
         if receipt_fields:
             result["receipt_fields"] = receipt_fields
         numeric = {}

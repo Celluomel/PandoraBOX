@@ -858,6 +858,85 @@ class PersonaBridge:
                 if failed_stages and trace.get("status") == "completed":
                     trace["status"] = "completed_with_stage_failures"
 
+    def _review_liberty_contradiction(
+        self, system: Any, response: str, turn_id: str,
+    ) -> None:
+        """Run contradiction detection and leave attributable, redacted evidence."""
+        detector = getattr(system, "liberty_contradiction", None)
+        if detector is None:
+            self._record_turn_stage(
+                "contradiction_review", "skipped_unavailable", turn_id=turn_id,
+            )
+            return
+
+        beliefs = [
+            str(getattr(belief, "statement", ""))
+            for belief in getattr(getattr(system, "self_concept", None), "_beliefs", {}).values()
+        ]
+        response_text = str(response or "")
+        input_material = json.dumps(
+            {"beliefs": beliefs, "response": response_text},
+            ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8", errors="replace")
+        input_receipt = {
+            "belief_count": len(beliefs),
+            "response_characters": len(response_text),
+            "evidence_sha256": hashlib.sha256(input_material).hexdigest(),
+        }
+        self._record_turn_stage(
+            "contradiction_review_input", "prepared", output=input_receipt,
+            consumes=("turn_input", "response_finalization"), turn_id=turn_id,
+        )
+
+        event_emitted = False
+        try:
+            organism = getattr(self, "_organism", None)
+            identity_drift = 0.0
+            observatory = getattr(organism, "observatory", None)
+            if observatory is not None and callable(getattr(observatory, "snapshot", None)):
+                try:
+                    snapshot = observatory.snapshot() or {}
+                    identity_drift = float(snapshot.get("IDX", snapshot.get("identity_index", 0.0)))
+                except Exception:
+                    pass
+
+            contradiction = detector.detect_contradiction(
+                self_concept_beliefs=beliefs,
+                response_text=response_text,
+                interaction_count=getattr(system, "_interaction_count", 0),
+                world_model=getattr(system, "world_model", None),
+                identity_drift=identity_drift,
+            )
+            if contradiction is not None:
+                try:
+                    from core.cognitive_event_bus import CONTRADICTION_DETECTED
+                    event_bus = getattr(organism, "event_bus", None)
+                    emit = getattr(event_bus, "emit", None)
+                    if callable(emit):
+                        emit(CONTRADICTION_DETECTED, {
+                            "topic": str(getattr(contradiction, "claimed_belief", ""))[:80],
+                            "pressure": 0.6,
+                        }, source="liberty_contradiction")
+                        event_emitted = True
+                except Exception:
+                    logger.debug("Contradiction event dispatch unavailable", exc_info=True)
+
+            self._record_turn_stage(
+                "contradiction_review", "completed", output={
+                    "detected": contradiction is not None,
+                    "event_emitted": event_emitted,
+                    "event_status": "emitted" if event_emitted else "not_emitted",
+                    "belief_count": len(beliefs),
+                }, consumes=("contradiction_review_input",), turn_id=turn_id,
+            )
+        except Exception as exc:
+            self._record_turn_stage(
+                "contradiction_review", "failed", turn_id=turn_id,
+                error_type=type(exc).__name__,
+                consumes=("contradiction_review_input",),
+            )
+            logger.debug("Contradiction detection (non-fatal): %s", type(exc).__name__)
+
     def _record_world_model_profile_update(self, receipt: Any, turn_id: str) -> bool:
         """Record a profile-write receipt and flag unconfirmed persistence."""
         if not isinstance(receipt, dict):
@@ -6361,50 +6440,7 @@ Memory honesty — two distinct cases:
             )
 
             # 14: liberty contradiction detection
-            if s.liberty_contradiction:
-                try:
-                    beliefs = [b.statement for b in s.self_concept._beliefs.values()]
-                    # Collect world_model and identity_drift for enhanced detection
-                    _wm = getattr(s, 'world_model', None)
-                    _idx = 0.0
-                    try:
-                        _org = getattr(self, '_organism', None)
-                        if _org and hasattr(_org, 'observatory'):
-                            _snap = _org.observatory.snapshot()
-                            _idx = _snap.get('IDX', _snap.get('identity_index', 0.0))
-                    except Exception:
-                        pass
-                    contradiction = s.liberty_contradiction.detect_contradiction(
-                        self_concept_beliefs=beliefs,
-                        response_text=response,
-                        interaction_count=s._interaction_count,
-                        world_model=_wm,
-                        identity_drift=_idx,
-                    )
-                    if contradiction:
-                        logger.debug(f"Contradiction: {contradiction.claimed_belief}")
-                        try:
-                            from core.cognitive_event_bus import CONTRADICTION_DETECTED
-                            _org = getattr(self, '_organism', None)
-                            if _org and hasattr(_org, 'event_bus'):
-                                _org.event_bus.emit(CONTRADICTION_DETECTED, {
-                                    "topic":    getattr(contradiction, 'claimed_belief', '')[:80],
-                                    "pressure": 0.6,
-                                }, source="liberty_contradiction")
-                        except Exception:
-                            pass
-                    self._record_turn_stage(
-                        "contradiction_review", "completed", turn_id=audit_turn_id,
-                    )
-                except Exception as e:
-                    self._record_turn_stage(
-                        "contradiction_review", "failed", str(e), turn_id=audit_turn_id,
-                    )
-                    logger.debug(f"Contradiction detection (non-fatal): {e}")
-            else:
-                self._record_turn_stage(
-                    "contradiction_review", "skipped_unavailable", turn_id=audit_turn_id,
-                )
+            self._review_liberty_contradiction(s, response, audit_turn_id)
 
             # 15: liberty goal behavior logging
             if s.liberty_goals:

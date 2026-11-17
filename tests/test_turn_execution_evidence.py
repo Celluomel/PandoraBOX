@@ -325,6 +325,47 @@ def test_turn_stage_records_redacted_output_and_actual_consumption_link():
     assert trace["semantic_answer_validation"]["status"] == "not_performed"
 
 
+def test_contradiction_review_records_redacted_inputs_result_and_event_effect():
+    bridge = _bridge()
+    bridge._organism = SimpleNamespace(
+        observatory=None,
+        event_bus=SimpleNamespace(emit=lambda *args, **kwargs: None),
+    )
+    bridge._record_turn_stage("turn_input", "received", output="private user prompt")
+    bridge._record_turn_stage("response_finalization", "completed", output="private final answer")
+    contradiction_text = "private belief statement must never enter trace"
+    system = SimpleNamespace(
+        liberty_contradiction=SimpleNamespace(
+            detect_contradiction=lambda **kwargs: SimpleNamespace(
+                claimed_belief=contradiction_text,
+            ),
+        ),
+        self_concept=SimpleNamespace(
+            _beliefs={"belief-1": SimpleNamespace(statement=contradiction_text)},
+        ),
+        _interaction_count=7,
+        world_model=None,
+    )
+
+    bridge._review_liberty_contradiction(system, "private final answer", "turn-evidence-1")
+    trace = bridge.get_turn_trace("turn-evidence-1")
+    input_stage = trace["stages"]["contradiction_review_input"]
+    review_stage = trace["stages"]["contradiction_review"]
+
+    assert input_stage["status"] == "prepared"
+    assert input_stage["output_summary"]["receipt_fields"]["belief_count"] == 1
+    assert input_stage["output_summary"]["receipt_fields"]["response_characters"] == len("private final answer")
+    assert input_stage["output_fingerprint"]
+    assert [item["stage"] for item in input_stage["consumes"]] == [
+        "turn_input", "response_finalization",
+    ]
+    assert review_stage["status"] == "completed"
+    assert review_stage["output_summary"]["receipt_fields"]["detected"] is True
+    assert review_stage["output_summary"]["receipt_fields"]["event_emitted"] is True
+    assert review_stage["consumes"][0]["fingerprint"] == input_stage["output_fingerprint"]
+    assert contradiction_text not in repr(trace)
+
+
 def test_deterministic_reasoning_receipt_links_memory_and_planner_inputs():
     assert deterministic_reasoning_dependencies(
         selected=True, memory_recall=True,
