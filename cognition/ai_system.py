@@ -1229,6 +1229,7 @@ class EnhancedMemorySystem:
         """
         if limit <= 0:
             return []
+        semantic_sources: List[Dict[str, Any]] = []
         try:
             # Prefer the existing semantic index. Explicit historical recall
             # filters its bounded neighbor window to user-authored sources
@@ -1294,7 +1295,16 @@ class EnhancedMemorySystem:
                                     if memory.get("memory_type") == "episodic":
                                         memory["source"] = "legacy_episodic_user_source"
                                         memory["user_authored_text"] = extract_user_authored_text(memory)
-                                return recalled
+                                if explicit_recall:
+                                    # A semantic neighbor window is not a
+                                    # completeness guarantee for exact recall.
+                                    # Retain it for paraphrases, but also query
+                                    # the ranked source archive below so a
+                                    # precise lexical source outside FAISS's
+                                    # top-k window cannot be missed.
+                                    semantic_sources = recalled
+                                else:
+                                    return recalled
                     except Exception as error:
                         logger.debug("Semantic user-message recall unavailable: %s", error)
 
@@ -1307,14 +1317,18 @@ class EnhancedMemorySystem:
                     self.persistence, "get_conversation_source_memories", None
                 )
                 if callable(source_reader):
-                    memories = source_reader(query=query, limit=2000)
+                    memories = source_reader(query=query, limit=128)
                 else:
                     memories = self.persistence.get_all_memories()
                 memories = [
                     memory for memory in memories
                     if memory.get("memory_type") in {"user_message", "episodic"}
                 ]
-                memories = filter_recall_query_records(memories, query=query)
+                lexical_sources = filter_recall_query_records(memories, query=query)
+                memories = lexical_sources or filter_recall_query_records(semantic_sources)
+                if lexical_sources and semantic_sources:
+                    memories.extend(semantic_sources)
+                    memories = filter_recall_query_records(memories, query=query)
                 # New turns are persisted both as a dedicated user_message
                 # and inside an episodic exchange. Keep one source candidate
                 # per normalized user utterance, preferring the dedicated row.

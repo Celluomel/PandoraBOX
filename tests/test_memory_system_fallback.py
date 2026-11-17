@@ -853,6 +853,50 @@ class MemorySystemFallbackTests(unittest.TestCase):
             "explicit recall must use the dedicated source archive query",
         )
 
+    def test_explicit_recall_supplements_faiss_with_exact_source_outside_neighbor_window(self):
+        query = "What was the test marker I gave you for the next turn in the cognitive harness audit?"
+        self.rows = [
+            {
+                "id": 1, "faiss_id": 1,
+                "text": "User message: In the cognitive harness audit, keep focus on Global Workspace outputs.",
+                "timestamp": datetime.now().isoformat(), "impact_score": 0.5,
+                "memory_type": "user_message", "memory_tier": "interaction",
+                "emotional_valence": "Neutral", "access_count": 0,
+            },
+            {
+                "id": 2, "faiss_id": 2,
+                "text": "User message: The next audit operation is web_search.",
+                "timestamp": datetime.now().isoformat(), "impact_score": 0.5,
+                "memory_type": "user_message", "memory_tier": "interaction",
+                "emotional_valence": "Neutral", "access_count": 0,
+            },
+            {
+                "id": 3, "faiss_id": 3,
+                "text": "User message: For the cognitive harness audit, my test marker for the next turn is cobalt fox 8421.",
+                "timestamp": datetime.now().isoformat(), "impact_score": 0.5,
+                "memory_type": "user_message", "memory_tier": "interaction",
+                "emotional_valence": "Neutral", "access_count": 0,
+            },
+        ]
+
+        class _IncompleteSemanticWindow:
+            ntotal = 240
+
+            def search(self, _query, _count):
+                return (
+                    np.array([[0.1, 0.2]], dtype="float32"),
+                    np.array([[1, 2]], dtype="int64"),
+                )
+
+        system = self._system(embedder=_Embedder(), index=_IncompleteSemanticWindow())
+        recalled = system.retrieve_user_authored_memories(
+            query, limit=6, explicit_recall=True,
+        )
+
+        self.assertEqual([memory["id"] for memory in recalled], [3])
+        self.assertIn("cobalt fox 8421", recalled[0]["text"])
+        self.assertEqual(system.persistence.conversation_source_queries, [(query, 128)])
+
     def test_explicit_recall_recovers_user_segment_from_legacy_episodic_dialogue(self):
         query = "For the cognitive harness audit, what did I say about module outputs?"
         assistant_reply = "Lumina invented a long answer about quantum cognition."
@@ -912,7 +956,7 @@ class MemorySystemFallbackTests(unittest.TestCase):
         self.assertEqual([memory["id"] for memory in recalled], [31])
         self.assertEqual(recalled[0]["memory_type"], "user_message")
         self.assertIn("interprétation claire", recalled[0]["text"])
-        self.assertFalse(system.persistence.conversation_source_queries)
+        self.assertEqual(system.persistence.conversation_source_queries, [(query, 128)])
 
     def test_explicit_recall_deduplicates_user_message_and_episodic_copy(self):
         query = "For the cognitive harness audit, what did I ask about module outputs?"
