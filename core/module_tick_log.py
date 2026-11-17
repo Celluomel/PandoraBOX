@@ -47,6 +47,8 @@ def summarize_output(value: Any) -> dict[str, Any]:
         receipt_numeric_fields = {
             "cycle", "goal_plans_synchronized", "goal_plans_scheduled",
             "goal_plans_pending", "pending_count", "history_count",
+            "module_count", "observed_count", "tick_count", "error_count",
+            "initialized_unobserved_count", "unavailable_count",
             "signal_count", "cluster_count", "concepts_parsed",
             "concept_upsert_calls_returned", "observation_calls_returned",
             "relation_upsert_calls_returned", "duration_ms",

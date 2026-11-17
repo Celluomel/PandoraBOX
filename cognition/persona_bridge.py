@@ -88,6 +88,56 @@ def _turn_output_evidence(value: Any) -> tuple[str, dict[str, Any]]:
     return hashlib.sha256(material).hexdigest(), summary
 
 
+def _runtime_execution_evidence_snapshot(trace: Any) -> dict[str, Any]:
+    """Build a bounded, turn-specific snapshot for deterministic trace reports."""
+    trace = trace if isinstance(trace, dict) else {}
+    stages = trace.get("stages", {})
+    stages = stages if isinstance(stages, dict) else {}
+    stage_names = (
+        "turn_input", "input_safety", "self_description_context",
+        "memory_retrieval", "cognitive_prompt_context", "prompt_assembly",
+        "primary_generation", "provider_completion", "response_finalization",
+        "response_learning_and_memory", "organism_post_interaction",
+    )
+    stage_statuses = {
+        name: str(stages[name].get("status") or "unknown")[:48]
+        for name in stage_names if isinstance(stages.get(name), dict)
+    }
+    sources = trace.get("context_sources", {})
+    sources = sources if isinstance(sources, dict) else {}
+    manifest = sources.get("module_tick_manifest", {})
+    manifest = manifest if isinstance(manifest, dict) else {}
+    manifest_fields = (
+        "module_count", "observed_count", "tick_count", "error_count",
+        "initialized_unobserved_count", "unavailable_count",
+    )
+    manifest_snapshot = {
+        "status": str(manifest.get("status") or "unavailable")[:48],
+        **{
+            key: max(0, _safe_nonnegative_int(manifest.get(key)))
+            for key in manifest_fields
+        },
+    }
+    return {
+        "type": "runtime_execution_evidence_snapshot",
+        "turn_id": str(trace.get("turn_id") or "")[:120],
+        "trace_available": bool(trace.get("turn_id")),
+        "stage_statuses": stage_statuses,
+        "module_tick_manifest": manifest_snapshot,
+        **{
+            key: manifest_snapshot[key]
+            for key in manifest_fields
+        },
+    }
+
+
+def _safe_nonnegative_int(value: Any) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
 def _prior_assistant_trace_evidence(
     manager: Any,
     trace: dict[str, Any],
@@ -2544,14 +2594,38 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             )
         if _runtime_execution_query and not _explicit_memory_recall:
             from cognition.self_description import trace_grounded_architecture_answer
-            _deterministic_response = trace_grounded_architecture_answer(
-                effective_input, self.get_last_turn_trace(),
+            _runtime_evidence_trace = self.get_turn_trace(_audit_turn_id)
+            _runtime_evidence_snapshot = _runtime_execution_evidence_snapshot(
+                _runtime_evidence_trace,
+            )
+            _runtime_evidence_stages = (
+                _runtime_evidence_trace.get("stages", {})
+                if isinstance(_runtime_evidence_trace, dict) else {}
+            )
+            _runtime_evidence_dependencies = tuple(
+                name for name in _runtime_evidence_snapshot["stage_statuses"]
+                if isinstance(_runtime_evidence_stages.get(name), dict)
+                and _runtime_evidence_stages[name].get("output_fingerprint")
             )
             self._record_turn_stage(
-                "architecture_claim_validation", "passed",
-                "Answer rendered from the current turn receipt and module manifest; no LLM claim inference used.",
-                output={"source": "current_turn_execution_receipt"},
-                consumes=("turn_input", "self_description_context"),
+                "runtime_execution_evidence_snapshot",
+                "captured" if _runtime_evidence_snapshot["trace_available"] else "unavailable",
+                output=_runtime_evidence_snapshot,
+                consumes=_runtime_evidence_dependencies,
+                turn_id=_audit_turn_id,
+            )
+            _deterministic_response = trace_grounded_architecture_answer(
+                effective_input, _runtime_evidence_trace or {},
+            )
+            self._record_turn_stage(
+                "architecture_claim_validation",
+                "passed" if _runtime_evidence_snapshot["trace_available"] else "incomplete_evidence",
+                "Answer rendered from the exact turn receipt and captured module manifest; no LLM claim inference used.",
+                output={
+                    "source": "current_turn_execution_receipt",
+                    "trace_available": _runtime_evidence_snapshot["trace_available"],
+                },
+                consumes=("runtime_execution_evidence_snapshot",),
                 turn_id=_audit_turn_id,
             )
         if _cognitive_audit_status_query and not _explicit_memory_recall:

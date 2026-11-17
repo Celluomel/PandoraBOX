@@ -11,8 +11,10 @@ from cognition.persona_bridge import (
     _prior_assistant_evidence_detail,
     _prior_assistant_evidence_summary,
     _prior_assistant_trace_evidence,
+    _runtime_execution_evidence_snapshot,
     _turn_output_evidence,
 )
+from core.module_tick_log import summarize_output
 from cognition.turn_context_evidence import (
     deterministic_reasoning_dependencies,
     response_learning_evidence,
@@ -71,6 +73,66 @@ def test_deterministic_reasoning_receipt_links_memory_and_planner_inputs():
         selected=True, cognitive_audit_report=True,
     ) == ("turn_input", "cognitive_audit_status_report")
     assert deterministic_reasoning_dependencies(selected=False, memory_recall=True) == ()
+
+
+def test_runtime_execution_evidence_snapshot_binds_exact_turn_and_manifest_counts():
+    snapshot = _runtime_execution_evidence_snapshot({
+        "turn_id": "audit-turn-7",
+        "stages": {
+            "turn_input": {"status": "received", "output_fingerprint": "input-fp"},
+            "primary_generation": {"status": "skipped_deterministic"},
+            "private_stage": {"status": "completed", "detail": "private prompt"},
+        },
+        "context_sources": {
+            "module_tick_manifest": {
+                "status": "injected", "module_count": 43,
+                "observed_count": 32, "tick_count": 244, "error_count": 0,
+                "initialized_unobserved_count": 10, "unavailable_count": 1,
+                "private_payload": "must not be copied",
+            },
+        },
+    })
+
+    assert snapshot["trace_available"] is True
+    assert snapshot["turn_id"] == "audit-turn-7"
+    assert snapshot["stage_statuses"] == {
+        "turn_input": "received",
+        "primary_generation": "skipped_deterministic",
+    }
+    assert snapshot["module_tick_manifest"] == {
+        "status": "injected", "module_count": 43, "observed_count": 32,
+        "tick_count": 244, "error_count": 0,
+        "initialized_unobserved_count": 10, "unavailable_count": 1,
+    }
+    assert "must not be copied" not in repr(snapshot)
+    summary = summarize_output(snapshot)
+    assert summary["receipt_fields"]["module_count"] == 43
+    assert summary["receipt_fields"]["observed_count"] == 32
+    assert summary["receipt_fields"]["tick_count"] == 244
+
+
+def test_runtime_execution_route_uses_originating_turn_trace_snapshot():
+    source = Path(__file__).resolve().parents[1] / "cognition" / "persona_bridge.py"
+    tree = ast.parse(source.read_text(encoding="utf-8"))
+    exact_trace_calls = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "get_turn_trace"
+        and len(node.args) == 1
+        and isinstance(node.args[0], ast.Name)
+        and node.args[0].id == "_audit_turn_id"
+    ]
+    assert exact_trace_calls
+    route_names = [
+        node.args[0].value for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "_record_turn_stage"
+        and node.args and isinstance(node.args[0], ast.Constant)
+        and isinstance(node.args[0].value, str)
+    ]
+    assert "runtime_execution_evidence_snapshot" in route_names
 
 
 def test_turn_trace_exposes_safe_stream_failure_type_but_redacts_exception_text():
