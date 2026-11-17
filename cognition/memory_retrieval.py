@@ -49,6 +49,49 @@ _HISTORICAL_REQUEST_PATTERNS = (
         r"(?:you\s+)?(?P<topic>[^?!.]{1,100})",
         re.IGNORECASE,
     ),
+    # Historical sensor readings and other facts are commonly asked as
+    # "what value did I give you?" rather than as an instruction/request.
+    # Route these to source-backed recall too; otherwise ordinary semantic
+    # retrieval may find nearby records but the exact-recall gate is skipped.
+    re.compile(
+        r"\b(?:what|which)\s+(?P<topic>[^?!.]{1,100}?)\s+"
+        r"(?:did|have|had)\s+i\s+"
+        r"(?:give|gave|tell|told|provide|provided|share|shared|mention|mentioned|"
+        r"state|stated|send|sent|write|wrote|report|reported)\s+"
+        r"(?:you\s+)?",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:do|did|can|could)\s+you\s+(?:remember|recall)\s+"
+        r"(?P<topic>[^?!.]{1,100}?)\s+"
+        r"(?:i\s+(?:gave|give|told|tell|provided|provide|shared|share|"
+        r"mentioned|mention|reported|report)\s+you)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bquel(?:le)?s?\s+(?P<topic>[^?!.]{1,100}?)\s+"
+        r"(?:ai|avais|aurais)-je\s+"
+        r"(?:donn[ée](?:e|s|es)?|fourni(?:e|s|es)?|indiqu[ée](?:e|s|es)?|"
+        r"transmis(?:e|es)?|communiqu[ée](?:e|s|es)?|partag[ée](?:e|s|es)?|"
+        r"mentionn[ée](?:e|s|es)?|rapport[ée](?:e|s|es)?|dit(?:e|es)?)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bquel(?:le)?s?\s+(?P<topic>[^?!.]{1,100}?)\s+"
+        r"je\s+t['’]ai\s+"
+        r"(?:donn[ée](?:e|s|es)?|fourni(?:e|s|es)?|indiqu[ée](?:e|s|es)?|"
+        r"transmis(?:e|es)?|communiqu[ée](?:e|s|es)?|partag[ée](?:e|s|es)?|"
+        r"mentionn[ée](?:e|s|es)?|rapport[ée](?:e|s|es)?|dit(?:e|es)?)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bquel(?:le)?s?\s+(?P<topic>[^?!.]{1,100}?)\s+"
+        r"t['’]ai-je\s+"
+        r"(?:donn[ée](?:e|s|es)?|fourni(?:e|s|es)?|indiqu[ée](?:e|s|es)?|"
+        r"transmis(?:e|es)?|communiqu[ée](?:e|s|es)?|partag[ée](?:e|s|es)?|"
+        r"mentionn[ée](?:e|s|es)?|rapport[ée](?:e|s|es)?|dit(?:e|es)?)\b",
+        re.IGNORECASE,
+    ),
     # Questions whose grammatical subject is "I" followed by an object of
     # ask/request. Unlike the older "what outcome did I ask for" form, the
     # object follows the verb here: "what did I ask you to fix about X?".

@@ -7,6 +7,7 @@ locals, prompts, sensor payloads, or return values.
 from __future__ import annotations
 
 import atexit
+import faulthandler
 import json
 import os
 from pathlib import Path
@@ -30,7 +31,11 @@ TEST_OR_TOOL_DIRS = {"tests", "scripts", "tools", "archive", "artifacts"}
 file_calls: Counter[str] = Counter()
 module_calls: Counter[str] = Counter()
 relative_path_cache: dict[str, str | None] = {}
+turn_file_calls: dict[str, Counter[str]] = {}
+turn_module_calls: dict[str, Counter[str]] = {}
+MAX_AUDIT_TURNS = 32
 last_flush = 0.0
+_turn_context_var = None
 
 
 def _repo_relative(filename: str) -> str | None:
@@ -86,6 +91,39 @@ def _scope(path: str) -> str:
     return "brain_or_shared_library"
 
 
+def _active_turn_id() -> str:
+    """Read only the opaque ContextVar identity; never inspect frame locals."""
+    global _turn_context_var
+    if _turn_context_var is None:
+        module = sys.modules.get("core.turn_execution_context")
+        _turn_context_var = getattr(module, "current_turn_id", None) if module else None
+    if _turn_context_var is None:
+        return ""
+    try:
+        value = _turn_context_var.get()
+    except Exception:
+        return ""
+    return value if isinstance(value, str) and len(value) <= 120 else ""
+
+
+def _record_call(path: str, module_body: bool, turn_id: str = "") -> None:
+    file_calls[path] += 1
+    if module_body:
+        module_calls[path] += 1
+    if not turn_id:
+        return
+    if turn_id not in turn_file_calls:
+        turn_file_calls[turn_id] = Counter()
+        turn_module_calls[turn_id] = Counter()
+        while len(turn_file_calls) > MAX_AUDIT_TURNS:
+            oldest = next(iter(turn_file_calls))
+            turn_file_calls.pop(oldest, None)
+            turn_module_calls.pop(oldest, None)
+    turn_file_calls[turn_id][path] += 1
+    if module_body:
+        turn_module_calls[turn_id][path] += 1
+
+
 def _profile(frame, event, arg):
     del arg
     if event != "call":
@@ -93,9 +131,11 @@ def _profile(frame, event, arg):
     relative = _repo_relative(frame.f_code.co_filename)
     if relative is None:
         return
-    file_calls[relative] += 1
-    if frame.f_code.co_name == "<module>":
-        module_calls[relative] += 1
+    _record_call(
+        relative,
+        frame.f_code.co_name == "<module>",
+        _active_turn_id(),
+    )
     global last_flush
     now = time.monotonic()
     if now - last_flush >= 30:
@@ -124,11 +164,30 @@ def _write_report() -> None:
              "scope": _scope(path)}
             for path in executed
         ],
+        "turn_execution_summaries": [
+            {
+                "turn_id": turn_id,
+                "executed_file_count": len(calls),
+                "python_call_events": sum(calls.values()),
+                "executed_files": [
+                    {
+                        "path": path,
+                        "module_body_executions": turn_module_calls.get(turn_id, {}).get(path, 0),
+                        "python_call_events": count,
+                        "scope": _scope(path),
+                    }
+                    for path, count in sorted(calls.items())
+                ],
+            }
+            for turn_id, calls in turn_file_calls.items()
+        ],
         "unexecuted_files": unexecuted,
         "limitations": [
             "A file absent from this report may be optional, platform-specific, or scenario-gated; absence alone is not a defect.",
             "A call event proves code execution, not correct output or useful downstream effect.",
             "The module body count distinguishes module import/execution from calls into an already imported module.",
+            "Per-turn records are correlated by an opaque ContextVar turn ID; background tasks that inherit the context remain attributed to their originating turn.",
+            "A per-turn file call proves execution in that turn context, not correctness or usefulness of its output; use turn receipts for causal outputs.",
         ],
     }
     try:
@@ -148,6 +207,14 @@ def main() -> int:
     if not target.is_file() or target.suffix.lower() != ".py":
         print("Audit target must be an existing Python file.", file=sys.stderr)
         return 2
+    try:
+        stack_dump_seconds = float(os.environ.get("LUMINA_AUDIT_STACK_DUMP_SECONDS", "0"))
+    except (TypeError, ValueError):
+        stack_dump_seconds = 0.0
+    if stack_dump_seconds > 0:
+        faulthandler.dump_traceback_later(
+            max(5.0, min(stack_dump_seconds, 3600.0)), repeat=True, file=sys.stderr,
+        )
 
     atexit.register(_write_report)
     sys.path.insert(0, str(ROOT))

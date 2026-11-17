@@ -55,6 +55,11 @@ from cognition.turn_context_evidence import (
     USER_PROFILE_PROVENANCE_POLICY,
 )
 from cognition.factual_self_report_context import history_without_assistant_claims
+from core.turn_execution_context import (
+    current_turn_id as _current_audit_turn_id,
+    normalize_turn_id as _normalize_audit_turn_id,
+    set_current_turn_id as _set_audit_turn_id,
+)
 
 from pathlib import Path
 
@@ -565,29 +570,39 @@ class PersonaBridge:
     ):
         _terminal_meta = None
         async with self._response_turn_lock:
-            async for chunk in self._get_response_stream_impl(
-                user_text,
-                user_id=user_id,
-                vision_context=vision_context,
-                voice_mode=voice_mode,
-                displayed_cognitive_trace=displayed_cognitive_trace,
-                allow_body_actions=allow_body_actions,
-                record_history=record_history,
-                conversation_history=conversation_history,
-                peer_name=peer_name,
-                max_tokens_override=max_tokens_override,
-                cognitive_scope_id=cognitive_scope_id,
-                turn_id=turn_id,
-            ):
-                if isinstance(chunk, dict) and chunk.get("__meta__"):
-                    chunk.setdefault("turn_id", self._last_turn_trace.get("turn_id", ""))
-                    chunk.setdefault(
-                        "cognitive_scope_id",
-                        self._last_turn_trace.get("cognitive_scope_id", user_id),
-                    )
-                    _terminal_meta = chunk
-                    continue
-                yield chunk
+            # Generate the stable trace ID before entering any cognitive
+            # modules so the opt-in profiler can attribute their calls to
+            # this turn. ContextVar propagation also covers asyncio.to_thread.
+            audit_turn_id = _normalize_audit_turn_id(turn_id) or (
+                f"lumina-{time.time_ns()}-{self._turn_sequence + 1}"
+            )
+            context_token = _set_audit_turn_id(audit_turn_id)
+            try:
+                async for chunk in self._get_response_stream_impl(
+                    user_text,
+                    user_id=user_id,
+                    vision_context=vision_context,
+                    voice_mode=voice_mode,
+                    displayed_cognitive_trace=displayed_cognitive_trace,
+                    allow_body_actions=allow_body_actions,
+                    record_history=record_history,
+                    conversation_history=conversation_history,
+                    peer_name=peer_name,
+                    max_tokens_override=max_tokens_override,
+                    cognitive_scope_id=cognitive_scope_id,
+                    turn_id=audit_turn_id,
+                ):
+                    if isinstance(chunk, dict) and chunk.get("__meta__"):
+                        chunk.setdefault("turn_id", self._last_turn_trace.get("turn_id", ""))
+                        chunk.setdefault(
+                            "cognitive_scope_id",
+                            self._last_turn_trace.get("cognitive_scope_id", user_id),
+                        )
+                        _terminal_meta = chunk
+                        continue
+                    yield chunk
+            finally:
+                _current_audit_turn_id.reset(context_token)
         # Release the per-turn lock before handing out the terminal event.
         # Consumers commonly stop at metadata; they must not hold the lock
         # while a suspended generator waits to be closed by garbage collection.

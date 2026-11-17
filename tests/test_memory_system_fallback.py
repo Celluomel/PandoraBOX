@@ -338,6 +338,37 @@ class MemorySystemFallbackTests(unittest.TestCase):
                     topic,
                 )
 
+    def test_sensor_value_given_in_prior_turn_routes_to_source_recall(self):
+        queries = (
+            "Peux-tu rappeler quelle valeur du capteur je t’ai donnée au tour précédent ?",
+            "Quelle valeur du capteur t’ai-je indiquée dans mon message précédent ?",
+            "What sensor reading did I give you in the previous turn?",
+            "Which value did I tell you in my last message?",
+            "Can you recall the exact sensor value I gave you in my previous message?",
+        )
+        for query in queries:
+            with self.subTest(query=query):
+                self.assertTrue(is_explicit_memory_recall_query(query))
+                topic = extract_explicit_recall_topic(query).casefold()
+                self.assertTrue(
+                    any(term in topic for term in ("capteur", "sensor", "value", "reading")),
+                    topic,
+                )
+
+        query = queries[0]
+        source = {
+            "memory_type": "user_message",
+            "text": "User message: La dernière valeur du capteur que je t’ai donnée est 0,8 m.",
+            "relevance": 0.9,
+        }
+        eligible = filter_recall_query_records([source], query=query)
+        self.assertEqual(eligible, [source])
+        self.assertIsNone(explicit_recall_abstention_result(query, eligible))
+        self.assertEqual(
+            explicit_recall_abstention_result(query, [])["status"],
+            "abstained_no_source",
+        )
+
     def test_feminine_french_historical_participle_routes_to_explicit_recall(self):
         query = "Dans nos échanges, quelle règle ai-je posée pour les informations des capteurs ?"
         self.assertTrue(is_explicit_memory_recall_query(query))

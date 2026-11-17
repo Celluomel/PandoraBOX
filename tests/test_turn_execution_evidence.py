@@ -2,7 +2,7 @@ import threading
 import ast
 import inspect
 from pathlib import Path
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 
 from cognition.ai_system import EnhancedAISystem
 from cognition.ai_system import generate_semantic_hash
@@ -20,6 +20,7 @@ from cognition.turn_context_evidence import (
     deterministic_reasoning_dependencies,
     response_learning_evidence,
 )
+from core.turn_execution_context import current_turn_id
 
 
 def _bridge():
@@ -1199,3 +1200,75 @@ def test_architecture_validation_can_link_candidate_prior_evidence_and_final_out
         "generation_candidate", "prior_assistant_evidence", "turn_input",
     ]
     assert validation["consumes"][0]["fingerprint"] == stages["generation_candidate"]["output_fingerprint"]
+
+
+def test_chat_turn_context_matches_trace_id_and_resets_after_completion():
+    bridge = PersonaBridge.__new__(PersonaBridge)
+    bridge._response_turn_lock = _ImmediateAsyncLock()
+    bridge._turn_sequence = 0
+    bridge._last_turn_trace = {"turn_id": "", "cognitive_scope_id": "default"}
+    observed = []
+
+    async def fake_impl(self, _user_text, **kwargs):
+        observed.append((current_turn_id.get(), kwargs["turn_id"]))
+        self._turn_sequence += 1
+        self._last_turn_trace = {
+            "turn_id": kwargs["turn_id"],
+            "cognitive_scope_id": "default",
+        }
+        yield "answer"
+        yield {"__meta__": True}
+
+    bridge._get_response_stream_impl = MethodType(fake_impl, bridge)
+
+    result = _drain_immediate_async_generator(bridge.get_response_stream("test prompt"))
+    generated_id = result[-1]["turn_id"]
+    assert generated_id.startswith("lumina-")
+    assert observed == [(generated_id, generated_id)]
+    assert current_turn_id.get() == ""
+
+
+def test_explicit_turn_id_is_used_for_context_correlation():
+    bridge = PersonaBridge.__new__(PersonaBridge)
+    bridge._response_turn_lock = _ImmediateAsyncLock()
+    bridge._turn_sequence = 0
+    bridge._last_turn_trace = {"turn_id": "", "cognitive_scope_id": "default"}
+    seen = []
+
+    async def fake_impl(self, _user_text, **kwargs):
+        seen.append(current_turn_id.get())
+        self._turn_sequence += 1
+        self._last_turn_trace = {
+            "turn_id": kwargs["turn_id"],
+            "cognitive_scope_id": "default",
+        }
+        yield {"__meta__": True}
+
+    bridge._get_response_stream_impl = MethodType(fake_impl, bridge)
+
+    result = _drain_immediate_async_generator(
+        bridge.get_response_stream("test", turn_id="caller-turn-7")
+    )
+    assert result[-1]["turn_id"] == "caller-turn-7"
+    assert seen == ["caller-turn-7"]
+
+
+class _ImmediateAsyncLock:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return False
+
+
+def _drain_immediate_async_generator(generator):
+    """Run the no-I/O fake async generator without Windows socketpair setup."""
+    result = []
+    while True:
+        operation = generator.__anext__()
+        try:
+            value = operation.send(None)
+        except StopIteration as completed:
+            result.append(completed.value)
+        except StopAsyncIteration:
+            return result
