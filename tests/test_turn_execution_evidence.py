@@ -131,6 +131,26 @@ def test_semantic_validation_receipt_keeps_dimensions_without_answer_text():
     assert "private repair text" not in repr(receipt)
 
 
+def test_source_grounded_answer_receipt_is_not_mislabeled_as_llm_review():
+    bridge = _bridge()
+    bridge._record_semantic_validation_summary(
+        "turn-evidence-1", "passed_source_grounded", {
+            "relevant": True,
+            "claim_basis": "factual",
+            "evidence_support": "supported",
+            "contract_compliant": True,
+            "reason": "exact source text match",
+        },
+    )
+
+    receipt = bridge._last_turn_trace["semantic_answer_validation"]
+    assert receipt["status"] == "source_grounded_exact_match"
+    assert receipt["scope"] == "deterministic_response_equals_retrieved_user_source"
+    assert receipt["stage_status"] == "passed_source_grounded"
+    assert receipt["evidence_support"] == "supported"
+    assert "probabilistic" not in receipt["status"]
+
+
 def test_repaired_answer_receipt_proves_second_review_without_repair_text():
     bridge = _bridge()
     bridge._record_semantic_validation_summary(

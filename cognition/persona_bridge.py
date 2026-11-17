@@ -925,14 +925,22 @@ class PersonaBridge:
         """Persist only bounded semantic-review fields, never prompt or answer text."""
         review = review if isinstance(review, dict) else {}
         summary: dict[str, Any] = {
-            "status": "probabilistic_review_passed"
+            "status": "source_grounded_exact_match"
+            if status == "passed_source_grounded"
+            else "response_replaced_source_mismatch"
+            if status == "abstained_source_mismatch"
+            else "probabilistic_review_passed"
             if status in {"passed", "repaired_and_passed"}
             else "response_replaced_reviewer_unavailable"
             if status == "abstained_review_unavailable"
             else "response_replaced_after_review"
             if status.startswith("abstained_")
             else "review_incomplete",
-            "scope": "request_relevance_context_support_and_explicit_constraints; not proof of truth",
+            "scope": (
+                "deterministic_response_equals_retrieved_user_source"
+                if status in {"passed_source_grounded", "abstained_source_mismatch"}
+                else "request_relevance_context_support_and_explicit_constraints; not proof of truth"
+            ),
             "stage_status": str(status)[:48],
         }
         if isinstance(review.get("relevant"), bool):
@@ -3625,7 +3633,15 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
         )
         _semantic_status = "unavailable"
         _repair_review: dict[str, Any] | None = None
-        if raw_response.strip() and not _generation_failed:
+        _source_recall_attempt = (
+            _explicit_memory_recall
+            and isinstance(_memory_recall_result, dict)
+            and _memory_recall_result.get("status") in {
+                "supported", "supported_verbatim_source",
+            }
+            and bool(_memory_recall_result.get("source_ref"))
+        )
+        if raw_response.strip() and not _generation_failed and not _source_recall_attempt:
             _llm_manager = getattr(self._llm_stream_fn, "__self__", None)
             # The answer is still inside an interactive turn here. The normal
             # background helper deliberately defers while that marker is set,
@@ -3755,6 +3771,49 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     _audit_turn_id, "unavailable", None,
                 )
                 _response_source_stage = "semantic_answer_validation"
+        elif raw_response.strip() and not _generation_failed and _source_recall_attempt:
+            expected_source_answer = str(_memory_recall_result.get("answer") or "").strip()
+            exact_source_match = bool(expected_source_answer) and raw_response.strip() == expected_source_answer
+            _semantic_status = (
+                "passed_source_grounded" if exact_source_match
+                else "abstained_source_mismatch"
+            )
+            if not exact_source_match:
+                try:
+                    from managers.settings_manager import config as _semantic_cfg
+                    _lang = str(getattr(_semantic_cfg, "RESPONSE_LANGUAGE", "auto") or "auto").lower()
+                except Exception:
+                    _lang = "auto"
+                raw_response = (
+                    "Je ne peux pas confirmer cette réponse à partir des éléments disponibles."
+                    if _lang.startswith("fr") or any(ch in effective_input for ch in "àâçéèêëîïôùûüÿœ")
+                    else "I can't confirm that answer from the available evidence."
+                )
+            source_check = {
+                "scope": "deterministic_response_equals_retrieved_user_source",
+                "validation_method": "exact_source_text_match",
+                "source_ref": str(_memory_recall_result.get("source_ref"))[:40],
+                "source_status": str(_memory_recall_result.get("status"))[:40],
+                "exact_source_match": exact_source_match,
+            }
+            self._record_turn_stage(
+                "semantic_answer_validation", _semantic_status,
+                "Structural check of the deterministic recall answer against its retrieved user source; no LLM truth claim.",
+                output=source_check,
+                consumes=("deterministic_reasoning", "memory_recall_answer", "turn_input"),
+                turn_id=_audit_turn_id,
+            )
+            self._record_semantic_validation_summary(
+                _audit_turn_id, _semantic_status,
+                {
+                    "relevant": True,
+                    "claim_basis": "factual",
+                    "evidence_support": "supported" if exact_source_match else "insufficient_evidence",
+                    "contract_compliant": exact_source_match,
+                    "reason": "exact source text match" if exact_source_match else "deterministic response differs from retrieved source",
+                },
+            )
+            _response_source_stage = "semantic_answer_validation"
         if _safety is not None:
             try:
                 _or = _safety.check_output(raw_response, user_id)
