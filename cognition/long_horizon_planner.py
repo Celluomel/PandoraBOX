@@ -1835,11 +1835,46 @@ class LongHorizonPlanner:
                         )
                         plan_migrated_unverified = True
                         migrated_unverified_progress = True
-                    if plan_migrated_unverified and not plan.current_decision:
-                        plan.current_decision = (
-                            "Legacy completed steps without per-step execution receipts are "
-                            "unverified; no retry is recorded or scheduled by this migration."
-                        )
+                    if plan_migrated_unverified:
+                        # A legacy decision string can still claim that the step
+                        # succeeded even after the migration demotes that step
+                        # and resets the verified prefix. Always replace it so
+                        # the current trace cannot contradict the migrated state.
+                        if last.get("success") is True and not has_matching_last_receipt:
+                            plan.current_decision = (
+                                "Legacy plan-level success lacked a matching step execution "
+                                "receipt; progress remains unverified and this migration "
+                                "does not schedule a retry."
+                            )
+                        else:
+                            plan.current_decision = (
+                                "Legacy completed steps without per-step execution receipts "
+                                "remain unverified; this migration does not schedule a retry."
+                            )
+                    # Also repair plans that were already persisted as
+                    # unverified by an earlier version. Their old decision text
+                    # may still say "must be retried" although aspiration plans
+                    # are advisory and have no dispatch path.
+                    if plan.steps_completed < len(plan.steps):
+                        next_step = plan.steps[plan.steps_completed]
+                        if next_step.status == "unverified":
+                            if plan.source == "aspiration":
+                                reconciled_decision = (
+                                    f"Aspiration step '{next_step.operation}' remains unverified; "
+                                    "progress is unchanged and this advisory plan does not "
+                                    "schedule execution."
+                                )
+                            else:
+                                reconciled_decision = (
+                                    f"Goal step '{next_step.operation}' remains unverified; "
+                                    "progress is unchanged until its matching execution receipt "
+                                    "and result are recorded."
+                                )
+                            if plan.current_decision != reconciled_decision:
+                                plan.current_decision = reconciled_decision
+                                plan.decision_updated_at = time.time()
+                                plan_migrated_unverified = True
+                                migrated_unverified_progress = True
                 except Exception: pass
             if migrated_recovery_steps or migrated_unverified_progress:
                 self._save()

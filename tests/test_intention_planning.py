@@ -669,11 +669,81 @@ class IntentionPlanningTests(unittest.TestCase):
             self.assertEqual(plan.last_outcome["status"], "unverified")
             self.assertIsNone(plan.last_outcome["success"])
             self.assertEqual(len(plan.unverified_legacy_claims), 3)
-            self.assertIn("does not record or schedule a retry", plan.current_decision)
+            self.assertIn("advisory plan does not schedule execution", plan.current_decision)
             persisted = json.loads(planner._path.read_text(encoding="utf-8"))["cognitive"]
             self.assertEqual(persisted["steps_completed"], 0)
             self.assertEqual(persisted["steps"][0]["status"], "unverified")
             self.assertEqual(len(persisted["unverified_legacy_claims"]), 3)
+
+    def test_legacy_migration_replaces_stale_success_decision_when_last_outcome_is_not_success(self):
+        with tempfile.TemporaryDirectory() as folder:
+            planner, _, _ = self._planner(folder)
+            payload = {
+                "cognitive": {
+                    "aspiration_domain": "cognitive",
+                    "steps": [{
+                        "sequence": 0, "action_type": "analytical",
+                        "expected_cost": 0.05, "expected_gain": 0.01,
+                        "operation": "memory_recall", "status": "completed",
+                        "attempts": 0, "result": "", "execution_id": "",
+                        "cycle_id": None, "observed_at": 0.0,
+                        "effect_measured": False,
+                    }],
+                    "resource_reserve": 0.22, "revision_trigger": 0.25,
+                    "horizon": 1, "steps_completed": 1, "source": "aspiration",
+                    "status": "active", "last_outcome": {
+                        "operation": "memory_recall", "success": False,
+                        "status": "failed", "result": "old retry record",
+                    },
+                    "current_decision": "memory_recall succeeded; aspiration step advanced.",
+                }
+            }
+            planner._path.write_text(json.dumps(payload), encoding="utf-8")
+
+            planner._load()
+
+            plan = planner._plans["cognitive"]
+            self.assertEqual(plan.steps_completed, 0)
+            self.assertEqual(plan.steps[0].status, "unverified")
+            self.assertIn("remains unverified", plan.current_decision)
+            self.assertIn("advisory plan does not schedule execution", plan.current_decision)
+            self.assertNotIn("succeeded", plan.current_decision)
+
+    def test_load_reconciles_stale_retry_claim_for_persisted_unverified_aspiration(self):
+        with tempfile.TemporaryDirectory() as folder:
+            planner, _, _ = self._planner(folder)
+            payload = {
+                "cognitive": {
+                    "aspiration_domain": "cognitive",
+                    "steps": [{
+                        "sequence": 0, "action_type": "analytical",
+                        "expected_cost": 0.05, "expected_gain": 0.01,
+                        "operation": "memory_recall", "status": "unverified",
+                        "attempts": 1, "result": "recalled (1 sources)",
+                        "execution_id": "", "cycle_id": 22,
+                        "observed_at": 123.0, "effect_measured": False,
+                    }],
+                    "resource_reserve": 0.22, "revision_trigger": 0.25,
+                    "horizon": 1, "steps_completed": 0, "source": "aspiration",
+                    "status": "active", "last_outcome": {
+                        "operation": "memory_recall", "success": None,
+                        "status": "unverified", "missing_evidence": ["execution_id"],
+                    },
+                    "current_decision": "memory_recall is unverified; the step must be retried.",
+                }
+            }
+            planner._path.write_text(json.dumps(payload), encoding="utf-8")
+
+            planner._load()
+
+            plan = planner._plans["cognitive"]
+            self.assertEqual(plan.steps_completed, 0)
+            self.assertEqual(plan.steps[0].status, "unverified")
+            self.assertIn("remains unverified", plan.current_decision)
+            self.assertIn("advisory plan does not schedule execution", plan.current_decision)
+            self.assertNotIn("must be retried", plan.current_decision)
+            persisted = json.loads(planner._path.read_text(encoding="utf-8"))["cognitive"]
+            self.assertEqual(persisted["current_decision"], plan.current_decision)
 
     def test_goal_action_outcome_is_not_reassigned_to_an_aspiration(self):
         calls = []
