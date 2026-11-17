@@ -296,6 +296,19 @@ def _compact_turn_audit_record(raw: Any) -> dict[str, Any]:
         'stages': stages,
         'context_sources': context_sources,
         'stage_events': events,
+        'pipeline_integrity': {
+            key: value for key, value in (raw.get('pipeline_integrity') or {}).items()
+            if key in {
+                'status', 'scope', 'semantic_correctness', 'required_core_stages',
+                'execution_path', 'missing_core_stages', 'malformed_stages',
+                'stage_order_violations', 'data_flow_issues', 'peer_scope_violations',
+                'failed_stages', 'incomplete_outputs', 'conditional_skips',
+            }
+        },
+        'semantic_answer_validation': {
+            key: value for key, value in (raw.get('semantic_answer_validation') or {}).items()
+            if key in {'status', 'scope', 'stage_status'}
+        },
     }
 
 

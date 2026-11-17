@@ -1,7 +1,7 @@
 # Audit du harnais cognitif — état et prochaines étapes
 
 **Date de mise à jour :** 17 novembre 2026
-**Statut :** audit du harnais cognitif en cours; aucune conclusion globale de qualité n’est établie. Le dernier commit partagé est `0d9fe7b`; il inclut la séparation des espaces d’embedding et l’attribution du focus workspace. Le correctif local courant étend le watcher pour préserver ces preuves et les limites explicites de validation de réponse. Les modifications Body/UI préexistantes restent hors lot. Les processus Lumina actifs précèdent les derniers changements cognitifs et devront être vérifiés ensemble après le lot suivant; aucune relance n’est demandée pour cette correction locale.
+**Statut :** audit du harnais cognitif en cours; aucune conclusion globale de qualité n’est établie. Le dernier commit partagé est `7d2f411`; il étend le watcher pour préserver les preuves d’attribution et les limites explicites de validation de réponse. Un correctif local complète la chaîne en faisant traverser l’allowlist PersonaBridge et la projection API à ces mêmes champs. Les modifications Body/UI préexistantes restent hors lot. Lumina n’a pas été redémarrée; une validation live groupée sera nécessaire après le prochain lot.
 
 ## Plan d’audit piloté par les preuves — mesure de progression
 
@@ -3838,7 +3838,17 @@ Le processus actif fonctionne encore sous l’ancien code. Son dernier relevé l
 
 **Vérification :** `tests/test_cognitive_harness_audit_watch.py` — **6 passed**, dont un nouveau contrat qui confirme la conservation des champs utiles et l’exclusion des sentinelles privées. Le test async de l’API passe aussi hors sandbox (**1 passed**); dans le bac à sable, `IsolatedAsyncioTestCase` se bloque avant le test dans `socket.socketpair`, et l’import normal échoue sous `cp1252` à cause des logs Unicode. Import FAISS minimal : `faiss_import_ok`; l’exception native antérieure n’a pas été reproduite. Aucun code FAISS modifié.
 
-**Limite :** cette correction améliore la preuve capturée, pas la qualité des réponses. Nomic peut mesurer une proximité de sens calibrée, mais ne vérifie pas que les affirmations répondent juste à une question ni que le raisonnement est valide. La piste 8 reste partielle et le score strict reste **3/10 = 30 %** jusqu’aux scénarios avec critères attendus et résultats live. Le correctif doit être committé/poussé; il ne requiert pas de redémarrage de Lumina pour les tests locaux, mais l’observateur devra être relancé pour enregistrer les nouveaux champs.
+**Limite :** cette correction améliore la preuve capturée, pas la qualité des réponses. Nomic peut mesurer une proximité de sens calibrée, mais ne vérifie pas que les affirmations répondent juste à une question ni que le raisonnement est valide. La piste 8 reste partielle et le score strict reste **3/10 = 30 %** jusqu’aux scénarios avec critères attendus et résultats live. Le watcher a été poussé dans `7d2f411`; l’observateur devra reprendre ses polls pour enregistrer les nouveaux champs.
+
+### Chaîne workspace → trace → API : provenance supprimée avant l’observateur — 17 novembre 2026
+
+**Cause de bout en bout :** le producteur `state_focus_source` calculait correctement la provenance, mais `_record_turn_context_source()` l’excluait de sa liste d’autorisation. En plus, `get_last_turn_trace()` ne copiait pas les champs de validation/intégrité dans l’historique récent, et `_compact_turn_audit_record()` ne les projetait pas sur `/api/interface/cognitive-turns`. Le watcher ne pouvait donc pas les recevoir, même après sa propre mise à jour. Le relevé live du processus ancien confirmait `context_included=true` avec `status=injected_unattributed` et aucun attribut de producteur.
+
+**Correction complète :** l’allowlist PersonaBridge conserve maintenant source/horodatage/âge; l’historique récent conserve les champs expurgés `pipeline_integrity` et `semantic_answer_validation`; le compacteur API les expose avec une allowlist dédiée. Le watcher poussé dans `7d2f411` les conserve ensuite dans son JSONL. Aucun champ de texte privé ou raison libre n’est ajouté.
+
+**Vérification locale :** suites `test_turn_execution_evidence.py`, `test_interface_api.py`, `test_cognitive_harness_audit_watch.py` — **60 passed, 9 avertissements historiques**. Les tests vérifient chacun des maillons, ainsi que la redaction. Les tests async nécessitent l’exécution hors du bac à sable Windows, où `socket.socketpair` se bloquait avant le test. Compilation Python et `git diff --check` réussis.
+
+**État live et suite :** le processus sur `8080` répondait toujours au cycle **12494**, mais son reçu récent n’exposait pas `pipeline_integrity` ni `semantic_answer_validation` et gardait le focus non attribué; c’est cohérent avec le binaire déjà démarré avant ces corrections. Aucun redémarrage n’a été fait. Après le prochain redémarrage groupé, vérifier une trace dont le focus provient du fallback workspace, confirmer que l’API et le watcher gardent la même provenance, et vérifier que `semantic_answer_validation.status=not_performed` reste explicite. La correction de preuve ne crée pas de validateur sémantique général; pistes 3 et 8 restent partielles, score strict **3/10 = 30 %**.
 
 ### Global Workspace : focus injecté depuis un snapshot sans provenance de tour — 17 novembre 2026
 

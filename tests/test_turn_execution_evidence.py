@@ -56,6 +56,52 @@ def test_workspace_snapshot_without_focus_writer_stays_unattributed():
     }, now=100.0) == {}
 
 
+def test_workspace_focus_provenance_survives_context_source_allowlist():
+    bridge = _bridge()
+    bridge._record_turn_context_source(
+        "global_workspace_state", "injected_snapshot_attributed",
+        turn_id="turn-evidence-1", state_focus_source="workspace_competition",
+        state_focus_updated_at=95.0, state_focus_age_seconds=5.0,
+        focus_text="private text must be dropped",
+    )
+
+    source = bridge._last_turn_trace["context_sources"]["global_workspace_state"]
+
+    assert source["state_focus_source"] == "workspace_competition"
+    assert source["state_focus_updated_at"] == 95.0
+    assert source["state_focus_age_seconds"] == 5.0
+    assert "focus_text" not in source
+
+
+def test_recent_turn_history_preserves_redacted_pipeline_and_answer_validation():
+    bridge = _bridge()
+    bridge._turn_trace_history = [{
+        "turn_id": "turn-history-1", "scope": "human", "status": "completed",
+        "started_at": 1.0, "completed_at": 2.0, "user_id": "private-user",
+        "stages": {}, "context_sources": {}, "stage_events": [],
+        "pipeline_integrity": {
+            "status": "incomplete_evidence",
+            "scope": "execution_order_and_data_flow_only",
+            "semantic_correctness": "not_assessed",
+            "missing_core_stages": ["response_validation"],
+            "private_detail": "must not escape",
+        },
+        "semantic_answer_validation": {
+            "status": "not_performed", "scope": "none",
+            "stage_status": "unavailable", "reason": "must not escape",
+        },
+    }]
+
+    history = bridge.get_last_turn_trace()["recent_turns"][0]
+
+    assert history["pipeline_integrity"]["semantic_correctness"] == "not_assessed"
+    assert history["pipeline_integrity"]["missing_core_stages"] == ["response_validation"]
+    assert history["semantic_answer_validation"] == {
+        "status": "not_performed", "scope": "none", "stage_status": "unavailable",
+    }
+    assert "must not escape" not in repr(history)
+
+
 def test_turn_stage_records_redacted_output_and_actual_consumption_link():
     bridge = _bridge()
     private_prompt = "private prompt should never appear in the audit trace"

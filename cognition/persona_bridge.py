@@ -652,6 +652,7 @@ class PersonaBridge:
             "source_cycle", "age_seconds", "age_cycles", "thread_id",
             "source_evidence_ref", "focus_type", "focus_score", "focus_ref",
             "context_included",
+            "state_focus_source", "state_focus_updated_at", "state_focus_age_seconds",
         }
         safe_metadata: dict[str, Any] = {}
         for key, value in metadata.items():
@@ -683,6 +684,7 @@ class PersonaBridge:
             elif key in {
                 "affect_source", "affect_description", "affect_event_type", "affect_event_source",
                 "thread_id", "source_evidence_ref", "focus_type", "focus_ref",
+                "state_focus_source",
             }:
                 safe_metadata[key] = str(value or "")[:80]
             elif isinstance(value, bool):
@@ -1273,6 +1275,22 @@ class PersonaBridge:
                         name: dict(source)
                         for name, source in item.get("context_sources", {}).items()
                         if isinstance(source, dict)
+                    },
+                    "pipeline_integrity": {
+                        key: value for key, value in (
+                            item.get("pipeline_integrity") or {}
+                        ).items()
+                        if key in {
+                            "status", "scope", "semantic_correctness", "required_core_stages",
+                            "execution_path", "missing_core_stages", "malformed_stages",
+                            "stage_order_violations", "data_flow_issues", "peer_scope_violations",
+                            "failed_stages", "incomplete_outputs", "conditional_skips",
+                        }
+                    },
+                    "semantic_answer_validation": {
+                        key: value for key, value in (
+                            item.get("semantic_answer_validation") or {}
+                        ).items() if key in {"status", "scope", "stage_status"}
                     },
                     "stages": {
                         name: {key: value for key, value in stage.items() if key != "detail"}

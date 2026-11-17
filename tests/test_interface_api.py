@@ -186,6 +186,17 @@ class InterfaceTests(unittest.IsolatedAsyncioTestCase):
                     'focus_text': 'private raw workspace topic',
                 },
             },
+            'pipeline_integrity': {
+                'status': 'incomplete_evidence',
+                'scope': 'execution_order_and_data_flow_only',
+                'semantic_correctness': 'not_assessed',
+                'missing_core_stages': ['response_validation'],
+                'private_detail': 'private pipeline detail',
+            },
+            'semantic_answer_validation': {
+                'status': 'not_performed', 'scope': 'none',
+                'stage_status': 'unavailable', 'reason': 'private validator detail',
+            },
             'stage_events': [], 'recent_turns': [],
         }
 
@@ -208,6 +219,13 @@ class InterfaceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(workspace_source['source_cycle'], 12016)
         self.assertEqual(workspace_source['state_focus_source'], 'workspace_competition')
         self.assertEqual(workspace_source['state_focus_age_seconds'], 2.0)
+        self.assertEqual(payload['turns'][0]['pipeline_integrity']['semantic_correctness'], 'not_assessed')
+        self.assertEqual(payload['turns'][0]['pipeline_integrity']['missing_core_stages'], ['response_validation'])
+        self.assertEqual(payload['turns'][0]['semantic_answer_validation'], {
+            'status': 'not_performed', 'scope': 'none', 'stage_status': 'unavailable',
+        })
+        self.assertNotIn('private pipeline detail', repr(payload))
+        self.assertNotIn('private validator detail', repr(payload))
         self.assertTrue(workspace_source['context_included'])
         self.assertNotIn('focus_text', workspace_source)
         self.assertNotIn('private memory text', repr(payload))
