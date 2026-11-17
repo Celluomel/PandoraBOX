@@ -15,25 +15,21 @@ CURIOSITY_THRESHOLD     = 0.55
 MAX_GOALS_FROM_CURIOSITY = 2
 GOAL_PRIORITY_BASE      = 0.60
 
-# A promoted topic must be a coherent phrase, not a 2-word conversation
-# fragment. Fragments like 'are'nt turning' / 'sharing today' / 'thought
-# wonder' were piling up as garbage goals (they score high curiosity because
-# they repeat in chat, but they are not real topics). Require a minimum word
-# count AND a minimum number of content (non-stop) words before a curiosity
-# topic is allowed to become a goal.
-MIN_TOPIC_WORDS         = 4
-MIN_TOPIC_CONTENT_WORDS = 3
-
-# Function words + generic introspection vocabulary — excluded when measuring
-# content-word overlap for duplicate detection.
+# Used only by the offline duplicate-overlap fallback. This is deliberately
+# separate from goal admission: it must never decide whether a topic is a
+# coherent or durable goal.
 _RESOLVER_STOP = {
-    'and', 'the', 'for', 'with', 'that', 'this', 'from', 'into', 'through',
-    'about', 'have', 'more', 'will', 'been', 'your', 'our', 'their', 'its',
-    'are', 'was', 'were', 'has', 'had', 'not', 'but', 'can', 'may', 'how',
-    'all', 'any', 'each', 'both', 'such', 'than', 'then', 'when', 'what',
-    'something', 'anything', 'nothing', 'true', 'know', 'think', 'believe',
-    'assume', 'assuming', 'belief', 'beliefs', 'curiosity', 'question',
-    'questions', 'answer', 'answers', 'thinking', 'thoughts',
+    "and", "the", "for", "with", "that", "this", "from", "into", "through",
+    "about", "have", "more", "will", "been", "your", "our", "their", "its",
+    "are", "was", "were", "has", "had", "not", "but", "can", "may", "how",
+    "all", "any", "each", "both", "such", "than", "then", "when", "what",
+    "something", "anything", "nothing", "true", "know", "think", "believe",
+    "assume", "assuming", "belief", "beliefs", "curiosity", "question",
+    "questions", "answer", "answers", "thinking", "thoughts",
+    "avec", "dans", "pour", "sans", "sur", "sous", "entre", "depuis",
+    "cela", "ceci", "cette", "comme", "mais", "donc", "alors", "quand",
+    "quoi", "quel", "quelle", "quels", "quelles", "comment", "pourquoi",
+    "être", "avoir", "faire", "dire", "voir", "savoir", "penser", "croire",
 }
 
 
@@ -44,6 +40,9 @@ class AutonomousCuriosityResolver:
         self._worker_lock = threading.Lock()
         self._worker_pending = False
         self._promoted: Set[str] = set()
+        self._last_result: dict[str, Any] = {
+            "status": "not_run", "cycle": 0,
+        }
         logger.info("[CuriosityResolver] Initialised")
 
     def tick(self, slow_cycle: int) -> dict[str, Any]:
@@ -72,100 +71,143 @@ class AutonomousCuriosityResolver:
         }
 
     def _check_and_promote_scheduled(self, slow_cycle: int) -> None:
+        started = time.perf_counter()
         try:
-            self._check_and_promote(slow_cycle)
+            result = self._check_and_promote(slow_cycle)
+            if not isinstance(result, dict):
+                result = {"status": "failed", "reason_code": "invalid_worker_result"}
+        except Exception as error:
+            logger.exception("[CuriosityResolver] promotion worker failed")
+            result = {
+                "status": "failed",
+                "reason_code": "promotion_worker_exception",
+                "error_type": type(error).__name__,
+            }
         finally:
             with self._worker_lock:
-                self._worker_pending = False
-
-    def _check_and_promote(self, slow_cycle: int) -> None:
-        try:
-            o    = self._organism
-            gate = getattr(o, "behavior_gate", None)
-            if gate and not gate.may_run_resolution():
-                return
-            ce = getattr(o, "curiosity", None)
-            if not ce:
-                return
-
-            topics: List[tuple] = []
-            try:
-                with ce._lock:
-                    for topic, node in ce._topics.items():
-                        if node.curiosity >= CURIOSITY_THRESHOLD:
-                            topics.append((topic, node.curiosity))
-                topics.sort(key=lambda x: -x[1])
-                topics = topics[:MAX_GOALS_FROM_CURIOSITY * 2]
-            except Exception as _ce_e:
-                logger.debug(f"[CuriosityResolver] topic read: {_ce_e}")
-                return
-
-            if not topics:
-                return
-
-            ai = getattr(o, "ai_system", None)
-            ge = getattr(ai, "goal_engine", None) if ai else None
-            if not ge:
-                return
-
-            existing: Set[str] = set()
-            try:
-                for g in ge._goals.values():
-                    existing.add(g.topic.lower().strip())
-            except Exception:
-                pass
-
-            promoted = 0
-            rejected_fragments = 0
-            for topic, curiosity_val in topics:
-                if promoted >= MAX_GOALS_FROM_CURIOSITY:
-                    break
-                if topic in self._promoted:
-                    continue
-                if not self._is_valid_topic(topic):
-                    rejected_fragments += 1
-                    logger.debug(
-                        "[CuriosityResolver] Skipping incoherent fragment "
-                        "(not a real topic): " + repr(topic)
-                    )
-                    continue
-                if self._is_duplicate(topic, existing):
-                    continue
-                if not self._create_goal(ge, topic, curiosity_val, slow_cycle):
-                    continue
-                with self._lock:
-                    self._promoted.add(topic)
-                # Block a second near-duplicate in the same tick
-                existing.add(topic.lower().strip())
-                promoted += 1
-
-            if promoted:
-                logger.info(f"[CuriosityResolver] Promoted {promoted} topics to goals (cycle={slow_cycle})")
-            if rejected_fragments:
-                logger.info(
-                    f"[CuriosityResolver] Rejected {rejected_fragments} "
-                    f"fragment topic(s) as incoherent (cycle={slow_cycle})"
+                self._last_result = dict(result)
+                self._last_result["cycle"] = int(slow_cycle)
+                self._last_result["duration_ms"] = round(
+                    (time.perf_counter() - started) * 1000, 2
                 )
-        except Exception as e:
-            logger.debug(f"[CuriosityResolver] error: {e}")
+                self._worker_pending = False
+            self._record_async_result(slow_cycle, self._last_result)
 
-    def _is_valid_topic(self, topic: str) -> bool:
-        """True only if the topic is a coherent phrase worth turning into a goal.
+    def get_last_result(self) -> dict[str, Any]:
+        """Return the content-free result of the most recent promotion scan."""
+        lock = getattr(self, "_worker_lock", None)
+        if lock is None:
+            return dict(getattr(self, "_last_result", {"status": "not_run"}))
+        with lock:
+            return dict(getattr(self, "_last_result", {"status": "not_run"}))
 
-        Blocks 2-word conversation fragments (e.g. 'are'nt turning',
-        'sharing today', 'thought wonder', 'sorry repeat') that were piling up
-        as garbage goals. A valid topic needs at least MIN_TOPIC_WORDS words
-        AND MIN_TOPIC_CONTENT_WORDS content (non-stop, alphabetic) words.
-        """
-        raw = (topic or "").split()
-        if len(raw) < MIN_TOPIC_WORDS:
-            return False
-        content = set()
-        for w in raw:
-            w = w.strip(".,!?;:()[]{}").lower()
-            if len(w) > 3 and w.isalpha() and w not in _RESOLVER_STOP:
-                content.add(w)
-        return len(content) >= MIN_TOPIC_CONTENT_WORDS
+    def _record_async_result(self, slow_cycle: int, result: dict[str, Any]) -> None:
+        organism = getattr(self, "_organism", None)
+        loop = getattr(organism, "_loop", None)
+        recorder = getattr(loop, "record_async_cycle_stage", None)
+        if not callable(recorder):
+            return
+        metrics = {
+            key: result[key]
+            for key in (
+                "candidate_count", "duplicate_count", "admission_rejected_count",
+                "promoted_count", "duration_ms",
+            )
+            if isinstance(result.get(key), (int, float))
+        }
+        try:
+            recorder(
+                slow_cycle,
+                "autonomous_curiosity_resolver.promotion",
+                str(result.get("status", "failed")),
+                output={
+                    key: result[key]
+                    for key in ("status", "reason_code", "cycle", "candidate_count",
+                                "duplicate_count", "admission_rejected_count", "promoted_count")
+                    if key in result
+                },
+                metrics=metrics,
+                error_type=result.get("error_type"),
+            )
+        except Exception as error:
+            logger.debug("[CuriosityResolver] async receipt failed: %s", type(error).__name__)
+
+    def _check_and_promote(self, slow_cycle: int) -> dict[str, Any]:
+        o = self._organism
+        gate = getattr(o, "behavior_gate", None)
+        if gate and not gate.may_run_resolution():
+            return {"status": "skipped", "reason_code": "behavior_gate_blocked"}
+        ce = getattr(o, "curiosity", None)
+        if not ce:
+            return {"status": "skipped", "reason_code": "curiosity_unavailable"}
+
+        topics: List[tuple] = []
+        try:
+            with ce._lock:
+                for topic, node in ce._topics.items():
+                    if node.curiosity >= CURIOSITY_THRESHOLD:
+                        topics.append((topic, node.curiosity))
+            topics.sort(key=lambda item: -item[1])
+            topics = topics[:MAX_GOALS_FROM_CURIOSITY * 2]
+        except Exception as error:
+            logger.warning("[CuriosityResolver] topic read failed: %s", type(error).__name__)
+            return {"status": "failed", "reason_code": "curiosity_read_failed",
+                    "error_type": type(error).__name__}
+
+        if not topics:
+            return {"status": "completed", "reason_code": "no_candidates",
+                    "candidate_count": 0, "duplicate_count": 0,
+                    "admission_rejected_count": 0, "promoted_count": 0}
+
+        ai = getattr(o, "ai_system", None)
+        ge = getattr(ai, "goal_engine", None) if ai else None
+        if not ge:
+            return {"status": "skipped", "reason_code": "goal_engine_unavailable",
+                    "candidate_count": len(topics)}
+
+        existing: Set[str] = set()
+        try:
+            for goal in ge._goals.values():
+                existing.add(goal.topic.lower().strip())
+        except Exception:
+            pass
+
+        promoted = 0
+        duplicate_count = 0
+        admission_rejected_count = 0
+        for topic, curiosity_val in topics:
+            if promoted >= MAX_GOALS_FROM_CURIOSITY:
+                break
+            if topic in getattr(self, "_promoted", set()):
+                continue
+            # GoalEngine.add_goal is the single durable-goal admission contract:
+            # it applies the semantic quality gate and all persistence checks.
+            # A second English word-count/stopword gate here was rejecting valid
+            # concise and French subjects before that shared decision.
+            if self._is_duplicate(topic, existing):
+                duplicate_count += 1
+                continue
+            if not self._create_goal(ge, topic, curiosity_val, slow_cycle):
+                admission_rejected_count += 1
+                continue
+            with self._lock:
+                if not hasattr(self, "_promoted"):
+                    self._promoted = set()
+                self._promoted.add(topic)
+            existing.add(topic.lower().strip())
+            promoted += 1
+
+        if promoted:
+            logger.info("[CuriosityResolver] Promoted %d topic(s) to goals (cycle=%d)",
+                        promoted, slow_cycle)
+        return {
+            "status": "completed",
+            "reason_code": "promotion_pass_complete",
+            "candidate_count": len(topics),
+            "duplicate_count": duplicate_count,
+            "admission_rejected_count": admission_rejected_count,
+            "promoted_count": promoted,
+        }
 
     # Calibrated dedup threshold (QUALITY tier / nomic): near-duplicate goal
     # topics score >= 0.643, distinct topics <= 0.550 (measured gap ~0.09).

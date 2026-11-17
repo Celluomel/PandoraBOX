@@ -246,6 +246,17 @@ GOOD_TOPIC_EXEMPLARS = [
     "learning Spanish conversation",
     "building a home automation system",
     "integrating knowledge from different sources into a coherent understanding",
+    # French equivalents keep this shared gate useful for the language used
+    # in Lumina conversations instead of making English the implicit default.
+    "apprendre à construire une petite application web",
+    "comprendre comment la conscience émerge de la cognition",
+    "planifier un voyage au Japon",
+    "rechercher l’histoire des fractales et des mathématiques",
+    "intégrer des connaissances issues de différentes sources dans une compréhension cohérente",
+    "améliorer la mémoire conversationnelle et le rappel fiable",
+    "comprendre l’odométrie et la localisation d’un robot",
+    "développer le raisonnement cognitif",
+    "analyser les émotions fonctionnelles et leurs causes",
 ]
 NOISE_TOPIC_EXEMPLARS = [
     "something to do",
@@ -265,6 +276,14 @@ NOISE_TOPIC_EXEMPLARS = [
     "what is my current goal",
     "a fragment of a sentence",
     "an incomplete conversational phrase",
+    # French conversational fragments are frequent input, but do not by
+    # themselves describe a durable goal or development topic.
+    "après chaque phrase",
+    "je voudrais parler d’un sujet",
+    "qu’est-ce que tu penses de cela",
+    "je veux discuter de ce qui s’est passé aujourd’hui",
+    "quelles sont tes pensées",
+    "répète ce que tu viens de dire",
 ]
 
 

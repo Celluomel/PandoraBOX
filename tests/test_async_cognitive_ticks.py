@@ -274,7 +274,16 @@ class AsyncCognitiveTickTests(unittest.TestCase):
         resolver = AutonomousCuriosityResolver.__new__(AutonomousCuriosityResolver)
         resolver._worker_lock = threading.Lock()
         resolver._worker_pending = False
-        resolver._check_and_promote = lambda cycle: None
+        async_receipts = []
+        resolver._organism = SimpleNamespace(
+            _loop=SimpleNamespace(
+                record_async_cycle_stage=lambda *args, **kwargs: async_receipts.append((args, kwargs))
+            )
+        )
+        resolver._check_and_promote = lambda cycle: {
+            "status": "completed", "reason_code": "no_candidates",
+            "candidate_count": 0, "promoted_count": 0,
+        }
         due = RESOLVE_CHECK_EVERY_N
 
         with patch("cognition.autonomous_curiosity_resolver.threading.Thread", _DeferredThread):
@@ -288,6 +297,12 @@ class AsyncCognitiveTickTests(unittest.TestCase):
         self.assertEqual(len(_DeferredThread.workers), 1)
         _DeferredThread.workers[0].target(*_DeferredThread.workers[0].args)
         self.assertFalse(resolver._worker_pending)
+        self.assertEqual(resolver.get_last_result()["cycle"], due)
+        self.assertEqual(resolver.get_last_result()["status"], "completed")
+        self.assertEqual(async_receipts[0][0], (
+            due, "autonomous_curiosity_resolver.promotion", "completed",
+        ))
+        self.assertEqual(async_receipts[0][1]["metrics"]["candidate_count"], 0)
 
     def test_generative_aspiration_tick_is_single_flight_and_receipted(self):
         engine = GenerativeAspirationEngine.__new__(GenerativeAspirationEngine)

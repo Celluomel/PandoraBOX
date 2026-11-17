@@ -2,6 +2,7 @@ from types import SimpleNamespace
 import threading
 
 from cognition.autonomous_curiosity_resolver import AutonomousCuriosityResolver
+from cognition.goal_engine import GoalEngine
 from cognition.motivational_field import FieldState, MotivationalField, MotivationalNeed
 
 
@@ -44,6 +45,42 @@ def test_curiosity_resolver_only_reports_goal_promotion_after_commit():
 
     assert resolver._create_goal(goal_engine, "a coherent curiosity topic", 0.8, 20) is False
     assert goal_engine._goals == {}
+
+
+def test_curiosity_resolver_offline_duplicate_fallback_has_no_missing_stopword_name(monkeypatch):
+    resolver = AutonomousCuriosityResolver.__new__(AutonomousCuriosityResolver)
+    monkeypatch.setattr(
+        "utils.shared_embedder.get_embedder",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("offline")),
+    )
+
+    assert resolver._is_duplicate("improve robot odometry", ["robot odometry"])
+
+
+def test_curiosity_resolver_uses_goal_engine_semantics_without_english_word_count_gate(
+    tmp_path, monkeypatch,
+):
+    engine = GoalEngine(None, persistence_file=str(tmp_path / "goals.json"))
+    node = SimpleNamespace(topic="robot odometry", curiosity=0.8)
+    curiosity = SimpleNamespace(_lock=threading.RLock(), _topics={node.topic: node})
+    organism = SimpleNamespace(
+        curiosity=curiosity,
+        ai_system=SimpleNamespace(goal_engine=engine),
+    )
+    resolver = AutonomousCuriosityResolver(organism)
+    resolver._is_duplicate = lambda _topic, _existing: False
+    monkeypatch.setattr(
+        "cognition.goal_semantics.batch_topic_quality",
+        lambda topics: {
+            topic: (0.72, 0.48, True) for topic in topics
+        },
+    )
+
+    result = resolver._check_and_promote(20)
+
+    assert result["promoted_count"] == 1
+    assert engine._goals
+    assert next(iter(engine._goals.values())).topic == "robot odometry"
 
 
 def test_motivational_field_reports_async_scan_and_prevents_overlap(monkeypatch):

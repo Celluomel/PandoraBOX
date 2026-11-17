@@ -119,9 +119,10 @@ class GoalSemanticsCacheTests(unittest.TestCase):
             return goal_semantics.batch_topic_quality(["sample topic"])["sample topic"]
 
     def test_rejects_fragment_with_weak_positive_semantic_margin(self):
-        # Live Nomic scoring for "après chaque" had a +0.0255 margin.
-        good, noise, accepted = self._score_topic(0.4380, 0.4125)
-        self.assertAlmostEqual(good - noise, 0.0255, places=4)
+        # The calibrated minimum is enforced even when a conversational
+        # fragment has some positive similarity to goal-worthy examples.
+        good, noise, accepted = self._score_topic(0.6350, 0.6100)
+        self.assertAlmostEqual(good - noise, 0.0250, places=4)
         self.assertFalse(accepted)
 
     def test_rejects_topic_that_is_closer_to_noise_than_good_examples(self):
