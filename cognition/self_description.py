@@ -202,9 +202,19 @@ def affect_self_report_context(
     event = latest_event if isinstance(latest_event, dict) else {}
     event_type = str(event.get("event_type") or "").strip()[:80]
     event_source = str(event.get("source") or "").strip()[:80]
+    event_context = event.get("cause_context")
+    drive = ""
+    if isinstance(event_context, dict):
+        candidate = str(event_context.get("drive") or "").strip().casefold()
+        if candidate and len(candidate) <= 32 and all(
+            char.isalnum() or char == "_" for char in candidate
+        ):
+            drive = candidate
     event_age = event.get("age_seconds")
     if event_type or event_source:
         latest_text = f"{event_type or 'event'} from {event_source or 'unspecified source'}"
+        if drive:
+            latest_text += f" (drive={drive})"
         try:
             latest_text += f", {max(0.0, float(event_age)):.1f}s ago"
         except (TypeError, ValueError, OverflowError):

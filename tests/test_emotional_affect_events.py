@@ -16,6 +16,7 @@ core_package.__path__ = [str(ROOT / "core")]
 sys.modules.setdefault("core", core_package)
 
 from cognition.emotional_state import EmotionalStateManager
+from cognition.self_description import affect_self_report_context
 from cognition.thought_stream import ThoughtStream
 from core.cognitive_event_bus import (
     CognitiveEventBus,
@@ -129,9 +130,25 @@ class EmotionalAffectEventTests(unittest.TestCase):
             events = state.get_recent_affect_events(20)
             self.assertEqual(sum(e["event_type"] == "drive_satisfied" for e in events), 1)
             self.assertEqual(sum(e["event_type"] == "tension_released" for e in events), 0)
+            latest = state.get_response_modifiers()["latest_affect_event"]
+            self.assertEqual(latest["cause_context"], {"drive": "social"})
+            affect_context = affect_self_report_context(
+                state.get_current_values(), state.get_state_description(), latest
+            )
+            self.assertIn("drive=social", affect_context)
             self.assertEqual(
                 bus.recent(1)[0].payload["affect_outcome"]["status"], "already_counted"
             )
+
+    def test_affect_event_context_does_not_persist_free_text(self):
+        with tempfile.TemporaryDirectory() as folder:
+            state = self.make_state(folder)
+            state.update_from_cognitive_event(
+                "drive_satisfied", intensity=0.5, source="pressure_system",
+                context={"drive": "social", "topic": "private free text"},
+            )
+            latest = state.get_recent_affect_events(1)[0]
+            self.assertEqual(latest["cause_context"], {"drive": "social"})
 
     def test_thought_stream_uses_live_emotional_description(self):
         with tempfile.TemporaryDirectory() as folder:

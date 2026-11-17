@@ -346,6 +346,7 @@ class EmotionalStateManager:
         event_type: str,
         intensity: float = 0.5,
         source: str = "cognitive_event",
+        context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Apply a persistent, intensity-scaled affective response to an
         internal event and retain its causal trace for introspection.
@@ -367,6 +368,18 @@ class EmotionalStateManager:
         if scale <= 0.0:
             return {"status": "no_salience", "event_type": event_name}
 
+        # Preserve only the categorical drive identity needed to explain
+        # satiation-derived affect. Event payloads may contain free text
+        # (for example a user-derived domain/topic), so never persist them
+        # wholesale in the affect record or inject them into a later prompt.
+        cause_context: Dict[str, str] = {}
+        if event_name in {"drive_satisfied", "tension_released"} and isinstance(context, dict):
+            drive = str(context.get("drive") or "").strip().casefold()
+            if drive and len(drive) <= 32 and all(
+                char.isalnum() or char == "_" for char in drive
+            ):
+                cause_context["drive"] = drive
+
         with self._lock:
             now = time.time()
             for emotion in self.emotions.values():
@@ -385,6 +398,7 @@ class EmotionalStateManager:
                 "source": str(source or "cognitive_event")[:80],
                 "intensity": round(scale, 3),
                 "changes": changes,
+                "cause_context": cause_context,
             }
             self._recent_affect_events.append(receipt)
             self._recent_affect_events = self._recent_affect_events[-20:]
@@ -665,6 +679,7 @@ class EmotionalStateManager:
                 "source": latest_event.get("source"),
                 "age_seconds": max(0, round(time.time() - float(latest_event.get("timestamp", 0)), 1)),
                 "intensity": latest_event.get("intensity"),
+                "cause_context": dict(latest_event.get("cause_context") or {}),
             }
 
         return {

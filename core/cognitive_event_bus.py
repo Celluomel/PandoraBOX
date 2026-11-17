@@ -243,7 +243,8 @@ def wire_cognitive_bus(organism: Any, bus: CognitiveEventBus) -> None:
         value = max(0.0, min(1.0, value))
         try:
             event.payload["affect_outcome"] = apply_event(
-                event.event_type, intensity=value, source=event.source
+                event.event_type, intensity=value, source=event.source,
+                context=event.payload,
             )
         except Exception as exc:
             event.payload["affect_outcome"] = {

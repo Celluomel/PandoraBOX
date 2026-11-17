@@ -554,7 +554,7 @@ class PersonaBridge:
             "tick_count", "error_count", "initialized_unobserved_count",
             "unavailable_count", "affect_source", "affect_profile",
             "affect_description", "affect_event_type", "affect_event_source",
-            "affect_event_age_seconds",
+            "affect_event_age_seconds", "affect_event_context",
             "source_cycle", "age_seconds", "age_cycles", "thread_id",
             "source_evidence_ref", "focus_type", "focus_score", "focus_ref",
             "context_included",
@@ -580,6 +580,12 @@ class PersonaBridge:
                         continue
                     if math.isfinite(number):
                         safe_metadata[key][str(channel)] = round(max(0.0, min(1.0, number)), 3)
+            elif key == "affect_event_context" and isinstance(value, dict):
+                drive = str(value.get("drive") or "").strip().casefold()
+                if drive and len(drive) <= 32 and all(
+                    char.isalnum() or char == "_" for char in drive
+                ):
+                    safe_metadata[key] = {"drive": drive}
             elif key in {
                 "affect_source", "affect_description", "affect_event_type", "affect_event_source",
                 "thread_id", "source_evidence_ref", "focus_type", "focus_ref",
@@ -4269,6 +4275,13 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                 f"({_latest_affect.get('age_seconds')} s ago, intensity {_latest_affect.get('intensity')})"
                 if _latest_affect else "none recorded"
             )
+            _affect_cause_context = _latest_affect.get("cause_context", {})
+            _affect_drive = (
+                str(_affect_cause_context.get("drive", ""))
+                if isinstance(_affect_cause_context, dict) else ""
+            )
+            if _affect_drive:
+                _affect_cause_text += f"; drive={_affect_drive}"
             # Pass current user input as context so get_inner_voice() returns
             # beliefs *relevant to what is being discussed*, not just the
             # top-3 by confidence (which produces the same static boilerplate
@@ -4360,6 +4373,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         affect_event_type=_latest_affect.get("event_type", "") if _latest_affect else "",
                         affect_event_source=_latest_affect.get("source", "") if _latest_affect else "",
                         affect_event_age_seconds=_latest_affect.get("age_seconds") if _latest_affect else None,
+                        affect_event_context=_latest_affect.get("cause_context", {}) if _latest_affect else {},
                     )
                 _module_tick_snapshot = None
                 _module_entries = []
