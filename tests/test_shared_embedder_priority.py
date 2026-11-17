@@ -1,6 +1,8 @@
 import unittest
 from unittest.mock import patch
 
+import numpy as np
+
 from utils.shared_embedder import APIEmbedder, interactive_priority_active, set_interactive_priority
 
 
@@ -12,6 +14,57 @@ class InteractiveEmbeddingPriorityTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "deferred during interactive turn"):
                 APIEmbedder("nomic", "http://localhost:1234/v1").encode(["background work"])
         fast_fallback.assert_not_called()
+
+    def test_quality_response_model_mismatch_uses_explicit_fast_space(self):
+        class Fast:
+            model_name_or_path = "all-MiniLM-L6-v2"
+
+            def encode(self, texts, **_kwargs):
+                return np.ones((len(texts), 384), dtype="float32")
+
+        api = APIEmbedder("nomic-model", "http://localhost:1234/v1")
+        with patch.object(api, "_post", return_value={
+            "model": "different-model",
+            "data": [{"index": 0, "embedding": [1.0, 0.0]}],
+        }), patch("utils.shared_embedder._get_fast_embedder", return_value=Fast()):
+            vectors, space_id = api.encode_with_metadata(["probe"])
+
+        self.assertEqual(vectors.shape, (1, 384))
+        self.assertEqual(space_id, "sentence-transformers:all-MiniLM-L6-v2")
+
+    def test_quality_response_rejects_nonfinite_vectors(self):
+        class Fast:
+            model_name_or_path = "all-MiniLM-L6-v2"
+
+            def encode(self, texts, **_kwargs):
+                return np.ones((len(texts), 384), dtype="float32")
+
+        api = APIEmbedder("nomic-model", "http://localhost:1234/v1")
+        with patch.object(api, "_post", return_value={
+            "model": "nomic-model",
+            "data": [{"index": 0, "embedding": [float("nan"), 0.0]}],
+        }), patch("utils.shared_embedder._get_fast_embedder", return_value=Fast()):
+            vectors, space_id = api.encode_with_metadata(["probe"])
+
+        self.assertTrue(np.isfinite(vectors).all())
+        self.assertEqual(space_id, "sentence-transformers:all-MiniLM-L6-v2")
+
+    def test_quality_response_rejects_missing_vector_indices(self):
+        class Fast:
+            model_name_or_path = "all-MiniLM-L6-v2"
+
+            def encode(self, texts, **_kwargs):
+                return np.ones((len(texts), 384), dtype="float32")
+
+        api = APIEmbedder("nomic-model", "http://localhost:1234/v1")
+        with patch.object(api, "_post", return_value={
+            "model": "nomic-model",
+            "data": [],
+        }), patch("utils.shared_embedder._get_fast_embedder", return_value=Fast()):
+            vectors, space_id = api.encode_with_metadata(["probe"])
+
+        self.assertEqual(vectors.shape, (1, 384))
+        self.assertEqual(space_id, "sentence-transformers:all-MiniLM-L6-v2")
 
     def test_priority_state_can_be_set_and_cleared(self):
         set_interactive_priority(True)

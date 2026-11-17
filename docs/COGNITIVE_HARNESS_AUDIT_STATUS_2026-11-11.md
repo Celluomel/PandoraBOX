@@ -3620,4 +3620,10 @@ La même absence de provenance existait dans `cognition.goal_semantics` : le cac
 
 Une relecture a trouvé et fermé un dernier cas de mélange au retour de matrice : une ancienne entrée Nomic et une nouvelle entrée fallback pouvaient coexister dans la même requête partiellement cachée. Le cache recalcule maintenant tout le lot dans l’espace fallback avant de renvoyer les vecteurs. Le test de régression correspondant est inclus dans les 10 cas cache/priority; relance finale ciblée : **10 passed**, compilation et diff-check réussis.
 
+### Contrat de réponse de l’API d’embedding — 17 novembre 2026
+
+La provenance déclarée par `APIEmbedder` supposait encore que l’API respectait le champ `model`. Le chemin acceptait une réponse d’un autre modèle, des index de vecteurs dupliqués/manquants ou des valeurs non finies, puis pouvait étiqueter ces données comme Nomic. Le fournisseur vérifie maintenant l’identifiant de modèle retourné lorsqu’il est présent, les indices complets ordonnés et la forme/finitude des vecteurs. Une réponse invalide emprunte le fallback MiniLM avec l’identité de ce vrai espace, ou échoue explicitement si le fallback est indisponible.
+
+Régression ciblée : modèle renvoyé différent, vecteur NaN et indices de vecteur manquants déclenchent le fallback identifié; cache Nomic→fallback, lot partiellement en cache, index FAISS et reçus sont couverts ensemble. Les cinq suites ciblées passent maintenant **75 tests, 10 sous-tests, 9 avertissements préexistants**; aucun crash natif FAISS sur cette exécution; compilation et `git diff --check` réussis. Le contrôle API et sa couverture sont en attente de commit.
+
 **Portée et score :** la piste de qualité sémantique reste partielle à **4/10 = 40 %**. Cette correction empêche la contamination entre modèles, mais ne vérifie pas si les similarités de Nomic sont bien calibrées ni si les décisions aval sont justes. Il faut encore rejouer les mêmes cas avec provenance de modèle dans les reçus, puis comparer décisions et effets à des références annotées.

@@ -137,10 +137,23 @@ class APIEmbedder:
                     raise RuntimeError("quality embeddings deferred during interactive turn")
                 chunk = texts[i:i + batch_size]
                 d = self._post(chunk)
+                reported_model = d.get("model")
+                if reported_model and reported_model != self.model_name:
+                    raise RuntimeError(
+                        "embedding endpoint returned a different model: "
+                        f"requested={self.model_name!r}, reported={reported_model!r}"
+                    )
                 data = sorted(d.get("data", []), key=lambda x: x.get("index", 0))
+                if len(data) != len(chunk) or [item.get("index") for item in data] != list(range(len(chunk))):
+                    raise ValueError("embedding endpoint returned missing or duplicate vector indices")
                 for item in data:
-                    out.append(item["embedding"])
-            return np.asarray(out, dtype="float32")
+                    vector = np.asarray(item["embedding"], dtype="float32")
+                    if vector.ndim != 1 or not vector.size or not np.isfinite(vector).all():
+                        raise ValueError("embedding endpoint returned an invalid vector")
+                    if out and vector.shape != np.asarray(out[0]).shape:
+                        raise ValueError("embedding endpoint changed vector dimension within a batch")
+                    out.append(vector)
+            return np.stack(out).astype("float32", copy=False)
         finally:
             _quality_request_lock.release()
 
