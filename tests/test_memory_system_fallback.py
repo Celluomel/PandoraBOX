@@ -33,6 +33,7 @@ class _Persistence:
     def __init__(self, rows):
         self.rows = rows
         self.all_memory_queries = []
+        self.conversation_source_queries = []
 
     def get_all_memories(self, tier=None, memory_type=None, limit=None):
         self.all_memory_queries.append((tier, memory_type, limit))
@@ -50,7 +51,7 @@ class _Persistence:
         return [row for row in self.rows if row.get("faiss_id") in ids]
 
     def get_conversation_source_memories(self, query=None, limit=2000):
-        self.all_memory_queries.append((None, "conversation_sources", limit, query))
+        self.conversation_source_queries.append((query, limit))
         return [
             row for row in self.rows
             if row.get("memory_type") in {"user_message", "episodic"}
@@ -885,10 +886,7 @@ class MemorySystemFallbackTests(unittest.TestCase):
         self.assertEqual([memory["id"] for memory in recalled], [31])
         self.assertEqual(recalled[0]["memory_type"], "user_message")
         self.assertIn("interprétation claire", recalled[0]["text"])
-        self.assertFalse(any(
-            len(call) > 1 and call[1] == "conversation_sources"
-            for call in system.persistence.all_memory_queries
-        ))
+        self.assertFalse(system.persistence.conversation_source_queries)
 
     def test_explicit_recall_deduplicates_user_message_and_episodic_copy(self):
         query = "For the cognitive harness audit, what did I ask about module outputs?"

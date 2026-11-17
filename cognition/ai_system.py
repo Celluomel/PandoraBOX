@@ -1253,18 +1253,24 @@ class EnhancedMemorySystem:
                                 for position in range(len(indices[0]))
                                 if int(indices[0][position]) != -1
                             }
+                            allowed_types = (
+                                {"user_message", "episodic"}
+                                if explicit_recall else {"user_message"}
+                            )
                             sourced = [
                                 memory for memory in candidates
-                                if memory.get("memory_type") == "user_message"
+                                if memory.get("memory_type") in allowed_types
                             ]
                             if explicit_recall:
                                 # Filter self-referential recall questions before
-                                # deciding the semantic lane has enough results.
-                                # Otherwise recent repeated prompts can occupy all
-                                # returned slots and starve older source statements.
-                                sourced = filter_recall_query_records(
+                                # preferring lexical source matches. If a
+                                # paraphrase shares no exact terms, retain the
+                                # semantic candidates after the same source-role
+                                # and self-match checks.
+                                lexical_sources = filter_recall_query_records(
                                     sourced, query=query,
                                 )
+                                sourced = lexical_sources or filter_recall_query_records(sourced)
                             sourced.sort(key=lambda memory: distance_by_id.get(
                                 int(memory.get("faiss_id", -1)), float("inf")
                             ))
@@ -1276,7 +1282,7 @@ class EnhancedMemorySystem:
                             # source. The downstream source verifier still
                             # rejects unsupported answers and can abstain.
                             if sourced:
-                                return [
+                                recalled = [
                                     dict(memory, relevance=faiss_l2_relevance(
                                         distance_by_id.get(
                                             int(memory.get("faiss_id", -1)), float("inf")
@@ -1284,6 +1290,11 @@ class EnhancedMemorySystem:
                                     ))
                                     for memory in sourced[:limit]
                                 ]
+                                for memory in recalled:
+                                    if memory.get("memory_type") == "episodic":
+                                        memory["source"] = "legacy_episodic_user_source"
+                                        memory["user_authored_text"] = extract_user_authored_text(memory)
+                                return recalled
                     except Exception as error:
                         logger.debug("Semantic user-message recall unavailable: %s", error)
 
