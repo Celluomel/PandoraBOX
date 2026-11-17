@@ -96,6 +96,22 @@ def embed(texts: Sequence[str]) -> Optional[np.ndarray]:
                     raise ValueError("embedding provider returned an unexpected row count")
                 if not np.isfinite(mat).all():
                     raise ValueError("embedding provider returned non-finite vectors")
+                if (
+                    actual_space_id != space_id
+                    and any((space_id, text) in _embedding_cache for text in values)
+                ):
+                    # Some requested-space entries were cached earlier, but
+                    # this call fell back to another model. Re-encode the full
+                    # batch in the fallback space so the returned matrix never
+                    # mixes vectors from two models, even when dimensions match.
+                    encoded, retry_space_id = embedder.encode_with_metadata(values)
+                    actual_space_id = str(retry_space_id)
+                    mat = np.asarray(encoded, dtype="float32")
+                    if mat.ndim == 1:
+                        mat = mat[None, :]
+                    if mat.ndim != 2 or mat.shape[0] != len(values) or not np.isfinite(mat).all():
+                        raise ValueError("embedding provider returned invalid vectors after fallback")
+                    missing = list(dict.fromkeys(values))
                 # QUALITY can transparently fall back to FAST. Cache under the
                 # vector space that actually produced this batch, not merely
                 # the requested tier/model.

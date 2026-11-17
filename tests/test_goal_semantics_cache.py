@@ -32,6 +32,20 @@ class _FallbackEmbedder:
         return np.asarray([[1.0, 2.0] for _ in texts], dtype="float32"), "fast:minilm"
 
 
+class _SwitchingSpaceEmbedder:
+    model_name = "quality-model"
+    embedding_space_id = "api:local:quality-model"
+
+    def __init__(self):
+        self.calls = []
+
+    def encode_with_metadata(self, texts):
+        self.calls.append(list(texts))
+        if len(self.calls) == 1:
+            return np.asarray([[10.0, 1.0] for _ in texts]), self.embedding_space_id
+        return np.asarray([[20.0, 2.0] for _ in texts]), "fast:minilm"
+
+
 class GoalSemanticsCacheTests(unittest.TestCase):
     def setUp(self):
         with goal_semantics._embedding_cache_lock:
@@ -82,6 +96,18 @@ class GoalSemanticsCacheTests(unittest.TestCase):
         np.testing.assert_array_equal(first, second)
         self.assertIn(("fast:minilm", "fallback topic"), goal_semantics._embedding_cache)
         self.assertNotIn((fallback.embedding_space_id, "fallback topic"), goal_semantics._embedding_cache)
+
+    def test_partial_cache_fallback_reembeds_batch_without_mixing_spaces(self):
+        switching = _SwitchingSpaceEmbedder()
+        with patch("utils.shared_embedder.get_embedder", return_value=switching):
+            goal_semantics.embed(["cached nomic text"])
+            result = goal_semantics.embed(["cached nomic text", "new text"])
+
+        self.assertEqual(
+            switching.calls,
+            [["cached nomic text"], ["new text"], ["cached nomic text", "new text"]],
+        )
+        np.testing.assert_array_equal(result, np.asarray([[20.0, 2.0], [20.0, 2.0]]))
 
     def _score_topic(self, good_sim, noise_sim):
         rows = 1 + len(goal_semantics.GOOD_TOPIC_EXEMPLARS) + len(
