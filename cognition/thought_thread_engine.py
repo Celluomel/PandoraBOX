@@ -158,6 +158,26 @@ class ThoughtThreadEngine:
             source_ref = str(seed.get("source_ref") or "")
             for t in self._threads.values():
                 if source_ref and t.source_ref == source_ref:
+                    if t.status not in (
+                        ThoughtThreadStatus.ACTIVE,
+                        ThoughtThreadStatus.ENGAGED,
+                    ):
+                        previous_status = t.status.value
+                        t.status = ThoughtThreadStatus.ACTIVE
+                        t.current_state["active_goal_reassertion"] = {
+                            "reason": "goal_engine_still_active",
+                            "previous_thread_status": previous_status,
+                            "reactivated_at": time.time(),
+                        }
+                    # The active GoalEngine record is the authoritative
+                    # snapshot for this goal. Refresh its descriptive fields
+                    # without discarding accumulated history or action receipts.
+                    t.topic = topic
+                    t.goal = seed.get("goal", t.goal)
+                    t.source = seed.get("source", t.source)
+                    t.current_state.update(seed.get("current_state", {}))
+                    t.last_advanced = time.time()
+                    self._save()
                     return t
                 if t.topic.lower() == topic and t.status in (
                     ThoughtThreadStatus.ACTIVE, ThoughtThreadStatus.ENGAGED

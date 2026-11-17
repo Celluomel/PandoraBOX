@@ -84,6 +84,47 @@ def test_goal_seed_upgrades_matching_unlinked_thread_without_confidence_inflatio
     assert reused.confidence == confidence_before
 
 
+def test_active_goal_reactivates_its_deferred_thread_and_preserves_receipts(tmp_path):
+    engine = ThoughtThreadEngine(str(tmp_path / "threads.json"))
+    context = TTEContext(energy=80.0)
+    thread = engine.spawn_thread(context, {
+        "topic": "knowledge integration",
+        "goal": "Integrate evidence",
+        "source": "goal_engine",
+        "source_ref": "goal-active-1",
+        "current_state": {"success_criteria": "A grounded synthesis is recorded"},
+    })
+    initial_confidence = thread.confidence
+    engine.record_action_receipt(
+        "goal-active-1", action="memory_recall", success=True,
+        execution_id="execution-17", cycle_id=100,
+        result="recalled one source",
+    )
+    thread.status = type(thread.status).DEFERRED
+    context.world_state["goal_threads"] = [{
+        "source_ref": "goal-active-1",
+        "topic": "knowledge integration",
+        "goal": "Integrate current evidence into a coherent account",
+        "priority": 0.87,
+        "intent_kind": "learn",
+        "success_criteria": "A verified synthesis is recorded",
+        "source_turn_id": "turn-22",
+    }]
+
+    active = engine.step(context)
+
+    assert len(active) == 1
+    assert active[0].id == thread.id
+    assert active[0].status.value == "active"
+    assert active[0].goal == "Integrate current evidence into a coherent account"
+    assert active[0].current_state["success_criteria"] == "A verified synthesis is recorded"
+    assert active[0].current_state["source_turn_id"] == "turn-22"
+    assert active[0].current_state["action_receipt_count"] == 1
+    assert active[0].current_state["last_action_receipt"]["execution_id"] == "execution-17"
+    assert active[0].current_state["active_goal_reassertion"]["previous_thread_status"] == "deferred"
+    assert active[0].confidence == initial_confidence
+
+
 def test_cde_passes_new_meta_threads_to_dts_in_same_cycle(tmp_path):
     tte = ThoughtThreadEngine(str(tmp_path / "threads.json"))
     tte_context = TTEContext(energy=80.0)
