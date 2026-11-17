@@ -26,7 +26,7 @@ bias the LLM away from parameters that have a poor effectiveness record.
 """
 
 from __future__ import annotations
-import json, logging, threading, time
+import json, logging, os, tempfile, threading, time
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -138,15 +138,20 @@ class MetaLearningAudit:
         try:
             before_records = len(self._records)
             before_pending = len(self._pending)
-            self._run(slow_cycle)
+            persisted = self._run(slow_cycle)
             outcome = {
-                "outcome_status": "completed",
-                "reason_code": "effect_window_evaluated" if len(self._records) > before_records else "no_mature_effect_window",
+                "outcome_status": "completed" if persisted else "failed",
+                "reason_code": (
+                    "state_persisted_effect_window_evaluated"
+                    if persisted and len(self._records) > before_records else
+                    "state_persisted_no_mature_effect_window"
+                    if persisted else "state_persistence_failed"
+                ),
                 "evaluations_added": len(self._records) - before_records,
                 "pending_count": len(self._pending),
                 "pending_delta": len(self._pending) - before_pending,
             }
-            self._record_async_completion(slow_cycle, "completed", outcome)
+            self._record_async_completion(slow_cycle, outcome["outcome_status"], outcome)
         except Exception as exc:
             logger.debug(f"[MetaLearningAudit] _run error: {exc}")
             self._record_async_completion(
@@ -157,10 +162,10 @@ class MetaLearningAudit:
             with self._lock:
                 self._worker_pending = False
 
-    def _run(self, slow_cycle: int) -> None:
+    def _run(self, slow_cycle: int) -> bool:
         self._register_new_commits(slow_cycle)
         self._evaluate_matured(slow_cycle)
-        self._save()
+        return self._save()
 
     def _record_async_completion(
         self, slow_cycle: int, status: str, output: Dict[str, Any],
@@ -199,11 +204,13 @@ class MetaLearningAudit:
                     trial.get("parameter"),
                 )
                 continue
-            # Already registered?
+            # A matured evaluation leaves _pending and moves to _records.
+            # Check both stores so every confirmed commit is evaluated once,
+            # not re-registered on every later audit tick.
             already = any(
-                p["parameter"] == trial.get("parameter") and
-                p["commit_cycle"] == commit_cycle
-                for p in self._pending
+                str(item.get("parameter", "")) == str(trial.get("parameter", ""))
+                and str(item.get("commit_cycle", "")) == str(commit_cycle)
+                for item in [*self._pending, *(asdict(record) for record in self._records)]
             )
             if already: continue
             self._pending.append({
@@ -316,7 +323,8 @@ class MetaLearningAudit:
         vals = [s.get(signal, 0.5) for s in recent]
         return sum(vals) / len(vals)
 
-    def _save(self) -> None:
+    def _save(self) -> bool:
+        temp_path = None
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             with self._lock:
@@ -326,9 +334,24 @@ class MetaLearningAudit:
                     "do_not_repeat":  self._do_not_repeat,
                     "_meta": {"version":"v64","ts":time.time()},
                 }
-            with open(self._path,"w") as f: json.dump(data,f,indent=2)
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=str(self._path.parent),
+                prefix=f".{self._path.name}.", suffix=".tmp", delete=False,
+            ) as f:
+                temp_path = f.name
+                json.dump(data, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp_path, self._path)
+            return True
         except Exception as e:
-            logger.debug(f"[MetaLearningAudit] save error: {e}")
+            logger.warning("[MetaLearningAudit] state persistence failed: %s", e)
+            if temp_path:
+                try:
+                    os.unlink(temp_path)
+                except OSError:
+                    pass
+            return False
 
     def _load(self) -> None:
         try:

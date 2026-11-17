@@ -1,6 +1,9 @@
 from types import SimpleNamespace
+from unittest.mock import patch
 
-from cognition.meta_learning_audit import META_WINDOW, MetaLearningAudit
+from cognition.meta_learning_audit import (
+    META_WINDOW, MetaLearningAudit, ParameterEffectiveness,
+)
 
 
 def _audit(tmp_path, pending, snapshots):
@@ -9,7 +12,6 @@ def _audit(tmp_path, pending, snapshots):
     organism = SimpleNamespace(_loop=loop)
     audit = MetaLearningAudit(organism, ai_system=None, path=str(tmp_path / "meta.json"))
     audit._pending = pending
-    audit._save = lambda: None
     return audit
 
 
@@ -93,3 +95,54 @@ def test_evaluation_defers_when_post_commit_measurements_are_missing(tmp_path):
 
     assert audit._records == []
     assert audit._pending == pending
+
+
+def test_matured_commit_is_not_registered_for_evaluation_twice(tmp_path):
+    audit = _audit(tmp_path, [], [])
+    trial = {
+        "outcome": "confirmed",
+        "committed": True,
+        "parameter": "grounding_boost",
+        "dimension": "belief_confidence_mean",
+        "proposed_at_cycle": 40,
+        "evaluated_at_cycle": 100,
+        "signal_at_eval": 0.56,
+    }
+    audit._organism._loop._cognitive_audit._state.trial_log = [trial]
+    audit._records.append(ParameterEffectiveness(
+        parameter="grounding_boost", signal="belief_confidence_mean",
+        before=0.56, after_peak=0.70, after_stable=0.68,
+        verdict="effective", commit_cycle=100,
+    ))
+
+    audit._register_new_commits(slow_cycle=400)
+
+    assert audit._pending == []
+
+
+def test_save_failure_is_reported_and_preserves_existing_state_file(tmp_path):
+    path = tmp_path / "meta.json"
+    path.write_text('{"records": [], "pending": []}', encoding="utf-8")
+    audit = _audit(tmp_path, [], [])
+    audit._path = path
+
+    with patch("cognition.meta_learning_audit.os.replace", side_effect=OSError("disk full")):
+        assert audit._save() is False
+
+    assert path.read_text(encoding="utf-8") == '{"records": [], "pending": []}'
+    assert list(tmp_path.glob(".meta.json.*.tmp")) == []
+
+
+def test_worker_receipt_reports_persistence_failure(tmp_path):
+    audit = _audit(tmp_path, [], [])
+    receipts = []
+    audit._save = lambda: False
+    audit._record_async_completion = lambda cycle, status, output, **kwargs: receipts.append(
+        (cycle, status, output)
+    )
+
+    audit._run_guarded(50)
+
+    assert receipts[0][1] == "failed"
+    assert receipts[0][2]["reason_code"] == "state_persistence_failed"
+    assert audit._worker_pending is False

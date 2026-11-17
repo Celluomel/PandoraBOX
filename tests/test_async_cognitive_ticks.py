@@ -424,7 +424,7 @@ class AsyncCognitiveTickTests(unittest.TestCase):
         engine._worker_pending = False
         engine._records = []
         engine._pending = []
-        engine._run = lambda cycle: None
+        engine._run = lambda cycle: True
         completions = []
         recorder = lambda *args, **kwargs: completions.append((args, kwargs))
         engine._organism = SimpleNamespace(_loop=SimpleNamespace(record_async_cycle_stage=recorder))
