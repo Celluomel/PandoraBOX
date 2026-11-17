@@ -55,6 +55,13 @@ class FactualSelfReportContextTests(unittest.TestCase):
         )
         self.assertLess(factual_assignment, closed_world_assignment)
 
+    def test_turn_route_classification_is_recorded_against_input_evidence(self):
+        source = (_HELPER_PATH.parents[1] / "cognition" / "persona_bridge.py").read_text(encoding="utf-8")
+        self.assertIn('"turn_evidence_routing", "classified"', source)
+        self.assertIn('"factual_plan_query": bool(_factual_plan_query)', source)
+        self.assertIn('"closed_world_report": bool(_closed_world_cognitive_report_query)', source)
+        self.assertIn('error_type=type(_architecture_query_error).__name__', source)
+
     def test_planner_self_report_suppresses_assistant_continuity_and_filters_history(self):
         source = (_HELPER_PATH.parents[1] / "cognition" / "persona_bridge.py").read_text(encoding="utf-8")
         self.assertIn(

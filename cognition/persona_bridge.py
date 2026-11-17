@@ -2011,6 +2011,19 @@ Return exactly NONE if nothing should carry forward. Otherwise return one plain 
                 is_internal_cognitive_query(effective_input)
                 or _explicit_memory_recall
             )
+            self._record_turn_stage(
+                "turn_evidence_routing", "classified",
+                output={
+                    "factual_plan_query": bool(_factual_plan_query),
+                    "closed_world_report": bool(_closed_world_cognitive_report_query),
+                    "architecture_query": bool(_architecture_query),
+                    "cognitive_trace_query": bool(_cognitive_trace_query),
+                    "runtime_execution_query": bool(_runtime_execution_query),
+                    "explicit_memory_recall": bool(_explicit_memory_recall),
+                },
+                consumes=("turn_input",),
+                turn_id=_audit_turn_id,
+            )
         except Exception as _architecture_query_error:
             _architecture_query = False
             _cognitive_trace_query = False
@@ -2020,6 +2033,12 @@ Return exactly NONE if nothing should carry forward. Otherwise return one plain 
             _factual_plan_query = False
             _internal_cognitive_query = False
             logger.debug("Architecture query detection unavailable: %s", _architecture_query_error)
+            self._record_turn_stage(
+                "turn_evidence_routing", "failed",
+                error_type=type(_architecture_query_error).__name__,
+                consumes=("turn_input",),
+                turn_id=_audit_turn_id,
+            )
         # A factual self-report will receive a current telemetry snapshot later
         # in prompt construction. Do not copy prior assistant prose into a
         # continuity block where stale/invented values could compete with it.
