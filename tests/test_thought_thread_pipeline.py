@@ -6,7 +6,8 @@ from cognition.cognitive_dissonance_engine import (
     DissonanceEvent,
     DissonanceEventType,
 )
-from cognition.thought_thread_engine import TTEContext, ThoughtThreadEngine
+from cognition.narrative_arc_writer import NarrativeArcWriter
+from cognition.thought_thread_engine import TTEContext, ThoughtThreadEngine, ThoughtThreadStatus
 from cognition.thread_lifecycle_manager import ThreadLifecycleManager
 from core.data.access import DataAccess
 from core.data.schemas import normalize_thread
@@ -465,3 +466,14 @@ def test_goal_action_receipt_arriving_before_thread_seed_is_persisted_and_relink
     assert receipts[0]["execution_id"] == "exec-before-seed"
     assert receipts[0]["cycle_id"] == 41
     assert thread.current_state["last_action_receipt"] == receipts[0]
+
+
+def test_narrative_writer_only_receives_unseen_terminal_threads():
+    writer = NarrativeArcWriter()
+    active = SimpleNamespace(id="active", status=ThoughtThreadStatus.ACTIVE)
+    completed = SimpleNamespace(id="done", status=ThoughtThreadStatus.COMPLETED)
+    failed = SimpleNamespace(id="failed", status=ThoughtThreadStatus.FAILED)
+    deferred = SimpleNamespace(id="deferred", status=ThoughtThreadStatus.DEFERRED)
+    writer._seen_thread_ids.add("failed")
+
+    assert writer.pending_thread_resolutions([active, completed, failed, deferred]) == [completed]

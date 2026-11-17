@@ -108,6 +108,23 @@ class NarrativeArcWriter:
 
     # ── 1. Thread resolution → chapter ───────────────────────────────────────
 
+    def pending_thread_resolutions(self, threads: List[Any]) -> List[Any]:
+        """Return only terminal threads that have not produced a chapter yet.
+
+        The internal loop may call this every cycle. Filtering before the
+        instrumented writer avoids recording thousands of successful ``False``
+        returns for active or already-consumed threads.
+        """
+        from cognition.thought_thread_engine import ThoughtThreadStatus
+
+        terminal = (ThoughtThreadStatus.COMPLETED, ThoughtThreadStatus.FAILED)
+        return [
+            thread for thread in threads
+            if getattr(thread, "id", None)
+            and getattr(thread, "status", None) in terminal
+            and getattr(thread, "id", None) not in self._seen_thread_ids
+        ]
+
     def watch_thread_resolution(
         self, thread: Any, narrative_identity: Any
     ) -> bool:

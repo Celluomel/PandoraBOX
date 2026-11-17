@@ -3151,7 +3151,9 @@ class InternalThoughtLoop:
                         ) or getattr(o, 'narrative_identity', None)
 
                         # 1. Watch for newly completed/failed threads
-                        for _t in self._tte.all_threads():
+                        for _t in self._naw.pending_thread_resolutions(
+                            self._tte.all_threads()
+                        ):
                             self._naw.watch_thread_resolution(_t, _ni)
 
                         # 2. Watch for resolved CDE events → belief chapters
