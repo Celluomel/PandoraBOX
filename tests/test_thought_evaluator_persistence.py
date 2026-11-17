@@ -99,3 +99,24 @@ def test_dal_updates_thought_by_id_without_adding_duplicate(tmp_path):
     assert len(matches) == 1
     assert matches[0]["evaluated"] is True
     assert matches[0]["evaluation"]["concept"] == "updated"
+
+
+def test_memory_recall_provenance_does_not_itself_create_an_opportunity(tmp_path):
+    evaluator = SimpleThoughtEvaluator(tmp_path)
+
+    neutral = evaluator._classify_thought(
+        "retrieved context: the project stored a prior measurement",
+        {"source": "goal_action.memory_recall"},
+    )
+    tension = evaluator._classify_thought(
+        "retrieved context describes an unresolved contradiction",
+        {"source": "goal_action.memory_recall"},
+    )
+    opportunity = evaluator._classify_thought(
+        "retrieved context says we could explore a new experiment",
+        {"source": "goal_action.memory_recall"},
+    )
+
+    assert neutral == "mundane"
+    assert tension == "tension"
+    assert opportunity == "opportunity"

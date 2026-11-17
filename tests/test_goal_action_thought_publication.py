@@ -1,3 +1,4 @@
+import hashlib
 import tempfile
 import unittest
 from types import SimpleNamespace
@@ -40,14 +41,18 @@ class GoalActionThoughtPublicationTests(unittest.TestCase):
         executor._o = SimpleNamespace(thought_stream=stream, workspace=Workspace())
 
         result = executor._add_thought(
-            "Validated reflection", source="goal_action.self_question"
+            "Validated reflection", source="goal_action.self_question",
+            topic="memory retrieval audit",
         )
 
-        self.assertEqual(result, {
-            "thought_stream_recorded": True,
-            "workspace_broadcast": True,
-        })
+        self.assertTrue(result["thought_stream_recorded"])
+        self.assertTrue(result["workspace_broadcast"])
+        self.assertEqual(
+            result["thought_id_ref"],
+            hashlib.sha256(stream.recent(1)[0].id.encode()).hexdigest()[:20],
+        )
         self.assertEqual(stream.recent(1)[0].content, "Validated reflection")
+        self.assertEqual(stream.recent(1)[0].topic, "memory retrieval audit")
 
     def test_publication_is_admitted_when_any_cognitive_consumer_accepts(self):
         admitted = GoalActionExecutor._publication_was_admitted

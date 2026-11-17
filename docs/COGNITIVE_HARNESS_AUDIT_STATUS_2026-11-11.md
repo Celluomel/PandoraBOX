@@ -1,7 +1,7 @@
 # Audit du harnais cognitif — état et prochaines étapes
 
 **Date de mise à jour :** 17 novembre 2026
-**Statut :** audit du harnais cognitif en cours; aucune conclusion globale de qualité n’est établie. Le dernier état live attesté répondait sur `127.0.0.1:8765/status`, `ready=true`, boucle interne active, modèle Gemma et FAISS actifs. Les corrections de preuve runtime, rappel mémoire, consommation immédiate ThoughtStream→Phase 1, empreinte commune jusqu’au commit d’objectif et suppression de l’event loop superflu du rappel mémoire sont poussées jusqu’à `49405a5`. Le correctif local courant répare la persistance/évaluation des pensées; il n’est pas encore chargé. Les modifications Body/UI préexistantes restent hors lot.
+**Statut :** audit du harnais cognitif en cours; aucune conclusion globale de qualité n’est établie. Le dernier état live attesté répondait sur `127.0.0.1:8765/status`, `ready=true`, boucle interne active, modèle Gemma et FAISS actifs. Les corrections de preuve runtime, rappel mémoire, consommation immédiate ThoughtStream→Phase 1, empreinte commune jusqu’au commit d’objectif, suppression de l’event loop superflu du rappel mémoire et persistance sans doublons sont poussées jusqu’à `f98a37b`. Le correctif local courant distingue provenance de mémoire et intention d’objectif; il n’est pas encore chargé. Les modifications Body/UI préexistantes restent hors lot.
 
 ## Plan d’audit piloté par les preuves — mesure de progression
 
@@ -3721,6 +3721,16 @@ Le manifeste embarqué dans ce premier tour comptait 0/43 modules avec tick et 0
 **Vérification locale :** scénario réel avec une pensée mémoire non flushée : l’évaluateur la voit, garde le même ID, la sauvegarde une fois, préserve un enregistrement DAL parallèle, restaure le marqueur, puis ne l’évalue pas une seconde fois. Test DAL séparé : mise à jour par ID sans doublon. Suites mémoire, Phase 1, action/planification, tick async, pipeline GoalEngine et logs cognitifs : **193 passed, 4 subtests passed**, 9 avertissements historiques. Le lot n’est pas encore chargé dans le processus Lumina actif.
 
 **Suite d’audit :** après commit/push et redémarrage groupé, observer une pensée mémoire unique dans le stockage, son évaluation, sa proposition Phase 1 et son résultat workspace; contrôler aussi que les entrées DAL externes restent présentes après plusieurs flushs. Les pistes 3, 6 et 7 demeurent partielles; **3/10 = 30 %** ne change pas avant ces preuves live.
+
+### Provenance mémoire ≠ intention d’objectif — 17 novembre 2026
+
+**Cause comportementale vérifiée :** `SimpleThoughtEvaluator._classify_thought()` classait toute pensée `goal_action.memory_recall` comme `opportunity`, sauf présence d’un mot de tension. Comme les opportunités au-dessus du seuil produisent des propositions, le simple fait d’avoir récupéré un souvenir pouvait transformer un contexte en nouveau but. Le sujet explicite du but de rappel n’était en outre pas transmis dans le champ `topic`; l’évaluateur pouvait le deviner à partir du préfixe de prose « Memory about… ».
+
+**Correction :** la provenance mémoire n’impose plus une intention. Le contenu récupéré passe par la classification de contenu commune; un rappel neutre reste une pensée de contexte, tandis qu’un signal explicite de tension/incertitude/opportunité garde le comportement existant. La publication de mémoire conserve aussi `goal.topic` dans le champ structuré `topic`, de sorte que l’évaluation n’a pas à extraire le sujet du texte généré. La pensée demeure disponible à la compétition Phase 1 et ne crée pas de but durable automatiquement.
+
+**Vérification locale :** tests couvrant rappel neutre→`mundane`, contenu de contradiction→`tension`, opportunité explicite→`opportunity`, conservation du sujet structuré, persistance sans duplication et liaison mémoire→Phase 1. Neuf suites ciblées : **199 passed, 4 subtests passed**, 9 avertissements de dépendances historiques; `py_compile` et `git diff --check` réussis.
+
+**Limite et suite :** le classificateur reste lexical et ne constitue pas une validation sémantique générale. Le changement empêche seulement que la provenance soit prise à tort pour une intention. Le processus Lumina actif n’a pas chargé ce lot. Les pistes 3, 6 et 7 restent partielles; **3/10 = 30 %** jusqu’à une trace live qui lie un rappel réellement pertinent au traitement aval, sans créer un objectif parasite.
 
 ### Identité continue d’une pensée mémoire jusqu’aux candidats — extension du reçu
 

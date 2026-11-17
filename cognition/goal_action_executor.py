@@ -962,7 +962,9 @@ class GoalActionExecutor:
             if callable(progress_callback):
                 progress_callback("publication", "started", source_count=len(parts))
             publication = self._add_thought(
-                thought, source="goal_action.memory_recall"
+                thought,
+                source="goal_action.memory_recall",
+                topic=str(getattr(goal, "topic", "") or "")[:120],
             )
             published = bool(
                 publication.get("thought_stream_recorded")
@@ -2763,7 +2765,7 @@ class GoalActionExecutor:
             return True   # default: allow question
 
     def _add_thought(self, content: str, source: str = "goal_action",
-                     priority: float = 0.45) -> Dict[str, Any]:
+                     priority: float = 0.45, topic: str = "") -> Dict[str, Any]:
         """Record a thought in ThoughtStream and broadcast it to workspace."""
         result: Dict[str, Any] = {
             "thought_stream_recorded": False,
@@ -2776,6 +2778,7 @@ class GoalActionExecutor:
                 thought_receipt = ts.add_with_receipt(
                     content=content, source=source, priority=priority,
                     thought_type="goal_action",
+                    **({"topic": str(topic)[:120]} if topic else {}),
                 )
                 result["thought_stream_recorded"] = bool(
                     thought_receipt.get("recorded")
@@ -2789,6 +2792,7 @@ class GoalActionExecutor:
                 result["thought_stream_recorded"] = bool(ts.add(
                     content=content, source=source, priority=priority,
                     thought_type="goal_action",
+                    **({"topic": str(topic)[:120]} if topic else {}),
                 ))
         except Exception as e:
             logger.warning("[GoalActionExecutor] ThoughtStream record failed: %s", e)

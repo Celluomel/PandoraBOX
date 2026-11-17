@@ -302,22 +302,14 @@ class SimpleThoughtEvaluator:
     def _classify_thought(self, text: str, thought: Dict) -> str:
         source = thought.get('source', '')
         
-        # insight_sources that are GENERATIVE (produce their own follow-up goals)
-        # must be 'mundane' to break circular amplification loops.
-        # But memory_recall is RETRIEVIVE — it surfaces past context that should
-        # be evaluated as new input, potentially generating hypotheses.
+        # Generated reflections/search are excluded from recursively creating
+        # goals. Retrieval provenance alone does not imply opportunity; recalled
+        # content uses the same content classification as other inputs.
         GENERATIVE_SOURCES = {'goal_action.self_question', 'goal_action.web_search',
                                'insight', 'reflection'}
-        RETRIEVIVE_SOURCES = {'goal_action.memory_recall'}
         
         if source in GENERATIVE_SOURCES:
             return 'mundane'
-        if source in RETRIEVIVE_SOURCES:
-            # Treat FAISS/SQLite recalled content as external input — can generate hypotheses
-            if any(kw in text for kw in self.tension_keywords):
-                return 'tension'
-            return 'opportunity'
-
         if any(kw in text for kw in self.uncertainty_keywords):
             return 'uncertainty'
         elif any(kw in text for kw in self.tension_keywords):
