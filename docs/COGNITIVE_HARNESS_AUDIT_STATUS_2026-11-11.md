@@ -4138,3 +4138,24 @@ Le rejeu sur le processus redémarré a confirmé la fenêtre à **5,026 s**. Le
 **Tests après ce changement :** `tests/test_turn_execution_evidence.py`, mémoire/rappel/planification, preuves du cycle interne et observateur d’audit : **224 tests réussis**, 15 sous-tests, 9 avertissements de dépendances préexistants; compilation Python et `git diff --check` passent. Les tests ajoutés vérifient le lien entrée→revue, les résultats positif et négatif, l’émission d’événement et l’absence du texte privé dans la trace.
 
 **Limites et progression :** le processus live n’a pas encore chargé le reçu de contradiction enrichi; cette validation sera regroupée avec le prochain lot de changements cognitifs, sans redémarrage intermédiaire. Le statut du plan aspiration « Map the causal chain… » reste 0/15 avec la prochaine étape `memory_recall` non vérifiée; ce n’est pas un progrès du plan d’audit, et il ne faut pas le confondre avec les plans GoalEngine distincts qui avancent. Le chercheur cognitif demeure diagnostique faute de cibles indépendantes validées. Pistes 8 et 10 restent partielles; aucun critère de clôture supplémentaire n’est atteint, score strict **3/10 = 30 %**.
+
+### 18 novembre — classement des fichiers Python non vus par le profileur
+
+Le snapshot `logs/runtime_python_execution.json` couvre le processus `app.py` instrumenté et ses threads : **570 fichiers suivis, 292 exécutés, 278 non exécutés**, avec trois résumés de tour (95, 95 et 100 fichiers exécutés). Ce nombre n’est pas un objectif de couverture à 100 % : tests, outils, anciennes versions, code Body et fonctions déclenchées seulement par certains événements ne doivent pas tous s’exécuter à chaque tour. Le profilage exclut les sous-processus; l’absence d’un import dans ce fichier ne prouve donc pas qu’un navigateur ou service séparé est arrêté.
+
+| Fichier cognitif absent du snapshot | Appelant / condition observée dans le code | Classement actuel |
+|---|---|---|
+| `cognition/goal_completion.py` | Importé par `goal_action_executor`, `goal_engine` et `goal_quality_filter` sur les chemins de clôture/complétion | Conditionnel; non sollicité dans les trois tours mesurés |
+| `cognition/intention_reasoner.py` | Chargé paresseusement par `LongHorizonPlanner._get_reasoner()` lors de la délibération d’un plan | Conditionnel; un plan déjà persisté peut ne pas demander cette délibération |
+| `cognition/dream_synthesis.py`, `cognition/semantic_consolidator.py` | Appelés depuis `LifeEventDreamSystem.run_dream_cycle()` | Conditionnels à un cycle de rêve; aucun cycle correspondant dans la fenêtre mesurée |
+| `cognition/reflection_absorber.py`, `cognition/reflection_proposal_bridge.py` | Appelés après une réflexion `screened_consistent`; la proposition exige en plus le mode `evolution` et un composant nommé | Conditionnels à un résultat validé et au mode; non prouvés dans cette fenêtre |
+| `cognition/reply_guard.py` | Importé seulement quand le fast pass renvoie une réponse directe non vide | Conditionnel au routage du fast pass |
+| `cognition/peer_conversation.py` | Appelé par la réception d’un tour provenant d’un pair Lumina | Conditionnel à un message enfant entrant |
+| `cognition/research_mcp/claude_search.py` | Provider de recherche facultatif | Non requis avec le backend observé; le profilage seul ne démontre pas quel provider a répondu |
+| `cognition/research_mcp/stealth_browser.py` | Repli navigateur de la recherche | Conditionnel; peut être exécuté dans un sous-processus non couvert |
+| `cognition/ablation.py` | Moteur de scénarios d’ablation contrôlée, sans appel runtime de production trouvé | Outil de recherche/test, pas un composant attendu à chaque tour |
+| `cognition/inner_monologue_engine_old.py`, `cognition/recursive_deliberation_old.py` | Aucun appel de production trouvé | Versions anciennes; absence cohérente avec leur rôle |
+
+`cognition/body_plan_compiler.py` et les quatre entrées `cognition/body_runtime/*` sont hors du périmètre de cet audit du cerveau. Le manifeste contient aussi des absents sous `tests/`, `scripts/`, `body_runtime_host/` et `brain_visualizer/`; ils ne sont pas des modules requis du chemin cognitif courant.
+
+**Conclusion de cette tranche :** parmi les 11 modules cognitifs non-legacy et hors Body, les références du code les classent comme conditionnels ou outils; le snapshot seul ne démontre pas que leurs scénarios conditionnels ont été exercés. Les futurs tests de scénario doivent déclencher et vérifier au minimum la clôture d’objectif, la délibération d’un plan neuf, un cycle de rêve, une réflexion d’évolution validée, le routage pair et chaque provider activé. Pour les modules non déclenchés, l’état d’audit reste « non vérifié dans ce scénario », pas « inutilisé » ni « fonctionnel ». Cette classification améliore la matrice mais ne clôt aucune piste; progression stricte **3/10 = 30 %**.
