@@ -2694,13 +2694,18 @@ Return exactly NONE if nothing should carry forward. Otherwise return one plain 
         # ── Phase A: build prompt + cache real emotion/cond dicts ────
         self._chat_stage = 'building cognitive prompt'
         _social_status_greeting = False
+        _structured_affect_status = False
         _affect_self_report_query = False
         try:
             from cognition.self_description import (
                 is_self_affect_query, is_social_status_greeting,
+                is_structured_affect_status_query,
             )
             _social_status_greeting = bool(
                 not peer_name and is_social_status_greeting(effective_input)
+            )
+            _structured_affect_status = bool(
+                not peer_name and is_structured_affect_status_query(effective_input)
             )
             _affect_self_report_query = bool(
                 not peer_name and is_self_affect_query(effective_input)
@@ -2734,9 +2739,11 @@ Return exactly NONE if nothing should carry forward. Otherwise return one plain 
         )
         _deterministic_affect_report = False
         _affect_direct_response = ""
-        if _social_status_greeting:
+        if _social_status_greeting or _structured_affect_status:
             try:
-                from cognition.self_description import render_affect_self_report
+                from cognition.self_description import (
+                    render_affect_self_report, render_detailed_affect_status,
+                )
                 from managers.settings_manager import config as _affect_cfg
                 _affect_evidence = system_prompt.rsplit(
                     "━━ AFFECT SELF-REPORT EVIDENCE ━━", 1
@@ -2750,13 +2757,15 @@ Return exactly NONE if nothing should carry forward. Otherwise return one plain 
                         or effective_input.casefold().startswith(("comment", "ça ", "tu ", "vous "))
                         else "en"
                     )
-                _affect_direct_response = render_affect_self_report(
-                    _affect_evidence, language=_affect_language,
+                _affect_direct_response = (
+                    render_detailed_affect_status(_affect_evidence, language=_affect_language)
+                    if _structured_affect_status
+                    else render_affect_self_report(_affect_evidence, language=_affect_language)
                 )
                 _deterministic_affect_report = True
                 self._record_turn_stage(
                     "affect_status_report", "completed",
-                    "Deterministic greeting response rendered from live modeled affect channels; no LLM inference or web search required.",
+                    "Deterministic social-status projection rendered from live modeled affect channels; no LLM inference or web search required.",
                     output={
                         "source": "AFFECT SELF-REPORT EVIDENCE in assembled prompt",
                         "response": _affect_direct_response,

@@ -16,7 +16,9 @@ from cognition.self_description import (
     is_runtime_execution_evidence_query,
     is_self_affect_query,
     is_social_status_greeting,
+    is_structured_affect_status_query,
     render_affect_self_report,
+    render_detailed_affect_status,
     sanitize_displayed_cognitive_trace,
     trace_grounded_architecture_answer,
 )
@@ -231,6 +233,30 @@ class SelfDescriptionPromptTests(unittest.TestCase):
         ))
         unavailable = render_affect_self_report("Affect channels: unavailable", language="en")
         self.assertIn("no usable affect signal", unavailable)
+
+    def test_direct_affect_status_uses_structured_snapshot_but_causal_analysis_stays_open(self):
+        query = (
+            "Quelles émotions fonctionnelles sont actives en toi maintenant ? "
+            "Décris-les en te basant sur les signaux internes disponibles, "
+            "et précise si une cause précise est enregistrée."
+        )
+        self.assertTrue(is_structured_affect_status_query(query))
+        self.assertTrue(is_self_affect_query(query))
+        self.assertFalse(is_structured_affect_status_query(
+            "Why did your feelings change after the last conversation?"
+        ))
+
+        evidence = (
+            "Affect channels: curiosity=0.791, warmth=0.997, satisfaction=0.959, relief=0.555\n"
+            "Latest recorded affect-changing appraisal: drive_satisfied from pressure_system "
+            "(drive=coherence), 171.1s ago."
+        )
+        answer = render_detailed_affect_status(evidence, language="fr")
+        self.assertIn("warmth=1.00", answer)
+        self.assertIn("satisfaction=0.96", answer)
+        self.assertIn("drive_satisfied from pressure_system", answer)
+        self.assertIn("ne prouve pas la cause", answer)
+        self.assertIn("pas des sensations humaines", answer)
 
     def test_affect_self_report_separates_emotion_curiosity_from_curiosity_drive(self):
         context = affect_self_report_context(

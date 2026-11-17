@@ -178,6 +178,40 @@ def is_social_status_greeting(user_input: str) -> bool:
     return social_status
 
 
+def is_structured_affect_status_query(user_input: str) -> bool:
+    """Recognize direct requests to enumerate current affect channels/events.
+
+    Open-ended questions about why affect changes remain on the reasoning path;
+    this route is for reporting the already-structured current-state record.
+    """
+    text = " ".join(str(user_input or "").casefold().split())
+    asks_channels = bool(re.search(
+        r"\b(?:what|which)\s+(?:functional\s+)?(?:emotions?|feelings?|"
+        r"affect(?:ive)?\s+signals?|signals?)\b",
+        text,
+    )) or bool(re.search(
+        r"\bquels?\s+(?:signaux\s+)?(?:émotions?|sentiments?|"
+        r"signaux\s+affectifs?)\b|\bquelles?\s+(?:émotions?|sentiments?)\b",
+        text,
+    ))
+    asks_current = bool(re.search(
+        r"\b(?:active|present|current|right now|currently|now|available|"
+        r"actives?|présent(?:e|es)?|maintenant|en ce moment|disponibles?)\b",
+        text,
+    ))
+    refers_to_lumina = bool(re.search(
+        r"\b(?:you|your|yourself|lumina|toi|tu|ton|ta|tes|"
+        r"en toi|chez toi|tes signaux)\b",
+        text,
+    ))
+    asks_why = bool(re.search(
+        r"\b(?:why|pourquoi|how did|how does|comment|quelle est la cause|"
+        r"qu'est-ce qui a provoqué|qu'est-ce qui a causé)\b",
+        text,
+    ))
+    return asks_channels and asks_current and refers_to_lumina and not asks_why
+
+
 def is_self_affect_query(user_input: str) -> bool:
     """Identify a request to report Lumina's own modeled affect state.
 
@@ -187,7 +221,7 @@ def is_self_affect_query(user_input: str) -> bool:
     answer or classify general questions about emotion.
     """
     text = " ".join(str(user_input or "").casefold().split())
-    if is_social_status_greeting(text):
+    if is_social_status_greeting(text) or is_structured_affect_status_query(text):
         return True
 
     mentions_affect = bool(re.search(
@@ -233,6 +267,52 @@ def render_affect_self_report(evidence: str, *, language: str = "en") -> str:
     return (
         f"My modeled functional state is currently led by {signal_text}. "
         "These are computed signals, not human sensations."
+    )
+
+
+def render_detailed_affect_status(evidence: str, *, language: str = "en") -> str:
+    """Report every available affect channel and the latest logged appraisal."""
+    match = re.search(r"^Affect channels:\s*(.+)$", evidence, re.MULTILINE)
+    channels: list[tuple[str, float]] = []
+    if match and match.group(1).strip().casefold() != "unavailable":
+        for item in match.group(1).split(","):
+            parsed = re.fullmatch(r"\s*([a-z_]+)\s*=\s*(-?\d+(?:\.\d+)?)\s*", item)
+            if parsed:
+                value = float(parsed.group(2))
+                if 0.0 <= value <= 1.0:
+                    channels.append((parsed.group(1), value))
+    if not channels:
+        if str(language).casefold().startswith("fr"):
+            return "Aucun relevé de canal affectif exploitable n’est disponible actuellement."
+        return "No usable affect-channel snapshot is available right now."
+
+    channel_text = ", ".join(
+        f"{name}={value:.2f}" for name, value in sorted(channels, key=lambda item: -item[1])
+    )
+    event_match = re.search(
+        r"^Latest recorded affect-changing appraisal:\s*(.+)$",
+        evidence, re.MULTILINE,
+    )
+    event_text = str(event_match.group(1) if event_match else "none recorded").strip()[:180]
+    no_event = event_text.casefold() == "none recorded"
+    if str(language).casefold().startswith("fr"):
+        event_report = (
+            "Aucun événement affectif récent n’est enregistré."
+            if no_event
+            else f"Dernière appréciation enregistrée : {event_text}. Elle ne prouve pas la cause de l’ensemble de l’état."
+        )
+        return (
+            f"Canaux affectifs modélisés (échelle 0–1) : {channel_text}. "
+            f"{event_report} Ce sont des signaux calculés, pas des sensations humaines."
+        )
+    event_report = (
+        "No recent affect-changing appraisal is recorded."
+        if no_event
+        else f"Latest recorded appraisal: {event_text}. It does not establish the cause of the overall state."
+    )
+    return (
+        f"Modeled affect channels (0–1 scale): {channel_text}. "
+        f"{event_report} These are computed signals, not human sensations."
     )
 
 
