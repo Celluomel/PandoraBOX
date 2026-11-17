@@ -1,7 +1,7 @@
 # Audit du harnais cognitif — état et prochaines étapes
 
 **Date de mise à jour :** 17 novembre 2026
-**Statut :** audit du harnais cognitif en cours; aucune conclusion globale de qualité n’est établie. Dernier commit partagé : `482006c` (thèmes écrits par l’assistant exclus du profil utilisateur et de son IDF). Les correctifs PresenceEngine et profil interactionnel sont poussés; les modifications Body/UI préexistantes restent hors lot. Lumina n’a pas été redémarrée; une validation live groupée sera nécessaire après ce lot.
+**Statut :** audit du harnais cognitif en cours; aucune conclusion globale de qualité n’est établie. Dernier commit partagé : `afeddb0` (rapport mis à jour avec les reçus live mémoire/profil). Les correctifs PresenceEngine et profil interactionnel sont poussés; les modifications Body/UI préexistantes restent hors lot. Lumina n’a pas été redémarrée; une validation live groupée sera nécessaire après ce lot.
 
 ## Plan d’audit piloté par les preuves — mesure de progression
 
@@ -3911,3 +3911,11 @@ Le processus actif fonctionne encore sous l’ancien code. Son dernier relevé l
 Le endpoint local `8080/api/interface/cognitive-turns` répond sans passer par l’interface graphique. Le dernier tour déjà terminé (`lumina-1794929947842972200-1`) indique : récupération FAISS, **18** candidats vectoriels, **6** candidats primaires renvoyés, **4** en pool final et **4** injectés; durée **54,98 ms**. Ce reçu prouve l’exécution du chemin FAISS et l’injection, mais ne juge pas la pertinence des textes. Le mode attention `relational` est présent comme donnée de trace; il ne suffit pas à prouver qu’il a modifié le classement.
 
 Pour le même tour, `user_profile_context=fallback_identity_only`, provenance à **0 fait explicite / 0 ancien fait non vérifié**, et `human_profile_learning=skipped_no_named_profile`. `world_model_profile_update=updated` rapporte un compte d’interaction à 2, avec `extracted_count=0` et `categories_updated=[]`: il s’agit d’une mise à jour du modèle interactionnel, pas de l’apprentissage d’un fait personnel. Ces statuts doivent rester distincts dans l’analyse. Cette trace précède le commit `482006c`, ne contient aucun texte privé, et ne valide donc pas les correctifs de profil qui viennent d’être poussés.
+
+### Mode de rappel par attention : signal calculé mais sans effet sur FAISS — 17 novembre 2026
+
+**Écart d’intention vérifié :** `AttentionSystem.memory_recall_mode()` décrit une priorité de rappel (« relational », « semantic », « identity », « episodic »). `PersonaBridge` calcule cette valeur et la passe au reçu d’audit, mais la requête, la limite, les voies de rappel et le classement sont identiques quel que soit le mode. Le commentaire local « bias query toward attention-dominant channel » surestime donc le comportement réel. La trace live le rend visible : `attention_mode=relational`, mais les quatre enregistrements finaux étaient du tier `interaction`; le reçu ne montre aucun effet du mode.
+
+**Décision d’ingénierie :** ne pas inventer maintenant un routage par dictionnaire ni appliquer un boost non calibré. Les tiers existants (`personal`, `cognitive`, `event`, `visual`, `interaction`) ne correspondent pas tous directement aux quatre modes; un mapping arbitraire pourrait dégrader les rappels. La correction fonctionnelle doit être conçue comme une influence mesurable sur le classement, évaluée sur un jeu de requêtes annotées, et comparée à la récupération actuelle. En attendant, le signal est seulement diagnostic et ne doit pas être présenté comme une adaptation active.
+
+**État :** écart identifié, pas encore corrigé dans le code; cette piste mémoire reste partielle. Le benchmark MiniLM/Nomic de 5 paraphrases n’évalue pas ce comportement et ne justifie pas le changement. Les trois suites profil/mémoire déjà exécutées totalisent **75 tests passés** (19 PresenceEngine + 56 WorldModel/profil/logs) pour les correctifs poussés; elles ne valident ni la pertinence des souvenirs live ni l’effet causal du mode d’attention.
