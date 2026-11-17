@@ -784,6 +784,8 @@ class InternalThoughtLoop:
                 "goal_state_persisted", "memory_retrieved", "thought_published",
                 "thought_stream_recorded", "workspace_broadcast",
                 "thought_id_ref",
+                "source_thought_ref", "persisted_source_thought_ref",
+                "proposal_source_thought_ref", "selected_candidate_ref",
                 "research_item_queued", "hypothesis_generated",
                 "source_thought_source", "source_thought_type", "source_concept_method",
                 "drive_update", "need_scan", "pressure_source",
@@ -847,12 +849,30 @@ class InternalThoughtLoop:
                 ]
                 summary["memory_recall_candidate_refs"] = safe_refs
                 summary["memory_recall_candidate_count"] = len(safe_refs)
+            proposal_refs = value.get("goal_proposal_origin_refs")
+            if isinstance(proposal_refs, (list, tuple)):
+                safe_refs = [
+                    ref for ref in proposal_refs[:20]
+                    if isinstance(ref, str) and re.fullmatch(r"[a-f0-9]{20}", ref)
+                ]
+                summary["goal_proposal_origin_refs"] = safe_refs
+                summary["goal_proposal_origin_count"] = len(safe_refs)
             return summary
         if isinstance(value, (list, tuple, set)):
             return {"kind": type(value).__name__, "item_count": len(value)}
         if value is None:
             return {"kind": "none"}
         return {"kind": type(value).__name__}
+
+    @staticmethod
+    def _thought_id_reference(thought_id: Any) -> str | None:
+        """Hash one stable thought ID identically at every audit stage."""
+        value = str(thought_id or "")
+        if not value:
+            return None
+        return hashlib.sha256(
+            value.encode("utf-8", errors="replace")
+        ).hexdigest()[:20]
 
     @staticmethod
     def _memory_recall_candidate_refs(competition_output: Any) -> list[str]:
@@ -870,13 +890,32 @@ class InternalThoughtLoop:
                 continue
             thought_id = str(source_data.get("id") or "")
             if thought_id:
-                ref = hashlib.sha256(
-                    thought_id.encode("utf-8", errors="replace")
-                ).hexdigest()[:20]
+                ref = InternalThoughtLoop._thought_id_reference(thought_id)
+                if not ref:
+                    continue
                 if ref not in refs:
                     refs.append(ref)
                 if len(refs) >= 20:
                     break
+        return refs
+
+    @staticmethod
+    def _goal_proposal_origin_refs(proposals: Any) -> list[str]:
+        """Hash source thought IDs for admitted GoalEngine proposals."""
+        refs: list[str] = []
+        for proposal in proposals if isinstance(proposals, (list, tuple)) else []:
+            if not isinstance(proposal, dict):
+                continue
+            thought_id = str(proposal.get("origin_thought") or "")
+            if not thought_id:
+                continue
+            ref = InternalThoughtLoop._thought_id_reference(thought_id)
+            if not ref:
+                continue
+            if ref not in refs:
+                refs.append(ref)
+            if len(refs) >= 20:
+                break
         return refs
 
     @staticmethod
@@ -1883,12 +1922,19 @@ class InternalThoughtLoop:
                 _phase1_evidence_output["memory_recall_candidate_refs"] = (
                     _memory_recall_candidate_refs[:20]
                 )
+                _goal_proposal_origin_refs = self._goal_proposal_origin_refs(
+                    _cycle_result.get("goal_suggestions", [])
+                )
+                _phase1_evidence_output["goal_proposal_origin_refs"] = (
+                    _goal_proposal_origin_refs
+                )
                 _phase1_evidence_ref = self._record_cycle_stage(
                     "phase1_competition", "completed", output=_phase1_evidence_output,
                     metrics={
                         "total_pressure": float(total_pressure),
                         "candidate_count": int(_phase1_competition_metrics.get("total_candidates", 0) or 0),
                         "memory_recall_candidate_count": len(_memory_recall_candidate_refs),
+                        "goal_proposal_origin_count": len(_goal_proposal_origin_refs),
                     },
                 )
                 self._record_cycle_stage(
@@ -2004,6 +2050,11 @@ class InternalThoughtLoop:
                     except Exception as _arb_e:
                         _arbitration_status = "failed"
                         logger.debug(f"[InternalLoop] arbitration error (non-fatal): {_arb_e}")
+                    _arbitration_output = dict(_arbitration_output or {})
+                    _arbitration_output["selected_candidate_ref"] = (
+                        self._evidence_fingerprint(_winner.get("id"))
+                        if isinstance(_winner, dict) and _winner.get("id") else None
+                    )
                     _arbitration_evidence_ref = self._record_cycle_stage(
                         "executive_arbitration", _arbitration_status,
                         inputs={"competition_output_ref": _phase1_evidence_ref},
@@ -2071,12 +2122,29 @@ class InternalThoughtLoop:
                         "verified_commit" if isinstance(_commit_result, dict) and _commit_result.get("created") and _commit_result.get("verified")
                         else "rejected_or_unverified" if isinstance(_commit_result, dict)
                         else "no_selected_proposal",
-                        inputs={"arbitrated_winner_ref": _arbitration_evidence_ref},
+                        inputs={
+                            "arbitrated_winner_ref": _arbitration_evidence_ref,
+                            "selected_candidate_ref": (
+                                self._evidence_fingerprint(_winner.get("id"))
+                                if isinstance(_winner, dict) and _winner.get("id") else None
+                            ),
+                        },
                         output=(
                             {"created": bool(_commit_result.get("created")),
                              "verified": bool(_commit_result.get("verified")),
                              "goal_id_ref": self._evidence_fingerprint(_commit_result.get("id")),
                              "topic_ref": self._evidence_fingerprint(_commit_result.get("topic")),
+                             "proposal_source_thought_ref": (
+                                 self._thought_id_reference(_selected_proposal.get("origin_thought"))
+                                 if isinstance(_selected_proposal, dict)
+                                 and _selected_proposal.get("origin_thought") else None
+                             ),
+                             "persisted_source_thought_ref": (
+                                 self._thought_id_reference(_commit_result.get("source_thought_id"))
+                                 if _commit_result.get("created")
+                                 and _commit_result.get("verified")
+                                 and _commit_result.get("source_thought_id") else None
+                             ),
                              "source_thought_source": _commit_result.get("source_thought_source", ""),
                              "source_thought_type": _commit_result.get("source_thought_type", ""),
                              "source_concept_method": _commit_result.get("source_concept_method", "")}

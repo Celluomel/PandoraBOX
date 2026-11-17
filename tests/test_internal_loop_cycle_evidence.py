@@ -982,3 +982,30 @@ def test_memory_recall_candidate_reference_matches_stable_thought_id():
     assert summary["memory_recall_candidate_refs"] == [expected]
     assert summary["memory_recall_candidate_count"] == 1
     assert "private retrieved text" not in str(summary)
+
+
+def test_goal_proposal_receipt_preserves_hashed_source_and_candidate_lineage():
+    thought_id = "tht_recalled_fact_42"
+    expected = hashlib.sha256(thought_id.encode()).hexdigest()[:20]
+
+    refs = InternalThoughtLoop._goal_proposal_origin_refs([
+        {"origin_thought": thought_id, "concept": "memory integration"},
+        {"origin_thought": thought_id, "concept": "duplicate source"},
+        {"origin_thought": "", "concept": "unlinked"},
+    ])
+    assert refs == [expected]
+
+    summary = InternalThoughtLoop._evidence_summary({
+        "goal_proposal_origin_refs": refs,
+        "proposal_source_thought_ref": expected,
+        "persisted_source_thought_ref": expected,
+        "selected_candidate_ref": "b" * 20,
+        "private_topic": "never enter the receipt",
+    })
+    assert summary["goal_proposal_origin_refs"] == [expected]
+    assert summary["goal_proposal_origin_count"] == 1
+    assert summary["proposal_source_thought_ref"] == expected
+    assert summary["persisted_source_thought_ref"] == expected
+    assert summary["selected_candidate_ref"] == "b" * 20
+    assert "private_topic" not in summary
+    assert "never enter the receipt" not in str(summary)

@@ -470,27 +470,37 @@ class GoalActionExecutor:
                 ACTION_MEMORY_RECALL, ACTION_WEB_SEARCH,
                 ACTION_SELF_QUESTION, ACTION_BISOCIATIVE,
             ):
-                # FIX 3: fire via daemon thread + asyncio.run() — guaranteed execution
+                # Memory recall is synchronous I/O today; dispatch it directly
+                # on a worker instead of creating an otherwise unused asyncio
+                # Proactor loop (which can block while creating its self-pipe
+                # on Windows). The other actions await network/LLM work.
                 if action_type == ACTION_MEMORY_RECALL:
-                    coro = self._action_memory_recall_background(
+                    action = lambda: self._action_memory_recall_background(
                         goal, execution_id=execution_id, cycle_id=cycle_id
                     )
+                    fire = self._fire_sync
                 elif action_type == ACTION_WEB_SEARCH:
                     coro = self._action_web_search(
                         goal, execution_id=execution_id, cycle_id=cycle_id
                     )
+                    action = coro
+                    fire = self._fire
                 elif action_type == ACTION_BISOCIATIVE:
                     coro = self._action_bisociative_hypothesis(
                         goal, execution_id=execution_id, cycle_id=cycle_id
                     )
+                    action = coro
+                    fire = self._fire
                 else:
                     coro = self._action_self_question(
                         goal, execution_id=execution_id, cycle_id=cycle_id
                     )
+                    action = coro
+                    fire = self._fire
                 if _ct_pred is not None:
                     self._pending_predictions[(str(goal.id), action_type)] = _ct_pred
-                self._fire(
-                    coro,
+                fire(
+                    action,
                     on_error=lambda error: self._finalize_async_action(
                         goal, action_type, False, f"async action raised: {error}",
                         execution_id=execution_id, cycle_id=cycle_id,
@@ -723,14 +733,14 @@ class GoalActionExecutor:
 
     # ── Action implementations ─────────────────────────────────────────────────
 
-    async def _action_memory_recall_background(
+    def _action_memory_recall_background(
         self, goal, *, execution_id: str, cycle_id: Optional[int] = None,
     ) -> None:
-        """Run local database/FAISS recall on the action worker thread.
+        """Run synchronous local database/FAISS recall on its worker thread.
 
-        ``_fire`` owns a dedicated daemon thread and runs this coroutine there;
-        calling the synchronous recall directly avoids an unnecessary second
-        thread hop while keeping the internal cognitive-loop caller nonblocking.
+        This method deliberately contains no ``await``: the caller dispatches
+        it with ``_fire_sync`` so Windows does not create an unused Proactor
+        event loop for local synchronous work.
         """
         execution_ref = hashlib.sha256(
             str(execution_id).encode("utf-8", errors="replace")
@@ -2876,3 +2886,31 @@ class GoalActionExecutor:
 
         t = threading.Thread(target=_runner, daemon=True, name="gae-async")
         t.start()
+
+    @staticmethod
+    def _fire_sync(action, on_error=None, on_complete=None) -> None:
+        """Run a synchronous cognitive action on a daemon worker thread."""
+        def _runner():
+            try:
+                action()
+            except Exception as e:
+                logger.warning("[GoalActionExecutor] sync action error: %s", e)
+                if callable(on_error):
+                    try:
+                        on_error(e)
+                    except Exception as callback_error:
+                        logger.warning(
+                            "[GoalActionExecutor] sync error finalization failed: %s",
+                            callback_error,
+                        )
+            finally:
+                if callable(on_complete):
+                    try:
+                        on_complete()
+                    except Exception as callback_error:
+                        logger.warning(
+                            "[GoalActionExecutor] sync completion cleanup failed: %s",
+                            callback_error,
+                        )
+
+        threading.Thread(target=_runner, daemon=True, name="gae-sync").start()

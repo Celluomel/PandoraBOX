@@ -1,6 +1,5 @@
 """Regression tests for PandoraBOX's intention -> plan -> outcome loop."""
 import json
-import asyncio
 import tempfile
 import threading
 import unittest
@@ -1058,19 +1057,19 @@ class IntentionPlanningTests(unittest.TestCase):
         executor._action_memory_recall_with_fallback = Mock(side_effect=fake_memory_recall)
         captured = {}
 
-        def capture_async(coro, on_error=None, on_complete=None):
-            captured.update(coro=coro, on_error=on_error, on_complete=on_complete)
+        def capture_sync(action, on_error=None, on_complete=None):
+            captured.update(action=action, on_error=on_error, on_complete=on_complete)
 
-        with patch.object(GoalActionExecutor, "_fire", side_effect=capture_async):
+        with patch.object(GoalActionExecutor, "_fire_sync", side_effect=capture_sync):
             report = executor.run_tick(cycle_id=91)
 
         self.assertEqual(report["outcome_status"], "dispatched")
         executor._action_memory_recall_with_fallback.assert_not_called()
-        self.assertEqual(captured["coro"].cr_code.co_name, "_action_memory_recall_background")
+        self.assertTrue(callable(captured["action"]))
 
         executor._finalize_async_action = Mock()
         worker = threading.Thread(
-            target=lambda: asyncio.run(captured["coro"]),
+            target=captured["action"],
             name="test-gae-action-worker",
         )
         worker.start()

@@ -1,7 +1,7 @@
 # Audit du harnais cognitif — état et prochaines étapes
 
 **Date de mise à jour :** 17 novembre 2026
-**Statut :** audit du harnais cognitif en cours; aucune conclusion globale de qualité n’est établie. Le dernier état live attesté répondait sur `127.0.0.1:8765/status`, `ready=true`, boucle interne active, modèle Gemma et FAISS actifs. Les corrections de preuve runtime, rappel mémoire et consommation immédiate ThoughtStream→Phase 1 sont poussées jusqu’à `3e9cf94` (`Feed live thought stream into Phase 1 competition`). Un complément local lie maintenant le hash de la pensée aux candidats Phase 1; il n’est pas encore chargé. Les modifications Body/UI préexistantes restent hors lot.
+**Statut :** audit du harnais cognitif en cours; aucune conclusion globale de qualité n’est établie. Le dernier état live attesté répondait sur `127.0.0.1:8765/status`, `ready=true`, boucle interne active, modèle Gemma et FAISS actifs. Les corrections de preuve runtime, rappel mémoire, consommation immédiate ThoughtStream→Phase 1 et empreinte commune entre publication et compétition sont poussées jusqu’à `c139aee`. Le correctif local courant retire l’event loop inutile du rappel mémoire synchrone; il n’est pas encore chargé. Les modifications Body/UI préexistantes restent hors lot.
 
 ## Plan d’audit piloté par les preuves — mesure de progression
 
@@ -3691,6 +3691,26 @@ Le manifeste embarqué dans ce premier tour comptait 0/43 modules avec tick et 0
 **Vérification locale :** nouveau test prouvant qu’une pensée ajoutée mais non encore sauvegardée apparaît dans les candidats Phase 1, garde le même ID sur plusieurs lectures et n’est pas dupliquée après persistance; second test prouvant que l’ID survit à un redémarrage du `ThoughtStream`. Lot ciblé mémoire, planification, ticks async, cycle evidence et intégration Phase 1 : **133 tests passés**, 9 avertissements historiques. Un test de liaison supplémentaire confirme que le hash du reçu de publication est le même que le hash extrait des candidats de compétition. `py_compile` et `git diff --check` passent. Le test async Windows doit être exécuté hors sandbox car celui-ci bloque la création de socketpair Proactor.
 
 **Validation restante avant clôture :** le correctif doit être chargé au prochain redémarrage groupé; le reçu mémoire doit alors montrer l’ID stable, puis un cycle Phase 1 ultérieur doit inclure le même ID dans ses candidats ou son gagnant. Ce lien live n’est pas encore prouvé. La piste 6 (boucle interne/chercheur) et la piste 7 (action/progression) demeurent partielles; la progression globale ne change pas : **3/10 = 30 %**.
+
+### Rappel mémoire : event loop Windows superflu — 17 novembre 2026
+
+**Échec reproduit :** le test de rappel mémoire asynchrone échouait de façon reproductible sous Windows; son worker restait vivant après 5 s. Une capture `faulthandler` localise le blocage dans `asyncio.run()` pendant la création du `ProactorEventLoop` et de son socketpair, avant l’entrée dans le rappel mémoire. Le rappel lui-même est synchrone et ne contient aucun `await`; faire créer un event loop ne lui apportait aucune capacité asynchrone.
+
+**Correction locale :** `ACTION_MEMORY_RECALL` est désormais exécutée directement sur un worker daemon synchrone avec les mêmes callbacks d’erreur et de fin. Web search, self-question et hypothèse bisociative conservent le worker asyncio, car ils attendent réellement des opérations réseau/LLM. Le test du contrat vérifie l’exécution hors du thread cognitif, les étapes SQLite→FAISS→publication et la finalisation, sans créer de loop artificielle.
+
+**Vérification locale :** le test reproduisant le blocage passe après correction. Les cinq suites mémoire/planification/ticks/cycle evidence passent ensemble : **133 passed**, 9 avertissements de dépendances historiques. La correction n’est pas encore commitée, poussée ni chargée dans Lumina; le prochain redémarrage peut être regroupé avec les autres corrections non chargées.
+
+**Suite d’audit :** l’étape suivante vérifie l’attribution du même identifiant entre une pensée rappelée, une proposition GoalEngine, le gagnant d’arbitrage et la création persistée du but. Les pistes 3, 6 et 7 restent partielles; **3/10 = 30 %** demeure inchangé.
+
+### Revalidation et extension de provenance — 17 novembre 2026
+
+**Cause du test bloqué établie :** une capture `faulthandler` a montré que le worker d’essai attendait dans `asyncio.run()` pendant la création du `ProactorEventLoop` Windows, avant d’entrer dans la fonction de rappel. `_action_memory_recall_background` n’effectue aucun `await`; créer un event loop ici était inutile. Le correctif exécute le rappel synchrone directement sur un worker daemon. Les actions réseau/LLM qui attendent réellement conservent le runner asyncio.
+
+**Provenance proposition→but ajoutée :** le reçu Phase 1 expose maintenant les empreintes des pensées sources des propositions admises; l’arbitrage expose l’empreinte du candidat retenu; le reçu de commit relie ce candidat et la pensée d’origine, puis distingue l’empreinte de la source relue dans GoalEngine quand un nouveau but est effectivement persisté et vérifié. Les résumés n’exposent que des empreintes de 20 caractères hexadécimaux et des compteurs, jamais le contenu de pensée ou le sujet du but.
+
+**Vérification locale :** cinq suites ciblées (ThoughtStream/Phase 1, rappel mémoire, planification, ticks asynchrones et reçus de cycle) : **134 passed**, 9 avertissements historiques. Le test précédemment bloqué passe; `py_compile` et `git diff --check` passent. Le processus Lumina actif n’a pas ces modifications chargées. Elles sont encore locales; un redémarrage groupé sera nécessaire pour les valider en direct.
+
+**Limite et suite :** le code et les tests prouvent que les reçus peuvent représenter les liens, pas encore qu’un cycle réel fasse apparaître une même empreinte dans chaque étape. Il faudra capturer un cas où une pensée mémoire est évaluée en proposition et sélectionnée; si la proposition perd ou est rejetée, ce résultat doit aussi être conservé comme résultat causal. Les pistes 3, 6 et 7 restent partielles; **3/10 = 30 %** ne change pas avant la preuve live et l’évaluation de la qualité de l’effet.
 
 ### Identité continue d’une pensée mémoire jusqu’aux candidats — extension du reçu
 
