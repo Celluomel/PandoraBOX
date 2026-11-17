@@ -347,6 +347,7 @@ class MemorySystemFallbackTests(unittest.TestCase):
             "From my historical exchanges stored in memory, what did I ask you to fix "
             "about the UnboundLocalError involving _deterministic_response?",
             "What did I ask you to fix about the UnboundLocalError involving _deterministic_response?",
+            "Which plan did I ask you to summarize earlier in this chat?",
             "Qu’est-ce que je t’ai demandé de corriger à propos de l’erreur UnboundLocalError ?",
         )
         for query in queries:
@@ -354,7 +355,7 @@ class MemorySystemFallbackTests(unittest.TestCase):
                 self.assertTrue(is_explicit_memory_recall_query(query))
                 topic = extract_explicit_recall_topic(query).casefold()
                 self.assertTrue(
-                    any(term in topic for term in ("unboundlocalerror", "corriger")),
+                    any(term in topic for term in ("unboundlocalerror", "corriger", "plan")),
                     topic,
                 )
                 self.assertNotIn("historical exchanges", topic)

@@ -105,7 +105,7 @@ _HISTORICAL_REQUEST_PATTERNS = (
         re.IGNORECASE,
     ),
     re.compile(
-        r"\bwhat\s+(?P<topic>[^?!.]{1,100}?)\s+"
+        r"\b(?:what|which)\s+(?P<topic>[^?!.]{1,100}?)\s+"
         r"(?:did|have|had)\s+i\s+"
         r"(?:ask(?:ed)?|request(?:ed)?|say|said|tell\s+you|told\s+you)\b",
         re.IGNORECASE,
