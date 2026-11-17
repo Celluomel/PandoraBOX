@@ -1394,11 +1394,18 @@ class LongHorizonPlanner:
             text,
         )) and LongHorizonPlanner.is_self_report_query(text)
 
-    def factual_goal_plan_response(self, user_input: str, language: str = "auto") -> str:
+    def factual_goal_plan_response(
+        self,
+        user_input: str,
+        language: str = "auto",
+        *,
+        snapshot: Optional[Dict[str, Any]] = None,
+    ) -> str:
         """Render goal/plan telemetry from recorded state without LLM paraphrase."""
         if not self.is_goal_plan_query(user_input):
             return ""
-        snapshot = self.factual_self_report_snapshot()
+        if snapshot is None:
+            snapshot = self.factual_self_report_snapshot()
         goals = [str(item["topic"]) for item in snapshot["active_goals"] if item.get("topic")]
         goal_count = int(snapshot.get("active_goal_count", len(goals)))
         plan = snapshot.get("dominant_plan")

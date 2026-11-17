@@ -1192,6 +1192,36 @@ class IntentionPlanningTests(unittest.TestCase):
         self.assertIn("Score indicatif non calibré du planificateur (pas une probabilité) : 0,413", french)
         self.assertIn("Incertitudes enregistrées : Decision-support score is uncalibrated", french)
 
+    def test_factual_goal_report_renders_the_supplied_snapshot_without_rereading_live_state(self):
+        planner = LongHorizonPlanner.__new__(LongHorizonPlanner)
+        planner.factual_self_report_snapshot = lambda: self.fail(
+            "report must use the same snapshot that was recorded in the turn trace"
+        )
+        snapshot = {
+            "active_goals": [{"topic": "memory about knowledge"}],
+            "active_goal_count": 1,
+            "dominant_plan": {
+                "objective": "memory about knowledge",
+                "steps_completed": 1,
+                "steps_total": 4,
+                "steps_with_execution_evidence": 1,
+                "completed_steps_without_execution_evidence": 0,
+                "success_criteria_status": "unverified",
+                "next_operation": "self_question",
+                "next_operation_status": "pending",
+                "reasoning_confidence": 0.33,
+                "uncertainties": [],
+            },
+        }
+
+        report = planner.factual_goal_plan_response(
+            "quel est ton plan actif ?", "fr", snapshot=snapshot,
+        )
+
+        self.assertIn("memory about knowledge", report)
+        self.assertIn("1/4 étapes terminées", report)
+        self.assertIn("self_question (état : pending)", report)
+
     def test_user_practical_task_cannot_become_autonomous_goal(self):
         with tempfile.TemporaryDirectory() as folder:
             engine = GoalEngine(

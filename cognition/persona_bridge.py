@@ -1997,12 +1997,12 @@ Return exactly NONE if nothing should carry forward. Otherwise return one plain 
             _cognitive_trace_query = is_cognitive_trace_query(effective_input)
             _runtime_execution_query = is_runtime_execution_evidence_query(effective_input)
             _cognitive_audit_status_query = is_cognitive_audit_status_query(effective_input)
+            _factual_plan_query = LongHorizonPlanner.is_goal_plan_query(effective_input)
             _closed_world_cognitive_report_query = (
                 is_closed_world_cognitive_report_query(effective_input)
                 or _factual_plan_query
                 or _explicit_memory_recall
             )
-            _factual_plan_query = LongHorizonPlanner.is_goal_plan_query(effective_input)
             _architecture_query = (
                 (is_architecture_query(effective_input) or _cognitive_trace_query)
                 and not _explicit_memory_recall
@@ -2572,9 +2572,42 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                 _planner = getattr(_loop, "_long_horizon_planner", None)
                 if _planner is not None:
                     from managers.settings_manager import config as _report_cfg
+                    _planner_snapshot = (
+                        _planner.factual_self_report_snapshot()
+                        if _factual_plan_query else None
+                    )
+                    if isinstance(_planner_snapshot, dict):
+                        _snapshot_bytes = json.dumps(
+                            _planner_snapshot, ensure_ascii=False, sort_keys=True,
+                            separators=(",", ":"), default=str,
+                        ).encode("utf-8", errors="replace")
+                        _selected_plan = _planner_snapshot.get("dominant_plan")
+                        _selected_plan = (
+                            _selected_plan if isinstance(_selected_plan, dict) else {}
+                        )
+                        self._record_turn_stage(
+                            "planner_factual_snapshot", "captured",
+                            output={
+                                "snapshot_sha256": hashlib.sha256(_snapshot_bytes).hexdigest(),
+                                "captured_at": _planner_snapshot.get("captured_at"),
+                                "active_goal_count": _planner_snapshot.get("active_goal_count", 0),
+                                "plan_present": bool(_selected_plan),
+                                "plan_source": str(_selected_plan.get("source") or "none"),
+                                "plan_progress": [
+                                    _selected_plan.get("steps_completed", 0),
+                                    _selected_plan.get("steps_total", 0),
+                                ],
+                                "completed_step_receipt_count": len(
+                                    _selected_plan.get("completed_step_receipts") or []
+                                ),
+                            },
+                            consumes=("turn_input",),
+                            turn_id=_audit_turn_id,
+                        )
                     _goal_report = _planner.factual_goal_plan_response(
                         effective_input,
                         getattr(_report_cfg, "RESPONSE_LANGUAGE", "auto"),
+                        snapshot=_planner_snapshot,
                     )
                     if _goal_report:
                         _deterministic_response = _goal_report
@@ -2806,7 +2839,10 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                             self._record_turn_stage(
                                 "deterministic_reasoning", "selected_direct",
                                 output=_deterministic_response,
-                                consumes=("turn_input",),
+                                consumes=(
+                                    ("turn_input", "planner_factual_snapshot")
+                                    if _factual_plan_query else ("turn_input",)
+                                ),
                                 turn_id=_audit_turn_id,
                             )
                     _llm_manager = getattr(self._llm_stream_fn, "__self__", None)

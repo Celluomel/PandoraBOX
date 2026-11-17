@@ -1,5 +1,6 @@
 import unittest
 import importlib.util
+import ast
 from pathlib import Path
 
 _HELPER_PATH = Path(__file__).resolve().parents[1] / "cognition" / "factual_self_report_context.py"
@@ -10,6 +11,50 @@ history_without_assistant_claims = _HELPER.history_without_assistant_claims
 
 
 class FactualSelfReportContextTests(unittest.TestCase):
+    def test_factual_plan_route_is_initialized_before_closed_world_expression(self):
+        source_path = _HELPER_PATH.parents[1] / "cognition" / "persona_bridge.py"
+        tree = ast.parse(source_path.read_text(encoding="utf-8"))
+        bridge = next(
+            node for node in tree.body
+            if isinstance(node, ast.ClassDef) and node.name == "PersonaBridge"
+        )
+        lifecycle = next(
+            node for node in bridge.body
+            if isinstance(node, ast.AsyncFunctionDef)
+            and node.name == "_stream_with_full_lifecycle"
+        )
+        route_try = next(
+            node for node in ast.walk(lifecycle)
+            if isinstance(node, ast.Try)
+            and any(
+                isinstance(child, ast.Assign)
+                and any(
+                    isinstance(target, ast.Name)
+                    and target.id == "_closed_world_cognitive_report_query"
+                    for target in child.targets
+                )
+                for child in node.body
+            )
+        )
+        factual_assignment = next(
+            index for index, node in enumerate(route_try.body)
+            if isinstance(node, ast.Assign)
+            and any(
+                isinstance(target, ast.Name) and target.id == "_factual_plan_query"
+                for target in node.targets
+            )
+        )
+        closed_world_assignment = next(
+            index for index, node in enumerate(route_try.body)
+            if isinstance(node, ast.Assign)
+            and any(
+                isinstance(target, ast.Name)
+                and target.id == "_closed_world_cognitive_report_query"
+                for target in node.targets
+            )
+        )
+        self.assertLess(factual_assignment, closed_world_assignment)
+
     def test_planner_self_report_suppresses_assistant_continuity_and_filters_history(self):
         source = (_HELPER_PATH.parents[1] / "cognition" / "persona_bridge.py").read_text(encoding="utf-8")
         self.assertIn(
@@ -17,6 +62,12 @@ class FactualSelfReportContextTests(unittest.TestCase):
         )
         self.assertIn('if _factual_self_report:', source)
         self.assertIn('"historical_assistant_context", "filtered"', source)
+
+    def test_plan_answer_trace_consumes_the_snapshot_used_to_render_it(self):
+        source = (_HELPER_PATH.parents[1] / "cognition" / "persona_bridge.py").read_text(encoding="utf-8")
+        self.assertIn('"planner_factual_snapshot", "captured"', source)
+        self.assertIn('snapshot=_planner_snapshot', source)
+        self.assertIn('("turn_input", "planner_factual_snapshot")', source)
 
     def test_keeps_user_context_and_excludes_prior_assistant_claims(self):
         history = [
