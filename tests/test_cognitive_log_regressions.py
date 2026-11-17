@@ -158,6 +158,25 @@ class CognitiveLogRegressionTests(unittest.TestCase):
         self.assertEqual(summary["retrieval"]["primary_returned_count"], 1)
         self.assertEqual(summary["retrieval"]["final_pool_count"], 1)
 
+    def test_memory_trace_reports_actual_faiss_model_without_local_path(self):
+        evidence = memory_retrieval_evidence(
+            "question", [], retrieval_receipt={
+                "backend": "faiss",
+                "embedding_model": r"C:\Users\private\models\text-embedding-nomic-embed-text-v1.5",
+                "embedding_dim": 768,
+                "vector_candidate_count": 3,
+                "returned_count": 1,
+                "elapsed_ms": 12.0,
+            },
+        )
+
+        assert evidence["retrieval"]["embedding_model"] == "text-embedding-nomic-embed-text-v1.5"
+        assert evidence["retrieval"]["embedding_dim"] == 768
+        summary = audit_safe_turn_summary(evidence)
+        assert summary["retrieval"]["embedding_model"] == "text-embedding-nomic-embed-text-v1.5"
+        assert summary["retrieval"]["embedding_dim"] == 768
+        assert "C:\\Users" not in repr(summary)
+
     def test_prompt_memory_keeps_user_message_separate_from_unverified_lumina_reply(self):
         rendered = format_memory_for_prompt({
             "memory_type": "episodic",

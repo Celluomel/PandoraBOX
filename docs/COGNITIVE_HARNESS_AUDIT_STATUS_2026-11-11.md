@@ -1,7 +1,7 @@
 # Audit du harnais cognitif — état et prochaines étapes
 
 **Date de mise à jour :** 17 novembre 2026
-**Statut :** audit du harnais cognitif en cours; aucune conclusion globale de qualité n’est établie. Le dernier commit partagé est `d4a1178`; il complète la chaîne PersonaBridge → API des preuves de validation et de provenance. Un correctif local affine le routage auto de recherche pour les questions portant sur l’état cognitif interne. Les modifications Body/UI préexistantes restent hors lot. Lumina n’a pas été redémarrée; une validation live groupée sera nécessaire après le prochain lot.
+**Statut :** audit du harnais cognitif en cours; aucune conclusion globale de qualité n’est établie. Le dernier commit partagé est `15d1c62`; il complète la chaîne de provenance workspace et oriente les questions sur l’état interne vers le contexte/runtime. Un correctif local rend visible le modèle/dimension réellement utilisés pour chaque recherche mémoire FAISS. Les modifications Body/UI préexistantes restent hors lot. Lumina n’a pas été redémarrée; une validation live groupée sera nécessaire après le prochain lot.
 
 ## Plan d’audit piloté par les preuves — mesure de progression
 
@@ -3871,3 +3871,15 @@ Le processus actif fonctionne encore sous l’ancien code. Son dernier relevé l
 **Vérification locale :** `tests/test_persona_search_decision.py` — **6 passed**, dont le cas de question française sur l’état émotionnel qui vérifie le routage et la règle transmise au juge. Cette vérification valide la consigne et le câblage, pas l’obéissance réelle du LLM; celle-ci devra être vérifiée live après redémarrage groupé. Aucun test n’atteste que les anciens résultats de recherche ont influencé la réponse finale.
 
 **État :** piste 9 partielle; pas de changement au score strict **3/10 = 30 %**. Le correctif doit être poussé. Le poids/reclassement des résultats reste une question distincte : l’embedding Nomic peut classer la proximité thématique, mais pas prouver la fiabilité factuelle des sources.
+
+### Modèle d’embedding réellement utilisé pour la mémoire — 17 novembre 2026
+
+**Constat vérifié :** `config.json` sélectionne Nomic pour `QUALITY_EMBED_MODEL`, mais `EnhancedAISystem` construit `SystemConfig()` avec `embedding_model_name="all-MiniLM-L6-v2"` et le chemin de mémoire FAISS appelle l’embedder FAST (`get_embedder(model_name)`, sans `quality=True`). Les logs de démarrage montrent les deux tiers chargés : FAST MiniLM et QUALITY Nomic. Cela signifie que le réglage Nomic est actif pour les consommateurs du tier qualité, mais pas pour l’index épisodique FAISS. Ce choix conserve 384 dimensions et une latence locale; remplacer le modèle de mémoire nécessiterait un nouvel index homogène et une comparaison de qualité/latence, donc aucun changement de modèle n’est fait sur la seule base d’un nom de configuration.
+
+**Défaut d’audit corrigé localement :** `retrieve_memories_with_receipt()` connaissait `embedding_model` et `embedding_dim`, mais `memory_retrieval_evidence()` et `audit_safe_turn_summary()` les retiraient. Les reçus de tour prouvaient backend et latence, sans permettre de savoir si la mémoire avait réellement utilisé MiniLM, Nomic ou un autre modèle.
+
+**Correction :** le reçu de trace transmet maintenant l’étiquette de modèle réellement utilisée et la dimension uniquement pour le backend FAISS. Les chemins locaux sont réduits au nom du modèle; les valeurs sont validées et le texte des mémoires reste exclu.
+
+**Vérification locale :** `test_memory_system_fallback.py`, `test_cognitive_log_regressions.py`, `test_turn_execution_evidence.py` — **125 passed, 14 subtests passed, 9 avertissements historiques**. Le nouveau test vérifie MiniLM/Nomic, la dimension 768 et l’absence d’un chemin `C:\Users\…` dans le reçu. Le processus live n’a pas encore chargé ce changement; après le redémarrage groupé, une trace FAISS permettra de vérifier le modèle effectivement utilisé.
+
+**Portée :** visibilité améliorée, pas amélioration prouvée du rappel. Nomic est une piste à évaluer sur un jeu de requêtes/paraphrases français pré-étiqueté, avec rappel@k, pertinence des souvenirs injectés et latence. Il ne remplace pas un validateur de vérité ou de qualité cognitive. Piste 4 partielle pour la généralisation, progression stricte toujours **3/10 = 30 %**.

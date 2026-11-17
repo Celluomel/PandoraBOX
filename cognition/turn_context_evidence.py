@@ -175,6 +175,18 @@ def memory_retrieval_evidence(
             "final_pool_count": len(candidates),
             "elapsed_ms": elapsed_ms,
         }
+        # Keep the actual FAISS vector-space identity visible in the audit
+        # receipt.  The configured quality embedder is not necessarily the
+        # model used by episodic memory (which may use the FAST tier).
+        if str(retrieval_receipt.get("backend") or "") == "faiss":
+            model = str(retrieval_receipt.get("embedding_model") or "")
+            model = model.replace("\\", "/").rsplit("/", 1)[-1]
+            model = re.sub(r"[^A-Za-z0-9._-]", "_", model)[:96]
+            if model:
+                evidence["retrieval"]["embedding_model"] = model
+            dimension = retrieval_receipt.get("embedding_dim")
+            if isinstance(dimension, int) and not isinstance(dimension, bool) and 0 < dimension <= 10000:
+                evidence["retrieval"]["embedding_dim"] = dimension
     return evidence
 
 
@@ -377,6 +389,12 @@ def audit_safe_turn_summary(value: Any) -> dict[str, Any] | None:
                 "final_pool_count": final_pool_count,
                 "elapsed_ms": elapsed_ms,
             }
+            model = retrieval.get("embedding_model")
+            if isinstance(model, str) and re.fullmatch(r"[A-Za-z0-9._-]{1,96}", model):
+                summary["retrieval"]["embedding_model"] = model
+            dimension = retrieval.get("embedding_dim")
+            if isinstance(dimension, int) and not isinstance(dimension, bool) and 0 < dimension <= 10000:
+                summary["retrieval"]["embedding_dim"] = dimension
         return summary
 
     if {"injected_count", "records"}.issubset(value):
