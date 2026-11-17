@@ -1,5 +1,6 @@
 import threading
 import ast
+import contextvars
 import inspect
 from pathlib import Path
 from types import MethodType, SimpleNamespace
@@ -1247,7 +1248,8 @@ def test_explicit_turn_id_is_used_for_context_correlation():
     bridge._get_response_stream_impl = MethodType(fake_impl, bridge)
 
     result = _drain_immediate_async_generator(
-        bridge.get_response_stream("test", turn_id="caller-turn-7")
+        bridge.get_response_stream("test", turn_id="caller-turn-7"),
+        fresh_context_per_next=True,
     )
     assert result[-1]["turn_id"] == "caller-turn-7"
     assert seen == ["caller-turn-7"]
@@ -1261,13 +1263,17 @@ class _ImmediateAsyncLock:
         return False
 
 
-def _drain_immediate_async_generator(generator):
+def _drain_immediate_async_generator(generator, *, fresh_context_per_next=False):
     """Run the no-I/O fake async generator without Windows socketpair setup."""
     result = []
     while True:
         operation = generator.__anext__()
         try:
-            value = operation.send(None)
+            context = contextvars.Context() if fresh_context_per_next else None
+            value = (
+                context.run(operation.send, None)
+                if context is not None else operation.send(None)
+            )
         except StopIteration as completed:
             result.append(completed.value)
         except StopAsyncIteration:
