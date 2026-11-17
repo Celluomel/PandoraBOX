@@ -184,6 +184,11 @@ def test_finished_turn_preserves_source_grounded_validation_scope():
     assert receipt["exact_source_match"] is True
     assert receipt["source_ref"] == "source-123"
     assert receipt["source_status"] == "supported_verbatim_source"
+    safe_trace = bridge.get_turn_trace("turn-evidence-1")
+    assert safe_trace["semantic_answer_validation"]["validation_method"] == (
+        "exact_source_text_match"
+    )
+    assert safe_trace["semantic_answer_validation"]["exact_source_match"] is True
 
 
 def test_finished_turn_preserves_deterministic_source_abstention_receipt():
@@ -220,6 +225,12 @@ def test_finished_turn_preserves_deterministic_source_abstention_receipt():
     assert receipt["source_status"] == "abstained_insufficient_source_match"
     assert receipt["exact_result_match"] is True
     assert receipt["abstention_matches_gate"] is True
+
+    safe_trace = bridge.get_turn_trace("turn-evidence-1")
+    assert safe_trace["semantic_answer_validation"]["validation_method"] == (
+        "deterministic_abstention_result_match"
+    )
+    assert safe_trace["semantic_answer_validation"]["abstention_matches_gate"] is True
 
 
 def test_repaired_answer_receipt_proves_second_review_without_repair_text():

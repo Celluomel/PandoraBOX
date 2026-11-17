@@ -1539,6 +1539,9 @@ class PersonaBridge:
                         "evidence_support", "contract_compliant", "material_issue_count",
                         "repair_rechecked", "reviewer_status", "reviewer_reason",
                         "repair_reviewer_status", "repair_reviewer_issue_count",
+                        "validation_method", "source_ref", "source_status",
+                        "exact_source_match", "exact_result_match",
+                        "abstention_matches_gate",
                     }
                 },
             }
