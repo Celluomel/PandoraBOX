@@ -409,28 +409,57 @@ class CognitiveAttentionEngine:
                 + ", ".join(f"{m}({old:+.3f}→{new:+.3f})" for m,old,new in updated[:4])
             )
 
-    def decay_bias(self) -> None:
+    def decay_bias(self) -> Dict[str, Any]:
         """Decay learned bias toward zero (called each consolidation cycle).
         Prevents permanent miscalibration from a single feedback session.
         Decay rate 0.99/cycle = ~37% retention after 100 cycles (~14h)."""
         DECAY = 0.99
+        changed = 0
         with self._lock:
             for m in MODULES:
-                self._learned_bias[m] = round(
-                    self._learned_bias.get(m, 0.0) * DECAY, 5
+                old = self._learned_bias.get(m, 0.0)
+                new = round(
+                    old * DECAY, 5
                 )
-        self._save_bias()
+                self._learned_bias[m] = new
+                changed += old != new
+            remaining = sum(abs(value) >= 1e-6 for value in self._learned_bias.values())
+            max_abs = max((abs(value) for value in self._learned_bias.values()), default=0.0)
+        persisted = self._save_bias()
+        return {
+            "effect_status": "state_decayed",
+            "outcome_status": "completed" if persisted else "partial",
+            "modules_changed": changed,
+            "modules_with_bias": remaining,
+            "max_abs_bias": round(max_abs, 5),
+            "persisted": persisted,
+        }
 
-    def decay_context(self) -> None:
+    def decay_context(self) -> Dict[str, Any]:
         """Phase 3.0: decay contextual attention memory (called each
         consolidation cycle). Slower than global bias decay (0.995 vs 0.99) —
         contextual patterns persist longer since they require matching
         context + feedback to acquire."""
         if self._context_memory is not None:
             try:
-                self._context_memory.decay()
+                result = self._context_memory.decay()
+                if isinstance(result, dict):
+                    return result
+                return {
+                    "effect_status": "decay_called",
+                    "outcome_status": "completed",
+                }
             except Exception as e:
                 logger.debug(f"[CognitiveAttentionEngine] context decay error: {e}")
+                return {
+                    "effect_status": "decay_failed",
+                    "outcome_status": "failed",
+                    "reason_code": type(e).__name__.lower()[:64],
+                }
+        return {
+            "effect_status": "context_memory_unavailable",
+            "outcome_status": "skipped",
+        }
 
     def update_from_context_feedback(self, signal: float,
                                       weights_at_feedback: Optional[Dict[str, float]] = None,
@@ -469,7 +498,7 @@ class CognitiveAttentionEngine:
         except Exception:
             pass
 
-    def _save_bias(self) -> None:
+    def _save_bias(self) -> bool:
         """Persist learned bias into cognitive_attention.json alongside weights."""
         try:
             if self._path.exists():
@@ -480,8 +509,10 @@ class CognitiveAttentionEngine:
             _tmp_path = self._path.with_suffix('.json.tmp')
             _tmp_path.write_text(json.dumps(d, indent=2))
             _tmp_path.replace(self._path)  # atomic on POSIX — never a torn read
+            return True
         except Exception as e:
             logger.debug(f"[CognitiveAttentionEngine] bias save error: {e}")
+            return False
 
     # ── Persistence ────────────────────────────────────────────────────────────
 

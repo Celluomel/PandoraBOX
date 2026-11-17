@@ -3,6 +3,7 @@ import hashlib
 import json
 from pathlib import Path
 import sys
+import threading
 import tempfile
 import types
 import unittest
@@ -33,7 +34,8 @@ from cognition.semantic_extractor import SemanticExtractor
 from cognition.semantic_memory import SemanticMemory
 from cognition.self_concept_synchronizer import SelfConceptSynchronizer
 from cognition.self_concept import SelfConceptSystem
-from cognition.cognitive_attention_engine import CognitiveAttentionEngine
+from cognition.cognitive_attention_engine import CognitiveAttentionEngine, MODULES
+from cognition.contextual_attention_memory import ContextualAttentionMemory
 from cognition.decision_commitment import Commitment, DecisionCommitmentLayer
 from cognition.ai_identity import (
     AIIdentity, CoreValues, IdentityAnalyzer, IdentityComponent, IdentitySystem,
@@ -842,6 +844,47 @@ class CognitiveLogRegressionTests(unittest.TestCase):
                     changed = manager.learn_from_message(profile.id, message)
                 self.assertFalse(changed)
                 self.assertEqual(profile.characteristics, [])
+
+    def test_attention_decay_returns_effect_and_persistence_receipts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            engine = CognitiveAttentionEngine.__new__(CognitiveAttentionEngine)
+            engine._lock = threading.Lock()
+            engine._path = Path(directory) / "attention.json"
+            engine._learned_bias = {name: 0.0 for name in MODULES}
+            engine._learned_bias[MODULES[0]] = 0.1
+
+            global_receipt = engine.decay_bias()
+            self.assertEqual(global_receipt["effect_status"], "state_decayed")
+            self.assertEqual(global_receipt["outcome_status"], "completed")
+            self.assertEqual(global_receipt["modules_changed"], 1)
+            self.assertTrue(global_receipt["persisted"])
+            self.assertTrue(engine._path.exists())
+
+            memory = ContextualAttentionMemory.__new__(ContextualAttentionMemory)
+            memory._lock = threading.Lock()
+            memory._path = Path(directory) / "context.json"
+            memory._contexts = {
+                "trust=high": {
+                    "module_signals": {
+                        "self_model": {"mean": 0.4, "sum": 0.4, "count": 2},
+                    },
+                    "total_feedback_events": 2,
+                },
+                "noise": {
+                    "module_signals": {
+                        "semantic_memory": {"mean": 0.0005, "sum": 0.0005, "count": 1},
+                    },
+                    "total_feedback_events": 1,
+                },
+            }
+            context_receipt = memory.decay()
+            self.assertEqual(context_receipt["effect_status"], "context_bias_decayed")
+            self.assertEqual(context_receipt["outcome_status"], "completed")
+            self.assertEqual(context_receipt["signals_pruned"], 1)
+            self.assertEqual(context_receipt["contexts_pruned"], 1)
+            self.assertTrue(context_receipt["persisted"])
+            persisted = json.loads(memory._path.read_text(encoding="utf-8"))
+            self.assertEqual(list(persisted["contexts"]), ["trust=high"])
 
 
 if __name__ == "__main__":

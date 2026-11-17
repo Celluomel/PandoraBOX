@@ -50,6 +50,9 @@ def summarize_output(value: Any) -> dict[str, Any]:
             "signal_count", "cluster_count", "concepts_parsed",
             "concept_upsert_calls_returned", "observation_calls_returned",
             "relation_upsert_calls_returned", "duration_ms",
+            "modules_changed", "modules_with_bias", "contexts_before",
+            "contexts_after", "signals_before", "signals_after",
+            "signals_pruned", "contexts_pruned",
         }
         for key in receipt_enum_fields:
             item = value.get(key)
@@ -62,6 +65,8 @@ def summarize_output(value: Any) -> dict[str, Any]:
                 receipt_fields[key] = item
         if isinstance(value.get("aspiration_plan_exists"), bool):
             receipt_fields["aspiration_plan_exists"] = value["aspiration_plan_exists"]
+        if isinstance(value.get("persisted"), bool):
+            receipt_fields["persisted"] = value["persisted"]
         if receipt_fields:
             result["receipt_fields"] = receipt_fields
         numeric = {}

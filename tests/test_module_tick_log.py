@@ -118,6 +118,42 @@ class ModuleTickLogTests(unittest.TestCase):
         self.assertEqual(methods["decay_context"]["last_error_type"], "ValueError")
         self.assertNotIn("private detail", repr(methods))
 
+    def test_attention_decay_effect_receipt_is_auditable_without_raw_state(self):
+        ticks = ModuleTickLog()
+        ticks.register("cognitive_attention_engine", initialized=True)
+        ticks.record(
+            "cognitive_attention_engine", "decay_context",
+            started_at=1.0, duration_ms=1.0,
+            output={
+                "effect_status": "context_bias_decayed",
+                "outcome_status": "completed",
+                "contexts_before": 3,
+                "contexts_after": 3,
+                "signals_before": 5,
+                "signals_after": 5,
+                "signals_pruned": 0,
+                "contexts_pruned": 0,
+                "persisted": True,
+            },
+        )
+
+        module = ticks.snapshot()["cognitive_attention_engine"]
+        self.assertEqual(module["state"], "output_present_unvalidated")
+        self.assertEqual(
+            module["last_output"]["receipt_fields"],
+            {
+                "effect_status": "context_bias_decayed",
+                "outcome_status": "completed",
+                "contexts_before": 3,
+                "contexts_after": 3,
+                "signals_before": 5,
+                "signals_after": 5,
+                "signals_pruned": 0,
+                "contexts_pruned": 0,
+                "persisted": True,
+            },
+        )
+
     def test_empty_and_uninspectable_outputs_are_not_marked_healthy(self):
         ticks = ModuleTickLog()
         ticks.register("empty", initialized=True)

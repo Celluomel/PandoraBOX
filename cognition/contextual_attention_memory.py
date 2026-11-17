@@ -222,16 +222,21 @@ class ContextualAttentionMemory:
 
     # ── Decay (forgetting) ────────────────────────────────────────────────────
 
-    def decay(self) -> None:
+    def decay(self) -> Dict[str, Any]:
         """
         Decay all module signal means toward zero. Slower than global bias
         (0.995 vs 0.99) — contextual patterns should persist longer since
         they're harder to acquire (need matching context + feedback).
         Prunes near-zero entries to keep the file bounded.
         """
+        contexts_before = 0
+        entries_before = 0
+        entries_pruned = 0
         with self._lock:
+            contexts_before = len(self._contexts)
             empty_contexts = []
             for ckey, data in self._contexts.items():
+                entries_before += len(data.get("module_signals", {}))
                 empty_modules = []
                 for m, sig in data.get("module_signals", {}).items():
                     sig["mean"] = round(sig["mean"] * DECAY_RATE, 5)
@@ -239,12 +244,29 @@ class ContextualAttentionMemory:
                         empty_modules.append(m)
                 for m in empty_modules:
                     del data["module_signals"][m]
+                entries_pruned += len(empty_modules)
                 if not data["module_signals"]:
                     empty_contexts.append(ckey)
             for ckey in empty_contexts:
                 del self._contexts[ckey]
 
-        self._save()
+            contexts_after = len(self._contexts)
+            entries_after = sum(
+                len(data.get("module_signals", {}))
+                for data in self._contexts.values()
+            )
+        persisted = self._save()
+        return {
+            "effect_status": "context_bias_decayed",
+            "outcome_status": "completed" if persisted else "partial",
+            "contexts_before": contexts_before,
+            "contexts_after": contexts_after,
+            "signals_before": entries_before,
+            "signals_after": entries_after,
+            "signals_pruned": entries_pruned,
+            "contexts_pruned": contexts_before - contexts_after,
+            "persisted": persisted,
+        }
 
     # ── Dashboard support ──────────────────────────────────────────────────────
 
@@ -281,7 +303,7 @@ class ContextualAttentionMemory:
             logger.debug(f"[ContextualAttentionMemory] load error: {e}")
             self._contexts = {}
 
-    def _save(self) -> None:
+    def _save(self) -> bool:
         try:
             payload = {
                 "contexts": self._contexts,
@@ -293,5 +315,7 @@ class ContextualAttentionMemory:
             _tmp_path = self._path.with_suffix('.json.tmp')
             _tmp_path.write_text(json.dumps(payload, indent=2))
             _tmp_path.replace(self._path)  # atomic on POSIX — never a torn read
+            return True
         except Exception as e:
             logger.debug(f"[ContextualAttentionMemory] save error: {e}")
+            return False
