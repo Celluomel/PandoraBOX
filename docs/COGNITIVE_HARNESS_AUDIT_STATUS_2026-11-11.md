@@ -1,7 +1,7 @@
 # Audit du harnais cognitif — état et prochaines étapes
 
 **Date de mise à jour :** 17 novembre 2026
-**Statut :** audit du harnais cognitif en cours; aucune conclusion globale de qualité n’est établie. Le dernier état live attesté répondait sur `127.0.0.1:8765/status`, `ready=true`, boucle interne active, modèle Gemma et FAISS actifs. Les corrections de preuve runtime, rappel mémoire, consommation immédiate ThoughtStream→Phase 1, empreinte commune jusqu’au commit d’objectif, suppression de l’event loop superflu du rappel mémoire et persistance sans doublons sont poussées jusqu’à `f98a37b`. Le correctif local courant distingue provenance de mémoire et intention d’objectif; il n’est pas encore chargé. Les modifications Body/UI préexistantes restent hors lot.
+**Statut :** audit du harnais cognitif en cours; aucune conclusion globale de qualité n’est établie. Le dernier état live attesté répondait sur `127.0.0.1:8765/status`, `ready=true`, boucle interne active, modèle Gemma et FAISS actifs. Les corrections de preuve runtime, rappel mémoire, consommation immédiate ThoughtStream→Phase 1, empreinte commune jusqu’au commit d’objectif, suppression de l’event loop superflu du rappel mémoire, persistance sans doublons et distinction provenance mémoire/intention d’objectif sont poussées jusqu’à `9d0a67b`. Le correctif local courant empêche les suivis générés par l’évaluateur de se recycler en buts et persiste les évaluations négatives; il n’est pas encore chargé. Les modifications Body/UI préexistantes restent hors lot.
 
 ## Plan d’audit piloté par les preuves — mesure de progression
 
@@ -3731,6 +3731,16 @@ Le manifeste embarqué dans ce premier tour comptait 0/43 modules avec tick et 0
 **Vérification locale :** tests couvrant rappel neutre→`mundane`, contenu de contradiction→`tension`, opportunité explicite→`opportunity`, conservation du sujet structuré, persistance sans duplication et liaison mémoire→Phase 1. Neuf suites ciblées : **199 passed, 4 subtests passed**, 9 avertissements de dépendances historiques; `py_compile` et `git diff --check` réussis.
 
 **Limite et suite :** le classificateur reste lexical et ne constitue pas une validation sémantique générale. Le changement empêche seulement que la provenance soit prise à tort pour une intention. Le processus Lumina actif n’a pas chargé ce lot. Les pistes 3, 6 et 7 restent partielles; **3/10 = 30 %** jusqu’à une trace live qui lie un rappel réellement pertinent au traitement aval, sans créer un objectif parasite.
+
+### Évaluateur de pensées : rétroaction auto-générée et résultats négatifs oubliés — 17 novembre 2026
+
+**Cause établie dans le flux :** `SimpleThoughtEvaluator` injecte des pensées de suivi sous `thought_evaluator.followup` et, lorsque rien n’est évalué, une question de secours sous `thought_evaluator.stagnation_guard`. Ces deux sources n’étaient pas dans la liste des pensées générées exclues de l’admission d’intentions. Leur vocabulaire (« tension », « unresolved », « understand », « could ») pouvait donc se requalifier lui-même en incertitude, tension ou opportunité. Deuxième défaut causal : `_evaluate_thought()` renvoie `None` pour une pensée vide ou non orientée vers un but, mais la boucle ne persistait aucun état évalué; la même pensée était retraitée à chaque passage et pouvait réactiver la rétroaction.
+
+**Correction locale :** les deux sources de l’évaluateur sont maintenant explicitement non génératrices d’intention. Un résultat négatif valide est enregistré comme `mundane`, avec `should_create_goal=false` et un code de motif (`empty_content` ou `no_goal_signal`), puis persiste par ID dans DAL et ThoughtStream; les exceptions demeurent non évaluées pour permettre une reprise. Le garde de stagnation n’ajoute plus une graine si une graine du même type existe dans les deux dernières heures. Les horodatages numériques et ISO sont traités par le même parseur.
+
+**Vérification locale :** neuf suites cognitives (ThoughtStream, Phase 1, rappel mémoire, action/planification, ticks, cycle evidence, persistance évaluateur, sélection goal et régressions de logs) : **202 passés, 4 sous-tests passés**, 9 avertissements de dépendances historiques. Nouveaux cas : suivi généré et graine de stagnation ne deviennent pas des intentions; résultat négatif persisté et ignoré au passage suivant; graine idle limitée à une par fenêtre de deux heures. Aucun test ne valide encore la qualité sémantique générale du classificateur.
+
+**État et suite :** ce lot est local, à committer/pousser; Lumina actif n’a pas chargé ces changements. La validation live devra comparer source/ID et création de but sur une pensée normale, une pensée mémoire neutre, un suivi généré et une période idle. Le score strict reste **3/10 = 30 %**; cette correction réduit une boucle de rétroaction, mais ne clôt pas encore la piste 6 ou 8.
 
 ### Identité continue d’une pensée mémoire jusqu’aux candidats — extension du reçu
 

@@ -41,6 +41,18 @@ class SimpleThoughtEvaluator:
             'goal_action.self_question', 'goal_action.memory_recall',
             'goal_action.web_search', 'insight', 'reflection',
         }
+
+    @staticmethod
+    def _timestamp_seconds(value) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError, OverflowError):
+            try:
+                return datetime.fromisoformat(
+                    str(value).replace('Z', '+00:00')
+                ).timestamp()
+            except Exception:
+                return 0.0
     
     def evaluate_recent_thoughts(self) -> List[Dict]:
         try:
@@ -57,20 +69,10 @@ class SimpleThoughtEvaluator:
                     if isinstance(item, dict) and item.get("id"):
                         merged_by_id[str(item["id"])] = item
 
-                def _thought_time(item):
-                    value = item.get("timestamp")
-                    try:
-                        return float(value)
-                    except (TypeError, ValueError, OverflowError):
-                        try:
-                            return datetime.fromisoformat(
-                                str(value).replace("Z", "+00:00")
-                            ).timestamp()
-                        except Exception:
-                            return 0.0
-
                 thoughts = sorted(
-                    merged_by_id.values(), key=_thought_time, reverse=True
+                    merged_by_id.values(),
+                    key=lambda item: self._timestamp_seconds(item.get("timestamp")),
+                    reverse=True,
                 )[:50]
             goals_list = _dal.get_goals()
             goals_data = {'goals': {g['id']: g for g in goals_list}}
@@ -188,6 +190,20 @@ class SimpleThoughtEvaluator:
                     self._inject_followup_thoughts(_dal, concept, evaluation['type'])
 
                 evaluated_count += 1
+            else:
+                # A negative classification is still a completed evaluation.
+                # Leaving mundane or evaluator-generated thoughts pending made
+                # every later pass reconsider the same input indefinitely.
+                thought['evaluated'] = True
+                thought['evaluated_at'] = datetime.now().isoformat()
+                content = str(thought.get('content') or thought.get('text') or '').strip()
+                thought['evaluation'] = {
+                    'type': 'mundane',
+                    'should_create_goal': False,
+                    'reason_code': 'empty_content' if not content else 'no_goal_signal',
+                }
+                evaluated_thoughts.append(thought)
+                evaluated_count += 1
 
         if _use_dal:
             updater = getattr(_dal, "update_thought", None)
@@ -215,7 +231,13 @@ class SimpleThoughtEvaluator:
                 json.dump(thoughts_data, f, indent=2, ensure_ascii=False)
             os.replace(tmp, thoughts_file)
         
-        if evaluated_count == 0 and _use_dal:
+        has_recent_stagnation_seed = any(
+            isinstance(thought, dict)
+            and thought.get("source") == "thought_evaluator.stagnation_guard"
+            and 0 <= _now - self._timestamp_seconds(thought.get("timestamp")) < 7200
+            for thought in thoughts
+        )
+        if evaluated_count == 0 and _use_dal and not has_recent_stagnation_seed:
             import time as _t, random as _rand
             seeds = [
                 "What is currently most important for me to understand?",
@@ -305,8 +327,11 @@ class SimpleThoughtEvaluator:
         # Generated reflections/search are excluded from recursively creating
         # goals. Retrieval provenance alone does not imply opportunity; recalled
         # content uses the same content classification as other inputs.
-        GENERATIVE_SOURCES = {'goal_action.self_question', 'goal_action.web_search',
-                               'insight', 'reflection'}
+        GENERATIVE_SOURCES = {
+            'goal_action.self_question', 'goal_action.web_search',
+            'thought_evaluator.followup', 'thought_evaluator.stagnation_guard',
+            'insight', 'reflection',
+        }
         
         if source in GENERATIVE_SOURCES:
             return 'mundane'

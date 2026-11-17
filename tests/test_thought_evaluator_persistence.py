@@ -120,3 +120,55 @@ def test_memory_recall_provenance_does_not_itself_create_an_opportunity(tmp_path
     assert neutral == "mundane"
     assert tension == "tension"
     assert opportunity == "opportunity"
+
+
+def test_generated_evaluator_thoughts_cannot_create_recursive_goal_intent(tmp_path):
+    evaluator = SimpleThoughtEvaluator(tmp_path)
+
+    for source in (
+        "thought_evaluator.followup",
+        "thought_evaluator.stagnation_guard",
+    ):
+        assert evaluator._classify_thought(
+            "What remains unresolved and could be explored?", {"source": source}
+        ) == "mundane"
+
+
+def test_negative_evaluation_is_persisted_and_not_reprocessed(tmp_path):
+    stream = ThoughtStream(SimpleNamespace(_data_dir=tmp_path))
+    stream.add(
+        "A simple observation of a blue cup.",
+        source="ordinary_note",
+        priority=0.2,
+        thought_type="reflection",
+    )
+    thought_id = stream.recent_dicts(1)[0]["id"]
+    evaluator = SimpleThoughtEvaluator(tmp_path, thought_stream=stream)
+
+    with patch.object(evaluator, "_inject_followup_thoughts"):
+        assert evaluator.evaluate_recent_thoughts() == []
+
+    marked = next(item for item in stream.recent_dicts(10) if item["id"] == thought_id)
+    assert marked["evaluated"] is True
+    assert marked["evaluation"] == {
+        "type": "mundane",
+        "should_create_goal": False,
+        "reason_code": "no_goal_signal",
+    }
+
+    with patch.object(evaluator, "_evaluate_thought") as second_evaluation:
+        assert evaluator.evaluate_recent_thoughts() == []
+    second_evaluation.assert_not_called()
+
+
+def test_stagnation_guard_emits_at_most_one_recent_seed(tmp_path):
+    evaluator = SimpleThoughtEvaluator(tmp_path)
+
+    assert evaluator.evaluate_recent_thoughts() == []
+    assert evaluator.evaluate_recent_thoughts() == []
+
+    seeds = [
+        thought for thought in DataAccess(str(tmp_path)).get_thoughts(skip_expired=False)
+        if thought.get("source") == "thought_evaluator.stagnation_guard"
+    ]
+    assert len(seeds) == 1
