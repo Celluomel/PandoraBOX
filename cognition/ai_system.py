@@ -61,7 +61,7 @@ from cognition.behavioral_conditioning import BehavioralConditioningSystem
 from cognition.life_stage_prompting import build_stage_system_block, get_stage_profile
 from cognition.relational_knowledge_graph import RelationalKnowledgeGraph
 from cognition.memory_retrieval import (
-    extract_user_authored_text, faiss_l2_relevance,
+    explicit_recall_search_term_groups, extract_user_authored_text, faiss_l2_relevance,
     filter_recall_query_records, rank_documents,
 )
 from cognition.turn_context_evidence import memory_embedding_text
@@ -664,21 +664,55 @@ class EnhancedPersistence:
             logger.error(f"get_all_memories failed: {e}")
             return []
 
-    def get_conversation_source_memories(self) -> List[Dict[str, Any]]:
-        """Return only user messages and dialogues that contain user turns."""
+    def get_conversation_source_memories(
+        self, query: Optional[str] = None, limit: int = 2000,
+    ) -> List[Dict[str, Any]]:
+        """Return a bounded, query-ranked pool of user-authored sources.
+
+        Older explicit recall loaded the entire conversation archive into
+        Python and tokenized every row. Keep the SQL scan inside SQLite and
+        materialize only the best bounded candidates for source validation.
+        """
         try:
+            bounded_limit = max(1, min(int(limit), 2000))
+            term_groups = explicit_recall_search_term_groups(str(query or ""))
+            columns = (
+                "id, faiss_id, text, timestamp, impact_score, "
+                "emotional_valence, arousal_level, memory_type, memory_tier, access_count"
+            )
+            params: List[Any] = []
+            if term_groups:
+                score_terms = []
+                match_terms = []
+                for variants in term_groups:
+                    conditions = " OR ".join("lower(text) LIKE ?" for _ in variants)
+                    score_terms.append(f"CASE WHEN ({conditions}) THEN 1 ELSE 0 END")
+                score_expression = " + ".join(score_terms)
+                for variants in term_groups:
+                    conditions = " OR ".join("lower(text) LIKE ?" for _ in variants)
+                    match_terms.append(f"({conditions})")
+                    params.extend(f"%{term}%" for term in variants)
+                # SQL placeholders are bound in statement order: WHERE first,
+                # then the score expression in ORDER BY.
+                for variants in term_groups:
+                    params.extend(f"%{term}%" for term in variants)
+                sql = (
+                    f"SELECT {columns} FROM memories "
+                    "WHERE memory_type IN ('user_message', 'episodic') AND ("
+                    + " OR ".join(match_terms)
+                    + f") ORDER BY ({score_expression}) DESC, id DESC LIMIT ?"
+                )
+            else:
+                sql = (
+                    f"SELECT {columns} FROM memories "
+                    "WHERE memory_type IN ('user_message', 'episodic') "
+                    "ORDER BY id DESC LIMIT ?"
+                )
+            params.append(bounded_limit)
             with self.get_connection() as conn:
-                rows = conn.execute(
-                    "SELECT id, faiss_id, text, timestamp, impact_score, "
-                    "emotional_valence, arousal_level, memory_type, memory_tier, access_count "
-                    "FROM memories WHERE memory_type IN ('user_message', 'episodic') "
-                    "ORDER BY id DESC"
-                ).fetchall()
-            columns = [
-                "id", "faiss_id", "text", "timestamp", "impact_score",
-                "emotional_valence", "arousal_level", "memory_type", "memory_tier", "access_count",
-            ]
-            return [dict(zip(columns, row)) for row in rows]
+                rows = conn.execute(sql, tuple(params)).fetchall()
+            column_names = columns.split(", ")
+            return [dict(zip(column_names, row)) for row in rows]
         except Exception as e:
             logger.error("get_conversation_source_memories failed: %s", e)
             return []
@@ -1196,13 +1230,11 @@ class EnhancedMemorySystem:
         if limit <= 0:
             return []
         try:
-            # Prefer the existing semantic index. For explicit historical
-            # recall, filter its bounded neighbor window before deciding it is
-            # sufficient; if it is not, the lexical pass below searches the
-            # full user-message archive to avoid recent-prompt starvation.
+            # Prefer the existing semantic index. Explicit historical recall
+            # filters its bounded neighbor window to user-authored sources
+            # before any archive-wide lexical fallback is considered.
             if (
-                not explicit_recall
-                and self.embedding_model is not None
+                self.embedding_model is not None
                 and self.faiss_index is not None
             ):
                 total = int(getattr(self.faiss_index, "ntotal", 0) or 0)
@@ -1236,7 +1268,14 @@ class EnhancedMemorySystem:
                             sourced.sort(key=lambda memory: distance_by_id.get(
                                 int(memory.get("faiss_id", -1)), float("inf")
                             ))
-                            if sourced and (not explicit_recall or len(sourced) >= limit):
+                            # One query-matched, user-authored source is enough
+                            # to answer a historical fact safely. Requiring
+                            # `limit` neighbors here forced most explicit
+                            # recalls to deserialize and tokenize the entire
+                            # conversation archive even after FAISS found the
+                            # source. The downstream source verifier still
+                            # rejects unsupported answers and can abstain.
+                            if sourced:
                                 return [
                                     dict(memory, relevance=faiss_l2_relevance(
                                         distance_by_id.get(
@@ -1257,7 +1296,7 @@ class EnhancedMemorySystem:
                     self.persistence, "get_conversation_source_memories", None
                 )
                 if callable(source_reader):
-                    memories = source_reader()
+                    memories = source_reader(query=query, limit=2000)
                 else:
                     memories = self.persistence.get_all_memories()
                 memories = [

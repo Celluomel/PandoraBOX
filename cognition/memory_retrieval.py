@@ -333,6 +333,31 @@ def _explicit_recall_focus(text: str) -> str:
     return extract_explicit_recall_topic(str(text or "").strip())
 
 
+def explicit_recall_search_term_groups(text: str, limit: int = 12) -> List[Tuple[str, ...]]:
+    """Return bounded SQLite search terms, retaining accented spellings.
+
+    Each group represents one lexical term and may contain its original and
+    accent-folded forms. Keeping variants in one group lets SQL rank a source
+    once per term while still matching older records with either spelling.
+    """
+    focus = _explicit_recall_focus(text)
+    groups: List[Tuple[str, ...]] = []
+    seen = set()
+    for raw in re.findall(r"[\w'-]+", focus.casefold(), flags=re.UNICODE):
+        normalized = "".join(
+            ch for ch in unicodedata.normalize("NFKD", raw)
+            if not unicodedata.combining(ch)
+        )
+        if len(normalized) <= 1 or normalized in _STOPWORDS or normalized in seen:
+            continue
+        seen.add(normalized)
+        variants = tuple(dict.fromkeys((raw, normalized)))
+        groups.append(variants)
+        if len(groups) >= max(1, int(limit)):
+            break
+    return groups
+
+
 def extract_user_authored_text(memory: dict) -> str:
     """Extract user-authored text from an episodic record when available."""
     text = str(memory.get("text", ""))

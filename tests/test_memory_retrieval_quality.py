@@ -10,6 +10,7 @@ sys.modules.setdefault("cognition", package)
 
 from cognition.memory_retrieval import (
     exact_filename_recall_result,
+    explicit_recall_search_term_groups,
     faiss_l2_relevance,
     is_explicit_memory_recall_query,
     rank_documents,
@@ -62,6 +63,14 @@ class MemoryRetrievalQualityTests(unittest.TestCase):
     def test_french_accents_are_normalized_and_empty_queries_return_nothing(self):
         self.assertEqual(tokenize("Épuisé, déjà, à côté"), ["epuise", "deja", "cote"])
         self.assertEqual(rank_documents("le et ou", self.DOCUMENTS), [])
+
+    def test_explicit_recall_sql_terms_are_bounded_and_keep_accent_variants(self):
+        groups = explicit_recall_search_term_groups(
+            "Quelle valeur du capteur était indiquée précédemment ?"
+        )
+        self.assertLessEqual(len(groups), 12)
+        self.assertIn(("capteur",), groups)
+        self.assertIn(("précédemment", "precedemment"), groups)
 
     def test_normalized_faiss_squared_l2_maps_to_cosine_relevance(self):
         # For unit vectors, d² = 2 - 2*cosine. These values are the exact

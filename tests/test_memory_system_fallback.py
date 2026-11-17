@@ -1,4 +1,5 @@
 import sys
+import sqlite3
 import unittest
 from datetime import datetime
 from pathlib import Path
@@ -14,7 +15,7 @@ package.__path__ = [str(ROOT / "cognition")]
 sys.modules.setdefault("cognition", package)
 
 import cognition.ai_system as ai_system_module
-from cognition.ai_system import EnhancedMemorySystem
+from cognition.ai_system import EnhancedMemorySystem, EnhancedPersistence
 from cognition.memory_retrieval import (
     extract_explicit_recall_topic,
     explicit_recall_source_result,
@@ -48,11 +49,12 @@ class _Persistence:
     def get_memories_by_ids(self, ids):
         return [row for row in self.rows if row.get("faiss_id") in ids]
 
-    def get_conversation_source_memories(self):
+    def get_conversation_source_memories(self, query=None, limit=2000):
+        self.all_memory_queries.append((None, "conversation_sources", limit, query))
         return [
             row for row in self.rows
             if row.get("memory_type") in {"user_message", "episodic"}
-        ]
+        ][:limit]
 
     def add_memory(self, memory):
         next_id = max((int(row.get("id", 0)) for row in self.rows), default=0) + 1
@@ -883,6 +885,10 @@ class MemorySystemFallbackTests(unittest.TestCase):
         self.assertEqual([memory["id"] for memory in recalled], [31])
         self.assertEqual(recalled[0]["memory_type"], "user_message")
         self.assertIn("interprétation claire", recalled[0]["text"])
+        self.assertFalse(any(
+            len(call) > 1 and call[1] == "conversation_sources"
+            for call in system.persistence.all_memory_queries
+        ))
 
     def test_explicit_recall_deduplicates_user_message_and_episodic_copy(self):
         query = "For the cognitive harness audit, what did I ask about module outputs?"
@@ -916,6 +922,41 @@ class MemorySystemFallbackTests(unittest.TestCase):
         self.assertEqual(len(recalled), 1)
         self.assertEqual(recalled[0]["id"], 8)
         self.assertEqual(recalled[0]["memory_type"], "user_message")
+
+    def test_conversation_source_reader_ranks_and_bounds_rows_in_sql(self):
+        persistence = EnhancedPersistence.__new__(EnhancedPersistence)
+        connection = sqlite3.connect(":memory:")
+        connection.execute("""
+            CREATE TABLE memories (
+                id INTEGER, faiss_id INTEGER, text TEXT, timestamp TEXT,
+                impact_score REAL, emotional_valence TEXT, arousal_level TEXT,
+                memory_type TEXT, memory_tier TEXT, access_count INTEGER
+            )
+        """)
+        records = [
+            (1, 1, "User message: valeur du capteur = 0,8 m pendant l’audit",
+             "2026-11-01", 0.5, "Neutral", "Low", "user_message", "interaction", 0),
+            (2, 2, "User message: conversation sur le harnais cognitif",
+             "2026-11-02", 0.5, "Neutral", "Low", "user_message", "interaction", 0),
+            (3, 3, "Conversation — User: la valeur du capteur était 0,8 m | Lumina: reçu",
+             "2026-11-03", 0.5, "Neutral", "Low", "episodic", "interaction", 0),
+            (4, 4, "Assistant: valeur du capteur reçue", "2026-11-04", 0.5,
+             "Neutral", "Low", "assistant_message", "interaction", 0),
+        ]
+        connection.executemany("INSERT INTO memories VALUES (?,?,?,?,?,?,?,?,?,?)", records)
+
+        @contextmanager
+        def get_connection():
+            yield connection
+
+        persistence.get_connection = get_connection
+        results = persistence.get_conversation_source_memories(
+            query="Quelle valeur du capteur m’as-tu rappelée ?", limit=1,
+        )
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["id"], 3)
+        self.assertEqual(results[0]["memory_type"], "episodic")
 
     def test_cross_pool_merge_deduplicates_same_user_turn(self):
         user_message = {
