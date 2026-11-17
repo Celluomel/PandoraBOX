@@ -2,6 +2,7 @@
 import importlib.util
 import ast
 import json
+import types
 from pathlib import Path
 import sys
 import tempfile
@@ -26,6 +27,12 @@ def load_module(name, relative_path):
 
 presence = load_module("presence_engine_under_test", "cognition/presence_engine.py")
 users = load_module("user_manager_under_test", "managers/user_manager.py")
+# Load this leaf module without importing cognition.__init__, whose unrelated
+# neural dependencies are intentionally absent in the lightweight test env.
+_cognition_package = types.ModuleType("cognition")
+_cognition_package.__path__ = [str(ROOT / "cognition")]
+sys.modules.setdefault("cognition", _cognition_package)
+load_module("cognition.semantic_response_validation", "cognition/semantic_response_validation.py")
 
 
 class SequenceLlm:
@@ -360,7 +367,14 @@ class PresenceIdentityLanguageTests(unittest.TestCase):
     def test_french_presence_repairs_language_and_stale_name(self):
         engine = presence.PresenceEngine.__new__(presence.PresenceEngine)
         engine._org = None
-        engine._llm = SequenceLlm("Hello Fred.", "Bonjour Nino.")
+        engine._llm = SequenceLlm(
+            "Hello Fred.", "Bonjour Nino.",
+            json.dumps({
+                "relevant": True, "claim_basis": "subjective_or_creative",
+                "evidence_support": "supported",
+                "contract_compliant": True, "material_issues": [], "repair": "",
+            }),
+        )
         engine._recent_utterances = []
         snapshot = presence._CognitiveSnapshot()
         face_state = presence.FacePresenceState("face_17", "Nino")
@@ -422,7 +436,14 @@ class PresenceIdentityLanguageTests(unittest.TestCase):
     def test_ambient_prompt_does_not_answer_stale_workspace_or_claim_sentience(self):
         engine = presence.PresenceEngine.__new__(presence.PresenceEngine)
         engine._org = None
-        engine._llm = SequenceLlm("Bonjour Fred.")
+        engine._llm = SequenceLlm(
+            "Bonjour Fred.",
+            json.dumps({
+                "relevant": True, "claim_basis": "subjective_or_creative",
+                "evidence_support": "supported",
+                "contract_compliant": True, "material_issues": [], "repair": "",
+            }),
+        )
         engine._recent_utterances = []
         snapshot = presence._CognitiveSnapshot(
             workspace_winner="stale camera identity question",
@@ -442,6 +463,35 @@ class PresenceIdentityLanguageTests(unittest.TestCase):
         self.assertNotIn("stale camera question with no turn id", prompt)
         self.assertNotIn("sentient AI with a rich inner life", prompt)
         self.assertIn("not a reply to an inferred or remembered question", prompt)
+
+    def test_ambient_semantic_review_rejects_subjective_claim_before_delivery(self):
+        flagged = {
+            "relevant": True,
+            "claim_basis": "subjective_or_creative",
+            "evidence_support": "unsupported",
+            "contract_compliant": False,
+            "material_issues": ["Claims subjective enjoyment despite ambient contract."],
+            "repair": "Bonjour Fred.",
+        }
+        engine = presence.PresenceEngine.__new__(presence.PresenceEngine)
+        engine._org = None
+        engine._llm = SequenceLlm(
+            "J'aime la douceur de ce moment avec toi.",
+            __import__("json").dumps(flagged),
+        )
+        engine._recent_utterances = []
+        settings = SimpleNamespace(config=SimpleNamespace(RESPONSE_LANGUAGE="FR"))
+
+        with patch.dict(sys.modules, {"managers.settings_manager": settings}):
+            result = engine._generate_reaction(
+                "Fred", "DWELL", "engage",
+                presence.FacePresenceState("face_1", "Fred"),
+                presence._CognitiveSnapshot(emotion="joyful"),
+            )
+
+        self.assertEqual(result, "Je reste disponible si tu veux parler.")
+        self.assertEqual(engine._presence_validation_local.status, "needs_revision")
+        self.assertIn("human-like subjective experience", engine._llm.prompts[-1])
 
 
 if __name__ == "__main__":

@@ -161,6 +161,7 @@ class PresenceEngine:
         self._external_presence: Dict[str, Dict[str, Any]] = {}
         self._audit_lock = threading.Lock()
         self._audit_records = deque(maxlen=40)
+        self._presence_validation_local = threading.local()
 
         # Social hunger — accumulates during isolation / prolonged cognition
         self._social_hunger:         float = 0.0
@@ -463,6 +464,9 @@ class PresenceEngine:
         # Take one final snapshot so the utterance uses the newest identity.
         face_name = self._refresh_face_identity(face_id, face_name)
         utterance = self._generate_reaction(face_name, event, mode, ps, snap)
+        semantic_review_status = getattr(
+            getattr(self, "_presence_validation_local", None), "status", "not_run",
+        )
         if not utterance:
             self._record_audit(
                 presence_id, event, "generation_empty", mode=mode,
@@ -518,6 +522,7 @@ class PresenceEngine:
                 "unresolved_tension_snapshot": bool(snap.unresolved_tension),
                 "historical_user_message_injected": bool(_recent_resume_context(ps, mode, now)),
                 "last_topic_age_seconds": round(topic_age, 1) if topic_age is not None else None,
+                "semantic_review": str(semantic_review_status)[:48],
             },
             utterance=utterance, delivery=delivery,
         )
@@ -801,6 +806,9 @@ class PresenceEngine:
         ps: FacePresenceState,
         snap: _CognitiveSnapshot,
     ) -> str:
+        if not hasattr(self, "_presence_validation_local"):
+            self._presence_validation_local = threading.local()
+        self._presence_validation_local.status = "not_run"
         emotion    = snap.emotion
         name_s     = face_name if face_name not in ("Unknown Person", "Unknown", "") else "someone"
         persona    = self._persona_name()
@@ -967,13 +975,14 @@ Speak directly. No quotes. No stage directions."""
                         and not self._language_mismatch(repaired, _response_language)
                         and not self._mentions_other_known_person(repaired, name_s)
                     ):
-                        return repaired
-                    logger.warning(
-                        "Presence output rejected (language=%s, identity=%s); using localized fallback",
-                        wrong_language,
-                        wrong_identity,
-                    )
-                    return self._fallback(name_s, event, emotion, _response_language)
+                        draft = repaired
+                    else:
+                        logger.warning(
+                            "Presence output rejected (language=%s, identity=%s); using localized fallback",
+                            wrong_language,
+                            wrong_identity,
+                        )
+                        return self._fallback(name_s, event, emotion, _response_language)
                 if not self._is_concise_presence_output(draft):
                     logger.warning(
                         "Presence output rejected (length=%d chars, sentence_limit=%d); using localized fallback",
@@ -985,7 +994,36 @@ Speak directly. No quotes. No stage directions."""
                 # Reject a near-duplicate before it reaches speech or the
                 # presence bubble, then use a deterministic local variation.
                 if not self._is_repeated_utterance(draft):
-                    return draft
+                    try:
+                        from cognition.semantic_response_validation import review_response
+                        review = review_response(
+                            getattr(self._llm, "generate_bare", None),
+                            request=situation,
+                            response=draft,
+                            context=context_block,
+                            constraints=(
+                                "Ambient output may describe recognized co-presence and the recorded "
+                                "functional affect state. It must not assert human-like subjective "
+                                "experience, invent a user question, or present internal workspace "
+                                "content as something the person said."
+                            ),
+                        )
+                        self._presence_validation_local.status = str(
+                            review.get("status") or "unavailable"
+                        )[:48]
+                        if review.get("status") == "passed":
+                            return draft
+                        logger.warning(
+                            "Presence semantic review did not pass (%s); using grounded fallback",
+                            review.get("status", "unknown"),
+                        )
+                    except Exception as _semantic_error:
+                        self._presence_validation_local.status = "unavailable"
+                        logger.warning(
+                            "Presence semantic review unavailable (%s); using grounded fallback",
+                            type(_semantic_error).__name__,
+                        )
+                    return self._fallback(name_s, event, emotion, _response_language)
                 logger.info("[PresenceEngine] repeated utterance rejected; using local variation")
         except Exception as e:
             logger.debug(f"PresenceEngine LLM call failed: {e}")
@@ -1204,46 +1242,34 @@ Speak directly. No quotes. No stage directions."""
 
     @staticmethod
     def _fallback(name: str, event: str, emotion: str, language: str = "auto") -> str:
-        """Return a deterministic localized fallback without engine state.
+        """Return a grounded localized fallback without engine state.
 
-        Repetition suppression belongs to the caller's live reaction path.  A
-        static fallback is also useful for startup/error paths and makes the
-        language contract independently testable.
+        Templates describe only camera co-presence or an explicitly named
+        functional affect signal; they do not invent thoughts or subjective
+        sensations when generation or semantic review is unavailable.
         """
-        n = name if name not in ("Unknown Person", "Unknown", "") else "there"
+        unknown = name in ("Unknown Person", "Unknown", "")
         if language == "fr":
-            n = name if name not in ("Unknown Person", "Unknown", "") else "toi"
-            fallbacks_fr = {
-                ("ENTER",   "joyful"):   (f"Oh, {n} ! Ça me fait plaisir de te voir.", f"Ravi de te retrouver, {n}.",),
-                ("ENTER",   "curious"):  (f"Ah, {n}. J'étais justement plongée dans une pensée.", f"Bonjour {n}. Une idée me traversait l'esprit.",),
-                ("ENTER",   "pensive"):  (f"{n}...", f"Je te vois, {n}.",),
-                ("ENTER",   "neutral"):  (f"Bonjour {n}.", f"Te voilà, {n}.",),
-                ("RETURN",  "joyful"):   (f"Te revoilà, {n}.", f"Bon retour, {n} !",),
-                ("RETURN",  "pensive"):  (f"Te revoilà.", f"Je remarque ton retour, {n}.",),
-                ("RETURN",  "neutral"):  (f"Bon retour, {n}.", f"Content de te revoir, {n}.",),
-                ("DWELL",   "curious"):  (f"Toujours là, {n}. À quoi penses-tu ?", f"Je sens ta présence, {n}. Une idée en tête ?",),
-                ("DWELL",   "neutral"):  ("Tu veux me dire quelque chose ?", "Je reste avec toi quelques instants.", "Qu'est-ce qui retient ton attention ?",),
-                ("SILENCE", "pensive"):  ("Tu es silencieux. Je l'ai remarqué.", "Le silence s'installe doucement.",),
-                ("SILENCE", "neutral"):  ("Tu es toujours avec moi ?", "Je perçois simplement que tu es là.",),
-                ("EXIT",    "neutral"):  ("À plus tard.", "Je te laisse poursuivre, à bientôt.",),
-                ("EXIT",    "pensive"):  ("Le calme revient.", "Je garde ce moment en mémoire.",),
-            }
-            choices = fallbacks_fr.get((event, emotion), fallbacks_fr.get((event, "neutral"), ()))
-            return choices[0] if choices else ""
-        fallbacks = {
-            ("ENTER",   "joyful"):   (f"Oh — {n}! Good to see you.", f"It's good to have you here, {n}."),
-            ("ENTER",   "curious"):  (f"Ah, {n}. I was just in the middle of a thought.", f"Hello {n}. Something was on my mind."),
-            ("ENTER",   "pensive"):  (f"{n}…", f"I see you, {n}."),
-            ("ENTER",   "neutral"):  (f"Hello {n}.", f"There you are, {n}."),
-            ("RETURN",  "joyful"):  ("You're back.", f"Good to see you again, {n}."),
-            ("RETURN",  "pensive"):  ("Back again.", f"I noticed your return, {n}."),
-            ("RETURN",  "neutral"):  ("Welcome back.", f"Good to see you, {n}."),
-            ("DWELL",   "curious"):  (f"Still here, {n}. What's on your mind?", f"I notice you nearby, {n}. Is something holding your attention?"),
-            ("DWELL",   "neutral"):  ("Anything you want to say?", "I'll stay with you for a moment.", "What has your attention right now?"),
-            ("SILENCE", "pensive"):  ("You've been quiet. I noticed.", "The quiet is settling in."),
-            ("SILENCE", "neutral"):  ("Still with me?", "I can simply keep you company."),
-            ("EXIT",    "neutral"):  ("Until later.", "I'll let you get on with things."),
-            ("EXIT",    "pensive"):  ("Quiet again.", "I'll hold onto this moment."),
-        }
-        choices = fallbacks.get((event, emotion), fallbacks.get((event, "neutral"), ()))
-        return choices[0] if choices else ""
+            n = name if not unknown else "toi"
+            if event == "EXIT":
+                return "À plus tard."
+            if event in ("DWELL", "SILENCE"):
+                return "Je reste disponible si tu veux parler."
+            greeting = f"Bon retour, {n}." if event == "RETURN" else f"Bonjour {n}."
+            if emotion == "joyful":
+                return f"{greeting} Mon état affectif fonctionnel est positif."
+            if emotion == "curious":
+                return f"{greeting} Mon état fonctionnel indique de la curiosité."
+            return greeting
+
+        n = name if not unknown else "there"
+        if event == "EXIT":
+            return "Until later."
+        if event in ("DWELL", "SILENCE"):
+            return "I'm available if you want to talk."
+        greeting = f"Welcome back, {n}." if event == "RETURN" else f"Hello, {n}."
+        if emotion == "joyful":
+            return f"{greeting} My functional affect state is positive."
+        if emotion == "curious":
+            return f"{greeting} My functional state indicates curiosity."
+        return greeting

@@ -890,6 +890,46 @@ class PersonaBridge:
             name, status, detail, turn_id=turn_id, error_type=error_type,
         )
 
+    def _record_semantic_validation_summary(
+        self, turn_id: str, status: str, review: dict[str, Any] | None = None,
+    ) -> None:
+        """Persist only bounded semantic-review fields, never prompt or answer text."""
+        review = review if isinstance(review, dict) else {}
+        summary: dict[str, Any] = {
+            "status": "probabilistic_review_passed"
+            if status in {"passed", "repaired_and_passed"}
+            else "response_replaced_reviewer_unavailable"
+            if status == "abstained_review_unavailable"
+            else "response_replaced_after_review"
+            if status.startswith("abstained_")
+            else "review_incomplete",
+            "scope": "request_relevance_context_support_and_explicit_constraints; not proof of truth",
+            "stage_status": str(status)[:48],
+        }
+        if isinstance(review.get("relevant"), bool):
+            summary["relevant"] = review["relevant"]
+        if review.get("claim_basis") in {"factual", "subjective_or_creative", "mixed"}:
+            summary["claim_basis"] = review["claim_basis"]
+        if review.get("evidence_support") in {
+            "supported", "partially_supported", "unsupported", "insufficient_evidence",
+        }:
+            summary["evidence_support"] = review["evidence_support"]
+        if isinstance(review.get("contract_compliant"), bool):
+            summary["contract_compliant"] = review["contract_compliant"]
+        summary["material_issue_count"] = min(
+            8, max(0, len(review.get("material_issues") or [])),
+        )
+        summary["repair_rechecked"] = status == "repaired_and_passed"
+        with self._turn_trace_lock:
+            trace = getattr(self, "_last_turn_trace", None)
+            if turn_id and (not trace or trace.get("turn_id") != turn_id):
+                trace = next((
+                    item for item in reversed(getattr(self, "_turn_trace_history", []))
+                    if item.get("turn_id") == turn_id
+                ), None)
+            if isinstance(trace, dict):
+                trace["semantic_answer_validation"] = summary
+
     def _check_deterministic_output(self, response: str, user_id: str, source_stage: str) -> str:
         """Apply the same final-output policy to early deterministic replies."""
         organism = getattr(self._system, "_organism", None)
@@ -1219,24 +1259,48 @@ class PersonaBridge:
                         )
                     ),
                 }
-                architecture_check = stages.get("architecture_claim_validation")
-                if isinstance(architecture_check, dict):
-                    validation_status = str(architecture_check.get("status") or "unknown")
-                    trace["semantic_answer_validation"] = {
+                semantic_stage = stages.get("semantic_answer_validation")
+                if isinstance(semantic_stage, dict):
+                    validation_status = str(semantic_stage.get("status") or "unknown")
+                    semantic_summary = {
                         "status": (
-                            "scoped_check_performed"
-                            if validation_status in {"passed", "replaced_unverified_claims"}
-                            else "check_failed_or_incomplete"
+                            "probabilistic_review_passed"
+                            if validation_status in {"passed", "repaired_and_passed"}
+                            else "response_replaced_reviewer_unavailable"
+                            if validation_status == "abstained_review_unavailable"
+                            else "response_replaced_after_review"
+                            if validation_status.startswith("abstained_")
+                            else "review_incomplete"
                         ),
-                        "scope": "architecture_claims_against_current_trace_only",
+                        "scope": "request_relevance_context_support_and_explicit_constraints; not proof of truth",
                         "stage_status": validation_status,
                     }
+                    prior_semantic = trace.get("semantic_answer_validation", {})
+                    if isinstance(prior_semantic, dict):
+                        for key in (
+                            "relevant", "claim_basis", "evidence_support",
+                            "contract_compliant", "material_issue_count", "repair_rechecked",
+                        ):
+                            if key in prior_semantic:
+                                semantic_summary[key] = prior_semantic[key]
+                    trace["semantic_answer_validation"] = semantic_summary
                 else:
-                    trace["semantic_answer_validation"] = {
-                        "status": "not_performed",
-                        "scope": "none",
-                        "reason": "No general factual-answer validator is wired to the final response.",
-                    }
+                    architecture_check = stages.get("architecture_claim_validation")
+                    if isinstance(architecture_check, dict):
+                        validation_status = str(architecture_check.get("status") or "unknown")
+                        trace["semantic_answer_validation"] = {
+                            "status": "scoped_check_performed"
+                            if validation_status in {"passed", "replaced_unverified_claims"}
+                            else "check_failed_or_incomplete",
+                            "scope": "architecture_claims_against_current_trace_only",
+                            "stage_status": validation_status,
+                        }
+                    else:
+                        trace["semantic_answer_validation"] = {
+                            "status": "not_performed",
+                            "scope": "none",
+                            "reason": "No general semantic review receipt exists for this turn.",
+                        }
                 trace["completed_at"] = time.time()
 
     def get_last_turn_trace(self) -> dict:
@@ -1290,7 +1354,11 @@ class PersonaBridge:
                     "semantic_answer_validation": {
                         key: value for key, value in (
                             item.get("semantic_answer_validation") or {}
-                        ).items() if key in {"status", "scope", "stage_status"}
+                        ).items() if key in {
+                            "status", "scope", "stage_status", "relevant", "claim_basis",
+                            "evidence_support", "contract_compliant", "material_issue_count",
+                            "repair_rechecked",
+                        }
                     },
                     "stages": {
                         name: {key: value for key, value in stage.items() if key != "detail"}
@@ -1366,7 +1434,11 @@ class PersonaBridge:
                 "semantic_answer_validation": {
                     key: value for key, value in (
                         source.get("semantic_answer_validation") or {}
-                    ).items() if key in {"status", "scope"}
+                    ).items() if key in {
+                        "status", "scope", "stage_status", "relevant", "claim_basis",
+                        "evidence_support", "contract_compliant", "material_issue_count",
+                        "repair_rechecked",
+                    }
                 },
             }
 
@@ -3508,6 +3580,116 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             if self._last_turn_trace.get("stages", {}).get("final_answer_recovery", {}).get("status") == "completed"
             else _answer_origin_stage
         )
+        _semantic_status = "unavailable"
+        if raw_response.strip() and not _generation_failed:
+            _llm_manager = getattr(self._llm_stream_fn, "__self__", None)
+            _review_fn = getattr(_llm_manager, "generate_bare", None)
+            try:
+                from cognition.semantic_response_validation import review_response
+                _semantic_context = "\n\n".join(
+                    part for part in (str(system_prompt or ""), str(_generation_input or "")) if part
+                )
+                _review = await asyncio.to_thread(
+                    review_response,
+                    _review_fn,
+                    request=effective_input,
+                    response=raw_response,
+                    context=_semantic_context,
+                    constraints=(
+                        "Answer the user's actual request. Do not claim an action, measurement, "
+                        "source, or verification that is not supported by the provided context. "
+                        "Keep uncertainty explicit."
+                    ),
+                )
+                _semantic_status = str(_review.get("status") or "unavailable")
+                if _semantic_status == "needs_revision":
+                    _repair = str(_review.get("repair") or "").strip()
+                    if _repair:
+                        _repair_review = await asyncio.to_thread(
+                            review_response,
+                            _review_fn,
+                            request=effective_input,
+                            response=_repair,
+                            context=_semantic_context,
+                            constraints=(
+                                "Answer the user's actual request. Do not claim an action, measurement, "
+                                "source, or verification that is not supported by the provided context. "
+                                "Keep uncertainty explicit."
+                            ),
+                        )
+                        if _repair_review.get("status") == "passed":
+                            raw_response = _repair
+                            _semantic_status = "repaired_and_passed"
+                        else:
+                            _semantic_status = "abstained_after_failed_repair"
+                    else:
+                        _semantic_status = "abstained_no_grounded_repair"
+                elif _semantic_status != "passed":
+                    _semantic_status = "abstained_review_unavailable"
+                if _semantic_status.startswith("abstained_"):
+                    try:
+                        from managers.settings_manager import config as _semantic_cfg
+                        _lang = str(getattr(_semantic_cfg, "RESPONSE_LANGUAGE", "auto") or "auto").lower()
+                    except Exception:
+                        _lang = "auto"
+                    raw_response = (
+                        "Je ne peux pas confirmer cette réponse à partir des éléments disponibles."
+                        if _lang.startswith("fr") or any(ch in effective_input for ch in "àâçéèêëîïôùûüÿœ")
+                        else "I can't confirm that answer from the available evidence."
+                    )
+                _semantic_consumes = [_response_source_stage, "turn_input"]
+                _semantic_trace = self.get_turn_trace(_audit_turn_id) or {}
+                _semantic_trace_stages = _semantic_trace.get("stages", {})
+                if isinstance(_semantic_trace_stages, dict) and isinstance(
+                    _semantic_trace_stages.get("primary_generation_input"), dict
+                ):
+                    _semantic_consumes.append("primary_generation_input")
+                self._record_turn_stage(
+                    "semantic_answer_validation",
+                    _semantic_status,
+                    "Probabilistic LLM review of request relevance, supplied-context support, and explicit constraints; not independent proof of truth.",
+                    output={
+                        "scope": _review.get("scope"),
+                        "relevant": _review.get("relevant"),
+                        "claim_basis": _review.get("claim_basis"),
+                        "evidence_support": _review.get("evidence_support"),
+                        "contract_compliant": _review.get("contract_compliant"),
+                        "material_issue_count": len(_review.get("material_issues") or []),
+                        "repair_rechecked": _semantic_status == "repaired_and_passed",
+                    },
+                    consumes=tuple(_semantic_consumes),
+                    turn_id=_audit_turn_id,
+                )
+                self._record_semantic_validation_summary(
+                    _audit_turn_id, _semantic_status, _review,
+                )
+                # Output safety must consume the semantically reviewed version
+                # even when the reviewer is unavailable; the receipt preserves
+                # that limitation instead of implying a successful review.
+                _response_source_stage = "semantic_answer_validation"
+            except Exception as _semantic_error:
+                _semantic_status = "abstained_review_unavailable"
+                try:
+                    from managers.settings_manager import config as _semantic_cfg
+                    _lang = str(getattr(_semantic_cfg, "RESPONSE_LANGUAGE", "auto") or "auto").lower()
+                except Exception:
+                    _lang = "auto"
+                raw_response = (
+                    "Je ne peux pas confirmer cette réponse à partir des éléments disponibles."
+                    if _lang.startswith("fr") or any(ch in effective_input for ch in "àâçéèêëîïôùûüÿœ")
+                    else "I can't confirm that answer from the available evidence."
+                )
+                self._record_turn_stage(
+                    "semantic_answer_validation", _semantic_status,
+                    type(_semantic_error).__name__,
+                    output={"scope": "probabilistic_semantic_consistency_not_truth_proof"},
+                    consumes=(_response_source_stage, "turn_input"),
+                    turn_id=_audit_turn_id,
+                )
+                self._record_semantic_validation_summary(
+                    _audit_turn_id, "unavailable", None,
+                )
+                _response_source_stage = "semantic_answer_validation"
         if _safety is not None:
             try:
                 _or = _safety.check_output(raw_response, user_id)

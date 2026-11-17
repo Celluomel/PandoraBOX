@@ -102,6 +102,29 @@ def test_recent_turn_history_preserves_redacted_pipeline_and_answer_validation()
     assert "must not escape" not in repr(history)
 
 
+def test_semantic_validation_receipt_keeps_dimensions_without_answer_text():
+    bridge = _bridge()
+    bridge._record_semantic_validation_summary(
+        "turn-evidence-1", "passed", {
+            "relevant": True,
+            "claim_basis": "factual",
+            "evidence_support": "partially_supported",
+            "contract_compliant": True,
+            "material_issues": [],
+            "repair": "private repair text",
+        },
+    )
+
+    receipt = bridge._last_turn_trace["semantic_answer_validation"]
+    assert receipt["status"] == "probabilistic_review_passed"
+    assert receipt["relevant"] is True
+    assert receipt["claim_basis"] == "factual"
+    assert receipt["evidence_support"] == "partially_supported"
+    assert receipt["contract_compliant"] is True
+    assert receipt["material_issue_count"] == 0
+    assert "private repair text" not in repr(receipt)
+
+
 def test_turn_stage_records_redacted_output_and_actual_consumption_link():
     bridge = _bridge()
     private_prompt = "private prompt should never appear in the audit trace"

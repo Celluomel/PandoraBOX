@@ -196,6 +196,9 @@ class InterfaceTests(unittest.IsolatedAsyncioTestCase):
             'semantic_answer_validation': {
                 'status': 'not_performed', 'scope': 'none',
                 'stage_status': 'unavailable', 'reason': 'private validator detail',
+                'relevant': True, 'claim_basis': 'factual',
+                'evidence_support': 'supported', 'contract_compliant': True,
+                'material_issue_count': 0, 'repair_rechecked': False,
             },
             'stage_events': [], 'recent_turns': [],
         }
@@ -223,6 +226,9 @@ class InterfaceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload['turns'][0]['pipeline_integrity']['missing_core_stages'], ['response_validation'])
         self.assertEqual(payload['turns'][0]['semantic_answer_validation'], {
             'status': 'not_performed', 'scope': 'none', 'stage_status': 'unavailable',
+            'relevant': True, 'claim_basis': 'factual',
+            'evidence_support': 'supported', 'contract_compliant': True,
+            'material_issue_count': 0, 'repair_rechecked': False,
         })
         self.assertNotIn('private pipeline detail', repr(payload))
         self.assertNotIn('private validator detail', repr(payload))
