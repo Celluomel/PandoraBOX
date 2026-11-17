@@ -13,10 +13,20 @@ import re
 from typing import Any, Callable
 
 
-MAX_REQUEST_CHARS = 4000
-MAX_RESPONSE_CHARS = 8000
-MAX_CONTEXT_CHARS = 12000
+MAX_REQUEST_CHARS = 2000
+MAX_RESPONSE_CHARS = 4000
+MAX_CONTEXT_CHARS = 4000
 MAX_ISSUES = 8
+_REVIEW_STOPWORDS = frozenset((
+    "a", "an", "and", "are", "as", "at", "be", "but", "by", "can", "did", "do",
+    "for", "from", "had", "has", "have", "he", "her", "how", "i", "in", "is", "it",
+    "me", "my", "of", "on", "or", "our", "that", "the", "their", "them", "this",
+    "to", "was", "we", "what", "when", "where", "which", "who", "with", "you", "your",
+    "au", "aux", "avec", "ce", "ces", "dans", "de", "des", "du", "elle", "en", "est",
+    "et", "il", "je", "la", "le", "les", "ma", "mais", "me", "mon", "ne", "nos",
+    "notre", "nous", "on", "ou", "par", "pas", "pour", "que", "qui", "se", "ses", "son",
+    "sur", "ta", "te", "tes", "toi", "ton", "tu", "un", "une", "vos", "votre", "vous",
+))
 
 REVIEW_RESPONSE_SCHEMA = {
     "name": "semantic_response_review",
@@ -49,6 +59,59 @@ REVIEW_RESPONSE_SCHEMA = {
 def _bounded(value: Any, limit: int) -> str:
     text = str(value or "").strip()
     return text[-limit:] if len(text) > limit else text
+
+
+def _select_review_context(request: str, context: str) -> str:
+    """Keep context passages relevant to the request within a small token budget.
+
+    The full conversational prompt can exceed 20k characters and contains
+    cognitive state unrelated to the current answer. Sending its last 12k
+    characters to the reviewer caused the local model to exhaust its output
+    budget before returning JSON. The user request and candidate remain
+    separate fields; this selects only supporting context passages by lexical
+    overlap, retaining their original order and never changing their content.
+    """
+    raw = str(context or "").strip()
+    if len(raw) <= MAX_CONTEXT_CHARS:
+        return raw
+    request_terms = {
+        term.casefold()
+        for term in re.findall(r"[^\W_]+", str(request or ""), flags=re.UNICODE)
+        if len(term) > 2 and term.casefold() not in _REVIEW_STOPWORDS
+    }
+    if not request_terms:
+        return _bounded(raw, MAX_CONTEXT_CHARS)
+
+    passages: list[tuple[int, int, str]] = []
+    for index, paragraph in enumerate(re.split(r"\n\s*\n", raw)):
+        paragraph = paragraph.strip()
+        if not paragraph:
+            continue
+        # Split oversized sections into bounded windows so one large system
+        # block cannot crowd out short, relevant evidence later in the prompt.
+        for offset in range(0, len(paragraph), 1200):
+            chunk = paragraph[offset:offset + 1200]
+            terms = {
+                term.casefold()
+                for term in re.findall(r"[^\W_]+", chunk, flags=re.UNICODE)
+                if len(term) > 2
+            }
+            overlap = len(request_terms & terms)
+            if overlap:
+                passages.append((overlap, index * 10000 + offset, chunk))
+
+    if not passages:
+        return _bounded(raw, MAX_CONTEXT_CHARS)
+    selected: list[tuple[int, str]] = []
+    remaining = MAX_CONTEXT_CHARS
+    for _score, position, chunk in sorted(passages, key=lambda item: (-item[0], item[1])):
+        if remaining <= 0:
+            break
+        excerpt = chunk[:remaining]
+        selected.append((position, excerpt))
+        remaining -= len(excerpt) + 2
+    selected.sort(key=lambda item: item[0])
+    return "\n\n".join(text for _position, text in selected)
 
 
 def _parse_json(text: str) -> dict[str, Any] | None:
@@ -104,7 +167,7 @@ EXPLICIT CONSTRAINTS:
 {_bounded(constraints, 3000) or "None separately identified."}
 
 REFERENCE CONTEXT (may be incomplete):
-{_bounded(context, MAX_CONTEXT_CHARS) or "No reference context supplied."}
+{_select_review_context(request, context) or "No reference context supplied."}
 
 CANDIDATE ANSWER:
 {_bounded(response, MAX_RESPONSE_CHARS)}

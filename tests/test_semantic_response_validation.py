@@ -84,6 +84,39 @@ class SemanticResponseValidationTests(unittest.TestCase):
             "reason": "TimeoutError",
         })
 
+    def test_large_prompt_context_is_reduced_to_request_relevant_passages(self):
+        context = (
+            "UNRELATED COGNITIVE STATE\n" + "calibration curiosity attention. " * 260
+            + "\n\nCURRENT SENSOR EVIDENCE\nThe sensor value is 0.8 m."
+            + "\n\nUNRELATED HISTORY\n" + "narrative identity and reflection. " * 260
+        )
+        captured = {}
+
+        def reviewer(prompt, **_kwargs):
+            captured["prompt"] = prompt
+            return json.dumps({
+                "relevant": True,
+                "claim_basis": "factual",
+                "evidence_support": "supported",
+                "contract_compliant": True,
+                "material_issues": [],
+                "repair": "",
+            })
+
+        semantic.review_response(
+            reviewer,
+            request="What sensor value was reported?",
+            response="The sensor value was 0.8 m.",
+            context=context,
+        )
+
+        prompt = captured["prompt"]
+        context_section = prompt.split("REFERENCE CONTEXT (may be incomplete):\n", 1)[1]
+        context_section = context_section.split("\n\nCANDIDATE ANSWER:", 1)[0]
+        self.assertLessEqual(len(context_section), semantic.MAX_CONTEXT_CHARS)
+        self.assertIn("CURRENT SENSOR EVIDENCE", context_section)
+        self.assertNotIn("UNRELATED HISTORY", context_section)
+
 
 if __name__ == "__main__":
     unittest.main()
