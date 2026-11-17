@@ -927,6 +927,8 @@ class PersonaBridge:
         summary: dict[str, Any] = {
             "status": "source_grounded_exact_match"
             if status == "passed_source_grounded"
+            else "source_gate_abstention"
+            if status == "passed_source_abstention"
             else "response_replaced_source_mismatch"
             if status == "abstained_source_mismatch"
             else "probabilistic_review_passed"
@@ -939,6 +941,8 @@ class PersonaBridge:
             "scope": (
                 "deterministic_response_equals_retrieved_user_source"
                 if status in {"passed_source_grounded", "abstained_source_mismatch"}
+                else "deterministic_recall_gate_abstained"
+                if status == "passed_source_abstention"
                 else "request_relevance_context_support_and_explicit_constraints; not proof of truth"
             ),
             "stage_status": str(status)[:48],
@@ -974,6 +978,14 @@ class PersonaBridge:
             if review.get("source_status") in {"supported", "supported_verbatim_source"}:
                 summary["source_status"] = review["source_status"]
             summary["exact_source_match"] = status == "passed_source_grounded"
+        elif status == "passed_source_abstention":
+            summary["validation_method"] = str(
+                review.get("validation_method") or "deterministic_abstention_result_match"
+            )[:48]
+            if review.get("source_status"):
+                summary["source_status"] = str(review["source_status"])[:40]
+            summary["exact_result_match"] = bool(review.get("exact_result_match", True))
+            summary["abstention_matches_gate"] = summary["exact_result_match"]
         with self._turn_trace_lock:
             trace = getattr(self, "_last_turn_trace", None)
             if turn_id and (not trace or trace.get("turn_id") != turn_id):
@@ -1320,6 +1332,8 @@ class PersonaBridge:
                         "status": (
                             "source_grounded_exact_match"
                             if validation_status == "passed_source_grounded"
+                            else "source_gate_abstention"
+                            if validation_status == "passed_source_abstention"
                             else "response_replaced_source_mismatch"
                             if validation_status == "abstained_source_mismatch"
                             else "probabilistic_review_passed"
@@ -1335,6 +1349,8 @@ class PersonaBridge:
                             if validation_status in {
                                 "passed_source_grounded", "abstained_source_mismatch",
                             }
+                            else "deterministic_recall_gate_abstained"
+                            if validation_status == "passed_source_abstention"
                             else "request_relevance_context_support_and_explicit_constraints; not proof of truth"
                         ),
                         "stage_status": validation_status,
@@ -1346,10 +1362,23 @@ class PersonaBridge:
                             "contract_compliant", "material_issue_count", "repair_rechecked",
                             "reviewer_status", "reviewer_reason", "repair_reviewer_status",
                             "repair_reviewer_issue_count", "validation_method", "source_ref",
-                            "source_status", "exact_source_match",
+                            "source_status", "exact_source_match", "exact_result_match",
+                            "abstention_matches_gate",
                         ):
                             if key in prior_semantic:
                                 semantic_summary[key] = prior_semantic[key]
+                    # A deterministic source receipt is itself the validation
+                    # method. Preserve that fact even if a concurrent trace
+                    # finalizer raced the detailed summary writer.
+                    if validation_status == "passed_source_grounded":
+                        semantic_summary.setdefault("validation_method", "exact_source_text_match")
+                        semantic_summary.setdefault("exact_source_match", True)
+                    elif validation_status == "passed_source_abstention":
+                        semantic_summary.setdefault(
+                            "validation_method", "deterministic_abstention_result_match",
+                        )
+                        semantic_summary.setdefault("exact_result_match", True)
+                        semantic_summary.setdefault("abstention_matches_gate", True)
                     trace["semantic_answer_validation"] = semantic_summary
                 else:
                     architecture_check = stages.get("architecture_claim_validation")
@@ -1427,7 +1456,8 @@ class PersonaBridge:
                             "repair_rechecked", "reviewer_status", "reviewer_reason",
                             "repair_reviewer_status", "repair_reviewer_issue_count",
                             "validation_method", "source_ref", "source_status",
-                            "exact_source_match",
+                            "exact_source_match", "exact_result_match",
+                            "abstention_matches_gate",
                         }
                     },
                     "stages": {
@@ -3656,10 +3686,14 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
         _source_recall_attempt = (
             _explicit_memory_recall
             and isinstance(_memory_recall_result, dict)
-            and _memory_recall_result.get("status") in {
-                "supported", "supported_verbatim_source",
-            }
-            and bool(_memory_recall_result.get("source_ref"))
+            and (
+                (
+                    _memory_recall_result.get("status")
+                    in {"supported", "supported_verbatim_source"}
+                    and bool(_memory_recall_result.get("source_ref"))
+                )
+                or str(_memory_recall_result.get("status") or "").startswith("abstained_")
+            )
         )
         if raw_response.strip() and not _generation_failed and not _source_recall_attempt:
             _llm_manager = getattr(self._llm_stream_fn, "__self__", None)
@@ -3793,12 +3827,16 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                 _response_source_stage = "semantic_answer_validation"
         elif raw_response.strip() and not _generation_failed and _source_recall_attempt:
             expected_source_answer = str(_memory_recall_result.get("answer") or "").strip()
-            exact_source_match = bool(expected_source_answer) and raw_response.strip() == expected_source_answer
+            exact_result_match = bool(expected_source_answer) and raw_response.strip() == expected_source_answer
+            source_supported = _memory_recall_result.get("status") in {
+                "supported", "supported_verbatim_source",
+            }
             _semantic_status = (
-                "passed_source_grounded" if exact_source_match
-                else "abstained_source_mismatch"
+                ("passed_source_grounded" if exact_result_match else "abstained_source_mismatch")
+                if source_supported
+                else ("passed_source_abstention" if exact_result_match else "abstained_source_mismatch")
             )
-            if not exact_source_match:
+            if not exact_result_match:
                 try:
                     from managers.settings_manager import config as _semantic_cfg
                     _lang = str(getattr(_semantic_cfg, "RESPONSE_LANGUAGE", "auto") or "auto").lower()
@@ -3810,15 +3848,24 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     else "I can't confirm that answer from the available evidence."
                 )
             source_check = {
-                "scope": "deterministic_response_equals_retrieved_user_source",
-                "validation_method": "exact_source_text_match",
-                "source_ref": str(_memory_recall_result.get("source_ref"))[:40],
+                "scope": (
+                    "deterministic_response_equals_retrieved_user_source"
+                    if source_supported else "deterministic_recall_gate_abstained"
+                ),
+                "validation_method": (
+                    "exact_source_text_match"
+                    if source_supported else "deterministic_abstention_result_match"
+                ),
                 "source_status": str(_memory_recall_result.get("status"))[:40],
-                "exact_source_match": exact_source_match,
+                "exact_result_match": exact_result_match,
             }
+            if _memory_recall_result.get("source_ref"):
+                source_check["source_ref"] = str(_memory_recall_result.get("source_ref"))[:40]
+            if source_supported:
+                source_check["exact_source_match"] = exact_result_match
             self._record_turn_stage(
                 "semantic_answer_validation", _semantic_status,
-                "Structural check of the deterministic recall answer against its retrieved user source; no LLM truth claim.",
+                "Structural check of the deterministic recall result; source-backed answers and fail-closed abstentions do not require an LLM re-review.",
                 output=source_check,
                 consumes=("deterministic_reasoning", "memory_recall_answer", "turn_input"),
                 turn_id=_audit_turn_id,
@@ -3828,11 +3875,21 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                 {
                     "relevant": True,
                     "claim_basis": "factual",
-                    "evidence_support": "supported" if exact_source_match else "insufficient_evidence",
-                    "contract_compliant": exact_source_match,
-                    "reason": "exact source text match" if exact_source_match else "deterministic response differs from retrieved source",
+                    "evidence_support": (
+                        "supported" if source_supported and exact_result_match
+                        else "insufficient_evidence"
+                    ),
+                    "contract_compliant": exact_result_match,
+                    "reason": (
+                        "exact source text match" if source_supported and exact_result_match
+                        else "deterministic source gate abstention" if exact_result_match
+                        else "deterministic response differs from recall result"
+                    ),
                     "source_ref": _memory_recall_result.get("source_ref"),
                     "source_status": _memory_recall_result.get("status"),
+                    "validation_method": source_check["validation_method"],
+                    "exact_source_match": exact_result_match if source_supported else None,
+                    "exact_result_match": exact_result_match,
                 },
             )
             _response_source_stage = "semantic_answer_validation"

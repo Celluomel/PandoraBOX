@@ -182,6 +182,44 @@ def test_finished_turn_preserves_source_grounded_validation_scope():
     assert receipt["stage_status"] == "passed_source_grounded"
     assert receipt["validation_method"] == "exact_source_text_match"
     assert receipt["exact_source_match"] is True
+    assert receipt["source_ref"] == "source-123"
+    assert receipt["source_status"] == "supported_verbatim_source"
+
+
+def test_finished_turn_preserves_deterministic_source_abstention_receipt():
+    bridge = _bridge()
+    bridge._record_turn_stage(
+        "semantic_answer_validation", "passed_source_abstention",
+        output={
+            "scope": "deterministic_recall_gate_abstained",
+            "validation_method": "deterministic_abstention_result_match",
+            "source_status": "abstained_insufficient_source_match",
+            "exact_result_match": True,
+        },
+        consumes=("memory_recall_answer", "deterministic_reasoning", "turn_input"),
+    )
+    bridge._record_semantic_validation_summary(
+        "turn-evidence-1", "passed_source_abstention", {
+            "relevant": True,
+            "claim_basis": "factual",
+            "evidence_support": "insufficient_evidence",
+            "contract_compliant": True,
+            "source_status": "abstained_insufficient_source_match",
+            "validation_method": "deterministic_abstention_result_match",
+            "exact_result_match": True,
+        },
+    )
+
+    bridge._finish_turn_trace("completed")
+    receipt = bridge._last_turn_trace["semantic_answer_validation"]
+
+    assert receipt["status"] == "source_gate_abstention"
+    assert receipt["scope"] == "deterministic_recall_gate_abstained"
+    assert receipt["stage_status"] == "passed_source_abstention"
+    assert receipt["validation_method"] == "deterministic_abstention_result_match"
+    assert receipt["source_status"] == "abstained_insufficient_source_match"
+    assert receipt["exact_result_match"] is True
+    assert receipt["abstention_matches_gate"] is True
 
 
 def test_repaired_answer_receipt_proves_second_review_without_repair_text():
