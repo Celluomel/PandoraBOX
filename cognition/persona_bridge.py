@@ -890,6 +890,7 @@ class PersonaBridge:
 
         event_emitted = False
         event_handler_count = None
+        downstream_effects = {}
         try:
             organism = getattr(self, "_organism", None)
             identity_drift = 0.0
@@ -913,14 +914,62 @@ class PersonaBridge:
                     from core.cognitive_event_bus import CONTRADICTION_DETECTED
                     event_bus = getattr(organism, "event_bus", None)
                     emit = getattr(event_bus, "emit", None)
-                    if callable(emit):
-                        handlers_called = emit(CONTRADICTION_DETECTED, {
-                            "topic": str(getattr(contradiction, "claimed_belief", ""))[:80],
-                            "pressure": 0.6,
-                        }, source="liberty_contradiction")
+                    emit_with_receipt = getattr(event_bus, "emit_with_receipt", None)
+                    event_payload = {
+                        "topic": str(getattr(contradiction, "claimed_belief", ""))[:80],
+                        "pressure": 0.6,
+                    }
+                    emitted_event = None
+                    if callable(emit_with_receipt):
+                        emitted_event, handlers_called = emit_with_receipt(
+                            CONTRADICTION_DETECTED, event_payload,
+                            source="liberty_contradiction",
+                        )
+                    elif callable(emit):
+                        handlers_called = emit(
+                            CONTRADICTION_DETECTED, event_payload,
+                            source="liberty_contradiction",
+                        )
+                    else:
+                        handlers_called = None
+                    if callable(emit_with_receipt) or callable(emit):
                         event_emitted = True
                         if isinstance(handlers_called, int) and not isinstance(handlers_called, bool):
                             event_handler_count = max(0, handlers_called)
+                    if emitted_event is not None:
+                        payload = getattr(emitted_event, "payload", {})
+                        if isinstance(payload, dict):
+                            affect_outcome = payload.get("affect_outcome", {})
+                            if isinstance(affect_outcome, dict):
+                                downstream_effects["affect_status"] = str(
+                                    affect_outcome.get("status", "unknown")
+                                )[:48]
+                            reaction = payload.get("contradiction_reaction", {})
+                            if isinstance(reaction, dict):
+                                for key in (
+                                    "tension_status", "curiosity_status", "workspace_status",
+                                ):
+                                    if isinstance(reaction.get(key), str):
+                                        downstream_effects[key] = reaction[key][:48]
+                    elif event_emitted:
+                        # Compatibility for third-party buses that only expose emit().
+                        recent_events = getattr(event_bus, "recent_of_type", None)
+                        if callable(recent_events):
+                            emitted_events = recent_events(CONTRADICTION_DETECTED, 1)
+                            if emitted_events:
+                                payload = getattr(emitted_events[-1], "payload", {})
+                                affect_outcome = payload.get("affect_outcome", {})
+                                if isinstance(affect_outcome, dict):
+                                    downstream_effects["affect_status"] = str(
+                                        affect_outcome.get("status", "unknown")
+                                    )[:48]
+                                reaction = payload.get("contradiction_reaction", {})
+                                if isinstance(reaction, dict):
+                                    for key in (
+                                        "tension_status", "curiosity_status", "workspace_status",
+                                    ):
+                                        if isinstance(reaction.get(key), str):
+                                            downstream_effects[key] = reaction[key][:48]
                 except Exception:
                     logger.debug("Contradiction event dispatch unavailable", exc_info=True)
 
@@ -936,6 +985,7 @@ class PersonaBridge:
                     ),
                     "event_handler_count": event_handler_count,
                     "belief_count": len(beliefs),
+                    **downstream_effects,
                 }, consumes=("contradiction_review_input",), turn_id=turn_id,
             )
         except Exception as exc:

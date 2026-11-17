@@ -39,6 +39,27 @@ class ModuleTickLogTests(unittest.TestCase):
         self.assertNotIn("private user text", repr(summary))
         self.assertNotIn("custom_status", summary["receipt_fields"])
 
+    def test_output_summary_retains_contradiction_effect_statuses_only(self):
+        summary = summarize_output({
+            "event_status": "handlers_called",
+            "event_handler_count": 2,
+            "affect_status": "applied",
+            "tension_status": "returned",
+            "curiosity_status": "failed_RuntimeError",
+            "workspace_status": "returned",
+            "private_topic": "do not retain",
+        })
+
+        self.assertEqual(summary["receipt_fields"], {
+            "event_status": "handlers_called",
+            "event_handler_count": 2,
+            "affect_status": "applied",
+            "tension_status": "returned",
+            "curiosity_status": "failed_RuntimeError",
+            "workspace_status": "returned",
+        })
+        self.assertNotIn("do not retain", repr(summary))
+
     def test_semantic_extraction_receipt_exposes_counts_without_prose(self):
         summary = summarize_output({
             "status": "completed",

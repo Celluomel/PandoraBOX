@@ -44,6 +44,7 @@ def summarize_output(value: Any) -> dict[str, Any]:
             "aspiration_planning", "goal_plan_schedule_status", "persistence_status",
             "cag_status", "workspace_status",
             "event_status",
+            "affect_status", "tension_status", "curiosity_status",
         }
         receipt_numeric_fields = {
             "cycle", "goal_plans_synchronized", "goal_plans_scheduled",

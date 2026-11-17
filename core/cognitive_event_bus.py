@@ -120,6 +120,23 @@ class CognitiveEventBus:
         Emit an event. All registered handlers are called synchronously.
         Returns the number of handlers that were called.
         """
+        _, called = self.emit_with_receipt(
+            event_type, payload, source=source, priority=priority,
+        )
+        return called
+
+    def emit_with_receipt(
+        self,
+        event_type: str,
+        payload: Dict[str, Any],
+        source: str = "unknown",
+        priority: Optional[float] = None,
+    ) -> tuple[CognitiveEvent, int]:
+        """Emit an event and return that exact, handler-mutated event with its count.
+
+        This lets a caller attribute downstream receipts to the event it emitted
+        without racing against a later event of the same type.
+        """
         # Keep priority as event metadata when producers provide it.  Older
         # producers only pass the three original arguments, so this remains
         # backwards compatible while allowing pressure/perception signals to
@@ -153,7 +170,7 @@ class CognitiveEventBus:
                 f"[EventBus] '{event_type}' from '{source}' → {called} handler(s)"
             )
 
-        return called
+        return event, called
 
     # ── Query ─────────────────────────────────────────────────────────────────
 
@@ -264,34 +281,48 @@ def wire_cognitive_bus(organism: Any, bus: CognitiveEventBus) -> None:
     def on_contradiction(event: CognitiveEvent):
         topic    = event.payload.get("topic", "")
         pressure = float(event.payload.get("pressure", 0.5))
+        reaction = {
+            "tension_status": "unavailable",
+            "curiosity_status": "unavailable",
+            "workspace_status": "unavailable",
+        }
 
         # Raise tension
         te = getattr(organism, 'tension_engine', None)
-        if te and hasattr(te, 'add_contradiction_pressure'):
+        add_pressure = getattr(te, 'add_contradiction_pressure', None)
+        if callable(add_pressure):
             try:
-                te.add_contradiction_pressure(pressure * 0.6)
-            except Exception:
-                pass
+                add_pressure(pressure * 0.6)
+                reaction["tension_status"] = "returned"
+            except Exception as exc:
+                reaction["tension_status"] = f"failed_{type(exc).__name__}"
 
         # Stimulate curiosity toward the contradiction topic
         cu = getattr(organism, 'curiosity', None)
-        if cu and topic:
+        stimulate = getattr(cu, 'stimulate', None)
+        if callable(stimulate) and topic:
             try:
-                cu.stimulate(topic, amount=pressure * 0.4, source="contradiction")
-            except Exception:
-                pass
+                stimulate(topic, amount=pressure * 0.4, source="contradiction")
+                reaction["curiosity_status"] = "returned"
+            except Exception as exc:
+                reaction["curiosity_status"] = f"failed_{type(exc).__name__}"
+        elif callable(stimulate):
+            reaction["curiosity_status"] = "skipped_no_topic"
 
         # Broadcast to workspace
         ws = getattr(organism, 'workspace', None)
-        if ws:
+        broadcast = getattr(ws, 'broadcast', None)
+        if callable(broadcast):
             try:
-                ws.broadcast(
+                broadcast(
                     source="event_bus.contradiction",
                     content=f"Contradiction detected on: {topic}",
                     priority=0.5 + pressure * 0.3,
                 )
-            except Exception:
-                pass
+                reaction["workspace_status"] = "returned"
+            except Exception as exc:
+                reaction["workspace_status"] = f"failed_{type(exc).__name__}"
+        event.payload["contradiction_reaction"] = reaction
 
     bus.on(CONTRADICTION_DETECTED, on_contradiction)
 

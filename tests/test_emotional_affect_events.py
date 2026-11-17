@@ -140,6 +140,73 @@ class EmotionalAffectEventTests(unittest.TestCase):
                 bus.recent(1)[0].payload["affect_outcome"]["status"], "already_counted"
             )
 
+    def test_contradiction_receipt_reports_each_downstream_handler_return(self):
+        tension_calls = []
+        curiosity_calls = []
+        workspace_calls = []
+        organism = NS(
+            ai_system=NS(emotional_state=NS(update_from_cognitive_event=lambda *a, **k: {
+                "status": "applied",
+            })),
+            tension_engine=NS(add_contradiction_pressure=tension_calls.append),
+            curiosity=NS(stimulate=lambda *a, **k: curiosity_calls.append((a, k))),
+            workspace=NS(broadcast=lambda **kwargs: workspace_calls.append(kwargs)),
+        )
+        bus = CognitiveEventBus()
+        wire_cognitive_bus(organism, bus)
+
+        handled = bus.emit(
+            CONTRADICTION_DETECTED,
+            {"topic": "memory consistency", "pressure": 0.75},
+            source="audit_test",
+        )
+
+        event = bus.recent_of_type(CONTRADICTION_DETECTED, 1)[0]
+        reaction = event.payload["contradiction_reaction"]
+        self.assertEqual(handled, 2)
+        self.assertEqual(event.payload["affect_outcome"]["status"], "applied")
+        self.assertEqual(reaction, {
+            "tension_status": "returned",
+            "curiosity_status": "returned",
+            "workspace_status": "returned",
+        })
+        self.assertEqual(len(tension_calls), 1)
+        self.assertEqual(len(curiosity_calls), 1)
+        self.assertEqual(len(workspace_calls), 1)
+
+        exact_event, exact_handled = bus.emit_with_receipt(
+            CONTRADICTION_DETECTED,
+            {"topic": "second event", "pressure": 0.4},
+            source="audit_test",
+        )
+        self.assertIs(exact_event, bus.recent_of_type(CONTRADICTION_DETECTED, 1)[0])
+        self.assertEqual(exact_handled, 2)
+        self.assertEqual(
+            exact_event.payload["contradiction_reaction"]["workspace_status"],
+            "returned",
+        )
+
+    def test_contradiction_receipt_distinguishes_missing_and_failed_handlers(self):
+        def fail(*_args, **_kwargs):
+            raise RuntimeError("private details must not enter receipt")
+
+        organism = NS(
+            tension_engine=NS(add_contradiction_pressure=fail),
+            curiosity=None,
+            workspace=NS(broadcast=lambda **_kwargs: None),
+        )
+        bus = CognitiveEventBus()
+        wire_cognitive_bus(organism, bus)
+        bus.emit(CONTRADICTION_DETECTED, {"pressure": 0.5}, source="audit_test")
+
+        reaction = bus.recent_of_type(CONTRADICTION_DETECTED, 1)[0].payload[
+            "contradiction_reaction"
+        ]
+        self.assertEqual(reaction["tension_status"], "failed_RuntimeError")
+        self.assertEqual(reaction["curiosity_status"], "unavailable")
+        self.assertEqual(reaction["workspace_status"], "returned")
+        self.assertNotIn("private details", repr(reaction))
+
     def test_affect_event_context_does_not_persist_free_text(self):
         with tempfile.TemporaryDirectory() as folder:
             state = self.make_state(folder)

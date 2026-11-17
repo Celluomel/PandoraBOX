@@ -327,9 +327,22 @@ def test_turn_stage_records_redacted_output_and_actual_consumption_link():
 
 def test_contradiction_review_records_redacted_inputs_result_and_event_effect():
     bridge = _bridge()
+    event = SimpleNamespace(payload={
+        "affect_outcome": {"status": "applied"},
+        "contradiction_reaction": {
+            "tension_status": "returned",
+            "curiosity_status": "returned",
+            "workspace_status": "returned",
+        },
+    })
     bridge._organism = SimpleNamespace(
         observatory=None,
-        event_bus=SimpleNamespace(emit=lambda *args, **kwargs: 2),
+        event_bus=SimpleNamespace(
+            emit=lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("legacy emit should not be used when a receipt API exists")
+            ),
+            emit_with_receipt=lambda *args, **kwargs: (event, 2),
+        ),
     )
     bridge._record_turn_stage("turn_input", "received", output="private user prompt")
     bridge._record_turn_stage("response_finalization", "completed", output="private final answer")
@@ -364,6 +377,10 @@ def test_contradiction_review_records_redacted_inputs_result_and_event_effect():
     assert review_stage["output_summary"]["receipt_fields"]["event_emitted"] is True
     assert review_stage["output_summary"]["receipt_fields"]["event_handler_count"] == 2
     assert review_stage["output_summary"]["receipt_fields"]["event_status"] == "handlers_called"
+    assert review_stage["output_summary"]["receipt_fields"]["affect_status"] == "applied"
+    assert review_stage["output_summary"]["receipt_fields"]["tension_status"] == "returned"
+    assert review_stage["output_summary"]["receipt_fields"]["curiosity_status"] == "returned"
+    assert review_stage["output_summary"]["receipt_fields"]["workspace_status"] == "returned"
     assert review_stage["consumes"][0]["fingerprint"] == input_stage["output_fingerprint"]
     assert contradiction_text not in repr(trace)
 
