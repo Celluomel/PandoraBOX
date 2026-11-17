@@ -75,6 +75,34 @@ def test_workspace_focus_provenance_survives_context_source_allowlist():
     assert "focus_text" not in source
 
 
+def test_prompt_context_timings_survive_redacted_turn_trace_allowlists():
+    bridge = _bridge()
+    bridge._record_turn_context_source(
+        "prompt_context_timing", "measured", turn_id="turn-evidence-1",
+        interval_ms=4700.0,
+        operations_ms={
+            "self_concept_inner_voice": 12.5,
+            "memory_count_query": 4.0,
+            "private_prompt_text": "must be dropped",
+            "invalid_duration": float("nan"),
+        },
+        uninstrumented_ms=4683.5,
+        private_payload="must be dropped",
+    )
+
+    trace = bridge.get_turn_trace("turn-evidence-1")
+    source = trace["context_sources"]["prompt_context_timing"]
+
+    assert source["interval_ms"] == 4700.0
+    assert source["operations_ms"] == {
+        "self_concept_inner_voice": 12.5,
+        "memory_count_query": 4.0,
+    }
+    assert source["uninstrumented_ms"] == 4683.5
+    assert "private_payload" not in repr(trace)
+    assert "must be dropped" not in repr(trace)
+
+
 def test_recent_turn_history_preserves_redacted_pipeline_and_answer_validation():
     bridge = _bridge()
     bridge._turn_trace_history = [{

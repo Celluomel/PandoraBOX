@@ -9,6 +9,7 @@ import tempfile
 import time
 import uuid
 import ipaddress
+import math
 from typing import Any
 from urllib.parse import urlparse, urlunparse
 from urllib.request import Request as UrlRequest, urlopen
@@ -272,15 +273,34 @@ def _compact_turn_audit_record(raw: Any) -> dict[str, Any]:
         'observed_count', 'tick_count', 'error_count', 'initialized_unobserved_count',
         'unavailable_count', 'affect_source', 'affect_profile', 'affect_event_type',
         'affect_event_age_seconds', 'source_cycle', 'age_seconds',
+        'interval_ms', 'operations_ms', 'uninstrumented_ms',
         'age_cycles', 'source_evidence_ref', 'focus_type', 'focus_score',
         'focus_ref', 'context_included', 'state_focus_source',
         'state_focus_updated_at', 'state_focus_age_seconds',
     }
     for name, value in (raw.get('context_sources') or {}).items():
         if isinstance(value, dict):
-            context_sources[str(name)[:100]] = {
-                key: value[key] for key in source_fields if key in value
+            compact_source = {
+                key: value[key] for key in source_fields
+                if key in value and key != 'operations_ms'
             }
+            if isinstance(value.get('operations_ms'), dict):
+                allowed_operations = {
+                    'response_modifiers', 'self_concept_inner_voice', 'identity_context',
+                    'observatory_snapshot', 'memory_count_query', 'self_model_block',
+                    'architecture_prompt_context',
+                }
+                compact_source['operations_ms'] = {}
+                for operation, duration in value['operations_ms'].items():
+                    if str(operation) not in allowed_operations:
+                        continue
+                    try:
+                        number = float(duration)
+                    except (TypeError, ValueError, OverflowError):
+                        continue
+                    if math.isfinite(number) and number >= 0:
+                        compact_source['operations_ms'][str(operation)] = round(number, 3)
+            context_sources[str(name)[:100]] = compact_source
     events = []
     for event in raw.get('stage_events', [])[-160:]:
         if not isinstance(event, dict):

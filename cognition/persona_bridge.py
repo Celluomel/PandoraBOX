@@ -681,6 +681,7 @@ class PersonaBridge:
             "source_evidence_ref", "focus_type", "focus_score", "focus_ref",
             "context_included",
             "state_focus_source", "state_focus_updated_at", "state_focus_age_seconds",
+            "interval_ms", "operations_ms", "uninstrumented_ms",
         }
         safe_metadata: dict[str, Any] = {}
         for key, value in metadata.items():
@@ -709,6 +710,23 @@ class PersonaBridge:
                     char.isalnum() or char == "_" for char in drive
                 ):
                     safe_metadata[key] = {"drive": drive}
+            elif key == "operations_ms" and isinstance(value, dict):
+                allowed_operations = {
+                    "response_modifiers", "self_concept_inner_voice", "identity_context",
+                    "observatory_snapshot", "memory_count_query", "self_model_block",
+                    "architecture_prompt_context",
+                }
+                safe_metadata[key] = {}
+                for operation, duration in value.items():
+                    operation_name = str(operation)[:64]
+                    if operation_name not in allowed_operations:
+                        continue
+                    try:
+                        number = float(duration)
+                    except (TypeError, ValueError, OverflowError):
+                        continue
+                    if math.isfinite(number) and number >= 0:
+                        safe_metadata[key][operation_name] = round(number, 3)
             elif key in {
                 "affect_source", "affect_description", "affect_event_type", "affect_event_source",
                 "thread_id", "source_evidence_ref", "focus_type", "focus_ref",
@@ -1519,6 +1537,7 @@ class PersonaBridge:
                             "source_kinds", "record_count", "module_count", "observed_count",
                             "tick_count", "error_count", "initialized_unobserved_count",
                             "unavailable_count",
+                            "interval_ms", "operations_ms", "uninstrumented_ms",
                         }
                     }
             return {
@@ -4816,7 +4835,27 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                 turn_id=audit_turn_id,
             )
 
-            mods        = s.emotional_state.get_response_modifiers()
+            # The turn trace records stage boundaries, but that leaves a large
+            # attribution gap between memory retrieval and prompt assembly.
+            # Measure the concrete synchronous operations in this interval so
+            # the audit can identify a real bottleneck instead of blaming the
+            # nearest named stage. This is evidence-only instrumentation.
+            _prompt_context_started = time.perf_counter()
+            _prompt_context_timings_ms: dict[str, float] = {}
+
+            def _measure_prompt_context(name: str, operation):
+                _started = time.perf_counter()
+                try:
+                    return operation()
+                finally:
+                    _prompt_context_timings_ms[name] = round(
+                        (time.perf_counter() - _started) * 1000.0, 3
+                    )
+
+            mods        = _measure_prompt_context(
+                "response_modifiers",
+                s.emotional_state.get_response_modifiers,
+            )
             _affect_profile = mods.get("affective_profile", {})
             _affect_self_report = False
             _affect_profile_text = ", ".join(
@@ -4840,13 +4879,20 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             # beliefs *relevant to what is being discussed*, not just the
             # top-3 by confidence (which produces the same static boilerplate
             # every turn regardless of topic).
-            inner_voice = s.self_concept.get_inner_voice(context=user_input)
-            identity_ctx = s._get_identity_context()
+            inner_voice = _measure_prompt_context(
+                "self_concept_inner_voice",
+                lambda: s.self_concept.get_inner_voice(context=user_input),
+            )
+            identity_ctx = _measure_prompt_context(
+                "identity_context", s._get_identity_context,
+            )
 
             # ── Concrete self-model facts — real numbers, not abstractions ──
             try:
                 _obs       = getattr(self._organism, 'observatory', None)
-                _obs_snap  = _obs.snapshot() if _obs else {}
+                _obs_snap  = _measure_prompt_context(
+                    "observatory_snapshot", _obs.snapshot if _obs else lambda: {},
+                )
                 _ts        = getattr(self._organism, 'thought_stream', None)
                 _ts_latest = None
                 if _ts:
@@ -4865,27 +4911,33 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     _db = pathlib.Path(getattr(s.config.database, 'name', 'data/persona/ai_system.db'))
                     if _db.exists():
                         _conn = sqlite3.connect(str(_db))
-                        _mem_count = _conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
+                        _mem_count = _measure_prompt_context(
+                            "memory_count_query",
+                            lambda: _conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0],
+                        )
                         _conn.close()
                 except Exception:
                     pass
                 _asp_self_obj = getattr(self._organism, 'aspirational_self', None)
                 _asp_summary  = _asp_self_obj.summary() if _asp_self_obj else {}
 
-                _self_model_block = _build_self_model_block(
-                    interaction_count = s._interaction_count,
-                    life_stage        = s.life_stage,
-                    age               = s.current_age,
-                    memory_count      = _mem_count,
-                    # ThoughtStream is global and may contain human-turn
-                    # material. Do not disclose it to a peer model.
-                    latest_thought    = None if peer_name else _ts_latest,
-                    observatory       = _obs_snap,
-                    pressures         = {k: round(v.level, 2) for k, v in _pressures.items()},
-                    capabilities      = _capabilities,
-                    aspirations       = _asp_summary.get('top_tensions', []),
-                    # The session visual buffer belongs to Brain camera turns.
-                    session_visuals   = 0 if peer_name else len(self._session_visuals),
+                _self_model_block = _measure_prompt_context(
+                    "self_model_block",
+                    lambda: _build_self_model_block(
+                        interaction_count = s._interaction_count,
+                        life_stage        = s.life_stage,
+                        age               = s.current_age,
+                        memory_count      = _mem_count,
+                        # ThoughtStream is global and may contain human-turn
+                        # material. Do not disclose it to a peer model.
+                        latest_thought    = None if peer_name else _ts_latest,
+                        observatory       = _obs_snap,
+                        pressures         = {k: round(v.level, 2) for k, v in _pressures.items()},
+                        capabilities      = _capabilities,
+                        aspirations       = _asp_summary.get('top_tensions', []),
+                        # The session visual buffer belongs to Brain camera turns.
+                        session_visuals   = 0 if peer_name else len(self._session_visuals),
+                    ),
                 )
             except Exception as _sme:
                 _self_model_block = ""
@@ -4974,9 +5026,12 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                             for item in _module_entries
                         ),
                     )
-                _architecture_block = get_self_description().prompt_context(
-                    module_tick_snapshot=(
-                        _module_tick_snapshot if _module_entries else None
+                _architecture_block = _measure_prompt_context(
+                    "architecture_prompt_context",
+                    lambda: get_self_description().prompt_context(
+                        module_tick_snapshot=(
+                            _module_tick_snapshot if _module_entries else None
+                        ),
                     ),
                 )
                 self._record_turn_stage(
@@ -5004,6 +5059,19 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     },
                     turn_id=audit_turn_id,
                 )
+            self._record_turn_context_source(
+                "prompt_context_timing",
+                "measured",
+                turn_id=audit_turn_id,
+                interval_ms=round(
+                    (time.perf_counter() - _prompt_context_started) * 1000.0, 3
+                ),
+                operations_ms=_prompt_context_timings_ms,
+                uninstrumented_ms=max(0.0, round(
+                    (time.perf_counter() - _prompt_context_started) * 1000.0
+                    - sum(_prompt_context_timings_ms.values()), 3
+                )),
+            )
 
             # ── Aspirational Self — injected directly, no FAISS ─────────
             _asp_self = getattr(self._organism, 'aspirational_self', None)
