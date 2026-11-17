@@ -907,6 +907,42 @@ class LLMManager:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
         with self._provider_lock:
+            structured_requested = bool(
+                kwargs.get("json_mode") or isinstance(kwargs.get("json_schema"), dict)
+            )
+            stream = getattr(self.provider, "_generate_messages_stream", None)
+
+            def collect_visible(stream_kwargs: Dict[str, Any]) -> tuple[str, str]:
+                chunks: List[str] = []
+                finish_reason = ""
+                for part in stream(messages, **stream_kwargs):
+                    if isinstance(part, str):
+                        chunks.append(part)
+                    elif isinstance(part, dict):
+                        if part.get("type") == "content":
+                            chunks.append(str(part.get("text") or ""))
+                        elif part.get("type") == "finish":
+                            finish_reason = str(part.get("reason") or "").casefold()
+                return "".join(chunks), finish_reason
+
+            # Structured reviews need the provider's finish reason: the
+            # non-stream endpoint returns only content, so a reasoning model
+            # that exhausts max_tokens is indistinguishable from an empty
+            # answer. Stream once, then retry only a length-capped response
+            # with a larger but bounded output allowance.
+            if structured_requested and callable(stream):
+                text, finish_reason = collect_visible(kwargs)
+                if finish_reason in {"length", "max_tokens", "max_output_tokens"}:
+                    retry_kwargs = dict(kwargs)
+                    current_limit = max(64, int(kwargs.get("max_tokens", 480)))
+                    retry_kwargs["max_tokens"] = min(2048, current_limit * 2)
+                    if retry_kwargs["max_tokens"] > current_limit:
+                        retry_text, retry_reason = collect_visible(retry_kwargs)
+                        if retry_text.strip() or not text.strip():
+                            text = retry_text
+                            finish_reason = retry_reason
+                return text
+
             text = self.provider._generate_messages(messages, **kwargs)
             if str(text or "").strip():
                 return str(text)
@@ -916,7 +952,6 @@ class LLMManager:
             # endpoint still emits the visible assistant text. Reuse the
             # same fallback as history-free background cognition, but keep
             # this path legal during the active interactive turn.
-            stream = getattr(self.provider, "_generate_messages_stream", None)
             if callable(stream):
                 chunks: List[str] = []
                 for part in stream(messages, **kwargs):
