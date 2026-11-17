@@ -234,6 +234,41 @@ class DataAccess:
             raw["thoughts"] = active
             return self._save("thought_stream.json", raw)
 
+    def update_thought(self, thought: Dict) -> bool:
+        """Update an existing thought by stable ID without appending a copy."""
+        if not isinstance(thought, dict):
+            return False
+        thought_n = normalize_thought(thought)
+        thought_id = str(thought_n.get("id") or "")
+        if not thought_id:
+            return False
+        with _LOCK:
+            raw = self._load("thought_stream.json", {"thoughts": []})
+            if isinstance(raw, list):
+                thoughts = raw
+                envelope = {"thoughts": thoughts}
+            elif isinstance(raw, dict):
+                thoughts = raw.get("thoughts", [])
+                envelope = raw
+            else:
+                return False
+            if not isinstance(thoughts, list):
+                return False
+
+            matches = [
+                index for index, item in enumerate(thoughts)
+                if isinstance(item, dict) and str(item.get("id") or "") == thought_id
+            ]
+            if not matches:
+                return False
+            first = matches[0]
+            existing = thoughts[first]
+            thoughts[first] = {**existing, **thought_n}
+            for index in reversed(matches[1:]):
+                del thoughts[index]
+            envelope["thoughts"] = thoughts
+            return self._save("thought_stream.json", envelope)
+
     def expire_old_thoughts(self) -> int:
         """Remove expired thoughts. Returns count removed."""
         with _LOCK:

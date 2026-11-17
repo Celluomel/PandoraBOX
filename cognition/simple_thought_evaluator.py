@@ -11,8 +11,9 @@ from typing import List, Dict, Any
 
 class SimpleThoughtEvaluator:
     
-    def __init__(self, persona_dir):
+    def __init__(self, persona_dir, thought_stream=None):
         self.persona_dir = Path(persona_dir)
+        self.thought_stream = thought_stream
         
         self.uncertainty_keywords = [
             'wonder', 'curious', 'curiosity', 'why', 'how', 'what', 'uncertain',
@@ -46,6 +47,31 @@ class SimpleThoughtEvaluator:
             from core.data.access import DataAccess
             _dal = DataAccess(str(self.persona_dir))
             thoughts = _dal.get_thoughts(skip_expired=True)
+            stream_recent = getattr(self.thought_stream, "recent_dicts", None)
+            if callable(stream_recent):
+                merged_by_id = {
+                    str(item.get("id") or ""): item
+                    for item in thoughts if isinstance(item, dict) and item.get("id")
+                }
+                for item in stream_recent(50):
+                    if isinstance(item, dict) and item.get("id"):
+                        merged_by_id[str(item["id"])] = item
+
+                def _thought_time(item):
+                    value = item.get("timestamp")
+                    try:
+                        return float(value)
+                    except (TypeError, ValueError, OverflowError):
+                        try:
+                            return datetime.fromisoformat(
+                                str(value).replace("Z", "+00:00")
+                            ).timestamp()
+                        except Exception:
+                            return 0.0
+
+                thoughts = sorted(
+                    merged_by_id.values(), key=_thought_time, reverse=True
+                )[:50]
             goals_list = _dal.get_goals()
             goals_data = {'goals': {g['id']: g for g in goals_list}}
             _use_dal = True
@@ -66,6 +92,7 @@ class SimpleThoughtEvaluator:
 
         suggestions_by_concept = {}
         evaluated_count = 0
+        evaluated_thoughts = []
         
         print(f"\n🧠 Evaluating {len(thoughts)} thoughts...")
         
@@ -146,6 +173,7 @@ class SimpleThoughtEvaluator:
                             })
                 
                 thought['evaluated'] = True
+                thought['evaluated_at'] = datetime.now().isoformat()
                 thought['evaluation'] = {
                     'type': evaluation['type'],
                     'concept': evaluation['concept'],
@@ -153,6 +181,7 @@ class SimpleThoughtEvaluator:
                     'actionability': evaluation.get('actionability', 0.5),
                     'conceptual_friction': evaluation.get('friction', '')
                 }
+                evaluated_thoughts.append(thought)
 
                 concept = evaluation['concept']
                 if concept and concept != 'unknown' and _use_dal:
@@ -161,11 +190,26 @@ class SimpleThoughtEvaluator:
                 evaluated_count += 1
 
         if _use_dal:
-            for thought in thoughts:
-                if thought.get('evaluated'):
+            updater = getattr(_dal, "update_thought", None)
+            for thought in evaluated_thoughts:
+                if self.thought_stream is not None:
+                    mark_evaluated = getattr(self.thought_stream, "mark_evaluated", None)
+                    if callable(mark_evaluated):
+                        mark_evaluated(
+                            str(thought.get("id") or ""),
+                            thought.get("evaluation", {}),
+                            str(thought.get("evaluated_at") or ""),
+                        )
+                if callable(updater):
+                    updater(thought)
+                else:
+                    # Compatibility for older DataAccess adapters; the real
+                    # DAL implements update_thought to avoid duplicate rows.
                     _dal.add_thought(thought)
         else:
             import os
+            if isinstance(thoughts_data, dict):
+                thoughts_data["thoughts"] = thoughts
             tmp = thoughts_file.with_suffix('.tmp')
             with open(tmp, 'w', encoding='utf-8') as f:
                 json.dump(thoughts_data, f, indent=2, ensure_ascii=False)

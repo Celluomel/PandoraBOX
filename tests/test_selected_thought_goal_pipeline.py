@@ -210,7 +210,7 @@ def test_structured_thought_reaches_persisted_workspace_goal_end_to_end(tmp_path
         timestamp=1794427200.0,
         topic="cognitive_execution_flow",
     )
-    assert dal.add_thought({"id": "thought-e2e-1", **source.to_dict()}) is True
+    assert dal.add_thought({**source.to_dict(), "id": "thought-e2e-1"}) is True
 
     evaluator = SimpleThoughtEvaluator(persona_dir)
     evaluator._classify_thought = lambda *_args: "tension"

@@ -1,7 +1,7 @@
 # Audit du harnais cognitif — état et prochaines étapes
 
 **Date de mise à jour :** 17 novembre 2026
-**Statut :** audit du harnais cognitif en cours; aucune conclusion globale de qualité n’est établie. Le dernier état live attesté répondait sur `127.0.0.1:8765/status`, `ready=true`, boucle interne active, modèle Gemma et FAISS actifs. Les corrections de preuve runtime, rappel mémoire, consommation immédiate ThoughtStream→Phase 1 et empreinte commune entre publication et compétition sont poussées jusqu’à `c139aee`. Le correctif local courant retire l’event loop inutile du rappel mémoire synchrone; il n’est pas encore chargé. Les modifications Body/UI préexistantes restent hors lot.
+**Statut :** audit du harnais cognitif en cours; aucune conclusion globale de qualité n’est établie. Le dernier état live attesté répondait sur `127.0.0.1:8765/status`, `ready=true`, boucle interne active, modèle Gemma et FAISS actifs. Les corrections de preuve runtime, rappel mémoire, consommation immédiate ThoughtStream→Phase 1, empreinte commune jusqu’au commit d’objectif et suppression de l’event loop superflu du rappel mémoire sont poussées jusqu’à `49405a5`. Le correctif local courant répare la persistance/évaluation des pensées; il n’est pas encore chargé. Les modifications Body/UI préexistantes restent hors lot.
 
 ## Plan d’audit piloté par les preuves — mesure de progression
 
@@ -3711,6 +3711,16 @@ Le manifeste embarqué dans ce premier tour comptait 0/43 modules avec tick et 0
 **Vérification locale :** cinq suites ciblées (ThoughtStream/Phase 1, rappel mémoire, planification, ticks asynchrones et reçus de cycle) : **134 passed**, 9 avertissements historiques. Le test précédemment bloqué passe; `py_compile` et `git diff --check` passent. Le processus Lumina actif n’a pas ces modifications chargées. Elles sont encore locales; un redémarrage groupé sera nécessaire pour les valider en direct.
 
 **Limite et suite :** le code et les tests prouvent que les reçus peuvent représenter les liens, pas encore qu’un cycle réel fasse apparaître une même empreinte dans chaque étape. Il faudra capturer un cas où une pensée mémoire est évaluée en proposition et sélectionnée; si la proposition perd ou est rejetée, ce résultat doit aussi être conservé comme résultat causal. Les pistes 3, 6 et 7 restent partielles; **3/10 = 30 %** ne change pas avant la preuve live et l’évaluation de la qualité de l’effet.
+
+### Persistance évaluateur↔ThoughtStream : doublons et perte du statut évalué — 17 novembre 2026
+
+**Cause vérifiée dans le code :** `_save_persisted()` écrivait tout le tampon ThoughtStream dans `thought_stream.json`, puis réajoutait les 20 dernières pensées par `DataAccess.add_thought()` dans ce même fichier. Chaque flush pouvait donc dupliquer des IDs. En parallèle, `SimpleThoughtEvaluator` marquait les pensées par append DAL; ThoughtStream ne sérialisait pas `evaluated/evaluated_at/evaluation` et pouvait réécrire une version sans ces marqueurs. Enfin, la restauration convertissait `timestamp` par `float()` seulement alors que le DAL stocke aussi des dates ISO; un tel élément arrêtait le chargement restant.
+
+**Correction :** la sauvegarde fusionne maintenant les entrées existantes et le tampon par ID, préserve les pensées écrites par d’autres producteurs, et n’ajoute plus une seconde copie après flush. Le DAL a `update_thought()` pour modifier un ID existant sans append. ThoughtStream sérialise/restaure l’état évaluateur et le convertit en secondes quel que soit le format numérique ou ISO. Phase 1 transmet son flux mémoire à l’évaluateur; celui-ci fusionne les pensées persistées avec les 50 récentes en RAM, évalue une seule fois par ID, met à jour le DAL si l’entrée y existe et marque le tampon pour sauvegarde.
+
+**Vérification locale :** scénario réel avec une pensée mémoire non flushée : l’évaluateur la voit, garde le même ID, la sauvegarde une fois, préserve un enregistrement DAL parallèle, restaure le marqueur, puis ne l’évalue pas une seconde fois. Test DAL séparé : mise à jour par ID sans doublon. Suites mémoire, Phase 1, action/planification, tick async, pipeline GoalEngine et logs cognitifs : **193 passed, 4 subtests passed**, 9 avertissements historiques. Le lot n’est pas encore chargé dans le processus Lumina actif.
+
+**Suite d’audit :** après commit/push et redémarrage groupé, observer une pensée mémoire unique dans le stockage, son évaluation, sa proposition Phase 1 et son résultat workspace; contrôler aussi que les entrées DAL externes restent présentes après plusieurs flushs. Les pistes 3, 6 et 7 demeurent partielles; **3/10 = 30 %** ne change pas avant ces preuves live.
 
 ### Identité continue d’une pensée mémoire jusqu’aux candidats — extension du reçu
 

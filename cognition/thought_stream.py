@@ -55,6 +55,7 @@ import math
 import random
 import time
 import uuid
+from datetime import datetime
 from collections import deque
 from dataclasses import dataclass, field
 import json
@@ -80,6 +81,9 @@ class Thought:
     topic: str = ""
     # Stable identity across workspace competition, persistence and reload.
     id: str = field(default_factory=lambda: f"tht_{uuid.uuid4().hex}")
+    evaluated: bool = False
+    evaluated_at: str = ""
+    evaluation: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict:
         return {
@@ -90,6 +94,9 @@ class Thought:
             "thought_type": self.thought_type,
             "timestamp":    self.timestamp,
             "topic":        self.topic,
+            "evaluated":    bool(self.evaluated),
+            "evaluated_at": self.evaluated_at,
+            "evaluation":   dict(self.evaluation) if isinstance(self.evaluation, dict) else {},
         }
 
 
@@ -1041,14 +1048,30 @@ class ThoughtStream:
             # Restore thought buffer
             restored = 0
             for d in data.get("thoughts", []):
+                raw_timestamp = d.get("timestamp", 0.0)
+                try:
+                    thought_timestamp = float(raw_timestamp)
+                except (TypeError, ValueError, OverflowError):
+                    try:
+                        thought_timestamp = datetime.fromisoformat(
+                            str(raw_timestamp).replace("Z", "+00:00")
+                        ).timestamp()
+                    except Exception:
+                        thought_timestamp = 0.0
                 t = Thought(
                     id          = str(d.get("id") or f"tht_{uuid.uuid4().hex}"),
                     content   = d.get("content", ""),
                     source    = d.get("source", "memory"),
                     priority  = float(d.get("priority", 0.3)),
                     thought_type = d.get("thought_type", "self_observation"),
-                    timestamp = float(d.get("timestamp", 0.0)),
+                    timestamp = thought_timestamp,
                     topic     = d.get("topic", ""),
+                    evaluated = bool(d.get("evaluated", False)),
+                    evaluated_at = str(d.get("evaluated_at") or "")[:80],
+                    evaluation = (
+                        dict(d.get("evaluation"))
+                        if isinstance(d.get("evaluation"), dict) else {}
+                    ),
                 )
                 if t.content:
                     self._buffer.append(t)
@@ -1093,6 +1116,47 @@ class ThoughtStream:
             import os
             thoughts = [t.to_dict() for t in list(self._buffer)]
 
+            # DataAccess and ThoughtStream share this file. Merge by stable ID
+            # so DAL-only entries survive a ThoughtStream flush and existing
+            # thoughts are updated rather than duplicated.
+            existing_data: Any = {}
+            if self._persist_path.exists():
+                try:
+                    existing_data = json.loads(
+                        self._persist_path.read_text(encoding="utf-8")
+                    )
+                except Exception:
+                    existing_data = {}
+            if isinstance(existing_data, list):
+                existing_items = existing_data
+            elif isinstance(existing_data, dict):
+                existing_items = existing_data.get("thoughts", [])
+            else:
+                existing_items = []
+            merged: List[Dict[str, Any]] = []
+            by_id: Dict[str, int] = {}
+            for item in existing_items if isinstance(existing_items, list) else []:
+                if not isinstance(item, dict):
+                    continue
+                item_id = str(item.get("id") or "")
+                if item_id and item_id in by_id:
+                    index = by_id[item_id]
+                    merged[index] = {**merged[index], **item}
+                else:
+                    if item_id:
+                        by_id[item_id] = len(merged)
+                    merged.append(dict(item))
+            for item in thoughts:
+                item_id = str(item.get("id") or "")
+                if item_id and item_id in by_id:
+                    index = by_id[item_id]
+                    merged[index] = {**merged[index], **item}
+                else:
+                    if item_id:
+                        by_id[item_id] = len(merged)
+                    merged.append(item)
+            thoughts = merged[-200:]
+
             # Serialize open questions — strip numpy embeddings (not JSON-serializable)
             open_q_data = []
             for oq in self._open_questions:
@@ -1121,14 +1185,6 @@ class ThoughtStream:
                 f"[ThoughtStream] Saved {len(thoughts)} thoughts, "
                 f"{len(open_q_data)} open questions"
             )
-            try:
-                from core.data.access import DataAccess
-                from core.data.schemas import normalize_thought
-                dal = DataAccess(str(self._persist_path.parent))
-                for t in thoughts[-20:]:
-                    dal.add_thought(normalize_thought(t))
-            except Exception:
-                pass
         except Exception as e:
             logger.debug(f"[ThoughtStream] Save failed (non-fatal): {e}")
 
@@ -1144,6 +1200,22 @@ class ThoughtStream:
 
     def recent_dicts(self, n: int = 5) -> List[Dict]:
         return [t.to_dict() for t in self.recent(n)]
+
+    def mark_evaluated(
+        self, thought_id: str, evaluation: Dict[str, Any], evaluated_at: str,
+    ) -> bool:
+        """Persist evaluator state on the matching in-memory thought."""
+        stable_id = str(thought_id or "")
+        if not stable_id:
+            return False
+        for thought in reversed(self._buffer):
+            if thought.id == stable_id:
+                thought.evaluated = True
+                thought.evaluated_at = str(evaluated_at or "")[:80]
+                thought.evaluation = dict(evaluation) if isinstance(evaluation, dict) else {}
+                self._persist_dirty = True
+                return True
+        return False
 
     def all(self) -> List[Thought]:
         return list(self._buffer)

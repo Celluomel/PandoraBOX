@@ -85,7 +85,9 @@ class Phase1Orchestrator:
         
         try:
             from cognition.simple_thought_evaluator import SimpleThoughtEvaluator
-            components['thought_evaluator'] = SimpleThoughtEvaluator(str(self.persona_dir))
+            components['thought_evaluator'] = SimpleThoughtEvaluator(
+                str(self.persona_dir), thought_stream=self._thought_stream,
+            )
         except ImportError:
             pass
         
