@@ -3583,7 +3583,15 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
         _semantic_status = "unavailable"
         if raw_response.strip() and not _generation_failed:
             _llm_manager = getattr(self._llm_stream_fn, "__self__", None)
-            _review_fn = getattr(_llm_manager, "generate_bare", None)
+            # The answer is still inside an interactive turn here. The normal
+            # background helper deliberately defers while that marker is set,
+            # which made every in-turn semantic review appear unavailable.
+            # Use the manager's foreground, history-free analysis channel so
+            # the review shares the provider lock without competing with the
+            # visible generation or bypassing the active-turn policy.
+            _review_fn = getattr(_llm_manager, "generate_interactive_analysis", None)
+            if not callable(_review_fn):
+                _review_fn = getattr(_llm_manager, "generate_bare", None)
             try:
                 from cognition.semantic_response_validation import review_response
                 _semantic_context = "\n\n".join(
