@@ -1,7 +1,7 @@
 # Audit du harnais cognitif — état et prochaines étapes
 
 **Date de mise à jour :** 17 novembre 2026
-**Statut :** audit du harnais cognitif en cours; aucune conclusion globale de qualité n’est établie. Le dernier commit partagé est `3bbc8e1`; il rend visible le modèle/dimension réellement utilisés pour chaque recherche mémoire FAISS. Un A/B local a comparé MiniLM et Nomic sur un petit jeu français contrôlé; aucune migration d’index n’est engagée. Les modifications Body/UI préexistantes restent hors lot. Lumina n’a pas été redémarrée; une validation live groupée sera nécessaire après le prochain lot.
+**Statut :** audit du harnais cognitif en cours; aucune conclusion globale de qualité n’est établie. Dernier commit partagé avant le lot en cours : `bdfd4cf` (reçu du modèle FAISS et A/B MiniLM/Nomic). Un correctif PresenceEngine est en validation locale avant push; les modifications Body/UI préexistantes restent hors lot. Lumina n’a pas été redémarrée; une validation live groupée sera nécessaire après ce lot.
 
 ## Plan d’audit piloté par les preuves — mesure de progression
 
@@ -3885,3 +3885,13 @@ Le processus actif fonctionne encore sous l’ancien code. Son dernier relevé l
 **Portée :** visibilité améliorée, pas amélioration prouvée du rappel. Nomic est une piste à évaluer sur un jeu de requêtes/paraphrases français pré-étiqueté, avec rappel@k, pertinence des souvenirs injectés et latence. Il ne remplace pas un validateur de vérité ou de qualité cognitive. Piste 4 partielle pour la généralisation, progression stricte toujours **3/10 = 30 %**.
 
 **A/B exploratoire FAST MiniLM vs QUALITY Nomic :** cinq requêtes paraphrasées françaises avec cinq souvenirs candidats synthétiques, label positif fixé sur la diagonale. MiniLM : top‑1 **3/5**, MRR **0,707**, environ **0,03 s** pour les encodages locaux. Nomic : top‑1 **4/5**, MRR **0,900**, environ **4,16 s** pour deux lots API (requêtes et candidats). Le modèle et la dimension observés étaient bien MiniLM/384 et Nomic/768. Ce résultat est trop petit et trop artificiel pour établir un gain général; il montre une piste possible avec un coût de latence à mesurer. Aucun souvenir utilisateur n’a été lu/modifié et aucun index n’a été reconstruit. Avant toute décision : benchmark pré-étiqueté plus large, top‑k, pertinence des éléments effectivement injectés, répétabilité et latence p50/p95.
+
+### PresenceEngine : texte généré compté comme interaction avant livraison — 17 novembre 2026
+
+**Cause dans le flux :** le moteur déduisait l’énoncé, l’ajoutait à `_recent_utterances`, le publiait comme percept épisodique et mettait à jour le contexte social avant l’appel à `_deliver()`. Or `_deliver()` peut renvoyer `suppressed_interactive_turn`, `suppressed_chat_grace` ou `logged_no_delivery_callback`. Dans ces cas, la phrase n’avait pas été entendue/affichée, mais le harnais pouvait la réinjecter comme dialogue partagé et réduire `_social_hunger` / réinitialiser `_last_meaningful_social`. Cela créait une boucle de rétroaction fondée sur une intention de parole, pas sur une interaction confirmée.
+
+**Correction :** l’ordre est maintenant génération → tentative de livraison → effets « parole partagée » uniquement si le reçu indique `tts` ou `bubble`. Une tentative supprimée n’entre ni dans les paroles récentes ni dans le percept épisodique, ne soulage pas la faim sociale et reçoit la décision d’audit `utterance_not_delivered`. Les délivrances confirmées reçoivent `utterance_delivered`. Les événements de présence et les coûts de génération restent comptabilisés même si la parole est supprimée.
+
+**Vérification locale :** `test_presence_identity_language.py` couvre la non-réduction de faim sociale sur suppression/log seul et son soulagement après reçu `tts+bubble`; exécuter aussi la compilation, `git diff --check` et la suite ciblée après le réordonnancement. Le processus Lumina courant n’a pas encore chargé ce changement; pas de redémarrage demandé à ce stade.
+
+**Portée :** correction de la cohérence causale du chemin de présence; aucune preuve encore que le problème historique soit reproduit avec le processus actuel ni qu’elle améliore la qualité globale des réponses. Le score strict reste **3/10 = 30 %**. Après déploiement au prochain redémarrage groupé, vérifier dans le reçu que toute ligne `utterance_not_delivered` n’a aucun effet mémoire/`recent_utterances`, tandis qu’un reçu `tts` ou `bubble` est conservé une seule fois.

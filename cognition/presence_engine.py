@@ -61,7 +61,7 @@ REACTION_COOLDOWN_S        = 30    # min seconds between any two utterances
 ENTER_CONFIRM_FRAMES       = 5     # frames face must be present to count as entered
 RETURN_THRESHOLD_S         = 180   # 3 min away → return event
 DWELL_CHECK_INTERVAL_S     = 90   # interval between dwell checks
-SILENCE_THRESHOLD_S        = 240   # 5 min silent → notice the quiet
+SILENCE_THRESHOLD_S        = 240   # 4 min silent → notice the quiet
 CHAT_ACTIVITY_GRACE_S      = 180   # keep ambient speech quiet after a chat turn
 MAX_REACTIONS_PER_FACE     = 6     # session cap
 EXIT_GRACE_FRAMES          = 30    # ~3s at 10fps — ignore camera noise
@@ -457,9 +457,6 @@ class PresenceEngine:
             self._last_any_reaction = now
 
         self._drain_social_battery()
-        # Meaningful social contact — partial hunger relief
-        self._last_meaningful_social = time.time()
-        self._social_hunger = max(0.0, self._social_hunger - 0.20)
 
         # ── Generate utterance ────────────────────────────────────────────
         # Recognition may finish while the pressure gates above are running.
@@ -473,32 +470,35 @@ class PresenceEngine:
             )
             return
 
-        # ── Remember what was said ────────────────────────────────────────
-        self._recent_utterances.append((now, utterance))
-        self._recent_utterances = self._recent_utterances[-5:]
+        # Attempt delivery before treating generated text as shared dialogue.
+        # Suppressed output must not become a remembered utterance/percept.
+        topic_age = max(0.0, now - ps.last_topic_ts) if ps.last_topic_ts else None
+        delivery = self._deliver(utterance, presence_id=presence_id)
+        delivered = self._record_meaningful_social_delivery(delivery, now=now)
+        if delivered:
+            self._recent_utterances.append((now, utterance))
+            self._recent_utterances = self._recent_utterances[-5:]
 
-        # Phase 6.0 — make this moment cognitively real (memory + episodic
-        # chapter), not just spoken and forgotten. pressure (already
-        # computed above, real expression-pressure score) doubles as
-        # confidence/salience — a stronger, evidence-driven reason to speak
-        # deserves a more salient percept, not an arbitrary constant.
-        if self._connector is not None:
-            try:
-                from cognition.universal_connector import Percept
-                self._connector.perceive(Percept(
-                    modality   = "vision_presence",
-                    source     = "camera",
-                    payload    = f"{event}/{mode} with {face_name}: \"{utterance}\"",
-                    confidence = min(1.0, pressure),
-                    salience   = min(1.0, pressure),
-                    provenance = {"face_name": face_name, "event": event, "mode": mode},
-                ))
-            except Exception as e:
-                logger.debug(f"[PresenceEngine] connector.perceive failed (non-fatal): {e}")
+            # Phase 6.0 — only a successfully delivered utterance is shared
+            # dialogue and can enter episodic memory as a spoken percept.
+            if self._connector is not None:
+                try:
+                    from cognition.universal_connector import Percept
+                    self._connector.perceive(Percept(
+                        modality   = "vision_presence",
+                        source     = "camera",
+                        payload    = f"{event}/{mode} with {face_name}: \"{utterance}\"",
+                        confidence = min(1.0, pressure),
+                        salience   = min(1.0, pressure),
+                        provenance = {"face_name": face_name, "event": event, "mode": mode},
+                    ))
+                except Exception as e:
+                    logger.debug(f"[PresenceEngine] connector.perceive failed (non-fatal): {e}")
 
         logger.info(
             f"👁️  [{event}] {face_name} → {mode} "
-            f"(pressure={pressure:.2f}, {snap.strategic_style}): {utterance}"
+            f"(pressure={pressure:.2f}, delivery={delivery}, "
+            f"{snap.strategic_style}): {utterance}"
         )
         # Feed event into CAG social field
         try:
@@ -507,10 +507,10 @@ class PresenceEngine:
                 _st_pe.acc.update_social_field(face_name, event)
         except Exception:
             pass
-        topic_age = max(0.0, now - ps.last_topic_ts) if ps.last_topic_ts else None
-        delivery = self._deliver(utterance, presence_id=presence_id)
         self._record_audit(
-            presence_id, event, "utterance_generated", mode=mode,
+            presence_id, event,
+            "utterance_delivered" if delivered else "utterance_not_delivered",
+            mode=mode,
             pressure=pressure, reason="pressure_gate_passed",
             context={
                 "emotion_snapshot": bool(snap.emotion),
@@ -1117,6 +1117,15 @@ Speak directly. No quotes. No stage directions."""
         else:
             logger.info(f"👁️  [utterance — no GUI] {text}")
         return "+".join(delivered) if delivered else "logged_no_delivery_callback"
+
+    def _record_meaningful_social_delivery(self, delivery: str, *, now: float | None = None) -> bool:
+        """Relieve social hunger only when an utterance reached an output channel."""
+        channels = {item.strip() for item in str(delivery or "").split("+") if item.strip()}
+        if not channels.intersection({"tts", "bubble"}):
+            return False
+        self._last_meaningful_social = time.time() if now is None else float(now)
+        self._social_hunger = max(0.0, self._social_hunger - 0.20)
+        return True
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     #  Helpers

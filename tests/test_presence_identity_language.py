@@ -103,6 +103,24 @@ class PresenceIdentityLanguageTests(unittest.TestCase):
         self.assertEqual(delivery, "tts")
         self.assertEqual(received, [("Hello", "presence-123")])
 
+    def test_social_hunger_is_relieved_only_after_confirmed_delivery(self):
+        engine = presence.PresenceEngine.__new__(presence.PresenceEngine)
+        engine._last_meaningful_social = 10.0
+        engine._social_hunger = 0.8
+
+        self.assertFalse(engine._record_meaningful_social_delivery(
+            "suppressed_interactive_turn", now=20.0,
+        ))
+        self.assertFalse(engine._record_meaningful_social_delivery(
+            "logged_no_delivery_callback", now=20.0,
+        ))
+        self.assertEqual(engine._last_meaningful_social, 10.0)
+        self.assertEqual(engine._social_hunger, 0.8)
+
+        self.assertTrue(engine._record_meaningful_social_delivery("tts+bubble", now=21.0))
+        self.assertEqual(engine._last_meaningful_social, 21.0)
+        self.assertAlmostEqual(engine._social_hunger, 0.6)
+
     def test_presence_only_receives_prior_user_message_for_recent_resume(self):
         face = presence.FacePresenceState("face_17", "Fred")
         face.last_topic = "Why is the camera identity mentioned?"
