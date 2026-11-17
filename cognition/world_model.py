@@ -264,60 +264,28 @@ class UserProfile:
         ]
 
     def prompt_fragment(self) -> str:
-        parts = []
-        name = self.display_name or self.user_id
-        parts.append(
-            "INFERRED BEHAVIORAL INTERACTION MODEL — based on observed exchanges; "
-            "its estimates are not explicit user statements or named-profile facts."
-        )
-        parts.append(f"Interaction sample: {self.interaction_count} observed exchanges.")
-        if name and name not in ("default", "guest"):
-            parts.append(f"User: {name}")
+        # This profile is a lightweight behavioural aid, not an authoritative
+        # record of user facts. Keep its prompt form compact enough to survive
+        # the shared context budget instead of silently dropping a long block.
+        parts = [
+            "Inferred interaction model; not explicit user-stated facts."
+        ]
 
-        topics = self.top_topics(3)
+        topics = [str(topic).strip()[:16] for topic in self.top_topics(2) if str(topic).strip()]
         if topics:
-            parts.append(
-                "Topics discussed (conversation co-occurrence only; not evidence of the user's "
-                "preferences, intentions, or expertise): " + ", ".join(topics)
-            )
-
-        exp = self.top_expertise(2)
-        if exp:
-            parts.append("Possible familiarity signals (inferred from vocabulary, unverified): " +
-                         ", ".join(f"{d} ({l})" for d, l in exp))
+            parts.append("Topics only (not preferences): " + ", ".join(topics))
 
         style = []
-        if self.preferred_depth != "medium": style.append(self.preferred_depth)
-        if self.formality != "neutral":      style.append(self.formality)
+        if self.preferred_depth != "medium":
+            style.append(str(self.preferred_depth)[:12])
+        if self.formality != "neutral":
+            style.append(str(self.formality)[:12])
         if style:
-            parts.append(
-                "Possible response-style estimates (inferred from interaction; "
-                "not explicit preferences): " + ", ".join(style)
-            )
+            parts.append("Possible reply style (inferred): " + ", ".join(style))
 
-        if self.relational and self.interaction_count >= 3:
-            lbl   = self.relational.relationship_label()
-            trend = self.relational.engagement_trend()
-            relation_estimates = []
-            if lbl in ("close", "distant"):
-                relation_estimates.append(f"relationship={lbl}")
-            if trend in ("rising", "declining"):
-                relation_estimates.append(f"engagement_trend={trend}")
-            if relation_estimates:
-                parts.append(
-                    "Relational estimates (inferred, not user-stated facts): "
-                    + ", ".join(relation_estimates)
-                )
-
-        if self.temporal:
-            ph = self.temporal.peak_hour()
-            if ph is not None:
-                session = "morning" if 5<=ph<12 else "afternoon" if 12<=ph<18 else "evening" if 18<=ph<23 else "night"
-                parts.append(
-                    f"Estimated active-time pattern (inferred, not a user-stated schedule): {session}"
-                )
-
-        parts.append(f"{self.interaction_count} interactions")
+        # PromptContextBudget estimates four characters per token and reserves
+        # 60 tokens for this category. Inputs above are structurally bounded so
+        # admission never cuts a clause off mid-sentence.
         return " | ".join(parts)
 
 

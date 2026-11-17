@@ -39,11 +39,12 @@ Token budget (conservative — real tokenisation is ~4 chars/token):
     Category            Budget (tokens)   Priority
     ─────────────────────────────────────────────
     self_evidence       120               1  (verified claims and epistemic contract)
-    self_state          120               2  (φ, coherence, experiential state)
+    self_state          180               2  (φ, coherence, experiential state)
+    user_model           60               2  (compact inferred interaction model)
     identity            200               3  (narrative arc, values)
     cognitive_pressure  100               4  (tensions, energy, homeostasis)
     attention           80                5  (attention + curiosity)
-    memory_active       150               6  (inner monologue, working memory)
+    memory_active       150               6  (inner monologue)
     skills              120               7  (relevant competencies)
     preferences         80                8  (stable orientations)
     experimentation     100               9  (active experiment)
@@ -84,6 +85,11 @@ CATEGORY_BUDGETS: Dict[str, Tuple[int, int]] = {
     # independent producers. Their compact forms need to coexist; the former
     # cap admitted only the self-model paragraph.
     "self_state":         (180, 2),
+    # A compact, explicitly inferred interaction model is useful to tailor a
+    # reply, but it is neither an explicit profile fact nor general memory.
+    # Reserve a bounded slot after core self-state so the WorldModel section
+    # is not routinely evicted by lower-priority narrative/attention text.
+    "user_model":         (60,  2),
     # A correction rule is a turn-specific control signal; keep it separate
     # from the large meta-systems bundle so a relevant rule is not silently
     # displaced by unrelated telemetry.

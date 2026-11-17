@@ -20,8 +20,7 @@ class WorldModelProfilePersistenceTests(unittest.TestCase):
 
             fragment = profile.prompt_fragment()
 
-        self.assertIn("Topics discussed (conversation co-occurrence only", fragment)
-        self.assertIn("not evidence of the user's preferences, intentions, or expertise", fragment)
+        self.assertIn("Topics only (not preferences)", fragment)
         self.assertIn("photosynthesis", fragment)
 
     def test_world_model_estimates_are_never_labeled_as_explicit_profile_facts(self):
@@ -37,10 +36,11 @@ class WorldModelProfilePersistenceTests(unittest.TestCase):
             profile.formality = "casual"
             fragment = profile.prompt_fragment()
 
-        self.assertIn("INFERRED BEHAVIORAL INTERACTION MODEL", fragment)
-        self.assertIn("not explicit user statements or named-profile facts", fragment)
-        self.assertIn("Possible response-style estimates (inferred", fragment)
+        self.assertIn("Inferred interaction model", fragment)
+        self.assertIn("not explicit user-stated facts", fragment)
+        self.assertIn("Possible reply style (inferred", fragment)
         self.assertNotIn("Style: deep, casual", fragment)
+        self.assertLessEqual(len(fragment), 200)
 
     def test_human_profile_receipt_follows_verified_atomic_write(self):
         with tempfile.TemporaryDirectory() as directory:

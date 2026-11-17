@@ -850,7 +850,7 @@ class CognitiveOrganism:
             _uid = getattr(self, '_current_user_id', 'default')
             wm_frag = self.world_model.user_prompt_fragment(_uid)
             if wm_frag:
-                budget.add("memory_active", "working_memory", wm_frag)
+                budget.add("user_model", "behavioral_user_model", wm_frag)
         except Exception:
             pass
 

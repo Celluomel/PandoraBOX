@@ -112,6 +112,24 @@ class PromptContextInfluenceTests(unittest.TestCase):
         self.assertIn("self_correction", selected)
         self.assertNotIn("narrative_identity", selected)
 
+    def test_compact_behavioral_user_model_survives_full_core_prompt_budget(self):
+        with tempfile.TemporaryDirectory() as directory:
+            budget = PromptContextBudget(str(Path(directory) / "contributions.json"))
+            budget.add("factual_telemetry", "long_horizon_plan", "p" * 1680)  # 420 tokens
+            budget.add("self_evidence", "grounded_identity", "e" * 480)       # 120 tokens
+            budget.add("self_correction", "self_correction", "c" * 480)     # 120 tokens
+            budget.add("self_state", "self_model_state", "s" * 720)           # 180 tokens
+            budget.add("user_model", "behavioral_user_model", "u" * 200)      # 50 tokens
+            budget.add("attention", "attention", "a" * 320)                    # lower priority
+
+            budget.assemble()
+            entries = {entry.source: entry for entry in budget._entries}
+
+        self.assertTrue(entries["behavioral_user_model"].selected)
+        self.assertEqual(entries["behavioral_user_model"].reason, "budget_ok")
+        self.assertFalse(entries["attention"].selected)
+        self.assertLessEqual(budget._total_used, TOTAL_TOKEN_CAP)
+
 
 if __name__ == "__main__":
     unittest.main()
