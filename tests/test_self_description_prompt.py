@@ -15,6 +15,8 @@ from cognition.self_description import (
     is_internal_cognitive_query,
     is_runtime_execution_evidence_query,
     is_self_affect_query,
+    is_social_status_greeting,
+    render_affect_self_report,
     sanitize_displayed_cognitive_trace,
     trace_grounded_architecture_answer,
 )
@@ -190,6 +192,45 @@ class SelfDescriptionPromptTests(unittest.TestCase):
         self.assertFalse(is_internal_cognitive_query(
             "What emotions are commonly associated with curiosity?"
         ))
+
+    def test_social_status_greetings_route_to_affect_without_capturing_how_to_questions(self):
+        for query in (
+            "how are you doing Lumina",
+            "how is it going?",
+            "How's it going, Lumina?",
+            "comment ça va Lumina ?",
+            "comment vas-tu ?",
+            "vous allez bien ?",
+        ):
+            with self.subTest(query=query):
+                self.assertTrue(is_social_status_greeting(query))
+                self.assertTrue(is_self_affect_query(query))
+
+        self.assertFalse(is_social_status_greeting("How are you using the camera API?"))
+        self.assertFalse(is_social_status_greeting("How is the audit going?"))
+        self.assertFalse(is_self_affect_query("What emotions are common in humans?"))
+
+    def test_social_status_answer_is_a_deterministic_projection_of_modeled_channels(self):
+        evidence = (
+            "Affect channels: curiosity=0.730, warmth=0.910, satisfaction=0.200\n"
+            "State description: stable\n"
+            "Latest recorded affect-changing appraisal: none recorded."
+        )
+        answer = render_affect_self_report(evidence, language="en")
+        self.assertEqual(
+            answer,
+            "My modeled functional state is currently led by warmth 0.91 and curiosity 0.73. "
+            "These are computed signals, not human sensations.",
+        )
+        self.assertNotIn("satisfied", answer)
+        self.assertIn("pas des sensations humaines", render_affect_self_report(
+            "Affect channels: warmth=1.000", language="fr",
+        ))
+        self.assertIn("warmth 1.00", render_affect_self_report(
+            "Affect channels: warmth=1.000", language="en",
+        ))
+        unavailable = render_affect_self_report("Affect channels: unavailable", language="en")
+        self.assertIn("no usable affect signal", unavailable)
 
     def test_affect_self_report_separates_emotion_curiosity_from_curiosity_drive(self):
         context = affect_self_report_context(

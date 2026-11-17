@@ -156,6 +156,28 @@ def is_internal_cognitive_query(user_input: str) -> bool:
     return asks_cause_or_mechanism and refers_to_internal_behavior
 
 
+def is_social_status_greeting(user_input: str) -> bool:
+    """Recognize short conventional greetings asking the addressee's state."""
+    text = " ".join(str(user_input or "").casefold().split())
+    # Ordinary greetings are requests for the addressee's current state even
+    # when they do not contain an explicit emotion word. Keep this intent
+    # boundary narrow and syntactic; do not classify every "how are you..."
+    # sentence as an affect report (for example, "how are you using X?").
+    social_status = bool(re.search(
+        r"^(?:hey\s+|hi\s+|hello\s+)?"
+        r"(?:how\s+are\s+you(?:\s+doing)?|how['’]s\s+it\s+going|"
+        r"how\s+is\s+it\s+going|how\s+have\s+you\s+been)"
+        r"(?:\s*,?\s*(?:lumina|there))?\s*[?!.,]*$",
+        text,
+    )) or bool(re.search(
+        r"^(?:comment\s+ça\s+va|comment\s+vas[- ]tu|comment\s+allez[- ]vous|"
+        r"(?:tu\s+vas|vous\s+allez)\s+bien)"
+        r"(?:\s*,?\s*lumina)?\s*[?!.,]*$",
+        text,
+    ))
+    return social_status
+
+
 def is_self_affect_query(user_input: str) -> bool:
     """Identify a request to report Lumina's own modeled affect state.
 
@@ -165,6 +187,9 @@ def is_self_affect_query(user_input: str) -> bool:
     answer or classify general questions about emotion.
     """
     text = " ".join(str(user_input or "").casefold().split())
+    if is_social_status_greeting(text):
+        return True
+
     mentions_affect = bool(re.search(
         r"\b(?:emotions?|émotions?|feelings?|sentiments?|affect|feel|feeling|sens)\b",
         text,
@@ -174,6 +199,41 @@ def is_self_affect_query(user_input: str) -> bool:
         text,
     ))
     return mentions_affect and refers_to_self
+
+
+def render_affect_self_report(evidence: str, *, language: str = "en") -> str:
+    """Render a short social status answer from the injected live affect block.
+
+    This is intentionally a deterministic projection of measured software
+    channels. It avoids asking the chat model to invent subjective sensations
+    or sending the same simple greeting through generation and review passes.
+    """
+    match = re.search(r"^Affect channels:\s*(.+)$", evidence, re.MULTILINE)
+    channels: list[tuple[str, float]] = []
+    if match and match.group(1).strip().casefold() != "unavailable":
+        for item in match.group(1).split(","):
+            parsed = re.fullmatch(r"\s*([a-z_]+)\s*=\s*(-?\d+(?:\.\d+)?)\s*", item)
+            if parsed:
+                value = float(parsed.group(2))
+                if 0.0 <= value <= 1.0:
+                    channels.append((parsed.group(1), value))
+    if not channels:
+        if str(language).casefold().startswith("fr"):
+            return "Je ne peux pas confirmer mon état affectif actuel : aucun signal affectif exploitable n’est disponible."
+        return "I can’t confirm my current affective state because no usable affect signal is available."
+
+    top = sorted(channels, key=lambda item: (-item[1], item[0]))[:2]
+    if str(language).casefold().startswith("fr"):
+        signal_text = " et ".join(f"{name} {value:.2f}" for name, value in top)
+        return (
+            f"Mon état fonctionnel modélisé est surtout marqué par {signal_text}. "
+            "Ce sont des signaux calculés, pas des sensations humaines."
+        )
+    signal_text = " and ".join(f"{name} {value:.2f}" for name, value in top)
+    return (
+        f"My modeled functional state is currently led by {signal_text}. "
+        "These are computed signals, not human sensations."
+    )
 
 
 def affect_self_report_context(

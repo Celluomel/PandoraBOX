@@ -2672,6 +2672,20 @@ Return exactly NONE if nothing should carry forward. Otherwise return one plain 
 
         # ── Phase A: build prompt + cache real emotion/cond dicts ────
         self._chat_stage = 'building cognitive prompt'
+        _social_status_greeting = False
+        _affect_self_report_query = False
+        try:
+            from cognition.self_description import (
+                is_self_affect_query, is_social_status_greeting,
+            )
+            _social_status_greeting = bool(
+                not peer_name and is_social_status_greeting(effective_input)
+            )
+            _affect_self_report_query = bool(
+                not peer_name and is_self_affect_query(effective_input)
+            )
+        except Exception as _affect_route_error:
+            logger.debug("Affect self-report routing unavailable: %s", _affect_route_error)
         _suppress_external_search = bool(
             voice_mode
             or bool(peer_name)
@@ -2680,6 +2694,7 @@ Return exactly NONE if nothing should carry forward. Otherwise return one plain 
             # grounded in this process's own trace, not supplemented by web
             # snippets that cannot prove what Lumina executed.
             or _internal_cognitive_query
+            or _affect_self_report_query
             or _quantitative_analysis is not None
             or (
                 _goal_means_analysis is not None
@@ -2696,6 +2711,41 @@ Return exactly NONE if nothing should carry forward. Otherwise return one plain 
             _audit_turn_id,
             _are_turn_status == "completed",
         )
+        _deterministic_affect_report = False
+        _affect_direct_response = ""
+        if _social_status_greeting:
+            try:
+                from cognition.self_description import render_affect_self_report
+                from managers.settings_manager import config as _affect_cfg
+                _affect_evidence = system_prompt.rsplit(
+                    "━━ AFFECT SELF-REPORT EVIDENCE ━━", 1
+                )[-1]
+                _affect_language = str(
+                    getattr(_affect_cfg, "RESPONSE_LANGUAGE", "auto") or "auto"
+                ).casefold()
+                if _affect_language == "auto":
+                    _affect_language = (
+                        "fr" if any(ch in effective_input.casefold() for ch in "àâçéèêëîïôùûüÿœ")
+                        or effective_input.casefold().startswith(("comment", "ça ", "tu ", "vous "))
+                        else "en"
+                    )
+                _affect_direct_response = render_affect_self_report(
+                    _affect_evidence, language=_affect_language,
+                )
+                _deterministic_affect_report = True
+                self._record_turn_stage(
+                    "affect_status_report", "completed",
+                    "Deterministic greeting response rendered from live modeled affect channels; no LLM inference or web search required.",
+                    output={
+                        "source": "AFFECT SELF-REPORT EVIDENCE in assembled prompt",
+                        "response": _affect_direct_response,
+                    },
+                    consumes=("affective_state", "turn_input"),
+                    turn_id=_audit_turn_id,
+                )
+            except Exception as _affect_render_error:
+                logger.warning("Could not render deterministic affect greeting: %s", _affect_render_error)
+                _deterministic_affect_report = False
         if peer_name:
             system_prompt += (
                 f"\n\nINTERLOCUTOR: You are speaking in a private cognitive dialogue with "
@@ -2968,6 +3018,8 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             )
             else ""
         )
+        if _deterministic_affect_report and _affect_direct_response:
+            _deterministic_response = _affect_direct_response
         if _explicit_memory_recall and _memory_recall_result is not None:
             _deterministic_response = str(_memory_recall_result.get("answer") or "")
             self._record_turn_stage(
@@ -3855,7 +3907,10 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                 or str(_memory_recall_result.get("status") or "").startswith("abstained_")
             )
         )
-        if raw_response.strip() and not _generation_failed and not _source_recall_attempt:
+        if (
+            raw_response.strip() and not _generation_failed
+            and not _source_recall_attempt and not _deterministic_affect_report
+        ):
             _llm_manager = getattr(self._llm_stream_fn, "__self__", None)
             # The answer is still inside an interactive turn here. The normal
             # background helper deliberately defers while that marker is set,
@@ -3985,6 +4040,31 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     _audit_turn_id, "unavailable", None,
                 )
                 _response_source_stage = "semantic_answer_validation"
+        elif raw_response.strip() and not _generation_failed and _deterministic_affect_report:
+            _semantic_status = "passed_deterministic_source_projection"
+            self._record_turn_stage(
+                "semantic_answer_validation", _semantic_status,
+                "Deterministic projection of the current affect evidence block; no LLM reviewer was called.",
+                output={
+                    "source": "AFFECT SELF-REPORT EVIDENCE",
+                    "validation_method": "deterministic_template_from_structured_channels",
+                    "no_subjective_sensation_claim": True,
+                },
+                consumes=("affect_status_report", "turn_input"),
+                turn_id=_audit_turn_id,
+            )
+            self._record_semantic_validation_summary(
+                _audit_turn_id,
+                _semantic_status,
+                {
+                    "relevant": True,
+                    "claim_basis": "factual",
+                    "evidence_support": "supported",
+                    "contract_compliant": True,
+                    "validation_method": "deterministic_template_from_structured_channels",
+                },
+            )
+            _response_source_stage = "semantic_answer_validation"
         elif raw_response.strip() and not _generation_failed and _source_recall_attempt:
             expected_source_answer = str(_memory_recall_result.get("answer") or "").strip()
             exact_result_match = bool(expected_source_answer) and raw_response.strip() == expected_source_answer
