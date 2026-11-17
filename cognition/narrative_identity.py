@@ -104,9 +104,12 @@ class NarrativeIdentity:
         description: str,
         emotion: str = "neutral",
         significance: float = 0.5,
-    ) -> None:
-        """Add a significant life event to the narrative."""
+    ) -> bool:
+        """Persist a significant life event; return whether persistence worked."""
         with self._lock:
+            previous_story = list(self.life_story)
+            previous_last_chapter = self._last_chapter
+            previous_narrative_stale = self._narrative_stale
             chapter = LifeChapter(
                 timestamp    = time.time(),
                 title        = title,
@@ -125,7 +128,14 @@ class NarrativeIdentity:
             self._last_chapter    = time.time()
             self._narrative_stale = True
             logger.debug(f"[NarrativeIdentity] chapter recorded: {title!r}")
-            self._save()
+            if self._save():
+                return True
+            # A failed write is not a recorded chapter. Roll back memory too,
+            # so the caller can retry without duplicating a phantom entry.
+            self.life_story = previous_story
+            self._last_chapter = previous_last_chapter
+            self._narrative_stale = previous_narrative_stale
+            return False
 
     def add_belief(
         self, belief: str, confidence: float = 0.8,
@@ -476,6 +486,7 @@ class NarrativeIdentity:
     # ── Persistence ───────────────────────────────────────────────────────────
 
     def _save(self) -> bool:
+        temp_path = self._path.with_suffix(self._path.suffix + ".tmp")
         try:
             data = {
                 "birth_time":      self._birth_time,
@@ -487,10 +498,17 @@ class NarrativeIdentity:
                 "current_arc":     getattr(self, "_current_arc", ""),
                 "last_arc_topic":  getattr(self, "_last_arc_topic", ""),
             }
-            self._path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+            temp_path.write_text(
+                json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
+            )
+            temp_path.replace(self._path)
             return True
         except Exception as e:
             logger.debug(f"[NarrativeIdentity] save error: {e}")
+            try:
+                temp_path.unlink(missing_ok=True)
+            except Exception:
+                pass
             return False
 
     def _load(self) -> None:

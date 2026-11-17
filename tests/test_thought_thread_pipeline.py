@@ -477,3 +477,25 @@ def test_narrative_writer_only_receives_unseen_terminal_threads():
     writer._seen_thread_ids.add("failed")
 
     assert writer.pending_thread_resolutions([active, completed, failed, deferred]) == [completed]
+
+
+def test_narrative_writer_retries_terminal_thread_after_persistence_failure():
+    writer = NarrativeArcWriter()
+    thread = SimpleNamespace(
+        id="retryable", status=ThoughtThreadStatus.COMPLETED,
+        topic="causal reasoning", goal="link evidence to outcome",
+        confidence=0.8, history=[{}], source="test", age_hours=lambda: 1.0,
+    )
+    attempts = []
+
+    def record_chapter(**_chapter):
+        attempts.append(True)
+        return len(attempts) > 1
+
+    narrative = SimpleNamespace(record_chapter=record_chapter)
+    assert writer.watch_thread_resolution(thread, narrative) is False
+    assert "retryable" not in writer._seen_thread_ids
+    assert writer.pending_thread_resolutions([thread]) == [thread]
+    assert writer.watch_thread_resolution(thread, narrative) is True
+    assert "retryable" in writer._seen_thread_ids
+    assert len(attempts) == 2

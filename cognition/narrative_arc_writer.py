@@ -145,8 +145,6 @@ class NarrativeArcWriter:
         if status not in (ThoughtThreadStatus.COMPLETED, ThoughtThreadStatus.FAILED):
             return False
 
-        self._seen_thread_ids.add(tid)
-
         topic      = getattr(thread, "topic", "unknown")
         goal       = getattr(thread, "goal", "")
         confidence = getattr(thread, "confidence", 0.5)
@@ -180,12 +178,16 @@ class NarrativeArcWriter:
         emotion = EMOTION_MAP.get(verb, "reflective")
 
         try:
-            narrative_identity.record_chapter(
+            persisted = narrative_identity.record_chapter(
                 title       = title,
                 description = desc,
                 emotion     = emotion,
                 significance= round(sig, 3),
             )
+            if persisted is False:
+                logger.warning("[NAW] Thread chapter persistence failed; will retry")
+                return False
+            self._seen_thread_ids.add(tid)
             logger.debug(f"[NAW] Thread chapter: {title!r} sig={sig:.2f}")
             return True
         except Exception as e:

@@ -1,7 +1,7 @@
 # Audit du harnais cognitif — état et prochaines étapes
 
 **Date de mise à jour :** 17 novembre 2026
-**Statut :** audit du harnais cognitif en cours; aucune conclusion globale de qualité n’est établie. Le dernier état live attesté répondait sur `127.0.0.1:8765/status`, `ready=true`, boucle interne active, modèle Gemma et FAISS actifs. Les corrections de preuve runtime, rappel mémoire, consommation immédiate ThoughtStream→Phase 1, empreinte commune jusqu’au commit d’objectif, suppression de l’event loop superflu du rappel mémoire, persistance sans doublons, distinction provenance mémoire/intention d’objectif et boucle de rétroaction de l’évaluateur sont poussées jusqu’à `e41670e`. Le gate sémantique commun aux sujets Curiosity est poussé jusqu’à `a18d570`. Le lot local courant retire le filtre linguistique redondant du resolver Curiosity, journalise son résultat asynchrone avec le cycle d’origine, et ajoute des ancres Nomic bilingues. Il n’est pas encore chargé dans Lumina. Les modifications Body/UI préexistantes restent hors lot.
+**Statut :** audit du harnais cognitif en cours; aucune conclusion globale de qualité n’est établie. Le dernier état live attesté répondait sur `127.0.0.1:8765/status`, `ready=true`, boucle interne active, modèle Gemma et FAISS actifs. Les corrections d’audit sont poussées jusqu’à `4c06e8c` (boucle de rétroaction de l’évaluateur, gate sémantique partagé et bilingue, filtres narrative, clarification des compteurs du chercheur). Le lot local courant vérifie que l’écriture d’un chapitre narratif est effectivement persistée avant que son fil soit marqué traité; il n’est pas encore chargé dans Lumina. Les modifications Body/UI préexistantes restent hors lot.
 
 ## Plan d’audit piloté par les preuves — mesure de progression
 
@@ -3795,3 +3795,13 @@ Le processus actif fonctionne encore sous l’ancien code. Son dernier relevé l
 **Vérification locale :** 14 suites cognitives, santé et données : **263 passed, 4 subtests passed, 9 avertissements historiques**; compilation et `git diff --check` réussis. Test ajouté pour garantir qu’un snapshot avec quatre métriques mesurées et zéro cible donne respectivement `measured_signal_count=4`, `measured_target_count=0`, `actionable_signal_count=0`.
 
 **État et suite :** ce correctif n’est pas encore chargé dans le processus live. La progression reste **3/10 = 30 %**. Le redémarrage groupé devra vérifier la valeur de comptage corrigée sans modifier les diagnostics. L’analyse du chercheur continue ensuite sur la cause plus fondamentale : définition d’une mesure de qualité vérifiable et d’un lien causal défendable avant toute expérience de réglage.
+
+### Chapitre narratif : un échec disque était compté comme traité — 17 novembre 2026
+
+**Défaut causal :** `NarrativeArcWriter.watch_thread_resolution()` ajoutait l’ID du fil à `_seen_thread_ids` avant d’écrire le chapitre. `NarrativeIdentity.record_chapter()` modifiait son état en mémoire puis ignorait le booléen de `_save()`, lequel avale les erreurs et renvoie `False`. Une panne disque pouvait donc laisser le chapitre absent du fichier, mais le fil était marqué vu; le writer ne réessayait plus et les ticks signalaient un retour normal.
+
+**Correction locale :** `record_chapter()` renvoie maintenant le résultat de persistance, écrit par fichier temporaire puis remplacement atomique, et restaure l’état en mémoire si la sauvegarde échoue. Le writer n’ajoute le fil à `_seen_thread_ids` qu’après une persistance réussie; un échec reste dans la liste des événements à réessayer.
+
+**Vérification locale :** tests d’échec/rollback, sauvegarde/rechargement sans fichier temporaire résiduel et nouvel essai du writer après un échec initial. Quinze suites cognitives ciblées : **266 passed, 4 subtests passed, 9 avertissements historiques**; compilation et `git diff --check` réussis.
+
+**État :** lot local non committé/non poussé et non chargé. Le commit précédent `4c06e8c` est le dernier sur GitHub; ce lot devra être poussé séparément. Le score d’audit reste **3/10 = 30 %**. Après le redémarrage groupé, vérifier qu’un échec d’écriture reste retentable, qu’un succès produit un seul chapitre rechargé après redémarrage, et que le compteur de `watch_thread_resolution` n’augmente que pour des fils terminaux inédits.
