@@ -151,6 +151,39 @@ def test_source_grounded_answer_receipt_is_not_mislabeled_as_llm_review():
     assert "probabilistic" not in receipt["status"]
 
 
+def test_finished_turn_preserves_source_grounded_validation_scope():
+    bridge = _bridge()
+    bridge._record_turn_stage(
+        "semantic_answer_validation", "passed_source_grounded",
+        output={
+            "validation_method": "exact_source_text_match",
+            "source_ref": "source-123",
+            "source_status": "supported_verbatim_source",
+            "exact_source_match": True,
+        },
+        consumes=("memory_recall_answer", "deterministic_reasoning"),
+    )
+    bridge._record_semantic_validation_summary(
+        "turn-evidence-1", "passed_source_grounded", {
+            "relevant": True,
+            "claim_basis": "factual",
+            "evidence_support": "supported",
+            "contract_compliant": True,
+            "source_ref": "source-123",
+            "source_status": "supported_verbatim_source",
+        },
+    )
+
+    bridge._finish_turn_trace("completed")
+    receipt = bridge._last_turn_trace["semantic_answer_validation"]
+
+    assert receipt["status"] == "source_grounded_exact_match"
+    assert receipt["scope"] == "deterministic_response_equals_retrieved_user_source"
+    assert receipt["stage_status"] == "passed_source_grounded"
+    assert receipt["validation_method"] == "exact_source_text_match"
+    assert receipt["exact_source_match"] is True
+
+
 def test_repaired_answer_receipt_proves_second_review_without_repair_text():
     bridge = _bridge()
     bridge._record_semantic_validation_summary(

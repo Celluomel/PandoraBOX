@@ -967,6 +967,13 @@ class PersonaBridge:
         summary["repair_reviewer_issue_count"] = min(
             8, max(0, len(repair_review.get("material_issues") or [])),
         )
+        if status in {"passed_source_grounded", "abstained_source_mismatch"}:
+            summary["validation_method"] = "exact_source_text_match"
+            if review.get("source_ref"):
+                summary["source_ref"] = str(review["source_ref"])[:40]
+            if review.get("source_status") in {"supported", "supported_verbatim_source"}:
+                summary["source_status"] = review["source_status"]
+            summary["exact_source_match"] = status == "passed_source_grounded"
         with self._turn_trace_lock:
             trace = getattr(self, "_last_turn_trace", None)
             if turn_id and (not trace or trace.get("turn_id") != turn_id):
@@ -1311,7 +1318,11 @@ class PersonaBridge:
                     validation_status = str(semantic_stage.get("status") or "unknown")
                     semantic_summary = {
                         "status": (
-                            "probabilistic_review_passed"
+                            "source_grounded_exact_match"
+                            if validation_status == "passed_source_grounded"
+                            else "response_replaced_source_mismatch"
+                            if validation_status == "abstained_source_mismatch"
+                            else "probabilistic_review_passed"
                             if validation_status in {"passed", "repaired_and_passed"}
                             else "response_replaced_reviewer_unavailable"
                             if validation_status == "abstained_review_unavailable"
@@ -1319,7 +1330,13 @@ class PersonaBridge:
                             if validation_status.startswith("abstained_")
                             else "review_incomplete"
                         ),
-                        "scope": "request_relevance_context_support_and_explicit_constraints; not proof of truth",
+                        "scope": (
+                            "deterministic_response_equals_retrieved_user_source"
+                            if validation_status in {
+                                "passed_source_grounded", "abstained_source_mismatch",
+                            }
+                            else "request_relevance_context_support_and_explicit_constraints; not proof of truth"
+                        ),
                         "stage_status": validation_status,
                     }
                     prior_semantic = trace.get("semantic_answer_validation", {})
@@ -1328,7 +1345,8 @@ class PersonaBridge:
                             "relevant", "claim_basis", "evidence_support",
                             "contract_compliant", "material_issue_count", "repair_rechecked",
                             "reviewer_status", "reviewer_reason", "repair_reviewer_status",
-                            "repair_reviewer_issue_count",
+                            "repair_reviewer_issue_count", "validation_method", "source_ref",
+                            "source_status", "exact_source_match",
                         ):
                             if key in prior_semantic:
                                 semantic_summary[key] = prior_semantic[key]
@@ -1408,6 +1426,8 @@ class PersonaBridge:
                             "evidence_support", "contract_compliant", "material_issue_count",
                             "repair_rechecked", "reviewer_status", "reviewer_reason",
                             "repair_reviewer_status", "repair_reviewer_issue_count",
+                            "validation_method", "source_ref", "source_status",
+                            "exact_source_match",
                         }
                     },
                     "stages": {
@@ -3811,6 +3831,8 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     "evidence_support": "supported" if exact_source_match else "insufficient_evidence",
                     "contract_compliant": exact_source_match,
                     "reason": "exact source text match" if exact_source_match else "deterministic response differs from retrieved source",
+                    "source_ref": _memory_recall_result.get("source_ref"),
+                    "source_status": _memory_recall_result.get("status"),
                 },
             )
             _response_source_stage = "semantic_answer_validation"
