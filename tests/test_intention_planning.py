@@ -1,9 +1,10 @@
 """Regression tests for PandoraBOX's intention -> plan -> outcome loop."""
 import json
+import asyncio
 import tempfile
 import threading
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from pathlib import Path
 import sys
 from types import ModuleType
@@ -932,6 +933,66 @@ class IntentionPlanningTests(unittest.TestCase):
 
             self.assertEqual(marked, [(goal.id, "memory_recall")])
             self.assertEqual(planner.next_action_for_goal(goal), "self_question")
+
+    def test_memory_recall_is_dispatched_off_loop_and_finalized_with_its_result(self):
+        goal = NS(
+            id="g-async-recall", topic="memory retrieval audit",
+            origin="resolve_uncertainty", priority=0.72, energy=0.8,
+        )
+        goal_engine = NS(get_active_goals=lambda min_activation=0.1: [goal])
+        executor = GoalActionExecutor.__new__(GoalActionExecutor)
+        executor._o = NS(ai_system=NS(goal_engine=goal_engine), _loop=None)
+        executor._last_action_time = {}
+        executor._rotation_index = {}
+        executor._pending_predictions = {}
+        executor._async_actions_in_flight = set()
+        executor._async_actions_lock = threading.Lock()
+        executor._get_goal_engine = lambda: goal_engine
+        executor._select_eligible_goal = lambda _active: goal
+        executor._planned_action = lambda _goal: "memory_recall"
+        executor._plan_has_pending_step = lambda _goal: False
+        loop_thread_id = threading.get_ident()
+        recall_thread_ids = []
+        executor._action_memory_recall_with_fallback = Mock(
+            side_effect=lambda _goal: recall_thread_ids.append(threading.get_ident()) or {
+                "success": True,
+                "outcome_status": "succeeded",
+                "memory_retrieved": True,
+                "thought_published": True,
+                "thought_stream_recorded": True,
+                "workspace_broadcast": False,
+                "result": "recalled and published (1 sources)",
+            }
+        )
+        captured = {}
+
+        def capture_async(coro, on_error=None, on_complete=None):
+            captured.update(coro=coro, on_error=on_error, on_complete=on_complete)
+
+        with patch.object(GoalActionExecutor, "_fire", side_effect=capture_async):
+            report = executor.run_tick(cycle_id=91)
+
+        self.assertEqual(report["outcome_status"], "dispatched")
+        executor._action_memory_recall_with_fallback.assert_not_called()
+        self.assertEqual(captured["coro"].cr_code.co_name, "_action_memory_recall_background")
+
+        executor._finalize_async_action = Mock()
+        worker = threading.Thread(
+            target=lambda: asyncio.run(captured["coro"]),
+            name="test-gae-action-worker",
+        )
+        worker.start()
+        worker.join(timeout=5)
+        self.assertFalse(worker.is_alive(), "memory recall worker did not complete")
+        self.assertEqual(len(recall_thread_ids), 1)
+        self.assertNotEqual(recall_thread_ids[0], loop_thread_id)
+        finalized = executor._finalize_async_action.call_args
+        self.assertEqual(finalized.args[1:3], ("memory_recall", True))
+        self.assertEqual(finalized.kwargs["execution_id"], report["execution_id"])
+        self.assertEqual(finalized.kwargs["cycle_id"], 91)
+        self.assertEqual(finalized.kwargs["evidence"]["memory_retrieved"], True)
+        captured["on_complete"]()
+        self.assertEqual(executor._async_actions_in_flight, set())
 
     def test_self_capability_question_gets_only_recorded_plan_telemetry(self):
         with tempfile.TemporaryDirectory() as folder:

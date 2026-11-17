@@ -371,7 +371,10 @@ class GoalActionExecutor:
         execution_id = "act_" + uuid.uuid4().hex
 
         async_key = None
-        if action_type in (ACTION_WEB_SEARCH, ACTION_SELF_QUESTION, ACTION_BISOCIATIVE):
+        if action_type in (
+            ACTION_MEMORY_RECALL, ACTION_WEB_SEARCH,
+            ACTION_SELF_QUESTION, ACTION_BISOCIATIVE,
+        ):
             async_key = (str(goal.id), action_type)
             if not self._claim_async_action(async_key):
                 logger.info(
@@ -459,17 +462,20 @@ class GoalActionExecutor:
         async_dispatched = False
 
         try:
-            if action_type == ACTION_MEMORY_RECALL:
-                result = self._action_memory_recall_with_fallback(goal)
-                report.update(result)
-
-            elif action_type == ACTION_USER_QUESTION:
+            if action_type == ACTION_USER_QUESTION:
                 result = self._action_user_question(goal)
                 report.update(result)
 
-            elif action_type in (ACTION_WEB_SEARCH, ACTION_SELF_QUESTION, ACTION_BISOCIATIVE):
+            elif action_type in (
+                ACTION_MEMORY_RECALL, ACTION_WEB_SEARCH,
+                ACTION_SELF_QUESTION, ACTION_BISOCIATIVE,
+            ):
                 # FIX 3: fire via daemon thread + asyncio.run() — guaranteed execution
-                if action_type == ACTION_WEB_SEARCH:
+                if action_type == ACTION_MEMORY_RECALL:
+                    coro = self._action_memory_recall_background(
+                        goal, execution_id=execution_id, cycle_id=cycle_id
+                    )
+                elif action_type == ACTION_WEB_SEARCH:
                     coro = self._action_web_search(
                         goal, execution_id=execution_id, cycle_id=cycle_id
                     )
@@ -716,6 +722,38 @@ class GoalActionExecutor:
         return action
 
     # ── Action implementations ─────────────────────────────────────────────────
+
+    async def _action_memory_recall_background(
+        self, goal, *, execution_id: str, cycle_id: Optional[int] = None,
+    ) -> None:
+        """Run local database/FAISS recall on the action worker thread.
+
+        ``_fire`` owns a dedicated daemon thread and runs this coroutine there;
+        calling the synchronous recall directly avoids an unnecessary second
+        thread hop while keeping the internal cognitive-loop caller nonblocking.
+        """
+        result = self._action_memory_recall_with_fallback(goal)
+        success = bool(result.get("success"))
+        outcome = str(result.get("outcome_status") or (
+            "succeeded" if success else "failed"
+        ))
+        evidence = {
+            "outcome_status": outcome,
+            "reason_code": str(result.get("reason_code") or "")[:64],
+            "memory_retrieved": bool(result.get("memory_retrieved")),
+            "thought_published": bool(result.get("thought_published")),
+            "thought_stream_recorded": bool(result.get("thought_stream_recorded")),
+            "workspace_broadcast": bool(result.get("workspace_broadcast")),
+        }
+        self._finalize_async_action(
+            goal,
+            ACTION_MEMORY_RECALL,
+            success,
+            str(result.get("result") or "")[:200],
+            execution_id=execution_id,
+            cycle_id=cycle_id,
+            evidence=evidence,
+        )
 
     def _action_memory_recall_with_fallback(self, goal) -> Dict:
         """
