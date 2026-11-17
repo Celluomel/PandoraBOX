@@ -63,3 +63,37 @@ def test_empty_memory_recall_has_machine_readable_failure_reason():
     assert result["success"] is False
     assert result["outcome_status"] == "failed"
     assert result["reason_code"] == "no_relevant_memories"
+
+
+def test_memory_recall_reports_provider_and_publication_phases_without_content():
+    class _SemanticMemory:
+        def get_related(self, concept, limit=5):
+            return [SimpleNamespace(source=concept, target="grounded concept")]
+
+    executor = _executor_with_publication({
+        "thought_stream_recorded": True,
+        "workspace_broadcast": False,
+    })
+    executor._o.semantic_memory = _SemanticMemory()
+    phases = []
+
+    result = executor._try_memory_recall(
+        SimpleNamespace(topic="audit cognitive memory retrieval"),
+        progress_callback=lambda phase, status, **metrics: phases.append(
+            (phase, status, metrics)
+        ),
+    )
+
+    assert result["success"] is True
+    assert [(phase, status) for phase, status, _ in phases] == [
+        ("sqlite_lookup", "started"),
+        ("sqlite_lookup", "completed"),
+        ("faiss_lookup", "started"),
+        ("faiss_lookup", "completed"),
+        ("publication", "started"),
+        ("publication", "completed"),
+    ]
+    assert phases[1][2]["relations"] == 1
+    assert phases[3][2]["result_present"] is True
+    assert phases[5][2]["thought_stream_recorded"] is True
+    assert all("content" not in metrics and "query" not in metrics for _, _, metrics in phases)

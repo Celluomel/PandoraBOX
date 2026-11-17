@@ -740,7 +740,28 @@ class GoalActionExecutor:
             output={"action": ACTION_MEMORY_RECALL, "execution_ref": execution_ref},
             metrics={"action": ACTION_MEMORY_RECALL},
         )
-        result = self._action_memory_recall_with_fallback(goal)
+        def record_recall_phase(phase: str, status: str, **metrics: Any) -> None:
+            phase_name = re.sub(r"[^a-z0-9_]+", "_", str(phase).lower()).strip("_")[:48]
+            safe_metrics = {
+                str(key): value for key, value in metrics.items()
+                if isinstance(value, (str, bool, int, float))
+            }
+            self._record_async_cycle_evidence(
+                cycle_id,
+                f"goal_action_executor.memory_recall.{phase_name}",
+                status,
+                output={
+                    "action": ACTION_MEMORY_RECALL,
+                    "execution_ref": execution_ref,
+                    "phase": phase_name,
+                    **safe_metrics,
+                },
+                metrics={"action": ACTION_MEMORY_RECALL, **safe_metrics},
+            )
+
+        result = self._action_memory_recall_with_fallback(
+            goal, progress_callback=record_recall_phase
+        )
         success = bool(result.get("success"))
         outcome = str(result.get("outcome_status") or (
             "succeeded" if success else "failed"
@@ -810,13 +831,17 @@ class GoalActionExecutor:
             )
             return False
 
-    def _action_memory_recall_with_fallback(self, goal) -> Dict:
+    def _action_memory_recall_with_fallback(
+        self, goal, *, progress_callback=None,
+    ) -> Dict:
         """
         FIX 1 + FIX 4: Use get_related(keyword) with keyword extraction.
         A missing memory is returned as a real failed outcome. The intention
         planner can retry it once, then move to the next ordered strategy.
         """
-        result = self._try_memory_recall(goal)
+        result = self._try_memory_recall(
+            goal, progress_callback=progress_callback
+        )
         if result['success']:
             return result
 
@@ -827,7 +852,7 @@ class GoalActionExecutor:
         )
         return result
 
-    def _try_memory_recall(self, goal) -> Dict:
+    def _try_memory_recall(self, goal, *, progress_callback=None) -> Dict:
         """
         Unified memory recall: SQLite concept graph + FAISS episodic memory.
 
@@ -843,10 +868,15 @@ class GoalActionExecutor:
         # ── Source 1: SQLite semantic concept graph ────────────────────────
         sem = getattr(self._o, 'semantic_memory', None)
         if sem and hasattr(sem, 'get_related'):
+            if callable(progress_callback):
+                progress_callback("sqlite_lookup", "started")
+            relation_count = 0
+            sqlite_errors = 0
             for kw in keywords:
                 try:
                     relations = sem.get_related(kw, limit=5)
                     if relations:
+                        relation_count = len(relations)
                         assoc = [
                             (r.target if r.source.lower() == kw else r.source)
                             for r in relations[:3]
@@ -864,16 +894,29 @@ class GoalActionExecutor:
                             pass
                         break  # one keyword hit is enough from SQLite
                 except Exception as e:
+                    sqlite_errors += 1
                     logger.debug(f"[GoalActionExecutor] get_related('{kw}') error: {e}")
+            if callable(progress_callback):
+                progress_callback(
+                    "sqlite_lookup",
+                    "completed" if relation_count else ("partial" if sqlite_errors else "empty"),
+                    relations=relation_count,
+                    errors=sqlite_errors,
+                )
+        elif callable(progress_callback):
+            progress_callback("sqlite_lookup", "skipped", reason="provider_unavailable")
 
         # ── Source 2: FAISS episodic memory (always run, not just fallback) ─
         ai_sys = getattr(self._o, 'ai_system', None)
         ms = getattr(ai_sys, 'memory_system', None)
         if ms and keywords:
+            if callable(progress_callback):
+                progress_callback("faiss_lookup", "started")
             try:
                 # Query with full topic for richer episodic match
                 query = goal.topic.replace('_', ' ')
                 context = ms.get_context(query, top_k=3)
+                faiss_chars = len(context.strip()) if isinstance(context, str) else 0
                 if context and context.strip() and len(context.strip()) > 20:
                     parts.append(f"episodic: {context.strip()[:120]}")
                     logger.info(
@@ -886,14 +929,27 @@ class GoalActionExecutor:
                         if c: c.record_memory_recall('faiss')
                     except Exception:
                         pass
+                if callable(progress_callback):
+                    progress_callback(
+                        "faiss_lookup", "completed",
+                        result_present=bool(faiss_chars), result_chars=faiss_chars,
+                    )
             except Exception as e:
                 logger.debug(f"[GoalActionExecutor] FAISS recall error: {e}")
+                if callable(progress_callback):
+                    progress_callback(
+                        "faiss_lookup", "failed", error_type=type(e).__name__
+                    )
+        elif callable(progress_callback):
+            progress_callback("faiss_lookup", "skipped", reason="provider_unavailable")
 
         if parts:
             thought = (
                 f"Memory about '{goal.topic[:30]}': "
                 + " | ".join(parts)
             )
+            if callable(progress_callback):
+                progress_callback("publication", "started", source_count=len(parts))
             publication = self._add_thought(
                 thought, source="goal_action.memory_recall"
             )
@@ -901,6 +957,12 @@ class GoalActionExecutor:
                 publication.get("thought_stream_recorded")
                 or publication.get("workspace_broadcast")
             )
+            if callable(progress_callback):
+                progress_callback(
+                    "publication", "completed" if published else "rejected",
+                    thought_stream_recorded=bool(publication.get("thought_stream_recorded")),
+                    workspace_broadcast=bool(publication.get("workspace_broadcast")),
+                )
             return {
                 'success': published,
                 'outcome_status': 'succeeded' if published else 'failed',
@@ -915,6 +977,8 @@ class GoalActionExecutor:
                 **publication,
             }
 
+        if callable(progress_callback):
+            progress_callback("publication", "skipped", reason="no_memory_sources")
         return {
             'success': False,
             'outcome_status': 'failed',

@@ -1038,8 +1038,13 @@ class IntentionPlanningTests(unittest.TestCase):
         executor._plan_has_pending_step = lambda _goal: False
         loop_thread_id = threading.get_ident()
         recall_thread_ids = []
-        executor._action_memory_recall_with_fallback = Mock(
-            side_effect=lambda _goal: recall_thread_ids.append(threading.get_ident()) or {
+        def fake_memory_recall(_goal, *, progress_callback=None):
+            recall_thread_ids.append(threading.get_ident())
+            if callable(progress_callback):
+                progress_callback("sqlite_lookup", "completed", relations=5, errors=0)
+                progress_callback("faiss_lookup", "completed", result_present=True, result_chars=72)
+                progress_callback("publication", "completed", thought_stream_recorded=True, workspace_broadcast=False)
+            return {
                 "success": True,
                 "outcome_status": "succeeded",
                 "memory_retrieved": True,
@@ -1048,7 +1053,8 @@ class IntentionPlanningTests(unittest.TestCase):
                 "workspace_broadcast": False,
                 "result": "recalled and published (1 sources)",
             }
-        )
+
+        executor._action_memory_recall_with_fallback = Mock(side_effect=fake_memory_recall)
         captured = {}
 
         def capture_async(coro, on_error=None, on_complete=None):
@@ -1080,19 +1086,24 @@ class IntentionPlanningTests(unittest.TestCase):
             [(item["stage"], item["status"]) for item in async_stages],
             [
                 ("goal_action_executor.memory_recall_started", "started"),
+                ("goal_action_executor.memory_recall.sqlite_lookup", "completed"),
+                ("goal_action_executor.memory_recall.faiss_lookup", "completed"),
+                ("goal_action_executor.memory_recall.publication", "completed"),
                 ("goal_action_executor.memory_recall_result", "succeeded"),
             ],
         )
         self.assertTrue(all(item["cycle_id"] == 91 for item in async_stages))
         self.assertTrue(all(item["output"] for item in async_stages))
         self.assertTrue(all(item["metrics"] for item in async_stages))
-        result_output = async_stages[1]["output"]
+        result_output = async_stages[4]["output"]
         self.assertEqual(result_output["outcome_status"], "succeeded")
         self.assertTrue(result_output["memory_retrieved"])
         self.assertTrue(result_output["thought_published"])
         self.assertTrue(result_output["thought_stream_recorded"])
         self.assertFalse(result_output["workspace_broadcast"])
         self.assertNotIn("result", result_output)
+        self.assertEqual(async_stages[2]["output"]["result_chars"], 72)
+        self.assertTrue(async_stages[3]["output"]["thought_stream_recorded"])
         captured["on_complete"]()
         self.assertEqual(executor._async_actions_in_flight, set())
 
