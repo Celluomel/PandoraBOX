@@ -101,6 +101,54 @@ def test_compact_turn_snapshot_keeps_causality_without_user_text_or_identity():
     assert "private" not in repr(compact)
 
 
+def test_compact_turn_snapshot_keeps_workspace_attribution_and_validation_limits():
+    payload = {
+        "available": True,
+        "turns": [{
+            "turn_id": "turn-workspace-1", "scope": "human", "status": "completed",
+            "context_sources": {
+                "global_workspace_state": {
+                    "status": "injected_snapshot_attributed",
+                    "source_cycle": None,
+                    "age_cycles": None,
+                    "state_focus_source": "phase1_competition",
+                    "state_focus_updated_at": 1234.5,
+                    "state_focus_age_seconds": 2.0,
+                    "focus_type": "goal",
+                    "focus_score": 0.63,
+                    "focus_ref": "opaque-ref",
+                    "context_included": True,
+                    "focus_text": "must not be recorded",
+                },
+            },
+            "pipeline_integrity": {
+                "status": "incomplete_evidence",
+                "scope": "execution_order_and_data_flow_only",
+                "semantic_correctness": "not_assessed",
+                "missing_core_stages": ["response_validation"],
+                "private_detail": "must not be recorded",
+            },
+            "semantic_answer_validation": {
+                "status": "not_performed", "scope": "none",
+                "reason": "No general validator is wired.",
+                "raw_answer": "must not be recorded",
+            },
+        }],
+    }
+
+    compact = compact_turn_snapshot(payload, "http://localhost/turns")
+    turn = compact["turns"][0]
+    workspace = turn["context_sources"]["global_workspace_state"]
+
+    assert workspace["state_focus_source"] == "phase1_competition"
+    assert workspace["state_focus_updated_at"] == 1234.5
+    assert workspace["focus_ref"] == "opaque-ref"
+    assert turn["pipeline_integrity"]["semantic_correctness"] == "not_assessed"
+    assert turn["pipeline_integrity"]["missing_core_stages"] == ["response_validation"]
+    assert turn["semantic_answer_validation"]["status"] == "not_performed"
+    assert "must not be recorded" not in repr(compact)
+
+
 def test_load_seen_state_resumes_deduplication_from_jsonl(tmp_path):
     output = tmp_path / "audit.jsonl"
     records = [

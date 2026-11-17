@@ -116,6 +116,9 @@ def compact_turn_snapshot(payload: dict[str, Any], endpoint: str) -> dict[str, A
                 "observed_count", "tick_count", "error_count", "initialized_unobserved_count",
                 "unavailable_count", "affect_source", "affect_profile", "affect_event_type",
                 "affect_event_age_seconds", "source_cycle", "age_seconds",
+                "age_cycles", "source_evidence_ref", "focus_type", "focus_score",
+                "focus_ref", "context_included", "state_focus_source",
+                "state_focus_updated_at", "state_focus_age_seconds",
             }
             sources = {
                 str(name)[:100]: {
@@ -135,7 +138,26 @@ def compact_turn_snapshot(payload: dict[str, Any], endpoint: str) -> dict[str, A
                 key: turn.get(key) for key in (
                     "turn_id", "scope", "status", "started_at", "completed_at",
                 ) if key in turn
-            } | {"stages": stages, "context_sources": sources, "stage_events": events})
+            } | {
+                "stages": stages,
+                "context_sources": sources,
+                "stage_events": events,
+                "pipeline_integrity": {
+                    key: value for key, value in _mapping(turn.get("pipeline_integrity")).items()
+                    if key in {
+                        "status", "scope", "semantic_correctness", "required_core_stages",
+                        "execution_path", "missing_core_stages", "malformed_stages",
+                        "stage_order_violations", "data_flow_issues", "peer_scope_violations",
+                        "failed_stages", "incomplete_outputs", "conditional_skips",
+                    }
+                },
+                "semantic_answer_validation": {
+                    key: value for key, value in _mapping(
+                        turn.get("semantic_answer_validation")
+                    ).items()
+                    if key in {"status", "scope", "stage_status"}
+                },
+            })
     return {
         "available": bool(payload.get("available")),
         "reason": payload.get("reason"),

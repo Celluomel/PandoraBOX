@@ -1,7 +1,7 @@
 # Audit du harnais cognitif — état et prochaines étapes
 
 **Date de mise à jour :** 17 novembre 2026
-**Statut :** audit du harnais cognitif en cours; aucune conclusion globale de qualité n’est établie. Le relevé live du 17 novembre confirme les deux endpoints (`127.0.0.1:8080` application complète et `127.0.0.1:8765/status` BrainOnly) prêts, modèle Gemma, FAISS et boucle active. Les corrections sont poussées jusqu’à `5023e29` (évaluateur, gates sémantiques, narratif, compteurs du chercheur, persistance atomique et idempotence du méta-audit). Le processus live a démarré avant les changements narratifs et méta-audit récents; le lot local courant corrige l’application des seuils Nomic lorsque l’embedder bascule vers MiniLM. Les modifications Body/UI préexistantes restent hors lot.
+**Statut :** audit du harnais cognitif en cours; aucune conclusion globale de qualité n’est établie. Le dernier commit partagé est `0d9fe7b`; il inclut la séparation des espaces d’embedding et l’attribution du focus workspace. Le correctif local courant étend le watcher pour préserver ces preuves et les limites explicites de validation de réponse. Les modifications Body/UI préexistantes restent hors lot. Les processus Lumina actifs précèdent les derniers changements cognitifs et devront être vérifiés ensemble après le lot suivant; aucune relance n’est demandée pour cette correction locale.
 
 ## Plan d’audit piloté par les preuves — mesure de progression
 
@@ -3829,6 +3829,16 @@ Le processus actif fonctionne encore sous l’ancien code. Son dernier relevé l
 **Vérification locale :** 32 tests passent sur Curiosity/resolver, évaluateur avancé, cache et gate GoalEngine, et audit MetaLearning; les tests démontrent qu’un cosine artificiellement élevé en MiniLM n’active pas le seuil Nomic, tandis que la même sortie Nomic conserve le chemin sémantique. 7 avertissements Pydantic historiques. L’effet live n’est pas encore vérifié; l’API actuelle répond, mais le processus utilise l’ancien code jusqu’au redémarrage groupé.
 
 **Portée :** Nomic est utile pour le tri sémantique et la déduplication; ces correctifs empêchent un changement silencieux de modèle de dérégler les décisions. Cela ne fournit toujours pas une mesure de vérité, d’utilité cognitive ou d’effet causal. Piste 6 et score strict inchangés : **3/10 = 30 %**.
+
+### Capture des preuves du watcher : champs de provenance et limites de qualité perdus — 17 novembre 2026
+
+**Défaut causal reproduit :** l’API `cognitive-turns` exposait déjà la provenance du focus Global Workspace et les champs `pipeline_integrity` / `semantic_answer_validation`, mais `watch_cognitive_harness_audit.compact_turn_snapshot()` les supprimait. Le JSONL de l’observateur ne pouvait donc pas conserver les éléments qui permettent de séparer l’exécution causale d’un tour de la validité sémantique de sa réponse; le rapport d’audit reposait sur des lectures ponctuelles de l’API.
+
+**Correction :** la capture conserve maintenant le producteur/horodatage/âge du focus, la référence opaque, les limites d’intégrité de pipeline et le statut/périmètre de validation de réponse. Elle continue d’exclure texte du focus, texte de réponse, détails privés et champs inconnus; le champ libre `reason` n’est pas persisté. Aucun statut d’exécution n’est transformé en verdict de qualité.
+
+**Vérification :** `tests/test_cognitive_harness_audit_watch.py` — **6 passed**, dont un nouveau contrat qui confirme la conservation des champs utiles et l’exclusion des sentinelles privées. Le test async de l’API passe aussi hors sandbox (**1 passed**); dans le bac à sable, `IsolatedAsyncioTestCase` se bloque avant le test dans `socket.socketpair`, et l’import normal échoue sous `cp1252` à cause des logs Unicode. Import FAISS minimal : `faiss_import_ok`; l’exception native antérieure n’a pas été reproduite. Aucun code FAISS modifié.
+
+**Limite :** cette correction améliore la preuve capturée, pas la qualité des réponses. Nomic peut mesurer une proximité de sens calibrée, mais ne vérifie pas que les affirmations répondent juste à une question ni que le raisonnement est valide. La piste 8 reste partielle et le score strict reste **3/10 = 30 %** jusqu’aux scénarios avec critères attendus et résultats live. Le correctif doit être committé/poussé; il ne requiert pas de redémarrage de Lumina pour les tests locaux, mais l’observateur devra être relancé pour enregistrer les nouveaux champs.
 
 ### Global Workspace : focus injecté depuis un snapshot sans provenance de tour — 17 novembre 2026
 
