@@ -8242,8 +8242,14 @@ Memory honesty — two distinct cases:
                 "YES if: live data, recent events, current prices/news/scores, "
                 "facts that may have changed since 2024, or the user asks to "
                 "inspect, compare or cite external sources such as papers or a "
-                "specific website.\n"
-                "NO if: creative, conversational, math, coding, stable knowledge."
+                "specific website. An explicit request for external research or "
+                "citations takes priority.\n"
+                "NO if: creative, conversational, math, coding, stable knowledge, "
+                "or a question about this assistant's current internal state, "
+                "feelings, attention, goals, memory, architecture, or capabilities "
+                "that asks you to use available conversation/runtime evidence. "
+                "Those questions should be answered from the supplied internal "
+                "context; do not search the web to infer the assistant's live state."
             )
             raw = llm_fn(f"Need web search for: {user_input[:200]}", system,
                          max_tokens=5, temperature=0.1)

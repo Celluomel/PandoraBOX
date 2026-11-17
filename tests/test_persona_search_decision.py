@@ -32,6 +32,28 @@ def test_question_fragment_reaches_classifier():
     assert len(calls) == 1
 
 
+def test_internal_state_classifier_is_directed_to_use_runtime_evidence():
+    calls = []
+
+    def classifier(prompt, system, **kwargs):
+        calls.append((prompt, system, kwargs))
+        return "NO"
+
+    bridge = _bridge(classifier)
+    query = (
+        "Quelles émotions fonctionnelles sont actives en toi maintenant? "
+        "Décris-les selon les signaux internes disponibles."
+    )
+
+    assert bridge._llm_should_search(query) is False
+    assert len(calls) == 1
+    _, system, kwargs = calls[0]
+    assert "current internal state" in system
+    assert "supplied internal context" in system
+    assert "explicit request for external research" in system
+    assert kwargs["max_tokens"] == 5
+
+
 def test_classifier_failure_does_not_treat_generic_body_question_as_web_search():
     def unavailable(*args, **kwargs):
         raise RuntimeError("classifier unavailable")

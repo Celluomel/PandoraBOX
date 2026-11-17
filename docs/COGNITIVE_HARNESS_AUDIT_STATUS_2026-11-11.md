@@ -1,7 +1,7 @@
 # Audit du harnais cognitif — état et prochaines étapes
 
 **Date de mise à jour :** 17 novembre 2026
-**Statut :** audit du harnais cognitif en cours; aucune conclusion globale de qualité n’est établie. Le dernier commit partagé est `ddf2864`; il complète la chaîne PersonaBridge → API des preuves de validation et de provenance. Les modifications Body/UI préexistantes restent hors lot. Lumina n’a pas été redémarrée; une validation live groupée sera nécessaire après le prochain lot.
+**Statut :** audit du harnais cognitif en cours; aucune conclusion globale de qualité n’est établie. Le dernier commit partagé est `d4a1178`; il complète la chaîne PersonaBridge → API des preuves de validation et de provenance. Un correctif local affine le routage auto de recherche pour les questions portant sur l’état cognitif interne. Les modifications Body/UI préexistantes restent hors lot. Lumina n’a pas été redémarrée; une validation live groupée sera nécessaire après le prochain lot.
 
 ## Plan d’audit piloté par les preuves — mesure de progression
 
@@ -3861,3 +3861,13 @@ Le processus actif fonctionne encore sous l’ancien code. Son dernier relevé l
 **Observation distincte de coût :** les trois derniers cycles live (`12483–12485`) contenaient **51, 61 et 61** reçus `narrative_arc_writer.watch_thread_resolution` chacun; les cycles avaient 100 stages retenus. Le filtre de fils terminaux inédits est déjà poussé dans `a4c8422`, mais pas chargé dans ce processus. Cela confirme que le processus courant tourne encore sur l’ancienne boucle répétitive; la comparaison après redémarrage groupé devra montrer la baisse sans perte de résolution des fils terminaux.
 
 **État :** la correction de provenance workspace est locale et à vérifier avec ses suites complètes; aucun changement de statut de piste ni de score n’est justifié. L’ensemble des patches poussés depuis `e59a5ae` requiert un seul redémarrage groupé pour la validation live; jusqu’alors, les endpoints répondent mais l’état live reste pré-patch.
+
+### Routage auto de recherche : question d’état interne envoyée au web — 17 novembre 2026
+
+**Cause observée :** le journal du 11 novembre montrait une question d’introspection (« quelles émotions fonctionnelles sont actives en toi, selon tes signaux internes ? ») classée `YES` par le juge web-search. La recherche a alors consommé RSS, DDG puis Bing et injecté cinq résultats sans rapport direct avec l’état courant de Lumina. Le classifieur ne précisait pas que l’état interne et les capacités présentes doivent venir du contexte/runtime fourni.
+
+**Correction locale :** la consigne du juge `auto` indique maintenant de répondre aux questions sur l’état interne, l’attention, les objectifs, la mémoire, l’architecture et les capacités à partir des éléments conversationnels/runtime disponibles, sans recherche web. Une demande explicite de sources/recherche externe conserve la priorité; aucun dictionnaire de mots ni gate lexical spécifique au français n’a été ajouté.
+
+**Vérification locale :** `tests/test_persona_search_decision.py` — **6 passed**, dont le cas de question française sur l’état émotionnel qui vérifie le routage et la règle transmise au juge. Cette vérification valide la consigne et le câblage, pas l’obéissance réelle du LLM; celle-ci devra être vérifiée live après redémarrage groupé. Aucun test n’atteste que les anciens résultats de recherche ont influencé la réponse finale.
+
+**État :** piste 9 partielle; pas de changement au score strict **3/10 = 30 %**. Le correctif doit être poussé. Le poids/reclassement des résultats reste une question distincte : l’embedding Nomic peut classer la proximité thématique, mais pas prouver la fiabilité factuelle des sources.
