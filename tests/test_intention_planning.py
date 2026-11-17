@@ -1010,8 +1010,23 @@ class IntentionPlanningTests(unittest.TestCase):
             origin="resolve_uncertainty", priority=0.72, energy=0.8,
         )
         goal_engine = NS(get_active_goals=lambda min_activation=0.1: [goal])
+        async_stages = []
+
+        def record_async_cycle_stage(cycle_id, stage, status, *, output=None, metrics=None):
+            async_stages.append({
+                "cycle_id": cycle_id,
+                "stage": stage,
+                "status": status,
+                "output": output,
+                "metrics": metrics,
+            })
+            return True
+
         executor = GoalActionExecutor.__new__(GoalActionExecutor)
-        executor._o = NS(ai_system=NS(goal_engine=goal_engine), _loop=None)
+        executor._o = NS(
+            ai_system=NS(goal_engine=goal_engine),
+            _loop=NS(record_async_cycle_stage=record_async_cycle_stage),
+        )
         executor._last_action_time = {}
         executor._rotation_index = {}
         executor._pending_predictions = {}
@@ -1061,6 +1076,23 @@ class IntentionPlanningTests(unittest.TestCase):
         self.assertEqual(finalized.kwargs["execution_id"], report["execution_id"])
         self.assertEqual(finalized.kwargs["cycle_id"], 91)
         self.assertEqual(finalized.kwargs["evidence"]["memory_retrieved"], True)
+        self.assertEqual(
+            [(item["stage"], item["status"]) for item in async_stages],
+            [
+                ("goal_action_executor.memory_recall_started", "started"),
+                ("goal_action_executor.memory_recall_result", "succeeded"),
+            ],
+        )
+        self.assertTrue(all(item["cycle_id"] == 91 for item in async_stages))
+        self.assertTrue(all(item["output"] for item in async_stages))
+        self.assertTrue(all(item["metrics"] for item in async_stages))
+        result_output = async_stages[1]["output"]
+        self.assertEqual(result_output["outcome_status"], "succeeded")
+        self.assertTrue(result_output["memory_retrieved"])
+        self.assertTrue(result_output["thought_published"])
+        self.assertTrue(result_output["thought_stream_recorded"])
+        self.assertFalse(result_output["workspace_broadcast"])
+        self.assertNotIn("result", result_output)
         captured["on_complete"]()
         self.assertEqual(executor._async_actions_in_flight, set())
 

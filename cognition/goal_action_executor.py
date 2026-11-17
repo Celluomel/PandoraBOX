@@ -732,6 +732,14 @@ class GoalActionExecutor:
         calling the synchronous recall directly avoids an unnecessary second
         thread hop while keeping the internal cognitive-loop caller nonblocking.
         """
+        execution_ref = hashlib.sha256(
+            str(execution_id).encode("utf-8", errors="replace")
+        ).hexdigest()[:20]
+        self._record_async_cycle_evidence(
+            cycle_id, "goal_action_executor.memory_recall_started", "started",
+            output={"action": ACTION_MEMORY_RECALL, "execution_ref": execution_ref},
+            metrics={"action": ACTION_MEMORY_RECALL},
+        )
         result = self._action_memory_recall_with_fallback(goal)
         success = bool(result.get("success"))
         outcome = str(result.get("outcome_status") or (
@@ -745,6 +753,21 @@ class GoalActionExecutor:
             "thought_stream_recorded": bool(result.get("thought_stream_recorded")),
             "workspace_broadcast": bool(result.get("workspace_broadcast")),
         }
+        self._record_async_cycle_evidence(
+            cycle_id, "goal_action_executor.memory_recall_result",
+            "succeeded" if success else "failed",
+            output={
+                **evidence,
+                "success": success,
+                "execution_ref": execution_ref,
+            },
+            metrics={
+                "action": ACTION_MEMORY_RECALL,
+                "success": success,
+                "outcome_status": outcome,
+                "reason_code": evidence["reason_code"],
+            },
+        )
         self._finalize_async_action(
             goal,
             ACTION_MEMORY_RECALL,
@@ -754,6 +777,38 @@ class GoalActionExecutor:
             cycle_id=cycle_id,
             evidence=evidence,
         )
+
+    def _record_async_cycle_evidence(
+        self, cycle_id: Optional[int], stage: str, status: str, *,
+        output: Optional[Dict[str, Any]] = None,
+        metrics: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Attach a bounded async progress/result receipt to its origin cycle."""
+        if cycle_id is None:
+            return False
+        loop = getattr(self._o, "_loop", None)
+        record = getattr(loop, "record_async_cycle_stage", None)
+        if not callable(record):
+            return False
+        try:
+            recorded = record(
+                int(cycle_id), str(stage)[:96], str(status)[:48],
+                output=output, metrics=metrics,
+            )
+            if recorded is False:
+                logger.warning(
+                    "[GoalActionExecutor] async evidence was not attached "
+                    "to cycle %s (stage=%s)", cycle_id, stage,
+                )
+                return False
+            return True
+        except Exception as exc:
+            logger.warning(
+                "[GoalActionExecutor] async evidence attach failed "
+                "for cycle %s (stage=%s): %s",
+                cycle_id, stage, type(exc).__name__,
+            )
+            return False
 
     def _action_memory_recall_with_fallback(self, goal) -> Dict:
         """
@@ -2521,33 +2576,27 @@ class GoalActionExecutor:
         # the originating slow cycle, rather than letting the dispatch receipt
         # be mistaken for action success or attributing it to a later cycle.
         if cycle_id is not None:
-            try:
-                loop = getattr(self._o, "_loop", None)
-                record_async = getattr(loop, "record_async_cycle_stage", None)
-                if callable(record_async):
-                    safe_action = action_type if action_type in _SAFE_ACTION_TYPES else "unknown"
-                    reason_code = ""
-                    if isinstance(evidence, dict):
-                        candidate = evidence.get("reason_code")
-                        if isinstance(candidate, str) and re.fullmatch(r"[a-z0-9_]{1,64}", candidate):
-                            reason_code = candidate
-                    record_async(
-                        int(cycle_id),
-                        f"goal_action_executor.{safe_action}",
-                        "succeeded" if success else "failed",
-                        output=receipt,
-                        metrics={
-                            "action": safe_action,
-                            "success": bool(success),
-                            "execution_ref": hashlib.sha256(
-                                str(execution_id).encode("utf-8")
-                            ).hexdigest()[:20] if execution_id else "",
-                            "reason_code": reason_code,
-                            "goal_state_persisted": bool(goal_state_persisted),
-                        },
-                    )
-            except Exception as e:
-                logger.debug("[GoalActionExecutor] async cycle evidence error: %s", e)
+            safe_action = action_type if action_type in _SAFE_ACTION_TYPES else "unknown"
+            reason_code = ""
+            if isinstance(evidence, dict):
+                candidate = evidence.get("reason_code")
+                if isinstance(candidate, str) and re.fullmatch(r"[a-z0-9_]{1,64}", candidate):
+                    reason_code = candidate
+            self._record_async_cycle_evidence(
+                cycle_id,
+                f"goal_action_executor.{safe_action}",
+                "succeeded" if success else "failed",
+                output=receipt,
+                metrics={
+                    "action": safe_action,
+                    "success": bool(success),
+                    "execution_ref": hashlib.sha256(
+                        str(execution_id).encode("utf-8")
+                    ).hexdigest()[:20] if execution_id else "",
+                    "reason_code": reason_code,
+                    "goal_state_persisted": bool(goal_state_persisted),
+                },
+            )
         return receipt
 
     def _has_semantic_memory(self) -> bool:
