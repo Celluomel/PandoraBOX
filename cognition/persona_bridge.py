@@ -889,6 +889,7 @@ class PersonaBridge:
         )
 
         event_emitted = False
+        event_handler_count = None
         try:
             organism = getattr(self, "_organism", None)
             identity_drift = 0.0
@@ -913,11 +914,13 @@ class PersonaBridge:
                     event_bus = getattr(organism, "event_bus", None)
                     emit = getattr(event_bus, "emit", None)
                     if callable(emit):
-                        emit(CONTRADICTION_DETECTED, {
+                        handlers_called = emit(CONTRADICTION_DETECTED, {
                             "topic": str(getattr(contradiction, "claimed_belief", ""))[:80],
                             "pressure": 0.6,
                         }, source="liberty_contradiction")
                         event_emitted = True
+                        if isinstance(handlers_called, int) and not isinstance(handlers_called, bool):
+                            event_handler_count = max(0, handlers_called)
                 except Exception:
                     logger.debug("Contradiction event dispatch unavailable", exc_info=True)
 
@@ -925,7 +928,13 @@ class PersonaBridge:
                 "contradiction_review", "completed", output={
                     "detected": contradiction is not None,
                     "event_emitted": event_emitted,
-                    "event_status": "emitted" if event_emitted else "not_emitted",
+                    "event_status": (
+                        "handlers_called" if event_handler_count and event_handler_count > 0
+                        else "emitted_unhandled" if event_emitted and event_handler_count == 0
+                        else "emitted_unverified" if event_emitted
+                        else "not_emitted"
+                    ),
+                    "event_handler_count": event_handler_count,
                     "belief_count": len(beliefs),
                 }, consumes=("contradiction_review_input",), turn_id=turn_id,
             )

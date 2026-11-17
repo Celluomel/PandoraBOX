@@ -56,7 +56,7 @@ def summarize_output(value: Any) -> dict[str, Any]:
             "modules_changed", "modules_with_bias", "contexts_before",
             "contexts_after", "signals_before", "signals_after",
             "signals_pruned", "contexts_pruned",
-            "belief_count", "response_characters",
+            "belief_count", "response_characters", "event_handler_count",
         }
         for key in receipt_enum_fields:
             item = value.get(key)

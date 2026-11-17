@@ -329,7 +329,7 @@ def test_contradiction_review_records_redacted_inputs_result_and_event_effect():
     bridge = _bridge()
     bridge._organism = SimpleNamespace(
         observatory=None,
-        event_bus=SimpleNamespace(emit=lambda *args, **kwargs: None),
+        event_bus=SimpleNamespace(emit=lambda *args, **kwargs: 2),
     )
     bridge._record_turn_stage("turn_input", "received", output="private user prompt")
     bridge._record_turn_stage("response_finalization", "completed", output="private final answer")
@@ -362,6 +362,8 @@ def test_contradiction_review_records_redacted_inputs_result_and_event_effect():
     assert review_stage["status"] == "completed"
     assert review_stage["output_summary"]["receipt_fields"]["detected"] is True
     assert review_stage["output_summary"]["receipt_fields"]["event_emitted"] is True
+    assert review_stage["output_summary"]["receipt_fields"]["event_handler_count"] == 2
+    assert review_stage["output_summary"]["receipt_fields"]["event_status"] == "handlers_called"
     assert review_stage["consumes"][0]["fingerprint"] == input_stage["output_fingerprint"]
     assert contradiction_text not in repr(trace)
 
