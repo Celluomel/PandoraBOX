@@ -158,6 +158,7 @@ class MemorySystemFallbackTests(unittest.TestCase):
         system.config = SimpleNamespace(
             max_memory_retrieval=5,
             faiss=SimpleNamespace(save_interval=100),
+            embedding_model_name="test-embedder",
         )
         system.embedding_dim = 3
         system.embedding_model = embedder
@@ -198,6 +199,8 @@ class MemorySystemFallbackTests(unittest.TestCase):
 
         self.assertEqual(len(memories), 2)
         self.assertEqual(receipt["backend"], "faiss")
+        self.assertEqual(receipt["embedding_model"], "test-embedder")
+        self.assertEqual(receipt["embedding_dim"], 3)
         self.assertIsNone(receipt["fallback_reason"])
         self.assertEqual(receipt["vector_candidate_count"], 2)
         self.assertEqual(receipt["returned_count"], 2)

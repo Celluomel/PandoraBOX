@@ -867,6 +867,11 @@ class EnhancedMemorySystem:
         path = Path(self.config.faiss.index_path)
         if path.exists():
             try:
+                if not self._index_manifest_matches(path):
+                    logger.warning(
+                        "FAISS index embedding provenance is missing or mismatched; rebuilding"
+                    )
+                    return self._build_index_from_db()
                 idx = faiss.read_index(str(path))
                 if idx.d == self.embedding_dim and self._index_matches_memory_db(idx):
                     logger.info(f"FAISS index loaded ({idx.ntotal} vectors)")
@@ -877,6 +882,35 @@ class EnhancedMemorySystem:
             except Exception as e:
                 logger.error(f"FAISS load failed: {e}")
         return self._build_index_from_db()
+
+    def _embedding_model_id(self) -> str:
+        """Return the configured model identity used for this memory index."""
+        return str(getattr(self.config, "embedding_model_name", "unknown") or "unknown")
+
+    @staticmethod
+    def _index_manifest_path(index_path: Path) -> Path:
+        return index_path.with_suffix(index_path.suffix + ".meta.json")
+
+    def _index_manifest_matches(self, index_path: Path) -> bool:
+        """Require model, dimension, and file checksum provenance before load.
+
+        FAISS validates vector dimensions and IDs, but not which embedding
+        model produced vectors. Same-dimension model changes can otherwise
+        silently mix incompatible vector spaces and corrupt retrieval quality.
+        """
+        manifest_path = self._index_manifest_path(index_path)
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if (
+                manifest.get("schema") != 1
+                or manifest.get("embedding_model") != self._embedding_model_id()
+                or int(manifest.get("embedding_dim", -1)) != int(self.embedding_dim)
+            ):
+                return False
+            digest = hashlib.sha256(index_path.read_bytes()).hexdigest()
+            return manifest.get("index_sha256") == digest
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            return False
 
     def _index_matches_memory_db(self, index) -> bool:
         """Reject stale/corrupt ID maps before using persisted vector results.
@@ -936,6 +970,10 @@ class EnhancedMemorySystem:
         temporary = target.with_name(
             f"{target.name}.{threading.get_ident()}.tmp"
         )
+        manifest_target = self._index_manifest_path(target)
+        manifest_temporary = manifest_target.with_name(
+            f"{manifest_target.name}.{threading.get_ident()}.tmp"
+        )
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
             with self._lock:
@@ -943,13 +981,27 @@ class EnhancedMemorySystem:
                 if index is None:
                     return False
                 faiss.write_index(index, str(temporary))
+                manifest = {
+                    "schema": 1,
+                    "embedding_model": self._embedding_model_id(),
+                    "embedding_dim": int(self.embedding_dim),
+                    "vector_count": int(getattr(index, "ntotal", 0) or 0),
+                    "index_sha256": hashlib.sha256(temporary.read_bytes()).hexdigest(),
+                }
+                manifest_temporary.write_text(
+                    json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8"
+                )
+                # Replace the binary first. If interrupted before the manifest
+                # replace, its checksum will fail and startup safely rebuilds.
                 temporary.replace(target)
+                manifest_temporary.replace(manifest_target)
             return True
         except Exception as e:
-            try:
-                temporary.unlink(missing_ok=True)
-            except OSError:
-                pass
+            for temp_path in (temporary, manifest_temporary):
+                try:
+                    temp_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
             logger.error(f"FAISS save failed: {e}")
             return False
 
@@ -1088,6 +1140,12 @@ class EnhancedMemorySystem:
                 memories = []
         receipt = {
             "backend": backend,
+            "embedding_model": (
+                self._embedding_model_id() if backend == "faiss" else None
+            ),
+            "embedding_dim": (
+                int(self.embedding_dim) if backend == "faiss" else None
+            ),
             "fallback_reason": fallback_reason,
             "vector_candidate_count": vector_candidate_count,
             "returned_count": len(memories),

@@ -25,12 +25,60 @@ def test_save_index_atomically_replaces_the_persisted_file(tmp_path, monkeypatch
     memory.faiss_index = "updated-index"
     memory.config = SimpleNamespace(
         faiss=SimpleNamespace(index_path=str(target)),
+        embedding_model_name="all-MiniLM-L6-v2",
     )
+    memory.embedding_dim = 384
     monkeypatch.setattr(ai_system_module, "faiss", FakeFaiss)
 
     assert memory._save_index() is True
     assert target.read_bytes() == b"updated-index"
-    assert list(tmp_path.iterdir()) == [target]
+    manifest = target.with_suffix(target.suffix + ".meta.json")
+    assert manifest.exists()
+    assert memory._index_manifest_matches(target)
+    assert sorted(path.name for path in tmp_path.iterdir()) == sorted(
+        [target.name, manifest.name]
+    )
+
+
+def test_faiss_manifest_rejects_model_change_and_index_tampering(tmp_path, monkeypatch):
+    target = tmp_path / "faiss_index.bin"
+
+    class FakeFaiss:
+        @staticmethod
+        def write_index(index, path):
+            Path(path).write_bytes(index)
+
+    memory = EnhancedMemorySystem.__new__(EnhancedMemorySystem)
+    memory._lock = RLock()
+    memory.faiss_index = b"index-for-minilm"
+    memory.embedding_dim = 384
+    memory.config = SimpleNamespace(
+        faiss=SimpleNamespace(index_path=str(target)),
+        embedding_model_name="all-MiniLM-L6-v2",
+    )
+    monkeypatch.setattr(ai_system_module, "faiss", FakeFaiss)
+
+    assert memory._save_index() is True
+    assert memory._index_manifest_matches(target)
+
+    memory.config.embedding_model_name = "some-other-384d-model"
+    assert memory._index_manifest_matches(target) is False
+
+    memory.config.embedding_model_name = "all-MiniLM-L6-v2"
+    target.write_bytes(b"tampered-index")
+    assert memory._index_manifest_matches(target) is False
+
+
+def test_legacy_faiss_index_without_manifest_is_not_trusted(tmp_path):
+    target = tmp_path / "legacy.bin"
+    target.write_bytes(b"old-index-without-model-provenance")
+    memory = EnhancedMemorySystem.__new__(EnhancedMemorySystem)
+    memory.embedding_dim = 384
+    memory.config = SimpleNamespace(
+        embedding_model_name="all-MiniLM-L6-v2",
+    )
+
+    assert memory._index_manifest_matches(target) is False
 
 
 def test_failed_index_write_preserves_previous_persisted_file(tmp_path, monkeypatch):
@@ -48,7 +96,9 @@ def test_failed_index_write_preserves_previous_persisted_file(tmp_path, monkeypa
     memory.faiss_index = "updated-index"
     memory.config = SimpleNamespace(
         faiss=SimpleNamespace(index_path=str(target)),
+        embedding_model_name="all-MiniLM-L6-v2",
     )
+    memory.embedding_dim = 384
     monkeypatch.setattr(ai_system_module, "faiss", BrokenFaiss)
 
     assert memory._save_index() is False
