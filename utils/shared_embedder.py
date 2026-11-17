@@ -106,6 +106,10 @@ class APIEmbedder:
         self.timeout = timeout
         self._dim = None
 
+    @property
+    def embedding_space_id(self):
+        return f"api:{self.base_url}:{self.model_name}"
+
     def _post(self, texts):
         body = json.dumps({"model": self.model_name, "input": list(texts)}).encode("utf-8")
         req = urllib.request.Request(
@@ -141,12 +145,23 @@ class APIEmbedder:
             _quality_request_lock.release()
 
     def encode(self, texts, **kw):
+        vectors, _space_id = self.encode_with_metadata(texts, **kw)
+        return vectors
+
+    def encode_with_metadata(self, texts, **kw):
+        """Encode and return the actual vector-space identity used.
+
+        QUALITY requests may fall back to local FAST embeddings. Returning the
+        actual space with the vector lets semantic caches avoid mixing the two
+        models even when callers keep the same configured QUALITY model.
+        """
         single = isinstance(texts, str)
         if _interactive_priority.is_set():
             raise RuntimeError("quality embeddings deferred during interactive turn")
         try:
             mat = self._encode_list([texts] if single else list(texts))
-            return mat[0] if single else mat
+            result = mat[0] if single else mat
+            return result, f"api:{self.base_url}:{self.model_name}"
         except Exception as e:
             if "deferred" in str(e):
                 raise
@@ -160,7 +175,9 @@ class APIEmbedder:
             fast = _get_fast_embedder()
             if fast is None:
                 raise
-            return fast.encode(texts, **kw)
+            result = fast.encode(texts, **kw)
+            fast_name = getattr(fast, "model_name_or_path", DEFAULT_FAST_MODEL)
+            return result, f"sentence-transformers:{fast_name}"
 
     def get_sentence_embedding_dimension(self):
         if _interactive_priority.is_set():

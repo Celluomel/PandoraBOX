@@ -7,12 +7,29 @@ from cognition import goal_semantics
 
 
 class _FakeEmbedder:
-    def __init__(self):
+    def __init__(self, model_name="fake-model", offset=0):
         self.calls = []
+        self.model_name = model_name
+        self.offset = offset
 
     def encode(self, texts):
         self.calls.append(list(texts))
-        return np.asarray([[len(text), sum(map(ord, text)) % 97] for text in texts], dtype="float32")
+        return np.asarray(
+            [[len(text) + self.offset, sum(map(ord, text)) % 97] for text in texts],
+            dtype="float32",
+        )
+
+
+class _FallbackEmbedder:
+    model_name = "quality-model"
+    embedding_space_id = "api:local:quality-model"
+
+    def __init__(self):
+        self.calls = 0
+
+    def encode_with_metadata(self, texts):
+        self.calls += 1
+        return np.asarray([[1.0, 2.0] for _ in texts], dtype="float32"), "fast:minilm"
 
 
 class GoalSemanticsCacheTests(unittest.TestCase):
@@ -42,6 +59,29 @@ class GoalSemanticsCacheTests(unittest.TestCase):
         result = goal_semantics.embed(["same", "same"])
         self.assertEqual(self.embedder.calls, [["same"]])
         np.testing.assert_array_equal(result[0], result[1])
+
+    def test_same_dimension_model_change_does_not_reuse_old_vectors(self):
+        first_model = _FakeEmbedder(model_name="model-a", offset=0)
+        second_model = _FakeEmbedder(model_name="model-b", offset=100)
+        with patch("utils.shared_embedder.get_embedder", return_value=first_model):
+            first = goal_semantics.embed(["shared topic"])
+        with patch("utils.shared_embedder.get_embedder", return_value=second_model):
+            second = goal_semantics.embed(["shared topic"])
+
+        self.assertEqual(first_model.calls, [["shared topic"]])
+        self.assertEqual(second_model.calls, [["shared topic"]])
+        self.assertNotEqual(float(first[0, 0]), float(second[0, 0]))
+
+    def test_quality_fallback_vectors_are_cached_under_actual_fast_space(self):
+        fallback = _FallbackEmbedder()
+        with patch("utils.shared_embedder.get_embedder", return_value=fallback):
+            first = goal_semantics.embed(["fallback topic"])
+            second = goal_semantics.embed(["fallback topic"])
+
+        self.assertEqual(fallback.calls, 2)
+        np.testing.assert_array_equal(first, second)
+        self.assertIn(("fast:minilm", "fallback topic"), goal_semantics._embedding_cache)
+        self.assertNotIn((fallback.embedding_space_id, "fallback topic"), goal_semantics._embedding_cache)
 
     def _score_topic(self, good_sim, noise_sim):
         rows = 1 + len(goal_semantics.GOOD_TOPIC_EXEMPLARS) + len(

@@ -36,7 +36,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import numpy as np
 
 logger = logging.getLogger(__name__)
-_embedding_cache: OrderedDict[str, np.ndarray] = OrderedDict()
+_embedding_cache: OrderedDict[Tuple[str, str], np.ndarray] = OrderedDict()
 _embedding_cache_lock = threading.RLock()
 _EMBEDDING_CACHE_LIMIT = 4096
 
@@ -61,40 +61,82 @@ def embed(texts: Sequence[str]) -> Optional[np.ndarray]:
         if not values:
             return np.empty((0, 0), dtype="float32")
         with _embedding_cache_lock:
-            missing = list(dict.fromkeys(text for text in values if text not in _embedding_cache))
+            from utils.shared_embedder import interactive_priority_active
+            if interactive_priority_active():
+                logger.debug(
+                    "[goal_semantics] deferred uncached text(s) during interactive chat"
+                )
+                return None
+            from utils.shared_embedder import get_embedder
+            embedder = get_embedder(quality=True)
+            space_id = getattr(embedder, "embedding_space_id", None)
+            if not space_id:
+                model_name = getattr(embedder, "model_name", None)
+                space_id = model_name or (
+                    f"{type(embedder).__module__}.{type(embedder).__qualname__}@{id(embedder)}"
+                )
+            space_id = str(space_id)
+            actual_space_id = space_id
+            cache_keys = [(space_id, text) for text in values]
+            missing = list(dict.fromkeys(
+                text for text, key in zip(values, cache_keys)
+                if key not in _embedding_cache
+            ))
             if missing:
-                from utils.shared_embedder import interactive_priority_active
-                if interactive_priority_active():
-                    logger.debug(
-                        "[goal_semantics] deferred %d uncached text(s) during interactive chat",
-                        len(missing),
-                    )
-                    return None
-                from utils.shared_embedder import get_embedder
-                embedder = get_embedder(quality=True)
-                mat = np.asarray(embedder.encode(missing), dtype="float32")
+                if hasattr(embedder, "encode_with_metadata"):
+                    encoded, actual_space_id = embedder.encode_with_metadata(missing)
+                    actual_space_id = str(actual_space_id)
+                else:
+                    encoded = embedder.encode(missing)
+                    actual_space_id = space_id
+                mat = np.asarray(encoded, dtype="float32")
                 if mat.ndim == 1:
                     mat = mat[None, :]
                 if mat.shape[0] != len(missing):
                     raise ValueError("embedding provider returned an unexpected row count")
-                # A provider/model switch can change vector dimensions. Never
-                # compare cached vectors from different embedding spaces.
-                cached_dim = next(iter(_embedding_cache.values())).shape[0] if _embedding_cache else mat.shape[1]
-                if cached_dim != mat.shape[1]:
-                    _embedding_cache.clear()
-                    missing = list(dict.fromkeys(values))
-                    mat = np.asarray(embedder.encode(missing), dtype="float32")
+                if not np.isfinite(mat).all():
+                    raise ValueError("embedding provider returned non-finite vectors")
+                # QUALITY can transparently fall back to FAST. Cache under the
+                # vector space that actually produced this batch, not merely
+                # the requested tier/model.
+                actual_keys = [(actual_space_id, text) for text in missing]
+                prior_dims = {
+                    vector.shape[0] for (cached_space, _), vector in _embedding_cache.items()
+                    if cached_space == actual_space_id
+                }
+                if prior_dims and prior_dims != {mat.shape[1]}:
+                    for key in [key for key in _embedding_cache if key[0] == actual_space_id]:
+                        del _embedding_cache[key]
+                    actual_keys = [(actual_space_id, text) for text in values]
+                    if hasattr(embedder, "encode_with_metadata"):
+                        encoded, retry_space_id = embedder.encode_with_metadata(values)
+                        if str(retry_space_id) != actual_space_id:
+                            raise ValueError("embedding backend changed during a cache rebuild")
+                    else:
+                        encoded = embedder.encode(values)
+                    mat = np.asarray(encoded, dtype="float32")
                     if mat.ndim == 1:
                         mat = mat[None, :]
+                    if mat.ndim != 2 or mat.shape[0] != len(values) or not np.isfinite(mat).all():
+                        raise ValueError("embedding provider returned invalid vectors after dimension change")
+                    missing = list(dict.fromkeys(values))
                 for text, vector in zip(missing, mat):
-                    _embedding_cache[text] = vector.copy()
-                    _embedding_cache.move_to_end(text)
+                    key = (actual_space_id, text)
+                    _embedding_cache[key] = vector.copy()
+                    _embedding_cache.move_to_end(key)
                 while len(_embedding_cache) > _EMBEDDING_CACHE_LIMIT:
                     _embedding_cache.popitem(last=False)
             result = []
+            # If the quality API failed, the newly computed vectors belong to
+            # FAST and are stored under that explicit identity. Re-request on
+            # later calls so a recovered QUALITY backend can replace the result.
+            result_space_id = actual_space_id if missing else space_id
             for text in values:
-                vector = _embedding_cache[text]
-                _embedding_cache.move_to_end(text)
+                key = (result_space_id, text)
+                if key not in _embedding_cache:
+                    key = (space_id, text)
+                vector = _embedding_cache[key]
+                _embedding_cache.move_to_end(key)
                 result.append(vector)
             return np.stack(result).astype("float32", copy=False)
     except Exception as e:  # noqa: BLE001 - never break a goal cycle
