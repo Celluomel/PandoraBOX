@@ -746,6 +746,23 @@ class PersonaBridge:
         )
         return stage_status == "failed"
 
+    def _record_semantic_topic_extraction(self, receipt: Any, turn_id: str) -> None:
+        """Attach the async extractor's redacted completion receipt to its turn."""
+        if not turn_id:
+            return
+        safe_receipt = receipt if isinstance(receipt, dict) else {
+            "status": "invalid_receipt",
+            "turn_id": str(turn_id or "") or None,
+        }
+        self._record_turn_stage(
+            "semantic_topic_extraction",
+            str(safe_receipt.get("status", "unreported")),
+            str(safe_receipt.get("error_type", "")),
+            output=safe_receipt,
+            consumes=("turn_input",),
+            turn_id=turn_id,
+        )
+
     @staticmethod
     def _provider_events_for_turn(
         provider_tokens: list[Any], *, include_reasoning: bool,
@@ -5541,6 +5558,21 @@ Memory honesty — two distinct cases:
                         _decision,
                         human_interaction=False,
                         turn_id=audit_turn_id,
+                        semantic_topic_callback=lambda receipt: self._record_semantic_topic_extraction(
+                            receipt, audit_turn_id,
+                        ),
+                    )
+                    _semantic_topic_receipt = (
+                        _post_receipt.get("semantic_topic_learning", {})
+                        if isinstance(_post_receipt, dict) else {}
+                    )
+                    self._record_turn_stage(
+                        "semantic_topic_learning_handoff",
+                        str(_semantic_topic_receipt.get("status", "unreported")),
+                        str(_semantic_topic_receipt.get("reason", "")),
+                        output=_semantic_topic_receipt,
+                        consumes=("turn_input",),
+                        turn_id=audit_turn_id,
                     )
                     self._record_turn_stage(
                         "pcm_post_turn_outcome",
@@ -5748,6 +5780,21 @@ Memory honesty — two distinct cases:
                     # Pass real emo_dict so meta_cognition evaluation is grounded
                     _post_receipt = organism._post_interaction(
                         user_input, response, {"emo_values": emo_dict}, _decision,
+                        turn_id=audit_turn_id,
+                        semantic_topic_callback=lambda receipt: self._record_semantic_topic_extraction(
+                            receipt, audit_turn_id,
+                        ),
+                    )
+                    _semantic_topic_receipt = (
+                        _post_receipt.get("semantic_topic_learning", {})
+                        if isinstance(_post_receipt, dict) else {}
+                    )
+                    self._record_turn_stage(
+                        "semantic_topic_learning_handoff",
+                        str(_semantic_topic_receipt.get("status", "unreported")),
+                        str(_semantic_topic_receipt.get("reason", "")),
+                        output=_semantic_topic_receipt,
+                        consumes=("turn_input",),
                         turn_id=audit_turn_id,
                     )
                     self._record_turn_stage(

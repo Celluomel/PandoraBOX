@@ -135,6 +135,8 @@ class SemanticExtractor:
         meta_scores:   Optional[Dict] = None,
         workspace=None,
         observation_role: str = "user_topic",
+        turn_id: str = "",
+        completion_callback=None,
     ):
         """Queue a completed turn for semantic extraction.
 
@@ -145,7 +147,10 @@ class SemanticExtractor:
         role = str(observation_role or "user_topic")
         if role not in {"user_topic", "peer_topic"}:
             role = "user_topic"
-        item = (user_input, response, None, workspace, role)
+        item = (
+            user_input, response, None, workspace, role,
+            str(turn_id or ""), completion_callback,
+        )
         with self._lock:
             self._queue.put_nowait(item)
             if self._worker_running:
@@ -168,15 +173,35 @@ class SemanticExtractor:
                         return
                 continue
             try:
-                self._extract(*item)
+                receipt = self._extract(*item)
+                completion_callback = item[6] if len(item) > 6 else None
+                if callable(completion_callback):
+                    try:
+                        completion_callback(receipt)
+                    except Exception as callback_error:
+                        logger.debug(
+                            "[SemanticExtractor] Completion receipt callback failed: %s",
+                            callback_error,
+                        )
             finally:
                 self._queue.task_done()
 
     def _extract(self, user_input, response, meta_scores, workspace,
-                 observation_role="user_topic"):
+                 observation_role="user_topic", turn_id="", completion_callback=None):
+        receipt = {
+            "status": "failed",
+            "turn_id": str(turn_id or "") or None,
+            "concepts_parsed": 0,
+            "concept_upsert_calls_returned": 0,
+            "observation_calls_returned": 0,
+            "relation_upsert_calls_returned": 0,
+            "cag_status": "not_available",
+            "workspace_status": "not_requested",
+        }
         try:
             t0 = time.time()
             concepts, relations, topic, cog_load = self._parse(user_input, response)
+            receipt["concepts_parsed"] = len(concepts)
 
             # CAG receives the concepts this extractor already grounded in the
             # incoming message. This avoids its former independent heuristic
@@ -192,12 +217,16 @@ class SemanticExtractor:
                         evidence_text=user_input or "",
                         source_role=observation_role,
                     )
+                    receipt["cag_status"] = "completed"
             except Exception as context_error:
+                receipt["cag_status"] = "failed"
+                receipt["cag_error_type"] = type(context_error).__name__
                 logger.debug("CAG semantic-topic update unavailable: %s", context_error)
 
             # Write to semantic memory
             for c in concepts:
                 self._memory.upsert_concept(c, strength_boost=0.04)
+                receipt["concept_upsert_calls_returned"] += 1
             # Keep interlocutor topics distinct from assistant prose and from
             # other interlocutors. FLUX may contribute shared concepts, but its
             # utterances must never qualify as human-originated goal evidence.
@@ -209,9 +238,11 @@ class SemanticExtractor:
                     role=observation_role,
                     confidence=0.8,
                 )
+                receipt["observation_calls_returned"] += 1
             for rel in relations:
                 self._memory.upsert_relation(
                     rel["from"], rel["to"], rel["type"], weight_boost=0.05)
+                receipt["relation_upsert_calls_returned"] += 1
 
             # Broadcast dominant topic into Global Workspace
             if workspace and topic:
@@ -225,16 +256,27 @@ class SemanticExtractor:
                         ),
                         priority = 0.4,
                     )
-                except Exception:
-                    pass
+                    receipt["workspace_status"] = "completed"
+                except Exception as workspace_error:
+                    receipt["workspace_status"] = "failed"
+                    receipt["workspace_error_type"] = type(workspace_error).__name__
+
+            receipt["status"] = (
+                "partial" if "failed" in {
+                    receipt["cag_status"], receipt["workspace_status"],
+                } else "completed"
+            )
 
             elapsed = time.time() - t0
+            receipt["duration_ms"] = round(elapsed * 1000, 3)
             logger.info(
                 f"[SemanticExtractor] {len(concepts)} concepts, "
                 f"{len(relations)} relations — topic: '{topic}' in {elapsed*1000:.0f}ms"
             )
         except Exception as e:
+            receipt["error_type"] = type(e).__name__
             logger.debug(f"[SemanticExtractor] Error: {e}")
+        return receipt
 
     def _parse(self, user_input: str, response: str
                ) -> Tuple[List[str], List[Dict], str, float]:

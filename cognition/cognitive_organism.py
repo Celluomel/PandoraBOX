@@ -87,6 +87,22 @@ from cognition.semantic_memory     import SemanticMemory
 from cognition.semantic_extractor  import SemanticExtractor
 from cognition.aspirational_self   import AspirationalSelf
 
+
+def _semantic_topic_learning_policy(user_input: str) -> tuple[bool, str]:
+    """Keep source-recall requests from becoming durable topic-interest signals.
+
+    The memory router already distinguishes requests to retrieve prior user
+    statements from ordinary topical conversation. Reuse that intent instead
+    of maintaining a second lexical filter here.
+    """
+    try:
+        from cognition.memory_retrieval import is_explicit_memory_recall_query
+        if is_explicit_memory_recall_query(str(user_input or "")):
+            return False, "explicit_source_recall"
+    except Exception as exc:
+        logger.debug("Semantic topic policy unavailable; retaining default learning: %s", exc)
+    return True, "ordinary_turn"
+
 # ── Consciousness-level binding layer (v34) ───────────────────────────────────
 from cognition.phenomenal_binder      import PhenomenalBinder
 from cognition.metacognitive_interrupt import MetacognitiveInterrupt
@@ -1342,7 +1358,8 @@ class CognitiveOrganism:
         human_interaction: bool = True,
         attention_feedback_context: Optional[Dict[str, Any]] = None,
         turn_id: str = "",
-    ) -> None:
+        semantic_topic_callback=None,
+    ) -> Dict[str, Any]:
         """Post-response processing: evaluate, learn, update state."""
         self._last_interaction_ts = time.time()
 
@@ -1475,15 +1492,41 @@ class CognitiveOrganism:
             pass
 
         # ── Real-time semantic extraction into Global Workspace ──────────────
-        try:
-            self._semantic_extractor.extract_async(
-                user_input  = user_input or "",
-                response    = response   or "",
-                workspace = self.workspace,
-                observation_role=("user_topic" if human_interaction else "peer_topic"),
-            )
-        except Exception:
-            pass
+        # A source-recall request is an interaction act (retrieve what was said
+        # before), not evidence that the requested words are a current topic of
+        # interest. Keep episodic response memory above, but do not promote the
+        # control/retrieval wording into semantic topics or CAG.
+        semantic_topic_receipt = {
+            "status": "not_attempted",
+            "turn_id": str(turn_id or "") or None,
+        }
+        should_extract_topics, semantic_topic_reason = _semantic_topic_learning_policy(
+            user_input or ""
+        )
+        if should_extract_topics:
+            try:
+                self._semantic_extractor.extract_async(
+                    user_input=user_input or "",
+                    response=response or "",
+                    workspace=self.workspace,
+                    observation_role=("user_topic" if human_interaction else "peer_topic"),
+                    turn_id=turn_id,
+                    completion_callback=semantic_topic_callback,
+                )
+                semantic_topic_receipt.update({
+                    "status": "queued",
+                    "reason": semantic_topic_reason,
+                })
+            except Exception as exc:
+                semantic_topic_receipt.update({
+                    "status": "failed",
+                    "reason": type(exc).__name__,
+                })
+        else:
+            semantic_topic_receipt.update({
+                "status": "skipped_by_intent",
+                "reason": semantic_topic_reason,
+            })
 
         # ── Emit identity events via EventBus ───────────────────────────────
         try:
@@ -1875,6 +1918,7 @@ class CognitiveOrganism:
             "world_model_profile_update": world_profile_update,
             "world_self_dynamics_outcome": wsdm_outcome_receipt,
             "pcm_outcome": pcm_outcome_receipt,
+            "semantic_topic_learning": semantic_topic_receipt,
         }
 
     def _read_emotion_state(self) -> str:

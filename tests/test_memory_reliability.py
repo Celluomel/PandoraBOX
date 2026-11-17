@@ -172,6 +172,43 @@ class MemoryReliabilityTests(unittest.TestCase):
 
         self.assertEqual(memory.concepts, ["first topic", "second topic"])
 
+    def test_semantic_extractor_returns_completion_receipt_for_originating_turn(self):
+        class _ReceiptMemory:
+            def __init__(self):
+                self.concepts = []
+                self.observations = []
+
+            def upsert_concept(self, concept, strength_boost=0.04):
+                self.concepts.append(concept)
+                return len(self.concepts)
+
+            def record_observation(self, name, **kwargs):
+                self.observations.append((name, kwargs))
+
+            def upsert_relation(self, *_args, **_kwargs):
+                return None
+
+        memory = _ReceiptMemory()
+        extractor = SemanticExtractor(memory)
+        extractor._parse = lambda _user, _response: (
+            ["memory retrieval"], [], "memory retrieval", 0.2,
+        )
+        extractor._keyword_extract = lambda _text: ["memory retrieval"]
+        receipts = []
+        extractor.extract_async(
+            "memory retrieval audit", "A bounded reply.",
+            workspace=None, turn_id="semantic-turn-17",
+            completion_callback=receipts.append,
+        )
+        extractor._queue.join()
+
+        self.assertEqual(len(receipts), 1)
+        self.assertEqual(receipts[0]["status"], "completed")
+        self.assertEqual(receipts[0]["turn_id"], "semantic-turn-17")
+        self.assertEqual(receipts[0]["concepts_parsed"], 1)
+        self.assertEqual(receipts[0]["concept_upsert_calls_returned"], 1)
+        self.assertEqual(receipts[0]["observation_calls_returned"], 1)
+
     def test_semantic_extraction_rejects_ungrounded_concepts_and_relations(self):
         extractor = SemanticExtractor(_Memory())
         source = "The camera feed enables face recognition in this interface."

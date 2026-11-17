@@ -99,7 +99,10 @@ class PeerHistoryIsolationTests(unittest.TestCase):
 
         bridge = PersonaBridge.__new__(PersonaBridge)
         bridge._turn_trace_lock = threading.Lock()
-        bridge._last_turn_trace = {"stages": {}}
+        bridge._last_turn_trace = {
+            "turn_id": "peer-semantic-turn",
+            "stages": {"turn_input": {"output_fingerprint": "input-fingerprint"}},
+        }
         system = Mock()
         system._interaction_count = 7
         bridge._system = system
@@ -107,10 +110,20 @@ class PeerHistoryIsolationTests(unittest.TestCase):
         organism.goal_ecology.dominant_drive.return_value = types.SimpleNamespace(name="understand")
         organism.energy.level.return_value = 0.8
         organism.energy.temperature_hint.return_value = 0.4
+        organism._post_interaction.return_value = {
+            "semantic_topic_learning": {
+                "status": "skipped_by_intent",
+                "reason": "explicit_source_recall",
+                "turn_id": "peer-semantic-turn",
+            },
+            "pcm_outcome": {"status": "no_pending_transition"},
+            "world_self_dynamics_outcome": {"status": "unavailable"},
+        }
 
         result = bridge._run_full_post_turn_lifecycle(
             "peer input", "lumina_child_flux", "peer reply", {}, {}, organism,
             human_interaction=False,
+            audit_turn_id="peer-semantic-turn",
         )
 
         self.assertTrue(result)
@@ -122,6 +135,27 @@ class PeerHistoryIsolationTests(unittest.TestCase):
         self.assertEqual(
             bridge._last_turn_trace["stages"]["peer_cognitive_evaluation"]["status"],
             "completed",
+        )
+        semantic_stage = bridge._last_turn_trace["stages"]["semantic_topic_learning_handoff"]
+        self.assertEqual(semantic_stage["status"], "skipped_by_intent")
+        self.assertEqual(semantic_stage["output_summary"]["type"], "dict")
+        self.assertEqual(len(semantic_stage["output_fingerprint"]), 64)
+        self.assertEqual(semantic_stage["consumes"][0], {
+            "stage": "turn_input", "fingerprint": "input-fingerprint",
+        })
+        completion_callback = organism._post_interaction.call_args.kwargs[
+            "semantic_topic_callback"
+        ]
+        completion_callback({
+            "status": "completed",
+            "turn_id": "peer-semantic-turn",
+            "concepts_parsed": 2,
+            "concept_upsert_calls_returned": 2,
+        })
+        extraction_stage = bridge._last_turn_trace["stages"]["semantic_topic_extraction"]
+        self.assertEqual(extraction_stage["status"], "completed")
+        self.assertEqual(
+            extraction_stage["consumes"][0]["fingerprint"], "input-fingerprint",
         )
 
     def test_post_turn_failure_is_not_reported_as_completed(self):

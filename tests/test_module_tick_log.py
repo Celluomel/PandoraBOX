@@ -39,6 +39,26 @@ class ModuleTickLogTests(unittest.TestCase):
         self.assertNotIn("private user text", repr(summary))
         self.assertNotIn("custom_status", summary["receipt_fields"])
 
+    def test_semantic_extraction_receipt_exposes_counts_without_prose(self):
+        summary = summarize_output({
+            "status": "completed",
+            "turn_id": "semantic-turn-17",
+            "concepts_parsed": 3,
+            "concept_upsert_calls_returned": 3,
+            "observation_calls_returned": 2,
+            "relation_upsert_calls_returned": 1,
+            "cag_status": "completed",
+            "workspace_status": "not_requested",
+            "user_input": "private user text",
+        })
+
+        self.assertEqual(summary["receipt_fields"]["status"], "completed")
+        self.assertEqual(summary["receipt_fields"]["concepts_parsed"], 3)
+        self.assertEqual(summary["receipt_fields"]["observation_calls_returned"], 2)
+        self.assertEqual(summary["receipt_fields"]["cag_status"], "completed")
+        self.assertNotIn("private user text", repr(summary))
+        self.assertNotIn("turn_id", summary["receipt_fields"])
+
     def test_none_output_is_unverified_not_a_claimed_side_effect(self):
         ticks = ModuleTickLog()
         ticks.register("side_effect", initialized=True)
