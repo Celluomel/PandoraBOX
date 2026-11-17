@@ -46,6 +46,7 @@ class ThreadResolver:
 
         resolved_count = 0
         deferred_count = 0
+        changed_threads = []
 
         for thread in threads_list:
             # Skip if already resolved
@@ -74,6 +75,7 @@ class ThreadResolver:
                 thread['resolved_at'] = datetime.now().isoformat()
                 thread['resolution_reason'] = f'Tension below threshold ({current_tension:.2f} < {self.resolution_threshold})'
                 resolved_count += 1
+                changed_threads.append(thread)
                 print(f"   ✅ Resolved thread '{tension_object}' - tension: {current_tension:.2f}")
                 
             elif iteration_count > self.max_iterations:
@@ -83,18 +85,30 @@ class ThreadResolver:
                 thread['deferred_at'] = datetime.now().isoformat()
                 thread['current_tension'] = current_tension
                 deferred_count += 1
+                changed_threads.append(thread)
                 print(f"   ⏸️  Deferred thread '{tension_object}' - {iteration_count} iterations")
             
             else:
                 # Still active, add metadata for tracking
-                thread['current_tension'] = current_tension
-                thread['iteration_count'] = iteration_count
+                changed = (
+                    thread.get('current_tension') != current_tension
+                    or thread.get('iteration_count') != iteration_count
+                )
+                if changed:
+                    thread['current_tension'] = current_tension
+                    thread['iteration_count'] = iteration_count
+                    changed_threads.append(thread)
         
         # Save updated threads via DAL
         if _use_dal:
-            for thread in threads_list:
-                _dal.save_thread(thread)
-        else:
+            if changed_threads:
+                save_many = getattr(_dal, 'save_threads', None)
+                if callable(save_many):
+                    save_many(changed_threads)
+                else:
+                    for thread in changed_threads:
+                        _dal.save_thread(thread)
+        elif changed_threads:
             import os
             tmp = self.threads_file.with_suffix('.tmp')
             with open(tmp, 'w', encoding='utf-8') as f:
@@ -126,6 +140,14 @@ class ThreadResolver:
         """
         if not tensions or not object_name:
             return 0.5  # Default medium tension
+
+        # DataAccess.get_tensions() returns the flat map, while this resolver
+        # wraps it as {"current": ...} to match older persisted formats.
+        # Unwrap before matching; otherwise every lookup silently falls back
+        # to 0.5 and low-tension threads can never meet the resolution rule.
+        current = tensions.get('current') if isinstance(tensions, dict) else None
+        if isinstance(current, dict):
+            tensions = current
         
         object_lower = object_name.lower()
         

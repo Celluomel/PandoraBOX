@@ -279,6 +279,17 @@ class DataAccess:
             raw[thread_id] = thread_n
             return self._save("thought_threads.json", raw)
 
+    def save_threads(self, threads: List[Dict]) -> bool:
+        """Create or update a batch of threads with one atomic file write."""
+        batch = [normalize_thread(thread) for thread in threads]
+        if not batch:
+            return True
+        with _LOCK:
+            raw = self._load("thought_threads.json", {})
+            for thread in batch:
+                raw[thread["id"]] = thread
+            return self._save("thought_threads.json", raw)
+
     # ──────────────────────────────────────────────────────────────────────────
     # IDENTITY / BELIEFS
     # ──────────────────────────────────────────────────────────────────────────
