@@ -61,6 +61,15 @@ _HISTORICAL_REQUEST_PATTERNS = (
         r"(?:you\s+)?",
         re.IGNORECASE,
     ),
+    # Also recognize copular questions such as "what was the test marker I
+    # gave you?". Without this form, it fell through to ordinary FAISS recall
+    # and a nearby but unrelated user message could be presented as fact.
+    re.compile(
+        r"\bwhat\s+was\s+(?P<topic>[^?!.]{1,100}?)\s+"
+        r"(?:that\s+)?i\s+(?:gave|give|told|tell|provided|provide|shared|share|"
+        r"mentioned|mention|reported|report|sent|send|wrote|write)\s+(?:you\b)?",
+        re.IGNORECASE,
+    ),
     re.compile(
         r"\b(?:do|did|can|could)\s+you\s+(?:remember|recall)\s+"
         r"(?P<topic>[^?!.]{1,100}?)\s+"
@@ -410,6 +419,7 @@ def filter_recall_query_records(
         flags=re.IGNORECASE,
     ))
     filtered = []
+    scored_user_sources = []
     for memory in memories:
         kind = str(memory.get("memory_type", "")).casefold()
         source_text = extract_user_authored_text(memory)
@@ -422,9 +432,11 @@ def filter_recall_query_records(
         # or statements that can actually substantiate the answer.
         if kind in {"user_message", "episodic"} and re.search(r"[?？]", source_text):
             continue
+        overlap_count = 0
         if focus and kind in {"user_message", "episodic"}:
             source_terms = set(tokenize(source_text))
             overlap = focus & source_terms
+            overlap_count = len(overlap)
             # A single broad shared word (for example "audit") is not enough
             # to treat a neighboring conversation as evidence for a specific
             # historical request. Require both multiple matching terms and a
@@ -433,7 +445,22 @@ def filter_recall_query_records(
             minimum_ratio = 0.05 if filename_lookup else 0.2
             if len(overlap) < minimum_overlap or len(overlap) / max(1, len(focus)) < minimum_ratio:
                 continue
-        filtered.append(memory)
+        if focus and kind in {"user_message", "episodic"} and _historical_request_match(query or ""):
+            scored_user_sources.append((overlap_count, memory))
+        else:
+            filtered.append(memory)
+
+    # For an explicit historical question, several neighboring user turns can
+    # share broad context words while only one actually identifies the asked
+    # fact. Keep sources whose content match is close to the best match; this
+    # prevents a weak neighbor from entering the prompt as competing evidence.
+    if scored_user_sources:
+        best_overlap = max(score for score, _ in scored_user_sources)
+        minimum_relevant_overlap = max(2, math.ceil(best_overlap * 0.7))
+        filtered.extend(
+            memory for score, memory in scored_user_sources
+            if score >= minimum_relevant_overlap
+        )
     return filtered
 
 
@@ -522,12 +549,13 @@ def explicit_recall_source_result(
         value, maxsplit=1, flags=re.IGNORECASE,
     )[0]
     asks_exact_text = bool(re.search(
-        r"\b(?:exact(?:ly)?\s+)?(?:phrase|wording|quote|quotation|text|word|instructions?|"
+        r"\b(?:exact(?:ly)?\s+)?(?:phrase|wording|quote|quotation|text|word|marker|code|"
+        r"identifier|token|value|number|instructions?|"
         r"directions?|phrase exacte|formulation exacte|citation|consignes?|texte exact|mot exact)\b",
         recall_clause, re.IGNORECASE,
     )) and bool(re.search(
-        r"\b(?:exact|exactly|phrase|wording|quote|quotation|text|word|instruction|direction|"
-        r"exacte|citation|consigne|texte|mot)\b",
+        r"\b(?:exact|exactly|phrase|wording|quote|quotation|text|word|marker|code|identifier|"
+        r"token|value|number|instruction|direction|exacte|citation|consigne|texte|mot)\b",
         recall_clause, re.IGNORECASE,
     ))
     # "Remind me only what I asked you" requests source-bounded recall even

@@ -749,6 +749,32 @@ class MemorySystemFallbackTests(unittest.TestCase):
         self.assertIn("audit", topic)
         self.assertIn("final outcome", topic)
 
+    def test_copular_marker_recall_routes_to_the_matching_user_source(self):
+        query = "What was the test marker I gave you for the next turn in the cognitive harness audit?"
+        source = {
+            "memory_type": "user_message",
+            "text": "User message: For the cognitive harness audit, my test marker for the next turn is cobalt fox 8421.",
+            "relevance": 0.9,
+        }
+        unrelated = {
+            "memory_type": "user_message",
+            "text": "User message: The next audit operation is web_search.",
+            "relevance": 1.0,
+        }
+
+        self.assertTrue(is_explicit_memory_recall_query(query))
+        focus = extract_explicit_recall_topic(query).casefold()
+        self.assertIn("test marker", focus)
+        self.assertIn("cognitive harness audit", focus)
+        self.assertEqual(
+            filter_recall_query_records([unrelated, source], query=query),
+            [source],
+        )
+        result = explicit_recall_source_result(query, [unrelated, source])
+        self.assertEqual(result["status"], "supported_verbatim_source")
+        self.assertIn("cobalt fox 8421", result["answer"])
+        self.assertNotIn("web_search", result["answer"])
+
     def test_text_recall_excludes_visual_results_from_mixed_retrieval_pool(self):
         records = [
             {"memory_tier": "interaction", "memory_type": "user_message", "text": "audit priority"},
