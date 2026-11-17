@@ -1693,6 +1693,9 @@ class PersonaBridge:
                             "source_kinds", "record_count", "module_count", "observed_count",
                             "tick_count", "error_count", "initialized_unobserved_count",
                             "unavailable_count",
+                            "affect_source", "affect_profile", "affect_event_type",
+                            "affect_event_source", "affect_event_age_seconds",
+                            "affect_event_context",
                             "interval_ms", "operations_ms", "uninstrumented_ms",
                         }
                     }
@@ -3941,20 +3944,47 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                 _review_fn = getattr(_llm_manager, "generate_bare", None)
             try:
                 from cognition.semantic_response_validation import review_response
-                _semantic_context = "\n\n".join(
-                    part for part in (str(system_prompt or ""), str(_generation_input or "")) if part
-                )
+                _affect_claim_review = False
+                try:
+                    from cognition.self_description import is_self_affect_query
+                    _affect_claim_review = bool(
+                        not peer_name and is_self_affect_query(effective_input)
+                    )
+                except Exception:
+                    pass
+                if _affect_claim_review:
+                    _affect_marker = "━━ AFFECT SELF-REPORT EVIDENCE ━━"
+                    _prompt_text = str(system_prompt or "")
+                    _marker_at = _prompt_text.rfind(_affect_marker)
+                    _semantic_context = (
+                        _prompt_text[_marker_at:]
+                        if _marker_at >= 0 else ""
+                    )
+                    _semantic_constraints = (
+                        "Use only the named modeled affect channels and values in the supplied affect evidence. "
+                        "They are computed software signals, not subjective experiences. Reject claims such as "
+                        "'I feel'/'je ressens', bodily sensations, or any affect channel absent from that evidence. "
+                        "Do not state that a recorded appraisal caused the overall current state; at most report it "
+                        "as the latest logged appraisal, and say no cause is established when the evidence does not "
+                        "record one. Require evidence support for every claim, including social wording."
+                    )
+                else:
+                    _semantic_context = "\n\n".join(
+                        part for part in (str(system_prompt or ""), str(_generation_input or "")) if part
+                    )
+                    _semantic_constraints = (
+                        "Answer the user's actual request. Do not claim an action, measurement, "
+                        "source, or verification that is not supported by the provided context. "
+                        "Keep uncertainty explicit."
+                    )
                 _review = await asyncio.to_thread(
                     review_response,
                     _review_fn,
                     request=effective_input,
                     response=raw_response,
                     context=_semantic_context,
-                    constraints=(
-                        "Answer the user's actual request. Do not claim an action, measurement, "
-                        "source, or verification that is not supported by the provided context. "
-                        "Keep uncertainty explicit."
-                    ),
+                    constraints=_semantic_constraints,
+                    require_evidence_support=_affect_claim_review,
                 )
                 _semantic_status = str(_review.get("status") or "unavailable")
                 if _semantic_status == "needs_revision":
@@ -3966,11 +3996,8 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                             request=effective_input,
                             response=_repair,
                             context=_semantic_context,
-                            constraints=(
-                                "Answer the user's actual request. Do not claim an action, measurement, "
-                                "source, or verification that is not supported by the provided context. "
-                                "Keep uncertainty explicit."
-                            ),
+                            constraints=_semantic_constraints,
+                            require_evidence_support=_affect_claim_review,
                         )
                         if _repair_review.get("status") == "passed":
                             raw_response = _repair

@@ -103,6 +103,31 @@ def test_prompt_context_timings_survive_redacted_turn_trace_allowlists():
     assert "must be dropped" not in repr(trace)
 
 
+def test_live_affect_channels_are_auditable_but_free_text_is_not_exposed():
+    bridge = _bridge()
+    bridge._record_turn_context_source(
+        "affective_state", "injected", turn_id="turn-evidence-1",
+        affect_source="EmotionalStateManager.affective_profile",
+        affect_profile={"warmth": 0.82, "satisfaction": 0.61, "secret": 0.99},
+        affect_event_type="drive_satisfied", affect_event_source="goal_engine",
+        affect_event_age_seconds=4.2,
+        affect_event_context={"drive": "expression", "private_text": "drop me"},
+        affect_description="free-form affect text must not be exposed",
+    )
+
+    trace = bridge.get_turn_trace("turn-evidence-1")
+    source = trace["context_sources"]["affective_state"]
+
+    assert source["affect_source"] == "EmotionalStateManager.affective_profile"
+    assert source["affect_profile"] == {"warmth": 0.82, "satisfaction": 0.61}
+    assert source["affect_event_type"] == "drive_satisfied"
+    assert source["affect_event_source"] == "goal_engine"
+    assert source["affect_event_age_seconds"] == 4.2
+    assert source["affect_event_context"] == {"drive": "expression"}
+    assert "free-form affect text" not in repr(trace)
+    assert "drop me" not in repr(trace)
+
+
 def test_recent_turn_history_preserves_redacted_pipeline_and_answer_validation():
     bridge = _bridge()
     bridge._turn_trace_history = [{

@@ -134,6 +134,7 @@ def review_response(
     response: str,
     context: str = "",
     constraints: str = "",
+    require_evidence_support: bool = False,
 ) -> dict[str, Any]:
     """Run a structured semantic review or return an explicit unavailable receipt."""
     if not callable(review_fn) or not str(response or "").strip():
@@ -159,6 +160,7 @@ assess relevance and constraints; do not call an opinion factually false merely
 because it is subjective. If factual support cannot be determined, use
 insufficient_evidence. Do not invent evidence. Keep material_issues to at most
 {MAX_ISSUES} items. A repair must not introduce claims absent from the evidence.
+{"For this review, evidence support is mandatory even for social or subjective wording; do not treat unsupported first-person experience as exempt." if require_evidence_support else ""}
 
 REQUEST:
 {_bounded(request, MAX_REQUEST_CHARS)}
@@ -223,7 +225,10 @@ CANDIDATE ANSWER:
         and parsed["contract_compliant"]
         and (
             evidence_support in {"supported", "partially_supported"}
-            or parsed["claim_basis"] == "subjective_or_creative"
+            or (
+                parsed["claim_basis"] == "subjective_or_creative"
+                and not require_evidence_support
+            )
         )
         and not issues
     )

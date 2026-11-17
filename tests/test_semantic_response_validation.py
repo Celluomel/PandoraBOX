@@ -70,6 +70,33 @@ class SemanticResponseValidationTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "passed")
 
+    def test_strict_evidence_review_does_not_exempt_unsupported_subjective_claims(self):
+        captured = {}
+
+        def reviewer(prompt, **_kwargs):
+            captured["prompt"] = prompt
+            return json.dumps({
+                "relevant": True,
+                "claim_basis": "subjective_or_creative",
+                "evidence_support": "insufficient_evidence",
+                "contract_compliant": True,
+                "material_issues": ["felt sensation is not in the signal snapshot"],
+                "repair": "The modeled warmth channel is active; this is not evidence of a felt sensation.",
+            })
+
+        result = semantic.review_response(
+            reviewer,
+            request="What affect signals are active in you?",
+            response="I feel a strong warmth.",
+            context="AFFECT SELF-REPORT EVIDENCE: warmth=0.82 is a modeled channel.",
+            constraints="Do not claim subjective experience.",
+            require_evidence_support=True,
+        )
+
+        self.assertIn("evidence support is mandatory", captured["prompt"])
+        self.assertEqual(result["status"], "needs_revision")
+        self.assertEqual(result["evidence_support"], "insufficient_evidence")
+
     def test_review_call_exception_is_recorded_without_response_text(self):
         def fail(*_args, **_kwargs):
             raise TimeoutError
