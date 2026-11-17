@@ -1,7 +1,7 @@
 # Audit du harnais cognitif — état et prochaines étapes
 
 **Date de mise à jour :** 17 novembre 2026
-**Statut :** audit du harnais cognitif en cours; aucune conclusion globale de qualité n’est établie. Le dernier commit partagé est `7d2f411`; il étend le watcher pour préserver les preuves d’attribution et les limites explicites de validation de réponse. Un correctif local complète la chaîne en faisant traverser l’allowlist PersonaBridge et la projection API à ces mêmes champs. Les modifications Body/UI préexistantes restent hors lot. Lumina n’a pas été redémarrée; une validation live groupée sera nécessaire après le prochain lot.
+**Statut :** audit du harnais cognitif en cours; aucune conclusion globale de qualité n’est établie. Le dernier commit partagé est `ddf2864`; il complète la chaîne PersonaBridge → API des preuves de validation et de provenance. Les modifications Body/UI préexistantes restent hors lot. Lumina n’a pas été redémarrée; une validation live groupée sera nécessaire après le prochain lot.
 
 ## Plan d’audit piloté par les preuves — mesure de progression
 
