@@ -13,6 +13,7 @@ import logging
 import os
 import threading
 import re
+import time
 from collections import defaultdict, Counter
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timedelta
@@ -730,6 +731,10 @@ class IdentitySystem:
         self._last_analysis_time: Optional[datetime] = None
         self._analysis_interval = timedelta(hours=1)
         self._lock = threading.RLock()
+        self._context_refresh_lock = threading.Lock()
+        self._context_refresh_pending = False
+        self._context_refresh_last_attempt = 0.0
+        self._context_refresh_retry_seconds = 30.0
 
     def get_identity(self, force_refresh: bool = False) -> AIIdentity:
         # If refresh needed, gate it through scheduler (priority 5 — lowest, skips if busy)
@@ -800,7 +805,26 @@ class IdentitySystem:
         return "\n".join(parts)
 
     def get_identity_for_context(self) -> str:
-        identity = self.get_identity()
+        """Format the last identity snapshot without blocking the chat path.
+
+        Identity analysis can read many memories and make bounded LLM calls.
+        A prompt-context read must therefore use the cached snapshot and ask a
+        daemon worker to refresh stale state, never perform that work inline.
+        """
+        identity = self.current_identity
+        stale = (
+            identity is None
+            or self._last_analysis_time is None
+            or datetime.now() - self._last_analysis_time > self._analysis_interval
+        )
+        if stale:
+            self._schedule_context_refresh()
+        if identity is None:
+            return (
+                "Identity analysis is pending; no current analyzed identity "
+                "details are available for this turn."
+            )
+
         parts = []
         if identity.core_traits:
             top = sorted(identity.core_traits, key=lambda x: x.confidence, reverse=True)[:2]
@@ -810,6 +834,44 @@ class IdentitySystem:
             parts.append("Core values: " + ", ".join(v.value_name for v in top))
         parts.append(f"Development: {identity.self_narrative.life_phase} phase, {identity.growth_trajectory}")
         return " | ".join(parts)
+
+    def _schedule_context_refresh(self) -> None:
+        """Schedule at most one background identity refresh for prompt reads."""
+        refresh_lock = getattr(self, "_context_refresh_lock", None)
+        if refresh_lock is None:
+            return
+        with refresh_lock:
+            if getattr(self, "_context_refresh_pending", False):
+                return
+            now = time.monotonic()
+            last_attempt = float(getattr(self, "_context_refresh_last_attempt", 0.0) or 0.0)
+            retry_seconds = max(
+                1.0, float(getattr(self, "_context_refresh_retry_seconds", 30.0) or 30.0)
+            )
+            if now - last_attempt < retry_seconds:
+                return
+            self._context_refresh_pending = True
+            self._context_refresh_last_attempt = now
+
+        def _refresh() -> None:
+            try:
+                self.get_identity()
+            except Exception as exc:
+                logger.warning("Background identity refresh failed: %s", type(exc).__name__)
+            finally:
+                with refresh_lock:
+                    self._context_refresh_pending = False
+
+        try:
+            threading.Thread(
+                target=_refresh,
+                name="identity-context-refresh",
+                daemon=True,
+            ).start()
+        except Exception as exc:
+            with refresh_lock:
+                self._context_refresh_pending = False
+            logger.warning("Could not schedule background identity refresh: %s", type(exc).__name__)
 
     def analyze_identity_conflicts(self) -> List[Dict[str, Any]]:
         identity  = self.get_identity()

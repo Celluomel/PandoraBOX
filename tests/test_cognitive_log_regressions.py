@@ -5,8 +5,10 @@ from pathlib import Path
 import sys
 import threading
 import tempfile
+import time
 import types
 import unittest
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -571,6 +573,73 @@ class CognitiveLogRegressionTests(unittest.TestCase):
         self.assertFalse(any("coherent identity" in item for item in system.suggest_identity_development()))
 
         self.assertFalse(measured_identity_coherence_below(proxy_identity, 0.6))
+
+    def test_identity_prompt_context_uses_cache_and_never_waits_for_refresh(self):
+        identity = AIIdentity(
+            core_traits=[IdentityComponent(
+                name="curiosity", description="", confidence=0.8,
+                supporting_memories=[], stability_score=0.7,
+            )],
+            growth_trajectory="exploring",
+        )
+        system = IdentitySystem.__new__(IdentitySystem)
+        system.current_identity = identity
+        system._last_analysis_time = datetime.now() - timedelta(seconds=10)
+        system._analysis_interval = timedelta(seconds=1)
+        system._context_refresh_lock = threading.Lock()
+        system._context_refresh_pending = False
+        system._context_refresh_last_attempt = 0.0
+        system._context_refresh_retry_seconds = 30.0
+        refresh_started = threading.Event()
+        allow_refresh_to_finish = threading.Event()
+        refresh_calls = []
+
+        def slow_refresh():
+            refresh_calls.append(True)
+            refresh_started.set()
+            allow_refresh_to_finish.wait(2.0)
+            return identity
+
+        system.get_identity = slow_refresh
+        started = time.perf_counter()
+        context = system.get_identity_for_context()
+        elapsed = time.perf_counter() - started
+
+        self.assertIn("Key traits: curiosity", context)
+        self.assertLess(elapsed, 0.2)
+        self.assertTrue(refresh_started.wait(1.0))
+        self.assertIn("Key traits: curiosity", system.get_identity_for_context())
+        self.assertEqual(len(refresh_calls), 1)
+        self.assertTrue(system._context_refresh_pending)
+        allow_refresh_to_finish.set()
+        deadline = time.perf_counter() + 1.0
+        while system._context_refresh_pending and time.perf_counter() < deadline:
+            time.sleep(0.005)
+        self.assertFalse(system._context_refresh_pending)
+
+    def test_identity_prompt_context_reports_pending_when_no_snapshot_exists(self):
+        system = IdentitySystem.__new__(IdentitySystem)
+        system.current_identity = None
+        system._last_analysis_time = None
+        system._analysis_interval = timedelta(hours=1)
+        system._context_refresh_lock = threading.Lock()
+        system._context_refresh_pending = False
+        system._context_refresh_last_attempt = 0.0
+        system._context_refresh_retry_seconds = 30.0
+        refresh_started = threading.Event()
+        allow_refresh_to_finish = threading.Event()
+
+        def slow_refresh():
+            refresh_started.set()
+            allow_refresh_to_finish.wait(2.0)
+            return AIIdentity()
+
+        system.get_identity = slow_refresh
+        context = system.get_identity_for_context()
+
+        self.assertIn("Identity analysis is pending", context)
+        self.assertTrue(refresh_started.wait(1.0))
+        allow_refresh_to_finish.set()
 
     def test_measured_low_identity_coherence_remains_actionable(self):
         measured_identity = AIIdentity(
