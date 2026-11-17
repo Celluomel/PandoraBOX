@@ -310,7 +310,8 @@ def _compact_turn_audit_record(raw: Any) -> dict[str, Any]:
             if key in {
                 'status', 'scope', 'stage_status', 'relevant', 'claim_basis',
                 'evidence_support', 'contract_compliant', 'material_issue_count',
-                'repair_rechecked',
+                'repair_rechecked', 'reviewer_status', 'reviewer_reason',
+                'repair_reviewer_status', 'repair_reviewer_issue_count',
             }
         },
     }

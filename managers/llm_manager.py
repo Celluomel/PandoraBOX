@@ -15,6 +15,41 @@ logger = logging.getLogger(__name__)
 _HISTORY_MAX = 20  # 10 user + 10 assistant turns
 
 
+def _structured_response_format(kwargs: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Build an OpenAI-compatible structured response format when requested.
+
+    LM Studio's current chat-completions API expects ``json_schema`` rather
+    than the legacy ``json_object`` response format. Keep ``json_mode`` as a
+    compatibility shorthand for a generic JSON object, while allowing callers
+    that need a real contract to supply a named schema.
+    """
+    schema_spec = kwargs.get("json_schema")
+    if isinstance(schema_spec, dict):
+        if "schema" in schema_spec:
+            schema = schema_spec.get("schema")
+            name = str(schema_spec.get("name") or "structured_response")
+            strict = bool(schema_spec.get("strict", True))
+        else:
+            schema = schema_spec
+            name = "structured_response"
+            strict = True
+        if isinstance(schema, dict):
+            return {
+                "type": "json_schema",
+                "json_schema": {"name": name, "strict": strict, "schema": schema},
+            }
+    if kwargs.get("json_mode"):
+        return {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "json_object",
+                "strict": False,
+                "schema": {"type": "object"},
+            },
+        }
+    return None
+
+
 # ─────────────────────────────────────────────
 #  Abstract base
 # ─────────────────────────────────────────────
@@ -265,8 +300,9 @@ class LMStudioProvider(BaseLLMProvider):
             # normal assistant content channel, so callers may opt out locally.
             if "reasoning_format" in kwargs:
                 request_body["reasoning_format"] = kwargs["reasoning_format"]
-            if kwargs.get("json_mode"):
-                request_body["response_format"] = {"type": "json_object"}
+            response_format = _structured_response_format(kwargs)
+            if response_format:
+                request_body["response_format"] = response_format
             r = requests.post(
                 f"{self.base_url}/chat/completions",
                 json=request_body,
@@ -380,6 +416,9 @@ class LMStudioProvider(BaseLLMProvider):
                 }
             if "reasoning_format" in kwargs:
                 request_body["reasoning_format"] = kwargs["reasoning_format"]
+            response_format = _structured_response_format(kwargs)
+            if response_format:
+                request_body["response_format"] = response_format
             with requests.post(
                 f"{self.base_url}/chat/completions",
                 json=request_body,
@@ -522,7 +561,9 @@ class OpenAIProvider(BaseLLMProvider):
                     "model":       self.model,
                     "messages":    messages,
                     "temperature": kwargs.get("temperature", 0.7),
-                    "max_tokens":  kwargs.get("max_tokens", 600)
+                    "max_tokens":  kwargs.get("max_tokens", 600),
+                    **({"response_format": _structured_response_format(kwargs)}
+                       if _structured_response_format(kwargs) else {}),
                 },
                 timeout=60
             )
@@ -547,6 +588,8 @@ class OpenAIProvider(BaseLLMProvider):
                     "temperature": kwargs.get("temperature", 0.7),
                     "max_tokens":  kwargs.get("max_tokens", 600),
                     "stream":      True,
+                    **({"response_format": _structured_response_format(kwargs)}
+                       if _structured_response_format(kwargs) else {}),
                 },
                 stream=True,
                 timeout=60
@@ -746,11 +789,17 @@ class LLMManager:
                     "status": "deferred",
                     "reason": "interactive turn started",
                 }
+            structured_requested = bool(
+                kwargs.get("json_mode") or isinstance(kwargs.get("json_schema"), dict)
+            )
             background_result = getattr(
                 self.provider, "generate_background_result", None,
             )
             completion = None
-            if callable(background_result):
+            # LM Studio's native /api/v1/chat endpoint does not accept the
+            # OpenAI-compatible response_format contract. Route structured
+            # requests through chat completions so the schema is enforceable.
+            if callable(background_result) and not structured_requested:
                 try:
                     completion = background_result(messages, **kwargs)
                     if not isinstance(completion, dict):
@@ -767,7 +816,7 @@ class LLMManager:
                 background_generate = getattr(
                     self.provider, "generate_background_messages", None,
                 )
-                if callable(background_generate):
+                if callable(background_generate) and not structured_requested:
                     try:
                         text = background_generate(messages, **kwargs) or ""
                     except Exception as native_error:
@@ -858,7 +907,27 @@ class LLMManager:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
         with self._provider_lock:
-            return self.provider._generate_messages(messages, **kwargs)
+            text = self.provider._generate_messages(messages, **kwargs)
+            if str(text or "").strip():
+                return str(text)
+
+            # Some OpenAI-compatible local servers return HTTP 200 with an
+            # empty message.content for this model, while their streaming
+            # endpoint still emits the visible assistant text. Reuse the
+            # same fallback as history-free background cognition, but keep
+            # this path legal during the active interactive turn.
+            stream = getattr(self.provider, "_generate_messages_stream", None)
+            if callable(stream):
+                chunks: List[str] = []
+                for part in stream(messages, **kwargs):
+                    if isinstance(part, str):
+                        chunks.append(part)
+                    elif isinstance(part, dict) and part.get("type") == "content":
+                        chunks.append(str(part.get("text") or ""))
+                streamed = "".join(chunks)
+                if streamed.strip() and not streamed.strip().lower().startswith("error:"):
+                    return streamed
+            return str(text or "")
 
     def recover_final_response(
         self,

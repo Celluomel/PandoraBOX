@@ -18,6 +18,33 @@ MAX_RESPONSE_CHARS = 8000
 MAX_CONTEXT_CHARS = 12000
 MAX_ISSUES = 8
 
+REVIEW_RESPONSE_SCHEMA = {
+    "name": "semantic_response_review",
+    "strict": True,
+    "schema": {
+        "type": "object",
+        "properties": {
+            "relevant": {"type": "boolean"},
+            "claim_basis": {
+                "type": "string",
+                "enum": ["factual", "subjective_or_creative", "mixed"],
+            },
+            "evidence_support": {
+                "type": "string",
+                "enum": ["supported", "partially_supported", "unsupported", "insufficient_evidence"],
+            },
+            "contract_compliant": {"type": "boolean"},
+            "material_issues": {"type": "array", "items": {"type": "string"}},
+            "repair": {"type": "string"},
+        },
+        "required": [
+            "relevant", "claim_basis", "evidence_support", "contract_compliant",
+            "material_issues", "repair",
+        ],
+        "additionalProperties": False,
+    },
+}
+
 
 def _bounded(value: Any, limit: int) -> str:
     text = str(value or "").strip()
@@ -90,10 +117,14 @@ CANDIDATE ANSWER:
                 "support, and stated constraints. Return valid JSON and never "
                 "claim certainty beyond the evidence."
             ),
-            max_tokens=384,
+            # The configured Gemma model used its entire 384-token budget on
+            # hidden reasoning and returned no visible review. 768 was the
+            # smallest live-tested budget that produced a schema-valid receipt.
+            max_tokens=768,
             temperature=0.0,
             timeout=20,
             reasoning_format="none",
+            json_schema=REVIEW_RESPONSE_SCHEMA,
         )
         if isinstance(raw, dict):
             raw = raw.get("text", "")

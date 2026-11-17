@@ -892,6 +892,7 @@ class PersonaBridge:
 
     def _record_semantic_validation_summary(
         self, turn_id: str, status: str, review: dict[str, Any] | None = None,
+        repair_review: dict[str, Any] | None = None,
     ) -> None:
         """Persist only bounded semantic-review fields, never prompt or answer text."""
         review = review if isinstance(review, dict) else {}
@@ -914,12 +915,22 @@ class PersonaBridge:
             "supported", "partially_supported", "unsupported", "insufficient_evidence",
         }:
             summary["evidence_support"] = review["evidence_support"]
+        if review.get("status") in {"passed", "needs_revision", "unavailable", "invalid_review_output"}:
+            summary["reviewer_status"] = review["status"]
+        if review.get("reason"):
+            summary["reviewer_reason"] = str(review["reason"])[:80]
         if isinstance(review.get("contract_compliant"), bool):
             summary["contract_compliant"] = review["contract_compliant"]
         summary["material_issue_count"] = min(
             8, max(0, len(review.get("material_issues") or [])),
         )
         summary["repair_rechecked"] = status == "repaired_and_passed"
+        repair_review = repair_review if isinstance(repair_review, dict) else {}
+        if repair_review.get("status") in {"passed", "needs_revision", "unavailable", "invalid_review_output"}:
+            summary["repair_reviewer_status"] = repair_review["status"]
+        summary["repair_reviewer_issue_count"] = min(
+            8, max(0, len(repair_review.get("material_issues") or [])),
+        )
         with self._turn_trace_lock:
             trace = getattr(self, "_last_turn_trace", None)
             if turn_id and (not trace or trace.get("turn_id") != turn_id):
@@ -1280,6 +1291,8 @@ class PersonaBridge:
                         for key in (
                             "relevant", "claim_basis", "evidence_support",
                             "contract_compliant", "material_issue_count", "repair_rechecked",
+                            "reviewer_status", "reviewer_reason", "repair_reviewer_status",
+                            "repair_reviewer_issue_count",
                         ):
                             if key in prior_semantic:
                                 semantic_summary[key] = prior_semantic[key]
@@ -1357,7 +1370,8 @@ class PersonaBridge:
                         ).items() if key in {
                             "status", "scope", "stage_status", "relevant", "claim_basis",
                             "evidence_support", "contract_compliant", "material_issue_count",
-                            "repair_rechecked",
+                            "repair_rechecked", "reviewer_status", "reviewer_reason",
+                            "repair_reviewer_status", "repair_reviewer_issue_count",
                         }
                     },
                     "stages": {
@@ -1437,7 +1451,8 @@ class PersonaBridge:
                     ).items() if key in {
                         "status", "scope", "stage_status", "relevant", "claim_basis",
                         "evidence_support", "contract_compliant", "material_issue_count",
-                        "repair_rechecked",
+                        "repair_rechecked", "reviewer_status", "reviewer_reason",
+                        "repair_reviewer_status", "repair_reviewer_issue_count",
                     }
                 },
             }
@@ -3581,6 +3596,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             else _answer_origin_stage
         )
         _semantic_status = "unavailable"
+        _repair_review: dict[str, Any] | None = None
         if raw_response.strip() and not _generation_failed:
             _llm_manager = getattr(self._llm_stream_fn, "__self__", None)
             # The answer is still inside an interactive turn here. The normal
@@ -3632,8 +3648,12 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                             _semantic_status = "abstained_after_failed_repair"
                     else:
                         _semantic_status = "abstained_no_grounded_repair"
-                elif _semantic_status != "passed":
+                elif _semantic_status == "invalid_review_output":
+                    _semantic_status = "abstained_invalid_review_output"
+                elif _semantic_status == "unavailable":
                     _semantic_status = "abstained_review_unavailable"
+                elif _semantic_status != "passed":
+                    _semantic_status = "abstained_review_status_unrecognized"
                 if _semantic_status.startswith("abstained_"):
                     try:
                         from managers.settings_manager import config as _semantic_cfg
@@ -3664,12 +3684,21 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         "contract_compliant": _review.get("contract_compliant"),
                         "material_issue_count": len(_review.get("material_issues") or []),
                         "repair_rechecked": _semantic_status == "repaired_and_passed",
+                        "reviewer_status": _review.get("status"),
+                        "reviewer_reason": str(_review.get("reason") or "")[:80],
+                        "repair_reviewer_status": (
+                            _repair_review.get("status") if isinstance(_repair_review, dict) else None
+                        ),
+                        "repair_reviewer_issue_count": (
+                            min(8, len(_repair_review.get("material_issues") or []))
+                            if isinstance(_repair_review, dict) else 0
+                        ),
                     },
                     consumes=tuple(_semantic_consumes),
                     turn_id=_audit_turn_id,
                 )
                 self._record_semantic_validation_summary(
-                    _audit_turn_id, _semantic_status, _review,
+                    _audit_turn_id, _semantic_status, _review, _repair_review,
                 )
                 # Output safety must consume the semantically reviewed version
                 # even when the reviewer is unavailable; the receipt preserves

@@ -89,6 +89,8 @@ def test_recent_turn_history_preserves_redacted_pipeline_and_answer_validation()
         "semantic_answer_validation": {
             "status": "not_performed", "scope": "none",
             "stage_status": "unavailable", "reason": "must not escape",
+            "reviewer_status": "invalid_review_output",
+            "reviewer_reason": "reviewer_did_not_return_schema_valid_json",
         },
     }]
 
@@ -98,6 +100,8 @@ def test_recent_turn_history_preserves_redacted_pipeline_and_answer_validation()
     assert history["pipeline_integrity"]["missing_core_stages"] == ["response_validation"]
     assert history["semantic_answer_validation"] == {
         "status": "not_performed", "scope": "none", "stage_status": "unavailable",
+        "reviewer_status": "invalid_review_output",
+        "reviewer_reason": "reviewer_did_not_return_schema_valid_json",
     }
     assert "must not escape" not in repr(history)
 
@@ -123,6 +127,38 @@ def test_semantic_validation_receipt_keeps_dimensions_without_answer_text():
     assert receipt["contract_compliant"] is True
     assert receipt["material_issue_count"] == 0
     assert "private repair text" not in repr(receipt)
+
+
+def test_repaired_answer_receipt_proves_second_review_without_repair_text():
+    bridge = _bridge()
+    bridge._record_semantic_validation_summary(
+        "turn-evidence-1", "repaired_and_passed",
+        {"status": "needs_revision", "material_issues": ["initial mismatch"]},
+        {"status": "passed", "material_issues": [], "repair": "private corrected answer"},
+    )
+
+    receipt = bridge._last_turn_trace["semantic_answer_validation"]
+    assert receipt["repair_rechecked"] is True
+    assert receipt["reviewer_status"] == "needs_revision"
+    assert receipt["repair_reviewer_status"] == "passed"
+    assert receipt["repair_reviewer_issue_count"] == 0
+    assert "private corrected answer" not in repr(receipt)
+
+
+def test_invalid_reviewer_output_is_distinguished_from_reviewer_outage():
+    bridge = _bridge()
+    bridge._record_semantic_validation_summary(
+        "turn-evidence-1", "abstained_invalid_review_output", {
+            "status": "invalid_review_output",
+            "reason": "reviewer_did_not_return_schema_valid_json",
+        },
+    )
+
+    receipt = bridge._last_turn_trace["semantic_answer_validation"]
+    assert receipt["status"] == "response_replaced_after_review"
+    assert receipt["stage_status"] == "abstained_invalid_review_output"
+    assert receipt["reviewer_status"] == "invalid_review_output"
+    assert receipt["reviewer_reason"] == "reviewer_did_not_return_schema_valid_json"
 
 
 def test_turn_stage_records_redacted_output_and_actual_consumption_link():

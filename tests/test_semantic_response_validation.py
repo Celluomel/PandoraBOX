@@ -21,6 +21,7 @@ class SemanticResponseValidationTests(unittest.TestCase):
             self.assertIn("REQUEST:", prompt)
             self.assertIn("CANDIDATE ANSWER:", prompt)
             self.assertEqual(kwargs["temperature"], 0.0)
+            self.assertEqual(kwargs["json_schema"], semantic.REVIEW_RESPONSE_SCHEMA)
             return json.dumps({
                 "relevant": True,
                 "claim_basis": "factual",
