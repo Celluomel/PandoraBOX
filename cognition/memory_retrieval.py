@@ -29,6 +29,11 @@ votre vous y etre avoir faire suis sont doit dois
 # Bare basenames need a recognizable extension. Arbitrary extensions remain
 # valid when the user-authored source includes an explicit path; this prevents
 # prose such as "answer.my" from being promoted to a recalled filename.
+_EXACT_VALUE_RECALL_PATTERN = re.compile(
+    r"\b(?:marker|code|identifier|token|value|number|checksum|hash|reference)\b",
+    re.IGNORECASE,
+)
+
 _COMMON_FILENAME_EXTENSIONS = frozenset(("""
 7z aac ai apk avi bat bin bmp bz2 c cc cfg cjs class cmd conf cpp cs css csv cxx dat db diff dll doc docx dwg
 email epub exe flac gif go gz h hpp htm html ico ini ino ipynb jar java jpeg jpg js json jsonl jsx kt log lua m4a
@@ -550,12 +555,12 @@ def explicit_recall_source_result(
     )[0]
     asks_exact_text = bool(re.search(
         r"\b(?:exact(?:ly)?\s+)?(?:phrase|wording|quote|quotation|text|word|marker|code|"
-        r"identifier|token|value|number|instructions?|"
+        r"identifier|token|value|number|checksum|hash|reference|instructions?|"
         r"directions?|phrase exacte|formulation exacte|citation|consignes?|texte exact|mot exact)\b",
         recall_clause, re.IGNORECASE,
     )) and bool(re.search(
         r"\b(?:exact|exactly|phrase|wording|quote|quotation|text|word|marker|code|identifier|"
-        r"token|value|number|instruction|direction|exacte|citation|consigne|texte|mot)\b",
+        r"token|value|number|checksum|hash|reference|instruction|direction|exacte|citation|consigne|texte|mot)\b",
         recall_clause, re.IGNORECASE,
     ))
     # "Remind me only what I asked you" requests source-bounded recall even
@@ -628,10 +633,26 @@ def explicit_recall_abstention_result(
     """
     if not is_explicit_memory_recall_query(query):
         return None
-    if _SOURCE_ONLY_RECALL_PATTERN.search(str(query or "")):
+    if (
+        _SOURCE_ONLY_RECALL_PATTERN.search(str(query or ""))
+        or _EXACT_VALUE_RECALL_PATTERN.search(str(query or ""))
+    ):
         if explicit_recall_source_result(query, memories) is None:
+            is_french = bool(re.search(
+                r"\b(?:quel(?:le)?s?|formulation|citation|texte|mot|checksum|"
+                r"demand[ée]s?|rappelle|qu['’]est-ce|ai-je|historique)\b",
+                str(query or ""), re.IGNORECASE,
+            )) and bool(re.search(
+                r"[àâçéèêëîïôùûüÿœ]|\b(?:quel(?:le)?s?|formulation|citation|"
+                r"demand[ée]s?|rappelle|ai-je)\b",
+                str(query or ""), re.IGNORECASE,
+            ))
             return {
-                "answer": "Je n’ai pas retrouvé de source utilisateur suffisamment précise pour restituer cette consigne sans la déformer.",
+                "answer": (
+                    "Je n’ai pas retrouvé de source utilisateur suffisamment précise pour restituer cette valeur sans l’inventer."
+                    if is_french else
+                    "I couldn't find a sufficiently specific user-authored source to retrieve that value without guessing."
+                ),
                 "status": "abstained_insufficient_source_match",
                 "source_ref": None,
                 "source_type": None,

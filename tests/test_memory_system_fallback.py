@@ -453,6 +453,20 @@ class MemorySystemFallbackTests(unittest.TestCase):
         self.assertIsNone(result["source_ref"])
         self.assertIn("couldn't retrieve", result["answer"])
 
+    def test_exact_historical_value_abstains_when_only_semantic_neighbors_exist(self):
+        query = "What exact checksum string did I give you for the Moonbase regression test?"
+        semantic_neighbor = {
+            "memory_type": "user_message",
+            "text": "User message: For the cognitive harness audit, my test marker for the next turn is cobalt fox 8421.",
+            "relevance": 0.99,
+        }
+
+        result = explicit_recall_abstention_result(query, [semantic_neighbor])
+
+        self.assertEqual(result["status"], "abstained_insufficient_source_match")
+        self.assertIsNone(result["source_ref"])
+        self.assertNotIn("cobalt fox 8421", result["answer"])
+
     def test_explicit_recall_does_not_abstain_when_a_relevant_user_source_exists(self):
         query = "What did I ask you to fix about the UnboundLocalError involving _deterministic_response?"
         source = {
