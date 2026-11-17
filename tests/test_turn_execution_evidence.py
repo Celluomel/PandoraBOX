@@ -366,6 +366,29 @@ def test_contradiction_review_records_redacted_inputs_result_and_event_effect():
     assert contradiction_text not in repr(trace)
 
 
+def test_contradiction_review_records_no_finding_as_a_completed_negative_result():
+    bridge = _bridge()
+    bridge._organism = SimpleNamespace(event_bus=None, observatory=None)
+    bridge._record_turn_stage("turn_input", "received", output="prompt")
+    bridge._record_turn_stage("response_finalization", "completed", output="answer")
+    system = SimpleNamespace(
+        liberty_contradiction=SimpleNamespace(
+            detect_contradiction=lambda **kwargs: None,
+        ),
+        self_concept=SimpleNamespace(_beliefs={}),
+        _interaction_count=1,
+        world_model=None,
+    )
+
+    bridge._review_liberty_contradiction(system, "answer", "turn-evidence-1")
+    review_stage = bridge.get_turn_trace("turn-evidence-1")["stages"]["contradiction_review"]
+
+    assert review_stage["status"] == "completed"
+    assert review_stage["output_summary"]["receipt_fields"]["detected"] is False
+    assert review_stage["output_summary"]["receipt_fields"]["event_emitted"] is False
+    assert review_stage["output_summary"]["receipt_fields"]["event_status"] == "not_emitted"
+
+
 def test_deterministic_reasoning_receipt_links_memory_and_planner_inputs():
     assert deterministic_reasoning_dependencies(
         selected=True, memory_recall=True,
