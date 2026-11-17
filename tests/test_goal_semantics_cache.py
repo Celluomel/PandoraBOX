@@ -43,6 +43,31 @@ class GoalSemanticsCacheTests(unittest.TestCase):
         self.assertEqual(self.embedder.calls, [["same"]])
         np.testing.assert_array_equal(result[0], result[1])
 
+    def _score_topic(self, good_sim, noise_sim):
+        rows = 1 + len(goal_semantics.GOOD_TOPIC_EXEMPLARS) + len(
+            goal_semantics.NOISE_TOPIC_EXEMPLARS
+        )
+        with patch("cognition.goal_semantics.embed", return_value=np.zeros((rows, 2))), patch(
+            "cognition.goal_semantics.max_cosine", side_effect=[good_sim, noise_sim]
+        ):
+            return goal_semantics.batch_topic_quality(["sample topic"])["sample topic"]
+
+    def test_rejects_fragment_with_weak_positive_semantic_margin(self):
+        # Live Nomic scoring for "après chaque" had a +0.0255 margin.
+        good, noise, accepted = self._score_topic(0.4380, 0.4125)
+        self.assertAlmostEqual(good - noise, 0.0255, places=4)
+        self.assertFalse(accepted)
+
+    def test_rejects_topic_that_is_closer_to_noise_than_good_examples(self):
+        good, noise, accepted = self._score_topic(0.4686, 0.4706)
+        self.assertLess(good - noise, 0.0)
+        self.assertFalse(accepted)
+
+    def test_accepts_topic_with_calibrated_positive_semantic_margin(self):
+        good, noise, accepted = self._score_topic(0.5054, 0.4551)
+        self.assertGreater(good - noise, goal_semantics.MIN_GOOD_TOPIC_MARGIN)
+        self.assertTrue(accepted)
+
 
 if __name__ == "__main__":
     unittest.main()

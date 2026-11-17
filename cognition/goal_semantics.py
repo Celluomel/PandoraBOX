@@ -40,6 +40,12 @@ _embedding_cache: OrderedDict[str, np.ndarray] = OrderedDict()
 _embedding_cache_lock = threading.RLock()
 _EMBEDDING_CACHE_LIMIT = 4096
 
+# Require a positive semantic separation from conversational/noise exemplars.
+# Live Nomic scoring on the admitted fragment "après chaque" produced a
+# +0.0255 margin, while durable topics retained margins around +0.05 or more.
+# This boundary rejects that observed false positive without phrase lists.
+MIN_GOOD_TOPIC_MARGIN = 0.04
+
 
 # ── Low-level helpers ─────────────────────────────────────────────────────────
 
@@ -181,6 +187,7 @@ GOOD_TOPIC_EXEMPLARS = [
     "designing a garden for pollinators",
     "learning Spanish conversation",
     "building a home automation system",
+    "integrating knowledge from different sources into a coherent understanding",
 ]
 NOISE_TOPIC_EXEMPLARS = [
     "something to do",
@@ -263,16 +270,16 @@ def batch_topic_quality(
     For each topic, computes:
         good_sim  = max cosine(topic, GOOD_TOPIC_EXEMPLARS)
         noise_sim = max cosine(topic, NOISE_TOPIC_EXEMPLARS)
-    A topic is considered goal-worthy (pass=True) when it is at least as close
-    to good exemplars as to noise (with a small tolerance for nomic's
-    compressed similarity band), and has a minimum meaningfulness:
-        pass = (good_sim - noise_sim) > -0.03  AND  good_sim > 0.10
+    A topic is considered goal-worthy (pass=True) when it is meaningfully
+    closer to good exemplars than to noise, and has a minimum meaningfulness:
+        pass = (good_sim - noise_sim) > MIN_GOOD_TOPIC_MARGIN
+               AND good_sim > 0.10
 
-    The relative (good >= noise) criterion is the primary signal — it is
-    robust to absolute similarity-scale differences between nomic and MiniLM.
-    The -0.03 tolerance is deliberate: the goal pool was previously TOO narrow
-    (a 30-word whitelist), so we bias slightly toward acceptance and let the
-    downstream quality filter do the fine discrimination.
+    The positive separation prevents marginal conversational fragments from
+    becoming durable goals. The 0.04 margin and a broad knowledge-integration
+    exemplar were calibrated against live Nomic and MiniLM scores. This keeps
+    valid abstract goals separated from noise in both tiers without phrase
+    lists.
 
     Returns {topic: (good_sim, noise_sim, pass)} or None if embeddings are
     unavailable (semantic scoring is deferred).
@@ -295,6 +302,6 @@ def batch_topic_quality(
     for i, t in enumerate(topics):
         good_sim = max_cosine(topic_vecs[i], good_vecs)
         noise_sim = max_cosine(topic_vecs[i], noise_vecs)
-        ok = (good_sim - noise_sim) > -0.03 and good_sim > 0.10
+        ok = (good_sim - noise_sim) > MIN_GOOD_TOPIC_MARGIN and good_sim > 0.10
         out[t] = (float(good_sim), float(noise_sim), bool(ok))
     return out
