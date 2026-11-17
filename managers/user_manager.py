@@ -419,6 +419,11 @@ class UserManager:
         summary = {
             "explicit_user_stated_entries": 0,
             "legacy_unverified_entries": 0,
+            # The profile model has no source receipt for display_name. Treat
+            # it as a UI/identity label, never as a user-stated fact.
+            "display_name_source": (
+                "source_not_recorded" if profile and profile.display_name else "empty"
+            ),
             "categories": {
                 field_name: {"explicit_user_stated": 0, "legacy_unverified": 0}
                 for field_name in kinds.values()
@@ -463,7 +468,8 @@ class UserManager:
                     for field_name, counts in category_counts.items()
                 )
                 parts = [
-                    f"User's name: {profile.display_name}.",
+                    "Profile display label (source receipt not recorded; not an "
+                    f"explicit user-stated fact): {profile.display_name}.",
                     "AUTHORITATIVE NAMED-PROFILE PROVENANCE COUNTS: "
                     f"explicit_user_stated_entries={provenance_summary['explicit_user_stated_entries']}; "
                     f"legacy_unverified_entries={provenance_summary['legacy_unverified_entries']} "

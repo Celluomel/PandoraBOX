@@ -110,6 +110,19 @@ def test_profile_provenance_requires_a_user_source_receipt(tmp_path):
     assert "concise answers" not in prompt_context
 
 
+def test_profile_display_name_is_not_claimed_as_an_explicit_user_fact(tmp_path):
+    manager = UserManager(path=Path(tmp_path) / "users.json")
+    profile = manager.create("Fred")
+
+    summary = manager.profile_provenance_summary_for(profile.id)
+    prompt_context = manager.prompt_context_for(profile.id)
+
+    assert summary["display_name_source"] == "source_not_recorded"
+    assert "Profile display label" in prompt_context
+    assert "source receipt not recorded" in prompt_context
+    assert "not an explicit user-stated fact" in prompt_context
+
+
 def test_legacy_profile_notes_are_not_injected_into_chat_prompt(tmp_path):
     manager = UserManager(path=Path(tmp_path) / "users.json")
     profile = manager.create("Fred")

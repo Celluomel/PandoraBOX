@@ -120,11 +120,13 @@ class CognitiveLogRegressionTests(unittest.TestCase):
             "injected", "named_profile", "hashed context", {
                 "explicit_user_stated_entries": 0,
                 "legacy_unverified_entries": 1,
+                "display_name_source": "source_not_recorded",
                 "categories": {"preferences": {"explicit_user_stated": 0, "legacy_unverified": 1}},
             },
         )
         counted = audit_safe_turn_summary(counted_profile)
         self.assertEqual(counted["provenance_summary"]["explicit_user_stated_entries"], 0)
+        self.assertEqual(counted["provenance_summary"]["display_name_source"], "source_not_recorded")
         self.assertEqual(counted["provenance_summary"]["categories"]["preferences"]["legacy_unverified"], 1)
         empty_profile = profile_context_evidence("empty", "no_named_profile", "")
         self.assertEqual(empty_profile["quality"], "empty")

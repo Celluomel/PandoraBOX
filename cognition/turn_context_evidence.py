@@ -9,8 +9,10 @@ from typing import Any, Iterable, Mapping
 
 USER_PROFILE_PROVENANCE_POLICY = (
     "User-profile evidence policy: the named UserManager profile is the source for "
-    "explicitly recorded user facts. Treat only entries labeled 'User-stated' with a "
-    "source receipt as explicit user statements; entries labeled legacy/unverified are "
+    "explicitly recorded user facts. A profile display name without a source receipt is "
+    "only an identity label, not proof that the user explicitly stated that name. Treat "
+    "only entries labeled 'User-stated' with a source receipt as explicit user statements; "
+    "entries labeled legacy/unverified are "
     "not confirmed facts. The WorldModel behavioral interaction model, communication "
     "style estimates, inferred familiarity, relationship estimates, time-pattern estimates, "
     "conversation topics, and retrieved memories are separate evidence sources. Never "
@@ -263,6 +265,9 @@ def profile_context_evidence(
             "legacy_unverified_entries": safe_count(
                 provenance_summary.get("legacy_unverified_entries", 0)
             ),
+            "display_name_source": str(
+                provenance_summary.get("display_name_source", "unknown")
+            )[:40],
             "categories": categories,
         }
     return result
