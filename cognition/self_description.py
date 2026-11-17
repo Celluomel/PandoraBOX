@@ -106,7 +106,7 @@ def is_runtime_execution_evidence_query(user_input: str) -> bool:
     """
     text = " ".join(str(user_input or "").casefold().split())
     refers_to_receipt = bool(re.search(
-        r"\b(?:cognitive\s+(?:execution|exécution)\s+trace|"
+        r"\b(?:(?:(?:cognitive|runtime)\s+)?(?:execution|exécution)\s+trace|"
         r"trace\s+(?:(?:of\s+)|(?:d['’]))?(?:cognitive\s+)?(?:execution|exécution)|"
         r"runtime\s+(?:execution\s+)?trace|module\s+(?:execution\s+)?trace|"
         r"execution\s+receipt|reçu\s+d['’]exécution|module\s+tick\s+manifest)\b",

@@ -43,6 +43,14 @@ class SelfDescriptionPromptTests(unittest.TestCase):
         self.assertTrue(is_architecture_query(question))
         self.assertTrue(is_internal_cognitive_query(question))
         self.assertFalse(is_cognitive_trace_query(question))
+        # Users naturally reverse the phrase order and omit the word
+        # "cognitive". These still refer to this process's execution receipt.
+        plain_order = (
+            "For the audit, what does the current execution trace prove?"
+        )
+        self.assertTrue(is_runtime_execution_evidence_query(plain_order))
+        self.assertTrue(is_architecture_query(plain_order))
+        self.assertTrue(is_internal_cognitive_query(plain_order))
         french_question = "Que prouve la trace d'exécution cognitive du tour courant ?"
         self.assertTrue(is_runtime_execution_evidence_query(french_question))
         self.assertTrue(is_architecture_query(french_question))
@@ -52,6 +60,9 @@ class SelfDescriptionPromptTests(unittest.TestCase):
         })
         self.assertIn("Reçu du tour courant", french_answer)
         self.assertIn("ne prouve ni la justesse", french_answer)
+        self.assertFalse(is_runtime_execution_evidence_query(
+            "What is the execution time for embedding model startup?"
+        ))
 
     def test_runtime_execution_answer_uses_current_receipts_and_states_limits(self):
         question = "What does the current cognitive execution trace prove?"
