@@ -469,6 +469,7 @@ class CognitiveAuditEngine:
         worst = None
         worst_actionable = None
         measured: Dict[str, float] = {}
+        actionable: Dict[str, float] = {}
         if snap:
             try:
                 last_snapshot = SignalSnapshot(**{
@@ -485,6 +486,11 @@ class CognitiveAuditEngine:
                     worst_actionable = min(actionable, key=actionable.get)
             except Exception:
                 pass
+        signal_measurement_status = self._snapshot_signal_status(snap)
+        measured_diagnostic_count = sum(
+            status in {"measured", "measured_legacy_snapshot"}
+            for status in signal_measurement_status.values()
+        )
         return {
             "last_snapshot": snap,
             "last_snapshot_age_seconds": round(snapshot_age, 1) if snapshot_age is not None else None,
@@ -504,9 +510,15 @@ class CognitiveAuditEngine:
             "non_actionable_signals": sorted(
                 set(SIGNAL_TARGETS) - set(SIGNAL_PARAMETER_MAP)
             ),
-            "measured_signal_count": len(measured),
+            # Keep diagnostic observation separate from target evaluation.
+            # SIGNAL_TARGETS is intentionally empty until a metric has an
+            # independently validated target; that must not make real samples
+            # appear to be absent in status consumers.
+            "measured_signal_count": measured_diagnostic_count,
+            "measured_target_count": len(measured),
+            "actionable_signal_count": len(actionable),
             "unavailable_signals": sorted(set(SIGNAL_TARGETS) - set(measured)),
-            "signal_measurement_status": self._snapshot_signal_status(snap),
+            "signal_measurement_status": signal_measurement_status,
             "signal_sample_count": (
                 dict(snap.get("signal_sample_count", {})) if isinstance(snap, dict) else {}
             ),

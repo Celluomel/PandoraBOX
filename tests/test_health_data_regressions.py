@@ -300,6 +300,9 @@ class HealthDataTests(unittest.TestCase):
 
         self.assertEqual(status['performance_target_count'], 0)
         self.assertEqual(status['performance_target_status'], 'none_validated')
+        self.assertEqual(status['measured_signal_count'], 1)
+        self.assertEqual(status['measured_target_count'], 0)
+        self.assertEqual(status['actionable_signal_count'], 0)
 
         self.assertEqual(
             status['signal_measurement_status']['mean_skill_depth'],
@@ -341,6 +344,9 @@ class HealthDataTests(unittest.TestCase):
         self.assertIsNone(status['worst_signal_now'])
         self.assertEqual(status['performance_target_count'], 0)
         self.assertEqual(status['performance_target_status'], 'none_validated')
+        self.assertEqual(status['measured_signal_count'], 4)
+        self.assertEqual(status['measured_target_count'], 0)
+        self.assertEqual(status['actionable_signal_count'], 0)
         self.assertNotIn('experiment_confirmation_rate', status['non_actionable_signals'])
         self.assertEqual(
             status['descriptive_metrics']['experiment_confirmation_rate']['value'], 0.0,
