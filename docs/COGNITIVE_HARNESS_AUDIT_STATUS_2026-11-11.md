@@ -1,7 +1,7 @@
 # Audit du harnais cognitif — état et prochaines étapes
 
 **Date de mise à jour :** 17 novembre 2026
-**Statut :** audit du harnais cognitif en cours; aucune conclusion globale de qualité n’est établie. Le dernier commit partagé est `15d1c62`; il complète la chaîne de provenance workspace et oriente les questions sur l’état interne vers le contexte/runtime. Un correctif local rend visible le modèle/dimension réellement utilisés pour chaque recherche mémoire FAISS. Les modifications Body/UI préexistantes restent hors lot. Lumina n’a pas été redémarrée; une validation live groupée sera nécessaire après le prochain lot.
+**Statut :** audit du harnais cognitif en cours; aucune conclusion globale de qualité n’est établie. Le dernier commit partagé est `3bbc8e1`; il rend visible le modèle/dimension réellement utilisés pour chaque recherche mémoire FAISS. Un A/B local a comparé MiniLM et Nomic sur un petit jeu français contrôlé; aucune migration d’index n’est engagée. Les modifications Body/UI préexistantes restent hors lot. Lumina n’a pas été redémarrée; une validation live groupée sera nécessaire après le prochain lot.
 
 ## Plan d’audit piloté par les preuves — mesure de progression
 
@@ -3883,3 +3883,5 @@ Le processus actif fonctionne encore sous l’ancien code. Son dernier relevé l
 **Vérification locale :** `test_memory_system_fallback.py`, `test_cognitive_log_regressions.py`, `test_turn_execution_evidence.py` — **125 passed, 14 subtests passed, 9 avertissements historiques**. Le nouveau test vérifie MiniLM/Nomic, la dimension 768 et l’absence d’un chemin `C:\Users\…` dans le reçu. Le processus live n’a pas encore chargé ce changement; après le redémarrage groupé, une trace FAISS permettra de vérifier le modèle effectivement utilisé.
 
 **Portée :** visibilité améliorée, pas amélioration prouvée du rappel. Nomic est une piste à évaluer sur un jeu de requêtes/paraphrases français pré-étiqueté, avec rappel@k, pertinence des souvenirs injectés et latence. Il ne remplace pas un validateur de vérité ou de qualité cognitive. Piste 4 partielle pour la généralisation, progression stricte toujours **3/10 = 30 %**.
+
+**A/B exploratoire FAST MiniLM vs QUALITY Nomic :** cinq requêtes paraphrasées françaises avec cinq souvenirs candidats synthétiques, label positif fixé sur la diagonale. MiniLM : top‑1 **3/5**, MRR **0,707**, environ **0,03 s** pour les encodages locaux. Nomic : top‑1 **4/5**, MRR **0,900**, environ **4,16 s** pour deux lots API (requêtes et candidats). Le modèle et la dimension observés étaient bien MiniLM/384 et Nomic/768. Ce résultat est trop petit et trop artificiel pour établir un gain général; il montre une piste possible avec un coût de latence à mesurer. Aucun souvenir utilisateur n’a été lu/modifié et aucun index n’a été reconstruit. Avant toute décision : benchmark pré-étiqueté plus large, top‑k, pertinence des éléments effectivement injectés, répétabilité et latence p50/p95.
