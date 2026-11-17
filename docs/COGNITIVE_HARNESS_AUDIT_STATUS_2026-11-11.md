@@ -1,7 +1,7 @@
 # Audit du harnais cognitif — état et prochaines étapes
 
 **Date de mise à jour :** 17 novembre 2026
-**Statut :** audit du harnais cognitif en cours; aucune conclusion globale de qualité n’est établie. Dernier commit partagé avant le lot en cours : `bdfd4cf` (reçu du modèle FAISS et A/B MiniLM/Nomic). Un correctif PresenceEngine est en validation locale avant push; les modifications Body/UI préexistantes restent hors lot. Lumina n’a pas été redémarrée; une validation live groupée sera nécessaire après ce lot.
+**Statut :** audit du harnais cognitif en cours; aucune conclusion globale de qualité n’est établie. Dernier commit partagé : `fc661bb` (PresenceEngine : paroles supprimées exclues des effets mémoire/social). Un correctif au profil interactionnel est maintenant en validation locale; les modifications Body/UI préexistantes restent hors lot. Lumina n’a pas été redémarrée; une validation live groupée sera nécessaire après ce lot.
 
 ## Plan d’audit piloté par les preuves — mesure de progression
 
@@ -3895,3 +3895,13 @@ Le processus actif fonctionne encore sous l’ancien code. Son dernier relevé l
 **Vérification locale :** `test_presence_identity_language.py` couvre la non-réduction de faim sociale sur suppression/log seul et son soulagement après reçu `tts+bubble`; exécuter aussi la compilation, `git diff --check` et la suite ciblée après le réordonnancement. Le processus Lumina courant n’a pas encore chargé ce changement; pas de redémarrage demandé à ce stade.
 
 **Portée :** correction de la cohérence causale du chemin de présence; aucune preuve encore que le problème historique soit reproduit avec le processus actuel ni qu’elle améliore la qualité globale des réponses. Le score strict reste **3/10 = 30 %**. Après déploiement au prochain redémarrage groupé, vérifier dans le reçu que toute ligne `utterance_not_delivered` n’a aucun effet mémoire/`recent_utterances`, tandis qu’un reçu `tts` ou `bubble` est conservé une seule fois.
+
+### Profil utilisateur : thèmes de la réponse Lumina attribués à l’utilisateur — 17 novembre 2026
+
+**Preuve live et analyse du code :** la dernière trace disponible montrait `user_profile_context=fallback_identity_only` avec zéro fait explicite dans le profil; la récupération mémoire avait tout de même injecté quatre messages d’interaction. La trace seule ne permet pas de juger leur pertinence, mais la revue de `WorldModel.update_from_interaction()` a révélé que `response` et `user_text` étaient combinés en `all_topics`, puis les thèmes de réponse étaient ajoutés à `profile.topic_entries`. Le prompt de ce modèle est présenté comme profil comportemental de l’utilisateur. Une réponse longue, erronée ou exploratoire de Lumina pouvait donc devenir artificiellement un sujet de Fred. Le même mélange alimentait `_global_topic_df`, utilisé pour le TF‑IDF des sujets utilisateur.
+
+**Correction locale :** les thèmes propres à `user_text` alimentent désormais `topic_entries` et leur document frequency TF‑IDF. Les thèmes de la réponse peuvent encore contribuer au graphe global de cooccurrence, qui reste une association conversationnelle; ils ne sont plus une preuve de l’intérêt de l’utilisateur. L’extraction d’expertise et les fenêtres récentes étaient déjà fondées sur le texte utilisateur.
+
+**Vérification locale :** le scénario où la demande porte sur un robot et où la réponse parle uniquement de quasars/nébuleuses confirme que seuls les thèmes écrits par l’utilisateur entrent dans son profil et son IDF. Suites WorldModel/profil et régressions de logs : **56 tests passés, 4 sous-tests passés, 9 avertissements historiques**; `py_compile` et `git diff --check` passent. Le processus live n’a pas chargé cette correction.
+
+**Portée :** défaut de frontière de provenance corrigé dans le modèle de profil; la validité d’autres inférences (style, expertise, faits explicites) reste à évaluer séparément. Pas de changement au score strict **3/10 = 30 %** sans validation live après redémarrage groupé et scénario de profil représentatif.

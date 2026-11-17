@@ -8,6 +8,22 @@ from cognition.world_model import WorldModel
 
 
 class WorldModelProfilePersistenceTests(unittest.TestCase):
+    def test_assistant_only_topics_do_not_become_user_profile_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            model = WorldModel(None, path=str(Path(directory) / "world.json"))
+            profile = model.update_from_interaction(
+                user_id="fred",
+                user_text="Can you help with my robot?",
+                response="Quasars and nebulae are fascinating astronomy topics.",
+                emotion="neutral",
+            )
+
+        self.assertIn("robot", profile.topic_entries)
+        self.assertNotIn("quasars", profile.topic_entries)
+        self.assertNotIn("nebulae", profile.topic_entries)
+        self.assertNotIn("quasars", model._global_topic_df)
+        self.assertNotIn("nebulae", model._global_topic_df)
+
     def test_behavioral_topic_context_does_not_claim_user_preferences(self):
         with tempfile.TemporaryDirectory() as directory:
             model = WorldModel(None, path=str(Path(directory) / "world.json"))

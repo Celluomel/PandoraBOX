@@ -354,10 +354,15 @@ class WorldModel:
             resp_topics = self._extract_topics(response)
             all_topics  = list(set(user_topics + resp_topics))
 
-            self._update_topic_entries(profile, user_topics, resp_topics)
+            # The per-user interaction model must be grounded in what the
+            # user actually wrote. Assistant-only topics can be verbose or
+            # mistaken and must not become evidence about the user's interests.
+            self._update_topic_entries(profile, user_topics)
 
             self._total_docs += 1
-            for t in set(all_topics):
+            # IDF is calculated for user-authored profile topics, so its
+            # document frequency must use the same source boundary.
+            for t in set(user_topics):
                 self._global_topic_df[t] += 1
 
             if profile.interaction_count % self.TFIDF_UPDATE_EVERY == 0:
@@ -636,17 +641,13 @@ class WorldModel:
                 result.append(t)
         return result[:12]
 
-    def _update_topic_entries(self, profile: UserProfile, user_topics: List[str], resp_topics: List[str]) -> None:
+    def _update_topic_entries(self, profile: UserProfile, user_topics: List[str]) -> None:
         now = time.time()
         for t in user_topics:
             if t not in profile.topic_entries:
                 profile.topic_entries[t] = TopicEntry(name=t, first_seen=now)
             profile.topic_entries[t].raw_count += 2
             profile.topic_entries[t].last_seen  = now
-        for t in resp_topics:
-            if t not in profile.topic_entries:
-                profile.topic_entries[t] = TopicEntry(name=t, first_seen=now)
-            profile.topic_entries[t].raw_count += 1
         if len(profile.topic_entries) > self.TOPIC_MAX_PER_USER:
             sorted_e = sorted(profile.topic_entries.items(), key=lambda kv: (kv[1].last_seen, kv[1].raw_count))
             for name, _ in sorted_e[:10]:
