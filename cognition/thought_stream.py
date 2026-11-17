@@ -54,6 +54,7 @@ import logging
 import math
 import random
 import time
+import uuid
 from collections import deque
 from dataclasses import dataclass, field
 import json
@@ -77,9 +78,12 @@ class Thought:
     # creation sites where a clean subject is known; falls back to None
     # otherwise (callers must handle the fallback, never slug-mangle).
     topic: str = ""
+    # Stable identity across workspace competition, persistence and reload.
+    id: str = field(default_factory=lambda: f"tht_{uuid.uuid4().hex}")
 
     def to_dict(self) -> Dict:
         return {
+            "id":            self.id,
             "content":      self.content,
             "source":       self.source,
             "priority":     round(self.priority, 3),
@@ -1022,6 +1026,7 @@ class ThoughtStream:
             restored = 0
             for d in data.get("thoughts", []):
                 t = Thought(
+                    id          = str(d.get("id") or f"tht_{uuid.uuid4().hex}"),
                     content   = d.get("content", ""),
                     source    = d.get("source", "memory"),
                     priority  = float(d.get("priority", 0.3)),
@@ -1032,6 +1037,8 @@ class ThoughtStream:
                 if t.content:
                     self._buffer.append(t)
                     restored += 1
+                    if not d.get("id"):
+                        self._persist_dirty = True
 
             # Restore open questions — cognitive pressure survives restart
             now = time.time()

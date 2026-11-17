@@ -476,6 +476,7 @@ class InternalThoughtLoop:
             )
             self._phase1 = Phase1Orchestrator(
                 global_workspace=_gw, goal_engine=_goal_engine,
+                thought_stream=getattr(self._organism, "thought_stream", None),
             )
             logger.info("[InternalLoop] V32 Phase 1 Orchestrator ready ✅")
         except Exception as _e:

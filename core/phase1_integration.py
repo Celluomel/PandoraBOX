@@ -32,7 +32,10 @@ class Phase1Orchestrator:
     alongside existing PandoraBOX functionality.
     """
     
-    def __init__(self, persona_dir: str = "data/persona", global_workspace=None, goal_engine=None):
+    def __init__(
+        self, persona_dir: str = "data/persona", global_workspace=None,
+        goal_engine=None, thought_stream=None,
+    ):
         self.persona_dir = Path(persona_dir)
         self.cycle_count = 0
         self.enabled = True
@@ -41,6 +44,7 @@ class Phase1Orchestrator:
         # active_hypotheses. None keeps this class fully standalone.
         self._global_workspace = global_workspace
         self.goal_engine = goal_engine
+        self._thought_stream = thought_stream
         
         # Try to load Phase 1 components
         self.components = self._initialize_components()
@@ -364,24 +368,52 @@ class Phase1Orchestrator:
             return []
     
     def _load_recent_thoughts(self) -> List[Dict]:
-        """Load recent thoughts for competition via DAL."""
+        """Load recent thoughts, including current in-memory publications."""
+        persisted = []
         try:
             from core.data.access import DataAccess
-            return DataAccess(str(self.persona_dir)).get_thoughts(limit=20)
+            persisted = DataAccess(str(self.persona_dir)).get_thoughts(limit=20)
         except Exception:
-            pass
-        thought_file = self.persona_dir / 'thought_stream.json'
-        if thought_file.exists():
+            thought_file = self.persona_dir / 'thought_stream.json'
+            if thought_file.exists():
+                try:
+                    with open(thought_file, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                    raw = data.get('thoughts', [])
+                    persisted = raw[-20:] if isinstance(raw, list) else []
+                except Exception:
+                    persisted = []
+
+        # ThoughtStream.add() is immediately visible in memory but is only
+        # persisted on a later flush. Reading the DAL alone therefore made a
+        # newly recalled memory invisible to the next Phase 1 competition.
+        in_memory = []
+        try:
+            recent_dicts = getattr(self._thought_stream, "recent_dicts", None)
+            if callable(recent_dicts):
+                in_memory = recent_dicts(20) or []
+        except Exception:
+            in_memory = []
+
+        merged: Dict[tuple, Dict[str, Any]] = {}
+        for item in list(persisted or []) + list(in_memory or []):
+            if not isinstance(item, dict):
+                continue
+            key = (
+                str(item.get("source") or ""),
+                str(item.get("timestamp") or ""),
+                str(item.get("content") or ""),
+            )
+            if key[2]:
+                merged[key] = item
+
+        def _timestamp(item: Dict[str, Any]) -> float:
             try:
-                with open(thought_file, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    thoughts = data.get('thoughts', [])
-                    # Return last 10 thoughts
-                    return thoughts[-10:] if len(thoughts) > 10 else thoughts
+                return float(item.get("timestamp", 0) or 0)
             except:
-                pass
-        
-        return []
+                return 0.0
+
+        return sorted(merged.values(), key=_timestamp, reverse=True)[:20]
     
     def _load_tensions(self) -> Dict:
         """Load current tensions."""
