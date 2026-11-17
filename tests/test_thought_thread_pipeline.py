@@ -8,6 +8,7 @@ from cognition.cognitive_dissonance_engine import (
 )
 from cognition.thought_thread_engine import TTEContext, ThoughtThreadEngine
 from cognition.thread_lifecycle_manager import ThreadLifecycleManager
+from core.data.access import DataAccess
 from core.data.schemas import normalize_thread
 
 
@@ -301,7 +302,7 @@ def test_lifecycle_manager_preserves_over_budget_thread_while_goal_is_active():
     manager = ThreadLifecycleManager.__new__(ThreadLifecycleManager)
     manager.dal = SimpleNamespace(
         get_threads=lambda: [thread],
-        save_thread=lambda value: saved.append(value.copy()),
+        save_thread=lambda value: saved.append(value.copy()) or True,
     )
     manager._repair_thought_goal_links = lambda: 0
 
@@ -315,6 +316,79 @@ def test_lifecycle_manager_preserves_over_budget_thread_while_goal_is_active():
     closed_report = manager.run(active_goal_ids=set())
     assert thread["status"] == "retired"
     assert closed_report["unverified_threads_retired"] == ["thread-a"]
+
+
+def test_lifecycle_manager_batches_thread_retirement_and_reports_persistence():
+    thread = {
+        "id": "thread-batch-1",
+        "topic": "cognitive audit",
+        "status": "active",
+        "iteration_count": 100,
+        "history": [],
+        "current_state": {},
+    }
+    writes = []
+    manager = ThreadLifecycleManager.__new__(ThreadLifecycleManager)
+    manager.dal = SimpleNamespace(
+        get_threads=lambda: [thread],
+        save_threads=lambda values: writes.append([v.copy() for v in values]) or True,
+    )
+    manager._repair_thought_goal_links = lambda: 0
+
+    report = manager.run(active_goal_ids=set())
+
+    assert len(writes) == 1
+    assert len(writes[0]) == 1
+    assert writes[0][0]["status"] == "retired"
+    assert report["threads_retired"] == ["thread-b"]
+    assert report["threads_processed"] == 1
+    assert report["unverified_threads_retired"] == ["thread-b"]
+    assert report["thread_persistence_failed"] == []
+
+
+def test_lifecycle_manager_does_not_claim_retirement_when_batch_save_fails():
+    thread = {
+        "id": "thread-save-fail",
+        "topic": "cognitive audit",
+        "status": "active",
+        "iteration_count": 100,
+        "history": [],
+        "current_state": {},
+    }
+    manager = ThreadLifecycleManager.__new__(ThreadLifecycleManager)
+    manager.dal = SimpleNamespace(
+        get_threads=lambda: [thread],
+        save_threads=lambda _values: False,
+    )
+    manager._repair_thought_goal_links = lambda: 0
+
+    report = manager.run(active_goal_ids=set())
+
+    assert report["threads_retired"] == []
+    assert report["threads_processed"] == 0
+    assert report["thread_persistence_failed"] == ["thread-s"]
+
+
+def test_data_access_saves_multiple_beliefs_with_one_identity_write(tmp_path, monkeypatch):
+    manager = DataAccess(str(tmp_path))
+    snapshots = []
+    monkeypatch.setattr(manager, "_load", lambda _name, default=None: {"beliefs": {}})
+    monkeypatch.setattr(
+        manager,
+        "_save",
+        lambda filename, payload: snapshots.append((filename, payload.copy())) or True,
+    )
+
+    assert manager.save_beliefs([
+        {"name": "thread_learning_a", "value": 1.0, "confidence": 0.8},
+        {"name": "thread_learning_b", "value": 0.0, "confidence": 0.7},
+    ]) is True
+
+    assert len(snapshots) == 1
+    assert snapshots[0][0] == "identity.json"
+    assert set(snapshots[0][1]["beliefs"]) == {
+        "thread_learning_a", "thread_learning_b",
+    }
 
 
 def test_thread_schema_keeps_goal_link_and_tte_lifecycle_fields():

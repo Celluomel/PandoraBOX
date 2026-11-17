@@ -60,10 +60,15 @@ class ThreadLifecycleManager:
             'unverified_threads_retired': [],
             'active_goal_threads_preserved': [],
             'links_repaired':    0,
+            'belief_persistence_failed': [],
+            'thread_persistence_failed': [],
         }
 
         # 1. Handle stuck threads
         threads = self.dal.get_threads()
+        retirement_candidates = []
+        belief_candidates = []
+        unverified_candidate_ids = set()
         for thread in threads:
             iters  = thread.get('iteration_count', 0)
             status = thread.get('status', 'active')
@@ -76,20 +81,67 @@ class ThreadLifecycleManager:
             if iters >= self.MAX_ITER_THRESHOLD and status not in ('resolved', 'retired'):
                 belief = self._extract_belief(thread)
                 if belief:
-                    self.dal.save_belief(belief)
-                    report['beliefs_extracted'].append(belief['name'])
+                    belief_candidates.append(belief)
+                    thread['_lifecycle_belief_name'] = belief['name']
                     # Link thread to the belief
                     thread['identity_link']  = belief['name']
                     thread['learning_at']    = _now()
                 else:
-                    report['unverified_threads_retired'].append(thread['id'][:8])
+                    unverified_candidate_ids.add(thread['id'][:8])
 
                 thread['status']      = 'retired'
                 thread['retired_at']  = _now()
                 thread['retire_reason'] = f"Exceeded {self.MAX_ITER_THRESHOLD} iterations"
-                self.dal.save_thread(thread)
-                report['threads_retired'].append(thread['id'][:8])
-                report['threads_processed'] += 1
+                retirement_candidates.append(thread)
+
+        # The old loop rewrote the full multi-megabyte thread JSON file once
+        # per retired thread. Persist this maintenance batch once instead.
+        beliefs_saved = True
+        if belief_candidates:
+            batch_saver = getattr(self.dal, 'save_beliefs', None)
+            if callable(batch_saver):
+                beliefs_saved = bool(batch_saver(belief_candidates))
+            else:
+                beliefs_saved = all(
+                    self.dal.save_belief(belief) for belief in belief_candidates
+                )
+            if beliefs_saved:
+                report['beliefs_extracted'] = [
+                    belief['name'] for belief in belief_candidates
+                ]
+            else:
+                failed_belief_names = {belief['name'] for belief in belief_candidates}
+                report['belief_persistence_failed'] = sorted(failed_belief_names)
+
+        if not beliefs_saved:
+            retirement_candidates = [
+                thread for thread in retirement_candidates
+                if thread.get('_lifecycle_belief_name') not in failed_belief_names
+            ]
+        for thread in retirement_candidates:
+            thread.pop('_lifecycle_belief_name', None)
+
+        if retirement_candidates:
+            batch_saver = getattr(self.dal, 'save_threads', None)
+            if callable(batch_saver):
+                threads_saved = bool(batch_saver(retirement_candidates))
+            else:
+                threads_saved = all(
+                    self.dal.save_thread(thread) for thread in retirement_candidates
+                )
+            if threads_saved:
+                report['threads_retired'] = [
+                    thread['id'][:8] for thread in retirement_candidates
+                ]
+                report['threads_processed'] = len(retirement_candidates)
+                report['unverified_threads_retired'] = [
+                    thread['id'][:8] for thread in retirement_candidates
+                    if thread['id'][:8] in unverified_candidate_ids
+                ]
+            else:
+                report['thread_persistence_failed'] = [
+                    thread['id'][:8] for thread in retirement_candidates
+                ]
 
         # 2. Repair thought→goal links
         report['links_repaired'] = self._repair_thought_goal_links()

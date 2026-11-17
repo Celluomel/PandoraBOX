@@ -319,41 +319,58 @@ class DataAccess:
 
     def save_belief(self, belief: Dict) -> bool:
         """Create or update a belief (matched by name), capped at BELIEF_MAX_IN_IDENTITY."""
+        return self.save_beliefs([belief])
+
+    def save_beliefs(self, batch: List[Dict]) -> bool:
+        """Create or update beliefs with one atomic identity-file write."""
+        if not batch:
+            return True
         with _LOCK:
             raw = self._load("identity.json", make_identity_envelope({}))
             beliefs = raw.get("beliefs", {})
             if isinstance(beliefs, list):
                 beliefs = {b.get("name", new_id("bel_")): b for b in beliefs}
 
-            # Normalize name: strip repeated "expressed_" prefix chains
-            _raw_bname = belief.get("name", new_id("bel_"))
             import re as _bre
-            name = _bre.sub(r'^(expressed_)+', 'expressed_', _raw_bname)
-            # Update the belief dict itself so the stored name is clean
-            if name != _raw_bname:
-                belief = {**belief, "name": name}
-            existing = beliefs.get(name, {})
-            merged = {**existing, **belief, "updated_at": now_iso()}
-            if "history" not in merged:
-                merged["history"] = []
-            if existing.get("value") is not None and existing["value"] != belief.get("value"):
-                merged["history"].append({
-                    "old_value": existing["value"],
-                    "new_value": belief.get("value"),
-                    "at": now_iso(),
-                })
-            beliefs[name] = merged
+            protected_names = set()
+            last_batch_name = None
+            for belief in batch:
+                # Normalize name: strip repeated "expressed_" prefix chains.
+                _raw_bname = belief.get("name", new_id("bel_"))
+                name = _bre.sub(r'^(expressed_)+', 'expressed_', _raw_bname)
+                if name != _raw_bname:
+                    belief = {**belief, "name": name}
+                existing = beliefs.get(name, {})
+                merged = {**existing, **belief, "updated_at": now_iso()}
+                if "history" not in merged:
+                    merged["history"] = []
+                if existing.get("value") is not None and existing["value"] != belief.get("value"):
+                    merged["history"].append({
+                        "old_value": existing["value"],
+                        "new_value": belief.get("value"),
+                        "at": now_iso(),
+                    })
+                beliefs[name] = merged
+                protected_names.add(name)
+                last_batch_name = name
 
             # Hard cap: if over limit, prune weakest (lowest confidence) entries
-            # but always keep the one we just wrote.
-            if len(beliefs) > self.BELIEF_MAX_IN_IDENTITY:
+            # but keep this batch's updates where the cap permits.
+            while len(beliefs) > self.BELIEF_MAX_IN_IDENTITY:
                 sorted_keys = sorted(
-                    (k for k in beliefs if k != name),
+                    (k for k in beliefs if k not in protected_names),
                     key=lambda k: beliefs[k].get("confidence", beliefs[k].get("value", 0.0))
                 )
-                overflow = len(beliefs) - self.BELIEF_MAX_IN_IDENTITY
-                for k in sorted_keys[:overflow]:
-                    del beliefs[k]
+                if not sorted_keys:
+                    # An oversized incoming batch cannot all be retained under
+                    # the cap; keep its last item as the legacy single-write
+                    # API would and prune the weakest earlier batch members.
+                    keep = last_batch_name
+                    sorted_keys = sorted(
+                        (k for k in beliefs if k != keep),
+                        key=lambda k: beliefs[k].get("confidence", beliefs[k].get("value", 0.0)),
+                    )
+                del beliefs[sorted_keys[0]]
 
             raw["beliefs"] = beliefs
             raw["updated_at"] = now_iso()
