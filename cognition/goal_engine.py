@@ -1684,6 +1684,62 @@ class GoalEngine:
         candidates = []
         accepted = 0
         _generation_blocked = False
+        topic_quality_metrics = {
+            "semantic_memory": {"candidate_count": 0, "accepted_count": 0},
+            "curiosity": {"candidate_count": 0, "accepted_count": 0},
+            "embedding_status": "not_requested",
+        }
+
+        def _admit_semantic_topics(raw_topics, source_name, limit=8):
+            unique_topics = list(dict.fromkeys(
+                str(topic).strip() for topic in raw_topics if str(topic).strip()
+            ))
+            source_metrics = topic_quality_metrics[source_name]
+            source_metrics["candidate_count"] = len(unique_topics)
+            if not unique_topics:
+                return []
+
+            try:
+                from cognition import goal_semantics as _gs
+                scores = _gs.batch_topic_quality(unique_topics)
+            except Exception as error:  # noqa: BLE001
+                logger.debug("[GoalEngine] %s topic quality failed: %s", source_name, error)
+                scores = None
+
+            if scores is None:
+                topic_quality_metrics["embedding_status"] = "deferred"
+                logger.info(
+                    "[GoalEngine] %s topic scoring deferred; no unscored topics promoted",
+                    source_name,
+                )
+                return []
+
+            topic_quality_metrics["embedding_status"] = "available"
+            admitted = []
+            for topic in unique_topics:
+                verdict = scores.get(topic)
+                if verdict is None:
+                    continue
+                good_sim, noise_sim, is_quality = verdict
+                normalized = " ".join(topic.casefold().split())
+                with self._lock:
+                    self._topic_quality_cache[normalized] = bool(is_quality)
+                logger.debug(
+                    "[GoalEngine] %s topic '%s' %s semantic (good=%.2f noise=%.2f)",
+                    source_name, topic, "PASS" if is_quality else "reject",
+                    good_sim, noise_sim,
+                )
+                if is_quality:
+                    admitted.append(topic)
+
+            admitted = admitted[:limit]
+            source_metrics["accepted_count"] = len(admitted)
+            logger.info(
+                "[GoalEngine] %d/%d %s topic(s) passed EMBEDDING quality gate",
+                len(admitted), len(unique_topics), source_name,
+            )
+            return admitted
+
         try:
             # Clean legacy conversational fragments from the live pool as well
             # as at startup, so a long-running process can recover immediately.
@@ -1709,61 +1765,30 @@ class GoalEngine:
                     raw_topics = sem.recent_user_topics(
                         limit=15, min_strength=0.5, min_observations=2
                     )
-
-                    # Score topics semantically in one dimension-safe batch.
-                    # If embeddings are busy/unavailable, defer promotion and
-                    # retry on a later cycle rather than guessing lexically.
-                    _sem_topic = None
-                    try:
-                        from cognition import goal_semantics as _gs
-                        _sem_topic = _gs.batch_topic_quality(raw_topics)
-                    except Exception as _e:  # noqa: BLE001
-                        logger.debug(f"[GoalEngine] semantic topic quality failed: {_e}")
-                        _sem_topic = None
-
-                    def _is_quality_topic(t: str) -> bool:
-                        if _sem_topic is not None and t in _sem_topic:
-                            good_sim, noise_sim, ok = _sem_topic[t]
-                            with self._lock:
-                                normalized_topic = " ".join(t.casefold().split())
-                                self._topic_quality_cache[normalized_topic] = bool(ok)
-                            logger.debug(
-                                "[GoalEngine] topic '%s' %s semantic "
-                                "(good=%.2f noise=%.2f)"
-                                % (t, "PASS" if ok else "reject", good_sim, noise_sim)
-                            )
-                            return ok
-                        return False
-
-                    topics = [t for t in raw_topics if _is_quality_topic(t)][:8]
-                    if _sem_topic is not None:
-                        logger.info(
-                            f"[GoalEngine] {len(topics)}/{len(raw_topics)} topic(s) "
-                            f"passed EMBEDDING quality gate"
-                        )
-                    else:
-                        logger.info(
-                            "[GoalEngine] semantic goal-topic scoring deferred; "
-                            "no unscored topics promoted"
-                        )
+                    topics = _admit_semantic_topics(raw_topics, "semantic_memory")
             except Exception as e:
                 logger.debug(f"[GoalEngine] semantic topics: {e}")
 
-            # Fallback to curiosity engine topics if semantic memory empty
+            # Curiosity is a fallback topic source, not a quality exception.
+            # Its nodes can contain the same conversation fragments as
+            # semantic memory, so subject them to the identical embedding gate.
             if not topics:
                 try:
                     org = getattr(self.ai_system, '_organism', None)
                     cu  = getattr(org, 'curiosity', None) if org else None
                     if cu:
+                        curiosity_topics = []
                         top = cu.top_topic()
                         if top:
-                            topics = [top]
+                            curiosity_topics.append(top)
                         with cu._lock:
-                            extra = [
+                            curiosity_topics.extend(
                                 n.topic for n in cu._topics.values()
                                 if n.curiosity >= 0.45
-                            ]
-                            topics.extend(extra[:5])
+                            )
+                        topics = _admit_semantic_topics(
+                            curiosity_topics, "curiosity", limit=6
+                        )
                 except Exception:
                     pass
 
@@ -1891,6 +1916,7 @@ class GoalEngine:
                 "motivation_count": len(motivations),
                 "user_topic_count": len(user_topics),
                 "filtered_topic_count": len(filtered_topics),
+                "topic_quality": topic_quality_metrics,
                 "candidate_count": len(candidates),
                 "accepted_candidate_count": accepted,
                 "generation_blocked": bool(_generation_blocked),
