@@ -57,6 +57,36 @@ def test_curiosity_resolver_offline_duplicate_fallback_has_no_missing_stopword_n
     assert resolver._is_duplicate("improve robot odometry", ["robot odometry"])
 
 
+def test_curiosity_resolver_does_not_apply_nomic_threshold_to_minilm_fallback(monkeypatch):
+    class FallbackEmbedder:
+        def encode_with_metadata(self, texts):
+            import numpy as np
+            return np.asarray([[1.0, 0.0] for _ in texts]), "sentence-transformers:all-MiniLM-L6-v2"
+
+    resolver = AutonomousCuriosityResolver.__new__(AutonomousCuriosityResolver)
+    monkeypatch.setattr(
+        "utils.shared_embedder.get_embedder", lambda **_kwargs: FallbackEmbedder(),
+    )
+
+    assert resolver._is_duplicate("robot odometry", ["mechanical walking"]) is False
+
+
+def test_curiosity_resolver_uses_cosine_threshold_for_calibrated_nomic(monkeypatch):
+    class NomicEmbedder:
+        def encode_with_metadata(self, texts):
+            import numpy as np
+            return np.asarray([[1.0, 0.0] for _ in texts]), (
+                "api:http://localhost:1234/v1:text-embedding-nomic-embed-text-v1.5"
+            )
+
+    resolver = AutonomousCuriosityResolver.__new__(AutonomousCuriosityResolver)
+    monkeypatch.setattr(
+        "utils.shared_embedder.get_embedder", lambda **_kwargs: NomicEmbedder(),
+    )
+
+    assert resolver._is_duplicate("robot odometry", ["mechanical walking"]) is True
+
+
 def test_curiosity_resolver_uses_goal_engine_semantics_without_english_word_count_gate(
     tmp_path, monkeypatch,
 ):

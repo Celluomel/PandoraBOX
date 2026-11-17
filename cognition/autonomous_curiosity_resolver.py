@@ -232,10 +232,22 @@ class AutonomousCuriosityResolver:
         # Semantic similarity (QUALITY tier, single batched call)
         try:
             import numpy as np
-            from utils.shared_embedder import get_embedder
+            from utils.shared_embedder import (
+                get_embedder, is_calibrated_quality_space,
+            )
             emb = get_embedder(quality=True)
-            vecs = np.asarray(
-                emb.encode([candidate] + topics), dtype="float32")
+            texts = [candidate] + topics
+            if hasattr(emb, "encode_with_metadata"):
+                encoded, space_id = emb.encode_with_metadata(texts)
+                if not is_calibrated_quality_space(space_id):
+                    logger.debug(
+                        "[CuriosityResolver] uncalibrated embedding space %s; "
+                        "using word-overlap dedup", space_id,
+                    )
+                    return self._is_duplicate_word_overlap(cand, topics)
+            else:
+                encoded = emb.encode(texts)
+            vecs = np.asarray(encoded, dtype="float32")
             cand_vec = vecs[0]
             others = vecs[1:]
             cn = float(np.linalg.norm(cand_vec)) + 1e-9

@@ -93,6 +93,17 @@ def _quality_model_from_config():
     return DEFAULT_QUALITY_MODEL
 
 
+def is_calibrated_quality_space(space_id):
+    """Whether an embedding result came from the specifically calibrated model.
+
+    Similarity thresholds in consumers are calibrated against Nomic v1.5.
+    A transparent FAST-tier fallback is dimension-safe but is not guaranteed
+    to preserve those cosine distributions, so callers must not reuse those
+    thresholds for it.
+    """
+    return str(space_id or "").endswith(":" + DEFAULT_QUALITY_MODEL)
+
+
 class APIEmbedder:
     """Embedder backed by an OpenAI-compatible /v1/embeddings endpoint.
 

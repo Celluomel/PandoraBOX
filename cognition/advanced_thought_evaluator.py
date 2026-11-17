@@ -240,11 +240,11 @@ class AdvancedThoughtEvaluator:
         """
         Compute semantic similarity to active goals.
 
-        Uses the QUALITY-tier embedder (nomic-embed-text) cosine similarity -
-        true semantic understanding, robust to rewording. The class thresholds
-        (high=0.7 / moderate=0.4) map naturally onto the cosine scale. Falls
-        back to the legacy word-overlap heuristic if the embedder/API is
-        unavailable, so evaluation never breaks offline.
+        Uses cosine similarity only when Nomic v1.5 actually produced the
+        vectors. The shared embedder can silently fall back to MiniLM; that
+        vector space has different score distributions, so the Nomic
+        thresholds must not be applied to it. Uncalibrated/unavailable spaces
+        use the legacy word-overlap heuristic.
         """
         if not concepts or not active_goals:
             return 0.0
@@ -255,9 +255,20 @@ class AdvancedThoughtEvaluator:
             return 0.0
         try:
             import numpy as np
-            from utils.shared_embedder import get_embedder
+            from utils.shared_embedder import (
+                get_embedder, is_calibrated_quality_space,
+            )
             emb = get_embedder(quality=True)
-            vecs = np.asarray(emb.encode([concept_text] + goal_texts), dtype="float32")
+            texts = [concept_text] + goal_texts
+            if hasattr(emb, "encode_with_metadata"):
+                encoded, space_id = emb.encode_with_metadata(texts)
+                if not is_calibrated_quality_space(space_id):
+                    return self._compute_goal_similarity_word_overlap(
+                        concepts, active_goals,
+                    )
+            else:
+                encoded = emb.encode(texts)
+            vecs = np.asarray(encoded, dtype="float32")
             c = vecs[0]
             others = vecs[1:]
             cn = float(np.linalg.norm(c)) + 1e-9
