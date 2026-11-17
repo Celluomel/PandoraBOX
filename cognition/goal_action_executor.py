@@ -773,6 +773,7 @@ class GoalActionExecutor:
             "thought_published": bool(result.get("thought_published")),
             "thought_stream_recorded": bool(result.get("thought_stream_recorded")),
             "workspace_broadcast": bool(result.get("workspace_broadcast")),
+            "thought_id_ref": str(result.get("thought_id_ref") or "")[:20],
         }
         self._record_async_cycle_evidence(
             cycle_id, "goal_action_executor.memory_recall_result",
@@ -962,6 +963,7 @@ class GoalActionExecutor:
                     "publication", "completed" if published else "rejected",
                     thought_stream_recorded=bool(publication.get("thought_stream_recorded")),
                     workspace_broadcast=bool(publication.get("workspace_broadcast")),
+                    thought_id_ref=str(publication.get("thought_id_ref") or "")[:20],
                 )
             return {
                 'success': published,
@@ -2751,16 +2753,31 @@ class GoalActionExecutor:
             return True   # default: allow question
 
     def _add_thought(self, content: str, source: str = "goal_action",
-                     priority: float = 0.45) -> Dict[str, bool]:
+                     priority: float = 0.45) -> Dict[str, Any]:
         """Record a thought in ThoughtStream and broadcast it to workspace."""
-        result = {"thought_stream_recorded": False, "workspace_broadcast": False}
+        result: Dict[str, Any] = {
+            "thought_stream_recorded": False,
+            "workspace_broadcast": False,
+            "thought_id_ref": "",
+        }
         try:
             ts = getattr(self._o, 'thought_stream', None)
-            if ts and hasattr(ts, 'add'):
+            if ts and hasattr(ts, 'add_with_receipt'):
+                thought_receipt = ts.add_with_receipt(
+                    content=content, source=source, priority=priority,
+                    thought_type="goal_action",
+                )
+                result["thought_stream_recorded"] = bool(
+                    thought_receipt.get("recorded")
+                )
+                raw_id = str(thought_receipt.get("thought_id") or "")
+                if raw_id and result["thought_stream_recorded"]:
+                    result["thought_id_ref"] = hashlib.sha256(
+                        raw_id.encode("utf-8", errors="replace")
+                    ).hexdigest()[:20]
+            elif ts and hasattr(ts, 'add'):
                 result["thought_stream_recorded"] = bool(ts.add(
-                    content=content,
-                    source=source,
-                    priority=priority,
+                    content=content, source=source, priority=priority,
                     thought_type="goal_action",
                 ))
         except Exception as e:

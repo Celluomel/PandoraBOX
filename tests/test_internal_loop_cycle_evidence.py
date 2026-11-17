@@ -1,4 +1,5 @@
 from collections import deque
+import hashlib
 import threading
 from types import SimpleNamespace
 
@@ -948,3 +949,36 @@ def test_goal_action_receipt_identifies_fallback_selection_without_goal_text():
     assert evidence["selected_goal_id_ref"] == loop._evidence_fingerprint("private-goal-id")
     assert "private-goal-id" not in str(evidence)
     assert "private goal text" not in str(evidence)
+
+
+def test_memory_recall_candidate_reference_matches_stable_thought_id():
+    thought_id = "tht_audit_memory_123"
+    expected = hashlib.sha256(thought_id.encode()).hexdigest()[:20]
+    competition = {
+        "competition": {
+            "all_candidates": [
+                {
+                    "type": "thought",
+                    "source_data": {
+                        "id": thought_id,
+                        "source": "goal_action.memory_recall",
+                        "content": "private retrieved text must not enter the receipt",
+                    },
+                },
+                {
+                    "type": "thought",
+                    "source_data": {"id": "other", "source": "curiosity"},
+                },
+            ],
+        },
+    }
+
+    refs = InternalThoughtLoop._memory_recall_candidate_refs(competition)
+    assert refs == [expected]
+
+    summary = InternalThoughtLoop._evidence_summary({
+        "memory_recall_candidate_refs": refs + ["private topic", "f" * 21],
+    })
+    assert summary["memory_recall_candidate_refs"] == [expected]
+    assert summary["memory_recall_candidate_count"] == 1
+    assert "private retrieved text" not in str(summary)

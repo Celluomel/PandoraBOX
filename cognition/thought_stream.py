@@ -282,15 +282,26 @@ class ThoughtStream:
         The thought becomes visible to ``recent()`` immediately and is included
         in the next regular persistence flush.
         """
+        return bool(self.add_with_receipt(
+            content, source=source, priority=priority,
+            thought_type=thought_type, topic=topic,
+        ).get("recorded"))
+
+    def add_with_receipt(
+        self, content: str, source: str = "external",
+        priority: float = 0.45, thought_type: str = "self_observation",
+        topic: str = "",
+    ) -> Dict[str, Any]:
+        """Add a thought and return its stable ID without exposing its text."""
         text = str(content or "").strip()
         if not text:
-            return False
+            return {"recorded": False, "thought_id": ""}
         try:
             p = float(priority)
         except (TypeError, ValueError):
-            return False
+            return {"recorded": False, "thought_id": ""}
         if not math.isfinite(p) or not 0.0 <= p <= 1.0:
-            return False
+            return {"recorded": False, "thought_id": ""}
 
         thought = Thought(
             content=text,
@@ -307,7 +318,12 @@ class ThoughtStream:
                 obs.record_thought(text)
         except Exception:
             logger.debug("[ThoughtStream] External thought telemetry failed", exc_info=True)
-        return any(item is thought for item in self._buffer)
+        recorded = any(item is thought for item in self._buffer)
+        return {
+            "recorded": recorded,
+            "thought_id": thought.id if recorded else "",
+            "timestamp": thought.timestamp if recorded else None,
+        }
 
     def tick(self) -> Optional[Thought]:
         """

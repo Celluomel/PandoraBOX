@@ -783,6 +783,7 @@ class InternalThoughtLoop:
                 "outcome_status", "reason_code", "skipped",
                 "goal_state_persisted", "memory_retrieved", "thought_published",
                 "thought_stream_recorded", "workspace_broadcast",
+                "thought_id_ref",
                 "research_item_queued", "hypothesis_generated",
                 "source_thought_source", "source_thought_type", "source_concept_method",
                 "drive_update", "need_scan", "pressure_source",
@@ -838,12 +839,45 @@ class InternalThoughtLoop:
                 item = value.get(key)
                 if isinstance(item, (list, tuple)):
                     summary[f"{key}_count"] = len(item)
+            candidate_refs = value.get("memory_recall_candidate_refs")
+            if isinstance(candidate_refs, (list, tuple)):
+                safe_refs = [
+                    ref for ref in candidate_refs[:20]
+                    if isinstance(ref, str) and re.fullmatch(r"[a-f0-9]{20}", ref)
+                ]
+                summary["memory_recall_candidate_refs"] = safe_refs
+                summary["memory_recall_candidate_count"] = len(safe_refs)
             return summary
         if isinstance(value, (list, tuple, set)):
             return {"kind": type(value).__name__, "item_count": len(value)}
         if value is None:
             return {"kind": "none"}
         return {"kind": type(value).__name__}
+
+    @staticmethod
+    def _memory_recall_candidate_refs(competition_output: Any) -> list[str]:
+        """Hash IDs of recalled-memory thoughts actually admitted as candidates."""
+        if not isinstance(competition_output, dict):
+            return []
+        competition = competition_output.get("competition", {})
+        candidates = competition.get("all_candidates", []) if isinstance(competition, dict) else []
+        refs: list[str] = []
+        for candidate in candidates if isinstance(candidates, list) else []:
+            if not isinstance(candidate, dict) or candidate.get("type") != "thought":
+                continue
+            source_data = candidate.get("source_data", {})
+            if not isinstance(source_data, dict) or source_data.get("source") != "goal_action.memory_recall":
+                continue
+            thought_id = str(source_data.get("id") or "")
+            if thought_id:
+                ref = hashlib.sha256(
+                    thought_id.encode("utf-8", errors="replace")
+                ).hexdigest()[:20]
+                if ref not in refs:
+                    refs.append(ref)
+                if len(refs) >= 20:
+                    break
+        return refs
 
     @staticmethod
     def _workspace_decision_age_cycles(
@@ -1834,6 +1868,9 @@ class InternalThoughtLoop:
                 total_pressure  = pressure_result.get('total', 0.5)
                 _phase1_competition_output = _cycle_result.get("competition", {})
                 _phase1_competition_metrics = _phase1_competition_output.get("competition", {})
+                _memory_recall_candidate_refs = self._memory_recall_candidate_refs(
+                    _phase1_competition_output
+                )
                 _proposal_admission = _cycle_result.get("rejected_goal_suggestions", [])
                 if _proposal_admission:
                     self._record_cycle_stage(
@@ -1842,11 +1879,16 @@ class InternalThoughtLoop:
                             "rejections": _proposal_admission[:12],
                         },
                     )
+                _phase1_evidence_output = dict(_phase1_competition_output)
+                _phase1_evidence_output["memory_recall_candidate_refs"] = (
+                    _memory_recall_candidate_refs[:20]
+                )
                 _phase1_evidence_ref = self._record_cycle_stage(
-                    "phase1_competition", "completed", output=_phase1_competition_output,
+                    "phase1_competition", "completed", output=_phase1_evidence_output,
                     metrics={
                         "total_pressure": float(total_pressure),
                         "candidate_count": int(_phase1_competition_metrics.get("total_candidates", 0) or 0),
+                        "memory_recall_candidate_count": len(_memory_recall_candidate_refs),
                     },
                 )
                 self._record_cycle_stage(

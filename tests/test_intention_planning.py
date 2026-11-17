@@ -1051,6 +1051,7 @@ class IntentionPlanningTests(unittest.TestCase):
                 "thought_published": True,
                 "thought_stream_recorded": True,
                 "workspace_broadcast": False,
+                "thought_id_ref": "a" * 20,
                 "result": "recalled and published (1 sources)",
             }
 
@@ -1101,6 +1102,7 @@ class IntentionPlanningTests(unittest.TestCase):
         self.assertTrue(result_output["thought_published"])
         self.assertTrue(result_output["thought_stream_recorded"])
         self.assertFalse(result_output["workspace_broadcast"])
+        self.assertEqual(result_output["thought_id_ref"], "a" * 20)
         self.assertNotIn("result", result_output)
         self.assertEqual(async_stages[2]["output"]["result_chars"], 72)
         self.assertTrue(async_stages[3]["output"]["thought_stream_recorded"])

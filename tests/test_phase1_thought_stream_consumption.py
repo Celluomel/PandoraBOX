@@ -1,18 +1,25 @@
+import hashlib
 from pathlib import Path
 from types import SimpleNamespace
 
 from core.phase1_integration import Phase1Orchestrator
+from core.internal_loop import InternalThoughtLoop
+from cognition.goal_action_executor import GoalActionExecutor
 from cognition.thought_stream import ThoughtStream
 
 
 def test_phase1_competition_reads_new_in_memory_thought_before_disk_flush(tmp_path):
     stream = ThoughtStream(SimpleNamespace(_data_dir=tmp_path))
-    assert stream.add(
+    executor = GoalActionExecutor.__new__(GoalActionExecutor)
+    executor._o = SimpleNamespace(thought_stream=stream)
+    executor._broadcast = lambda _content, priority=0.45: False
+    publication = executor._add_thought(
         "Memory about cognitive audit: concept links found",
         source="goal_action.memory_recall",
         priority=0.45,
-        thought_type="goal_action",
     )
+    assert publication["thought_stream_recorded"] is True
+    assert publication["workspace_broadcast"] is False
     assert stream._persist_dirty is True
 
     phase1 = Phase1Orchestrator.__new__(Phase1Orchestrator)
@@ -27,6 +34,17 @@ def test_phase1_competition_reads_new_in_memory_thought_before_disk_flush(tmp_pa
     assert first[0]["thought_type"] == "goal_action"
     assert first[0]["id"].startswith("tht_")
     assert first[0]["id"] == second[0]["id"]
+    expected_ref = hashlib.sha256(first[0]["id"].encode()).hexdigest()[:20]
+    assert publication["thought_id_ref"] == expected_ref
+    downstream_refs = InternalThoughtLoop._memory_recall_candidate_refs({
+        "competition": {
+            "all_candidates": [{
+                "type": "thought",
+                "source_data": first[0],
+            }],
+        },
+    })
+    assert downstream_refs == [publication["thought_id_ref"]]
 
     # After persistence, the same in-memory and disk item must still be one
     # candidate with the same stable identity.
