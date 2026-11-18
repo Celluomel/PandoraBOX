@@ -223,7 +223,30 @@ class CognitiveLogRegressionTests(unittest.TestCase):
         self.assertEqual(summary["candidate_count"], 1)
         self.assertEqual(summary["candidates"][0]["memory_tier"], "episodic")
         self.assertEqual(summary["candidates"][0]["source"], "faiss")
+        self.assertEqual(summary["candidates"][0]["retrieval_lane"], "unattributed")
         self.assertNotIn("Private decision content", str(summary))
+
+    def test_memory_lane_provenance_survives_trace_sanitization(self):
+        recalled = audit_safe_turn_summary(memory_retrieval_evidence(
+            "private query", [{
+                "id": "private-1", "text": "private text", "memory_type": "fact",
+                "memory_tier": "personal", "retrieval_lane": "personal",
+            }],
+        ))
+        injected = audit_safe_turn_summary(memory_prompt_injection_evidence([{
+            "id": "private-1", "text": "private text", "memory_type": "fact",
+            "memory_tier": "personal", "retrieval_lane": "personal",
+        }]))
+
+        self.assertEqual(recalled["candidates"][0]["retrieval_lane"], "personal")
+        self.assertEqual(injected["records"][0]["retrieval_lane"], "personal")
+        self.assertNotIn("private text", str(recalled))
+        self.assertNotIn("private text", str(injected))
+
+        invalid = audit_safe_turn_summary(memory_prompt_injection_evidence([{
+            "id": "private-2", "retrieval_lane": "forged/private/path",
+        }]))
+        self.assertEqual(invalid["records"][0]["retrieval_lane"], "unattributed")
 
     def test_memory_injection_receipt_distinguishes_recalled_from_prompted_records(self):
         memories = [{
@@ -979,3 +1002,4 @@ class CognitiveLogRegressionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -24,6 +24,25 @@ USER_PROFILE_PROVENANCE_POLICY = (
     "from profile facts."
 )
 
+_MEMORY_RETRIEVAL_LANES = {
+    "primary", "user_authored", "personal", "visual", "event",
+    "explicit_recall_secondary", "session_visual_buffer",
+}
+
+
+def _safe_memory_retrieval_lane(value: Any) -> str:
+    lane = str(value or "unattributed")[:40]
+    return lane if lane in _MEMORY_RETRIEVAL_LANES else "unattributed"
+
+
+def tag_memory_retrieval_lane(
+    memories: Iterable[Mapping[str, Any]], lane: str,
+) -> list[dict[str, Any]]:
+    """Copy retrieved rows with a bounded, auditable lane label."""
+    safe_lane = _safe_memory_retrieval_lane(lane)
+    return [dict(memory, retrieval_lane=safe_lane)
+            for memory in memories if isinstance(memory, Mapping)]
+
 
 def _sha256(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8", errors="replace")).hexdigest()
@@ -130,6 +149,7 @@ def memory_retrieval_evidence(
             "memory_tier": str(memory.get("memory_tier") or "unknown")[:24],
             "memory_type": str(memory.get("memory_type") or "unknown")[:40],
             "source": str(memory.get("source") or "memory_store")[:40],
+            "retrieval_lane": _safe_memory_retrieval_lane(memory.get("retrieval_lane")),
             "timestamp_present": bool(memory.get("timestamp")),
             "relevance": relevance,
             "has_user_message": has_user_message,
@@ -200,6 +220,7 @@ def memory_prompt_injection_evidence(memories: Iterable[Mapping[str, Any]]) -> d
             "ref": _sha256(stable_key)[:20],
             "memory_tier": str(memory.get("memory_tier") or "unknown")[:24],
             "memory_type": str(memory.get("memory_type") or "unknown")[:40],
+            "retrieval_lane": _safe_memory_retrieval_lane(memory.get("retrieval_lane")),
         })
     return {"injected_count": len(injected), "records": injected[:12]}
 
@@ -327,6 +348,7 @@ def audit_safe_turn_summary(value: Any) -> dict[str, Any] | None:
                     "memory_tier": str(candidate.get("memory_tier", "unknown"))[:24],
                     "memory_type": str(candidate.get("memory_type", "unknown"))[:40],
                     "source": str(candidate.get("source", "memory_store"))[:40],
+                    "retrieval_lane": _safe_memory_retrieval_lane(candidate.get("retrieval_lane")),
                     "timestamp_present": bool(candidate.get("timestamp_present")),
                     "relevance": candidate.get("relevance")
                     if isinstance(candidate.get("relevance"), (int, float))
@@ -408,6 +430,7 @@ def audit_safe_turn_summary(value: Any) -> dict[str, Any] | None:
                     "ref": str(record.get("ref", ""))[:20],
                     "memory_tier": str(record.get("memory_tier", "unknown"))[:24],
                     "memory_type": str(record.get("memory_type", "unknown"))[:40],
+                    "retrieval_lane": _safe_memory_retrieval_lane(record.get("retrieval_lane")),
                 })
                 if len(records) >= 12:
                     break
@@ -492,3 +515,4 @@ def audit_safe_turn_summary(value: Any) -> dict[str, Any] | None:
         }
 
     return None
+

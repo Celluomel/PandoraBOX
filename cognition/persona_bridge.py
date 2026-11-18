@@ -1,5 +1,5 @@
-Warning: truncated output (original token count: 128517)
-Total output lines: 9266
+Warning: truncated output (original token count: 128670)
+Total output lines: 9274
 
 """
 Persona Bridge
@@ -56,6 +56,7 @@ from cognition.turn_context_evidence import (
     profile_context_evidence,
     response_learning_evidence,
     USER_PROFILE_PROVENANCE_POLICY,
+    tag_memory_retrieval_lane,
 )
 from cognition.factual_self_report_context import history_without_assistant_claims
 from core.turn_execution_context import (
@@ -1260,7 +1261,711 @@ class PersonaBridge:
                 if deterministic_safety_block_path:
                     required_stages = (
                         ("readiness", {"passed"}),
-                        ("input_safety", {"blocked", "f…98517 tokens truncated…      if self._is_goal_persistence_verification(user_text):
+                        ("input_safety", {"blocked", "failed"}),
+                        ("safety_block_response", {"completed"}),
+                        ("response_finalization", {"completed"}),
+                        ("response", {"completed"}),
+                    )
+                elif blocking_fallback_path:
+                    required_stages = (
+                        ("readiness", {"passed"}),
+                        ("input_safety", {"passed"}),
+                        ("fallback_generation", {"completed"}),
+                        ("output_safety", {"passed", "replaced"}),
+                        ("response_finalization", {"completed"}),
+                        ("response", {"completed"}),
+                    )
+                elif deterministic_body_path:
+                    required_stages = (
+                        ("readiness", {"passed"}),
+                        ("input_safety", {"passed"}),
+                        ("body_action_gate", {"checked"}),
+                        ("body_action_resolution", {"completed"}),
+                        ("output_safety", {"passed", "replaced"}),
+                        ("response_finalization", {"completed"}),
+                        ("response", {"completed"}),
+                        ("deterministic_body_response", {"completed"}),
+                    )
+                elif deterministic_goal_path:
+                    required_stages = (
+                        ("readiness", {"passed"}),
+                        ("input_safety", {"passed"}),
+                        ("goal_write_gate", {"executed", "verified", "blocked", "failed"}),
+                        ("output_safety", {"passed", "replaced"}),
+                        ("response_finalization", {"completed"}),
+                        ("response", {"completed"}),
+                        ("deterministic_goal_response", {"completed"}),
+                    )
+                elif deterministic_reasoning_path:
+                    required_stages = (
+                        ("readiness", {"passed"}),
+                        ("input_safety", {"passed"}),
+                        ("prompt_assembly", {"completed"}),
+                        ("deterministic_reasoning", {"selected_direct", "completed"}),
+                        ("output_safety", {"passed", "replaced"}),
+                        ("response_finalization", {"completed"}),
+                        ("response", {"completed"}),
+                    )
+                elif fast_direct_path:
+                    required_stages = (
+                        ("readiness", {"passed"}),
+                        ("input_safety", {"passed"}),
+                        ("fast_first_pass", {"selected_direct"}),
+                        ("output_safety", {"passed", "replaced"}),
+                        ("response_finalization", {"completed"}),
+                        ("response", {"completed"}),
+                    )
+                else:
+                    required_stages = (
+                        ("readiness", {"passed"}),
+                        ("input_safety", {"passed"}),
+                        ("prompt_assembly", {"completed"}),
+                        ("output_safety", {"passed", "replaced"}),
+                        ("response_finalization", {"completed"}),
+                        ("response", {"completed"}),
+                    )
+                for stage_name, expected in required_stages:
+                    value = stage_status.get(stage_name)
+                    if not isinstance(value, str) or value not in expected:
+                        missing_core.append(stage_name)
+                has_generation = (
+                    deterministic_safety_block_path
+                    or blocking_fallback_path
+                    or deterministic_body_path
+                    or deterministic_goal_path
+                    or deterministic_reasoning_path
+                    or fast_direct_path
+                    # A provider may finish without visible answer text and
+                    # PersonaBridge can then make a second, explicit final
+                    # answer recovery call. That call is generation work and
+                    # must count as such, while its separate status keeps the
+                    # failed/empty primary attempt visible in the receipt.
+                    or stage_status.get("final_answer_recovery") == "completed"
+                    or any(
+                        isinstance(stage_status.get(name), str)
+                        and stage_status.get(name) in accepted
+                        for name, accepted in (
+                            ("primary_generation", {"completed"}),
+                            # A routing decision is not a generated answer.
+                            # A delegated turn needs primary_generation evidence.
+                            ("fast_first_pass", {"selected_direct"}),
+                            ("deterministic_reasoning", {"selected_direct", "completed"}),
+                        )
+                    )
+                )
+                if not has_generation:
+                    missing_core.append("generation")
+                peer_scope_violations = []
+                if trace.get("scope") == "peer":
+                    for stage_name in (
+                        "memory_retrieval", "brain_pc_camera_context",
+                        "body_observation_context", "empathy_read",
+                        "empathy_context", "empathy_outcome",
+                        "human_relational_graph", "human_profile_learning",
+                        "world_model_profile_update",
+                        "active_context_prompt", "active_context_update",
+                    ):
+                        value = stage_status.get(stage_name)
+                        if value is not None and (
+                            not isinstance(value, str)
+                            or value not in {"skipped_by_scope", "skipped_by_policy"}
+                        ):
+                            peer_scope_violations.append(stage_name)
+                integrity_issues = missing_core + [
+                    f"peer_scope:{name}" for name in peer_scope_violations
+                ]
+                malformed_stages = sorted(
+                    name for name, value in stage_status.items()
+                    if not isinstance(value, str) or not value
+                )
+                integrity_issues.extend(
+                    f"malformed_stage:{name}" for name in malformed_stages
+                )
+                stage_order_violations = []
+                for earlier, later in (
+                    ("prompt_assembly", "primary_generation"),
+                    ("primary_generation", "output_safety"),
+                    ("final_answer_recovery", "output_safety"),
+                    ("fallback_generation", "output_safety"),
+                    ("goal_write_gate", "output_safety"),
+                    ("body_action_resolution", "output_safety"),
+                    ("output_safety", "response_finalization"),
+                    ("response_finalization", "response"),
+                ):
+                    left = stages.get(earlier, {})
+                    right = stages.get(later, {})
+                    if (
+                        isinstance(left, dict) and isinstance(right, dict)
+                        and isinstance(left.get("at"), (int, float))
+                        and isinstance(right.get("at"), (int, float))
+                        and right["at"] < left["at"]
+                    ):
+                        stage_order_violations.append(f"{later}_before_{earlier}")
+                integrity_issues.extend(
+                    f"stage_order:{item}" for item in stage_order_violations
+                )
+                data_flow_issues = []
+                for consumer_name, consumer in stages.items():
+                    if not isinstance(consumer, dict):
+                        continue
+                    for reference in consumer.get("consumes", []):
+                        if not isinstance(reference, dict):
+                            data_flow_issues.append(f"malformed_consumer:{consumer_name}")
+                            continue
+                        source_name = str(reference.get("stage") or "")
+                        source = stages.get(source_name)
+                        source_fingerprint = (
+                            source.get("output_fingerprint")
+                            if isinstance(source, dict) else None
+                        )
+                        if not source_fingerprint:
+                            data_flow_issues.append(
+                                f"missing_source_output:{source_name}->{consumer_name}"
+                            )
+                        elif reference.get("fingerprint") != source_fingerprint:
+                            data_flow_issues.append(
+                                f"source_output_mismatch:{source_name}->{consumer_name}"
+                            )
+                        elif (
+                            isinstance(source.get("at"), (int, float))
+                            and isinstance(consumer.get("at"), (int, float))
+                            and consumer["at"] < source["at"]
+                        ):
+                            data_flow_issues.append(
+                                f"consumer_before_source:{source_name}->{consumer_name}"
+                            )
+                integrity_issues.extend(
+                    f"data_flow:{item}" for item in data_flow_issues
+                )
+                failed_stage_names = sorted(
+                    name for name, value in stage_status.items()
+                    if isinstance(value, str) and value in {"failed", "invalid_output"}
+                )
+                integrity_issues.extend(
+                    f"failed_stage:{name}" for name in failed_stage_names
+                )
+                incomplete_outputs = sorted(
+                    name for name, value in stages.items()
+                    if isinstance(value, dict)
+                and isinstance(value.get("status"), str)
+                and value.get("status") in {
+                        "truncated_by_token_limit", "completion_metadata_missing",
+                    }
+                )
+                integrity_issues.extend(
+                    f"incomplete_output:{name}" for name in incomplete_outputs
+                )
+                trace["pipeline_integrity"] = {
+                    "status": "consistent" if not integrity_issues else "incomplete_evidence",
+                    # This verdict is intentionally scoped to execution evidence.
+                    # A complete, correctly ordered pipeline can still produce
+                    # an unsupported or false answer; output safety is not a
+                    # factuality check.
+                    "scope": "execution_order_and_data_flow_only",
+                    "semantic_correctness": "not_assessed",
+                    "checked_at": time.time(),
+                    "required_core_stages": len(required_stages) + (
+                        0 if (
+                            deterministic_safety_block_path or blocking_fallback_path or deterministic_body_path or deterministic_goal_path
+                            or deterministic_reasoning_path or fast_direct_path
+                        ) else 1
+                    ),
+                    "execution_path": (
+                        "deterministic_body_action" if deterministic_body_path
+                        else "deterministic_goal_write" if deterministic_goal_path
+                        else "deterministic_input_safety_block" if deterministic_safety_block_path
+                        else "blocking_fallback" if blocking_fallback_path
+                        else "deterministic_reasoning" if deterministic_reasoning_path
+                        else "fast_direct_response" if fast_direct_path
+                        else "recovered_generation"
+                        if stage_status.get("final_answer_recovery") == "completed"
+                        else "generative_chat"
+                    ),
+                    "missing_core_stages": missing_core,
+                    "malformed_stages": malformed_stages,
+                    "stage_order_violations": stage_order_violations,
+                    "data_flow_issues": data_flow_issues,
+                    "peer_scope_violations": peer_scope_violations,
+                    "failed_stages": failed_stage_names,
+                    "incomplete_outputs": incomplete_outputs,
+                    "conditional_skips": sorted(
+                        name for name, value in stage_status.items()
+                        if (isinstance(value, str) and value.startswith("skipped_")) or (
+                            isinstance(value, str) and value in {
+                            "not_applicable", "not_selected", "no_active_context",
+                            "empty", "disabled", "unavailable",
+                            }
+                        )
+                    ),
+                }
+                semantic_stage = stages.get("semantic_answer_validation")
+                if isinstance(semantic_stage, dict):
+                    validation_status = str(semantic_stage.get("status") or "unknown")
+                    semantic_summary = {
+                        "status": (
+                            "source_grounded_exact_match"
+                            if validation_status == "passed_source_grounded"
+                            else "source_gate_abstention"
+                            if validation_status == "passed_source_abstention"
+                            else "response_replaced_source_mismatch"
+                            if validation_status == "abstained_source_mismatch"
+                            else "probabilistic_review_passed"
+                            if validation_status in {"passed", "repaired_and_passed"}
+                            else "response_replaced_reviewer_unavailable"
+                            if validation_status == "abstained_review_unavailable"
+                            else "response_replaced_after_review"
+                            if validation_status.startswith("abstained_")
+                        else "deterministic_affect_source_projection"
+                        if validation_status == "passed_deterministic_source_projection"
+                            else "review_incomplete"
+                        ),
+                        "scope": (
+                            "deterministic_response_equals_retrieved_user_source"
+                            if validation_status in {
+                                "passed_source_grounded", "abstained_source_mismatch",
+                            }
+                            else "deterministic_recall_gate_abstained"
+                            if validation_status == "passed_source_abstention"
+                            else "deterministic_projection_of_live_modeled_affect_channels"
+                            if validation_status == "passed_deterministic_source_projection"
+                            else "request_relevance_context_support_and_explicit_constraints; not proof of truth"
+                        ),
+                        "stage_status": validation_status,
+                    }
+                    prior_semantic = trace.get("semantic_answer_validation", {})
+                    if isinstance(prior_semantic, dict):
+                        for key in (
+                            "relevant", "claim_basis", "evidence_support",
+                            "contract_compliant", "material_issue_count", "repair_rechecked",
+                            "reviewer_status", "reviewer_reason", "repair_reviewer_status",
+                            "repair_reviewer_issue_count", "validation_method", "source_ref",
+                            "source_status", "exact_source_match", "exact_result_match",
+                            "abstention_matches_gate",
+                        ):
+                            if key in prior_semantic:
+                                semantic_summary[key] = prior_semantic[key]
+                    # A deterministic source receipt is itself the validation
+                    # method. Preserve that fact even if a concurrent trace
+                    # finalizer raced the detailed summary writer.
+                    if validation_status == "passed_source_grounded":
+                        semantic_summary.setdefault("validation_method", "exact_source_text_match")
+                        semantic_summary.setdefault("exact_source_match", True)
+                    elif validation_status == "passed_source_abstention":
+                        semantic_summary.setdefault(
+                            "validation_method", "deterministic_abstention_result_match",
+                        )
+                        semantic_summary.setdefault("exact_result_match", True)
+                        semantic_summary.setdefault("abstention_matches_gate", True)
+                    elif validation_status == "passed_deterministic_source_projection":
+                        semantic_summary.setdefault(
+                            "validation_method",
+                            "deterministic_template_from_structured_channels",
+                        )
+                    trace["semantic_answer_validation"] = semantic_summary
+                else:
+                    architecture_check = stages.get("architecture_claim_validation")
+                    if isinstance(architecture_check, dict):
+                        validation_status = str(architecture_check.get("status") or "unknown")
+                        trace["semantic_answer_validation"] = {
+                            "status": "scoped_check_performed"
+                            if validation_status in {"passed", "replaced_unverified_claims"}
+                            else "check_failed_or_incomplete",
+                            "scope": "architecture_claims_against_current_trace_only",
+                            "stage_status": validation_status,
+                        }
+                    else:
+                        trace["semantic_answer_validation"] = {
+                            "status": "not_performed",
+                            "scope": "none",
+                            "reason": "No general semantic review receipt exists for this turn.",
+                        }
+                trace["completed_at"] = time.time()
+
+    def get_last_turn_trace(self) -> dict:
+        with self._turn_trace_lock:
+            trace = dict(self._last_turn_trace)
+            trace["stages"] = {
+                name: {key: value for key, value in stage.items() if key != "detail"}
+                for name, stage in self._last_turn_trace.get("stages", {}).items()
+                if isinstance(stage, dict)
+            }
+            trace["stage_events"] = [
+                dict(event) for event in self._last_turn_trace.get("stage_events", [])
+                if isinstance(event, dict)
+            ]
+            trace["context_sources"] = {
+                name: dict(source)
+                for name, source in self._last_turn_trace.get("context_sources", {}).items()
+                if isinstance(source, dict)
+            }
+            trace["stage_health"] = {
+                name: {
+                    **{key: value for key, value in state.items() if key != "status_counts"},
+                    "status_counts": dict(state.get("status_counts", {})),
+                }
+                for name, state in getattr(self, "_turn_stage_health", {}).items()
+            }
+            trace["recent_turns"] = [
+                {
+                    "turn_id": item.get("turn_id"),
+                    "scope": item.get("scope"),
+                    "user_id": item.get("user_id"),
+                    "status": item.get("status"),
+                    "started_at": item.get("started_at"),
+                    "completed_at": item.get("completed_at"),
+                    "context_…88670 tokens truncated…         lines.append("état USB du contrôleur FNK0031: non reçu récemment")
+
+        physical_sensors = [
+            item for item in observations
+            if str(item.get("subject") or "").startswith("sensor.")
+            and not self._is_simulated_body_observation(item)
+        ]
+        if physical_sensors:
+            lines.append("capteurs matériels horodatés: " + "; ".join(
+                self._format_body_sensor_observation(item) for item in physical_sensors[:8]
+            ))
+        else:
+            lines.append("aucune mesure de capteur matériel récente")
+
+        odometry = by_subject.get("sensor.odometry")
+        if odometry and not self._is_simulated_body_observation(odometry):
+            lines.append("odométrie physique: " + self._format_body_sensor_observation(odometry))
+        else:
+            lines.append("pose/déplacement métrique physique: non confirmé par une odométrie récente")
+
+        world = by_subject.get("body.world_model")
+        world_value = world.get("value") if isinstance(world, dict) else None
+        simulated = isinstance(world_value, dict) and world_value.get("simulated_only") is True
+        if simulated:
+            lines.append("la pose, les objets et les capacités reach/speed/strength/gripper du snapshot sont issus de la simulation; ce ne sont pas des mesures du robot réel")
+        elif world_value:
+            lines.append("capacités du modèle Body: " + str((world_value.get("capabilities") or "non rapportées")) + "; elles ne constituent pas des mesures d'effort ou de position articulaire")
+
+        if controller_value:
+            lines.append("FNK0031: six jambes décrivent le modèle du kit, pas une mesure d'articulations; l'état publié peut être estimé depuis les commandes, sans retour encodeur/contact")
+        return {
+            "handled": True,
+            "status": "reported" if physical_sensors or controller_value else "partial",
+            "response": "Paramètres vérifiables du Body : " + " ; ".join(lines),
+            "sources": [item.get("subject") for item in observations],
+            "simulated_world_model": simulated,
+        }
+
+    def _body_gps_location_response(self) -> dict:
+        body = getattr(self._organism, "_body_runtime", None) if self._organism else None
+        if body is None:
+            return {"handled": True, "status": "unavailable", "response": "Le pont télémétrique du Body est indisponible."}
+        observations = body.snapshot(max_age=300.0)
+        gps = next((
+            item for item in observations
+            if item.get("subject") == "sensor.gps"
+            and not self._is_simulated_body_observation(item)
+            and isinstance(item.get("value"), dict)
+        ), None)
+        value = gps.get("value", {}) if gps else {}
+        lat = value.get("latitude", value.get("lat"))
+        lon = value.get("longitude", value.get("lon", value.get("lng")))
+        if not gps or not value.get("fix") or lat is None or lon is None:
+            return {
+                "handled": True,
+                "status": "unavailable",
+                "response": "Le Body n'a pas transmis de position GNSS valide récente; je ne peux pas établir sa localisation actuelle.",
+                "location": {"available": False},
+            }
+        try:
+            lat, lon = float(lat), float(lon)
+        except (TypeError, ValueError):
+            return {"handled": True, "status": "unavailable", "response": "La position GNSS reçue est invalide."}
+        age = max(0.0, time.time() - float(gps.get("observed_at") or time.time()))
+        stale = age > 15.0
+        map_url = f"https://www.openstreetmap.org/?mlat={lat:.6f}&mlon={lon:.6f}#map=17/{lat:.6f}/{lon:.6f}"
+        satellites = value.get("satellites")
+        freshness = f"fix reçu il y a {age:.0f} s" + (" (position périmée)" if stale else "")
+        accuracy = value.get("horizontal_accuracy_m", value.get("accuracy_m"))
+        detail = f", précision annoncée ±{float(accuracy):.1f} m" if isinstance(accuracy, (int, float)) else " ; précision métrique non fournie par ce flux"
+        sat_detail = f", {satellites} satellites" if satellites is not None else ""
+        return {
+            "handled": True,
+            "status": "reported",
+            "response": f"Position GNSS du Body : {lat:.6f}, {lon:.6f} ({freshness}{sat_detail}{detail}). Ouvrir dans OpenStreetMap : {map_url}. Cela localise le Body à l'échelle géographique, pas sa pose précise ni les obstacles dans la pièce.",
+            "location": {"available": True, "latitude": lat, "longitude": lon, "age_seconds": round(age, 1), "stale": stale, "map_url": map_url},
+        }
+
+    @staticmethod
+    def _direct_body_motion(text: str) -> dict | None:
+        """Map an unambiguous short locomotion request to one FNHR primitive.
+
+        Destination-based requests intentionally remain with the grounded
+        planner; this helper only handles relative directional commands.
+        """
+        value = str(text or "").casefold()
+        if re.search(r"\b(turn|rotate|tourne|virage)\b.{0,24}\b(left|gauche)\b|\b(gauche|left)\b.{0,24}\b(turn|tourne)\b", value):
+            return {"action": "turn_left", "label": "tourner à gauche"}
+        if re.search(r"\b(turn|rotate|tourne|virage)\b.{0,24}\b(right|droite)\b|\b(droite|right)\b.{0,24}\b(turn|tourne)\b", value):
+            return {"action": "turn_right", "label": "tourner à droite"}
+        if re.search(r"\b(backward|backwards|reverse|recule|reculer|en arrière|en arriere)\b", value):
+            return {"action": "backward", "label": "reculer"}
+        if re.search(r"\b(forward|forwards|advance|avancer|avance|en avant)\b", value):
+            return {"action": "forward", "label": "avancer"}
+        if re.search(r"\b(strafe|crawl|move|déplace|deplace|va)\b.{0,24}\b(left|gauche)\b|\b(à gauche|a gauche)\b", value):
+            return {"action": "left", "label": "se déplacer à gauche"}
+        if re.search(r"\b(strafe|crawl|move|déplace|deplace|va)\b.{0,24}\b(right|droite)\b|\b(à droite|a droite)\b", value):
+            return {"action": "right", "label": "se déplacer à droite"}
+        return None
+
+    @staticmethod
+    def _may_route_to_body(text: str) -> bool:
+        """Gate the Body LLM classifier behind explicit Body/action intent."""
+        normalized = str(text or "").lower().strip()
+        body_reference = re.search(
+            r"\b(body|robot|ventuno|fnk0031|gps|gnss|sensor|sensors|capteur|capteurs|"
+            r"yolox|midas|tof|mmwave|radar|odometry|odom|ultrasonic|ultrasonique|"
+            r"motor|motors|engine|engines|servo|servos|servomotor|servomoteur|servomoteurs|"
+            r"moteur|moteurs|jambe|jambes|articulation|articulations)\b",
+            normalized,
+        )
+        # This is only a high-recall gateway to the semantic action classifier,
+        # not an action/command parser. Match verbs anywhere in the utterance so
+        # polite/intervening phrases ("peux-tu te déplacer vers la TV") cannot
+        # bypass the Brain's goal and capability assessment.
+        direct_action = re.search(
+            r"\b(?:move|moving|moved|drive|driving|navigate|go|turn|stop|walk|advance|crawl|"
+            r"approach|come closer|déplac\w*|deplac\w*|avance\w*|recule\w*|tourne\w*|"
+            r"arrête\w*|arrete\w*|marche\w*|rapproche\w*)\b|"
+            r"\b(?:en avant|à gauche|a gauche|à droite|a droite)\b",
+            normalized,
+        )
+        return bool(body_reference or direct_action)
+
+    @staticmethod
+    def _may_route_to_local_camera(text: str) -> bool:
+        """Cheap candidate gate; the semantic classifier decides the actual intent."""
+        return bool(re.search(
+            r"\b(camera|caméra|vision|visual|image|picture|photo|face|visage|see|seeing|look|looking|vois|voir|vois-tu|regarde|reconnais|reconnaissance)\b",
+            str(text or "").lower(),
+        ))
+
+    @staticmethod
+    def _is_factual_question_form(text: str) -> bool:
+        """Recognize interrogative grammar so a read-only question cannot fall into the diagnostic dump."""
+        normalized = str(text or "").strip().casefold()
+        if "?" in normalized:
+            return True
+        return bool(
+            re.match(
+                r"^(?:quel(?:le|s|les)?|qu['’]est|qu['’]elle|que|qui|où|ou|pourquoi|comment|"
+                r"what|which|who|where|when|why|how|is|are|do|does|did|can|could|"
+                r"combien|est-ce\s+que|y\s+a[- ]t[- ]il)\b",
+                normalized,
+            )
+            or re.search(r"\b(?:can|could|do|does|did)\s+you\b", normalized)
+        )
+
+    @staticmethod
+    def _is_explicit_goal_persistence_request(text: str) -> bool:
+        """Match direct requests to write a goal, which must not be narrated as an LLM-only side effect."""
+        normalized = str(text or "").strip().casefold()
+        command = re.match(
+            r"^\s*(?:(?:for this audit|for this test|please|s'il te plaît|s’il te plaît)\s*,?\s*)*"
+            r"(?:(?:can|could|would) you\s+|i want you to\s+|je veux que tu\s+|peux-tu\s+|"
+            r"pourrais-tu\s+)?(?:create|add|save|persist|record|establish|set up|"
+            r"créer|crée|ajouter|enregistrer|sauvegarder|persister|établir|définir)\b",
+            normalized,
+        )
+        goal_reference = re.search(
+            r"\b(?:goal|objective|aspiration|goal\s+engine|objectif|but|aspiration)\b",
+            normalized,
+        )
+        return bool(command and goal_reference)
+
+    @staticmethod
+    def _parse_explicit_goal_request(text: str) -> tuple[str, str]:
+        """Extract a user-authored title and criteria from an explicit goal-write request."""
+        raw = str(text or "").strip()
+        title_match = re.search(
+            r"\b(?:goal|objective|objectif|but)\s*:\s*(.+?)(?=\.\s|$)",
+            raw,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if not title_match:
+            return "", ""
+        topic = " ".join(title_match.group(1).split()).strip(" \t\r\n.;:")
+        criteria_match = re.search(
+            r"\b(?:success criteria?|measurable success criteria?|critère de succès(?: mesurable)?|"
+            r"critères de réussite)\s*(?::|is|are|will be|sera|seront)\s*(.+?)(?=\.\s|$)",
+            raw,
+            re.IGNORECASE | re.DOTALL,
+        )
+        criteria = " ".join(criteria_match.group(1).split()).strip(" \t\r\n.;:") if criteria_match else ""
+        if not criteria and topic:
+            criteria = (
+                "Across five consecutive relevant answers, an independent review or the user confirms "
+                "that observed facts and inferences are explicitly separated with zero category errors."
+                if re.search(r"\b(observation|observed|fact|inference|observation|fait|inférence)\b", topic, re.I)
+                else f"Across five consecutive relevant answers about {topic}, a reviewer confirms the stated capability is demonstrated without a material error."
+            )
+        return topic, criteria
+
+    @staticmethod
+    def _is_goal_persistence_verification(text: str) -> bool:
+        """Match questions or challenges about whether a conversational goal write really happened."""
+        normalized = str(text or "").casefold()
+        has_goal = bool(re.search(r"\b(?:goal|objective|objectif|but|aspiration)\b", normalized))
+        # A request for the current count is a state query, not a request to
+        # audit whether a prior write occurred. Keep it on the factual
+        # self-report path so the live snapshot and its count are the source
+        # of truth. Phrases such as "from the recorded goal state" must not
+        # turn a count question into a write-receipt query.
+        asks_owned_goal_count = bool(
+            (
+                re.search(r"\bhow\s+many\b.{0,80}\b(?:active\s+)?goals?\b", normalized)
+                and re.search(r"\b(?:you|your)\b", normalized)
+            )
+            or (
+                re.search(r"\bcombien\b.{0,80}\b(?:objectifs?|buts?)\b", normalized)
+                and re.search(r"\b(?:tu|tes|ton|vous|vos|votre)\b", normalized)
+            )
+        )
+        if asks_owned_goal_count:
+            return False
+        asks_id = bool(re.search(
+            r"\b(?:exact\s+(?:persistent\s+)?id|id\s+(?:of|for)|identifier|identifiant)\b",
+            normalized,
+        ))
+        asks_write_status = bool(
+            re.search(r"\b(?:did|have|has|was|is)\b.{0,60}\b(?:saved|persisted|created|recorded)\b", normalized)
+            or re.search(r"\b(?:saved|persisted|created|recorded)\b.{0,60}\b(?:goal|objective|objectif)\b", normalized)
+        )
+        challenges_claim = bool(
+            re.search(r"\b(?:not visible|does not exist|doesn't exist|retract|withdraw|verify|confirm|rétract\w*)\b.{0,80}\b(?:goal|objective|objectif)\b", normalized)
+            or re.search(r"\b(?:goal|objective|objectif)\b.{0,80}\b(?:not visible|does not exist|doesn't exist|retract|withdraw|verify|confirm|rétract\w*)\b", normalized)
+        )
+        asks_proof = asks_id or asks_write_status or challenges_claim
+        return has_goal and asks_proof
+
+    def _goal_persistence_status(self, user_text: str) -> dict:
+        """Answer goal-write verification only from the live GoalEngine registry."""
+        system = self._system
+        engine = getattr(system, "goal_engine", None) if system is not None else None
+        if engine is None or not callable(getattr(engine, "get_active_goals", None)):
+            return {
+                "handled": True,
+                "status": "unverified",
+                "response": (
+                    "I cannot verify that goal write: the live GoalEngine state is unavailable in this turn. "
+                    "I will not claim an ID or persistence without reading it back."
+                ),
+            }
+
+        try:
+            all_goals = list(getattr(engine, "_goals", {}).values())
+            requested_ids = {value.casefold() for value in re.findall(
+                r"\bgoal_[a-z0-9_-]+\b", str(user_text or ""), re.IGNORECASE
+            )}
+            id_matches = [
+                goal for goal in all_goals
+                if str(getattr(goal, "id", "")).casefold() in requested_ids
+            ]
+            if requested_ids:
+                if id_matches:
+                    goal = id_matches[0]
+                    prior_turns = getattr(self, "_turn_trace_history", [])
+                    previous_turn_id = (
+                        str(prior_turns[-1].get("turn_id") or "")
+                        if prior_turns and isinstance(prior_turns[-1], dict) else ""
+                    )
+                    caused_by_previous_turn = bool(
+                        previous_turn_id
+                        and str(getattr(goal, "source_turn_id", "")) == previous_turn_id
+                    )
+                    response = (
+                        f"GoalEngine currently contains {goal.id} ({goal.topic}), status {goal.status}. "
+                        + (
+                            "Its stored source_turn_id matches the immediately preceding chat turn."
+                            if caused_by_previous_turn
+                            else "The registry does not link it to the immediately preceding chat turn."
+                        )
+                    )
+                    status = "found_and_causally_linked" if caused_by_previous_turn else "found_without_turn_link"
+                else:
+                    response = (
+                        "I cannot verify that identifier: no matching goal ID exists in the current GoalEngine registry. "
+                        "The previous claim that it was saved was unsupported."
+                    )
+                    status = "id_not_found"
+            else:
+                active = list(engine.get_active_goals())
+                response = (
+                    f"The live GoalEngine currently reports {len(active)} active goal(s). "
+                    "There is no turn-linked write receipt available here, so I cannot attribute a goal to the preceding chat turn."
+                )
+                status = "live_state_read_without_turn_receipt"
+            return {"handled": True, "status": status, "response": response}
+        except Exception as exc:
+            logger.warning("[GoalWriteGate] GoalEngine read-back failed: %s", exc)
+            return {
+                "handled": True,
+                "status": "unverified",
+                "response": "I cannot verify the goal write because reading the live GoalEngine registry failed; I will not claim it was saved.",
+            }
+
+    def _explicit_goal_write_gate(self, user_text: str) -> dict | None:
+        if self._is_explicit_goal_persistence_request(user_text):
+            is_french = bool(re.search(
+                r"\b(?:créer|crée|ajouter|enregistrer|sauvegarder|objectif|critère)\b",
+                str(user_text or "").casefold(),
+            ))
+            topic, criteria = self._parse_explicit_goal_request(user_text)
+            if not topic:
+                return {
+                    "handled": True,
+                    "status": "needs_goal_title",
+                    "response": (
+                        "Je n'ai pas créé d'objectif : indique son titre explicitement, par exemple « créer un objectif : améliorer… », pour éviter d'en inventer la portée. Aucun changement persistant n'a été fait."
+                        if is_french else
+                        "I did not create a goal: to avoid inventing its scope, provide an explicit title such as 'create a goal: improve …'. No persistent change was made."
+                    ),
+                }
+            engine = getattr(self._system, "goal_engine", None) if self._system is not None else None
+            create = getattr(engine, "create_user_requested_goal", None)
+            turn_id = str(getattr(self, "_last_turn_trace", {}).get("turn_id") or "")
+            if not callable(create) or not turn_id:
+                return {
+                    "handled": True,
+                    "status": "not_executed",
+                    "response": (
+                        "Je n'ai pas créé ni enregistré l'objectif : GoalEngine ou l'identifiant d'audit de ce tour est indisponible."
+                        if is_french else
+                        "I did not create or persist the goal: GoalEngine or this turn's audit ID is unavailable."
+                    ),
+                }
+            result = create(topic, criteria, turn_id)
+            if result.get("created") and result.get("verified"):
+                return {
+                    "handled": True,
+                    "status": "persisted_verified",
+                    "goal_write": result,
+                    "response": (
+                        f"GoalEngine a enregistré puis relu {result['id']} : {result['topic']}. "
+                        f"Critère de réussite : {result['success_criteria']} "
+                        f"L'enregistrement est lié au tour {result['source_turn_id']}."
+                        if is_french else
+                        f"GoalEngine saved and read back {result['id']}: {result['topic']}. "
+                        f"Success criterion: {result['success_criteria']} "
+                        f"The record links to chat turn {result['source_turn_id']}."
+                    ),
+                }
+            return {
+                "handled": True,
+                "status": "write_failed",
+                "goal_write": result,
+                "response": (
+                    "L'enregistrement de l'objectif n'a pas été confirmé. GoalEngine l'a refusé ou la relecture persistante a échoué ; aucun identifiant n'est présenté comme un succès."
+                    if is_french else
+                    "The goal was not confirmed as saved. GoalEngine rejected it or its persistence read-back failed; no goal ID is being reported as successful."
+                ),
+            }
+        if self._is_goal_persistence_verification(user_text):
             return self._goal_persistence_status(user_text)
         return None
 

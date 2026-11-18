@@ -4278,3 +4278,11 @@ La revue de toutes les voies de rappel a confirmé le défaut de provenance anno
 
 **État de preuve :** c'est une correction de code vérifiée hors ligne; elle n'a pas encore été chargée dans un processus Lumina ni éprouvée par deux profils live. Redémarrer Lumina une seule fois après ce lot, puis jouer deux profils distincts avec un fait privé chacun et vérifier que le reçu mémoire de chaque tour ne contient que son propriétaire. Le score d'audit reste **3/10 (30 %)** jusqu'à ce rejeu et aux autres scénarios causaux.
 
+### Provenance mémoire par voie — attribuable dans les reçus de tour
+
+Le contrôle du reçu a confirmé que les candidats et l’injection dans le prompt étaient comptés et hachés, mais que la voie d’origine disparaissait après la fusion. L’auditeur ne pouvait donc pas distinguer un souvenir FAISS principal d’un message utilisateur séparé, d’un fait personnel, d’un événement ou du tampon visuel de session.
+
+**Correction :** chaque ligne copiée dans le pool reçoit un label de voie borné (`primary`, `user_authored`, `personal`, `visual`, `event`, `explicit_recall_secondary` ou `session_visual_buffer`). Les reçus de rappel et d’injection conservent ce label après sanitisation; les textes privés restent absents et les valeurs hors liste deviennent `unattributed`. Le même identifiant haché peut ainsi être comparé entre la liste des candidats rappelés et les enregistrements effectivement injectés.
+
+**Vérification :** les tests de régression valident la présence du label à la récupération et à l’injection, la sanitisation des valeurs arbitraires et l’absence du texte privé. Groupe de tests ciblé : **157 passed**, 9 avertissements préexistants, 19 sous-tests; `py_compile` et `git diff --check` passent. La preuve live de cohérence candidat→prompt reste à vérifier sur un processus Lumina redémarré.
+
