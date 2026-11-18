@@ -1392,11 +1392,11 @@ async def main_page():
                 if state.persona and state.persona.is_ready:
                     _org = getattr(state.persona, '_organism', None)
                     _ni  = getattr(_org, 'narrative_identity', None)
-                    _has_content = (
-                        _ni is not None and (
-                            bool(getattr(_ni, 'life_story',   [])) or
-                            bool(getattr(_ni, '_current_arc', ''))
-                        )
+                    _global_chapters = (
+                        _ni.global_chapters() if _ni and hasattr(_ni, 'global_chapters') else []
+                    )
+                    _has_content = _ni is not None and (
+                        bool(_global_chapters) or bool(getattr(_ni, '_current_arc', ''))
                     )
                     if _has_content and state.llm:
                         import time as _wt

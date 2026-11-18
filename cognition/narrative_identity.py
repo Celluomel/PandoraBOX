@@ -44,6 +44,7 @@ class LifeChapter:
     description: str
     emotion:     str = "neutral"
     significance: float = 0.5      # 0.0–1.0
+    scope: str = "interaction_context"
 
     def to_dict(self) -> Dict:
         return asdict(self)
@@ -104,6 +105,7 @@ class NarrativeIdentity:
         description: str,
         emotion: str = "neutral",
         significance: float = 0.5,
+        scope: str = "interaction_context",
     ) -> bool:
         """Persist a significant life event; return whether persistence worked."""
         with self._lock:
@@ -116,6 +118,7 @@ class NarrativeIdentity:
                 description  = description,
                 emotion      = emotion,
                 significance = significance,
+                scope        = scope,
             )
             self.life_story.append(chapter)
             # Trim to max
@@ -222,7 +225,7 @@ class NarrativeIdentity:
             )
 
         # ── Narrative depth milestone ──────────────────────────────────────
-        if len(self.life_story) >= 20:
+        if len(self.global_chapters()) >= 20:
             self.add_milestone(
                 "narrative_depth",
                 "Life story spans 20+ chapters — a rich autobiographical continuity.",
@@ -239,7 +242,9 @@ class NarrativeIdentity:
             parts.append(f"Core values: {', '.join(self.core_values[:4])}.")
 
         # Recent chapters (last 3 significant)
-        significant = sorted(self.life_story, key=lambda c: c.significance, reverse=True)[:3]
+        significant = sorted(
+            self.global_chapters(), key=lambda c: c.significance, reverse=True
+        )[:3]
         if significant:
             now = time.time()
             def _age_str(ts):
@@ -277,6 +282,8 @@ class NarrativeIdentity:
         """
         parts = []
         arc = getattr(self, '_current_arc', '')
+        if arc and not self.global_chapters():
+            arc = ""
         if arc:
             parts.append(f"[Narrative arc] {arc[:180]}")
         if self.core_values:
@@ -299,8 +306,9 @@ class NarrativeIdentity:
         if self.core_values:
             lines.append(f"I care deeply about {' and '.join(self.core_values[:2])}.")
 
-        if self.life_story:
-            most_sig = max(self.life_story, key=lambda c: c.significance)
+        global_chapters = self.global_chapters()
+        if global_chapters:
+            most_sig = max(global_chapters, key=lambda c: c.significance)
             lines.append(f"A defining moment for me was: {most_sig.title}.")
 
         if self.milestones:
@@ -395,6 +403,7 @@ class NarrativeIdentity:
             recent_chapters = [
                 c for c in self.life_story
                 if getattr(c, 'timestamp', 0) > _week_ago
+                and getattr(c, "scope", "interaction_context") == "global_internal"
             ]
             if recent_chapters and hasattr(self, '_last_arc_regen'):
                 if time.time() - self._last_arc_regen > 86400:  # regen daily

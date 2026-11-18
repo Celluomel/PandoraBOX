@@ -199,7 +199,13 @@ class CognitivePreProcessor:
                 return ""
 
             # Don't fire on a brand-new install with nothing persisted
-            has_story   = bool(getattr(ni, "life_story",  []))
+            chapters = (
+                ni.global_chapters() if hasattr(ni, "global_chapters") else [
+                    chapter for chapter in getattr(ni, "life_story", [])
+                    if getattr(chapter, "scope", "interaction_context") == "global_internal"
+                ]
+            )
+            has_story   = bool(chapters)
             has_beliefs = bool(getattr(ni, "beliefs",     []))
             has_arc     = bool(getattr(ni, "_current_arc", ""))
             if not (has_story or has_beliefs or has_arc):

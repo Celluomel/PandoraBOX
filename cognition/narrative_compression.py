@@ -116,7 +116,12 @@ class NarrativeCompression:
         chapters = []
         try:
             ni = getattr(self._organism, 'narrative_identity', None)
-            chapters = list(getattr(ni, 'life_story', []) or [])
+            chapters = list(
+                ni.global_chapters() if hasattr(ni, 'global_chapters') else [
+                    chapter for chapter in (getattr(ni, 'life_story', []) or [])
+                    if getattr(chapter, 'scope', 'interaction_context') == 'global_internal'
+                ]
+            )
         except Exception:
             pass
         eligible = len(self._cluster(chapters)) if chapters else 0
