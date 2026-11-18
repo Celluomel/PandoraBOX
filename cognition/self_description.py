@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import re
 import time
 from dataclasses import dataclass, asdict, field
@@ -212,6 +213,26 @@ def is_structured_affect_status_query(user_input: str) -> bool:
     return asks_channels and asks_current and refers_to_lumina and not asks_why
 
 
+def is_affect_change_analysis_query(user_input: str) -> bool:
+    """Recognize questions asking why Lumina's modeled affect changed.
+
+    This selects a closed-world report over timestamped affect event receipts;
+    it does not claim those receipts explain the whole current state.
+    """
+    text = " ".join(str(user_input or "").casefold().split())
+    if not is_self_affect_query(text):
+        return False
+    asks_cause = bool(re.search(
+        r"\b(?:why|what caused|what made|how did|pourquoi|quelle est la cause|"
+        r"qu'est-ce qui a (?:changé|provoqué|causé))\b", text,
+    ))
+    asks_change = bool(re.search(
+        r"\b(?:change[ds]?|shift(?:ed)?|became|after|since|évolu\w*|"
+        r"chang\w*|vari\w*|depuis|après)\b", text,
+    ))
+    return asks_cause and asks_change
+
+
 def is_self_affect_query(user_input: str) -> bool:
     """Identify a request to report Lumina's own modeled affect state.
 
@@ -317,10 +338,78 @@ def render_detailed_affect_status(evidence: str, *, language: str = "en") -> str
     )
 
 
+def render_affect_change_analysis(evidence: str, *, language: str = "en") -> str:
+    """Summarize logged channel deltas without inventing a causal narrative."""
+    event_lines = re.findall(r"^Recorded affect event: (.+)$", evidence, re.MULTILINE)
+    event_lines = [line.strip()[:220] for line in event_lines[:5]]
+    changed_lines = []
+    for line in event_lines:
+        change_payload = re.search(r"changes=\[([^\]]*)\]", line)
+        deltas = re.findall(
+            r"([a-z_]+)=([+-]?\d+(?:\.\d+)?)",
+            change_payload.group(1) if change_payload else "",
+        )
+        if any(abs(float(delta)) >= 0.00005 for _name, delta in deltas):
+            changed_lines.append(line)
+    baseline_only = any("baseline=[" in line for line in event_lines)
+    is_fr = str(language).casefold().startswith("fr")
+    if not event_lines:
+        if is_fr:
+            return (
+                "Je ne peux pas établir pourquoi l’état affectif modélisé aurait changé : "
+                "aucun événement affectif récent avec variations de canaux n’est disponible. "
+                "Il manque aussi un relevé avant/après lié à la conversation."
+            )
+        return (
+            "I can’t establish why the modeled affect state changed: no recent affect event "
+            "with channel deltas is available, and there is no before/after snapshot tied "
+            "to the conversation."
+        )
+    if not changed_lines and not baseline_only:
+        if is_fr:
+            return (
+                "Des événements affectifs récents ont été traités, mais aucun delta de canal "
+                "n’est enregistré à la précision du journal. Je ne peux pas les présenter "
+                "comme des changements observés. Aucun relevé avant/après lié à la conversation "
+                "n’est disponible pour établir une cause."
+            )
+        return (
+            "Recent affect events were processed, but the log records no channel delta at its "
+            "reported precision. I can’t present them as observed changes. No conversation-linked "
+            "before/after snapshot is available to establish a cause."
+        )
+    events = "; ".join(changed_lines or event_lines)
+    turn_ids = sorted(set(re.findall(r"\bturn=([A-Za-z0-9_-]{1,96})", events)))
+    turn_link = (
+        (" Ces événements portent l’identifiant de tour " + ", ".join(turn_ids) + "; "
+         "cela les associe à ces opérations, sans démontrer une causalité exclusive.")
+        if is_fr and turn_ids else
+        (" These events carry turn ID(s) " + ", ".join(turn_ids) + "; this associates them "
+         "with those operations but does not establish exclusive causation.")
+        if turn_ids else ""
+    )
+    if is_fr:
+        return (
+            "Les journaux enregistrent ces changements de canaux du modèle : "
+            f"{events}. Ils décrivent les mises à jour logicielles consignées, pas une cause "
+            "unique de l’état actuel. Les données fournies ne relient pas un relevé avant/après "
+            "à la dernière conversation; je ne peux donc pas lui attribuer le changement."
+            f"{turn_link}"
+        )
+    return (
+        "The logs record these changes in modeled channels: "
+        f"{events}. They describe logged software updates, not a single cause of the current "
+        "state. The available data do not tie before/after snapshots to the last conversation, "
+        "so I can’t attribute the change to it."
+        f"{turn_link}"
+    )
+
+
 def affect_self_report_context(
     profile: Any,
     description: str = "",
     latest_event: Any = None,
+    recent_events: Any = None,
 ) -> str:
     """Format the live affect snapshot with source and similarly named-drive limits."""
     allowed_channels = (
@@ -362,6 +451,27 @@ def affect_self_report_context(
             pass
     else:
         latest_text = "none recorded"
+    safe_events = sanitize_affect_event_receipts(recent_events)
+    event_lines = []
+    for event in safe_events:
+        age_text = (
+            f", age={event['age_seconds']:.1f}s"
+            if event.get("age_seconds") is not None else ""
+        )
+        delta_text = ", ".join(
+            f"{name}={delta:+.3f}" for name, delta in sorted(event["changes"].items())
+        ) or "no channel delta recorded"
+        baseline_text = ", ".join(
+            f"{name}={delta:+.3f}"
+            for name, delta in sorted(event["baseline_changes"].items())
+        )
+        baseline_suffix = f", baseline=[{baseline_text}]" if baseline_text else ""
+        event_lines.append(
+            f"Recorded affect event: type={event['event_type']}, source={event['source']}"
+            f"{age_text}, changes=[{delta_text}]{baseline_suffix}"
+            f"{', turn=' + event['turn_id'] if event.get('turn_id') else ''}"
+        )
+    recent_text = "\n".join(event_lines) if event_lines else ""
     return (
         "━━ AFFECT SELF-REPORT EVIDENCE ━━\n"
         "Source: EmotionalStateManager.get_response_modifiers().affective_profile; "
@@ -369,6 +479,7 @@ def affect_self_report_context(
         f"Affect channels: {channel_text}\n"
         f"State description: {state_text}\n"
         f"Latest recorded affect-changing appraisal: {latest_text}.\n"
+        f"{recent_text + chr(10) if recent_text else ''}"
         "For this self-report, use only these affect-channel values. In particular, "
         "the CuriosityEngine/DecisionPressure `Curiosity Drive` elsewhere in cognitive "
         "telemetry is a separate motivation signal; do not substitute it for the "
@@ -377,6 +488,71 @@ def affect_self_report_context(
         "cause of the whole state. These computational signals do not establish human-like "
         "subjective experience. If the relevant value is unavailable here, say so."
     )
+
+
+def sanitize_affect_event_receipts(recent_events: Any) -> list[dict[str, Any]]:
+    """Expose only bounded event identifiers, ages, and known channel deltas."""
+    allowed_channels = {
+        "curiosity", "warmth", "anxiety", "satisfaction", "frustration",
+        "enthusiasm", "surprise", "sadness", "relief", "disappointment",
+        "anticipation",
+    }
+    result = []
+    if not isinstance(recent_events, (list, tuple)):
+        return result
+    for row in recent_events[-5:]:
+        if not isinstance(row, dict):
+            continue
+        event_type = re.sub(
+            r"[^a-z0-9_.-]", "_", str(row.get("event_type") or "event").strip().casefold()
+        )[:48] or "event"
+        source = re.sub(
+            r"[^a-z0-9_.-]", "_", str(row.get("source") or "unspecified").strip().casefold()
+        )[:48] or "unspecified"
+        try:
+            if row.get("timestamp") is not None:
+                age_seconds = max(0.0, time.time() - float(row.get("timestamp")))
+            elif row.get("age_seconds") is not None:
+                age_seconds = max(0.0, float(row.get("age_seconds")))
+            else:
+                age_seconds = None
+            if age_seconds is not None and not math.isfinite(age_seconds):
+                age_seconds = None
+        except (TypeError, ValueError, OverflowError):
+            age_seconds = None
+        raw_changes = row.get("changes") if isinstance(row.get("changes"), dict) else {}
+        changes = {}
+        for name, raw_delta in raw_changes.items():
+            if name not in allowed_channels:
+                continue
+            try:
+                delta = float(raw_delta)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if math.isfinite(delta):
+                changes[name] = max(-1.0, min(1.0, delta))
+        raw_baselines = row.get("baseline_changes") if isinstance(row.get("baseline_changes"), dict) else {}
+        baseline_changes = {}
+        for name, raw_delta in raw_baselines.items():
+            if name not in allowed_channels:
+                continue
+            try:
+                delta = float(raw_delta)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if math.isfinite(delta):
+                baseline_changes[name] = max(-1.0, min(1.0, delta))
+        result.append({
+            "event_type": event_type,
+            "source": source,
+            "turn_id": re.sub(
+                r"[^A-Za-z0-9_-]", "_", str(row.get("turn_id") or "").strip()
+            )[:96] or None,
+            "age_seconds": round(age_seconds, 1) if age_seconds is not None else None,
+            "changes": changes,
+            "baseline_changes": baseline_changes,
+        })
+    return result
 
 
 def _is_audit_trace_followup(normalized_text: str) -> bool:

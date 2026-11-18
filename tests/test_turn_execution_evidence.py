@@ -128,6 +128,47 @@ def test_live_affect_channels_are_auditable_but_free_text_is_not_exposed():
     assert "drop me" not in repr(trace)
 
 
+def test_affect_receipt_consumed_by_same_turn_trace_matches_rendered_evidence():
+    from cognition.self_description import (
+        affect_self_report_context,
+        render_affect_change_analysis,
+        sanitize_affect_event_receipts,
+    )
+
+    raw_receipt = {
+        "timestamp": 1_800_000_000.0,
+        "event_type": "interaction_appraisal",
+        "source": "update_from_interaction",
+        "turn_id": "turn-evidence-1",
+        "changes": {"warmth": 0.04},
+    }
+    safe_receipts = sanitize_affect_event_receipts([raw_receipt])
+    bridge = _bridge()
+    bridge._record_turn_context_source(
+        "affective_state", "injected", turn_id="turn-evidence-1",
+        affect_profile={"warmth": 0.82}, affect_recent_events=safe_receipts,
+    )
+    bridge._record_turn_stage(
+        "affective_state", "captured", turn_id="turn-evidence-1",
+        output={"recent_event_count": len(safe_receipts)}, consumes=("turn_input",),
+    )
+
+    trace = bridge.get_turn_trace("turn-evidence-1")
+    source_events = trace["context_sources"]["affective_state"]["affect_recent_events"]
+    stage = trace["stages"]["affective_state"]
+    prompt_evidence = affect_self_report_context(
+        {"warmth": 0.82}, recent_events=source_events,
+    )
+    answer = render_affect_change_analysis(prompt_evidence, language="en")
+
+    assert source_events == safe_receipts
+    assert stage["status"] == "captured"
+    assert stage["consumes"][0]["stage"] == "turn_input"
+    assert source_events[0]["turn_id"] == "turn-evidence-1"
+    assert "warmth=+0.040" in answer
+    assert "turn ID(s) turn-evidence-1" in answer
+
+
 def test_recent_turn_history_preserves_redacted_pipeline_and_answer_validation():
     bridge = _bridge()
     bridge._turn_trace_history = [{

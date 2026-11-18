@@ -21,6 +21,7 @@ Architecture:
 import json
 import logging
 import math
+import re
 import time
 import threading
 from dataclasses import dataclass, asdict, field
@@ -125,7 +126,13 @@ class Emotion:
             return
         decay_factor = 0.5 ** (elapsed_hours / self.halflife_hours)
         delta = self.value - self.baseline
-        self.value = max(0.0, min(1.0, self.baseline + delta * decay_factor))
+        decayed_value = max(0.0, min(1.0, self.baseline + delta * decay_factor))
+        # Do not advance the decay clock for sub-receipt changes. Keeping the
+        # prior timestamp lets small decay accumulate until it is observable,
+        # instead of losing it on every frequent read.
+        if abs(decayed_value - self.value) < 0.00005:
+            return
+        self.value = decayed_value
         self.last_updated_ts = now_ts
 
 
@@ -212,7 +219,7 @@ class EmotionalStateManager:
 
     # ── Core update methods ────────────────────────────────────────────────
 
-    def apply_time_decay(self) -> Dict[str, float]:
+    def apply_time_decay(self, *, turn_id: str = "") -> Dict[str, float]:
         """
         Apply real-time decay to all emotions.
         Call this at the START of every conversation or significant time gap.
@@ -225,6 +232,12 @@ class EmotionalStateManager:
                 before = emo.value
                 emo.decay(now)
                 delta[name] = emo.value - before
+            if any(abs(change) >= 0.00005 for change in delta.values()):
+                self._append_affect_event(
+                    "time_decay", "elapsed_time", 0.0, delta,
+                    timestamp=now, turn_id=turn_id,
+                )
+                self._record_snapshot()
             self._update_mood(now)
             self._save()
             return delta
@@ -263,6 +276,8 @@ class EmotionalStateManager:
         valence:  str,          # "Positive" | "Negative" | "Neutral"
         arousal:  str,          # "High" | "Medium" | "Low"
         intensity: float = 1.0,
+        *,
+        turn_id: str = "",
     ) -> None:
         """
         Shift emotional state based on an interaction's emotional content.
@@ -271,8 +286,19 @@ class EmotionalStateManager:
         with self._lock:
             now = time.time()
             # Apply any pending decay first
+            before_decay = {name: emo.value for name, emo in self.emotions.items()}
             for emo in self.emotions.values():
                 emo.decay(now)
+            decay_changes = {
+                name: emo.value - before_decay[name]
+                for name, emo in self.emotions.items()
+            }
+            if any(abs(change) >= 0.00005 for change in decay_changes.values()):
+                self._append_affect_event(
+                    "time_decay", "elapsed_time", 0.0, decay_changes,
+                    timestamp=now, turn_id=turn_id,
+                )
+            before_update = {name: emo.value for name, emo in self.emotions.items()}
 
             v_map = {"Positive": 1.0, "Neutral": 0.0, "Negative": -1.0}
             a_map = {"High": 1.0,     "Medium": 0.5,  "Low": 0.0}
@@ -301,6 +327,15 @@ class EmotionalStateManager:
             # Update volatility based on the magnitude of changes
             self._update_volatility()
             self._record_snapshot()
+            changes = {
+                name: emo.value - before_update[name]
+                for name, emo in self.emotions.items()
+            }
+            self._append_affect_event(
+                "interaction_appraisal", "update_from_interaction", i, changes,
+                {"valence": str(valence).casefold(), "arousal": str(arousal).casefold()},
+                timestamp=now, turn_id=turn_id,
+            )
             self._save()
 
             # ── Micro-update: emit coherence delta and qualia vote ────────────
@@ -382,8 +417,18 @@ class EmotionalStateManager:
 
         with self._lock:
             now = time.time()
+            before_decay = {name: emotion.value for name, emotion in self.emotions.items()}
             for emotion in self.emotions.values():
                 emotion.decay(now)
+            decay_changes = {
+                name: emotion.value - before_decay[name]
+                for name, emotion in self.emotions.items()
+            }
+            if any(abs(change) >= 0.00005 for change in decay_changes.values()):
+                self._append_affect_event(
+                    "time_decay", "elapsed_time", 0.0, decay_changes,
+                    timestamp=now,
+                )
             changes = {}
             for emotion_name, weight in profile.items():
                 before = self.emotions[emotion_name].value
@@ -392,16 +437,10 @@ class EmotionalStateManager:
             self._update_mood(now)
             self._update_volatility()
             self._record_snapshot()
-            receipt = {
-                "timestamp": now,
-                "event_type": event_name,
-                "source": str(source or "cognitive_event")[:80],
-                "intensity": round(scale, 3),
-                "changes": changes,
-                "cause_context": cause_context,
-            }
-            self._recent_affect_events.append(receipt)
-            self._recent_affect_events = self._recent_affect_events[-20:]
+            receipt = self._append_affect_event(
+                event_name, source or "cognitive_event", scale, changes,
+                cause_context, timestamp=now,
+            )
             self._save()
             return {"status": "applied", **receipt}
 
@@ -416,6 +455,7 @@ class EmotionalStateManager:
         Positive feedback creates genuine satisfaction; negative creates genuine frustration.
         """
         with self._lock:
+            before_update = {name: emo.value for name, emo in self.emotions.items()}
             if positive:
                 self._nudge("satisfaction", +0.08)
                 self._nudge("anxiety",      -0.06)
@@ -427,6 +467,16 @@ class EmotionalStateManager:
                 self._nudge("enthusiasm",   -0.04)
             
             self._update_volatility()
+            changes = {
+                name: emo.value - before_update[name]
+                for name, emo in self.emotions.items()
+            }
+            if any(abs(change) >= 0.00005 for change in changes.values()):
+                self._append_affect_event(
+                    "user_feedback", "interface_feedback", 1.0, changes,
+                    {"feedback": "positive" if positive else "negative"},
+                )
+            self._record_snapshot()
             self._save()
 
     def update_from_time_gap(self, gap_hours: float) -> str:
@@ -441,6 +491,7 @@ class EmotionalStateManager:
             if gap_hours < 0.5:
                 return ""   # less than 30 mins — no emotional significance
 
+            before_gap = {name: emo.value for name, emo in self.emotions.items()}
             desc = ""
             if gap_hours > 72:
                 # 3+ day gap — deep solitude, reflective
@@ -461,6 +512,15 @@ class EmotionalStateManager:
                 desc = f"Some time has passed since we last spoke."
 
             self._update_volatility()
+            gap_changes = {
+                name: emo.value - before_gap[name]
+                for name, emo in self.emotions.items()
+            }
+            self._append_affect_event(
+                "conversation_gap", "elapsed_conversation_gap", 1.0, gap_changes,
+                {"gap_hours": round(max(0.0, float(gap_hours)), 2)},
+            )
+            self._record_snapshot()
             self._save()
             return desc
 
@@ -471,11 +531,22 @@ class EmotionalStateManager:
         """
         with self._lock:
             new_baselines = self._compute_baselines(personality)
+            before = {name: emo.baseline for name, emo in self.emotions.items()}
             for name, emo in self.emotions.items():
                 new_base = new_baselines.get(name, 0.3)
                 # Baselines shift at 20% of the gap per recalibration call
                 emo.baseline = emo.baseline + (new_base - emo.baseline) * 0.2
                 emo.baseline = max(BASELINE_FLOOR, min(BASELINE_CEIL, emo.baseline))
+            changes = {
+                name: emo.baseline - before[name]
+                for name, emo in self.emotions.items()
+            }
+            if any(abs(change) >= 0.0001 for change in changes.values()):
+                self._append_affect_event(
+                    "baseline_recalibration", "personality_recalibration", 1.0,
+                    {}, baseline_changes=changes,
+                )
+                self._record_snapshot()
             self._save()
 
     def regulate(self) -> None:
@@ -485,6 +556,7 @@ class EmotionalStateManager:
         """
         with self._lock:
             now = time.time()
+            before_regulation = {name: emo.value for name, emo in self.emotions.items()}
             for emo in self.emotions.values():
                 # Apply gentle regulation toward baseline
                 if abs(emo.value - emo.baseline) > 0.3:
@@ -497,6 +569,16 @@ class EmotionalStateManager:
                     emo.last_updated_ts = now
             
             self._volatility = max(0.0, self._volatility - 0.1)  # Reduce volatility
+            changes = {
+                name: emo.value - before_regulation[name]
+                for name, emo in self.emotions.items()
+            }
+            if any(abs(change) >= 0.00005 for change in changes.values()):
+                self._append_affect_event(
+                    "affect_regulation", "emotional_state_regulator", 1.0,
+                    changes, timestamp=now,
+                )
+                self._record_snapshot()
             logger.debug("Emotional regulation applied")
             self._save()
 
@@ -526,9 +608,20 @@ class EmotionalStateManager:
         with self._lock:
             now = time.time()
             result = {}
+            before = {name: emo.value for name, emo in self.emotions.items()}
             for name, emo in self.emotions.items():
                 emo.decay(now)
                 result[name] = round(emo.value, 3)
+            changes = {
+                name: emo.value - before[name]
+                for name, emo in self.emotions.items()
+            }
+            if any(abs(change) >= 0.00005 for change in changes.values()):
+                self._append_affect_event(
+                    "time_decay", "elapsed_time", 0.0, changes,
+                    timestamp=now,
+                )
+                self._save()
             return result
 
     def get_overall_valence_arousal(self) -> Tuple[float, float]:
@@ -752,7 +845,9 @@ class EmotionalStateManager:
         emo.value  = max(0.0, min(1.0, emo.value + effective))
         emo.last_updated_ts = time.time()
 
-    def receive_self_influence(self, nudges: Dict[str, float]) -> None:
+    def receive_self_influence(
+        self, nudges: Dict[str, float], source: str = "self_model_influence",
+    ) -> None:
         """
         Apply self-model-derived emotion nudges as transient one-turn shifts.
 
@@ -772,8 +867,86 @@ class EmotionalStateManager:
             SelfModelInfluence to avoid positive feedback loops — but callers
             may still pass negative anxiety deltas to reduce it.
         """
-        for emotion_name, delta in nudges.items():
-            self._nudge(emotion_name, delta)
+        with self._lock:
+            before = {name: emo.value for name, emo in self.emotions.items()}
+            for emotion_name, delta in nudges.items():
+                self._nudge(emotion_name, delta)
+            changes = {
+                name: emo.value - before[name]
+                for name, emo in self.emotions.items()
+            }
+            if any(abs(change) >= 0.0001 for change in changes.values()):
+                self._append_affect_event(
+                    "self_influence", source, 1.0, changes,
+                )
+                self._record_snapshot()
+                self._save()
+
+    def _append_affect_event(
+        self,
+        event_type: str,
+        source: str,
+        intensity: float,
+        changes: Dict[str, float],
+        cause_context: Optional[Dict[str, Any]] = None,
+        *,
+        timestamp: Optional[float] = None,
+        baseline_changes: Optional[Dict[str, float]] = None,
+        turn_id: str = "",
+    ) -> Dict[str, Any]:
+        """Append a bounded, non-free-text receipt for an affect mutation."""
+        safe_changes = {}
+        for name, raw_delta in (changes or {}).items():
+            if name not in self.emotions:
+                continue
+            try:
+                delta = float(raw_delta)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if math.isfinite(delta):
+                safe_changes[name] = round(max(-1.0, min(1.0, delta)), 4)
+        safe_context = {}
+        for key, value in (cause_context or {}).items():
+            if key not in {"drive", "valence", "arousal", "feedback", "gap_hours"}:
+                continue
+            candidate = str(value).strip().casefold()
+            if candidate and len(candidate) <= 32 and all(
+                char.isalnum() or char in "_.-" for char in candidate
+            ):
+                safe_context[key] = candidate
+        safe_baseline_changes = {}
+        for name, raw_delta in (baseline_changes or {}).items():
+            if name not in self.emotions:
+                continue
+            try:
+                delta = float(raw_delta)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if math.isfinite(delta):
+                safe_baseline_changes[name] = round(max(-1.0, min(1.0, delta)), 4)
+        try:
+            safe_intensity = float(intensity)
+        except (TypeError, ValueError, OverflowError):
+            safe_intensity = 0.0
+        if not math.isfinite(safe_intensity):
+            safe_intensity = 0.0
+        receipt = {
+            "timestamp": float(timestamp if timestamp is not None else time.time()),
+            "event_type": re.sub(
+                r"[^a-zA-Z0-9_.-]", "_", str(event_type or "affect_update").strip()
+            )[:80] or "affect_update",
+            "source": re.sub(
+                r"[^a-zA-Z0-9_.-]", "_", str(source or "unspecified").strip()
+            )[:80] or "unspecified",
+            "intensity": round(max(0.0, min(1.0, safe_intensity)), 3),
+            "changes": safe_changes,
+            "baseline_changes": safe_baseline_changes,
+            "cause_context": safe_context,
+            "turn_id": re.sub(r"[^a-zA-Z0-9_-]", "_", str(turn_id or "").strip())[:96] or None,
+        }
+        self._recent_affect_events.append(receipt)
+        self._recent_affect_events = self._recent_affect_events[-20:]
+        return receipt
 
     def _update_volatility(self):
         """Update volatility metric based on recent emotional changes."""

@@ -27,6 +27,15 @@ from core.planning.multi_step_planner import MultiStepPlanner
 from managers.llm_manager import LLMManager, LMStudioProvider
 
 
+def _reserve_step(planner, goal, execution_id, cycle_id=None):
+    operation = planner.next_action_for_goal(goal)
+    assert operation
+    assert planner.reserve_goal_action_execution(
+        str(goal.id), operation, execution_id, cycle_id,
+    )
+    return operation
+
+
 class _Prediction:
     def __init__(self, cost=0.04, gain=0.03, confidence=0.8):
         self.self_deltas = {"cognitive_energy": -cost}
@@ -313,8 +322,10 @@ class IntentionPlanningTests(unittest.TestCase):
             self.assertIn("declared operation order", plan.decision_rationale)
             initial_decision = plan.decision_rationale
             initial_confidence = plan.reasoning_confidence
+            _reserve_step(planner, goal, "exec-g-1-fail")
             planner.record_goal_action_outcome(
-                goal.id, "memory_recall", False, "no memory"
+                goal.id, "memory_recall", False, "no memory",
+                execution_id="exec-g-1-fail",
             )
             self.assertEqual(plan.steps_completed, 0)
             self.assertEqual(planner.next_action_for_goal(goal), "memory_recall")
@@ -322,9 +333,10 @@ class IntentionPlanningTests(unittest.TestCase):
             self.assertEqual(plan.decision_revision, 1)
             self.assertEqual(plan.reasoning_confidence, initial_confidence)
 
+            _reserve_step(planner, goal, "exec-g-1-success")
             planner.record_goal_action_outcome(
                 goal.id, "memory_recall", True, "recalled evidence",
-                execution_id="exec-g-1",
+                execution_id="exec-g-1-success",
             )
             self.assertEqual(plan.steps_completed, 1)
             self.assertEqual(planner.next_action_for_goal(goal), "self_question")
@@ -345,6 +357,7 @@ class IntentionPlanningTests(unittest.TestCase):
             goal = NS(id="g-provenance", topic="learn causal audit", origin="resolve_uncertainty")
             plan = planner.ensure_goal_plan(goal)
 
+            _reserve_step(planner, goal, "act-cycle-31-1", 31)
             planner.record_goal_action_outcome(
                 goal.id,
                 "memory_recall",
@@ -357,6 +370,42 @@ class IntentionPlanningTests(unittest.TestCase):
             self.assertEqual(plan.last_outcome["execution_id"], "act-cycle-31-1")
             self.assertEqual(plan.last_outcome["cycle_id"], 31)
             self.assertEqual(plan.last_outcome["operation"], "memory_recall")
+
+    def test_replayed_execution_receipt_cannot_advance_repeated_operation_step(self):
+        with tempfile.TemporaryDirectory() as folder:
+            planner, _, _ = self._planner(folder)
+            goal = NS(id="g-replay", topic="reject replayed receipts", origin="resolve_uncertainty")
+            plan = planner.ensure_goal_plan(goal)
+            plan.steps = [
+                PlanStep(0, "memory_recall", 0.04, 0.03, operation="memory_recall"),
+                PlanStep(1, "memory_recall", 0.04, 0.03, operation="memory_recall"),
+            ]
+            plan.steps_completed = 0
+
+            self.assertTrue(planner.reserve_goal_action_execution(
+                goal.id, "memory_recall", "execution-first", 10,
+            ))
+            planner.record_goal_action_outcome(
+                goal.id, "memory_recall", True, "first retrieval completed",
+                execution_id="execution-first", cycle_id=10,
+            )
+            self.assertEqual(plan.steps_completed, 1)
+
+            self.assertTrue(planner.reserve_goal_action_execution(
+                goal.id, "memory_recall", "execution-second", 11,
+            ))
+            planner.record_goal_action_outcome(
+                goal.id, "memory_recall", True, "replayed first receipt",
+                execution_id="execution-first", cycle_id=10,
+            )
+            self.assertEqual(plan.steps_completed, 1)
+            self.assertEqual(plan.steps[1].status, "pending")
+
+            planner.record_goal_action_outcome(
+                goal.id, "memory_recall", True, "second retrieval completed",
+                execution_id="execution-second", cycle_id=11,
+            )
+            self.assertEqual(plan.steps_completed, 2)
 
     def test_goal_success_without_execution_receipt_is_not_progress(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -819,8 +868,10 @@ class IntentionPlanningTests(unittest.TestCase):
             self.assertTrue(all(0.0 <= event["priority"] <= 0.75 for event in created))
 
             planner._organism.workspace.events.clear()
+            _reserve_step(planner, goal, "exec-receipt-fail-1")
             planner.record_goal_action_outcome(
-                goal.id, "memory_recall", False, "no evidence"
+                goal.id, "memory_recall", False, "no evidence",
+                execution_id="exec-receipt-fail-1",
             )
             outcomes = planner._organism.workspace.events
             self.assertEqual(plan.steps_completed, 0)
@@ -838,8 +889,10 @@ class IntentionPlanningTests(unittest.TestCase):
             ))
 
             planner._organism.workspace.events.clear()
+            _reserve_step(planner, goal, "exec-receipt-fail-2")
             planner.record_goal_action_outcome(
-                goal.id, "memory_recall", False, "still no evidence"
+                goal.id, "memory_recall", False, "still no evidence",
+                execution_id="exec-receipt-fail-2",
             )
             self.assertTrue(any(
                 event["source"] == "long_horizon_planner.revision"
@@ -942,8 +995,14 @@ class IntentionPlanningTests(unittest.TestCase):
             goal = NS(id="g-2", topic="research uncertainty", origin="explore")
             planner.ensure_goal_plan(goal)
 
-            planner.record_goal_action_outcome(goal.id, "memory_recall", False, "empty")
-            planner.record_goal_action_outcome(goal.id, "memory_recall", False, "empty")
+            _reserve_step(planner, goal, "exec-g-2-fail-1")
+            planner.record_goal_action_outcome(
+                goal.id, "memory_recall", False, "empty", execution_id="exec-g-2-fail-1",
+            )
+            _reserve_step(planner, goal, "exec-g-2-fail-2")
+            planner.record_goal_action_outcome(
+                goal.id, "memory_recall", False, "empty", execution_id="exec-g-2-fail-2",
+            )
 
             self.assertEqual(planner.next_action_for_goal(goal), "self_question")
             plan = planner.ensure_goal_plan(goal)
@@ -969,6 +1028,7 @@ class IntentionPlanningTests(unittest.TestCase):
             planner, _, _ = self._planner(folder)
             goal = NS(id="g-3", topic="understand persistence", origin="resolve_uncertainty")
             planner.ensure_goal_plan(goal)
+            _reserve_step(planner, goal, "exec-g-3")
             planner.record_goal_action_outcome(
                 goal.id, "memory_recall", True, "persistent evidence",
                 execution_id="exec-g-3",
@@ -995,6 +1055,9 @@ class IntentionPlanningTests(unittest.TestCase):
             executor._pending_predictions = {}
 
             self.assertEqual(executor._planned_action(goal), "memory_recall")
+            self.assertTrue(planner.reserve_goal_action_execution(
+                goal.id, "memory_recall", "exec-g-4", None,
+            ))
             executor._finalize_async_action(
                 goal, "memory_recall", True, "recalled evidence",
                 execution_id="exec-g-4",
@@ -1124,6 +1187,7 @@ class IntentionPlanningTests(unittest.TestCase):
                 goal_engine=NS(get_active_goals=lambda min_activation=0.1: [goal])
             )
             plan = planner.ensure_goal_plan(goal)
+            _reserve_step(planner, goal, "exec-g-factual")
             planner.record_goal_action_outcome(
                 goal.id, "memory_recall", True, "recalled evidence",
                 execution_id="exec-g-factual",

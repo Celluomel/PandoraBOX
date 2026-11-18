@@ -131,7 +131,9 @@ def apply_threat_response(organism: Any) -> Optional[float]:
     if threat_level >= THREAT_NOISE_FLOOR:
         try:
             delta = min(MAX_ANXIETY_NUDGE, threat_level * MAX_ANXIETY_NUDGE)
-            emo.receive_self_influence({"anxiety": +delta})
+            emo.receive_self_influence(
+                {"anxiety": +delta}, source="threat_response",
+            )
             logger.debug(
                 f"[ThreatResponse] threat_level={threat_level:.2f} -> "
                 f"anxiety nudge +{delta:.3f}"
@@ -150,3 +152,4 @@ def apply_threat_response(organism: Any) -> Optional[float]:
         logger.debug(f"[ThreatResponse] regulation check failed (non-fatal): {e}")
 
     return threat_level
+

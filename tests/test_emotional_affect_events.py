@@ -2,29 +2,43 @@
 import tempfile
 import json
 import unittest
-from pathlib import Path
+import importlib.util
 import sys
-from types import ModuleType, SimpleNamespace as NS
+from pathlib import Path
+from types import SimpleNamespace as NS
+from unittest.mock import patch
 
-# Avoid importing cognition/__init__.py and its optional runtime stack.
+# Load the focused modules by file path so this unit test does not replace the
+# process-wide cognition/core packages and alter later integration-test imports.
 ROOT = Path(__file__).resolve().parents[1]
-package = ModuleType("cognition")
-package.__path__ = [str(ROOT / "cognition")]
-sys.modules.setdefault("cognition", package)
-core_package = ModuleType("core")
-core_package.__path__ = [str(ROOT / "core")]
-sys.modules.setdefault("core", core_package)
 
-from cognition.emotional_state import EmotionalStateManager
-from cognition.self_description import affect_self_report_context
-from cognition.thought_stream import ThoughtStream
-from core.cognitive_event_bus import (
-    CognitiveEventBus,
-    CONTRADICTION_DETECTED,
-    DRIVE_SATISFIED,
-    TENSION_RELEASED,
-    wire_cognitive_bus,
+
+def _load_focused_module(alias, relative_path):
+    spec = importlib.util.spec_from_file_location(alias, ROOT / relative_path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[alias] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+_emotional_state_module = _load_focused_module(
+    "_lumina_test_emotional_state", "cognition/emotional_state.py",
 )
+EmotionalStateManager = _emotional_state_module.EmotionalStateManager
+affect_self_report_context = _load_focused_module(
+    "_lumina_test_self_description", "cognition/self_description.py",
+).affect_self_report_context
+ThoughtStream = _load_focused_module(
+    "_lumina_test_thought_stream", "cognition/thought_stream.py",
+).ThoughtStream
+_event_bus = _load_focused_module(
+    "_lumina_test_cognitive_event_bus", "core/cognitive_event_bus.py",
+)
+CognitiveEventBus = _event_bus.CognitiveEventBus
+CONTRADICTION_DETECTED = _event_bus.CONTRADICTION_DETECTED
+DRIVE_SATISFIED = _event_bus.DRIVE_SATISFIED
+TENSION_RELEASED = _event_bus.TENSION_RELEASED
+wire_cognitive_bus = _event_bus.wire_cognitive_bus
 
 
 class EmotionalAffectEventTests(unittest.TestCase):
@@ -111,6 +125,92 @@ class EmotionalAffectEventTests(unittest.TestCase):
                 modifiers["latest_affect_event"]["event_type"], "identity_threatened"
             )
             self.assertEqual(modifiers["latest_affect_event"]["source"], "self_model")
+
+    def test_non_cognitive_affect_mutations_record_source_and_channel_deltas(self):
+        with tempfile.TemporaryDirectory() as folder:
+            state = self.make_state(folder)
+            state.update_from_interaction("Positive", "High", intensity=0.8)
+            interaction = state.get_recent_affect_events(1)[0]
+            self.assertEqual(interaction["event_type"], "interaction_appraisal")
+            self.assertEqual(interaction["source"], "update_from_interaction")
+            self.assertEqual(interaction["cause_context"], {
+                "valence": "positive", "arousal": "high",
+            })
+            self.assertTrue(interaction["changes"])
+
+            state.update_from_feedback(False)
+            feedback = state.get_recent_affect_events(1)[0]
+            self.assertEqual(feedback["event_type"], "user_feedback")
+            self.assertEqual(feedback["cause_context"], {"feedback": "negative"})
+            self.assertTrue(feedback["changes"])
+
+            state.update_from_time_gap(36.0)
+            gap = state.get_recent_affect_events(1)[0]
+            self.assertEqual(gap["event_type"], "conversation_gap")
+            self.assertEqual(gap["cause_context"], {"gap_hours": "36.0"})
+            self.assertTrue(gap["changes"])
+
+            state.receive_self_influence({"warmth": 0.04}, source="threat_response")
+            influence = state.get_recent_affect_events(1)[0]
+            self.assertEqual(influence["event_type"], "self_influence")
+            self.assertEqual(influence["source"], "threat_response")
+            self.assertGreater(influence["changes"]["warmth"], 0)
+
+    def test_affect_regulation_records_the_channels_it_changes(self):
+        with tempfile.TemporaryDirectory() as folder:
+            state = self.make_state(folder)
+            state.emotions["warmth"].value = min(1.0, state.emotions["warmth"].baseline + 0.5)
+            state.regulate()
+            receipt = state.get_recent_affect_events(1)[0]
+            self.assertEqual(receipt["event_type"], "affect_regulation")
+            self.assertEqual(receipt["source"], "emotional_state_regulator")
+            self.assertLess(receipt["changes"]["warmth"], 0)
+
+    def test_personality_baseline_recalibration_has_a_separate_receipt(self):
+        personality = NS(to_dict=lambda: {
+            "curiosity": 0.95, "creativity": 0.90, "confidence": 0.80,
+            "empathy_emotional": 0.85, "empathy": 0.80, "pragmatism": 0.20,
+        })
+        with tempfile.TemporaryDirectory() as folder:
+            state = self.make_state(folder)
+            before = state.emotions["curiosity"].baseline
+            state.recalibrate_baselines(personality)
+            receipt = state.get_recent_affect_events(1)[0]
+            self.assertEqual(receipt["event_type"], "baseline_recalibration")
+            self.assertEqual(receipt["changes"], {})
+            self.assertNotEqual(receipt["baseline_changes"]["curiosity"], 0)
+            self.assertNotEqual(state.emotions["curiosity"].baseline, before)
+
+    def test_subthreshold_decay_accumulates_until_it_can_be_recorded(self):
+        with tempfile.TemporaryDirectory() as folder:
+            state = self.make_state(folder)
+            emotion = state.emotions["warmth"]
+            emotion.value = min(1.0, emotion.baseline + 0.5)
+            base_ts = 1_000_000.0
+            emotion.last_updated_ts = base_ts
+            original_value = emotion.value
+
+            emotion.decay(base_ts + 0.1)
+            self.assertEqual(emotion.value, original_value)
+            self.assertEqual(emotion.last_updated_ts, base_ts)
+
+            with patch.object(_emotional_state_module.time, "time", return_value=base_ts + 100.0):
+                state.apply_time_decay()
+            recent = state.get_recent_affect_events(1)
+            self.assertTrue(recent)
+            self.assertEqual(recent[0]["event_type"], "time_decay")
+            self.assertNotEqual(emotion.value, original_value)
+
+    def test_feedback_clipped_at_channel_limits_does_not_claim_an_affect_event(self):
+        with tempfile.TemporaryDirectory() as folder:
+            state = self.make_state(folder)
+            for name in ("satisfaction", "enthusiasm"):
+                state.emotions[name].value = 1.0
+            state.emotions["anxiety"].value = 0.0
+
+            state.update_from_feedback(True)
+
+            self.assertEqual(state.get_recent_affect_events(), [])
 
     def test_event_bus_routes_appraisal_and_deduplicates_satiation_pair(self):
         with tempfile.TemporaryDirectory() as folder:

@@ -394,6 +394,47 @@ class GoalActionExecutor:
                     "skipped": True,
                 }
 
+        if planned_action:
+            try:
+                loop = getattr(self._o, "_loop", None)
+                planner = getattr(loop, "_long_horizon_planner", None) if loop else None
+                reserve = getattr(planner, "reserve_goal_action_execution", None)
+                if planner is not None and (
+                    not callable(reserve) or not reserve(
+                        str(goal.id), action_type, execution_id, cycle_id,
+                    )
+                ):
+                    self._release_async_action(async_key)
+                    logger.warning(
+                        "[GoalActionExecutor] Planned dispatch was not bound to the "
+                        "current plan step; suppressing execution"
+                    )
+                    self._record_tick_skip("planned_step_reservation_failed", goal_id=goal.id)
+                    return {
+                        "goal_id": goal.id,
+                        "goal_topic": goal.topic,
+                        "action": action_type,
+                        "success": False,
+                        "outcome_status": "skipped",
+                        "reason_code": "planned_step_reservation_failed",
+                        "result": "planned step execution could not be bound to its receipt",
+                        "skipped": True,
+                    }
+            except Exception as exc:
+                self._release_async_action(async_key)
+                logger.warning("[GoalActionExecutor] Plan step reservation failed: %s", exc)
+                self._record_tick_skip("planned_step_reservation_failed", goal_id=goal.id)
+                return {
+                    "goal_id": goal.id,
+                    "goal_topic": goal.topic,
+                    "action": action_type,
+                    "success": False,
+                    "outcome_status": "skipped",
+                    "reason_code": "planned_step_reservation_failed",
+                    "result": "planned step execution could not be bound to its receipt",
+                    "skipped": True,
+                }
+
         # test_hypothesis goals get temporary priority boost so they compete
         # effectively against generic explore_opportunity goals
         if 'test_hypothesis' in getattr(goal, 'origin', '') and goal.priority < 0.75:

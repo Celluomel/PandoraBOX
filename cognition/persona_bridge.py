@@ -677,6 +677,7 @@ class PersonaBridge:
             "unavailable_count", "affect_source", "affect_profile",
             "affect_description", "affect_event_type", "affect_event_source",
             "affect_event_age_seconds", "affect_event_context",
+            "affect_recent_events",
             "source_cycle", "age_seconds", "age_cycles", "thread_id",
             "source_evidence_ref", "focus_type", "focus_score", "focus_ref",
             "context_included",
@@ -710,6 +711,9 @@ class PersonaBridge:
                     char.isalnum() or char == "_" for char in drive
                 ):
                     safe_metadata[key] = {"drive": drive}
+            elif key == "affect_recent_events" and isinstance(value, (list, tuple)):
+                from cognition.self_description import sanitize_affect_event_receipts
+                safe_metadata[key] = sanitize_affect_event_receipts(value)
             elif key == "operations_ms" and isinstance(value, dict):
                 allowed_operations = {
                     "response_modifiers", "self_concept_inner_voice", "identity_context",
@@ -1696,6 +1700,7 @@ class PersonaBridge:
                             "affect_source", "affect_profile", "affect_event_type",
                             "affect_event_source", "affect_event_age_seconds",
                             "affect_event_context",
+                            "affect_recent_events",
                             "interval_ms", "operations_ms", "uninstrumented_ms",
                         }
                     }
@@ -2695,10 +2700,11 @@ Return exactly NONE if nothing should carry forward. Otherwise return one plain 
         self._chat_stage = 'building cognitive prompt'
         _social_status_greeting = False
         _structured_affect_status = False
+        _affect_change_analysis = False
         _affect_self_report_query = False
         try:
             from cognition.self_description import (
-                is_self_affect_query, is_social_status_greeting,
+                is_affect_change_analysis_query, is_self_affect_query, is_social_status_greeting,
                 is_structured_affect_status_query,
             )
             _social_status_greeting = bool(
@@ -2706,6 +2712,9 @@ Return exactly NONE if nothing should carry forward. Otherwise return one plain 
             )
             _structured_affect_status = bool(
                 not peer_name and is_structured_affect_status_query(effective_input)
+            )
+            _affect_change_analysis = bool(
+                not peer_name and is_affect_change_analysis_query(effective_input)
             )
             _affect_self_report_query = bool(
                 not peer_name and is_self_affect_query(effective_input)
@@ -2739,10 +2748,11 @@ Return exactly NONE if nothing should carry forward. Otherwise return one plain 
         )
         _deterministic_affect_report = False
         _affect_direct_response = ""
-        if _social_status_greeting or _structured_affect_status:
+        if _social_status_greeting or _structured_affect_status or _affect_change_analysis:
             try:
                 from cognition.self_description import (
-                    render_affect_self_report, render_detailed_affect_status,
+                    render_affect_change_analysis, render_affect_self_report,
+                    render_detailed_affect_status,
                 )
                 from managers.settings_manager import config as _affect_cfg
                 _affect_evidence = system_prompt.rsplit(
@@ -2758,14 +2768,16 @@ Return exactly NONE if nothing should carry forward. Otherwise return one plain 
                         else "en"
                     )
                 _affect_direct_response = (
-                    render_detailed_affect_status(_affect_evidence, language=_affect_language)
+                    render_affect_change_analysis(_affect_evidence, language=_affect_language)
+                    if _affect_change_analysis
+                    else render_detailed_affect_status(_affect_evidence, language=_affect_language)
                     if _structured_affect_status
                     else render_affect_self_report(_affect_evidence, language=_affect_language)
                 )
                 _deterministic_affect_report = True
                 self._record_turn_stage(
                     "affect_status_report", "completed",
-                    "Deterministic social-status projection rendered from live modeled affect channels; no LLM inference or web search required.",
+                    "Deterministic affect projection rendered from the live structured affect record; no LLM inference or web search required.",
                     output={
                         "source": "AFFECT SELF-REPORT EVIDENCE in assembled prompt",
                         "response": _affect_direct_response,
@@ -4828,10 +4840,13 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             _interlocutor_role_line = _interlocutor_role_instruction(peer_name)
 
             gap_note = s._handle_time_gap(user_id)
-            s.emotional_state.apply_time_decay()
+            s.emotional_state.apply_time_decay(turn_id=audit_turn_id)
             emo_dict = s.memory_system.analyze_emotional_context(user_input)
             if mark_user_active:
-                s.emotional_state.update_from_interaction(emo_dict["valence"], emo_dict["arousal"])
+                s.emotional_state.update_from_interaction(
+                    emo_dict["valence"], emo_dict["arousal"],
+                    turn_id=audit_turn_id,
+                )
             cond_dict = s.conditioning.check_input(user_input)
             if mark_user_active:
                 s._set_active_user(user_id)
@@ -5241,6 +5256,9 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     not peer_name and is_self_affect_query(user_input)
                 )
                 if _affect_self_report:
+                    from cognition.self_description import sanitize_affect_event_receipts
+                    _recent_affect_events = s.emotional_state.get_recent_affect_events(5)
+                    _safe_affect_events = sanitize_affect_event_receipts(_recent_affect_events)
                     self._record_turn_context_source(
                         "affective_state",
                         "injected",
@@ -5252,6 +5270,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                         affect_event_source=_latest_affect.get("source", "") if _latest_affect else "",
                         affect_event_age_seconds=_latest_affect.get("age_seconds") if _latest_affect else None,
                         affect_event_context=_latest_affect.get("cause_context", {}) if _latest_affect else {},
+                        affect_recent_events=_safe_affect_events,
                     )
                     self._record_turn_stage(
                         "affective_state", "captured",
@@ -5260,6 +5279,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                             "source": "EmotionalStateManager.get_response_modifiers().affective_profile",
                             "affect_profile": _affect_profile,
                             "description": mods.get("state_description", ""),
+                            "recent_events": _safe_affect_events,
                             "latest_event": {
                                 "event_type": _latest_affect.get("event_type", "") if _latest_affect else "",
                                 "source": _latest_affect.get("source", "") if _latest_affect else "",
@@ -5934,6 +5954,7 @@ Memory honesty — two distinct cases:
                     _affect_profile,
                     mods.get("state_description", ""),
                     _latest_affect,
+                    _recent_affect_events,
                 )
 
             return (

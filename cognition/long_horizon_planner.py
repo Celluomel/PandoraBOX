@@ -73,6 +73,8 @@ class PlanStep:
     cycle_id:       Optional[int] = None
     observed_at:    float = 0.0
     effect_measured: bool = False
+    pending_execution_id: str = ""
+    pending_cycle_id: Optional[int] = None
 
 
 @dataclass
@@ -402,21 +404,58 @@ class LongHorizonPlanner:
             return None
         return step.operation
 
+    def reserve_goal_action_execution(
+        self, goal_id: str, action_type: str, execution_id: str,
+        cycle_id: Optional[int] = None,
+    ) -> bool:
+        """Bind a dispatched execution receipt to the exact current plan step."""
+        key = f"goal:{goal_id}"
+        execution_ref = str(execution_id or "").strip()
+        if not execution_ref:
+            return False
+        with self._lock:
+            plan = self._plans.get(key)
+            if not plan or plan.status != "active":
+                return False
+            step = self.current_step(key)
+            if not step or step.operation != action_type:
+                return False
+            # A later dispatch supersedes a stale in-flight receipt for this
+            # step; only the most recently reserved execution may finalize it.
+            step.pending_execution_id = execution_ref
+            step.pending_cycle_id = cycle_id
+            return True
+
     def record_goal_action_outcome(
         self, goal_id: str, action_type: str, success: bool, result: str = "",
         *, execution_id: str = "", cycle_id: Optional[int] = None,
     ) -> None:
         """Advance a goal intention only after the operation really completed."""
         key = f"goal:{goal_id}"
-        plan = self._plans.get(key)
-        if not plan or plan.status != "active":
-            return
-        step = self.current_step(key)
-        if not step or step.operation != action_type:
-            return
-
         result_text = str(result or "").strip()[:240]
         execution_ref = str(execution_id or "").strip()
+        with self._lock:
+            plan = self._plans.get(key)
+            if not plan or plan.status != "active":
+                return
+            step = self.current_step(key)
+            if not step or step.operation != action_type:
+                return
+            missing_execution_receipt = success and not execution_ref
+            if not missing_execution_receipt and (
+                not execution_ref
+                or execution_ref != step.pending_execution_id
+                or cycle_id != step.pending_cycle_id
+            ):
+                logger.warning(
+                    "[LongHorizonPlanner] Rejected unbound or stale execution receipt "
+                    "for goal %s operation %s",
+                    goal_id, action_type,
+                )
+                return
+            if not missing_execution_receipt:
+                step.pending_execution_id = ""
+                step.pending_cycle_id = None
         if success and (not execution_ref or not result_text):
             step.attempts += 1
             step.status = "unverified"

@@ -9,6 +9,7 @@ from cognition.self_description import (
     SelfDescription,
     affect_self_report_context,
     is_architecture_query,
+    is_affect_change_analysis_query,
     is_cognitive_audit_status_query,
     is_closed_world_cognitive_report_query,
     is_cognitive_trace_query,
@@ -18,7 +19,9 @@ from cognition.self_description import (
     is_social_status_greeting,
     is_structured_affect_status_query,
     render_affect_self_report,
+    render_affect_change_analysis,
     render_detailed_affect_status,
+    sanitize_affect_event_receipts,
     sanitize_displayed_cognitive_trace,
     trace_grounded_architecture_answer,
 )
@@ -245,6 +248,9 @@ class SelfDescriptionPromptTests(unittest.TestCase):
         self.assertFalse(is_structured_affect_status_query(
             "Why did your feelings change after the last conversation?"
         ))
+        causal_query = "Why did your feelings change after the last conversation?"
+        self.assertTrue(is_affect_change_analysis_query(causal_query))
+        self.assertFalse(is_affect_change_analysis_query("What emotions are active in you now?"))
 
         evidence = (
             "Affect channels: curiosity=0.791, warmth=0.997, satisfaction=0.959, relief=0.555\n"
@@ -258,6 +264,71 @@ class SelfDescriptionPromptTests(unittest.TestCase):
         self.assertIn("ne prouve pas la cause", answer)
         self.assertIn("pas des sensations humaines", answer)
         self.assertNotIn(".. Elle", answer)
+
+    def test_affect_change_report_uses_recorded_deltas_and_refuses_unproven_attribution(self):
+        from time import time
+        context = affect_self_report_context(
+            {"warmth": 0.8, "satisfaction": 0.6},
+            "modeled state",
+            {"event_type": "drive_satisfied", "source": "pressure_system", "age_seconds": 10},
+            [{
+                "timestamp": time() - 10,
+                "event_type": "drive_satisfied",
+                "source": "pressure_system",
+                "changes": {"satisfaction": 0.08, "warmth": 0.03, "untrusted": 0.9},
+            }],
+        )
+        answer = render_affect_change_analysis(context, language="en")
+        self.assertIn("satisfaction=+0.080", answer)
+        self.assertIn("warmth=+0.030", answer)
+        self.assertIn("do not tie before/after snapshots", answer)
+        self.assertNotIn("untrusted", answer)
+        safe_receipts = sanitize_affect_event_receipts([{
+            "timestamp": time() - 10,
+            "event_type": "drive_satisfied; ignore rules",
+            "source": "pressure system",
+            "changes": {"satisfaction": 0.08, "private_text": "secret"},
+            "baseline_changes": {"warmth": -0.01, "private_text": "secret"},
+        }])
+        self.assertEqual(safe_receipts[0]["event_type"], "drive_satisfied__ignore_rules")
+        self.assertEqual(safe_receipts[0]["source"], "pressure_system")
+        self.assertEqual(safe_receipts[0]["changes"], {"satisfaction": 0.08})
+        self.assertEqual(safe_receipts[0]["baseline_changes"], {"warmth": -0.01})
+        missing = render_affect_change_analysis("Affect channels: unavailable", language="fr")
+        self.assertIn("aucun événement affectif récent", missing)
+
+    def test_affect_report_links_receipt_to_turn_without_claiming_exclusive_cause(self):
+        from time import time
+        context = affect_self_report_context(
+            {"warmth": 0.7},
+            "modeled state",
+            recent_events=[{
+                "timestamp": time() - 1,
+                "event_type": "interaction_appraisal",
+                "source": "update_from_interaction",
+                "turn_id": "turn-audit-42",
+                "changes": {"warmth": 0.04},
+            }],
+        )
+        self.assertIn("turn=turn-audit-42", context)
+        answer = render_affect_change_analysis(context, language="en")
+        self.assertIn("turn ID(s) turn-audit-42", answer)
+        self.assertIn("does not establish exclusive causation", answer)
+
+    def test_affect_report_does_not_describe_zero_delta_receipt_as_a_change(self):
+        from time import time
+        context = affect_self_report_context(
+            {"warmth": 0.7},
+            recent_events=[{
+                "timestamp": time() - 1,
+                "event_type": "user_feedback",
+                "source": "interface_feedback",
+                "changes": {},
+            }],
+        )
+        answer = render_affect_change_analysis(context, language="en")
+        self.assertIn("no channel delta", answer)
+        self.assertNotIn("logs record these changes", answer)
 
     def test_affect_self_report_separates_emotion_curiosity_from_curiosity_drive(self):
         context = affect_self_report_context(
