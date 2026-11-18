@@ -496,6 +496,33 @@ class NarrativeIdentity:
             # Restore arc state — NarrativeArcWriter picks up where it left off
             self._current_arc    = data.get("current_arc",    "")
             self._last_arc_topic = data.get("last_arc_topic", "")
+            # Older versions copied raw user messages into the global life
+            # story and could derive a shared prompt arc from them. Remove
+            # only entries bearing that exact legacy signature and discard
+            # the derived arc so it cannot keep leaking after this upgrade.
+            legacy_chat_titles = {
+                "Question explored", "Reflective exchange", "Continuity recalled",
+                "Deep conversation", "Interaction",
+            }
+            original_count = len(self.life_story)
+            self.life_story = [
+                chapter for chapter in self.life_story
+                if not (
+                    chapter.title in legacy_chat_titles
+                    and chapter.description.startswith("User:")
+                )
+            ]
+            removed_legacy_chats = len(self.life_story) != original_count
+            if removed_legacy_chats:
+                self._current_arc = ""
+                self._last_arc_topic = ""
+                self._narrative_stale = True
+                self._save()
+                logger.warning(
+                    "[NarrativeIdentity] removed %d legacy user-chat chapter(s) "
+                    "from global identity and cleared their derived arc",
+                    original_count - len(self.life_story),
+                )
             logger.info(
                 f"[NarrativeIdentity] loaded: {len(self.life_story)} chapters, "
                 f"{len(self.beliefs)} beliefs, {len(self.milestones)} milestones, "

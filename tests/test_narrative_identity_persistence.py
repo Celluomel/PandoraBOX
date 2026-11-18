@@ -1,3 +1,5 @@
+import json
+
 from cognition.narrative_identity import NarrativeIdentity
 
 
@@ -22,3 +24,36 @@ def test_record_chapter_atomically_persists_and_can_be_reloaded(tmp_path):
     restored = NarrativeIdentity(None, path=str(path))
     assert len(restored.life_story) == 1
     assert restored.life_story[0].title == "Resolved a question"
+
+
+def test_load_removes_legacy_user_chat_from_global_identity_and_arc(tmp_path):
+    path = tmp_path / "identity.json"
+    path.write_text(json.dumps({
+        "life_story": [
+            {
+                "timestamp": 1.0,
+                "title": "Reflective exchange",
+                "description": "User: private-profile-only phrase",
+                "emotion": "curious",
+                "significance": 0.7,
+            },
+            {
+                "timestamp": 2.0,
+                "title": "Internal reflection",
+                "description": "A global self-observation.",
+                "emotion": "curious",
+                "significance": 0.6,
+            },
+        ],
+        "current_arc": "Shared themes include private-profile-only phrase.",
+        "last_arc_topic": "private-profile-only phrase",
+    }), encoding="utf-8")
+
+    identity = NarrativeIdentity(None, path=str(path))
+
+    assert [chapter.title for chapter in identity.life_story] == ["Internal reflection"]
+    assert identity._current_arc == ""
+    assert identity._last_arc_topic == ""
+    persisted = path.read_text(encoding="utf-8")
+    assert "private-profile-only phrase" not in persisted
+
