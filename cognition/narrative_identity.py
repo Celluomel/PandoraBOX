@@ -188,6 +188,13 @@ class NarrativeIdentity:
                 self._narrative_stale = True
                 self._save()
 
+    def global_chapters(self) -> List[LifeChapter]:
+        """Return only explicitly global, internally sourced chapters."""
+        return [
+            chapter for chapter in self.life_story
+            if getattr(chapter, "scope", "interaction_context") == "global_internal"
+        ]
+
     def add_milestone(self, name: str, description: str) -> None:
         """Record a one-time milestone (first dream, 100th conversation, etc.)."""
         with self._lock:
