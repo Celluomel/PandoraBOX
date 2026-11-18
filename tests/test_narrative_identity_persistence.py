@@ -47,6 +47,11 @@ def test_load_removes_legacy_user_chat_from_global_identity_and_arc(tmp_path):
         ],
         "current_arc": "Shared themes include private-profile-only phrase.",
         "last_arc_topic": "private-profile-only phrase",
+        "milestones": [
+            {"name": "world_model_250_topics", "description": "profile data", "timestamp": 3.0},
+            {"name": "deep_relationship", "description": "profile data", "timestamp": 4.0},
+            {"name": "interaction_10", "description": "global count", "timestamp": 5.0},
+        ],
     }), encoding="utf-8")
 
     identity = NarrativeIdentity(None, path=str(path))
@@ -54,6 +59,8 @@ def test_load_removes_legacy_user_chat_from_global_identity_and_arc(tmp_path):
     assert [chapter.title for chapter in identity.life_story] == ["Internal reflection"]
     assert identity._current_arc == ""
     assert identity._last_arc_topic == ""
+    assert [m["name"] for m in identity.milestones] == ["interaction_10"]
     persisted = path.read_text(encoding="utf-8")
     assert "private-profile-only phrase" not in persisted
+    assert "deep_relationship" not in persisted
 

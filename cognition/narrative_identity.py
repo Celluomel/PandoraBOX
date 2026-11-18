@@ -513,15 +513,27 @@ class NarrativeIdentity:
                 )
             ]
             removed_legacy_chats = len(self.life_story) != original_count
-            if removed_legacy_chats:
-                self._current_arc = ""
-                self._last_arc_topic = ""
+            legacy_profile_milestones = {
+                "world_model_50_topics", "world_model_100_topics",
+                "world_model_250_topics", "deep_relationship",
+            }
+            original_milestone_count = len(self.milestones)
+            self.milestones = [
+                milestone for milestone in self.milestones
+                if milestone.get("name") not in legacy_profile_milestones
+            ]
+            removed_profile_milestones = len(self.milestones) != original_milestone_count
+            if removed_legacy_chats or removed_profile_milestones:
+                if removed_legacy_chats:
+                    self._current_arc = ""
+                    self._last_arc_topic = ""
                 self._narrative_stale = True
                 self._save()
                 logger.warning(
                     "[NarrativeIdentity] removed %d legacy user-chat chapter(s) "
-                    "from global identity and cleared their derived arc",
+                    "and %d profile-derived milestone(s) from global identity",
                     original_count - len(self.life_story),
+                    original_milestone_count - len(self.milestones),
                 )
             logger.info(
                 f"[NarrativeIdentity] loaded: {len(self.life_story)} chapters, "
