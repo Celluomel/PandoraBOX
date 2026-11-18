@@ -16,6 +16,7 @@ sys.modules.setdefault("cognition", package)
 
 import cognition.ai_system as ai_system_module
 from cognition.ai_system import EnhancedMemorySystem, EnhancedPersistence
+from cognition.ai_system import retrieve_memories_for_user
 from cognition.memory_retrieval import (
     extract_explicit_recall_topic,
     explicit_recall_source_result,
@@ -170,6 +171,127 @@ class MemorySystemFallbackTests(unittest.TestCase):
         import threading
         system._lock = threading.RLock()
         return system
+
+    def test_persisted_memory_scope_isolates_users_and_quarantines_legacy_dialogue(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as folder:
+            persistence = EnhancedPersistence(SimpleNamespace(
+                name=str(Path(folder) / "memory.sqlite3"), timeout=5.0,
+                check_same_thread=False, max_backups=2,
+            ))
+            entries = [
+                ("Fred private statement", "user_message", "interaction", "fred"),
+                ("Other private statement", "user_message", "interaction", "other"),
+                ("Legacy unowned statement", "episodic", "interaction", None),
+                ("Shared cognitive principle", "principle", "cognitive", None),
+            ]
+            for text, memory_type, tier, owner in entries:
+                assert persistence.add_memory({
+                    "text": text, "timestamp": datetime.now().isoformat(),
+                    "impact_score": 0.5, "emotional_valence": "Neutral",
+                    "arousal_level": "Low", "memory_type": memory_type,
+                    "memory_tier": tier, "owner_user_id": owner,
+                    "access_count": 0, "last_accessed": datetime.now().isoformat(),
+                    "semantic_hash": ai_system_module.generate_semantic_hash(text, owner),
+                }) is not None
+
+            fred_rows = persistence.get_all_memories(owner_user_id="fred")
+            fred_texts = {row["text"] for row in fred_rows}
+            self.assertIn("Fred private statement", fred_texts)
+            self.assertNotIn("Shared cognitive principle", fred_texts)
+            self.assertNotIn("Other private statement", fred_texts)
+            self.assertNotIn("Legacy unowned statement", fred_texts)
+            scoped_system = EnhancedMemorySystem.__new__(EnhancedMemorySystem)
+            scoped_system.persistence = persistence
+            scoped_system.config = SimpleNamespace(max_memory_retrieval=8)
+            scoped_system.embedding_model = None
+            scoped_system.faiss_index = None
+            scoped_system.embedding_dim = 3
+            retrieved = scoped_system.retrieve_memories(
+                "private statement", owner_user_id="fred",
+            )
+            self.assertEqual([row["text"] for row in retrieved], ["Fred private statement"])
+            self.assertEqual(
+                [row["text"] for row in persistence.get_conversation_source_memories(
+                    owner_user_id="fred"
+                )],
+                ["Fred private statement"],
+            )
+            self.assertEqual(
+                {row["text"] for row in persistence.get_memories_by_ids(
+                    [1, 2, 3, 4], owner_user_id="fred"
+                )},
+                {"Fred private statement"},
+            )
+            self.assertNotEqual(
+                ai_system_module.generate_semantic_hash("same fact", "fred"),
+                ai_system_module.generate_semantic_hash("same fact", "other"),
+            )
+            persistence.close_thread_connection()
+
+    def test_user_scope_is_enforced_for_legacy_memory_adapters(self):
+        class LegacyAdapter:
+            def retrieve_memories(self, query, limit=None):
+                return [
+                    {"text": "Fred fact", "owner_user_id": "fred"},
+                    {"text": "Other user's fact", "owner_user_id": "other"},
+                    {"text": "Legacy ownerless fact", "owner_user_id": None},
+                ]
+
+        rows = retrieve_memories_for_user(LegacyAdapter(), "fact", "fred", limit=3)
+        self.assertEqual([row["text"] for row in rows], ["Fred fact"])
+
+    def test_legacy_database_migration_adds_owner_without_claiming_old_dialogue(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as folder:
+            db_path = Path(folder) / "legacy.sqlite3"
+            connection = sqlite3.connect(db_path)
+            connection.execute("""
+                CREATE TABLE memories (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, faiss_id INTEGER UNIQUE,
+                    text TEXT NOT NULL, timestamp TEXT NOT NULL, impact_score REAL,
+                    emotional_valence TEXT, arousal_level TEXT, memory_type TEXT,
+                    memory_tier TEXT, access_count INTEGER, last_accessed TEXT,
+                    semantic_hash TEXT UNIQUE, created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            connection.execute(
+                "INSERT INTO memories (faiss_id,text,timestamp,memory_type,memory_tier,semantic_hash) "
+                "VALUES (1,'User message: legacy secret','2026-11-01','user_message','interaction','legacy-hash')"
+            )
+            connection.commit()
+            connection.close()
+
+            persistence = EnhancedPersistence(SimpleNamespace(
+                name=str(db_path), timeout=5.0,
+                check_same_thread=False, max_backups=2,
+            ))
+            with persistence.get_connection() as conn:
+                columns = {
+                    row[1] for row in conn.execute("PRAGMA table_info(memories)").fetchall()
+                }
+            self.assertIn("owner_user_id", columns)
+            self.assertEqual(
+                persistence.get_conversation_source_memories(owner_user_id="fred"), []
+            )
+            persistence.close_thread_connection()
+
+    def test_personal_tier_recall_requires_matching_owner(self):
+        system = self._system()
+        system.persistence.rows = [
+            {"id": 1, "faiss_id": 1, "text": "Fred's family fact", "timestamp": datetime.now().isoformat(),
+             "impact_score": 0.9, "memory_type": "personal_fact", "memory_tier": "personal",
+             "owner_user_id": "fred"},
+            {"id": 2, "faiss_id": 2, "text": "Other user's family fact", "timestamp": datetime.now().isoformat(),
+             "impact_score": 0.9, "memory_type": "personal_fact", "memory_tier": "personal",
+             "owner_user_id": "other"},
+        ]
+
+        assert [row["id"] for row in system.retrieve_by_tier(
+            "family fact", "personal", owner_user_id="fred",
+        )] == [1]
 
     def test_persisted_faiss_index_must_match_unique_database_ids(self):
         system = self._system()
@@ -1012,7 +1134,8 @@ class MemorySystemFallbackTests(unittest.TestCase):
             CREATE TABLE memories (
                 id INTEGER, faiss_id INTEGER, text TEXT, timestamp TEXT,
                 impact_score REAL, emotional_valence TEXT, arousal_level TEXT,
-                memory_type TEXT, memory_tier TEXT, access_count INTEGER
+                memory_type TEXT, memory_tier TEXT, access_count INTEGER,
+                owner_user_id TEXT
             )
         """)
         records = [
@@ -1025,7 +1148,8 @@ class MemorySystemFallbackTests(unittest.TestCase):
             (4, 4, "Assistant: valeur du capteur reçue", "2026-11-04", 0.5,
              "Neutral", "Low", "assistant_message", "interaction", 0),
         ]
-        connection.executemany("INSERT INTO memories VALUES (?,?,?,?,?,?,?,?,?,?)", records)
+        records = [record + (None,) for record in records]
+        connection.executemany("INSERT INTO memories VALUES (?,?,?,?,?,?,?,?,?,?,?)", records)
 
         @contextmanager
         def get_connection():
@@ -1163,3 +1287,4 @@ class MemorySystemFallbackTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

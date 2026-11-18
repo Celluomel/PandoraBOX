@@ -1,5 +1,5 @@
-Warning: truncated output (original token count: 128429)
-Total output lines: 9258
+Warning: truncated output (original token count: 128517)
+Total output lines: 9266
 
 """
 Persona Bridge
@@ -1260,7 +1260,7 @@ class PersonaBridge:
                 if deterministic_safety_block_path:
                     required_stages = (
                         ("readiness", {"passed"}),
-                        ("input_safety", {"blocked", "f…98429 tokens truncated…      if self._is_goal_persistence_verification(user_text):
+                        ("input_safety", {"blocked", "f…98517 tokens truncated…      if self._is_goal_persistence_verification(user_text):
             return self._goal_persistence_status(user_text)
         return None
 

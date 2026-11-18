@@ -859,7 +859,9 @@ def test_post_response_processing_reports_actual_memory_write_results():
 
 
 def test_post_response_processing_treats_existing_identical_user_memory_as_deduplicated():
-    duplicate_hash = generate_semantic_hash("User message: ordinary user message")
+    duplicate_hash = generate_semantic_hash(
+        "User message: ordinary user message", "user-a",
+    )
 
     class Persistence:
         def has_memory_hash(self, semantic_hash):
