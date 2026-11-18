@@ -443,9 +443,11 @@ class NarrativeIdentity:
             logger.debug(f"[NarrativeIdentity] arc regen error: {e}")
 
     def summary(self) -> Dict:
+        global_chapter_count = len(self.global_chapters())
         return {
             "age_seconds":    int(time.time() - self._birth_time),
-            "chapters":       len(self.life_story),
+            "chapters":       global_chapter_count,
+            "contextual_chapters": len(self.life_story) - global_chapter_count,
             "beliefs":        len(self.beliefs),
             "milestones":     len(self.milestones),
             "core_values":    self.core_values[:3],

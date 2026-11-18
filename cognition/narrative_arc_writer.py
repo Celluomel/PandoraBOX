@@ -347,7 +347,12 @@ class NarrativeArcWriter:
         if narrative_identity is None:
             return ""
 
-        chapters = getattr(narrative_identity, "life_story", [])
+        chapters = (
+            narrative_identity.global_chapters()
+            if hasattr(narrative_identity, "global_chapters")
+            else [c for c in getattr(narrative_identity, "life_story", [])
+                  if getattr(c, "scope", "interaction_context") == "global_internal"]
+        )
         if not chapters:
             return ""
 

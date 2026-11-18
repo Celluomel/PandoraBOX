@@ -1405,7 +1405,7 @@ async def main_page():
                         if _arc:
                             _parts.append(f"Last narrative arc: {_arc}")
                         _chapters = sorted(
-                            getattr(_ni, 'life_story', []),
+                            _global_chapters,
                             key=lambda c: c.significance, reverse=True
                         )[:2]
                         for _c in _chapters:

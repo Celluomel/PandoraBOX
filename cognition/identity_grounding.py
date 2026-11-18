@@ -168,7 +168,12 @@ class IdentityGrounding:
             pass
         try:
             narrative = getattr(self._organism, "narrative_identity", None)
-            chapters = list(getattr(narrative, "life_story", []) or [])[-8:]
+            chapters = (
+                narrative.global_chapters() if hasattr(narrative, "global_chapters") else [
+                    chapter for chapter in (getattr(narrative, "life_story", []) or [])
+                    if getattr(chapter, "scope", "interaction_context") == "global_internal"
+                ]
+            )[-8:]
             ev["narrative_chapters"] = [
                 chapter.to_dict() if hasattr(chapter, "to_dict") else dict(chapter)
                 for chapter in chapters

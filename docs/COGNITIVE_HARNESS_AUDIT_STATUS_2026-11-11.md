@@ -4301,3 +4301,12 @@ La revue du flux profil → self-model a confirmé une contamination causale ent
 **Migration des anciennes données globales :** le chargement de `NarrativeIdentity` reconnaît maintenant la signature exacte des anciens chapitres de chat (`User:` avec l’un des titres générés par l’ancien `_post_interaction`), les retire de l’identité globale et vide l’arc dérivé de ces chapitres avant toute réinjection. Les autres chapitres autonomes sont conservés. Test de migration ajouté; le groupe ciblé est maintenant à **104 tests passés**, 6 sous-tests, 9 avertissements connus.
 
 **Nettoyage des jalons historiques :** la même migration retire les jalons globaux anciens issus d’un profil (`world_model_50/100/250_topics`, `deep_relationship`) tout en préservant les jalons globaux valides comme `interaction_10`. Le test vérifie la persistance après migration, pas seulement l’état en mémoire.
+
+
+### 18 novembre — portée explicite des chapitres narratifs
+
+Le cloisonnement du profil révélait encore une voie indirecte : même après suppression des extraits de messages dans `_post_interaction`, des chapitres contextuels déjà présents pouvaient être relus par l’arc narratif, la préanalyse, le grounding d’identité, la motivation, le PhenomenalBinder, la compression narrative, la synchronisation du self-concept, le réveil du tableau de bord et l’import de mémoire depuis les paramètres.
+
+**Correction :** chaque `LifeChapter` porte désormais une portée, par défaut `interaction_context`. Seuls les chapitres marqués explicitement `global_internal` alimentent la narration et les surfaces d’identité globales. Le changement de stade de vie, produit par le système interne, est marqué explicitement global. Le résumé distingue chapitres globaux et contextuels. Les arcs historiques sont vidés au chargement puis reconstruits uniquement à partir de chapitres globaux; les anciennes entrées sans provenance sûre restent contextuelles.
+
+**Vérification hors ligne :** deux tests ajoutés couvrent l’exclusion des chapitres contextuels de l’identité/arc et l’acceptation d’un chapitre interne explicitement global. Le test de migration vérifie aussi que les données anciennes non attribuables ne deviennent pas globales. Groupe ciblé : **106 tests passés**, 9 avertissements préexistants, 6 sous-tests; compilation des modules modifiés réussie. Cela confirme le filtrage logiciel, pas encore le comportement d’un processus Lumina en direct. L’audit reste à **3/10** jusqu’à un rejeu live et aux scénarios cognitifs représentatifs.

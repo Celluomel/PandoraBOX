@@ -441,7 +441,10 @@ class PhenomenalBinder:
         # Narrative chapter (recent self-story)
         try:
             ni = organism.narrative_identity
-            chapters = ni.life_story[-1:] if ni.life_story else []
+            chapters = ni.global_chapters()[-1:] if hasattr(ni, "global_chapters") else [
+                chapter for chapter in ni.life_story
+                if getattr(chapter, "scope", "interaction_context") == "global_internal"
+            ][-1:]
             signals["recent_chapter"] = chapters[0].title if chapters else ""
         except Exception:
             signals["recent_chapter"] = ""

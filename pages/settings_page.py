@@ -602,7 +602,9 @@ async def settings_page(tab: str = 'llm'):
                                         if arc:
                                             chunks.append(f'Current narrative arc: {arc}')
                                         for entry in ni.get('life_story', [])[:60]:
-                                            desc = entry.get('description', '') if isinstance(entry, dict) else str(entry)
+                                            if not isinstance(entry, dict) or entry.get('scope', 'interaction_context') != 'global_internal':
+                                                continue
+                                            desc = entry.get('description', '')
                                             if desc and len(desc) > 10:
                                                 chunks.append(f'Life event: {desc}')
                                         for b in (ni.get('beliefs', []) or [])[:20]:

@@ -735,7 +735,12 @@ class MotivationalField:
                 return needs
 
             # Check narrative arc staleness
-            life_story = getattr(ni, 'life_story', [])
+            life_story = (
+                ni.global_chapters() if hasattr(ni, 'global_chapters') else [
+                    chapter for chapter in getattr(ni, 'life_story', [])
+                    if getattr(chapter, 'scope', 'interaction_context') == 'global_internal'
+                ]
+            )
             chapter_age_str = ""
             if life_story:
                 latest_chapter = max(

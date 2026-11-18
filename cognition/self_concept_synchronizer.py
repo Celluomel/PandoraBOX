@@ -461,6 +461,8 @@ class SelfConceptSynchronizer:
         for entry in life_story:
             if not isinstance(entry, dict):
                 continue
+            if entry.get("scope", "interaction_context") != "global_internal":
+                continue
             title = entry.get('title', '')
             desc  = str(entry.get('description', ''))
             ts    = entry.get('timestamp', 0)

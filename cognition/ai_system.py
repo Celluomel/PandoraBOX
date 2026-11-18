@@ -2239,6 +2239,7 @@ Write a first-person journal reflection (2-4 sentences)."""},
                             ),
                             emotion      = "reflective",
                             significance = 0.85,
+                            scope        = "global_internal",
                         )
             except Exception:
                 pass

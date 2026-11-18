@@ -88,3 +88,62 @@ def test_post_interaction_does_not_store_user_text_in_global_narrative():
 
     organism.narrative_identity.record_chapter.assert_not_called()
     organism.narrative_identity.check_auto_milestones.assert_called_once_with(4)
+
+
+def test_contextual_chapters_do_not_enter_global_identity_or_arc(tmp_path):
+    identity = NarrativeIdentity(SimpleNamespace(), path=str(tmp_path / "identity.json"))
+    identity.record_chapter(
+        "User topic", "private-profile phrase that must not enter the global prompt"
+    )
+    identity._current_arc = "The private-profile phrase is the current global arc."
+
+    assert identity.global_chapters() == []
+    assert "private-profile" not in identity.prompt_fragment()
+    assert "private-profile" not in identity.self_description()
+
+    from cognition.narrative_arc_writer import NarrativeArcWriter
+
+    assert NarrativeArcWriter().synthesise_arc(identity) == ""
+
+
+def test_explicit_global_chapter_is_available_for_identity_context(tmp_path):
+    identity = NarrativeIdentity(SimpleNamespace(), path=str(tmp_path / "identity.json"))
+    identity.record_chapter(
+        "Internal milestone", "A verified internal transition.",
+        significance=0.9, scope="global_internal",
+    )
+
+    assert [chapter.title for chapter in identity.global_chapters()] == ["Internal milestone"]
+    assert "Internal milestone" in identity.self_description()
+
+
+def test_post_interaction_does_not_store_user_text_in_global_narrative():
+    organism = Mock()
+    organism.ai_system._interaction_count = 4
+    organism.narrative_identity = Mock()
+    organism._loop = SimpleNamespace(
+        _world_self_dynamics=None,
+        _resource_economy=None,
+        _consequence_model=None,
+        _auto_experiment=None,
+    )
+    organism.energy.mode.return_value = "normal"
+    organism.energy.level.return_value = 0.7
+    organism.ai_system.emotional_state.overall_arousal = 0.3
+    organism.meta_cognition.post_response_eval.return_value = None
+    organism.homeostasis.last_report.return_value = None
+    organism.workspace = object()
+    organism._semantic_extractor = Mock()
+
+    CognitiveOrganism._post_interaction(
+        organism,
+        user_input="Our private topic should stay in its profile and never become Lumina's global identity.",
+        response="A response long enough to resemble a significant exchange and test the global narrative write path.",
+        cycle_data={"emo_values": {}},
+        decision=None,
+        turn_id="profile-isolation-turn",
+    )
+
+    organism.narrative_identity.record_chapter.assert_not_called()
+    organism.narrative_identity.check_auto_milestones.assert_called_once_with(4)
+

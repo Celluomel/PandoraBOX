@@ -215,7 +215,7 @@ class CognitivePreProcessor:
 
             # 2. Three most significant chapters with age labels
             chapters = sorted(
-                getattr(ni, "life_story", []),
+                chapters,
                 key=lambda c: c.significance,
                 reverse=True
             )[:3]

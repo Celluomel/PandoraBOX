@@ -170,7 +170,12 @@ class NarrativeCompression:
             ni = getattr(self._organism, 'narrative_identity', None)
             if not ni or not hasattr(ni, 'life_story'):
                 return {"outcome_status": "skipped", "reason_code": "identity_unavailable", "chapter_count": 0}
-            chapters = list(ni.life_story)
+            chapters = list(
+                ni.global_chapters() if hasattr(ni, 'global_chapters') else [
+                    chapter for chapter in ni.life_story
+                    if getattr(chapter, 'scope', 'interaction_context') == 'global_internal'
+                ]
+            )
             if len(chapters) < MIN_CHAPTERS:
                 return {"outcome_status": "skipped", "reason_code": "insufficient_chapters", "chapter_count": len(chapters)}
 
