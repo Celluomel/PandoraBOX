@@ -261,7 +261,7 @@ class Phase1Orchestrator:
                 raw_goal_suggestions
             )
             rejected_origins = {
-                str(item.get("origin_thought") or "")
+                str(item.get("origin_thought_ref") or "")
                 for item in rejected_goal_suggestions if isinstance(item, dict)
             }
             evaluator = self.components.get("thought_evaluator")

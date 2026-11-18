@@ -4264,3 +4264,7 @@ Un audit indépendant du chemin mémoire/profil a trouvé quatre points. (1) Les
 
 **Progression globale :** **3/10 (30 %)** selon le barème strict : les preuves hors ligne et quelques scénarios live ont fermé des chemins ciblés, mais la revue du reviewer affectif, des effets aval, du rappel interutilisateur et des autres scénarios représentatifs reste incomplète. Le compteur 3/10 n’augmente pas au seul motif qu’un patch ou des tests unitaires passent.
 
+### Contrôle post-push — fermeture des propositions rejetées
+
+La revue du code après le commit `231d69e` a détecté une erreur dans le raccord entre le reçu de rejet et la pensée source : le filtre lisait `origin_thought`, alors que la porte de qualité émet `origin_thought_ref`. Les propositions perdant la compétition étaient bien conservées, mais celles rejetées par cette porte pouvaient rester à tort `pending`. Le raccord lit maintenant la clé réellement produite et le test du cycle Phase1 vérifie que `low_quality_topic` est persisté comme rejet terminal. Le lot `test_selected_thought_goal_pipeline` + `test_thought_evaluator_persistence` passe (**23 tests**); compilation des trois modules et `git diff --check` passent. Cette correction doit être publiée après le commit `231d69e`.
+

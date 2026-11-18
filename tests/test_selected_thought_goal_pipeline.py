@@ -103,10 +103,19 @@ def test_enhanced_cycle_competes_only_admissible_goal_proposals():
         def thought_proposal_rejection_reason(self, topic):
             return "low_quality_topic" if topic == "notice pull toward" else None
 
+    class _Evaluator:
+        def __init__(self):
+            self.rejected = []
+
+        def record_proposal_rejection(self, thought_id, reason):
+            self.rejected.append((thought_id, reason))
+            return True
+
     phase1 = Phase1Orchestrator.__new__(Phase1Orchestrator)
     workspace = _Workspace()
+    evaluator = _Evaluator()
     phase1._global_workspace = None
-    phase1.components = {"workspace": workspace}
+    phase1.components = {"workspace": workspace, "thought_evaluator": evaluator}
     phase1.goal_engine = _GoalEngine()
     phase1.cycle_count = 4
     phase1.gather_perception = lambda _input: {}
@@ -126,6 +135,7 @@ def test_enhanced_cycle_competes_only_admissible_goal_proposals():
     proposal_topics = [item["topic"] for item in workspace.seen_thoughts]
     assert proposal_topics == ["grounded perception"]
     assert result["rejected_goal_suggestions"][0]["reason"] == "low_quality_topic"
+    assert evaluator.rejected == [("noise", "low_quality_topic")]
 
 
 def test_enhanced_cycle_can_skip_unconsumed_advisory_plan():
@@ -422,3 +432,4 @@ def test_failed_workspace_cycle_publishes_an_explicit_empty_focus():
         "topic": "",
         "score": 0.0,
     }
+
