@@ -1034,3 +1034,4 @@ class EmotionalStateManager:
             logger.info(f"Emotional state loaded ({len(self.emotions)} emotions)")
         except Exception as e:
             logger.error(f"EmotionalState load failed: {e}")
+

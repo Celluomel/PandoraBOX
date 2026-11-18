@@ -104,6 +104,20 @@ class SimpleThoughtEvaluator:
 
         for thought in thoughts:
             if thought.get('evaluated', False):
+                stored_evaluation = thought.get("evaluation", {})
+                stored_proposal = (
+                    stored_evaluation.get("goal_proposal")
+                    if isinstance(stored_evaluation, dict) else None
+                )
+                # Evaluation and arbitration are separate lifecycle stages. A
+                # proposal that lost workspace competition remains durable and
+                # is re-emitted without re-running the evaluator/LLM.
+                if (
+                    isinstance(stored_proposal, dict)
+                    and stored_proposal.get("status", "pending") == "pending"
+                ):
+                    self._merge_proposal(suggestions_by_concept, stored_proposal)
+                    continue
                 evaluated_at = thought.get('evaluated_at', '')
                 try:
                     from datetime import timezone
@@ -127,6 +141,7 @@ class SimpleThoughtEvaluator:
                 continue
             
             if evaluation:
+                stored_proposal = None
                 if evaluation['should_create_goal']:
                     if not self._has_existing_goal(goals_data, evaluation['concept']):
                         _concept_key = " ".join(
@@ -155,24 +170,12 @@ class SimpleThoughtEvaluator:
                                 if evaluation.get('hypothesis_pending') else evaluation['concept']
                             ),
                         }
-                        previous = suggestions_by_concept.get(_concept_key)
-                        if previous is None:
-                            suggestions_by_concept[_concept_key] = suggestion
-                        else:
-                            previous['priority'] = max(previous['priority'], suggestion['priority'])
-                            previous['actionability'] = max(
-                                previous['actionability'], suggestion['actionability']
-                            )
-                            previous['hypothesis_pending'] |= suggestion['hypothesis_pending']
-                            previous['supporting_thought_ids'].extend(
-                                suggestion['supporting_thought_ids']
-                            )
-                            previous.setdefault('supporting_thought_provenance', []).append({
-                                'id': suggestion['origin_thought'],
-                                'source': suggestion['origin_thought_source'],
-                                'type': suggestion['origin_thought_type'],
-                                'timestamp': suggestion['origin_thought_timestamp'],
-                            })
+                        suggestion["proposal_id"] = self._proposal_id(
+                            suggestion.get("origin_thought"), suggestion.get("concept")
+                        )
+                        suggestion["status"] = "pending"
+                        stored_proposal = dict(suggestion)
+                        self._merge_proposal(suggestions_by_concept, suggestion)
                 
                 thought['evaluated'] = True
                 thought['evaluated_at'] = datetime.now().isoformat()
@@ -181,7 +184,8 @@ class SimpleThoughtEvaluator:
                     'concept': evaluation['concept'],
                     'priority': evaluation['priority'],
                     'actionability': evaluation.get('actionability', 0.5),
-                    'conceptual_friction': evaluation.get('friction', '')
+                    'conceptual_friction': evaluation.get('friction', ''),
+                    **({"goal_proposal": stored_proposal} if stored_proposal else {}),
                 }
                 evaluated_thoughts.append(thought)
 
@@ -222,6 +226,10 @@ class SimpleThoughtEvaluator:
                     # Compatibility for older DataAccess adapters; the real
                     # DAL implements update_thought to avoid duplicate rows.
                     _dal.add_thought(thought)
+            if self.thought_stream is not None:
+                flush = getattr(self.thought_stream, "flush", None)
+                if callable(flush):
+                    flush()
         else:
             import os
             if isinstance(thoughts_data, dict):
@@ -266,6 +274,135 @@ class SimpleThoughtEvaluator:
         print(f"   🎯 Generated {len(suggestions)} distinct goal proposals")
         
         return suggestions
+
+    @staticmethod
+    def _proposal_id(origin_thought: Any, concept: Any) -> str:
+        """Stable, content-minimal identifier for a source thought's proposal."""
+        payload = f"{str(origin_thought or '')}\0{' '.join(str(concept or '').casefold().split())}"
+        return "gpr_" + hashlib.sha256(payload.encode("utf-8")).hexdigest()[:20]
+
+    @staticmethod
+    def _merge_proposal(suggestions_by_concept: Dict[str, Dict], proposal: Dict) -> None:
+        concept = " ".join(
+            str(proposal.get("concept") or "").replace("_", " ").casefold().split()
+        )
+        if not concept:
+            return
+        previous = suggestions_by_concept.get(concept)
+        if previous is None:
+            suggestions_by_concept[concept] = dict(proposal)
+            return
+        previous["priority"] = max(float(previous.get("priority", 0)), float(proposal.get("priority", 0)))
+        previous["actionability"] = max(
+            float(previous.get("actionability", 0)), float(proposal.get("actionability", 0))
+        )
+        previous["hypothesis_pending"] = bool(
+            previous.get("hypothesis_pending") or proposal.get("hypothesis_pending")
+        )
+        ids = list(previous.get("supporting_thought_ids") or [])
+        ids.extend(proposal.get("supporting_thought_ids") or [])
+        previous["supporting_thought_ids"] = list(dict.fromkeys(str(item) for item in ids if item))
+
+    def record_proposal_disposition(
+        self, proposal: Dict, status: str, *, cycle: int | None = None, reason: str = "",
+    ) -> int:
+        """Persist a terminal disposition on each source thought that proposed it."""
+        allowed = {"committed", "satisfied", "rejected"}
+        if not isinstance(proposal, dict) or status not in allowed:
+            return 0
+        ids = proposal.get("supporting_thought_ids") or [proposal.get("origin_thought")]
+        ids = {str(item) for item in ids if item}
+        if not ids:
+            return 0
+        if self.thought_stream is not None:
+            flush = getattr(self.thought_stream, "flush", None)
+            if callable(flush):
+                flush()
+        try:
+            from core.data.access import DataAccess
+            dal = DataAccess(str(self.persona_dir))
+            thoughts = dal.get_thoughts(skip_expired=False)
+        except Exception:
+            return 0
+        now = datetime.now().isoformat()
+        updated = 0
+        for thought in thoughts:
+            if not isinstance(thought, dict) or str(thought.get("id") or "") not in ids:
+                continue
+            evaluation = thought.get("evaluation")
+            if not isinstance(evaluation, dict):
+                evaluation = {}
+            pending = evaluation.get("goal_proposal")
+            if not isinstance(pending, dict) or pending.get("status", "pending") != "pending":
+                continue
+            pending = dict(pending)
+            pending.update({
+                "status": status,
+                "resolved_at": now,
+                "resolved_cycle": int(cycle) if cycle is not None else None,
+                "reason_code": str(reason or status)[:80],
+            })
+            evaluation = dict(evaluation)
+            evaluation["goal_proposal"] = pending
+            thought["evaluation"] = evaluation
+            if dal.update_thought(thought):
+                updated += 1
+            if self.thought_stream is not None:
+                mark_evaluated = getattr(self.thought_stream, "mark_evaluated", None)
+                if callable(mark_evaluated):
+                    mark_evaluated(
+                        str(thought.get("id") or ""), evaluation,
+                        str(thought.get("evaluated_at") or now),
+                    )
+        if updated and self.thought_stream is not None:
+            flush = getattr(self.thought_stream, "flush", None)
+            if callable(flush):
+                flush()
+        return updated
+
+    def record_proposal_rejection(self, origin_thought_id: str, reason: str) -> bool:
+        """Close a proposal rejected by the pre-arbitration quality gate."""
+        origin_thought_id = str(origin_thought_id or "")
+        if not origin_thought_id:
+            return False
+        if self.thought_stream is not None:
+            flush = getattr(self.thought_stream, "flush", None)
+            if callable(flush):
+                flush()
+        try:
+            from core.data.access import DataAccess
+            dal = DataAccess(str(self.persona_dir))
+            thoughts = dal.get_thoughts(skip_expired=False)
+        except Exception:
+            return False
+        for thought in thoughts:
+            if not isinstance(thought, dict) or str(thought.get("id") or "") != origin_thought_id:
+                continue
+            evaluation = thought.get("evaluation")
+            if not isinstance(evaluation, dict):
+                return False
+            proposal = evaluation.get("goal_proposal")
+            if not isinstance(proposal, dict) or proposal.get("status", "pending") != "pending":
+                return False
+            proposal = dict(proposal)
+            proposal.update({
+                "status": "rejected",
+                "resolved_at": datetime.now().isoformat(),
+                "reason_code": str(reason or "quality_gate_rejected")[:80],
+            })
+            evaluation = dict(evaluation)
+            evaluation["goal_proposal"] = proposal
+            thought["evaluation"] = evaluation
+            persisted = bool(dal.update_thought(thought))
+            if persisted and self.thought_stream is not None:
+                mark = getattr(self.thought_stream, "mark_evaluated", None)
+                if callable(mark):
+                    mark(origin_thought_id, evaluation, str(thought.get("evaluated_at") or ""))
+                flush = getattr(self.thought_stream, "flush", None)
+                if callable(flush):
+                    flush()
+            return persisted
+        return False
     
     def _evaluate_thought(self, thought: Dict) -> Dict[str, Any]:
         text = (thought.get('content') or thought.get('text') or '').lower()
@@ -552,3 +689,4 @@ class SimpleThoughtEvaluator:
 if __name__ == "__main__":
     evaluator = SimpleThoughtEvaluator('data/persona')
     evaluator.evaluate_recent_thoughts()
+

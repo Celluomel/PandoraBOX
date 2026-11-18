@@ -330,6 +330,23 @@ class SelfDescriptionPromptTests(unittest.TestCase):
         self.assertIn("no channel delta", answer)
         self.assertNotIn("logs record these changes", answer)
 
+    def test_affect_report_separates_baseline_recalibration_from_current_affect_change(self):
+        from time import time
+        context = affect_self_report_context(
+            {"warmth": 0.7},
+            recent_events=[{
+                "timestamp": time() - 1,
+                "event_type": "baseline_recalibration",
+                "source": "personality_recalibration",
+                "baseline_changes": {"warmth": 0.02},
+                "changes": {},
+            }],
+        )
+        answer = render_affect_change_analysis(context, language="en")
+        self.assertIn("affect baseline recalibration", answer)
+        self.assertIn("record no change to current affect channels", answer)
+        self.assertNotIn("changes in modeled channels", answer)
+
     def test_affect_self_report_separates_emotion_curiosity_from_curiosity_drive(self):
         context = affect_self_report_context(
             {"curiosity": 0.785, "warmth": 0.864, "unknown": 0.99},
@@ -780,3 +797,4 @@ class SelfDescriptionPromptTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

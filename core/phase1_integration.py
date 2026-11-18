@@ -260,6 +260,26 @@ class Phase1Orchestrator:
             goal_suggestions, rejected_goal_suggestions = self._admit_goal_proposals(
                 raw_goal_suggestions
             )
+            rejected_origins = {
+                str(item.get("origin_thought") or "")
+                for item in rejected_goal_suggestions if isinstance(item, dict)
+            }
+            evaluator = self.components.get("thought_evaluator")
+            reject_recorder = getattr(evaluator, "record_proposal_rejection", None)
+            if callable(reject_recorder):
+                for proposal in raw_goal_suggestions:
+                    if (
+                        isinstance(proposal, dict)
+                        and str(proposal.get("origin_thought") or "") in rejected_origins
+                    ):
+                        reject_recorder(
+                            str(proposal.get("origin_thought") or ""),
+                            next((
+                                item.get("reason", "quality_gate_rejected")
+                                for item in rejected_goal_suggestions
+                                if item.get("origin_thought_ref") == proposal.get("origin_thought")
+                            ), "quality_gate_rejected"),
+                        )
             if goal_suggestions:
                 print(f"   💡 {len(goal_suggestions)} distinct goal proposals for workspace arbitration")
             if rejected_goal_suggestions:
@@ -616,3 +636,4 @@ if __name__ == "__main__":
     print("\n" + "="*70)
     print("✅ Phase 1 Integration Test Complete")
     print("="*70)
+

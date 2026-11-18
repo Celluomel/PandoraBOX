@@ -1066,6 +1066,66 @@ class IntentionPlanningTests(unittest.TestCase):
             self.assertEqual(marked, [(goal.id, "memory_recall")])
             self.assertEqual(planner.next_action_for_goal(goal), "self_question")
 
+    def test_run_tick_binds_async_completion_to_reserved_plan_step(self):
+        with tempfile.TemporaryDirectory() as folder:
+            planner, _, _ = self._planner(folder)
+            goal = NS(
+                id="g-bound-dispatch", topic="verify exact async receipt",
+                origin="resolve_uncertainty", priority=0.8, energy=0.8,
+            )
+            marked = []
+            goal_engine = NS(
+                get_active_goals=lambda min_activation=0.1: [goal],
+                mark_action=lambda goal_id, action, **kwargs: marked.append(
+                    (goal_id, action, kwargs)
+                ) or True,
+            )
+            loop = NS(
+                _long_horizon_planner=planner,
+                record_async_cycle_stage=lambda *args, **kwargs: True,
+            )
+            executor = GoalActionExecutor.__new__(GoalActionExecutor)
+            executor._o = NS(ai_system=NS(goal_engine=goal_engine), _loop=loop)
+            executor._last_action_time = {}
+            executor._rotation_index = {}
+            executor._pending_predictions = {}
+            executor._async_actions_in_flight = set()
+            executor._async_actions_lock = threading.Lock()
+            executor._get_goal_engine = lambda: goal_engine
+            executor._select_eligible_goal = lambda _active: goal
+            executor._action_memory_recall_with_fallback = Mock(return_value={
+                "success": True, "outcome_status": "succeeded",
+                "result": "recalled and published (1 sources)",
+                "memory_retrieved": True, "thought_published": True,
+                "thought_stream_recorded": True,
+            })
+            captured = {}
+
+            def capture_sync(action, on_error=None, on_complete=None):
+                captured.update(action=action, on_error=on_error, on_complete=on_complete)
+
+            with patch.object(GoalActionExecutor, "_fire_sync", side_effect=capture_sync):
+                dispatch = executor.run_tick(cycle_id=701)
+
+            self.assertEqual(dispatch["outcome_status"], "dispatched")
+            step = planner.current_step(f"goal:{goal.id}")
+            self.assertEqual(step.pending_execution_id, dispatch["execution_id"])
+            self.assertEqual(step.pending_cycle_id, 701)
+
+            worker = threading.Thread(target=captured["action"])
+            worker.start()
+            worker.join(timeout=5)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(planner.next_action_for_goal(goal), "self_question")
+            self.assertEqual(planner._plans[f"goal:{goal.id}"].steps_completed, 1)
+            self.assertEqual(marked[0][2]["execution_id"], dispatch["execution_id"])
+            self.assertEqual(marked[0][2]["cycle_id"], 701)
+            self.assertEqual(
+                planner._plans[f"goal:{goal.id}"].steps[0].execution_id,
+                dispatch["execution_id"],
+            )
+            captured["on_complete"]()
+
     def test_memory_recall_is_dispatched_off_loop_and_finalized_with_its_result(self):
         goal = NS(
             id="g-async-recall", topic="memory retrieval audit",
@@ -1725,3 +1785,4 @@ class IntentionPlanningTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -1929,3 +1929,4 @@ class LongHorizonPlanner:
                     )
         except Exception as e:
             logger.warning(f"[LongHorizonPlanner] load error: {e}")
+

@@ -1598,3 +1598,4 @@ def _drain_immediate_async_generator(generator, *, fresh_context_per_next=False)
             result.append(completed.value)
         except StopAsyncIteration:
             return result
+

@@ -74,8 +74,76 @@ def test_evaluator_sees_unflushed_thought_and_persists_evaluation_once(tmp_path)
     evaluator.thought_stream = reloaded_stream
     with patch.object(evaluator, "_evaluate_thought") as second_evaluation:
         second_proposals = evaluator.evaluate_recent_thoughts()
-    assert second_proposals == []
+    assert len(second_proposals) == 1
+    assert second_proposals[0]["status"] == "pending"
+    assert second_proposals[0]["proposal_id"] == proposals[0]["proposal_id"]
     second_evaluation.assert_not_called()
+
+
+def test_losing_goal_proposal_survives_and_retries_without_re_evaluation(tmp_path):
+    stream = ThoughtStream(SimpleNamespace(_data_dir=tmp_path))
+    stream.add(
+        "A recurring contradiction in the cognitive harness needs review.",
+        source="audit-test",
+        priority=0.8,
+        thought_type="tension",
+        topic="cognitive harness audit",
+    )
+    thought_id = stream.recent_dicts(1)[0]["id"]
+    evaluator = SimpleThoughtEvaluator(tmp_path, thought_stream=stream)
+    evaluate = patch.object(evaluator, "_evaluate_thought", return_value=_goal_evaluation())
+
+    with evaluate as evaluate_mock, patch.object(evaluator, "_inject_followup_thoughts"):
+        first = evaluator.evaluate_recent_thoughts()
+        second = evaluator.evaluate_recent_thoughts()
+
+    assert len(first) == len(second) == 1
+    assert first[0]["proposal_id"] == second[0]["proposal_id"]
+    assert second[0]["status"] == "pending"
+    assert evaluate_mock.call_count == 1
+    stored = next(
+        item for item in DataAccess(str(tmp_path)).get_thoughts(skip_expired=False)
+        if item["id"] == thought_id
+    )
+    assert stored["evaluation"]["goal_proposal"]["status"] == "pending"
+
+    assert evaluator.record_proposal_disposition(
+        second[0], "committed", cycle=14, reason="goal_readback_verified"
+    ) == 1
+    assert evaluator.evaluate_recent_thoughts() == []
+    resolved = next(
+        item for item in DataAccess(str(tmp_path)).get_thoughts(skip_expired=False)
+        if item["id"] == thought_id
+    )
+    assert resolved["evaluation"]["goal_proposal"]["status"] == "committed"
+    assert resolved["evaluation"]["goal_proposal"]["resolved_cycle"] == 14
+    evaluate_mock.assert_called_once()
+
+
+def test_quality_gate_rejection_closes_pending_proposal(tmp_path):
+    stream = ThoughtStream(SimpleNamespace(_data_dir=tmp_path))
+    stream.add(
+        "An unresolved contradiction in the cognitive harness.",
+        source="audit-test",
+        priority=0.8,
+        thought_type="tension",
+        topic="cognitive harness quality",
+    )
+    thought_id = stream.recent_dicts(1)[0]["id"]
+    evaluator = SimpleThoughtEvaluator(tmp_path, thought_stream=stream)
+    with patch.object(evaluator, "_evaluate_thought", return_value=_goal_evaluation()), \
+         patch.object(evaluator, "_inject_followup_thoughts"):
+        proposal = evaluator.evaluate_recent_thoughts()[0]
+
+    assert evaluator.record_proposal_rejection(thought_id, "low_quality_topic") is True
+    assert evaluator.evaluate_recent_thoughts() == []
+    stored = next(
+        item for item in DataAccess(str(tmp_path)).get_thoughts(skip_expired=False)
+        if item["id"] == thought_id
+    )
+    assert stored["evaluation"]["goal_proposal"]["status"] == "rejected"
+    assert stored["evaluation"]["goal_proposal"]["reason_code"] == "low_quality_topic"
+    assert proposal["proposal_id"]
 
 
 def test_dal_updates_thought_by_id_without_adding_duplicate(tmp_path):
@@ -172,3 +240,4 @@ def test_stagnation_guard_emits_at_most_one_recent_seed(tmp_path):
         if thought.get("source") == "thought_evaluator.stagnation_guard"
     ]
     assert len(seeds) == 1
+

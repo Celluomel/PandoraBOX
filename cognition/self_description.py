@@ -343,6 +343,7 @@ def render_affect_change_analysis(evidence: str, *, language: str = "en") -> str
     event_lines = re.findall(r"^Recorded affect event: (.+)$", evidence, re.MULTILINE)
     event_lines = [line.strip()[:220] for line in event_lines[:5]]
     changed_lines = []
+    baseline_lines = []
     for line in event_lines:
         change_payload = re.search(r"changes=\[([^\]]*)\]", line)
         deltas = re.findall(
@@ -351,7 +352,13 @@ def render_affect_change_analysis(evidence: str, *, language: str = "en") -> str
         )
         if any(abs(float(delta)) >= 0.00005 for _name, delta in deltas):
             changed_lines.append(line)
-    baseline_only = any("baseline=[" in line for line in event_lines)
+        baseline_payload = re.search(r"baseline=\[([^\]]*)\]", line)
+        baseline_deltas = re.findall(
+            r"([a-z_]+)=([+-]?\d+(?:\.\d+)?)",
+            baseline_payload.group(1) if baseline_payload else "",
+        )
+        if any(abs(float(delta)) >= 0.00005 for _name, delta in baseline_deltas):
+            baseline_lines.append(line)
     is_fr = str(language).casefold().startswith("fr")
     if not event_lines:
         if is_fr:
@@ -365,7 +372,7 @@ def render_affect_change_analysis(evidence: str, *, language: str = "en") -> str
             "with channel deltas is available, and there is no before/after snapshot tied "
             "to the conversation."
         )
-    if not changed_lines and not baseline_only:
+    if not changed_lines and not baseline_lines:
         if is_fr:
             return (
                 "Des événements affectifs récents ont été traités, mais aucun delta de canal "
@@ -378,7 +385,22 @@ def render_affect_change_analysis(evidence: str, *, language: str = "en") -> str
             "reported precision. I can’t present them as observed changes. No conversation-linked "
             "before/after snapshot is available to establish a cause."
         )
-    events = "; ".join(changed_lines or event_lines)
+    events = "; ".join(changed_lines)
+    baseline_events = "; ".join(baseline_lines)
+    if not changed_lines and baseline_lines:
+        if is_fr:
+            return (
+                "Les journaux montrent une recalibration des niveaux de référence affectifs : "
+                f"{baseline_events}. Cela modifie les baselines du modèle; aucun delta des "
+                "canaux affectifs actuels n’est enregistré dans ces événements. Il n’y a pas "
+                "de relevé avant/après lié à la conversation pour établir sa cause."
+            )
+        return (
+            "The logs show affect baseline recalibration: "
+            f"{baseline_events}. This changes the model’s reference baselines; these events "
+            "record no change to current affect channels. No conversation-linked before/after "
+            "snapshot is available to establish a cause."
+        )
     turn_ids = sorted(set(re.findall(r"\bturn=([A-Za-z0-9_-]{1,96})", events)))
     turn_link = (
         (" Ces événements portent l’identifiant de tour " + ", ".join(turn_ids) + "; "
@@ -394,14 +416,16 @@ def render_affect_change_analysis(evidence: str, *, language: str = "en") -> str
             f"{events}. Ils décrivent les mises à jour logicielles consignées, pas une cause "
             "unique de l’état actuel. Les données fournies ne relient pas un relevé avant/après "
             "à la dernière conversation; je ne peux donc pas lui attribuer le changement."
-            f"{turn_link}"
+            + (f" Recalibrations de baseline distinctes : {baseline_events}." if baseline_events else "")
+            + f"{turn_link}"
         )
     return (
         "The logs record these changes in modeled channels: "
         f"{events}. They describe logged software updates, not a single cause of the current "
         "state. The available data do not tie before/after snapshots to the last conversation, "
         "so I can’t attribute the change to it."
-        f"{turn_link}"
+        + (f" Separate baseline recalibrations: {baseline_events}." if baseline_events else "")
+        + f"{turn_link}"
     )
 
 
@@ -1303,3 +1327,4 @@ def get_self_description() -> SelfDescription:
     if "singleton" not in _descriptions:
         _descriptions["singleton"] = SelfDescription()
     return _descriptions["singleton"]
+
