@@ -1608,54 +1608,13 @@ class CognitiveOrganism:
         except Exception:
             pass
 
-        # ── v3: Record significant interaction as narrative chapter ────────
+        # ── Keep global narrative identity free of user chat content ───────
+        # User utterances belong to their selected profile and memory. The
+        # global narrative arc is injected into every user's prompt, so a
+        # conversation must not become a global autobiographical chapter.
         try:
-            word_count = len(response.split())
-            # Filter internal LLM prompts: these appear as user_input when the
-            # proactive/emotion system passes its internal prompt as an interaction.
-            # Recording them as narrative chapters produces entries like
-            # "User: You are feeling curiosity. Without naming the emotion..."
-            _INTERNAL_MARKERS = (
-                "you are feeling", "without naming the emotion", "let it colour",
-                "one sentence only", "you just had this inner thought",
-                "[what i can currently see", "[vision@", "inner voice",
-                "speak naturally", "naturally surface",
-            )
-            _is_internal = any(
-                m in user_input.lower()[:120] for m in _INTERNAL_MARKERS
-            )
-            if word_count > 25 and not _is_internal:   # skip internal prompts
-                snippet = user_input[:80].replace("\n", " ")
-                # Differentiate chapter titles by content type
-                _lower = user_input.lower()
-                _sig   = min(0.7, 0.3 + word_count / 500.0)
-                if any(w in _lower for w in ["why", "how", "what is", "explain", "understand"]):
-                    _title = "Question explored"
-                    _sig   = max(_sig, 0.55)
-                elif any(w in _lower for w in ["feel", "think", "believe", "consciousness", "self"]):
-                    _title = "Reflective exchange"
-                    _sig   = max(_sig, 0.60)
-                elif any(w in _lower for w in ["remember", "yesterday", "last time", "you said"]):
-                    _title = "Continuity recalled"
-                    _sig   = max(_sig, 0.58)
-                elif word_count > 150:
-                    _title = "Deep conversation"
-                    _sig   = max(_sig, 0.65)
-                else:
-                    _title = "Interaction"
-                self.narrative_identity.record_chapter(
-                    title=_title,
-                    description=f"User: {snippet}",
-                    emotion=self._read_emotion_state(),
-                    significance=_sig,
-                )
-            # Auto-milestone salience detection — runs every interaction
-            try:
-                from core.ai_system import AISystem
-                ic = getattr(self.ai_system, '_interaction_count', 0)
-                self.narrative_identity.check_auto_milestones(ic)
-            except Exception:
-                pass
+            ic = getattr(self.ai_system, '_interaction_count', 0)
+            self.narrative_identity.check_auto_milestones(ic)
         except Exception:
             pass
 

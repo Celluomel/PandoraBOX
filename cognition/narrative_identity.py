@@ -213,22 +213,6 @@ class NarrativeIdentity:
                     f"Reached {n} interaction{'s' if n>1 else ''} — a meaningful threshold.",
                 )
 
-        # ── Knowledge milestones ───────────────────────────────────────────
-        try:
-            wm = getattr(self._o, 'world_model', None)
-            if wm:
-                profile = next(iter(wm.user_profiles.values()), None)
-                if profile:
-                    n_topics = len(profile.topic_entries)
-                    for threshold in (50, 100, 250):
-                        if n_topics >= threshold:
-                            self.add_milestone(
-                                f"world_model_{threshold}_topics",
-                                f"World model now contains {threshold}+ distinct concepts.",
-                            )
-        except Exception:
-            pass
-
         # ── Belief formation milestone ─────────────────────────────────────
         n_beliefs = len([b for b in self.beliefs if not b.immutable])
         if n_beliefs >= 5:
@@ -243,22 +227,6 @@ class NarrativeIdentity:
                 "narrative_depth",
                 "Life story spans 20+ chapters — a rich autobiographical continuity.",
             )
-
-        # ── Relational milestone ───────────────────────────────────────────
-        try:
-            wm = getattr(self._o, 'world_model', None)
-            if wm:
-                profile = next(iter(wm.user_profiles.values()), None)
-                if profile and profile.relational:
-                    strength = getattr(profile.relational, 'bond_strength', 0)
-                    if strength > 0.7:
-                        self.add_milestone(
-                            "deep_relationship",
-                            "Formed a strong relational bond with a user.",
-                        )
-        except Exception:
-            pass
-
 
         """
         Returns a compact paragraph for injection into PandoraBOX's system prompt.

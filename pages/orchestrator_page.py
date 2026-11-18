@@ -632,7 +632,7 @@ async def orchestrator_page():
                 si   = stab.get('surprise_index', 0.0)
                 cb   = stab.get('confirmation_bias', 0.0)
                 nr   = stab.get('novelty_rate', 0.0)
-                tq   = stab.get('topic_quality', 1.0)
+                tq   = stab.get('topic_quality')
                 drift= stab.get('model_drift', 0.0)
                 hlth = stab.get('health', '')
                 stability_measured = stab.get('measurement_status') == 'measured'
@@ -642,7 +642,7 @@ async def orchestrator_page():
 
                 si_col = '#22c55e' if stability_measured and 0.10 <= si <= 0.40 else '#f59e0b' if stability_measured else '#94a3b8'
                 cb_col = '#ef4444' if stability_measured and cb > 0.85 else '#f59e0b' if stability_measured and cb > 0.70 else '#22c55e' if stability_measured else '#94a3b8'
-                tq_col = '#22c55e' if tq >= 0.7 else '#f59e0b' if tq >= 0.5 else '#ef4444'
+                tq_col = '#94a3b8' if tq is None else '#22c55e' if tq >= 0.7 else '#f59e0b' if tq >= 0.5 else '#ef4444'
                 dr_col = '#ef4444' if stability_measured and drift > 0.3 else '#f59e0b' if stability_measured and drift > 0.1 else '#22c55e' if stability_measured else '#94a3b8'
 
                 try:
@@ -661,7 +661,7 @@ async def orchestrator_page():
                        f'<b style="color:{cb_col}">{cb_label}</b></div>'
                        f'<div style="font-size:10px"><span style="color:#94a3b8">Novelty:</span> {nr:.2f} '
                        f'<span style="color:#94a3b8">| Topic quality:</span> '
-                       f'<b style="color:{tq_col}">{tq:.2f}</b> '
+                       f'<b style="color:{tq_col}">{f"{tq:.2f}" if tq is not None else "unavailable"}</b> '
                        f'<span style="color:#94a3b8">| Drift:</span> '
                        f'<b style="color:{dr_col}">{drift_label}</b></div>'
                        if stab else '')

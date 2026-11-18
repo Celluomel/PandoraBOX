@@ -202,33 +202,17 @@ class PredictiveMind:
             self._high_conf_correct / self._high_conf_total, 3
         ) if self._high_conf_total else 0.5
 
-        # FIX: primary novelty from sliding window
+        # Novelty is a global metric from this module's own observed window.
+        # A user's private profile is not a valid fallback for Lumina's self-state.
         nw = list(self._novelty_window)
         if len(nw) >= 5:
             novelty = round(sum(nw) / len(nw), 3)
         else:
-            # Thin window fallback: WorldModel recent-topic growth rate
-            novelty = 0.15   # sane default while warming up
-            try:
-                wm = getattr(self._o, 'world_model', None)
-                if wm and self._total_predictions > 5:
-                    profile = next(iter(wm.user_profiles.values()), None)
-                    if profile and profile.interaction_count > 0:
-                        recent_new = getattr(profile, '_recent_new_topics', 0)
-                        window     = min(20, profile.interaction_count)
-                        novelty    = round(min(1.0, recent_new / max(1, window)), 3)
-            except Exception:
-                pass
+            novelty = 0.15
 
-        topic_quality = 1.0
-        try:
-            wm = getattr(self._o, 'world_model', None)
-            if wm:
-                profile = next(iter(wm.user_profiles.values()), None)
-                if profile:
-                    topic_quality = getattr(profile, '_topic_quality', 1.0)
-        except Exception:
-            pass
+        # Topic quality belongs to individual user profiles; no global
+        # measurement is defined, so do not substitute a profile or perfect prior.
+        topic_quality = None
 
         drift = round(max(0.0, conf_bias - surprise_idx - 0.2), 3)
 
@@ -249,7 +233,8 @@ class PredictiveMind:
             "surprise_index":   surprise_idx,
             "confirmation_bias": conf_bias,
             "novelty_rate":      novelty,
-            "topic_quality":     round(topic_quality, 3),
+            "topic_quality":     round(topic_quality, 3) if topic_quality is not None else None,
+            "topic_quality_status": "unavailable_global_metric_not_defined",
             "model_drift":       drift,
             "health":            health,
             "measurement_status": "measured" if has_validated_outcomes else "unmeasured_no_independent_outcome_labels",
