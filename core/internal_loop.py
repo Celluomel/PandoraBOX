@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 54934)
-Total output lines: 4126
-
 """
 Internal Thought Loop - V33 Enhanced
 =====================================
@@ -967,6 +964,34 @@ class InternalThoughtLoop:
         )
 
     @staticmethod
+    def _persist_proposal_disposition(
+        proposal: Any, status: str, recorder: Any, *, cycle: int, reason: str,
+    ) -> dict[str, Any]:
+        """Return evidence for durable source-thought disposition persistence."""
+        if not isinstance(proposal, dict) or status not in {"committed", "satisfied"}:
+            return {"status": "not_applicable", "updated_sources": 0, "expected_sources": 0}
+        source_ids = proposal.get("supporting_thought_ids") or [proposal.get("origin_thought")]
+        expected = len({str(item) for item in source_ids if item})
+        if not expected:
+            return {"status": "failed", "updated_sources": 0, "expected_sources": 0,
+                    "reason_code": "source_thought_id_missing"}
+        if not callable(recorder):
+            return {"status": "failed", "updated_sources": 0, "expected_sources": expected,
+                    "reason_code": "disposition_recorder_unavailable"}
+        try:
+            updated = int(recorder(proposal, status, cycle=cycle, reason=reason) or 0)
+        except Exception as exc:
+            return {"status": "failed", "updated_sources": 0, "expected_sources": expected,
+                    "reason_code": "disposition_recorder_error",
+                    "error": str(exc)[:160]}
+        return {
+            "status": "persisted" if updated >= expected else "partial" if updated > 0 else "failed",
+            "updated_sources": min(updated, expected),
+            "expected_sources": expected,
+            **({"reason_code": "source_disposition_not_durable"} if updated < expected else {}),
+        }
+
+    @staticmethod
     def _workspace_focus_for_consumers(winner: Any, admitted: bool) -> Any:
         """Do not expose a rejected goal proposal as an active cognitive focus."""
         source_data = winner.get("source_data", {}) if isinstance(winner, dict) else {}
@@ -1220,7 +1245,1788 @@ class InternalThoughtLoop:
                 return
             receipt["status"] = status
             receipt["finished_at"] = time.time()
-            receipt["duration_ms"] = round((receipt["finished_at"] - receipt["started_at"]) * 100…24934 tokens truncated…CognitiveStack tick error (non-fatal): {_cs}")
+            receipt["duration_ms"] = round((receipt["finished_at"] - receipt["started_at"]) * 1000, 2)
+            if error_type:
+                receipt["error_type"] = str(error_type)
+            if error_summary:
+                receipt["error_summary"] = str(error_summary)[:240]
+            self._cycle_evidence.append(receipt)
+            self._active_cycle_evidence = None
+            self._active_cycle_thread_id = None
+
+    def cycle_evidence_snapshot(self, limit: int = 5) -> dict[str, Any]:
+        """Expose recent bounded causal receipts; semantic correctness is not inferred."""
+        lock = getattr(self, "_cycle_evidence_lock", None)
+        if lock is None:
+            return {"retained": 0, "cycles": []}
+        with lock:
+            bounded_limit = max(0, min(int(limit), 10))
+            cycles = list(self._cycle_evidence)[-bounded_limit:] if bounded_limit else []
+            if self._active_cycle_evidence is not None:
+                cycles.append(dict(self._active_cycle_evidence))
+            return {
+                "retained": len(self._cycle_evidence),
+                "capacity": 40,
+                "evidence_scope": "internal_cycle_execution_and_explicit_dataflow; semantic_quality_not_assessed",
+                "cycles": json.loads(json.dumps(cycles, default=str)),
+            }
+
+    @staticmethod
+    def _resolve_cycle_state_path() -> Path:
+        """Per-process cycle-state file, keyed by PERSONA_NAME so master
+        and Flux (which share data/persona for actual persona memory)
+        stop racing on one counter file. See __init__ comment above."""
+        try:
+            from managers.settings_manager import get_persona_name
+            suffix = (get_persona_name() or "lumina").strip().lower().replace(" ", "_")
+        except Exception:
+            suffix = "lumina"
+        return Path(f"data/persona/internal_loop_state_{suffix or 'lumina'}.json")
+
+    # ── Cycle-count persistence (bug fix v59) ───────────────────────────────────
+    def _load_cycle_state(self) -> None:
+        try:
+            if self._cycle_state_path.exists():
+                d = json.loads(self._cycle_state_path.read_text())
+                restored = int(d.get("slow_cycle_count", 0))
+                if restored > 0:
+                    self._slow_cycle_count = restored
+                    logger.info(
+                        f"[InternalLoop] Restored slow_cycle_count={restored} "
+                        f"from previous session (was resetting to 0 on every "
+                        f"restart before this fix)"
+                    )
+                    return
+
+            # One-time migration: this instance's own per-process file
+            # doesn't exist yet (first run after the v116 fix above). Adopt
+            # whatever the OLD shared file has, so switching to a per-
+            # instance path doesn't itself look like a reset to whichever
+            # process previously held the higher count.
+            _legacy_path = Path("data/persona/internal_loop_state.json")
+            if _legacy_path != self._cycle_state_path and _legacy_path.exists():
+                d = json.loads(_legacy_path.read_text())
+                restored = int(d.get("slow_cycle_count", 0))
+                if restored > 0:
+                    self._slow_cycle_count = restored
+                    logger.info(
+                        f"[InternalLoop] Migrated slow_cycle_count={restored} "
+                        f"from legacy shared state file to per-instance "
+                        f"{self._cycle_state_path.name}"
+                    )
+        except Exception as e:
+            logger.warning(f"[InternalLoop] cycle-state load failed (starting at 0): {e}")
+
+    def _save_cycle_state(self) -> None:
+        try:
+            self._cycle_state_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self._cycle_state_path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps({
+                "slow_cycle_count": self._slow_cycle_count,
+                "last_saved": time.time(),
+            }))
+            tmp.replace(self._cycle_state_path)
+        except Exception as e:
+            logger.debug(f"[InternalLoop] cycle-state save failed: {e}")
+
+    def ensure_predictive_models(self):
+        """Return shared predictive models, initializing them on demand.
+
+        Streaming chat can begin before the background loop reaches its lazy
+        initialization thresholds. Using this helper from both paths keeps
+        the first interaction from silently skipping predictive cognition and
+        prevents duplicate instances racing between the chat and loop threads.
+        """
+        with self._predictive_models_lock:
+            organism = self._organism
+            if getattr(self, "_consequence_model", None) is None:
+                try:
+                    from cognition.predictive_consequence_model import PredictiveConsequenceModel
+                    self._consequence_model = PredictiveConsequenceModel(organism)
+                    logger.info("[InternalLoop] PredictiveConsequenceModel ready ✅")
+                except Exception as exc:
+                    logger.warning("[InternalLoop] PredictiveConsequenceModel init failed: %s", exc)
+                    self._consequence_model = None
+
+            if getattr(self, "_world_self_dynamics", None) is None:
+                ai_system = getattr(organism, "ai_system", None)
+                if ai_system is not None:
+                    try:
+                        from cognition.world_self_dynamics_model import WorldSelfDynamicsModel
+                        self._world_self_dynamics = WorldSelfDynamicsModel(organism, ai_system)
+                        logger.info("[InternalLoop] WorldSelfDynamicsModel ready ✅")
+                    except Exception as exc:
+                        logger.warning("[InternalLoop] WorldSelfDynamicsModel init failed: %s", exc)
+                        self._world_self_dynamics = None
+            return (
+                getattr(self, "_consequence_model", None),
+                getattr(self, "_world_self_dynamics", None),
+            )
+
+    # ── Lifecycle ─────────────────────────────────────────────────────────────
+
+    def start(self) -> None:
+        if self._running:
+            return
+        self._running = True
+        self._thread = threading.Thread(
+            target=self._loop,
+            name="LuminaInternalLoop",
+            daemon=True,
+        )
+        self._thread.start()
+        logger.info("[InternalLoop] Background thought loop started")
+
+    def shutdown(self) -> None:
+        self._running = False
+        if self._thread:
+            self._thread.join(timeout=5.0)
+        planner = getattr(self, '_long_horizon_planner', None)
+        if planner is not None and hasattr(planner, 'persist_now'):
+            try:
+                planner.persist_now()
+            except Exception as exc:
+                logger.debug("[InternalLoop] planner shutdown save failed: %s", exc)
+        logger.info("[InternalLoop] Background thought loop stopped")
+
+    def attach_vision(self, vision_manager) -> None:
+        """Wire the StreamingVisionManager so the loop can do ambient perception."""
+        self._vision_ref = vision_manager
+        # Also attach to organism for brain bridge access
+        try:
+            o = getattr(self, '_o', None) or getattr(self, 'organism', None)
+            if o is not None:
+                o._vision_manager = vision_manager
+        except Exception:
+            pass
+        logger.info("[InternalLoop] Vision manager attached for ambient perception")
+
+    # ── Main loop ─────────────────────────────────────────────────────────────
+
+    def _loop(self) -> None:
+        last_slow       = time.time()
+        tension_active  = False   # hysteresis state — persists across fast cycles
+
+        while self._running:
+            fast_cycle_completed = False
+            try:
+                self._fast_cycle()
+                self._last_fast_cycle_at = time.time()
+                fast_cycle_completed = True
+
+                now          = time.time()
+                elapsed_slow = now - last_slow
+                timer_due    = elapsed_slow >= SLOW_CYCLE_SECONDS
+
+                # Tension-driven firing with hysteresis:
+                # Activates when pressure crosses TENSION_ACTIVATE (0.80).
+                # Only deactivates when pressure drops below TENSION_DEACTIVATE (0.60).
+                # This prevents rapid on/off cycling when tension oscillates around
+                # a single threshold (e.g. 0.79 → 0.81 → 0.78 → 0.82).
+                tension_due = False
+                if elapsed_slow >= MIN_SLOW_INTERVAL and not timer_due:
+                    try:
+                        _pressure = getattr(self._organism, '_v32_decision_pressure', {})
+                        _tension  = _pressure.get('total', 0.0)
+
+                        if not tension_active and _tension >= TENSION_ACTIVATE:
+                            tension_active = True
+                            logger.debug(
+                                f"[InternalLoop] Tension threshold crossed — "
+                                f"early firing activated (pressure={_tension:.2f})"
+                            )
+                        elif tension_active and _tension < TENSION_DEACTIVATE:
+                            tension_active = False
+                            logger.debug(
+                                f"[InternalLoop] Tension subsided — "
+                                f"early firing deactivated (pressure={_tension:.2f})"
+                            )
+
+                        tension_due = tension_active
+                    except Exception:
+                        pass
+
+                if timer_due or tension_due:
+                    self._slow_cycle()
+                    last_slow = now
+
+            except Exception as e:
+                if not fast_cycle_completed:
+                    self._fast_cycle_error_count += 1
+                logger.error(f"[InternalLoop] Cycle error: {e}", exc_info=True)
+
+            time.sleep(FAST_CYCLE_SECONDS)
+
+    # ── Fast cycle (every 30s) ────────────────────────────────────────────────
+
+    def _fast_cycle(self) -> None:
+        """Lightweight maintenance: energy regeneration and emotion decay."""
+        o = self._organism
+
+        # Regenerate energy
+        if hasattr(o, "energy"):
+            o.energy.regenerate()
+
+        # Decay emotional state toward baselines
+        if hasattr(o, "ai_system") and hasattr(o.ai_system, "emotional_state"):
+            try:
+                o.ai_system.emotional_state.apply_time_decay()
+            except Exception:
+                pass   # don't crash the loop over a decay error
+
+        # Decay curiosity
+        if hasattr(o, "curiosity"):
+            o.curiosity.decay_all()
+
+        # Tick v2 modules
+        if hasattr(o, 'self_model'):
+            try:
+                o.self_model.tick_load_decay(elapsed_secs=30.0)
+            except Exception:
+                pass
+        if hasattr(o, 'attractors'):
+            try:
+                o.attractors.tick_return_force()
+            except Exception:
+                pass
+
+        # ── v3: ThoughtStream tick → feed GlobalWorkspace ─────────────────
+        if hasattr(o, 'thought_stream') and hasattr(o, 'workspace'):
+            try:
+                thought = o.thought_stream.tick()
+                if thought:
+                    o.workspace.broadcast(
+                        source=f"thought.{thought.source}",
+                        content=thought.content,
+                        priority=thought.priority * 0.6,
+                    )
+                    # ── Curiosity→Goal converter (closes cognitive loop) ──
+                    # A high-priority curiosity thought boosts the "understand" drive,
+                    # converting contemplation into motivated exploration.
+                    # Max 3 conversions per cycle (curiosity runaway guard).
+                    _conversions = getattr(o, '_curiosity_goal_conversions', 0)
+                    _energy_ok = hasattr(o, 'energy') and o.energy.level() >= 15.0
+                    if (
+                        thought.thought_type == "curiosity"
+                        and thought.priority >= 0.55
+                        and _conversions < 3
+                        and hasattr(o, 'goal_ecology')
+                        and _energy_ok
+                    ):
+                        try:
+                            o.goal_ecology.record_satisfaction("understand", -0.15)  # increase urgency
+                            o._curiosity_goal_conversions = _conversions + 1
+                            logger.debug(
+                                f"[InternalLoop] curiosity→goal: boosted 'understand' "
+                                f"from thought p={thought.priority:.2f}"
+                            )
+                        except Exception:
+                            pass
+            except Exception as _te:
+                pass
+
+        # Reset per-cycle conversion counter each fast cycle
+        if hasattr(o, '_curiosity_goal_conversions'):
+            o._curiosity_goal_conversions = 0
+
+        # ── v3: PredictiveMind uncertainty signal ─────────────────────────
+        if hasattr(o, 'predictive_mind') and hasattr(o, 'workspace'):
+            try:
+                sig = o.predictive_mind.uncertainty_signal()
+                if sig:
+                    o.workspace.broadcast(
+                        source=sig['source'],
+                        content=sig['content'],
+                        priority=sig['priority'],
+                    )
+            except Exception:
+                pass
+
+    # ── Slow cycle (every 2 minutes) ─────────────────────────────────────────
+
+    def _slow_cycle(self) -> None:
+        """Deeper inspection, reflection, and intention formation."""
+        # Guard against concurrent calls from the background thread + ExecutionLayer.
+        # acquire(blocking=False) returns False instantly if another thread holds it.
+        _acquired = self._lock.acquire(blocking=False)
+        if not _acquired:
+            logger.debug("[InternalLoop] _slow_cycle skipped — already running")
+            return
+        try:
+            self._slow_cycle_impl()
+            if getattr(self, "_module_tick_log", None) is not None:
+                # Some modules are created lazily during a cycle. Refresh after
+                # it too, so the status snapshot reflects their current state
+                # and the probes attach before their next invocation.
+                self._refresh_module_tick_probes()
+            self._last_slow_cycle_at = time.time()
+            self._finish_cycle_evidence("completed")
+        except Exception as exc:
+            self._slow_cycle_error_count += 1
+            self._last_slow_cycle_error_type = type(exc).__name__
+            self._finish_cycle_evidence(
+                "failed", type(exc).__name__, self._exception_summary(exc),
+            )
+            raise
+        finally:
+            self._lock.release()
+
+    def _slow_cycle_impl(self) -> None:
+        """Inner body of the slow cycle (called under lock)."""
+        self._refresh_module_tick_probes()
+        self._slow_cycle_count += 1
+        self._begin_cycle_evidence(self._slow_cycle_count)
+        self._save_cycle_state()
+        o = self._organism
+
+        # ── v50: Resource economy tick ────────────────────────────────────────
+        # Applies time-based recovery to cognitive_energy, social_energy,
+        # attention.  Must run first so gate reads current values this cycle.
+        try:
+            _resource_economy = self._ensure_resource_economy()
+            if _resource_economy is not None:
+                _resource_economy.tick()
+        except Exception as _re:
+            logger.debug(f"[InternalLoop] ResourceEconomy error (non-fatal): {_re}")
+
+        # ── v50: CognitiveBehaviorGate — lazy init on organism ────────────────
+        try:
+            if not hasattr(o, 'behavior_gate') or o.behavior_gate is None:
+                from cognition.cognitive_behavior_gate import CognitiveBehaviorGate
+                o.behavior_gate = CognitiveBehaviorGate(o)
+                logger.info("[InternalLoop] CognitiveBehaviorGate ready ✅")
+        except Exception as _bg:
+            logger.debug(f"[InternalLoop] BehaviorGate init error (non-fatal): {_bg}")
+
+        # ── v51: MotivationalField — unified drive + self-generated goals ─────
+        # Integrates all pressure sources into a coherent drive vector every
+        # 5 slow cycles.  Scans for self-originated needs every 20 slow cycles.
+        try:
+            if not hasattr(self, '_motivational_field'):
+                self._motivational_field = None
+            if self._motivational_field is None and self._slow_cycle_count > 2:
+                _ai_sys = getattr(o, 'ai_system', None)
+                if _ai_sys and _llm_available(_ai_sys):
+                    from cognition.motivational_field import MotivationalField
+                    self._motivational_field = MotivationalField(o, _ai_sys)
+                    logger.info("[InternalLoop] MotivationalField ready ✅")
+            if self._motivational_field is not None:
+                self._motivational_field.tick(self._slow_cycle_count)
+        except Exception as _mf:
+            logger.debug(f"[InternalLoop] MotivationalField error (non-fatal): {_mf}")
+
+        # Initialize shared predictive models after the first slow cycle if no
+        # response turn has requested them yet. Live turns call this same
+        # idempotent helper immediately, so startup timing cannot skip them.
+        if self._slow_cycle_count > 1:
+            self.ensure_predictive_models()
+
+        # ── v54: AspirationalSynthesisEngine — generative aspiration ──────────
+        try:
+            if not hasattr(self, '_aspiration_synthesis'):
+                self._aspiration_synthesis = None
+            if self._aspiration_synthesis is None and self._slow_cycle_count > 10:
+                _ai_sys = getattr(o, 'ai_system', None)
+                if _ai_sys and _llm_available(_ai_sys):
+                    from cognition.aspirational_synthesis_engine import AspirationalSynthesisEngine
+                    self._aspiration_synthesis = AspirationalSynthesisEngine(o, _ai_sys)
+                    logger.info("[InternalLoop] AspirationalSynthesisEngine ready ✅")
+            if self._aspiration_synthesis is not None:
+                self._aspiration_synthesis.tick(self._slow_cycle_count)
+        except Exception as _ase:
+            logger.debug(f"[InternalLoop] AspirationalSynthesis error (non-fatal): {_ase}")
+
+        # ── v55: TemporalProjection — path simulation toward aspirations ───────
+        try:
+            if not hasattr(self, '_temporal_projection'):
+                self._temporal_projection = None
+            if self._temporal_projection is None and self._slow_cycle_count > 10:
+                _ai_sys = getattr(o, 'ai_system', None)
+                if _ai_sys and _llm_available(_ai_sys):
+                    from cognition.temporal_projection import TemporalProjection
+                    self._temporal_projection = TemporalProjection(o, _ai_sys)
+                    logger.info("[InternalLoop] TemporalProjection ready ✅")
+            if self._temporal_projection is not None:
+                self._temporal_projection.tick(self._slow_cycle_count)
+        except Exception as _tp:
+            logger.debug(f"[InternalLoop] TemporalProjection error (non-fatal): {_tp}")
+
+        # ── v57: CrossLayerFeedback — upward causal loops ──────────────────────
+        # Reads outputs from higher layers and writes to operating parameters
+        # of lower layers, closing the feedback loops the downward stack missed.
+        try:
+            if not hasattr(self, '_cross_layer_feedback'):
+                self._cross_layer_feedback = None
+            if self._cross_layer_feedback is None and self._slow_cycle_count > 5:
+                _ai_sys = getattr(o, 'ai_system', None)
+                if _ai_sys:
+                    from cognition.cross_layer_feedback import CrossLayerFeedback
+                    self._cross_layer_feedback = CrossLayerFeedback(o, _ai_sys)
+                    logger.info("[InternalLoop] CrossLayerFeedback ready ✅")
+            if self._cross_layer_feedback is not None:
+                self._cross_layer_feedback.tick(self._slow_cycle_count)
+        except Exception as _clf:
+            logger.debug(f"[InternalLoop] CrossLayerFeedback error (non-fatal): {_clf}")
+
+        # ── v59: GenerativeAspirationEngine — model-gap-driven aspiration ──────
+        # Detects concepts that recur without being understood, unnoticed belief
+        # tensions, and unexplained relational variance.  Generates aspirations
+        # from gaps in the world model rather than from capability combinations.
+        try:
+            if not hasattr(self, '_generative_aspiration'):
+                self._generative_aspiration = None
+            if self._generative_aspiration is None and self._slow_cycle_count > 15:
+                _ai_sys = getattr(o, 'ai_system', None)
+                if _ai_sys and _llm_available(_ai_sys):
+                    from cognition.generative_aspiration_engine import GenerativeAspirationEngine
+                    self._generative_aspiration = GenerativeAspirationEngine(o, _ai_sys)
+                    logger.info("[InternalLoop] GenerativeAspirationEngine ready ✅")
+            if self._generative_aspiration is not None:
+                self._generative_aspiration.tick(self._slow_cycle_count)
+        except Exception as _gae:
+            logger.debug(f"[InternalLoop] GenerativeAspiration error (non-fatal): {_gae}")
+
+        # ── v60: CausalMechanismModel ─────────────────────────────────────────
+        try:
+            if not hasattr(self, '_causal_mechanism'): self._causal_mechanism = None
+            if self._causal_mechanism is None and self._slow_cycle_count > 20:
+                _ai = getattr(o, 'ai_system', None)
+                if _ai:
+                    from cognition.causal_mechanism_model import CausalMechanismModel
+                    self._causal_mechanism = CausalMechanismModel(o, _ai)
+                    logger.info("[InternalLoop] CausalMechanismModel ready ✅")
+            if self._causal_mechanism: self._causal_mechanism.tick(self._slow_cycle_count)
+        except Exception as _cm:
+            logger.debug(f"[InternalLoop] CausalMechanism error (non-fatal): {_cm}")
+
+        # ── v61: LongHorizonPlanner ───────────────────────────────────────────
+        try:
+            if not hasattr(self, '_long_horizon_planner'): self._long_horizon_planner = None
+            if self._long_horizon_planner is None and self._slow_cycle_count > 20:
+                _ai = getattr(o, 'ai_system', None)
+                if _ai:
+                    from cognition.long_horizon_planner import LongHorizonPlanner
+                    self._long_horizon_planner = LongHorizonPlanner(o, _ai)
+                    logger.info("[InternalLoop] LongHorizonPlanner ready ✅")
+            if self._long_horizon_planner: self._long_horizon_planner.tick(self._slow_cycle_count)
+        except Exception as _lhp:
+            logger.warning(
+                "[InternalLoop] LongHorizonPlanner error (non-fatal): %s", _lhp
+            )
+
+        # ── v62: FluxMindModel ────────────────────────────────────────────────
+        try:
+            if not hasattr(self, '_flux_mind_model'): self._flux_mind_model = None
+            if self._flux_mind_model is None and self._slow_cycle_count > 10:
+                _ai = getattr(o, 'ai_system', None)
+                if _ai:
+                    from cognition.flux_mind_model import FluxMindModel
+                    self._flux_mind_model = FluxMindModel(o, _ai)
+                    logger.info("[InternalLoop] FluxMindModel ready ✅")
+            if self._flux_mind_model: self._flux_mind_model.tick(self._slow_cycle_count)
+        except Exception as _fmm:
+            logger.debug(f"[InternalLoop] FluxMindModel error (non-fatal): {_fmm}")
+
+        # ── v63: NarrativeCompression ─────────────────────────────────────────
+        try:
+            if not hasattr(self, '_narrative_compression'): self._narrative_compression = None
+            if self._narrative_compression is None and self._slow_cycle_count > 10:
+                _ai = getattr(o, 'ai_system', None)
+                if _ai:
+                    from cognition.narrative_compression import NarrativeCompression
+                    self._narrative_compression = NarrativeCompression(o, _ai)
+                    logger.info("[InternalLoop] NarrativeCompression ready ✅")
+            if self._narrative_compression: self._narrative_compression.tick(self._slow_cycle_count)
+        except Exception as _nc:
+            logger.debug(f"[InternalLoop] NarrativeCompression error (non-fatal): {_nc}")
+
+        # ── v64: MetaLearningAudit ────────────────────────────────────────────
+        try:
+            if not hasattr(self, '_meta_learning_audit'): self._meta_learning_audit = None
+            if self._meta_learning_audit is None and self._slow_cycle_count > 10:
+                _ai = getattr(o, 'ai_system', None)
+                if _ai:
+                    from cognition.meta_learning_audit import MetaLearningAudit
+                    self._meta_learning_audit = MetaLearningAudit(o, _ai)
+                    logger.info("[InternalLoop] MetaLearningAudit ready ✅")
+            if self._meta_learning_audit: self._meta_learning_audit.tick(self._slow_cycle_count)
+        except Exception as _mla:
+            logger.debug(f"[InternalLoop] MetaLearningAudit error (non-fatal): {_mla}")
+
+        # ── v65: StructuralCoupling ───────────────────────────────────────────
+        try:
+            if not hasattr(self, '_structural_coupling'): self._structural_coupling = None
+            if self._structural_coupling is None and self._slow_cycle_count > 10:
+                _ai = getattr(o, 'ai_system', None)
+                if _ai:
+                    from cognition.structural_coupling import StructuralCoupling
+                    self._structural_coupling = StructuralCoupling(o, _ai)
+                    logger.info("[InternalLoop] StructuralCoupling ready ✅")
+            if self._structural_coupling: self._structural_coupling.tick(self._slow_cycle_count)
+        except Exception as _sc:
+            logger.debug(f"[InternalLoop] StructuralCoupling error (non-fatal): {_sc}")
+
+        # ── v66: TemporalSelfProjection ───────────────────────────────────────
+        try:
+            if not hasattr(self, '_temporal_self_projection'): self._temporal_self_projection = None
+            if self._temporal_self_projection is None and self._slow_cycle_count > 5:
+                _ai = getattr(o, 'ai_system', None)
+                if _ai:
+                    from cognition.temporal_self_projection import TemporalSelfProjection
+                    self._temporal_self_projection = TemporalSelfProjection(o, _ai)
+                    logger.info("[InternalLoop] TemporalSelfProjection ready ✅")
+            if self._temporal_self_projection: self._temporal_self_projection.tick(self._slow_cycle_count)
+        except Exception as _tsp:
+            logger.debug(f"[InternalLoop] TemporalSelfProjection error (non-fatal): {_tsp}")
+
+        # Must be ready before SimpleThoughtEvaluator runs (fast cycle) so
+        # record_hypothesis() is never dropped.  get_collector(organism) sets the
+        # singleton; subsequent no-arg calls return the same instance.
+        try:
+            from cognition.emergence_metrics import get_collector as _gec
+            _gec(o, str(getattr(o, '_data_dir', 'data/persona')))
+        except Exception:
+            pass
+        o = self._organism
+
+        logger.debug(f"[InternalLoop] Slow cycle #{self._slow_cycle_count}")
+
+        # 1. Recompute tensions from current state
+        tensions = None
+        if hasattr(o, "tension_engine") and hasattr(o, "_collect_tension_inputs"):
+            try:
+                inputs = o._collect_tension_inputs(
+                    interaction_recency_seconds=o.seconds_since_interaction()
+                )
+                tensions = o.tension_engine.compute(**inputs)
+                # Scanning for contradictions passively reduces coherence pressure
+                # (even if unresolved, the act of inspection brings relief)
+                if hasattr(o, 'pressure'):
+                    o.pressure.satiate("coherence", 0.06)
+            except Exception as e:
+                logger.debug(f"[InternalLoop] Tension compute failed: {e}")
+
+        # 2. Update goal ecology
+        if tensions and hasattr(o, "goal_ecology"):
+            try:
+                energy_level = o.energy.level() if hasattr(o, "energy") else 80.0
+                o.goal_ecology.update_from_tensions(
+                    tensions,
+                    energy_level=energy_level,
+                    user_present=False,
+                )
+            except Exception as e:
+                logger.debug(f"[InternalLoop] Goal ecology update failed: {e}")
+
+        # 3. Homeostasis evaluation
+        if hasattr(o, "homeostasis") and hasattr(o, "_collect_homeostasis_inputs"):
+            try:
+                h_inputs = o._collect_homeostasis_inputs()
+                o.homeostasis.evaluate(**h_inputs)
+            except Exception as e:
+                logger.debug(f"[InternalLoop] Homeostasis eval failed: {e}")
+
+        # 4. Periodic reflection (every N slow cycles)
+        if self._slow_cycle_count % REFLECTION_EVERY_N == 0:
+            self._reflection_cycle()
+
+        # 5. Curiosity-driven intention — feeds workspace context only
+        # (never triggers spontaneous output — that's the proactive system's job)
+        if hasattr(o, "curiosity") and o.energy.curiosity_active():
+            top = o.curiosity.top_topic()
+            if top and hasattr(o, 'workspace'):
+                try:
+                    o.workspace.broadcast(
+                        source="curiosity.intention",
+                        content=f"Inner pull toward: {top}",
+                        priority=0.35,
+                    )
+                except Exception:
+                    pass
+                logger.debug(f"[InternalLoop] Curiosity intention (workspace only): {top!r}")
+
+        # ── v3: NarrativeIdentity sync (every 6th slow cycle ~12 min) ────
+        if self._slow_cycle_count % 6 == 0 and hasattr(o, 'narrative_identity'):
+            try:
+                o.narrative_identity.sync_from_organism()
+            except Exception as _ne:
+                pass
+
+        # ── v3: Memory Intrusion tick (every slow cycle) ──────────────────
+        if hasattr(o, 'memory_intrusion'):
+            try:
+                o.memory_intrusion.tick()
+            except Exception as _mi:
+                pass
+
+        # ── PressureSystem: autonomous drive buildup ──────────────────────
+        if hasattr(o, 'pressure'):
+            try:
+                pressures = o.pressure.tick()
+                dominant = max(pressures, key=pressures.get) if pressures else None
+                if dominant and pressures[dominant] > 0.75:
+                    logger.debug(
+                        f"[InternalLoop] Pressure peak: {dominant}={pressures[dominant]:.2f}"
+                    )
+            except Exception as _pe:
+                logger.debug(f"[InternalLoop] Pressure tick error: {_pe}")
+
+        # The governor must use a current pressure sample. Previously it read
+        # organism._v32_decision_pressure before Phase 1 refreshed that value,
+        # so a restart silently supplied the 0.5 fallback and gated downstream
+        # stages using stale pressure. Phase 1's pressure calculation is safe
+        # to run before workspace competition and is reused below.
+        _gov_pressure_result = None
+        _gov_pressure_source = "fallback"
+        if self._phase1 is not None:
+            try:
+                _candidate_pressure = self._phase1.get_decision_pressure()
+                if isinstance(_candidate_pressure, dict) and isinstance(
+                    _candidate_pressure.get("total"), (int, float)
+                ):
+                    _gov_pressure_result = _candidate_pressure
+                    _gov_pressure_source = "phase1_current"
+            except Exception as _pressure_error:
+                logger.debug(
+                    "[InternalLoop] Current decision pressure unavailable: %s",
+                    type(_pressure_error).__name__,
+                )
+        if _gov_pressure_result is None:
+            _previous_pressure = getattr(o, "_v32_decision_pressure", {})
+            if isinstance(_previous_pressure, dict) and isinstance(
+                _previous_pressure.get("total"), (int, float)
+            ):
+                _gov_pressure_result = _previous_pressure
+                _gov_pressure_source = "previous_sample"
+            else:
+                _gov_pressure_result = {"total": 0.5}
+                _gov_pressure_source = "safe_default"
+        _gov_pressure = float(_gov_pressure_result["total"])
+        _ai_sys_g = getattr(o, "ai_system", None)
+        _ge_g = getattr(_ai_sys_g, "goal_engine", None)
+        _gov_goal_status_counts = self._governor_goal_status_counts(_ge_g)
+        _gov_goal_count = (
+            _gov_goal_status_counts["active"] + _gov_goal_status_counts["dormant"]
+        )
+        if self._governor:
+            self._governor.begin_cycle(
+                total_pressure=_gov_pressure,
+                goal_count=_gov_goal_count,
+                cycle_number=self._slow_cycle_count,
+                pressure_source=_gov_pressure_source,
+                goal_status_counts=_gov_goal_status_counts,
+            )
+
+        # ── V32: Phase 1 Decision Pressure + Workspace Competition ─────────
+        # Every 2 slow cycles: compute pressure AND run workspace competition
+        # to select the dominant cognitive focus (winner).
+        if (self._phase1 and self._slow_cycle_count % 2 == 0
+                and (not self._governor or self._governor.may_run('Phase1Pressure'))):
+            try:
+                # This loop consumes Phase 1 pressure/competition only. The
+                # lightweight Phase 1 plan has no downstream consumer; action
+                # execution is owned by GoalActionExecutor and its persistent
+                # LongHorizonPlanner plan, so do not generate a duplicate.
+                _cycle_result = self._phase1.enhanced_cycle(
+                    None, include_advisory_plan=False,
+                    decision_pressure=_gov_pressure_result,
+                )
+                pressure_result = _cycle_result.get('pressure', {})
+                total_pressure  = pressure_result.get('total', 0.5)
+                _phase1_competition_output = _cycle_result.get("competition", {})
+                _phase1_competition_metrics = _phase1_competition_output.get("competition", {})
+                _memory_recall_candidate_refs = self._memory_recall_candidate_refs(
+                    _phase1_competition_output
+                )
+                _proposal_admission = _cycle_result.get("rejected_goal_suggestions", [])
+                if _proposal_admission:
+                    self._record_cycle_stage(
+                        "goal_proposal_admission", "partial", output={
+                            "rejected_count": len(_proposal_admission),
+                            "rejections": _proposal_admission[:12],
+                        },
+                    )
+                _phase1_evidence_output = dict(_phase1_competition_output)
+                _phase1_evidence_output["memory_recall_candidate_refs"] = (
+                    _memory_recall_candidate_refs[:20]
+                )
+                _goal_proposal_origin_refs = self._goal_proposal_origin_refs(
+                    _cycle_result.get("goal_suggestions", [])
+                )
+                _phase1_evidence_output["goal_proposal_origin_refs"] = (
+                    _goal_proposal_origin_refs
+                )
+                _phase1_evidence_ref = self._record_cycle_stage(
+                    "phase1_competition", "completed", output=_phase1_evidence_output,
+                    metrics={
+                        "total_pressure": float(total_pressure),
+                        "candidate_count": int(_phase1_competition_metrics.get("total_candidates", 0) or 0),
+                        "memory_recall_candidate_count": len(_memory_recall_candidate_refs),
+                        "goal_proposal_origin_count": len(_goal_proposal_origin_refs),
+                    },
+                )
+                self._record_cycle_stage(
+                    "phase1_advisory_plan", "skipped_by_design",
+                    inputs={"competition_output_ref": _phase1_evidence_ref},
+                    output={"reason": "actions are planned by GoalActionExecutor/LongHorizonPlanner"},
+                )
+
+                # Log workspace winner — the dominant cognitive focus
+                _winner = _cycle_result.get('winner')
+                if _winner:
+                    _arbitration_status = "no_candidate"
+                    _arbitration_output = None
+                    # Phase 4.1/4.2: Executive Arbitration — re-score top
+                    # candidates via prospective prediction; override the
+                    # raw-score winner if a runner-up predicts a
+                    # meaningfully better outcome. Closes the gap where
+                    # competition's all_candidates was computed and
+                    # returned but nothing downstream ever read it
+                    # (confirmed by reading core/phase1_integration.py —
+                    # only `winner` was consumed).
+                    try:
+                        from cognition.executive_arbitration import arbitrate
+                        if not hasattr(self, '_arbitration_runs'):
+                            self._arbitration_runs      = 0
+                            self._arbitration_overrides = 0
+                            self._arbitration_skipped   = 0
+                        # Fix: _cycle_result wraps compete()'s FULL raw output
+                        # under its own 'competition' key — pass THAT raw
+                        # output (already shaped {'winner':...,
+                        # 'competition': {'all_candidates':...}}), not the
+                        # outer _cycle_result, which would double-nest.
+                        _raw_competition = _cycle_result.get('competition', {})
+                        # Phase 4.x: sync existing subsystems' status into the
+                        # shared WorkspaceState BEFORE arbitrating, so the
+                        # multi-factor utility function in executive_
+                        # arbitration.py has counterfactual/identity/goal/
+                        # calibration terms to read, not just raw+predicted.
+                        _gw = getattr(o, "workspace", None)
+                        _ws_state = None
+                        if _gw is not None:
+                            try:
+                                from cognition.workspace_state_sync import sync_workspace_state
+                                sync_workspace_state(_gw, organism=o, internal_loop=self)
+                                _ws_state = _gw.get_state()
+                            except Exception as _sync_e:
+                                logger.debug(f"[InternalLoop] workspace sync error (non-fatal): {_sync_e}")
+                        _emo_v, _emo_a = None, None
+                        try:
+                            _emo = getattr(getattr(o, 'ai_system', None), 'emotional_state', None)
+                            if _emo and hasattr(_emo, 'get_overall_valence_arousal'):
+                                _emo_v, _emo_a = _emo.get_overall_valence_arousal()
+                        except Exception:
+                            pass
+                        _arb = arbitrate(
+                            _raw_competition, self._consequence_model,
+                            self._world_self_dynamics,
+                            workspace_state=_ws_state,
+                            valence=_emo_v, arousal=_emo_a,
+                        )
+                        # Fix: this branch previously only logged (and only
+                        # counted anything at all) when arbitration actually
+                        # overrode the raw winner. On every other cycle —
+                        # confirmed winner, or nothing to arbitrate — the
+                        # module silently produced zero console output,
+                        # making it look like arbitration wasn't running at
+                        # all. It now logs (and counts) every run.
+                        if _arb is None:
+                            _arbitration_skip_reason = _executive_arbitration_skip_reason(
+                                _raw_competition, self._consequence_model,
+                            )
+                            _arbitration_status = f"skipped_{_arbitration_skip_reason}"
+                            self._arbitration_skipped += 1
+                            logger.debug(
+                                "[InternalLoop] ⚖️ Executive arbitration skipped: %s",
+                                _arbitration_skip_reason,
+                            )
+                            _arbitration_output = {
+                                "result": None,
+                                "skip_reason": _arbitration_skip_reason,
+                            }
+                        else:
+                            _arbitration_status = "completed"
+                            self._arbitration_runs += 1
+                            # Phase 5.4: record this decision for later outcome
+                            # review, regardless of override — learning from
+                            # every goal-type decision, not just overrides,
+                            # gives far more signal per unit of engagement.
+                            if self._arbitration_learning is not None:
+                                try:
+                                    _ge = getattr(getattr(o, 'ai_system', None), 'goal_engine', None)
+                                    self._arbitration_learning.record(
+                                        _arb, self._slow_cycle_count, goal_engine=_ge
+                                    )
+                                except Exception as _al_e:
+                                    logger.debug(f"[InternalLoop] arbitration learning record failed (non-fatal): {_al_e}")
+                            if _arb.overridden:
+                                self._arbitration_overrides += 1
+                                logger.info(
+                                    f"[InternalLoop] ⚖️ Executive arbitration: {_arb.reasoning}"
+                                )
+                                _winner = _arb.arbitrated_winner
+                                _arbitration_output = _winner
+                            else:
+                                logger.info(
+                                    f"[InternalLoop] ⚖️ Executive arbitration: {_arb.reasoning}"
+                                )
+                            _arbitration_output = {
+                                "overridden": bool(_arb.overridden),
+                                "winner": _winner,
+                                "reason_ref": self._evidence_fingerprint(_arb.reasoning),
+                            }
+                    except Exception as _arb_e:
+                        _arbitration_status = "failed"
+                        logger.debug(f"[InternalLoop] arbitration error (non-fatal): {_arb_e}")
+                    _arbitration_output = dict(_arbitration_output or {})
+                    _arbitration_output["selected_candidate_ref"] = (
+                        self._evidence_fingerprint(_winner.get("id"))
+                        if isinstance(_winner, dict) and _winner.get("id") else None
+                    )
+                    _arbitration_evidence_ref = self._record_cycle_stage(
+                        "executive_arbitration", _arbitration_status,
+                        inputs={"competition_output_ref": _phase1_evidence_ref},
+                        output=_arbitration_output,
+                    )
+
+                    # A thought proposal becomes a persistent goal only if it
+                    # survives workspace selection and executive arbitration.
+                    # GoalEngine owns the write and confirms it from disk;
+                    # merely scoring or broadcasting a proposal is not goal
+                    # creation.
+                    _selected_proposal = None
+                    _commit_result = None
+                    _winner_source = _winner.get("source_data", {}) if isinstance(_winner, dict) else {}
+                    if isinstance(_winner_source, dict):
+                        _selected_proposal = _winner_source.get("_goal_proposal")
+                    if isinstance(_selected_proposal, dict):
+                        if _selected_proposal.get("hypothesis_pending"):
+                            _evaluator = getattr(self._phase1, "components", {}).get("thought_evaluator")
+                            try:
+                                _hypothesis = _evaluator._generate_hypothesis(
+                                    str(_selected_proposal.get("origin_content") or ""),
+                                    str(_selected_proposal.get("concept") or ""),
+                                ) if _evaluator else ""
+                            except Exception as _hypothesis_error:
+                                logger.debug(
+                                    "[InternalLoop] selected proposal hypothesis synthesis failed: %s",
+                                    _hypothesis_error,
+                                )
+                                _hypothesis = ""
+                            _selected_proposal["hypothesis"] = _hypothesis
+                            _selected_proposal["hypothesis_pending"] = False
+                        _selected_goal_engine = getattr(
+                            getattr(o, "ai_system", None), "goal_engine", None
+                        )
+                        if _selected_goal_engine is not None:
+                            try:
+                                _commit = _selected_goal_engine.commit_selected_thought_proposal(
+                                    _selected_proposal, self._slow_cycle_count
+                                )
+                            except Exception as _commit_error:
+                                _commit = {"created": False, "verified": False, "reason": str(_commit_error)}
+                            _commit_result = _commit
+                            if _commit.get("created") and _commit.get("verified"):
+                                _winner = dict(_winner)
+                                _winner.update({
+                                    "type": "goal",
+                                    "id": _commit["id"],
+                                    "name": _commit["topic"],
+                                    "topic": _commit["topic"],
+                                    "label": f"Persisted selected goal: {_commit['topic']}",
+                                })
+                                logger.info(
+                                    "[InternalLoop] Selected proposal committed and read-back verified: "
+                                    "goal=%s topic=%r",
+                                    _commit["id"], _commit["topic"],
+                                )
+                            else:
+                                logger.info(
+                                    "[InternalLoop] Selected thought proposal was not committed: %s",
+                                    _commit.get("reason", "not_verified"),
+                                )
+                    # Persist terminal outcomes against the exact source
+                    # thought. Proposals that lost arbitration stay pending
+                    # and are re-emitted by SimpleThoughtEvaluator next time;
+                    # transient commit failures also stay pending for retry.
+                    _proposal_suggestions = _cycle_result.get("goal_suggestions", [])
+                    _selected_proposal_id = (
+                        str(_selected_proposal.get("proposal_id") or "")
+                        if isinstance(_selected_proposal, dict) else ""
+                    )
+                    _proposal_outcomes = []
+                    _evaluator = getattr(self._phase1, "components", {}).get("thought_evaluator")
+                    _disposition_recorder = getattr(
+                        _evaluator, "record_proposal_disposition", None
+                    )
+                    for _proposal in _proposal_suggestions:
+                        if not isinstance(_proposal, dict):
+                            continue
+                        _is_selected = bool(
+                            _selected_proposal_id
+                            and _proposal.get("proposal_id") == _selected_proposal_id
+                        )
+                        _verified_commit = bool(
+                            _is_selected and isinstance(_commit_result, dict)
+                            and _commit_result.get("verified")
+                        )
+                        if _verified_commit and _commit_result.get("created"):
+                            _proposal_status, _proposal_reason = "committed", "goal_readback_verified"
+                        elif _verified_commit and _commit_result.get("reason") == "existing_goal":
+                            _proposal_status, _proposal_reason = "satisfied", "existing_goal_verified"
+                        elif _is_selected:
+                            _proposal_status, _proposal_reason = "retry_pending", str(
+                                (_commit_result or {}).get("reason", "selected_commit_unverified")
+                            )[:80]
+                        else:
+                            _proposal_status, _proposal_reason = "lost_pending", "not_selected_by_arbitration"
+                        _source_disposition = self._persist_proposal_disposition(
+                            _proposal, _proposal_status, _disposition_recorder,
+                            cycle=self._slow_cycle_count, reason=_proposal_reason,
+                        )
+                        if _source_disposition["status"] in {"failed", "partial"}:
+                            logger.warning(
+                                "[InternalLoop] proposal source disposition not fully persisted: "
+                                "status=%s updated=%s expected=%s reason=%s",
+                                _source_disposition["status"],
+                                _source_disposition["updated_sources"],
+                                _source_disposition["expected_sources"],
+                                _source_disposition.get("reason_code", "unknown"),
+                            )
+                        _proposal_outcomes.append({
+                            "proposal_id_ref": self._evidence_fingerprint(
+                                _proposal.get("proposal_id")
+                            ),
+                            "source_thought_ref": self._thought_id_reference(
+                                _proposal.get("origin_thought")
+                            ),
+                            "status": _proposal_status,
+                            "reason_code": _proposal_reason,
+                            "source_disposition": _source_disposition,
+                        })
+                    _disposition_persistence_failed = any(
+                        item.get("source_disposition", {}).get("status") in {"failed", "partial"}
+                        for item in _proposal_outcomes
+                    )
+                    self._record_cycle_stage(
+                        "goal_proposal_disposition",
+                        "partial" if _disposition_persistence_failed else "completed" if _proposal_outcomes else "no_proposals",
+                        inputs={"phase1_competition_ref": _phase1_evidence_ref,
+                                "arbitration_receipt_ref": _arbitration_evidence_ref},
+                        output={"proposal_count": len(_proposal_outcomes),
+                                "outcomes": _proposal_outcomes[:20]},
+                    )
+                    _commit_evidence_ref = self._record_cycle_stage(
+                        "selected_proposal_commit",
+                        "verified_commit" if isinstance(_commit_result, dict) and _commit_result.get("created") and _commit_result.get("verified")
+                        else "rejected_or_unverified" if isinstance(_commit_result, dict)
+                        else "no_selected_proposal",
+                        inputs={
+                            "arbitrated_winner_ref": _arbitration_evidence_ref,
+                            "selected_candidate_ref": (
+                                self._evidence_fingerprint(_winner.get("id"))
+                                if isinstance(_winner, dict) and _winner.get("id") else None
+                            ),
+                        },
+                        output=(
+                            {"created": bool(_commit_result.get("created")),
+                             "verified": bool(_commit_result.get("verified")),
+                             "goal_id_ref": self._evidence_fingerprint(_commit_result.get("id")),
+                             "topic_ref": self._evidence_fingerprint(_commit_result.get("topic")),
+                             "proposal_source_thought_ref": (
+                                 self._thought_id_reference(_selected_proposal.get("origin_thought"))
+                                 if isinstance(_selected_proposal, dict)
+                                 and _selected_proposal.get("origin_thought") else None
+                             ),
+                             "persisted_source_thought_ref": (
+                                 self._thought_id_reference(_commit_result.get("source_thought_id"))
+                                 if _commit_result.get("created")
+                                 and _commit_result.get("verified")
+                                 and _commit_result.get("source_thought_id") else None
+                             ),
+                             "source_thought_source": _commit_result.get("source_thought_source", ""),
+                             "source_thought_type": _commit_result.get("source_thought_type", ""),
+                             "source_concept_method": _commit_result.get("source_concept_method", "")}
+                            if isinstance(_commit_result, dict) else None
+                        ),
+                    )
+                    _proposal_focus_admitted = self._selected_proposal_commit_admitted(
+                        _winner, _commit_result,
+                    )
+                    _proposal_admission_status, _proposal_admission_output = (
+                        self._proposal_focus_admission_evidence(
+                            _winner, _proposal_focus_admitted,
+                        )
+                    )
+                    _proposal_focus_ref = self._record_cycle_stage(
+                        "proposal_durable_focus_admission",
+                        _proposal_admission_status,
+                        inputs={"selected_proposal_commit_ref": _commit_evidence_ref},
+                        output=_proposal_admission_output,
+                    )
+                    if isinstance(_selected_proposal, dict) and not _proposal_focus_admitted:
+                        _winner = dict(_winner)
+                        _winner["proposal_admission"] = "rejected"
+
+                    _comp  = _cycle_result.get('competition', {}).get('competition', {})
+                    _cands = _comp.get('total_candidates', 0)
+                    _margin = _comp.get('winning_margin', 0)
+                    if isinstance(_selected_proposal, dict) and not _proposal_focus_admitted:
+                        logger.info(
+                            "[InternalLoop] Workspace proposal rejected from focus: %s "
+                            "| score=%.2f (from %s candidates, margin=%.2f)",
+                            _winner.get("label", _winner.get("type", "?") + " | " + _winner.get("name", "?"))[:60],
+                            float(_winner.get("score", 0) or 0), _cands, _margin,
+                        )
+                    else:
+                        logger.info(
+                            f"[InternalLoop] 🏆 Workspace winner: "
+                            f"{_winner.get('label', _winner.get('type','?')+' | '+_winner.get('name','?'))[:60]} "
+                            f"| score={_winner.get('score',0):.2f} "
+                            f"(from {_cands} candidates, margin={_margin:.2f})"
+                        )
+                    # Store winner for other systems to read
+                    _published_workspace_winner = self._workspace_focus_for_consumers(
+                        _winner, _proposal_focus_admitted,
+                    )
+                    o._v32_workspace_winner = _published_workspace_winner
+                    o._v32_workspace_winner_cycle = self._slow_cycle_count
+                    _ws_state = self._publish_global_workspace_focus(
+                        o, _published_workspace_winner,
+                        getattr(self, "_long_horizon_planner", None),
+                    ) or _ws_state
+                    _winner_evidence_ref = self._record_cycle_stage(
+                        "winner_published_to_workspace_state", "completed",
+                        inputs={
+                            "arbitration_output_ref": _arbitration_evidence_ref,
+                            "proposal_focus_admission_ref": _proposal_focus_ref,
+                        },
+                        output={
+                            "published_winner": _published_workspace_winner,
+                            "raw_cycle_winner_ref": self._evidence_fingerprint(_winner),
+                        },
+                    )
+                    o._v32_workspace_winner_evidence_ref = _winner_evidence_ref
+                    o._v32_workspace_winner_evidence_cycle = self._slow_cycle_count
+
+                    # ── WorkspaceBias: commit the focus as an ACTIVE, EMBEDDED
+                    # commitment. This is what lets the focus BIAS downstream
+                    # selection and be measured as OVERRIDDEN by real behaviour
+                    # (instead of only being a prompt string the LLM may ignore).
+                    if _proposal_focus_admitted:
+                        try:
+                            from cognition.workspace_bias import get_workspace_bias
+                            get_workspace_bias(o, str(getattr(o, '_data_dir', 'data/persona'))).commit(
+                                _winner, self._slow_cycle_count
+                            )
+                        except Exception as _wb_ce:
+                            logger.debug(f"[InternalLoop] workspace-bias commit error (non-fatal): {_wb_ce}")
+                    else:
+                        logger.info(
+                            "[InternalLoop] Rejected proposal remains a cycle observation; "
+                            "durable workspace focus was not updated"
+                        )
+                    # Phase 4.x: also expose the full structured snapshot.
+                    # Existing consumers of _v32_workspace_winner (a single
+                    # string/dict) are untouched; new/updated consumers
+                    # (e.g. cognitive_organism._build_prompt_additions) can
+                    # read the richer object without a second sync pass.
+                    if _ws_state is not None:
+                        o._v32_workspace_state = _ws_state
+
+                    # ── DecisionCommitmentLayer ──────────────────────────
+                    # Record this decision and enforce temporal consistency.
+                    # Lazy-init on first winner so organism is fully ready.
+                    if _proposal_focus_admitted:
+                        try:
+                            if self._commitment_layer is None:
+                                from cognition.decision_commitment import DecisionCommitmentLayer
+                                self._commitment_layer = DecisionCommitmentLayer(
+                                    o, data_dir=str(getattr(o, '_data_dir', 'data/persona'))
+                                )
+                                logger.info('[InternalLoop] DecisionCommitmentLayer ready ✅')
+                            self._commitment_layer.tick(_winner, self._slow_cycle_count)
+                        except Exception as _dcl_e:
+                            logger.debug(f'[InternalLoop] CommitmentLayer error: {_dcl_e}')
+
+                    # ── EmergenceMetricsCollector ────────────────────────────
+                    try:
+                        from cognition.emergence_metrics import get_collector
+                        _emc = get_collector(o, str(getattr(o, '_data_dir', 'data/persona')))
+                        if _emc:
+                            _emc.tick(self._slow_cycle_count)
+                    except Exception as _emc_e:
+                        logger.debug(f'[InternalLoop] EmergenceMetrics error: {_emc_e}')
+
+                    # Winning workspace arbitration establishes cognitive
+                    # focus. It is not an executed effect; GoalActionExecutor
+                    # records action feedback only after it actually runs.
+
+                    # Refresh curiosity with winner topic — prevents monotonic decay.
+                    # Fix: previously did _winner.get('name','').replace('_',' ')
+                    # — feeding slug fragments like "curiosity_wonder_dont" straight
+                    # back into curiosity.json, actively injecting noise topics.
+                    # Now uses the clean 'topic' field; skips entirely if absent
+                    # rather than falling back to slug-mangling.
+                    if (
+                        _proposal_focus_admitted
+                        and hasattr(o, 'curiosity')
+                        and _winner.get('type') in ('goal', 'thought')
+                    ):
+                        try:
+                            _topic = _winner.get('topic', '')
+                            if _topic and len(_topic) > 3:
+                                o.curiosity.add_question(_topic, f"What can I learn about {_topic}?")
+                        except Exception:
+                            pass
+
+                if not _winner:
+                    _no_winner_ref = self._record_cycle_stage(
+                        "executive_arbitration", "skipped_no_winner",
+                        inputs={"competition_output_ref": _phase1_evidence_ref},
+                    )
+                    # An explicit empty arbitration result supersedes the last
+                    # focus. Leaving the previous object in shared organism
+                    # state lets prompt consumers keep presenting it forever
+                    # and can make the action executor treat it as current.
+                    self._record_cycle_stage(
+                        "selected_proposal_commit", "no_winner",
+                        inputs={"arbitrated_winner_ref": _no_winner_ref},
+                    )
+                    self._publish_empty_workspace_focus(
+                        o, reason="no_candidate", status="no_winner",
+                        inputs={"competition_output_ref": _phase1_evidence_ref},
+                    )
+
+                # Log high pressure
+                if total_pressure > 0.7:
+                    logger.info(
+                        f"[InternalLoop] V32 High decision pressure: {total_pressure:.2f} "
+                        f"({pressure_result.get('interpretation', 'UNKNOWN')})"
+                    )
+
+                # Store pressure for access by other systems
+                o._v32_decision_pressure = pressure_result
+
+            except Exception as _p1e:
+                self._record_cycle_stage(
+                    "phase1_competition", "failed",
+                    metrics={
+                        "error_type": type(_p1e).__name__,
+                        "error_summary": self._exception_summary(_p1e),
+                    },
+                )
+                # A failed arbitration cannot authorize stale attention or
+                # allow an unrelated old goal to be selected downstream.
+                self._publish_empty_workspace_focus(
+                    o, reason="phase1_failed", status="cleared_after_error",
+                )
+                logger.debug(f"[InternalLoop] Phase 1 pressure/workspace error: {_p1e}")
+        elif self._phase1:
+            self._record_cycle_stage(
+                "phase1_competition",
+                "skipped_governor" if self._slow_cycle_count % 2 == 0 else "skipped_cadence",
+            )
+        else:
+            self._record_cycle_stage("phase1_competition", "unavailable")
+
+        # ── GoalEngine: autonomous goal formation & maintenance ───────────
+        # tick() now correctly reads pressures from organism.pressure and
+        # topics from organism.semantic_memory — real goal emergence, not
+        # injection. Goals form from identity traits × actual topics discussed.
+        _ai_sys = getattr(o, 'ai_system', None)
+        _ge = getattr(_ai_sys, 'goal_engine', None)
+        if _ge is not None and (not self._governor or self._governor.may_run('GoalEngine')):
+            try:
+                _ge.tick()
+                _get_tick_report = getattr(_ge, "get_last_tick_report", None)
+                _goal_engine_report = _get_tick_report() if callable(_get_tick_report) else None
+                _goal_engine_status = (
+                    str(_goal_engine_report.get("status", "returned_without_receipt"))
+                    if isinstance(_goal_engine_report, dict) else "returned_without_receipt"
+                )
+                _ge_active = len([g for g in _ge._goals.values() if g.status == "active"])
+                _goal_engine_evidence_ref = self._record_cycle_stage(
+                    "goal_engine_tick", _goal_engine_status,
+                    output=_goal_engine_report or {"active_goal_count": _ge_active},
+                )
+                _post_goal_status_counts = self._governor_goal_status_counts(_ge)
+                _registry_transition = {
+                    **{
+                        f"pre_{key}_goal_count": int(_gov_goal_status_counts.get(key, 0))
+                        for key in (
+                            "active", "dormant", "completed", "archived",
+                            "abandoned", "low_quality", "other",
+                        )
+                    },
+                    "pre_goal_records_seen": int(_gov_goal_status_counts.get("total", 0)),
+                    **{
+                        f"post_{key}_goal_count": int(_post_goal_status_counts.get(key, 0))
+                        for key in (
+                            "active", "dormant", "completed", "archived",
+                            "abandoned", "low_quality", "other",
+                        )
+                    },
+                    "post_goal_records_seen": int(_post_goal_status_counts.get("total", 0)),
+                }
+                self._record_cycle_stage(
+                    "goal_engine_registry_transition", _goal_engine_status,
+                    inputs={"goal_engine_output_ref": _goal_engine_evidence_ref},
+                    output=_registry_transition,
+                )
+                if self._governor:
+                    self._governor.record('GoalEngine', _ge_active)
+
+                # Inject active goal thoughts into GW for CCS + Observatory
+                if hasattr(o, 'workspace'):
+                    if _goal_engine_status == "failed":
+                        self._record_cycle_stage(
+                            "goal_thoughts_broadcast", "skipped_upstream_failure",
+                            inputs={"goal_engine_output_ref": _goal_engine_evidence_ref},
+                        )
+                    else:
+                        _goal_thoughts = _ge.get_goal_thoughts()
+                        _broadcast_status, _broadcast_metrics = self._broadcast_goal_thoughts(
+                            o.workspace, _goal_thoughts
+                        )
+                        self._record_cycle_stage(
+                            "goal_thoughts_broadcast", _broadcast_status,
+                            inputs={"goal_engine_output_ref": _goal_engine_evidence_ref},
+                            output=_broadcast_metrics,
+                        )
+                else:
+                    self._record_cycle_stage(
+                        "goal_thoughts_broadcast", "unavailable",
+                        inputs={"goal_engine_output_ref": _goal_engine_evidence_ref},
+                    )
+            except Exception as _ge_e:
+                self._record_cycle_stage(
+                    "goal_engine_tick", "failed",
+                    metrics={
+                        "error_type": type(_ge_e).__name__,
+                        "error_summary": self._exception_summary(_ge_e),
+                    },
+                )
+                logger.debug(f"[InternalLoop] Goal engine tick error: {_ge_e}")
+        elif _ge is not None:
+            self._record_cycle_stage("goal_engine_tick", "skipped_governor")
+        else:
+            self._record_cycle_stage("goal_engine_tick", "unavailable")
+
+        # ── GoalActionExecutor: translate goals → concrete actions ───────────
+        # Runs every _action_every_n slow cycles. Picks the highest-activation
+        # goal and executes one action: memory_recall, web_search,
+        # user_question, or self_question. Increments actions_taken so GEI rises.
+        if self._slow_cycle_count % self._action_every_n == 0:
+            try:
+                # Lazy init — needs the organism reference
+                if self._goal_action_executor is None:
+                    from cognition.goal_action_executor import GoalActionExecutor
+                    self._goal_action_executor = GoalActionExecutor(o)
+                    logger.info("[InternalLoop] GoalActionExecutor ready ✅")
+
+                _winner = getattr(o, "_v32_workspace_winner", None)
+                winner_cycle = getattr(o, "_v32_workspace_winner_cycle", None)
+                winner_age = self._workspace_decision_age_cycles(
+                    self._slow_cycle_count, _winner, winner_cycle,
+                )
+                decision_is_fresh = (
+                    isinstance(_winner, dict)
+                    and winner_age is not None
+                    and 0 <= winner_age <= 2
+                )
+                preferred_goal_id = (
+                    str(_winner.get("id"))
+                    if decision_is_fresh and _winner.get("type") == "goal" and _winner.get("id")
+                    else None
+                )
+                # A fresh arbitration decision is authoritative. If attention
+                # selected a thought/tension or a goal unavailable to the
+                # executor, do not silently act on an unrelated older goal.
+                _action_report = self._goal_action_executor.run_tick(
+                    preferred_goal_id=preferred_goal_id,
+                    selection_is_authoritative=decision_is_fresh,
+                    cycle_id=self._slow_cycle_count,
+                )
+                _action_receipt = self._goal_action_receipt(
+                    _action_report, self._goal_action_executor,
+                )
+                _selection_evidence = self._goal_action_selection_evidence(
+                    _action_receipt, decision_is_fresh=decision_is_fresh,
+                )
+                _previous_winner_ref = getattr(o, "_v32_workspace_winner_evidence_ref", None)
+                _action_stage_status = (
+                    str(_action_receipt.get("outcome_status", "completed"))
+                    if isinstance(_action_receipt, dict) else "no_action_report"
+                )
+                self._record_cycle_stage(
+                    "goal_action_executor", _action_stage_status,
+                    inputs={
+                        **_selection_evidence,
+                        "winner_output_ref": _previous_winner_ref if decision_is_fresh else None,
+                        "decision_fresh": decision_is_fresh,
+                        "winner_age_cycles": winner_age,
+                        "preferred_goal_id_ref": self._evidence_fingerprint(preferred_goal_id) if preferred_goal_id else None,
+                    },
+                    output=_action_receipt,
+                )
+                if _action_report and _action_report.get("success"):
+                    logger.info(
+                        f"[InternalLoop] ⚡ Goal action: "
+                        f"{_action_report['action']} on "
+                        f"'{_action_report['goal_topic'][:30]}' — "
+                        f"{_action_report['result'][:60]}"
+                    )
+            except Exception as _ae:
+                self._record_cycle_stage(
+                    "goal_action_executor", "failed",
+                    metrics={
+                        "error_type": type(_ae).__name__,
+                        "error_summary": self._exception_summary(_ae),
+                    },
+                )
+                logger.debug(f"[InternalLoop] GoalActionExecutor error: {_ae}")
+        else:
+            self._record_cycle_stage("goal_action_executor", "skipped_cadence")
+
+        # ── V32: Phase 1 Thread Resolution (prevent infinite loops) ───────
+        # Every 10 slow cycles (~20 minutes), resolve stuck thought threads
+        if self._phase1 and self._slow_cycle_count % 10 == 0:
+            try:
+                resolved, deferred = self._phase1.resolve_stuck_threads()
+                if resolved > 0 or deferred > 0:
+                    logger.info(
+                        f"[InternalLoop] V32 Thread resolution: "
+                        f"{resolved} resolved, {deferred} deferred"
+                    )
+            except Exception as _tr:
+                logger.debug(f"[InternalLoop] Thread resolution error: {_tr}")
+
+        # ── V33: Phase 2 Advanced Thought Evaluation (semantic) ───────────
+        # Every 7 slow cycles (~14 minutes), evaluate thoughts with semantic analysis
+        _phase2_eval_due = self._slow_cycle_count % 7 == 0
+        _phase2_eval_allowed = (
+            self._phase2 is not None
+            and _phase2_eval_due
+            and (not self._governor or self._governor.may_run('Phase2ThoughtEval'))
+        )
+        if self._phase2 is None:
+            self._record_cycle_stage("phase2_advanced_evaluation", "unavailable")
+        elif not _phase2_eval_due:
+            self._record_cycle_stage(
+                "phase2_advanced_evaluation", "skipped_cadence",
+                metrics={"cycle": self._slow_cycle_count, "interval_cycles": 7},
+            )
+        elif not _phase2_eval_allowed:
+            self._record_cycle_stage(
+                "phase2_advanced_evaluation", "skipped_governor",
+                metrics=self._phase2_governor_skip_metrics("Phase2ThoughtEval"),
+            )
+        else:
+            try:
+                evaluated_thoughts = self._phase2.evaluate_thoughts_advanced()
+                _phase2_eval_ref = self._record_cycle_stage(
+                    "phase2_advanced_evaluation",
+                    "completed" if evaluated_thoughts else "no_candidates",
+                    output={"evaluated_count": len(evaluated_thoughts or [])},
+                )
+                if evaluated_thoughts:
+                    logger.info(
+                        f"[InternalLoop] V33 Advanced evaluation: {len(evaluated_thoughts)} thoughts "
+                        f"analyzed with semantic similarity"
+                    )
+
+                    # Create/mutate goals from advanced evaluation
+                    _goal_engine = getattr(
+                        getattr(o, "ai_system", None), "goal_engine", None
+                    )
+                    mutations = self._phase2.create_and_mutate_goals(
+                        evaluated_thoughts, goal_engine=_goal_engine
+                    )
+                    if (_goal_engine is not None
+                            and hasattr(_goal_engine, "reload_from_disk") and any(
+                        mutations.get(key)
+                        for key in ("created_goals", "updated_goals", "merged_goals")
+                    )):
+                        _goal_engine.reload_from_disk()
+
+                    created = len(mutations.get('created_goals', []))
+                    updated = len(mutations.get('updated_goals', []))
+                    merged = len(mutations.get('merged_goals', []))
+
+                    if created or updated or merged:
+                        logger.info(
+                            f"[InternalLoop] V33 Goal mutations: "
+                            f"{created} created, {updated} updated, {merged} merged"
+                        )
+                    self._record_cycle_stage(
+                        "phase2_goal_mutation", "completed",
+                        inputs={"evaluation_output_ref": _phase2_eval_ref},
+                        output={
+                            "created_count": created,
+                            "updated_count": updated,
+                            "merged_count": merged,
+                        },
+                    )
+            except Exception as _ate:
+                self._record_cycle_stage(
+                    "phase2_advanced_evaluation", "failed",
+                    metrics={
+                        "error_type": type(_ate).__name__,
+                        "error_summary": self._exception_summary(_ate),
+                    },
+                )
+                logger.debug(f"[InternalLoop] Advanced thought evaluation error: {_ate}")
+
+        # ── EventBus heartbeat: emit dominant drive state every slow cycle ─
+        # This ensures the bus is active even between surprising interactions,
+        # and gives the health monitor a non-zero baseline to evaluate.
+        if hasattr(o, 'event_bus') and hasattr(o, 'pressure'):
+            try:
+                from core.cognitive_event_bus import DRIVE_SPIKE
+                pressures = o.pressure.levels() if hasattr(o.pressure, 'levels') else {}
+                if not pressures:
+                    pressures = {
+                        k: r.effective_pressure()
+                        for k, r in getattr(o.pressure, 'reservoirs', {}).items()
+                    }
+                if pressures:
+                    dominant = max(pressures, key=pressures.get)
+                    dominant_level = pressures[dominant]
+                    if dominant_level > 0.40:  # only emit if meaningfully active
+                        o.event_bus.emit(DRIVE_SPIKE, {
+                            "drive":   dominant,
+                            "urgency": round(dominant_level, 3),
+                            "source":  "internal_loop_heartbeat",
+                        }, source="internal_loop")
+            except Exception:
+                pass
+
+        # ── SleepCycleManager: phase tick + dispatch queued tasks ─────────
+        if hasattr(o, 'sleep_cycle'):
+            try:
+                phase = o.sleep_cycle.tick()
+                executed = o.sleep_cycle.run_pending()
+                if executed:
+                    logger.info(f"[InternalLoop] Sleep phase {phase.value}: ran {executed}")
+            except Exception as _sc:
+                logger.debug(f"[InternalLoop] SleepCycle tick error: {_sc}")
+
+        # ── Identity batch processing (SLEEP phase preferred, fallback in slow cycle) ──
+        # FIX: identity_queue was at 51 and never draining.
+        # Root cause: priority=8 with skip_if_busy=True means it almost never
+        # acquires the lock (BACKGROUND_PRIORITY_THRESHOLD=3, anything >= 3
+        # uses non-blocking acquire). Changed to priority=2 (below threshold)
+        # so it BLOCKS briefly and actually drains. In sleep/dream: priority=1
+        # (highest urgency). Also run up to 2 drain passes per slow cycle when
+        # queue is large, applying goal fitness mutation on high-dissonance items.
+        try:
+            sc_phase = getattr(getattr(o, 'sleep_cycle', None), 'phase', None)
+            ai_sys   = getattr(o, 'ai_system', None)
+            phase_val = sc_phase.value if sc_phase else 'unknown'
+            if ai_sys:
+                id_sys = getattr(ai_sys, 'identity_system', None)
+                if id_sys and id_sys.pending_memory_count > 0:
+                    from core.llm_scheduler import llm_scheduler
+                    _in_rest_phase = phase_val in ('sleep', 'dream')
+                    # Priority BELOW threshold → blocking acquire (actually drains)
+                    _prio = 1 if _in_rest_phase else 2
+                    # Large queue: attempt 2 passes per cycle
+                    _passes = 2 if id_sys.pending_memory_count > 20 else 1
+                    for _ in range(_passes):
+                        with llm_scheduler.sync_slot(priority=_prio, skip_if_busy=False,
+                                                     caller="identity_batch") as acq:
+                            if acq:
+                                id_sys.get_identity()
+                                logger.debug(
+                                    f"[InternalLoop] Identity batch drained "
+                                    f"(phase={phase_val}), "
+                                    f"{id_sys.pending_memory_count} still pending"
+                                )
+        except Exception as _ib:
+            logger.debug(f"[InternalLoop] Identity batch error: {_ib}")
+
+        # ── GW → Episodic Memory: persist high-priority broadcasts ───────────
+        # Every slow cycle (~2 min), drain GW items with priority ≥ 0.60
+        # that haven't been written to FAISS yet. This closes the gap between
+        # the working memory (volatile) and episodic memory (persistent).
+        try:
+            ws  = getattr(o, 'workspace', None)
+            ms  = getattr(getattr(o, 'ai_system', None), 'memory_system', None)
+            if ws and ms:
+                now   = time.time()
+                since = getattr(self, '_last_gw_flush', 0.0)
+                items = [i for i in ws.recent(32)
+                         if getattr(i, 'priority', 0) >= 0.75   # raised from 0.60
+                         and getattr(i, 'timestamp', 0) > since]
+                _skip_sources = {'ambient_vision', 'curiosity.intention',
+                                 'semantic_extractor', 'ambient_vision.faces'}
+                for item in items[:4]:   # max 4 per cycle (was 6)
+                    src  = getattr(item, 'source', 'workspace')
+                    text = getattr(item, 'content', '')
+                    if text and src not in _skip_sources:
+                        ms.add_memory(
+                            f"[GW/{src}] {text[:300]}",
+                            impact_score = min(1.0, getattr(item, 'priority', 0.6)),
+                            memory_type  = "cognitive_event",
+                            valence      = "Neutral",
+                            arousal      = "Medium",
+                        )
+                if items:
+                    logger.debug(f"[InternalLoop] GW→Episodic: flushed {min(len(items),6)} items")
+                self._last_gw_flush = now
+        except Exception as _gw:
+            logger.debug(f"[InternalLoop] GW→Episodic flush error: {_gw}")
+
+        # ── ThoughtStream periodic flush to disk ─────────────────────────────
+        try:
+            ts = getattr(o, 'thought_stream', None)
+            if ts and hasattr(ts, 'flush'):
+                ts.flush()
+        except Exception:
+            pass
+
+        # ── AutonomousReflectionEngine: LLM-based self-understanding ──────────
+        # Runs background LLM calls (priority=3, skip_if_busy=True) to generate
+        # novel linguistic comprehension of the system's own evolution.
+        # Lazy-init after slow cycle 1 so ai_system is fully ready.
+        try:
+            if self._autonomous_reflection is None and self._slow_cycle_count > 1:
+                from cognition.autonomous_reflection import AutonomousReflectionEngine
+                _ai_sys = getattr(o, 'ai_system', None)
+                if _ai_sys and _llm_available(_ai_sys):
+                    self._autonomous_reflection = AutonomousReflectionEngine(
+                        organism  = o,
+                        ai_system = _ai_sys,
+                    )
+                    logger.info("[InternalLoop] AutonomousReflectionEngine ready ✅")
+
+            if self._autonomous_reflection is not None:
+                # v43: Run passive confidence decay each slow cycle
+                try:
+                    self._autonomous_reflection._epistemic.decay_cycle()
+                except Exception:
+                    pass
+
+                # v42: LLM-based self-interpretation (preemptible)
+                # v49: propagate counterfactual mode flag if immune system is active
+                if (hasattr(self, '_cognitive_immune')
+                        and self._cognitive_immune is not None
+                        and self._cognitive_immune.is_counterfactual_active()):
+                    self._autonomous_reflection._immune_counterfactual_active = True
+                elif hasattr(self._autonomous_reflection, '_immune_counterfactual_active'):
+                    del self._autonomous_reflection._immune_counterfactual_active
+                self._autonomous_reflection.tick(self._slow_cycle_count)
+
+                # Phase 6.15 — self-description scan (self_description.py),
+                # same cadence as AutonomousReflection per the spec's own
+                # guidance ("call from the same slow-cycle path"). Cheap —
+                # reads module-level constants, no LLM call — so no extra
+                # cadence gating needed beyond piggybacking on this tick.
+                try:
+                    from cognition.self_description import get_self_description
+                    _drifted = get_self_description().scan_known_components()
+                    if _drifted:
+                        logger.info(f"[InternalLoop] SelfDescription: {_drifted} component(s) drifted since last scan")
+                except Exception as _sd_e:
+                    logger.debug(f"[InternalLoop] SelfDescription scan failed (non-fatal): {_sd_e}")
+        except Exception as _are:
+            logger.debug(f"[InternalLoop] AutonomousReflection error (non-fatal): {_are}")
+
+        # ── ProactiveOutreachEngine — reach out to users when relevant ─────────
+        try:
+            if self._proactive_outreach is None and self._slow_cycle_count > 5:
+                _ai_sys = getattr(o, 'ai_system', None)
+                if _ai_sys and _llm_available(_ai_sys):
+                    from cognition.proactive_outreach import ProactiveOutreachEngine
+                    self._proactive_outreach = ProactiveOutreachEngine(
+                        organism  = o,
+                        ai_system = _ai_sys,
+                    )
+                    logger.info("[InternalLoop] ProactiveOutreachEngine ready ✅")
+            if self._proactive_outreach is not None:
+                self._proactive_outreach.tick(self._slow_cycle_count)
+        except Exception as _poe:
+            logger.debug(f"[InternalLoop] ProactiveOutreach error (non-fatal): {_poe}")
+
+        # ── Phase 5.0: AutonomousCuriosityResolver — curiosity → goals ─────────
+        # Was fully built (respects behavior_gate, avoids duplicate
+        # promotion, bounded to 2 goals per check) but never instantiated
+        # or called anywhere in the codebase until now.
+        try:
+            if self._autonomous_curiosity_resolver is None:
+                from cognition.autonomous_curiosity_resolver import AutonomousCuriosityResolver
+                self._autonomous_curiosity_resolver = AutonomousCuriosityResolver(o)
+                logger.info("[InternalLoop] AutonomousCuriosityResolver ready ✅")
+            self._autonomous_curiosity_resolver.tick(self._slow_cycle_count)
+        except Exception as _acr_e:
+            logger.debug(f"[InternalLoop] AutonomousCuriosityResolver error (non-fatal): {_acr_e}")
+
+        # ── v46: Skill decay, emotional memory residue, preference decay ───
+        try:
+            sr = getattr(o, 'skill_registry', None)
+            if sr:
+                if hasattr(sr, 'maintenance_cycle'):
+                    sr.maintenance_cycle(self._slow_cycle_count)
+                else:
+                    sr.decay_cycle()
+        except Exception:
+            pass
+        try:
+            em = getattr(o, 'emotional_memory', None)
+            if em:
+                em.slow_cycle_tick()
+        except Exception:
+            pass
+        try:
+            pe = getattr(o, 'preference_engine', None)
+            if pe:
+                pe.decay_cycle()
+        except Exception:
+            pass
+
+        # ── v47: Resolution engine — intentional closure ───────────────────
+        try:
+            if not hasattr(self, '_resolution_engine'):
+                self._resolution_engine = None
+            if self._resolution_engine is None and self._slow_cycle_count > 3:
+                _ai_sys = getattr(o, 'ai_system', None)
+                if _ai_sys and _llm_available(_ai_sys):
+                    from cognition.resolution_engine import ResolutionEngine
+                    self._resolution_engine = ResolutionEngine(o, _ai_sys)
+                    logger.info("[InternalLoop] ResolutionEngine ready ✅")
+            if self._resolution_engine is not None:
+                self._resolution_engine.tick(self._slow_cycle_count)
+        except Exception as _re:
+            logger.debug(f"[InternalLoop] ResolutionEngine error (non-fatal): {_re}")
+
+        # ── v47: Autonomous experimentation ───────────────────────────────
+        try:
+            if not hasattr(self, '_auto_experiment'):
+                self._auto_experiment = None
+            if self._auto_experiment is None and self._slow_cycle_count > 3:
+                _ai_sys = getattr(o, 'ai_system', None)
+                if _ai_sys and _llm_available(_ai_sys):
+                    from cognition.autonomous_experimentation import AutonomousExperimentationEngine
+                    self._auto_experiment = AutonomousExperimentationEngine(o, _ai_sys)
+                    logger.info("[InternalLoop] AutonomousExperimentationEngine ready ✅")
+            if self._auto_experiment is not None:
+                self._auto_experiment.tick(self._slow_cycle_count)
+        except Exception as _ae:
+            logger.debug(f"[InternalLoop] AutoExperiment error (non-fatal): {_ae}")
+
+        # Proposal-driven Workspace capability experiment. This is deliberately
+        # independent from chat and from the LLM-backed experimentation engine.
+        try:
+            if self._capability_development is None:
+                from cognition.capability_development import CapabilityDevelopmentEngine
+                self._capability_development = CapabilityDevelopmentEngine(o)
+                logger.info("[InternalLoop] CapabilityDevelopmentEngine ready")
+            self._capability_development.tick(self._slow_cycle_count)
+        except Exception as _cde:
+            logger.debug(f"[InternalLoop] Capability development error (non-fatal): {_cde}")
+
+        # ── Multi-causal cognitive restructuring ──────────────────────────
+        # Clusters persistent tensions and evaluates correction strategies in
+        # the background. It never adds a generative call to the chat path.
+        try:
+            if self._cognitive_restructuring is None:
+                self._cognitive_restructuring = getattr(o, "_cognitive_restructuring", None)
+            if self._cognitive_restructuring is None:
+                from cognition.cognitive_restructuring_engine import CognitiveRestructuringEngine
+                self._cognitive_restructuring = CognitiveRestructuringEngine(o)
+                logger.info("[InternalLoop] CognitiveRestructuringEngine ready ✅")
+            self._cognitive_restructuring.tick(self._slow_cycle_count)
+        except Exception as _cr:
+            logger.debug(f"[InternalLoop] Cognitive restructuring error (non-fatal): {_cr}")
+
+        # ── Phase 3.3: CounterfactualSimulator ───────────────────────────────
+        # Retroactively evaluates the last 10 interactions against all
+        # alternative action types using PCM and WSDM's existing k-NN
+        # machinery. Gated by MIN_RECORDS_FOR_CF (15) and CF_INTERVAL_CYCLES
+        # (5 consolidation cycles) — fires ~every 50 minutes, not every cycle.
+        try:
+            if not hasattr(self, '_counterfactual_sim'):
+                self._counterfactual_sim = None
+            if self._counterfactual_sim is None and self._slow_cycle_count > 15:
+                from cognition.counterfactual_simulator import CounterfactualSimulator
+                self._counterfactual_sim = CounterfactualSimulator(o)
+                logger.info("[InternalLoop] CounterfactualSimulator ready ✅")
+            if self._counterfactual_sim is not None:
+                self._counterfactual_sim.tick(self._slow_cycle_count)
+        except Exception as _cf_e:
+            logger.debug(f"[InternalLoop] CounterfactualSimulator error (non-fatal): {_cf_e}")
+
+        # ── Phase 3.5: IntrospectiveObserver ────────────────────────────────
+        # Computes longitudinal observations from attention history,
+        # personality history, calibration ECE, counterfactual patterns,
+        # and emergence metrics. Runs every 10 consolidation cycles (~100 min).
+        try:
+            if not hasattr(self, '_introspective_observer'):
+                self._introspective_observer = None
+            if self._introspective_observer is None and self._slow_cycle_count > 20:
+                from cognition.introspective_observer import IntrospectiveObserver
+                self._introspective_observer = IntrospectiveObserver(o)
+                logger.info("[InternalLoop] IntrospectiveObserver ready ✅")
+            if self._introspective_observer is not None:
+                self._introspective_observer.tick(self._slow_cycle_count)
+        except Exception as _io_e:
+            logger.debug(f"[InternalLoop] IntrospectiveObserver error (non-fatal): {_io_e}")
+
+        # ── v47: Skill transfer links (every 60 slow cycles ≈ 2 hours) ────
+        try:
+            sr = getattr(o, 'skill_registry', None)
+            if sr and self._slow_cycle_count % 60 == 0 and self._slow_cycle_count > 0:
+                sr.generate_transfer_links()
+        except Exception:
+            pass
+
+        # ── v48: Cognitive audit — self-directed development ──────────────
+        # Reads five performance signals every ~80 min, detects sustained
+        # underperformance, proposes a parameter calibration via LLM,
+        # trials it for ~2 hours, then commits or reverts based on outcome.
+        # One trial at a time.  Priority 3 / skip_if_busy — never blocks.
+        try:
+            if not hasattr(self, '_cognitive_audit'):
+                self._cognitive_audit = None
+            if self._cognitive_audit is None and self._slow_cycle_count > 5:
+                _ai_sys = getattr(o, 'ai_system', None)
+                if _ai_sys and _llm_available(_ai_sys):
+                    from cognition.cognitive_audit_engine import CognitiveAuditEngine
+                    self._cognitive_audit = CognitiveAuditEngine(o, _ai_sys)
+                    logger.info("[InternalLoop] CognitiveAuditEngine ready ✅")
+            if self._cognitive_audit is not None:
+                self._cognitive_audit.tick(self._slow_cycle_count)
+        except Exception as _cae:
+            logger.debug(f"[InternalLoop] CognitiveAudit error (non-fatal): {_cae}")
+
+        # ── v49: Cognitive immune system — attractor detection ───────────────
+        # Reads five ecology-level signals every ~60 min and triggers
+        # counterfactual mode when self-reinforcing attractor patterns are
+        # detected.  Coordinates with CognitiveAuditEngine (never runs
+        # counterfactual while an audit trial is active).
+        try:
+            if not hasattr(self, '_cognitive_immune'):
+                self._cognitive_immune = None
+            if self._cognitive_immune is None and self._slow_cycle_count > 5:
+                _ai_sys = getattr(o, 'ai_system', None)
+                if _ai_sys and _llm_available(_ai_sys):
+                    from cognition.cognitive_immune_system import CognitiveImmuneSystem
+                    self._cognitive_immune = CognitiveImmuneSystem(o, _ai_sys)
+                    logger.info("[InternalLoop] CognitiveImmuneSystem ready ✅")
+            if self._cognitive_immune is not None:
+                self._cognitive_immune.tick(self._slow_cycle_count)
+        except Exception as _cis:
+            logger.debug(f"[InternalLoop] CognitiveImmune error (non-fatal): {_cis}")
+
+        # ── CognitiveStack decay tick ─────────────────────────────────────────
+        # Without this, topic frames accumulate indefinitely. Each slow cycle
+        # decays confidence and prunes stale frames so the stack stays current.
+        try:
+            from cognition.cognitive_stack import get_cognitive_stack
+            get_cognitive_stack().tick()
+        except Exception as _cs:
+            logger.debug(f"[InternalLoop] CognitiveStack tick error (non-fatal): {_cs}")
 
         # ── TTE → CDE → DTS: executive cognition pipeline ────────────────────
         # Fix #5: enforce cognitive selection every slow cycle.
@@ -1510,17 +3316,17 @@ class InternalThoughtLoop:
                                 1.0
                             )
                         }
-                        
+
                         narrative = self._phase2.synthesize_narrative(cycle_data)
                         _narrative_ref = self._record_cycle_stage(
                             "phase2_narrative_synthesis",
                             "completed" if narrative else "no_narrative",
                             output={"narrative_present": bool(narrative)},
                         )
-                        
+
                         if narrative:
                             logger.info(f"[InternalLoop] V33 Narrative: {narrative[:80]}...")
-                            
+
                             # Generation and workspace admission are separate effects.
                             self._publish_phase2_narrative(
                                 narrative,
@@ -1567,9 +3373,9 @@ class InternalThoughtLoop:
                                     self._phase2_thread_is_resolved(thread)
                                     and not self._phase2_thread_identity_linked(thread)
                                 ):
-                                    
+
                                     resolved_threads.append(thread)
-                                    
+
                         if resolved_threads:
                             identity_updates = []
                             linked_count = 0
@@ -1585,7 +3391,7 @@ class InternalThoughtLoop:
 
                             total_beliefs = sum(len(u.get('beliefs_changed', [])) for u in identity_updates)
                             total_traits = sum(len(u.get('traits_changed', [])) for u in identity_updates)
-                            
+
                             if total_beliefs or total_traits:
                                 logger.info(
                                     f"[InternalLoop] V33 Thread→Identity: "
@@ -2352,4 +4158,3 @@ class InternalThoughtLoop:
         import threading as _t
         _t.Thread(target=_run_analysis, daemon=True, name="AmbientVision").start()
         self._last_ambient_vision = now
-

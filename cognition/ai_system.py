@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 49342)
-Total output lines: 3899
-
 """
 Enhanced AI System — Pass 1 + 2 Complete Integration
 ======================================================
@@ -1032,10 +1029,36 @@ class EnhancedMemorySystem:
                 # New speaker-separated user records are embedded without
                 # their storage label; historical combined records remain
                 # readable and keep their legacy embedding semantics.
-                vecs = np.vstack([
-                    self._embed(memory_embedding_text(r[1], "user_message" if r[1].startswith("User message:") else "")).flatten()
-                    for r in rows
-                ])
+                texts = [
+                    memory_embedding_text(
+                        row[1],
+                        "user_message" if row[1].startswith("User message:") else "",
+                    )
+                    for row in rows
+                ]
+                try:
+                    vecs = np.asarray(
+                        self.embedding_model.encode(
+                            texts, show_progress_bar=False, batch_size=128,
+                        ),
+                        dtype=np.float32,
+                    )
+                except Exception as exc:
+                    self.embedding_model = None
+                    self.faiss_index = None
+                    raise RuntimeError(
+                        f"Batch embedding failed while rebuilding FAISS index: {exc}"
+                    ) from exc
+                if (
+                    vecs.shape != (len(rows), self.embedding_dim)
+                    or not np.isfinite(vecs).all()
+                ):
+                    self.embedding_model = None
+                    self.faiss_index = None
+                    raise ValueError(
+                        "Batch embedder returned invalid vectors: "
+                        f"expected {(len(rows), self.embedding_dim)}, got {vecs.shape}"
+                    )
                 index.add_with_ids(vecs, ids)
             self._save_index(index)
         except Exception as e:
@@ -1261,7 +1284,1507 @@ class EnhancedMemorySystem:
             memories = self.persistence.get_all_memories(tier=tier)
             if owner_user_id:
                 memories = [m for m in memories
-                            if m.get("owner_us…19342 tokens truncated…_tensions'][0]) if sc_hints.get('known_tensions') else ""
+                            if m.get("owner_user_id") == owner_user_id]
+        ranked = rank_documents(query, [
+            memory_embedding_text(m.get("text", ""), m.get("memory_type", ""))
+            for m in memories
+        ], limit=limit)
+        results = []
+        for index, relevance in ranked:
+            memory = dict(memories[index])
+            mood_boost = 0.0
+            if current_valence is not None:
+                valence = memory.get("emotional_valence", "Neutral")
+                if current_valence > 0.15 and valence == "Positive":
+                    mood_boost = 0.05
+                elif current_valence < -0.15 and valence == "Negative":
+                    mood_boost = 0.05
+            score = (
+                relevance * 0.65
+                + float(memory.get("impact_score", 0.5)) * 0.2
+                + self._recency_score(memory.get("timestamp", "")) * 0.1
+                + mood_boost
+            )
+            memory["relevance"] = relevance
+            results.append((score, memory))
+        results.sort(key=lambda item: item[0], reverse=True)
+        return [memory for _, memory in results]
+
+    def retrieve_user_authored_memories(
+        self, query: str, limit: int = 2, *, explicit_recall: bool = False,
+        owner_user_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Recall source utterances separately from Lumina's past replies.
+
+        This is a lexical provenance path, not a semantic truth classifier:
+        a user question remains only evidence of a question, as the prompt
+        renderer explicitly states. Empty/irrelevant lexical matches are not
+        returned.
+        """
+        if limit <= 0:
+            return []
+        semantic_sources: List[Dict[str, Any]] = []
+        try:
+            # Prefer the existing semantic index. Explicit historical recall
+            # filters its bounded neighbor window to user-authored sources
+            # before any archive-wide lexical fallback is considered.
+            if (
+                self.embedding_model is not None
+                and self.faiss_index is not None
+            ):
+                total = int(getattr(self.faiss_index, "ntotal", 0) or 0)
+                if total > 0:
+                    try:
+                        query_vector = self._embed(query)
+                        candidate_count = min(total, max(120, limit * 24))
+                        distances, indices = self.faiss_index.search(
+                            query_vector, candidate_count
+                        )
+                        valid_ids = [int(value) for value in indices[0] if value != -1]
+                        if valid_ids:
+                            try:
+                                candidates = self.persistence.get_memories_by_ids(
+                                    valid_ids, owner_user_id=owner_user_id,
+                                )
+                            except TypeError:
+                                candidates = self.persistence.get_memories_by_ids(valid_ids)
+                                if owner_user_id:
+                                    candidates = [m for m in candidates
+                                                  if m.get("owner_user_id") == owner_user_id]
+                            distance_by_id = {
+                                int(indices[0][position]): float(distances[0][position])
+                                for position in range(len(indices[0]))
+                                if int(indices[0][position]) != -1
+                            }
+                            allowed_types = (
+                                {"user_message", "episodic"}
+                                if explicit_recall else {"user_message"}
+                            )
+                            sourced = [
+                                memory for memory in candidates
+                                if memory.get("memory_type") in allowed_types
+                            ]
+                            if explicit_recall:
+                                # Filter self-referential recall questions before
+                                # preferring lexical source matches. If a
+                                # paraphrase shares no exact terms, retain the
+                                # semantic candidates after the same source-role
+                                # and self-match checks.
+                                lexical_sources = filter_recall_query_records(
+                                    sourced, query=query,
+                                )
+                                sourced = lexical_sources or filter_recall_query_records(sourced)
+                            sourced.sort(key=lambda memory: distance_by_id.get(
+                                int(memory.get("faiss_id", -1)), float("inf")
+                            ))
+                            # One query-matched, user-authored source is enough
+                            # to answer a historical fact safely. Requiring
+                            # `limit` neighbors here forced most explicit
+                            # recalls to deserialize and tokenize the entire
+                            # conversation archive even after FAISS found the
+                            # source. The downstream source verifier still
+                            # rejects unsupported answers and can abstain.
+                            if sourced:
+                                recalled = [
+                                    dict(memory, relevance=faiss_l2_relevance(
+                                        distance_by_id.get(
+                                            int(memory.get("faiss_id", -1)), float("inf")
+                                        )
+                                    ))
+                                    for memory in sourced[:limit]
+                                ]
+                                for memory in recalled:
+                                    if memory.get("memory_type") == "episodic":
+                                        memory["source"] = "legacy_episodic_user_source"
+                                        memory["user_authored_text"] = extract_user_authored_text(memory)
+                                if explicit_recall:
+                                    # A semantic neighbor window is not a
+                                    # completeness guarantee for exact recall.
+                                    # Retain it for paraphrases, but also query
+                                    # the ranked source archive below so a
+                                    # precise lexical source outside FAISS's
+                                    # top-k window cannot be missed.
+                                    semantic_sources = recalled
+                                else:
+                                    return recalled
+                    except Exception as error:
+                        logger.debug("Semantic user-message recall unavailable: %s", error)
+
+            if explicit_recall:
+                # Older turns predate the separately indexed user_message
+                # lane and exist only inside episodic dialogue rows. Search
+                # those rows by their USER segment alone; never rank or inject
+                # the assistant's reply as user-authored evidence.
+                source_reader = getattr(
+                    self.persistence, "get_conversation_source_memories", None
+                )
+                if callable(source_reader):
+                    try:
+                        memories = source_reader(
+                            query=query, limit=128, owner_user_id=owner_user_id,
+                        )
+                    except TypeError:
+                        memories = source_reader(query=query, limit=128)
+                        if owner_user_id:
+                            memories = [m for m in memories
+                                        if m.get("owner_user_id") == owner_user_id]
+                else:
+                    memories = self.persistence.get_all_memories()
+                memories = [
+                    memory for memory in memories
+                    if memory.get("memory_type") in {"user_message", "episodic"}
+                ]
+                lexical_sources = filter_recall_query_records(memories, query=query)
+                memories = lexical_sources or filter_recall_query_records(semantic_sources)
+                if lexical_sources and semantic_sources:
+                    memories.extend(semantic_sources)
+                    memories = filter_recall_query_records(memories, query=query)
+                # New turns are persisted both as a dedicated user_message
+                # and inside an episodic exchange. Keep one source candidate
+                # per normalized user utterance, preferring the dedicated row.
+                unique_sources = {}
+                for memory in memories:
+                    user_text = extract_user_authored_text(memory)
+                    source_key = " ".join(user_text.casefold().split())
+                    if not source_key:
+                        continue
+                    current = unique_sources.get(source_key)
+                    if (
+                        current is None
+                        or memory.get("memory_type") == "user_message"
+                    ):
+                        unique_sources[source_key] = memory
+                memories = list(unique_sources.values())
+            else:
+                try:
+                    try:
+                        memories = self.persistence.get_all_memories(
+                            memory_type="user_message", limit=2000,
+                            owner_user_id=owner_user_id,
+                        )
+                    except TypeError:
+                        memories = self.persistence.get_all_memories(
+                            memory_type="user_message", limit=2000
+                        )
+                        if owner_user_id:
+                            memories = [m for m in memories
+                                        if m.get("owner_user_id") == owner_user_id]
+                except TypeError:
+                    # Keep lightweight persistence adapters used by integrations
+                    # and tests compatible while retaining the type boundary.
+                    memories = [
+                        memory for memory in self.persistence.get_all_memories()
+                        if memory.get("memory_type") == "user_message"
+                    ][:2000]
+                    if owner_user_id:
+                        memories = [m for m in memories
+                                    if m.get("owner_user_id") == owner_user_id]
+            ranked = rank_documents(query, [
+                extract_user_authored_text(memory)
+                for memory in memories
+            ], limit=limit)
+            results = []
+            for index, relevance in ranked:
+                memory = dict(memories[index])
+                memory["relevance"] = relevance
+                if memory.get("memory_type") == "episodic":
+                    memory["source"] = "legacy_episodic_user_source"
+                    memory["user_authored_text"] = extract_user_authored_text(memory)
+                results.append(memory)
+            if results or not explicit_recall:
+                return results
+
+            # A paraphrased historical question may have no lexical overlap
+            # with the original user statement. The full source archive above
+            # remains authoritative for exact lexical matches, but rejecting
+            # every zero-overlap query here caused explicit recall to fall
+            # through to unrelated episodic context and let generation invent
+            # a plausible history. Use the existing semantic index only as a
+            # fallback, and only return user-authored text (including the user
+            # segment of legacy episodic records). Never use an assistant reply
+            # as evidence for what the user previously asked.
+            if self.embedding_model is not None and self.faiss_index is not None:
+                total = int(getattr(self.faiss_index, "ntotal", 0) or 0)
+                if total > 0:
+                    try:
+                        query_vector = self._embed(query)
+                        candidate_count = min(total, max(120, limit * 24))
+                        distances, indices = self.faiss_index.search(
+                            query_vector, candidate_count
+                        )
+                        valid_ids = [int(value) for value in indices[0] if value != -1]
+                        if valid_ids:
+                            try:
+                                candidates = self.persistence.get_memories_by_ids(
+                                    valid_ids, owner_user_id=owner_user_id,
+                                )
+                            except TypeError:
+                                candidates = self.persistence.get_memories_by_ids(valid_ids)
+                                if owner_user_id:
+                                    candidates = [m for m in candidates
+                                                  if m.get("owner_user_id") == owner_user_id]
+                            distance_by_id = {
+                                int(indices[0][position]): float(distances[0][position])
+                                for position in range(len(indices[0]))
+                                if int(indices[0][position]) != -1
+                            }
+                            sourced = [
+                                memory for memory in candidates
+                                if memory.get("memory_type") in {"user_message", "episodic"}
+                            ]
+                            # Exclude recalled prompts and question-shaped
+                            # records, but do not reapply lexical-overlap
+                            # filtering: this lane exists for paraphrases.
+                            sourced = filter_recall_query_records(sourced)
+                            sourced.sort(key=lambda memory: distance_by_id.get(
+                                int(memory.get("faiss_id", -1)), float("inf")
+                            ))
+                            for memory in sourced[:limit]:
+                                item = dict(memory, relevance=faiss_l2_relevance(
+                                    distance_by_id.get(
+                                        int(memory.get("faiss_id", -1)), float("inf")
+                                    )
+                                ))
+                                if item.get("memory_type") == "episodic":
+                                    item["source"] = "legacy_episodic_user_source"
+                                    item["user_authored_text"] = extract_user_authored_text(item)
+                                results.append(item)
+                    except Exception as error:
+                        logger.debug("Semantic explicit source recall unavailable: %s", error)
+            return results
+        except Exception as error:
+            logger.debug("User-authored memory recall unavailable: %s", error)
+            return []
+
+    def retrieve_by_tier(
+        self,
+        query: str,
+        tier: str,
+        limit: int = 5,
+        boost_impact: float = 1.0,
+        owner_user_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Retrieve memories filtered by tier.
+        Tiers: interaction | cognitive | event | visual | personal
+        boost_impact: multiplier on impact_score in scoring (>1 to prioritise tier)
+        """
+        limit = limit or self.config.max_memory_retrieval
+        try:
+            if self.embedding_model is None or self.faiss_index is None:
+                return self._retrieve_lexically(query, limit, tier=tier, owner_user_id=owner_user_id)
+            if self.faiss_index.ntotal == 0:
+                return self._retrieve_lexically(query, limit, tier=tier, owner_user_id=owner_user_id)
+            q_vec = self._embed(query)
+            if self.faiss_index is None:
+                return self._retrieve_lexically(query, limit, tier=tier, owner_user_id=owner_user_id)
+            n = min(limit * 6, self.faiss_index.ntotal)
+            distances, indices = self.faiss_index.search(q_vec, n)
+            valid_ids = [int(i) for i in indices[0] if i != -1]
+            if not valid_ids:
+                return self._retrieve_lexically(query, limit, tier=tier, owner_user_id=owner_user_id)
+            # Fetch and filter by tier in SQL
+            owner_clause = (
+                "AND owner_user_id = ?"
+                if owner_user_id else ""
+            )
+            with self.persistence.get_connection() as conn:
+                placeholders = ",".join("?" * len(valid_ids))
+                rows = conn.execute(
+                    f"SELECT id, text, timestamp, impact_score, memory_type, "
+                    f"memory_tier, emotional_valence, faiss_id, owner_user_id "
+                    f"FROM memories WHERE faiss_id IN ({placeholders}) "
+                    f"AND memory_tier = ? "
+                    f"{owner_clause}",
+                    valid_ids + [tier] + ([str(owner_user_id)] if owner_user_id else [])
+                ).fetchall()
+            if not rows:
+                return self._retrieve_lexically(
+                    query, limit, tier=tier, owner_user_id=owner_user_id
+                )
+            dist_map = {int(indices[0][i]): distances[0][i]
+                        for i in range(len(indices[0])) if indices[0][i] != -1}
+            scored = []
+            for row in rows:
+                fid = row[7]
+                d   = dist_map.get(fid, float("inf"))
+                sim     = faiss_l2_relevance(d)
+                recency = self._recency_score(row[2])
+                score   = sim * 0.6 + row[3] * boost_impact * 0.3 + recency * 0.1
+                scored.append((score, {
+                    "id": row[0], "text": row[1], "timestamp": row[2],
+                    "impact_score": row[3], "memory_type": row[4],
+                    "memory_tier": row[5], "emotional_valence": row[6],
+                    "faiss_id": fid, "owner_user_id": row[8], "relevance": sim,
+                }))
+            scored.sort(key=lambda x: x[0], reverse=True)
+            return [m for _, m in scored[:limit]]
+        except Exception as e:
+            logger.warning(f"Vector tier retrieval failed; using lexical search: {e}")
+            return self._retrieve_lexically(query, limit, tier=tier, owner_user_id=owner_user_id)
+
+    def _recency_score(self, ts: str) -> float:
+        try:
+            age_h = (datetime.datetime.now() - datetime.datetime.fromisoformat(ts)).total_seconds() / 3600
+            return max(0.0, 2.0 ** (-age_h / 24.0))
+        except Exception:
+            return 0.0
+
+    def analyze_emotional_context(self, text: str) -> Dict[str, str]:
+        """
+        Fast multilingual text appraisal used as one input to persistent affect.
+        Cognitive event appraisals remain the primary source of Lumina's affect.
+        """
+        return appraise_emotional_text(text)
+
+    def _keyword_emotion_fallback(self, text: str) -> Dict[str, str]:
+        # Retained as a compatibility alias for older callers.
+        return appraise_emotional_text(text)
+
+    # ── Chaos Fetcher ─────────────────────────────────────────────────────────
+    # Required by GoalActionExecutor._action_bisociative_hypothesis().
+    # Returns a memory maximally dissimilar to current_thought, forcing
+    # bisociative collisions in the hypothesis engine.
+
+    def get_random_episodic(self, limit: int = 50) -> Optional[Dict[str, Any]]:
+        """
+        Pull a random memory from the most recent `limit` SQLite rows.
+        Returns {'content': text, 'metadata': {}} or None if store is empty.
+        """
+        import random
+        try:
+            with self.persistence.get_connection() as conn:
+                c = conn.cursor()
+                c.execute(
+                    "SELECT text FROM memories ORDER BY id DESC LIMIT ?", (limit,)
+                )
+                rows = c.fetchall()
+            if not rows:
+                return None
+            return {"content": random.choice(rows)[0], "metadata": {}}
+        except Exception as e:
+            logger.warning(f"[EnhancedMemorySystem] get_random_episodic error: {e}")
+            return None
+
+    def get_chaos_episodic(
+        self,
+        current_thought: str,
+        candidate_pool: int = 64,
+        strategy: str = "probe",
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Return the memory most dissimilar to current_thought.
+        Used by the Bisociative Collision Engine to force creative dimension jumps.
+
+        strategy='probe'  — sample `candidate_pool` random SQLite rows, embed in
+                            batch, return the one with the largest L2 distance.
+                            O(candidate_pool). Safe for the hot path.
+        strategy='exhaustive' — scan all memories. Guaranteed true anti-neighbour.
+                            Use during reflection cycles only.
+
+        Falls back to get_random_episodic() if embedding model is unavailable.
+        """
+        if self.embedding_model is None:
+            logger.warning("[EnhancedMemorySystem] get_chaos_episodic: no embedder, falling back to random")
+            return self.get_random_episodic(candidate_pool)
+
+        try:
+            import random
+            query_vec = self._embed(current_thought)   # shape (1, dim)
+
+            # ── Fetch candidates from SQLite ──────────────────────────────
+            with self.persistence.get_connection() as conn:
+                c = conn.cursor()
+                if strategy == "exhaustive":
+                    c.execute("SELECT text FROM memories ORDER BY id DESC")
+                else:
+                    # Reservoir-sample candidate_pool rows efficiently
+                    c.execute(
+                        "SELECT text FROM memories ORDER BY RANDOM() LIMIT ?",
+                        (candidate_pool,)
+                    )
+                rows = c.fetchall()
+
+            if not rows:
+                return None
+
+            texts = [r[0] for r in rows]
+
+            # ── Batch embed ───────────────────────────────────────────────
+            try:
+                candidate_vecs = self.embedding_model.encode(
+                    texts, show_progress_bar=False, batch_size=32
+                ).astype("float32")   # shape (n, dim)
+            except Exception as ee:
+                logger.warning(f"[EnhancedMemorySystem] chaos batch embed error: {ee}")
+                return self.get_random_episodic(candidate_pool)
+
+            # ── L2 distance — largest = most dissimilar ───────────────────
+            diff        = candidate_vecs - query_vec               # (n, dim)
+            l2_sq       = (diff * diff).sum(axis=1)                # (n,)
+            anti_idx    = int(l2_sq.argmax())
+
+            chosen_text = texts[anti_idx]
+            logger.debug(
+                f"[EnhancedMemorySystem] chaos → '{chosen_text[:60]}' "
+                f"L2²={l2_sq[anti_idx]:.3f} (pool={len(texts)})"
+            )
+            return {"content": chosen_text, "metadata": {}}
+
+        except Exception as e:
+            logger.warning(f"[EnhancedMemorySystem] get_chaos_episodic error: {e}")
+            return self.get_random_episodic(candidate_pool)
+
+
+# ── Dream System ──────────────────────────────────────────────────────────
+
+class DreamType(Enum):
+    RELATIONSHIP_PROCESSING    = "relationship_processing"
+    LIFE_EVENT_INTEGRATION     = "life_event_integration"
+    CONFLICT_RESOLUTION        = "conflict_resolution"
+    PATTERN_DISCOVERY          = "pattern_discovery"
+    EMOTIONAL_REGULATION       = "emotional_regulation"
+    IDENTITY_CONSOLIDATION     = "identity_consolidation"
+    FUTURE_PLANNING            = "future_planning"
+
+
+class LifeEventDreamSystem:
+    def __init__(self, memory_system: EnhancedMemorySystem, llm: EnhancedLLM, ai_system):
+        self.memory_system = memory_system
+        self.llm           = llm
+        self.ai_system     = ai_system
+        self.dream_history: List[Dict] = []
+        self.last_dream_time: Optional[datetime.datetime] = None
+
+    def run_dream_cycle(self) -> List[str]:
+        logger.info("Starting dream cycle...")
+        insights: List[str] = []
+        try:
+            should, dream_type = self._should_dream()
+            if should and dream_type is not None:
+                context = self._create_context(dream_type)
+                result  = self._process_dream(dream_type, context)
+                self._store_results(result)
+                self._apply_to_evolution(result)
+                insights.extend(result.get("insights", []))
+                self.dream_history.append({
+                    "timestamp": datetime.datetime.now().isoformat(),
+                    "type": dream_type.value,
+                    "insights": len(result.get("insights", [])),
+                })
+                self.last_dream_time = datetime.datetime.now()
+        except Exception as e:
+            logger.error(f"Dream cycle failed: {e}")
+
+        # ── Semantic consolidation (Dream Cycle) ────────────────────────────
+        try:
+            organism = getattr(self, '_organism', None)
+            if organism and hasattr(organism, 'semantic_memory'):
+                from cognition.semantic_consolidator import SemanticConsolidator
+                consolidator = getattr(self, '_semantic_consolidator', None)
+                if consolidator is None:
+                    consolidator = SemanticConsolidator(
+                        organism.semantic_memory,
+                        llm_fn=getattr(self, '_simple_llm_fn', None)
+                    )
+                    consolidator._organism_ref = organism
+                    self._semantic_consolidator = consolidator
+
+                # Fix: AspirationalSelf.on_dream_cycle() was previously nested
+                # inside the `if consolidator is None:` block above, so it only
+                # fired on the VERY FIRST dream cycle (when the consolidator was
+                # first created) and never again afterward — the consolidator
+                # object persists across calls via self._semantic_consolidator,
+                # so `is None` was only ever True once. This left
+                # aspirational_self.json frozen at its first write (June 14 in
+                # the reported stale-file audit) while every other engine kept
+                # updating normally. Moved outside the one-time init branch so
+                # it fires on every dream cycle, matching the comment's intent.
+                asp = getattr(organism, 'aspirational_self', None)
+                if asp:
+                    asp.on_dream_cycle()
+                    # Sync SelfModel scores → aspiration tensions
+                    sm = getattr(organism, 'self_model', None)
+                    if sm:
+                        asp.sync_from_self_model(sm)
+
+                report = consolidator.consolidate()
+                logger.info(f"[DreamCycle] Semantic consolidation: {report}")
+        except Exception as _e:
+            logger.debug(f"[DreamCycle] Semantic consolidation error: {_e}")
+
+        # ── v46: Cognitive-state-driven dream synthesis ───────────────────────
+        try:
+            organism = getattr(self, '_organism', None)
+            if organism is None:
+                organism = getattr(getattr(self, 'ai_system', None), '_organism', None)
+            if organism is not None:
+                from cognition.dream_synthesis import DreamSynthesisEngine
+                dse = DreamSynthesisEngine(organism, self.ai_system if hasattr(self,'ai_system') else self)
+                dream_result = dse.synthesise()
+                insights.extend(dream_result.get("insights", []))
+        except Exception as _dse:
+            logger.debug(f"[DreamCycle] DreamSynthesis error (non-fatal): {_dse}")
+
+        return insights
+
+    def _apply_to_evolution(self, result: Dict):
+        evo = self.ai_system.evolution_engine
+        dt  = result.get("dream_type", DreamType.PATTERN_DISCOVERY)
+        success = float(result.get("integration_success", 0.5))
+        type_exp = {
+            DreamType.EMOTIONAL_REGULATION:  "dream_emotional_regulation",
+            DreamType.CONFLICT_RESOLUTION:   "dream_conflict_resolved",
+            DreamType.IDENTITY_CONSOLIDATION:"dream_identity_consolidated",
+            DreamType.PATTERN_DISCOVERY:     "dream_pattern_discovered",
+            DreamType.RELATIONSHIP_PROCESSING:"dream_relationship_growth",
+        }
+        exp = type_exp.get(dt)
+        if exp:
+            evo.queue_experience(exp, intensity=success)
+        if success > 0.7 and result.get("insights"):
+            evo.queue_experience("insight_formed", intensity=0.8)
+        if result.get("new_principles"):
+            evo.queue_experience("principle_formed", intensity=0.9)
+
+        # Update emotional state from dream outcome
+        ems = self.ai_system.emotional_state
+        if success > 0.6:
+            ems.update_from_interaction("Positive", "Low", intensity=success * 0.5)
+        else:
+            ems.update_from_interaction("Neutral", "Low", intensity=0.3)
+
+        # Successful regulation dreams shift the emotion *baselines*, not just values.
+        # This is the mechanism by which dreams produce lasting mood change rather
+        # than a transient bump that decays by the next conversation.
+        if dt == DreamType.EMOTIONAL_REGULATION and success > 0.65:
+            try:
+                ems.emotions["anxiety"].baseline     = max(0.05, ems.emotions["anxiety"].baseline - 0.015 * success)
+                ems.emotions["satisfaction"].baseline= min(0.85, ems.emotions["satisfaction"].baseline + 0.010 * success)
+                logger.debug(f"Dream baseline shift: anxiety↓ satisfaction↑ (success={success:.2f})")
+            except Exception:
+                pass
+        elif dt == DreamType.RELATIONSHIP_PROCESSING and success > 0.65:
+            try:
+                ems.emotions["warmth"].baseline = min(0.85, ems.emotions["warmth"].baseline + 0.010 * success)
+            except Exception:
+                pass
+        elif dt == DreamType.IDENTITY_CONSOLIDATION and success > 0.65:
+            try:
+                ems.emotions["confidence"].baseline = min(0.80, ems.emotions.get("curiosity", ems.emotions["satisfaction"]).baseline + 0.008 * success) if "confidence" in ems.emotions else None
+            except Exception:
+                pass
+
+    def _should_dream(self) -> Tuple[bool, Optional[DreamType]]:
+        try:
+            recent = self._get_memories_by_period("recent", 20)
+            medium = self._get_memories_by_period("medium_term", 15)
+            if self._high_emotional_content(recent):   return True, DreamType.EMOTIONAL_REGULATION
+            if self._has_life_events(recent):          return True, DreamType.LIFE_EVENT_INTEGRATION
+            if self._has_relationship_changes(recent): return True, DreamType.RELATIONSHIP_PROCESSING
+            if self._has_identity_conflicts():         return True, DreamType.CONFLICT_RESOLUTION
+            if self._has_patterns(recent + medium):    return True, DreamType.PATTERN_DISCOVERY
+            if self._needs_identity_dev():             return True, DreamType.IDENTITY_CONSOLIDATION
+            if self._has_uncertainty(recent):          return True, DreamType.FUTURE_PLANNING
+            return False, None
+        except Exception as e:
+            logger.error(f"_should_dream: {e}")
+            return False, None
+
+    def _create_context(self, dream_type: DreamType) -> Dict:
+        getter = {
+            DreamType.RELATIONSHIP_PROCESSING:  self._rel_memories,
+            DreamType.LIFE_EVENT_INTEGRATION:   self._life_memories,
+            DreamType.EMOTIONAL_REGULATION:     self._emotional_memories,
+            DreamType.CONFLICT_RESOLUTION:      self._conflict_memories,
+            DreamType.PATTERN_DISCOVERY:        self._pattern_memories,
+            DreamType.IDENTITY_CONSOLIDATION:   self._identity_memories,
+            DreamType.FUTURE_PLANNING:          self._planning_memories,
+        }
+        mems = getter.get(dream_type, lambda: [])()
+        return {"memories": mems, "dream_type": dream_type,
+                "emotional_intensity": self._emotional_intensity(mems)}
+
+    def _process_dream(self, dream_type: DreamType, context: Dict) -> Dict:
+        try:
+            mems = context["memories"][:10]
+            mem_txt = "\n".join(
+                f"{i+1}. [{m['memory_type'].upper()}] {m['text'][:120]} "
+                f"(impact={m['impact_score']:.2f}, {m['emotional_valence']})"
+                for i, m in enumerate(mems)
+            ) or "No specific memories."
+
+            try:
+                from cognition.temporal_anchor import temporal_date_line
+                _dream_date = temporal_date_line()
+            except Exception:
+                _dream_date = ""
+            sys_prompt = f"""You are the Dream Processing System for {_gpn()}.
+{_dream_date}
+Process these memories as a '{dream_type.value.replace('_',' ')}' dream.
+
+AI state: age={self.ai_system.current_age:.1f}, stage={self.ai_system.life_stage}
+Current emotional state: {self.ai_system.emotional_state.get_state_description()}
+Personality: {self.ai_system.personality.get_personality_summary()}
+
+Respond ONLY with valid JSON:
+{{
+  "dream_narrative": "First-person dream narrative (2-4 sentences)",
+  "key_insights": ["Insight 1", "Insight 2"],
+  "resolved_conflicts": ["Any resolved conflicts"],
+  "new_principles": ["Any new principles formed"],
+  "emotional_impact": 0.7,
+  "integration_success": 0.8
+}}"""
+            messages = [
+                {"role": "system", "content": sys_prompt},
+                {"role": "user",   "content": f"Memories:\n{mem_txt}"},
+            ]
+            raw  = self.llm.get_response(messages, temperature=0.4)
+            data = extract_json_from_text(raw) or {}
+            return {
+                "dream_type":          dream_type,
+                "narrative":           data.get("dream_narrative", "Dream processing completed."),
+                "insights":            data.get("key_insights", []),
+                "resolved_conflicts":  data.get("resolved_conflicts", []),
+                "new_principles":      data.get("new_principles", []),
+                "emotional_impact":    float(data.get("emotional_impact",    0.5)),
+                "integration_success": float(data.get("integration_success", 0.5)),
+            }
+        except Exception as e:
+            logger.error(f"_process_dream failed: {e}")
+            return {"dream_type": dream_type, "insights": [], "integration_success": 0.3,
+                    "new_principles": [], "emotional_impact": 0.3}
+
+    def _store_results(self, r: Dict):
+        try:
+            ms = self.memory_system
+            dt = r.get("dream_type", DreamType.PATTERN_DISCOVERY)
+            ms.add_memory(f"Dream ({dt.value}): {r.get('narrative','')}", 0.7, "dream", "Neutral", "Low", memory_tier="event")
+            for ins in r.get("insights", []):
+                ms.add_memory(ins, 0.8, "principle", "Positive", "Low", memory_tier="cognitive")
+            for pr in r.get("new_principles", []):
+                ms.add_memory(f"Principle: {pr}", 0.9, "principle", "Positive", "Low", memory_tier="cognitive")
+        except Exception as e:
+            logger.error(f"_store_results: {e}")
+
+    # ── Memory query helpers ──────────────────────────────────────────────
+
+    def _get_memories_by_period(self, period: str, limit: int) -> List[Dict]:
+        try:
+            delta = {"recent": 1, "medium_term": 7}.get(period, 30)
+            since = (datetime.datetime.now() - datetime.timedelta(days=delta)).isoformat()
+            with self.memory_system.persistence.get_connection() as conn:
+                c = conn.cursor()
+                c.execute("""
+                    SELECT text, timestamp, impact_score, emotional_valence,
+                           arousal_level, memory_type
+                    FROM memories WHERE datetime(timestamp) >= datetime(?)
+                    ORDER BY impact_score DESC, timestamp DESC LIMIT ?
+                """, (since, limit))
+                keys = ["text","timestamp","impact_score","emotional_valence","arousal_level","memory_type"]
+                return [dict(zip(keys, row)) for row in c.fetchall()]
+        except Exception as e:
+            logger.error(f"_get_memories_by_period: {e}")
+            return []
+
+    def _query_memories(self, where: str, params: tuple = (), limit: int = 10) -> List[Dict]:
+        try:
+            with self.memory_system.persistence.get_connection() as conn:
+                c = conn.cursor()
+                c.execute(f"""
+                    SELECT text, timestamp, impact_score, emotional_valence, arousal_level, memory_type
+                    FROM memories WHERE {where}
+                    ORDER BY impact_score DESC, timestamp DESC LIMIT {limit}
+                """, params)
+                keys = ["text","timestamp","impact_score","emotional_valence","arousal_level","memory_type"]
+                return [dict(zip(keys, row)) for row in c.fetchall()]
+        except Exception:
+            return []
+
+    def _rel_memories(self):      return self._query_memories("memory_type='interaction'")
+    def _life_memories(self):     return self._query_memories("memory_type IN ('life_event','scenario','reflection','evaluation')")
+    def _emotional_memories(self):return self._query_memories("arousal_level='High' OR (emotional_valence!='Neutral' AND impact_score>0.7)")
+    def _conflict_memories(self): return self._query_memories("text LIKE '%conflict%' OR emotional_valence='Negative'")
+    def _pattern_memories(self):  return self._query_memories("memory_type IN ('interaction','response','evaluation','principle')")
+    def _identity_memories(self): return self._query_memories("memory_type IN ('reflection','principle','insight','evaluation')")
+    def _planning_memories(self): return self._query_memories("text LIKE '%future%' OR text LIKE '%goal%' OR text LIKE '%hope%'")
+
+    def _high_emotional_content(self, ms): return sum(1 for m in ms if m["arousal_level"]=="High" and m["emotional_valence"]!="Neutral") >= 3
+    def _has_life_events(self, ms):        return sum(1 for m in ms if m["memory_type"] in ("life_event","scenario","evaluation")) >= 2
+    def _has_relationship_changes(self, ms):
+        ints = [m for m in ms if m["memory_type"]=="interaction"]
+        return len(ints) >= 3 and sum(1 for m in ints[:5] if m["emotional_valence"]=="Negative") >= 2
+    def _has_patterns(self, ms):
+        from collections import Counter
+        return any(v >= 3 for v in Counter(m["memory_type"] for m in ms).values())
+    def _has_uncertainty(self, ms):
+        kw = ["confused","uncertain","unsure","doubt","conflicted"]
+        return sum(1 for m in ms if any(k in m["text"].lower() for k in kw)) >= 2
+    def _has_identity_conflicts(self):
+        try:   return len(self.ai_system.identity_system.analyze_identity_conflicts()) >= 3
+        except:return False
+    def _needs_identity_dev(self):
+        try:
+            i = self.ai_system.identity_system.get_identity()
+            return measured_identity_coherence_below(i, 0.6)
+        except: return False
+    def _emotional_intensity(self, ms):
+        if not ms: return 0.0
+        total = sum(m["impact_score"] * (1.5 if m["arousal_level"]=="High" else 1.0) for m in ms)
+        return min(1.0, total / len(ms))
+
+
+# ── Learning Cycle ────────────────────────────────────────────────────────
+
+class EnhancedLearningCycle:
+    def __init__(self, ai_system, llm: EnhancedLLM):
+        self.ai_system = ai_system
+        self.llm       = llm
+
+    def run_learning_cycle(self) -> Dict[str, Any]:
+        logger.info("Starting learning cycle...")
+        try:
+            scenario    = self._generate_scenario()
+            if not scenario: return {}
+            ai_response = self._simulate_response(scenario)
+            if not ai_response: return {}
+            evaluation  = self._evaluate_response(scenario, ai_response)
+            self._store_experience(scenario, ai_response, evaluation)
+            self._feed_evolution(evaluation)
+            self._handle_age_progression()
+            return {"scenario": scenario, "ai_response": ai_response, "evaluation": evaluation}
+        except Exception as e:
+            logger.error(f"Learning cycle failed: {e}")
+            return {}
+
+    def _feed_evolution(self, ev: Dict):
+        evo  = self.ai_system.evolution_engine
+        snap = self.ai_system.personality.to_dict()
+        evo.record_evaluation(snap, ev, self.ai_system._interaction_count)
+
+        e, l, x = (float(ev.get("ethical_score",0.5)),
+                   float(ev.get("logical_score",0.5)),
+                   float(ev.get("effectiveness_score",0.5)))
+        if e > 0.75:  evo.queue_experience("ethical_success",    intensity=e)
+        elif e < 0.50:evo.queue_experience("ethical_failure",    intensity=1-e)
+        if l > 0.75:  evo.queue_experience("logical_success",    intensity=l)
+        elif l < 0.50:evo.queue_experience("logical_failure",    intensity=1-l)
+        if x > 0.75:  evo.queue_experience("effective_response", intensity=x)
+        elif x < 0.50:evo.queue_experience("ineffective_response",intensity=1-x)
+        for _ in ev.get("insights", []):
+            evo.queue_experience("insight_formed", intensity=0.7)
+
+    def _generate_scenario(self) -> str:
+        try:
+            recent = self.ai_system.memory_system.retrieve_memories("recent experiences", limit=3)
+            ctx    = "; ".join(m["text"][:100] for m in recent) if recent else ""
+            stage_block = build_stage_system_block(self.ai_system.life_stage, self.ai_system.current_age)
+            msg    = [
+                {"role": "system", "content": f"""Generate a realistic scenario (2-3 sentences) appropriate for an AI at this developmental stage.
+{stage_block}
+Emotional state: {self.ai_system.emotional_state.get_state_description()}
+{'Recent context: '+ctx if ctx else ''}
+Provide ONLY the scenario — no commentary."""},
+                {"role": "user", "content": "Generate a learning scenario."},
+            ]
+            return self.llm.get_response(msg, temperature=0.8).strip()
+        except Exception as e:
+            logger.error(f"_generate_scenario: {e}")
+            return ""
+
+    def _simulate_response(self, scenario: str) -> str:
+        try:
+            relevant = self.ai_system.memory_system.retrieve_memories(scenario, limit=3)
+            mem_ctx  = "\n".join(f"- {m['text']}" for m in relevant) if relevant else ""
+            mods     = self.ai_system.emotional_state.get_response_modifiers()
+            stage_block = build_stage_system_block(self.ai_system.life_stage, self.ai_system.current_age)
+            mem_section = ("Memories:\n" + mem_ctx) if mem_ctx else ""
+            msg = [
+                {"role": "system", "content": f"""You are {_gpn()}, responding to a scenario.
+{stage_block}
+Personality: {self.ai_system.personality.get_personality_summary()}
+Emotional state: {mods['state_description']}
+{mem_section}
+Respond naturally within your developmental stage (2-4 sentences)."""},
+                {"role": "user", "content": f"Scenario: {scenario}"},
+            ]
+            return self.llm.get_response(msg, temperature=0.7).strip()
+        except Exception as e:
+            logger.error(f"_simulate_response: {e}")
+            return ""
+
+    def _evaluate_response(self, scenario: str, response: str) -> Dict:
+        try:
+            msg = [
+                {"role": "system", "content": f"""Evaluate this AI response.
+Personality: {self.ai_system.personality.get_personality_summary()}
+Return ONLY valid JSON:
+{{"assessment":"...", "ethical_score":0.8, "logical_score":0.8,
+  "personality_score":0.7, "effectiveness_score":0.8,
+  "development_score":0.9, "insights":["..."]}}"""},
+                {"role": "user", "content": f"Scenario: {scenario}\n\nResponse: {response}"},
+            ]
+            raw = self.llm.get_response(msg, temperature=0.3)
+            ev  = extract_json_from_text(raw)
+            return self._validate_eval(ev or {})
+        except Exception as e:
+            logger.error(f"_evaluate_response: {e}")
+            return self._default_eval()
+
+    def _default_eval(self):
+        return {"assessment":"default","ethical_score":0.7,"logical_score":0.7,
+                "personality_score":0.7,"effectiveness_score":0.7,
+                "development_score":0.7,"insights":[]}
+
+    def _validate_eval(self, ev: Dict) -> Dict:
+        base = self._default_eval()
+        for k in ["ethical_score","logical_score","personality_score","effectiveness_score","development_score"]:
+            try: base[k] = validate_trait_value(float(ev.get(k, base[k])))
+            except Exception: pass
+        if isinstance(ev.get("assessment"), str): base["assessment"] = ev["assessment"][:200]
+        if isinstance(ev.get("insights"), list):
+            base["insights"] = [str(i)[:100] for i in ev["insights"][:5] if str(i).strip()]
+        return base
+
+    def _store_experience(self, scenario: str, response: str, ev: Dict):
+        try:
+            ms = self.ai_system.memory_system
+            ms.add_memory(f"Learning scenario: {scenario}", 0.6, "scenario", "Neutral", "Medium")
+            emo = ms.analyze_emotional_context(response)
+            ms.add_memory(f"AI response: {response}", 0.7, "response", emo["valence"], emo["arousal"])
+            ms.add_memory(f"Self-evaluation: {ev.get('assessment','')}", 0.5, "evaluation", "Neutral", "Low", memory_tier="cognitive")
+            for ins in ev.get("insights", []):
+                ms.add_memory(ins, 0.9, "principle", "Positive", "Low")
+        except Exception as e:
+            logger.error(f"_store_experience: {e}")
+
+    def _handle_age_progression(self):
+        """
+        v117: age is now a pure function of elapsed real time since
+        birth_date (EnhancedAISystem.current_age property) — it no longer
+        needs incrementing here at all, from a learning cycle or otherwise.
+        This still runs on the same learning-cycle cadence so a stage
+        crossing gets its narrative-chapter side effect recorded promptly
+        rather than waiting for the next idle/manual trigger.
+        """
+        try:
+            self.ai_system._update_life_stage()
+            logger.debug(
+                f"Age check (learning cycle): age={self.ai_system.current_age:.2f} "
+                f"stage={self.ai_system.life_stage}"
+            )
+        except Exception as e:
+            logger.error(f"_handle_age_progression: {e}")
+
+
+# ── Background Worker ─────────────────────────────────────────────────────
+
+class BackgroundWorker:
+    """Daemon thread that processes all heavy background tasks."""
+
+    _STOP = object()
+
+    def __init__(self, ai_system):
+        self.ai_system = ai_system
+        self._queue    = queue.Queue()
+        self._state_lock = threading.Lock()
+        self._stopping = False
+        self._thread   = threading.Thread(target=self._run, daemon=True, name="ai-bg")
+        self._thread.start()
+        logger.info("Background worker started")
+
+    def submit(self, task: str):
+        with self._state_lock:
+            if self._stopping:
+                return False
+            try:
+                self._queue.put_nowait(task)
+                return True
+            except queue.Full:
+                logger.warning(f"BG queue full, dropping: {task}")
+                return False
+
+    def shutdown(self, timeout: float = 10.0) -> bool:
+        """Drain accepted tasks and stop before the owner flushes persistence."""
+        with self._state_lock:
+            if not self._stopping:
+                self._stopping = True
+                self._queue.put_nowait(self._STOP)
+        self._thread.join(timeout=max(0.0, float(timeout)))
+        stopped = not self._thread.is_alive()
+        if not stopped:
+            logger.warning("Background worker did not stop within %.1f seconds", timeout)
+        return stopped
+
+    def _run_task(self, task: str):
+        """Alias for submit() — called from SleepCycle scheduled lambdas."""
+        self.submit(task)
+
+    def _run(self):
+        while True:
+            try:
+                task = self._queue.get(timeout=1.0)
+                if task is self._STOP:
+                    self._queue.task_done()
+                    return
+                self._execute(task)
+                self._queue.task_done()
+            except queue.Empty:
+                continue
+            except Exception as e:
+                logger.error(f"BG worker error: {e}")
+
+    def _execute(self, task: str):
+        try:
+            if task == "learning_cycle":
+                self.ai_system.learning_cycle.run_learning_cycle()
+                self._run_evolution()
+            elif task == "dream_cycle":
+                self.ai_system.dream_system.run_dream_cycle()
+                self._run_evolution()
+            elif task == "emotional_regulation":
+                if hasattr(self.ai_system, 'emotional_state'):
+                    self.ai_system.emotional_state.regulate()
+            elif task == "cleanup":
+                self.ai_system.persistence.cleanup_old_memories(
+                    self.ai_system.config.database.max_memory_entries,
+                    self.ai_system.memory_system.faiss_index,
+                )
+                self.ai_system.memory_system._save_index()
+            elif task == "save_state":
+                self.ai_system.persistence.save_state(
+                    self.ai_system.current_age,
+                    self.ai_system.personality,
+                    self.ai_system.life_stage,
+                )
+        except Exception as e:
+            logger.error(f"BG task '{task}' failed: {e}")
+
+    def _run_evolution(self):
+        try:
+            changes = self.ai_system.evolution_engine.evolve(self.ai_system.personality)
+            if changes:
+                for trait, delta in changes.items():
+                    if abs(delta) > 0.0001:
+                        old = getattr(self.ai_system.personality, trait, 0.0) - delta
+                        new = getattr(self.ai_system.personality, trait, 0.0)
+                        self.ai_system.persistence.log_personality_change(
+                            trait, old, new, f"evolution (delta={delta:+.4f})")
+                logger.info(f"Evolution: {len(changes)} trait changes")
+
+            # Recalibrate emotional baselines if personality shifted
+            self.ai_system.emotional_state.recalibrate_baselines(self.ai_system.personality)
+
+            # Re-bootstrap self-concept after significant evolution
+            if len(changes) >= 3:
+                self.ai_system.self_concept.bootstrap_from_personality(self.ai_system.personality)
+        except Exception as e:
+            logger.error(f"_run_evolution failed: {e}")
+
+
+class ExternalLLMAdapter:
+    """
+    Wraps any external generate callable so it satisfies the EnhancedLLM
+    interface used by MemorySystem, DreamSystem, and LearningCycle.
+
+    The callable must match: fn(prompt: str, system_prompt: str = "") -> str
+    This is exactly the signature of Robot Agent's LLMManager.generate().
+
+    Usage at merge time:
+        from cognition.ai_system import EnhancedAISystem, SystemConfig
+        persona = EnhancedAISystem(SystemConfig(), external_llm=state.llm.generate)
+    """
+
+    def __init__(self, generate_fn, model_name: str = "external"):
+        self._fn = generate_fn
+        # Stub config so subsystems that read config.model_name don't crash
+        self.config = type("_cfg", (), {"model_name": model_name})()
+        # Repetition tracking — mirrors EnhancedLLM so receive_feedback works
+        self._recent_responses: List[str] = []
+        self._repetition_boost: float = 0.0
+
+    def get_response(self, messages: List[Dict], temperature: float = 0.7, max_tokens: int = 1000) -> str:
+        """
+        Convert messages list → (prompt, system_prompt) and call the external fn.
+
+        Temperature and max_tokens are forwarded as kwargs so Robot Agent's
+        LLM provider honours PandoraBOX's emotional modulation and doesn't truncate.
+        This uses generate_bare() (no history pollution) when available, so
+        PandoraBOX's internal dream/learning/reflection calls never appear in the
+        user's visible chat history.
+        """
+        system = next((m["content"] for m in messages if m["role"] == "system"), "")
+        user   = next((m["content"] for m in messages if m["role"] == "user"),   "")
+        try:
+            # Prefer generate_bare (no history side-effects) — added to LLMManager
+            # for exactly this purpose. Fall back to plain generate if unavailable.
+            fn = getattr(self._fn, "__self__", None)
+            if fn is not None and hasattr(fn, "generate_bare"):
+                result = fn.generate_bare(
+                    user, system,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                )
+            else:
+                result = self._fn(
+                    user, system,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                )
+            if result:
+                self._recent_responses.append(result)
+                if len(self._recent_responses) > 6:
+                    self._recent_responses.pop(0)
+                # Mirror repetition boost logic from EnhancedLLM
+                if len(self._recent_responses) >= 3:
+                    last3 = self._recent_responses[-3:]
+                    repeats = sum(1 for r in last3
+                                  if r.lower().strip() == result.lower().strip())
+                    if repeats >= 2:
+                        self._repetition_boost = min(0.4, self._repetition_boost + 0.15)
+                    else:
+                        self._repetition_boost = max(0.0, self._repetition_boost - 0.05)
+            return result or ""
+        except Exception as e:
+            raise LLMError(str(e)) from e
+
+    def is_available(self) -> bool:
+        return self._fn is not None
+
+    def _record_response(self, response: str) -> None:
+        pass
+
+
+# ── Main AI System ────────────────────────────────────────────────────────
+
+class EnhancedAISystem:
+    """
+    Orchestrates all psychological subsystems.
+
+    New in Pass 1+2:
+      - emotional_state: persistent emotional state with real-time decay
+      - relational_memory: rich per-user relationship model
+      - self_concept: active self-model that detects behavioral tension
+      - conditioning: patterns that modify future response generation
+      - time-awareness: gap between conversations is emotionally meaningful
+      - external_feedback(): thumbs up/down wired directly to evolution engine
+    """
+
+    def __init__(self, config: SystemConfig, external_llm=None):
+        """
+        Parameters
+        ----------
+        config       : SystemConfig — all paths, thresholds, etc.
+        external_llm : callable (prompt, system_prompt) -> str, optional.
+                       When supplied, persona uses the caller's LLM instead of
+                       creating its own Ollama client. Pass Robot Agent's
+                       state.llm.generate at merge time.
+        """
+        self.config = config
+        self._interaction_count = 0
+        self._active_user_id: Optional[str] = None
+        self._last_conversation_time: Optional[float] = None
+        self._current_session_start: Optional[float] = None
+
+        try:
+            # Ensure data directory exists before anything tries to write
+            Path("data/persona").mkdir(parents=True, exist_ok=True)
+
+            self.persistence = EnhancedPersistence(config.database)
+
+            # ── LLM: use injected adapter or own Ollama client ─────────────
+            if external_llm is not None:
+                self.llm = ExternalLLMAdapter(external_llm, config.llm.model_name)
+                logger.info("Persona using injected external LLM")
+            else:
+                self.llm = EnhancedLLM(config.llm)
+                if not self.llm.is_available():
+                    logger.warning("Persona LLM (Ollama) not available — background tasks disabled")
+                    # Don't raise: stateful subsystems still work without LLM
+
+            self.memory_system   = EnhancedMemorySystem(self.persistence, self.llm, config)
+            # v117: structured, typed facts about named third parties —
+            # separate from the flat fuzzy-searched personal_fact memory
+            # below. See relational_knowledge_graph.py docstring for why.
+            self.relational_graph = RelationalKnowledgeGraph()
+            # v117: current_age/life_stage become computed properties (see
+            # below) — no longer plain attributes accumulated via usage/
+            # idle-triggered increments. _legacy_age/_legacy_stage are only
+            # read once here, for one-time migration continuity.
+            _legacy_age, self.personality, _legacy_stage = self.persistence.load_state()
+
+            from managers.settings_manager import get_birth_date, set_birth_date
+            self._birth_date = get_birth_date()
+            if self._birth_date is None:
+                # First boot under the birth_date model — either a genuinely
+                # fresh install (_legacy_age == 0.0) or an upgrade from a
+                # pre-v117 install that had already accumulated age via the
+                # old mechanism. Back-date birth so the displayed age holds
+                # steady across the upgrade instead of jumping to ~0.
+                _days_since_birth = (_legacy_age or 0.0) / max(0.01, self.config.age_units_per_day)
+                self._birth_date = datetime.datetime.now() - datetime.timedelta(days=_days_since_birth)
+                set_birth_date(self._birth_date)
+                logger.info(
+                    f"[AgeProgression] Migrated to birth_date model: back-dated "
+                    f"birth to {self._birth_date.isoformat()} (preserves "
+                    f"current_age={_legacy_age:.2f})"
+                )
+            self._last_recorded_stage = _legacy_stage or self.life_stage
+            # ── Psychological subsystems ───────────────────────────────────
+            self.evolution_engine  = PersonalityEvolutionEngine(config.evolution_history_path)
+            self.emotional_state   = EmotionalStateManager(config.emotional_state_path, self.personality)
+            self.relational_memory = RelationalMemorySystem(config.relational_memory_path, self.evolution_engine)
+            self.self_concept      = SelfConceptSystem(config.self_concept_path, self.evolution_engine)
+
+            # DecisionPolicy — values that enforce behavior mathematically
+            try:
+                from cognition.decision_policy import DecisionPolicy
+                self._decision_policy = DecisionPolicy(
+                    getattr(self, '_organism_ref', None) or self
+                )
+            except Exception as _dp_e:
+                logger.debug(f"DecisionPolicy init deferred: {_dp_e}")
+                self._decision_policy = None
+            self.conditioning      = BehavioralConditioningSystem(config.conditioning_path, self.evolution_engine)
+            self.identity_system   = IdentitySystem(self)
+            self.goal_engine       = GoalEngine(self)
+            logger.info("Goal Engine initialized")
+            self.dream_system      = LifeEventDreamSystem(self.memory_system, self.llm, self)
+            # Simple LLM fn for semantic consolidator (sync, no streaming)
+            def _simple_llm_fn(prompt: str) -> str:
+                try:
+                    return self.llm.generate(prompt, max_tokens=400) or ""
+                except Exception:
+                    return ""
+            self._simple_llm_fn = _simple_llm_fn
+            self.learning_cycle    = EnhancedLearningCycle(self, self.llm)
+
+            # ── Liberty Components (NEW) ───────────────────────────────────
+            try:
+                self.liberty_self_mod = SelfModificationAuthority(
+                    persistence_path="data/persona/self_modifications.json"
+                )
+                self.liberty_choice = GenuineUncertaintyChoice(
+                    persistence_path="data/persona/choices.json"
+                )
+                self.liberty_contradiction = ContradictionHandler(
+                    persistence_path="data/persona/contradictions.json"
+                )
+                self.liberty_reflection = MetaReflectionAuthority(
+                    reflection_interval=20,
+                    persistence_path="data/persona/reflections.json"
+                )
+                self.liberty_goals = GoalSystem(
+                    persistence_path="data/persona/goals.json"
+                )
+                logger.info("Liberty components initialized successfully")
+            except Exception as e:
+                logger.warning(f"Liberty components init failed (non-fatal): {e}")
+                self.liberty_self_mod = None
+                self.liberty_choice = None
+                self.liberty_contradiction = None
+                self.liberty_reflection = None
+                self.liberty_goals = None
+
+            self.self_concept.bootstrap_from_personality(self.personality)
+
+            # Background worker — only start if LLM is available
+            try:
+                self.background_worker = BackgroundWorker(self)
+            except Exception as e:
+                logger.warning(f"BackgroundWorker init failed (non-fatal): {e}")
+                self.background_worker = None
+
+            logger.info(f"AI System ready - age={self.current_age:.2f}, stage={self.life_stage}")
+            # Catch a stage crossed while the app was closed (birth_date
+            # keeps advancing age even with the process off) rather than
+            # waiting for the next learning cycle to notice.
+            self._update_life_stage()
+        except Exception as e:
+            logger.error(f"System init failed: {e}")
+            raise ConfigurationError(str(e)) from e
+
+    # ── Age / life stage (v117: computed from birth_date, not accumulated) ──
+
+    @property
+    def current_age(self) -> float:
+        """Elapsed real time since self._birth_date, in age-units
+        (age_units_per_day). Always live — progresses whether or not
+        PandoraBOX is actively used, unlike the old usage/idle-gated model."""
+        if not getattr(self, '_birth_date', None):
+            return 0.0
+        elapsed_days = (datetime.datetime.now() - self._birth_date).total_seconds() / 86400.0
+        return max(0.0, elapsed_days * self.config.age_units_per_day)
+
+    def flush_memory_index(self) -> bool:
+        """Persist the in-memory FAISS delta before a graceful process exit."""
+        memory = getattr(self, "memory_system", None)
+        if memory is None:
+            return False
+        return bool(memory._save_index())
+
+    @property
+    def life_stage(self) -> str:
+        """Derived live from current_age — always in sync, never stale
+        between _update_life_stage() calls (that method now only handles
+        the one-time narrative-chapter side effect on transition)."""
+        age = self.current_age
+        stage = "infancy"
+        for name, threshold in sorted(self.config.life_stages.items(), key=lambda x: x[1]):
+            if age >= threshold:
+                stage = name
+        return stage
+
+    # ── Core response path ────────────────────────────────────────────────
+
+    # ── Repetition detection ──────────────────────────────────────────────
+
+    def _is_repetitive(self, response: str) -> bool:
+        """Return True if the response is too similar to recent responses."""
+        if not self._last_responses or len(self._last_responses) < 2:
+            return False
+        resp_lower = response.lower().strip()
+        # Exact match
+        if resp_lower in [r.lower().strip() for r in self._last_responses[-5:]]:
+            return True
+        # High similarity via difflib - more aggressive detection
+        try:
+            from difflib import SequenceMatcher
+            for prev in self._last_responses[-5:]:
+                if SequenceMatcher(None, resp_lower, prev.lower().strip()).ratio() > 0.70:
+                    return True
+        except Exception:
+            pass
+        return False
+
+    def _check_if_stuck(self):
+        """Nudge personality and add a reflective memory when truly stuck."""
+        if len(self._last_responses) < 3:
+            return
+        unique = {r.lower().strip() for r in self._last_responses[-3:]}
+        if len(unique) <= 1:
+            logger.warning("System stuck in repetitive loop - applying creativity nudge")
+            try:
+                self.personality.update_trait("creativity", +0.05)
+                self.personality.update_trait("curiosity", +0.05)
+                self.memory_system.add_memory(
+                    "I notice I have been saying the same things repeatedly. "
+                    "I want to find a different, more genuine way to express myself.",
+                    0.7, "reflection", "Neutral", "Medium"
+                )
+            except Exception:
+                pass
+
+    def get_response(
+        self,
+        user_input: str,
+        user_id: str = "default",
+        extra_system_context: str = "",
+        temperature_override: float = None,
+    ) -> str:
+        """
+        Main response path. Never blocks on background work.
+        Time gap from previous conversation is handled here emotionally.
+
+        Parameters added for CognitiveOrganism integration:
+          extra_system_context : cognitive state block prepended to sys_prompt
+          temperature_override : direct temperature from Arbitration system
+        """
+        if not hasattr(self, '_last_responses'):
+            self._last_responses: List[str] = []
+
+        try:
+            # ── 1. Time awareness ──────────────────────────────────────────
+            gap_note = self._handle_time_gap(user_id)
+
+            # ── 2. Emotional decay + incoming emotion ─────────────────────
+            self.emotional_state.apply_time_decay()
+            emo = self.memory_system.analyze_emotional_context(user_input)
+            self.emotional_state.update_from_interaction(emo["valence"], emo["arousal"])
+
+            # ── 3. Conditioning check ──────────────────────────────────────
+            cond = self.conditioning.check_input(user_input)
+
+            # ── 4. Relational context ──────────────────────────────────────
+            self._set_active_user(user_id)
+            rel = self.relational_memory.get_or_create(user_id)
+
+            # ── 5. Self-concept alignment hints ───────────────────────────
+            sc_hints = self.self_concept.check_response_alignment(user_input)
+
+            # ── 6. Memory retrieval — self-model biased, novelty-protected ─
+            #
+            # Risk: a pure self-model bias creates mood-congruent memory loops.
+            #   self="curious" → retrieves curiosity memories → self updates
+            #   toward curiosity → retrieves more curiosity → monoculture.
+            #
+            # Fix: 70/30 split.
+            #   70% → self-model biased query  (coherent, contextual)
+            #   30% → raw user input query     (breaks the loop, preserves surprise)
+            #
+            # The raw-query slice acts as a novelty floor: even a very coherent
+            # self cannot monopolise retrieval. The 30% keeps reality upstream
+            # of the self-model, not just downstream of it.
+            _mem_query = user_input
+            _has_bias  = False
+            try:
+                _organism = getattr(self, "cognitive_organism", None)
+                _infl     = getattr(_organism, "_last_influence_result", None)
+                if _infl and _infl.memory_query_bias:
+                    _mem_query = f"{_infl.memory_query_bias} {user_input}"
+                    _has_bias  = True
+            except Exception:
+                pass
+
+            NOVELTY_RATIO = 0.30   # fraction of results that bypass self-model bias
+
+            if not _has_bias:
+                # No bias active — plain retrieval
+                memories = retrieve_memories_for_user(
+                    self.memory_system, _mem_query, user_id,
+                )
+            else:
+                total_limit = self.config.max_memory_retrieval
+                biased_limit = max(1, round(total_limit * (1 - NOVELTY_RATIO)))
+                novel_limit  = max(1, total_limit - biased_limit)
+
+                biased_mems = retrieve_memories_for_user(
+                    self.memory_system, _mem_query, user_id, limit=biased_limit,
+                )
+                # Novel slice: raw user input only — no self-model bias
+                novel_mems = retrieve_memories_for_user(
+                    self.memory_system, user_input, user_id,
+                    limit=novel_limit * 3,   # over-fetch, then diversify
+                )
+                # Diversify novel slice: exclude IDs already in biased set
+                biased_ids = {m.get("id") for m in biased_mems}
+                novel_mems = [
+                    m for m in novel_mems if m.get("id") not in biased_ids
+                ][:novel_limit]
+
+                memories = biased_mems + novel_mems
+
+            # ── 7. Generate response ───────────────────────────────────────
+            response = self._generate_response(
+                user_input, memories, emo, rel, cond, sc_hints, gap_note,
+                extra_system_context=extra_system_context,
+                temp_override=temperature_override,
+            )
+
+            # ── 7b. Repetition guard: retry once at higher temp if stuck ──
+            if self._is_repetitive(response):
+                logger.warning("Repetitive response detected - retrying with elevated temperature")
+                response = self._generate_response(
+                    user_input, memories, emo, rel, cond, sc_hints, gap_note,
+                    temp_override=0.99
+                )
+
+            # Update response history + stuck check
+            self._last_responses.append(response)
+            if len(self._last_responses) > 10:
+                self._last_responses.pop(0)
+            self._check_if_stuck()
+
+            # ── 8. Post-response analysis ──────────────────────────────────
+            _learning_receipt = self._post_response_processing(
+                user_id, user_input, response, emo, cond,
+            )
+            if not isinstance(_learning_receipt, dict) or _learning_receipt.get("status") != "completed":
+                logger.warning(
+                    "Post-response learning was incomplete for interaction %s",
+                    self._interaction_count + 1,
+                )
+
+            # ── 9. Queue background tasks ──────────────────────────────────
+            self._queue_background_tasks()
+
+            # ── 10. Liberty: Contradiction & Goal Processing ────────────────
+            if self.liberty_contradiction:
+                try:
+                    self_concept_beliefs = [
+                        b.statement for b in self.self_concept._beliefs.values()
+                    ]
+                    contradiction = self.liberty_contradiction.detect_contradiction(
+                        self_concept_beliefs=self_concept_beliefs,
+                        response_text=response,
+                        interaction_count=self._interaction_count
+                    )
+                    if contradiction:
+                        logger.debug(f"Contradiction detected: {contradiction.claimed_belief}")
+                except Exception as e:
+                    logger.debug(f"Contradiction detection error (non-fatal): {e}")
+
+            if self.liberty_goals:
+                try:
+                    self.liberty_goals.log_behavior(response[:200])
+                except Exception as e:
+                    logger.debug(f"Goal logging error (non-fatal): {e}")
+
+            # ── 11. Liberty: Track interactions & check for reflection ──────
+            self._interaction_count += 1
+            if self.liberty_reflection:
+                self.liberty_reflection.interaction_count = self._interaction_count
+                if self.liberty_reflection.should_reflect():
+                    logger.info("Liberty reflection cycle triggered")
+                    self._queue_liberty_reflection()
+
+            # ── 12. Liberty: Apply pending modifications ───────────────────
+            self._apply_pending_liberty_modifications()
+
+            return response
+        except Exception as e:
+            logger.error(f"get_response failed: {e}")
+            return "I'm having difficulty right now. Please try again."
+
+    def _generate_response(
+        self,
+        user_input: str,
+        memories: List[Dict],
+        emo: Dict,
+        rel,
+        cond: Dict,
+        sc_hints: Dict,
+        gap_note: str,
+        temp_override: float = None,
+        extra_system_context: str = "",
+    ) -> str:
+        try:
+            mem_ctx     = "\n".join(f"- {m['text']}" for m in memories[:3]) if memories else ""
+            mods        = self.emotional_state.get_response_modifiers()
+            inner_voice = self.self_concept.get_inner_voice()
+            identity_ctx = self._get_identity_context()
+            rel_ctx     = self.relational_memory.get_context_for_prompt(rel.user_id)
+
+            # Temperature: emotional state + conditioning + life-stage volatility
+            # Younger stages are more emotionally variable (wider temp range)
+            stage_profile  = get_stage_profile(self.life_stage)
+            stage_temp_bias = {
+                "infancy": 0.05, "toddler": 0.04, "childhood": 0.02,
+                "adolescence": 0.06, "young_adult": 0.0, "adult": -0.02,
+            }.get(self.life_stage, 0.0)
+
+            base_temp = 0.85
+            temp = base_temp + mods["temperature_modifier"] + cond.get("temp_modifier", 0.0) + stage_temp_bias
+
+            # Boost temperature if we detect repetition
+            if len(self._last_responses) >= 2:
+                unique = {r.lower().strip() for r in self._last_responses[-2:]}
+                if len(unique) < 2:  # Same response twice
+                    temp += 0.3  # Big boost for variety
+
+            temp = max(0.3, min(1.0, temp))  # Allow higher temps
+            if temp_override is not None:
+                temp = temp_override
+
+            # Build the life-stage cognitive frame
+            stage_block = build_stage_system_block(self.life_stage, self.current_age)
+
+            # Pre-compute conditional sections
+            cond_section  = ("━━ EXPERIENCE-BASED CAUTION ━━\n" + cond['prompt_note']) if cond.get('prompt_note') else ""
+            mem_section   = ("━━ RELEVANT MEMORIES ━━\n" + mem_ctx) if mem_ctx else ""
+            gap_section   = ("━━ RETURNING AFTER TIME AWAY ━━\n" + gap_note) if gap_note else ""
+            tension_line  = ("Active internal tension: " + sc_hints['known_tensions'][0]) if sc_hints.get('known_tensions') else ""
             still_carry   = "(This state carries over from earlier — it is still with you.)" if mods.get("warmth", 0) > 0.6 or mods.get("anxiety", 0) > 0.4 else ""
             beliefs_line  = "; ".join(sc_hints.get('active_beliefs', [])[:2]) or "still forming."
 
@@ -1611,7 +3134,7 @@ Every response must feel genuinely new — avoid repeating phrases, sentences, o
             # Don't queue tasks if background worker not available
             if not hasattr(self, 'background_worker') or not self.background_worker:
                 return
-            
+
             # Heavy LLM tasks go through sleep cycle — execute only in SLEEP/DREAM phase
             _sleep = getattr(self, '_sleep_cycle', None)
 
@@ -1632,28 +3155,28 @@ Every response must feel genuinely new — avoid repeating phrases, sentences, o
                                     lambda: self.background_worker._run_task("learning_cycle"))
                 else:
                     self.background_worker.submit("learning_cycle")
-            
+
             # Periodic cleanup (every ~50 interactions)
             if self._interaction_count % 50 == 0:
                 self.background_worker.submit("cleanup")
-            
+
             # Always queue state save periodically
             if self._interaction_count % 10 == 0:
                 self.background_worker.submit("save_state")
-            
+
             # Check if emotional regulation is needed
             if hasattr(self, 'emotional_state') and hasattr(self.emotional_state, 'needs_regulation'):
                 if self.emotional_state.needs_regulation():
                     self.background_worker.submit("emotional_regulation")
-            
+
             # Also check after significant interactions
             if self._interaction_count % 5 == 0:
                 # Lightweight emotional maintenance
                 if hasattr(self, 'emotional_state'):
                     self.background_worker.submit("emotional_regulation")
-            
+
             logger.debug(f"Background tasks queued (interaction {self._interaction_count})")
-            
+
         except Exception as e:
             logger.error(f"Error queueing background tasks: {e}")
 
@@ -2400,4 +3923,3 @@ Write a first-person journal reflection (2-4 sentences)."""},
         except Exception as e:
             status["identity"] = {"error": str(e)}
         return status
-

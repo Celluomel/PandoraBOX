@@ -81,6 +81,79 @@ def test_legacy_faiss_index_without_manifest_is_not_trusted(tmp_path):
     assert memory._index_manifest_matches(target) is False
 
 
+def test_rebuilding_faiss_index_batch_encodes_memories_and_preserves_ids(monkeypatch):
+    rows = [(11, "User message: remember this"), (12, "A stored observation")]
+
+    class Cursor:
+        def execute(self, query):
+            assert "SELECT faiss_id, text FROM memories" in query
+
+        def fetchall(self):
+            return rows
+
+    class Connection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def cursor(self):
+            return Cursor()
+
+    class Index:
+        def __init__(self):
+            self.added_vectors = None
+            self.added_ids = None
+
+        def add_with_ids(self, vectors, ids):
+            self.added_vectors = vectors.copy()
+            self.added_ids = ids.copy()
+
+    index = Index()
+
+    class FakeFaiss:
+        @staticmethod
+        def IndexIDMap(_flat_index):
+            return index
+
+        @staticmethod
+        def IndexFlatL2(dim):
+            assert dim == 3
+            return "flat-index"
+
+    class Embedder:
+        def __init__(self):
+            self.calls = []
+
+        def encode(self, texts, **kwargs):
+            self.calls.append((texts, kwargs))
+            return [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
+
+    embedder = Embedder()
+    memory = EnhancedMemorySystem.__new__(EnhancedMemorySystem)
+    memory.embedding_dim = 3
+    memory.embedding_model = embedder
+    memory.faiss_index = None
+    memory.persistence = SimpleNamespace(get_connection=Connection)
+    memory._save_index = Mock(return_value=True)
+    monkeypatch.setattr(ai_system_module, "faiss", FakeFaiss)
+
+    built = memory._build_index_from_db()
+
+    assert built is index
+    assert len(embedder.calls) == 1
+    encoded_texts, kwargs = embedder.calls[0]
+    assert encoded_texts == [
+        ai_system_module.memory_embedding_text(rows[0][1], "user_message"),
+        ai_system_module.memory_embedding_text(rows[1][1], ""),
+    ]
+    assert kwargs == {"show_progress_bar": False, "batch_size": 128}
+    assert index.added_ids.tolist() == [11, 12]
+    assert index.added_vectors.tolist() == [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
+    memory._save_index.assert_called_once_with(index)
+
+
 def test_failed_index_write_preserves_previous_persisted_file(tmp_path, monkeypatch):
     target = tmp_path / "faiss_index.bin"
     target.write_bytes(b"known-good-index")

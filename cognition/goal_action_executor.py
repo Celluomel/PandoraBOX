@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 35188)
-Total output lines: 2962
-
 """
 Goal Action Executor
 ====================
@@ -1254,7 +1251,441 @@ class GoalActionExecutor:
                 sr = getattr(self._o, 'skill_registry', None)
                 if sr:
                     sr.seed(
-                 …5188 tokens truncated…at32")
+                        domain      = topic[:40],
+                        description = f"From web research: {interpretation[:80]}",
+                    )
+            except Exception as _skill_e:
+                logger.debug(f"[GoalActionExecutor] skill seed error (non-fatal): {_skill_e}")
+
+            # Queue for proactive delivery to user
+            queued_insight = (
+                f"I was just exploring {topic} and found something worth sharing: "
+                f"{interpretation}"
+            )
+            if research_sources:
+                citations = "; ".join(
+                    f"{source['title']} — {source['url']}"
+                    for source in research_sources
+                )
+                queued_insight += f"\nSources: {citations}"
+            with self._pending_delivery_lock:
+                self._pending_insights.append(queued_insight)
+
+            # Track cooldown
+            self._last_web_search[goal.id] = time.time()
+
+            logger.info(
+                f"[GoalActionExecutor] 🌐 Web search ✅ '{topic[:30]}': "
+                f"interpreted (emotion={emotional_context or 'unknown'}) → queued"
+            )
+            self._finalize_async_action(
+                goal, ACTION_WEB_SEARCH, True,
+                f"interpreted research for {topic[:80]}",
+                evidence={
+                    **publication,
+                    "research_item_queued": True,
+                    "research_sources": research_sources,
+                },
+                execution_id=execution_id, cycle_id=cycle_id,
+            )
+            return
+
+        except ImportError:
+            logger.debug("[GoalActionExecutor] search_providers not available")
+        except Exception as e:
+            logger.warning(f"[GoalActionExecutor] web_search error: {e}", exc_info=True)
+
+        self._finalize_async_action(
+            goal, ACTION_WEB_SEARCH, False, "research did not produce a usable result",
+            execution_id=execution_id, cycle_id=cycle_id,
+        )
+        await self._fallback_self_question(
+            goal, parent_action=ACTION_WEB_SEARCH,
+            parent_execution_id=execution_id, cycle_id=cycle_id,
+        )
+
+    def _get_identity_context(self) -> tuple:
+        """
+        Extract current dominant emotion and top beliefs for the identity filter.
+        Returns (emotional_context: str, belief_context: str).
+        Safe to call from any thread — all reads, no writes.
+        """
+        emotional_context = ""
+        try:
+            ai_sys = getattr(self._o, 'ai_system', None)
+            ems = getattr(ai_sys, 'emotional_state', None)
+            if ems:
+                if hasattr(ems, 'get_current_values'):
+                    emotions = ems.get_current_values()
+                elif hasattr(ems, 'emotions'):
+                    emotions = {n: e.value for n, e in ems.emotions.items()}
+                else:
+                    emotions = {}
+                if emotions:
+                    dom_name, dom_val = max(emotions.items(), key=lambda x: x[1])
+                    if dom_val > 0.15:   # only report meaningful emotions
+                        emotional_context = f"{dom_name} ({dom_val:.2f})"
+        except Exception:
+            pass
+
+        belief_context = ""
+        try:
+            ai_sys = getattr(self._o, 'ai_system', None)
+            sc = getattr(ai_sys, 'self_concept', None)
+            if sc and hasattr(sc, '_beliefs'):
+                statements = [
+                    b.statement for b in list(sc._beliefs.values())
+                    if hasattr(b, 'statement') and b.statement
+                    and not b.statement.startswith('insight_')
+                ][:3]
+                if statements:
+                    belief_context = "; ".join(statements[:2])
+        except Exception:
+            pass
+
+        return emotional_context, belief_context
+
+    async def _interpret_through_identity(
+        self,
+        raw_context: str,
+        topic: str,
+        emotional_context: str,
+        belief_context: str,
+    ) -> str:
+        """
+        LLM call: make sense of raw web data through the lens of current
+        emotional state and held beliefs.
+
+        This is the moment personality becomes CAUSAL — not "PandoraBOX is curious"
+        as a label, but curiosity actually shaping what she sees in new data.
+        """
+        try:
+            from core.state import state as _state
+            llm = getattr(_state, 'llm', None)
+            if not llm or not hasattr(llm, 'generate_bare'):
+                return ""
+
+            identity_lines = []
+            if emotional_context:
+                identity_lines.append(f"Current emotional state: {emotional_context}")
+            if belief_context:
+                identity_lines.append(f"Core beliefs: {belief_context}")
+            identity_block = "\n".join(identity_lines)
+
+            prompt = (
+                f"You are reflecting on recent information about '{topic}'.\n"
+                + (f"{identity_block}\n\n" if identity_block else "")
+                + f"Information found:\n{raw_context}\n\n"
+                f"In one sentence, what does this mean to you personally "
+                f"given your current state and values?"
+            )
+
+            response = await asyncio.to_thread(
+                llm.generate_bare, prompt, max_tokens=80, temperature=0.72
+            )
+            if response and len(response.strip()) > 10:
+                return response.strip()[:200]
+        except Exception as e:
+            logger.debug(f"[GoalActionExecutor] identity filter error: {e}")
+        return ""
+
+    async def _action_self_question(
+        self, goal, *, execution_id: str = "", cycle_id: Optional[int] = None
+    ) -> None:
+        """
+        FIX 3 (async side): Called inside asyncio.run() in a daemon thread.
+        Uses state.llm.generate_bare() — the correct sync path for internal
+        cognitive tasks. Result delivered proactively to chat.
+        """
+        try:
+            from core.state import state as _state
+            llm = getattr(_state, 'llm', None)
+            if not llm or not hasattr(llm, 'generate_bare'):
+                logger.warning(
+                    "[GoalActionExecutor] LLM backend not available for self_question "
+                    f"(state.llm={type(llm).__name__ if llm else 'None'}, "
+                    f"has_generate_bare={hasattr(llm, 'generate_bare') if llm else False}) "
+                    "— goal will retry next cycle"
+                )
+                self._finalize_async_action(
+                    goal, ACTION_SELF_QUESTION, False, "LLM backend unavailable",
+                    execution_id=execution_id, cycle_id=cycle_id,
+                )
+                return
+
+            # Fix: goal.topic is frozen at creation time; regenerate from
+            # live state for the five known tension goals so repeated
+            # actions on a long-lived goal don't repeat identical wording
+            # every time (see cognition/tension_topics.py for detail).
+            try:
+                from cognition.tension_topics import regenerate_topic_for_goal
+                from pathlib import Path as _Path
+                _dd = getattr(self._o, '_data_dir', 'data/persona')
+                _fresh = regenerate_topic_for_goal(
+                    goal.name, _dd if isinstance(_dd, _Path) else _Path(_dd)
+                )
+            except Exception:
+                _fresh = None
+
+            topic = (_fresh if _fresh else goal.topic).replace('_', ' ')
+
+            # Deduplicate: skip if same insight was stored recently
+            # FIX: use full topic normalised lowercase (not truncated to 20 chars)
+            # Truncation caused duplicate pairs: insight_Actively_pursue_curi
+            # vs insight_actively_pursue_curiosity for the same topic.
+            belief_key = f"insight_{topic.lower().replace(' ', '_')}"
+            last_stored = self._recent_insights.get(belief_key, 0)
+            age = time.time() - last_stored
+            if age < INSIGHT_DEDUPE_WINDOW:
+                belief_persisted = False
+                try:
+                    from core.data.access import DataAccess
+                    stored = DataAccess().get_belief_by_name(belief_key)
+                    belief_persisted = bool(
+                        isinstance(stored, dict)
+                        and str(stored.get("statement", "")).strip()
+                    )
+                except Exception as exc:
+                    logger.debug(
+                        "[GoalActionExecutor] Deduplicated insight read-back failed: %s",
+                        exc,
+                    )
+                logger.info(
+                    f"[GoalActionExecutor] ⏭ Dedup: '{topic[:30]}' "
+                    f"(stored {int(age)}s ago < {INSIGHT_DEDUPE_WINDOW}s) "
+                    f"— persistence_verified={belief_persisted}"
+                )
+                if belief_persisted:
+                    # Advance frame so the NEXT cycle uses a different prompt angle.
+                    self._frame_index[goal.id] = (
+                        self._frame_index.get(goal.id, 0) + 1
+                    ) % len(_SELF_QUESTION_FRAMES)
+                    self._finalize_async_action(
+                        goal, ACTION_SELF_QUESTION, True,
+                        "recent grounded insight already exists",
+                        evidence={"belief_persisted": True, "reused_existing_insight": True},
+                        execution_id=execution_id, cycle_id=cycle_id,
+                    )
+                else:
+                    self._finalize_async_action(
+                        goal, ACTION_SELF_QUESTION, False,
+                        "recent-insight cache had no persisted belief",
+                        evidence={"belief_persisted": False},
+                        execution_id=execution_id, cycle_id=cycle_id,
+                    )
+                return
+
+            # State-grounded introspection: derive question from IDX, contradictions,
+            # pressure, commitment consistency — not from LLM training templates.
+            frame_idx = self._frame_index.get(goal.id, 0)
+            try:
+                from cognition.grounded_introspection import get_generator
+                _gen = get_generator(self._o)
+                prompt = _gen.generate(topic, frame_idx)
+            except Exception as _gi_e:
+                logger.warning(
+                    f"[GoalActionExecutor] grounded introspection error: {_gi_e}",
+                    exc_info=True
+                )
+                # Fallback to rotating frames
+                prompt = _SELF_QUESTION_FRAMES[frame_idx % len(_SELF_QUESTION_FRAMES)].format(
+                    topic=topic
+                )
+            # Posterior topic quality check: if the topic is semantically thin
+            # (noise word from semantic memory, conversation fragment), substitute
+            # it with a meaningful alternative derived from the goal's origin.
+            try:
+                _ai_sys = getattr(self._o, 'ai_system', None)
+                _emb_model = getattr(_ai_sys, 'embedding_model', None) if _ai_sys else None
+                if _emb_model is not None and not hasattr(self, '_topic_noise_anchor'):
+                    self._topic_noise_anchor = _emb_model.encode(
+                        "word fragment filler noise greeting"
+                    ).astype("float32")
+                    self._topic_content_anchor = _emb_model.encode(
+                        "identity value belief orientation curiosity meaning purpose"
+                    ).astype("float32")
+
+                if _emb_model is not None:
+                    import numpy as _np_t
+
+                    def _cos_t(a, b):
+                        n = _np_t.linalg.norm(a) * _np_t.linalg.norm(b)
+                        return float(_np_t.dot(a, b) / n) if n > 0 else 0.0
+
+                    _v_topic = _emb_model.encode(topic).astype("float32")
+                    _topic_quality = _cos_t(_v_topic, self._topic_content_anchor)
+                    _TOPIC_QUALITY_FLOOR = 0.18
+
+                    if _topic_quality < _TOPIC_QUALITY_FLOOR:
+                        _origin = getattr(goal, 'origin', 'explore')
+                        _origin_map = {
+                            "understand_user":    "how I relate to and understand others",
+                            "explore":            "what genuinely interests me right now",
+                            "self_improve":       "what I am becoming through this work",
+                            "maintain_coherence": "how I maintain coherence across sessions",
+                            "curiosity_autonomous": topic,
+                        }
+                        _substitute = _origin_map.get(
+                            _origin, "what is most alive in my thinking right now"
+                        )
+                        logger.info(
+                            f"[GoalActionExecutor] Topic '{topic}' is noise "
+                            f"(quality={_topic_quality:.3f} < {_TOPIC_QUALITY_FLOOR}) "
+                            f"— substituting: '{_substitute}'"
+                        )
+                        topic = _substitute
+                        prompt = _SELF_QUESTION_FRAMES[frame_idx % len(_SELF_QUESTION_FRAMES)].format(
+                            topic=topic
+                        )
+            except Exception as _tq_e:
+                logger.debug(f"[GoalActionExecutor] Topic quality check error: {_tq_e}")
+
+            self._frame_index[goal.id] = (frame_idx + 1) % len(_SELF_QUESTION_FRAMES)
+
+            logger.info(f"[GoalActionExecutor] LLM call: \"{prompt[:100]}\"")
+
+            generation = await self._generate_background_llm(
+                llm,
+                prompt,
+                caller="gae_self_question",
+                # Reasoning-capable local models may spend part of the
+                # completion budget before emitting assistant content. 120
+                # tokens made an otherwise valid autonomous action look like
+                # a provider failure.
+                max_tokens=360,
+                temperature=0.55,
+            )
+            response = generation["text"]
+
+            if generation["status"] == "deferred":
+                reason = generation["reason"] or "LLM busy"
+                logger.info(
+                    "[GoalActionExecutor] SELF_QUESTION deferred for '%s': %s",
+                    topic[:30],
+                    reason,
+                )
+                self._defer_async_action(goal, ACTION_SELF_QUESTION, reason)
+                return
+
+            # Some reasoning-capable local models can spend the small first
+            # budget entirely in their hidden reasoning channel and return an
+            # empty final assistant message. Retry once with enough headroom
+            # and an explicit final-content instruction; do not classify that
+            # provider behavior as a cognitive failure immediately.
+            if generation["status"] == "empty":
+                retry_prompt = (
+                    prompt
+                    + "\nReturn the answer in the final assistant content only. "
+                      "Do not use a reasoning-only response."
+                )
+                generation = await self._generate_background_llm(
+                    llm,
+                    retry_prompt,
+                    caller="gae_self_question_retry",
+                    max_tokens=900,
+                    temperature=0.35,
+                )
+                response = generation["text"]
+
+            _completion_problem = _generation_completion_problem(generation)
+            if _completion_problem:
+                self._finalize_async_action(
+                    goal, ACTION_SELF_QUESTION, False,
+                    "provider completion could not be verified; insight is not committed",
+                    evidence={
+                        "reason_code": _completion_problem,
+                        "completion_reason": generation.get("completion_reason", "length"),
+                        "completion_verified": generation.get("completion_verified"),
+                        "output_tokens": generation.get("output_tokens"),
+                        "max_output_tokens": generation.get("max_output_tokens"),
+                    },
+                    execution_id=execution_id, cycle_id=cycle_id,
+                )
+                return
+
+            _resp_stripped = (response or "").strip()
+            _is_error = (
+                not _resp_stripped or len(_resp_stripped) < 10
+                or _resp_stripped.startswith("Error:") or _resp_stripped.startswith("error")
+            )
+            if _is_error:
+                logger.warning(
+                    f"[GoalActionExecutor] LLM returned no usable response "
+                    f"for '{topic[:30]}' — will retry next cycle. "
+                    f"(status={generation['status']}, "
+                    f"reason={generation['reason']!r}, raw={repr(_resp_stripped[:60])})"
+                )
+                self._finalize_async_action(
+                    goal,
+                    ACTION_SELF_QUESTION,
+                    False,
+                    generation["reason"] or "LLM returned no usable response",
+                    execution_id=execution_id, cycle_id=cycle_id,
+                )
+                return
+
+            insight = _retain_generated_text(response, max_chars=2400)
+            if insight is None:
+                self._finalize_async_action(
+                    goal,
+                    ACTION_SELF_QUESTION,
+                    False,
+                    "insight output was empty or exceeded the safe size limit",
+                    evidence={
+                        "reason_code": "insight_output_invalid_size",
+                        "generated_chars": len(str(response or "")),
+                    },
+                    execution_id=execution_id,
+                    cycle_id=cycle_id,
+                )
+                return
+            logger.info(
+                f"[GoalActionExecutor] ✅ Insight for '{topic[:30]}': "
+                f"'{insight[:80]}'"
+            )
+
+            # ── Insight quality gate ────────────────────────────────────
+            # Three-layer validation, cheapest first.
+            # Layer 1: hard gates (word count, error strings) — always run.
+            # Layer 2: embedding cosine similarity vs "introspective statement"
+            #          anchor — reuses ai_system.embedding_model (no extra cost).
+            # Layer 3: verb-list heuristic — fallback only when no embeddings.
+            _words = insight.split()
+
+            if len(_words) < 6:
+                logger.info(
+                    f"[GoalActionExecutor] ⚠ Insight too short ({len(_words)} words): "
+                    f"'{insight[:60]}'"
+                )
+                self._finalize_async_action(
+                    goal, ACTION_SELF_QUESTION, False, "insight failed minimum length",
+                    execution_id=execution_id, cycle_id=cycle_id,
+                )
+                return
+            if insight.lower().startswith(("error:", "error ")):
+                logger.info(
+                    f"[GoalActionExecutor] ⚠ Insight is provider error string: "
+                    f"'{insight[:60]}'"
+                )
+                self._finalize_async_action(
+                    goal, ACTION_SELF_QUESTION, False, "provider returned an error",
+                    execution_id=execution_id, cycle_id=cycle_id,
+                )
+                return
+
+            _embedding_valid = None
+            try:
+                _ai_sys = getattr(self._o, 'ai_system', None)
+                _emb_model = getattr(_ai_sys, 'embedding_model', None) if _ai_sys else None
+                if _emb_model is not None:
+                    import numpy as _np
+                    if not hasattr(self, '_insight_anchor_vec'):
+                        _anchor_text = (
+                            "I reflect on my identity values beliefs orientation "
+                            "I believe I think I notice I assume I understand "
+                            "my perspective my nature my tendency"
+                        )
+                        self._insight_anchor_vec = _emb_model.encode(_anchor_text).astype("float32")
                         self._noise_anchor_vec   = _emb_model.encode(
                             "word fragment greeting filler noise topic"
                         ).astype("float32")
@@ -2528,4 +2959,3 @@ class GoalActionExecutor:
                         )
 
         threading.Thread(target=_runner, daemon=True, name="gae-sync").start()
-
