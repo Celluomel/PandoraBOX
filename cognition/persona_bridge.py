@@ -2281,74 +2281,16 @@ class PersonaBridge:
         user_id: str = "default",
         turn_epoch: int = 0,
     ) -> str | dict[str, str]:
-        """Always run one bounded post-turn continuity pass when the model is idle."""
-        if not self._system:
-            return "unavailable"
-        with self._reflection_lock:
-            if self._reflection_epochs.get(user_id, turn_epoch) != turn_epoch:
-                return "superseded"
-        try:
-            llm_manager = getattr(self._external_llm_fn, "__self__", None)
-            generate_result = getattr(llm_manager, "generate_bare_result", None)
-            if not callable(generate_result):
-                return "unavailable"
-            prompt = f"""Review this completed exchange for conversational continuity. This pass runs after the user has already received a response.
+        """Retain the stage receipt without running a duplicate post-turn inference.
 
-USER MESSAGE:
-{str(user_text or '')[:3000]}
-
-ASSISTANT RESPONSE:
-{str(assistant_text or '')[:3000]}
-
-Write at most 70 words, in the user's language, only if a concise carry-forward note would materially help answer a likely follow-up. Preserve explicit user corrections, constraints, unresolved requests, or commitments. Do not infer personal facts or emotions, invent missing details, praise the exchange, answer the user, or repeat the response. If nothing merits carrying forward, return exactly NONE."""
-            result = generate_result(
-                prompt,
-                # French carry-forward notes can exceed 120 tokens.
-                max_tokens=192,
-                temperature=0.1,
-            )
-            provider_status = str(result.get("status") or "")
-            if provider_status == "truncated":
-                # The model sometimes ignores the initial 70-word ceiling.
-                # Retry once with a much shorter task and output budget; never
-                # save the truncated first response as continuity memory.
-                retry_prompt = f"""Review this completed exchange only for a concrete user correction, constraint, unresolved request, or commitment likely to matter on the next turn.
-
-USER: {str(user_text or '')[:1800]}
-ASSISTANT: {str(assistant_text or '')[:1800]}
-
-Return exactly NONE if nothing should carry forward. Otherwise return one plain sentence of at most 18 words, without explanation."""
-                result = generate_result(
-                    retry_prompt, max_tokens=96, temperature=0.0,
-                )
-                provider_status = str(result.get("status") or "")
-            if provider_status == "deferred":
-                return "deferred"
-            if provider_status != "ok":
-                # Preserve a bounded failure class for the turn audit. The
-                # provider's reason may contain prompt or backend text, so it
-                # must not be copied into the cognitive trace.
-                error_type = {
-                    "empty": "EmptyProviderOutput",
-                    "error": "ProviderError",
-                    "truncated": "ProviderTruncatedOutput",
-                }.get(provider_status, "UnexpectedProviderStatus")
-                return {"status": "failed", "error_type": error_type}
-            note = str(result.get("text") or "").strip()
-            if not note or note.casefold() == "none":
-                logger.debug("[DeferredReflection] no continuity note for completed turn")
-                return "no_note"
-            with self._reflection_lock:
-                if self._reflection_epochs.get(user_id, turn_epoch) != turn_epoch:
-                    return "superseded"
-                self._reflection_results[user_id] = (turn_epoch, note[:1200])
-            logger.info("[DeferredReflection] continuity note ready for next turn")
-            return "completed"
-        except Exception as exc:
-            logger.debug("Deferred continuity reflection unavailable: %s", exc)
-            # Preserve only the exception class for the turn audit. The message
-            # can contain prompt or provider data and must not enter telemetry.
-            return {"status": "failed", "error_type": type(exc).__name__}
+        The conversational provider already receives turn history, and
+        ``_recent_dialogue_continuity`` adds that history to short follow-ups.
+        A second LLM pass after every answer duplicated this path, consumed
+        provider capacity, and could fail after the user-facing answer had
+        already completed. Durable facts and commitments are handled by the
+        memory/profile stages instead.
+        """
+        return "not_applicable_history_is_primary"
 
     def run_deferred_goal_means_analysis(
         self, user_text: str, user_id: str = "default", interlocutor_name: str = "",

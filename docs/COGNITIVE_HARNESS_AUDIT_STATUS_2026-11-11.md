@@ -4332,3 +4332,14 @@ Vérification locale : **73 tests passés**, 9 avertissements préexistants; com
 **Vérification hors ligne :** groupe ciblé dans la branche de publication : **133 tests passés**, 9 avertissements préexistants et 15 sous-tests; compilation des quatre modules réussie. Le test ajouté vérifie un appel d’encodage batch, les identifiants FAISS et les transformations des messages utilisateur.
 
 **Suite de l’audit :** corriger la cause du post-traitement LLM redondant/tronqué; mesurer le temps de reconstruction batch en invalidant l’index uniquement dans un environnement de test; puis exécuter plusieurs scénarios représentatifs et valider les sorties aval. L’audit reste à **3/10** : ces preuves établissent l’exécution et un défaut de coût/fidélité, pas encore le fonctionnement cognitif attendu.
+
+
+### 18 novembre — suppression de l’inférence de continuité redondante
+
+Le reçu live `lumina-1795036987060030700-1` a montré que la réponse utilisateur était finalisée, puis que `continuity_analysis_post_response` lançait une inférence cachée. Une sortie tronquée entraînait une seconde tentative (192 puis 96 tokens), après livraison de la réponse. Le même code transmet déjà l’historique au modèle conversationnel et injecte le dialogue récent pour les suivis courts; les faits durables passent par les modules mémoire/profil. L’analyse différée répétait donc une capacité existante et expliquait deux générations supplémentaires sur certains tours simples.
+
+**Correction :** `run_deferred_analysis` n’appelle plus Gemma; le reçu indique `not_applicable_history_is_primary`. Le code de conversation demeure la source principale de continuité, et les faits/profils restent traités par leurs voies dédiées. Aucun contenu de dialogue n’est résumé par un second LLM après réponse.
+
+**Vérification hors ligne :** le test dédié confirme que le fournisseur n’est jamais appelé; les 11 tests du scheduler de post-traitement passent. Le groupe précédent sur mémoire/FAISS, cycle interne et dispositions avait passé 133 tests dans la branche publiée. Le diagnostic natif Windows `0xc0000008` est apparu lors d’une exécution plus large, laquelle a été interrompue avant résultat; ce diagnostic reste à isoler.
+
+**À vérifier après un redémarrage groupé :** reçu du prochain tour avec `continuity_analysis_post_response=not_applicable_history_is_primary`, compteur de générations du fournisseur sur une question simple, puis suivi elliptique pour confirmer que l’historique existant garde le fil. Progression reste à **3/10** jusqu’à ces preuves live et aux scénarios cognitifs aval.

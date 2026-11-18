@@ -648,109 +648,18 @@ class PeerHistoryIsolationTests(unittest.TestCase):
         )
         self.assertEqual(bridge.get_goal_means_status("fred")["status"], "idle")
 
-    def test_deferred_continuity_returns_only_exception_type_for_audit(self):
+    def test_deferred_continuity_uses_existing_history_without_an_extra_llm_call(self):
         from cognition.persona_bridge import PersonaBridge
 
-        class _Provider:
-            def generate_bare_result(self, *args, **kwargs):
-                raise RuntimeError("private prompt-bearing provider message")
-
-        bridge = PersonaBridge.__new__(PersonaBridge)
-        bridge._system = object()
-        bridge._external_llm_fn = _Provider().generate_bare_result
-        bridge._reflection_lock = threading.Lock()
-        bridge._reflection_epochs = {}
-
-        result = bridge.run_deferred_analysis("question", "answer", "fred", 0)
-
-        self.assertEqual(result, {"status": "failed", "error_type": "RuntimeError"})
-        self.assertNotIn("private prompt", str(result))
-
-    def test_deferred_continuity_classifies_provider_empty_and_error_results(self):
-        from cognition.persona_bridge import PersonaBridge
-
-        class _Provider:
-            def __init__(self, status):
-                self.status = status
-
-            def generate_bare_result(self, *args, **kwargs):
-                return {
-                    "status": self.status,
-                    "text": "",
-                    "reason": "private provider detail must not enter the trace",
-                }
-
-        for provider_status, expected in (
-            ("empty", "EmptyProviderOutput"),
-            ("error", "ProviderError"),
-            ("unexpected", "UnexpectedProviderStatus"),
-        ):
-            with self.subTest(provider_status=provider_status):
-                bridge = PersonaBridge.__new__(PersonaBridge)
-                bridge._system = object()
-                bridge._external_llm_fn = _Provider(provider_status).generate_bare_result
-                bridge._reflection_lock = threading.Lock()
-                bridge._reflection_epochs = {}
-
-                result = bridge.run_deferred_analysis("question", "answer", "fred", 0)
-
-                self.assertEqual(result, {"status": "failed", "error_type": expected})
-                self.assertNotIn("private provider detail", str(result))
-
-    def test_deferred_continuity_rejects_truncated_provider_output_explicitly(self):
-        from cognition.persona_bridge import PersonaBridge
-
-        class _Provider:
-            calls = []
-
-            def generate_bare_result(self, *args, **kwargs):
-                self.calls.append((args, kwargs))
-                return {"status": "truncated", "text": "partial note"}
-
-        provider = _Provider()
+        provider = Mock()
         bridge = PersonaBridge.__new__(PersonaBridge)
         bridge._system = object()
         bridge._external_llm_fn = provider.generate_bare_result
-        bridge._reflection_lock = threading.Lock()
-        bridge._reflection_epochs = {}
 
         result = bridge.run_deferred_analysis("question", "answer", "fred", 0)
 
-        self.assertEqual(
-            result, {"status": "failed", "error_type": "ProviderTruncatedOutput"}
-        )
-        self.assertEqual(len(provider.calls), 2)
-        self.assertEqual(provider.calls[0][1]["max_tokens"], 192)
-        self.assertEqual(provider.calls[1][1]["max_tokens"], 96)
-        self.assertIn("at most 18 words", provider.calls[1][0][0])
-
-    def test_deferred_continuity_uses_short_retry_after_truncation(self):
-        from cognition.persona_bridge import PersonaBridge
-
-        class _Provider:
-            def __init__(self):
-                self.results = iter((
-                    {"status": "truncated", "text": "partial"},
-                    {"status": "ok", "text": "Keep the audit focused on causal module effects."},
-                ))
-
-            def generate_bare_result(self, *args, **kwargs):
-                return next(self.results)
-
-        bridge = PersonaBridge.__new__(PersonaBridge)
-        bridge._system = object()
-        bridge._external_llm_fn = _Provider().generate_bare_result
-        bridge._reflection_lock = threading.Lock()
-        bridge._reflection_epochs = {"fred": 0}
-        bridge._reflection_results = {}
-
-        result = bridge.run_deferred_analysis("question", "answer", "fred", 0)
-
-        self.assertEqual(result, "completed")
-        self.assertEqual(
-            bridge._reflection_results["fred"][1],
-            "Keep the audit focused on causal module effects.",
-        )
+        self.assertEqual(result, "not_applicable_history_is_primary")
+        provider.generate_bare_result.assert_not_called()
 
 
 class _FakePersona:
