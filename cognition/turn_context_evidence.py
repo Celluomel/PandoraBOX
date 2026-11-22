@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import re
 from typing import Any, Iterable, Mapping
 
@@ -310,6 +311,37 @@ def audit_safe_turn_summary(value: Any) -> dict[str, Any] | None:
     """Expose bounded provenance fields while keeping private prompt/memory text hidden."""
     if not isinstance(value, Mapping):
         return None
+
+    if value.get("type") == "cognitive_deliberation_receipt":
+        receipt: dict[str, Any] = {
+            "type": "cognitive_deliberation_receipt",
+            "quality": "present",
+            "status": str(value.get("status") or "unknown")[:32],
+        }
+        for key in ("cycles_run", "candidates_considered"):
+            number = value.get(key)
+            if isinstance(number, int) and not isinstance(number, bool):
+                receipt[key] = max(0, min(10000, number))
+        for key in (
+            "final_utility", "internal_pressure", "internal_pressure_delta",
+            "internal_meta_error", "efficacy_observation_meta_error",
+            "efficacy_multiplier", "efficacy_score_delta",
+        ):
+            number = value.get(key)
+            if isinstance(number, (int, float)) and not isinstance(number, bool):
+                numeric = float(number)
+                if math.isfinite(numeric):
+                    receipt[key] = max(-10000.0, min(10000.0, numeric))
+        candidate_type = str(value.get("selected_candidate_type") or "unknown")
+        if candidate_type in {"goal", "thought", "tension", "curiosity", "memory", "relational", "creative", "narrative", "aspiration", "unknown"}:
+            receipt["selected_candidate_type"] = candidate_type
+        for key in (
+            "synthesized", "efficacy_candidate_present", "efficacy_applied_to_focus",
+            "efficacy_prediction_recorded",
+        ):
+            if isinstance(value.get(key), bool):
+                receipt[key] = value[key]
+        return receipt
 
     if value.get("type") == "cognitive_effect_receipt":
         receipt: dict[str, Any] = {"type": "cognitive_effect_receipt", "quality": "present"}

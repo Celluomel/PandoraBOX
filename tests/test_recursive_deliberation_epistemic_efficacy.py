@@ -33,10 +33,22 @@ class _EfficacyModel:
         self.observed.append((pressure, observation_cycle_id))
 
     def record_competition_application(self, **receipt):
-        self.application = receipt
+        candidate = receipt.get("candidate") or {}
+        self.application = {
+            "eligible_candidate_present": candidate is not None,
+            "applied_to_final_focus": bool(
+                candidate and candidate.get("name") == receipt.get("final_focus")
+                and candidate.get("efficacy_multiplier_applied") is not None
+            ),
+            "multiplier": candidate.get("efficacy_multiplier_applied"),
+            "score_delta_from_efficacy": candidate.get("score_delta_from_efficacy"),
+            **receipt,
+        }
+        self.last_application = self.application
 
     def record_prediction_if_winner(self, name, topic, pressure, source_cycle_id=None):
         self.predictions.append((name, topic, pressure, source_cycle_id))
+        return True
 
 
 class _Competition:
@@ -51,6 +63,9 @@ class _Competition:
             "topic": "resolve_uncertainty",
             "type": "goal",
             "score": 1.0,
+            "score_without_efficacy": 0.9,
+            "efficacy_multiplier_applied": 1.2,
+            "score_delta_from_efficacy": 0.1,
         }
         return {"competition": {"all_candidates": [candidate]}}
 
@@ -63,7 +78,12 @@ def test_default_adaptive_depth_keeps_epistemic_efficacy_in_deliberation(
     organism = SimpleNamespace(workspace=workspace)
     efficacy = _EfficacyModel()
     competition = _Competition()
-    internal_state = SimpleNamespace(history=[], update=lambda _pressure: None)
+    internal_state = SimpleNamespace(
+        history=[], update=lambda _pressure: SimpleNamespace(
+            pressure=0.6, pressure_delta=0.2, meta_error=0.1,
+        ),
+        internal_alignment=lambda *_args, **_kwargs: 0.1,
+    )
     monkeypatch.setattr(deliberation_module, "_gather_live_goals", lambda _org: [{
         "id": "resolve-uncertainty",
         "name": "resolve_uncertainty",
@@ -104,6 +124,14 @@ def test_default_adaptive_depth_keeps_epistemic_efficacy_in_deliberation(
     assert efficacy.predictions == [
         ("resolve_uncertainty", "resolve_uncertainty", 0.6, "turn-42")
     ]
+    assert result["type"] == "cognitive_deliberation_receipt"
+    if internal_state_fails:
+        assert result["internal_pressure"] is None
+    else:
+        assert result["internal_pressure"] == pytest.approx(0.6)
+    assert result["efficacy_candidate_present"] is True
+    assert result["efficacy_applied_to_focus"] is True
+    assert result["efficacy_prediction_recorded"] is True
 
 
 class _SelfConcept:
@@ -128,9 +156,9 @@ def test_prediction_receipt_links_cycles_pressures_belief_and_applied_multiplier
             "internal_alignment_baseline": 0.2, "internal_bias": 0.2,
         }, final_focus="resolve_uncertainty",
     )
-    model.record_prediction_if_winner(
+    assert model.record_prediction_if_winner(
         "resolve_uncertainty", "resolve_uncertainty", 0.6, source_cycle_id="turn-10"
-    )
+    ) is True
     pending_id = model._pending.prediction_id
 
     assert model.observe_if_pending(0.45, observation_cycle_id="turn-11:observe") == pytest.approx(0.0)
@@ -154,9 +182,9 @@ def test_prediction_not_created_when_multiplier_did_not_affect_selected_focus():
         }, final_focus="other_goal",
     )
 
-    model.record_prediction_if_winner(
+    assert model.record_prediction_if_winner(
         "resolve_uncertainty", "resolve_uncertainty", 0.6, source_cycle_id="turn-12"
-    )
+    ) is False
 
     assert model._pending is None
     assert model.last_application["applied_to_final_focus"] is False

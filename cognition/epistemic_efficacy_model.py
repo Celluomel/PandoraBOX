@@ -139,7 +139,7 @@ class EpistemicEfficacyModel:
 
     def record_prediction_if_winner(self, winner_name: str, winner_topic: str,
                                      current_pressure: float,
-                                     source_cycle_id: Optional[str] = None) -> None:
+                                     source_cycle_id: Optional[str] = None) -> bool:
         """Call once per cycle, AFTER the competition winner is known. If
         resolve_uncertainty won, the self-model makes ITS OWN falsifiable
         prediction about how effective that choice will be — genuinely
@@ -151,12 +151,12 @@ class EpistemicEfficacyModel:
         e.g. internal_cognitive_state.is_self_regulatory_goal)."""
         text = f"{winner_name or ''} {winner_topic or ''}".lower().replace(" ", "_")
         if "resolve_uncertainty" not in text:
-            return
+            return False
         if not (self.last_application
                 and self.last_application.get("applied_to_final_focus") is True):
             # A prediction about efficacy is only justified when the
             # learned multiplier was actually applied to the selected goal.
-            return
+            return False
         predicted_drop = self._confidence() * PREDICTION_SCALE
         prediction_id = f"epistemic-{time.time_ns()}"
         self._pending = PendingPrediction(
@@ -167,6 +167,7 @@ class EpistemicEfficacyModel:
             competition_application=(dict(self.last_application)
                                      if self.last_application else None),
         )
+        return True
 
     def record_competition_application(self, *, cycle_id: str,
                                        candidate: Optional[Dict[str, Any]],

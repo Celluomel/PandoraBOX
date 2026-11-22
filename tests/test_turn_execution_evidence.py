@@ -128,6 +128,32 @@ def test_live_affect_channels_are_auditable_but_free_text_is_not_exposed():
     assert "drop me" not in repr(trace)
 
 
+def test_recursive_deliberation_turn_receipt_keeps_effect_metrics_and_drops_focus_text():
+    bridge = _bridge()
+    bridge._record_turn_stage(
+        "recursive_deliberation", "completed", turn_id="turn-evidence-1",
+        output={
+            "type": "cognitive_deliberation_receipt", "status": "completed",
+            "cycles_run": 2, "candidates_considered": 7, "final_utility": 0.63,
+            "selected_candidate_type": "goal", "internal_pressure": 0.4,
+            "internal_pressure_delta": -0.1, "internal_meta_error": 0.2,
+            "efficacy_candidate_present": True, "efficacy_applied_to_focus": True,
+            "efficacy_multiplier": 1.2, "efficacy_score_delta": 0.03,
+            "efficacy_prediction_recorded": False,
+            "final_focus": "private goal text must not appear",
+        },
+    )
+
+    stage = bridge.get_turn_trace("turn-evidence-1")["stages"]["recursive_deliberation"]
+    summary = stage["output_summary"]
+    assert summary["type"] == "cognitive_deliberation_receipt"
+    assert summary["cycles_run"] == 2
+    assert summary["efficacy_applied_to_focus"] is True
+    assert summary["efficacy_score_delta"] == 0.03
+    assert "final_focus" not in summary
+    assert "private goal text" not in repr(stage)
+
+
 def test_affect_receipt_consumed_by_same_turn_trace_matches_rendered_evidence():
     from cognition.self_description import (
         affect_self_report_context,

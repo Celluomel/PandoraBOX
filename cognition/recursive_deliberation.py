@@ -359,10 +359,11 @@ def deliberate(
     except (TypeError, ValueError):
         _epi = 0.0
     internal_state = None
+    internal_snapshot = None
     try:
         from cognition.internal_cognitive_state import get_internal_cognitive_state
         internal_state = get_internal_cognitive_state(organism)
-        internal_state.update(_epi)
+        internal_snapshot = internal_state.update(_epi)
     except Exception as e:
         logger.debug(f"[RecursiveDeliberation] internal_cognitive_state update failed (non-fatal): {e}")
         internal_state = None
@@ -374,11 +375,14 @@ def deliberate(
     # gets to influence this cycle's competition, or the loop would be
     # scoring against evidence from the future.
     efficacy_model = None
+    efficacy_observation_error = None
     try:
         from cognition.epistemic_efficacy_model import get_epistemic_efficacy_model
         efficacy_model = get_epistemic_efficacy_model(organism)
         if efficacy_model is not None:
-            efficacy_model.observe_if_pending(_epi, observation_cycle_id=f"{cycle_id}:observe")
+            efficacy_observation_error = efficacy_model.observe_if_pending(
+                _epi, observation_cycle_id=f"{cycle_id}:observe"
+            )
     except Exception as e:
         logger.debug(f"[RecursiveDeliberation] epistemic_efficacy_model observe failed (non-fatal): {e}")
 
@@ -487,6 +491,8 @@ def deliberate(
     # cycle. Deliberately AFTER update_state(), not before — the
     # prediction is about what happens BECAUSE this goal was chosen, so
     # it has to follow the choice being finalized.
+    prediction_recorded = False
+    efficacy_application = None
     if efficacy_model is not None:
         try:
             competition_candidates = (
@@ -500,19 +506,46 @@ def deliberate(
                 cycle_id=str(cycle_id), candidate=efficacy_candidate,
                 final_focus=winner.get("name") or winner.get("label"),
             )
-            efficacy_model.record_prediction_if_winner(
+            efficacy_application = getattr(efficacy_model, "last_application", None)
+            prediction_recorded = bool(efficacy_model.record_prediction_if_winner(
                 winner.get("name", ""), winner.get("topic", ""),
                 pressure.get("epistemic", 0.0), source_cycle_id=str(cycle_id),
-            )
+            ))
         except Exception as e:
             logger.debug(f"[RecursiveDeliberation] efficacy prediction record failed (non-fatal): {e}")
 
     summary = {
+        "type": "cognitive_deliberation_receipt",
+        "status": "completed",
         "cycles_run": cycles_run,
-        "final_focus": winner.get("name") or winner.get("label"),
         "final_utility": round(winner_utility, 4),
         "candidates_considered": len(final_ranked),
         "synthesized": winner is synthesis_used,
+        "selected_candidate_type": str(winner.get("type") or "unknown")[:32],
+        "internal_pressure": round(internal_snapshot.pressure, 5) if internal_snapshot else None,
+        "internal_pressure_delta": round(internal_snapshot.pressure_delta, 5) if internal_snapshot else None,
+        "internal_meta_error": round(internal_snapshot.meta_error, 5) if internal_snapshot else None,
+        "efficacy_observation_meta_error": (
+            round(float(efficacy_observation_error), 5)
+            if isinstance(efficacy_observation_error, (int, float)) else None
+        ),
+        "efficacy_candidate_present": bool(
+            efficacy_application.get("eligible_candidate_present")
+            if isinstance(efficacy_application, dict) else False
+        ),
+        "efficacy_applied_to_focus": bool(
+            efficacy_application.get("applied_to_final_focus")
+            if isinstance(efficacy_application, dict) else False
+        ),
+        "efficacy_multiplier": (
+            efficacy_application.get("multiplier")
+            if isinstance(efficacy_application, dict) else None
+        ),
+        "efficacy_score_delta": (
+            efficacy_application.get("score_delta_from_efficacy")
+            if isinstance(efficacy_application, dict) else None
+        ),
+        "efficacy_prediction_recorded": prediction_recorded,
     }
     logger.debug(f"[RecursiveDeliberation] {summary}")
     return summary

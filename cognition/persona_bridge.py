@@ -4535,8 +4535,20 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     # Match the synchronous respond() path before deriving
                     # prompt additions from the current workspace focus.
                     from cognition.recursive_deliberation import deliberate
-                    deliberate(self._organism, user_input)
-                    self._record_turn_stage("recursive_deliberation", "completed")
+                    deliberation_receipt = deliberate(
+                        self._organism, user_input, cycle_id=audit_turn_id,
+                    )
+                    if isinstance(deliberation_receipt, dict):
+                        self._record_turn_stage(
+                            "recursive_deliberation", "completed",
+                            output=deliberation_receipt, turn_id=audit_turn_id,
+                        )
+                    else:
+                        self._record_turn_stage(
+                            "recursive_deliberation", "completed_no_candidates",
+                            output={"type": "cognitive_deliberation_receipt", "status": "no_candidates"},
+                            turn_id=audit_turn_id,
+                        )
                 except Exception as exc:
                     self._record_turn_stage("recursive_deliberation", "failed", str(exc))
                     logger.exception("Streaming recursive deliberation failed")
