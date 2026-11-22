@@ -3016,12 +3016,6 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
 
         if _temporal_frame is not None:
             system_prompt += "\n\n" + _temporal_frame.prompt_fragment()
-            _generation_input += (
-                "\n\nUse the temporal frame only as internal reasoning. Do not mention t0, "
-                "the current clock time, elapsed time, or chronology unless the user asks "
-                "about time or it materially answers the question. Keep ordinary social "
-                "replies natural, direct, and concise."
-            )
 
         if voice_mode:
             # Audio needs a direct, self-contained utterance. Without this
