@@ -16,34 +16,27 @@ sys.modules["cognition"] = package
 
 from cognition.goal_means_reasoning import (
     analysis_prompt, goal_means_contract, guarded_response, is_analysis_followup,
-    is_practical_decision, parse_analysis,
+    parse_analysis,
 )
 from cognition.abstract_reasoning_engine import AbstractReasoningEngine, ReasoningResult
 
 
 class GoalMeansReasoningTests(unittest.TestCase):
-    def test_detects_practical_choices_in_french_and_english(self):
-        self.assertTrue(is_practical_decision(
-            "Je dois remettre le dossier au bureau, est-ce que j'y vais maintenant ou demain"
-        ))
-        self.assertTrue(is_practical_decision(
-            "Should I carry the equipment first or prepare the room first?"
-        ))
-        self.assertTrue(is_practical_decision(
-            "Comment puis-je terminer la tâche si la ressource reste ailleurs ?"
-        ))
-
-    def test_french_apostrophe_typing_variant_still_gets_goal_means_contract(self):
+    def test_semantic_protocol_is_injected_independent_of_wording(self):
         question = (
             "je dois aller laver ma voiture et le lavage auto se trouve a 150 "
             "metres dois'je prendre ma voiture"
         )
-        self.assertTrue(is_practical_decision(question))
-        self.assertIn("GOAL-MEANS COHERENCE CHECK", goal_means_contract(question))
+        contract = goal_means_contract(question)
+        self.assertIn("GOAL-MEANS COHERENCE CHECK", contract)
+        self.assertIn("meaning and context, not keyword or phrase matching", contract)
+        self.assertIn("GOAL-MEANS COHERENCE CHECK", goal_means_contract("Parlons de musique."))
 
-    def test_does_not_force_logistical_reasoning_into_casual_chat(self):
-        self.assertFalse(is_practical_decision("J'aime marcher quand il fait beau."))
-        self.assertEqual(goal_means_contract("Parlons de musique."), "")
+    def test_deferred_selector_uses_semantic_applicability_field(self):
+        self.assertIn("do not use keyword lists, phrase matching", analysis_prompt("J'ai faim."))
+        not_applicable = parse_analysis('{"applicable": false, "primary_goal": "", "options": []}')
+        self.assertIsNotNone(not_applicable)
+        self.assertFalse(not_applicable.applicable)
 
     def test_contract_orders_goal_and_prerequisites_before_preferences(self):
         contract = goal_means_contract("Should I take route A or route B?")
@@ -220,6 +213,7 @@ class GoalMeansReasoningTests(unittest.TestCase):
             (ROOT / "cognition/persona_bridge.py").read_text(encoding="utf-8"), method
         )
         self.assertIn("goal_means_contract(effective_input)", source)
+        self.assertNotIn("is_practical_decision", source)
         self.assertIn("guarded_response", source)
         self.assertIn("_validate_before_display", source)
         self.assertLess(source.index("goal_means_contract(effective_input)"), source.index("def _stream():"))

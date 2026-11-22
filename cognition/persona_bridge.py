@@ -2419,15 +2419,7 @@ class PersonaBridge:
     ) -> dict:
         """Run the structured objective/means analysis after the visible answer."""
         analysis_scope = str(scope_id or user_id)
-        from cognition.goal_means_reasoning import (
-            analysis_prompt, is_practical_decision, parse_analysis,
-        )
-
-        if not is_practical_decision(user_text):
-            result = {"status": "not_applicable"}
-            with self._reflection_lock:
-                self._goal_means_status[analysis_scope] = result
-            return result
+        from cognition.goal_means_reasoning import analysis_prompt, parse_analysis
 
         manager = getattr(self._external_llm_fn, "__self__", None)
         generate_result = getattr(manager, "generate_bare_result", None)
@@ -2461,6 +2453,8 @@ class PersonaBridge:
                 analysis = parse_analysis(str(raw_result.get("text") or ""))
                 if analysis is None:
                     result = {"status": "invalid_output", "reason": "analysis did not match the validated schema"}
+                elif not analysis.applicable:
+                    result = {"status": "not_applicable", "selection": "semantic"}
                 else:
                     with self._reflection_lock:
                         self._recent_goal_means[analysis_scope] = (analysis, time.monotonic(), 3)
@@ -2718,10 +2712,7 @@ class PersonaBridge:
             logger.debug("Quantitative reasoning unavailable (non-fatal): %s", _quant_error)
             _quantitative_analysis = None
         try:
-            from cognition.goal_means_reasoning import (
-                is_analysis_followup, is_practical_decision,
-            )
-            _is_practical_turn = is_practical_decision(effective_input)
+            from cognition.goal_means_reasoning import is_analysis_followup
             with self._reflection_lock:
                 _recent = self._recent_goal_means.get(_cognitive_scope)
             if _recent:
@@ -2744,17 +2735,12 @@ class PersonaBridge:
                 elif len(effective_input.split()) > 5:
                     with self._reflection_lock:
                         self._recent_goal_means.pop(_cognitive_scope, None)
-            if (
-                _is_practical_turn
-                and _temporal_analysis is None
-                and _quantitative_analysis is None
-            ):
+            if _temporal_analysis is None and _quantitative_analysis is None:
                 logger.debug("[GoalMeans] structured analysis deferred until after response")
             self._record_turn_stage(
                 "goal_means_reasoning",
                 "followup_analysis_loaded" if _goal_means_analysis is not None
-                else "deferred_post_response" if _is_practical_turn
-                else "not_applicable",
+                else "semantic_selection_deferred",
                 turn_id=_audit_turn_id,
             )
         except Exception as _gma_error:
@@ -2965,10 +2951,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
         # truncate it, and it requires no additional LLM call.
         try:
             from cognition.goal_means_reasoning import goal_means_contract
-            _goal_means_contract = (
-                "" if _quantitative_analysis is not None
-                else goal_means_contract(effective_input)
-            )
+            _goal_means_contract = goal_means_contract(effective_input)
         except Exception as _gmr_error:
             logger.debug("Goal-means reasoning unavailable (non-fatal): %s", _gmr_error)
             _goal_means_contract = ""
@@ -4194,8 +4177,9 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
         # lock, so a later turn cannot interleave with this one mid-learning.
         post_tasks: list[tuple[str, asyncio.Future]] = []
 
-        # Practical peer turns use the same structured goal/means stage as
-        # human turns, but store follow-up state under a per-conversation key.
+        # Human and peer turns use the same semantic goal/means selector after
+        # delivery. The selector is model-based; no lexical trigger decides
+        # whether this analysis runs.
         if _generation_failed:
             self._record_turn_stage(
                 "goal_means_post_response", "skipped_generation_failed",
@@ -4203,26 +4187,22 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             )
         else:
             try:
-                from cognition.goal_means_reasoning import is_practical_decision
-                if is_practical_decision(effective_input):
-                    if peer_name:
-                        post_tasks.append(("goal_means_post_response", loop.run_in_executor(
-                            None,
-                            self.run_deferred_goal_means_analysis,
-                            effective_input,
-                            user_id,
-                            peer_name,
-                            _cognitive_scope,
-                        )))
-                    else:
-                        # Human entrypoints schedule this stage after consuming the
-                        # visible answer via AppState.schedule_deferred_cognitive_stages.
-                        self._record_turn_stage(
-                            "goal_means_post_response", "scheduled_by_entrypoint",
-                            turn_id=_audit_turn_id,
-                        )
+                if peer_name:
+                    post_tasks.append(("goal_means_post_response", loop.run_in_executor(
+                        None,
+                        self.run_deferred_goal_means_analysis,
+                        effective_input,
+                        user_id,
+                        peer_name,
+                        _cognitive_scope,
+                    )))
                 else:
-                    self._record_turn_stage("goal_means_post_response", "not_applicable", turn_id=_audit_turn_id)
+                    # Human entrypoints schedule this stage after consuming the
+                    # visible answer via AppState.schedule_deferred_cognitive_stages.
+                    self._record_turn_stage(
+                        "goal_means_post_response", "scheduled_by_entrypoint",
+                        turn_id=_audit_turn_id,
+                    )
             except Exception as _goal_means_error:
                 self._record_turn_stage("goal_means_post_response", "failed", str(_goal_means_error), turn_id=_audit_turn_id)
 

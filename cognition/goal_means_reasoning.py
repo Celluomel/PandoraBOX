@@ -1,9 +1,8 @@
-"""Goal-means coherence for practical conversational decisions.
+"""Goal-means coherence with semantic applicability selection.
 
-This module does not solve a user's task with brittle domain rules.  It
-recognizes when a turn asks for an action choice and supplies a compact
-reasoning protocol to the response model: preserve the primary outcome,
-check material prerequisites, then consider secondary preferences.
+No lexical rule selects turns. The response model receives the compact protocol
+on every turn, and the deferred structured pass selects applicability from
+meaning and context before analyzing feasibility.
 """
 from __future__ import annotations
 
@@ -14,36 +13,15 @@ from dataclasses import dataclass, field
 from typing import List
 
 
-_DECISION_PATTERNS = (
-    r"\bshould\s+(?:i|we)\b",
-    r"\bhow\s+(?:can|could|should)\s+(?:i|we)\b",
-    r"\bdo\s+i\b.{0,100}\bor\b",
-    r"\bwhich\s+(?:option|way|route|method|one)\b",
-    # Accept typographic apostrophes as well as hyphens/spaces: users often
-    # type forms such as "dois'je" even though standard French uses "dois-je".
-    # This is orthographic normalization for the general modal+pronoun form,
-    # not a domain or scenario lookup.
-    r"\b(?:dois|devrais)[\s'’\-]?je\b",
-    r"\bcomment\s+(?:puis|pourrais|devrais)[\s'’\-]?je\b",
-    r"\best[- ]?ce\s+que\b",
-    r"\bquelle?\s+(?:option|façon|manière|méthode)\b",
-)
-
-
-def is_practical_decision(text: str) -> bool:
-    """Return whether a turn asks for a concrete choice or course of action."""
-    normalized = " ".join(str(text or "").strip().casefold().split())
-    if len(normalized) < 8:
-        return False
-    return any(re.search(pattern, normalized) for pattern in _DECISION_PATTERNS)
-
-
 def goal_means_contract(text: str) -> str:
-    """Build a domain-independent reasoning contract for practical choices."""
-    if not is_practical_decision(text):
-        return ""
+    """Return the universal semantic goal-means protocol for response generation.
+
+    Applicability is decided by the conversational model from intent and
+    context, never by a lexical trigger. The protocol is present on every turn
+    so phrasing, language, typos, and topic vocabulary cannot bypass it.
+    """
     return """━━ GOAL-MEANS COHERENCE CHECK ━━
-This is a practical action or choice question. Reason in this order before answering:
+For every message, understand its conversational intent semantically. If it asks for advice, a choice, or a concrete course of action, reason in this order before answering; otherwise answer normally and do not force a recommendation:
 1. Identify the human's primary intended outcome. Preserve it unchanged.
 2. Treat distance, comfort, weather, speed, cost, and similar details as secondary unless they determine feasibility.
 3. Identify the agents, objects, resources, locations, and prior conditions that the primary action requires.
@@ -53,7 +31,7 @@ This is a practical action or choice question. Reason in this order before answe
 6. Eliminate any option that prevents the primary outcome, even if that option is attractive on a secondary criterion.
 7. Recommend a feasible option directly first. Discuss preferences or richer interpretation only after feasibility is established.
 
-Do not silently change the goal, invent unmentioned equipment or workarounds, or turn a straightforward logistical constraint into a metaphor. If the human corrects a missed prerequisite, revise the original model from that correction instead of defending the rejected option."""
+Do not silently change the goal, invent unmentioned equipment or workarounds, or turn a straightforward logistical constraint into a metaphor. Interpret intent from meaning and context, not keyword or phrase matching. If the human corrects a missed prerequisite, revise the original model from that correction instead of defending the rejected option."""
 
 
 @dataclass
@@ -71,6 +49,7 @@ class OptionAssessment:
 @dataclass
 class GoalMeansAnalysis:
     primary_goal: str
+    applicable: bool = True
     semantic_roles: dict = field(default_factory=dict)
     patient_must_move_to_execution_location: bool | None = None
     required_conditions: List[str] = field(default_factory=list)
@@ -116,7 +95,7 @@ class GoalMeansAnalysis:
 
 
 def analysis_prompt(text: str, agent_name: str = "") -> str:
-    """Return a short, history-free prompt for executable goal analysis."""
+    """Semantically select and analyze goal-means decisions in one pass."""
     clean_agent_name = " ".join(str(agent_name or "").strip().split())
     named_agent_rule = (
         f'The human decision-maker is named "{clean_agent_name}". Use that exact name '
@@ -124,7 +103,7 @@ def analysis_prompt(text: str, agent_name: str = "") -> str:
         if clean_agent_name else
         "Name the concrete decision-maker when the message provides their identity."
     )
-    return f"""Analyze this practical decision using semantic roles and Boolean feasibility. Do not answer the user.
+    return f"""First determine semantically whether the message asks for advice, a choice, or a concrete course of action. Use the message meaning and conversational context; do not use keyword lists, phrase matching, or a language-specific trigger. If it does not, return applicable=false, an empty primary_goal, and an empty options array. If it does, return applicable=true and analyze it using semantic roles and Boolean feasibility. Do not answer the user.
 
 User message:
 {text}
@@ -166,6 +145,7 @@ Keep every text field short and use the same language as the user.
 
 Return only JSON with this exact shape:
 {{
+  "applicable": true,
   "primary_goal": "short concrete outcome",
   "semantic_roles": {{
     "agent": "agent",
@@ -203,6 +183,9 @@ def parse_analysis(raw: str) -> GoalMeansAnalysis | None:
         data = json.loads(cleaned)
     except (TypeError, ValueError, json.JSONDecodeError):
         return None
+    applicable = data.get("applicable")
+    if applicable is False:
+        return GoalMeansAnalysis(primary_goal="", applicable=False)
     goal = str(data.get("primary_goal") or "").strip()
     if not goal:
         return None
@@ -349,6 +332,7 @@ def parse_analysis(raw: str) -> GoalMeansAnalysis | None:
         decisive_reason = str(data.get("decisive_reason") or "").strip()
     return GoalMeansAnalysis(
         primary_goal=goal,
+        applicable=True,
         semantic_roles=semantic_roles,
         patient_must_move_to_execution_location=patient_must_move,
         required_conditions=conditions,
