@@ -43,6 +43,24 @@ class SelfDescriptionPromptTests(unittest.TestCase):
         self.assertIn("does not review chat answers or every cognitive update", context)
         self.assertIn("proposal confidence must exceed 0.6", context)
 
+    def test_architecture_context_refresh_replaces_roles_from_an_older_registry(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            description = SelfDescription(
+                str(Path(temporary_directory) / "self_description.json")
+            )
+            description.register_or_update(
+                "InternalCognitiveState", "cognition/internal_cognitive_state.py",
+                "Stale role: reads confidence and anticipatory emotion",
+                {"ENABLED": True},
+            )
+
+            context, receipt = description.refreshed_prompt_context()
+
+        self.assertEqual(receipt["status"], "refreshed")
+        self.assertGreater(receipt["registered_component_count"], 0)
+        self.assertIn("does not read confidence, emotion, or anticipation", context)
+        self.assertNotIn("Stale role", context)
+
     def test_cognitive_audit_status_query_requires_owned_recorded_state(self):
         question = (
             "According to your recorded current cognitive audit state, "

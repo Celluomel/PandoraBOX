@@ -1242,6 +1242,24 @@ class SelfDescription:
                 return True
             return h != self.components[name].last_hash
 
+    def refreshed_prompt_context(
+        self, module_tick_snapshot: Dict[str, Dict[str, Any]] | None = None,
+    ) -> tuple[str, dict[str, int | str]]:
+        """Refresh source-derived component roles before returning architecture context.
+
+        The persisted registry may have been written by an older code version. A
+        live architecture answer must use current source descriptions rather than
+        waiting for a periodic internal-loop tick to refresh them.
+        """
+        drift_count = self.scan_known_components()
+        with self._lock:
+            component_count = len(self.components)
+        return self.prompt_context(module_tick_snapshot), {
+            "status": "refreshed",
+            "registered_component_count": component_count,
+            "parameter_drift_count": drift_count,
+        }
+
     def recent_drift_events(self, limit: int = 20) -> list:
         with self._lock:
             return list(self._drift_events[-limit:])

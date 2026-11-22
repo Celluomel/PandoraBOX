@@ -5273,14 +5273,32 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                             for item in _module_entries
                         ),
                     )
+                _architecture_refresh_receipt = {}
+
+                def _build_architecture_context():
+                    _description = get_self_description()
+                    _tick_snapshot = (
+                        _module_tick_snapshot if _module_entries else None
+                    )
+                    if _architecture_query:
+                        _block, _receipt = _description.refreshed_prompt_context(
+                            module_tick_snapshot=_tick_snapshot,
+                        )
+                        _architecture_refresh_receipt.update(_receipt)
+                        return _block
+                    return _description.prompt_context(
+                        module_tick_snapshot=_tick_snapshot,
+                    )
+
                 _architecture_block = _measure_prompt_context(
-                    "architecture_prompt_context",
-                    lambda: get_self_description().prompt_context(
-                        module_tick_snapshot=(
-                            _module_tick_snapshot if _module_entries else None
-                        ),
-                    ),
+                    "architecture_prompt_context", _build_architecture_context,
                 )
+                if _architecture_refresh_receipt:
+                    self._record_turn_context_source(
+                        "architecture_registry_refresh", "completed",
+                        turn_id=audit_turn_id,
+                        **_architecture_refresh_receipt,
+                    )
                 self._record_turn_stage(
                     "self_description_context", "injected",
                     output={
@@ -5296,6 +5314,12 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                     "VERIFIED ARCHITECTURE: registry unavailable; do not infer "
                     "specific internal mechanisms from memory or metaphor."
                 )
+                if _architecture_query:
+                    self._record_turn_context_source(
+                        "architecture_registry_refresh", "failed",
+                        turn_id=audit_turn_id,
+                        error_type=type(_sde).__name__,
+                    )
                 self._record_turn_stage(
                     "self_description_context", "unavailable", str(_sde),
                     output={
