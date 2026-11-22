@@ -950,9 +950,16 @@ class EnhancedMemorySystem:
                     )
                     return self._build_index_from_db()
                 idx = faiss.read_index(str(path))
-                if idx.d == self.embedding_dim and self._index_matches_memory_db(idx):
-                    logger.info(f"FAISS index loaded ({idx.ntotal} vectors)")
-                    return idx
+                if idx.d == self.embedding_dim:
+                    if self._index_matches_memory_db(idx):
+                        logger.info(f"FAISS index loaded ({idx.ntotal} vectors)")
+                        return idx
+                    if self._synchronize_index_with_memory_db(idx):
+                        logger.info(
+                            "FAISS index synchronized with newer persisted memories (%d vectors)",
+                            idx.ntotal,
+                        )
+                        return idx
                 logger.warning(
                     "FAISS index dimension or ID map does not match persisted memories; rebuilding"
                 )
@@ -1012,6 +1019,67 @@ class EnhancedMemorySystem:
             return ids.size == len(persisted_ids) and set(map(int, ids)) == persisted_ids
         except Exception as exc:
             logger.warning("FAISS index consistency check failed: %s", exc)
+            return False
+
+    def _synchronize_index_with_memory_db(self, index) -> bool:
+        """Append DB memories missing from a valid persisted index.
+
+        SQLite is committed before periodic FAISS snapshots. After an
+        unclean stop, that leaves a healthy index with a small append-only
+        tail missing. Embed and add only that tail; rebuild from all memories
+        only when the index contains stale/duplicate IDs or synchronization
+        cannot be validated.
+        """
+        try:
+            id_map = getattr(index, "id_map", None)
+            if id_map is None:
+                return False
+            index_ids = np.asarray(
+                faiss.vector_to_array(id_map), dtype=np.int64,
+            ).reshape(-1)
+            index_id_set = set(map(int, index_ids))
+            if index_ids.size != int(index.ntotal) or len(index_id_set) != index_ids.size:
+                return False
+
+            with self.persistence.get_connection() as conn:
+                rows = conn.execute(
+                    "SELECT faiss_id, text FROM memories WHERE faiss_id IS NOT NULL"
+                ).fetchall()
+            persisted_by_id = {int(row[0]): row[1] for row in rows}
+            if len(persisted_by_id) != len(rows):
+                return False
+            persisted_ids = set(persisted_by_id)
+            if not index_id_set.issubset(persisted_ids):
+                return False
+
+            missing_ids = persisted_ids - index_id_set
+            if not missing_ids:
+                return True
+            missing_rows = [(fid, persisted_by_id[fid]) for fid in sorted(missing_ids)]
+            texts = [
+                memory_embedding_text(
+                    text, "user_message" if text.startswith("User message:") else "",
+                )
+                for _, text in missing_rows
+            ]
+            vectors = np.asarray(
+                self.embedding_model.encode(
+                    texts, show_progress_bar=False, batch_size=128,
+                ),
+                dtype=np.float32,
+            )
+            if vectors.shape != (len(missing_rows), self.embedding_dim) or not np.isfinite(vectors).all():
+                return False
+            index.add_with_ids(
+                vectors, np.asarray([fid for fid, _ in missing_rows], dtype=np.int64),
+            )
+            if not self._save_index(index):
+                logger.warning("FAISS tail synchronized in memory but snapshot save failed")
+            else:
+                logger.info("FAISS appended %d missing DB vector(s)", len(missing_rows))
+            return True
+        except Exception as exc:
+            logger.warning("FAISS incremental synchronization failed: %s", exc)
             return False
 
     def _build_index_from_db(self):

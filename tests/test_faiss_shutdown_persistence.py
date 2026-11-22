@@ -5,6 +5,8 @@ from queue import Queue
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+import numpy as np
+
 import cognition.ai_system as ai_system_module
 from cognition.ai_system import BackgroundWorker, EnhancedAISystem, EnhancedMemorySystem
 from cognition.cognitive_organism import CognitiveOrganism
@@ -152,6 +154,105 @@ def test_rebuilding_faiss_index_batch_encodes_memories_and_preserves_ids(monkeyp
     assert index.added_ids.tolist() == [11, 12]
     assert index.added_vectors.tolist() == [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
     memory._save_index.assert_called_once_with(index)
+
+
+def test_startup_synchronizes_only_db_tail_without_full_rebuild(monkeypatch):
+    rows = [(11, "Stored before snapshot"), (12, "User message: new memory")]
+
+    class Connection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def execute(self, query):
+            assert "SELECT faiss_id, text FROM memories" in query
+            return self
+
+        def fetchall(self):
+            return rows
+
+    class Index:
+        def __init__(self):
+            self.id_map = np.asarray([11], dtype=np.int64)
+            self.added_vectors = None
+            self.added_ids = None
+
+        @property
+        def ntotal(self):
+            return len(self.id_map)
+
+        def add_with_ids(self, vectors, ids):
+            self.added_vectors = vectors.copy()
+            self.added_ids = ids.copy()
+            self.id_map = np.concatenate([self.id_map, ids])
+
+    class FakeFaiss:
+        @staticmethod
+        def vector_to_array(id_map):
+            return id_map
+
+    class Embedder:
+        def __init__(self):
+            self.calls = []
+
+        def encode(self, texts, **kwargs):
+            self.calls.append((texts, kwargs))
+            return [[0.0, 1.0, 0.0]]
+
+    index = Index()
+    embedder = Embedder()
+    memory = EnhancedMemorySystem.__new__(EnhancedMemorySystem)
+    memory.embedding_dim = 3
+    memory.embedding_model = embedder
+    memory.persistence = SimpleNamespace(get_connection=Connection)
+    memory._save_index = Mock(return_value=True)
+    monkeypatch.setattr(ai_system_module, "faiss", FakeFaiss)
+
+    assert memory._synchronize_index_with_memory_db(index) is True
+    assert len(embedder.calls) == 1
+    assert embedder.calls[0][0] == [
+        ai_system_module.memory_embedding_text(rows[1][1], "user_message"),
+    ]
+    assert embedder.calls[0][1] == {"show_progress_bar": False, "batch_size": 128}
+    assert index.added_ids.tolist() == [12]
+    assert index.ntotal == 2
+    memory._save_index.assert_called_once_with(index)
+
+
+def test_startup_refuses_incremental_sync_if_index_has_deleted_db_ids(monkeypatch):
+    class Connection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def execute(self, _query):
+            return self
+
+        def fetchall(self):
+            return [(11, "Still persisted")]
+
+    class Index:
+        id_map = np.asarray([11, 12], dtype=np.int64)
+        ntotal = 2
+
+    class FakeFaiss:
+        @staticmethod
+        def vector_to_array(id_map):
+            return id_map
+
+    memory = EnhancedMemorySystem.__new__(EnhancedMemorySystem)
+    memory.persistence = SimpleNamespace(get_connection=Connection)
+    memory.embedding_model = Mock()
+    memory._save_index = Mock(return_value=True)
+    monkeypatch.setattr(ai_system_module, "faiss", FakeFaiss)
+
+    assert memory._synchronize_index_with_memory_db(Index()) is False
+    memory.embedding_model.encode.assert_not_called()
+    memory._save_index.assert_not_called()
 
 
 def test_failed_index_write_preserves_previous_persisted_file(tmp_path, monkeypatch):
