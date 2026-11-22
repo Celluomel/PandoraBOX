@@ -176,8 +176,11 @@ class SemanticMemory:
             return row[0] if row else -1
 
     def record_observation(self, name: str, source: str = "unknown",
-                           role: str = "context", confidence: float = 0.5) -> None:
-        """Persist provenance separately from the shared concept graph."""
+                           role: str = "context", confidence: float = 0.5) -> bool:
+        """Persist provenance separately from the shared concept graph.
+
+        True is returned only after the observation transaction commits.
+        """
         concept_id = self.upsert_concept(name, strength_boost=0.0)
         if concept_id < 0:
             return
@@ -191,6 +194,7 @@ class SemanticMemory:
                 "(concept_id, source, role, confidence, observed_at) VALUES (?,?,?,?,?)",
                 (concept_id, str(source)[:80], str(role)[:40], confidence, time.time()),
             )
+        return True
 
     def recent_user_topics(self, limit: int = 15, min_strength: float = 0.5,
                            min_observations: int = 2) -> List[str]:
@@ -212,12 +216,13 @@ class SemanticMemory:
         return [row[0] for row in rows]
 
     def upsert_relation(self, source: str, target: str, rel_type: str,
-                        weight_boost: float = 0.05):
+                        weight_boost: float = 0.05) -> bool:
         """Add or reinforce a directed relation between two concepts."""
         now = time.time()
         sid = self.upsert_concept(source)
         tid = self.upsert_concept(target)
-        if sid < 0 or tid < 0 or sid == tid: return
+        if sid < 0 or tid < 0 or sid == tid:
+            return False
         with self._conn() as conn:
             conn.execute("""
                 INSERT INTO relations (source_id, target_id, rel_type, weight, last_used)
@@ -226,6 +231,7 @@ class SemanticMemory:
                     weight    = MIN(1.0, weight + ?),
                     last_used = ?
             """, (sid, tid, rel_type, 0.4 + weight_boost, now, weight_boost, now))
+        return True
 
     def get_related(self, concept: str, limit: int = 10) -> List[Relation]:
         """Return concepts related to the given concept."""

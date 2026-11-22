@@ -368,6 +368,32 @@ def audit_safe_turn_summary(value: Any) -> dict[str, Any] | None:
     if value.get("type") == "response_learning_receipt":
         return response_learning_evidence(value)
 
+    if value.get("type") == "semantic_extraction_receipt":
+        receipt: dict[str, Any] = {
+            "type": "semantic_extraction_receipt",
+            "quality": "present",
+            "status": str(value.get("status") or "unknown")[:32],
+            "persistence_status": str(value.get("persistence_status") or "unverified")[:24],
+            "cag_status": str(value.get("cag_status") or "unknown")[:24],
+            "workspace_status": str(value.get("workspace_status") or "unknown")[:24],
+        }
+        for key in (
+            "concepts_parsed", "concept_upsert_calls_returned", "concepts_persisted",
+            "observation_calls_returned", "observations_persisted",
+            "relation_upsert_calls_returned", "relations_persisted",
+        ):
+            number = value.get(key)
+            if isinstance(number, int) and not isinstance(number, bool):
+                receipt[key] = max(0, min(1000, number))
+        if isinstance(value.get("dominant_topic_selected"), bool):
+            receipt["dominant_topic_selected"] = value["dominant_topic_selected"]
+        duration = value.get("duration_ms")
+        if isinstance(duration, (int, float)) and not isinstance(duration, bool):
+            numeric = float(duration)
+            if math.isfinite(numeric):
+                receipt["duration_ms"] = max(0.0, min(600000.0, numeric))
+        return receipt
+
     if {"query_sha256", "candidate_count", "candidates"}.issubset(value):
         candidates = []
         raw_candidates = value.get("candidates")

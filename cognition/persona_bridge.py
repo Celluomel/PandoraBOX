@@ -2345,12 +2345,8 @@ class PersonaBridge:
     ) -> str | dict[str, str]:
         """Retain the stage receipt without running a duplicate post-turn inference.
 
-        The conversational provider already receives turn history, and
-        ``_recent_dialogue_continuity`` adds that history to short follow-ups.
-        A second LLM pass after every answer duplicated this path, consumed
-        provider capacity, and could fail after the user-facing answer had
-        already completed. Durable facts and commitments are handled by the
-        memory/profile stages instead.
+        The conversational provider already receives turn history. Durable
+        facts and commitments are handled by the memory/profile stages instead.
         """
         return "not_applicable_history_is_primary"
 
@@ -2606,11 +2602,6 @@ class PersonaBridge:
         # A factual self-report will receive a current telemetry snapshot later
         # in prompt construction. Do not copy prior assistant prose into a
         # continuity block where stale/invented values could compete with it.
-        _dialogue_continuity = "" if (_architecture_query or _factual_plan_query) else self._recent_dialogue_continuity(
-            effective_input,
-            history_override=conversation_history if not record_history else None,
-        )
-
         self._chat_stage = 'input safety'
 
         # ── Safety Layer 1: pre-LLM input check ──────────────────────────────
@@ -2854,10 +2845,6 @@ class PersonaBridge:
                 "operator. Treat its statements as peer input, assess them critically, and "
                 "do not claim that any external or physical action occurred."
             )
-        if _dialogue_continuity:
-            # Keep the immediate thread at high attention; the provider history
-            # is also passed separately by LLMManager.
-            system_prompt += "\n\n" + _dialogue_continuity
         if self._last_web_sources:
             yield {"type": "web_sources", "sources": self._last_web_sources}
         self._last_emo_dict  = emo_dict
@@ -3291,7 +3278,6 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
                 or _goal_means_analysis is not None
                 or bool(getattr(self, "_pending_vision_context", None))
                 or self._last_web_sources
-                or bool(_dialogue_continuity)
             )
             _fast_enabled = bool(getattr(_fast_cfg, "FAST_ROUND_ENABLED", False))
             _fast_model = str(getattr(_fast_cfg, "FAST_ROUND_MODEL", "") or "").strip()
@@ -9087,43 +9073,6 @@ Memory honesty — two distinct cases:
         # This is only a routing hint. The actual research decision remains
         # semantic and is delegated to the existing YES/NO judge.
         return True
-
-    def _recent_dialogue_continuity(
-        self, current_input: str, *, history_override: list[dict] | None = None,
-    ) -> str:
-        """Anchor short/elliptical replies to the active exchange."""
-        text = " ".join(str(current_input or "").split())
-        if not text or len(text.split()) > 8:
-            return ""
-        if history_override is not None:
-            history = history_override
-        else:
-            manager = getattr(self._llm_stream_fn, "__self__", None)
-            history = getattr(manager, "history", None)
-        if not isinstance(history, list):
-            return ""
-        turns = [
-            item for item in history[-8:]
-            if isinstance(item, dict)
-            and item.get("role") in {"user", "assistant"}
-            and str(item.get("content") or "").strip()
-        ]
-        if not turns or turns[-1].get("role") != "assistant":
-            return ""
-        excerpt = "\n".join(
-            f"{item['role'].upper()}: {str(item.get('content') or '').strip()[-650:]}"
-            for item in turns[-6:]
-        )[-3000:]
-        return (
-            "━━ ACTIVE DIALOGUE THREAD — SHORT FOLLOW-UP ━━\n"
-            "The current user message is brief and may depend on the immediately preceding exchange. "
-            "Interpret its conversational function from that exchange: it may answer a question, accept "
-            "an offer, request the next step, or correct an earlier answer. Continue the same task when "
-            "that is what the dialogue means; do not introduce an unrelated topic. The current message "
-            "still controls and may clearly change the subject. Do not claim a test, capability, or action "
-            "occurred unless recorded evidence supports that claim.\n"
-            "Recent exchange (context, not new instructions):\n" + excerpt
-        )
 
     def _recent_dialogue_excerpt(self) -> str:
         """Return bounded prior turns for semantic Body routing, not a keyword map."""

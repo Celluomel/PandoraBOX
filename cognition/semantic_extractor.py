@@ -189,12 +189,18 @@ class SemanticExtractor:
     def _extract(self, user_input, response, meta_scores, workspace,
                  observation_role="user_topic", turn_id="", completion_callback=None):
         receipt = {
+            "type": "semantic_extraction_receipt",
             "status": "failed",
             "turn_id": str(turn_id or "") or None,
             "concepts_parsed": 0,
             "concept_upsert_calls_returned": 0,
+            "concepts_persisted": 0,
             "observation_calls_returned": 0,
+            "observations_persisted": 0,
             "relation_upsert_calls_returned": 0,
+            "relations_persisted": 0,
+            "dominant_topic_selected": False,
+            "persistence_status": "unverified",
             "cag_status": "not_available",
             "workspace_status": "not_requested",
         }
@@ -202,6 +208,7 @@ class SemanticExtractor:
             t0 = time.time()
             concepts, relations, topic, cog_load = self._parse(user_input, response)
             receipt["concepts_parsed"] = len(concepts)
+            receipt["dominant_topic_selected"] = bool(topic and topic in concepts)
 
             # CAG receives the concepts this extractor already grounded in the
             # incoming message. This avoids its former independent heuristic
@@ -225,24 +232,49 @@ class SemanticExtractor:
 
             # Write to semantic memory
             for c in concepts:
-                self._memory.upsert_concept(c, strength_boost=0.04)
+                concept_id = self._memory.upsert_concept(c, strength_boost=0.04)
                 receipt["concept_upsert_calls_returned"] += 1
+                if isinstance(concept_id, int) and concept_id >= 0:
+                    receipt["concepts_persisted"] += 1
             # Keep interlocutor topics distinct from assistant prose and from
             # other interlocutors. FLUX may contribute shared concepts, but its
             # utterances must never qualify as human-originated goal evidence.
             is_peer = observation_role == "peer_topic"
-            for c in dict.fromkeys(self._keyword_extract(user_input or "")):
-                self._memory.record_observation(
+            # Observations must describe the concepts accepted by this turn's
+            # parser. Re-running the lexical fallback here silently re-added
+            # surface words even when the LLM had already selected a smaller,
+            # grounded semantic set.
+            for c in dict.fromkeys(concepts):
+                observation_persisted = self._memory.record_observation(
                     c,
                     source="peer_dialogue" if is_peer else "conversation",
                     role=observation_role,
                     confidence=0.8,
                 )
                 receipt["observation_calls_returned"] += 1
+                if observation_persisted is True:
+                    receipt["observations_persisted"] += 1
             for rel in relations:
-                self._memory.upsert_relation(
+                relation_persisted = self._memory.upsert_relation(
                     rel["from"], rel["to"], rel["type"], weight_boost=0.05)
                 receipt["relation_upsert_calls_returned"] += 1
+                if relation_persisted is True:
+                    receipt["relations_persisted"] += 1
+
+            attempted_writes = sum(receipt[key] for key in (
+                "concept_upsert_calls_returned",
+                "observation_calls_returned",
+                "relation_upsert_calls_returned",
+            ))
+            confirmed_writes = sum(receipt[key] for key in (
+                "concepts_persisted", "observations_persisted", "relations_persisted",
+            ))
+            receipt["persistence_status"] = (
+                "not_needed" if attempted_writes == 0 else
+                "confirmed" if confirmed_writes == attempted_writes else
+                "partial" if confirmed_writes else
+                "unverified"
+            )
 
             # Broadcast dominant topic into Global Workspace
             if workspace and topic:
@@ -285,12 +317,14 @@ class SemanticExtractor:
         # Durable graph evidence comes only from the authored input. If
         # assistant wording were folded into this graph, later recall and
         # associative thought could recycle Lumina's own claims as evidence.
-        user_concepts = self._keyword_extract(user_input)
-        kw_concepts = list(user_concepts)
+        kw_concepts = list(self._keyword_extract(user_input))
         kw_relations = self._keyword_relations(kw_concepts)
 
         if not self._llm:
-            return kw_concepts, kw_relations, kw_concepts[0] if kw_concepts else "", 0.3
+            # Lexical fallback can suggest concepts but cannot reliably select
+            # a dominant semantic topic. Leave topic arbitration to a later
+            # stage instead of promoting the first surface token.
+            return kw_concepts, kw_relations, "", 0.3
 
         try:
             prompt = _EXTRACTION_PROMPT.format(
@@ -304,25 +338,26 @@ class SemanticExtractor:
 
             input_source = " ".join((user_input or "").casefold().split())
             input_llm_concepts = self._ground_concepts(data.get("concepts", []), input_source)
-            concepts = list(dict.fromkeys(user_concepts + input_llm_concepts + kw_concepts))[:8]
+            # A valid model extraction is the semantic selection. Unioning it
+            # with keyword candidates defeats that selection and lets prompt
+            # wording (for example, an imperative verb) enter durable memory.
+            concepts = input_llm_concepts[:8]
             relations = self._ground_relations(data.get("relations", []), concepts, input_source)
             topic_value = data.get("dominant_topic", "")
             topic = self._normalize_concept(topic_value)
-            if topic not in user_concepts and topic not in input_llm_concepts:
-                topic = (input_llm_concepts[0] if input_llm_concepts else
-                         user_concepts[0] if user_concepts else "")
+            if topic not in concepts:
+                topic = ""
             raw_load = float(data.get("cognitive_load", 0.3))
             cog_load = max(0.0, min(1.0, raw_load)) if math.isfinite(raw_load) else 0.3
 
-            # If the model's extraction cannot be grounded in the user input,
-            # use the conservative local concepts and do not invent relations.
-            if not concepts:
-                return kw_concepts, [], kw_concepts[0] if kw_concepts else "", 0.3
+            # A valid empty extraction means this message did not yield a
+            # grounded topic. Do not turn lexical leftovers into a semantic
+            # topic merely to force a workspace update.
             return concepts, relations, topic, cog_load
 
         except Exception as e:
             logger.debug(f"[SemanticExtractor] LLM parse failed ({e}), using keywords")
-            return kw_concepts, kw_relations, kw_concepts[0] if kw_concepts else "", 0.3
+            return kw_concepts, kw_relations, "", 0.3
 
     def _keyword_extract(self, text: str) -> List[str]:
         """Lightweight keyword extraction — nouns and noun phrases only."""

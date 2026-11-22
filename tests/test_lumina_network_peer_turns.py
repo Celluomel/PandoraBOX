@@ -74,25 +74,15 @@ class PeerHistoryIsolationTests(unittest.TestCase):
         self.assertEqual(provider.seen_history, peer_history)
         self.assertEqual(manager.history, original)
 
-    def test_peer_continuity_uses_scoped_transcript_not_human_chat(self):
-        from cognition.persona_bridge import PersonaBridge
+    def test_persona_does_not_duplicate_provider_history_into_system_prompt(self):
+        from pathlib import Path
 
-        bridge = PersonaBridge.__new__(PersonaBridge)
-        manager = types.SimpleNamespace(history=[
-            {"role": "user", "content": "human secret topic"},
-            {"role": "assistant", "content": "human-only answer"},
-        ])
-        bridge._llm_stream_fn = types.SimpleNamespace(__self__=manager)
-        scoped = [
-            {"role": "assistant", "content": "peer topic"},
-            {"role": "user", "content": "peer answer"},
-            {"role": "assistant", "content": "Lumina follow-up"},
-        ]
+        source = Path(__file__).resolve().parents[1] / "cognition" / "persona_bridge.py"
+        bridge_source = source.read_text(encoding="utf-8")
+        provider_source = (source.parents[1] / "managers" / "llm_manager.py").read_text(encoding="utf-8")
 
-        continuity = bridge._recent_dialogue_continuity("and then?", history_override=scoped)
-
-        self.assertIn("peer topic", continuity)
-        self.assertNotIn("human secret topic", continuity)
+        self.assertNotIn("ACTIVE DIALOGUE THREAD — SHORT FOLLOW-UP", bridge_source)
+        self.assertIn("messages.extend(history)", provider_source)
 
     def test_peer_post_turn_runs_cognitive_evaluation_without_human_memory_learning(self):
         from cognition.persona_bridge import PersonaBridge

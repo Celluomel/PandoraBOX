@@ -114,7 +114,9 @@ def test_post_turn_reducer_handles_effect_receipts_before_generic_completed_bran
     assert '"skipped_no_prior_affect_read"' in body
     assert '"skipped_no_independent_outcome_evidence"' in body
     assert "invalid or unreported effect receipt" in body
-    assert body.index("elif stage_name in {\"empathy_outcome\", \"abstract_reasoning_outcome\"}") < body.rindex("else:\n                    self._record_turn_stage(")
+    effect_branch = body.index("elif stage_name in {\"empathy_outcome\", \"abstract_reasoning_outcome\"}")
+    post_turn_branch = body.index("elif stage_name == \"cognitive_post_turn\" and result is False")
+    assert effect_branch < post_turn_branch
 
 
 def test_abstract_reasoning_is_run_before_prompt_build_and_peer_scoped_out():
@@ -172,6 +174,31 @@ def test_effect_receipt_summary_preserves_only_bounded_non_text_evidence():
         "attractor_traits_changed": 2,
         "persistence": "attempted_unverified",
     }
+
+
+def test_semantic_extraction_summary_exposes_persistence_without_concept_text():
+    summary = audit_safe_turn_summary({
+        "type": "semantic_extraction_receipt",
+        "status": "completed",
+        "persistence_status": "confirmed",
+        "cag_status": "completed",
+        "workspace_status": "completed",
+        "concepts_parsed": 2,
+        "concept_upsert_calls_returned": 2,
+        "concepts_persisted": 2,
+        "observation_calls_returned": 2,
+        "observations_persisted": 2,
+        "relation_upsert_calls_returned": 0,
+        "relations_persisted": 0,
+        "dominant_topic_selected": True,
+        "duration_ms": 12.5,
+        "concepts": ["private concept text"],
+    })
+    assert summary["type"] == "semantic_extraction_receipt"
+    assert summary["persistence_status"] == "confirmed"
+    assert summary["concepts_persisted"] == 2
+    assert summary["dominant_topic_selected"] is True
+    assert "concepts" not in summary
 
 
 def test_app_state_resolves_relational_memory_from_its_actual_owner():

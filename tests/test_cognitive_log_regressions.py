@@ -377,7 +377,12 @@ class CognitiveLogRegressionTests(unittest.TestCase):
 
         memory = _Memory()
         workspace = _Workspace()
-        extractor = SemanticExtractor(memory)
+        extractor = SemanticExtractor(memory, llm_fn=lambda _prompt: json.dumps({
+            "concepts": [{"name": "robot cognition", "evidence": "robot cognition"}],
+            "relations": [],
+            "dominant_topic": "robot cognition",
+            "cognitive_load": 0.2,
+        }))
         extractor._extract(
             "shared robot cognition", "A peer reply", None, workspace,
             observation_role="peer_topic",

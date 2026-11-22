@@ -261,6 +261,96 @@ class MemoryReliabilityTests(unittest.TestCase):
         self.assertEqual(concepts, [])
         self.assertEqual(topic, "")
 
+    def test_llm_semantics_are_not_unionized_with_surface_keyword_candidates(self):
+        extractor = SemanticExtractor(_Memory(), llm_fn=lambda _prompt: json.dumps({
+            "concepts": [
+                {"name": "semantic extractor", "evidence": "semantic extractor"},
+                {"name": "profil utilisateur", "evidence": "profil utilisateur"},
+                {"name": "harnais cognitif", "evidence": "harnais cognitif"},
+            ],
+            "relations": [],
+            "dominant_topic": "harnais cognitif",
+            "cognitive_load": 0.3,
+        }))
+
+        concepts, relations, topic, _ = extractor._parse(
+            "Décris le rôle du semantic extractor et du profil utilisateur dans le harnais cognitif.",
+            "",
+        )
+
+        self.assertEqual(concepts, [
+            "semantic extractor", "profil utilisateur", "harnais cognitif",
+        ])
+        self.assertEqual(relations, [])
+        self.assertEqual(topic, "harnais cognitif")
+        self.assertNotIn("décris", concepts)
+        self.assertNotIn("rôle", concepts)
+
+    def test_semantic_observations_use_the_accepted_concept_set(self):
+        class _ObservationMemory:
+            def __init__(self):
+                self.concepts = []
+                self.observations = []
+
+            def upsert_concept(self, concept, strength_boost=0.04):
+                self.concepts.append(concept)
+                return len(self.concepts)
+
+            def record_observation(self, name, **kwargs):
+                self.observations.append(name)
+
+            def upsert_relation(self, *_args, **_kwargs):
+                pass
+
+        memory = _ObservationMemory()
+        extractor = SemanticExtractor(memory)
+        extractor._parse = lambda _user, _response: (
+            ["accepted semantic concept"], [], "accepted semantic concept", 0.2,
+        )
+        extractor._keyword_extract = lambda _text: [
+            "accepted semantic concept", "surface wording noise",
+        ]
+
+        receipt = extractor._extract(
+            "surface wording noise", "", None, None,
+            turn_id="semantic-observation-1",
+        )
+
+        self.assertEqual(memory.concepts, ["accepted semantic concept"])
+        self.assertEqual(memory.observations, ["accepted semantic concept"])
+        self.assertEqual(receipt["observation_calls_returned"], 1)
+
+    def test_semantic_extraction_receipt_confirms_sqlite_commits(self):
+        with tempfile.TemporaryDirectory() as directory:
+            memory = SemanticMemory(str(Path(directory) / "semantic.sqlite"))
+            response = json.dumps({
+                "concepts": [
+                    {"name": "robot cognition", "evidence": "robot cognition"},
+                    {"name": "semantic memory", "evidence": "semantic memory"},
+                ],
+                "relations": [{
+                    "from": "robot cognition", "to": "semantic memory",
+                    "type": "enables",
+                    "evidence": "robot cognition enables semantic memory",
+                }],
+                "dominant_topic": "robot cognition",
+                "cognitive_load": 0.2,
+            })
+            extractor = SemanticExtractor(memory, llm_fn=lambda _prompt: response)
+
+            receipt = extractor._extract(
+                "robot cognition enables semantic memory", "", None, None,
+                turn_id="semantic-sqlite-commit-1",
+            )
+
+            self.assertEqual(receipt["status"], "completed")
+            self.assertEqual(receipt["persistence_status"], "confirmed")
+            self.assertEqual(receipt["concepts_persisted"], 2)
+            self.assertEqual(receipt["observations_persisted"], 2)
+            self.assertEqual(receipt["relations_persisted"], 1)
+            self.assertEqual(memory.concept_count(), 2)
+            self.assertEqual(memory.relation_count(), 1)
+
     def test_semantic_extractor_does_not_persist_heuristic_capability_scores(self):
         memory = _Memory()
         extractor = SemanticExtractor(memory)
