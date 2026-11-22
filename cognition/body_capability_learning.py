@@ -57,25 +57,43 @@ class BodyCapabilityLearner:
     def observe(self, observation: Any) -> Optional[Dict[str, Any]]:
         """Record one BodyObservation and return a workspace signal if useful.
 
-        The input is intentionally duck-typed so this stays independent from
-        the transport (local adapter, WebSocket bridge, or future robot).
+        Only an explicit robot inventory declaration or a physically verified
+        action outcome can update this ledger. Scene snapshots and affordances
+        describe a world model, not durable robot capability evidence.
         """
         value = getattr(observation, "value", None)
         kind = str(getattr(observation, "kind", "") or "")
+        subject = str(getattr(observation, "subject", "") or "")
+        source = str(getattr(observation, "source", "") or "")
         provenance = getattr(observation, "provenance", {}) or {}
         candidates = []
-        if isinstance(value, dict):
-            candidates.extend({"name": key, "state": item} for key, item in (value.get("capabilities") or {}).items())
-            candidates.extend({"name": key, "state": item} for key, item in (value.get("affordances") or {}).items())
-            outcome = value.get("outcome")
-            if isinstance(outcome, dict):
-                candidates.append({"name": value.get("action") or value.get("target"), "outcome": outcome})
-        if isinstance(provenance, dict):
-            declared = provenance.get("capabilities") or provenance.get("affordances")
+        provenance = provenance if isinstance(provenance, dict) else {}
+        source_markers = f"{source} {provenance.get('source', '')}".lower()
+        simulated = bool(
+            provenance.get("simulated") is True
+            or any(marker in source_markers for marker in ("simulation", "simulated", "sim_robot", "virtual_lidar"))
+        )
+        if simulated:
+            return None
+
+        evidence_scope = ""
+        if subject == "robot.capability_inventory" and isinstance(value, dict):
+            declared = value.get("capabilities")
             if isinstance(declared, dict):
                 candidates.extend({"name": key, "state": item} for key, item in declared.items())
-        if kind == "actuation_feedback" and not candidates:
-            candidates.append({"name": getattr(observation, "subject", "body_action"), "outcome": value})
+                evidence_scope = "robot_capability_inventory_declaration"
+        elif kind == "actuation_feedback":
+            verification = str(provenance.get("verification_status") or "").lower()
+            status = str(provenance.get("command_status") or "").lower()
+            outcome = provenance.get("outcome")
+            if (
+                verification == "verified_observation"
+                and status == "executed"
+                and isinstance(outcome, dict)
+                and not (outcome.get("simulated") is True or outcome.get("verification_status") == "verified_simulation")
+            ):
+                candidates.append({"name": subject, "outcome": outcome})
+                evidence_scope = "verified_physical_action_outcome"
         if not candidates:
             return None
 
@@ -94,17 +112,24 @@ class BodyCapabilityLearner:
                     if status in {"failure", "failed", "blocked", "danger"}:
                         success = False
                 state = candidate.get("state")
-                fingerprint = hashlib.sha256(self._stable({"name": name, "state": state, "outcome": outcome}).encode()).hexdigest()[:16]
+                fingerprint = hashlib.sha256(self._stable({
+                    "name": name, "state": state, "outcome": outcome,
+                    "scope": evidence_scope, "source": source, "subject": subject,
+                }).encode()).hexdigest()[:16]
                 record = self._data["capabilities"].setdefault(name, {
                     "name": name, "state": "hypothesis", "confidence": 0.2,
                     "observations": 0, "successes": 0, "failures": 0,
                     "last_evidence": 0.0, "evidence": [],
+                    "evidence_scope": evidence_scope,
                 })
                 if fingerprint in record.get("evidence", []):
                     continue
                 record["evidence"] = (record.get("evidence", []) + [fingerprint])[-12:]
                 record["observations"] += 1
                 record["last_evidence"] = now
+                record["evidence_scope"] = evidence_scope
+                record["evidence_source"] = source
+                record["evidence_subject"] = subject
                 if state is not None:
                     record["declared_or_observed_state"] = state
                 if success is True:

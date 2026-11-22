@@ -1354,13 +1354,55 @@ async def cognitive_dashboard_page():
                                     _badge(f"{cae.get('confirmed_trials', 0)} confirmed", 'green')
                                 _kv('Last audit cycle', cae.get('last_audit_cycle', 0))
                                 worst = cae.get('worst_signal_now')
-                                if worst:
+                                target_status = cae.get('performance_target_status')
+                                measured_count = cae.get('measured_signal_count')
+                                if measured_count is None:
+                                    last_snapshot = cae.get('last_snapshot') or {}
+                                    measured_count = sum(
+                                        1 for name in (
+                                            'epistemic_grounding_rate',
+                                            'question_resolution_rate',
+                                            'mean_skill_depth',
+                                            'belief_confidence_mean',
+                                        )
+                                        if isinstance(last_snapshot.get(name), (int, float))
+                                        and math.isfinite(last_snapshot[name])
+                                    )
+                                if target_status == 'none_validated':
+                                    ui.label(
+                                        'No validated performance targets; diagnostics only'
+                                    ).classes('text-slate-400 text-xs mt-1')
+                                elif measured_count == 0:
+                                    ui.label('No measurable signals yet').classes(
+                                        'text-slate-400 text-xs mt-1'
+                                    )
+                                elif worst:
                                     ui.label(f'Currently underperforming: {worst}').classes(
                                         'text-yellow-400 text-xs mt-1'
                                     )
                                 else:
-                                    ui.label('All signals on target').classes(
+                                    ui.label('All measured signals on target').classes(
                                         'text-green-400 text-xs mt-1'
+                                    )
+                                # Confirmation is not a quality score: a
+                                # disconfirmed hypothesis can still be a
+                                # resolved, useful experiment. Show outcomes
+                                # separately from performance deficits.
+                                outcomes = cae.get('descriptive_metrics', {})
+                                resolved = outcomes.get('experiment_resolution_rate', {})
+                                confirmed = outcomes.get('experiment_confirmation_rate', {})
+                                sample_count = int(resolved.get('sample_count', 0) or 0)
+                                if sample_count > 0 and resolved.get('value') is not None:
+                                    resolved_count = round(float(resolved['value']) * sample_count)
+                                    confirmed_count = round(float(confirmed.get('value') or 0.0) * sample_count)
+                                    _kv(
+                                        'Recent experiment outcomes',
+                                        f'{resolved_count}/{sample_count} resolved; '
+                                        f'{confirmed_count}/{sample_count} confirmed',
+                                    )
+                                else:
+                                    ui.label('Recent experiment outcomes: no finalized sample').classes(
+                                        'text-slate-500 text-xs mt-1'
                                     )
                                 trial = cae.get('active_trial')
                                 if trial:

@@ -30,6 +30,7 @@ def start_body_bridge_server(settings, api_host: str, api_port: int) -> BodyBrid
         settings.BODY_BRIDGE_LISTEN_PORT,
         api_host,
         api_port,
+        reserved_ports=(getattr(settings, "BRAIN_API_PORT", 8765),),
     )
     server = uvicorn.Server(uvicorn.Config(
         app=bridge_app,

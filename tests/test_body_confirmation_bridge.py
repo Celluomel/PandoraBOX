@@ -63,7 +63,7 @@ class BodyConfirmationBridgeTests(unittest.TestCase):
 
         self.assertIsNone(result)
 
-    def test_read_only_body_diagnostic_does_not_compile_or_send_motion(self):
+    def test_read_only_body_diagnostic_returns_to_cognitive_dialogue(self):
         now = __import__("time").time()
         observations = [{
             "subject": "sensor.ultrasonic",
@@ -95,11 +95,10 @@ class BodyConfirmationBridgeTests(unittest.TestCase):
 
         result = bridge.handle_body_chat_turn("Procède aux tests des capteurs et du mouvement")
 
-        self.assertEqual(result["status"], "diagnostic")
-        self.assertIn("tv", result["response"])
-        self.assertIn("no echo/data", result["response"])
-        self.assertIn("estimée depuis les commandes FNHR", result["response"])
-        self.assertFalse(result["diagnostic"]["actions_sent"])
+        # Read-only analysis should pass to the main cognitive turn, where
+        # timestamped evidence is available in context. This router must not
+        # replace reasoning with a canned digest or compile a motion plan.
+        self.assertIsNone(result)
         bridge.assess_body_action_request.assert_not_called()
 
     def test_semantic_classifier_has_a_read_only_diagnostic_route(self):

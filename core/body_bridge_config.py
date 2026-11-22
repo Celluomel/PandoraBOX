@@ -4,7 +4,13 @@ from __future__ import annotations
 import ipaddress
 
 
-def validate_bind(host: str, port: int, api_host: str, api_port: int) -> tuple[str, int]:
+def validate_bind(
+    host: str,
+    port: int,
+    api_host: str,
+    api_port: int,
+    reserved_ports: tuple[int, ...] = (),
+) -> tuple[str, int]:
     host = str(host or "127.0.0.1").strip()
     try:
         port = int(port)
@@ -19,6 +25,7 @@ def validate_bind(host: str, port: int, api_host: str, api_port: int) -> tuple[s
             raise ValueError("Bridge listen host must be loopback or a private LAN address")
     if not 1024 <= port <= 65535:
         raise ValueError("Bridge listen port must be between 1024 and 65535")
-    if port == int(api_port):
-        raise ValueError("Bridge listener must use a port different from the Brain REST API")
+    unavailable = {int(api_port), *(int(item) for item in reserved_ports)}
+    if port in unavailable:
+        raise ValueError("Bridge listener must use a port different from the UI and Brain REST APIs")
     return host, port

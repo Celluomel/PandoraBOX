@@ -120,6 +120,53 @@ def test_losing_goal_proposal_survives_and_retries_without_re_evaluation(tmp_pat
     evaluate_mock.assert_called_once()
 
 
+def test_partial_proposal_disposition_retry_counts_already_persisted_sources(tmp_path):
+    dal = DataAccess(str(tmp_path))
+    for thought_id in ("source-one", "source-two"):
+        assert dal.add_thought({
+            "id": thought_id,
+            "content": f"source for proposal {thought_id}",
+            "source": "audit-test",
+            "priority": 0.7,
+            "thought_type": "reflection",
+            "evaluated": True,
+            "evaluation": {"goal_proposal": {
+                "proposal_id": "proposal-shared",
+                "status": "pending",
+            }},
+        })
+    evaluator = SimpleThoughtEvaluator(tmp_path)
+    proposal = {
+        "proposal_id": "proposal-shared",
+        "origin_thought": "source-one",
+        "supporting_thought_ids": ["source-one", "source-two"],
+    }
+    original_update = DataAccess.update_thought
+    failed_once = {"value": False}
+
+    def fail_second_source_once(instance, thought):
+        if thought.get("id") == "source-two" and not failed_once["value"]:
+            failed_once["value"] = True
+            return False
+        return original_update(instance, thought)
+
+    with patch.object(DataAccess, "update_thought", fail_second_source_once):
+        first_receipt = evaluator.record_proposal_disposition(
+            proposal, "committed", cycle=9, reason="goal_readback_verified",
+        )
+        second_receipt = evaluator.record_proposal_disposition(
+            proposal, "committed", cycle=9, reason="goal_readback_verified",
+        )
+
+    assert first_receipt == 1
+    assert second_receipt == 2
+    statuses = {
+        item["id"]: item["evaluation"]["goal_proposal"]["status"]
+        for item in dal.get_thoughts(skip_expired=False)
+    }
+    assert statuses == {"source-one": "committed", "source-two": "committed"}
+
+
 def test_quality_gate_rejection_closes_pending_proposal(tmp_path):
     stream = ThoughtStream(SimpleNamespace(_data_dir=tmp_path))
     stream.add(
@@ -240,4 +287,3 @@ def test_stagnation_guard_emits_at_most_one_recent_seed(tmp_path):
         if thought.get("source") == "thought_evaluator.stagnation_guard"
     ]
     assert len(seeds) == 1
-

@@ -358,7 +358,24 @@ class SimpleThoughtEvaluator:
             flush = getattr(self.thought_stream, "flush", None)
             if callable(flush):
                 flush()
-        return updated
+        # Return the number of source thoughts whose terminal state is
+        # durable, not merely the number newly written in this attempt. This
+        # makes a retry after a partial write idempotent: already committed
+        # sources still count toward the complete receipt.
+        try:
+            persisted = dal.get_thoughts(skip_expired=False)
+        except Exception:
+            return 0
+        durable_ids = {
+            str(thought.get("id") or "")
+            for thought in persisted
+            if isinstance(thought, dict)
+            and str(thought.get("id") or "") in ids
+            and isinstance(thought.get("evaluation"), dict)
+            and isinstance(thought["evaluation"].get("goal_proposal"), dict)
+            and thought["evaluation"]["goal_proposal"].get("status") == status
+        }
+        return len(durable_ids)
 
     def record_proposal_rejection(self, origin_thought_id: str, reason: str) -> bool:
         """Close a proposal rejected by the pre-arbitration quality gate."""
@@ -689,4 +706,3 @@ class SimpleThoughtEvaluator:
 if __name__ == "__main__":
     evaluator = SimpleThoughtEvaluator('data/persona')
     evaluator.evaluate_recent_thoughts()
-

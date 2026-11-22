@@ -82,7 +82,7 @@ class BodyBridgeListenerTests(unittest.TestCase):
             BODY_BRIDGE_LISTEN_HOST="0.0.0.0",
             BODY_BRIDGE_LISTEN_PORT=8765,
         )
-        with self.assertRaisesRegex(ValueError, "different from the Brain REST API"):
+        with self.assertRaisesRegex(ValueError, "different from the UI and Brain REST APIs"):
             start_body_bridge_server(settings, "127.0.0.1", 8765)
 
     def test_listener_exposes_only_the_authenticated_websocket_route(self):
@@ -97,6 +97,12 @@ class BodyBridgeListenerTests(unittest.TestCase):
 
     def test_defaults_to_loopback_and_separate_port(self):
         self.assertEqual(validate_bind("127.0.0.1", 8786, "127.0.0.1", 8765), ("127.0.0.1", 8786))
+
+    def test_body_bridge_cannot_collide_with_full_app_brain_api_port(self):
+        with self.assertRaisesRegex(ValueError, "different from the UI and Brain REST APIs"):
+            validate_bind(
+                "127.0.0.1", 8765, "127.0.0.1", 8080, reserved_ports=(8765,),
+            )
 
     def test_empty_body_token_falls_back_to_brain_shared_token(self):
         if importlib.util.find_spec("fastapi") is None:

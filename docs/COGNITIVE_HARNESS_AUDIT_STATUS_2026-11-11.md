@@ -1,5 +1,10 @@
 # Audit du harnais cognitif — état et prochaines étapes
 
+**Date de mise à jour :** 22 novembre 2026
+**Statut :** audit global du harnais cognitif en cours; aucune conclusion globale de qualité n’est établie. La Phase 0 a identifié le veto du réviseur comme cause principale des refus et de la latence. La Phase 1 a déplacé cette revue après livraison et l’a rendue consultative pour les réponses ordinaires, sans supprimer les modules cognitifs ni les contrôles de sécurité. Le rejeu live final a terminé 23/23 tours, avec 0 réponse remplacée par le réviseur et 28 appels provider; sur les 19 cas comparables, la médiane est passée de 38,48 s à 11,78 s. Le streaming progressif reste à corriger et l’audit général des modules continue.
+
+Les rapports agrégés sont dans [CONVERSATION_COGNITIVE_REGRESSION_PHASE0_2026-11-22.md](CONVERSATION_COGNITIVE_REGRESSION_PHASE0_2026-11-22.md) et [CONVERSATION_COGNITIVE_REGRESSION_PHASE1_2026-11-22.md](CONVERSATION_COGNITIVE_REGRESSION_PHASE1_2026-11-22.md). La Phase 1 est un jalon ciblé, pas la clôture de l’audit global; la cible de moins de 2 s au premier token n’est pas atteinte.
+
 **Date de mise à jour :** 18 novembre 2026
 **Statut :** audit du harnais cognitif en cours; aucune conclusion globale de qualité n’est établie. Les preuves live du 17 novembre restent valides pour le code chargé à cette date (`6b05c99`), mais le PC a depuis redémarré et le processus Lumina courant n’a pas été vérifié via son API. Le commit local et `origin/main` étaient tous deux `a0d02ba` au début de cette tranche. Le dépôt contient aussi des changements Body/UI préexistants hors lot, non touchés ici.
 

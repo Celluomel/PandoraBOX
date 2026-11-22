@@ -39,17 +39,11 @@ from managers.security_manager import security, RateLimitError, SecurityViolatio
 
 from core.state import state
 from core.connection import connection_monitor
-from core.agent_controller import AgentController
-from core.agent_state import AgentState, VisionOutput as _VisionOutput
-
 from utils.user_switcher_ui import build_user_chip, refresh_chip
 from utils.organism_ui import build_organism, set_core_state, update_user_hue, set_camera_feed
 from utils.enhanced_css import ENHANCED_GLOBAL_CSS
 
 from pages.shared import GLOBAL_CSS, _safe_ui, _drain_ui_queue, _build_proactive_prompt
-
-_agent_state = AgentState()
-controller = AgentController(state, agent=_agent_state)
 
 logger = logging.getLogger(__name__)
 

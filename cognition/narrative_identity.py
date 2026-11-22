@@ -44,6 +44,8 @@ class LifeChapter:
     description: str
     emotion:     str = "neutral"
     significance: float = 0.5      # 0.0–1.0
+    # User/externally-derived experiences belong to their source workflow and
+    # must not become global autobiographical prompt context.
     scope: str = "interaction_context"
 
     def to_dict(self) -> Dict:
@@ -502,6 +504,10 @@ class NarrativeIdentity:
             return
         try:
             data = json.loads(self._path.read_text(encoding="utf-8"))
+            legacy_scope_missing = any(
+                isinstance(chapter, dict) and "scope" not in chapter
+                for chapter in data.get("life_story", [])
+            )
             self._birth_time = float(data.get("birth_time", self._birth_time))
             self.core_values = data.get("core_values", self.core_values)
             self.life_story  = [
@@ -531,6 +537,12 @@ class NarrativeIdentity:
                 )
             ]
             removed_legacy_chats = len(self.life_story) != original_count
+            # Pre-scope narrative arcs have no provenance. Clear them when
+            # migrating old chapters so private conversation context cannot
+            # survive in the persisted global arc.
+            if removed_legacy_chats or legacy_scope_missing:
+                self._current_arc = ""
+                self._last_arc_topic = ""
             legacy_profile_milestones = {
                 "world_model_50_topics", "world_model_100_topics",
                 "world_model_250_topics", "deep_relationship",
@@ -541,10 +553,7 @@ class NarrativeIdentity:
                 if milestone.get("name") not in legacy_profile_milestones
             ]
             removed_profile_milestones = len(self.milestones) != original_milestone_count
-            if removed_legacy_chats or removed_profile_milestones:
-                if removed_legacy_chats:
-                    self._current_arc = ""
-                    self._last_arc_topic = ""
+            if removed_legacy_chats or removed_profile_milestones or legacy_scope_missing:
                 self._narrative_stale = True
                 self._save()
                 logger.warning(

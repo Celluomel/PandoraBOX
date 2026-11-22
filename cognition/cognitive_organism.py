@@ -1617,7 +1617,6 @@ class CognitiveOrganism:
             self.narrative_identity.check_auto_milestones(ic)
         except Exception:
             pass
-
         # ── WorldModel: update the human profile, never a peer's profile ──
         try:
             from cognition.profile_flow import update_behavioral_user_profile

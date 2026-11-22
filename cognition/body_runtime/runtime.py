@@ -341,6 +341,21 @@ class BodyRuntime:
         if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
             logging.getLogger(__name__).error("Invalid Body URL; use an HTTP(S) URL without embedded credentials")
             return None
+        try:
+            configured_port = int(self.config_value("BODY_PORT", 8766) or 8766)
+            explicit_port = parsed.port
+        except (TypeError, ValueError):
+            logging.getLogger(__name__).error("Invalid Body URL port or BODY_PORT setting")
+            return None
+        if explicit_port is None:
+            if not 1 <= configured_port <= 65535:
+                logging.getLogger(__name__).error("BODY_PORT must be between 1 and 65535")
+                return None
+            # BODY_URL often supplies only scheme + host (e.g. https://127.0.0.1)
+            # while BODY_PORT carries the actual standalone-host port. Honor that
+            # setting instead of silently probing HTTPS's default port 443.
+            parsed = parsed._replace(netloc=f"{parsed.netloc}:{configured_port}")
+            base = parsed.geturl().rstrip("/")
         if parsed.scheme == "http" and parsed.hostname.lower() not in {"127.0.0.1", "localhost", "::1"}:
             logging.getLogger(__name__).error("Remote Body connections require HTTPS; refusing cleartext LAN traffic")
             return None
@@ -837,30 +852,11 @@ class BodyRuntime:
                 )
         else:
             lines.append("- No current Body sensor observation is available to this Brain turn.")
-        try:
-            capabilities = self._capability_learner.snapshot().get("capabilities", {})
-            if capabilities:
-                lines.append("BODY CAPABILITY EVIDENCE (persisted, not imagination):")
-                for name, record in sorted(capabilities.items()):
-                    lines.append(
-                        f"- {name}: state={record.get('state', 'hypothesis')}, "
-                        f"confidence={float(record.get('confidence', 0.0)):.2f}, "
-                        f"observations={record.get('observations', 0)}, "
-                        f"successes={record.get('successes', 0)}, failures={record.get('failures', 0)}"
-                    )
-            else:
-                lines.append("- No learned Body capability evidence is available yet.")
-            skills = self._capability_learner.verified_skills()
-            if skills:
-                lines.append("BODY SKILLS (verified and reusable under recorded conditions):")
-                for skill_id, skill in sorted(skills.items()):
-                    lines.append(
-                        f"- {skill_id}: confidence={float(skill.get('confidence', 0.0)):.2f}, "
-                        f"generalization={float(skill.get('generalization', 0.0)):.2f}, "
-                        f"successes={skill.get('successes', 0)}, failures={skill.get('failures', 0)}"
-                    )
-        except Exception:
-            lines.append("- Body capability ledger is unavailable for this turn.")
+        # Do not inject the persistent capability learner's legacy records into
+        # general perception context. Older entries lack source/simulation
+        # provenance and can include scene affordances; physical capability
+        # claims instead use the current timestamped inventory or verified
+        # command outcomes in this turn.
         # The Body's learned world knowledge (anchors + task state).  Only
         # This is the single channel through which the Body's physical
         # knowledge informs the Brain. Accessing ``worldmodel`` creates only

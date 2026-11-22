@@ -651,6 +651,30 @@ def test_proposal_admission_receipt_reports_actual_proposal_result():
     )
 
 
+def test_proposal_disposition_receipt_requires_every_source_thought_to_persist():
+    proposal = {"origin_thought": "thought-1", "supporting_thought_ids": ["thought-1", "thought-2"]}
+
+    result = InternalThoughtLoop._persist_proposal_disposition(
+        proposal, "committed", lambda *_args, **_kwargs: 1,
+        cycle=7, reason="goal_readback_verified",
+    )
+
+    assert result == {
+        "status": "partial", "updated_sources": 1, "expected_sources": 2,
+        "reason_code": "source_disposition_not_durable",
+    }
+
+
+def test_proposal_disposition_receipt_records_missing_recorder_as_failure():
+    result = InternalThoughtLoop._persist_proposal_disposition(
+        {"origin_thought": "thought-1"}, "satisfied", None,
+        cycle=7, reason="existing_goal_verified",
+    )
+
+    assert result["status"] == "failed"
+    assert result["reason_code"] == "disposition_recorder_unavailable"
+
+
 def test_post_arbitration_focus_and_existing_plan_reach_shared_workspace_state():
     organism = SimpleNamespace(workspace=GlobalWorkspace())
     planner = SimpleNamespace(status=lambda: {"plans": [{
