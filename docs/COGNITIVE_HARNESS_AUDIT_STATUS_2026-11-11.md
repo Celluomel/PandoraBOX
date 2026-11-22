@@ -13,6 +13,12 @@ La revue du chemin provider→UI a trouvé un défaut de transport : les adaptat
 
 **À confirmer en direct :** ce correctif n’est pas encore chargé dans Lumina et aucune mesure post-correctif de TTFT n’existe. Après le prochain démarrage, comparer le timestamp du premier fragment provider avec le premier événement `delta` HTTP sur plusieurs tours. Si le provider démarre vite mais que l’UI reste lente, poursuivre l’audit dans le pont Persona/API; si le premier fragment provider reste lent, mesurer le préremplissage et réduire le prompt ou le travail synchrone avant génération. Ne déclarer le streaming progressif clos qu’après un rejeu live montrant des événements `delta` avant la fin de génération.
 
+### 22 novembre — régression du raisonnement pratique en français
+
+La question « dois'je prendre ma voiture » n’était pas reconnue comme décision pratique : `is_practical_decision` acceptait `dois-je` et `dois je`, mais pas l’apostrophe typographique/ASCII. Le contrat goal-means n’était donc pas injecté, et le modèle a privilégié la commodité de marcher sans préserver le but principal — amener la voiture au lavage. Le gate reconnaît maintenant ces variantes orthographiques générales; aucun cas métier ni réponse fixe n’a été ajouté.
+
+**Vérification hors ligne :** le message exact est ajouté comme régression; suite `test_goal_means_reasoning.py` : **18 tests passés**, compilation et `git diff --check` réussis. **À confirmer en direct après rechargement :** la décision doit recommander de conduire, parce que la voiture est l’objet à laver. Le test hors ligne prouve l’injection du contrat, pas encore la réponse du modèle.
+
 **Date de mise à jour :** 18 novembre 2026
 **Statut :** audit du harnais cognitif en cours; aucune conclusion globale de qualité n’est établie. Les preuves live du 17 novembre restent valides pour le code chargé à cette date (`6b05c99`), mais le PC a depuis redémarré et le processus Lumina courant n’a pas été vérifié via son API. Le commit local et `origin/main` étaient tous deux `a0d02ba` au début de cette tranche. Le dépôt contient aussi des changements Body/UI préexistants hors lot, non touchés ici.
 

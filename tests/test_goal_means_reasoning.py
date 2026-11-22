@@ -33,6 +33,14 @@ class GoalMeansReasoningTests(unittest.TestCase):
             "Comment puis-je terminer la tâche si la ressource reste ailleurs ?"
         ))
 
+    def test_french_apostrophe_typing_variant_still_gets_goal_means_contract(self):
+        question = (
+            "je dois aller laver ma voiture et le lavage auto se trouve a 150 "
+            "metres dois'je prendre ma voiture"
+        )
+        self.assertTrue(is_practical_decision(question))
+        self.assertIn("GOAL-MEANS COHERENCE CHECK", goal_means_contract(question))
+
     def test_does_not_force_logistical_reasoning_into_casual_chat(self):
         self.assertFalse(is_practical_decision("J'aime marcher quand il fait beau."))
         self.assertEqual(goal_means_contract("Parlons de musique."), "")

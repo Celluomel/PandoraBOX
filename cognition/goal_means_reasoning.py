@@ -19,8 +19,12 @@ _DECISION_PATTERNS = (
     r"\bhow\s+(?:can|could|should)\s+(?:i|we)\b",
     r"\bdo\s+i\b.{0,100}\bor\b",
     r"\bwhich\s+(?:option|way|route|method|one)\b",
-    r"\b(?:dois|devrais)[- ]?je\b",
-    r"\bcomment\s+(?:puis|pourrais|devrais)[- ]?je\b",
+    # Accept typographic apostrophes as well as hyphens/spaces: users often
+    # type forms such as "dois'je" even though standard French uses "dois-je".
+    # This is orthographic normalization for the general modal+pronoun form,
+    # not a domain or scenario lookup.
+    r"\b(?:dois|devrais)[\s'’\-]?je\b",
+    r"\bcomment\s+(?:puis|pourrais|devrais)[\s'’\-]?je\b",
     r"\best[- ]?ce\s+que\b",
     r"\bquelle?\s+(?:option|façon|manière|méthode)\b",
 )
