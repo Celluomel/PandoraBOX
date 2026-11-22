@@ -54,6 +54,30 @@ def test_internal_state_classifier_is_directed_to_use_runtime_evidence():
     assert kwargs["max_tokens"] == 5
 
 
+def test_architecture_topic_can_still_request_new_external_papers():
+    calls = []
+
+    def classifier(prompt, system, **kwargs):
+        calls.append((prompt, system, kwargs))
+        return "YES"
+
+    bridge = _bridge(classifier)
+    query = (
+        "Quels articles arXiv publiés cette semaine présentent une architecture "
+        "de harnais cognitif synthétique ?"
+    )
+    receipts = [{
+        "completed_at": "2026-11-22T19:00:00Z",
+        "query": "Earlier unrelated search",
+        "sources": [],
+        "trace": {"providers_attempted": ["rss"], "feeds_attempted": []},
+    }]
+
+    assert bridge._llm_should_search(query, activity_receipts=receipts) is True
+    assert len(calls) == 1
+    assert "For requests for recent subject-matter facts or new papers, reply YES." in calls[0][1]
+
+
 def test_classifier_failure_does_not_treat_generic_body_question_as_web_search():
     def unavailable(*args, **kwargs):
         raise RuntimeError("classifier unavailable")

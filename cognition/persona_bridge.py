@@ -2561,6 +2561,15 @@ class PersonaBridge:
                 (is_architecture_query(effective_input) or _cognitive_trace_query)
                 and not _explicit_memory_recall
             )
+            _force_semantic_search_judgment = bool(
+                _architecture_query
+                and not (
+                    _cognitive_trace_query
+                    or _runtime_execution_query
+                    or _cognitive_audit_status_query
+                    or _explicit_memory_recall
+                )
+            )
             _internal_cognitive_query = (
                 is_internal_cognitive_query(effective_input)
                 or _explicit_memory_recall
@@ -2586,6 +2595,7 @@ class PersonaBridge:
             _closed_world_cognitive_report_query = False
             _factual_plan_query = False
             _internal_cognitive_query = False
+            _force_semantic_search_judgment = False
             logger.debug("Architecture query detection unavailable: %s", _architecture_query_error)
             self._record_turn_stage(
                 "turn_evidence_routing", "failed",
@@ -2773,10 +2783,13 @@ class PersonaBridge:
             voice_mode
             or bool(peer_name)
             or _explicit_memory_recall
-            # Architecture/self-audit answers are closed-world: they must be
-            # grounded in this process's own trace, not supplemented by web
-            # snippets that cannot prove what Lumina executed.
-            or _internal_cognitive_query
+            # Explicit self-reports and audit questions are closed-world.
+            # A broad architecture topic can also be an external research
+            # subject; let the semantic search judge resolve that ambiguity.
+            or _cognitive_trace_query
+            or _runtime_execution_query
+            or _cognitive_audit_status_query
+            or (_internal_cognitive_query and not _architecture_query)
             or _affect_self_report_query
             or _quantitative_analysis is not None
             or (
@@ -2794,6 +2807,7 @@ class PersonaBridge:
             _audit_turn_id,
             _are_turn_status == "completed",
             _structured_affect_status,
+            _force_semantic_search_judgment,
         )
         _deterministic_affect_report = False
         _affect_direct_response = ""
@@ -4455,6 +4469,7 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
         audit_turn_id: str = "",
         include_are_context: bool = True,
         debug_introspection: bool = False,
+        force_semantic_search_judgment: bool = False,
     ) -> tuple[str, dict, dict, float | None, dict | None]:
         """
         Run PandoraBOX's pre-LLM context pipeline and return:
@@ -5763,7 +5778,10 @@ Memory honesty — two distinct cases:
                     # "Always" still avoids unrelated searches on a
                     # conversational continuation.
                     _is_resume = self._is_conversation_resume(user_input)
-                    _search_judged = bool(_is_resume or _prior_research_receipts)
+                    _search_judged = bool(
+                        _is_resume or _prior_research_receipts
+                        or force_semantic_search_judgment
+                    )
                     _do_search = (
                         self._llm_should_search(
                             user_input, activity_receipts=_prior_research_receipts,
@@ -5771,7 +5789,7 @@ Memory honesty — two distinct cases:
                         if _prior_research_receipts
                         else (
                             self._llm_should_search(user_input)
-                            if _is_resume else True
+                            if _is_resume or force_semantic_search_judgment else True
                         )
                     )
                 else:  # auto

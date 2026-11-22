@@ -753,6 +753,33 @@ class SelfDescriptionPromptTests(unittest.TestCase):
             isinstance(node, ast.Name) and node.id == "_internal_cognitive_query"
             for node in ast.walk(search_policy)
         ), "internal cognitive questions must use closed-world evidence")
+        self.assertTrue(any(
+            isinstance(node, ast.UnaryOp)
+            and isinstance(node.op, ast.Not)
+            and isinstance(node.operand, ast.Name)
+            and node.operand.id == "_architecture_query"
+            for node in ast.walk(search_policy)
+        ), "a general architecture topic must be resolved semantically before search is suppressed")
+        for route in (
+            "_cognitive_trace_query", "_runtime_execution_query",
+            "_cognitive_audit_status_query",
+        ):
+            self.assertTrue(any(
+                isinstance(node, ast.Name) and node.id == route
+                for node in ast.walk(search_policy)
+            ), f"{route} must retain its closed-world evidence route")
+
+        prompt_call = next(
+            node for node in ast.walk(function)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "to_thread"
+            and node.args
+            and isinstance(node.args[0], ast.Attribute)
+            and node.args[0].attr == "_build_prompt_and_cache"
+        )
+        self.assertIsInstance(prompt_call.args[-1], ast.Name)
+        self.assertEqual(prompt_call.args[-1].id, "_force_semantic_search_judgment")
 
     def test_turn_trace_preserves_aggregated_tick_manifest_counts(self):
         from cognition.persona_bridge import PersonaBridge
