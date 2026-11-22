@@ -2789,6 +2789,7 @@ class PersonaBridge:
             or _cognitive_trace_query
             or _runtime_execution_query
             or _cognitive_audit_status_query
+            or _factual_plan_query
             or (_internal_cognitive_query and not _architecture_query)
             or _affect_self_report_query
             or _quantitative_analysis is not None
@@ -5766,9 +5767,6 @@ Memory honesty — two distinct cases:
                     # external research for this answer.
                     _search_skip_status = "skipped_explicit_user_opt_out"
                     logger.info("Web search suppressed by explicit user instruction.")
-                elif "[Cognitive telemetry - factual self-report]" in system_prompt:
-                    _search_skip_status = "skipped_factual_self_report"
-                    logger.debug("Web search suppressed for factual cognitive self-report.")
                 elif not self._research or _ws_mode == 'off':
                     _search_skip_status = "disabled"
                     # Closed-world mode must never call the LLM search

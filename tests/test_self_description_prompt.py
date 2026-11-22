@@ -762,7 +762,7 @@ class SelfDescriptionPromptTests(unittest.TestCase):
         ), "a general architecture topic must be resolved semantically before search is suppressed")
         for route in (
             "_cognitive_trace_query", "_runtime_execution_query",
-            "_cognitive_audit_status_query",
+            "_cognitive_audit_status_query", "_factual_plan_query",
         ):
             self.assertTrue(any(
                 isinstance(node, ast.Name) and node.id == route
@@ -780,6 +780,25 @@ class SelfDescriptionPromptTests(unittest.TestCase):
         )
         self.assertIsInstance(prompt_call.args[-1], ast.Name)
         self.assertEqual(prompt_call.args[-1].id, "_force_semantic_search_judgment")
+
+        prompt_builder = next(
+            node for node in bridge_class.body
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "_build_prompt_and_cache"
+        )
+        self.assertFalse(any(
+            isinstance(node, ast.If)
+            and any(
+                isinstance(child, ast.Name) and child.id == "system_prompt"
+                for child in ast.walk(node.test)
+            )
+            and any(
+                isinstance(child, ast.Constant)
+                and child.value == "[Cognitive telemetry - factual self-report]"
+                for child in ast.walk(node.test)
+            )
+            for node in ast.walk(prompt_builder)
+        ), "context injected into the prompt must not override the current turn's search intent")
 
     def test_turn_trace_preserves_aggregated_tick_manifest_counts(self):
         from cognition.persona_bridge import PersonaBridge
