@@ -27,6 +27,34 @@ class _CallbackTask:
 
 
 class BrainWorkflowStatusTests(unittest.TestCase):
+    def test_search_activity_question_uses_receipt_instead_of_searching_web_again(self):
+        bridge = PersonaBridge.__new__(PersonaBridge)
+        captured = {}
+
+        def classifier(prompt, system, **kwargs):
+            captured["prompt"] = prompt
+            captured["system"] = system
+            return "NO"
+
+        bridge._external_llm_fn = classifier
+        should_search = bridge._llm_should_search(
+            "quels sont les dates de tes recherches arXiv",
+            activity_receipts=[{
+                "completed_at": "2026-11-22T10:00:00+00:00",
+                "query": "recherches récentes sur Angelman",
+                "trace": {
+                    "providers_attempted": ["rss", "stealth"],
+                    "feeds_attempted": [{"name": "arXiv-Biology"}],
+                },
+                "sources": [],
+            }],
+        )
+
+        self.assertFalse(should_search)
+        self.assertIn("2026-11-22T10:00:00+00:00", captured["prompt"])
+        self.assertIn("arXiv-Biology", captured["prompt"])
+        self.assertIn("Do not search the web to discover", captured["system"])
+
     def _state(self):
         state = AppState.__new__(AppState)
         loop = SimpleNamespace(
@@ -184,7 +212,7 @@ class BrainWorkflowStatusTests(unittest.TestCase):
                     f"{relative_path}:{function_name} skips deferred post-turn cognition",
                 )
 
-    def test_deferred_post_turn_stages_are_scheduled_and_share_the_completed_turn(self):
+    def test_deferred_post_turn_stages_skip_redundant_goal_means_provider_call(self):
         persona = SimpleNamespace(
             get_last_turn_trace=Mock(return_value={
                 "turn_id": "turn-123", "cognitive_scope_id": "scope-123",
@@ -217,18 +245,17 @@ class BrainWorkflowStatusTests(unittest.TestCase):
         persona.run_deferred_analysis.assert_called_once_with(
             "practical user request", "completed answer", "fred", 7,
         )
-        persona.run_deferred_goal_means_analysis.assert_called_once_with(
-            "practical user request", "fred", "fred", "scope-123",
-        )
+        persona.run_deferred_goal_means_analysis.assert_not_called()
         persona.record_deferred_turn_stage.assert_any_call(
             "turn-123", "continuity_analysis_post_response", "scheduled", "",
         )
         persona.record_deferred_turn_stage.assert_any_call(
             "turn-123", "continuity_analysis_post_response", "completed", "",
         )
-        persona.record_deferred_turn_stage.assert_any_call(
-            "turn-123", "goal_means_post_response", "not_applicable", "",
-        )
+        self.assertFalse(any(
+            call.args[1] == "goal_means_post_response"
+            for call in persona.record_deferred_turn_stage.call_args_list
+        ))
 
     def test_deferred_continuity_error_type_is_recorded_without_message(self):
         persona = SimpleNamespace(

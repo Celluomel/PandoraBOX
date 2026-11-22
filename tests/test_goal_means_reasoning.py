@@ -28,9 +28,9 @@ class GoalMeansReasoningTests(unittest.TestCase):
             "metres dois'je prendre ma voiture"
         )
         contract = goal_means_contract(question)
-        self.assertIn("GOAL-MEANS COHERENCE CHECK", contract)
-        self.assertIn("meaning and context, not keyword or phrase matching", contract)
-        self.assertIn("GOAL-MEANS COHERENCE CHECK", goal_means_contract("Parlons de musique."))
+        self.assertIn("advice, choose an action, or plan", contract)
+        self.assertIn("factual questions, research requests", contract)
+        self.assertIn("advice, choose an action, or plan", goal_means_contract("Parlons de musique."))
 
     def test_deferred_selector_uses_semantic_applicability_field(self):
         self.assertIn("do not use keyword lists, phrase matching", analysis_prompt("J'ai faim."))
@@ -40,11 +40,10 @@ class GoalMeansReasoningTests(unittest.TestCase):
 
     def test_contract_orders_goal_and_prerequisites_before_preferences(self):
         contract = goal_means_contract("Should I take route A or route B?")
-        self.assertLess(contract.index("primary intended outcome"), contract.index("secondary"))
-        self.assertIn("indispensable prerequisites", contract)
-        self.assertIn("Eliminate any option", contract)
-        self.assertIn("Do not silently change the goal", contract)
-        self.assertIn("physical capability", contract)
+        self.assertIn("preserve the user's actual outcome", contract)
+        self.assertIn("must be present", contract)
+        self.assertIn("Reject an option", contract)
+        self.assertIn("Treat unknown conditions as unknown", contract)
         self.assertIn(
             'decision-maker is named "Fred"',
             analysis_prompt("Dois-je y aller ?", agent_name="Fred"),
@@ -214,6 +213,7 @@ class GoalMeansReasoningTests(unittest.TestCase):
         )
         self.assertIn("goal_means_contract(effective_input)", source)
         self.assertNotIn("is_practical_decision", source)
+        self.assertNotIn("Lead with the feasible recommendation", source)
         self.assertIn("guarded_response", source)
         self.assertIn("_validate_before_display", source)
         self.assertLess(source.index("goal_means_contract(effective_input)"), source.index("def _stream():"))
@@ -229,6 +229,19 @@ class GoalMeansReasoningTests(unittest.TestCase):
         self.assertIn("analysis_prompt(user_text", deferred_source)
         self.assertIn("generate_bare_result", deferred_source)
         self.assertIn("parse_analysis", deferred_source)
+
+    def test_goal_means_does_not_schedule_a_second_provider_call_after_delivery(self):
+        source = (ROOT / "cognition/persona_bridge.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        stream = next(
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.AsyncFunctionDef)
+            and node.name == "_stream_with_full_lifecycle"
+        )
+        stream_source = ast.get_source_segment(source, stream)
+        stage = stream_source[stream_source.index('"goal_means_post_response"'):]
+        self.assertIn("covered_by_foreground_protocol", stage)
+        self.assertNotIn("run_deferred_goal_means_analysis", stage)
 
     def test_blocking_fallback_keeps_quantitative_guard(self):
         source = (ROOT / "cognition/persona_bridge.py").read_text(encoding="utf-8")

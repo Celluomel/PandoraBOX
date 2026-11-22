@@ -1,4 +1,5 @@
 from unittest.mock import patch
+from types import SimpleNamespace
 
 from cognition.research_mcp import search_providers
 
@@ -83,3 +84,32 @@ def test_auto_stealth_fallback_returns_only_relevant_candidates():
 
     assert [item["url"] for item in ranked] == [relevant["url"]]
     assert ranked[0]["relevance"] > 0
+
+
+def test_search_trace_records_an_arxiv_feed_query_even_without_a_matching_result():
+    feed = SimpleNamespace(
+        feed_id="arxiv-biology", name="arXiv-Biology", tags=["science", "health"],
+        url="https://example.test/arxiv.xml",
+    )
+    registry = SimpleNamespace(
+        active_feeds=lambda tag_hint=None: [feed],
+        mark_used=lambda feed_id: None,
+    )
+    response = SimpleNamespace(
+        status_code=200,
+        content=b"<rss><channel><item><title>Unrelated biology paper</title>"
+                b"<link>https://example.test/paper</link><description>Cell study</description>"
+                b"</item></channel></rss>",
+    )
+    cfg = search_providers.SearchConfig(backend="rss", use_rss=True)
+
+    with patch("cognition.research_mcp.rss_registry.get_rss_registry", return_value=registry), \
+         patch("requests.get", return_value=response):
+        results = search_providers.get_results("Angelman syndrome latest research", cfg=cfg, num=3)
+
+    trace = search_providers.get_last_search_trace()
+    assert results == []
+    assert trace["providers_attempted"] == ["rss"]
+    assert trace["feeds_attempted"][0]["name"] == "arXiv-Biology"
+    assert trace["feeds_attempted"][0]["status"] == "parsed"
+    assert trace["started_at"] <= trace["completed_at"]

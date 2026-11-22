@@ -33,6 +33,9 @@ CONFIG (set via /llm settings page or config.json):
 from __future__ import annotations
 
 import asyncio
+import contextvars
+import copy
+import datetime as _dt
 import logging
 import math
 import random
@@ -42,6 +45,15 @@ from typing import List, Optional
 from urllib.parse import urlparse, quote_plus
 
 logger = logging.getLogger("research_mcp.search_providers")
+_SEARCH_TRACE: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
+    "pandorabox_search_trace", default=None,
+)
+
+
+def get_last_search_trace() -> dict:
+    """Return this execution context's trace for the most recent search."""
+    trace = _SEARCH_TRACE.get()
+    return copy.deepcopy(trace) if isinstance(trace, dict) else {}
 
 # ── Credibility scoring ───────────────────────────────────────────────────────
 _HIGH = {
@@ -320,10 +332,21 @@ def _rss(query: str, num: int, tag_hint: Optional[str] = None) -> List[dict]:
         terms = set(re.findall(r"[^\W_]{3,}", query.casefold(), flags=re.UNICODE))
         candidates = []
         for feed in feeds:
+            trace = _SEARCH_TRACE.get()
+            feed_attempt = {
+                "name": feed.name,
+                "tags": list(feed.tags),
+                "url": feed.url,
+                "status": "request_started",
+            }
+            if isinstance(trace, dict):
+                trace.setdefault("feeds_attempted", []).append(feed_attempt)
             try:
                 r = _req.get(feed.url, timeout=5, headers={"User-Agent": "Mozilla/5.0"})
                 if r.status_code != 200:
+                    feed_attempt["status"] = f"http_{r.status_code}"
                     continue
+                feed_attempt["status"] = "http_ok"
                 root  = ET.fromstring(r.content)
                 for item in root.findall(".//item")[:25]:
                     title = (item.findtext("title") or "").strip()
@@ -336,7 +359,9 @@ def _rss(query: str, num: int, tag_hint: Optional[str] = None) -> List[dict]:
                     ))
                     candidates.append((tokens, _r(title, link, desc[:300], src=f"rss_{feed.name}")))
                 registry.mark_used(feed.feed_id)
-            except Exception:
+                feed_attempt["status"] = "parsed"
+            except Exception as exc:
+                feed_attempt["status"] = f"failed:{type(exc).__name__}"
                 continue
         if not candidates:
             return []
@@ -604,6 +629,16 @@ def get_results(query: str, cfg: Optional[SearchConfig] = None, num: int = 5) ->
     if cfg is None:
         cfg = SearchConfig()
     num = cfg.num_results or num
+    trace = {
+        "query": str(query)[:240],
+        "started_at": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
+        "providers_attempted": [],
+        "feeds_attempted": [],
+    }
+    _SEARCH_TRACE.set(trace)
+
+    def _attempt(provider: str) -> None:
+        trace["providers_attempted"].append(provider)
 
     all_results: List[dict] = []
     seen:        set        = set()
@@ -618,35 +653,44 @@ def get_results(query: str, cfg: Optional[SearchConfig] = None, num: int = 5) ->
 
     # ── Explicit single backend ───────────────────────────────────────────────
     if b == "claude":
+        _attempt("claude")
         _add(_claude(query, num, cfg.anthropic_key))
     elif b == "brave":
+        _attempt("brave")
         _add(_brave(query, num, cfg.brave_key))
     elif b == "rss":
+        _attempt("rss")
         _add(_rss(query, num))
     elif b == "stealth":
+        _attempt("stealth")
         _add(_stealth(query, num))
 
     # ── AUTO: all tiers in priority order ────────────────────────────────────
     else:
         # T1A Brave
         if cfg.brave_key and len(all_results) < num:
+            _attempt("brave")
             _add(_brave(query, num, cfg.brave_key))
 
         # T1B Claude
         if cfg.anthropic_key and len(all_results) < num:
+            _attempt("claude")
             _add(_claude(query, num, cfg.anthropic_key))
 
         # T1C SerpAPI
         if cfg.serpapi_key and len(all_results) < num:
+            _attempt("serpapi")
             _add(_serpapi(query, num, cfg.serpapi_key))
 
         # T2 RSS (great for news, always works)
         if cfg.use_rss and len(all_results) < num:
+            _attempt("rss")
             _add(_rss(query, max(num - len(all_results), 3)))
 
         # T3 Stealth (last resort)
         if cfg.use_stealth and len(all_results) < 2:
             logger.info("All API/RSS tiers exhausted — falling back to stealth browser")
+            _attempt("stealth")
             _add(_stealth(query, num))
 
     final = _rank_search_results(query, all_results, num)
@@ -656,5 +700,8 @@ def get_results(query: str, cfg: Optional[SearchConfig] = None, num: int = 5) ->
             len(all_results), query,
         )
     srcs  = {r["source"] for r in final}
+    trace["result_sources"] = sorted(srcs)
+    trace["result_count"] = len(final)
+    trace["completed_at"] = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
     logger.info(f"search_providers: {len(final)} results for {query!r} via {srcs}")
     return final

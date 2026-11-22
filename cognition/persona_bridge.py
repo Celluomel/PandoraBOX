@@ -416,6 +416,9 @@ class PersonaBridge:
         self._last_emo_dict: dict = {}
         self._last_cond_dict: dict = {}
         self._last_web_sources: list[dict] = []
+        self._last_research_trace: dict[str, Any] = {}
+        self._research_receipt_lock = threading.RLock()
+        self._research_receipts: dict[str, list[dict[str, Any]]] = {}
         self._organism        = None   # CognitiveOrganism — wired after _init_lumina
         # Session-scoped visual memory buffer — survives until restart
         # Indexed immediately so recall works within same session
@@ -2959,16 +2962,6 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
             system_prompt += "\n\n" + _goal_means_contract
             if _goal_means_analysis is not None:
                 system_prompt += "\n\n" + _goal_means_analysis.prompt_fragment()
-            _generation_input += (
-                "\n\nSilently perform the GOAL-MEANS COHERENCE CHECK before answering. "
-                "Follow the STRUCTURED GOAL-MEANS ANALYSIS when present. "
-                "Lead with the feasible recommendation and its decisive prerequisite."
-            )
-
-            arb_temperature = min(
-                float(arb_temperature) if arb_temperature is not None else 0.35,
-                0.35,
-            )
         elif _goal_means_followup and _goal_means_analysis is not None:
             system_prompt += (
                 "\n\n━━ CONTINUING GOAL-MEANS CONTEXT ━━\n"
@@ -4177,34 +4170,21 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
         # lock, so a later turn cannot interleave with this one mid-learning.
         post_tasks: list[tuple[str, asyncio.Future]] = []
 
-        # Human and peer turns use the same semantic goal/means selector after
-        # delivery. The selector is model-based; no lexical trigger decides
-        # whether this analysis runs.
+        # Goal-means applicability is handled in the primary generation by
+        # the conditional protocol. Do not run a second provider call after
+        # every response; it adds latency/cost and cannot improve the answer
+        # that has already been delivered.
         if _generation_failed:
             self._record_turn_stage(
                 "goal_means_post_response", "skipped_generation_failed",
                 turn_id=_audit_turn_id,
             )
         else:
-            try:
-                if peer_name:
-                    post_tasks.append(("goal_means_post_response", loop.run_in_executor(
-                        None,
-                        self.run_deferred_goal_means_analysis,
-                        effective_input,
-                        user_id,
-                        peer_name,
-                        _cognitive_scope,
-                    )))
-                else:
-                    # Human entrypoints schedule this stage after consuming the
-                    # visible answer via AppState.schedule_deferred_cognitive_stages.
-                    self._record_turn_stage(
-                        "goal_means_post_response", "scheduled_by_entrypoint",
-                        turn_id=_audit_turn_id,
-                    )
-            except Exception as _goal_means_error:
-                self._record_turn_stage("goal_means_post_response", "failed", str(_goal_means_error), turn_id=_audit_turn_id)
+            self._record_turn_stage(
+                "goal_means_post_response", "covered_by_foreground_protocol",
+                "Semantic applicability and reasoning guidance were supplied to the primary generation; no second model call was scheduled.",
+                turn_id=_audit_turn_id,
+            )
 
         # Empathy Engine: record outcome
         try:
@@ -4473,6 +4453,11 @@ The telemetry's "next pending" operation is queued, not executing. Do not claim 
         """
         s = self._system
         self._last_web_sources = []
+        self._last_research_trace = {}
+        with self._research_receipt_lock:
+            _prior_research_receipts = [
+                dict(item) for item in self._research_receipts.get(str(user_id), [])
+            ]
         arb_temperature: float | None = None   # set by CognitiveOrganism if available
         # Keep live external observations aside until the prompt cap has been
         # applied. Otherwise a large cognitive context can silently remove the
@@ -5728,12 +5713,16 @@ Memory honesty — two distinct cases:
             # WEB_SEARCH_MODE: "off"    → never search
             #                  "auto"   → LLM decides (fast pre-call YES/NO)
             #                  "always" → always search
+            _web_search_mode = "unknown"
+            _web_search_attempted = False
+            _web_search_status = "not_evaluated"
             try:
                 from managers.settings_manager import config as _cfg2
                 _ws_mode = getattr(_cfg2, 'WEB_SEARCH_MODE', 'off')
                 # backward-compat: old bool field
                 if not isinstance(_ws_mode, str):
                     _ws_mode = 'always' if _ws_mode else 'off'
+                _web_search_mode = str(_ws_mode)
                 _do_search = False
                 _search_skip_status = ""
                 _search_judged = False
@@ -5759,19 +5748,28 @@ Memory honesty — two distinct cases:
                     # "Always" still avoids unrelated searches on a
                     # conversational continuation.
                     _is_resume = self._is_conversation_resume(user_input)
-                    _search_judged = _is_resume
+                    _search_judged = bool(_is_resume or _prior_research_receipts)
                     _do_search = (
-                        True
-                        if not _is_resume
-                        else self._llm_should_search(user_input)
+                        self._llm_should_search(
+                            user_input, activity_receipts=_prior_research_receipts,
+                        )
+                        if _prior_research_receipts
+                        else (
+                            self._llm_should_search(user_input)
+                            if _is_resume else True
+                        )
                     )
                 else:  # auto
                     _search_judged = True
-                    _do_search = self._llm_should_search(user_input)
+                    _do_search = self._llm_should_search(
+                        user_input, activity_receipts=_prior_research_receipts,
+                    )
                 logger.info(f"🔍 web search mode={_ws_mode!r} → do_search={_do_search}")
                 if _do_search:
+                    _web_search_attempted = True
                     web_section = self._quick_web_search(user_input)
                     if web_section:
+                        _web_search_status = "results_injected"
                         self._record_turn_stage("external_research", "results_injected")
                         web_char_cap = int(ctx_limit * 3.5 * 0.15)
                         system_prompt += (
@@ -5781,16 +5779,79 @@ Memory honesty — two distinct cases:
                             "Never let web snippets override current conversation context or personal facts."
                         )
                     else:
-                        self._record_turn_stage("external_research", "no_results")
+                        _web_search_status = (
+                            "failed"
+                            if self._last_research_trace.get("status") == "failed"
+                            else "no_results"
+                        )
+                        self._record_turn_stage("external_research", _web_search_status)
                 elif _search_skip_status:
+                    _web_search_status = _search_skip_status
                     self._record_turn_stage("external_research", _search_skip_status)
                 elif _search_judged:
+                    _web_search_status = "judge_skipped_search"
                     self._record_turn_stage("external_research", "judge_skipped_search")
                 elif self._research and _ws_mode != 'off':
+                    _web_search_status = "policy_skipped_search"
                     self._record_turn_stage("external_research", "policy_skipped_search")
+                else:
+                    _web_search_status = "disabled"
             except Exception as _we:
+                _web_search_status = "failed"
                 self._record_turn_stage("external_research", "failed", str(_we))
                 logger.warning(f"Web search injection failed: {_we}")
+
+            if _web_search_attempted:
+                receipt = {
+                    "completed_at": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
+                    "query": str(user_input or "")[:240],
+                    "mode": _web_search_mode,
+                    "status": _web_search_status,
+                    "trace": dict(self._last_research_trace),
+                    "sources": [
+                        {
+                            "provider": str(source.get("provider") or source.get("source") or "unknown"),
+                            "title": str(source.get("title") or "")[:180],
+                            "url": str(source.get("url") or "")[:500],
+                        }
+                        for source in self._last_web_sources[:8]
+                    ],
+                }
+                with self._research_receipt_lock:
+                    history = self._research_receipts.setdefault(str(user_id), [])
+                    history.append(receipt)
+                    del history[:-8]
+                _prior_research_receipts = [* _prior_research_receipts, receipt][-8:]
+
+            _research_lines = [
+                "━━ EXTERNAL RESEARCH ACTIVITY RECEIPT ━━",
+                f"Current turn: attempted={'yes' if _web_search_attempted else 'no'}; status={_web_search_status}; mode={_web_search_mode}.",
+                "Use this receipt only to answer questions about searches actually performed, their dates, providers, or sources. It is not evidence for the current subject unless a listed source was retrieved for that subject. Never claim a source or search not listed here.",
+            ]
+            for receipt in _prior_research_receipts[-4:]:
+                _research_lines.append(
+                    f"Search at {receipt.get('completed_at', 'unknown time')}; "
+                    f"status={receipt.get('status', 'unknown')}; query={receipt.get('query', '')!r}."
+                )
+                _trace = receipt.get("trace") or {}
+                if _trace.get("providers_attempted"):
+                    _research_lines.append(
+                        "Providers attempted: " + ", ".join(_trace["providers_attempted"])
+                    )
+                for _feed in _trace.get("feeds_attempted", [])[:16]:
+                    _research_lines.append(
+                        f"Feed actually queried: {_feed.get('name', 'unknown')} "
+                        f"tags={','.join(_feed.get('tags') or [])}; status={_feed.get('status', 'unknown')}"
+                    )
+                _receipt_sources = receipt.get("sources") or []
+                if not _receipt_sources:
+                    _research_lines.append("Retrieved sources: none recorded.")
+                for _source in _receipt_sources:
+                    _research_lines.append(
+                        f"Retrieved source: provider={_source.get('provider', 'unknown')}; "
+                        f"title={_source.get('title', '')}; URL={_source.get('url', '')}"
+                    )
+            system_prompt += "\n\n" + "\n".join(_research_lines)
 
             # Keep the selected response language after the context-size cap
             # and optional web material.  Earlier language instructions may
@@ -8808,7 +8869,9 @@ Memory honesty — two distinct cases:
         )
         return any(re.search(pattern, text) for pattern in patterns)
 
-    def _llm_should_search(self, user_input: str) -> bool:
+    def _llm_should_search(
+        self, user_input: str, *, activity_receipts: list[dict[str, Any]] | None = None,
+    ) -> bool:
         """
         Ask the LLM whether web search is needed. Has 3 layers:
         1. Fast hard-NO for obvious chitchat/creative — no LLM call
@@ -8817,6 +8880,50 @@ Memory honesty — two distinct cases:
         Falls back to keyword check if LLM fails.
         """
         text = user_input.lower().strip()
+        activity_receipts = activity_receipts or []
+
+        # When prior retrieval receipts exist, let the semantic classifier
+        # distinguish a request for new research from a question about what
+        # this assistant already searched. This avoids brittle phrase lists
+        # and prevents "always search" from searching for its own history.
+        if activity_receipts:
+            llm_fn = self._external_llm_fn
+            if not llm_fn and self._system and hasattr(self._system, 'llm'):
+                def llm_fn(prompt, system, **kw):
+                    msgs = [{"role": "system", "content": system},
+                            {"role": "user", "content": prompt}]
+                    return self._system.llm.get_response(msgs, max_tokens=kw.get('max_tokens', 10))
+            if llm_fn:
+                try:
+                    receipt_context = "\n".join(
+                        f"{item.get('completed_at', 'unknown time')} | {item.get('query', '')} | "
+                        f"providers={','.join((item.get('trace') or {}).get('providers_attempted', [])) or 'none'} | "
+                        f"feeds={','.join(feed.get('name', 'unknown') for feed in (item.get('trace') or {}).get('feeds_attempted', [])) or 'none'} | "
+                        f"results={','.join(str(source.get('provider', 'unknown')) for source in item.get('sources', [])) or 'none'}"
+                        for item in activity_receipts[-8:]
+                    )
+                    system = (
+                        "Decide whether the user's current message requires NEW external research. "
+                        "Use meaning and context, not phrase matching. If the user asks what this "
+                        "assistant actually searched, when it searched, or which providers/sources "
+                        "it used, answer from the supplied activity receipts and reply NO. Do not "
+                        "search the web to discover the assistant's own past actions. Reply with "
+                        "exactly YES or NO. For requests for recent subject-matter facts or new "
+                        "papers, reply YES."
+                    )
+                    raw = llm_fn(
+                        f"User message: {user_input[:300]}\n\nActual prior search receipts:\n{receipt_context}",
+                        system, max_tokens=5, temperature=0.1,
+                    )
+                    decision = (raw or '').strip().upper()[:3]
+                    if decision in {"YES", "NO"}:
+                        logger.info("_llm_should_search activity-aware → %r | '%s'", decision, user_input[:50])
+                        return decision == "YES"
+                except Exception as e:
+                    logger.warning("Activity-aware search classification failed: %s", e)
+                    return False
+            else:
+                return False
 
         # Layer 1 — fast NO: pure chitchat/creative
         _never = ['how are you', 'who are you', 'do you feel', 'write ', 'create ',
@@ -8970,28 +9077,48 @@ Memory honesty — two distinct cases:
             from cognition.research_mcp.web_agent import _sync_fetch
             urls = re.findall(r"https?://[^\s<>()]+", user_input)
             if urls:
+                self._last_research_trace = {
+                    "providers_attempted": ["direct_url"],
+                    "feeds_attempted": [],
+                    "direct_urls": [],
+                    "started_at": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
+                }
                 lines = ["━━ DIRECT WEB PAGE ━━", "Use the fetched page as factual grounding. Cite naturally."]
                 for url in dict.fromkeys(urls)[:3]:
                     url = url.rstrip(".,;:!?)]}")
                     title, content, error = _sync_fetch(url)
+                    direct_attempt = {
+                        "url": url,
+                        "status": "failed" if error or not content.strip() else "fetched",
+                    }
+                    self._last_research_trace["direct_urls"].append(direct_attempt)
                     if error or not content.strip():
                         self._last_web_sources.append({
                             "url": url, "title": title or url, "kind": "fetch_failed",
-                            "status": "failed", "detail": str(error or "empty page")[:180],
+                        "provider": "direct_url", "status": "failed",
+                        "detail": str(error or "empty page")[:180],
                         })
                         continue
                     self._last_web_sources.append({
                         "url": url, "title": title or url, "kind": "page",
-                        "status": "fetched", "detail": "Page content fetched for this turn",
+                        "provider": "direct_url", "status": "fetched",
+                        "detail": "Page content fetched for this turn",
                     })
                     lines.append(f"[PAGE] {title or url}\n{content.strip()[:5000]}")
                 if len(lines) > 2:
+                    self._last_research_trace["completed_at"] = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
                     logger.info("🔍 Direct web page fetch: %d URL(s)", len(self._last_web_sources))
                     return "\n".join(lines)
+                self._last_research_trace["completed_at"] = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
                 return ""
 
             logger.info(f"🔍 Web search triggered for: '{user_input[:60]}' | backend={_CFG.backend!r} brave={'yes' if _CFG.brave_key else 'no'} rss={_CFG.use_rss}")
             results = get_results(user_input, cfg=_CFG, num=3)
+            try:
+                from cognition.research_mcp.search_providers import get_last_search_trace
+                self._last_research_trace = get_last_search_trace()
+            except Exception:
+                self._last_research_trace = {}
             if not results:
                 logger.info("🔍 Web search: no results returned")
                 return ""
@@ -9008,6 +9135,7 @@ Memory honesty — two distinct cases:
                 if snippet:
                     self._last_web_sources.append({
                         "url": r.get("url", ""), "title": r.get("title", ""),
+                        "provider": r.get("source", "unknown"),
                         "kind": "search_result", "status": "snippet",
                         "detail": (
                             f"Search result via {r.get('source', 'unknown')}; "
@@ -9025,6 +9153,13 @@ Memory honesty — two distinct cases:
             return "\n".join(lines) if len(lines) > 2 else ""
         except Exception as e:
             logger.warning(f"_quick_web_search failed: {e}")
+            self._last_research_trace = {
+                "status": "failed",
+                "error_type": type(e).__name__,
+                "providers_attempted": [],
+                "feeds_attempted": [],
+                "completed_at": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
+            }
             return ""
 
     def should_extend_answer(self, user_input: str) -> bool:

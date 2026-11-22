@@ -1,9 +1,4 @@
-"""Goal-means coherence with semantic applicability selection.
-
-No lexical rule selects turns. The response model receives the compact protocol
-on every turn, and the deferred structured pass selects applicability from
-meaning and context before analyzing feasibility.
-"""
+"""Compact goal-means guidance, selected by meaning within response generation."""
 from __future__ import annotations
 
 import json
@@ -14,24 +9,15 @@ from typing import List
 
 
 def goal_means_contract(text: str) -> str:
-    """Return the universal semantic goal-means protocol for response generation.
+    """Return concise, conditional guidance; semantic applicability is in-band.
 
-    Applicability is decided by the conversational model from intent and
-    context, never by a lexical trigger. The protocol is present on every turn
-    so phrasing, language, typos, and topic vocabulary cannot bypass it.
+    No keyword or phrase list chooses whether this guidance applies. The main
+    response model decides from intent and context in the same generation.
     """
-    return """━━ GOAL-MEANS COHERENCE CHECK ━━
-For every message, understand its conversational intent semantically. If it asks for advice, a choice, or a concrete course of action, reason in this order before answering; otherwise answer normally and do not force a recommendation:
-1. Identify the human's primary intended outcome. Preserve it unchanged.
-2. Treat distance, comfort, weather, speed, cost, and similar details as secondary unless they determine feasibility.
-3. Identify the agents, objects, resources, locations, and prior conditions that the primary action requires.
-4. Simulate each proposed option concretely: after choosing it, are all indispensable prerequisites present where and when the primary action must happen?
-   Track temporal order and initial locations. Do not place one agent in two incompatible locations at the same time or invent a helper or remote trigger.
-5. Check the real agent's physical capability, including reaction time, acceleration, anatomy, route constraints, environmental limits, and safety. A computable requirement can still be physically impossible.
-6. Eliminate any option that prevents the primary outcome, even if that option is attractive on a secondary criterion.
-7. Recommend a feasible option directly first. Discuss preferences or richer interpretation only after feasibility is established.
+    return """━━ CONDITIONAL GOAL–MEANS REASONING ━━
+Apply this only when the user's intent is to get advice, choose an action, or plan a concrete course of action. For factual questions, research requests, explanations, translations, and reports about system activity, answer that request directly; do not invent a recommendation, prerequisite, or action plan, and do not mention this protocol.
 
-Do not silently change the goal, invent unmentioned equipment or workarounds, or turn a straightforward logistical constraint into a metaphor. Interpret intent from meaning and context, not keyword or phrase matching. If the human corrects a missed prerequisite, revise the original model from that correction instead of defending the rejected option."""
+When it does apply, preserve the user's actual outcome. Check which people, objects, resources, capabilities, and locations must be present for each option to achieve it. Reject an option that makes the outcome impossible before comparing convenience, distance, comfort, speed, or cost. State a concise recommendation and its causal reason only when the user asked for one. Treat unknown conditions as unknown, and incorporate corrections to missed prerequisites."""
 
 
 @dataclass

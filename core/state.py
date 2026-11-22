@@ -495,9 +495,8 @@ class AppState:
         if persona is None or not assistant_text:
             return False
         deferred = getattr(persona, "run_deferred_analysis", None)
-        goal_means = getattr(persona, "run_deferred_goal_means_analysis", None)
         semantic_review = getattr(persona, "run_deferred_semantic_validation", None)
-        if not callable(deferred) and not callable(goal_means) and not (
+        if not callable(deferred) and not (
             semantic_validation and callable(semantic_review)
         ):
             return False
@@ -571,31 +570,12 @@ class AppState:
                     logger.exception("Deferred semantic review failed")
             elif semantic_validation:
                 record("semantic_answer_validation", "skipped_unavailable")
-            if callable(goal_means):
-                try:
-                    result = goal_means(user_text, user_id, user_id, cognitive_scope_id)
-                    result_status = (
-                        str(result.get("status") or "failed")
-                        if isinstance(result, dict) else "failed"
-                    )
-                    record("goal_means_post_response", result_status)
-                except Exception as exc:
-                    record(
-                        "goal_means_post_response", "failed",
-                        error_type=type(exc).__name__,
-                    )
-                    logger.exception("Deferred goal-means analysis failed")
-            else:
-                record("goal_means_post_response", "skipped_unavailable")
-
         record("continuity_analysis_post_response", "scheduled")
-        record("goal_means_post_response", "scheduled")
 
         try:
             task = asyncio.create_task(asyncio.to_thread(run_stages))
         except RuntimeError:
             record("continuity_analysis_post_response", "failed", "no_running_event_loop")
-            record("goal_means_post_response", "failed", "no_running_event_loop")
             logger.warning("Deferred cognitive stages were not scheduled: no running event loop")
             return False
         self._deferred_cognitive_tasks.add(task)
