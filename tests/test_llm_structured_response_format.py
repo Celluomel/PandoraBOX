@@ -54,6 +54,8 @@ def test_lmstudio_nonstream_request_transmits_response_schema():
 
 
 def test_lmstudio_stream_request_transmits_response_schema():
+    chunk_sizes = []
+
     class Response:
         status_code = 200
 
@@ -63,16 +65,20 @@ def test_lmstudio_stream_request_transmits_response_schema():
         def __exit__(self, *_args):
             return False
 
-        @staticmethod
-        def iter_lines():
-            return iter(())
+        def iter_lines(self, chunk_size=512):
+            chunk_sizes.append(chunk_size)
+            yield b'data: {"choices":[{"delta":{"content":"first"}}]}'
+            yield b'data: {"choices":[{"delta":{"content":" token"}}]}'
+            yield b'data: [DONE]'
 
     provider = LMStudioProvider(model="test", base_url="http://localhost:1234/v1")
     with patch("managers.llm_manager.requests.post", return_value=Response()) as post:
-        list(provider._generate_messages_stream(
+        result = list(provider._generate_messages_stream(
             [{"role": "user", "content": "Review"}], json_schema=SCHEMA,
         ))
 
+    assert result == ["first", " token"]
+    assert chunk_sizes == [1]
     payload = post.call_args.kwargs["json"]
     assert payload["response_format"] == {
         "type": "json_schema",

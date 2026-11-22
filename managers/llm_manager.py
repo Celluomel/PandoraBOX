@@ -204,7 +204,11 @@ class OllamaProvider(BaseLLMProvider):
                 if r.status_code != 200:
                     yield f"Error: Ollama status {r.status_code}"
                     return
-                for raw_line in r.iter_lines():
+                # requests.iter_lines defaults to 512-byte reads. Short SSE
+                # events from local model servers can then remain buffered
+                # until generation is nearly complete, defeating token
+                # streaming even though the provider flushes each event.
+                for raw_line in r.iter_lines(chunk_size=1):
                     if not raw_line:
                         continue
                     try:
@@ -428,7 +432,9 @@ class LMStudioProvider(BaseLLMProvider):
                 if r.status_code != 200:
                     yield f"Error: LM Studio status {r.status_code}"
                     return
-                for raw_line in r.iter_lines():
+                # Keep SSE deltas available as the server flushes them; the
+                # requests default (512 bytes) delays short local-model events.
+                for raw_line in r.iter_lines(chunk_size=1):
                     if not raw_line:
                         continue
                     line = raw_line.decode("utf-8") if isinstance(raw_line, bytes) else raw_line
@@ -597,7 +603,7 @@ class OpenAIProvider(BaseLLMProvider):
                 if r.status_code != 200:
                     yield f"Error: OpenAI status {r.status_code}"
                     return
-                for raw_line in r.iter_lines():
+                for raw_line in r.iter_lines(chunk_size=1):
                     if not raw_line:
                         continue
                     line = raw_line.decode("utf-8") if isinstance(raw_line, bytes) else raw_line
@@ -1056,6 +1062,8 @@ class LLMManager:
         lock_wait = time.monotonic() - lock_started
         if lock_wait > 0.25:
             logger.info("Interactive stream waited %.0fms for an in-flight provider call", lock_wait * 1000)
+        provider_stream_started = time.perf_counter()
+        first_visible_chunk_logged = False
         try:
             for token in self.provider.generate_with_history_stream(
                 prompt, conversation_history, system_prompt, model=model, **kwargs
@@ -1063,6 +1071,15 @@ class LLMManager:
                 if isinstance(token, dict):
                     yield token
                     continue
+                if token and not first_visible_chunk_logged:
+                    first_visible_chunk_logged = True
+                    logger.info(
+                        "Interactive provider first content chunk: turn=%s provider=%s model=%s elapsed_ms=%d",
+                        str(kwargs.get("audit_turn_id") or "unattributed"),
+                        type(self.provider).__name__,
+                        str(model),
+                        round((time.perf_counter() - provider_stream_started) * 1000),
+                    )
                 accumulated.append(token)
                 yield token
         finally:

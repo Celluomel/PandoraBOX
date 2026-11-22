@@ -5,6 +5,14 @@
 
 Les rapports agrégés sont dans [CONVERSATION_COGNITIVE_REGRESSION_PHASE0_2026-11-22.md](CONVERSATION_COGNITIVE_REGRESSION_PHASE0_2026-11-22.md) et [CONVERSATION_COGNITIVE_REGRESSION_PHASE1_2026-11-22.md](CONVERSATION_COGNITIVE_REGRESSION_PHASE1_2026-11-22.md). La Phase 1 est un jalon ciblé, pas la clôture de l’audit global; la cible de moins de 2 s au premier token n’est pas atteinte.
 
+### 22 novembre — streaming progressif et latence du premier token
+
+La revue du chemin provider→UI a trouvé un défaut de transport : les adaptateurs HTTP utilisaient `requests.iter_lines()` avec son tampon par défaut de 512 octets. Les petits événements SSE du modèle local pouvaient donc rester tamponnés, même si le serveur les envoyait au fil de la génération. Les adaptateurs Ollama, LM Studio et OpenAI lisent maintenant les lignes avec `chunk_size=1`; `LLMManager` journalise aussi le délai jusqu’au premier fragment de contenu visible, corrélé au `turn_id`, pour séparer le préremplissage du modèle du délai de transport.
+
+**Vérification hors ligne :** le test du flux LM Studio vérifie que la lecture utilise la taille de bloc faible et restitue deux fragments distincts avant la fin du flux; les tests Phase 1 restent verts. Groupe ciblé : **13 tests passés**, compilation et `git diff --check` réussis.
+
+**À confirmer en direct :** ce correctif n’est pas encore chargé dans Lumina et aucune mesure post-correctif de TTFT n’existe. Après le prochain démarrage, comparer le timestamp du premier fragment provider avec le premier événement `delta` HTTP sur plusieurs tours. Si le provider démarre vite mais que l’UI reste lente, poursuivre l’audit dans le pont Persona/API; si le premier fragment provider reste lent, mesurer le préremplissage et réduire le prompt ou le travail synchrone avant génération. Ne déclarer le streaming progressif clos qu’après un rejeu live montrant des événements `delta` avant la fin de génération.
+
 **Date de mise à jour :** 18 novembre 2026
 **Statut :** audit du harnais cognitif en cours; aucune conclusion globale de qualité n’est établie. Les preuves live du 17 novembre restent valides pour le code chargé à cette date (`6b05c99`), mais le PC a depuis redémarré et le processus Lumina courant n’a pas été vérifié via son API. Le commit local et `origin/main` étaient tous deux `a0d02ba` au début de cette tranche. Le dépôt contient aussi des changements Body/UI préexistants hors lot, non touchés ici.
 
