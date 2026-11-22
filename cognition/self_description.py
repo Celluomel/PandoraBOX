@@ -1154,7 +1154,7 @@ class SelfDescription:
         lines = [
             "Verified architecture registry (partial; only registered components are listed).",
             "Treat these entries as evidence about named components and parameters, not as a complete inventory.",
-            "Do not invent internal mechanisms, equations, or causal explanations that are not listed here.",
+            "Treat each role as the full verified scope; do not broaden conditional modules or infer unlisted inputs, probabilities, equations, or causal mechanisms.",
             "A turn trace proves recorded execution and supplied context, not why a sentence was generated. "
             "For a specific response's cause, use only linked prompt/output evidence; if absent, say the cause is unverified.",
         ]
@@ -1185,6 +1185,9 @@ class SelfDescription:
             lines = [
                 "VERIFIED ARCHITECTURE (partial registry; this is not a complete process-flow audit):",
                 "Use only the named roles/configuration below as verified self-description. "
+                "Treat each role as the full verified scope: state its trigger, inputs, and effect only as listed. "
+                "Do not broaden a conditional component into an always-active subsystem, infer unlisted inputs "
+                "such as confidence/emotion/anticipation, or describe a bounded score multiplier as a probability. "
                 "Do not invent equations, physical sensations, or unlisted mechanisms.",
                 "A turn trace proves recorded execution and supplied context, not why a sentence was generated. "
                 "For a specific response's cause, use only linked prompt/output evidence; if absent, say the cause is unverified.",
@@ -1257,7 +1260,7 @@ class SelfDescription:
             from cognition import internal_cognitive_state as ics
             if self.register_or_update(
                 "InternalCognitiveState", "cognition/internal_cognitive_state.py",
-                "Bounded, continuous epistemic-pressure bias on self-regulatory goals",
+                "On recursive-deliberation calls, records normalized epistemic pressure, its change, and prior-pressure prediction error. WorkspaceCompetition may add a bounded score bias only to active goals whose name/topic matches the self-regulatory goal set. It does not read confidence, emotion, or anticipation, and it does not bias every goal.",
                 {"SELF_STATE_GOAL_WEIGHT": ics.SELF_STATE_GOAL_WEIGHT,
                  "MAX_INTERNAL_BIAS": ics.MAX_INTERNAL_BIAS,
                  "DELTA_SCALE": ics.DELTA_SCALE,
@@ -1271,7 +1274,7 @@ class SelfDescription:
             from cognition import epistemic_efficacy_model as eem
             if self.register_or_update(
                 "EpistemicEfficacyModel", "cognition/epistemic_efficacy_model.py",
-                "Falsifiable self-prediction about resolve_uncertainty's effectiveness",
+                "Tracks at most one pending prediction of epistemic-pressure drop, created only when resolve_uncertainty wins and its learned multiplier reaches the final focus. On a later cycle it compares predicted and observed pressure change and updates an effectiveness self-belief. The bounded confidence-derived multiplier scales that goal's score bias; it is not a calibrated success probability and does not score other goals.",
                 {"PREDICTION_SCALE": eem.PREDICTION_SCALE,
                  "GOOD_PREDICTION_THRESHOLD": eem.GOOD_PREDICTION_THRESHOLD,
                  "MIN_MULTIPLIER": eem.MIN_MULTIPLIER, "MAX_MULTIPLIER": eem.MAX_MULTIPLIER},
@@ -1284,7 +1287,7 @@ class SelfDescription:
             from cognition import unified_revision_gateway as urg
             if self.register_or_update(
                 "UnifiedRevisionGateway", "cognition/unified_revision_gateway.py",
-                "Safety wrapper on the live autonomous self-modification path",
+                "Called only before applying eligible Liberty proposals to an existing personality trait or known goal priority (proposal confidence must exceed 0.6). It refuses protected/non-finite targets or clamps numeric values and step size, then logs the decision. It does not review chat answers or every cognitive update.",
                 {"MAX_STEP": urg.MAX_STEP, "BOUNDS": urg.BOUNDS,
                  "PROTECTED_SUBSTRINGS": list(urg.PROTECTED_SUBSTRINGS)},
             ):

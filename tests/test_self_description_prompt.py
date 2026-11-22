@@ -3,6 +3,7 @@ import threading
 import ast
 import inspect
 from pathlib import Path
+import tempfile
 
 from cognition.self_description import (
     ComponentDesc,
@@ -28,6 +29,20 @@ from cognition.self_description import (
 
 
 class SelfDescriptionPromptTests(unittest.TestCase):
+    def test_registered_cognitive_module_roles_include_exact_scope_and_nonclaims(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            description = SelfDescription(
+                str(Path(temporary_directory) / "self_description.json")
+            )
+            description.scan_known_components()
+            context = description.prompt_context()
+
+        self.assertIn("does not read confidence, emotion, or anticipation", context)
+        self.assertIn("at most one pending prediction", context)
+        self.assertIn("not a calibrated success probability", context)
+        self.assertIn("does not review chat answers or every cognitive update", context)
+        self.assertIn("proposal confidence must exceed 0.6", context)
+
     def test_cognitive_audit_status_query_requires_owned_recorded_state(self):
         question = (
             "According to your recorded current cognitive audit state, "
