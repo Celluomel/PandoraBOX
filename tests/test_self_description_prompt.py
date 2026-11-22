@@ -56,7 +56,7 @@ class SelfDescriptionPromptTests(unittest.TestCase):
 
             context, receipt = description.refreshed_prompt_context()
 
-        self.assertEqual(receipt["status"], "refreshed")
+        self.assertEqual(receipt["refresh_result"], "refreshed")
         self.assertGreater(receipt["registered_component_count"], 0)
         self.assertIn("does not read confidence, emotion, or anticipation", context)
         self.assertNotIn("Stale role", context)

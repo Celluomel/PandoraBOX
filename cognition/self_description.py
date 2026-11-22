@@ -1255,7 +1255,7 @@ class SelfDescription:
         with self._lock:
             component_count = len(self.components)
         return self.prompt_context(module_tick_snapshot), {
-            "status": "refreshed",
+            "refresh_result": "refreshed",
             "registered_component_count": component_count,
             "parameter_drift_count": drift_count,
         }
