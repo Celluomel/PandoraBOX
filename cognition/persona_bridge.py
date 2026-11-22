@@ -69,6 +69,21 @@ logger = logging.getLogger(__name__)
 _TURN_OUTPUT_UNSET = object()
 
 
+def _research_result_grounding_instruction(attempted: bool, status: str) -> str:
+    """Prevent unsupported recency claims when an external search finds nothing."""
+    if not attempted or status not in {"no_results", "failed"}:
+        return ""
+    return (
+        "━━ NO USABLE EXTERNAL RESEARCH RESULTS ━━\n"
+        "The requested external search was attempted but returned no usable source. "
+        "For claims about recent papers, current findings, or the latest state of this topic, "
+        "do not substitute pretrained knowledge or imply that it was verified by this search. "
+        "Say plainly that no relevant source was retrieved. You may offer stable background only "
+        "if you label it as general knowledge rather than a current research summary. Never invent "
+        "paper titles, dates, findings, citations, or a source that is absent from the retrieval receipt."
+    )
+
+
 def _turn_output_evidence(value: Any) -> tuple[str, dict[str, Any]]:
     """Return a stable fingerprint and redacted shape summary for turn data."""
     try:
@@ -5852,6 +5867,11 @@ Memory honesty — two distinct cases:
                         f"title={_source.get('title', '')}; URL={_source.get('url', '')}"
                     )
             system_prompt += "\n\n" + "\n".join(_research_lines)
+            _research_grounding = _research_result_grounding_instruction(
+                _web_search_attempted, _web_search_status,
+            )
+            if _research_grounding:
+                system_prompt += "\n\n" + _research_grounding
 
             # Keep the selected response language after the context-size cap
             # and optional web material.  Earlier language instructions may

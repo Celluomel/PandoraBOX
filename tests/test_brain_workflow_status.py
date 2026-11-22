@@ -7,7 +7,7 @@ from unittest.mock import Mock, patch
 
 from core.state import AppState
 from core.internal_loop import InternalThoughtLoop
-from cognition.persona_bridge import PersonaBridge
+from cognition.persona_bridge import PersonaBridge, _research_result_grounding_instruction
 
 
 class _Task:
@@ -27,6 +27,14 @@ class _CallbackTask:
 
 
 class BrainWorkflowStatusTests(unittest.TestCase):
+    def test_empty_external_search_requires_honest_recency_abstention(self):
+        instruction = _research_result_grounding_instruction(True, "no_results")
+        self.assertIn("no usable source", instruction)
+        self.assertIn("do not substitute pretrained knowledge", instruction)
+        self.assertIn("Never invent paper titles", instruction)
+        self.assertEqual(_research_result_grounding_instruction(True, "results_injected"), "")
+        self.assertEqual(_research_result_grounding_instruction(False, "no_results"), "")
+
     def test_search_activity_question_uses_receipt_instead_of_searching_web_again(self):
         bridge = PersonaBridge.__new__(PersonaBridge)
         captured = {}
